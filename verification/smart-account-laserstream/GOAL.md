@@ -32,35 +32,34 @@ without turning the monitor into a generic event-sourcing platform.
 6. The implementation contains no new generic raw LaserStream event table,
    projection-offset framework, catalog-generation state machine, or
    reserve-update fan-out.
-7. `loyal-app` exposes a long-lived targeted durable-job consumer that reuses
-   the existing deposit and cleanup reconciliation functions and their
-   canonical writers. The two superseded Vercel cron schedules are absent. It
-   does not duplicate Earn accounting in Rust. Its focused tests pass.
+7. The existing `loyal-fleet-route-reconciler` process exposes an independently
+   bounded Earn lane that leases durable vault jobs, consumes every unprocessed
+   receipt, performs targeted slot-pinned proofs, and commits canonical Earn
+   writes with receipt completion and the fenced job transition in one Neon
+   transaction. No new Loyal App or Render worker is introduced.
 8. The isolated E2E starts a disposable local PostgreSQL database, applies the
    production Yield migrations, feeds simulated policy creation, deposit ATA,
-   obligation, shared-binding, balance-sweep-only, and policy
-   deletion events through a production-backed fixture binary, and proves by
-   SQL that:
-   - exactly two vault jobs exist;
-   - the unrelated balance-sweep-only account creates no Earn job;
-   - vault A advances from policy creation at slot 100 to policy closure at
-     slot 120;
-   - vault B coalesces deposit ATA, obligation, and shared-account signals and
-     retains slot 110 and the deposit signature;
-   - exactly five Earn receipts exist after replay;
-   - the durable cursor is 120;
-   - a forced pre-commit failure leaves the cursor, receipts, and jobs
-     unchanged;
-   - replay and process restart leave all counts and high-water marks
-     unchanged.
+   obligation, shared-binding, balance-sweep-only, and policy deletion events
+   through production producer and consumer code, and proves by SQL that:
+   - policy-only onboarding creates the expected policy, managed-vault, and
+     onboarding rows;
+   - invisible deposits create exactly one deposit, aggregate position, and
+     holding event per signature;
+   - `confirm_missed` and `cleanup_pending` close and zero canonical state only
+     after the slot-pinned zero proof;
+   - multiple signatures coalesced into one vault job are all consumed;
+   - positive balances, RPC lag, and forced pre-commit failure write no false
+     canonical state and leave work retryable;
+   - a newer update fences an older lease;
+   - replay and process restart create no duplicate accounting;
+   - Earn updates create zero balance-sweep observations, events, or lots;
+   - the producer replay cursor is monotonic and advances only with durable
+     receipts/jobs.
 9. Focused Rust formatting, compilation, and tests pass, and both implementation
    worktrees have no whitespace errors.
 
-## Nice to have
-
-- A local RPC fixture exercises the existing slot-pinned proof readers.
-- The targeted app consumer is exercised against the disposable database in
-  addition to its focused dependency-injected tests.
+The complete design and rollout contract is recorded in
+`docs/plans/ask-2173-earn-laserstream-reconciliation-plan.md`.
 
 ## Verdict
 
