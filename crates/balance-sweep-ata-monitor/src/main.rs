@@ -15,16 +15,15 @@ use balance_sweep_ata_monitor::{
     ata_target_set, diff_ata_target_sets, laserstream_replay_from_slot, run_event_loop,
     seed_current_balances, spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget,
     AtaUpdateSource, EarnUpdateContext, LaserstreamAtaUpdateSource,
-    LaserstreamSubscriptionUpdateHandle, SubscriptionConfig, SubscriptionWatchSet,
-    TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream, WebsocketAtaUpdateSource,
+    LaserstreamSubscriptionUpdateHandle, RpcEarnChainReader, SubscriptionConfig,
+    SubscriptionWatchSet, TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream,
+    WebsocketAtaUpdateSource,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use loyal_actions::USDC_MINT;
 use loyal_observability::{init_from_env, OperationalError};
-use loyal_yield_store::{
-    EarnReconciliationJobInput, OrchestratorConfig, OrchestratorError, OrchestratorStore,
-};
+use loyal_yield_store::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 use tokio::{
@@ -399,20 +398,10 @@ async fn supervise_monitor_sessions(
             );
         } else if earn_changed {
             let existing = session.as_mut().expect("session exists");
-            let previous_watch_set = existing.earn_watch_set.clone();
             let update = existing.subscription_update.as_ref().ok_or_else(|| {
                 anyhow::anyhow!("Earn account monitoring requires LaserStream update source")
             })?;
             update.replace(watch_set.clone())?;
-            enqueue_earn_subscription_bootstrap(
-                &store,
-                &format!("earn-smart-account:{}", args.cluster),
-                &watch_set,
-                Some(&previous_watch_set),
-                &args.rpc_url,
-                args.laserstream_replay_overlap_slots,
-            )
-            .await?;
             existing.earn_watch_set = watch_set;
         } else {
             tracing::debug!(
@@ -512,15 +501,6 @@ async fn start_session(
                 config,
                 watch_set: Some(watch_set.clone()),
             };
-            enqueue_earn_subscription_bootstrap(
-                &store,
-                &consumer_name,
-                &watch_set,
-                None,
-                &args.rpc_url,
-                args.laserstream_replay_overlap_slots,
-            )
-            .await?;
             let (task, handle) =
                 source.spawn_with_updates(accounts, tx, running.clone(), watch_set_state.clone());
             (task, Some(handle))
@@ -538,6 +518,7 @@ async fn start_session(
         ),
     };
     let earn = (args.update_source == UpdateSourceKind::Laserstream).then(|| EarnUpdateContext {
+        chain: Arc::new(RpcEarnChainReader::new(&args.rpc_url, store.clone())),
         store,
         consumer_name: format!("earn-smart-account:{}", args.cluster),
         watch_set: watch_set_state,
@@ -558,56 +539,6 @@ async fn start_session(
         source_task,
         event_loop_task,
     })
-}
-
-async fn enqueue_earn_subscription_bootstrap(
-    store: &OrchestratorStore,
-    consumer_name: &str,
-    watch_set: &SubscriptionWatchSet,
-    previous: Option<&SubscriptionWatchSet>,
-    rpc_url: &str,
-    replay_overlap_slots: u64,
-) -> Result<()> {
-    let new_vaults = watch_set.new_earn_vaults(previous);
-    if new_vaults.is_empty() {
-        return Ok(());
-    }
-    let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
-    let current_slot = rpc
-        .get_slot()
-        .context("fetch confirmed RPC slot for Earn subscription bootstrap")?;
-    let durable_slot = store
-        .load_laserstream_replay_cursor(consumer_name)
-        .await
-        .map_err(orchestrator_error)?
-        .unwrap_or_else(|| laserstream_replay_from_slot(current_slot, replay_overlap_slots));
-    let jobs = new_vaults
-        .into_iter()
-        .map(|vault| EarnReconciliationJobInput {
-            event_key: format!("subscription-bootstrap:{}:{current_slot}", vault.vault),
-            environment: vault.environment.clone(),
-            settings: vault.settings.clone(),
-            wallet: vault.wallet.clone(),
-            vault_pubkey: vault.vault.clone(),
-            vault_index: vault.vault_index,
-            filter_name: "earn_vault_accounts".to_owned(),
-            event_kind: "subscription_bootstrap".to_owned(),
-            trigger_slot: current_slot,
-            signature: None,
-            account_pubkey: Some(vault.vault.clone()),
-        })
-        .collect::<Vec<_>>();
-    store
-        .record_earn_reconciliation_batch(consumer_name, durable_slot, &jobs)
-        .await
-        .map_err(orchestrator_error)?;
-    tracing::info!(
-        job_count = jobs.len(),
-        current_slot,
-        durable_slot,
-        "enqueued bounded reconciliation bootstrap for new Earn subscriptions"
-    );
-    Ok(())
 }
 
 async fn laserstream_replay_start_slot(

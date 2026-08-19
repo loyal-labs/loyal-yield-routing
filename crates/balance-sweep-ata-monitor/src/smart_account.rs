@@ -18,9 +18,7 @@ use loyal_actions::{
     earn_stablecoins,
 };
 use loyal_kamino_data::targets::loyal_safe_markets;
-use loyal_yield_store::{
-    EarnReconciliationJobInput, EarnSubscriptionTarget, OrchestratorError, OrchestratorStore,
-};
+use loyal_yield_store::EarnSubscriptionTarget;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 
@@ -230,7 +228,7 @@ impl SubscriptionWatchSet {
             .collect()
     }
 
-    fn affected_vaults<'a>(
+    pub fn affected_vaults<'a>(
         &'a self,
         accounts: impl IntoIterator<Item = &'a str>,
     ) -> Vec<&'a EarnVaultWatch> {
@@ -298,80 +296,6 @@ pub fn normalize_laserstream_update(
         }
         _ => Ok(None),
     }
-}
-
-pub fn earn_jobs_for_update(
-    update: &NormalizedEarnUpdate,
-    watch_set: &SubscriptionWatchSet,
-) -> Vec<EarnReconciliationJobInput> {
-    let affected = watch_set.affected_vaults(update.account_pubkey.iter().map(String::as_str));
-    affected
-        .into_iter()
-        .filter_map(|vault| {
-            let filter_name = update
-                .filters
-                .iter()
-                .find(|filter| {
-                    vault.accounts.iter().any(|account| {
-                        account.pubkey == update.account_pubkey.clone().unwrap_or_default()
-                            && match account.role.as_str() {
-                                "policy" => *filter == EARN_POLICY_ACCOUNTS,
-                                "vault" => *filter == EARN_VAULT_ACCOUNTS,
-                                "idle_token" => *filter == EARN_IDLE_TOKEN_ACCOUNTS,
-                                "obligation" => *filter == EARN_OBLIGATIONS,
-                                _ => false,
-                            }
-                    })
-                })?
-                .clone();
-            let account_pubkey = update.account_pubkey.clone();
-            let trigger_kind = match filter_name.as_str() {
-                EARN_POLICY_ACCOUNTS => "policy_only",
-                _ => "invisible_deposit",
-            };
-            let event_key = update.event_key.clone().unwrap_or_else(|| {
-                format!(
-                    "{}:{}:{}:{}:{}",
-                    update.event_kind,
-                    update.slot,
-                    update.signature.as_deref().unwrap_or("no-signature"),
-                    update.account_pubkey.as_deref().unwrap_or("transaction"),
-                    filter_name
-                )
-            });
-            Some(EarnReconciliationJobInput {
-                event_key,
-                environment: vault.environment.clone(),
-                settings: vault.settings.clone(),
-                wallet: vault.wallet.clone(),
-                vault_pubkey: vault.vault.clone(),
-                vault_index: vault.vault_index,
-                filter_name,
-                event_kind: trigger_kind.to_owned(),
-                trigger_slot: update.slot,
-                signature: update.signature.clone(),
-                account_pubkey,
-            })
-        })
-        .collect()
-}
-
-pub async fn persist_normalized_earn_update(
-    store: &OrchestratorStore,
-    consumer_name: &str,
-    update: &NormalizedEarnUpdate,
-    watch_set: &SubscriptionWatchSet,
-) -> Result<(), OrchestratorError> {
-    let jobs = earn_jobs_for_update(update, watch_set);
-    if jobs.is_empty() {
-        return Err(OrchestratorError::StoreInvariant(format!(
-            "Earn LaserStream update at slot {} matched {:?} but no watched vault",
-            update.slot, update.filters
-        )));
-    }
-    store
-        .record_earn_reconciliation_batch(consumer_name, update.slot, &jobs)
-        .await
 }
 
 pub fn build_multi_channel_subscribe_request(

@@ -36,13 +36,17 @@ use tokio::{
 
 pub mod ata_recheck;
 pub mod earn_apy;
+pub mod earn_reconciliation;
 pub mod smart_account;
 
+pub use earn_reconciliation::{
+    reconcile_normalized_earn_update, EarnChainReader, FixtureEarnChainReader, RpcEarnChainReader,
+};
 pub use smart_account::{
-    build_multi_channel_subscribe_request, earn_jobs_for_update, normalize_laserstream_update,
-    persist_normalized_earn_update, subscribe_request_json, EarnVaultWatch, EarnWatchAccount,
-    NormalizedEarnUpdate, SubscriptionWatchSet, BALANCE_SWEEP_WALLET_ATAS,
-    EARN_IDLE_TOKEN_ACCOUNTS, EARN_OBLIGATIONS, EARN_POLICY_ACCOUNTS, EARN_VAULT_ACCOUNTS,
+    build_multi_channel_subscribe_request, normalize_laserstream_update, subscribe_request_json,
+    EarnVaultWatch, EarnWatchAccount, NormalizedEarnUpdate, SubscriptionWatchSet,
+    BALANCE_SWEEP_WALLET_ATAS, EARN_IDLE_TOKEN_ACCOUNTS, EARN_OBLIGATIONS, EARN_POLICY_ACCOUNTS,
+    EARN_VAULT_ACCOUNTS,
 };
 
 pub use ata_recheck::{
@@ -235,6 +239,7 @@ pub struct EarnUpdateContext {
     pub store: OrchestratorStore,
     pub consumer_name: String,
     pub watch_set: Arc<RwLock<SubscriptionWatchSet>>,
+    pub chain: Arc<dyn EarnChainReader>,
 }
 
 impl LaserstreamAtaUpdateSource {
@@ -466,11 +471,12 @@ pub async fn run_event_loop(
                     continue;
                 };
                 let watch_set = earn.watch_set.read().await.clone();
-                persist_normalized_earn_update(
+                reconcile_normalized_earn_update(
                     &earn.store,
                     &earn.consumer_name,
                     &update,
                     &watch_set,
+                    earn.chain.as_ref(),
                 )
                 .await
                 .map_err(|error| anyhow::anyhow!(error))?;
