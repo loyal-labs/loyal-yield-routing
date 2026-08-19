@@ -648,8 +648,8 @@ describe("runtime dependency boundary", () => {
 });
 
 describe("shouldNotifyFailedSweep", () => {
-  test("wakes the user only for failures that park a promised sweep", () => {
-    expect(shouldNotifyFailedSweep("preflight_blocked")).toBe(true);
+  test("wakes the user only for a fleet-wide fee payer outage", () => {
+    expect(shouldNotifyFailedSweep("preflight_blocked")).toBe(false);
     expect(shouldNotifyFailedSweep("fee_payer_exhausted")).toBe(true);
     // Nothing to sweep, deposit already landed, or a transient error the next
     // cycle clears — pushing for these is noise.

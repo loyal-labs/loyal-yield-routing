@@ -2,12 +2,20 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  Transaction,
   VersionedTransaction,
+  sendAndConfirmTransaction,
   type AddressLookupTableAccount,
   type TransactionInstruction,
 } from "@solana/web3.js";
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 import bs58 from "bs58";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
 import {
@@ -19,9 +27,11 @@ import {
   type DurableAutodepositAttempt,
 } from "./durable-autodeposit-confirmation";
 import {
-  AUTODEPOSIT_IDLE_HANDOFF_STATUS,
-  observeIdleVaultAtOrAfter,
-} from "./autodeposit-idle-vault-handoff";
+  durableDepositRetryEffect,
+  operationalAlertForDurableAutodeposit,
+  reduceDurableAutodepositState,
+  initialDurableAutodepositState,
+} from "./durable-autodeposit-operation";
 
 type PreparedOperation = {
   operation: string;
@@ -157,9 +167,35 @@ type ConfirmedPullHandoffTarget = Pick<
   | "tokenMint"
 >;
 
+type DurableAutodepositTarget = ConfirmedPullHandoffTarget &
+  Pick<
+    EligibleTarget,
+    | "settings"
+    | "vaultIndex"
+    | "routePolicyAccount"
+    | "routePolicySeed"
+    | "currentReserve"
+    | "currentMarket"
+    | "currentLiquidityMint"
+  >;
+
+type DurableAutodepositOperation = {
+  state: "prepared" | "pull_confirmed" | "deposit_pending" | "completed" | "ambiguous";
+  amountRaw: bigint;
+  reserve: string;
+  market: string;
+  liquidityMint: string;
+  executionId: string | null;
+  depositSourceBalanceRaw: bigint | null;
+  depositSignature: string | null;
+  depositConfirmedSlot: bigint | null;
+  target: DurableAutodepositTarget & { managedVaultId: bigint };
+};
+
 type ConfirmedPullRecoveryContext = {
   attempt: DurableAutodepositAttempt;
-  target: ConfirmedPullHandoffTarget & { managedVaultId: bigint };
+  operation: DurableAutodepositOperation;
+  target: DurableAutodepositTarget & { managedVaultId: bigint };
 };
 
 type SimulationSummary = {
@@ -214,16 +250,6 @@ class MissingActiveEarnRoutePolicyError extends Error {
   }
 }
 
-class IdleVaultHandoffPersistenceError extends Error {
-  constructor(cause: unknown) {
-    super(
-      `Confirmed autodeposit pull could not be published to idle-vault recovery: ${
-        cause instanceof Error ? cause.message : String(cause)
-      }`
-    );
-    this.name = "IdleVaultHandoffPersistenceError";
-  }
-}
 
 const DEFAULT_COMMITMENT = "confirmed";
 const DEFAULT_LOCAL_SAME_MINT_COMMAND = [
@@ -245,6 +271,12 @@ const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
  */
 const NOT_ACTIONABLE_RETRY_DELAY_SECONDS = 6 * 60 * 60;
 const AUTODEPOSIT_PULL_FEE_PAYER_MIN_LAMPORTS = 50_000_000;
+const AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS = 240_000;
+const AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS = 10_000;
+const AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS_ENV =
+  "AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS";
+const AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS_ENV =
+  "AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS";
 /**
  * Balance at which the fee payer is reported as running low while it still works.
  *
@@ -1537,9 +1569,7 @@ export function isFeePayerExhaustedFailure(error: unknown): boolean {
 export function shouldNotifyFailedSweep(
   failureCode: AutodepositExecutorFailureCode | null
 ): boolean {
-  return (
-    failureCode === "preflight_blocked" || failureCode === "fee_payer_exhausted"
-  );
+  return failureCode === "fee_payer_exhausted";
 }
 
 export type AutodepositFailureDisposition = {
@@ -1889,259 +1919,89 @@ async function getTokenBalanceRaw(
   }
 }
 
+async function ensureVaultTokenAccountBeforePull(args: {
+  connection: Connection;
+  execute: boolean;
+  feePayer: Keypair;
+  target: Pick<EligibleTarget, "tokenMint" | "vaultPubkey" | "vaultTokenAta">;
+}) {
+  const vault = new PublicKey(args.target.vaultPubkey);
+  const mint = new PublicKey(args.target.tokenMint);
+  const configuredTokenAccount = new PublicKey(args.target.vaultTokenAta);
+  const derivedTokenAccount = getAssociatedTokenAddressSync(
+    mint,
+    vault,
+    true,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  if (!derivedTokenAccount.equals(configuredTokenAccount)) {
+    throw new Error(
+      `Configured vault token account ${configuredTokenAccount.toBase58()} does not match derived ATA ${derivedTokenAccount.toBase58()}.`
+    );
+  }
+  if (
+    await args.connection.getAccountInfo(
+      configuredTokenAccount,
+      DEFAULT_COMMITMENT
+    )
+  ) {
+    return { status: "ready" as const, signature: null };
+  }
+  if (!args.execute) {
+    return { status: "repair_required" as const, signature: null };
+  }
+  const transaction = new Transaction().add(
+    createAssociatedTokenAccountIdempotentInstruction(
+      args.feePayer.publicKey,
+      configuredTokenAccount,
+      vault,
+      mint,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    )
+  );
+  const signature = await sendAndConfirmTransaction(
+    args.connection,
+    transaction,
+    [args.feePayer],
+    { commitment: DEFAULT_COMMITMENT }
+  );
+  const repaired = await args.connection.getAccountInfo(
+    configuredTokenAccount,
+    DEFAULT_COMMITMENT
+  );
+  if (!repaired) {
+    throw new Error(
+      `Vault ATA repair ${signature} confirmed without creating ${configuredTokenAccount.toBase58()}.`
+    );
+  }
+  return { status: "repaired" as const, signature };
+}
+
 async function getContextFencedTokenBalance(args: {
   connection: Connection;
   minimumSlot: bigint;
   tokenAccount: PublicKey;
 }) {
-  return observeIdleVaultAtOrAfter({
-    minimumSlot: args.minimumSlot,
-    maxAttempts: 20,
-    pollIntervalMs: 250,
-    read: async () => {
-      const balance = await args.connection.getTokenAccountBalance(
-        args.tokenAccount,
-        DEFAULT_COMMITMENT
-      );
+  let lastObservedSlot = BigInt(0);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const balance = await args.connection.getTokenAccountBalance(
+      args.tokenAccount,
+      DEFAULT_COMMITMENT
+    );
+    lastObservedSlot = BigInt(balance.context.slot);
+    if (lastObservedSlot >= args.minimumSlot) {
       return {
         amountRaw: BigInt(balance.value.amount),
-        observedSlot: BigInt(balance.context.slot),
+        observedSlot: lastObservedSlot,
       };
-    },
-  });
-}
-
-async function publishConfirmedPullAndCompleteClaim(args: {
-  attemptId: string;
-  claimToken: string;
-  databaseUrl: string;
-  executionId: string;
-  neon: AppModules["neon"];
-  observedAmountRaw: bigint;
-  observedAt: string;
-  observedSlot: bigint;
-  target: ConfirmedPullHandoffTarget;
-}) {
-  const managedVaultId = args.target.managedVaultId;
-  if (managedVaultId === undefined) {
-    throw new Error(
-      `Autodeposit target ${args.target.id} has no managed-vault identity.`
-    );
-  }
-  const sql = args.neon(args.databaseUrl);
-  const rows = await sql`
-    WITH published AS (
-      INSERT INTO loyal_yield.vault_idle_token_balances_current (
-        vault_id,
-        mint,
-        amount_raw,
-        owner,
-        token_account,
-        observed_slot,
-        observed_at,
-        source_commitment,
-        updated_at
-      ) VALUES (
-        ${managedVaultId.toString()},
-        ${args.target.tokenMint},
-        ${args.observedAmountRaw.toString()},
-        ${args.target.vaultPubkey},
-        ${args.target.vaultTokenAta},
-        ${args.observedSlot.toString()},
-        ${args.observedAt},
-        ${DEFAULT_COMMITMENT},
-        now()
-      )
-      ON CONFLICT (vault_id, mint) DO UPDATE SET
-        amount_raw = CASE
-          WHEN EXCLUDED.observed_slot > loyal_yield.vault_idle_token_balances_current.observed_slot
-            OR (
-              EXCLUDED.observed_slot = loyal_yield.vault_idle_token_balances_current.observed_slot
-              AND EXCLUDED.amount_raw = loyal_yield.vault_idle_token_balances_current.amount_raw
-              AND EXCLUDED.owner = loyal_yield.vault_idle_token_balances_current.owner
-              AND EXCLUDED.token_account = loyal_yield.vault_idle_token_balances_current.token_account
-            )
-          THEN EXCLUDED.amount_raw
-          ELSE loyal_yield.vault_idle_token_balances_current.amount_raw
-        END,
-        owner = CASE
-          WHEN EXCLUDED.observed_slot > loyal_yield.vault_idle_token_balances_current.observed_slot
-          THEN EXCLUDED.owner
-          ELSE loyal_yield.vault_idle_token_balances_current.owner
-        END,
-        token_account = CASE
-          WHEN EXCLUDED.observed_slot > loyal_yield.vault_idle_token_balances_current.observed_slot
-          THEN EXCLUDED.token_account
-          ELSE loyal_yield.vault_idle_token_balances_current.token_account
-        END,
-        observed_slot = GREATEST(
-          loyal_yield.vault_idle_token_balances_current.observed_slot,
-          EXCLUDED.observed_slot
-        ),
-        observed_at = CASE
-          WHEN EXCLUDED.observed_slot > loyal_yield.vault_idle_token_balances_current.observed_slot
-          THEN EXCLUDED.observed_at
-          ELSE loyal_yield.vault_idle_token_balances_current.observed_at
-        END,
-        source_commitment = CASE
-          WHEN EXCLUDED.observed_slot > loyal_yield.vault_idle_token_balances_current.observed_slot
-          THEN EXCLUDED.source_commitment
-          ELSE loyal_yield.vault_idle_token_balances_current.source_commitment
-        END,
-        updated_at = CASE
-          WHEN EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
-          THEN now()
-          ELSE loyal_yield.vault_idle_token_balances_current.updated_at
-        END
-      RETURNING amount_raw, owner, token_account, observed_slot
-    ),
-    valid_publication AS (
-      SELECT *
-      FROM published
-      WHERE observed_slot > ${args.observedSlot.toString()}::bigint
-         OR (
-           observed_slot = ${args.observedSlot.toString()}::bigint
-           AND amount_raw = ${args.observedAmountRaw.toString()}::bigint
-           AND owner = ${args.target.vaultPubkey}
-           AND token_account = ${args.target.vaultTokenAta}
-         )
-    ),
-    updated_execution AS (
-      UPDATE loyal_yield.balance_sweep_executions
-      SET
-        decoded_evidence = COALESCE(decoded_evidence, '{}'::jsonb) ||
-          jsonb_build_object(
-            'status', ${AUTODEPOSIT_IDLE_HANDOFF_STATUS}::text,
-            'idleVaultAmountRaw', ${args.observedAmountRaw.toString()}::text,
-            'idleVaultObservedSlot', ${args.observedSlot.toString()}::text,
-            'idleVaultObservedAt', ${args.observedAt}::text,
-            'idleVaultSourceCommitment', ${DEFAULT_COMMITMENT}::text
-          ),
-        decoded_at = now()
-      WHERE id = ${args.executionId}
-        AND EXISTS (SELECT 1 FROM valid_publication)
-      RETURNING id
-    ),
-    cleared_handoff_alert AS (
-      UPDATE loyal_yield.balance_sweep_transaction_attempts
-      SET error_detail = NULL,
-          updated_at = now()
-      WHERE id = ${args.attemptId}
-        AND attempt_state = 'confirmed'
-        AND EXISTS (SELECT 1 FROM valid_publication)
-      RETURNING id
-    ),
-    matched_lots AS (
-      SELECT i.lot_id, i.amount_raw
-      FROM loyal_yield.balance_sweep_lot_claim_items i
-      JOIN loyal_yield.balance_sweep_surplus_lots l ON l.id = i.lot_id
-      JOIN loyal_yield.balance_sweep_wallet_balance_events e
-        ON e.event_id = l.source_event_id
-      JOIN loyal_yield.balance_sweep_lot_claims c
-        ON c.claim_token = i.claim_token
-      JOIN loyal_yield.balance_sweep_targets t ON t.id = c.target_id
-      WHERE i.claim_token = ${args.claimToken}
-        AND l.target_id = c.target_id
-        AND e.mint = t.token_mint
-        AND t.token_mint = ${USDC_MINT_ADDRESS}
-    ),
-    inserted_lots AS (
-      INSERT INTO loyal_yield.balance_sweep_execution_lots
-        (execution_id, lot_id, amount_raw)
-      SELECT ${args.executionId}, lot_id, amount_raw
-      FROM matched_lots
-      WHERE EXISTS (SELECT 1 FROM valid_publication)
-      ON CONFLICT (execution_id, lot_id) DO NOTHING
-      RETURNING lot_id
-    ),
-    updated_claim AS (
-      UPDATE loyal_yield.balance_sweep_lot_claims
-      SET
-        status = 'executed',
-        execution_id = ${args.executionId},
-        updated_at = now()
-      WHERE claim_token = ${args.claimToken}
-        AND status = 'selected'
-        AND EXISTS (SELECT 1 FROM matched_lots)
-        AND EXISTS (SELECT 1 FROM valid_publication)
-        AND EXISTS (SELECT 1 FROM updated_execution)
-      RETURNING claim_token
-    ),
-    updated_slot AS (
-      UPDATE loyal_yield.balance_sweep_scheduled_slots
-      SET
-        status = 'executed',
-        execution_id = ${args.executionId},
-        updated_at = now()
-      WHERE claim_token IN (SELECT claim_token FROM updated_claim)
-      RETURNING id
-    )
-    SELECT
-      amount_raw,
-      observed_slot,
-      EXISTS (SELECT 1 FROM updated_claim) AS claim_transitioned,
-      EXISTS (SELECT 1 FROM updated_slot) AS slot_transitioned
-    FROM valid_publication
-  `;
-  const row = rows[0] as Record<string, unknown> | undefined;
-  if (!row) {
-    throw new Error(
-      `idle-vault publication conflicted at observed slot ${args.observedSlot}`
-    );
-  }
-  const transitioned =
-    (row.claim_transitioned === true || row.claim_transitioned === "true") &&
-    (row.slot_transitioned === true || row.slot_transitioned === "true");
-  if (!transitioned) {
-    const terminalRows = await sql`
-      SELECT EXISTS (
-        SELECT 1
-        FROM loyal_yield.balance_sweep_lot_claims AS claim
-        JOIN loyal_yield.balance_sweep_scheduled_slots AS slot
-          ON slot.claim_token = claim.claim_token
-        WHERE claim.claim_token = ${args.claimToken}
-          AND claim.status = 'executed'
-          AND claim.execution_id = ${args.executionId}
-          AND slot.status = 'executed'
-          AND slot.execution_id = ${args.executionId}
-      ) AS terminal
-    `;
-    const terminal = (terminalRows[0] as Record<string, unknown> | undefined)
-      ?.terminal;
-    if (terminal !== true && terminal !== "true") {
-      throw new Error(
-        `idle-vault projection published but claim ${args.claimToken} did not complete`
-      );
     }
+    await new Promise<void>((resolve) => setTimeout(resolve, 250));
   }
-  return {
-    amountRaw: BigInt(readRequiredString(row.amount_raw, "amount_raw")),
-    observedSlot: BigInt(
-      readRequiredString(row.observed_slot, "observed_slot")
-    ),
-  };
-}
-
-const IDLE_HANDOFF_ALERT_CLAIM =
-  "alerted:autodeposit_idle_handoff_failed";
-
-async function claimIdleHandoffFailureAlert(args: {
-  attemptId: string;
-  databaseUrl: string;
-  neon: AppModules["neon"];
-}): Promise<boolean> {
-  const sql = args.neon(args.databaseUrl);
-  const rows = await sql`
-    UPDATE loyal_yield.balance_sweep_transaction_attempts
-    SET
-      error_detail = ${IDLE_HANDOFF_ALERT_CLAIM},
-      updated_at = now()
-    WHERE id = ${args.attemptId}
-      AND attempt_state = 'confirmed'
-      AND error_detail IS DISTINCT FROM ${IDLE_HANDOFF_ALERT_CLAIM}
-    RETURNING id
-  `;
-  return rows.length === 1;
+  throw new Error(
+    `vault token observation remained at slot ${lastObservedSlot}, before confirmed pull slot ${args.minimumSlot}`
+  );
 }
 
 async function loadRecurringDelegationAllowance(args: {
@@ -2317,6 +2177,16 @@ function parseDurableAutodepositAttempt(
       "attempt.operation_kind"
     ) as AutodepositOperationKind,
     executionId: readNullableString(row.execution_id),
+    depositSourceBalanceRaw:
+      row.deposit_source_balance_raw === null ||
+      row.deposit_source_balance_raw === undefined
+        ? null
+        : BigInt(
+            readRequiredString(
+              row.deposit_source_balance_raw,
+              "operation.deposit_source_balance_raw"
+            )
+          ),
     amountRaw: BigInt(readRequiredString(row.amount_raw, "attempt.amount_raw")),
     sourcePreBalanceRaw: BigInt(
       readRequiredString(
@@ -2382,6 +2252,56 @@ async function loadDurableAutodepositAttempt(args: {
   return row ? parseDurableAutodepositAttempt(row) : null;
 }
 
+async function loadDurableAutodepositOperation(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+}): Promise<DurableAutodepositOperation | null> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    SELECT *
+    FROM loyal_yield.balance_sweep_autodeposit_operations
+    WHERE claim_token = ${args.claimToken}
+    LIMIT 1
+  `;
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (!row) {
+    return null;
+  }
+  const state = readRequiredString(row.state, "operation.state") as DurableAutodepositOperation["state"];
+  return {
+    state,
+    amountRaw: BigInt(readRequiredString(row.amount_raw, "operation.amount_raw")),
+    reserve: readRequiredString(row.reserve, "operation.reserve"),
+    market: readRequiredString(row.market, "operation.market"),
+    liquidityMint: readRequiredString(row.liquidity_mint, "operation.liquidity_mint"),
+    executionId: readNullableString(row.execution_id),
+    depositSignature: readNullableString(row.deposit_signature),
+    depositConfirmedSlot:
+      row.deposit_confirmed_slot === null || row.deposit_confirmed_slot === undefined
+        ? null
+        : BigInt(readRequiredString(row.deposit_confirmed_slot, "operation.deposit_confirmed_slot")),
+    target: {
+      id: BigInt(readRequiredString(row.target_id, "operation.target_id")),
+      managedVaultId: BigInt(readRequiredString(row.managed_vault_id, "operation.managed_vault_id")),
+      settings: readRequiredString(row.settings, "operation.settings"),
+      vaultIndex: Number(readRequiredString(row.vault_index, "operation.vault_index")),
+      wallet: readRequiredString(row.wallet, "operation.wallet"),
+      walletUsdcAta: readRequiredString(row.wallet_token_ata, "operation.wallet_token_ata"),
+      walletTokenAta: readRequiredString(row.wallet_token_ata, "operation.wallet_token_ata"),
+      vaultPubkey: readRequiredString(row.vault_pubkey, "operation.vault_pubkey"),
+      vaultUsdcAta: readRequiredString(row.vault_token_ata, "operation.vault_token_ata"),
+      vaultTokenAta: readRequiredString(row.vault_token_ata, "operation.vault_token_ata"),
+      tokenMint: readRequiredString(row.token_mint, "operation.token_mint"),
+      routePolicyAccount: readRequiredString(row.route_policy_account, "operation.route_policy_account"),
+      routePolicySeed: BigInt(readRequiredString(row.route_policy_seed, "operation.route_policy_seed")),
+      currentReserve: readRequiredString(row.reserve, "operation.reserve"),
+      currentMarket: readRequiredString(row.market, "operation.market"),
+      currentLiquidityMint: readRequiredString(row.liquidity_mint, "operation.liquidity_mint"),
+    },
+  };
+}
+
 async function loadConfirmedPullRecoveryContext(args: {
   neon: AppModules["neon"];
   databaseUrl: string;
@@ -2440,43 +2360,25 @@ async function loadConfirmedPullRecoveryContext(args: {
       `Confirmed autodeposit pull ${attempt.id} has no confirmed slot.`
     );
   }
-  return {
-    attempt,
-    target: {
-      id: args.targetId,
-      managedVaultId: BigInt(
-        readRequiredString(
-          row.recovery_managed_vault_id,
-          "recovery.managed_vault_id"
-        )
-      ),
-      wallet: readRequiredString(row.recovery_wallet, "recovery.wallet"),
-      walletUsdcAta: readRequiredString(
-        row.recovery_wallet_usdc_ata,
-        "recovery.wallet_usdc_ata"
-      ),
-      walletTokenAta: readRequiredString(
-        row.recovery_wallet_token_ata,
-        "recovery.wallet_token_ata"
-      ),
-      vaultPubkey: readRequiredString(
-        row.recovery_vault_pubkey,
-        "recovery.vault_pubkey"
-      ),
-      vaultUsdcAta: readRequiredString(
-        row.recovery_vault_usdc_ata,
-        "recovery.vault_usdc_ata"
-      ),
-      vaultTokenAta: readRequiredString(
-        row.recovery_vault_token_ata,
-        "recovery.vault_token_ata"
-      ),
-      tokenMint: readRequiredString(
-        row.recovery_token_mint,
-        "recovery.token_mint"
-      ),
-    },
-  };
+  const operation = await loadDurableAutodepositOperation({
+    neon: args.neon,
+    databaseUrl: args.databaseUrl,
+    claimToken: args.claimToken,
+  });
+  if (!operation) {
+    throw new Error(
+      `Confirmed pull ${attempt.signature} lost its durable autodeposit operation.`
+    );
+  }
+  if (
+    operation.target.id !== args.targetId ||
+    operation.amountRaw !== attempt.amountRaw
+  ) {
+    throw new Error(
+      `Confirmed pull ${attempt.signature} does not match its durable autodeposit operation.`
+    );
+  }
+  return { attempt, operation, target: operation.target };
 }
 
 async function persistPreparedAutodepositAttempt(args: {
@@ -2856,6 +2758,147 @@ async function sendPreparedOperation(args: {
   };
 }
 
+async function sendPreparedTopUpOperation(args: {
+  connection: Connection;
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+  targetId: bigint;
+  scheduledSlotId: bigint;
+  executionId: string;
+  amountRaw: bigint;
+  sourcePreBalanceRaw: bigint;
+  prepare: () => Promise<SameMintTopUpResult>;
+}): Promise<DurablePreparedOperationResult> {
+  let attempt = await loadDurableAutodepositAttempt({
+    neon: args.neon,
+    databaseUrl: args.databaseUrl,
+    claimToken: args.claimToken,
+    operationKind: "top_up",
+  });
+  if (!attempt || attemptAllowsSafeRequeue(attempt.state)) {
+    const dryRun = await args.prepare();
+    assertNoTopUpPreflightBlockers(dryRun);
+    const prepared = readRecord(
+      dryRun.json?.durablePolicyDepositTransaction
+    );
+    const signature = readRequiredString(
+      prepared?.signature,
+      "durable Kamino top-up signature"
+    );
+    const signedTransactionBase64 = readRequiredString(
+      prepared?.signedTransactionBase64,
+      "durable Kamino top-up signed transaction"
+    );
+    const signedTransaction = Buffer.from(signedTransactionBase64, "base64");
+    const signedTransactionSha256 = createHash("sha256")
+      .update(signedTransaction)
+      .digest("hex");
+    if (
+      signedTransactionSha256 !==
+      readRequiredString(
+        prepared?.signedTransactionSha256,
+        "durable Kamino top-up transaction hash"
+      )
+    ) {
+      throw new Error("Durable Kamino top-up transaction hash does not match its bytes.");
+    }
+    const transaction = VersionedTransaction.deserialize(signedTransaction);
+    const derivedSignature = transaction.signatures[0]
+      ? bs58.encode(transaction.signatures[0])
+      : null;
+    if (derivedSignature !== signature) {
+      throw new Error(
+        `Durable Kamino top-up bytes derive ${derivedSignature}, expected ${signature}.`
+      );
+    }
+    attempt = await persistPreparedAutodepositAttempt({
+      neon: args.neon,
+      databaseUrl: args.databaseUrl,
+      claimToken: args.claimToken,
+      targetId: args.targetId,
+      scheduledSlotId: args.scheduledSlotId,
+      operationKind: "top_up",
+      executionId: BigInt(args.executionId),
+      amountRaw: args.amountRaw,
+      sourcePreBalanceRaw: args.sourcePreBalanceRaw,
+      destinationPreBalanceRaw: BigInt(0),
+      signature,
+      signedTransactionBase64,
+      signedTransactionSha256,
+      blockhash: readRequiredString(
+        prepared?.recentBlockhash,
+        "durable Kamino top-up recent blockhash"
+      ),
+      lastValidBlockHeight: BigInt(
+        readRequiredString(
+          prepared?.lastValidBlockHeight,
+          "durable Kamino top-up last valid block height"
+        )
+      ),
+    });
+  }
+
+  const settlement = await settleDurableAutodepositAttempt({
+    attempt,
+    dependencies: {
+      observe: (candidate) =>
+        observeDurableAutodepositAttempt({
+          connection: args.connection,
+          attempt: candidate,
+        }),
+      broadcastExact: async (candidate) => {
+        const bytes = Buffer.from(candidate.signedTransactionBase64, "base64");
+        const transaction = VersionedTransaction.deserialize(bytes);
+        const derivedSignature = transaction.signatures[0]
+          ? bs58.encode(transaction.signatures[0])
+          : null;
+        if (derivedSignature !== candidate.signature) {
+          throw new Error(
+            `Persisted top-up transaction derives ${derivedSignature}, expected ${candidate.signature}.`
+          );
+        }
+        return args.connection.sendRawTransaction(bytes, {
+          maxRetries: 0,
+          skipPreflight: true,
+        });
+      },
+      recordBroadcast: (candidate) =>
+        recordAutodepositAttemptBroadcast({
+          neon: args.neon,
+          databaseUrl: args.databaseUrl,
+          attempt: candidate,
+        }),
+      recordObservation: (candidate, observation) =>
+        recordAutodepositAttemptObservation({
+          neon: args.neon,
+          databaseUrl: args.databaseUrl,
+          attempt: candidate,
+          observation,
+        }),
+    },
+  });
+  if (
+    settlement.observation.state === "confirmed" &&
+    settlement.observation.confirmedSlot !== null
+  ) {
+    return {
+      status: "confirmed",
+      signature: settlement.attempt.signature,
+      slot: settlement.observation.confirmedSlot,
+      attempt: settlement.attempt,
+    };
+  }
+  return {
+    status:
+      settlement.observation.state === "unknown"
+        ? "pending"
+        : settlement.observation.state,
+    attempt: settlement.attempt,
+    error: settlement.observation.error,
+  };
+}
+
 export type SameMintTopUpResult = {
   command: string[];
   exitCode: number;
@@ -2901,7 +2944,7 @@ export async function runSameMintReserveTopUp(args: {
   execute: boolean;
   reserve: string;
   rpcUrl: string;
-  target: EligibleTarget;
+  target: Pick<EligibleTarget, "settings" | "vaultIndex">;
 }): Promise<SameMintTopUpResult> {
   const command = [
     ...sameMintReserveSwapCommand(),
@@ -2926,7 +2969,7 @@ export async function runMissingObligationSetup(args: {
   execute: boolean;
   reserve: string;
   rpcUrl: string;
-  target: EligibleTarget;
+  target: Pick<EligibleTarget, "settings" | "vaultIndex">;
 }): Promise<SameMintTopUpResult> {
   const command = [
     ...sameMintReserveSwapCommand(),
@@ -3675,6 +3718,14 @@ function defaultSleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function readEnvInteger(name: string, fallback: number): number {
+  const value = process.env[name]?.trim();
+  if (!value || !/^\d+$/.test(value)) {
+    return fallback;
+  }
+  return Number(value);
+}
+
 export async function assertSolBalance(args: {
   connection: Pick<Connection, "getBalance">;
   feePayer: PublicKey;
@@ -3866,6 +3917,141 @@ function tailLines(value: string, count: number): string[] {
   return value.trim().split(/\r?\n/).filter(Boolean).slice(-count);
 }
 
+export async function preflightDurableKaminoDeposit(args: {
+  amountRaw: bigint;
+  execute: boolean;
+  defaultMarket: string;
+  defaultReserve: string;
+  defaultLiquidityMint: string;
+  rpcUrl: string;
+  target: EligibleTarget;
+}) {
+  const reserve = args.target.currentReserve ?? args.defaultReserve;
+  const market = args.target.currentMarket ?? args.defaultMarket;
+  const liquidityMint =
+    args.target.currentLiquidityMint ?? args.defaultLiquidityMint;
+  if (liquidityMint !== args.target.tokenMint) {
+    throw new Error(
+      `Autodeposit top-up mint ${liquidityMint} does not match pulled mint ${args.target.tokenMint}.`
+    );
+  }
+  const refreshTopUp = () =>
+    runSameMintReserveTopUp({
+      amountRaw: args.amountRaw,
+      execute: false,
+      reserve,
+      rpcUrl: args.rpcUrl,
+      target: args.target,
+    });
+  const initialDryRun = await refreshTopUp();
+  const recovered = await recoverMissingObligationBeforePull({
+    dryRun: initialDryRun,
+    execute: args.execute,
+    reserve,
+    pollIntervalMs: readEnvInteger(
+      AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS_ENV,
+      AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS
+    ),
+    timeoutMs: readEnvInteger(
+      AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS_ENV,
+      AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS
+    ),
+    runSetup: (execute) =>
+      runMissingObligationSetup({
+        execute,
+        reserve,
+        rpcUrl: args.rpcUrl,
+        target: args.target,
+      }),
+    refreshTopUp,
+  });
+  assertNoTopUpPreflightBlockers(recovered.topUpDryRun);
+  const policyDepositTransaction = readRecord(
+    recovered.topUpDryRun.json?.policyDepositTransaction
+  );
+  if (policyDepositTransaction?.simulationError != null) {
+    throw new Error(
+      `Kamino top-up dry-run simulation failed; refusing to pull. topUp=${JSON.stringify(
+        summarizeTopUpResult(recovered.topUpDryRun)
+      )}`
+    );
+  }
+  const readiness = await awaitTopUpLookupTableReadiness({
+    dryRun: recovered.topUpDryRun,
+    refreshDryRun: refreshTopUp,
+    reserve,
+    pollIntervalMs: readEnvInteger(
+      AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS_ENV,
+      AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS
+    ),
+    timeoutMs: readEnvInteger(
+      AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS_ENV,
+      AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS
+    ),
+  });
+  assertLookupTableReadinessBeforePull(readiness);
+  return {
+    reserve,
+    market,
+    liquidityMint,
+    dryRun: readiness.dryRun,
+    evidence: {
+      topUp: summarizeTopUpResult(readiness.dryRun),
+      lookupTableCoverage: readiness.coverage,
+      missingObligationRecovery: recovered.recovery.status,
+    },
+  };
+}
+
+async function persistDurableAutodepositOperation(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+  scheduledSlotId: bigint;
+  amountRaw: bigint;
+  target: EligibleTarget;
+  preflight: Awaited<ReturnType<typeof preflightDurableKaminoDeposit>>;
+}) {
+  if (args.target.managedVaultId === undefined) {
+    throw new Error(`Autodeposit target ${args.target.id} has no managed vault.`);
+  }
+  const sql = args.neon(args.databaseUrl);
+  await sql`
+    INSERT INTO loyal_yield.balance_sweep_autodeposit_operations (
+      claim_token, target_id, scheduled_slot_id, state, amount_raw,
+      managed_vault_id, settings, vault_index, wallet, wallet_token_ata,
+      vault_pubkey, vault_token_ata, token_mint, reserve, market,
+      liquidity_mint, route_policy_account, route_policy_seed,
+      preflight_evidence
+    ) VALUES (
+      ${args.claimToken}, ${args.target.id.toString()},
+      ${args.scheduledSlotId.toString()}, 'prepared', ${args.amountRaw.toString()},
+      ${args.target.managedVaultId.toString()}, ${args.target.settings},
+      ${args.target.vaultIndex}, ${args.target.wallet}, ${args.target.walletTokenAta},
+      ${args.target.vaultPubkey}, ${args.target.vaultTokenAta}, ${args.target.tokenMint},
+      ${args.preflight.reserve}, ${args.preflight.market}, ${args.preflight.liquidityMint},
+      ${args.target.routePolicyAccount}, ${args.target.routePolicySeed.toString()},
+      ${JSON.stringify(args.preflight.evidence)}::jsonb
+    )
+    ON CONFLICT (claim_token) DO NOTHING
+  `;
+  const persisted = await loadDurableAutodepositOperation({
+    neon: args.neon,
+    databaseUrl: args.databaseUrl,
+    claimToken: args.claimToken,
+  });
+  if (
+    !persisted ||
+    persisted.target.id !== args.target.id ||
+    persisted.amountRaw !== args.amountRaw ||
+    persisted.reserve !== args.preflight.reserve
+  ) {
+    throw new Error(
+      `Durable autodeposit operation ${args.claimToken} conflicts with this execution.`
+    );
+  }
+}
+
 async function recordPullExecution(args: {
   neon: AppModules["neon"];
   databaseUrl: string;
@@ -3924,7 +4110,7 @@ async function recordPullExecution(args: {
           source: "single-vault-autodeposit-executor",
         })}::jsonb,
         ${JSON.stringify({
-          sequence: "subscription_pull_then_idle_vault_handoff",
+          sequence: "subscription_pull_then_mandatory_kamino_deposit",
         })}::jsonb,
         now(),
         now(),
@@ -3950,13 +4136,175 @@ async function recordPullExecution(args: {
   };
 }
 
-async function publishConfirmedPullHandoff(args: {
+async function persistDepositPendingOperation(args: {
+  attempt: DurableAutodepositAttempt;
+  claimToken: string;
+  databaseUrl: string;
+  executionId: string;
+  neon: AppModules["neon"];
+  observedAmountRaw: bigint;
+  observedAt: string;
+  observedSlot: bigint;
+  target: DurableAutodepositTarget & { managedVaultId: bigint };
+}) {
+  const sql = args.neon(args.databaseUrl);
+  const leaseToken = randomUUID();
+  const rows = await sql`
+    WITH published AS (
+      INSERT INTO loyal_yield.vault_idle_token_balances_current (
+        vault_id, mint, amount_raw, owner, token_account, observed_slot,
+        observed_at, source_commitment, updated_at
+      ) VALUES (
+        ${args.target.managedVaultId.toString()}, ${args.target.tokenMint},
+        ${args.observedAmountRaw.toString()}, ${args.target.vaultPubkey},
+        ${args.target.vaultTokenAta}, ${args.observedSlot.toString()},
+        ${args.observedAt}, ${DEFAULT_COMMITMENT}, now()
+      )
+      ON CONFLICT (vault_id, mint) DO UPDATE SET
+        amount_raw = EXCLUDED.amount_raw,
+        owner = EXCLUDED.owner,
+        token_account = EXCLUDED.token_account,
+        observed_slot = EXCLUDED.observed_slot,
+        observed_at = EXCLUDED.observed_at,
+        source_commitment = EXCLUDED.source_commitment,
+        updated_at = now()
+      WHERE EXCLUDED.observed_slot >= loyal_yield.vault_idle_token_balances_current.observed_slot
+      RETURNING observed_slot
+    ),
+    advanced AS (
+      UPDATE loyal_yield.balance_sweep_autodeposit_operations
+      SET state = 'deposit_pending',
+          pull_signature = ${args.attempt.signature},
+          pull_confirmed_slot = ${args.attempt.confirmedSlot?.toString() ?? null},
+          execution_id = ${args.executionId},
+          deposit_source_balance_raw = COALESCE(
+            deposit_source_balance_raw,
+            ${args.observedAmountRaw.toString()}::bigint
+          ),
+          deposit_lease_token = ${leaseToken},
+          deposit_lease_expires_at = now() + interval '10 minutes',
+          error_detail = NULL,
+          updated_at = now()
+      WHERE claim_token = ${args.claimToken}
+        AND state IN ('prepared', 'pull_confirmed', 'deposit_pending')
+        AND (
+          deposit_lease_token IS NULL
+          OR deposit_lease_expires_at <= now()
+        )
+        AND EXISTS (SELECT 1 FROM published)
+      RETURNING claim_token
+    )
+    UPDATE loyal_yield.balance_sweep_executions
+    SET decoded_evidence = COALESCE(decoded_evidence, '{}'::jsonb) ||
+          jsonb_build_object(
+            'status', 'partial_executed_pull_deposit_pending',
+            'idleVaultAmountRaw', ${args.observedAmountRaw.toString()}::text,
+            'idleVaultObservedSlot', ${args.observedSlot.toString()}::text,
+            'idleVaultObservedAt', ${args.observedAt}::text
+          ),
+        decoded_at = now()
+    WHERE id = ${args.executionId}
+      AND EXISTS (SELECT 1 FROM advanced)
+    RETURNING id
+  `;
+  return rows.length === 1 ? leaseToken : null;
+}
+
+async function completeDurableAutodepositOperation(args: {
+  claimToken: string;
+  databaseUrl: string;
+  depositSignature: string;
+  depositSlot: bigint;
+  executionId: string;
+  leaseToken: string;
+  neon: AppModules["neon"];
+}) {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    WITH completed_operation AS (
+      UPDATE loyal_yield.balance_sweep_autodeposit_operations
+      SET state = 'completed',
+          deposit_signature = ${args.depositSignature},
+          deposit_confirmed_slot = ${args.depositSlot.toString()},
+          deposit_lease_token = NULL,
+          deposit_lease_expires_at = NULL,
+          error_detail = NULL,
+          updated_at = now()
+      WHERE claim_token = ${args.claimToken}
+        AND execution_id = ${args.executionId}
+        AND deposit_lease_token = ${args.leaseToken}
+        AND state = 'deposit_pending'
+      RETURNING claim_token
+    ),
+    completed_execution AS (
+      UPDATE loyal_yield.balance_sweep_executions
+      SET kamino_deposit_signature = ${args.depositSignature},
+          completed_at = now(),
+          completion_failure_code = NULL,
+          decoded_evidence = COALESCE(decoded_evidence, '{}'::jsonb) ||
+            jsonb_build_object(
+              'status', 'executed',
+              'kaminoDepositSignature', ${args.depositSignature}::text,
+              'kaminoDepositSlot', ${args.depositSlot.toString()}::text
+            ),
+          decoded_at = now()
+      WHERE id = ${args.executionId}
+        AND EXISTS (SELECT 1 FROM completed_operation)
+      RETURNING id
+    ),
+    matched_lots AS (
+      SELECT item.lot_id, item.amount_raw
+      FROM loyal_yield.balance_sweep_lot_claim_items AS item
+      WHERE item.claim_token = ${args.claimToken}
+    ),
+    inserted_lots AS (
+      INSERT INTO loyal_yield.balance_sweep_execution_lots
+        (execution_id, lot_id, amount_raw)
+      SELECT ${args.executionId}, lot_id, amount_raw
+      FROM matched_lots
+      WHERE EXISTS (SELECT 1 FROM completed_execution)
+      ON CONFLICT (execution_id, lot_id) DO NOTHING
+    ),
+    completed_claim AS (
+      UPDATE loyal_yield.balance_sweep_lot_claims
+      SET status = 'executed', execution_id = ${args.executionId}, updated_at = now()
+      WHERE claim_token = ${args.claimToken}
+        AND status = 'selected'
+        AND EXISTS (SELECT 1 FROM completed_execution)
+      RETURNING claim_token
+    ),
+    completed_slot AS (
+      UPDATE loyal_yield.balance_sweep_scheduled_slots
+      SET status = 'executed', execution_id = ${args.executionId}, updated_at = now()
+      WHERE claim_token IN (SELECT claim_token FROM completed_claim)
+      RETURNING id
+    )
+    SELECT
+      EXISTS (SELECT 1 FROM completed_operation) AS operation_completed,
+      EXISTS (SELECT 1 FROM completed_claim) AS claim_completed,
+      EXISTS (SELECT 1 FROM completed_slot) AS slot_completed
+  `;
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (
+    row?.operation_completed !== true ||
+    row.claim_completed !== true ||
+    row.slot_completed !== true
+  ) {
+    throw new Error(
+      `Durable autodeposit operation ${args.claimToken} did not complete atomically.`
+    );
+  }
+}
+
+async function resumeDurableKaminoDeposit(args: {
   attempt: DurableAutodepositAttempt;
   claimToken: string;
   connection: Connection;
   databaseUrl: string;
   neon: AppModules["neon"];
-  target: ConfirmedPullHandoffTarget;
+  operation: DurableAutodepositOperation;
+  rpcUrl: string;
+  target: DurableAutodepositTarget & { managedVaultId: bigint };
 }) {
   if (args.attempt.confirmedSlot === null) {
     throw new Error(
@@ -3984,8 +4332,8 @@ async function publishConfirmedPullHandoff(args: {
     destinationPreBalanceRaw: args.attempt.destinationPreBalanceRaw,
     destinationPostBalanceRaw: vaultObservation.amountRaw,
   });
-  const idleVaultPublication = await publishConfirmedPullAndCompleteClaim({
-    attemptId: args.attempt.id,
+  const leaseToken = await persistDepositPendingOperation({
+    attempt: args.attempt,
     claimToken: args.claimToken,
     databaseUrl: args.databaseUrl,
     executionId: executionRecord.executionId,
@@ -3995,7 +4343,146 @@ async function publishConfirmedPullHandoff(args: {
     observedSlot: vaultObservation.observedSlot,
     target: args.target,
   });
-  return { idleVaultPublication, vaultObservation, walletPostPullRaw };
+  if (!leaseToken) {
+    return {
+      status: "deposit_pending" as const,
+      executionRecord,
+      vaultObservation,
+      walletPostPullRaw,
+      error: "another executor owns the active deposit lease",
+    };
+  }
+  const leasedOperation = await loadDurableAutodepositOperation({
+    neon: args.neon,
+    databaseUrl: args.databaseUrl,
+    claimToken: args.claimToken,
+  });
+  if (
+    !leasedOperation ||
+    leasedOperation.depositSourceBalanceRaw === null
+  ) {
+    throw new Error(
+      `Durable autodeposit operation ${args.claimToken} lost its deposit source baseline.`
+    );
+  }
+  const existingTopUpAttempt = await loadDurableAutodepositAttempt({
+    neon: args.neon,
+    databaseUrl: args.databaseUrl,
+    claimToken: args.claimToken,
+    operationKind: "top_up",
+  });
+  if (
+    (!existingTopUpAttempt ||
+      attemptAllowsSafeRequeue(existingTopUpAttempt.state)) &&
+    durableDepositRetryEffect({
+      currentSourceBalanceRaw: vaultObservation.amountRaw,
+      postPullSourceBalanceRaw: leasedOperation.depositSourceBalanceRaw,
+    }) === "ambiguous_prior_effect"
+  ) {
+    const sql = args.neon(args.databaseUrl);
+    await sql`
+      UPDATE loyal_yield.balance_sweep_autodeposit_operations
+      SET state = 'ambiguous',
+          deposit_lease_token = NULL,
+          deposit_lease_expires_at = NULL,
+          error_detail = 'vault balance fell below the durable post-pull baseline before a deposit signature was recorded',
+          updated_at = now()
+      WHERE claim_token = ${args.claimToken}
+        AND state = 'deposit_pending'
+        AND deposit_lease_token = ${leaseToken}
+    `;
+    throw new Error(
+      `Autodeposit deposit effect is ambiguous for claim ${args.claimToken}; refusing to submit another deposit.`
+    );
+  }
+  let topUpSend: DurablePreparedOperationResult;
+  try {
+    topUpSend = await sendPreparedTopUpOperation({
+      connection: args.connection,
+      neon: args.neon,
+      databaseUrl: args.databaseUrl,
+      claimToken: args.claimToken,
+      targetId: args.target.id,
+      scheduledSlotId: args.attempt.scheduledSlotId!,
+      executionId: executionRecord.executionId,
+      amountRaw: args.operation.amountRaw,
+      sourcePreBalanceRaw: leasedOperation.depositSourceBalanceRaw,
+      prepare: () =>
+        runSameMintReserveTopUp({
+          amountRaw: args.operation.amountRaw,
+          execute: false,
+          reserve: args.operation.reserve,
+          rpcUrl: args.rpcUrl,
+          target: args.target,
+        }),
+    });
+  } catch (error) {
+    const sql = args.neon(args.databaseUrl);
+    await sql`
+      UPDATE loyal_yield.balance_sweep_autodeposit_operations
+      SET deposit_lease_token = NULL,
+          deposit_lease_expires_at = NULL,
+          error_detail = ${String(error).slice(0, 4_000)},
+          updated_at = now()
+      WHERE claim_token = ${args.claimToken}
+        AND state = 'deposit_pending'
+        AND deposit_lease_token = ${leaseToken}
+    `;
+    return {
+      status: "deposit_pending" as const,
+      executionRecord,
+      vaultObservation,
+      walletPostPullRaw,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (topUpSend.status !== "confirmed") {
+    const alert = operationalAlertForAttempt(topUpSend.attempt.state);
+    const sql = args.neon(args.databaseUrl);
+    await sql`
+      UPDATE loyal_yield.balance_sweep_autodeposit_operations
+      SET state = ${alert ? "ambiguous" : "deposit_pending"},
+          deposit_lease_token = NULL,
+          deposit_lease_expires_at = NULL,
+          error_detail = ${attemptErrorDetail(topUpSend.error)},
+          updated_at = now()
+      WHERE claim_token = ${args.claimToken}
+        AND state = 'deposit_pending'
+        AND deposit_lease_token = ${leaseToken}
+    `;
+    if (alert) {
+      throw new Error(
+        `Durable Kamino top-up ${topUpSend.attempt.signature} has ambiguous chain effect.`
+      );
+    }
+    return {
+      status: "deposit_pending" as const,
+      executionRecord,
+      vaultObservation,
+      walletPostPullRaw,
+      error: attemptErrorDetail(topUpSend.error),
+    };
+  }
+  const deposit = {
+    signature: topUpSend.signature,
+    confirmedSlot: topUpSend.slot,
+  };
+  await completeDurableAutodepositOperation({
+    claimToken: args.claimToken,
+    databaseUrl: args.databaseUrl,
+    depositSignature: deposit.signature,
+    depositSlot: deposit.confirmedSlot,
+    executionId: executionRecord.executionId,
+    leaseToken,
+    neon: args.neon,
+  });
+  return {
+    status: "completed" as const,
+    deposit,
+    executionRecord,
+    vaultObservation,
+    walletPostPullRaw,
+  };
 }
 
 async function recoverConfirmedPullHandoff(args: {
@@ -4006,67 +4493,60 @@ async function recoverConfirmedPullHandoff(args: {
   scheduledSlotId: bigint;
 }): Promise<void> {
   try {
-    const result = await publishConfirmedPullHandoff({
+    const result = await resumeDurableKaminoDeposit({
       attempt: args.context.attempt,
       claimToken: args.context.attempt.claimToken,
       connection: args.connection,
       databaseUrl: args.databaseUrl,
       neon: args.neon,
+      operation: args.context.operation,
+      rpcUrl: requireEnv("SOLANA_RPC_URL"),
       target: args.context.target,
     });
     console.log(
       JSON.stringify(
         {
-          status: AUTODEPOSIT_IDLE_HANDOFF_STATUS,
+          status:
+            result.status === "completed"
+              ? "autodeposit_completed"
+              : "autodeposit_deposit_pending",
           recoverySource: "persisted_confirmed_pull",
           targetId: args.context.target.id.toString(),
           scheduledSlotId: args.scheduledSlotId.toString(),
-          signature: args.context.attempt.signature,
-          confirmedSlot: args.context.attempt.confirmedSlot?.toString(),
+          signatures: {
+            pull: args.context.attempt.signature,
+            kaminoDeposit:
+              result.status === "completed" ? result.deposit.signature : null,
+          },
           walletPostPullRaw: result.walletPostPullRaw.toString(),
           vaultPostPullRaw: result.vaultObservation.amountRaw.toString(),
-          idleVaultObservedSlot:
-            result.vaultObservation.observedSlot.toString(),
-          idleVaultPublication: {
-            amountRaw: result.idleVaultPublication.amountRaw.toString(),
-            observedSlot:
-              result.idleVaultPublication.observedSlot.toString(),
-          },
-          vaultToEarnOwner: "loyal-fleet-worker",
+          retryable: result.status === "deposit_pending",
+          alert: null,
         },
         null,
         2
       )
     );
   } catch (error) {
-    let shouldAlert = true;
-    try {
-      shouldAlert = await claimIdleHandoffFailureAlert({
-        attemptId: args.context.attempt.id,
-        databaseUrl: args.databaseUrl,
-        neon: args.neon,
-      });
-    } catch {
-      // A database outage is not evidence that the confirmed handoff is safe.
-    }
-    if (!shouldAlert) {
-      console.log(
-        JSON.stringify({
-          status: "autodeposit_idle_handoff_recovery_pending",
-          recoverySource: "persisted_confirmed_pull",
-          targetId: args.context.target.id.toString(),
-          scheduledSlotId: args.scheduledSlotId.toString(),
-          signature: args.context.attempt.signature,
-          alertAlreadyClaimed: true,
-          error: error instanceof Error ? error.message : String(error),
+    const operation = await loadDurableAutodepositOperation({
+      neon: args.neon,
+      databaseUrl: args.databaseUrl,
+      claimToken: args.context.attempt.claimToken,
+    });
+    const model = operation?.state === "ambiguous"
+      ? reduceDurableAutodepositState(initialDurableAutodepositState(), {
+          type: "deposit_ambiguous",
         })
-      );
-      return;
-    }
-    process.exitCode = autodepositExecutorFailureExitCode(
-      "idle_handoff_failed"
+      : reduceDurableAutodepositState(initialDurableAutodepositState(), {
+          type: "durable_ownership_lost",
+        });
+    const alert = operationalAlertForDurableAutodeposit(model);
+    process.exitCode = operation
+      ? autodepositExecutorFailureExitCode("transaction_effect_ambiguous")
+      : 1;
+    throw new Error(
+      `${alert}: ${error instanceof Error ? error.message : String(error)}`
     );
-    throw new IdleVaultHandoffPersistenceError(error);
   }
 }
 
@@ -4323,6 +4803,12 @@ async function main() {
         role: "Autodeposit pull fee payer",
       });
     }
+    const vaultTokenAccountReadiness = await ensureVaultTokenAccountBeforePull({
+      connection,
+      execute: options.execute,
+      feePayer: policyKeypair,
+      target,
+    });
 
     const pull = existingDurablePullAttempt
       ? null
@@ -4355,7 +4841,22 @@ async function main() {
           logs: ["persisted signed pull is reconciled instead of rebuilt"],
           unitsConsumed: null,
         };
-    if (options.execute && pullSimulation.err) {
+    const depositPreflight = await preflightDurableKaminoDeposit({
+      amountRaw: executionAmountRaw,
+      execute: options.execute,
+      defaultMarket: defaultEarnTarget.market.toBase58(),
+      defaultReserve: defaultEarnTarget.reserve.toBase58(),
+      defaultLiquidityMint: defaultEarnTarget.liquidityMint.toBase58(),
+      rpcUrl,
+      target,
+    });
+    const topUpFeePayer = new PublicKeyCtor(
+      readRequiredString(
+        readRecord(depositPreflight.dryRun.json?.wallet)?.signer,
+        "Kamino top-up fee payer"
+      )
+    );
+    if (pullSimulation.err) {
       throw new Error(
         `Autodeposit pull simulation failed; refusing to execute. pull=${JSON.stringify(
           summarizeSimulation(pullSimulation)
@@ -4376,11 +4877,11 @@ async function main() {
       persistedWalletBalanceFloorRaw: target.walletBalanceFloorRaw.toString(),
       overrideFloorRaw: options.overrideFloorRaw?.toString() ?? null,
       vaultPreBalanceRaw: vaultPreBalanceRaw.toString(),
-      handoffTarget: {
-        sourceKind: "idle_vault_usdc",
-        managedVaultId: target.managedVaultId.toString(),
-        mint: target.tokenMint,
-        owner: "loyal-fleet-worker",
+      topUpTarget: {
+        reserve: depositPreflight.reserve,
+        market: depositPreflight.market,
+        liquidityMint: depositPreflight.liquidityMint,
+        owner: "autodeposit-operation",
       },
       excessRaw: sweepDecision.excessRaw.toString(),
       amountRaw: executionAmountRaw.toString(),
@@ -4394,16 +4895,22 @@ async function main() {
           ? sweepDecision.cappedByRemainingAllowance
           : false,
       subscriptionAllowance: summarizeAllowance(allowance),
-      transactionOrder: ["subscription_pull_wallet_to_earn_vault"],
+      transactionOrder: [
+        "subscription_pull_wallet_to_earn_vault",
+        "kamino_route_policy_top_up_from_earn_vault",
+      ],
       signers: {
         pull: policyKeypair.publicKey.toBase58(),
+        kaminoTopUpFeePayer: topUpFeePayer.toBase58(),
       },
       policies: {
         sweep: target.sweepPolicyAccount,
       },
       simulations: {
         pull: summarizeSimulation(pullSimulation),
+        kaminoTopUp: depositPreflight.evidence,
       },
+      vaultTokenAccountReadiness,
       lotClaim: lotClaim ? summarizeLotClaim(lotClaim) : null,
       sendsTransactions: options.execute,
     };
@@ -4424,19 +4931,33 @@ async function main() {
     }
     const durableClaimToken = lotClaim.claimToken;
     const durableScheduledSlotId = options.scheduledSlotId;
-    const durablePullSend = await sendPreparedOperation({
-      compilePreparedOperation: appModules.compilePreparedOperation,
-      connection,
-      prepared: pull?.prepared ?? null,
-      signers: [policyKeypair],
+    await persistDurableAutodepositOperation({
       neon: appModules.neon,
       databaseUrl,
       claimToken: durableClaimToken,
-      targetId: target.id,
       scheduledSlotId: durableScheduledSlotId,
       amountRaw: executionAmountRaw,
-      sourcePreBalanceRaw: walletBalanceRaw,
-      destinationPreBalanceRaw: vaultPreBalanceRaw,
+      target,
+      preflight: depositPreflight,
+    });
+    const { result: durablePullSend } = await runAfterFeePayerSolSafety({
+      connection,
+      feePayer: topUpFeePayer,
+      run: () =>
+        sendPreparedOperation({
+          compilePreparedOperation: appModules.compilePreparedOperation,
+          connection,
+          prepared: pull?.prepared ?? null,
+          signers: [policyKeypair],
+          neon: appModules.neon,
+          databaseUrl,
+          claimToken: durableClaimToken,
+          targetId: target.id,
+          scheduledSlotId: durableScheduledSlotId,
+          amountRaw: executionAmountRaw,
+          sourcePreBalanceRaw: walletBalanceRaw,
+          destinationPreBalanceRaw: vaultPreBalanceRaw,
+        }),
     });
     if (durablePullSend.status !== "confirmed") {
       const alert = operationalAlertForAttempt(durablePullSend.attempt.state);
@@ -4473,69 +4994,79 @@ async function main() {
     const pullSend = durablePullSend;
     pullSent = true;
     try {
-      const handoff = await publishConfirmedPullHandoff({
+      const operation = await loadDurableAutodepositOperation({
+        neon: appModules.neon,
+        databaseUrl,
+        claimToken: durableClaimToken,
+      });
+      if (!operation) {
+        throw new Error(
+          `Confirmed pull ${pullSend.signature} lost its durable autodeposit operation.`
+        );
+      }
+      const result = await resumeDurableKaminoDeposit({
         attempt: pullSend.attempt,
         claimToken: durableClaimToken,
         connection,
         databaseUrl,
         neon: appModules.neon,
-        target,
+        operation,
+        rpcUrl,
+        target: target as EligibleTarget & { managedVaultId: bigint },
       });
       console.log(
         JSON.stringify(
           {
             ...plan,
-            status: AUTODEPOSIT_IDLE_HANDOFF_STATUS,
+            status:
+              result.status === "completed"
+                ? "autodeposit_completed"
+                : "autodeposit_deposit_pending",
             signatures: {
               pull: pullSend.signature,
+              kaminoDeposit:
+                result.status === "completed" ? result.deposit.signature : null,
             },
             confirmedSlots: {
               pull: pullSend.slot.toString(),
+              kaminoDeposit:
+                result.status === "completed"
+                  ? result.deposit.confirmedSlot.toString()
+                  : null,
             },
-            walletPostPullRaw: handoff.walletPostPullRaw.toString(),
-            vaultPostPullRaw: handoff.vaultObservation.amountRaw.toString(),
-            idleVaultObservedSlot:
-              handoff.vaultObservation.observedSlot.toString(),
-            idleVaultPublication: {
-              amountRaw: handoff.idleVaultPublication.amountRaw.toString(),
-              observedSlot:
-                handoff.idleVaultPublication.observedSlot.toString(),
-            },
-            vaultToEarnOwner: "loyal-fleet-worker",
+            walletPostPullRaw: result.walletPostPullRaw.toString(),
+            vaultPostPullRaw: result.vaultObservation.amountRaw.toString(),
+            retryable: result.status === "deposit_pending",
+            alert: null,
           },
           null,
           2
         )
       );
     } catch (error) {
-      let shouldAlert = true;
-      try {
-        shouldAlert = await claimIdleHandoffFailureAlert({
-          attemptId: pullSend.attempt.id,
-          databaseUrl,
-          neon: appModules.neon,
-        });
-      } catch {
-        // If the alert claim itself cannot be stored, fail loudly. A database
-        // outage must not turn a confirmed money movement into a silent retry.
-      }
-      if (!shouldAlert) {
+      const operation = await loadDurableAutodepositOperation({
+        neon: appModules.neon,
+        databaseUrl,
+        claimToken: durableClaimToken,
+      });
+      if (operation && operation.state !== "ambiguous") {
         console.log(
           JSON.stringify({
-            status: "autodeposit_idle_handoff_recovery_pending",
+            status: "autodeposit_deposit_pending",
             targetId: target.id.toString(),
             scheduledSlotId: durableScheduledSlotId.toString(),
             signature: pullSend.signature,
-            alertAlreadyClaimed: true,
+            retryable: true,
+            alert: null,
             error: error instanceof Error ? error.message : String(error),
           })
         );
         return;
       }
-      process.exitCode = autodepositExecutorFailureExitCode(
-        "idle_handoff_failed"
-      );
-      throw new IdleVaultHandoffPersistenceError(error);
+      process.exitCode = operation
+        ? autodepositExecutorFailureExitCode("transaction_effect_ambiguous")
+        : 1;
+      throw error;
     }
   } catch (error) {
     // A blocked route never moved funds, so it deserves its own exit code rather than
@@ -4585,6 +5116,13 @@ async function main() {
     ) {
       const claimToken = lotClaim.claimToken;
       const lastError = error instanceof Error ? error.message : String(error);
+      const sql = appModules.neon(databaseUrl);
+      await sql`
+        DELETE FROM loyal_yield.balance_sweep_autodeposit_operations
+        WHERE claim_token = ${claimToken}
+          AND state = 'prepared'
+          AND pull_signature IS NULL
+      `;
       const releaseClaim = () =>
         releaseAutodepositLotClaim({
           neon: appModules.neon,
@@ -4635,6 +5173,26 @@ async function main() {
       closedRoutePolicyReconciliationIsNotActionable(reconciliation)
     ) {
       process.exitCode = autodepositExecutorFailureExitCode("not_actionable");
+      return;
+    }
+    if (
+      !pullSent &&
+      !unresolvedPullAttempt &&
+      !pullAttemptLookupFailed &&
+      disposition.failureCode !== "fee_payer_exhausted" &&
+      !missingTokenDelegate
+    ) {
+      process.exitCode = 0;
+      console.log(
+        JSON.stringify({
+          status: "autodeposit_preflight_retry_pending",
+          targetId: target.id.toString(),
+          scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
+          retryable: true,
+          alert: null,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      );
       return;
     }
     throw error;
