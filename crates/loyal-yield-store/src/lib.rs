@@ -67,8 +67,6 @@ pub enum OrchestratorError {
         vault_id: VaultId,
         observed_slot: i64,
     },
-    #[error("lookup-table binding {binding_id} activation is blocked by a live usage lease")]
-    LookupTableBindingActivationDeferred { binding_id: i64 },
     #[error("new opportunity for vault {vault_id} is deferred behind unexpired lease {leased_id}")]
     OpportunityDeferredBehindLease { vault_id: VaultId, leased_id: i64 },
     #[error(

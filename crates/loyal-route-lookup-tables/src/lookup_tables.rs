@@ -3179,6 +3179,47 @@ pub struct LookupTableBindingHeadFlip {
     pub predecessor: Option<LookupTableVaultBindingRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LookupTableBindingActivationDeferral {
+    LogicalHeadUsageLease {
+        binding_id: i64,
+    },
+    VerificationSlotAhead {
+        binding_id: i64,
+        observed_slot: i64,
+        required_slot: i64,
+    },
+}
+
+impl LookupTableBindingActivationDeferral {
+    pub const fn error_code(&self) -> &'static str {
+        match self {
+            Self::LogicalHeadUsageLease { .. } => "logical_head_usage_lease",
+            Self::VerificationSlotAhead { .. } => "verification_slot_ahead",
+        }
+    }
+
+    pub const fn observed_slot(&self) -> Option<i64> {
+        match self {
+            Self::LogicalHeadUsageLease { .. } => None,
+            Self::VerificationSlotAhead { observed_slot, .. } => Some(*observed_slot),
+        }
+    }
+
+    pub const fn required_slot(&self) -> Option<i64> {
+        match self {
+            Self::LogicalHeadUsageLease { .. } => None,
+            Self::VerificationSlotAhead { required_slot, .. } => Some(*required_slot),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LookupTableBindingActivationOutcome {
+    Activated(LookupTableBindingHeadFlip),
+    Deferred(LookupTableBindingActivationDeferral),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LookupTableProvisioningPlanPolicy {
     pub vault_policy: PackedShardPolicy,
@@ -6648,7 +6689,7 @@ impl NeonSqlClient {
         binding_id: i64,
         observed_slot: i64,
         rollback_until: DateTime<Utc>,
-    ) -> Result<LookupTableBindingHeadFlip, OrchestratorError> {
+    ) -> Result<LookupTableBindingActivationOutcome, OrchestratorError> {
         if observed_slot < 0 || rollback_until <= Utc::now() {
             return Err(OrchestratorError::StoreInvariant(
                 "binding activation requires a nonnegative observed slot and a future rollback deadline"
@@ -6869,7 +6910,21 @@ impl NeonSqlClient {
         .fetch_one(&mut *tx)
         .await?;
         if conflicting_usage_count != 0 {
-            return Err(OrchestratorError::LookupTableBindingActivationDeferred { binding_id });
+            return Ok(LookupTableBindingActivationOutcome::Deferred(
+                LookupTableBindingActivationDeferral::LogicalHeadUsageLease { binding_id },
+            ));
+        }
+        if let Some(required_slot) = table
+            .last_verified_slot
+            .filter(|required_slot| *required_slot > observed_slot)
+        {
+            return Ok(LookupTableBindingActivationOutcome::Deferred(
+                LookupTableBindingActivationDeferral::VerificationSlotAhead {
+                    binding_id,
+                    observed_slot,
+                    required_slot,
+                },
+            ));
         }
         let expected_allocation_kind = match candidate.allocation_mode {
             LookupTableBindingMode::PackedShard => LookupTableAllocationKind::VaultShard,
@@ -6882,9 +6937,6 @@ impl NeonSqlClient {
             || table.legacy_status != "usable"
             || !durable
             || table.last_verified_slot.is_none()
-            || table
-                .last_verified_slot
-                .is_some_and(|slot| slot > observed_slot)
             || table.usable_address_count != table.address_count
             || candidate.reserved_capacity < manifest_address_count
         {
@@ -7029,10 +7081,12 @@ impl NeonSqlClient {
         .await?;
         let active = lookup_table_binding_from_row(&row)?;
         tx.commit().await?;
-        Ok(LookupTableBindingHeadFlip {
-            active,
-            predecessor,
-        })
+        Ok(LookupTableBindingActivationOutcome::Activated(
+            LookupTableBindingHeadFlip {
+                active,
+                predecessor,
+            },
+        ))
     }
 
     pub async fn activate_lookup_table_family_generation(

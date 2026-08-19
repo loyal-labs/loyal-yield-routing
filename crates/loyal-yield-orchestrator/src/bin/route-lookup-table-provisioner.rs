@@ -25,9 +25,10 @@ use loyal_yield_orchestrator::{
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
     AtomicVaultAllocationResult, FinalizedSharedTableObservation,
     FinalizedSharedTableShardObservation, LeasedLookupTableOperation,
-    LegacyLookupTableRetirementRequest, LookupTableAllocationKind, LookupTableChainState,
-    LookupTableClusterBudgetPolicy, LookupTableFamilyKind, LookupTableFamilyRecord,
-    LookupTableFamilyState, LookupTableFamilyUpsert, LookupTableLifecycle,
+    LegacyLookupTableRetirementRequest, LookupTableAllocationKind,
+    LookupTableBindingActivationDeferral, LookupTableBindingActivationOutcome,
+    LookupTableChainState, LookupTableClusterBudgetPolicy, LookupTableFamilyKind,
+    LookupTableFamilyRecord, LookupTableFamilyState, LookupTableFamilyUpsert, LookupTableLifecycle,
     LookupTableManifestAddressRecord, LookupTableManifestSubject, LookupTableMembershipAddress,
     LookupTableOperationAdvance, LookupTableOperationKind, LookupTableOperationLease,
     LookupTableOperationRecord, LookupTableOperationStatus, LookupTablePrecutoverProbe,
@@ -1274,30 +1275,40 @@ async fn plan_next_provisioning_request(
                     else {
                         unreachable!()
                     };
-                    match activate_binding_if_ready(client, binding, recent_slot).await {
-                        Ok(activated) => (0, activated),
-                        Err(error) => {
-                            let Some(error_code) =
-                                binding_activation_defer_code(error.as_ref(), binding.id)
-                            else {
-                                return Err(error);
-                            };
-                            println!(
-                                "{}",
-                                json!({
-                                    "event": "alt_provisioner_binding_activation_deferred",
-                                    "cluster": options.cluster,
-                                    "requestId": request.id,
-                                    "vaultId": request.vault_id.as_i64(),
-                                    "bindingId": binding.id,
-                                    "errorCode": error_code,
-                                    "retryAt": plan.request.next_attempt_at,
-                                    "transactionsSent": false,
-                                })
-                            );
-                            (0, false)
-                        }
+                    let (activated, deferred) =
+                        match activate_binding_if_ready(client, binding, recent_slot).await {
+                            Ok(Some(LookupTableBindingActivationOutcome::Activated(_))) => {
+                                (true, None)
+                            }
+                            Ok(Some(LookupTableBindingActivationOutcome::Deferred(deferral))) => {
+                                (false, Some(binding_activation_defer_fields(&deferral)))
+                            }
+                            Ok(None) => (false, None),
+                            Err(error)
+                                if is_binding_activation_database_deadlock(error.as_ref()) =>
+                            {
+                                (false, Some(("database_deadlock", None, None)))
+                            }
+                            Err(error) => return Err(error),
+                        };
+                    if let Some((error_code, observed_slot, required_slot)) = deferred {
+                        println!(
+                            "{}",
+                            json!({
+                                "event": "alt_provisioner_binding_activation_deferred",
+                                "cluster": options.cluster,
+                                "requestId": request.id,
+                                "vaultId": request.vault_id.as_i64(),
+                                "bindingId": binding.id,
+                                "errorCode": error_code,
+                                "observedSlot": observed_slot,
+                                "requiredSlot": required_slot,
+                                "retryAt": plan.request.next_attempt_at,
+                                "transactionsSent": false,
+                            })
+                        );
                     }
+                    (0, activated)
                 }
                 AtomicVaultAllocationResult::BindingReserved { operations, .. }
                 | AtomicVaultAllocationResult::CreateQueued { operations, .. } => {
@@ -1367,28 +1378,30 @@ async fn plan_next_provisioning_request(
     Ok(true)
 }
 
-fn binding_activation_defer_code(
-    error: &(dyn Error + 'static),
-    binding_id: i64,
-) -> Option<&'static str> {
-    match error.downcast_ref::<OrchestratorError>()? {
-        OrchestratorError::LookupTableBindingActivationDeferred {
-            binding_id: blocked_binding_id,
-        } if *blocked_binding_id == binding_id => Some("logical_head_usage_lease"),
-        OrchestratorError::Sqlx(loyal_yield_orchestrator::sqlx::Error::Database(database))
-            if database.code().as_deref() == Some("40P01") =>
-        {
-            Some("database_deadlock")
-        }
-        _ => None,
-    }
+fn binding_activation_defer_fields(
+    deferral: &LookupTableBindingActivationDeferral,
+) -> (&'static str, Option<i64>, Option<i64>) {
+    (
+        deferral.error_code(),
+        deferral.observed_slot(),
+        deferral.required_slot(),
+    )
+}
+
+fn is_binding_activation_database_deadlock(error: &(dyn Error + 'static)) -> bool {
+    matches!(
+        error.downcast_ref::<OrchestratorError>(),
+        Some(OrchestratorError::Sqlx(
+            loyal_yield_orchestrator::sqlx::Error::Database(database)
+        )) if database.code().as_deref() == Some("40P01")
+    )
 }
 
 async fn activate_binding_if_ready(
     client: &NeonSqlClient,
     binding: &LookupTableVaultBindingRecord,
     observed_slot: u64,
-) -> Result<bool, Box<dyn Error>> {
+) -> Result<Option<LookupTableBindingActivationOutcome>, Box<dyn Error>> {
     let table = client
         .reusable_lookup_table(binding.route_lookup_table_id)
         .await?
@@ -1397,7 +1410,7 @@ async fn activate_binding_if_ready(
         || table.usable_address_count != table.address_count
         || table.last_verified_slot.is_none()
     {
-        return Ok(false);
+        return Ok(None);
     }
     let manifest = client
         .lookup_table_manifest(binding.manifest_id)
@@ -1418,16 +1431,16 @@ async fn activate_binding_if_ready(
         .map(|row| row.address.clone())
         .collect::<BTreeSet<_>>();
     if !required.is_subset(&membership) {
-        return Ok(false);
+        return Ok(None);
     }
-    client
+    let outcome = client
         .flip_lookup_table_binding_head(
             binding.id,
             i64::try_from(observed_slot)?,
             Utc::now() + chrono::Duration::hours(24),
         )
         .await?;
-    Ok(true)
+    Ok(Some(outcome))
 }
 
 fn provisioning_request_lease(
@@ -4829,6 +4842,31 @@ mod tests {
         assert_eq!(policy.delay_after(2), Duration::from_millis(20));
         assert_eq!(policy.delay_after(3), Duration::from_millis(25));
         assert_eq!(policy.delay_after(u32::MAX), Duration::from_millis(25));
+    }
+
+    #[test]
+    fn binding_activation_deferrals_are_not_fatal_errors() {
+        let verification_slot = LookupTableBindingActivationDeferral::VerificationSlotAhead {
+            binding_id: 17,
+            observed_slot: 120,
+            required_slot: 121,
+        };
+        assert_eq!(
+            binding_activation_defer_fields(&verification_slot),
+            ("verification_slot_ahead", Some(120), Some(121))
+        );
+
+        let usage_lease =
+            LookupTableBindingActivationDeferral::LogicalHeadUsageLease { binding_id: 17 };
+        assert_eq!(
+            binding_activation_defer_fields(&usage_lease),
+            ("logical_head_usage_lease", None, None)
+        );
+
+        let invariant = OrchestratorError::StoreInvariant(
+            "malformed binding state must remain fatal".to_owned(),
+        );
+        assert!(!is_binding_activation_database_deadlock(&invariant));
     }
 
     #[test]
