@@ -401,7 +401,7 @@ async fn supervise_monitor_sessions(
             let update = existing.subscription_update.as_ref().ok_or_else(|| {
                 anyhow::anyhow!("Earn account monitoring requires LaserStream update source")
             })?;
-            update.replace(watch_set.clone())?;
+            update.replace(watch_set.clone()).await?;
             existing.earn_watch_set = watch_set;
         } else {
             tracing::debug!(

@@ -145,18 +145,24 @@ bash verification/smart-account-laserstream/verify.sh \
 
 Pre-merge:
 
-- keep both PRs aligned and green;
-- do not disable cron schedules before the routing image is ready;
-- confirm migration 40 never shipped in its discarded queue form.
+- rebase on current routing `main` and keep migration 40 as
+  `durable_autodeposit_operation`;
+- register the LaserStream replay cursor as migration 41 in both registries;
+- keep the routing verifier and worker-image checks green;
+- treat the rollout as urgent: loyal-app#668 is already merged and its
+  production Vercel deployments completed, so the cron fallback is no longer
+  available.
 
 Post-merge:
 
 1. publish the routing `laserstream-workers` image;
-2. apply routing migration 40;
-3. redeploy `loyal-balance-sweep-ata-monitor` with the immutable image;
-4. verify all five filters, replay progress, and canonical reconciliation;
-5. deploy `loyal-app` to remove the Vercel cron routes and schedules.
+2. apply routing migration 41;
+3. redeploy `loyal-balance-sweep-ata-monitor-staging` with the immutable image;
+4. verify all five filters, replacement acknowledgements/reconnects, replay
+   progress, and canonical reconciliation;
+5. redeploy `loyal-balance-sweep-ata-monitor` and repeat those checks.
 
-Services to redeploy are `loyal-balance-sweep-ata-monitor` on Render and the
-`loyal-app` web/Vercel deployment. No fleet worker, projector, or additional
-Render service is part of this change.
+Services to redeploy are `loyal-balance-sweep-ata-monitor-staging` and
+`loyal-balance-sweep-ata-monitor` on Render. The loyal-app cron removal is
+already deployed; no additional Loyal App, fleet worker, projector, or Render
+service is part of this rollout.

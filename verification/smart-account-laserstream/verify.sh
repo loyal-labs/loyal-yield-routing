@@ -16,16 +16,20 @@ server_started=0
 vault_a="Config1111111111111111111111111111111111111"
 vault_b="BPFLoaderUpgradeab1e11111111111111111111111"
 vault_c="LoaderV411111111111111111111111111111111111"
+vault_d="SysvarInstructions1111111111111111111111111"
 settings_a="Vote111111111111111111111111111111111111111"
 settings_b="SysvarC1ock11111111111111111111111111111111"
 settings_c="SysvarRecentB1ockHashes11111111111111111111"
+settings_d="SysvarEpochSchedu1e111111111111111111111111"
 wallet_a="Stake11111111111111111111111111111111111111"
 wallet_b="ComputeBudget111111111111111111111111111111"
 wallet_c="Vote111111111111111111111111111111111111111"
+wallet_d="NativeLoader1111111111111111111111111111111"
 policy_a="AddressLookupTab1e1111111111111111111111111"
 setup_a="SysvarS1otHashes111111111111111111111111111"
 policy_b="BPFLoader1111111111111111111111111111111111"
 policy_c="Ed25519SigVerify111111111111111111111111111"
+policy_d="MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
 mint="So11111111111111111111111111111111111111112"
 market="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 reserve="SysvarRent111111111111111111111111111111111"
@@ -181,6 +185,9 @@ echo "== Apply production routing and app-compatible Yield migrations"
   NEON_DATABASE_URL="$database_url" NO_DNA=1 \
     cargo run --quiet -p loyal-yield-orchestrator --bin yield-migrations -- --check
 )
+assert_scalar "40:durable_autodeposit_operation,41:laserstream_replay_cursor" \
+  "SELECT string_agg(version::text || ':' || name, ',' ORDER BY version) FROM loyal_yield.schema_migrations WHERE version >= 40" \
+  "current-main migration 40 and LaserStream migration 41 coexist"
 psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0001_add_user_yield_deposit_positions.sql" >/dev/null
 psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0004_add_verifiable_earn_holdings.sql" >/dev/null
 psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0013_add_earn_deposit_onboarding_attempts.sql" >/dev/null
@@ -201,11 +208,13 @@ CREATE TABLE app_user_smart_accounts (
 INSERT INTO app_users (id, subject_address) VALUES
   ('00000000-0000-0000-0000-000000000001', '$wallet_a'),
   ('00000000-0000-0000-0000-000000000002', '$wallet_b'),
-  ('00000000-0000-0000-0000-000000000003', '$wallet_c');
+  ('00000000-0000-0000-0000-000000000003', '$wallet_c'),
+  ('00000000-0000-0000-0000-000000000004', '$wallet_d');
 INSERT INTO app_user_smart_accounts (user_id, solana_env, settings_pda, state) VALUES
   ('00000000-0000-0000-0000-000000000001', 'mainnet', '$settings_a', 'ready'),
   ('00000000-0000-0000-0000-000000000002', 'mainnet', '$settings_b', 'ready'),
-  ('00000000-0000-0000-0000-000000000003', 'mainnet', '$settings_c', 'ready');
+  ('00000000-0000-0000-0000-000000000003', 'mainnet', '$settings_c', 'ready'),
+  ('00000000-0000-0000-0000-000000000004', 'mainnet', '$settings_d', 'ready');
 
 WITH route AS (
   INSERT INTO loyal_yield.route_policies (
@@ -240,6 +249,79 @@ INSERT INTO loyal_yield.earn_deposit_onboarding_attempts (
   '$policy_b', 201, 'sig-policy-b', 105, '$reserve', '$market', '$mint',
   'route_policy_confirmed', NOW(), NOW()
 );
+
+WITH route AS (
+  INSERT INTO loyal_yield.route_policies (
+    settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+    delegated_signers, threshold, route_modes, stable_mints, kamino_markets,
+    kamino_liquidity_mints, active, last_seen_slot, last_seen_signature
+  ) VALUES (
+    '$settings_d', '$wallet_d', 401, '$policy_d', 1, '$vault_d',
+    ARRAY['$wallet_d'], 1, ARRAY['kamino_deposit'], ARRAY['$mint'],
+    ARRAY['$market'], ARRAY['$mint'], TRUE, 105, 'sig-policy-d'
+  ) RETURNING id
+), vault AS (
+  INSERT INTO loyal_yield.managed_vaults (
+    settings, vault_index, vault_pubkey, active_policy_id, active
+  ) SELECT '$settings_d', 1, '$vault_d', route.id, TRUE FROM route
+  RETURNING id, active_policy_id
+), initial_deposit AS (
+  INSERT INTO loyal_yield.user_yield_position_deposits (
+    deposit_signature, policy_signature, confirmed_slot, wallet_address,
+    smart_account_address, settings, vault_index, vault_pubkey, policy_id,
+    policy_account, policy_seed, target_reserve, market, liquidity_mint,
+    target_supply_apy_bps, deposit_mint, principal_amount_raw, confirmed_at,
+    created_at
+  ) SELECT
+    'sig-deposit-d-initial', 'sig-policy-d', 100, '$wallet_d', '$vault_d',
+    '$settings_d', 1, '$vault_d', route.id, '$policy_d', 401, '$reserve',
+    '$market', '$mint', NULL, '$mint', 2000000, NOW(), NOW()
+  FROM route
+  RETURNING id
+), position AS (
+  INSERT INTO loyal_yield.user_yield_positions (
+    wallet_address, smart_account_address, settings, vault_index, vault_pubkey,
+    policy_id, policy_account, policy_seed, initial_reserve, initial_market,
+    initial_liquidity_mint, initial_supply_apy_bps, deposit_mint,
+    principal_amount_raw, first_deposit_signature, last_deposit_signature,
+    last_confirmed_slot, status, created_at, updated_at, current_reserve,
+    current_market, current_liquidity_mint, current_amount_raw,
+    current_observed_slot, current_observed_at
+  ) SELECT
+    '$wallet_d', '$vault_d', '$settings_d', 1, '$vault_d', route.id,
+    '$policy_d', 401, '$reserve', '$market', '$mint', NULL, '$mint', 2000000,
+    'sig-deposit-d-initial', 'sig-deposit-d-initial', 100, 'active', NOW(),
+    NOW(), '$reserve', '$market', '$mint', 2100000, 100, NOW()
+  FROM route
+  RETURNING id
+), holding AS (
+  INSERT INTO loyal_yield.user_yield_position_holding_events (
+    position_id, event_type, reserve, market, liquidity_mint, amount_raw,
+    principal_delta_raw, holding_delta_raw, observed_slot, observed_at,
+    source_signature, source_deposit_id, created_at
+  ) SELECT
+    position.id, 'deposit_initialized', '$reserve', '$market', '$mint',
+    2100000, 2000000, 2100000, 100, NOW(), 'sig-deposit-d-initial',
+    initial_deposit.id, NOW()
+  FROM position CROSS JOIN initial_deposit
+  RETURNING id, position_id
+)
+UPDATE loyal_yield.user_yield_positions position
+SET last_holding_event_id = holding.id
+FROM holding
+WHERE position.id = holding.position_id;
+
+INSERT INTO loyal_yield.earn_deposit_onboarding_attempts (
+  wallet_address, delegated_signer, smart_account_address, settings, vault_index,
+  vault_pubkey, policy_id, policy_account, policy_seed, route_policy_db_id,
+  route_policy_signature, route_policy_confirmed_slot, target_reserve, market,
+  liquidity_mint, status, first_seen_at, updated_at
+) SELECT
+  '$wallet_d', '$wallet_d', '$vault_d', '$settings_d', 1, '$vault_d', 401,
+  '$policy_d', 401, id, 'sig-policy-d', 105, '$reserve', '$market', '$mint',
+  'route_policy_confirmed', NOW(), NOW()
+FROM loyal_yield.route_policies
+WHERE policy_account = '$policy_d';
 
 WITH route AS (
   INSERT INTO loyal_yield.route_policies (
@@ -351,15 +433,30 @@ assert_scalar "1" \
 assert_scalar "1" \
   "SELECT count(*) FROM loyal_yield.user_yield_position_deposits WHERE deposit_signature = 'sig-deposit-b' AND principal_amount_raw = 5000000" \
   "invisible deposit ledger recorded"
-assert_scalar "5000000:5000000:active" \
-  "SELECT principal_amount_raw || ':' || current_amount_raw || ':' || status::text FROM loyal_yield.user_yield_positions WHERE vault_pubkey = '$vault_b'" \
-  "invisible deposit aggregate position recorded"
-assert_scalar "1" \
-  "SELECT count(*) FROM loyal_yield.user_yield_position_holding_events event JOIN loyal_yield.user_yield_position_deposits deposit ON deposit.id = event.source_deposit_id WHERE deposit.deposit_signature = 'sig-deposit-b' AND event.event_type = 'deposit_initialized'" \
-  "invisible deposit holding event recorded"
+assert_scalar "5000000:5250000:118:active" \
+  "SELECT principal_amount_raw || ':' || current_amount_raw || ':' || current_observed_slot || ':' || status::text FROM loyal_yield.user_yield_positions WHERE vault_pubkey = '$vault_b'" \
+  "invisible deposit keeps principal separate from later chain-observed holding"
+assert_scalar "5250000:5000000:5250000:118" \
+  "SELECT event.amount_raw || ':' || event.principal_delta_raw || ':' || event.holding_delta_raw || ':' || event.observed_slot FROM loyal_yield.user_yield_position_holding_events event JOIN loyal_yield.user_yield_position_deposits deposit ON deposit.id = event.source_deposit_id WHERE deposit.deposit_signature = 'sig-deposit-b' AND event.event_type = 'deposit_initialized'" \
+  "invisible deposit holding event uses the observed amount and context slot"
+assert_scalar "0" \
+  "SELECT count(*) FROM loyal_yield.user_yield_positions position JOIN loyal_yield.user_yield_position_holding_events event ON event.id = position.last_holding_event_id WHERE position.current_reserve IS DISTINCT FROM event.reserve OR position.current_market IS DISTINCT FROM event.market OR position.current_liquidity_mint IS DISTINCT FROM event.liquidity_mint OR position.current_amount_raw IS DISTINCT FROM event.amount_raw OR position.current_observed_slot IS DISTINCT FROM event.observed_slot OR position.current_observed_at IS DISTINCT FROM event.observed_at" \
+  "canonical position projection matches its latest holding event"
 assert_scalar "complete" \
   "SELECT status FROM loyal_yield.earn_deposit_onboarding_attempts WHERE vault_pubkey = '$vault_b'" \
   "invisible deposit onboarding completed"
+assert_scalar "7000000:7400000:119:active" \
+  "SELECT principal_amount_raw || ':' || current_amount_raw || ':' || current_observed_slot || ':' || status::text FROM loyal_yield.user_yield_positions WHERE vault_pubkey = '$vault_d'" \
+  "top-up adds principal while projecting the later observed holding"
+assert_scalar "7400000:5000000:5300000:119:deposit_top_up" \
+  "SELECT event.amount_raw || ':' || event.principal_delta_raw || ':' || event.holding_delta_raw || ':' || event.observed_slot || ':' || event.event_type::text FROM loyal_yield.user_yield_position_holding_events event JOIN loyal_yield.user_yield_position_deposits deposit ON deposit.id = event.source_deposit_id WHERE deposit.deposit_signature = 'sig-deposit-d'" \
+  "top-up holding delta is measured from the previous projection"
+assert_scalar "2:2" \
+  "SELECT (SELECT count(*) FROM loyal_yield.user_yield_position_deposits WHERE vault_pubkey = '$vault_d') || ':' || (SELECT count(*) FROM loyal_yield.user_yield_position_holding_events event JOIN loyal_yield.user_yield_positions position ON position.id = event.position_id WHERE position.vault_pubkey = '$vault_d')" \
+  "top-up preserves one deposit and holding event per signature"
+assert_scalar "complete" \
+  "SELECT status FROM loyal_yield.earn_deposit_onboarding_attempts WHERE vault_pubkey = '$vault_d'" \
+  "top-up reconciliation completes pending onboarding"
 assert_scalar "9000000:active" \
   "SELECT principal_amount_raw || ':' || status::text FROM loyal_yield.user_yield_positions WHERE vault_pubkey = '$vault_c'" \
   "positive cleanup proof wrote no zero state"
@@ -424,6 +521,9 @@ assert_scalar "131" \
 assert_scalar "1:1" \
   "SELECT (SELECT count(*) FROM loyal_yield.user_yield_position_deposits WHERE deposit_signature = 'sig-deposit-b') || ':' || (SELECT count(*) FROM loyal_yield.user_yield_position_holding_events event JOIN loyal_yield.user_yield_position_deposits deposit ON deposit.id = event.source_deposit_id WHERE deposit.deposit_signature = 'sig-deposit-b')" \
   "replay created no duplicate deposit accounting"
+assert_scalar "2:2" \
+  "SELECT (SELECT count(*) FROM loyal_yield.user_yield_position_deposits WHERE vault_pubkey = '$vault_d') || ':' || (SELECT count(*) FROM loyal_yield.user_yield_position_holding_events event JOIN loyal_yield.user_yield_positions position ON position.id = event.position_id WHERE position.vault_pubkey = '$vault_d')" \
+  "replay created no duplicate top-up accounting"
 assert_scalar "2" \
   "SELECT count(*) FROM loyal_yield.user_yield_positions WHERE vault_pubkey IN ('$vault_b', '$vault_c') AND status = 'closed' AND principal_amount_raw = 0 AND current_amount_raw = 0" \
   "both cleanup classes closed and zeroed positions"
@@ -462,6 +562,8 @@ echo "== Run focused production checks"
 (
   cd "$routing_root"
   NO_DNA=1 cargo fmt --all -- --check
+  NO_DNA=1 cargo test -p balance-sweep-ata-monitor subscription_replacement
+  echo "PASS: subscription replacement acknowledgement and reconnect retention"
   NO_DNA=1 cargo test -p balance-sweep-ata-monitor
   NO_DNA=1 cargo check -p balance-sweep-ata-monitor -p loyal-yield-store \
     -p loyal-yield-orchestrator --bin yield-migrations

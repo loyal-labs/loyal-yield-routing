@@ -952,6 +952,10 @@ struct FixtureEvidence {
     #[serde(default)]
     amount_raw: Option<u64>,
     #[serde(default)]
+    observed_amount_raw: Option<u64>,
+    #[serde(default)]
+    observed_slot: Option<u64>,
+    #[serde(default)]
     deposit_mint: Option<String>,
     #[serde(default)]
     liquidity_mint: Option<String>,
@@ -1046,6 +1050,8 @@ impl EarnChainReader for FixtureEarnChainReader {
                         "kamino_deposit",
                     )?;
                     let amount = evidence.amount_raw.context("missing deposit amount")?;
+                    let observed_amount = evidence.observed_amount_raw.unwrap_or(amount);
+                    let observed_slot = evidence.observed_slot.unwrap_or(evidence.slot);
                     let liquidity_mint = evidence
                         .liquidity_mint
                         .clone()
@@ -1059,7 +1065,7 @@ impl EarnChainReader for FixtureEarnChainReader {
                         setup_policy: None,
                         deposit_signature: signature.to_owned(),
                         deposit_slot: evidence.slot,
-                        observed_slot: evidence.slot,
+                        observed_slot,
                         deposit_mint: evidence
                             .deposit_mint
                             .clone()
@@ -1075,8 +1081,8 @@ impl EarnChainReader for FixtureEarnChainReader {
                             reserve,
                             market: evidence.market.clone(),
                             liquidity_mint: liquidity_mint.clone(),
-                            amount_raw: amount,
-                            has_value: amount > 0,
+                            amount_raw: observed_amount,
+                            has_value: observed_amount > 0,
                             supply_apy_bps: None,
                             borrow_apy_bps: None,
                             planning_metadata: json!({
@@ -1092,7 +1098,7 @@ impl EarnChainReader for FixtureEarnChainReader {
                                 amount_raw: 0,
                                 owner: vault.vault.clone(),
                                 token_account: token_account.clone(),
-                                observed_slot: evidence.slot,
+                                observed_slot,
                                 observed_at: None,
                                 source_commitment: "confirmed".to_owned(),
                             })

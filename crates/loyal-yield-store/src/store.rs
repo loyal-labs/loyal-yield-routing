@@ -164,6 +164,17 @@ struct ManagedVaultRow {
 }
 
 #[derive(Debug, sqlx::FromRow)]
+struct ExistingEarnPositionProjectionRow {
+    id: i64,
+    current_reserve: String,
+    current_market: Option<String>,
+    current_liquidity_mint: String,
+    current_amount_raw: i64,
+    current_observed_slot: i64,
+    current_observed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
 struct SnapshotRow {
     id: i64,
     vault_id: i64,
@@ -4138,9 +4149,10 @@ async fn apply_earn_deposit(
         return Ok(());
     };
 
-    let existing_position_id = sqlx::query_scalar::<_, i64>(
+    let existing_position = sqlx::query_as::<_, ExistingEarnPositionProjectionRow>(
         r#"
-            SELECT id
+            SELECT id, current_reserve, current_market, current_liquidity_mint,
+                   current_amount_raw, current_observed_slot, current_observed_at
             FROM loyal_yield.user_yield_positions
             WHERE settings = $1 AND vault_index = $2 AND initial_reserve = $3
             FOR UPDATE
@@ -4152,10 +4164,57 @@ async fn apply_earn_deposit(
     .fetch_optional(&mut *conn)
     .await?;
 
-    let (position_id, event_type, resulting_amount) =
-        if let Some(position_id) = existing_position_id {
-            let resulting_amount = sqlx::query_scalar::<_, i64>(
-                r#"
+    let (
+        position_id,
+        event_type,
+        event_reserve,
+        event_market,
+        event_liquidity_mint,
+        resulting_amount,
+        holding_delta,
+        event_observed_slot,
+        event_observed_at,
+    ) = if let Some(existing) = existing_position {
+        let incoming_is_current = balance_observed_slot >= existing.current_observed_slot;
+        let event_reserve = if incoming_is_current {
+            mutation.target_reserve.clone()
+        } else {
+            existing.current_reserve
+        };
+        let event_market = if incoming_is_current {
+            mutation.market.clone()
+        } else {
+            existing.current_market
+        };
+        let event_liquidity_mint = if incoming_is_current {
+            mutation.liquidity_mint.clone()
+        } else {
+            existing.current_liquidity_mint
+        };
+        let resulting_amount = if incoming_is_current {
+            current_amount
+        } else {
+            existing.current_amount_raw
+        };
+        let event_observed_slot = if incoming_is_current {
+            balance_observed_slot
+        } else {
+            existing.current_observed_slot
+        };
+        let event_observed_at = if incoming_is_current {
+            observed_at
+        } else {
+            existing.current_observed_at
+        };
+        let holding_delta = resulting_amount
+            .checked_sub(existing.current_amount_raw)
+            .ok_or_else(|| {
+                OrchestratorError::StoreInvariant(
+                    "Earn holding delta overflow during deposit reconciliation".to_owned(),
+                )
+            })?;
+        sqlx::query(
+            r#"
                 UPDATE loyal_yield.user_yield_positions
                 SET wallet_address = $2,
                     smart_account_address = $3,
@@ -4171,35 +4230,44 @@ async fn apply_earn_deposit(
                     current_market = $12,
                     current_liquidity_mint = $13,
                     current_amount_raw = $14,
-                    current_observed_slot = GREATEST(current_observed_slot, $15),
+                    current_observed_slot = $15,
                     current_observed_at = $16,
                     updated_at = now()
                 WHERE id = $1
-                RETURNING current_amount_raw
                 "#,
-            )
-            .bind(position_id)
-            .bind(&mutation.wallet)
-            .bind(&mutation.smart_account_address)
-            .bind(&mutation.route_policy.vault_pubkey)
-            .bind(route.id.as_i64())
-            .bind(&mutation.route_policy.policy_account)
-            .bind(to_i64_policy_seed(mutation.route_policy.policy_seed)?)
-            .bind(amount)
-            .bind(&mutation.deposit_signature)
-            .bind(confirmed_slot)
-            .bind(&mutation.target_reserve)
-            .bind(&mutation.market)
-            .bind(&mutation.liquidity_mint)
-            .bind(current_amount)
-            .bind(balance_observed_slot)
-            .bind(observed_at)
-            .fetch_one(&mut *conn)
-            .await?;
-            (position_id, "deposit_top_up", resulting_amount)
-        } else {
-            let position_id = sqlx::query_scalar::<_, i64>(
-                r#"
+        )
+        .bind(existing.id)
+        .bind(&mutation.wallet)
+        .bind(&mutation.smart_account_address)
+        .bind(&mutation.route_policy.vault_pubkey)
+        .bind(route.id.as_i64())
+        .bind(&mutation.route_policy.policy_account)
+        .bind(to_i64_policy_seed(mutation.route_policy.policy_seed)?)
+        .bind(amount)
+        .bind(&mutation.deposit_signature)
+        .bind(confirmed_slot)
+        .bind(&event_reserve)
+        .bind(&event_market)
+        .bind(&event_liquidity_mint)
+        .bind(resulting_amount)
+        .bind(event_observed_slot)
+        .bind(event_observed_at)
+        .execute(&mut *conn)
+        .await?;
+        (
+            existing.id,
+            "deposit_top_up",
+            event_reserve,
+            event_market,
+            event_liquidity_mint,
+            resulting_amount,
+            holding_delta,
+            event_observed_slot,
+            event_observed_at,
+        )
+    } else {
+        let position_id = sqlx::query_scalar::<_, i64>(
+            r#"
                 INSERT INTO loyal_yield.user_yield_positions (
                     wallet_address, smart_account_address, settings, vault_index,
                     vault_pubkey, policy_id, policy_account, policy_seed,
@@ -4215,30 +4283,40 @@ async fn apply_earn_deposit(
                     now(), now(), $9, $10, $11, $18, $19, $17
                 ) RETURNING id
                 "#,
-            )
-            .bind(&mutation.wallet)
-            .bind(&mutation.smart_account_address)
-            .bind(&mutation.route_policy.settings)
-            .bind(i16::from(mutation.route_policy.vault_index))
-            .bind(&mutation.route_policy.vault_pubkey)
-            .bind(route.id.as_i64())
-            .bind(&mutation.route_policy.policy_account)
-            .bind(to_i64_policy_seed(mutation.route_policy.policy_seed)?)
-            .bind(&mutation.target_reserve)
-            .bind(&mutation.market)
-            .bind(&mutation.liquidity_mint)
-            .bind(mutation.target_supply_apy_bps)
-            .bind(&mutation.deposit_mint)
-            .bind(amount)
-            .bind(&mutation.deposit_signature)
-            .bind(confirmed_slot)
-            .bind(observed_at)
-            .bind(current_amount)
-            .bind(balance_observed_slot)
-            .fetch_one(&mut *conn)
-            .await?;
-            (position_id, "deposit_initialized", amount)
-        };
+        )
+        .bind(&mutation.wallet)
+        .bind(&mutation.smart_account_address)
+        .bind(&mutation.route_policy.settings)
+        .bind(i16::from(mutation.route_policy.vault_index))
+        .bind(&mutation.route_policy.vault_pubkey)
+        .bind(route.id.as_i64())
+        .bind(&mutation.route_policy.policy_account)
+        .bind(to_i64_policy_seed(mutation.route_policy.policy_seed)?)
+        .bind(&mutation.target_reserve)
+        .bind(&mutation.market)
+        .bind(&mutation.liquidity_mint)
+        .bind(mutation.target_supply_apy_bps)
+        .bind(&mutation.deposit_mint)
+        .bind(amount)
+        .bind(&mutation.deposit_signature)
+        .bind(confirmed_slot)
+        .bind(observed_at)
+        .bind(current_amount)
+        .bind(balance_observed_slot)
+        .fetch_one(&mut *conn)
+        .await?;
+        (
+            position_id,
+            "deposit_initialized",
+            mutation.target_reserve.clone(),
+            mutation.market.clone(),
+            mutation.liquidity_mint.clone(),
+            current_amount,
+            current_amount,
+            balance_observed_slot,
+            observed_at,
+        )
+    };
 
     let holding_id = sqlx::query_scalar::<_, i64>(
         r#"
@@ -4248,19 +4326,20 @@ async fn apply_earn_deposit(
                 observed_at, source_signature, source_deposit_id, created_at
             ) VALUES (
                 $1, $2::text::loyal_yield.user_yield_holding_event_type, $3, $4,
-                $5, $6, $7, $7, $8, $9, $10, $11, now()
+                $5, $6, $7, $8, $9, $10, $11, $12, now()
             ) RETURNING id
             "#,
     )
     .bind(position_id)
     .bind(event_type)
-    .bind(&mutation.target_reserve)
-    .bind(&mutation.market)
-    .bind(&mutation.liquidity_mint)
+    .bind(&event_reserve)
+    .bind(&event_market)
+    .bind(&event_liquidity_mint)
     .bind(resulting_amount)
     .bind(amount)
-    .bind(confirmed_slot)
-    .bind(observed_at)
+    .bind(holding_delta)
+    .bind(event_observed_slot)
+    .bind(event_observed_at)
     .bind(&mutation.deposit_signature)
     .bind(deposit_id)
     .fetch_one(&mut *conn)

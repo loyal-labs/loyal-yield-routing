@@ -34,7 +34,12 @@ any new Loyal App or fleet reconciliation worker.
    pair, managed vault, and `setup_policy_confirmed` onboarding state.
 7. Invisible deposit recovery records exactly one deposit by signature, the
    correct principal, an active aggregate position, one holding event, managed
-   reserve/idle state, and completed onboarding. Replay creates no duplicates.
+   reserve/idle state, and completed onboarding. The transaction principal and
+   slot deliberately differ from the later chain-observed holding amount and
+   context slot; the aggregate position and latest holding event must still
+   match exactly. A top-up fixture also proves that principal delta equals the
+   transaction debit while holding delta is measured from the previous
+   projection. Replay creates no duplicates.
 8. Full-withdraw cleanup covers both cases:
    - `confirm_missed`: zero proof succeeds and policies are already closed;
    - `cleanup_pending`: zero proof succeeds while policies remain open.
@@ -51,7 +56,13 @@ any new Loyal App or fleet reconciliation worker.
     or executions.
 12. Loyal App no longer exposes or schedules `earn-deposit-reconcile` or
     `earn-cleanup-reconcile`, and it adds no replacement worker.
-13. Focused Rust formatting, compilation, tests, isolated PostgreSQL assertions,
+13. Current main's migration 40 remains `durable_autodeposit_operation`, and
+    the LaserStream replay cursor is migration 41 in both migration registries.
+14. A live subscription replacement is acknowledged before the supervisor
+    updates its applied watch set. If the live write fails, the desired request
+    remains the reconnect request so newly discovered Earn accounts are not
+    stranded.
+15. Focused Rust formatting, compilation, tests, isolated PostgreSQL assertions,
     and whitespace checks pass.
 
 ## Rejected shortcuts

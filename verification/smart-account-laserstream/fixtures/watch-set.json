@@ -42,6 +42,18 @@
         { "pubkey": "LoaderV411111111111111111111111111111111111", "role": "vault" },
         { "pubkey": "KeccakSecp256k11111111111111111111111111111", "role": "idle_token" }
       ]
+    },
+    {
+      "environment": "verification",
+      "settings": "SysvarEpochSchedu1e111111111111111111111111",
+      "wallet": "NativeLoader1111111111111111111111111111111",
+      "vault": "SysvarInstructions1111111111111111111111111",
+      "vault_index": 1,
+      "accounts": [
+        { "pubkey": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", "role": "policy" },
+        { "pubkey": "SysvarInstructions1111111111111111111111111", "role": "vault" },
+        { "pubkey": "SysvarFees111111111111111111111111111111111", "role": "idle_token" }
+      ]
     }
   ]
 }
