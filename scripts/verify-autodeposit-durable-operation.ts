@@ -31,6 +31,8 @@ async function main() {
     store,
     migration,
     productionMigrations,
+    packageJson,
+    staleCurrentReserveVerifier,
     dockerfile,
     workflow,
   ] = await Promise.all([
@@ -42,6 +44,8 @@ async function main() {
         "crates/loyal-yield-store/migrations/0040_durable_autodeposit_operation.sql",
       ),
       source("crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs"),
+      source("package.json"),
+      source("scripts/verify-autodeposit-stale-current-reserve.ts"),
       source("Dockerfile.light-workers"),
       source(".github/workflows/worker-images.yml"),
     ]);
@@ -51,6 +55,9 @@ async function main() {
   );
   const duplicateModelTestExists = await exists(
     "scripts/durable-autodeposit-operation.test.ts",
+  );
+  const obsoleteIdleHandoffVerifierExists = await exists(
+    "scripts/verify-autodeposit-idle-vault-handoff.ts",
   );
 
   check(
@@ -178,6 +185,16 @@ async function main() {
   check(
     "the removed idle-age operational alert stays absent",
     !trigger.includes("autodeposit_idle_vault_recovery_stalled"),
+  );
+  check(
+    "the obsolete idle-handoff verifier is retired",
+    !obsoleteIdleHandoffVerifierExists &&
+      !packageJson.includes('"verify:autodeposit-idle-vault-handoff"'),
+  );
+  check(
+    "the stale-reserve verifier uses the prepare-only top-up helper",
+    staleCurrentReserveVerifier.includes("prepareSameMintReserveTopUp") &&
+      !staleCurrentReserveVerifier.includes("runSameMintReserveTopUp"),
   );
   check(
     "runtime packaging does not carry the removed duplicate model",

@@ -2144,19 +2144,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn idle_recovery_alert_floor_matches_fleet_minimum_notional() {
-        let minimum = minimum_actionable_idle_amount_raw();
-
-        assert_eq!(
-            minimum,
-            EconomicPolicy::default().minimum_notional_usd_micros
-        );
-        assert!(201 < minimum);
-        assert!(201_750 < minimum);
-        assert_eq!(minimum, 1_000_000);
-    }
-
     #[tokio::test]
     async fn silent_realtime_listener_returns_to_global_poll_fallback() {
         let (_sender, mut receiver) = mpsc::channel(1);

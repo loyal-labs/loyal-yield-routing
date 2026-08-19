@@ -36,7 +36,7 @@ import {
   readTopUpLookupTableCoverage,
   readTopUpPreflightBlockers,
   resolveCurrentReserve,
-  runSameMintReserveTopUp,
+  prepareSameMintReserveTopUp,
   type EligibleTarget,
   type LiveVaultPosition,
 } from "./execute-autodeposit-policy";
@@ -291,9 +291,8 @@ function spawnCount(directory: string): number {
 }
 
 function dryRun(reserve: string, workerTarget: EligibleTarget = target) {
-  return runSameMintReserveTopUp({
+  return prepareSameMintReserveTopUp({
     amountRaw: BigInt(715_370),
-    execute: false,
     reserve,
     rpcUrl: "https://verification.invalid",
     target: workerTarget,

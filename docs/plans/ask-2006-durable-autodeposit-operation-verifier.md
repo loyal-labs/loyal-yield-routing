@@ -9,9 +9,11 @@ Run from the repository root:
 
 ```sh
 bun run verify:autodeposit-durable-operation
+bun run verify:autodeposit-stale-current-reserve
 bun test scripts/durable-autodeposit-confirmation.test.ts scripts/execute-autodeposit-policy.test.ts
 cargo fmt --all -- --check
 cargo check -p balance-sweep-autodeposit-trigger -p loyal-fleet-worker -p loyal-yield-orchestrator
+cargo test -p balance-sweep-autodeposit-trigger
 cargo test -p loyal-yield-orchestrator --bin yield-migrations durable_autodeposit_operation_migration_is_registered_for_production
 git diff --check
 ```
@@ -57,7 +59,9 @@ Required observable properties:
    ownership/invariants, or another explicit operator-action condition may
    alert. The removed idle-age SLA alert stays absent.
 9. Runtime packaging contains every imported executor module and no removed
-   duplicate operation-model module.
+   duplicate operation-model module. The obsolete idle-handoff verifier is
+   retired, and the still-relevant stale-reserve verifier uses the prepare-only
+   route helper.
 
 Verdict: FAIL if any required property or command fails. PASS only when every
 required property and command passes.
