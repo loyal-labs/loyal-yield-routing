@@ -243,6 +243,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0039_unbroadcast_cross_mint_expiry_check.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 40,
+        name: "durable_autodeposit_operation",
+        sql: include_str!("../../../loyal-yield-store/migrations/0040_durable_autodeposit_operation.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -3637,6 +3643,27 @@ mod tests {
             assert!(
                 migration.sql.contains(required),
                 "migration 38 is missing {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn durable_autodeposit_operation_migration_is_registered_for_production() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 40)
+            .expect("migration 40 exists");
+
+        assert_eq!(migration.name, "durable_autodeposit_operation");
+        for required in [
+            "ALTER TABLE loyal_yield.balance_sweep_lot_claims",
+            "autodeposit_executor_lease_token",
+            "autodeposit_executor_lease_expires_at",
+            "autodeposit_deposit_plan",
+        ] {
+            assert!(
+                migration.sql.contains(required),
+                "migration 40 is missing {required}"
             );
         }
     }

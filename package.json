@@ -63,7 +63,7 @@
     "render:services": "bun scripts/render-services-table.ts",
     "render:services:redeploy": "bun scripts/render-services-redeploy.ts",
     "verify:autodeposit-alt-readiness": "bun scripts/verify-autodeposit-alt-readiness.ts",
-    "verify:autodeposit-idle-vault-handoff": "bun scripts/verify-autodeposit-idle-vault-handoff.ts",
+    "verify:autodeposit-durable-operation": "bun scripts/verify-autodeposit-durable-operation.ts",
     "verify:idle-deposit-reconcile": "cargo run -p loyal-yield-orchestrator --bin verify-idle-deposit-reconcile",
     "verify:autodeposit-closed-route-policy": "bun scripts/verify-autodeposit-closed-route-policy.ts",
     "verify:autodeposit-missing-route-policy-pause": "bash scripts/verify-autodeposit-missing-route-policy-pause.sh",

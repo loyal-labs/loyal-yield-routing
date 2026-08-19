@@ -15,6 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use klend_interface::{
     discriminators::{
@@ -9917,6 +9918,9 @@ async fn run_initial_reserve_deposit_flow(
                 "fundingTransaction": policy_transaction_json(&funding_transaction),
                 "policyDeposit": policy_plan.as_ref().map(|plan| initial_deposit_policy_preview_json(&plan.preview)),
                 "policyDepositTransaction": dry_run_policy_transaction.as_ref().map(policy_transaction_json),
+                "durablePolicyDepositTransaction": pre_funding_lookup_table_phase
+                    .as_ref()
+                    .and_then(|phase| durable_signed_route_transaction_json(&phase.resolution)),
                 "lookupTableResolution": pre_funding_lookup_table_phase.as_ref().map(|phase| phase.resolution.evidence.clone()),
             }))?
         );
@@ -15713,6 +15717,23 @@ fn policy_transaction_json(transaction: &PolicyTransactionBuild) -> Value {
             "KLend deposit/withdraw needs a fresh obligation; the script now emits refresh_obligation as a public pre-instruction before protected value movement"
         ),
     })
+}
+
+fn durable_signed_route_transaction_json(
+    resolution: &RuntimeLookupTableResolution,
+) -> Option<Value> {
+    let transaction = resolution.selected_transaction.as_ref()?;
+    let signed_bytes = bincode::serialize(transaction).ok()?;
+    let signature = transaction.signatures.first()?.to_string();
+    Some(json!({
+        "signature": signature,
+        "signedTransactionBase64": BASE64_STANDARD.encode(&signed_bytes),
+        "signedTransactionSha256": format!("{:x}", Sha256::digest(&signed_bytes)),
+        "recentBlockhash": resolution.recent_blockhash.to_string(),
+        "lastValidBlockHeight": resolution.last_valid_block_height,
+        "transaction": resolution.selected_transaction_packet.as_ref().map(transaction_packet_json),
+        "simulationUnitsConsumed": resolution.selected_simulation_units_consumed,
+    }))
 }
 
 fn policy_transaction_has_klend_obligation_stale(transaction: &PolicyTransactionBuild) -> bool {
