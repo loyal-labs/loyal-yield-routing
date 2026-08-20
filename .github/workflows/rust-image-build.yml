@@ -77,12 +77,18 @@ jobs:
       # delta at zero for commits that change no Rust, and bounds it to one
       # commit for the rest. Restore keys fall back to the manifest-compatible
       # prefix so a miss still starts from the nearest usable snapshot.
+      #
+      # The key also covers the build script because that is where each family's
+      # package and binary lists live. Moving a binary between families changes
+      # what belongs in this snapshot without changing any crate source, and an
+      # exact hit suppresses the save below, so a snapshot missing that binary
+      # would otherwise never be repaired.
       - name: Restore trusted Cargo target state
         id: cargo-target-cache
         uses: actions/cache/restore@v4
         with:
           path: target
-          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**', '.sqlx/**') }}
+          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**', '.sqlx/**', 'scripts/build-rust-image-binaries.sh') }}
           restore-keys: |
             ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-
             ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-
@@ -130,7 +136,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: target
-          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**', '.sqlx/**') }}
+          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**', '.sqlx/**', 'scripts/build-rust-image-binaries.sh') }}
 
       - name: Save trusted Cargo dependency state
         if: inputs.save-caches && github.ref == 'refs/heads/main' && matrix.family == 'light-workers' && steps.cargo-dependency-cache.outputs.cache-hit != 'true'
