@@ -128,6 +128,16 @@ rg --quiet --fixed-strings 'reconcile_normalized_earn_update' \
   fail "production event loop does not call direct Earn reconciliation"
 rg --quiet --fixed-strings 'FixtureEarnChainReader' "$e2e_source" ||
   fail "E2E does not use the production engine through a deterministic chain reader"
+if rg --quiet --fixed-strings 'handle.write(' \
+  "$routing_root/crates/balance-sweep-ata-monitor/src/lib.rs"; then
+  fail "Earn watch-set changes still use the SDK live-write path without replay"
+fi
+rg --quiet --fixed-strings 'session_requires_rebuild(session.is_none(), diff.has_changes(), earn_changed)' \
+  "$routing_root/crates/balance-sweep-ata-monitor/src/main.rs" ||
+  fail "Earn watch-set changes do not rebuild the replaying session"
+rg --quiet --fixed-strings 'preserve_replay_from_slot' \
+  "$routing_root/crates/balance-sweep-ata-monitor/src/main.rs" ||
+  fail "Earn watch-set rebuild does not preserve the earlier replay start"
 
 for removed_route in \
   "$app_root/apps/web/src/app/api/cron/earn-deposit-reconcile/route.ts" \
@@ -314,6 +324,19 @@ WHERE position.id = holding.position_id;
 INSERT INTO loyal_yield.earn_deposit_onboarding_attempts (
   wallet_address, delegated_signer, smart_account_address, settings, vault_index,
   vault_pubkey, policy_id, policy_account, policy_seed, route_policy_db_id,
+  route_policy_signature, route_policy_confirmed_slot, deposit_signature,
+  deposit_confirmed_slot, deposit_mint, principal_amount_raw, target_reserve,
+  market, liquidity_mint, status, first_seen_at, updated_at
+) SELECT
+  '$wallet_d', '$wallet_d', '$vault_d', '$settings_d', 1, '$vault_d', 401,
+  '$policy_d', 401, id, 'sig-policy-d', 105, 'sig-deposit-d-initial', 100,
+  '$mint', 2000000, '$reserve', '$market', '$mint', 'complete', NOW(), NOW()
+FROM loyal_yield.route_policies
+WHERE policy_account = '$policy_d';
+
+INSERT INTO loyal_yield.earn_deposit_onboarding_attempts (
+  wallet_address, delegated_signer, smart_account_address, settings, vault_index,
+  vault_pubkey, policy_id, policy_account, policy_seed, route_policy_db_id,
   route_policy_signature, route_policy_confirmed_slot, target_reserve, market,
   liquidity_mint, status, first_seen_at, updated_at
 ) SELECT
@@ -454,9 +477,15 @@ assert_scalar "7400000:5000000:5300000:119:deposit_top_up" \
 assert_scalar "2:2" \
   "SELECT (SELECT count(*) FROM loyal_yield.user_yield_position_deposits WHERE vault_pubkey = '$vault_d') || ':' || (SELECT count(*) FROM loyal_yield.user_yield_position_holding_events event JOIN loyal_yield.user_yield_positions position ON position.id = event.position_id WHERE position.vault_pubkey = '$vault_d')" \
   "top-up preserves one deposit and holding event per signature"
-assert_scalar "complete" \
-  "SELECT status FROM loyal_yield.earn_deposit_onboarding_attempts WHERE vault_pubkey = '$vault_d'" \
-  "top-up reconciliation completes pending onboarding"
+assert_scalar "sig-deposit-d-initial:2000000:100" \
+  "SELECT deposit_signature || ':' || principal_amount_raw || ':' || deposit_confirmed_slot FROM loyal_yield.earn_deposit_onboarding_attempts WHERE vault_pubkey = '$vault_d' AND deposit_signature = 'sig-deposit-d-initial'" \
+  "top-up preserves the completed historical onboarding attempt"
+assert_scalar "sig-deposit-d:5000000:113" \
+  "SELECT deposit_signature || ':' || principal_amount_raw || ':' || deposit_confirmed_slot FROM loyal_yield.earn_deposit_onboarding_attempts WHERE vault_pubkey = '$vault_d' AND deposit_signature = 'sig-deposit-d'" \
+  "top-up completes only the active onboarding attempt"
+assert_scalar "2" \
+  "SELECT count(*) FROM loyal_yield.earn_deposit_onboarding_attempts WHERE vault_pubkey = '$vault_d' AND status = 'complete'" \
+  "top-up leaves both onboarding attempts as distinct history"
 assert_scalar "9000000:active" \
   "SELECT principal_amount_raw || ':' || status::text FROM loyal_yield.user_yield_positions WHERE vault_pubkey = '$vault_c'" \
   "positive cleanup proof wrote no zero state"
@@ -562,9 +591,10 @@ echo "== Run focused production checks"
 (
   cd "$routing_root"
   NO_DNA=1 cargo fmt --all -- --check
-  NO_DNA=1 cargo test -p balance-sweep-ata-monitor subscription_replacement
-  echo "PASS: subscription replacement acknowledgement and reconnect retention"
   NO_DNA=1 cargo test -p balance-sweep-ata-monitor
+  echo "PASS: fresh replaying session on Earn watch-set changes"
+  echo "PASS: production principal proof nets balances per owner"
+  echo "PASS: failed Earn proof wakes the supervisor immediately"
   NO_DNA=1 cargo check -p balance-sweep-ata-monitor -p loyal-yield-store \
     -p loyal-yield-orchestrator --bin yield-migrations
   git diff --check

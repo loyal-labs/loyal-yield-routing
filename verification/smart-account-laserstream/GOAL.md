@@ -39,7 +39,8 @@ any new Loyal App or fleet reconciliation worker.
    context slot; the aggregate position and latest holding event must still
    match exactly. A top-up fixture also proves that principal delta equals the
    transaction debit while holding delta is measured from the previous
-   projection. Replay creates no duplicates.
+   projection, and only the active onboarding attempt is completed while prior
+   completed attempts remain immutable. Replay creates no duplicates.
 8. Full-withdraw cleanup covers both cases:
    - `confirm_missed`: zero proof succeeds and policies are already closed;
    - `cleanup_pending`: zero proof succeeds while policies remain open.
@@ -58,11 +59,18 @@ any new Loyal App or fleet reconciliation worker.
     `earn-cleanup-reconcile`, and it adds no replacement worker.
 13. Current main's migration 40 remains `durable_autodeposit_operation`, and
     the LaserStream replay cursor is migration 41 in both migration registries.
-14. A live subscription replacement is acknowledged before the supervisor
-    updates its applied watch set. If the live write fails, the desired request
-    remains the reconnect request so newly discovered Earn accounts are not
-    stranded.
-15. Focused Rust formatting, compilation, tests, isolated PostgreSQL assertions,
+14. Earn watch-set changes rebuild the whole LaserStream session instead of
+    using the SDK live-write path. The fresh request retains the previous
+    session's replay `from_slot`, rather than recomputing it from a cursor that
+    may have advanced on other accounts, so an event between refreshes is
+    backfilled.
+15. Production transaction parsing nets token balances per allowed owner before
+    calculating principal. Moving tokens between two accounts with the same
+    owner proves zero principal debit.
+16. An Earn proof/RPC failure exits the ordered event loop but wakes the
+    supervisor immediately, which restarts from the durable replay cursor rather
+    than sleeping for the 300-second target refresh interval.
+17. Focused Rust formatting, compilation, tests, isolated PostgreSQL assertions,
     and whitespace checks pass.
 
 ## Rejected shortcuts

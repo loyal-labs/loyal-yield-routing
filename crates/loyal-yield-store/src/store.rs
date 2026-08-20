@@ -4368,6 +4368,7 @@ async fn apply_earn_deposit(
             last_error_code = NULL,
             updated_at = now()
         WHERE settings = $8 AND vault_index = $9 AND vault_pubkey = $10
+          AND status <> 'complete'
         "#,
     )
     .bind(route.id.as_i64())

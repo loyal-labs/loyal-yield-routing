@@ -40,10 +40,13 @@ lookup. There is no reserve fan-out: reserve state is read only when an
 affected vault needs proof.
 
 The watch set is rebuilt from durable application identity, onboarding,
-position, and policy rows. Address lists are sorted and deduplicated. During a
-live replacement the process retains old Earn bindings until restart so an
-in-flight deletion still maps to its vault. The replay cursor starts with a
-bounded overlap, so replacement needs no bootstrap job.
+position, and policy rows. Address lists are sorted and deduplicated. Any Earn
+watch-set change rebuilds the physical LaserStream session from the durable
+subscription request. The rebuild retains the previous session's `from_slot`
+instead of recomputing it from a cursor that may have advanced on other
+accounts. We intentionally do not use the SDK's live write path because it
+clears `from_slot` and cannot backfill an event that landed before the new
+filter was installed.
 
 ## Direct reconciliation boundary
 
@@ -158,8 +161,8 @@ Post-merge:
 1. publish the routing `laserstream-workers` image;
 2. apply routing migration 41;
 3. redeploy `loyal-balance-sweep-ata-monitor-staging` with the immutable image;
-4. verify all five filters, replacement acknowledgements/reconnects, replay
-   progress, and canonical reconciliation;
+4. verify all five filters, watch-set rebuild replay, immediate proof-failure
+   restarts, replay progress, and canonical reconciliation;
 5. redeploy `loyal-balance-sweep-ata-monitor` and repeat those checks.
 
 Services to redeploy are `loyal-balance-sweep-ata-monitor-staging` and

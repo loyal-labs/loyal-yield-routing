@@ -832,46 +832,78 @@ fn transaction_owner_debit<'a>(
         .into_iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let balances = |name: &str| {
+    let balances = |name: &str| -> Result<BTreeMap<u64, (Option<String>, u64)>> {
         transaction
             .pointer(&format!("/transaction/meta/{name}"))
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default()
+            .into_iter()
+            .filter(|row| row.get("mint").and_then(Value::as_str) == Some(mint))
+            .try_fold(BTreeMap::new(), |mut parsed, row| {
+                if row.get("mint").and_then(Value::as_str) != Some(mint) {
+                    return Ok(parsed);
+                }
+                let index = row
+                    .get("accountIndex")
+                    .and_then(Value::as_u64)
+                    .context("token balance has no account index")?;
+                let amount = row
+                    .pointer("/uiTokenAmount/amount")
+                    .and_then(Value::as_str)
+                    .context("token balance has no raw amount")?
+                    .parse::<u64>()?;
+                let owner = row
+                    .get("owner")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                if parsed.insert(index, (owner, amount)).is_some() {
+                    bail!("duplicate token balance account index {index} in {name}");
+                }
+                Ok(parsed)
+            })
     };
-    let mut by_key = BTreeMap::<(u64, String), (u64, u64)>::new();
-    for (side, rows) in [
-        (0_usize, balances("preTokenBalances")),
-        (1, balances("postTokenBalances")),
-    ] {
-        for row in rows {
-            if row.get("mint").and_then(Value::as_str) != Some(mint) {
-                continue;
+    let pre = balances("preTokenBalances")?;
+    let post = balances("postTokenBalances")?;
+    let indexes = pre
+        .keys()
+        .chain(post.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut by_owner = BTreeMap::<String, (u64, u64)>::new();
+
+    for index in indexes {
+        let pre_row = pre.get(&index);
+        let post_row = post.get(&index);
+        if let Some((pre_owner, pre_amount)) = pre_row {
+            if let Some(owner) = pre_owner
+                .as_ref()
+                .or_else(|| post_row.and_then(|(owner, _)| owner.as_ref()))
+                .filter(|owner| owners.contains(owner.as_str()))
+            {
+                let total = by_owner.entry(owner.clone()).or_default();
+                total.0 = total
+                    .0
+                    .checked_add(*pre_amount)
+                    .context("deposit owner pre-balance overflow")?;
             }
-            let Some(owner) = row.get("owner").and_then(Value::as_str) else {
-                continue;
-            };
-            if !owners.contains(owner) {
-                continue;
-            }
-            let index = row
-                .get("accountIndex")
-                .and_then(Value::as_u64)
-                .context("token balance has no account index")?;
-            let amount = row
-                .pointer("/uiTokenAmount/amount")
-                .and_then(Value::as_str)
-                .context("token balance has no raw amount")?
-                .parse::<u64>()?;
-            let entry = by_key.entry((index, owner.to_owned())).or_default();
-            if side == 0 {
-                entry.0 = amount;
-            } else {
-                entry.1 = amount;
+        }
+        if let Some((post_owner, post_amount)) = post_row {
+            if let Some(owner) = post_owner
+                .as_ref()
+                .or_else(|| pre_row.and_then(|(owner, _)| owner.as_ref()))
+                .filter(|owner| owners.contains(owner.as_str()))
+            {
+                let total = by_owner.entry(owner.clone()).or_default();
+                total.1 = total
+                    .1
+                    .checked_add(*post_amount)
+                    .context("deposit owner post-balance overflow")?;
             }
         }
     }
-    by_key.into_values().try_fold(0_u64, |sum, (pre, post)| {
+
+    by_owner.into_values().try_fold(0_u64, |sum, (pre, post)| {
         sum.checked_add(pre.saturating_sub(post))
             .context("deposit owner debit overflow")
     })
@@ -1183,4 +1215,71 @@ fn fixture_policy_match(
         risk_profile: None,
         swap_lanes: Value::Array(Vec::new()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn token_balance(index: u64, owner: &str, mint: &str, amount: u64) -> Value {
+        json!({
+            "accountIndex": index,
+            "owner": owner,
+            "mint": mint,
+            "uiTokenAmount": { "amount": amount.to_string() }
+        })
+    }
+
+    #[test]
+    fn principal_debit_nets_same_owner_token_accounts() {
+        let owner = "wallet-owner".to_owned();
+        let mint = "deposit-mint";
+        let transaction = json!({
+            "transaction": {
+                "meta": {
+                    "preTokenBalances": [
+                        token_balance(0, &owner, mint, 100),
+                        token_balance(1, &owner, mint, 0)
+                    ],
+                    "postTokenBalances": [
+                        token_balance(0, &owner, mint, 0),
+                        token_balance(1, &owner, mint, 100)
+                    ]
+                }
+            }
+        });
+
+        assert_eq!(
+            transaction_owner_debit(&transaction, mint, [&owner]).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn principal_debit_keeps_net_outflow_across_allowed_owners() {
+        let wallet = "wallet-owner".to_owned();
+        let vault = "vault-owner".to_owned();
+        let mint = "deposit-mint";
+        let transaction = json!({
+            "transaction": {
+                "meta": {
+                    "preTokenBalances": [
+                        token_balance(0, &wallet, mint, 200),
+                        token_balance(1, &vault, mint, 50),
+                        token_balance(2, &vault, mint, 0)
+                    ],
+                    "postTokenBalances": [
+                        token_balance(0, &wallet, mint, 100),
+                        token_balance(1, &vault, mint, 0),
+                        token_balance(2, &vault, mint, 50)
+                    ]
+                }
+            }
+        });
+
+        assert_eq!(
+            transaction_owner_debit(&transaction, mint, [&wallet, &vault]).unwrap(),
+            100
+        );
+    }
 }

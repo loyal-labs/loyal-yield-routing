@@ -14,10 +14,9 @@ use balance_sweep_ata_monitor::earn_apy::{
 use balance_sweep_ata_monitor::{
     ata_target_set, diff_ata_target_sets, laserstream_replay_from_slot, run_event_loop,
     seed_current_balances, spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget,
-    AtaUpdateSource, EarnUpdateContext, LaserstreamAtaUpdateSource,
-    LaserstreamSubscriptionUpdateHandle, RpcEarnChainReader, SubscriptionConfig,
-    SubscriptionWatchSet, TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream,
-    WebsocketAtaUpdateSource,
+    AtaUpdateSource, EarnUpdateContext, LaserstreamAtaUpdateSource, RpcEarnChainReader,
+    SubscriptionConfig, SubscriptionWatchSet, TimescaleAtaConfig, TimescaleAtaObservationSink,
+    TimescaleAtaStream, WebsocketAtaUpdateSource,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
@@ -119,10 +118,11 @@ struct Args {
 struct MonitorSession {
     target_atas: HashSet<Pubkey>,
     earn_watch_set: SubscriptionWatchSet,
-    subscription_update: Option<LaserstreamSubscriptionUpdateHandle>,
+    replay_from_slot: Option<u64>,
     running: Arc<AtomicBool>,
     source_task: JoinHandle<()>,
     event_loop_task: JoinHandle<Result<()>>,
+    finished: mpsc::UnboundedReceiver<()>,
 }
 
 impl MonitorSession {
@@ -312,10 +312,13 @@ async fn supervise_monitor_sessions(
     let refresh_interval = Duration::from_secs(args.target_refresh_seconds);
     let mut session: Option<MonitorSession> = None;
     let mut next_state = Some((initial_targets, initial_watch_set));
+    let mut replay_from_slot_override = None;
 
     loop {
         if session.as_ref().is_some_and(MonitorSession::has_exited) {
             let finished = session.take().expect("checked session exists");
+            replay_from_slot_override =
+                preserve_replay_from_slot(replay_from_slot_override, finished.replay_from_slot);
             log_finished_session(finished).await;
         }
 
@@ -361,11 +364,20 @@ async fn supervise_monitor_sessions(
                 refresh_seconds = args.target_refresh_seconds,
                 "waiting for active balance sweep ATA targets"
             );
-        } else if session.is_none() || diff.has_changes() {
+        } else if session_requires_rebuild(session.is_none(), diff.has_changes(), earn_changed) {
+            if earn_changed {
+                replay_from_slot_override = preserve_replay_from_slot(
+                    replay_from_slot_override,
+                    session
+                        .as_ref()
+                        .and_then(|existing| existing.replay_from_slot),
+                );
+            }
             if let Some(existing) = session.take() {
                 tracing::info!(
                     added_count = diff.added.len(),
                     removed_count = diff.removed.len(),
+                    earn_changed,
                     "rebuilding balance sweep ATA subscription for refreshed target set"
                 );
                 stop_session(existing).await;
@@ -392,17 +404,11 @@ async fn supervise_monitor_sessions(
                     observations.clone(),
                     config,
                     recheck.clone(),
+                    replay_from_slot_override.take(),
                 )
                 .await
                 .context("start balance sweep ATA monitor session")?,
             );
-        } else if earn_changed {
-            let existing = session.as_mut().expect("session exists");
-            let update = existing.subscription_update.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("Earn account monitoring requires LaserStream update source")
-            })?;
-            update.replace(watch_set.clone()).await?;
-            existing.earn_watch_set = watch_set;
         } else {
             tracing::debug!(
                 target_count = targets.len(),
@@ -410,7 +416,34 @@ async fn supervise_monitor_sessions(
             );
         }
 
-        time::sleep(refresh_interval).await;
+        if let Some(existing) = session.as_mut() {
+            if wait_for_refresh_or_session_exit(refresh_interval, &mut existing.finished).await {
+                let finished = session.take().expect("session exit was observed");
+                replay_from_slot_override =
+                    preserve_replay_from_slot(replay_from_slot_override, finished.replay_from_slot);
+                log_finished_session(finished).await;
+            }
+        } else {
+            time::sleep(refresh_interval).await;
+        }
+    }
+}
+
+fn session_requires_rebuild(session_missing: bool, ata_changed: bool, earn_changed: bool) -> bool {
+    session_missing || ata_changed || earn_changed
+}
+
+fn preserve_replay_from_slot(current: Option<u64>, previous_session: Option<u64>) -> Option<u64> {
+    current.into_iter().chain(previous_session).min()
+}
+
+async fn wait_for_refresh_or_session_exit(
+    refresh_interval: Duration,
+    finished: &mut mpsc::UnboundedReceiver<()>,
+) -> bool {
+    tokio::select! {
+        _ = time::sleep(refresh_interval) => false,
+        _ = finished.recv() => true,
     }
 }
 
@@ -460,6 +493,7 @@ async fn start_session(
     observations: TimescaleAtaObservationSink,
     config: SubscriptionConfig,
     recheck: AtaRecheckHandle,
+    replay_from_slot_override: Option<u64>,
 ) -> Result<MonitorSession> {
     if args.update_source == UpdateSourceKind::Websocket && !watch_set.earn_vaults.is_empty() {
         anyhow::bail!(
@@ -476,18 +510,24 @@ async fn start_session(
         .map(|target| (target.wallet_usdc_ata, target))
         .collect::<HashMap<_, _>>();
     let (tx, rx) = mpsc::unbounded_channel();
+    let (finished_tx, finished) = mpsc::unbounded_channel();
     let running = Arc::new(AtomicBool::new(true));
     let watch_set_state = Arc::new(RwLock::new(watch_set.clone()));
-    let (source_task, subscription_update) = match args.update_source {
+    let (raw_source_task, replay_from_slot) = match args.update_source {
         UpdateSourceKind::Laserstream => {
             let consumer_name = format!("earn-smart-account:{}", args.cluster);
-            let from_slot = laserstream_replay_start_slot(
-                &store,
-                &consumer_name,
-                &args.rpc_url,
-                args.laserstream_replay_overlap_slots,
-            )
-            .await?;
+            let from_slot = match replay_from_slot_override {
+                Some(from_slot) => from_slot,
+                None => {
+                    laserstream_replay_start_slot(
+                        &store,
+                        &consumer_name,
+                        &args.rpc_url,
+                        args.laserstream_replay_overlap_slots,
+                    )
+                    .await?
+                }
+            };
             let source = LaserstreamAtaUpdateSource {
                 endpoint: args
                     .laserstream_endpoint
@@ -501,9 +541,10 @@ async fn start_session(
                 config,
                 watch_set: Some(watch_set.clone()),
             };
-            let (task, handle) =
-                source.spawn_with_updates(accounts, tx, running.clone(), watch_set_state.clone());
-            (task, Some(handle))
+            (
+                source.spawn_with_watch_set(accounts, tx, running.clone(), watch_set_state.clone()),
+                Some(from_slot),
+            )
         }
         UpdateSourceKind::Websocket => (
             WebsocketAtaUpdateSource {
@@ -517,27 +558,45 @@ async fn start_session(
             None,
         ),
     };
+    let source_finished_tx = finished_tx.clone();
+    let source_task = tokio::spawn(async move {
+        if let Err(error) = raw_source_task.await {
+            if !error.is_cancelled() {
+                tracing::warn!(error = %error, "balance sweep ATA source task failed");
+            }
+        }
+        let _ = source_finished_tx.send(());
+    });
     let earn = (args.update_source == UpdateSourceKind::Laserstream).then(|| EarnUpdateContext {
         chain: Arc::new(RpcEarnChainReader::new(&args.rpc_url, store.clone())),
         store,
         consumer_name: format!("earn-smart-account:{}", args.cluster),
         watch_set: watch_set_state,
     });
-    let event_loop_task = tokio::spawn(run_event_loop(
-        rx,
-        target_by_ata,
-        observations,
-        running.clone(),
-        Some(recheck),
-        earn,
-    ));
+    let event_running = running.clone();
+    let event_finished_tx = finished_tx.clone();
+    let event_loop_task = tokio::spawn(async move {
+        let result = run_event_loop(
+            rx,
+            target_by_ata,
+            observations,
+            event_running,
+            Some(recheck),
+            earn,
+        )
+        .await;
+        let _ = event_finished_tx.send(());
+        result
+    });
+    drop(finished_tx);
     Ok(MonitorSession {
         target_atas,
         earn_watch_set: watch_set,
-        subscription_update,
+        replay_from_slot,
         running,
         source_task,
         event_loop_task,
+        finished,
     })
 }
 
@@ -604,5 +663,31 @@ async fn log_finished_session(session: MonitorSession) {
     } else {
         session.event_loop_task.abort();
         let _ = session.event_loop_task.await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn earn_watch_change_requires_fresh_replaying_session() {
+        assert!(session_requires_rebuild(false, false, true));
+        assert_eq!(preserve_replay_from_slot(Some(90), Some(42)), Some(42));
+    }
+
+    #[tokio::test]
+    async fn failed_session_wakes_supervisor_before_refresh_deadline() {
+        let (finished_tx, mut finished_rx) = mpsc::unbounded_channel();
+        finished_tx.send(()).unwrap();
+
+        let woke_for_exit = time::timeout(
+            Duration::from_millis(100),
+            wait_for_refresh_or_session_exit(Duration::from_secs(300), &mut finished_rx),
+        )
+        .await
+        .expect("supervisor stayed asleep after session exit");
+
+        assert!(woke_for_exit);
     }
 }

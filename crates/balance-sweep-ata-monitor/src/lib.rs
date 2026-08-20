@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    future::Future,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -30,7 +29,7 @@ use solana_program::program_pack::Pack;
 use solana_pubsub_client::nonblocking::pubsub_client::PubsubClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use tokio::{
-    sync::{mpsc, oneshot, RwLock},
+    sync::{mpsc, RwLock},
     task::{JoinHandle, JoinSet},
     time,
 };
@@ -223,31 +222,6 @@ pub struct LaserstreamAtaUpdateSource {
 }
 
 #[derive(Clone)]
-pub struct LaserstreamSubscriptionUpdateHandle {
-    tx: mpsc::UnboundedSender<LaserstreamSubscriptionReplacement>,
-}
-
-impl LaserstreamSubscriptionUpdateHandle {
-    pub async fn replace(&self, watch_set: SubscriptionWatchSet) -> Result<()> {
-        let (accepted_tx, accepted_rx) = oneshot::channel();
-        self.tx
-            .send(LaserstreamSubscriptionReplacement {
-                watch_set,
-                accepted: accepted_tx,
-            })
-            .map_err(|_| anyhow::anyhow!("LaserStream subscription update task stopped"))?;
-        accepted_rx
-            .await
-            .map_err(|_| anyhow::anyhow!("LaserStream subscription update was not accepted"))
-    }
-}
-
-struct LaserstreamSubscriptionReplacement {
-    watch_set: SubscriptionWatchSet,
-    accepted: oneshot::Sender<()>,
-}
-
-#[derive(Clone)]
 pub struct EarnUpdateContext {
     pub store: OrchestratorStore,
     pub consumer_name: String,
@@ -256,18 +230,16 @@ pub struct EarnUpdateContext {
 }
 
 impl LaserstreamAtaUpdateSource {
-    pub fn spawn_with_updates(
+    pub fn spawn_with_watch_set(
         self,
         accounts: Vec<Pubkey>,
         tx: mpsc::UnboundedSender<AtaUpdateEvent>,
         running: Arc<AtomicBool>,
         watch_set: Arc<RwLock<SubscriptionWatchSet>>,
-    ) -> (JoinHandle<()>, LaserstreamSubscriptionUpdateHandle) {
-        let (update_tx, update_rx) = mpsc::unbounded_channel();
-        let task = tokio::spawn(async move {
-            run_laserstream_loop(self, accounts, tx, running, update_rx, watch_set).await;
-        });
-        (task, LaserstreamSubscriptionUpdateHandle { tx: update_tx })
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            run_laserstream_loop(self, accounts, tx, running, watch_set).await;
+        })
     }
 }
 
@@ -278,15 +250,12 @@ impl AtaUpdateSource for LaserstreamAtaUpdateSource {
         tx: mpsc::UnboundedSender<AtaUpdateEvent>,
         running: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
-        let (_update_tx, update_rx) = mpsc::unbounded_channel();
         let initial_watch_set = self.watch_set.clone().unwrap_or(SubscriptionWatchSet {
             balance_sweep_accounts: accounts.iter().map(ToString::to_string).collect(),
             earn_vaults: Vec::new(),
         });
         let watch_set = Arc::new(RwLock::new(initial_watch_set));
-        tokio::spawn(async move {
-            run_laserstream_loop(self, accounts, tx, running, update_rx, watch_set).await;
-        })
+        self.spawn_with_watch_set(accounts, tx, running, watch_set)
     }
 }
 
@@ -570,7 +539,6 @@ async fn run_laserstream_loop(
     accounts: Vec<Pubkey>,
     tx: mpsc::UnboundedSender<AtaUpdateEvent>,
     running: Arc<AtomicBool>,
-    mut subscription_updates: mpsc::UnboundedReceiver<LaserstreamSubscriptionReplacement>,
     watch_set_state: Arc<RwLock<SubscriptionWatchSet>>,
 ) {
     let mut current_watch_set = source.watch_set.clone().unwrap_or(SubscriptionWatchSet {
@@ -583,8 +551,7 @@ async fn run_laserstream_loop(
     current_watch_set.balance_sweep_accounts.sort();
     current_watch_set.balance_sweep_accounts.dedup();
     *watch_set_state.write().await = current_watch_set.clone();
-    let mut request = build_multi_channel_subscribe_request(&current_watch_set, source.from_slot);
-    let mut subscription_updates_open = true;
+    let request = build_multi_channel_subscribe_request(&current_watch_set, source.from_slot);
     tracing::info!(
         account_count = accounts.len(),
         endpoint = %source.endpoint,
@@ -602,7 +569,7 @@ async fn run_laserstream_loop(
         let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
             .with_max_reconnect_attempts(0)
             .with_replay(true);
-        let (stream, handle) = subscribe(config, request.clone());
+        let (stream, _handle) = subscribe(config, request.clone());
         futures_util::pin_mut!(stream);
         for account in &accounts {
             tracing::info!(
@@ -638,36 +605,6 @@ async fn run_laserstream_loop(
                         let _ = tx.send(AtaUpdateEvent::Heartbeat { account: *account });
                     }
                 }
-                replacement = subscription_updates.recv(), if subscription_updates_open => {
-                    let Some(LaserstreamSubscriptionReplacement {
-                        watch_set: mut replacement,
-                        accepted,
-                    }) = replacement else {
-                        subscription_updates_open = false;
-                        continue;
-                    };
-                    let write_result = stage_and_write_subscription_replacement(
-                        &mut replacement,
-                        &accounts,
-                        source.from_slot,
-                        &mut current_watch_set,
-                        &mut request,
-                        &watch_set_state,
-                        |replacement_request| handle.write(replacement_request),
-                    )
-                    .await;
-                    // The supervisor may commit this desired watch set after
-                    // either a successful live write or a failed write whose
-                    // replacement request is retained for the reconnect.
-                    let _ = accepted.send(());
-                    if let Err(error) = write_result {
-                        break Some(format!("replace LaserStream subscription: {error}"));
-                    }
-                    tracing::info!(
-                        earn_vault_count = current_watch_set.earn_vaults.len(),
-                        "replaced live LaserStream smart-account subscription"
-                    );
-                }
             }
         };
         let Some(error) = disconnect_error else {
@@ -702,36 +639,6 @@ async fn run_laserstream_loop(
         time::sleep(backoff).await;
         attempt += 1;
     }
-}
-
-async fn stage_and_write_subscription_replacement<F, Fut, E>(
-    replacement: &mut SubscriptionWatchSet,
-    accounts: &[Pubkey],
-    from_slot: u64,
-    current_watch_set: &mut SubscriptionWatchSet,
-    request: &mut SubscribeRequest,
-    watch_set_state: &Arc<RwLock<SubscriptionWatchSet>>,
-    write: F,
-) -> std::result::Result<(), E>
-where
-    F: FnOnce(SubscribeRequest) -> Fut,
-    Fut: Future<Output = std::result::Result<(), E>>,
-{
-    replacement
-        .balance_sweep_accounts
-        .extend(accounts.iter().map(ToString::to_string));
-    replacement.balance_sweep_accounts.sort();
-    replacement.balance_sweep_accounts.dedup();
-    let replacement_request = build_multi_channel_subscribe_request(replacement, from_slot);
-
-    // Publish the routing map before Helius can deliver a newly subscribed
-    // address. Retain the desired request before attempting the live write so
-    // a failed write reconnects with the new accounts instead of the old set.
-    *watch_set_state.write().await = replacement.clone();
-    *current_watch_set = replacement.clone();
-    *request = replacement_request.clone();
-
-    write(replacement_request).await
 }
 
 pub fn reconnect_backoff(config: SubscriptionConfig, completed_attempt: usize) -> Duration {
@@ -903,66 +810,16 @@ fn decode_ui_account_data(data: UiAccountData) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn subscription_replacement_waits_for_source_acknowledgement() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let handle = LaserstreamSubscriptionUpdateHandle { tx };
-        let replacement = SubscriptionWatchSet {
-            balance_sweep_accounts: vec!["11111111111111111111111111111111".to_owned()],
-            earn_vaults: Vec::new(),
-        };
-        let replace_task = tokio::spawn(async move { handle.replace(replacement).await });
-
-        tokio::task::yield_now().await;
-        assert!(!replace_task.is_finished());
-        let pending = rx.recv().await.expect("replacement was queued");
-        assert!(!replace_task.is_finished());
-        pending.accepted.send(()).unwrap();
-        replace_task.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn subscription_replacement_failed_write_is_retained_for_reconnect() {
-        let legacy_account: Pubkey = "11111111111111111111111111111111".parse().unwrap();
-        let policy_account = "AddressLookupTab1e1111111111111111111111111";
-        let mut replacement = SubscriptionWatchSet {
-            balance_sweep_accounts: Vec::new(),
-            earn_vaults: vec![EarnVaultWatch {
-                environment: "test".to_owned(),
-                settings: "Vote111111111111111111111111111111111111111".to_owned(),
-                wallet: "Stake11111111111111111111111111111111111111".to_owned(),
-                vault: "Config1111111111111111111111111111111111111".to_owned(),
-                vault_index: 1,
-                accounts: vec![EarnWatchAccount {
-                    pubkey: policy_account.to_owned(),
-                    role: "policy".to_owned(),
-                }],
-            }],
-        };
-        let mut current_watch_set = SubscriptionWatchSet {
-            balance_sweep_accounts: vec![legacy_account.to_string()],
-            earn_vaults: Vec::new(),
-        };
-        let mut reconnect_request = build_multi_channel_subscribe_request(&current_watch_set, 10);
-        let shared_state = Arc::new(RwLock::new(current_watch_set.clone()));
-
-        let result = stage_and_write_subscription_replacement(
-            &mut replacement,
-            &[legacy_account],
-            10,
-            &mut current_watch_set,
-            &mut reconnect_request,
-            &shared_state,
-            |_| async { Err::<(), _>("simulated live write failure") },
-        )
-        .await;
-
-        assert_eq!(result, Err("simulated live write failure"));
-        assert_eq!(current_watch_set, replacement);
-        assert_eq!(*shared_state.read().await, replacement);
-        assert_eq!(
-            reconnect_request.accounts[EARN_POLICY_ACCOUNTS].account,
-            vec![policy_account.to_owned()]
+    #[test]
+    fn fresh_subscription_request_preserves_replay_slot() {
+        let request = build_multi_channel_subscribe_request(
+            &SubscriptionWatchSet {
+                balance_sweep_accounts: vec!["11111111111111111111111111111111".to_owned()],
+                earn_vaults: Vec::new(),
+            },
+            42,
         );
+
+        assert_eq!(request.from_slot, Some(42));
     }
 }
