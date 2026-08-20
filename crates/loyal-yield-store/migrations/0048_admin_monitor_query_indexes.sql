@@ -3,6 +3,7 @@
 -- not repeatedly read the JSON-heavy opportunity heap.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS rebalance_opportunities_same_mint_admin_frequency_idx
     ON loyal_yield.rebalance_opportunities (
+        cluster,
         vault_id,
         created_at
     )
@@ -12,6 +13,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS rebalance_opportunities_same_mint_admin_
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS rebalance_opportunities_cross_mint_admin_frequency_idx
     ON loyal_yield.rebalance_opportunities (
+        cluster,
         vault_id,
         created_at
     )
