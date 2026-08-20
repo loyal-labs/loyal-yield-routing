@@ -44,7 +44,8 @@ on:
       - scripts/kamino-monitor-predeploy.sh
       - scripts/verify-rust-image-build-once.sh
   schedule:
-    # Refresh the large Cargo snapshots away from the image publication path.
+    # Safety net: repopulate Cargo snapshots that were evicted, or that no main
+    # push has rebuilt recently. Trusted pushes fill missing snapshots themselves.
     - cron: "17 0 * * *"
 
 permissions:
@@ -69,7 +70,7 @@ jobs:
     with:
       publish: true
       package-images: true
-      save-caches: false
+      save-caches: true
     secrets: inherit
 
   refresh-build-caches:
