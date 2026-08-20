@@ -43,6 +43,9 @@ on:
       - scripts/execute-autodeposit-policy.ts
       - scripts/kamino-monitor-predeploy.sh
       - scripts/verify-rust-image-build-once.sh
+  schedule:
+    # Refresh the large Cargo snapshots away from the image publication path.
+    - cron: "17 0 * * *"
 
 permissions:
   contents: read
@@ -55,6 +58,8 @@ jobs:
     uses: ./.github/workflows/rust-image-build.yml
     with:
       publish: false
+      package-images: true
+      save-caches: false
     secrets: inherit
 
   publish-main-images:
@@ -63,4 +68,16 @@ jobs:
     uses: ./.github/workflows/rust-image-build.yml
     with:
       publish: true
+      package-images: true
+      save-caches: false
+    secrets: inherit
+
+  refresh-build-caches:
+    name: Refresh trusted Rust build caches
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/rust-image-build.yml
+    with:
+      publish: false
+      package-images: false
+      save-caches: true
     secrets: inherit

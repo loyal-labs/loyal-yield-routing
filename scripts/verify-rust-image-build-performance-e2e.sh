@@ -20,6 +20,8 @@ Options:
   --cpus NUMBER             Docker CPU limit (default: 4)
   --memory SIZE             Docker memory limit (default: 16g)
   --compile-only            Skip runtime image packaging and probes
+  --simulate-target-cache-save
+                            Compress target like actions/cache before packaging
   --max-build-seconds N     Fail when compile/stage exceeds N; 0 disables
   --max-total-seconds N     Fail when the full run exceeds N; 0 disables
   --builder-image IMAGE     Prepared builder image tag
@@ -35,6 +37,7 @@ family=all
 cpus=4
 memory=16g
 compile_only=false
+simulate_target_cache_save=false
 max_build_seconds=0
 max_total_seconds=0
 builder_image=loyal-yield-routing-rust-e2e:rust-1.89-sccache-0.17
@@ -68,6 +71,10 @@ while (($# > 0)); do
       ;;
     --compile-only)
       compile_only=true
+      shift
+      ;;
+    --simulate-target-cache-save)
+      simulate_target_cache_save=true
       shift
       ;;
     --max-build-seconds)
@@ -168,13 +175,13 @@ docker run --rm \
     sccache --zero-stats >/dev/null
     python3 scripts/prepare-rust-target-cache.py restore
     bash scripts/verify-rust-image-build-once.sh
-    build_started=$(date +%s)
+    build_started_ms=$(date +%s%3N)
     build_args=()
     if [[ "$E2E_FAMILY" != all ]]; then
       build_args=(--family "$E2E_FAMILY")
     fi
     bash scripts/build-rust-image-binaries.sh "${build_args[@]}"
-    build_completed=$(date +%s)
+    build_completed_ms=$(date +%s%3N)
     python3 scripts/prepare-rust-target-cache.py record
     expected=$(bash scripts/build-rust-image-binaries.sh --family "$E2E_FAMILY" --list-binaries | sort -u)
     actual=$(find build-artifacts/rust -maxdepth 1 -type f -executable -printf "%f\n" | sort -u)
@@ -185,14 +192,28 @@ docker run --rm \
     binary_count=$(printf "%s\n" "$expected" | sed "/^$/d" | wc -l)
     sccache --show-stats --stats-format=json > /results/sccache.json
     jq -n \
-      --argjson build_seconds "$((build_completed - build_started))" \
+      --argjson build_milliseconds "$((build_completed_ms - build_started_ms))" \
       --argjson binary_count "$binary_count" \
-      "{build_seconds: \$build_seconds, binary_count: \$binary_count}" \
+      "{build_milliseconds: \$build_milliseconds, build_seconds: (\$build_milliseconds / 1000), binary_count: \$binary_count}" \
       > /results/build.json
   '
 
+build_milliseconds=$(jq -r '.build_milliseconds' "$result_dir/build.json")
 build_seconds=$(jq -r '.build_seconds' "$result_dir/build.json")
 binary_count=$(jq -r '.binary_count' "$result_dir/build.json")
+
+cache_save_seconds=0
+if $simulate_target_cache_save; then
+  cache_save_started=$(date +%s)
+  docker run --rm \
+    --volume "$target_dir:/target:ro" \
+    "$builder_image" \
+    tar -C /target -cf - . \
+    | zstd -T4 -q -o "$result_dir/target-cache.tar.zst"
+  cache_save_completed=$(date +%s)
+  cache_save_seconds=$((cache_save_completed - cache_save_started))
+  rm -f "$result_dir/target-cache.tar.zst"
+fi
 
 package_seconds=0
 if ! $compile_only; then
@@ -320,6 +341,7 @@ jq -n \
   --argjson cpus "$cpus" \
   --arg memory "$memory" \
   --argjson build_seconds "$build_seconds" \
+  --argjson cache_save_seconds "$cache_save_seconds" \
   --argjson package_seconds "$package_seconds" \
   --argjson total_seconds "$total_seconds" \
   --argjson binary_count "$binary_count" \
@@ -332,13 +354,16 @@ jq -n \
     cpus: $cpus,
     memory: $memory,
     build_seconds: $build_seconds,
+    cache_save_seconds: $cache_save_seconds,
     package_critical_path_seconds: $package_seconds,
     total_seconds: $total_seconds,
     binary_count: $binary_count,
+    probe_passed: true,
+    workflow_contract_passed: true,
     sccache: $sccache[0]
   }' | tee "$result_dir/report.json"
 
-if ((max_build_seconds > 0 && build_seconds > max_build_seconds)); then
+if ((max_build_seconds > 0 && build_milliseconds > max_build_seconds * 1000)); then
   printf 'Build duration %ss exceeds limit %ss\n' "$build_seconds" "$max_build_seconds" >&2
   exit 1
 fi

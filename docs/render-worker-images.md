@@ -147,7 +147,9 @@ package and probe all three compiler-free Dockerfiles without publishing.
 A trusted `main` push compiles the three image-family inventories in parallel and publishes all three immutable image families.
 The family-scoped Cargo target caches retain compatible fingerprints and record the source revision
 that produced them; CI marks only paths changed since that revision as newer before rebuilding.
-The cache rolls forward once per UTC day, bounding snapshot drift without uploading target state on every commit.
+The scheduled cache refresh rolls them forward once per UTC day. Main-branch image publication restores
+those snapshots but never uploads multi-gigabyte Cargo state, so deployable images are not held behind cache compression.
+The compiled family artifacts use low-level compression to reduce the handoff to the runtime-image jobs.
 Publishing these images does not deploy them.
 Deployment selects an already-published immutable SHA tag or digest; it never rebuilds Rust.
 Render services should use those immutable references and must not use `latest`
