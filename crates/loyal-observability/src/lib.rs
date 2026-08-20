@@ -29,7 +29,8 @@ use tracing::Level;
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 use url::Url;
 
-use sqlx_metrics::{is_sqlx_metrics_event, SqlxMetrics, SqlxMetricsLayer};
+use sqlx_metrics::{is_database_metrics_event, SqlxMetrics, SqlxMetricsLayer};
+pub use sqlx_metrics::{record_database_query_phase_duration, DatabaseQuery, DatabaseQueryPhase};
 pub use wallet::ObservabilityWalletAddress;
 use workflow::WORKFLOW_TRACE_TARGET;
 pub use workflow::{WorkflowMetrics, WorkflowOutcome, WorkflowSpan};
@@ -326,7 +327,7 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
     let meter = meter_provider.meter("loyal-observability");
     let workflow_metrics = WorkflowMetrics::new(&meter);
     let sqlx_metrics_layer = SqlxMetricsLayer::new(SqlxMetrics::new(&meter))
-        .with_filter(filter::filter_fn(is_sqlx_metrics_event));
+        .with_filter(filter::filter_fn(is_database_metrics_event));
 
     let span_exporter = SpanExporter::builder()
         .with_http()

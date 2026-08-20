@@ -5,8 +5,9 @@ A shared crate for exporting privacy-safe logs, metrics, and traces from Loyal R
 Current service integrations initialize this crate and emit bounded `OperationalError` records. They do not yet record `WorkflowMetrics` or `WorkflowSpan` signals; those APIs are available for explicit adoption by individual workflows.
 
 When remote observability is enabled, SQLx's existing tracing events are also
-converted automatically into privacy-safe database duration metrics. Services do
-not need to wrap store calls or pass metric handles through their database layer.
+converted automatically into privacy-safe database duration metrics. Expensive
+call sites can additionally identify their fetch, decode, and total phases with
+the crate's bounded database-query API.
 
 ## Signals
 
@@ -15,6 +16,7 @@ not need to wrap store calls or pass metric handles through their database layer
 | Logs | `OperationalError` | Explicit operational failures with stable codes and optional wallet correlation |
 | Metrics | `WorkflowMetrics` | Low-cardinality execution counts and duration histograms |
 | Metrics | automatic SQLx layer | PostgreSQL operation and connection-acquisition duration histograms |
+| Metrics | bounded database-query API | Named query phase duration histograms |
 | Traces | `WorkflowSpan` | Nested workflow operations with duration, outcome, and error status |
 
 Regular `tracing` events and spans are not exported remotely. The OTLP layers accept only the bounded targets created by this crate. All regular events still use the local formatting layer controlled by `RUST_LOG`.
@@ -31,13 +33,31 @@ measured by SQLx and emits:
 | --- | --- | --- | --- |
 | `db.client.operation.duration` | Histogram | `s` | `db.system.name=postgresql`, `db.operation.name` |
 | `db.client.connection.wait_time` | Histogram | `s` | `db.system.name=postgresql` |
+| `loyal.db.query.phase.duration` | Histogram | `s` | `db.system.name=postgresql`, `loyal.db.query.name`, `loyal.db.query.phase` |
 
 `db.operation.name` is deliberately fixed to `OTHER`. SQLx exposes the specific
 operation only inside its query payload, and this layer does not inspect that
 payload. SQL statements, bind values, SQLx query summaries, row values, and all
 other event fields are discarded rather than copied to metric attributes or
-remote logs. If per-operation breakdowns become necessary, callers should add a
-separate bounded static operation label instead of parsing SQL here.
+remote logs. Named query timings use `DatabaseQuery` and `DatabaseQueryPhase`
+enums, so callers cannot supply runtime labels or SQL text. Add a reviewed enum
+variant when another expensive call site needs a breakdown.
+
+```rust
+use std::time::Instant;
+use loyal_observability::{
+    record_database_query_phase_duration, DatabaseQuery, DatabaseQueryPhase,
+};
+
+let started = Instant::now();
+# let fetch_result: Result<(), ()> = Ok(());
+record_database_query_phase_duration(
+    DatabaseQuery::FleetOpportunityPlannerLoadSources,
+    DatabaseQueryPhase::Fetch,
+    started.elapsed(),
+);
+# fetch_result.unwrap();
+```
 
 SQLx emits query timing events at `DEBUG` for normal statements and `WARN` for
 slow statements. The dedicated per-layer filter observes both without enabling

@@ -22,7 +22,7 @@ signer="62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
 
 query="$({
   perl -0777 -ne '
-    if (/async fn load_fleet_sources\(.*?let row = crate::sqlx::query\(\s*r#"(.*?)"#,/s) {
+    if (/async fn load_fleet_sources\(.*?let row(?:_result)? = crate::sqlx::query\(\s*r#"(.*?)"#,/s) {
       print $1;
     }
   ' "$observation_source"
