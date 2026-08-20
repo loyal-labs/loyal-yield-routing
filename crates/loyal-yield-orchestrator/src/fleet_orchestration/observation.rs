@@ -6,6 +6,9 @@ use super::{
 use crate::{route_amount_evidence_from_metadata, NeonSqlClient, ACTIVE_DECISION_STATUSES};
 use chrono::{DateTime, Duration, Utc};
 use loyal_actions::earn_stablecoins;
+use loyal_observability::{
+    record_database_query_phase_duration, DatabaseQuery, DatabaseQueryPhase,
+};
 use loyal_yield_router::timescale::{
     SupportedReserveCatalogRow, SupportedReserveMarketSnapshot,
     SupportedReserveMarketSnapshotQuery, TimescaleRouterClient, VerifiedSupportedReserveRow,
@@ -1734,8 +1737,6 @@ fn canonical_f64(value: f64) -> String {
     value.to_string()
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct FleetSourceRow {
     vault_id: i64,
     settings: String,
@@ -1765,6 +1766,106 @@ struct FleetSourceRow {
     observed_slot: i64,
     observed_at: DateTime<Utc>,
     planning_metadata: Value,
+}
+
+/// Compact positional wire format for the full-fleet source payload. The SQL
+/// array order and this tuple are intentionally adjacent contracts: using an
+/// array avoids repeating 28 JSON object keys for every fleet source.
+#[derive(Deserialize)]
+struct FleetSourceWire(
+    i64,
+    String,
+    i16,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    bool,
+    i64,
+    String,
+    String,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<ObservedEarnPolicyEvidence>,
+    Vec<CrossMintSwapPolicyEvidence>,
+    String,
+    Option<String>,
+    String,
+    i64,
+    Option<i64>,
+    Option<String>,
+    i64,
+    DateTime<Utc>,
+    Value,
+);
+
+impl From<FleetSourceWire> for FleetSourceRow {
+    fn from(wire: FleetSourceWire) -> Self {
+        let FleetSourceWire(
+            vault_id,
+            settings,
+            vault_index,
+            vault_pubkey,
+            policy_id,
+            base_policy_account,
+            base_policy_delegated_signer,
+            base_policy_cluster,
+            base_policy_source_commitment,
+            base_policy_finalized_eligible,
+            base_policy_observed_slot,
+            base_policy_observed_signature,
+            policy_authority,
+            policy_markets,
+            policy_stable_mints,
+            policy_liquidity_mints,
+            policy_route_modes,
+            earn_policy_evidence,
+            cross_mint_swap_policies,
+            source_kind,
+            source_reserve,
+            liquidity_mint,
+            amount_raw,
+            source_snapshot_id,
+            idle_token_account,
+            observed_slot,
+            observed_at,
+            planning_metadata,
+        ) = wire;
+        Self {
+            vault_id,
+            settings,
+            vault_index,
+            vault_pubkey,
+            policy_id,
+            base_policy_account,
+            base_policy_delegated_signer,
+            base_policy_cluster,
+            base_policy_source_commitment,
+            base_policy_finalized_eligible,
+            base_policy_observed_slot,
+            base_policy_observed_signature,
+            policy_authority,
+            policy_markets,
+            policy_stable_mints,
+            policy_liquidity_mints,
+            policy_route_modes,
+            earn_policy_evidence,
+            cross_mint_swap_policies,
+            source_kind,
+            source_reserve,
+            liquidity_mint,
+            amount_raw,
+            source_snapshot_id,
+            idle_token_account,
+            observed_slot,
+            observed_at,
+            planning_metadata,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1877,11 +1978,14 @@ async fn load_fleet_sources(
     captured_at: DateTime<Utc>,
     vault_ids: Option<&[i64]>,
 ) -> Result<FleetSourceSet, FleetObservationError> {
+    let query_name = DatabaseQuery::FleetOpportunityPlannerLoadSources;
+    let query_started = Instant::now();
     let active_statuses = ACTIVE_DECISION_STATUSES
         .iter()
         .map(|status| (*status).to_owned())
         .collect::<Vec<_>>();
-    let row = crate::sqlx::query(
+    let fetch_started = Instant::now();
+    let row_result = crate::sqlx::query(
         r#"
         WITH active_opportunities AS (
             SELECT id, vault_id, source_reserve, target_reserve, liquidity_mint,
@@ -2243,35 +2347,35 @@ async fn load_fleet_sources(
             ), '{}'::JSONB) AS active_opportunity_vaults_excluded_by_state,
             COALESCE(
                 (SELECT jsonb_agg(
-                    jsonb_build_object(
-                        'vaultId', source.vault_id,
-                        'settings', source.settings,
-                        'vaultIndex', source.vault_index,
-                        'vaultPubkey', source.vault_pubkey,
-                        'policyId', source.policy_id,
-                        'basePolicyAccount', source.base_policy_account,
-                        'basePolicyDelegatedSigner', source.base_policy_delegated_signer,
-                        'basePolicyCluster', source.base_policy_cluster,
-                        'basePolicySourceCommitment', source.base_policy_source_commitment,
-                        'basePolicyFinalizedEligible', source.base_policy_finalized_eligible,
-                        'basePolicyObservedSlot', source.base_policy_observed_slot,
-                        'basePolicyObservedSignature', source.base_policy_observed_signature,
-                        'policyAuthority', source.policy_authority,
-                        'policyMarkets', source.policy_markets,
-                        'policyStableMints', source.policy_stable_mints,
-                        'policyLiquidityMints', source.policy_liquidity_mints,
-                        'policyRouteModes', source.policy_route_modes,
-                        'earnPolicyEvidence', source.earn_policy_evidence,
-                        'crossMintSwapPolicies', source.cross_mint_swap_policies,
-                        'sourceKind', source.source_kind,
-                        'sourceReserve', source.source_reserve,
-                        'liquidityMint', source.liquidity_mint,
-                        'amountRaw', source.amount_raw,
-                        'sourceSnapshotId', source.source_snapshot_id,
-                        'idleTokenAccount', source.idle_token_account,
-                        'observedSlot', source.observed_slot,
-                        'observedAt', source.observed_at,
-                        'planningMetadata', source.planning_metadata
+                    jsonb_build_array(
+                        source.vault_id,
+                        source.settings,
+                        source.vault_index,
+                        source.vault_pubkey,
+                        source.policy_id,
+                        source.base_policy_account,
+                        source.base_policy_delegated_signer,
+                        source.base_policy_cluster,
+                        source.base_policy_source_commitment,
+                        source.base_policy_finalized_eligible,
+                        source.base_policy_observed_slot,
+                        source.base_policy_observed_signature,
+                        source.policy_authority,
+                        source.policy_markets,
+                        source.policy_stable_mints,
+                        source.policy_liquidity_mints,
+                        source.policy_route_modes,
+                        source.earn_policy_evidence,
+                        source.cross_mint_swap_policies,
+                        source.source_kind,
+                        source.source_reserve,
+                        source.liquidity_mint,
+                        source.amount_raw,
+                        source.source_snapshot_id,
+                        source.idle_token_account,
+                        source.observed_slot,
+                        source.observed_at,
+                        source.planning_metadata
                     )
                     ORDER BY source.vault_id, source.source_kind, source.source_reserve, source.liquidity_mint
                 ) FROM sources source),
@@ -2319,53 +2423,65 @@ async fn load_fleet_sources(
     .bind(vault_ids.map(|ids| ids.to_vec()))
     .bind(config.enable_cross_mint_jupiter)
     .fetch_one(neon.pool())
-    .await
-    .map_err(FleetObservationError::NeonRead)?;
+    .await;
+    record_database_query_phase_duration(
+        query_name,
+        DatabaseQueryPhase::Fetch,
+        fetch_started.elapsed(),
+    );
+    let row = row_result.map_err(FleetObservationError::NeonRead)?;
     use crate::sqlx::Row;
-    let eligible_vault_count = row
-        .try_get("eligible_vault_count")
-        .map_err(FleetObservationError::NeonRead)?;
-    let source_candidate_vault_count = row
-        .try_get("source_candidate_vault_count")
-        .map_err(FleetObservationError::NeonRead)?;
-    let active_opportunity_vaults_excluded = row
-        .try_get("active_opportunity_vaults_excluded")
-        .map_err(FleetObservationError::NeonRead)?;
-    let no_positive_current_source_vault_count = derive_no_positive_current_source_vault_count(
-        eligible_vault_count,
-        active_opportunity_vaults_excluded,
-        source_candidate_vault_count,
-    )?;
-    let active_opportunity_vaults_excluded_by_state_json: Value = row
-        .try_get("active_opportunity_vaults_excluded_by_state")
-        .map_err(FleetObservationError::NeonRead)?;
-    let active_opportunity_vaults_excluded_by_state =
-        serde_json::from_value(active_opportunity_vaults_excluded_by_state_json)
-            .map_err(FleetObservationError::RowDecode)?;
-    let sources_json: Value = row
-        .try_get("sources")
-        .map_err(FleetObservationError::NeonRead)?;
-    let sources = serde_json::from_value(sources_json).map_err(FleetObservationError::RowDecode)?;
-    let committed_target_inflows_json: Value = row
-        .try_get("committed_target_inflows")
-        .map_err(FleetObservationError::NeonRead)?;
-    let committed_target_inflows = serde_json::from_value(committed_target_inflows_json)
-        .map_err(FleetObservationError::RowDecode)?;
-    let committed_source_outflows_json: Value = row
-        .try_get("committed_source_outflows")
-        .map_err(FleetObservationError::NeonRead)?;
-    let committed_source_outflows = serde_json::from_value(committed_source_outflows_json)
-        .map_err(FleetObservationError::RowDecode)?;
-    Ok(FleetSourceSet {
-        eligible_vault_count,
-        source_candidate_vault_count,
-        active_opportunity_vaults_excluded,
-        active_opportunity_vaults_excluded_by_state,
-        no_positive_current_source_vault_count,
-        sources,
-        committed_target_inflows,
-        committed_source_outflows,
-    })
+    let decode_started = Instant::now();
+    let decoded = (|| {
+        let eligible_vault_count = row
+            .try_get("eligible_vault_count")
+            .map_err(FleetObservationError::NeonRead)?;
+        let source_candidate_vault_count = row
+            .try_get("source_candidate_vault_count")
+            .map_err(FleetObservationError::NeonRead)?;
+        let active_opportunity_vaults_excluded = row
+            .try_get("active_opportunity_vaults_excluded")
+            .map_err(FleetObservationError::NeonRead)?;
+        let no_positive_current_source_vault_count = derive_no_positive_current_source_vault_count(
+            eligible_vault_count,
+            active_opportunity_vaults_excluded,
+            source_candidate_vault_count,
+        )?;
+        let crate::sqlx::types::Json(active_opportunity_vaults_excluded_by_state) = row
+            .try_get("active_opportunity_vaults_excluded_by_state")
+            .map_err(FleetObservationError::NeonRead)?;
+        let crate::sqlx::types::Json(source_rows): crate::sqlx::types::Json<Vec<FleetSourceWire>> =
+            row.try_get("sources")
+                .map_err(FleetObservationError::NeonRead)?;
+        let sources = source_rows.into_iter().map(FleetSourceRow::from).collect();
+        let crate::sqlx::types::Json(committed_target_inflows) = row
+            .try_get("committed_target_inflows")
+            .map_err(FleetObservationError::NeonRead)?;
+        let crate::sqlx::types::Json(committed_source_outflows) = row
+            .try_get("committed_source_outflows")
+            .map_err(FleetObservationError::NeonRead)?;
+        Ok(FleetSourceSet {
+            eligible_vault_count,
+            source_candidate_vault_count,
+            active_opportunity_vaults_excluded,
+            active_opportunity_vaults_excluded_by_state,
+            no_positive_current_source_vault_count,
+            sources,
+            committed_target_inflows,
+            committed_source_outflows,
+        })
+    })();
+    record_database_query_phase_duration(
+        query_name,
+        DatabaseQueryPhase::Decode,
+        decode_started.elapsed(),
+    );
+    record_database_query_phase_duration(
+        query_name,
+        DatabaseQueryPhase::Total,
+        query_started.elapsed(),
+    );
+    decoded
 }
 
 async fn load_fleet_sources_without_queue_schema(
@@ -2375,11 +2491,14 @@ async fn load_fleet_sources_without_queue_schema(
     rebalance_cooldown_seconds: i64,
     captured_at: DateTime<Utc>,
 ) -> Result<FleetSourceSet, FleetObservationError> {
+    let query_name = DatabaseQuery::FleetOpportunityPlannerLoadSourcesWithoutQueue;
+    let query_started = Instant::now();
     let active_statuses = ACTIVE_DECISION_STATUSES
         .iter()
         .map(|status| (*status).to_owned())
         .collect::<Vec<_>>();
-    let row = crate::sqlx::query(
+    let fetch_started = Instant::now();
+    let row_result = crate::sqlx::query(
         r#"
         WITH eligible_vaults AS (
             SELECT
@@ -2516,35 +2635,35 @@ async fn load_fleet_sources_without_queue_schema(
             ), '{}'::JSONB) AS active_opportunity_vaults_excluded_by_state,
             COALESCE(
                 (SELECT jsonb_agg(
-                    jsonb_build_object(
-                        'vaultId', source.vault_id,
-                        'settings', source.settings,
-                        'vaultIndex', source.vault_index,
-                        'vaultPubkey', source.vault_pubkey,
-                        'policyId', source.policy_id,
-                        'basePolicyAccount', source.base_policy_account,
-                        'basePolicyDelegatedSigner', source.base_policy_delegated_signer,
-                        'basePolicyCluster', source.base_policy_cluster,
-                        'basePolicySourceCommitment', source.base_policy_source_commitment,
-                        'basePolicyFinalizedEligible', source.base_policy_finalized_eligible,
-                        'basePolicyObservedSlot', source.base_policy_observed_slot,
-                        'basePolicyObservedSignature', source.base_policy_observed_signature,
-                        'policyAuthority', source.policy_authority,
-                        'policyMarkets', source.policy_markets,
-                        'policyStableMints', source.policy_stable_mints,
-                        'policyLiquidityMints', source.policy_liquidity_mints,
-                        'policyRouteModes', source.policy_route_modes,
-                        'earnPolicyEvidence', source.earn_policy_evidence,
-                        'crossMintSwapPolicies', source.cross_mint_swap_policies,
-                        'sourceKind', source.source_kind,
-                        'sourceReserve', source.source_reserve,
-                        'liquidityMint', source.liquidity_mint,
-                        'amountRaw', source.amount_raw,
-                        'sourceSnapshotId', source.source_snapshot_id,
-                        'idleTokenAccount', source.idle_token_account,
-                        'observedSlot', source.observed_slot,
-                        'observedAt', source.observed_at,
-                        'planningMetadata', source.planning_metadata
+                    jsonb_build_array(
+                        source.vault_id,
+                        source.settings,
+                        source.vault_index,
+                        source.vault_pubkey,
+                        source.policy_id,
+                        source.base_policy_account,
+                        source.base_policy_delegated_signer,
+                        source.base_policy_cluster,
+                        source.base_policy_source_commitment,
+                        source.base_policy_finalized_eligible,
+                        source.base_policy_observed_slot,
+                        source.base_policy_observed_signature,
+                        source.policy_authority,
+                        source.policy_markets,
+                        source.policy_stable_mints,
+                        source.policy_liquidity_mints,
+                        source.policy_route_modes,
+                        source.earn_policy_evidence,
+                        source.cross_mint_swap_policies,
+                        source.source_kind,
+                        source.source_reserve,
+                        source.liquidity_mint,
+                        source.amount_raw,
+                        source.source_snapshot_id,
+                        source.idle_token_account,
+                        source.observed_slot,
+                        source.observed_at,
+                        source.planning_metadata
                     )
                     ORDER BY source.vault_id, source.source_kind, source.source_reserve, source.liquidity_mint
                 ) FROM sources source),
@@ -2560,43 +2679,59 @@ async fn load_fleet_sources_without_queue_schema(
     .bind(rebalance_cooldown_seconds)
     .bind(captured_at)
     .fetch_one(neon.pool())
-    .await
-    .map_err(FleetObservationError::NeonRead)?;
+    .await;
+    record_database_query_phase_duration(
+        query_name,
+        DatabaseQueryPhase::Fetch,
+        fetch_started.elapsed(),
+    );
+    let row = row_result.map_err(FleetObservationError::NeonRead)?;
     use crate::sqlx::Row;
-    let eligible_vault_count = row
-        .try_get("eligible_vault_count")
-        .map_err(FleetObservationError::NeonRead)?;
-    let source_candidate_vault_count = row
-        .try_get("source_candidate_vault_count")
-        .map_err(FleetObservationError::NeonRead)?;
-    let active_opportunity_vaults_excluded = row
-        .try_get("active_opportunity_vaults_excluded")
-        .map_err(FleetObservationError::NeonRead)?;
-    let no_positive_current_source_vault_count = derive_no_positive_current_source_vault_count(
-        eligible_vault_count,
-        active_opportunity_vaults_excluded,
-        source_candidate_vault_count,
-    )?;
-    let active_opportunity_vaults_excluded_by_state_json: Value = row
-        .try_get("active_opportunity_vaults_excluded_by_state")
-        .map_err(FleetObservationError::NeonRead)?;
-    let active_opportunity_vaults_excluded_by_state =
-        serde_json::from_value(active_opportunity_vaults_excluded_by_state_json)
-            .map_err(FleetObservationError::RowDecode)?;
-    let sources_json: Value = row
-        .try_get("sources")
-        .map_err(FleetObservationError::NeonRead)?;
-    let sources = serde_json::from_value(sources_json).map_err(FleetObservationError::RowDecode)?;
-    Ok(FleetSourceSet {
-        eligible_vault_count,
-        source_candidate_vault_count,
-        active_opportunity_vaults_excluded,
-        active_opportunity_vaults_excluded_by_state,
-        no_positive_current_source_vault_count,
-        sources,
-        committed_target_inflows: Vec::new(),
-        committed_source_outflows: Vec::new(),
-    })
+    let decode_started = Instant::now();
+    let decoded = (|| {
+        let eligible_vault_count = row
+            .try_get("eligible_vault_count")
+            .map_err(FleetObservationError::NeonRead)?;
+        let source_candidate_vault_count = row
+            .try_get("source_candidate_vault_count")
+            .map_err(FleetObservationError::NeonRead)?;
+        let active_opportunity_vaults_excluded = row
+            .try_get("active_opportunity_vaults_excluded")
+            .map_err(FleetObservationError::NeonRead)?;
+        let no_positive_current_source_vault_count = derive_no_positive_current_source_vault_count(
+            eligible_vault_count,
+            active_opportunity_vaults_excluded,
+            source_candidate_vault_count,
+        )?;
+        let crate::sqlx::types::Json(active_opportunity_vaults_excluded_by_state) = row
+            .try_get("active_opportunity_vaults_excluded_by_state")
+            .map_err(FleetObservationError::NeonRead)?;
+        let crate::sqlx::types::Json(source_rows): crate::sqlx::types::Json<Vec<FleetSourceWire>> =
+            row.try_get("sources")
+                .map_err(FleetObservationError::NeonRead)?;
+        let sources = source_rows.into_iter().map(FleetSourceRow::from).collect();
+        Ok(FleetSourceSet {
+            eligible_vault_count,
+            source_candidate_vault_count,
+            active_opportunity_vaults_excluded,
+            active_opportunity_vaults_excluded_by_state,
+            no_positive_current_source_vault_count,
+            sources,
+            committed_target_inflows: Vec::new(),
+            committed_source_outflows: Vec::new(),
+        })
+    })();
+    record_database_query_phase_duration(
+        query_name,
+        DatabaseQueryPhase::Decode,
+        decode_started.elapsed(),
+    );
+    record_database_query_phase_duration(
+        query_name,
+        DatabaseQueryPhase::Total,
+        query_started.elapsed(),
+    );
+    decoded
 }
 
 fn build_observation_result(
