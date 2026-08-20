@@ -143,6 +143,7 @@ describe("direct autodeposit position reconciliation", () => {
       "1",
       "--reconcile-from-chain",
       "--reconcile-current-positions",
+      "--read-only",
       "--reconcile-reserve",
       "kamino-reserve",
       "--rpc-url",

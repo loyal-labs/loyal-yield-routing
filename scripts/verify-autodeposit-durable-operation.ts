@@ -30,6 +30,7 @@ async function main() {
     fleetWorker,
     store,
     migration,
+    finalizationMigration,
     productionMigrations,
     packageJson,
     staleCurrentReserveVerifier,
@@ -42,6 +43,9 @@ async function main() {
       source("crates/loyal-yield-store/src/store.rs"),
       source(
         "crates/loyal-yield-store/migrations/0040_durable_autodeposit_operation.sql",
+      ),
+      source(
+        "crates/loyal-yield-store/migrations/0045_atomic_autodeposit_finalization.sql",
       ),
       source("crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs"),
       source("package.json"),
@@ -73,6 +77,14 @@ async function main() {
       productionMigrations.includes('name: "durable_autodeposit_operation"') &&
       productionMigrations.includes(
         'migrations/0040_durable_autodeposit_operation.sql',
+      ),
+  );
+  check(
+    "the production migration runner applies atomic finalization",
+    productionMigrations.includes("version: 45") &&
+      productionMigrations.includes('name: "atomic_autodeposit_finalization"') &&
+      productionMigrations.includes(
+        'migrations/0045_atomic_autodeposit_finalization.sql',
       ),
   );
   check(
@@ -152,20 +164,24 @@ async function main() {
   );
   check(
     "claim completion locks and validates ownership before accounting",
-    completion.includes("owned_claim AS MATERIALIZED") &&
-      completion.includes("autodeposit_executor_lease_token") &&
-      completion.includes("autodeposit_executor_lease_expires_at > now()") &&
-      completion.includes("FOR UPDATE") &&
-      completion.includes("JOIN owned_claim ON TRUE") &&
-      completion.indexOf("owned_claim AS MATERIALIZED") <
-        completion.indexOf("inserted_deposit AS"),
+    completion.includes("finalize_confirmed_autodeposit") &&
+      !completion.includes("INSERT INTO loyal_yield.user_yield") &&
+      finalizationMigration.includes("FOR UPDATE") &&
+      finalizationMigration.includes("autodeposit_executor_lease_token") &&
+      finalizationMigration.includes("autodeposit_executor_lease_expires_at") &&
+      finalizationMigration.indexOf("FOR UPDATE") <
+        finalizationMigration.indexOf(
+          "INSERT INTO loyal_yield.user_yield_position_deposits",
+        ),
   );
   check(
     "claim completion is gated by the confirmed top-up attempt",
-    completion.includes("operation_kind = 'top_up'") &&
-      completion.includes("attempt_state = 'confirmed'") &&
-      completion.includes("completed_claim") &&
-      completion.includes("completed_slot"),
+    finalizationMigration.includes("attempt.operation_kind = 'top_up'") &&
+      finalizationMigration.includes("attempt.attempt_state = 'confirmed'") &&
+      finalizationMigration.includes("SET status = 'executed'") &&
+      finalizationMigration.includes(
+        "UPDATE loyal_yield.balance_sweep_scheduled_slots",
+      ),
   );
   check(
     "ambiguous top-ups retain a typed operator-action failure",
@@ -176,11 +192,13 @@ async function main() {
   check(
     "app accounting completes with the claim from the reconciled total",
     executor.includes("reconcileDirectDepositPosition") &&
-      executor.includes("completed_deposit") &&
-      executor.includes("completed_position") &&
-      executor.includes("completed_holding_event") &&
-      executor.includes("principal_amount_raw +") &&
-      executor.includes("postConfirmPositionAmountRaw"),
+      completion.includes("postConfirmPositionAmountRaw") &&
+      finalizationMigration.includes("deposit_inserted") &&
+      finalizationMigration.includes("principal_amount_raw =") &&
+      finalizationMigration.includes(
+        "current_amount_raw = p_post_confirm_position_amount_raw",
+      ) &&
+      finalizationMigration.includes("last_holding_event_id"),
   );
   check(
     "the removed idle-age operational alert stays absent",

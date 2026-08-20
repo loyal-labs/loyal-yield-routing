@@ -273,6 +273,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0044_fleet_health_status_query_optimization.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 45,
+        name: "atomic_autodeposit_finalization",
+        sql: include_str!("../../../loyal-yield-store/migrations/0045_atomic_autodeposit_finalization.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -3771,6 +3777,27 @@ mod tests {
             assert!(
                 migration.sql.contains(required),
                 "migration 40 is missing {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn atomic_autodeposit_finalization_migration_is_registered_for_production() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 45)
+            .expect("migration 45 exists");
+
+        assert_eq!(migration.name, "atomic_autodeposit_finalization");
+        for required in [
+            "finalize_confirmed_autodeposit",
+            "FOR UPDATE",
+            "claim_owned_by_another_executor",
+            "ON CONFLICT (deposit_signature) DO NOTHING",
+        ] {
+            assert!(
+                migration.sql.contains(required),
+                "migration 45 is missing {required}"
             );
         }
     }
