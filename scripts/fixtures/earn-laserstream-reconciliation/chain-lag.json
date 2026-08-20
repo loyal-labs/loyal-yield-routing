@@ -1,0 +1,6 @@
+{
+  "signatures": {
+    "sig-cleanup-b": { "kind": "cleanup", "slot": 130, "withdrawal_signature": "sig-withdraw-b", "withdrawal_slot": 120, "context_slot": 130, "balances_zero": true, "policies_closed": true },
+    "sig-cleanup-c": { "kind": "cleanup", "slot": 131, "withdrawal_signature": "sig-withdraw-c", "withdrawal_slot": 114, "context_slot": 110, "balances_zero": true, "policies_closed": false }
+  }
+}

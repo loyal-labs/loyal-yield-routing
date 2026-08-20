@@ -1,0 +1,2 @@
+{"event_key":"cleanup-b-closed","kind":"account_deleted","filters":["earn_policy_accounts"],"pubkey":"BPFLoader1111111111111111111111111111111111","slot":130,"signature":"sig-cleanup-b"}
+{"event_key":"cleanup-c-pending","kind":"account","filters":["earn_vault_accounts"],"pubkey":"LoaderV411111111111111111111111111111111111","slot":131,"signature":"sig-cleanup-c"}

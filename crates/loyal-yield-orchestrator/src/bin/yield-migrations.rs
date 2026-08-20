@@ -279,6 +279,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0045_atomic_autodeposit_finalization.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 46,
+        name: "laserstream_replay_cursor",
+        sql: include_str!("../../../loyal-yield-store/migrations/0046_laserstream_replay_cursor.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -704,6 +710,8 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "vault_idle_token_balances_current",
         "realtime_events",
         "realtime_configuration",
+        "laserstream_replay_cursors",
+        "laserstream_replay_cursors",
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"

@@ -366,6 +366,138 @@ pub struct WalletAtaBalanceUpdateInput {
     pub raw_evidence: Value,
 }
 
+/// One normalized LaserStream event and every Earn vault affected by it.
+///
+/// The monitor deliberately sends all affected vault mutations together. A
+/// shared account can wake more than one vault; advancing the cursor between
+/// those mutations would make a later failure unreplayable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnDirectReconciliationInput {
+    pub consumer_name: String,
+    pub event_key: String,
+    pub durable_slot: u64,
+    pub mutations: Vec<EarnDirectMutation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum EarnDirectMutation {
+    PolicyOnly(EarnPolicyOnlyMutation),
+    Deposit(EarnDepositMutation),
+    Cleanup(EarnCleanupMutation),
+    Noop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnPolicyOnlyMutation {
+    pub route_policy: PolicyMatchInput,
+    pub setup_policy: PolicyMatchInput,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnDepositMutation {
+    pub route_policy: PolicyMatchInput,
+    pub setup_policy: Option<PolicyMatchInput>,
+    pub deposit_signature: String,
+    pub deposit_slot: u64,
+    pub observed_slot: u64,
+    pub deposit_mint: String,
+    pub principal_amount_raw: u64,
+    pub target_reserve: String,
+    pub market: Option<String>,
+    pub liquidity_mint: String,
+    pub target_supply_apy_bps: Option<i64>,
+    pub wallet: String,
+    pub smart_account_address: String,
+    pub reserve_state: Vec<EarnReserveMutation>,
+    pub idle_state: Vec<EarnIdleTokenMutation>,
+    pub observed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnReserveMutation {
+    pub reserve: String,
+    pub market: Option<String>,
+    pub liquidity_mint: String,
+    pub amount_raw: u64,
+    pub has_value: bool,
+    pub supply_apy_bps: Option<i64>,
+    pub borrow_apy_bps: Option<i64>,
+    pub planning_metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnIdleTokenMutation {
+    pub mint: String,
+    pub amount_raw: u64,
+    pub owner: String,
+    pub token_account: String,
+    pub observed_slot: u64,
+    pub observed_at: Option<DateTime<Utc>>,
+    pub source_commitment: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnCleanupMutation {
+    pub settings: String,
+    pub vault_index: u8,
+    pub vault_pubkey: String,
+    pub cleanup_signature: String,
+    pub confirmed_slot: u64,
+    pub observed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnDirectReconciliationOutcome {
+    pub applied_mutations: usize,
+    pub cursor_slot: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnReconciliationContext {
+    pub route_policy: Option<PolicyMatchInput>,
+    pub setup_policy: Option<PolicyMatchInput>,
+    pub onboarding: Option<EarnOnboardingContext>,
+    pub full_withdrawal: Option<EarnFullWithdrawalContext>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnOnboardingContext {
+    pub status: String,
+    pub deposit_signature: Option<String>,
+    pub delegated_signer: String,
+    pub route_policy_account: String,
+    pub route_policy_seed: u64,
+    pub route_policy_signature: Option<String>,
+    pub route_policy_confirmed_slot: Option<u64>,
+    pub setup_policy_account: Option<String>,
+    pub setup_policy_seed: Option<u64>,
+    pub setup_policy_signature: Option<String>,
+    pub setup_policy_confirmed_slot: Option<u64>,
+    pub target_reserve: String,
+    pub market: Option<String>,
+    pub liquidity_mint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnFullWithdrawalContext {
+    pub signature: String,
+    pub confirmed_slot: u64,
+}
+
+/// Database identity used to build the in-memory Earn LaserStream watch set.
+/// Solana address derivation remains in the monitor so this store crate stays
+/// free of Solana dependencies.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnSubscriptionTarget {
+    pub environment: String,
+    pub settings: String,
+    pub wallet: String,
+    pub vault_index: i16,
+    pub vault_pubkey: Option<String>,
+    pub policy_accounts: Vec<String>,
+    pub markets: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WalletAtaBalanceCurrent {
     pub target_id: BalanceSweepTargetId,

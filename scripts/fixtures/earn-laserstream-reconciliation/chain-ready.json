@@ -1,0 +1,47 @@
+{
+  "signatures": {
+    "sig-policy-create-a": {
+      "kind": "policy_only",
+      "slot": 100,
+      "route_policy": { "policy_account": "AddressLookupTab1e1111111111111111111111111", "policy_seed": 101, "signature": "sig-policy-create-a", "confirmed_slot": 90 },
+      "setup_policy": { "policy_account": "SysvarS1otHashes111111111111111111111111111", "policy_seed": 102, "signature": "sig-policy-create-a", "confirmed_slot": 100 },
+      "delegated_signer": "Stake11111111111111111111111111111111111111",
+      "market": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "liquidity_mint": "So11111111111111111111111111111111111111112",
+      "target_reserve": "SysvarRent111111111111111111111111111111111"
+    },
+    "sig-deposit-b": {
+      "kind": "deposit",
+      "slot": 110,
+      "amount_raw": 5000000,
+      "observed_amount_raw": 5250000,
+      "observed_slot": 118,
+      "deposit_mint": "So11111111111111111111111111111111111111112",
+      "liquidity_mint": "So11111111111111111111111111111111111111112",
+      "market": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "target_reserve": "SysvarRent111111111111111111111111111111111",
+      "idle_token_account": "So11111111111111111111111111111111111111112",
+      "route_policy": { "policy_account": "BPFLoader1111111111111111111111111111111111", "policy_seed": 201, "signature": "sig-policy-b", "confirmed_slot": 105 },
+      "delegated_signer": "ComputeBudget111111111111111111111111111111"
+    },
+    "sig-obligation-b": { "kind": "noop", "slot": 111 },
+    "sig-shared-b": { "kind": "noop", "slot": 112 },
+    "sig-deposit-d": {
+      "kind": "deposit",
+      "slot": 113,
+      "amount_raw": 5000000,
+      "observed_amount_raw": 7400000,
+      "observed_slot": 119,
+      "deposit_mint": "So11111111111111111111111111111111111111112",
+      "liquidity_mint": "So11111111111111111111111111111111111111112",
+      "market": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "target_reserve": "SysvarRent111111111111111111111111111111111",
+      "idle_token_account": "SysvarFees111111111111111111111111111111111",
+      "route_policy": { "policy_account": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", "policy_seed": 401, "signature": "sig-policy-d", "confirmed_slot": 105 },
+      "delegated_signer": "NativeLoader1111111111111111111111111111111"
+    },
+    "sig-positive-c": { "kind": "cleanup", "slot": 115, "withdrawal_signature": "sig-withdraw-c", "withdrawal_slot": 114, "context_slot": 115, "balances_zero": false, "policies_closed": false },
+    "sig-cleanup-b": { "kind": "cleanup", "slot": 130, "withdrawal_signature": "sig-withdraw-b", "withdrawal_slot": 120, "context_slot": 130, "balances_zero": true, "policies_closed": true },
+    "sig-cleanup-c": { "kind": "cleanup", "slot": 131, "withdrawal_signature": "sig-withdraw-c", "withdrawal_slot": 114, "context_slot": 131, "balances_zero": true, "policies_closed": false }
+  }
+}
