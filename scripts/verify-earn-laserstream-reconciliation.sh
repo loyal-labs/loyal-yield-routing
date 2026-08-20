@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-verifier_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+verifier_root="$(cd "$script_dir/.." && pwd)"
+fixture_root="$script_dir/fixtures/earn-laserstream-reconciliation"
 routing_root=""
 app_root=""
 scratch_dir="$(mktemp -d "/tmp/smart-account-laserstream-verifier.XXXXXX")"
@@ -447,7 +449,7 @@ run_fixture() {
       --bin smart-account-laserstream-e2e -- \
       --postgres-url "$database_url" \
       --stream-name earn-smart-account-verification \
-      --watch-set "$verifier_root/fixtures/watch-set.json" \
+      --watch-set "$fixture_root/watch-set.json" \
       --events "$events_file" \
       --chain-fixtures "$chain_file" \
       --request-output "$request_log" \
@@ -456,8 +458,8 @@ run_fixture() {
 }
 
 echo "== Process policy-only, invisible deposit, shared binding, and positive cleanup"
-run_fixture "$verifier_root/fixtures/phase-1.ndjson" \
-  "$verifier_root/fixtures/chain-ready.json"
+run_fixture "$fixture_root/phase-1.ndjson" \
+  "$fixture_root/chain-ready.json"
 
 jq -e '
   .request_count == 1 and
@@ -554,8 +556,8 @@ SQL
 
 echo "== Prove forced failure is atomic"
 if SMART_ACCOUNT_E2E_FAIL_BEFORE_COMMIT_EVENT_KEY=cleanup-b-closed \
-  run_fixture "$verifier_root/fixtures/phase-2.ndjson" \
-    "$verifier_root/fixtures/chain-ready.json"; then
+  run_fixture "$fixture_root/phase-2.ndjson" \
+    "$fixture_root/chain-ready.json"; then
   fail "fault-injected direct reconciliation unexpectedly succeeded"
 fi
 assert_scalar "active" \
@@ -566,8 +568,8 @@ assert_scalar "115" \
   "forced failure did not advance cursor"
 
 echo "== Prove RPC lag blocks only the unproven event"
-if run_fixture "$verifier_root/fixtures/phase-2.ndjson" \
-  "$verifier_root/fixtures/chain-lag.json"; then
+if run_fixture "$fixture_root/phase-2.ndjson" \
+  "$fixture_root/chain-lag.json"; then
   fail "below-min-context cleanup unexpectedly succeeded"
 fi
 assert_scalar "closed" \
@@ -581,12 +583,12 @@ assert_scalar "130" \
   "cursor stopped at last proven event"
 
 echo "== Retry with ready proof and replay everything"
-run_fixture "$verifier_root/fixtures/phase-2.ndjson" \
-  "$verifier_root/fixtures/chain-ready.json"
-run_fixture "$verifier_root/fixtures/phase-1.ndjson" \
-  "$verifier_root/fixtures/chain-ready.json"
-run_fixture "$verifier_root/fixtures/phase-2.ndjson" \
-  "$verifier_root/fixtures/chain-ready.json"
+run_fixture "$fixture_root/phase-2.ndjson" \
+  "$fixture_root/chain-ready.json"
+run_fixture "$fixture_root/phase-1.ndjson" \
+  "$fixture_root/chain-ready.json"
+run_fixture "$fixture_root/phase-2.ndjson" \
+  "$fixture_root/chain-ready.json"
 
 assert_scalar "131" \
   "SELECT durable_slot FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name = 'earn-smart-account-verification'" \

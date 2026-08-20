@@ -132,7 +132,7 @@ worker handoffs.
 
 ## Verification
 
-The frozen verifier at `verification/smart-account-laserstream/verify.sh`
+The frozen verifier at `scripts/verify-earn-laserstream-reconciliation.sh`
 starts disposable PostgreSQL, applies production routing and Loyal
 App-compatible Earn schemas, and sends simulated evidence through the
 production reconciliation function.
@@ -145,7 +145,7 @@ old handoff tables, and zero balance-sweep side effects. It finishes with
 focused format, test, compile, and whitespace checks.
 
 ```sh
-bash verification/smart-account-laserstream/verify.sh \
+bash scripts/verify-earn-laserstream-reconciliation.sh \
   --routing-root /private/tmp/loyal-yield-routing-laserstream-implementation \
   --app-root /private/tmp/loyal-app-laserstream-implementation
 ```

@@ -1,6 +1,6 @@
-# Direct Earn LaserStream reconciliation verifier goal
+# Direct Earn LaserStream reconciliation verifier
 
-Run `verification/smart-account-laserstream/verify.sh` from this verifier
+Run `scripts/verify-earn-laserstream-reconciliation.sh` from this verifier
 worktree against separate routing and Loyal App implementation worktrees.
 
 The verifier is adversarial. It returns PASS only when confirmed LaserStream
