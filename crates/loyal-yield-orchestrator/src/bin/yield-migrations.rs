@@ -249,6 +249,30 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0040_durable_autodeposit_operation.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 41,
+        name: "optimizer_epochs_latest_cluster_index",
+        sql: include_str!("../../../loyal-yield-store/migrations/0041_optimizer_epochs_latest_cluster_index.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 42,
+        name: "rebalance_opportunities_optimizer_epoch_index",
+        sql: include_str!("../../../loyal-yield-store/migrations/0042_rebalance_opportunities_optimizer_epoch_index.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 43,
+        name: "rebalance_opportunities_health_aggregate_index",
+        sql: include_str!("../../../loyal-yield-store/migrations/0043_rebalance_opportunities_health_aggregate_index.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 44,
+        name: "fleet_health_status_query_optimization",
+        sql: include_str!("../../../loyal-yield-store/migrations/0044_fleet_health_status_query_optimization.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -379,9 +403,46 @@ async fn apply_migration(pool: &PgPool, migration: &Migration) -> Result<(), Box
     if migration.version == 32 {
         recover_invalid_idle_vault_decision_lookup_index(pool).await?;
     }
+    if migration.version == 41 {
+        recover_invalid_index(pool, "optimizer_epochs_latest_cluster_idx").await?;
+    }
+    if migration.version == 42 {
+        recover_invalid_index(pool, "rebalance_opportunities_optimizer_epoch_idx").await?;
+    }
+    if migration.version == 43 {
+        recover_invalid_index(pool, "rebalance_opportunities_health_aggregate_idx").await?;
+    }
     let execution_sql = migration_execution_sql(migration);
     sqlx::raw_sql(&execution_sql).execute(pool).await?;
     Ok(())
+}
+
+async fn recover_invalid_index(pool: &PgPool, index: &str) -> Result<(), sqlx::Error> {
+    let state: Option<(bool, bool)> = sqlx::query_as(
+        r#"
+        SELECT indisready, indisvalid
+        FROM pg_index
+        WHERE indexrelid = to_regclass(format('loyal_yield.%I', $1))
+        "#,
+    )
+    .bind(index)
+    .fetch_optional(pool)
+    .await?;
+
+    if state.is_some_and(|(indisready, indisvalid)| !indisready || !indisvalid) {
+        println!("dropping invalid loyal_yield.{index} before retry");
+        sqlx::query(&format!(
+            "DROP INDEX CONCURRENTLY loyal_yield.{}",
+            quote_identifier(index)
+        ))
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+fn quote_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
 async fn recover_invalid_idle_vault_decision_lookup_index(
@@ -2240,6 +2301,9 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "route_account_conflict_leases_opportunity_idx",
         "route_account_conflict_leases_submission_idx",
         "rebalance_decisions_idle_signature_id_idx",
+        "optimizer_epochs_latest_cluster_idx",
+        "rebalance_opportunities_optimizer_epoch_idx",
+        "rebalance_opportunities_health_aggregate_idx",
     ] {
         let exists: bool =
             sqlx::query_scalar("SELECT to_regclass(format('loyal_yield.%I', $1)) IS NOT NULL")
@@ -2251,6 +2315,49 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         }
     }
     validate_idle_vault_decision_lookup_index(pool).await?;
+    for (index, required_fragments) in [
+        (
+            "optimizer_epochs_latest_cluster_idx",
+            [
+                "(cluster, observed_at DESC, id DESC)",
+                "INCLUDE (epoch_key, market_slot, expires_at)",
+            ],
+        ),
+        (
+            "rebalance_opportunities_optimizer_epoch_idx",
+            [
+                "(optimizer_epoch_id)",
+                "INCLUDE (id, cluster, created_at, principal_usd_micros, annual_yield_gain_usd_micros)",
+            ],
+        ),
+        (
+            "rebalance_opportunities_health_aggregate_idx",
+            [
+                "(cluster, opportunity_state)",
+                "INCLUDE (principal_usd_micros, annual_yield_gain_usd_micros, created_at, state_entered_at, lease_expires_at)",
+            ],
+        ),
+    ] {
+        let (ready, valid, definition): (bool, bool, String) = sqlx::query_as(&format!(
+            "SELECT indisready, indisvalid, pg_get_indexdef(indexrelid)
+             FROM pg_index
+             WHERE indexrelid = 'loyal_yield.{}'::regclass",
+            quote_identifier(index)
+        ))
+        .fetch_one(pool)
+        .await?;
+        if !ready
+            || !valid
+            || required_fragments
+            .iter()
+            .any(|fragment| !definition.contains(fragment))
+        {
+            return Err(format!(
+                "fleet health query index loyal_yield.{index} must be ready, valid, and match its expected definition"
+            )
+            .into());
+        }
+    }
     let runnable_priority_index: String = sqlx::query_scalar(
         "SELECT pg_get_indexdef('loyal_yield.rebalance_opportunities_ready_priority_idx'::regclass)",
     )
@@ -3664,6 +3771,60 @@ mod tests {
             assert!(
                 migration.sql.contains(required),
                 "migration 40 is missing {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn fleet_health_query_optimization_migrations_are_registered_for_production() {
+        let expected = [
+            (
+                41,
+                "optimizer_epochs_latest_cluster_index",
+                "optimizer_epochs_latest_cluster_idx",
+            ),
+            (
+                42,
+                "rebalance_opportunities_optimizer_epoch_index",
+                "rebalance_opportunities_optimizer_epoch_idx",
+            ),
+            (
+                43,
+                "rebalance_opportunities_health_aggregate_index",
+                "rebalance_opportunities_health_aggregate_idx",
+            ),
+            (
+                44,
+                "fleet_health_status_query_optimization",
+                "GROUP BY GROUPING SETS",
+            ),
+        ];
+
+        for (version, name, required_sql) in expected {
+            let migration = MIGRATIONS
+                .iter()
+                .find(|migration| migration.version == version)
+                .unwrap_or_else(|| panic!("migration {version} exists"));
+            assert_eq!(migration.name, name);
+            assert!(
+                migration.sql.contains(required_sql),
+                "migration {version} is missing {required_sql}"
+            );
+        }
+
+        let view = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 44)
+            .expect("migration 44 exists");
+        for required in [
+            "LEFT JOIN LATERAL",
+            "current_epoch_opportunities AS MATERIALIZED",
+            "WHERE processed_at IS NULL",
+            "WHERE submission_state NOT IN ('reconciled', 'expired', 'failed')",
+        ] {
+            assert!(
+                view.sql.contains(required),
+                "optimized health view is missing {required}"
             );
         }
     }
