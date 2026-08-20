@@ -285,6 +285,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0046_laserstream_replay_cursor.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 47,
+        name: "unambiguous_autodeposit_finalization",
+        sql: include_str!("../../../loyal-yield-store/migrations/0047_unambiguous_autodeposit_finalization.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
