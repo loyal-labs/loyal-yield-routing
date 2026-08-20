@@ -195,9 +195,9 @@ echo "== Apply production routing and app-compatible Yield migrations"
   NEON_DATABASE_URL="$database_url" NO_DNA=1 \
     cargo run --quiet -p loyal-yield-orchestrator --bin yield-migrations -- --check
 )
-assert_scalar "40:durable_autodeposit_operation,41:optimizer_epochs_latest_cluster_index,42:rebalance_opportunities_optimizer_epoch_index,43:rebalance_opportunities_health_aggregate_index,44:fleet_health_status_query_optimization,45:laserstream_replay_cursor" \
+assert_scalar "40:durable_autodeposit_operation,41:optimizer_epochs_latest_cluster_index,42:rebalance_opportunities_optimizer_epoch_index,43:rebalance_opportunities_health_aggregate_index,44:fleet_health_status_query_optimization,45:atomic_autodeposit_finalization,46:laserstream_replay_cursor" \
   "SELECT string_agg(version::text || ':' || name, ',' ORDER BY version) FROM loyal_yield.schema_migrations WHERE version >= 40" \
-  "current-main migrations 40 through 44 and LaserStream migration 45 coexist"
+  "current-main migrations 40 through 45 and LaserStream migration 46 coexist"
 psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0001_add_user_yield_deposit_positions.sql" >/dev/null
 psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0004_add_verifiable_earn_holdings.sql" >/dev/null
 psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0013_add_earn_deposit_onboarding_attempts.sql" >/dev/null
