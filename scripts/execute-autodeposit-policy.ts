@@ -20,9 +20,11 @@ import { existsSync } from "node:fs";
 
 import {
   attemptAllowsSafeRequeue,
+  attemptHoldsClaim,
   operationalAlertForAttempt,
   settleDurableAutodepositAttempt,
   type AttemptObservation,
+  type AutodepositAttemptState,
   type AutodepositOperationKind,
   type DurableAutodepositAttempt,
 } from "./durable-autodeposit-confirmation";
@@ -190,6 +192,35 @@ type AutodepositRecoveryContext = {
 
 class AutodepositOwnershipLostError extends Error {}
 export class AutodepositEffectAmbiguousError extends Error {}
+
+export type DirectTopUpRecoveryAction =
+  | "reconcile_persisted"
+  | "prepare_or_requeue"
+  | "effect_ambiguous";
+
+export function classifyDirectTopUpRecovery(args: {
+  existingAttemptState: AutodepositAttemptState | null;
+  vaultAmountRaw: bigint;
+  plannedAmountRaw: bigint;
+  persistedSourcePreBalanceRaw: bigint | null;
+}): DirectTopUpRecoveryAction {
+  if (
+    args.existingAttemptState !== null &&
+    attemptHoldsClaim(args.existingAttemptState)
+  ) {
+    return "reconcile_persisted";
+  }
+  if (
+    args.vaultAmountRaw < args.plannedAmountRaw ||
+    (args.existingAttemptState !== null &&
+      attemptAllowsSafeRequeue(args.existingAttemptState) &&
+      args.persistedSourcePreBalanceRaw !== null &&
+      args.vaultAmountRaw < args.persistedSourcePreBalanceRaw)
+  ) {
+    return "effect_ambiguous";
+  }
+  return "prepare_or_requeue";
+}
 
 export function throwIfAutodepositAttemptRequiresOperator(
   attempt: Pick<DurableAutodepositAttempt, "signature" | "state">
@@ -3055,10 +3086,12 @@ async function sendPreparedTopUpOperation(args: {
         }),
     },
   });
-  if (
-    settlement.observation.state === "confirmed" &&
-    settlement.observation.confirmedSlot !== null
-  ) {
+  if (settlement.observation.state === "confirmed") {
+    if (settlement.observation.confirmedSlot === null) {
+      throw new Error(
+        `Confirmed top-up attempt ${settlement.attempt.signature} has no slot.`
+      );
+    }
     return {
       status: "confirmed",
       signature: settlement.attempt.signature,
@@ -4651,12 +4684,14 @@ async function resumeDirectKaminoDeposit(args: {
     claimToken: args.claimToken,
     operationKind: "top_up",
   });
-  if (
-    vaultObservation.amountRaw < args.plan.amountRaw ||
-    (existingTopUpAttempt !== null &&
-      attemptAllowsSafeRequeue(existingTopUpAttempt.state) &&
-      vaultObservation.amountRaw < existingTopUpAttempt.sourcePreBalanceRaw)
-  ) {
+  const topUpRecovery = classifyDirectTopUpRecovery({
+    existingAttemptState: existingTopUpAttempt?.state ?? null,
+    vaultAmountRaw: vaultObservation.amountRaw,
+    plannedAmountRaw: args.plan.amountRaw,
+    persistedSourcePreBalanceRaw:
+      existingTopUpAttempt?.sourcePreBalanceRaw ?? null,
+  });
+  if (topUpRecovery === "effect_ambiguous") {
     await releaseAutodepositClaimLease({
       neon: args.neon,
       databaseUrl: args.databaseUrl,
