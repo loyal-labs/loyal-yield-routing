@@ -42,11 +42,12 @@ affected vault needs proof.
 The watch set is rebuilt from durable application identity, onboarding,
 position, and policy rows. Address lists are sorted and deduplicated. Any Earn
 watch-set change rebuilds the physical LaserStream session from the durable
-subscription request. The rebuild retains the previous session's `from_slot`
-instead of recomputing it from a cursor that may have advanced on other
-accounts. We intentionally do not use the SDK's live write path because it
-clears `from_slot` and cannot backfill an event that landed before the new
-filter was installed.
+subscription request. The rebuild starts at the previous watch-set refresh
+boundary, then advances that checkpoint after the refreshed set is installed.
+That backfills events which landed between refreshes without replaying from the
+process-start slot on every later addition. We intentionally do not use the
+SDK's live write path because it clears `from_slot` and cannot backfill an event
+that landed before the new filter was installed.
 
 ## Direct reconciliation boundary
 
@@ -91,9 +92,13 @@ reserve in its accounts, calculate the wallet/vault raw token debit, validate
 the recorded policy/market/mint, and read current idle accounts at or after the
 update slot.
 
-Write: insert the deposit by signature, create or top up the aggregate
-position, append one holding event, publish reserve/idle state, and complete
-onboarding. Replay adds neither principal nor a duplicate event.
+Write: select the active onboarding attempt before completed history, insert
+the deposit by signature, resolve the active aggregate position by wallet and
+vault identity rather than its original reserve, append one holding event,
+publish reserve/idle state, and complete only that active attempt. A top-up
+after reserve A was rebalanced to reserve B therefore updates the same
+aggregate row when it targets B. Replay adds neither principal nor a duplicate
+event.
 
 ### Full-withdraw cleanup
 
@@ -132,11 +137,12 @@ starts disposable PostgreSQL, applies production routing and Loyal
 App-compatible Earn schemas, and sends simulated evidence through the
 production reconciliation function.
 
-It proves subscription shape, policy-only and deposit convergence,
+It proves subscription shape, deterministic active-onboarding policy selection,
+policy-only and deposit convergence, cross-reserve aggregate reuse,
 positive-balance no-op, failure rollback, minimum-context lag, both cleanup
-classes, replay idempotency, absence of old handoff tables, and zero
-balance-sweep side effects. It finishes with focused format, test, compile, and
-whitespace checks.
+classes, replay idempotency, advancing watch-set replay checkpoints, absence of
+old handoff tables, and zero balance-sweep side effects. It finishes with
+focused format, test, compile, and whitespace checks.
 
 ```sh
 bash verification/smart-account-laserstream/verify.sh \

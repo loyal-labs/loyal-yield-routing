@@ -37,10 +37,12 @@ any new Loyal App or fleet reconciliation worker.
    reserve/idle state, and completed onboarding. The transaction principal and
    slot deliberately differ from the later chain-observed holding amount and
    context slot; the aggregate position and latest holding event must still
-   match exactly. A top-up fixture also proves that principal delta equals the
-   transaction debit while holding delta is measured from the previous
-   projection, and only the active onboarding attempt is completed while prior
-   completed attempts remain immutable. Replay creates no duplicates.
+    match exactly. A top-up fixture also proves that principal delta equals the
+    transaction debit while holding delta is measured from the previous
+    projection, a position rebalanced from reserve A to B is reused when the
+    top-up targets B, and only the active onboarding attempt is selected and
+    completed while prior completed attempts and policies remain immutable.
+    Replay creates no duplicates.
 8. Full-withdraw cleanup covers both cases:
    - `confirm_missed`: zero proof succeeds and policies are already closed;
    - `cleanup_pending`: zero proof succeeds while policies remain open.
@@ -60,10 +62,10 @@ any new Loyal App or fleet reconciliation worker.
 13. Current main's migrations 40 through 45 remain registered, and the
     LaserStream replay cursor is migration 46 in both migration registries.
 14. Earn watch-set changes rebuild the whole LaserStream session instead of
-    using the SDK live-write path. The fresh request retains the previous
-    session's replay `from_slot`, rather than recomputing it from a cursor that
-    may have advanced on other accounts, so an event between refreshes is
-    backfilled.
+    using the SDK live-write path. The fresh request replays from the previous
+    watch-set refresh boundary so an event between refreshes is backfilled.
+    After the new set is installed the checkpoint advances; consecutive
+    additions do not replay from the process-start slot forever.
 15. Production transaction parsing nets token balances per allowed owner before
     calculating principal. Moving tokens between two accounts with the same
     owner proves zero principal debit.

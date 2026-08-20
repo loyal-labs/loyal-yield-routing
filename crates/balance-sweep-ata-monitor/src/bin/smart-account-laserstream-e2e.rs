@@ -32,6 +32,8 @@ struct Args {
     chain_fixtures: PathBuf,
     #[arg(long)]
     request_output: PathBuf,
+    #[arg(long)]
+    context_output: Option<PathBuf>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -61,6 +63,19 @@ async fn main() -> Result<()> {
         &args.request_output,
         serde_json::to_vec_pretty(&subscribe_request_json(&watch_set))?,
     )?;
+    if let Some(path) = args.context_output {
+        let mut contexts = Vec::with_capacity(watch_set.earn_vaults.len());
+        for vault in &watch_set.earn_vaults {
+            let context = store
+                .load_earn_reconciliation_context(&vault.settings, vault.vault_index, &vault.vault)
+                .await?;
+            contexts.push(serde_json::json!({
+                "vault": vault.vault,
+                "context": context,
+            }));
+        }
+        fs::write(path, serde_json::to_vec_pretty(&contexts)?)?;
+    }
     let chain = FixtureEarnChainReader::from_path(&args.chain_fixtures)?;
 
     for line in fs::read_to_string(&args.events)?

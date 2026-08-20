@@ -723,10 +723,17 @@ impl NeonSqlClient {
               ON vault.settings = policy.settings
              AND vault.vault_index = policy.vault_index
              AND vault.vault_pubkey = policy.vault_pubkey
-            LEFT JOIN loyal_yield.earn_deposit_onboarding_attempts onboarding
-              ON onboarding.settings = policy.settings
-             AND onboarding.vault_index = policy.vault_index
-             AND onboarding.vault_pubkey = policy.vault_pubkey
+            LEFT JOIN LATERAL (
+              SELECT candidate.policy_account, candidate.setup_policy_account
+              FROM loyal_yield.earn_deposit_onboarding_attempts candidate
+              WHERE candidate.settings = policy.settings
+                AND candidate.vault_index = policy.vault_index
+                AND candidate.vault_pubkey = policy.vault_pubkey
+              ORDER BY (candidate.status <> 'complete') DESC,
+                       candidate.updated_at DESC,
+                       candidate.id DESC
+              LIMIT 1
+            ) onboarding ON TRUE
             WHERE policy.settings = $1 AND policy.vault_index = $2
               AND policy.vault_pubkey = $3
               AND (
@@ -764,7 +771,7 @@ impl NeonSqlClient {
                    target_reserve, market, liquidity_mint
             FROM loyal_yield.earn_deposit_onboarding_attempts
             WHERE settings = $1 AND vault_index = $2 AND vault_pubkey = $3
-            ORDER BY updated_at DESC, id DESC
+            ORDER BY (status <> 'complete') DESC, updated_at DESC, id DESC
             LIMIT 1
             "#,
         )
@@ -4154,13 +4161,18 @@ async fn apply_earn_deposit(
             SELECT id, current_reserve, current_market, current_liquidity_mint,
                    current_amount_raw, current_observed_slot, current_observed_at
             FROM loyal_yield.user_yield_positions
-            WHERE settings = $1 AND vault_index = $2 AND initial_reserve = $3
+            WHERE settings = $1 AND vault_index = $2
+              AND wallet_address = $3 AND vault_pubkey = $4
+              AND status = 'active'::loyal_yield.yield_position_status
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
             FOR UPDATE
             "#,
     )
     .bind(&mutation.route_policy.settings)
     .bind(i16::from(mutation.route_policy.vault_index))
-    .bind(&mutation.target_reserve)
+    .bind(&mutation.wallet)
+    .bind(&mutation.route_policy.vault_pubkey)
     .fetch_optional(&mut *conn)
     .await?;
 

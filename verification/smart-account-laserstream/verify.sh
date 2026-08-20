@@ -9,6 +9,7 @@ data_dir="$scratch_dir/postgres"
 socket_dir="$scratch_dir/socket"
 postgres_log="$scratch_dir/postgres.log"
 request_log="$scratch_dir/subscribe-request.json"
+context_log="$scratch_dir/reconciliation-contexts.json"
 database_name="smart_account_laserstream_verify"
 port="$((57432 + RANDOM % 1000))"
 server_started=0
@@ -30,9 +31,11 @@ setup_a="SysvarS1otHashes111111111111111111111111111"
 policy_b="BPFLoader1111111111111111111111111111111111"
 policy_c="Ed25519SigVerify111111111111111111111111111"
 policy_d="MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+policy_d_stale="SysvarStakeHistory1111111111111111111111111"
 mint="So11111111111111111111111111111111111111112"
 market="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 reserve="SysvarRent111111111111111111111111111111111"
+initial_reserve_d="SysvarS1otHashes111111111111111111111111111"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -135,9 +138,9 @@ fi
 rg --quiet --fixed-strings 'session_requires_rebuild(session.is_none(), diff.has_changes(), earn_changed)' \
   "$routing_root/crates/balance-sweep-ata-monitor/src/main.rs" ||
   fail "Earn watch-set changes do not rebuild the replaying session"
-rg --quiet --fixed-strings 'preserve_replay_from_slot' \
+rg --quiet --fixed-strings 'replay_checkpoint_after_session_start' \
   "$routing_root/crates/balance-sweep-ata-monitor/src/main.rs" ||
-  fail "Earn watch-set rebuild does not preserve the earlier replay start"
+  fail "Earn watch-set rebuild has no advancing replay checkpoint"
 
 for removed_route in \
   "$app_root/apps/web/src/app/api/cron/earn-deposit-reconcile/route.ts" \
@@ -275,6 +278,11 @@ WITH route AS (
     settings, vault_index, vault_pubkey, active_policy_id, active
   ) SELECT '$settings_d', 1, '$vault_d', route.id, TRUE FROM route
   RETURNING id, active_policy_id
+), current_snapshot AS (
+  INSERT INTO loyal_yield.vault_position_snapshots (
+    vault_id, policy_id, observed_slot, is_current
+  ) SELECT vault.id, vault.active_policy_id, 108, TRUE FROM vault
+  RETURNING id
 ), initial_deposit AS (
   INSERT INTO loyal_yield.user_yield_position_deposits (
     deposit_signature, policy_signature, confirmed_slot, wallet_address,
@@ -284,7 +292,7 @@ WITH route AS (
     created_at
   ) SELECT
     'sig-deposit-d-initial', 'sig-policy-d', 100, '$wallet_d', '$vault_d',
-    '$settings_d', 1, '$vault_d', route.id, '$policy_d', 401, '$reserve',
+    '$settings_d', 1, '$vault_d', route.id, '$policy_d', 401, '$initial_reserve_d',
     '$market', '$mint', NULL, '$mint', 2000000, NOW(), NOW()
   FROM route
   RETURNING id
@@ -299,27 +307,48 @@ WITH route AS (
     current_observed_slot, current_observed_at
   ) SELECT
     '$wallet_d', '$vault_d', '$settings_d', 1, '$vault_d', route.id,
-    '$policy_d', 401, '$reserve', '$market', '$mint', NULL, '$mint', 2000000,
+    '$policy_d', 401, '$initial_reserve_d', '$market', '$mint', NULL, '$mint', 2000000,
     'sig-deposit-d-initial', 'sig-deposit-d-initial', 100, 'active', NOW(),
-    NOW(), '$reserve', '$market', '$mint', 2100000, 100, NOW()
+    NOW(), '$reserve', '$market', '$mint', 2100000, 108, NOW()
   FROM route
   RETURNING id
-), holding AS (
+), initial_holding AS (
   INSERT INTO loyal_yield.user_yield_position_holding_events (
     position_id, event_type, reserve, market, liquidity_mint, amount_raw,
     principal_delta_raw, holding_delta_raw, observed_slot, observed_at,
     source_signature, source_deposit_id, created_at
   ) SELECT
-    position.id, 'deposit_initialized', '$reserve', '$market', '$mint',
+    position.id, 'deposit_initialized', '$initial_reserve_d', '$market', '$mint',
     2100000, 2000000, 2100000, 100, NOW(), 'sig-deposit-d-initial',
     initial_deposit.id, NOW()
   FROM position CROSS JOIN initial_deposit
   RETURNING id, position_id
+), current_holding AS (
+  INSERT INTO loyal_yield.user_yield_position_holding_events (
+    position_id, event_type, reserve, market, liquidity_mint, amount_raw,
+    principal_delta_raw, holding_delta_raw, observed_slot, observed_at,
+    source_signature, source_snapshot_id, created_at
+  ) SELECT
+    position.id, 'snapshot_reconciled', '$reserve', '$market', '$mint',
+    2100000, NULL, NULL, 108, NOW(), 'sig-snapshot-d', current_snapshot.id,
+    NOW()
+  FROM position CROSS JOIN current_snapshot
+  RETURNING id, position_id
 )
 UPDATE loyal_yield.user_yield_positions position
-SET last_holding_event_id = holding.id
-FROM holding
-WHERE position.id = holding.position_id;
+SET last_holding_event_id = current_holding.id
+FROM current_holding
+WHERE position.id = current_holding.position_id;
+
+INSERT INTO loyal_yield.route_policies (
+  settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+  delegated_signers, threshold, route_modes, stable_mints, kamino_markets,
+  kamino_liquidity_mints, active, last_seen_slot, last_seen_signature
+) VALUES (
+  '$settings_d', '$wallet_d', 400, '$policy_d_stale', 1, '$vault_d',
+  ARRAY['$wallet_d'], 1, ARRAY['kamino_deposit'], ARRAY['$mint'],
+  ARRAY['$market'], ARRAY['$mint'], FALSE, 104, 'sig-policy-d-stale'
+);
 
 INSERT INTO loyal_yield.earn_deposit_onboarding_attempts (
   wallet_address, delegated_signer, smart_account_address, settings, vault_index,
@@ -328,11 +357,12 @@ INSERT INTO loyal_yield.earn_deposit_onboarding_attempts (
   deposit_confirmed_slot, deposit_mint, principal_amount_raw, target_reserve,
   market, liquidity_mint, status, first_seen_at, updated_at
 ) SELECT
-  '$wallet_d', '$wallet_d', '$vault_d', '$settings_d', 1, '$vault_d', 401,
-  '$policy_d', 401, id, 'sig-policy-d', 105, 'sig-deposit-d-initial', 100,
-  '$mint', 2000000, '$reserve', '$market', '$mint', 'complete', NOW(), NOW()
+  '$wallet_d', '$wallet_d', '$vault_d', '$settings_d', 1, '$vault_d', 400,
+  '$policy_d_stale', 400, id, 'sig-policy-d-stale', 104,
+  'sig-deposit-d-initial', 100, '$mint', 2000000, '$initial_reserve_d',
+  '$market', '$mint', 'complete', NOW(), NOW() + INTERVAL '1 day'
 FROM loyal_yield.route_policies
-WHERE policy_account = '$policy_d';
+WHERE policy_account = '$policy_d_stale';
 
 INSERT INTO loyal_yield.earn_deposit_onboarding_attempts (
   wallet_address, delegated_signer, smart_account_address, settings, vault_index,
@@ -420,7 +450,8 @@ run_fixture() {
       --watch-set "$verifier_root/fixtures/watch-set.json" \
       --events "$events_file" \
       --chain-fixtures "$chain_file" \
-      --request-output "$request_log"
+      --request-output "$request_log" \
+      --context-output "$context_log"
   )
 }
 
@@ -443,6 +474,16 @@ jq -e '
   ([.accounts[] | . == (sort | unique)] | all)
 ' "$request_log" >/dev/null || fail "captured SubscribeRequest is unsafe or incomplete"
 pass_condition "account-only multi-channel subscription"
+
+jq -e --arg vault "$vault_d" --arg policy "$policy_d" '
+  any(.[];
+    .vault == $vault and
+    .context.route_policy.policy_account == $policy and
+    .context.onboarding.route_policy_account == $policy and
+    .context.onboarding.status == "route_policy_confirmed"
+  )
+' "$context_log" >/dev/null || fail "active onboarding policy was not selected deterministically"
+pass_condition "active onboarding attempt overrides stale completed policy history"
 
 assert_scalar "setup_policy_confirmed" \
   "SELECT status FROM loyal_yield.earn_deposit_onboarding_attempts WHERE vault_pubkey = '$vault_a'" \
@@ -471,10 +512,13 @@ assert_scalar "complete" \
 assert_scalar "7000000:7400000:119:active" \
   "SELECT principal_amount_raw || ':' || current_amount_raw || ':' || current_observed_slot || ':' || status::text FROM loyal_yield.user_yield_positions WHERE vault_pubkey = '$vault_d'" \
   "top-up adds principal while projecting the later observed holding"
+assert_scalar "1:$initial_reserve_d:$reserve" \
+  "SELECT count(*) || ':' || min(initial_reserve) || ':' || min(current_reserve) FROM loyal_yield.user_yield_positions WHERE vault_pubkey = '$vault_d'" \
+  "cross-reserve top-up reuses the active aggregate position"
 assert_scalar "7400000:5000000:5300000:119:deposit_top_up" \
   "SELECT event.amount_raw || ':' || event.principal_delta_raw || ':' || event.holding_delta_raw || ':' || event.observed_slot || ':' || event.event_type::text FROM loyal_yield.user_yield_position_holding_events event JOIN loyal_yield.user_yield_position_deposits deposit ON deposit.id = event.source_deposit_id WHERE deposit.deposit_signature = 'sig-deposit-d'" \
   "top-up holding delta is measured from the previous projection"
-assert_scalar "2:2" \
+assert_scalar "2:3" \
   "SELECT (SELECT count(*) FROM loyal_yield.user_yield_position_deposits WHERE vault_pubkey = '$vault_d') || ':' || (SELECT count(*) FROM loyal_yield.user_yield_position_holding_events event JOIN loyal_yield.user_yield_positions position ON position.id = event.position_id WHERE position.vault_pubkey = '$vault_d')" \
   "top-up preserves one deposit and holding event per signature"
 assert_scalar "sig-deposit-d-initial:2000000:100" \
@@ -550,7 +594,7 @@ assert_scalar "131" \
 assert_scalar "1:1" \
   "SELECT (SELECT count(*) FROM loyal_yield.user_yield_position_deposits WHERE deposit_signature = 'sig-deposit-b') || ':' || (SELECT count(*) FROM loyal_yield.user_yield_position_holding_events event JOIN loyal_yield.user_yield_position_deposits deposit ON deposit.id = event.source_deposit_id WHERE deposit.deposit_signature = 'sig-deposit-b')" \
   "replay created no duplicate deposit accounting"
-assert_scalar "2:2" \
+assert_scalar "2:3" \
   "SELECT (SELECT count(*) FROM loyal_yield.user_yield_position_deposits WHERE vault_pubkey = '$vault_d') || ':' || (SELECT count(*) FROM loyal_yield.user_yield_position_holding_events event JOIN loyal_yield.user_yield_positions position ON position.id = event.position_id WHERE position.vault_pubkey = '$vault_d')" \
   "replay created no duplicate top-up accounting"
 assert_scalar "2" \
@@ -592,7 +636,7 @@ echo "== Run focused production checks"
   cd "$routing_root"
   NO_DNA=1 cargo fmt --all -- --check
   NO_DNA=1 cargo test -p balance-sweep-ata-monitor
-  echo "PASS: fresh replaying session on Earn watch-set changes"
+  echo "PASS: Earn watch-set replay checkpoint advances after rebuild"
   echo "PASS: production principal proof nets balances per owner"
   echo "PASS: failed Earn proof wakes the supervisor immediately"
   NO_DNA=1 cargo check -p balance-sweep-ata-monitor -p loyal-yield-store \

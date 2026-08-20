@@ -312,15 +312,34 @@ async fn supervise_monitor_sessions(
     let refresh_interval = Duration::from_secs(args.target_refresh_seconds);
     let mut session: Option<MonitorSession> = None;
     let mut next_state = Some((initial_targets, initial_watch_set));
-    let mut replay_from_slot_override = None;
+    let mut earn_replay_checkpoint = None;
 
     loop {
         if session.as_ref().is_some_and(MonitorSession::has_exited) {
             let finished = session.take().expect("checked session exists");
-            replay_from_slot_override =
-                preserve_replay_from_slot(replay_from_slot_override, finished.replay_from_slot);
             log_finished_session(finished).await;
         }
+
+        let refresh_replay_boundary =
+            if session.is_some() && args.update_source == UpdateSourceKind::Laserstream {
+                match laserstream_current_replay_boundary(
+                    &args.rpc_url,
+                    args.laserstream_replay_overlap_slots,
+                )
+                .await
+                {
+                    Ok(boundary) => Some(boundary),
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "failed to advance Earn watch-set replay checkpoint"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
         let (targets, mut watch_set) = match next_state.take() {
             Some(state) => state,
@@ -360,19 +379,17 @@ async fn supervise_monitor_sessions(
                 );
                 stop_session(existing).await;
             }
+            earn_replay_checkpoint = None;
             tracing::info!(
                 refresh_seconds = args.target_refresh_seconds,
                 "waiting for active balance sweep ATA targets"
             );
         } else if session_requires_rebuild(session.is_none(), diff.has_changes(), earn_changed) {
-            if earn_changed {
-                replay_from_slot_override = preserve_replay_from_slot(
-                    replay_from_slot_override,
-                    session
-                        .as_ref()
-                        .and_then(|existing| existing.replay_from_slot),
-                );
-            }
+            let replay_from_slot_override = replay_override_for_watch_set_change(
+                session.is_some(),
+                earn_changed,
+                earn_replay_checkpoint,
+            );
             if let Some(existing) = session.take() {
                 tracing::info!(
                     added_count = diff.added.len(),
@@ -395,20 +412,23 @@ async fn supervise_monitor_sessions(
                 "seeded current wallet ATA balances before subscription start"
             );
 
-            session = Some(
-                start_session(
-                    &args,
-                    targets,
-                    watch_set,
-                    store.clone(),
-                    observations.clone(),
-                    config,
-                    recheck.clone(),
-                    replay_from_slot_override.take(),
-                )
-                .await
-                .context("start balance sweep ATA monitor session")?,
+            let started = start_session(
+                &args,
+                targets,
+                watch_set,
+                store.clone(),
+                observations.clone(),
+                config,
+                recheck.clone(),
+                replay_from_slot_override,
+            )
+            .await
+            .context("start balance sweep ATA monitor session")?;
+            earn_replay_checkpoint = replay_checkpoint_after_session_start(
+                refresh_replay_boundary,
+                started.replay_from_slot,
             );
+            session = Some(started);
         } else {
             tracing::debug!(
                 target_count = targets.len(),
@@ -416,11 +436,13 @@ async fn supervise_monitor_sessions(
             );
         }
 
+        if session.is_some() && !earn_changed {
+            earn_replay_checkpoint = refresh_replay_boundary.or(earn_replay_checkpoint);
+        }
+
         if let Some(existing) = session.as_mut() {
             if wait_for_refresh_or_session_exit(refresh_interval, &mut existing.finished).await {
                 let finished = session.take().expect("session exit was observed");
-                replay_from_slot_override =
-                    preserve_replay_from_slot(replay_from_slot_override, finished.replay_from_slot);
                 log_finished_session(finished).await;
             }
         } else {
@@ -433,8 +455,21 @@ fn session_requires_rebuild(session_missing: bool, ata_changed: bool, earn_chang
     session_missing || ata_changed || earn_changed
 }
 
-fn preserve_replay_from_slot(current: Option<u64>, previous_session: Option<u64>) -> Option<u64> {
-    current.into_iter().chain(previous_session).min()
+fn replay_override_for_watch_set_change(
+    session_present: bool,
+    earn_changed: bool,
+    replay_checkpoint: Option<u64>,
+) -> Option<u64> {
+    (session_present && earn_changed)
+        .then_some(replay_checkpoint)
+        .flatten()
+}
+
+fn replay_checkpoint_after_session_start(
+    refresh_boundary: Option<u64>,
+    session_replay_from_slot: Option<u64>,
+) -> Option<u64> {
+    refresh_boundary.or(session_replay_from_slot)
 }
 
 async fn wait_for_refresh_or_session_exit(
@@ -620,6 +655,20 @@ async fn laserstream_replay_start_slot(
         .unwrap_or(current_fallback))
 }
 
+async fn laserstream_current_replay_boundary(
+    rpc_url: &str,
+    replay_overlap_slots: u64,
+) -> Result<u64> {
+    let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
+    let current_slot = rpc
+        .get_slot()
+        .context("fetch confirmed RPC slot for Earn watch-set replay checkpoint")?;
+    Ok(laserstream_replay_from_slot(
+        current_slot,
+        replay_overlap_slots,
+    ))
+}
+
 async fn stop_session(session: MonitorSession) {
     session.running.store(false, Ordering::Relaxed);
     session.source_task.abort();
@@ -671,9 +720,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn earn_watch_change_requires_fresh_replaying_session() {
+    fn earn_watch_change_replays_once_then_advances_checkpoint() {
         assert!(session_requires_rebuild(false, false, true));
-        assert_eq!(preserve_replay_from_slot(Some(90), Some(42)), Some(42));
+        assert_eq!(
+            replay_override_for_watch_set_change(true, true, Some(42)),
+            Some(42)
+        );
+
+        let advanced = replay_checkpoint_after_session_start(Some(90), Some(42));
+        assert_eq!(advanced, Some(90));
+        assert_eq!(
+            replay_override_for_watch_set_change(true, true, advanced),
+            Some(90)
+        );
+        assert_eq!(
+            replay_checkpoint_after_session_start(Some(140), Some(90)),
+            Some(140)
+        );
+    }
+
+    #[test]
+    fn failed_session_restarts_from_durable_cursor() {
+        assert_eq!(
+            replay_override_for_watch_set_change(false, true, Some(42)),
+            None
+        );
     }
 
     #[tokio::test]
