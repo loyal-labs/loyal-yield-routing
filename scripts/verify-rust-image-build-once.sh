@@ -134,17 +134,25 @@ require_file "$verifier"
 require_file "$crate_boundaries"
 require_file "$worker_image_docs"
 
-# Event contract: PRs verify; main builds and publishes; no manual build path remains.
+# Event contract: PRs verify, main publishes, and a schedule refreshes caches;
+# no manual build path remains.
 require_text "$worker_entry" 'pull_request:' 'Worker images verify pull requests'
 require_text "$worker_entry" 'push:' 'Worker images build trusted main pushes'
+require_text "$worker_entry" 'schedule:' 'Worker images refresh trusted caches on a schedule'
+require_text "$worker_entry" 'cron: "17 0 * * *"' 'Cache refresh runs once per UTC day'
 require_text "$worker_entry" 'branches:' 'Main push trigger is branch-scoped'
 require_text "$worker_entry" '- main' 'Main push trigger names the main branch'
 forbid_pattern "$worker_entry" '^[[:space:]]*workflow_dispatch:' 'Worker image workflow has no rebuild-capable manual trigger'
 require_text "$worker_entry" 'verify-pull-request:' 'Pull requests have a dedicated verification job'
 require_text "$worker_entry" 'publish-main-images:' 'Main pushes have a dedicated publication job'
-require_fixed_count "$worker_entry" 'uses: ./.github/workflows/rust-image-build.yml' 2 'PR and main are the only reusable workflow callers'
-require_fixed_count "$worker_entry" 'publish: false' 1 'Only the PR caller disables publication'
+require_text "$worker_entry" 'refresh-build-caches:' 'Scheduled runs have a dedicated cache-refresh job'
+require_fixed_count "$worker_entry" 'uses: ./.github/workflows/rust-image-build.yml' 3 'PR, main, and cache refresh are the only reusable workflow callers'
+require_fixed_count "$worker_entry" 'publish: false' 2 'PR and cache refresh callers disable publication'
 require_fixed_count "$worker_entry" 'publish: true' 1 'Only the main caller enables publication'
+require_fixed_count "$worker_entry" 'package-images: true' 2 'PR and main callers package runtime images'
+require_fixed_count "$worker_entry" 'package-images: false' 1 'Cache refresh does not package runtime images'
+require_fixed_count "$worker_entry" 'save-caches: false' 2 'PR and main callers do not upload Cargo state'
+require_fixed_count "$worker_entry" 'save-caches: true' 1 'Only the scheduled caller uploads Cargo state'
 forbid_pattern "$worker_entry" '^[[:space:]]+images:' 'Entry workflow has no image-selection branch that can trigger a second build'
 
 # Build contract: one matrix entry per image family compiles in parallel and
@@ -159,21 +167,23 @@ require_text "$workflow" '          - light-workers' 'Rust matrix includes light
 require_text "$workflow" '          - operator-tools' 'Rust matrix includes operator tools'
 require_text "$workflow" 'uses: actions/upload-artifact@v4' 'Each Rust matrix entry uploads its family artifact'
 require_text "$workflow" 'name: rust-image-binaries-${{ matrix.family }}' 'Rust artifacts are isolated by image family'
+require_text "$workflow" 'compression-level: 1' 'Rust artifacts use the measured low-cost compression level'
 forbid_pattern "$workflow" 'if:[[:space:]]*inputs\.images' 'Binary artifact upload is not conditional on an image selection'
 require_fixed_count "$workflow" 'uses: actions/download-artifact@v4' 3 'All three image jobs download their family artifact'
 require_text "$workflow" 'name: rust-image-binaries-laserstream-workers' 'LaserStream image downloads only its binaries'
 require_text "$workflow" 'name: rust-image-binaries-light-workers' 'Light-worker image downloads only its binaries'
 require_text "$workflow" 'name: rust-image-binaries-operator-tools' 'Operator image downloads only its binaries'
 require_fixed_count "$workflow" 'needs: rust-build' 3 'All three image jobs wait for the parallel Rust matrix'
+require_fixed_count "$workflow" 'if: inputs.package-images' 4 'Artifacts and all runtime images are skipped during cache refresh'
 forbid_pattern "$workflow" 'inputs\.images|^[[:space:]]+images:' 'Reusable workflow has no image-selection control flow'
 
 # Cache contract: Cargo fingerprints come from one dependency-graph snapshot;
 # sccache remains the content-addressed fallback for changed compiler outputs.
 require_text "$workflow" 'uses: actions/cache/restore@v4' 'Cargo dependency state is restored explicitly'
-require_text "$workflow" 'uses: actions/cache/save@v4' 'Trusted main builds save Cargo dependency state explicitly'
+require_text "$workflow" 'uses: actions/cache/save@v4' 'Scheduled refreshes save Cargo state explicitly'
 require_text "$workflow" "hashFiles('Cargo.lock')" 'Cargo dependency cache is keyed by the lockfile'
 require_fixed_count "$workflow" 'uses: actions/cache/restore@v4' 2 'Dependency downloads and Cargo target state have separate restore steps'
-require_fixed_count "$workflow" 'uses: actions/cache/save@v4' 2 'Trusted main can save dependency downloads and Cargo target state separately'
+require_fixed_count "$workflow" 'uses: actions/cache/save@v4' 2 'Scheduled refresh can save dependency downloads and Cargo target state separately'
 require_text "$workflow" 'RUST_TARGET_CACHE_PREFIX: rust-target-linux-amd64-rust-1.89-v2' 'Cargo target cache has an explicit generation and toolchain scope'
 require_text "$workflow" 'id: cargo-target-generation' 'Cargo target cache selects a rolling generation'
 require_text "$workflow" 'utc-date=$(date -u +%Y-%m-%d)' 'Cargo target cache rolls forward at most once per UTC day'
@@ -193,7 +203,8 @@ forbid_pattern "$workflow" 'git config .*safe\.directory' 'Workflow does not wea
 require_pattern "$workflow" 'mozilla-actions/sccache-action@v[0-9]' 'A versioned sccache action provides content-addressed compiler reuse'
 require_text "$workflow" 'SCCACHE_GHA_ENABLED: "true"' 'sccache uses the GitHub Actions cache backend'
 require_text "$workflow" 'RUSTC_WRAPPER: sccache' 'Rust compilation is routed through sccache'
-require_text "$workflow" "github.event_name == 'push'" 'Dependency-cache writes require a trusted push event'
+require_fixed_count "$workflow" "inputs.save-caches && github.event_name == 'schedule'" 2 'Only scheduled cache-refresh jobs can write Cargo state'
+forbid_pattern "$workflow" "github.event_name == 'push'.*actions/cache/save|if:.*github.event_name == 'push'.*cache" 'Main publication never uploads Cargo state'
 require_text "$workflow" "github.ref == 'refs/heads/main'" 'Dependency-cache writes are restricted to main'
 require_text "$workflow" "matrix.family == 'light-workers'" 'Only one matrix entry can save the shared dependency cache'
 

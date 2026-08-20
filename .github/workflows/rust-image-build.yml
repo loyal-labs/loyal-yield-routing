@@ -8,6 +8,16 @@ on:
         required: false
         default: false
         type: boolean
+      package-images:
+        description: Package and probe runtime images after compiling
+        required: false
+        default: true
+        type: boolean
+      save-caches:
+        description: Save refreshed Cargo state for later builds
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -98,25 +108,28 @@ jobs:
         run: python3 scripts/prepare-rust-target-cache.py record
 
       - name: Upload compiled binaries
+        if: inputs.package-images
         uses: actions/upload-artifact@v4
         with:
           name: rust-image-binaries-${{ matrix.family }}
           path: build-artifacts/rust
           if-no-files-found: error
           retention-days: 1
-          # Release binaries are already dense; skip CPU-heavy ZIP compression.
-          compression-level: 0
+          # Level 1 cuts the family artifacts by roughly 58% while adding only
+          # a few seconds before the package jobs download them.
+          compression-level: 1
 
-      # Pull requests can restore default-branch caches but cannot poison them.
+      # The scheduled default-branch refresh owns these multi-gigabyte uploads,
+      # so publishing a main commit never waits for cache compression.
       - name: Save trusted Cargo target state
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-target-cache.outputs.cache-hit != 'true'
+        if: inputs.save-caches && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.cargo-target-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: target
           key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-${{ steps.cargo-target-generation.outputs.utc-date }}
 
       - name: Save trusted Cargo dependency state
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.family == 'light-workers' && steps.cargo-dependency-cache.outputs.cache-hit != 'true'
+        if: inputs.save-caches && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && matrix.family == 'light-workers' && steps.cargo-dependency-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -126,6 +139,7 @@ jobs:
 
   laserstream-workers:
     name: Package laserstream workers
+    if: inputs.package-images
     needs: rust-build
     runs-on: ubuntu-latest
     steps:
@@ -178,6 +192,7 @@ jobs:
 
   light-workers:
     name: Package light workers
+    if: inputs.package-images
     needs: rust-build
     runs-on: ubuntu-latest
     steps:
@@ -250,6 +265,7 @@ jobs:
 
   operator-tools:
     name: Package operator tools
+    if: inputs.package-images
     needs: rust-build
     runs-on: ubuntu-latest
     steps:
