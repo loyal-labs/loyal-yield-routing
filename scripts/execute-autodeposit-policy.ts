@@ -3170,12 +3170,12 @@ export async function prepareSameMintReserveTopUp(args: {
   return runSameMintCommand(command);
 }
 
-async function reconcileDirectDepositPosition(args: {
+export function buildDirectDepositPositionReconciliationCommand(args: {
   reserve: string;
   rpcUrl: string;
   target: Pick<EligibleTarget, "settings" | "vaultIndex">;
-}): Promise<{ amountRaw: bigint; observedSlot: bigint }> {
-  const result = await runSameMintCommand([
+}): string[] {
+  return [
     ...sameMintReserveSwapCommand(),
     "--settings",
     args.target.settings,
@@ -3183,9 +3183,21 @@ async function reconcileDirectDepositPosition(args: {
     args.target.vaultIndex.toString(),
     "--reconcile-from-chain",
     "--reconcile-current-positions",
+    "--reconcile-reserve",
+    args.reserve,
     "--rpc-url",
     args.rpcUrl,
-  ]);
+  ];
+}
+
+async function reconcileDirectDepositPosition(args: {
+  reserve: string;
+  rpcUrl: string;
+  target: Pick<EligibleTarget, "settings" | "vaultIndex">;
+}): Promise<{ amountRaw: bigint; observedSlot: bigint }> {
+  const result = await runSameMintCommand(
+    buildDirectDepositPositionReconciliationCommand(args)
+  );
   if (result.json?.status !== "current_positions_reconciled") {
     throw new Error(
       `Post-confirm Kamino reconciliation returned ${String(

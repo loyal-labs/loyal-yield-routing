@@ -6,6 +6,7 @@ import {
   assertEmptyVaultBeforeDirectAutodeposit,
   assertSolBalance,
   autodepositExecutorFailureExitCode,
+  buildDirectDepositPositionReconciliationCommand,
   computeSweepAmount,
   isMissingAutodepositTokenDelegateFailure,
   parseKeypairSecret,
@@ -120,6 +121,33 @@ describe("direct autodeposit vault ownership", () => {
     expect(() =>
       assertEmptyVaultBeforeDirectAutodeposit(BigInt(0))
     ).not.toThrow();
+  });
+});
+
+describe("direct autodeposit position reconciliation", () => {
+  test("scopes the chain reconciliation to the deposited reserve", () => {
+    const command = buildDirectDepositPositionReconciliationCommand({
+      reserve: "kamino-reserve",
+      rpcUrl: "https://rpc.invalid",
+      target: {
+        settings: "smart-account-settings",
+        vaultIndex: 1,
+      },
+    });
+    const settingsArgument = command.indexOf("--settings");
+
+    expect(command.slice(settingsArgument)).toEqual([
+      "--settings",
+      "smart-account-settings",
+      "--vault-index",
+      "1",
+      "--reconcile-from-chain",
+      "--reconcile-current-positions",
+      "--reconcile-reserve",
+      "kamino-reserve",
+      "--rpc-url",
+      "https://rpc.invalid",
+    ]);
   });
 });
 
