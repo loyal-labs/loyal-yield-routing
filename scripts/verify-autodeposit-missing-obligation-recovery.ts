@@ -202,26 +202,39 @@ async function main() {
   const executorSource = await Bun.file(
     new URL("./execute-autodeposit-policy.ts", import.meta.url)
   ).text();
+  const preflightStart = executorSource.indexOf(
+    "export async function preflightDurableKaminoDeposit"
+  );
   const initialDryRunIndex = executorSource.indexOf(
-    "const initialTopUpDryRun = await runSameMintReserveTopUp({"
+    "const initialDryRun = await refreshTopUp();",
+    preflightStart
   );
   const recoveryIndex = executorSource.indexOf(
-    "const recoveryResult = await recoverMissingObligationBeforePull({"
+    "const recovered = await recoverMissingObligationBeforePull({",
+    preflightStart
+  );
+  const mainPreflightIndex = executorSource.indexOf(
+    "const depositPreflight = await preflightDurableKaminoDeposit({"
   );
   const pullIndex = executorSource.indexOf(
-    "const { result: pullSend, safety: topUpFeePayerSafety } ="
+    "const { result: durablePullSend } =",
+    mainPreflightIndex
   );
   check(
     "production executor wires recovery after dry-run and before pull",
     initialDryRunIndex >= 0 &&
       initialDryRunIndex < recoveryIndex &&
-      recoveryIndex < pullIndex
+      mainPreflightIndex >= 0 &&
+      mainPreflightIndex < pullIndex
+  );
+  const recoveryWiring = executorSource.slice(
+    recoveryIndex,
+    executorSource.indexOf("assertNoTopUpPreflightBlockers", recoveryIndex)
   );
   check(
     "production recovery invokes the setup-only runner",
-    executorSource.includes(
-      "runSetup: (execute) =>\n        runMissingObligationSetup({"
-    )
+    recoveryWiring.includes("runSetup: (execute) =>") &&
+      recoveryWiring.includes("runMissingObligationSetup({")
   );
 
   const originalCommand = process.env.SAME_MINT_RESERVE_SWAP_COMMAND;

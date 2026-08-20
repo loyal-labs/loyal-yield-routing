@@ -12608,25 +12608,26 @@ async fn deactivate_vault_policy_after_full_withdraw(
 
 async fn run_reconcile_current_positions_flow(
     options: &CliOptions,
-    client: &NeonSqlClient,
+    _client: &NeonSqlClient,
     vault: &SelectedVault,
     preview: &ChainReconcilePreview,
 ) -> Result<(), Box<dyn Error>> {
-    let snapshot = client
-        .apply_observed_patch(vault.id, chain_preview_reconciled_state(preview)?)
-        .await?;
+    // This path is a chain observer for callers that own their own publication
+    // transaction. Publishing here created a second accounting writer and made
+    // autodeposit completion impossible to roll back atomically.
+    let _ = chain_preview_reconciled_state(preview)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "status": "current_positions_reconciled",
             "writesDecision": false,
-            "writesCurrentPositions": true,
+            "writesCurrentPositions": false,
             "sendsTransactions": false,
             "execute": options.execute,
             "vault": vault_json(vault),
             "requestedReserves": options.reconcile_reserves,
             "reconciledReserveCount": preview.positions.len(),
-            "reconciledSnapshotId": snapshot.id.as_i64(),
+            "reconciledSnapshotId": Value::Null,
             "chainReconcile": chain_reconcile_preview_json(preview),
         }))?
     );

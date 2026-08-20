@@ -192,6 +192,7 @@ type AutodepositRecoveryContext = {
 
 class AutodepositOwnershipLostError extends Error {}
 export class AutodepositEffectAmbiguousError extends Error {}
+class AutodepositYieldPersistenceError extends Error {}
 
 export type DirectTopUpRecoveryAction =
   | "reconcile_persisted"
@@ -3183,6 +3184,7 @@ export function buildDirectDepositPositionReconciliationCommand(args: {
     args.target.vaultIndex.toString(),
     "--reconcile-from-chain",
     "--reconcile-current-positions",
+    "--read-only",
     "--reconcile-reserve",
     args.reserve,
     "--rpc-url",
@@ -4357,295 +4359,45 @@ async function completeAutodepositClaim(args: {
   executionId: string;
   leaseToken: string;
   neon: AppModules["neon"];
-  plan: AutodepositDepositPlan;
   postConfirmPositionAmountRaw: bigint;
   postConfirmObservedSlot: bigint;
   scheduledSlotId: bigint;
 }) {
   const sql = args.neon(args.databaseUrl);
-  const rows = await sql`
-    WITH owned_claim AS MATERIALIZED (
-      SELECT claim_token
-      FROM loyal_yield.balance_sweep_lot_claims
-      WHERE claim_token = ${args.claimToken}
-        AND status = 'selected'
-        AND autodeposit_executor_lease_token = ${args.leaseToken}
-        AND autodeposit_executor_lease_expires_at > now()
-      FOR UPDATE
-    ),
-    confirmed_top_up AS (
-      SELECT attempt.signature, attempt.confirmed_slot
-      FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
-      JOIN owned_claim ON TRUE
-      WHERE attempt.claim_token = ${args.claimToken}
-        AND attempt.execution_id = ${args.executionId}
-        AND attempt.operation_kind = 'top_up'
-        AND attempt.attempt_state = 'confirmed'
-        AND attempt.confirmed_slot IS NOT NULL
-      ORDER BY attempt.attempt_number DESC
-      LIMIT 1
-    ),
-    existing_position AS MATERIALIZED (
-      SELECT
-        position.id, position.current_amount_raw, position.principal_amount_raw,
-        position.current_reserve, position.current_liquidity_mint
-      FROM loyal_yield.user_yield_positions AS position
-      JOIN owned_claim ON TRUE
-      WHERE position.settings = ${args.plan.target.settings}
-        AND position.vault_index = ${args.plan.target.vaultIndex}
-        AND position.wallet_address = ${args.plan.target.wallet}
-        AND position.status = 'active'
-      ORDER BY position.updated_at DESC, position.id DESC
-      LIMIT 1
-      FOR UPDATE OF position
-    ),
-    inserted_deposit AS (
-      INSERT INTO loyal_yield.user_yield_position_deposits (
-        deposit_signature, policy_signature, confirmed_slot,
-        wallet_address, smart_account_address, settings, vault_index,
-        vault_pubkey, policy_id, policy_account, policy_seed,
-        target_reserve, market, liquidity_mint, target_supply_apy_bps,
-        deposit_mint, principal_amount_raw, balance_sweep_execution_id,
-        balance_sweep_scheduled_slot_id, confirmed_at, created_at
-      )
-      SELECT
-        confirmed_top_up.signature, confirmed_top_up.signature,
-        confirmed_top_up.confirmed_slot, ${args.plan.target.wallet},
-        ${args.plan.target.vaultPubkey}, ${args.plan.target.settings},
-        ${args.plan.target.vaultIndex}, ${args.plan.target.vaultPubkey},
-        ${args.plan.target.routePolicySeed.toString()},
-        ${args.plan.target.routePolicyAccount},
-        ${args.plan.target.routePolicySeed.toString()}, ${args.plan.reserve},
-        ${args.plan.market}, ${args.plan.liquidityMint}, NULL,
-        ${args.plan.liquidityMint}, ${args.plan.amountRaw.toString()},
-        ${args.executionId}, ${args.scheduledSlotId.toString()}, now(), now()
-      FROM confirmed_top_up
-      ON CONFLICT (deposit_signature) DO NOTHING
-      RETURNING id, deposit_signature
-    ),
-    linked_existing_deposit AS (
-      UPDATE loyal_yield.user_yield_position_deposits AS deposit
-      SET
-        balance_sweep_execution_id = COALESCE(
-          deposit.balance_sweep_execution_id,
-          ${args.executionId}
-        ),
-        balance_sweep_scheduled_slot_id = COALESCE(
-          deposit.balance_sweep_scheduled_slot_id,
-          ${args.scheduledSlotId.toString()}
-        )
-      FROM confirmed_top_up
-      WHERE deposit.deposit_signature = confirmed_top_up.signature
-        AND NOT EXISTS (SELECT 1 FROM inserted_deposit)
-        AND (
-          deposit.balance_sweep_execution_id IS NULL
-          OR deposit.balance_sweep_execution_id = ${args.executionId}
-        )
-      RETURNING deposit.id, deposit.deposit_signature
-    ),
-    completed_deposit AS (
-      SELECT id, deposit_signature, TRUE AS inserted FROM inserted_deposit
-      UNION ALL
-      SELECT id, deposit_signature, FALSE AS inserted
-      FROM linked_existing_deposit
-    ),
-    updated_position AS (
-      UPDATE loyal_yield.user_yield_positions AS position
-      SET deposit_mint = ${args.plan.liquidityMint},
-          initial_liquidity_mint = ${args.plan.liquidityMint},
-          initial_market = ${args.plan.market},
-          last_confirmed_slot = confirmed_top_up.confirmed_slot,
-          last_deposit_signature = confirmed_top_up.signature,
-          policy_account = ${args.plan.target.routePolicyAccount},
-          policy_id = ${args.plan.target.routePolicySeed.toString()},
-          policy_seed = ${args.plan.target.routePolicySeed.toString()},
-          principal_amount_raw = position.principal_amount_raw +
-            CASE WHEN completed_deposit.inserted
-              THEN ${args.plan.amountRaw.toString()}::bigint ELSE 0 END,
-          smart_account_address = ${args.plan.target.vaultPubkey},
-          vault_pubkey = ${args.plan.target.vaultPubkey},
-          wallet_address = ${args.plan.target.wallet},
-          current_reserve = ${args.plan.reserve},
-          current_market = ${args.plan.market},
-          current_liquidity_mint = ${args.plan.liquidityMint},
-          current_amount_raw = ${args.postConfirmPositionAmountRaw.toString()},
-          current_observed_slot = ${args.postConfirmObservedSlot.toString()},
-          current_observed_at = now(),
-          status = 'active',
-          updated_at = now()
-      FROM existing_position, confirmed_top_up, completed_deposit
-      WHERE position.id = existing_position.id
-      RETURNING
-        position.id,
-        'deposit_top_up'::text AS event_type,
-        CASE
-          WHEN existing_position.current_reserve = ${args.plan.reserve}
-           AND existing_position.current_liquidity_mint = ${args.plan.liquidityMint}
-          THEN ${args.postConfirmPositionAmountRaw.toString()}::bigint -
-            existing_position.current_amount_raw
-          ELSE NULL
-        END AS holding_delta_raw
-    ),
-    inserted_position AS (
-      INSERT INTO loyal_yield.user_yield_positions (
-        wallet_address, smart_account_address, settings, vault_index,
-        vault_pubkey, policy_id, policy_account, policy_seed,
-        initial_reserve, initial_market, initial_liquidity_mint,
-        initial_supply_apy_bps, deposit_mint, principal_amount_raw,
-        current_reserve, current_market, current_liquidity_mint,
-        current_amount_raw, current_observed_slot, current_observed_at,
-        first_deposit_signature, last_deposit_signature,
-        last_confirmed_slot, status, created_at, updated_at
-      )
-      SELECT
-        ${args.plan.target.wallet}, ${args.plan.target.vaultPubkey},
-        ${args.plan.target.settings}, ${args.plan.target.vaultIndex},
-        ${args.plan.target.vaultPubkey},
-        ${args.plan.target.routePolicySeed.toString()},
-        ${args.plan.target.routePolicyAccount},
-        ${args.plan.target.routePolicySeed.toString()}, ${args.plan.reserve},
-        ${args.plan.market}, ${args.plan.liquidityMint}, NULL,
-        ${args.plan.liquidityMint}, ${args.plan.amountRaw.toString()},
-        ${args.plan.reserve}, ${args.plan.market}, ${args.plan.liquidityMint},
-        ${args.postConfirmPositionAmountRaw.toString()},
-        ${args.postConfirmObservedSlot.toString()}, now(),
-        confirmed_top_up.signature, confirmed_top_up.signature,
-        confirmed_top_up.confirmed_slot, 'active', now(), now()
-      FROM confirmed_top_up, completed_deposit
-      WHERE NOT EXISTS (SELECT 1 FROM existing_position)
-      RETURNING
-        id,
-        'deposit_initialized'::text AS event_type,
-        ${args.postConfirmPositionAmountRaw.toString()}::bigint AS holding_delta_raw
-    ),
-    completed_position AS (
-      SELECT * FROM updated_position
-      UNION ALL
-      SELECT * FROM inserted_position
-    ),
-    inserted_holding_event AS (
-      INSERT INTO loyal_yield.user_yield_position_holding_events (
-        position_id, event_type, reserve, market, liquidity_mint,
-        amount_raw, principal_delta_raw, holding_delta_raw,
-        observed_slot, observed_at, source_signature,
-        source_deposit_id, created_at
-      )
-      SELECT
-        completed_position.id,
-        completed_position.event_type::loyal_yield.user_yield_holding_event_type,
-        ${args.plan.reserve}, ${args.plan.market}, ${args.plan.liquidityMint},
-        ${args.postConfirmPositionAmountRaw.toString()},
-        CASE WHEN completed_deposit.inserted
-          THEN ${args.plan.amountRaw.toString()}::bigint ELSE 0 END,
-        completed_position.holding_delta_raw,
-        ${args.postConfirmObservedSlot.toString()}, now(),
-        confirmed_top_up.signature, completed_deposit.id, now()
-      FROM completed_position, confirmed_top_up, completed_deposit
-      WHERE NOT EXISTS (
-        SELECT 1
-        FROM loyal_yield.user_yield_position_holding_events AS existing_event
-        WHERE existing_event.source_signature = confirmed_top_up.signature
-      )
-      RETURNING id, position_id
-    ),
-    completed_holding_event AS (
-      SELECT id, position_id FROM inserted_holding_event
-      UNION ALL
-      SELECT existing_event.id, existing_event.position_id
-      FROM loyal_yield.user_yield_position_holding_events AS existing_event
-      JOIN confirmed_top_up
-        ON existing_event.source_signature = confirmed_top_up.signature
-      WHERE NOT EXISTS (SELECT 1 FROM inserted_holding_event)
-      LIMIT 1
-    ),
-    finalized_position AS (
-      UPDATE loyal_yield.user_yield_positions AS position
-      SET last_holding_event_id = completed_holding_event.id,
-          updated_at = now()
-      FROM completed_holding_event
-      WHERE position.id = completed_holding_event.position_id
-      RETURNING position.id
-    ),
-    completed_execution AS (
-      UPDATE loyal_yield.balance_sweep_executions
-      SET kamino_deposit_signature = confirmed_top_up.signature,
-          completed_at = now(),
-          completion_failure_code = NULL,
-          decoded_evidence = COALESCE(decoded_evidence, '{}'::jsonb) ||
-            jsonb_build_object(
-              'status', 'executed',
-              'kaminoDepositSignature', confirmed_top_up.signature,
-              'kaminoDepositSlot', confirmed_top_up.confirmed_slot::text
-            ),
-          decoded_at = now()
-      FROM confirmed_top_up
-      WHERE id = ${args.executionId}
-        AND EXISTS (SELECT 1 FROM completed_deposit)
-        AND EXISTS (SELECT 1 FROM finalized_position)
-        AND EXISTS (
-          SELECT 1
-          FROM loyal_yield.balance_sweep_lot_claims AS claim
-          WHERE claim.claim_token = ${args.claimToken}
-            AND claim.status = 'selected'
-            AND claim.autodeposit_executor_lease_token = ${args.leaseToken}
-            AND claim.autodeposit_executor_lease_expires_at > now()
-        )
-      RETURNING id
-    ),
-    matched_lots AS (
-      SELECT item.lot_id, item.amount_raw
-      FROM loyal_yield.balance_sweep_lot_claim_items AS item
-      WHERE item.claim_token = ${args.claimToken}
-    ),
-    inserted_lots AS (
-      INSERT INTO loyal_yield.balance_sweep_execution_lots
-        (execution_id, lot_id, amount_raw)
-      SELECT ${args.executionId}, lot_id, amount_raw
-      FROM matched_lots
-      WHERE EXISTS (SELECT 1 FROM completed_execution)
-      ON CONFLICT (execution_id, lot_id) DO NOTHING
-    ),
-    completed_claim AS (
-      UPDATE loyal_yield.balance_sweep_lot_claims
-      SET status = 'executed',
-          execution_id = ${args.executionId},
-          autodeposit_executor_lease_token = NULL,
-          autodeposit_executor_lease_expires_at = NULL,
-          updated_at = now()
-      WHERE claim_token = ${args.claimToken}
-        AND status = 'selected'
-        AND autodeposit_executor_lease_token = ${args.leaseToken}
-        AND autodeposit_executor_lease_expires_at > now()
-        AND EXISTS (SELECT 1 FROM completed_execution)
-      RETURNING claim_token
-    ),
-    completed_slot AS (
-      UPDATE loyal_yield.balance_sweep_scheduled_slots
-      SET status = 'executed', execution_id = ${args.executionId}, updated_at = now()
-      WHERE claim_token IN (SELECT claim_token FROM completed_claim)
-      RETURNING id
-    )
-    SELECT
-      EXISTS (SELECT 1 FROM completed_deposit) AS deposit_completed,
-      EXISTS (SELECT 1 FROM finalized_position) AS position_completed,
-      EXISTS (SELECT 1 FROM completed_execution) AS execution_completed,
-      EXISTS (SELECT 1 FROM completed_claim) AS claim_completed,
-      EXISTS (SELECT 1 FROM completed_slot) AS slot_completed
-  `;
-  const row = rows[0] as Record<string, unknown> | undefined;
-  if (
-    row?.deposit_completed !== true ||
-    row.position_completed !== true ||
-    row.execution_completed !== true ||
-    row.claim_completed !== true ||
-    row.slot_completed !== true
-  ) {
-    throw new Error(
-      `Autodeposit claim ${args.claimToken} did not complete atomically.`
+  let rows: unknown[];
+  try {
+    rows = await sql`
+      SELECT loyal_yield.finalize_confirmed_autodeposit(
+        ${args.claimToken},
+        ${args.executionId}::bigint,
+        ${args.scheduledSlotId.toString()}::bigint,
+        ${args.leaseToken},
+        ${args.postConfirmPositionAmountRaw.toString()}::bigint,
+        ${args.postConfirmObservedSlot.toString()}::bigint
+      ) AS status
+    `;
+  } catch (error) {
+    if (String(readRecord(error)?.code ?? "") === "55P03") {
+      throw new AutodepositOwnershipLostError(
+        `Autodeposit claim ${args.claimToken} is owned by another executor.`
+      );
+    }
+    throw new AutodepositYieldPersistenceError(
+      `Confirmed autodeposit claim ${args.claimToken} could not be persisted atomically: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+  const status = readRequiredString(
+    (rows[0] as Record<string, unknown> | undefined)?.status,
+    "autodeposit finalization status"
+  );
+  if (status !== "completed" && status !== "already_completed") {
+    throw new AutodepositYieldPersistenceError(
+      `Confirmed autodeposit claim ${args.claimToken} returned unexpected finalization status ${status}.`
     );
   }
 }
-
 async function resumeDirectKaminoDeposit(args: {
   attempt: DurableAutodepositAttempt;
   claimToken: string;
@@ -4788,7 +4540,6 @@ async function resumeDirectKaminoDeposit(args: {
     executionId: executionRecord.executionId,
     leaseToken: args.leaseToken,
     neon: args.neon,
-    plan: args.plan,
     postConfirmPositionAmountRaw: postConfirmPosition.amountRaw,
     postConfirmObservedSlot: postConfirmPosition.observedSlot,
     scheduledSlotId: args.scheduledSlotId,
@@ -4931,12 +4682,29 @@ async function recoverAutodepositClaim(args: {
       claimToken: args.context.attempt.claimToken,
       leaseToken,
     });
-    if (
-      error instanceof AutodepositEffectAmbiguousError ||
-      error instanceof AutodepositOwnershipLostError
-    ) {
+    if (error instanceof AutodepositOwnershipLostError) {
+      console.log(
+        JSON.stringify({
+          status: "autodeposit_deposit_pending",
+          recoverySource: "persisted_confirmed_pull",
+          targetId: args.context.target.id.toString(),
+          scheduledSlotId: args.scheduledSlotId.toString(),
+          retryable: true,
+          alert: null,
+          reason: "claim_owned_by_another_executor",
+        })
+      );
+      return;
+    }
+    if (error instanceof AutodepositEffectAmbiguousError) {
       process.exitCode = autodepositExecutorFailureExitCode(
         "transaction_effect_ambiguous"
+      );
+      throw error;
+    }
+    if (error instanceof AutodepositYieldPersistenceError) {
+      process.exitCode = autodepositExecutorFailureExitCode(
+        "yield_persistence_failed"
       );
       throw error;
     }
@@ -5499,10 +5267,26 @@ async function main() {
         claimToken: durableClaimToken,
         leaseToken: durableLeaseToken,
       });
-      if (
-        !(error instanceof AutodepositEffectAmbiguousError) &&
-        !(error instanceof AutodepositOwnershipLostError)
-      ) {
+      if (error instanceof AutodepositOwnershipLostError) {
+        console.log(
+          JSON.stringify({
+            status: "autodeposit_deposit_pending",
+            targetId: target.id.toString(),
+            scheduledSlotId: durableScheduledSlotId.toString(),
+            retryable: true,
+            alert: null,
+            reason: "claim_owned_by_another_executor",
+          })
+        );
+        return;
+      }
+      if (error instanceof AutodepositYieldPersistenceError) {
+        process.exitCode = autodepositExecutorFailureExitCode(
+          "yield_persistence_failed"
+        );
+        throw error;
+      }
+      if (!(error instanceof AutodepositEffectAmbiguousError)) {
         console.log(
           JSON.stringify({
             status: "autodeposit_deposit_pending",

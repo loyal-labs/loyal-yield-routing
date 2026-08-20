@@ -24,7 +24,7 @@ import {
   readClosedRoutePolicyAccount,
   reconcileClosedRoutePolicy,
   reconcileClosedRoutePolicyFailure,
-  runSameMintReserveTopUp,
+  prepareSameMintReserveTopUp,
   type EligibleTarget,
 } from "./execute-autodeposit-policy";
 
@@ -207,9 +207,8 @@ function dryRun(): Promise<unknown> {
 }
 
 function dryRunTarget(workerTarget: EligibleTarget): Promise<unknown> {
-  return runSameMintReserveTopUp({
+  return prepareSameMintReserveTopUp({
     amountRaw: BigInt(609_765),
-    execute: false,
     reserve: DEPOSIT_RESERVE,
     rpcUrl: "https://verification.invalid",
     target: workerTarget,
