@@ -65,6 +65,7 @@
     "verify:autodeposit-alt-readiness": "bun scripts/verify-autodeposit-alt-readiness.ts",
     "verify:autodeposit-durable-operation": "bun scripts/verify-autodeposit-durable-operation.ts",
     "verify:autodeposit-atomic-finalization": "bash scripts/verify-autodeposit-atomic-finalization.sh",
+    "verify:autodeposit-finalization-e2e": "bash scripts/verify-autodeposit-finalization-e2e.sh",
     "verify:autodeposit-finalized-topup-recovery": "bun scripts/verify-autodeposit-finalized-topup-recovery.ts",
     "verify:idle-deposit-reconcile": "cargo run -p loyal-yield-orchestrator --bin verify-idle-deposit-reconcile",
     "verify:autodeposit-closed-route-policy": "bun scripts/verify-autodeposit-closed-route-policy.ts",
