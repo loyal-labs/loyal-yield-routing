@@ -148,9 +148,8 @@ bash verification/smart-account-laserstream/verify.sh \
 
 Pre-merge:
 
-- rebase on current routing `main` and keep migration 40 as
-  `durable_autodeposit_operation`;
-- register the LaserStream replay cursor as migration 41 in both registries;
+- rebase on current routing `main` and preserve its migrations 40 through 44;
+- register the LaserStream replay cursor as migration 45 in both registries;
 - keep the routing verifier and worker-image checks green;
 - treat the rollout as urgent: loyal-app#668 is already merged and its
   production Vercel deployments completed, so the cron fallback is no longer
@@ -159,7 +158,7 @@ Pre-merge:
 Post-merge:
 
 1. publish the routing `laserstream-workers` image;
-2. apply routing migration 41;
+2. apply routing migration 45;
 3. redeploy `loyal-balance-sweep-ata-monitor-staging` with the immutable image;
 4. verify all five filters, watch-set rebuild replay, immediate proof-failure
    restarts, replay progress, and canonical reconciliation;

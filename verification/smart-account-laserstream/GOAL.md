@@ -57,8 +57,8 @@ any new Loyal App or fleet reconciliation worker.
     or executions.
 12. Loyal App no longer exposes or schedules `earn-deposit-reconcile` or
     `earn-cleanup-reconcile`, and it adds no replacement worker.
-13. Current main's migration 40 remains `durable_autodeposit_operation`, and
-    the LaserStream replay cursor is migration 41 in both migration registries.
+13. Current main's migrations 40 through 44 remain registered, and the
+    LaserStream replay cursor is migration 45 in both migration registries.
 14. Earn watch-set changes rebuild the whole LaserStream session instead of
     using the SDK live-write path. The fresh request retains the previous
     session's replay `from_slot`, rather than recomputing it from a cursor that
