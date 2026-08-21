@@ -5,7 +5,11 @@ use std::{
     path::Path,
     pin::Pin,
     str::FromStr,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
@@ -21,9 +25,9 @@ use loyal_actions::{
     SQUADS_SMART_ACCOUNT_PROGRAM_ID,
 };
 use loyal_yield_store::{
-    EarnCleanupMutation, EarnDepositMutation, EarnDirectMutation, EarnDirectReconciliationInput,
-    EarnDirectReconciliationOutcome, EarnIdleTokenMutation, EarnPolicyOnlyMutation,
-    EarnReserveMutation, OrchestratorStore, PolicyMatchInput,
+    EarnCleanupMutation, EarnDepositMutation, EarnDirectMutation, EarnIdleTokenMutation,
+    EarnPolicyOnlyMutation, EarnReconciliationEnqueueInput, EarnReconciliationEnqueueOutcome,
+    EarnReconciliationVaultInput, EarnReserveMutation, OrchestratorStore, PolicyMatchInput,
 };
 use num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
@@ -32,8 +36,9 @@ use serde_json::{json, Value};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
     rpc_client::RpcClient,
-    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcTransactionConfig},
-    rpc_filter::{Memcmp, RpcFilterType},
+    rpc_config::{RpcAccountInfoConfig, RpcTokenAccountsFilter, RpcTransactionConfig},
+    rpc_request::RpcRequest,
+    rpc_response::{Response as RpcResponse, RpcKeyedAccount},
 };
 use solana_program::program_pack::Pack;
 use solana_sdk::{
@@ -44,6 +49,7 @@ use solana_sdk::{
     transaction::VersionedTransaction,
 };
 use solana_transaction_status_client_types::UiTransactionEncoding;
+use tokio::{sync::Notify, time};
 
 use crate::smart_account::{EarnVaultWatch, NormalizedEarnUpdate, SubscriptionWatchSet};
 
@@ -299,24 +305,20 @@ fn vault_has_blocking_token_inventory(
         })
         .collect::<BTreeSet<_>>();
     for token_program in [spl_token::id(), spl_token_2022::id()] {
-        let accounts = rpc.get_program_accounts_with_config(
-            &token_program,
-            RpcProgramAccountsConfig {
-                filters: Some(vec![RpcFilterType::Memcmp(Memcmp::new_base58_encoded(
-                    32,
-                    vault.as_ref(),
-                ))]),
-                account_config: RpcAccountInfoConfig {
-                    encoding: Some(UiAccountEncoding::Base64),
-                    commitment: Some(CommitmentConfig::confirmed()),
-                    min_context_slot: Some(min_context_slot),
-                    ..RpcAccountInfoConfig::default()
-                },
-                with_context: Some(false),
-                sort_results: Some(true),
-            },
-        )?;
-        for (address, account) in accounts {
+        let response =
+            get_token_accounts_by_owner_with_config(rpc, vault, token_program, min_context_slot)?;
+        if response.context.slot < min_context_slot {
+            bail!(
+                "token inventory context slot {} is below minimum {min_context_slot}",
+                response.context.slot
+            );
+        }
+        for keyed in response.value {
+            let address = Pubkey::from_str(&keyed.pubkey)?;
+            let account = keyed
+                .account
+                .decode()
+                .with_context(|| format!("decode owner token account {address}"))?;
             let (mint, owner, amount) = decode_token_account(&account)?;
             if owner != vault {
                 bail!("token inventory query returned account {address} for owner {owner}");
@@ -331,6 +333,29 @@ fn vault_has_blocking_token_inventory(
         }
     }
     Ok(false)
+}
+
+fn get_token_accounts_by_owner_with_config(
+    rpc: &RpcClient,
+    owner: Pubkey,
+    token_program: Pubkey,
+    min_context_slot: u64,
+) -> Result<RpcResponse<Vec<RpcKeyedAccount>>> {
+    let config = RpcAccountInfoConfig {
+        encoding: Some(UiAccountEncoding::Base64),
+        commitment: Some(CommitmentConfig::confirmed()),
+        min_context_slot: Some(min_context_slot),
+        ..RpcAccountInfoConfig::default()
+    };
+    rpc.send(
+        RpcRequest::GetTokenAccountsByOwner,
+        json!([
+            owner.to_string(),
+            RpcTokenAccountsFilter::ProgramId(token_program.to_string()),
+            config
+        ]),
+    )
+    .context("get token accounts by owner")
 }
 
 fn read_policy_only_proof(
@@ -921,13 +946,12 @@ fn decode_token_account(account: &solana_sdk::account::Account) -> Result<(Pubke
     bail!("account has unsupported token program {}", account.owner)
 }
 
-pub async fn reconcile_normalized_earn_update(
+pub async fn enqueue_normalized_earn_update(
     store: &OrchestratorStore,
     consumer_name: &str,
     update: &NormalizedEarnUpdate,
     watch_set: &SubscriptionWatchSet,
-    chain: &dyn EarnChainReader,
-) -> Result<EarnDirectReconciliationOutcome> {
+) -> Result<EarnReconciliationEnqueueOutcome> {
     let affected = watch_set.affected_vaults(update.account_pubkey.iter().map(String::as_str));
     if affected.is_empty() {
         bail!(
@@ -936,30 +960,168 @@ pub async fn reconcile_normalized_earn_update(
             update.filters
         );
     }
-    let mut mutations = Vec::with_capacity(affected.len());
-    for vault in affected {
-        mutations.push(chain.mutation_for(update, vault).await?);
-    }
+    let event_key = update.event_key.clone().unwrap_or_else(|| {
+        format!(
+            "{}:{}:{}:{}",
+            update.event_kind,
+            update.slot,
+            update.signature.as_deref().unwrap_or("missing-signature"),
+            update
+                .account_pubkey
+                .as_deref()
+                .unwrap_or("missing-account")
+        )
+    });
+    let event_payload = serde_json::to_value(update)?;
+    let vaults = affected
+        .into_iter()
+        .map(|vault| {
+            Ok(EarnReconciliationVaultInput {
+                settings: vault.settings.clone(),
+                vault_index: vault.vault_index,
+                vault_pubkey: vault.vault.clone(),
+                vault_payload: serde_json::to_value(vault)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     store
-        .apply_direct_earn_reconciliation(EarnDirectReconciliationInput {
+        .enqueue_earn_reconciliation_jobs(EarnReconciliationEnqueueInput {
             consumer_name: consumer_name.to_owned(),
-            event_key: update.event_key.clone().unwrap_or_else(|| {
-                format!(
-                    "{}:{}:{}:{}",
-                    update.event_kind,
-                    update.slot,
-                    update.signature.as_deref().unwrap_or("missing-signature"),
-                    update
-                        .account_pubkey
-                        .as_deref()
-                        .unwrap_or("missing-account")
-                )
-            }),
+            event_key,
             durable_slot: update.slot,
-            mutations,
+            event_payload,
+            vaults,
         })
         .await
         .map_err(Into::into)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EarnReconciliationProcessOutcome {
+    Idle,
+    Completed { job_id: i64, applied: usize },
+    Deferred { job_id: i64, error: String },
+}
+
+pub async fn process_next_earn_reconciliation_job(
+    store: &OrchestratorStore,
+    consumer_name: &str,
+    claim_owner: &str,
+    chain: &dyn EarnChainReader,
+    lease_seconds: i64,
+    retry_after_seconds: i64,
+) -> Result<EarnReconciliationProcessOutcome> {
+    let Some(job) = store
+        .claim_earn_reconciliation_job(consumer_name, claim_owner, lease_seconds)
+        .await?
+    else {
+        return Ok(EarnReconciliationProcessOutcome::Idle);
+    };
+    let retry_after_seconds = retry_after_seconds.saturating_mul(
+        1_i64 << u32::try_from(job.attempt_count.saturating_sub(1).min(5)).unwrap_or(5),
+    );
+    let decoded = serde_json::from_value(job.event_payload.clone())
+        .context("decode durable Earn event")
+        .and_then(|update| {
+            serde_json::from_value(job.vault_payload.clone())
+                .context("decode durable Earn vault")
+                .map(|vault| (update, vault))
+        });
+    let (update, vault): (NormalizedEarnUpdate, EarnVaultWatch) = match decoded {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            return defer_earn_reconciliation_job(
+                store,
+                job.id,
+                claim_owner,
+                error,
+                retry_after_seconds,
+            )
+            .await;
+        }
+    };
+    match chain.mutation_for(&update, &vault).await {
+        Ok(mutation) => match store
+            .complete_earn_reconciliation_job(job.id, claim_owner, &mutation)
+            .await
+        {
+            Ok(outcome) => Ok(EarnReconciliationProcessOutcome::Completed {
+                job_id: job.id,
+                applied: outcome.applied_mutations,
+            }),
+            Err(error) => {
+                defer_earn_reconciliation_job(
+                    store,
+                    job.id,
+                    claim_owner,
+                    error.into(),
+                    retry_after_seconds,
+                )
+                .await
+            }
+        },
+        Err(error) => {
+            defer_earn_reconciliation_job(store, job.id, claim_owner, error, retry_after_seconds)
+                .await
+        }
+    }
+}
+
+async fn defer_earn_reconciliation_job(
+    store: &OrchestratorStore,
+    job_id: i64,
+    claim_owner: &str,
+    error: anyhow::Error,
+    retry_after_seconds: i64,
+) -> Result<EarnReconciliationProcessOutcome> {
+    let error = format!("{error:#}");
+    store
+        .retry_earn_reconciliation_job(job_id, claim_owner, &error, retry_after_seconds)
+        .await?;
+    Ok(EarnReconciliationProcessOutcome::Deferred { job_id, error })
+}
+
+pub async fn run_earn_reconciliation_consumer(
+    store: OrchestratorStore,
+    consumer_name: String,
+    claim_owner: String,
+    chain: Arc<dyn EarnChainReader>,
+    wake: Arc<Notify>,
+    running: Arc<AtomicBool>,
+) {
+    while running.load(Ordering::Relaxed) {
+        match process_next_earn_reconciliation_job(
+            &store,
+            &consumer_name,
+            &claim_owner,
+            chain.as_ref(),
+            120,
+            15,
+        )
+        .await
+        {
+            Ok(EarnReconciliationProcessOutcome::Completed { job_id, applied }) => {
+                tracing::info!(job_id, applied, "completed durable Earn reconciliation job");
+            }
+            Ok(EarnReconciliationProcessOutcome::Deferred { job_id, error }) => {
+                tracing::error!(
+                    job_id,
+                    error,
+                    "Earn reconciliation proof failed; job retained for retry"
+                );
+            }
+            Ok(EarnReconciliationProcessOutcome::Idle) => {
+                tokio::select! {
+                    _ = wake.notified() => {}
+                    _ = time::sleep(Duration::from_secs(1)) => {}
+                }
+            }
+            Err(error) => {
+                tracing::error!(error = %error, "durable Earn reconciliation consumer failed");
+                time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

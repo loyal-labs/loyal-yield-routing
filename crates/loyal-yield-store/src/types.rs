@@ -367,16 +367,38 @@ pub struct WalletAtaBalanceUpdateInput {
 }
 
 /// One normalized LaserStream event and every Earn vault affected by it.
-///
-/// The monitor deliberately sends all affected vault mutations together. A
-/// shared account can wake more than one vault; advancing the cursor between
-/// those mutations would make a later failure unreplayable.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EarnDirectReconciliationInput {
+pub struct EarnReconciliationEnqueueInput {
     pub consumer_name: String,
     pub event_key: String,
     pub durable_slot: u64,
-    pub mutations: Vec<EarnDirectMutation>,
+    pub event_payload: Value,
+    pub vaults: Vec<EarnReconciliationVaultInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnReconciliationVaultInput {
+    pub settings: String,
+    pub vault_index: u8,
+    pub vault_pubkey: String,
+    pub vault_payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnReconciliationEnqueueOutcome {
+    pub inserted_jobs: usize,
+    pub cursor_slot: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnReconciliationJob {
+    pub id: i64,
+    pub consumer_name: String,
+    pub event_key: String,
+    pub durable_slot: u64,
+    pub event_payload: Value,
+    pub vault_payload: Value,
+    pub attempt_count: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -447,9 +469,8 @@ pub struct EarnCleanupMutation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EarnDirectReconciliationOutcome {
+pub struct EarnReconciliationCompletionOutcome {
     pub applied_mutations: usize,
-    pub cursor_slot: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

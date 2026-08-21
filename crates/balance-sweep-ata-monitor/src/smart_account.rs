@@ -1,6 +1,6 @@
 //! Small, explicit routing layer for the Earn wake-up subscription.
 //!
-//! Earn notifications are hints for the existing application reconcilers. They
+//! Earn notifications are durable wake-ups for the in-process reconciler. They
 //! intentionally never enter the balance-sweep observation/projector path.
 
 use std::{
@@ -246,11 +246,11 @@ impl SubscriptionWatchSet {
 }
 
 /// The normalized form is deliberately a hint, not a raw event envelope.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NormalizedEarnUpdate {
     pub event_key: Option<String>,
     pub filters: Vec<String>,
-    pub event_kind: &'static str,
+    pub event_kind: String,
     pub account_pubkey: Option<String>,
     pub slot: u64,
     pub signature: Option<String>,
@@ -285,9 +285,9 @@ pub fn normalize_laserstream_update(
                 filters: earn_filters,
                 event_kind: if account.is_none() || account.is_some_and(|value| value.lamports == 0)
                 {
-                    "account_deleted"
+                    "account_deleted".to_owned()
                 } else {
-                    "account"
+                    "account".to_owned()
                 },
                 account_pubkey,
                 slot: account_update.slot,

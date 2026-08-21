@@ -12,11 +12,12 @@ use balance_sweep_ata_monitor::earn_apy::{
     earn_apy_strategy_for_risk_profile, EarnApyRefreshConfig, EarnApySnapshotRefresher,
 };
 use balance_sweep_ata_monitor::{
-    ata_target_set, diff_ata_target_sets, laserstream_replay_from_slot, run_event_loop,
-    seed_current_balances, spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget,
-    AtaUpdateSource, EarnUpdateContext, LaserstreamAtaUpdateSource, RpcEarnChainReader,
-    SubscriptionConfig, SubscriptionWatchSet, TimescaleAtaConfig, TimescaleAtaObservationSink,
-    TimescaleAtaStream, WebsocketAtaUpdateSource,
+    ata_target_set, diff_ata_target_sets, laserstream_replay_from_slot,
+    run_earn_reconciliation_consumer, run_event_loop, seed_current_balances,
+    spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget, AtaUpdateSource,
+    EarnUpdateContext, LaserstreamAtaUpdateSource, RpcEarnChainReader, SubscriptionConfig,
+    SubscriptionWatchSet, TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream,
+    WebsocketAtaUpdateSource,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
@@ -26,7 +27,7 @@ use loyal_yield_store::{OrchestratorConfig, OrchestratorError, OrchestratorStore
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 use tokio::{
-    sync::{mpsc, RwLock},
+    sync::{mpsc, Notify, RwLock},
     task::JoinHandle,
     time,
 };
@@ -209,7 +210,29 @@ async fn run() -> Result<()> {
         },
     );
 
-    supervise_monitor_sessions(
+    // Reconciliation belongs to the process, not a LaserStream session. A
+    // transport reconnect must not cancel a proof already in flight, and a
+    // proof failure must never participate in session supervision.
+    let earn_consumer_running = Arc::new(AtomicBool::new(true));
+    let earn_wake = Arc::new(Notify::new());
+    let earn_consumer_task = (args.update_source == UpdateSourceKind::Laserstream).then(|| {
+        let consumer_name = format!("earn-smart-account:{}", args.cluster);
+        let claim_owner = format!(
+            "{}:{}:{}",
+            consumer_name,
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        tokio::spawn(run_earn_reconciliation_consumer(
+            store.clone(),
+            consumer_name,
+            claim_owner,
+            Arc::new(RpcEarnChainReader::new(&args.rpc_url, store.clone())),
+            earn_wake.clone(),
+            earn_consumer_running.clone(),
+        ))
+    });
+    let result = supervise_monitor_sessions(
         args,
         store,
         observations,
@@ -217,8 +240,16 @@ async fn run() -> Result<()> {
         targets,
         watch_set,
         recheck,
+        earn_wake.clone(),
     )
-    .await
+    .await;
+    earn_consumer_running.store(false, Ordering::Relaxed);
+    earn_wake.notify_waiters();
+    if let Some(task) = earn_consumer_task {
+        task.abort();
+        let _ = task.await;
+    }
+    result
 }
 
 async fn connect_earn_apy_refresher(args: &Args) -> Result<EarnApySnapshotRefresher> {
@@ -308,6 +339,7 @@ async fn supervise_monitor_sessions(
     initial_targets: Vec<AtaTarget>,
     initial_watch_set: SubscriptionWatchSet,
     recheck: AtaRecheckHandle,
+    earn_wake: Arc<Notify>,
 ) -> Result<()> {
     let refresh_interval = Duration::from_secs(args.target_refresh_seconds);
     let mut session: Option<MonitorSession> = None;
@@ -421,6 +453,7 @@ async fn supervise_monitor_sessions(
                 config,
                 recheck.clone(),
                 replay_from_slot_override,
+                earn_wake.clone(),
             )
             .await
             .context("start balance sweep ATA monitor session")?;
@@ -529,6 +562,7 @@ async fn start_session(
     config: SubscriptionConfig,
     recheck: AtaRecheckHandle,
     replay_from_slot_override: Option<u64>,
+    earn_wake: Arc<Notify>,
 ) -> Result<MonitorSession> {
     if args.update_source == UpdateSourceKind::Websocket && !watch_set.earn_vaults.is_empty() {
         anyhow::bail!(
@@ -602,11 +636,12 @@ async fn start_session(
         }
         let _ = source_finished_tx.send(());
     });
+    let consumer_name = format!("earn-smart-account:{}", args.cluster);
     let earn = (args.update_source == UpdateSourceKind::Laserstream).then(|| EarnUpdateContext {
-        chain: Arc::new(RpcEarnChainReader::new(&args.rpc_url, store.clone())),
         store,
-        consumer_name: format!("earn-smart-account:{}", args.cluster),
+        consumer_name,
         watch_set: watch_set_state,
+        wake: earn_wake,
     });
     let event_running = running.clone();
     let event_finished_tx = finished_tx.clone();

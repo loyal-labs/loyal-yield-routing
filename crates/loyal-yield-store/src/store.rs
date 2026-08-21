@@ -41,6 +41,8 @@ const MIGRATION_0039: &str =
     include_str!("../migrations/0039_unbroadcast_cross_mint_expiry_check.sql");
 const MIGRATION_0040: &str = include_str!("../migrations/0040_durable_autodeposit_operation.sql");
 const MIGRATION_0046: &str = include_str!("../migrations/0046_laserstream_replay_cursor.sql");
+const MIGRATION_0049: &str =
+    include_str!("../migrations/0049_durable_earn_reconciliation_jobs.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -448,38 +450,53 @@ impl NeonSqlClient {
                 sql: MIGRATION_0046,
                 expected_checksum: None,
             },
+            StoreMigration {
+                version: 49,
+                name: "durable_earn_reconciliation_jobs",
+                sql: MIGRATION_0049,
+                expected_checksum: None,
+            },
         ] {
             apply_store_migration(&self.pool, migration).await?;
         }
         Ok(())
     }
 
-    /// Applies every canonical Earn mutation caused by one LaserStream update
-    /// and advances the replay cursor in the same transaction.
-    pub async fn apply_direct_earn_reconciliation(
+    /// Makes an Earn stream event durable before acknowledging its slot.
+    pub async fn enqueue_earn_reconciliation_jobs(
         &self,
-        input: EarnDirectReconciliationInput,
-    ) -> Result<EarnDirectReconciliationOutcome, OrchestratorError> {
+        input: EarnReconciliationEnqueueInput,
+    ) -> Result<EarnReconciliationEnqueueOutcome, OrchestratorError> {
+        if input.vaults.is_empty() {
+            return Err(OrchestratorError::StoreInvariant(
+                "Earn reconciliation event has no affected vaults".to_owned(),
+            ));
+        }
         let durable_slot = to_i64_slot(input.durable_slot)?;
         let mut tx = self.pool.begin().await?;
-        let mut applied_mutations = 0_usize;
-
-        for mutation in &input.mutations {
-            match mutation {
-                EarnDirectMutation::PolicyOnly(policy) => {
-                    apply_earn_policy_only(&mut tx, policy).await?;
-                    applied_mutations += 1;
-                }
-                EarnDirectMutation::Deposit(deposit) => {
-                    apply_earn_deposit(&mut tx, deposit).await?;
-                    applied_mutations += 1;
-                }
-                EarnDirectMutation::Cleanup(cleanup) => {
-                    apply_earn_cleanup(&mut tx, cleanup).await?;
-                    applied_mutations += 1;
-                }
-                EarnDirectMutation::Noop => {}
-            }
+        let mut inserted_jobs = 0_usize;
+        for vault in &input.vaults {
+            let inserted = sqlx::query(
+                r#"
+                INSERT INTO loyal_yield.earn_reconciliation_jobs (
+                    consumer_name, event_key, durable_slot, settings,
+                    vault_index, vault_pubkey, event_payload, vault_payload
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (consumer_name, event_key, settings, vault_index, vault_pubkey)
+                DO NOTHING
+                "#,
+            )
+            .bind(&input.consumer_name)
+            .bind(&input.event_key)
+            .bind(durable_slot)
+            .bind(&vault.settings)
+            .bind(i16::from(vault.vault_index))
+            .bind(&vault.vault_pubkey)
+            .bind(&input.event_payload)
+            .bind(&vault.vault_payload)
+            .execute(&mut *tx)
+            .await?;
+            inserted_jobs += usize::try_from(inserted.rows_affected()).unwrap_or(usize::MAX);
         }
 
         sqlx::query(
@@ -500,10 +517,149 @@ impl NeonSqlClient {
         .await?;
 
         tx.commit().await?;
-        Ok(EarnDirectReconciliationOutcome {
-            applied_mutations,
+        Ok(EarnReconciliationEnqueueOutcome {
+            inserted_jobs,
             cursor_slot: input.durable_slot,
         })
+    }
+
+    pub async fn claim_earn_reconciliation_job(
+        &self,
+        consumer_name: &str,
+        claim_owner: &str,
+        lease_seconds: i64,
+    ) -> Result<Option<EarnReconciliationJob>, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            WITH candidate AS (
+                SELECT id
+                FROM loyal_yield.earn_reconciliation_jobs
+                WHERE consumer_name = $1
+                  AND completed_at IS NULL
+                  AND next_attempt_at <= NOW()
+                  AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM loyal_yield.earn_reconciliation_jobs earlier
+                      WHERE earlier.consumer_name = earn_reconciliation_jobs.consumer_name
+                        AND earlier.settings = earn_reconciliation_jobs.settings
+                        AND earlier.vault_index = earn_reconciliation_jobs.vault_index
+                        AND earlier.vault_pubkey = earn_reconciliation_jobs.vault_pubkey
+                        AND earlier.completed_at IS NULL
+                        AND (earlier.durable_slot, earlier.id)
+                            < (earn_reconciliation_jobs.durable_slot, earn_reconciliation_jobs.id)
+                  )
+                ORDER BY durable_slot, id
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            UPDATE loyal_yield.earn_reconciliation_jobs job
+            SET claim_owner = $2,
+                claim_expires_at = NOW() + make_interval(secs => $3::double precision),
+                attempt_count = attempt_count + 1,
+                updated_at = NOW()
+            FROM candidate
+            WHERE job.id = candidate.id
+            RETURNING job.id, job.consumer_name, job.event_key, job.durable_slot,
+                      job.event_payload, job.vault_payload, job.attempt_count
+            "#,
+        )
+        .bind(consumer_name)
+        .bind(claim_owner)
+        .bind(lease_seconds)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            let durable_slot = u64::try_from(row.get::<i64, _>("durable_slot")).map_err(|_| {
+                OrchestratorError::StoreInvariant("Earn job has negative durable slot".to_owned())
+            })?;
+            Ok(EarnReconciliationJob {
+                id: row.get("id"),
+                consumer_name: row.get("consumer_name"),
+                event_key: row.get("event_key"),
+                durable_slot,
+                event_payload: row.get("event_payload"),
+                vault_payload: row.get("vault_payload"),
+                attempt_count: row.get("attempt_count"),
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn retry_earn_reconciliation_job(
+        &self,
+        job_id: i64,
+        claim_owner: &str,
+        error: &str,
+        retry_after_seconds: i64,
+    ) -> Result<(), OrchestratorError> {
+        let updated = sqlx::query(
+            r#"
+            UPDATE loyal_yield.earn_reconciliation_jobs
+            SET claim_owner = NULL,
+                claim_expires_at = NULL,
+                next_attempt_at = NOW() + make_interval(secs => $3::double precision),
+                last_error = $4,
+                updated_at = NOW()
+            WHERE id = $1 AND claim_owner = $2 AND completed_at IS NULL
+            "#,
+        )
+        .bind(job_id)
+        .bind(claim_owner)
+        .bind(retry_after_seconds)
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "Earn reconciliation job {job_id} lost claim before retry"
+            )));
+        }
+        Ok(())
+    }
+
+    pub async fn complete_earn_reconciliation_job(
+        &self,
+        job_id: i64,
+        claim_owner: &str,
+        mutation: &EarnDirectMutation,
+    ) -> Result<EarnReconciliationCompletionOutcome, OrchestratorError> {
+        let mut tx = self.pool.begin().await?;
+        let completed = sqlx::query(
+            r#"
+            UPDATE loyal_yield.earn_reconciliation_jobs
+            SET completed_at = NOW(), claim_owner = NULL, claim_expires_at = NULL,
+                last_error = NULL, updated_at = NOW()
+            WHERE id = $1 AND claim_owner = $2 AND completed_at IS NULL
+              AND claim_expires_at > NOW()
+            "#,
+        )
+        .bind(job_id)
+        .bind(claim_owner)
+        .execute(&mut *tx)
+        .await?;
+        if completed.rows_affected() != 1 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "Earn reconciliation job {job_id} lost claim before completion"
+            )));
+        }
+        let applied_mutations = match mutation {
+            EarnDirectMutation::PolicyOnly(policy) => {
+                apply_earn_policy_only(&mut tx, policy).await?;
+                1
+            }
+            EarnDirectMutation::Deposit(deposit) => {
+                apply_earn_deposit(&mut tx, deposit).await?;
+                1
+            }
+            EarnDirectMutation::Cleanup(cleanup) => {
+                apply_earn_cleanup(&mut tx, cleanup).await?;
+                1
+            }
+            EarnDirectMutation::Noop => 0,
+        };
+        tx.commit().await?;
+        Ok(EarnReconciliationCompletionOutcome { applied_mutations })
     }
 
     pub async fn load_laserstream_replay_cursor(

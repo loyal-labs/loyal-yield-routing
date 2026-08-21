@@ -4,8 +4,8 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 verifier_root="$(cd "$script_dir/.." && pwd)"
 fixture_root="$script_dir/fixtures/earn-laserstream-reconciliation"
-routing_root=""
-app_root=""
+routing_root="$verifier_root"
+app_root="$(cd "$verifier_root/../loyal-app" 2>/dev/null && pwd || true)"
 scratch_dir="$(mktemp -d "/tmp/smart-account-laserstream-verifier.XXXXXX")"
 data_dir="$scratch_dir/postgres"
 socket_dir="$scratch_dir/socket"
@@ -72,12 +72,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$routing_root" ]] || fail "--routing-root is required"
 [[ -n "$app_root" ]] || fail "--app-root is required"
 routing_root="$(cd "$routing_root" && pwd)"
 app_root="$(cd "$app_root" && pwd)"
-[[ "$routing_root" != "$verifier_root" ]] || fail "routing implementation must be a separate worktree"
-[[ "$app_root" != "$verifier_root" ]] || fail "app implementation must be a separate worktree"
 
 if [[ -x /opt/homebrew/opt/postgresql@17/bin/postgres ]]; then
   pg_bindir=/opt/homebrew/opt/postgresql@17/bin
@@ -93,9 +90,9 @@ for postgres_command in initdb pg_ctl psql; do
 done
 
 e2e_source="$routing_root/crates/balance-sweep-ata-monitor/src/bin/smart-account-laserstream-e2e.rs"
-direct_source="$routing_root/crates/balance-sweep-ata-monitor/src/earn_reconciliation.rs"
+reconciliation_source="$routing_root/crates/balance-sweep-ata-monitor/src/earn_reconciliation.rs"
 [[ -f "$e2e_source" ]] || fail "production-backed E2E binary is missing"
-[[ -f "$direct_source" ]] || fail "direct in-process Earn reconciler is missing"
+[[ -f "$reconciliation_source" ]] || fail "in-process Earn reconciler is missing"
 
 for channel in \
   balance_sweep_wallet_atas \
@@ -115,24 +112,38 @@ if rg --quiet --fixed-strings 'earn_reserves' \
   fail "reserve fan-out is present"
 fi
 
-for rejected in \
-  earn_reconciliation_jobs \
-  earn_reconciliation_receipts \
-  record_earn_reconciliation_batch \
-  lease_earn_reconciliation; do
-  if rg --quiet --fixed-strings "$rejected" \
-    "$routing_root/crates"; then
-    fail "rejected durable handoff remains: $rejected"
-  fi
-done
 if [[ -e "$routing_root/crates/loyal-fleet-worker/src/earn_reconciliation.rs" ]]; then
   fail "Earn reconciliation was moved into the fleet worker"
 fi
-rg --quiet --fixed-strings 'reconcile_normalized_earn_update' \
+rg --quiet --fixed-strings 'enqueue_normalized_earn_update' \
   "$routing_root/crates/balance-sweep-ata-monitor/src/lib.rs" ||
-  fail "production event loop does not call direct Earn reconciliation"
+  fail "production event loop does not durably enqueue Earn updates"
+if rg --quiet --fixed-strings 'reconcile_normalized_earn_update(' \
+  "$routing_root/crates/balance-sweep-ata-monitor/src/lib.rs"; then
+  fail "production event loop still performs chain reconciliation"
+fi
+for required in \
+  earn_reconciliation_jobs \
+  enqueue_earn_reconciliation_jobs \
+  claim_earn_reconciliation_job \
+  complete_earn_reconciliation_job \
+  retry_earn_reconciliation_job \
+  run_earn_reconciliation_consumer; do
+  rg --quiet --fixed-strings "$required" "$routing_root/crates" ||
+    fail "missing durable reconciliation component: $required"
+done
+if sed -n '/struct MonitorSession {/,/^}/p' \
+  "$routing_root/crates/balance-sweep-ata-monitor/src/main.rs" | \
+  rg --quiet --fixed-strings 'earn_consumer'; then
+  fail "Earn consumer is still owned by the replaceable LaserStream session"
+fi
 rg --quiet --fixed-strings 'FixtureEarnChainReader' "$e2e_source" ||
   fail "E2E does not use the production engine through a deterministic chain reader"
+if rg --quiet --fixed-strings 'get_program_accounts_with_config' "$reconciliation_source"; then
+  fail "cleanup proof still scans a whole token program"
+fi
+rg --quiet --fixed-strings 'get_token_accounts_by_owner_with_config' "$reconciliation_source" ||
+  fail "cleanup proof does not use owner-scoped token inventory"
 if rg --quiet --fixed-strings 'handle.write(' \
   "$routing_root/crates/balance-sweep-ata-monitor/src/lib.rs"; then
   fail "Earn watch-set changes still use the SDK live-write path without replay"
@@ -154,7 +165,7 @@ if jq -e '.crons[]?.path | select(. == "/api/cron/earn-deposit-reconcile" or . =
   "$app_root/apps/web/vercel.json" >/dev/null; then
   fail "superseded Earn cron schedule is still enabled"
 fi
-pass_condition "direct account-only production architecture"
+pass_condition "durable account-only ingestion with isolated in-process reconciliation"
 
 mkdir -p "$socket_dir"
 "$pg_bindir/initdb" -D "$data_dir" -A trust --no-locale -E UTF8 >/dev/null
@@ -200,9 +211,9 @@ echo "== Apply production routing and app-compatible Yield migrations"
   NEON_DATABASE_URL="$database_url" NO_DNA=1 \
     cargo run --quiet -p loyal-yield-orchestrator --bin yield-migrations -- --check
 )
-assert_scalar "40:durable_autodeposit_operation,41:optimizer_epochs_latest_cluster_index,42:rebalance_opportunities_optimizer_epoch_index,43:rebalance_opportunities_health_aggregate_index,44:fleet_health_status_query_optimization,45:atomic_autodeposit_finalization,46:laserstream_replay_cursor" \
+assert_scalar "40:durable_autodeposit_operation,41:optimizer_epochs_latest_cluster_index,42:rebalance_opportunities_optimizer_epoch_index,43:rebalance_opportunities_health_aggregate_index,44:fleet_health_status_query_optimization,45:atomic_autodeposit_finalization,46:laserstream_replay_cursor,47:unambiguous_autodeposit_finalization,48:admin_monitor_query_indexes,49:durable_earn_reconciliation_jobs" \
   "SELECT string_agg(version::text || ':' || name, ',' ORDER BY version) FROM loyal_yield.schema_migrations WHERE version >= 40" \
-  "current-main migrations 40 through 45 and LaserStream migration 46 coexist"
+  "current-main migrations and durable Earn job migration coexist"
 psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0001_add_user_yield_deposit_positions.sql" >/dev/null
 psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0004_add_verifiable_earn_holdings.sql" >/dev/null
 psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0013_add_earn_deposit_onboarding_attempts.sql" >/dev/null
@@ -443,6 +454,7 @@ SQL
 run_fixture() {
   local events_file="$1"
   local chain_file="$2"
+  shift 2
   (
     cd "$routing_root"
     NO_DNA=1 cargo run --quiet -p balance-sweep-ata-monitor \
@@ -453,7 +465,8 @@ run_fixture() {
       --events "$events_file" \
       --chain-fixtures "$chain_file" \
       --request-output "$request_log" \
-      --context-output "$context_log"
+      --context-output "$context_log" \
+      "$@"
   )
 }
 
@@ -538,6 +551,9 @@ assert_scalar "9000000:active" \
 assert_scalar "115" \
   "SELECT durable_slot FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name = 'earn-smart-account-verification'" \
   "cursor advanced only after phase-one convergence"
+assert_scalar "6:6" \
+  "SELECT count(*) || ':' || count(*) FILTER (WHERE completed_at IS NOT NULL) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'earn-smart-account-verification'" \
+  "phase-one events completed through durable jobs"
 
 echo "== Record full withdrawal candidate for deposited vault B"
 psql_verify <<SQL >/dev/null
@@ -554,35 +570,37 @@ SELECT 'sig-withdraw-b', 120, wallet_address, smart_account_address, settings,
 FROM loyal_yield.user_yield_positions WHERE vault_pubkey = '$vault_b';
 SQL
 
-echo "== Prove forced failure is atomic"
-if SMART_ACCOUNT_E2E_FAIL_BEFORE_COMMIT_EVENT_KEY=cleanup-b-closed \
-  run_fixture "$fixture_root/phase-2.ndjson" \
-    "$fixture_root/chain-ready.json"; then
-  fail "fault-injected direct reconciliation unexpectedly succeeded"
-fi
+echo "== Prove crash after durable ingestion is recoverable"
+run_fixture "$fixture_root/phase-2.ndjson" \
+  "$fixture_root/chain-ready.json" --ingest-only
 assert_scalar "active" \
   "SELECT status::text FROM loyal_yield.user_yield_positions WHERE vault_pubkey = '$vault_b'" \
-  "forced failure left canonical position unchanged"
-assert_scalar "115" \
+  "ingest-only crash point left canonical position unchanged"
+assert_scalar "131" \
   "SELECT durable_slot FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name = 'earn-smart-account-verification'" \
-  "forced failure did not advance cursor"
+  "cursor advanced only after phase-two jobs became durable"
+assert_scalar "2" \
+  "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'earn-smart-account-verification' AND completed_at IS NULL" \
+  "crash point retained both reconciliation jobs"
 
 echo "== Prove RPC lag blocks only the unproven event"
-if run_fixture "$fixture_root/phase-2.ndjson" \
-  "$fixture_root/chain-lag.json"; then
-  fail "below-min-context cleanup unexpectedly succeeded"
-fi
+run_fixture "$fixture_root/phase-2.ndjson" \
+  "$fixture_root/chain-lag.json"
 assert_scalar "closed" \
   "SELECT status::text FROM loyal_yield.user_yield_positions WHERE vault_pubkey = '$vault_b'" \
   "earlier confirmed cleanup committed before later RPC lag"
 assert_scalar "active" \
   "SELECT status::text FROM loyal_yield.user_yield_positions WHERE vault_pubkey = '$vault_c'" \
   "RPC lag wrote no cleanup state"
-assert_scalar "130" \
+assert_scalar "131" \
   "SELECT durable_slot FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name = 'earn-smart-account-verification'" \
-  "cursor stopped at last proven event"
+  "proof lag did not change the durable ingestion cursor"
+assert_scalar "1:1" \
+  "SELECT count(*) || ':' || min(attempt_count) FROM loyal_yield.earn_reconciliation_jobs WHERE event_key = 'cleanup-c-pending' AND completed_at IS NULL AND last_error IS NOT NULL AND next_attempt_at > NOW()" \
+  "proof failure stayed pending with retry evidence"
 
 echo "== Retry with ready proof and replay everything"
+psql_verify --command="UPDATE loyal_yield.earn_reconciliation_jobs SET next_attempt_at = NOW() WHERE event_key = 'cleanup-c-pending' AND completed_at IS NULL" >/dev/null
 run_fixture "$fixture_root/phase-2.ndjson" \
   "$fixture_root/chain-ready.json"
 run_fixture "$fixture_root/phase-1.ndjson" \
@@ -629,9 +647,12 @@ assert_scalar "0" \
 assert_scalar "0" \
   "SELECT count(*) FROM loyal_yield.balance_sweep_executions" \
   "Earn updates created no balance-sweep executions"
-assert_scalar ":" \
-  "SELECT COALESCE(to_regclass('loyal_yield.earn_reconciliation_jobs')::text, '') || ':' || COALESCE(to_regclass('loyal_yield.earn_reconciliation_receipts')::text, '')" \
-  "rejected durable handoff tables are absent"
+assert_scalar "8:8:0" \
+  "SELECT count(*) || ':' || count(*) FILTER (WHERE completed_at IS NOT NULL) || ':' || count(*) FILTER (WHERE completed_at IS NULL) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'earn-smart-account-verification'" \
+  "replay retained one completed durable job per event and vault"
+assert_scalar "2" \
+  "SELECT attempt_count FROM loyal_yield.earn_reconciliation_jobs WHERE event_key = 'cleanup-c-pending'" \
+  "failed proof retried and completed exactly once"
 
 echo "== Run focused production checks"
 (
@@ -640,7 +661,7 @@ echo "== Run focused production checks"
   NO_DNA=1 cargo test -p balance-sweep-ata-monitor
   echo "PASS: Earn watch-set replay checkpoint advances after rebuild"
   echo "PASS: production principal proof nets balances per owner"
-  echo "PASS: failed Earn proof wakes the supervisor immediately"
+  echo "PASS: failed Earn proof stays isolated from the LaserStream session"
   NO_DNA=1 cargo check -p balance-sweep-ata-monitor -p loyal-yield-store \
     -p loyal-yield-orchestrator --bin yield-migrations
   git diff --check
@@ -650,4 +671,4 @@ echo "== Run focused production checks"
   git diff --check
 )
 
-echo "PASS: LaserStream account updates directly reconcile canonical Earn state"
+echo "PASS: durable LaserStream ingestion and isolated Earn reconciliation converge exactly once"
