@@ -42,8 +42,10 @@ pub mod smart_account;
 
 pub use earn_reconciliation::{
     enqueue_normalized_earn_update, process_next_earn_reconciliation_job,
-    run_earn_reconciliation_consumer, EarnChainReader, EarnReconciliationProcessOutcome,
-    FixtureEarnChainReader, RpcEarnChainReader,
+    process_next_earn_reconciliation_job_with_policy_monitor,
+    reconcile_targeted_policy_vault_update, run_earn_reconciliation_consumer, EarnChainReader,
+    EarnPolicyTransaction, EarnReconciliationProcessOutcome, FixtureEarnChainReader,
+    RpcEarnChainReader,
 };
 pub use monitor_observability::{
     emit_earn_reconciliation_consumer_failed, emit_earn_reconciliation_health_snapshot_failed,
@@ -53,7 +55,7 @@ pub use smart_account::{
     build_multi_channel_subscribe_request, normalize_laserstream_update, subscribe_request_json,
     EarnVaultWatch, EarnWatchAccount, NormalizedEarnUpdate, SubscriptionWatchSet,
     BALANCE_SWEEP_WALLET_ATAS, EARN_IDLE_TOKEN_ACCOUNTS, EARN_OBLIGATIONS, EARN_POLICY_ACCOUNTS,
-    EARN_VAULT_ACCOUNTS,
+    EARN_SMART_ACCOUNTS, EARN_VAULT_ACCOUNTS,
 };
 
 pub use ata_recheck::{
@@ -67,6 +69,7 @@ pub const LASERSTREAM_SOURCE: &str = "laserstream_grpc";
 pub const WEBSOCKET_SOURCE: &str = "websocket";
 pub const RPC_SEED_SOURCE: &str = "rpc_seed";
 pub const CONFIRMED_COMMITMENT: &str = "confirmed";
+pub const FINALIZED_LASERSTREAM_COMMITMENT: &str = "finalized";
 
 #[derive(Clone, Copy, Debug)]
 pub struct SubscriptionConfig {
@@ -683,7 +686,7 @@ fn forward_laserstream_update(
             owner,
             data: account.data,
             source: LASERSTREAM_SOURCE,
-            source_commitment: CONFIRMED_COMMITMENT,
+            source_commitment: FINALIZED_LASERSTREAM_COMMITMENT,
             txn_signature,
             received_at: Utc::now(),
         });

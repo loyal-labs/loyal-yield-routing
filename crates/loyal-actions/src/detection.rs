@@ -539,38 +539,70 @@ pub fn detect_jupiter_cross_mint_policy_account(
     Ok(Some(first))
 }
 
-/// Detect a canonical one-action Squads policy removal.
+/// Detect canonical one- or multi-action Squads policy removals.
 ///
-/// The instruction does not include the removed policy payload, so this result
+/// The instruction does not include removed policy payloads, so these results
 /// deliberately makes no claim about whether the account was a Jupiter policy.
-pub fn detect_squads_policy_remove(
+pub fn detect_squads_policy_removals(
     instruction: &Instruction,
-) -> Result<Option<DetectedPolicyRemoval>, PolicyDetectionError> {
-    let Some(envelope) = strict_settings_envelope(instruction) else {
-        return Ok(None);
+) -> Result<Vec<DetectedPolicyRemoval>, PolicyDetectionError> {
+    if instruction.program_id != SQUADS_SMART_ACCOUNT_PROGRAM_ID {
+        return Ok(Vec::new());
+    }
+    let [settings, authority, system_program, squads_program, repeated_authority, remaining @ ..] =
+        instruction.accounts.as_slice()
+    else {
+        return Ok(Vec::new());
     };
+    if system_program.pubkey != solana_sdk::system_program::ID
+        || squads_program.pubkey != SQUADS_SMART_ACCOUNT_PROGRAM_ID
+        || repeated_authority.pubkey != authority.pubkey
+        || !authority.is_signer
+        || !repeated_authority.is_signer
+        || remaining.is_empty()
+    {
+        return Ok(Vec::new());
+    }
     let mut cursor = Cursor::new(&instruction.data);
     require_settings_discriminator(&mut cursor)?;
-    if cursor.read_u8()? != SQUADS_SYNC_SIGNER_COUNT
-        || cursor.read_u32()? != 1
-        || cursor.read_u8()? != 9
-    {
-        return Ok(None);
+    if cursor.read_u8()? != SQUADS_SYNC_SIGNER_COUNT {
+        return Ok(Vec::new());
     }
-    let policy_account = cursor.read_pubkey()?;
+    let action_count = cursor.read_u32()? as usize;
+    if action_count == 0 || action_count > 32 || remaining.len() != action_count {
+        return Ok(Vec::new());
+    }
+    let mut removals = Vec::with_capacity(action_count);
+    for account in remaining {
+        if cursor.read_u8()? != 9 || !account.is_writable {
+            return Ok(Vec::new());
+        }
+        let policy_account = cursor.read_pubkey()?;
+        if policy_account != account.pubkey {
+            return Ok(Vec::new());
+        }
+        removals.push(DetectedPolicyRemoval {
+            settings: settings.pubkey,
+            authority: authority.pubkey,
+            policy_account,
+        });
+    }
     let memo = read_option(&mut cursor, |cursor| {
         let len = cursor.read_u32()? as usize;
         cursor.skip(len)
     })?;
-    if policy_account != envelope.policy_account || memo.is_some() || cursor.remaining() != 0 {
-        return Ok(None);
+    if memo.is_some() || cursor.remaining() != 0 {
+        return Ok(Vec::new());
     }
+    Ok(removals)
+}
 
-    Ok(Some(DetectedPolicyRemoval {
-        settings: envelope.settings,
-        authority: envelope.authority,
-        policy_account,
-    }))
+/// Compatibility helper for callers that require exactly one removal.
+pub fn detect_squads_policy_remove(
+    instruction: &Instruction,
+) -> Result<Option<DetectedPolicyRemoval>, PolicyDetectionError> {
+    let removals = detect_squads_policy_removals(instruction)?;
+    Ok((removals.len() == 1).then(|| removals[0]))
 }
 
 /// Detect the identity of any canonical one-action Squads policy update.
@@ -2543,9 +2575,10 @@ mod tests {
     use crate::{
         create_all_in_one_market_mint_yield_route_action, create_jupiter_cross_mint_policy_action,
         create_preset_all_in_one_yield_route_action, create_three_step_yield_route_actions,
-        remove_policy_instruction, yield_route_universe_for_preset, KaminoStableRiskProfile,
-        LoyalActionContext, RouteTopology, SwapLane, YieldRouteActionBuilder,
-        YieldRouteActionSeeds, YieldRouteUniverse, YieldRouteUniversePreset, JUPITER_V6_PROGRAM_ID,
+        remove_policies_instruction, remove_policy_instruction, yield_route_universe_for_preset,
+        KaminoStableRiskProfile, LoyalActionContext, RouteTopology, SwapLane,
+        YieldRouteActionBuilder, YieldRouteActionSeeds, YieldRouteUniverse,
+        YieldRouteUniversePreset, JUPITER_V6_PROGRAM_ID,
     };
 
     fn context() -> LoyalActionContext {
@@ -3399,6 +3432,21 @@ mod tests {
         assert!(detect_squads_policy_remove(&mismatched_account)
             .unwrap()
             .is_none());
+
+        let second_policy = Pubkey::new_unique();
+        let remove_pair = remove_policies_instruction(
+            context.settings,
+            context.authority,
+            &[policy_account, second_policy],
+        );
+        let pair = detect_squads_policy_removals(&remove_pair).unwrap();
+        assert_eq!(
+            pair.iter()
+                .map(|removal| removal.policy_account)
+                .collect::<Vec<_>>(),
+            vec![policy_account, second_policy]
+        );
+        assert!(detect_squads_policy_remove(&remove_pair).unwrap().is_none());
     }
 
     #[test]

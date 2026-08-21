@@ -13,7 +13,6 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use klend_interface::{
     from_account_data,
     state::{Obligation, Reserve},
@@ -24,6 +23,7 @@ use loyal_actions::{
     derive_kamino_vanilla_obligation, earn_stablecoin, earn_stablecoins, SquadsSettingsActionView,
     SQUADS_SMART_ACCOUNT_PROGRAM_ID,
 };
+use loyal_squads_policy_monitor::{PolicyMonitor, PostgresPolicyMatchSink};
 use loyal_yield_store::{
     EarnCleanupMutation, EarnDepositMutation, EarnDirectMutation, EarnIdleTokenMutation,
     EarnPolicyOnlyMutation, EarnReconciliationEnqueueInput, EarnReconciliationEnqueueOutcome,
@@ -46,19 +46,33 @@ use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
     signature::Signature,
-    transaction::VersionedTransaction,
 };
-use solana_transaction_status_client_types::UiTransactionEncoding;
-use tokio::{sync::Notify, time};
+use solana_transaction_status_client_types::{
+    option_serializer::OptionSerializer, UiTransactionEncoding,
+};
+use tokio::{
+    sync::{Mutex, Notify},
+    time,
+};
 
 use crate::{
     emit_earn_reconciliation_consumer_failed, emit_earn_reconciliation_health_snapshot_failed,
     emit_earn_reconciliation_job_failed,
     monitor_observability::EarnMonitorMetrics,
-    smart_account::{EarnVaultWatch, NormalizedEarnUpdate, SubscriptionWatchSet},
+    smart_account::{
+        EarnVaultWatch, NormalizedEarnUpdate, SubscriptionWatchSet, EARN_POLICY_ACCOUNTS,
+        EARN_SMART_ACCOUNTS,
+    },
 };
 
 const EARN_RECONCILIATION_HEALTH_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone)]
+pub struct EarnPolicyTransaction {
+    pub signature: String,
+    pub slot: u64,
+    pub instructions: Vec<Instruction>,
+}
 
 pub trait EarnChainReader: Send + Sync {
     fn mutation_for<'a>(
@@ -66,6 +80,13 @@ pub trait EarnChainReader: Send + Sync {
         update: &'a NormalizedEarnUpdate,
         vault: &'a EarnVaultWatch,
     ) -> Pin<Box<dyn Future<Output = Result<EarnDirectMutation>> + Send + 'a>>;
+
+    fn policy_transaction_for<'a>(
+        &'a self,
+        _update: &'a NormalizedEarnUpdate,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<EarnPolicyTransaction>>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 pub struct RpcEarnChainReader {
@@ -104,6 +125,24 @@ impl EarnChainReader for RpcEarnChainReader {
             })
             .await
             .context("Earn RPC proof task panicked")?
+        })
+    }
+
+    fn policy_transaction_for<'a>(
+        &'a self,
+        update: &'a NormalizedEarnUpdate,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<EarnPolicyTransaction>>> + Send + 'a>> {
+        Box::pin(async move {
+            let Some(signature) = update.signature.clone() else {
+                return Ok(None);
+            };
+            let rpc = Arc::clone(&self.rpc);
+            let slot = update.slot;
+            tokio::task::spawn_blocking(move || {
+                read_squads_policy_transaction(rpc.as_ref(), &signature, slot).map(Some)
+            })
+            .await
+            .context("Autoswap RPC transaction proof task panicked")?
         })
     }
 }
@@ -509,50 +548,58 @@ fn read_squads_policy_actions(
     signature: &str,
     expected_slot: u64,
 ) -> Result<Vec<SquadsSettingsActionView>> {
+    let transaction = read_squads_policy_transaction(rpc, signature, expected_slot)?;
+    let mut actions = Vec::new();
+    for instruction in transaction.instructions {
+        actions.extend(
+            decode_squads_policy_create_actions(&instruction)
+                .context("decode Squads policy creation")?,
+        );
+    }
+    Ok(actions)
+}
+
+fn read_squads_policy_transaction(
+    rpc: &RpcClient,
+    signature: &str,
+    expected_slot: u64,
+) -> Result<EarnPolicyTransaction> {
     let parsed_signature =
         Signature::from_str(signature).context("invalid transaction signature")?;
     let transaction = rpc.get_transaction_with_config(
         &parsed_signature,
         RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::Base64),
-            commitment: Some(CommitmentConfig::confirmed()),
+            commitment: Some(CommitmentConfig::finalized()),
             max_supported_transaction_version: Some(0),
         },
     )?;
-    let value = serde_json::to_value(transaction).context("serialize policy transaction")?;
-    require_transaction_slot(&value, signature, expected_slot)?;
-    if value
-        .pointer("/transaction/meta/err")
-        .is_some_and(|error| !error.is_null())
-    {
+    if transaction.slot != expected_slot {
+        bail!(
+            "transaction {signature} landed at slot {}, expected {expected_slot}",
+            transaction.slot
+        );
+    }
+    let meta = transaction
+        .transaction
+        .meta
+        .as_ref()
+        .context("policy transaction has no status metadata")?;
+    if meta.err.is_some() {
         bail!("policy transaction {signature} failed on chain");
     }
-    let payload = value
-        .pointer("/transaction/transaction")
-        .and_then(|transaction| transaction.as_array().and_then(|items| items.first()))
-        .and_then(Value::as_str)
-        .context("policy transaction has no base64 payload")?;
-    let bytes = BASE64_STANDARD
-        .decode(payload)
-        .context("decode policy transaction base64")?;
-    let transaction: VersionedTransaction =
-        bincode::deserialize(&bytes).context("decode policy versioned transaction")?;
+    let transaction = transaction
+        .transaction
+        .transaction
+        .decode()
+        .context("decode policy versioned transaction")?;
     let mut account_keys = transaction.message.static_account_keys().to_vec();
-    if let Some(loaded) = value.pointer("/transaction/meta/loadedAddresses") {
-        for key in ["writable", "readonly"] {
-            for address in loaded
-                .get(key)
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                account_keys.push(Pubkey::from_str(
-                    address.as_str().context("loaded address is not a string")?,
-                )?);
-            }
+    if let OptionSerializer::Some(loaded) = &meta.loaded_addresses {
+        for address in loaded.writable.iter().chain(&loaded.readonly) {
+            account_keys.push(Pubkey::from_str(address)?);
         }
     }
-    let mut actions = Vec::new();
+    let mut instructions = Vec::new();
     for compiled in transaction.message.instructions() {
         let Some(program_id) = account_keys
             .get(compiled.program_id_index as usize)
@@ -575,16 +622,17 @@ fn read_squads_policy_actions(
                 })
             })
             .collect();
-        actions.extend(
-            decode_squads_policy_create_actions(&Instruction {
-                program_id,
-                accounts,
-                data: compiled.data.clone(),
-            })
-            .context("decode Squads policy creation")?,
-        );
+        instructions.push(Instruction {
+            program_id,
+            accounts,
+            data: compiled.data.clone(),
+        });
     }
-    Ok(actions)
+    Ok(EarnPolicyTransaction {
+        signature: signature.to_owned(),
+        slot: expected_slot,
+        instructions,
+    })
 }
 
 fn read_deposit_proof(
@@ -844,17 +892,6 @@ fn transaction_accounts(transaction: &Value) -> BTreeSet<String> {
         .collect()
 }
 
-fn require_transaction_slot(transaction: &Value, signature: &str, expected: u64) -> Result<()> {
-    let actual = transaction
-        .get("slot")
-        .and_then(Value::as_u64)
-        .context("confirmed transaction has no slot")?;
-    if actual != expected {
-        bail!("transaction {signature} landed at slot {actual}, expected {expected}");
-    }
-    Ok(())
-}
-
 fn transaction_owner_debit<'a>(
     transaction: &Value,
     mint: &str,
@@ -1010,11 +1047,82 @@ pub enum EarnReconciliationProcessOutcome {
     Deferred { job_id: i64, error: String },
 }
 
+pub async fn reconcile_targeted_policy_vault_update(
+    chain: &dyn EarnChainReader,
+    policy_monitor: &Mutex<PolicyMonitor<PostgresPolicyMatchSink>>,
+    update: &NormalizedEarnUpdate,
+    vault: &EarnVaultWatch,
+) -> Result<bool> {
+    if !update
+        .filters
+        .iter()
+        .any(|filter| filter == EARN_SMART_ACCOUNTS || filter == EARN_POLICY_ACCOUNTS)
+    {
+        return Ok(false);
+    }
+    let Some(account_pubkey) = update.account_pubkey.as_deref() else {
+        return Ok(false);
+    };
+    if account_pubkey != vault.settings
+        && !vault.accounts.iter().any(|account| {
+            account.pubkey == account_pubkey
+                && (account.role == "smart_account" || account.role == "policy")
+        })
+    {
+        return Ok(false);
+    }
+    let Some(transaction) = chain.policy_transaction_for(update).await? else {
+        return Ok(false);
+    };
+    let settings = Pubkey::from_str(&vault.settings)?;
+    let instructions = transaction
+        .instructions
+        .into_iter()
+        .filter(|instruction| {
+            instruction
+                .accounts
+                .iter()
+                .any(|account| account.pubkey == settings)
+        })
+        .collect::<Vec<_>>();
+    if instructions.is_empty() {
+        return Ok(false);
+    }
+    policy_monitor
+        .lock()
+        .await
+        .process_policy_instructions(&transaction.signature, transaction.slot, instructions)
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
+    Ok(true)
+}
+
 pub async fn process_next_earn_reconciliation_job(
     store: &OrchestratorStore,
     consumer_name: &str,
     claim_owner: &str,
     chain: &dyn EarnChainReader,
+    lease_seconds: i64,
+    retry_after_seconds: i64,
+) -> Result<EarnReconciliationProcessOutcome> {
+    process_next_earn_reconciliation_job_with_policy_monitor(
+        store,
+        consumer_name,
+        claim_owner,
+        chain,
+        None,
+        lease_seconds,
+        retry_after_seconds,
+    )
+    .await
+}
+
+pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
+    store: &OrchestratorStore,
+    consumer_name: &str,
+    claim_owner: &str,
+    chain: &dyn EarnChainReader,
+    policy_monitor: Option<&Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
     lease_seconds: i64,
     retry_after_seconds: i64,
 ) -> Result<EarnReconciliationProcessOutcome> {
@@ -1047,7 +1155,29 @@ pub async fn process_next_earn_reconciliation_job(
             .await;
         }
     };
-    match chain.mutation_for(&update, &vault).await {
+    let policy_reconciled = if let Some(policy_monitor) = policy_monitor {
+        match reconcile_targeted_policy_vault_update(chain, policy_monitor, &update, &vault).await {
+            Ok(reconciled) => reconciled,
+            Err(error) => {
+                return defer_earn_reconciliation_job(
+                    store,
+                    job.id,
+                    claim_owner,
+                    error,
+                    retry_after_seconds,
+                )
+                .await;
+            }
+        }
+    } else {
+        false
+    };
+    let mutation = if policy_reconciled {
+        Ok(EarnDirectMutation::Noop)
+    } else {
+        chain.mutation_for(&update, &vault).await
+    };
+    match mutation {
         Ok(mutation) => match store
             .complete_earn_reconciliation_job(job.id, claim_owner, &mutation)
             .await
@@ -1093,6 +1223,7 @@ pub async fn run_earn_reconciliation_consumer(
     consumer_name: String,
     claim_owner: String,
     chain: Arc<dyn EarnChainReader>,
+    policy_monitor: Arc<Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
     wake: Arc<Notify>,
     running: Arc<AtomicBool>,
     metrics: EarnMonitorMetrics,
@@ -1117,11 +1248,12 @@ pub async fn run_earn_reconciliation_consumer(
             next_health_sample_at = now + EARN_RECONCILIATION_HEALTH_SAMPLE_INTERVAL;
         }
 
-        match process_next_earn_reconciliation_job(
+        match process_next_earn_reconciliation_job_with_policy_monitor(
             &store,
             &consumer_name,
             &claim_owner,
             chain.as_ref(),
+            Some(policy_monitor.as_ref()),
             120,
             15,
         )

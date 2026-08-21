@@ -272,7 +272,7 @@ async fn one_row_policy_catalog_is_finality_and_ambiguity_safe() {
 
 #[tokio::test]
 #[ignore = "requires CROSS_MINT_STORE_TEST_DATABASE_URL pointing at a throwaway database with migrations 0001-0037 applied"]
-async fn per_vault_opt_in_is_immutable_and_disable_is_committed() {
+async fn per_vault_opt_in_is_only_intent_and_disable_is_committed() {
     let database_url = match std::env::var(DATABASE_URL_ENV) {
         Ok(value) => value,
         Err(_) => {
@@ -298,10 +298,10 @@ async fn per_vault_opt_in_is_immutable_and_disable_is_committed() {
     );
 
     let lookup = CrossMintVaultOptInLookup {
-        cluster: "cross-mint-opt-in-db-test".to_owned(),
-        settings: "opt-in-settings".to_owned(),
+        cluster: CLUSTER.to_owned(),
+        settings: SETTINGS.to_owned(),
         vault_index: 1,
-        vault_pubkey: "opt-in-vault".to_owned(),
+        vault_pubkey: VAULT.to_owned(),
     };
     assert!(client
         .load_cross_mint_vault_opt_in(lookup.clone())
@@ -316,17 +316,31 @@ async fn per_vault_opt_in_is_immutable_and_disable_is_committed() {
             vault_index: lookup.vault_index,
             vault_pubkey: lookup.vault_pubkey.clone(),
             enabled: true,
-            classic_policy_account: "opt-in-classic-policy".to_owned(),
-            classic_policy_seed: 11,
-            token_2022_policy_account: "opt-in-token-2022-policy".to_owned(),
-            token_2022_policy_seed: 12,
-            max_slippage_bps: 50,
-            daily_source_mint_spending_cap: 1_000_000,
         })
         .await
         .expect("create enabled opt-in");
     assert!(created.enabled);
     assert_eq!(created.generation, 1);
+    client
+        .record_cross_mint_swap_policy_manifest(manifest(
+            "opt-in-classic",
+            11,
+            "finalized",
+            "opt-in-classic-policy",
+            "classic",
+        ))
+        .await
+        .expect("record classic policy authority");
+    client
+        .record_cross_mint_swap_policy_manifest(manifest(
+            "opt-in-token-2022",
+            12,
+            "finalized",
+            "opt-in-token-2022-policy",
+            "token_2022",
+        ))
+        .await
+        .expect("record Token-2022 policy authority");
 
     let disabled = client
         .disable_cross_mint_vault_opt_in(lookup.clone(), created.generation)
@@ -387,37 +401,11 @@ async fn per_vault_opt_in_is_immutable_and_disable_is_committed() {
             vault_index: lookup.vault_index,
             vault_pubkey: lookup.vault_pubkey.clone(),
             enabled: true,
-            classic_policy_account: "opt-in-classic-policy".to_owned(),
-            classic_policy_seed: 11,
-            token_2022_policy_account: "opt-in-token-2022-policy".to_owned(),
-            token_2022_policy_seed: 12,
-            max_slippage_bps: 50,
-            daily_source_mint_spending_cap: 1_000_000,
         })
         .await
         .expect("setup confirmation replay is idempotent");
     assert!(!replayed_setup.enabled);
     assert_eq!(replayed_setup.generation, disabled_again.generation);
-
-    let immutable_error = client
-        .upsert_cross_mint_vault_opt_in(CrossMintVaultOptInUpsert {
-            cluster: lookup.cluster.clone(),
-            settings: lookup.settings.clone(),
-            vault_index: lookup.vault_index,
-            vault_pubkey: lookup.vault_pubkey.clone(),
-            enabled: true,
-            classic_policy_account: "opt-in-classic-policy".to_owned(),
-            classic_policy_seed: 11,
-            token_2022_policy_account: "opt-in-token-2022-policy".to_owned(),
-            token_2022_policy_seed: 12,
-            max_slippage_bps: 50,
-            daily_source_mint_spending_cap: 2_000_000,
-        })
-        .await
-        .expect_err("a changed risk envelope requires remove and recreate");
-    assert!(immutable_error
-        .to_string()
-        .contains("risk configuration cannot change"));
 
     let persisted = client
         .load_cross_mint_vault_opt_in(lookup)
@@ -425,7 +413,5 @@ async fn per_vault_opt_in_is_immutable_and_disable_is_committed() {
         .expect("read unchanged opt-in")
         .expect("opt-in remains durable after rejected update");
     assert!(!persisted.enabled);
-    assert_eq!(persisted.max_slippage_bps, 50);
-    assert_eq!(persisted.daily_source_mint_spending_cap, 1_000_000);
     assert_eq!(persisted.generation, 4);
 }

@@ -4,7 +4,7 @@
 //! intentionally never enter the balance-sweep observation/projector path.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     str::FromStr,
 };
 
@@ -23,12 +23,14 @@ use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
 
 pub const BALANCE_SWEEP_WALLET_ATAS: &str = "balance_sweep_wallet_atas";
+pub const EARN_SMART_ACCOUNTS: &str = "earn_smart_accounts";
 pub const EARN_POLICY_ACCOUNTS: &str = "earn_policy_accounts";
 pub const EARN_VAULT_ACCOUNTS: &str = "earn_vault_accounts";
 pub const EARN_IDLE_TOKEN_ACCOUNTS: &str = "earn_idle_token_accounts";
 pub const EARN_OBLIGATIONS: &str = "earn_obligations";
 
-const EARN_ACCOUNT_CHANNELS: [&str; 4] = [
+const EARN_ACCOUNT_CHANNELS: [&str; 5] = [
+    EARN_SMART_ACCOUNTS,
     EARN_POLICY_ACCOUNTS,
     EARN_VAULT_ACCOUNTS,
     EARN_IDLE_TOKEN_ACCOUNTS,
@@ -95,6 +97,10 @@ impl SubscriptionWatchSet {
             if entry.settings != target.settings || entry.wallet != target.wallet {
                 anyhow::bail!("conflicting Earn identity for vault {vault}");
             }
+            entry.accounts.push(EarnWatchAccount {
+                pubkey: settings.to_string(),
+                role: "smart_account".to_owned(),
+            });
             entry.accounts.push(EarnWatchAccount {
                 pubkey: vault.to_string(),
                 role: "vault".to_owned(),
@@ -209,6 +215,7 @@ impl SubscriptionWatchSet {
         for vault in &self.earn_vaults {
             for account in &vault.accounts {
                 let channel = match account.role.as_str() {
+                    "smart_account" => EARN_SMART_ACCOUNTS,
                     "policy" => EARN_POLICY_ACCOUNTS,
                     "vault" => EARN_VAULT_ACCOUNTS,
                     "idle_token" => EARN_IDLE_TOKEN_ACCOUNTS,
@@ -319,8 +326,8 @@ pub fn build_multi_channel_subscribe_request(
         .collect();
     SubscribeRequest {
         accounts,
-        transactions: HashMap::new(),
-        commitment: Some(helius_laserstream::grpc::CommitmentLevel::Confirmed as i32),
+        transactions: BTreeMap::new().into_iter().collect(),
+        commitment: Some(helius_laserstream::grpc::CommitmentLevel::Finalized as i32),
         from_slot: Some(from_slot),
         ..Default::default()
     }
@@ -344,7 +351,7 @@ pub fn subscribe_request_json(watch_set: &SubscriptionWatchSet) -> serde_json::V
         .collect();
     serde_json::to_value(RequestJson {
         request_count: 1,
-        commitment: "confirmed",
+        commitment: "finalized",
         accounts,
         transactions: BTreeMap::new(),
         _marker: None,
@@ -369,4 +376,46 @@ fn signature_from_bytes(bytes: &[u8]) -> Result<String> {
         anyhow::bail!("LaserStream transaction signature was empty");
     }
     Ok(solana_sdk::bs58::encode(bytes).into_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autoswap_uses_targeted_accounts_without_a_transaction_stream() {
+        let settings = Pubkey::new_unique();
+        let vault = derive_squads_vault(&settings, 1).0;
+        let policy = Pubkey::new_unique();
+        let request = build_multi_channel_subscribe_request(
+            &SubscriptionWatchSet::from_targets(
+                Vec::new(),
+                vec![EarnSubscriptionTarget {
+                    environment: "mainnet-beta".to_owned(),
+                    settings: settings.to_string(),
+                    wallet: Pubkey::new_unique().to_string(),
+                    vault_index: 1,
+                    vault_pubkey: Some(vault.to_string()),
+                    policy_accounts: vec![policy.to_string()],
+                    markets: Vec::new(),
+                }],
+            )
+            .expect("valid targeted watch set"),
+            42,
+        );
+        assert_eq!(request.from_slot, Some(42));
+        assert_eq!(
+            request.commitment,
+            Some(helius_laserstream::grpc::CommitmentLevel::Finalized as i32)
+        );
+        assert!(request.transactions.is_empty());
+        assert_eq!(
+            request.accounts[EARN_SMART_ACCOUNTS].account,
+            vec![settings.to_string()]
+        );
+        assert_eq!(
+            request.accounts[EARN_POLICY_ACCOUNTS].account,
+            vec![policy.to_string()]
+        );
+    }
 }

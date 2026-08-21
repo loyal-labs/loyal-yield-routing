@@ -236,12 +236,6 @@ pub struct CrossMintVaultOptInUpsert {
     pub vault_index: u8,
     pub vault_pubkey: String,
     pub enabled: bool,
-    pub classic_policy_account: String,
-    pub classic_policy_seed: u64,
-    pub token_2022_policy_account: String,
-    pub token_2022_policy_seed: u64,
-    pub max_slippage_bps: u16,
-    pub daily_source_mint_spending_cap: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -251,12 +245,6 @@ pub struct CrossMintVaultOptIn {
     pub vault_index: i16,
     pub vault_pubkey: String,
     pub enabled: bool,
-    pub classic_policy_account: String,
-    pub classic_policy_seed: i64,
-    pub token_2022_policy_account: String,
-    pub token_2022_policy_seed: i64,
-    pub max_slippage_bps: i32,
-    pub daily_source_mint_spending_cap: i64,
     pub generation: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

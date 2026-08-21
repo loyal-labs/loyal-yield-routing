@@ -43,6 +43,7 @@ const MIGRATION_0040: &str = include_str!("../migrations/0040_durable_autodeposi
 const MIGRATION_0046: &str = include_str!("../migrations/0046_laserstream_replay_cursor.sql");
 const MIGRATION_0049: &str =
     include_str!("../migrations/0049_durable_earn_reconciliation_jobs.sql");
+const MIGRATION_0050: &str = include_str!("../migrations/0050_autoswap_opt_in_realtime.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -142,12 +143,6 @@ struct CrossMintVaultOptInRow {
     vault_index: i16,
     vault_pubkey: String,
     enabled: bool,
-    classic_policy_account: String,
-    classic_policy_seed: i64,
-    token_2022_policy_account: String,
-    token_2022_policy_seed: i64,
-    max_slippage_bps: i32,
-    daily_source_mint_spending_cap: i64,
     generation: i64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -454,6 +449,12 @@ impl NeonSqlClient {
                 version: 49,
                 name: "durable_earn_reconciliation_jobs",
                 sql: MIGRATION_0049,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 50,
+                name: "autoswap_opt_in_realtime",
+                sql: MIGRATION_0050,
                 expected_checksum: None,
             },
         ] {
@@ -879,6 +880,44 @@ impl NeonSqlClient {
                         .try_get::<Option<String>, _>("market")?
                         .into_iter()
                         .collect(),
+                });
+            }
+        }
+
+        let cross_mint_policies_exist: bool = sqlx::query_scalar(
+            "SELECT to_regclass('loyal_yield.cross_mint_swap_policies') IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if cross_mint_policies_exist {
+            let rows = sqlx::query(
+                r#"
+                SELECT authority AS wallet, settings, vault_index, vault_pubkey,
+                       array_agg(DISTINCT policy_account ORDER BY policy_account)
+                           AS policy_accounts
+                FROM loyal_yield.cross_mint_swap_policies
+                WHERE cluster = $1
+                  AND active
+                  AND source_shard IN ('classic', 'token_2022')
+                GROUP BY authority, settings, vault_index, vault_pubkey
+                "#,
+            )
+            .bind(environment)
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                let settings: String = row.get("settings");
+                if app_accounts_exist && !environment_settings.contains(&settings) {
+                    continue;
+                }
+                targets.push(EarnSubscriptionTarget {
+                    environment: environment.to_owned(),
+                    settings,
+                    wallet: row.get("wallet"),
+                    vault_index: row.get("vault_index"),
+                    vault_pubkey: Some(row.get("vault_pubkey")),
+                    policy_accounts: row.get("policy_accounts"),
+                    markets: Vec::new(),
                 });
             }
         }
@@ -1321,6 +1360,9 @@ impl NeonSqlClient {
                 .await?,
             ),
         };
+        if row.as_ref().is_some_and(|policy| policy.start_eligible) {
+            ensure_cross_mint_vault_opt_in_for_canonical_pair(&mut tx, &event).await?;
+        }
         tx.commit().await?;
         row.map(cross_mint_swap_policy_from_row).transpose()
     }
@@ -1366,9 +1408,6 @@ impl NeonSqlClient {
         let row = sqlx::query_as::<_, CrossMintVaultOptInRow>(
             r#"
             SELECT cluster, settings, vault_index, vault_pubkey, enabled,
-                   classic_policy_account, classic_policy_seed,
-                   token_2022_policy_account, token_2022_policy_seed,
-                   max_slippage_bps, daily_source_mint_spending_cap,
                    generation, created_at, updated_at
             FROM loyal_yield.cross_mint_vault_opt_ins
             WHERE cluster = $1
@@ -1386,118 +1425,31 @@ impl NeonSqlClient {
         row.map(cross_mint_vault_opt_in_from_row).transpose()
     }
 
-    /// Records a finalized enrollment. Replaying setup confirmation returns
-    /// the existing row without changing user intent or its generation. The
-    /// exact policy pair and risk envelope are immutable for the row's lifetime.
+    /// Records only run/pause intent. Policy identity and risk settings remain
+    /// authoritative in the finalized on-chain policy projection.
     pub async fn upsert_cross_mint_vault_opt_in(
         &self,
         input: CrossMintVaultOptInUpsert,
     ) -> Result<CrossMintVaultOptIn, OrchestratorError> {
         validate_cross_mint_vault_opt_in_upsert(&input)?;
-        let daily_cap = to_i64_cross_mint_cap(input.daily_source_mint_spending_cap)?;
-        let mut tx = self.pool.begin().await?;
-        let lock_key = format!(
-            "cross-mint-vault-opt-in:{}:{}:{}:{}",
-            input.cluster, input.settings, input.vault_index, input.vault_pubkey
-        );
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0::bigint))")
-            .bind(&lock_key)
-            .execute(&mut *tx)
-            .await?;
-        let current = sqlx::query_as::<_, CrossMintVaultOptInRow>(
+        let row = sqlx::query_as::<_, CrossMintVaultOptInRow>(
             r#"
-            SELECT cluster, settings, vault_index, vault_pubkey, enabled,
-                   classic_policy_account, classic_policy_seed,
-                   token_2022_policy_account, token_2022_policy_seed,
-                   max_slippage_bps, daily_source_mint_spending_cap,
-                   generation, created_at, updated_at
-            FROM loyal_yield.cross_mint_vault_opt_ins
-            WHERE cluster = $1
-              AND settings = $2
-              AND vault_index = $3
-              AND vault_pubkey = $4
-            FOR UPDATE
+            INSERT INTO loyal_yield.cross_mint_vault_opt_ins
+                (cluster, settings, vault_index, vault_pubkey, enabled)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (cluster, settings, vault_index, vault_pubkey)
+            DO UPDATE SET updated_at = cross_mint_vault_opt_ins.updated_at
+            RETURNING cluster, settings, vault_index, vault_pubkey, enabled,
+                      generation, created_at, updated_at
             "#,
         )
         .bind(&input.cluster)
         .bind(&input.settings)
         .bind(i16::from(input.vault_index))
         .bind(&input.vault_pubkey)
-        .fetch_optional(&mut *tx)
+        .bind(input.enabled)
+        .fetch_one(&self.pool)
         .await?;
-
-        let row = match current {
-            Some(current) => {
-                if current.max_slippage_bps != i32::from(input.max_slippage_bps)
-                    || current.daily_source_mint_spending_cap != daily_cap
-                    || current.classic_policy_account != input.classic_policy_account
-                    || current.classic_policy_seed
-                        != i64::try_from(input.classic_policy_seed).map_err(|_| {
-                            OrchestratorError::StoreInvariant(
-                                "cross-mint classic policy seed exceeds PostgreSQL BIGINT"
-                                    .to_owned(),
-                            )
-                        })?
-                    || current.token_2022_policy_account != input.token_2022_policy_account
-                    || current.token_2022_policy_seed
-                        != i64::try_from(input.token_2022_policy_seed).map_err(|_| {
-                            OrchestratorError::StoreInvariant(
-                                "cross-mint Token-2022 policy seed exceeds PostgreSQL BIGINT"
-                                    .to_owned(),
-                            )
-                        })?
-                {
-                    return Err(OrchestratorError::StoreInvariant(
-                        "cross-mint opt-in policy identity and risk configuration cannot change; remove and recreate the enrollment".to_owned(),
-                    ));
-                }
-                current
-            }
-            None => {
-                let classic_policy_seed =
-                    i64::try_from(input.classic_policy_seed).map_err(|_| {
-                        OrchestratorError::StoreInvariant(
-                            "cross-mint classic policy seed exceeds PostgreSQL BIGINT".to_owned(),
-                        )
-                    })?;
-                let token_2022_policy_seed =
-                    i64::try_from(input.token_2022_policy_seed).map_err(|_| {
-                        OrchestratorError::StoreInvariant(
-                            "cross-mint Token-2022 policy seed exceeds PostgreSQL BIGINT"
-                                .to_owned(),
-                        )
-                    })?;
-                sqlx::query_as::<_, CrossMintVaultOptInRow>(
-                    r#"
-                INSERT INTO loyal_yield.cross_mint_vault_opt_ins
-                    (cluster, settings, vault_index, vault_pubkey, enabled,
-                     classic_policy_account, classic_policy_seed,
-                     token_2022_policy_account, token_2022_policy_seed,
-                     max_slippage_bps, daily_source_mint_spending_cap)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                RETURNING cluster, settings, vault_index, vault_pubkey, enabled,
-                          classic_policy_account, classic_policy_seed,
-                          token_2022_policy_account, token_2022_policy_seed,
-                          max_slippage_bps, daily_source_mint_spending_cap,
-                          generation, created_at, updated_at
-                "#,
-                )
-                .bind(&input.cluster)
-                .bind(&input.settings)
-                .bind(i16::from(input.vault_index))
-                .bind(&input.vault_pubkey)
-                .bind(input.enabled)
-                .bind(&input.classic_policy_account)
-                .bind(classic_policy_seed)
-                .bind(&input.token_2022_policy_account)
-                .bind(token_2022_policy_seed)
-                .bind(i32::from(input.max_slippage_bps))
-                .bind(daily_cap)
-                .fetch_one(&mut *tx)
-                .await?
-            }
-        };
-        tx.commit().await?;
         cross_mint_vault_opt_in_from_row(row)
     }
 
@@ -1537,9 +1489,6 @@ impl NeonSqlClient {
         let current = sqlx::query_as::<_, CrossMintVaultOptInRow>(
             r#"
             SELECT cluster, settings, vault_index, vault_pubkey, enabled,
-                   classic_policy_account, classic_policy_seed,
-                   token_2022_policy_account, token_2022_policy_seed,
-                   max_slippage_bps, daily_source_mint_spending_cap,
                    generation, created_at, updated_at
             FROM loyal_yield.cross_mint_vault_opt_ins
             WHERE cluster = $1
@@ -1575,6 +1524,12 @@ impl NeonSqlClient {
                 "cross-mint opt-in generation changed before transition".to_owned(),
             ));
         }
+        if enabled && !canonical_cross_mint_pair_exists(&mut tx, &lookup).await? {
+            return Err(OrchestratorError::StoreInvariant(
+                "cross-mint opt-in cannot resume without one canonical finalized policy pair"
+                    .to_owned(),
+            ));
+        }
         let row = sqlx::query_as::<_, CrossMintVaultOptInRow>(
             r#"
             UPDATE loyal_yield.cross_mint_vault_opt_ins
@@ -1587,9 +1542,6 @@ impl NeonSqlClient {
               AND vault_pubkey = $4
               AND generation = $6
             RETURNING cluster, settings, vault_index, vault_pubkey, enabled,
-                      classic_policy_account, classic_policy_seed,
-                      token_2022_policy_account, token_2022_policy_seed,
-                      max_slippage_bps, daily_source_mint_spending_cap,
                       generation, created_at, updated_at
             "#,
         )
@@ -1623,6 +1575,7 @@ impl NeonSqlClient {
 
         let swap_policy_deactivated =
             deactivate_cross_mint_swap_policy(&mut tx, &event, slot).await?;
+        delete_cross_mint_vault_opt_in_after_complete_removal(&mut tx, &event).await?;
         let route_policy_id = sqlx::query_scalar::<_, i64>(
             r#"
             UPDATE loyal_yield.route_policies
@@ -3762,34 +3715,7 @@ fn validate_cross_mint_vault_opt_in_upsert(
         vault_index: input.vault_index,
         vault_pubkey: input.vault_pubkey.clone(),
     })?;
-    if input.classic_policy_account.trim().is_empty()
-        || input.token_2022_policy_account.trim().is_empty()
-        || input.classic_policy_account == input.token_2022_policy_account
-        || input.classic_policy_seed == 0
-        || input.token_2022_policy_seed == 0
-        || input.classic_policy_seed == input.token_2022_policy_seed
-    {
-        return Err(OrchestratorError::StoreInvariant(
-            "cross-mint opt-in requires two distinct policy accounts and seeds".to_owned(),
-        ));
-    }
-    if input.max_slippage_bps == 0
-        || input.max_slippage_bps > 10_000
-        || input.daily_source_mint_spending_cap == 0
-    {
-        return Err(OrchestratorError::StoreInvariant(
-            "cross-mint opt-in has an invalid slippage or daily spending cap".to_owned(),
-        ));
-    }
     Ok(())
-}
-
-fn to_i64_cross_mint_cap(value: u64) -> Result<i64, OrchestratorError> {
-    i64::try_from(value).map_err(|_| {
-        OrchestratorError::StoreInvariant(
-            "cross-mint opt-in daily spending cap exceeds PostgreSQL BIGINT".to_owned(),
-        )
-    })
 }
 
 fn commitment_rank(commitment: &str) -> Result<u8, OrchestratorError> {
@@ -3810,6 +3736,71 @@ fn stronger_commitment(left: &str, right: &str) -> Result<&'static str, Orchestr
         2 => Ok("finalized"),
         _ => unreachable!("commitment rank is bounded"),
     }
+}
+
+async fn ensure_cross_mint_vault_opt_in_for_canonical_pair(
+    tx: &mut Transaction<'_, Postgres>,
+    event: &CrossMintSwapPolicyManifestInput,
+) -> Result<(), OrchestratorError> {
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.cross_mint_vault_opt_ins
+            (cluster, settings, vault_index, vault_pubkey, enabled)
+        SELECT $1, $2, $3, $4, TRUE
+        WHERE (
+            SELECT count(*) = 2
+               AND count(DISTINCT source_shard) = 2
+               AND count(DISTINCT authority) = 1
+               AND count(DISTINCT delegated_signer) = 1
+               AND count(DISTINCT max_slippage_bps) = 1
+               AND count(DISTINCT daily_source_mint_spending_cap) = 1
+            FROM loyal_yield.cross_mint_swap_policies
+            WHERE cluster = $1 AND settings = $2
+              AND vault_index = $3 AND vault_pubkey = $4
+              AND active AND start_eligible
+              AND source_commitment = 'finalized'
+              AND last_mutation IN ('create', 'update')
+              AND source_shard IN ('classic', 'token_2022')
+        )
+        ON CONFLICT (cluster, settings, vault_index, vault_pubkey) DO NOTHING
+        "#,
+    )
+    .bind(&event.cluster)
+    .bind(&event.settings)
+    .bind(i16::from(event.vault_index))
+    .bind(&event.vault_pubkey)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn canonical_cross_mint_pair_exists(
+    tx: &mut Transaction<'_, Postgres>,
+    lookup: &CrossMintVaultOptInLookup,
+) -> Result<bool, OrchestratorError> {
+    Ok(sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT count(*) = 2
+           AND count(DISTINCT source_shard) = 2
+           AND count(DISTINCT authority) = 1
+           AND count(DISTINCT delegated_signer) = 1
+           AND count(DISTINCT max_slippage_bps) = 1
+           AND count(DISTINCT daily_source_mint_spending_cap) = 1
+        FROM loyal_yield.cross_mint_swap_policies
+        WHERE cluster = $1 AND settings = $2
+          AND vault_index = $3 AND vault_pubkey = $4
+          AND active AND start_eligible
+          AND source_commitment = 'finalized'
+          AND last_mutation IN ('create', 'update')
+          AND source_shard IN ('classic', 'token_2022')
+        "#,
+    )
+    .bind(&lookup.cluster)
+    .bind(&lookup.settings)
+    .bind(i16::from(lookup.vault_index))
+    .bind(&lookup.vault_pubkey)
+    .fetch_one(&mut **tx)
+    .await?)
 }
 
 async fn insert_cross_mint_swap_policy(
@@ -3997,6 +3988,46 @@ async fn deactivate_cross_mint_swap_policy(
     .execute(&mut **tx)
     .await?;
     Ok(was_enabled)
+}
+
+async fn delete_cross_mint_vault_opt_in_after_complete_removal(
+    tx: &mut Transaction<'_, Postgres>,
+    event: &PolicyRemovalInput,
+) -> Result<(), OrchestratorError> {
+    sqlx::query(
+        r#"
+        DELETE FROM loyal_yield.cross_mint_vault_opt_ins AS opt_in
+        WHERE opt_in.cluster = $1
+          AND opt_in.settings = $2
+          AND NOT EXISTS (
+              SELECT 1
+              FROM loyal_yield.cross_mint_swap_policies AS active_policy
+              WHERE active_policy.cluster = opt_in.cluster
+                AND active_policy.settings = opt_in.settings
+                AND active_policy.vault_index = opt_in.vault_index
+                AND active_policy.vault_pubkey = opt_in.vault_pubkey
+                AND active_policy.active
+          )
+          AND 2 = (
+              SELECT count(DISTINCT removed_policy.source_shard)
+              FROM loyal_yield.cross_mint_swap_policies AS removed_policy
+              WHERE removed_policy.cluster = opt_in.cluster
+                AND removed_policy.settings = opt_in.settings
+                AND removed_policy.vault_index = opt_in.vault_index
+                AND removed_policy.vault_pubkey = opt_in.vault_pubkey
+                AND removed_policy.authority = $3
+                AND removed_policy.source_shard IN ('classic', 'token_2022')
+                AND removed_policy.last_mutation = 'remove'
+                AND NOT removed_policy.active
+          )
+        "#,
+    )
+    .bind(&event.cluster)
+    .bind(&event.settings)
+    .bind(&event.authority)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 async fn insert_cross_mint_policy_removal_tombstone(
@@ -6819,11 +6850,7 @@ fn cross_mint_swap_policy_from_row(
 fn cross_mint_vault_opt_in_from_row(
     row: CrossMintVaultOptInRow,
 ) -> Result<CrossMintVaultOptIn, OrchestratorError> {
-    if row.vault_index < 0
-        || row.generation <= 0
-        || row.classic_policy_seed <= 0
-        || row.token_2022_policy_seed <= 0
-    {
+    if row.vault_index < 0 || row.generation <= 0 {
         return Err(OrchestratorError::StoreInvariant(
             "cross-mint opt-in row has an invalid vault index or generation".to_owned(),
         ));
@@ -6834,12 +6861,6 @@ fn cross_mint_vault_opt_in_from_row(
         vault_index: row.vault_index,
         vault_pubkey: row.vault_pubkey,
         enabled: row.enabled,
-        classic_policy_account: row.classic_policy_account,
-        classic_policy_seed: row.classic_policy_seed,
-        token_2022_policy_account: row.token_2022_policy_account,
-        token_2022_policy_seed: row.token_2022_policy_seed,
-        max_slippage_bps: row.max_slippage_bps,
-        daily_source_mint_spending_cap: row.daily_source_mint_spending_cap,
         generation: row.generation,
         created_at: row.created_at,
         updated_at: row.updated_at,

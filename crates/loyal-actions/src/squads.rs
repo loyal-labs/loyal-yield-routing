@@ -262,19 +262,37 @@ pub fn remove_policy_instruction(
     authority: Pubkey,
     policy: Pubkey,
 ) -> Instruction {
-    let action = SquadsSettingsAction::PolicyRemove { policy };
+    remove_policies_instruction(settings, authority, &[policy])
+}
+
+pub fn remove_policies_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    policies: &[Pubkey],
+) -> Instruction {
+    let actions = policies
+        .iter()
+        .copied()
+        .map(|policy| SquadsSettingsAction::PolicyRemove { policy })
+        .collect();
+    let mut accounts = vec![
+        AccountMeta::new(settings, false),
+        AccountMeta::new(authority, true),
+        AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+        AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+        AccountMeta::new_readonly(authority, true),
+    ];
+    accounts.extend(
+        policies
+            .iter()
+            .copied()
+            .map(|policy| AccountMeta::new(policy, false)),
+    );
 
     Instruction {
         program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(settings, false),
-            AccountMeta::new(authority, true),
-            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
-            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(policy, false),
-        ],
-        data: serialize_settings_actions(vec![action]),
+        accounts,
+        data: serialize_settings_actions(actions),
     }
 }
 

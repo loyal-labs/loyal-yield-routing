@@ -16477,6 +16477,56 @@ mod tests {
     use super::*;
     use loyal_yield_orchestrator::fleet_orchestration::deterministic_fleet_route_source_contract_fixtures;
 
+    #[tokio::test]
+    #[ignore = "requires AUTOSWAP_REBALANCE_VERIFY_DATABASE_URL for a disposable PostgreSQL database"]
+    async fn autoswap_rebalance_executes_opt_in_lock_queries() {
+        let database_url = env::var("AUTOSWAP_REBALANCE_VERIFY_DATABASE_URL")
+            .expect("AUTOSWAP_REBALANCE_VERIFY_DATABASE_URL must be set");
+        let fixture = DatabaseFixture::connect(&database_url)
+            .await
+            .expect("connect to disposable verifier database");
+
+        let activated = activate_cross_mint_fixture(&fixture, "autoswap_lock_alias")
+            .await
+            .expect("activate an Autoswap rebalance");
+        let continuation = fixture
+            .client
+            .claim_cross_mint_continuation(
+                &activated.movement.cluster,
+                "autoswap-lock-alias-worker",
+                60,
+            )
+            .await
+            .expect("claim Autoswap continuation")
+            .expect("activated Autoswap rebalance must be claimable");
+        let source_idle_account =
+            format!("source-idle:{}", activated.movement.decision_id.as_i64());
+        let input = cross_mint_leg_input(
+            &fixture,
+            &activated.opportunity_lease,
+            &continuation,
+            "autoswap-lock-alias-withdraw",
+            CrossMintMovementLeg::Withdraw,
+            CrossMintLegPurpose::OptimizeYield,
+            1,
+            CrossMintExpectedEffect {
+                debit: None,
+                credit_mint: Some("USDC".to_owned()),
+                credit_token_account: Some(source_idle_account),
+                minimum_credit_amount_raw: Some(850_000),
+            },
+        )
+        .await
+        .expect("prepare the first Autoswap leg");
+        let submission = fixture
+            .client
+            .append_cross_mint_leg(&continuation, input)
+            .await
+            .expect("publish the first Autoswap leg");
+
+        assert!(submission.id > 0);
+    }
+
     #[test]
     fn literal_source_evidence_contract_gate_accepts_code_owned_fixtures() {
         let code_owned = deterministic_fleet_route_source_contract_fixtures().unwrap();

@@ -5,7 +5,7 @@ use clap::ValueEnum;
 use futures_util::{future::BoxFuture, SinkExt, StreamExt};
 use loyal_actions::{
     decode_squads_policy_create_actions, detect_balance_sweep_policy_create,
-    detect_jupiter_cross_mint_policy_action, detect_squads_policy_remove,
+    detect_jupiter_cross_mint_policy_action, detect_squads_policy_removals,
     detect_squads_policy_update_identity, detect_yield_route_policy_create,
     generalized_cross_mint_manifest_fingerprint, DetectedBalanceSweepPolicy,
     DetectedJupiterCrossMintPolicy, DetectedJupiterPolicyIdentity, DetectedPolicyRemoval,
@@ -539,65 +539,13 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
         }
 
         let instructions = decode_squads_instructions(notification.transaction, notification.meta)?;
-        let mut emitted = 0;
-        for instruction in instructions {
-            if let Ok(Some(policy)) = detect_jupiter_cross_mint_policy_action(&instruction) {
-                self.sink
-                    .emit(PolicyMonitorEvent::CrossMintSwapPolicyManifest(
-                        CrossMintSwapPolicyManifestEvent::from_policy(
-                            &notification.signature,
-                            notification.slot,
-                            self.config.cluster,
-                            self.config.commitment,
-                            policy,
-                        ),
-                    ))
-                    .await?;
-                emitted += 1;
-                continue;
-            }
-            if let Ok(Some(removal)) = detect_squads_policy_remove(&instruction) {
-                self.sink
-                    .emit(PolicyMonitorEvent::PolicyRemoval(
-                        PolicyRemovalEvent::from_removal(
-                            &notification.signature,
-                            notification.slot,
-                            self.config.cluster,
-                            self.config.commitment,
-                            removal,
-                        ),
-                    ))
-                    .await?;
-                emitted += 1;
-                continue;
-            }
-            let actions = match decode_squads_policy_create_actions(&instruction) {
-                Ok(actions) => actions,
-                Err(_) => continue,
-            };
-            let mut recognized = 0;
-            for action in actions {
-                recognized += self.process_detected_action(&notification, &action).await?;
-            }
-            if recognized == 0 {
-                if let Ok(Some(update)) = detect_squads_policy_update_identity(&instruction) {
-                    self.sink
-                        .emit(PolicyMonitorEvent::PolicyRemoval(
-                            PolicyRemovalEvent::from_update_invalidation(
-                                &notification.signature,
-                                notification.slot,
-                                self.config.cluster,
-                                self.config.commitment,
-                                update,
-                            ),
-                        ))
-                        .await?;
-                    emitted += 1;
-                    continue;
-                }
-            }
-            emitted += recognized;
-        }
+        let mut emitted = self
+            .process_policy_instructions_inner(
+                &notification.signature,
+                notification.slot,
+                instructions,
+            )
+            .await?;
         for execution in detect_balance_sweep_execution_events(
             &notification,
             self.config.cluster,
@@ -616,9 +564,103 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
         Ok(emitted)
     }
 
+    /// Processes already-decoded Squads instructions from another transport.
+    /// LaserStream uses this entrypoint so policy semantics and persistence stay
+    /// identical without opening a second websocket connection.
+    pub async fn process_policy_instructions(
+        &mut self,
+        signature: &str,
+        slot: u64,
+        instructions: Vec<Instruction>,
+    ) -> Result<usize, MonitorError> {
+        if self.seen_signatures.contains(signature) {
+            return Ok(0);
+        }
+        let emitted = self
+            .process_policy_instructions_inner(signature, slot, instructions)
+            .await?;
+        self.seen_signatures.insert(signature.to_owned());
+        Ok(emitted)
+    }
+
+    async fn process_policy_instructions_inner(
+        &mut self,
+        signature: &str,
+        slot: u64,
+        instructions: Vec<Instruction>,
+    ) -> Result<usize, MonitorError> {
+        let mut emitted = 0;
+        for instruction in instructions {
+            if let Ok(Some(policy)) = detect_jupiter_cross_mint_policy_action(&instruction) {
+                self.sink
+                    .emit(PolicyMonitorEvent::CrossMintSwapPolicyManifest(
+                        CrossMintSwapPolicyManifestEvent::from_policy(
+                            signature,
+                            slot,
+                            self.config.cluster,
+                            self.config.commitment,
+                            policy,
+                        ),
+                    ))
+                    .await?;
+                emitted += 1;
+                continue;
+            }
+            if let Ok(removals) = detect_squads_policy_removals(&instruction) {
+                if !removals.is_empty() {
+                    for removal in removals {
+                        self.sink
+                            .emit(PolicyMonitorEvent::PolicyRemoval(
+                                PolicyRemovalEvent::from_removal(
+                                    signature,
+                                    slot,
+                                    self.config.cluster,
+                                    self.config.commitment,
+                                    removal,
+                                ),
+                            ))
+                            .await?;
+                        emitted += 1;
+                    }
+                    continue;
+                }
+            }
+            let actions = match decode_squads_policy_create_actions(&instruction) {
+                Ok(actions) => actions,
+                Err(_) => continue,
+            };
+            let mut recognized = 0;
+            for action in actions {
+                recognized += self
+                    .process_detected_action(signature, slot, &action)
+                    .await?;
+            }
+            if recognized == 0 {
+                if let Ok(Some(update)) = detect_squads_policy_update_identity(&instruction) {
+                    self.sink
+                        .emit(PolicyMonitorEvent::PolicyRemoval(
+                            PolicyRemovalEvent::from_update_invalidation(
+                                signature,
+                                slot,
+                                self.config.cluster,
+                                self.config.commitment,
+                                update,
+                            ),
+                        ))
+                        .await?;
+                    emitted += 1;
+                    continue;
+                }
+            }
+            emitted += recognized;
+        }
+        Ok(emitted)
+    }
+
     async fn process_detected_action(
         &mut self,
-        notification: &HeliusNotification<'_>,
+        signature: &str,
+        slot: u64,
         action: &SquadsSettingsActionView,
     ) -> Result<usize, MonitorError> {
         let mut emitted = 0;
@@ -626,8 +668,8 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
             self.sink
                 .emit(PolicyMonitorEvent::YieldRoute(
                     PolicyMatchEvent::from_policy(
-                        &notification.signature,
-                        notification.slot,
+                        signature,
+                        slot,
                         self.config.cluster,
                         self.config.commitment,
                         policy,
@@ -640,8 +682,8 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
             self.sink
                 .emit(PolicyMonitorEvent::BalanceSweep(
                     BalanceSweepPolicyEvent::from_policy(
-                        &notification.signature,
-                        notification.slot,
+                        signature,
+                        slot,
                         self.config.cluster,
                         policy,
                     ),
