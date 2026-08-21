@@ -291,6 +291,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0047_unambiguous_autodeposit_finalization.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 48,
+        name: "admin_monitor_query_indexes",
+        sql: include_str!("../../../loyal-yield-store/migrations/0048_admin_monitor_query_indexes.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -429,6 +435,20 @@ async fn apply_migration(pool: &PgPool, migration: &Migration) -> Result<(), Box
     }
     if migration.version == 43 {
         recover_invalid_index(pool, "rebalance_opportunities_health_aggregate_idx").await?;
+    }
+    if migration.version == 48 {
+        for index in [
+            "rebalance_opportunities_same_mint_admin_frequency_idx",
+            "rebalance_opportunities_cross_mint_admin_frequency_idx",
+            "rebalance_opportunities_failed_kind_state_entered_idx",
+            "rebalance_opportunities_kind_created_at_idx",
+            "balance_sweep_lot_claims_pre_pull_updated_idx",
+            "balance_sweep_wallet_balance_events_observed_at_idx",
+            "balance_sweep_wallet_balance_events_projected_at_idx",
+            "vault_reserve_positions_admin_holdings_idx",
+        ] {
+            recover_invalid_index(pool, index).await?;
+        }
     }
     let execution_sql = migration_execution_sql(migration);
     sqlx::raw_sql(&execution_sql).execute(pool).await?;
@@ -2324,6 +2344,14 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "optimizer_epochs_latest_cluster_idx",
         "rebalance_opportunities_optimizer_epoch_idx",
         "rebalance_opportunities_health_aggregate_idx",
+        "rebalance_opportunities_same_mint_admin_frequency_idx",
+        "rebalance_opportunities_cross_mint_admin_frequency_idx",
+        "rebalance_opportunities_failed_kind_state_entered_idx",
+        "rebalance_opportunities_kind_created_at_idx",
+        "balance_sweep_lot_claims_pre_pull_updated_idx",
+        "balance_sweep_wallet_balance_events_observed_at_idx",
+        "balance_sweep_wallet_balance_events_projected_at_idx",
+        "vault_reserve_positions_admin_holdings_idx",
     ] {
         let exists: bool =
             sqlx::query_scalar("SELECT to_regclass(format('loyal_yield.%I', $1)) IS NOT NULL")
@@ -2355,6 +2383,50 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
             [
                 "(cluster, opportunity_state)",
                 "INCLUDE (principal_usd_micros, annual_yield_gain_usd_micros, created_at, state_entered_at, lease_expires_at)",
+            ],
+        ),
+        (
+            "rebalance_opportunities_same_mint_admin_frequency_idx",
+            [
+                "(vault_id, created_at)",
+                "execution_plan ->> 'kind'::text) = 'same_mint'::text",
+            ],
+        ),
+        (
+            "rebalance_opportunities_cross_mint_admin_frequency_idx",
+            [
+                "(vault_id, created_at)",
+                "execution_plan ->> 'kind'::text) = 'cross_mint_jupiter'::text",
+            ],
+        ),
+        (
+            "balance_sweep_wallet_balance_events_observed_at_idx",
+            ["(observed_at)", "balance_sweep_wallet_balance_events"],
+        ),
+        (
+            "rebalance_opportunities_failed_kind_state_entered_idx",
+            ["(state_entered_at", "opportunity_state"],
+        ),
+        (
+            "rebalance_opportunities_kind_created_at_idx",
+            ["(created_at", "INCLUDE (attempt_count)"],
+        ),
+        (
+            "balance_sweep_lot_claims_pre_pull_updated_idx",
+            [
+                "(updated_at)",
+                "INCLUDE (claim_token, status, execution_id)",
+            ],
+        ),
+        (
+            "balance_sweep_wallet_balance_events_projected_at_idx",
+            ["(projected_at)", "balance_sweep_wallet_balance_events"],
+        ),
+        (
+            "vault_reserve_positions_admin_holdings_idx",
+            [
+                "(vault_id, liquidity_mint)",
+                "vault_reserve_positions_current",
             ],
         ),
     ] {
@@ -4077,6 +4149,32 @@ mod tests {
             assert!(
                 migration.sql.contains(required),
                 "migration 21 is missing {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn admin_monitor_indexes_are_registered_for_exact_bounded_queries() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 48)
+            .expect("migration 48 exists");
+
+        assert_eq!(migration.name, "admin_monitor_query_indexes");
+        for required in [
+            "rebalance_opportunities_same_mint_admin_frequency_idx",
+            "rebalance_opportunities_cross_mint_admin_frequency_idx",
+            "rebalance_opportunities_failed_kind_state_entered_idx",
+            "rebalance_opportunities_kind_created_at_idx",
+            "balance_sweep_lot_claims_pre_pull_updated_idx",
+            "balance_sweep_wallet_balance_events_observed_at_idx",
+            "balance_sweep_wallet_balance_events_projected_at_idx",
+            "vault_reserve_positions_admin_holdings_idx",
+            "CREATE INDEX CONCURRENTLY",
+        ] {
+            assert!(
+                migration.sql.contains(required),
+                "migration 48 is missing {required}"
             );
         }
     }
