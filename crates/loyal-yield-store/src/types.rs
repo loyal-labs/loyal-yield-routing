@@ -390,6 +390,15 @@ pub struct EarnReconciliationEnqueueOutcome {
     pub cursor_slot: u64,
 }
 
+/// Authoritative durable state for Earn stream and reconciliation monitoring.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnReconciliationHealthSnapshot {
+    pub cursor_slot: u64,
+    pub pending_jobs: u64,
+    pub failed_pending_jobs: u64,
+    pub oldest_pending_age_seconds: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EarnReconciliationJob {
     pub id: i64,

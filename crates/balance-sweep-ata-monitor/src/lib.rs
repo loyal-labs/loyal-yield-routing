@@ -37,12 +37,17 @@ use tokio::{
 pub mod ata_recheck;
 pub mod earn_apy;
 pub mod earn_reconciliation;
+pub mod monitor_observability;
 pub mod smart_account;
 
 pub use earn_reconciliation::{
     enqueue_normalized_earn_update, process_next_earn_reconciliation_job,
     run_earn_reconciliation_consumer, EarnChainReader, EarnReconciliationProcessOutcome,
     FixtureEarnChainReader, RpcEarnChainReader,
+};
+pub use monitor_observability::{
+    emit_earn_reconciliation_consumer_failed, emit_earn_reconciliation_health_snapshot_failed,
+    emit_earn_reconciliation_job_failed, EarnMonitorMetrics,
 };
 pub use smart_account::{
     build_multi_channel_subscribe_request, normalize_laserstream_update, subscribe_request_json,

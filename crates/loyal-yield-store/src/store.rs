@@ -686,6 +686,54 @@ impl NeonSqlClient {
         .transpose()
     }
 
+    /// Loads one restart-safe health snapshot from committed durable state.
+    pub async fn load_earn_reconciliation_health_snapshot(
+        &self,
+        consumer_name: &str,
+    ) -> Result<EarnReconciliationHealthSnapshot, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            SELECT COALESCE(MAX(cursor.durable_slot), 0)::BIGINT AS cursor_slot,
+                   COUNT(job.id) FILTER (WHERE job.completed_at IS NULL)::BIGINT
+                       AS pending_jobs,
+                   COUNT(job.id) FILTER (
+                       WHERE job.completed_at IS NULL AND job.last_error IS NOT NULL
+                   )::BIGINT AS failed_pending_jobs,
+                   COALESCE(
+                       GREATEST(
+                           0,
+                           FLOOR(EXTRACT(EPOCH FROM (
+                               NOW() - MIN(job.created_at) FILTER (
+                                   WHERE job.completed_at IS NULL
+                               )
+                           )))::BIGINT
+                       ),
+                       0
+                   ) AS oldest_pending_age_seconds
+            FROM loyal_yield.laserstream_replay_cursors cursor
+            FULL OUTER JOIN loyal_yield.earn_reconciliation_jobs job
+              ON job.consumer_name = cursor.consumer_name
+            WHERE cursor.consumer_name = $1 OR job.consumer_name = $1
+            "#,
+        )
+        .bind(consumer_name)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(EarnReconciliationHealthSnapshot {
+            cursor_slot: nonnegative_i64_to_u64(row.get("cursor_slot"), "cursor_slot")?,
+            pending_jobs: nonnegative_i64_to_u64(row.get("pending_jobs"), "pending_jobs")?,
+            failed_pending_jobs: nonnegative_i64_to_u64(
+                row.get("failed_pending_jobs"),
+                "failed_pending_jobs",
+            )?,
+            oldest_pending_age_seconds: nonnegative_i64_to_u64(
+                row.get("oldest_pending_age_seconds"),
+                "oldest_pending_age_seconds",
+            )?,
+        })
+    }
+
     /// Load only identity and already-recorded policy/market metadata. Address
     /// derivation is deliberately performed by the monitor from this compact
     /// snapshot rather than persisted in a second catalog.
