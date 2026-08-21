@@ -2134,18 +2134,6 @@ async fn load_fleet_sources(
                      AND opt_in.settings = swap_policy.settings
                      AND opt_in.vault_index = swap_policy.vault_index
                      AND opt_in.vault_pubkey = swap_policy.vault_pubkey
-                     AND CASE swap_policy.source_shard
-                         WHEN 'classic' THEN
-                             opt_in.classic_policy_account = swap_policy.policy_account
-                             AND opt_in.classic_policy_seed = swap_policy.policy_seed
-                         WHEN 'token_2022' THEN
-                             opt_in.token_2022_policy_account = swap_policy.policy_account
-                             AND opt_in.token_2022_policy_seed = swap_policy.policy_seed
-                         ELSE FALSE
-                     END
-                     AND opt_in.max_slippage_bps = swap_policy.max_slippage_bps
-                     AND opt_in.daily_source_mint_spending_cap =
-                         swap_policy.daily_source_mint_spending_cap
                     WHERE $9::BOOLEAN
                       AND swap_policy.active = TRUE
                       AND swap_policy.start_eligible = TRUE
@@ -2173,24 +2161,7 @@ async fn load_fleet_sources(
                             AND policy.max_slippage_bps = swap_policy.max_slippage_bps
                             AND policy.daily_source_mint_spending_cap =
                                 swap_policy.daily_source_mint_spending_cap
-                            AND EXISTS (
-                                SELECT 1
-                                FROM loyal_yield.cross_mint_vault_opt_ins opt_in
-                                WHERE opt_in.enabled = TRUE
-                                  AND opt_in.cluster = policy.cluster
-                                  AND opt_in.settings = policy.settings
-                                  AND opt_in.vault_index = policy.vault_index
-                                  AND opt_in.vault_pubkey = policy.vault_pubkey
-                                  AND CASE policy.source_shard
-                                      WHEN 'classic' THEN
-                                          opt_in.classic_policy_account = policy.policy_account
-                                          AND opt_in.classic_policy_seed = policy.policy_seed
-                                      WHEN 'token_2022' THEN
-                                          opt_in.token_2022_policy_account = policy.policy_account
-                                          AND opt_in.token_2022_policy_seed = policy.policy_seed
-                                      ELSE FALSE
-                                  END
-                            )
+                            AND policy.source_shard IN ('classic', 'token_2022')
                       )
                       ), '[]'::JSONB) AS cross_mint_swap_policies
             FROM loyal_yield.managed_vaults v

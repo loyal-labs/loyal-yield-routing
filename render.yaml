@@ -267,6 +267,8 @@ projects:
             dockerCommand: /usr/local/bin/loyal-squads-policy-monitor --cluster mainnet --commitment finalized
             maxShutdownDelaySeconds: 60
             envVars:
+              - key: POLICY_MONITOR_MODE
+                value: shadow
               - key: NEON_DATABASE_URL
                 sync: false
               - key: HELIUS_API_KEY

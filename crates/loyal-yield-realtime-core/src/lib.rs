@@ -24,6 +24,7 @@ pub const EVENT_EARN_POSITION_CHANGED: &str = "earn.position.changed";
 pub const EVENT_EARN_REBALANCE_CONFIRMED: &str = "earn.rebalance.confirmed";
 pub const EVENT_EARN_TRANSACTION_RECORDED: &str = "earn.transaction.recorded";
 pub const EVENT_EARN_ONBOARDING_CHANGED: &str = "earn.onboarding.changed";
+pub const EVENT_EARN_AUTOSWAP_CONFIGURATION_CHANGED: &str = "earn.autoswap.configuration.changed";
 
 pub mod autodeposit_states {
     pub const SCHEDULED: &str = "scheduled";

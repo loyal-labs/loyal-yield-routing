@@ -23,12 +23,16 @@ use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use loyal_actions::USDC_MINT;
 use loyal_observability::{init_from_env, OperationalError};
+use loyal_squads_policy_monitor::{
+    Cluster as PolicyCluster, Commitment as PolicyCommitment, MonitorConfig as PolicyMonitorConfig,
+    PolicyMonitor, PostgresPolicyMatchSink,
+};
 use loyal_yield_store::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
 use opentelemetry::metrics::Meter;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 use tokio::{
-    sync::{mpsc, Notify, RwLock},
+    sync::{mpsc, Mutex, Notify, RwLock},
     task::JoinHandle,
     time,
 };
@@ -218,7 +222,24 @@ async fn run(meter: Meter) -> Result<()> {
     let earn_consumer_running = Arc::new(AtomicBool::new(true));
     let earn_wake = Arc::new(Notify::new());
     let earn_monitor_metrics = EarnMonitorMetrics::new(&meter, "earn-smart-account", &args.cluster);
-    let earn_consumer_task = (args.update_source == UpdateSourceKind::Laserstream).then(|| {
+    let policy_monitor = if args.update_source == UpdateSourceKind::Laserstream {
+        let policy_cluster = match args.cluster.as_str() {
+            "mainnet" | "mainnet-beta" => PolicyCluster::Mainnet,
+            "devnet" => PolicyCluster::Devnet,
+            other => anyhow::bail!("unsupported policy-monitor cluster {other}"),
+        };
+        Some(Arc::new(Mutex::new(PolicyMonitor::new(
+            PolicyMonitorConfig {
+                cluster: policy_cluster,
+                commitment: PolicyCommitment::Finalized,
+                ws_url: String::new(),
+            },
+            PostgresPolicyMatchSink::from_store(store.clone()),
+        ))))
+    } else {
+        None
+    };
+    let earn_consumer_task = policy_monitor.map(|policy_monitor| {
         let consumer_name = format!("earn-smart-account:{}", args.cluster);
         let claim_owner = format!(
             "{}:{}:{}",
@@ -231,6 +252,7 @@ async fn run(meter: Meter) -> Result<()> {
             consumer_name,
             claim_owner,
             Arc::new(RpcEarnChainReader::new(&args.rpc_url, store.clone())),
+            policy_monitor,
             earn_wake.clone(),
             earn_consumer_running.clone(),
             earn_monitor_metrics.clone(),

@@ -303,6 +303,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0049_durable_earn_reconciliation_jobs.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 50,
+        name: "autoswap_opt_in_realtime",
+        sql: include_str!("../../../loyal-yield-store/migrations/0050_autoswap_opt_in_realtime.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
