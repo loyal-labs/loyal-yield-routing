@@ -97,7 +97,10 @@ pub fn emit_earn_reconciliation_health_snapshot_failed() {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{
+        collections::BTreeMap,
+        time::{Duration, Instant},
+    };
 
     use opentelemetry::metrics::MeterProvider as _;
     use opentelemetry_sdk::metrics::{
@@ -148,6 +151,55 @@ mod tests {
             EARN_RECONCILIATION_CONSUMER_FAILED,
             "earn_reconciliation_consumer_failed"
         );
+    }
+
+    #[test]
+    fn local_metrics_and_error_emission_stay_non_blocking() {
+        const METRIC_RECORDINGS: usize = 10_000;
+        const ERROR_EMISSIONS: usize = 3_000;
+        const LOCAL_OVERHEAD_BUDGET: Duration = Duration::from_secs(1);
+
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter)
+            .build();
+        let meter = provider.meter("ask-2200-monitor-observability-performance-test");
+        let metrics = EarnMonitorMetrics::new(&meter, "earn-smart-account", "mainnet");
+        let snapshot = EarnReconciliationHealthSnapshot {
+            cursor_slot: 440_700_000,
+            pending_jobs: 3,
+            failed_pending_jobs: 1,
+            oldest_pending_age_seconds: 120,
+        };
+
+        let metric_started_at = Instant::now();
+        for _ in 0..METRIC_RECORDINGS {
+            metrics.record(&snapshot);
+        }
+        let metric_elapsed = metric_started_at.elapsed();
+        assert!(
+            metric_elapsed <= LOCAL_OVERHEAD_BUDGET,
+            "{METRIC_RECORDINGS} four-gauge recordings took {metric_elapsed:?}"
+        );
+
+        let error_started_at = Instant::now();
+        for _ in 0..(ERROR_EMISSIONS / 3) {
+            emit_earn_reconciliation_job_failed();
+            emit_earn_reconciliation_consumer_failed();
+            emit_earn_reconciliation_health_snapshot_failed();
+        }
+        let error_elapsed = error_started_at.elapsed();
+        assert!(
+            error_elapsed <= LOCAL_OVERHEAD_BUDGET,
+            "{ERROR_EMISSIONS} operational-error emissions took {error_elapsed:?}"
+        );
+        eprintln!(
+            "ASK-2200 local telemetry overhead: metric_recordings={METRIC_RECORDINGS}, metric_ms={:.3}, error_emissions={ERROR_EMISSIONS}, error_ms={:.3}",
+            metric_elapsed.as_secs_f64() * 1000.0,
+            error_elapsed.as_secs_f64() * 1000.0,
+        );
+
+        provider.shutdown().expect("provider should shut down");
     }
 
     fn gauge_values(metrics: &[ResourceMetrics]) -> BTreeMap<&str, u64> {

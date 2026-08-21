@@ -70,9 +70,9 @@ database_url="postgresql://127.0.0.1:$port/$database_name"
 
 echo "== ASK-2200 focused Rust contracts"
 NO_DNA=1 cargo test -p loyal-observability --locked
-NO_DNA=1 cargo test -p balance-sweep-ata-monitor --lib monitor_observability
+NO_DNA=1 cargo test -p balance-sweep-ata-monitor --lib monitor_observability -- --nocapture
 
-echo "== ASK-2200 isolated durable-state regression"
+echo "== ASK-2200 isolated durable-state and loaded performance regression"
 ASK_2200_TEST_DATABASE_URL="$database_url" \
   NO_DNA=1 cargo test -p balance-sweep-ata-monitor \
     --test monitor_observability_db -- --ignored --nocapture
@@ -83,5 +83,5 @@ NO_DNA=1 cargo check -p loyal-observability -p loyal-yield-store \
 NO_DNA=1 cargo fmt --all -- --check
 git diff --check
 
-echo "PASS: ASK-2200 authoritative monitor state, OTLP metrics, and errors verified"
+echo "PASS: ASK-2200 state, OTLP metrics/errors, and loaded performance budgets verified"
 echo "NOT RUN: image publication, deploys, ClickStack dashboards/alerts, and live canaries"

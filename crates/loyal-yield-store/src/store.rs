@@ -693,27 +693,29 @@ impl NeonSqlClient {
     ) -> Result<EarnReconciliationHealthSnapshot, OrchestratorError> {
         let row = sqlx::query(
             r#"
-            SELECT COALESCE(MAX(cursor.durable_slot), 0)::BIGINT AS cursor_slot,
-                   COUNT(job.id) FILTER (WHERE job.completed_at IS NULL)::BIGINT
-                       AS pending_jobs,
-                   COUNT(job.id) FILTER (
-                       WHERE job.completed_at IS NULL AND job.last_error IS NOT NULL
-                   )::BIGINT AS failed_pending_jobs,
+            SELECT COALESCE(
+                       (
+                           SELECT cursor.durable_slot
+                           FROM loyal_yield.laserstream_replay_cursors cursor
+                           WHERE cursor.consumer_name = $1
+                       ),
+                       0
+                   )::BIGINT AS cursor_slot,
+                   COUNT(*)::BIGINT AS pending_jobs,
+                   COUNT(*) FILTER (WHERE job.last_error IS NOT NULL)::BIGINT
+                       AS failed_pending_jobs,
                    COALESCE(
                        GREATEST(
                            0,
                            FLOOR(EXTRACT(EPOCH FROM (
-                               NOW() - MIN(job.created_at) FILTER (
-                                   WHERE job.completed_at IS NULL
-                               )
+                               NOW() - MIN(job.created_at)
                            )))::BIGINT
                        ),
                        0
                    ) AS oldest_pending_age_seconds
-            FROM loyal_yield.laserstream_replay_cursors cursor
-            FULL OUTER JOIN loyal_yield.earn_reconciliation_jobs job
-              ON job.consumer_name = cursor.consumer_name
-            WHERE cursor.consumer_name = $1 OR job.consumer_name = $1
+            FROM loyal_yield.earn_reconciliation_jobs job
+            WHERE job.consumer_name = $1
+              AND job.completed_at IS NULL
             "#,
         )
         .bind(consumer_name)

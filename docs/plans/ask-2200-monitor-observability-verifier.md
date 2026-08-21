@@ -33,6 +33,12 @@ the commands and observable states below.
    legitimately idle.
 8. The focused Rust tests, isolated database regression, compilation,
    formatting, and diff checks all pass.
+9. With 100,000 completed historical jobs and 250 active jobs, 25 consecutive
+   snapshots stay within a 50 ms p95 budget and read at most 2,000 job rows per
+   sample. Monitoring cost must scale with active work, not completed history.
+10. Ten thousand four-gauge recordings and 3,000 privacy-safe operational-error
+    emissions each finish within one second locally. This catches accidental
+    synchronous network or disk work in the consumer path.
 
 ## Deployment-only follow-up
 
