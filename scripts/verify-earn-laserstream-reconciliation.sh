@@ -32,6 +32,9 @@ policy_a="AddressLookupTab1e1111111111111111111111111"
 setup_a="SysvarS1otHashes111111111111111111111111111"
 policy_b="BPFLoader1111111111111111111111111111111111"
 policy_c="Ed25519SigVerify111111111111111111111111111"
+setup_c="Stake11111111111111111111111111111111111111"
+policy_c_stale="ComputeBudget111111111111111111111111111111"
+obligation_c="NativeLoader1111111111111111111111111111111"
 policy_d="MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
 policy_d_stale="SysvarStakeHistory1111111111111111111111111"
 mint="So11111111111111111111111111111111111111112"
@@ -96,6 +99,7 @@ reconciliation_source="$routing_root/crates/balance-sweep-ata-monitor/src/earn_r
 
 for channel in \
   balance_sweep_wallet_atas \
+  earn_smart_accounts \
   earn_policy_accounts \
   earn_vault_accounts \
   earn_idle_token_accounts \
@@ -211,7 +215,7 @@ echo "== Apply production routing and app-compatible Yield migrations"
   NEON_DATABASE_URL="$database_url" NO_DNA=1 \
     cargo run --quiet -p loyal-yield-orchestrator --bin yield-migrations -- --check
 )
-assert_scalar "40:durable_autodeposit_operation,41:optimizer_epochs_latest_cluster_index,42:rebalance_opportunities_optimizer_epoch_index,43:rebalance_opportunities_health_aggregate_index,44:fleet_health_status_query_optimization,45:atomic_autodeposit_finalization,46:laserstream_replay_cursor,47:unambiguous_autodeposit_finalization,48:admin_monitor_query_indexes,49:durable_earn_reconciliation_jobs" \
+assert_scalar "40:durable_autodeposit_operation,41:optimizer_epochs_latest_cluster_index,42:rebalance_opportunities_optimizer_epoch_index,43:rebalance_opportunities_health_aggregate_index,44:fleet_health_status_query_optimization,45:atomic_autodeposit_finalization,46:laserstream_replay_cursor,47:unambiguous_autodeposit_finalization,48:admin_monitor_query_indexes,49:durable_earn_reconciliation_jobs,50:autoswap_opt_in_realtime" \
   "SELECT string_agg(version::text || ':' || name, ',' ORDER BY version) FROM loyal_yield.schema_migrations WHERE version >= 40" \
   "current-main migrations and durable Earn job migration coexist"
 psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0001_add_user_yield_deposit_positions.sql" >/dev/null
@@ -389,20 +393,47 @@ INSERT INTO loyal_yield.earn_deposit_onboarding_attempts (
 FROM loyal_yield.route_policies
 WHERE policy_account = '$policy_d';
 
-WITH route AS (
+WITH historical AS (
   INSERT INTO loyal_yield.route_policies (
     settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
     delegated_signers, threshold, route_modes, stable_mints, kamino_markets,
-    kamino_liquidity_mints, active, last_seen_slot, last_seen_signature
+    kamino_liquidity_mints, active, last_seen_slot, last_seen_signature,
+    cluster, source_commitment, finalized_eligible
+  ) VALUES (
+    '$settings_c', '$wallet_c', 300, '$policy_c_stale', 1, '$vault_c',
+    ARRAY['$wallet_c'], 1, ARRAY['kamino_deposit'], ARRAY['$mint'],
+    ARRAY['$market'], ARRAY['$mint'], FALSE, 80, 'sig-policy-c-stale',
+    'mainnet', 'finalized', FALSE
+  ) RETURNING id
+), route AS (
+  INSERT INTO loyal_yield.route_policies (
+    settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+    delegated_signers, threshold, route_modes, stable_mints, kamino_markets,
+    kamino_liquidity_mints, active, last_seen_slot, last_seen_signature,
+    cluster, source_commitment, finalized_eligible
   ) VALUES (
     '$settings_c', '$wallet_c', 301, '$policy_c', 1, '$vault_c',
     ARRAY['$wallet_c'], 1, ARRAY['kamino_deposit'], ARRAY['$mint'],
-    ARRAY['$market'], ARRAY['$mint'], TRUE, 100, 'sig-policy-c'
+    ARRAY['$market'], ARRAY['$mint'], TRUE, 100, 'sig-policy-c',
+    'mainnet', 'finalized', TRUE
+  ) RETURNING id
+), setup AS (
+  INSERT INTO loyal_yield.route_policies (
+    settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+    delegated_signers, threshold, route_modes, stable_mints, kamino_markets,
+    kamino_liquidity_mints, active, last_seen_slot, last_seen_signature,
+    cluster, source_commitment, finalized_eligible
+  ) VALUES (
+    '$settings_c', '$wallet_c', 302, '$setup_c', 1, '$vault_c',
+    ARRAY['$wallet_c'], 1, ARRAY['kamino_init_obligation'], ARRAY['$mint'],
+    ARRAY['$market'], ARRAY['$mint'], TRUE, 101, 'sig-setup-c',
+    'mainnet', 'finalized', TRUE
   ) RETURNING id
 ), vault AS (
   INSERT INTO loyal_yield.managed_vaults (
-    settings, vault_index, vault_pubkey, active_policy_id, active
-  ) SELECT '$settings_c', 1, '$vault_c', route.id, TRUE FROM route
+    settings, vault_index, vault_pubkey, active_policy_id, setup_policy_id, active
+  ) SELECT '$settings_c', 1, '$vault_c', route.id, setup.id, TRUE
+    FROM route CROSS JOIN setup
   RETURNING id, active_policy_id
 ), snapshot AS (
   INSERT INTO loyal_yield.vault_position_snapshots (
@@ -476,12 +507,13 @@ run_fixture "$fixture_root/phase-1.ndjson" \
 
 jq -e '
   .request_count == 1 and
-  .commitment == "confirmed" and
+  .commitment == "finalized" and
   (.accounts | keys | sort) == ([
     "balance_sweep_wallet_atas",
     "earn_idle_token_accounts",
     "earn_obligations",
     "earn_policy_accounts",
+    "earn_smart_accounts",
     "earn_vault_accounts"
   ] | sort) and
   .transactions == {} and
@@ -579,9 +611,9 @@ assert_scalar "active" \
 assert_scalar "131" \
   "SELECT durable_slot FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name = 'earn-smart-account-verification'" \
   "cursor advanced only after phase-two jobs became durable"
-assert_scalar "2" \
+assert_scalar "4" \
   "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'earn-smart-account-verification' AND completed_at IS NULL" \
-  "crash point retained both reconciliation jobs"
+  "crash point retained the policy-close job and all three production-shaped cleanup frames"
 
 echo "== Prove RPC lag blocks only the unproven event"
 run_fixture "$fixture_root/phase-2.ndjson" \
@@ -596,11 +628,20 @@ assert_scalar "131" \
   "SELECT durable_slot FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name = 'earn-smart-account-verification'" \
   "proof lag did not change the durable ingestion cursor"
 assert_scalar "1:1" \
-  "SELECT count(*) || ':' || min(attempt_count) FROM loyal_yield.earn_reconciliation_jobs WHERE event_key = 'cleanup-c-pending' AND completed_at IS NULL AND last_error IS NOT NULL AND next_attempt_at > NOW()" \
-  "proof failure stayed pending with retry evidence"
+  "SELECT count(*) || ':' || min(attempt_count) FROM loyal_yield.earn_reconciliation_jobs WHERE event_key = 'cleanup-c-idle' AND completed_at IS NULL AND last_error IS NOT NULL AND next_attempt_at > NOW()" \
+  "first production-shaped cleanup frame stayed pending with retry evidence"
+assert_scalar "3:3:0" \
+  "SELECT count(*) || ':' || count(*) FILTER (WHERE attempt_count = 1 AND last_error IS NOT NULL) || ':' || count(*) FILTER (WHERE attempt_count = 0 AND last_error IS NULL) FROM loyal_yield.earn_reconciliation_jobs WHERE event_payload->>'signature' = 'sig-cleanup-c' AND completed_at IS NULL" \
+  "one deferred cleanup frame does not starve its same-transaction siblings"
+assert_scalar "2:2" \
+  "SELECT count(*) FILTER (WHERE active AND finalized_eligible) || ':' || count(*) FILTER (WHERE active AND source_commitment = 'finalized') FROM loyal_yield.route_policies WHERE policy_account IN ('$policy_c', '$setup_c')" \
+  "failed cleanup leaves both finalized-eligible current policies unchanged"
+assert_scalar "sig-policy-c-stale:80" \
+  "SELECT last_seen_signature || ':' || last_seen_slot FROM loyal_yield.route_policies WHERE policy_account = '$policy_c_stale'" \
+  "failed cleanup leaves historical policy evidence unchanged"
 
 echo "== Retry with ready proof and replay everything"
-psql_verify --command="UPDATE loyal_yield.earn_reconciliation_jobs SET next_attempt_at = NOW() WHERE event_key = 'cleanup-c-pending' AND completed_at IS NULL" >/dev/null
+psql_verify --command="UPDATE loyal_yield.earn_reconciliation_jobs SET next_attempt_at = NOW() WHERE event_payload->>'signature' = 'sig-cleanup-c' AND completed_at IS NULL" >/dev/null
 run_fixture "$fixture_root/phase-2.ndjson" \
   "$fixture_root/chain-ready.json"
 run_fixture "$fixture_root/phase-1.ndjson" \
@@ -632,6 +673,12 @@ assert_scalar "0" \
 assert_scalar "0" \
   "SELECT count(*) FROM loyal_yield.route_policies WHERE vault_pubkey IN ('$vault_b', '$vault_c') AND active" \
   "cleanup deactivated canonical policies"
+assert_scalar "2" \
+  "SELECT count(*) FROM loyal_yield.route_policies WHERE policy_account IN ('$policy_c', '$setup_c') AND NOT active AND NOT finalized_eligible" \
+  "cleanup atomically clears activity and finalized eligibility for current policies"
+assert_scalar "sig-policy-c-stale:80" \
+  "SELECT last_seen_signature || ':' || last_seen_slot FROM loyal_yield.route_policies WHERE policy_account = '$policy_c_stale'" \
+  "cleanup does not rewrite historical policy evidence"
 assert_scalar "sig-cleanup-b" \
   "SELECT last_seen_signature FROM loyal_yield.route_policies WHERE policy_account = '$policy_b'" \
   "confirm-missed cleanup retained policy-close evidence"
@@ -647,12 +694,15 @@ assert_scalar "0" \
 assert_scalar "0" \
   "SELECT count(*) FROM loyal_yield.balance_sweep_executions" \
   "Earn updates created no balance-sweep executions"
-assert_scalar "8:8:0" \
+assert_scalar "10:10:0" \
   "SELECT count(*) || ':' || count(*) FILTER (WHERE completed_at IS NOT NULL) || ':' || count(*) FILTER (WHERE completed_at IS NULL) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'earn-smart-account-verification'" \
   "replay retained one completed durable job per event and vault"
-assert_scalar "2" \
-  "SELECT attempt_count FROM loyal_yield.earn_reconciliation_jobs WHERE event_key = 'cleanup-c-pending'" \
-  "failed proof retried and completed exactly once"
+assert_scalar "3:3:0" \
+  "SELECT count(*) || ':' || count(*) FILTER (WHERE completed_at IS NOT NULL) || ':' || count(*) FILTER (WHERE last_error IS NOT NULL) FROM loyal_yield.earn_reconciliation_jobs WHERE event_payload->>'signature' = 'sig-cleanup-c'" \
+  "all three production-shaped cleanup frames drain after the first retry succeeds"
+assert_scalar "3" \
+  "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE event_payload->>'signature' = 'sig-cleanup-c' AND attempt_count = 2" \
+  "each failed production-shaped frame retried and completed exactly once"
 
 echo "== Run focused production checks"
 (
