@@ -80,6 +80,13 @@ sets `Vary: Origin`, and does not enable credentialed CORS. Authenticated native
 requests without an `Origin` header are valid. Production has no localhost
 origin.
 
+Vercel previews are limited to aliases owned by the configured project and
+team. Production uses `REALTIME_ALLOWED_VERCEL_PREVIEW_PROJECT=loyal-frontend`
+and `REALTIME_ALLOWED_VERCEL_PREVIEW_TEAM=loyal-team`, which admits only HTTPS
+origins shaped like
+`loyal-frontend-git-<branch>-loyal-team.vercel.app`. It does not admit another
+Vercel project, another team, localhost, or an arbitrary `vercel.app` origin.
+
 ## Event contract
 
 Canonical autodeposit progress uses:
