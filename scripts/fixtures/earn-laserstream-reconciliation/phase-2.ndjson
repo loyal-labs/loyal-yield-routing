@@ -1,2 +1,4 @@
 {"event_key":"cleanup-b-closed","kind":"account_deleted","filters":["earn_policy_accounts"],"pubkey":"BPFLoader1111111111111111111111111111111111","slot":130,"signature":"sig-cleanup-b"}
-{"event_key":"cleanup-c-pending","kind":"account","filters":["earn_vault_accounts"],"pubkey":"LoaderV411111111111111111111111111111111111","slot":131,"signature":"sig-cleanup-c"}
+{"event_key":"cleanup-c-idle","kind":"account","filters":["earn_idle_token_accounts"],"pubkey":"KeccakSecp256k11111111111111111111111111111","slot":131,"signature":"sig-cleanup-c"}
+{"event_key":"cleanup-c-vault","kind":"account","filters":["earn_vault_accounts"],"pubkey":"LoaderV411111111111111111111111111111111111","slot":131,"signature":"sig-cleanup-c"}
+{"event_key":"cleanup-c-obligation","kind":"account_deleted","filters":["earn_obligations"],"pubkey":"NativeLoader1111111111111111111111111111111","slot":131,"signature":"sig-cleanup-c"}

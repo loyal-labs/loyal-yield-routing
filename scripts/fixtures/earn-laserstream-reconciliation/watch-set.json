@@ -11,6 +11,7 @@
       "vault": "Config1111111111111111111111111111111111111",
       "vault_index": 1,
       "accounts": [
+        { "pubkey": "Vote111111111111111111111111111111111111111", "role": "smart_account" },
         { "pubkey": "AddressLookupTab1e1111111111111111111111111", "role": "policy" },
         { "pubkey": "SysvarS1otHashes111111111111111111111111111", "role": "policy" },
         { "pubkey": "Config1111111111111111111111111111111111111", "role": "vault" },
@@ -24,6 +25,7 @@
       "vault": "BPFLoaderUpgradeab1e11111111111111111111111",
       "vault_index": 1,
       "accounts": [
+        { "pubkey": "SysvarC1ock11111111111111111111111111111111", "role": "smart_account" },
         { "pubkey": "BPFLoader1111111111111111111111111111111111", "role": "policy" },
         { "pubkey": "BPFLoaderUpgradeab1e11111111111111111111111", "role": "vault" },
         { "pubkey": "So11111111111111111111111111111111111111112", "role": "idle_token" },
@@ -38,9 +40,12 @@
       "vault": "LoaderV411111111111111111111111111111111111",
       "vault_index": 1,
       "accounts": [
+        { "pubkey": "SysvarRecentB1ockHashes11111111111111111111", "role": "smart_account" },
         { "pubkey": "Ed25519SigVerify111111111111111111111111111", "role": "policy" },
+        { "pubkey": "Stake11111111111111111111111111111111111111", "role": "policy" },
         { "pubkey": "LoaderV411111111111111111111111111111111111", "role": "vault" },
-        { "pubkey": "KeccakSecp256k11111111111111111111111111111", "role": "idle_token" }
+        { "pubkey": "KeccakSecp256k11111111111111111111111111111", "role": "idle_token" },
+        { "pubkey": "NativeLoader1111111111111111111111111111111", "role": "obligation" }
       ]
     },
     {
@@ -50,6 +55,7 @@
       "vault": "SysvarInstructions1111111111111111111111111",
       "vault_index": 1,
       "accounts": [
+        { "pubkey": "SysvarEpochSchedu1e111111111111111111111111", "role": "smart_account" },
         { "pubkey": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", "role": "policy" },
         { "pubkey": "SysvarInstructions1111111111111111111111111", "role": "vault" },
         { "pubkey": "SysvarFees111111111111111111111111111111111", "role": "idle_token" }

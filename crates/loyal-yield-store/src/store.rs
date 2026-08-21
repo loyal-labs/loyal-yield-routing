@@ -549,6 +549,14 @@ impl NeonSqlClient {
                         AND earlier.completed_at IS NULL
                         AND (earlier.durable_slot, earlier.id)
                             < (earn_reconciliation_jobs.durable_slot, earn_reconciliation_jobs.id)
+                        AND NOT (
+                            earlier.durable_slot = earn_reconciliation_jobs.durable_slot
+                            AND earlier.event_payload->>'signature'
+                                = earn_reconciliation_jobs.event_payload->>'signature'
+                            AND earlier.next_attempt_at > NOW()
+                            AND earlier.claim_owner IS NULL
+                            AND earlier.claim_expires_at IS NULL
+                        )
                   )
                 ORDER BY durable_slot, id
                 FOR UPDATE SKIP LOCKED
@@ -4764,7 +4772,7 @@ async fn apply_earn_cleanup(
     let observed_at = mutation.observed_at.unwrap_or_else(Utc::now);
     let vault_row = sqlx::query(
         r#"
-        SELECT id, active_policy_id
+        SELECT id, active_policy_id, setup_policy_id
         FROM loyal_yield.managed_vaults
         WHERE settings = $1 AND vault_index = $2 AND vault_pubkey = $3
         FOR UPDATE
@@ -4779,18 +4787,22 @@ async fn apply_earn_cleanup(
         return Ok(());
     };
     let vault_id: i64 = vault_row.try_get("id")?;
+    let active_policy_id: i64 = vault_row.try_get("active_policy_id")?;
+    let setup_policy_id: Option<i64> = vault_row.try_get("setup_policy_id")?;
 
     sqlx::query(
         r#"
         UPDATE loyal_yield.route_policies
         SET active = FALSE,
-            last_seen_slot = GREATEST(last_seen_slot, $2),
-            last_seen_signature = CASE WHEN $2 >= last_seen_slot THEN $3 ELSE last_seen_signature END,
+            finalized_eligible = FALSE,
+            last_seen_slot = GREATEST(last_seen_slot, $3),
+            last_seen_signature = CASE WHEN $3 >= last_seen_slot THEN $4 ELSE last_seen_signature END,
             last_seen_at = now()
-        WHERE vault_pubkey = $1
+        WHERE id = $1 OR id = $2
         "#,
     )
-    .bind(&mutation.vault_pubkey)
+    .bind(active_policy_id)
+    .bind(setup_policy_id)
     .bind(slot)
     .bind(&mutation.cleanup_signature)
     .execute(&mut *conn)
