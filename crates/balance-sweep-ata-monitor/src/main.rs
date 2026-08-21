@@ -15,15 +15,16 @@ use balance_sweep_ata_monitor::{
     ata_target_set, diff_ata_target_sets, laserstream_replay_from_slot,
     run_earn_reconciliation_consumer, run_event_loop, seed_current_balances,
     spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget, AtaUpdateSource,
-    EarnUpdateContext, LaserstreamAtaUpdateSource, RpcEarnChainReader, SubscriptionConfig,
-    SubscriptionWatchSet, TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream,
-    WebsocketAtaUpdateSource,
+    EarnMonitorMetrics, EarnUpdateContext, LaserstreamAtaUpdateSource, RpcEarnChainReader,
+    SubscriptionConfig, SubscriptionWatchSet, TimescaleAtaConfig, TimescaleAtaObservationSink,
+    TimescaleAtaStream, WebsocketAtaUpdateSource,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use loyal_actions::USDC_MINT;
 use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_store::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
+use opentelemetry::metrics::Meter;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 use tokio::{
@@ -134,8 +135,9 @@ impl MonitorSession {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _observability = init_from_env("loyal-balance-sweep-ata-monitor")?;
-    if let Err(error) = run().await {
+    let observability = init_from_env("loyal-balance-sweep-ata-monitor")?;
+    let meter = observability.meter("loyal-balance-sweep-ata-monitor");
+    if let Err(error) = run(meter).await {
         OperationalError::new(
             "balance_sweep_ata_monitor_fatal",
             "run_balance_sweep_ata_monitor",
@@ -149,7 +151,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run() -> Result<()> {
+async fn run(meter: Meter) -> Result<()> {
     let args = Args::parse();
     tracing::info!(
         cluster = %args.cluster,
@@ -215,6 +217,7 @@ async fn run() -> Result<()> {
     // proof failure must never participate in session supervision.
     let earn_consumer_running = Arc::new(AtomicBool::new(true));
     let earn_wake = Arc::new(Notify::new());
+    let earn_monitor_metrics = EarnMonitorMetrics::new(&meter, "earn-smart-account", &args.cluster);
     let earn_consumer_task = (args.update_source == UpdateSourceKind::Laserstream).then(|| {
         let consumer_name = format!("earn-smart-account:{}", args.cluster);
         let claim_owner = format!(
@@ -230,6 +233,7 @@ async fn run() -> Result<()> {
             Arc::new(RpcEarnChainReader::new(&args.rpc_url, store.clone())),
             earn_wake.clone(),
             earn_consumer_running.clone(),
+            earn_monitor_metrics.clone(),
         ))
     });
     let result = supervise_monitor_sessions(

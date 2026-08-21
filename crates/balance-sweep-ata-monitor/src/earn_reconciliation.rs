@@ -51,7 +51,14 @@ use solana_sdk::{
 use solana_transaction_status_client_types::UiTransactionEncoding;
 use tokio::{sync::Notify, time};
 
-use crate::smart_account::{EarnVaultWatch, NormalizedEarnUpdate, SubscriptionWatchSet};
+use crate::{
+    emit_earn_reconciliation_consumer_failed, emit_earn_reconciliation_health_snapshot_failed,
+    emit_earn_reconciliation_job_failed,
+    monitor_observability::EarnMonitorMetrics,
+    smart_account::{EarnVaultWatch, NormalizedEarnUpdate, SubscriptionWatchSet},
+};
+
+const EARN_RECONCILIATION_HEALTH_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 
 pub trait EarnChainReader: Send + Sync {
     fn mutation_for<'a>(
@@ -1088,8 +1095,28 @@ pub async fn run_earn_reconciliation_consumer(
     chain: Arc<dyn EarnChainReader>,
     wake: Arc<Notify>,
     running: Arc<AtomicBool>,
+    metrics: EarnMonitorMetrics,
 ) {
+    let mut next_health_sample_at = time::Instant::now();
     while running.load(Ordering::Relaxed) {
+        let now = time::Instant::now();
+        if now >= next_health_sample_at {
+            match store
+                .load_earn_reconciliation_health_snapshot(&consumer_name)
+                .await
+            {
+                Ok(snapshot) => metrics.record(&snapshot),
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        "failed to load Earn reconciliation health snapshot"
+                    );
+                    emit_earn_reconciliation_health_snapshot_failed();
+                }
+            }
+            next_health_sample_at = now + EARN_RECONCILIATION_HEALTH_SAMPLE_INTERVAL;
+        }
+
         match process_next_earn_reconciliation_job(
             &store,
             &consumer_name,
@@ -1109,6 +1136,7 @@ pub async fn run_earn_reconciliation_consumer(
                     error,
                     "Earn reconciliation proof failed; job retained for retry"
                 );
+                emit_earn_reconciliation_job_failed();
             }
             Ok(EarnReconciliationProcessOutcome::Idle) => {
                 tokio::select! {
@@ -1118,6 +1146,7 @@ pub async fn run_earn_reconciliation_consumer(
             }
             Err(error) => {
                 tracing::error!(error = %error, "durable Earn reconciliation consumer failed");
+                emit_earn_reconciliation_consumer_failed();
                 time::sleep(Duration::from_secs(1)).await;
             }
         }

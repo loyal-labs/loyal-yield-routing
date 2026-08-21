@@ -17,7 +17,11 @@ use std::{
     fmt::{self, Display, Formatter},
 };
 
-use opentelemetry::{metrics::MeterProvider as _, trace::TracerProvider as _, KeyValue};
+use opentelemetry::{
+    metrics::{Meter, MeterProvider as _},
+    trace::TracerProvider as _,
+    KeyValue,
+};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{
     LogExporter, MetricExporter, Protocol, SpanExporter, WithExportConfig, WithHttpConfig,
@@ -219,6 +223,19 @@ impl ObservabilityGuard {
     /// The returned handle is a no-op when [`ENABLED_ENV`] is false.
     pub fn workflow_metrics(&self) -> WorkflowMetrics {
         self.workflow_metrics.clone()
+    }
+
+    /// Returns a service-owned meter backed by the configured OTLP provider.
+    ///
+    /// Metric names and dimensions stay in the service that owns their domain
+    /// meaning. When observability is disabled this is the process-global no-op
+    /// meter, so callers do not need a second instrumentation path.
+    pub fn meter(&self, instrumentation_scope: &'static str) -> Meter {
+        self.providers
+            .meter
+            .as_ref()
+            .map(|provider| provider.meter(instrumentation_scope))
+            .unwrap_or_else(|| opentelemetry::global::meter(instrumentation_scope))
     }
 
     /// Flushes queued records without shutting the provider down.
