@@ -451,8 +451,23 @@ async fn apply_migration(pool: &PgPool, migration: &Migration) -> Result<(), Box
         }
     }
     let execution_sql = migration_execution_sql(migration);
-    sqlx::raw_sql(&execution_sql).execute(pool).await?;
+    if migration.version == 48 {
+        // PostgreSQL rejects CREATE INDEX CONCURRENTLY when several commands
+        // are submitted as one multi-statement query because that query runs
+        // in an implicit transaction block. Execute each immutable migration
+        // statement separately so every index build gets its own autocommit
+        // boundary while the session-level migration lock remains held.
+        for statement in concurrent_index_statements(&execution_sql) {
+            sqlx::raw_sql(statement).execute(pool).await?;
+        }
+    } else {
+        sqlx::raw_sql(&execution_sql).execute(pool).await?;
+    }
     Ok(())
+}
+
+fn concurrent_index_statements(sql: &str) -> impl Iterator<Item = &str> {
+    sql.split(';').map(str::trim).filter(|sql| !sql.is_empty())
 }
 
 async fn recover_invalid_index(pool: &PgPool, index: &str) -> Result<(), sqlx::Error> {
@@ -4177,5 +4192,11 @@ mod tests {
                 "migration 48 is missing {required}"
             );
         }
+
+        let statements = concurrent_index_statements(migration.sql).collect::<Vec<_>>();
+        assert_eq!(statements.len(), 8);
+        assert!(statements.iter().all(|statement| {
+            statement.match_indices("CREATE INDEX CONCURRENTLY").count() == 1
+        }));
     }
 }
