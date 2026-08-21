@@ -29,7 +29,7 @@ use solana_program::program_pack::Pack;
 use solana_pubsub_client::nonblocking::pubsub_client::PubsubClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use tokio::{
-    sync::{mpsc, RwLock},
+    sync::{mpsc, Notify, RwLock},
     task::{JoinHandle, JoinSet},
     time,
 };
@@ -40,7 +40,9 @@ pub mod earn_reconciliation;
 pub mod smart_account;
 
 pub use earn_reconciliation::{
-    reconcile_normalized_earn_update, EarnChainReader, FixtureEarnChainReader, RpcEarnChainReader,
+    enqueue_normalized_earn_update, process_next_earn_reconciliation_job,
+    run_earn_reconciliation_consumer, EarnChainReader, EarnReconciliationProcessOutcome,
+    FixtureEarnChainReader, RpcEarnChainReader,
 };
 pub use smart_account::{
     build_multi_channel_subscribe_request, normalize_laserstream_update, subscribe_request_json,
@@ -226,7 +228,7 @@ pub struct EarnUpdateContext {
     pub store: OrchestratorStore,
     pub consumer_name: String,
     pub watch_set: Arc<RwLock<SubscriptionWatchSet>>,
-    pub chain: Arc<dyn EarnChainReader>,
+    pub wake: Arc<Notify>,
 }
 
 impl LaserstreamAtaUpdateSource {
@@ -453,15 +455,15 @@ pub async fn run_event_loop(
                     continue;
                 };
                 let watch_set = earn.watch_set.read().await.clone();
-                reconcile_normalized_earn_update(
+                enqueue_normalized_earn_update(
                     &earn.store,
                     &earn.consumer_name,
                     &update,
                     &watch_set,
-                    earn.chain.as_ref(),
                 )
                 .await
                 .map_err(|error| anyhow::anyhow!(error))?;
+                earn.wake.notify_one();
                 continue;
             }
             other => other,

@@ -2,8 +2,9 @@ use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
 use balance_sweep_ata_monitor::{
-    reconcile_normalized_earn_update, subscribe_request_json, FixtureEarnChainReader,
-    NormalizedEarnUpdate, SubscriptionWatchSet,
+    enqueue_normalized_earn_update, process_next_earn_reconciliation_job, subscribe_request_json,
+    EarnReconciliationProcessOutcome, FixtureEarnChainReader, NormalizedEarnUpdate,
+    SubscriptionWatchSet,
 };
 use clap::Parser;
 use loyal_yield_store::{OrchestratorConfig, OrchestratorStore};
@@ -34,6 +35,8 @@ struct Args {
     request_output: PathBuf,
     #[arg(long)]
     context_output: Option<PathBuf>,
+    #[arg(long)]
+    ingest_only: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -87,9 +90,9 @@ async fn main() -> Result<()> {
             event_key: Some(event.event_key.clone()),
             filters: event.filters,
             event_kind: if event.kind == "account_deleted" {
-                "account_deleted"
+                "account_deleted".to_owned()
             } else {
-                "account"
+                "account".to_owned()
             },
             account_pubkey: event.pubkey,
             slot: event.slot,
@@ -101,18 +104,28 @@ async fn main() -> Result<()> {
         {
             continue;
         }
-        if std::env::var("SMART_ACCOUNT_E2E_FAIL_BEFORE_COMMIT_EVENT_KEY")
-            .ok()
-            .as_deref()
-            == Some(event.event_key.as_str())
+        enqueue_normalized_earn_update(&store, &args.stream_name, &update, &watch_set).await?;
+    }
+    if args.ingest_only {
+        return Ok(());
+    }
+
+    let claim_owner = format!("e2e:{}", std::process::id());
+    loop {
+        match process_next_earn_reconciliation_job(
+            &store,
+            &args.stream_name,
+            &claim_owner,
+            &chain,
+            120,
+            3600,
+        )
+        .await?
         {
-            anyhow::bail!(
-                "forced failure before direct Earn reconciliation commit for {}",
-                event.event_key
-            );
+            EarnReconciliationProcessOutcome::Idle => break,
+            EarnReconciliationProcessOutcome::Completed { .. }
+            | EarnReconciliationProcessOutcome::Deferred { .. } => {}
         }
-        reconcile_normalized_earn_update(&store, &args.stream_name, &update, &watch_set, &chain)
-            .await?;
     }
     Ok(())
 }

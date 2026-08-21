@@ -297,6 +297,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0048_admin_monitor_query_indexes.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 49,
+        name: "durable_earn_reconciliation_jobs",
+        sql: include_str!("../../../loyal-yield-store/migrations/0049_durable_earn_reconciliation_jobs.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -752,7 +758,7 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         "realtime_events",
         "realtime_configuration",
         "laserstream_replay_cursors",
-        "laserstream_replay_cursors",
+        "earn_reconciliation_jobs",
     ] {
         let exists: bool = sqlx::query_scalar(
             r#"
@@ -2403,14 +2409,14 @@ async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
         (
             "rebalance_opportunities_same_mint_admin_frequency_idx",
             [
-                "(vault_id, created_at)",
+                "(cluster, vault_id, created_at)",
                 "execution_plan ->> 'kind'::text) = 'same_mint'::text",
             ],
         ),
         (
             "rebalance_opportunities_cross_mint_admin_frequency_idx",
             [
-                "(vault_id, created_at)",
+                "(cluster, vault_id, created_at)",
                 "execution_plan ->> 'kind'::text) = 'cross_mint_jupiter'::text",
             ],
         ),

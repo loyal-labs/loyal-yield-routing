@@ -1,92 +1,63 @@
-# Direct Earn LaserStream reconciliation verifier
+# Durable Earn LaserStream reconciliation verifier
 
-Run `scripts/verify-earn-laserstream-reconciliation.sh` from this verifier
-worktree against separate routing and Loyal App implementation worktrees.
+Run `scripts/verify-earn-laserstream-reconciliation.sh` from the isolated
+implementation worktree. Pass `--app-root` only when Loyal App is not available
+at the repository's usual sibling path.
 
-The verifier is adversarial. It returns PASS only when confirmed LaserStream
-account updates directly converge canonical Earn state inside the existing
-LaserStream process. It must reject the previous Neon receipt/job handoff and
-any new Loyal App or fleet reconciliation worker.
+The verifier is adversarial. It returns PASS only when LaserStream account
+updates are durably accepted independently from chain proof and canonical Earn
+reconciliation. One PASS line is printed per condition and the script exits
+nonzero on the first violation.
 
 ## Required conditions
 
-1. The production request builder emits one confirmed account subscription with
-   filters `balance_sweep_wallet_atas`, `earn_policy_accounts`,
-   `earn_vault_accounts`, `earn_idle_token_accounts`, and `earn_obligations`.
-   It has no transaction filters, no reserve fan-out, no empty broad filter,
-   and deterministic deduplicated addresses.
-2. Account updates and account deletion/tombstones preserve their filter names,
-   signature, slot, and every affected vault binding. A pubkey shared with the
-   balance-sweep filter does not lose either binding.
-3. The production event loop invokes Earn reconciliation directly through a
-   bounded in-process path. No `earn_reconciliation_jobs`,
-   `earn_reconciliation_receipts`, job leasing/fencing, fleet-worker Earn lane,
-   or Loyal App consumer exists.
-4. Canonical Earn mutations happen before the durable LaserStream cursor
-   advances. A failed proof or forced pre-commit failure advances no cursor and
-   leaves no partial canonical state. Replay after a write-before-cursor crash
-   is safe because canonical writes are idempotent.
-5. The same production reconciliation engine is exercised with a deterministic
-   chain reader in the isolated E2E. The fixture layer supplies simulated
-   confirmed transaction/account evidence; it does not write expected database
-   rows itself.
-6. Policy-only onboarding recovery validates and records the route/setup policy
-   pair, managed vault, and `setup_policy_confirmed` onboarding state.
-7. Invisible deposit recovery records exactly one deposit by signature, the
-   correct principal, an active aggregate position, one holding event, managed
-   reserve/idle state, and completed onboarding. The transaction principal and
-   slot deliberately differ from the later chain-observed holding amount and
-   context slot; the aggregate position and latest holding event must still
-    match exactly. A top-up fixture also proves that principal delta equals the
-    transaction debit while holding delta is measured from the previous
-    projection, a position rebalanced from reserve A to B is reused when the
-    top-up targets B, and only the active onboarding attempt is selected and
-    completed while prior completed attempts and policies remain immutable.
-    Replay creates no duplicates.
-8. Full-withdraw cleanup covers both cases:
-   - `confirm_missed`: zero proof succeeds and policies are already closed;
-   - `cleanup_pending`: zero proof succeeds while policies remain open.
-   Both cases deactivate canonical policies/vaults, zero reserve and idle rows,
-   and close/zero the active position using the correct evidence signature.
-9. A positive-balance proof is a successful no-op: it writes no zero snapshot
-   and advances the cursor because a later balance change will wake the vault
-   again. RPC context below the withdrawal slot is retryable: it writes nothing
-   and does not advance past that event.
-10. Events are processed in stream order without dropping an earlier signature
-    when later updates affect the same vault. Restart replay converges to the
-    same final database state.
-11. Earn fixture traffic creates zero balance-sweep wallet events, surplus lots,
-    or executions.
-12. Loyal App no longer exposes or schedules `earn-deposit-reconcile` or
-    `earn-cleanup-reconcile`, and it adds no replacement worker.
-13. Current main's migrations 40 through 45 remain registered, and the
-    LaserStream replay cursor is migration 46 in both migration registries.
-14. Earn watch-set changes rebuild the whole LaserStream session instead of
-    using the SDK live-write path. The fresh request replays from the previous
-    watch-set refresh boundary so an event between refreshes is backfilled.
-    After the new set is installed the checkpoint advances; consecutive
-    additions do not replay from the process-start slot forever.
-15. Production transaction parsing nets token balances per allowed owner before
-    calculating principal. Moving tokens between two accounts with the same
-    owner proves zero principal debit.
-16. An Earn proof/RPC failure exits the ordered event loop but wakes the
-    supervisor immediately, which restarts from the durable replay cursor rather
-    than sleeping for the 300-second target refresh interval.
-17. Focused Rust formatting, compilation, tests, isolated PostgreSQL assertions,
-    and whitespace checks pass.
+1. The production request has the five account channels and no transaction
+   channel, reserve fan-out, broad empty filter, or duplicate address.
+2. The stream reader only normalizes and durably enqueues Earn updates. Enqueue
+   of every affected vault job and replay-cursor advancement are one database
+   transaction; the cursor never advances without the durable jobs.
+3. Duplicate delivery has one job per `(consumer, event, vault)` and cannot
+   duplicate canonical deposits, holdings, or cleanup.
+4. A crash after enqueue is recoverable: canonical state may still be old, but
+   the job is pending and a later in-process consumer run completes it.
+5. Chain/RPC proof failure is recorded on the job with its attempt count and
+   next retry time. It does not escape the LaserStream event loop, stop ATA
+   updates, rebuild the subscription, or trigger a full ATA seed.
+6. The reconciliation consumer runs in the existing monitor process, not in a
+   new Render/fleet/Loyal App worker. It claims bounded work, fences completion,
+   and atomically applies the canonical mutation plus job completion.
+7. The production cleanup inventory lookup uses owner-scoped token-account RPC
+   for both SPL Token and Token-2022. It never scans a whole token program with
+   `getProgramAccounts`.
+8. Policy-only onboarding, invisible deposits, top-ups, and both full-withdraw
+   cleanup classes retain the canonical outcomes covered by the previous E2E.
+   Principal and observed holding semantics, active-attempt selection,
+   cross-reserve position reuse, and exact-once history remain intact.
+9. The durable cursor represents ingestion, so it can advance while proof work
+   is pending. Restart/replay converges from queued work without losing the
+   failing event or replaying the monitor's whole lifetime.
+10. Earn traffic creates no balance-sweep wallet observations, surplus lots, or
+    executions. A proof failure also causes no bulk ATA reseed.
+11. Loyal App exposes no old Earn cron routes/schedules and adds no replacement
+    worker. Routing adds no new deployed service.
+12. Current migrations remain registered and the durable Earn job migration is
+    registered once, after current migration 48, in both routing registries. Apply and
+    check work in isolated PostgreSQL.
+13. Formatting, targeted Rust tests/checks, database assertions, and whitespace
+    checks pass.
 
 ## Rejected shortcuts
 
-- Source-string assertions in place of database behavior.
-- A fixture binary that inserts expected rows without calling the production
-  reconciliation engine.
-- Advancing the cursor before reconciliation and relying on a later scan.
-- A durable job/receipt table disguised under another name.
-- A transaction subscription or generic blockchain event store.
-- Moving the consumer into `loyal-fleet-route-reconciler`.
+- Performing RPC or canonical reconciliation in the LaserStream event loop.
+- Advancing the cursor before the complete affected-vault job set is durable.
+- Treating a failed proof as a consumed/completed job.
+- Retrying proof failures by restarting LaserStream or reseeding every ATA.
+- A generic blockchain event store, transaction subscription, or new worker.
+- `getProgramAccounts` against either token program.
+- A fixture that writes expected canonical rows without the production store
+  and reconciliation code.
 
 ## Verdict
 
-Print one PASS line per required condition and finish with overall PASS only if
-every condition holds. Otherwise print the exact failed condition and exit
-nonzero.
+The final line must be `PASS: durable LaserStream ingestion and isolated Earn
+reconciliation converge exactly once`. Any unmet condition is an overall FAIL.
