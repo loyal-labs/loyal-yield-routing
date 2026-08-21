@@ -188,6 +188,16 @@ async function checkRealtimeService(serviceId: string) {
     "REALTIME_ALLOWED_ORIGINS",
     "https://askloyal.com,https://www.askloyal.com"
   );
+  requireEnvValue(
+    vars,
+    "REALTIME_ALLOWED_VERCEL_PREVIEW_PROJECT",
+    "loyal-frontend"
+  );
+  requireEnvValue(
+    vars,
+    "REALTIME_ALLOWED_VERCEL_PREVIEW_TEAM",
+    "loyal-team"
+  );
   requireEnvValue(vars, "REALTIME_HEARTBEAT_SECONDS", "15");
   requireEnvValue(vars, "REALTIME_CATCH_UP_LIMIT", "500");
   requireEnvValue(vars, "REALTIME_CLIENT_BUFFER", "1024");

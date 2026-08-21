@@ -58,6 +58,7 @@ struct Config {
     auth_secret: Arc<[u8]>,
     previous_auth_secret: Option<Arc<[u8]>>,
     allowed_origins: Vec<HeaderValue>,
+    vercel_preview_origin: Option<VercelPreviewOriginRule>,
     heartbeat_seconds: u64,
     catch_up_limit: i64,
     client_buffer: usize,
@@ -68,6 +69,48 @@ struct Config {
     ready_max_lag: i64,
     channel: String,
     port: u16,
+}
+
+#[derive(Clone)]
+struct VercelPreviewOriginRule {
+    project: String,
+    team: String,
+}
+
+impl VercelPreviewOriginRule {
+    fn matches(&self, origin: &HeaderValue) -> bool {
+        let Ok(origin) = origin.to_str() else {
+            return false;
+        };
+        let Ok(parsed) = Url::parse(origin) else {
+            return false;
+        };
+        if parsed.scheme() != "https"
+            || parsed.path() != "/"
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || parsed.port().is_some()
+            || parsed.username() != ""
+            || parsed.password().is_some()
+        {
+            return false;
+        }
+        let Some(host) = parsed.host_str() else {
+            return false;
+        };
+        let prefix = format!("{}-git-", self.project);
+        let suffix = format!("-{}.vercel.app", self.team);
+        let Some(branch) = host
+            .strip_prefix(&prefix)
+            .and_then(|value| value.strip_suffix(&suffix))
+        else {
+            return false;
+        };
+        !branch.is_empty()
+            && branch
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    }
 }
 
 #[derive(Clone)]
@@ -831,6 +874,8 @@ fn resync_required_event(reason: &str) -> Event {
 }
 
 fn cors_layer(config: &Config) -> CorsLayer {
+    let exact_origins = config.allowed_origins.clone();
+    let vercel_preview_origin = config.vercel_preview_origin.clone();
     CorsLayer::new()
         .allow_methods([Method::GET, Method::OPTIONS])
         .allow_headers([
@@ -839,7 +884,12 @@ fn cors_layer(config: &Config) -> CorsLayer {
             header::CONTENT_TYPE,
             header::HeaderName::from_static("last-event-id"),
         ])
-        .allow_origin(AllowOrigin::list(config.allowed_origins.clone()))
+        .allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
+            exact_origins.contains(origin)
+                || vercel_preview_origin
+                    .as_ref()
+                    .is_some_and(|rule| rule.matches(origin))
+        }))
 }
 
 impl Config {
@@ -864,6 +914,7 @@ impl Config {
             auth_secret,
             previous_auth_secret,
             allowed_origins: parse_allowed_origins()?,
+            vercel_preview_origin: parse_vercel_preview_origin_rule()?,
             heartbeat_seconds: parse_env_u64(
                 "REALTIME_HEARTBEAT_SECONDS",
                 DEFAULT_HEARTBEAT_SECONDS,
@@ -937,6 +988,39 @@ fn parse_allowed_origins() -> Result<Vec<HeaderValue>, BoxError> {
         return Err("REALTIME_ALLOWED_ORIGINS cannot be empty".into());
     }
     Ok(origins)
+}
+
+fn parse_vercel_preview_origin_rule() -> Result<Option<VercelPreviewOriginRule>, BoxError> {
+    let project = env::var("REALTIME_ALLOWED_VERCEL_PREVIEW_PROJECT")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let team = env::var("REALTIME_ALLOWED_VERCEL_PREVIEW_TEAM")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let (project, team) = match (project, team) {
+        (None, None) => return Ok(None),
+        (Some(project), Some(team)) => (project, team),
+        _ => {
+            return Err("REALTIME_ALLOWED_VERCEL_PREVIEW_PROJECT and REALTIME_ALLOWED_VERCEL_PREVIEW_TEAM must be set together".into());
+        }
+    };
+    let project = project.trim();
+    let team = team.trim();
+    let is_valid_label = |value: &str| {
+        !value.is_empty()
+            && !value.starts_with('-')
+            && !value.ends_with('-')
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    };
+    if !is_valid_label(project) || !is_valid_label(team) {
+        return Err("Vercel preview project and team must be lowercase DNS labels".into());
+    }
+    Ok(Some(VercelPreviewOriginRule {
+        project: project.to_owned(),
+        team: team.to_owned(),
+    }))
 }
 
 fn parse_env_u64(name: &str, default: u64) -> u64 {
@@ -1029,5 +1113,25 @@ mod tests {
             HeaderValue::from_static("Bearer opaque-token"),
         );
         assert_eq!(bearer_token(&headers), Some("opaque-token"));
+    }
+
+    #[test]
+    fn vercel_preview_origin_is_limited_to_the_owned_project_and_team() {
+        let rule = VercelPreviewOriginRule {
+            project: "loyal-frontend".to_owned(),
+            team: "loyal-team".to_owned(),
+        };
+        assert!(rule.matches(&HeaderValue::from_static(
+            "https://loyal-frontend-git-codex-ask-2168-autoswap-client-loyal-team.vercel.app"
+        )));
+        for rejected in [
+            "http://loyal-frontend-git-branch-loyal-team.vercel.app",
+            "https://loyal-admin-git-branch-loyal-team.vercel.app",
+            "https://loyal-frontend-git-branch-other-team.vercel.app",
+            "https://attacker-loyal-frontend-git-branch-loyal-team.vercel.app",
+            "https://loyal-frontend-git-branch-loyal-team.vercel.app.evil.example",
+        ] {
+            assert!(!rule.matches(&HeaderValue::from_str(rejected).unwrap()));
+        }
     }
 }
