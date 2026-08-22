@@ -3595,6 +3595,7 @@ dependencies = [
  "bincode",
  "borsh 1.6.1",
  "loyal-hub-abi",
+ "loyal-multiply-guard-program",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3697,6 +3698,29 @@ dependencies = [
  "solana-sdk",
  "sqlx",
  "tracing",
+]
+
+[[package]]
+name = "loyal-multiply-guard-deployer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "loyal-solana-env",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "solana-client",
+ "solana-loader-v3-interface 3.0.0",
+ "solana-sdk",
+]
+
+[[package]]
+name = "loyal-multiply-guard-program"
+version = "0.1.0"
+dependencies = [
+ "borsh 1.6.1",
+ "solana-program",
 ]
 
 [[package]]
@@ -3855,6 +3879,7 @@ dependencies = [
 name = "loyal-yield-store"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "chrono",
  "log",
  "serde",
@@ -10336,11 +10361,14 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "borsh 1.6.1",
+ "chrono",
  "klend-interface",
  "litesvm",
  "loyal-actions",
+ "loyal-multiply-guard-program",
  "loyal-solana-env",
  "loyal-yield-router",
+ "loyal-yield-store",
  "num-bigint 0.4.6",
  "num-traits",
  "reqwest 0.12.28",

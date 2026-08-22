@@ -1,0 +1,187 @@
+{
+  "schemaVersion": 1,
+  "evidenceType": "backyard-voltr-four-market-bootstrap-execution-authorization",
+  "approvalId": "operator-approved-bootstrap-v1-1787290374",
+  "expiresAtUnix": "1787311974",
+  "routeId": "loyal-backyard-four-market-usdc-v1",
+  "cluster": "mainnet-beta",
+  "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "compatibilityApproval": {
+    "path": "docs/evidence/backyard-voltr-four-market/compatibility-verifier-approval-v1.json",
+    "fileSha256": "d5b9e15aa848fb4585d02c81c1e409fc30782ea2e405f311de035362d0d754c9",
+    "artifactPath": "docs/evidence/backyard-voltr-four-market/compatibility-v1.json",
+    "artifactFileSha256": "48a470e8344c58dd9e653b03540a49f4c774c7f0211618a9ac29230af38e42fa"
+  },
+  "sourceBinding": {
+    "algorithm": "sha256",
+    "files": [
+      {
+        "path": "tools/backyard-voltr/bun.lock",
+        "sha256": "dc30467ef7e0a2d897855d6cd5f00cfb4dbc956e5a5654b9186a2af1865002e3"
+      },
+      {
+        "path": "tools/backyard-voltr/package.json",
+        "sha256": "b7b59b9fa4032fda71b5095784c3b15881258e86e988f090a37a8b74a510dd3c"
+      },
+      {
+        "path": "tools/backyard-voltr/src/bootstrap/authorization.ts",
+        "sha256": "eed182049362ceb5839550fa224c96a1b9075927b5ef45b49a9abd5992c4065a"
+      },
+      {
+        "path": "tools/backyard-voltr/src/bootstrap/strategy.ts",
+        "sha256": "a1335a903f60465523ce00a6fb42e20e806839dab7206bb05ea386005f18ceb5"
+      },
+      {
+        "path": "tools/backyard-voltr/src/bootstrap/strategy-asset.ts",
+        "sha256": "60ac379660467e6338ee91702379ce38ccd9eda6971ed881f6c44e0b6f0f93c4"
+      },
+      {
+        "path": "tools/backyard-voltr/src/cli.ts",
+        "sha256": "9c67ce0682743fccc42deb90305f26d7b3966e0f43ef1601be43dc6b6e656579"
+      },
+      {
+        "path": "tools/backyard-voltr/src/domain/bootstrap-execution-authorization.ts",
+        "sha256": "a49e5c35bffcdf7e6e2ba63450d2b2190d7f39e535b9af42004d66c8b8c3ceab"
+      },
+      {
+        "path": "tools/backyard-voltr/src/domain/execution-intent.ts",
+        "sha256": "c86fcde662c57511a810da795a956cc246b4f16d23585947d432a7200a56f71f"
+      },
+      {
+        "path": "tools/backyard-voltr/src/domain/route-spec.ts",
+        "sha256": "a989079357e9f76e56f8518d35f642f4662f55aae45b7838aa2ca4e6da4a6aab"
+      },
+      {
+        "path": "tools/backyard-voltr/src/integrations/signer.ts",
+        "sha256": "c7a1cfa6dbb560517626b2236c61b74bc78ca41fff28012b7e5d0a850c4746ac"
+      },
+      {
+        "path": "tools/backyard-voltr/src/integrations/solana-compat.ts",
+        "sha256": "34e8c9e603caa0718da8bc7100727d36818cd5049c482bd94d7f505ddaf8abcc"
+      },
+      {
+        "path": "tools/backyard-voltr/src/integrations/voltr.ts",
+        "sha256": "f44f06676d70c19c221c1d12ca9de8266330fe8e7db781bff46e0121e0ea145d"
+      },
+      {
+        "path": "tools/backyard-voltr/src/verify/current.ts",
+        "sha256": "63525d45dc2c24a22acb6cb03aba11fad1a7f3be7e46877017c329428d4b670e"
+      },
+      {
+        "path": "tools/backyard-voltr/tsconfig.json",
+        "sha256": "a693351823d74bb0e3190a765fc8295674d859c2d0d3cadc7e964c572d9e4c33"
+      }
+    ],
+    "aggregateSha256": "5522d78b1c25ea27feb2cbf4315c56a166aac288743b8f6fc4192fd0e4f03e83"
+  },
+  "operations": [
+    {
+      "operation": "initialize-strategy",
+      "strategyId": "onre",
+      "reserve": "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+      "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+      "setupAdmin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "strategyAuth": "JC3ijTWLpzvU18H9j8Q7pWa1LBAUGx5arzoBVcy6cmZp",
+      "strategyInitReceipt": "2dhBPLc2s69FBck4Kdz5PzGanV4YsRL5M4nY3KdVUJpo",
+      "strategyAssetAta": "Bp7ngTwvHmP69xPzNKHGje6matu4vMTchzLLTu1sPZY5",
+      "fourMarketRouteSpecSha256": "a68ef28c8b9a9c8e34106cf78f1d10624d8bc9ebfd366cc15cbc5b273ecdf3e3",
+      "strategyGraphSha256": "93d39f05ea4ef37d414efd1462ae3c60c2e5ee0eceb710f7efc0ae823f0dc844",
+      "builderRouteSpecSha256": "d89bee0a589317f7c1f99b87ef333429f550c6ce93a0bd66f91cd27df45921f2",
+      "instructionDataSha256": {
+        "setManager": "cc6da1676cab30a17e0b18f2a4f03506d650070fbb4f151b2cc4eb403652ef67",
+        "initializeStrategy": "057ae86a8c0baded43cc1e07c6818daaf5f30d1c2232cc30d932bbc630082d4f",
+        "restoreManager": "439d763c251cf83afda10b88c3b045dddf19e55a9660d7d329699e7696ef6fd3"
+      },
+      "maxTotalLamports": "75000000"
+    },
+    {
+      "operation": "initialize-strategy",
+      "strategyId": "prime",
+      "reserve": "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+      "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+      "setupAdmin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "strategyAuth": "82DNksF4PDEmp7RqJbCvJDbyyXSfTqFxT3f6tyNkQsF1",
+      "strategyInitReceipt": "Gyhy9cX1fyjxhYKbRbt3rpswRg8JZRPvMgGorMWdHJ9U",
+      "strategyAssetAta": "3nspEGSXtY2zKTnuY7SujPPb8bCnfCJ5e99Wf9pBuH17",
+      "fourMarketRouteSpecSha256": "a68ef28c8b9a9c8e34106cf78f1d10624d8bc9ebfd366cc15cbc5b273ecdf3e3",
+      "strategyGraphSha256": "cce96da54f4727e3c90fac15a9c4050794277e2b36dc17d49a121c6589d69258",
+      "builderRouteSpecSha256": "57e4ac306cba2cd5ab6ffcf67bc822c41530775652fb79d368e40472c7097b09",
+      "instructionDataSha256": {
+        "setManager": "cc6da1676cab30a17e0b18f2a4f03506d650070fbb4f151b2cc4eb403652ef67",
+        "initializeStrategy": "057ae86a8c0baded43cc1e07c6818daaf5f30d1c2232cc30d932bbc630082d4f",
+        "restoreManager": "439d763c251cf83afda10b88c3b045dddf19e55a9660d7d329699e7696ef6fd3"
+      },
+      "maxTotalLamports": "75000000"
+    },
+    {
+      "operation": "initialize-strategy",
+      "strategyId": "maple",
+      "reserve": "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+      "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+      "setupAdmin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "strategyAuth": "DCNxVeadKhtB965n515k5utKyAzgBGjYm2S9oy92H9Jm",
+      "strategyInitReceipt": "9MajR4HSgdRkWiFsAum83P5F6EYNGjgscLGk97eEN6dC",
+      "strategyAssetAta": "5vjmiwoH9g8kJRatHM5gsBAw8eZVjjvjXjVTn6GfhWon",
+      "fourMarketRouteSpecSha256": "a68ef28c8b9a9c8e34106cf78f1d10624d8bc9ebfd366cc15cbc5b273ecdf3e3",
+      "strategyGraphSha256": "10c6c9435d6b169abc8d5850541769428baa707cfc7a3f9774ac0dc34bf2a58d",
+      "builderRouteSpecSha256": "d0872cc19113c8b53cb596862ab3c936f7408d3aa1925bdd8ac0b5ca994b995c",
+      "instructionDataSha256": {
+        "setManager": "cc6da1676cab30a17e0b18f2a4f03506d650070fbb4f151b2cc4eb403652ef67",
+        "initializeStrategy": "057ae86a8c0baded43cc1e07c6818daaf5f30d1c2232cc30d932bbc630082d4f",
+        "restoreManager": "439d763c251cf83afda10b88c3b045dddf19e55a9660d7d329699e7696ef6fd3"
+      },
+      "maxTotalLamports": "75000000"
+    },
+    {
+      "operation": "initialize-strategy-asset-ata",
+      "strategyId": "onre",
+      "reserve": "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+      "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+      "setupAdmin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "strategyAuth": "JC3ijTWLpzvU18H9j8Q7pWa1LBAUGx5arzoBVcy6cmZp",
+      "strategyInitReceipt": "2dhBPLc2s69FBck4Kdz5PzGanV4YsRL5M4nY3KdVUJpo",
+      "strategyAssetAta": "Bp7ngTwvHmP69xPzNKHGje6matu4vMTchzLLTu1sPZY5",
+      "fourMarketRouteSpecSha256": "a68ef28c8b9a9c8e34106cf78f1d10624d8bc9ebfd366cc15cbc5b273ecdf3e3",
+      "strategyGraphSha256": "93d39f05ea4ef37d414efd1462ae3c60c2e5ee0eceb710f7efc0ae823f0dc844",
+      "builderRouteSpecSha256": "d89bee0a589317f7c1f99b87ef333429f550c6ce93a0bd66f91cd27df45921f2",
+      "instructionDataSha256": {
+        "createAta": "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a"
+      },
+      "maxTotalLamports": "3000000"
+    },
+    {
+      "operation": "initialize-strategy-asset-ata",
+      "strategyId": "prime",
+      "reserve": "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+      "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+      "setupAdmin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "strategyAuth": "82DNksF4PDEmp7RqJbCvJDbyyXSfTqFxT3f6tyNkQsF1",
+      "strategyInitReceipt": "Gyhy9cX1fyjxhYKbRbt3rpswRg8JZRPvMgGorMWdHJ9U",
+      "strategyAssetAta": "3nspEGSXtY2zKTnuY7SujPPb8bCnfCJ5e99Wf9pBuH17",
+      "fourMarketRouteSpecSha256": "a68ef28c8b9a9c8e34106cf78f1d10624d8bc9ebfd366cc15cbc5b273ecdf3e3",
+      "strategyGraphSha256": "cce96da54f4727e3c90fac15a9c4050794277e2b36dc17d49a121c6589d69258",
+      "builderRouteSpecSha256": "57e4ac306cba2cd5ab6ffcf67bc822c41530775652fb79d368e40472c7097b09",
+      "instructionDataSha256": {
+        "createAta": "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a"
+      },
+      "maxTotalLamports": "3000000"
+    },
+    {
+      "operation": "initialize-strategy-asset-ata",
+      "strategyId": "maple",
+      "reserve": "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+      "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+      "setupAdmin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "strategyAuth": "DCNxVeadKhtB965n515k5utKyAzgBGjYm2S9oy92H9Jm",
+      "strategyInitReceipt": "9MajR4HSgdRkWiFsAum83P5F6EYNGjgscLGk97eEN6dC",
+      "strategyAssetAta": "5vjmiwoH9g8kJRatHM5gsBAw8eZVjjvjXjVTn6GfhWon",
+      "fourMarketRouteSpecSha256": "a68ef28c8b9a9c8e34106cf78f1d10624d8bc9ebfd366cc15cbc5b273ecdf3e3",
+      "strategyGraphSha256": "10c6c9435d6b169abc8d5850541769428baa707cfc7a3f9774ac0dc34bf2a58d",
+      "builderRouteSpecSha256": "d0872cc19113c8b53cb596862ab3c936f7408d3aa1925bdd8ac0b5ca994b995c",
+      "instructionDataSha256": {
+        "createAta": "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a"
+      },
+      "maxTotalLamports": "3000000"
+    }
+  ]
+}

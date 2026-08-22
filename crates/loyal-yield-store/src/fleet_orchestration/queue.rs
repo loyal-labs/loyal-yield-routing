@@ -176,6 +176,35 @@ impl RebalanceOpportunityClaimKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RebalanceOpportunityOperationClass {
+    YieldOptimization,
+    IdleAllocation,
+    WithdrawalRestoration,
+}
+
+impl RebalanceOpportunityOperationClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::YieldOptimization => "yield_optimization",
+            Self::IdleAllocation => "idle_allocation",
+            Self::WithdrawalRestoration => "withdrawal_restoration",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, OrchestratorError> {
+        match value {
+            "yield_optimization" => Ok(Self::YieldOptimization),
+            "idle_allocation" => Ok(Self::IdleAllocation),
+            "withdrawal_restoration" => Ok(Self::WithdrawalRestoration),
+            other => Err(OrchestratorError::StoreInvariant(format!(
+                "unknown rebalance opportunity operation class {other:?}"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RebalanceOpportunityInput {
     pub cluster: String,
@@ -197,6 +226,8 @@ pub struct RebalanceOpportunityInput {
     pub expected_net_gain_usd_micros: i64,
     pub economic_priority: i64,
     pub priority_version: String,
+    pub operation_class: RebalanceOpportunityOperationClass,
+    pub service_deadline_at: Option<DateTime<Utc>>,
     pub execution_plan: Value,
     pub available_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -232,6 +263,8 @@ pub struct RebalanceOpportunityRecord {
     pub expected_net_gain_usd_micros: i64,
     pub economic_priority: i64,
     pub priority_version: String,
+    pub operation_class: RebalanceOpportunityOperationClass,
+    pub service_deadline_at: Option<DateTime<Utc>>,
     pub state: RebalanceOpportunityState,
     pub execution_plan: Value,
     pub available_at: DateTime<Utc>,
@@ -254,6 +287,14 @@ pub struct RebalanceOpportunityLease {
     pub owner: String,
     pub fencing_token: i64,
     pub expires_at: DateTime<Utc>,
+}
+
+/// Minimal durable state needed by the Backyard Voltr planner. This is a view
+/// over the generic opportunity/submission lifecycle, not a Voltr queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoltrVaultPlanningState {
+    pub has_nonterminal_signed_generation: bool,
+    pub last_normal_optimization_started_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone)]
@@ -734,6 +775,45 @@ pub enum FleetHealthSnapshotProjection {
 }
 
 impl NeonSqlClient {
+    pub async fn voltr_vault_planning_state(
+        &self,
+        vault_id: VaultId,
+    ) -> Result<VoltrVaultPlanningState, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            SELECT EXISTS (
+                       SELECT 1
+                       FROM loyal_yield.signed_route_submissions submission
+                       JOIN loyal_yield.rebalance_opportunities opportunity
+                         ON opportunity.id = submission.opportunity_id
+                       WHERE opportunity.vault_id = $1
+                         AND opportunity.execution_plan->>'kind' = 'voltr_kamino'
+                         AND submission.submission_state NOT IN (
+                             'reconciled', 'expired', 'failed'
+                         )
+                   ) AS has_nonterminal_signed_generation,
+                   (
+                       SELECT max(opportunity.created_at)
+                       FROM loyal_yield.rebalance_opportunities opportunity
+                       WHERE opportunity.vault_id = $1
+                         AND opportunity.execution_plan->>'kind' = 'voltr_kamino'
+                         AND opportunity.operation_class = 'yield_optimization'
+                         AND opportunity.opportunity_state NOT IN (
+                             'stale', 'superseded', 'failed', 'cancelled'
+                         )
+                   ) AS last_normal_optimization_started_at
+            "#,
+        )
+        .bind(vault_id.as_i64())
+        .fetch_one(self.pool())
+        .await?;
+        Ok(VoltrVaultPlanningState {
+            has_nonterminal_signed_generation: row.try_get("has_nonterminal_signed_generation")?,
+            last_normal_optimization_started_at: row
+                .try_get("last_normal_optimization_started_at")?,
+        })
+    }
+
     pub async fn route_fee_payer_authority_status(
         &self,
         cluster: &str,
@@ -1640,22 +1720,23 @@ impl NeonSqlClient {
                  source_apy_bps, target_apy_bps, estimated_edge_bps,
                  estimated_cost_lamports, annual_yield_gain_usd_micros,
                  expected_net_gain_usd_micros, economic_priority,
-                 priority_version, opportunity_state, execution_plan,
+                 priority_version, operation_class, service_deadline_at,
+                 opportunity_state, execution_plan,
                  available_at, expires_at)
             SELECT
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                 $11, $12,
-                COALESCE(NULLIF($24::jsonb ->> 'source_liquidity_mint', ''), $12),
-                COALESCE(NULLIF($24::jsonb ->> 'target_liquidity_mint', ''), $12),
+                COALESCE(NULLIF($26::jsonb ->> 'source_liquidity_mint', ''), $12),
+                COALESCE(NULLIF($26::jsonb ->> 'target_liquidity_mint', ''), $12),
                 $13, $14, $15, $16, $17, $18, $19, $20,
-                $21, $22, $23, $24, $25, $26
+                $21, $22, $23, $24, $25, $26, $27, $28
             FROM loyal_yield.optimizer_epochs epoch
             WHERE epoch.id = $7
               AND epoch.cluster = $1
               AND epoch.expires_at >= clock_timestamp()
-                  + make_interval(secs => $27::INTEGER)
-              AND $26::TIMESTAMPTZ >= clock_timestamp()
-                  + make_interval(secs => $27::INTEGER)
+                  + make_interval(secs => $29::INTEGER)
+              AND $28::TIMESTAMPTZ >= clock_timestamp()
+                  + make_interval(secs => $29::INTEGER)
             ON CONFLICT DO NOTHING
             RETURNING *
             "#,
@@ -1682,6 +1763,8 @@ impl NeonSqlClient {
         .bind(input.expected_net_gain_usd_micros)
         .bind(input.economic_priority)
         .bind(&input.priority_version)
+        .bind(input.operation_class.as_str())
+        .bind(input.service_deadline_at)
         .bind(initial_state.as_str())
         .bind(&input.execution_plan)
         .bind(input.available_at)
@@ -2407,6 +2490,75 @@ impl NeonSqlClient {
         }))
     }
 
+    /// Claims one event from a named durable outbox lane. This is the same
+    /// lease/fence contract as `lease_next_orchestration_outbox`, but prevents
+    /// an unrelated worker from consuming a lane it cannot execute.
+    pub async fn lease_next_orchestration_outbox_lane(
+        &self,
+        cluster: &str,
+        event_kind: &str,
+        aggregate_kind: &str,
+        owner: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<Option<OrchestrationOutboxLease>, OrchestratorError> {
+        if cluster.trim().is_empty()
+            || event_kind.trim().is_empty()
+            || aggregate_kind.trim().is_empty()
+            || owner.trim().is_empty()
+            || lease_expires_at <= Utc::now()
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "outbox lane lease requires exact lane, owner, and future expiry".to_owned(),
+            ));
+        }
+        let row = sqlx::query(
+            r#"
+            WITH candidate AS (
+                SELECT event.id
+                FROM loyal_yield.orchestration_outbox event
+                WHERE event.cluster = $1
+                  AND event.event_kind = $2
+                  AND event.aggregate_kind = $3
+                  AND event.processed_at IS NULL
+                  AND event.available_at <= now()
+                  AND (
+                      event.lease_owner IS NULL
+                      OR event.lease_expires_at <= now()
+                  )
+                ORDER BY event.available_at, event.created_at, event.id
+                FOR UPDATE OF event SKIP LOCKED
+                LIMIT 1
+            )
+            UPDATE loyal_yield.orchestration_outbox event
+            SET lease_owner = $4,
+                lease_expires_at = $5,
+                fencing_token = event.fencing_token + 1,
+                attempt_count = event.attempt_count + 1,
+                updated_at = now()
+            FROM candidate
+            WHERE event.id = candidate.id
+            RETURNING event.*
+            "#,
+        )
+        .bind(cluster)
+        .bind(event_kind)
+        .bind(aggregate_kind)
+        .bind(owner)
+        .bind(lease_expires_at)
+        .fetch_optional(self.pool())
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let event = orchestration_outbox_from_row(&row)?;
+        Ok(Some(OrchestrationOutboxLease {
+            fencing_token: event.fencing_token,
+            expires_at: lease_expires_at,
+            owner: owner.to_owned(),
+            event,
+        }))
+    }
+
     /// Acknowledges only the still-current outbox claim. A late worker cannot
     /// erase work already reclaimed under a newer fencing token.
     pub async fn acknowledge_orchestration_outbox(
@@ -2586,6 +2738,37 @@ impl NeonSqlClient {
         if cluster != opportunity_lease.opportunity.cluster {
             return Err(OrchestratorError::StoreInvariant(
                 "execute lease cluster differs from its durable opportunity".to_owned(),
+            ));
+        }
+
+        // Voltr restoration is a withdrawal-liquidity operation, not an
+        // economic rebalance. Until both flows share a generic conflict table,
+        // normal optimizer execution must conservatively yield to any active
+        // restoration for the same vault or source reserve. This closes the
+        // cross-lane race that a Voltr-only outbox scan cannot see.
+        let restoration_conflict: Option<i64> = sqlx::query_scalar(
+            r#"
+            SELECT event.id
+            FROM loyal_yield.orchestration_outbox event
+            WHERE event.cluster = $1
+              AND event.event_kind = 'backyard_voltr_manager_withdraw'
+              AND event.aggregate_kind = 'voltr_withdrawal_restoration'
+              AND event.processed_at IS NULL
+              AND (
+                  event.payload->>'vaultId' = $2
+                  OR event.payload->'managerRequest'->>'reserve' = ANY($3::TEXT[])
+              )
+            LIMIT 1
+            "#,
+        )
+        .bind(&cluster)
+        .bind(opportunity_lease.opportunity.vault_id.as_i64().to_string())
+        .bind(&writable_account_keys)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if restoration_conflict.is_some() {
+            return Err(OrchestratorError::StoreInvariant(
+                "normal optimizer execution is fenced by an active Voltr restoration".to_owned(),
             ));
         }
 
@@ -2816,6 +2999,43 @@ impl NeonSqlClient {
         if input.compiled_fee_lamports > opportunity.estimated_cost_lamports {
             return Err(OrchestratorError::StoreInvariant(
                 "signed submission compiled fee exceeds its economic opportunity cap".to_owned(),
+            ));
+        }
+        let voltr_route = opportunity
+            .execution_plan
+            .get("kind")
+            .and_then(Value::as_str)
+            == Some("voltr_kamino");
+        if voltr_route {
+            let vault = opportunity
+                .execution_plan
+                .get("vault")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    OrchestratorError::StoreInvariant(
+                        "Voltr conflict admission is missing its exact vault".to_owned(),
+                    )
+                })?;
+            let selected_reserve = opportunity
+                .source_reserve
+                .as_deref()
+                .unwrap_or(opportunity.target_reserve.as_str());
+            let mut expected = vec![
+                format!("voltr:vault:{vault}"),
+                format!("kamino:reserve:{selected_reserve}"),
+            ];
+            expected.sort_unstable();
+            if conflict_account_keys != expected {
+                return Err(OrchestratorError::StoreInvariant(
+                    "Voltr conflict set does not match its exact vault and reserve".to_owned(),
+                ));
+            }
+        } else if conflict_account_keys
+            .iter()
+            .any(|key| key.starts_with("voltr:vault:") || key.starts_with("kamino:reserve:"))
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "non-Voltr route attempted to claim Voltr semantic conflicts".to_owned(),
             ));
         }
 
@@ -3704,6 +3924,12 @@ impl NeonSqlClient {
                   )
                 ORDER BY
                     CASE submission.submission_state WHEN 'confirmed' THEN 0 ELSE 1 END,
+                    CASE opportunity.operation_class
+                        WHEN 'withdrawal_restoration' THEN 0
+                        WHEN 'idle_allocation' THEN 1
+                        ELSE 2
+                    END,
+                    opportunity.service_deadline_at ASC NULLS LAST,
                     opportunity.economic_priority DESC,
                     submission.created_at,
                     submission.id
@@ -4099,6 +4325,12 @@ impl NeonSqlClient {
                         )
                   )
                 ORDER BY
+                    CASE opportunity.operation_class
+                        WHEN 'withdrawal_restoration' THEN 0
+                        WHEN 'idle_allocation' THEN 1
+                        ELSE 2
+                    END,
+                    opportunity.service_deadline_at ASC NULLS LAST,
                     opportunity.economic_priority DESC,
                     submission.created_at,
                     submission.id
@@ -4120,6 +4352,12 @@ impl NeonSqlClient {
             JOIN loyal_yield.rebalance_opportunities opportunity
               ON opportunity.id = claimed.opportunity_id
             ORDER BY
+                CASE opportunity.operation_class
+                    WHEN 'withdrawal_restoration' THEN 0
+                    WHEN 'idle_allocation' THEN 1
+                    ELSE 2
+                END,
+                opportunity.service_deadline_at ASC NULLS LAST,
                 opportunity.economic_priority DESC,
                 claimed.created_at,
                 claimed.id
@@ -5054,6 +5292,8 @@ impl NeonSqlClient {
             r#"
             WITH ranked_candidate AS NOT MATERIALIZED ((
                 SELECT opportunity.id,
+                       opportunity.operation_class,
+                       opportunity.service_deadline_at,
                        opportunity.scheduler_priority_anchor,
                        opportunity.economic_priority,
                        opportunity.created_at
@@ -5072,12 +5312,20 @@ impl NeonSqlClient {
                             + make_interval(secs => $7::INTEGER)
                   )
                 ORDER BY
+                    CASE opportunity.operation_class
+                        WHEN 'withdrawal_restoration' THEN 0
+                        WHEN 'idle_allocation' THEN 1
+                        ELSE 2
+                    END,
+                    opportunity.service_deadline_at ASC NULLS LAST,
                     opportunity.scheduler_priority_anchor DESC,
                     opportunity.economic_priority DESC,
                     opportunity.created_at,
                     opportunity.id
             ) UNION ALL (
                 SELECT opportunity.id,
+                       opportunity.operation_class,
+                       opportunity.service_deadline_at,
                        opportunity.scheduler_priority_anchor,
                        opportunity.economic_priority,
                        opportunity.created_at
@@ -5098,6 +5346,12 @@ impl NeonSqlClient {
                             + make_interval(secs => $7::INTEGER)
                   )
                 ORDER BY
+                    CASE opportunity.operation_class
+                        WHEN 'withdrawal_restoration' THEN 0
+                        WHEN 'idle_allocation' THEN 1
+                        ELSE 2
+                    END,
+                    opportunity.service_deadline_at ASC NULLS LAST,
                     opportunity.scheduler_priority_anchor DESC,
                     opportunity.economic_priority DESC,
                     opportunity.created_at,
@@ -5159,6 +5413,12 @@ impl NeonSqlClient {
                         AND submission.submission_state NOT IN ('reconciled', 'expired', 'failed')
                   )
                 ORDER BY
+                    CASE ranked.operation_class
+                        WHEN 'withdrawal_restoration' THEN 0
+                        WHEN 'idle_allocation' THEN 1
+                        ELSE 2
+                    END,
+                    ranked.service_deadline_at ASC NULLS LAST,
                     ranked.scheduler_priority_anchor DESC,
                     ranked.economic_priority DESC,
                     ranked.created_at,
@@ -5187,6 +5447,12 @@ impl NeonSqlClient {
                    )::BIGINT AS claim_server_elapsed_micros
             FROM claimed
             ORDER BY
+                CASE operation_class
+                    WHEN 'withdrawal_restoration' THEN 0
+                    WHEN 'idle_allocation' THEN 1
+                    ELSE 2
+                END,
+                service_deadline_at ASC NULLS LAST,
                 scheduler_priority_anchor DESC,
                 economic_priority DESC,
                 created_at,
@@ -5730,6 +5996,10 @@ pub fn rebalance_opportunity_idempotency_key(input: &RebalanceOpportunityInput) 
         input.expected_net_gain_usd_micros.to_string(),
         input.economic_priority.to_string(),
         input.priority_version.clone(),
+        input.operation_class.as_str().to_owned(),
+        input
+            .service_deadline_at
+            .map_or_else(String::new, |deadline| deadline.to_rfc3339()),
         serde_json::to_string(&input.execution_plan)
             .expect("validated JSON opportunity evidence must serialize"),
         input.expires_at.to_rfc3339(),
@@ -5784,19 +6054,31 @@ fn validate_opportunity_input(input: &RebalanceOpportunityInput) -> Result<(), O
             "rebalance opportunity identity fields must be nonempty".to_owned(),
         ));
     }
-    if input.optimizer_epoch_id <= 0
-        || input.amount_raw <= 0
-        || input.principal_usd_micros <= 0
-        || input.estimated_edge_bps <= 0
-        || input.estimated_cost_lamports < 0
-        || input.annual_yield_gain_usd_micros <= 0
-        || input.expected_net_gain_usd_micros <= 0
-        || input.economic_priority <= 0
-        || !input.execution_plan.is_object()
-    {
+    let common_values_valid = input.optimizer_epoch_id > 0
+        && input.amount_raw > 0
+        && input.principal_usd_micros > 0
+        && input.estimated_cost_lamports >= 0
+        && input.execution_plan.is_object();
+    let economics_valid = match input.operation_class {
+        RebalanceOpportunityOperationClass::YieldOptimization
+        | RebalanceOpportunityOperationClass::IdleAllocation => {
+            input.estimated_edge_bps > 0
+                && input.annual_yield_gain_usd_micros > 0
+                && input.expected_net_gain_usd_micros > 0
+                && input.economic_priority > 0
+                && input.service_deadline_at.is_none()
+        }
+        RebalanceOpportunityOperationClass::WithdrawalRestoration => {
+            input.estimated_edge_bps == 0
+                && input.annual_yield_gain_usd_micros == 0
+                && input.expected_net_gain_usd_micros == 0
+                && input.economic_priority == 0
+                && input.service_deadline_at.is_some()
+        }
+    };
+    if !common_values_valid || !economics_valid {
         return Err(OrchestratorError::StoreInvariant(
-            "rebalance opportunity must have positive value, edge, priority, and an object execution plan"
-                .to_owned(),
+            "rebalance opportunity values do not match its operation class".to_owned(),
         ));
     }
     if input.route_fingerprint.is_some() != input.requirements_fingerprint.is_some()
@@ -5814,7 +6096,9 @@ fn validate_opportunity_input(input: &RebalanceOpportunityInput) -> Result<(), O
                 .to_owned(),
         ));
     }
-    if input.target_apy_bps - input.source_apy_bps != input.estimated_edge_bps {
+    if input.operation_class != RebalanceOpportunityOperationClass::WithdrawalRestoration
+        && input.target_apy_bps - input.source_apy_bps != input.estimated_edge_bps
+    {
         return Err(OrchestratorError::StoreInvariant(
             "rebalance opportunity APYs do not match its estimated edge".to_owned(),
         ));
@@ -5873,6 +6157,8 @@ fn rebalance_opportunity_matches_input(
         && opportunity.expected_net_gain_usd_micros == input.expected_net_gain_usd_micros
         && opportunity.economic_priority == input.economic_priority
         && opportunity.priority_version == input.priority_version
+        && opportunity.operation_class == input.operation_class
+        && opportunity.service_deadline_at == input.service_deadline_at
         && execution_evidence_matches
         && opportunity.expires_at == input.expires_at
 }
@@ -6058,27 +6344,42 @@ pub(crate) async fn reserve_fee_only_route_payer_spend(
                 WHERE opportunity.id = $1
                   AND opportunity.cluster = $2
                   AND $3 = ANY(policy.delegated_signers)
-                  AND jsonb_array_length(
-                      COALESCE($4::jsonb -> 'tables', '[]'::jsonb)
-                  ) > 0
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM jsonb_array_elements(
-                          COALESCE($4::jsonb -> 'tables', '[]'::jsonb)
-                      ) selected
-                      LEFT JOIN loyal_yield.route_lookup_tables route_table
-                        ON route_table.id = (selected ->> 'tableId')::BIGINT
-                      LEFT JOIN loyal_yield.lookup_table_families family
-                        ON family.id = route_table.family_id
-                      WHERE route_table.id IS NULL
-                         OR route_table.cluster <> $2
-                         OR route_table.authority <> $3
-                         OR route_table.payer <> $3
-                         OR route_table.family_id IS NULL
-                         OR family.id IS NULL
-                         OR family.cluster <> $2
-                         OR family.provisioning_authority <> $3
-                         OR family.payer <> $3
+                  AND (
+                      (
+                          opportunity.execution_plan->>'kind' = 'voltr_kamino'
+                          AND opportunity.execution_plan->>'guardian' = $3
+                          AND NULLIF($4::jsonb->>'routeBundleSha256', '') =
+                              opportunity.execution_plan->>'route_bundle_sha256'
+                          AND NULLIF($4::jsonb->>'lookupTable', '') IS NOT NULL
+                          AND NULLIF(
+                              $4::jsonb->>'lookupTableOrderedAddressesSha256', ''
+                          ) IS NOT NULL
+                          AND ($4::jsonb->>'lookupTableAddressCount')::BIGINT > 0
+                      )
+                      OR (
+                          jsonb_array_length(
+                              COALESCE($4::jsonb -> 'tables', '[]'::jsonb)
+                          ) > 0
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM jsonb_array_elements(
+                                  COALESCE($4::jsonb -> 'tables', '[]'::jsonb)
+                              ) selected
+                              LEFT JOIN loyal_yield.route_lookup_tables route_table
+                                ON route_table.id = (selected ->> 'tableId')::BIGINT
+                              LEFT JOIN loyal_yield.lookup_table_families family
+                                ON family.id = route_table.family_id
+                              WHERE route_table.id IS NULL
+                                 OR route_table.cluster <> $2
+                                 OR route_table.authority <> $3
+                                 OR route_table.payer <> $3
+                                 OR route_table.family_id IS NULL
+                                 OR family.id IS NULL
+                                 OR family.cluster <> $2
+                                 OR family.provisioning_authority <> $3
+                                 OR family.payer <> $3
+                          )
+                      )
                   )
             )
             "#,
@@ -6605,10 +6906,22 @@ pub(crate) fn canonical_conflict_account_keys(
         .iter()
         .filter(|key| key.starts_with("fleet-shared-write-lane:"))
         .count();
-    if canonical.len() != conflict_account_keys.len() || vault_key_count != 1 || lane_key_count != 1
+    let voltr_vault_key_count = canonical
+        .iter()
+        .filter(|key| key.starts_with("voltr:vault:"))
+        .count();
+    let voltr_reserve_key_count = canonical
+        .iter()
+        .filter(|key| key.starts_with("kamino:reserve:"))
+        .count();
+    let generic_pair = vault_key_count == 1 && lane_key_count == 1;
+    let voltr_pair = voltr_vault_key_count == 1 && voltr_reserve_key_count == 1;
+    if canonical.len() != conflict_account_keys.len()
+        || canonical.len() != 2
+        || generic_pair == voltr_pair
     {
         return Err(OrchestratorError::StoreInvariant(
-            "route conflict ownership requires exactly one vault key and one bounded shared-write lane"
+            "route conflict ownership requires exactly one admitted vault and execution-lane pair"
                 .to_owned(),
         ));
     }
@@ -6686,6 +6999,10 @@ fn rebalance_opportunity_from_row(
         expected_net_gain_usd_micros: row.try_get("expected_net_gain_usd_micros")?,
         economic_priority: row.try_get("economic_priority")?,
         priority_version: row.try_get("priority_version")?,
+        operation_class: RebalanceOpportunityOperationClass::parse(
+            row.try_get("operation_class")?,
+        )?,
+        service_deadline_at: row.try_get("service_deadline_at")?,
         state,
         execution_plan: row.try_get("execution_plan")?,
         available_at: row.try_get("available_at")?,
@@ -6758,7 +7075,7 @@ fn fleet_planning_dirty_vault_from_row(
     })
 }
 
-fn orchestration_outbox_from_row(
+pub(crate) fn orchestration_outbox_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<OrchestrationOutboxRecord, OrchestratorError> {
     Ok(OrchestrationOutboxRecord {

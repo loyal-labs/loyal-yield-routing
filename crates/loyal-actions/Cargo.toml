@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "Rust SDK for building Loyal delegated Squads actions"
 
+[[bin]]
+name = "compile-voltr-kamino-policy"
+path = "src/bin/compile_voltr_kamino_policy.rs"
+
+[[bin]]
+name = "compile-voltr-kamino-runtime-policy"
+path = "src/bin/compile_voltr_kamino_runtime_policy.rs"
+
 [dependencies]
 base64.workspace = true
 bincode = "1.3"

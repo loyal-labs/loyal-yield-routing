@@ -1,0 +1,370 @@
+{
+  "schemaVersion": 1,
+  "kind": "backyard-voltr-four-market-policy-authorization",
+  "routeId": "loyal-backyard-four-market-usdc-v1",
+  "routeSpecSha256": "df6547aeaba99f6bf32a0f56d63c50d30f84d7dc1d3df801266b97bd9811e8f4",
+  "artifactPath": "docs/evidence/backyard-voltr-four-market/runtime-policy-catalog-v2.json",
+  "artifactFileSha256": "94cba2580b915cf9c93a7bd853701cc1acaafc9b0ab6c83492afbae3cfc209df",
+  "artifactSha256": "aaf5793545f21f4af0363293b8e2e1ea05812159415a0ff04b382738c0cf07dd",
+  "sourceManifestSha256": "180dbac6843dc1bc494577997139a7958ffb918c6274f99247fd32ed3f7e8e80",
+  "sourceAggregateSha256": "7872640aad4c80161ec93ba1ec743e02b5869e642ab6a11d6c3216433775e25c",
+  "sourceBinding": {
+    "algorithm": "sha256",
+    "files": [
+      {
+        "path": "Cargo.toml",
+        "sha256": "6917bfa26bd5f1da148ffc4f3691767c0efc1dd3e24dfafc7600f4a5e63b8fb7"
+      },
+      {
+        "path": "Cargo.lock",
+        "sha256": "bbf576340289e48f5e95b065f563403c2ff9102cc9a1a16f3108a694299dedfb"
+      },
+      {
+        "path": "crates/loyal-actions/Cargo.toml",
+        "sha256": "7a1b97164edaa871fd3dc8c697a4c793438ed9b25bbaad142267986e49331c24"
+      },
+      {
+        "path": "crates/loyal-actions/src/lib.rs",
+        "sha256": "2cb2a0bd8cb79f0a1af98ae2abfbf6edc95c4c9efb4f4d4f9fbdf2c826b4e557"
+      },
+      {
+        "path": "crates/loyal-actions/src/squads.rs",
+        "sha256": "d6e3f7d0a020de0c96eb0b02329b36bea7ed82d9d62d2fdbfbcd9f6ee7a5e50d"
+      },
+      {
+        "path": "crates/loyal-actions/src/autonomous_vaults/mod.rs",
+        "sha256": "f9aae1902b442a175ac69e74cbf2d3c3fd5a6c30f7dbc6f0470f8e4ffd4ca0de"
+      },
+      {
+        "path": "crates/loyal-actions/src/autonomous_vaults/voltr_kamino.rs",
+        "sha256": "9d90ae8a2e0301473d67e8ee0b618a9a8923052a2a45c54f126939fe4b706e42"
+      },
+      {
+        "path": "crates/loyal-actions/src/bin/compile_voltr_kamino_runtime_policy.rs",
+        "sha256": "d44d4b340eeb4fe6a2c473a3b5f727d0ccb2d330637af6a42ea91ed47987f1c0"
+      },
+      {
+        "path": "crates/loyal-route-lookup-tables/Cargo.toml",
+        "sha256": "230ccb86f527149c560af07e513c0cbae5b70ae461854e29fc64ce828545486d"
+      },
+      {
+        "path": "crates/loyal-route-lookup-tables/src/lib.rs",
+        "sha256": "6b972497a54e3d9f0c914d2ea0cc2239583e3bf2567505d9679c9f4058b16f0b"
+      },
+      {
+        "path": "crates/loyal-yield-store/Cargo.toml",
+        "sha256": "1908d0831b630a17f8a4645485ee48be68c7ec8598fa72268ee44ccb8762ba92"
+      },
+      {
+        "path": "crates/loyal-yield-store/src/lib.rs",
+        "sha256": "2eebfc83bc9e29ff1eb0b3f6afc7fa2000fc6123ec2808b04f87900f50b366d3"
+      },
+      {
+        "path": "crates/loyal-yield-store/src/store.rs",
+        "sha256": "19d889f2ded8bf46a28e20bb19085c565ede50543526bee617ca927b1fde18bf"
+      },
+      {
+        "path": "crates/loyal-yield-store/src/types.rs",
+        "sha256": "9aed03f133bcdbeae36aa74fea857fa14c45ac63cc59567f482ea6066f336293"
+      },
+      {
+        "path": "crates/loyal-yield-store/src/fleet_orchestration/mod.rs",
+        "sha256": "e2ad80d0a2a73bdd0402c6e745a92b44e75d4ebb24ea7ace89269f9f9b799ce8"
+      },
+      {
+        "path": "crates/loyal-yield-store/src/fleet_orchestration/domain.rs",
+        "sha256": "28f582a7efd36b17366f82b478f0a38da40d350dbc4c496b452cde83f74b561b"
+      },
+      {
+        "path": "crates/loyal-yield-store/src/fleet_orchestration/queue.rs",
+        "sha256": "1ad8802224db5a6f2b699558d286272d1b38fc4eeb907eccedce6a0fc0eae0ad"
+      },
+      {
+        "path": "crates/loyal-yield-store/src/fleet_orchestration/voltr_restoration.rs",
+        "sha256": "8ad656467c52ca87c9b525254f2906af3d5d1ac09c059803288363ed2ce99745"
+      },
+      {
+        "path": "crates/loyal-yield-orchestrator/Cargo.toml",
+        "sha256": "c759c043ffa1fc6cbaffb67c0497a3f06d1bd018746486a1ba2868c9d7e31a2b"
+      },
+      {
+        "path": "crates/loyal-yield-orchestrator/src/lib.rs",
+        "sha256": "611d98f31f931e4b11b219a43e8c11e53d07cd4aedddfaa0c416a8ef6f264d1d"
+      },
+      {
+        "path": "crates/loyal-yield-orchestrator/src/fleet_orchestration/mod.rs",
+        "sha256": "e848eccb210f336f6ab137e3dd1826749c1546c1c6b18c7024bc7f43717d9295"
+      },
+      {
+        "path": "crates/loyal-yield-orchestrator/src/fleet_orchestration/observation.rs",
+        "sha256": "0455347378ccae603fdc1d4099f6674a32a94be9a7b24f1d1bb8a32b60963102"
+      },
+      {
+        "path": "crates/loyal-yield-orchestrator/src/fleet_orchestration/planner.rs",
+        "sha256": "638ed87682b2107f5dd708a75e47e6a0fe94d94c1286a34096d82b9979942a48"
+      },
+      {
+        "path": "crates/loyal-yield-orchestrator/src/bin/fleet-opportunity-planner.rs",
+        "sha256": "02e3e4ffd664ab735db2bd3da867228f871f4d23acfe18dfef1e2d6cb7c572bf"
+      },
+      {
+        "path": "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-earn-replay.rs",
+        "sha256": "ba5fddf644ed89bcfba888e95e122c178bf2a78f36b9084398743c128c9c0698"
+      },
+      {
+        "path": "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-restoration-bridge.rs",
+        "sha256": "e4578e458142db7d02e157d47cdd4ae27722ba6ed7a54ae5528140e8bc881486"
+      },
+      {
+        "path": "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-restoration-readback.rs",
+        "sha256": "a3fecccd4de44b83bf5d400cd3145886de01edda0e0976aca0f8f50dc81001ed"
+      },
+      {
+        "path": "tools/backyard-voltr/bun.lock",
+        "sha256": "dc30467ef7e0a2d897855d6cd5f00cfb4dbc956e5a5654b9186a2af1865002e3"
+      },
+      {
+        "path": "tools/backyard-voltr/package.json",
+        "sha256": "65e2a1c107d39f4a957a840ca19efdcfc243f02b16788575f2701da3739b0c6f"
+      },
+      {
+        "path": "tools/backyard-voltr/src/cli.ts",
+        "sha256": "4b3e05e39bef64016a39a75bba5daa005369f252a32eb7e1c1c3fba5c0972103"
+      },
+      {
+        "path": "tools/backyard-voltr/src/manager-cli.ts",
+        "sha256": "84a5216a3c068513e1705b76b82b3284bb584c99266b4d41983b28b2efdabd35"
+      },
+      {
+        "path": "tools/backyard-voltr/src/bootstrap/authorization.ts",
+        "sha256": "eed182049362ceb5839550fa224c96a1b9075927b5ef45b49a9abd5992c4065a"
+      },
+      {
+        "path": "tools/backyard-voltr/src/bootstrap/commands.ts",
+        "sha256": "3985f7757caacd3386775b44766ec0d618a153522cd8ace9d12ac8e64e4830a9"
+      },
+      {
+        "path": "tools/backyard-voltr/src/bootstrap/strategy-asset.ts",
+        "sha256": "60ac379660467e6338ee91702379ce38ccd9eda6971ed881f6c44e0b6f0f93c4"
+      },
+      {
+        "path": "tools/backyard-voltr/src/bootstrap/strategy.ts",
+        "sha256": "a1335a903f60465523ce00a6fb42e20e806839dab7206bb05ea386005f18ceb5"
+      },
+      {
+        "path": "tools/backyard-voltr/src/activation/config.ts",
+        "sha256": "9033a844f908d846da1804f2337f85ba92069517b583cdd61d446453b66b754e"
+      },
+      {
+        "path": "tools/backyard-voltr/src/domain/bootstrap-execution-authorization.ts",
+        "sha256": "a49e5c35bffcdf7e6e2ba63450d2b2190d7f39e535b9af42004d66c8b8c3ceab"
+      },
+      {
+        "path": "tools/backyard-voltr/src/domain/execution-intent.ts",
+        "sha256": "ecb967924fcb08bde20e83e1655198afbb6dad55f5a784e3be9e2d791cbdecdd"
+      },
+      {
+        "path": "tools/backyard-voltr/src/domain/route-spec.ts",
+        "sha256": "7fa08cd485bfacad106416864cee8283c956e09e934e67f7f22d7d5691abb544"
+      },
+      {
+        "path": "tools/backyard-voltr/src/integrations/signer.ts",
+        "sha256": "c7a1cfa6dbb560517626b2236c61b74bc78ca41fff28012b7e5d0a850c4746ac"
+      },
+      {
+        "path": "tools/backyard-voltr/src/integrations/solana-compat.ts",
+        "sha256": "75bcaf818822faf040612dc68d975d50d44d70b90063e5c80f7d963faef33e83"
+      },
+      {
+        "path": "tools/backyard-voltr/src/integrations/voltr.ts",
+        "sha256": "53e0f75bd3a9f28202c197c6da47ebd4f6f1b3c8e38a3a32a07085fb0d19ad34"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/manager.ts",
+        "sha256": "d0b80f0e6b5422af8a5173ce6adf531c00a7976085b4efbd916869f62f0b788b"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/protected-state.ts",
+        "sha256": "9e6b5cadf237f282448f747e540774372df2ee9119da105cb12b8163115922aa"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/restoration-bridge.ts",
+        "sha256": "2fc2aec688a69248f982d6515fa0b9fb29444889489bfeb8cfdaf6eedecff53f"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/restoration-evidence.ts",
+        "sha256": "33239dcd783c51b373b0b66d1a20fbb569aa50dc743f683f9c282c2aba5c29c4"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/commands.ts",
+        "sha256": "a9d5f62230f69c716b9e7189cfcfa8b35030192ef12881a64d56c0c5f3fba220"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/earn-adapter.ts",
+        "sha256": "2822b37d95fbdc11fc3a4192060ddb53eecb18baa0c856acc69c7833f2af3bb3"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/final-reconciliation.ts",
+        "sha256": "6bffe5d696323eb0c303c0605156366fb9ac95f31dc2fe31eb234986a91d53e6"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/negative-mutations-mainnet.ts",
+        "sha256": "43725883f71355fd31627c3501932fdee52aa4f5eab5712e8280d8e153134ac9"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/receipt.ts",
+        "sha256": "d0838adbc06b4421f8cebf9d0d10cd3dd9b2f07ba8efe5a5e7a96eb6e384111b"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/withdrawal-restoration.ts",
+        "sha256": "216139931a95657ccef21e46cd6c2994cc1bf7e67cdd6791b70463b20bb86eda"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/withdrawal-scanner.ts",
+        "sha256": "d29d694c3d2b1fe68fceb0aefe51600731042a864e71e892d13ea6eb0a8f21d3"
+      },
+      {
+        "path": "tools/backyard-voltr/src/policies/authorization.ts",
+        "sha256": "b2c585f74507d5d31d17e6f70247c5fc4d0238aaf8952eec258ec105151bd455"
+      },
+      {
+        "path": "tools/backyard-voltr/src/policies/commands.ts",
+        "sha256": "2d3ec454c8151125b386ba4d068740fcf15ba4bacd5cd90da8284771d1642b86"
+      },
+      {
+        "path": "tools/backyard-voltr/src/policies/compiler.ts",
+        "sha256": "e58e72a002ecfc7f62019cab95e468df5ac7ccee20ed05221a16660046149440"
+      },
+      {
+        "path": "tools/backyard-voltr/src/verify/compatibility.ts",
+        "sha256": "c039cab1c517c84fb9126f234e28dffce005a449d612fac596d59b9a555b5300"
+      },
+      {
+        "path": "tools/backyard-voltr/src/verify/current.ts",
+        "sha256": "1e829e53a260f80ae9a691c59d1aea68d8a99c0ce6ddb2e3075c334346ffb137"
+      },
+      {
+        "path": "tools/backyard-voltr/src/verify/finalized.ts",
+        "sha256": "24c11544c0ec49f9db705ea1fc792cc62c192caaa4ea105f0713a7b57db728c5"
+      },
+      {
+        "path": "tools/backyard-voltr/src/verify/four-market.ts",
+        "sha256": "b13c746559bca549f9f9ee39a3bb68bf528969c0cecbcd28792c17314070a5df"
+      },
+      {
+        "path": "tools/backyard-voltr/src/verify/integration-handoff.ts",
+        "sha256": "06698a02d7ae488fac456e868cef52566368bd32b0c433788b1e2ccb8cb49ee8"
+      },
+      {
+        "path": "tools/backyard-voltr/src/verify/negative-mutations.ts",
+        "sha256": "670753f67d9f55ca9ef0230ee2e275fafa9442a150157d336ae88b8497804047"
+      },
+      {
+        "path": "tools/backyard-voltr/src/verify/squads.ts",
+        "sha256": "d7aecc495bb0c7ceae7228257d6a4a2397cd91ebd66f872e601f48d2adcbbcac"
+      },
+      {
+        "path": "tools/backyard-voltr/src/verify/structure.ts",
+        "sha256": "def7b903ecf19866d6d0510d0309477793af2b2ec831e4cbfcc755c88d48f475"
+      },
+      {
+        "path": "tools/backyard-voltr/tsconfig.json",
+        "sha256": "a693351823d74bb0e3190a765fc8295674d859c2d0d3cadc7e964c572d9e4c33"
+      }
+    ],
+    "aggregateSha256": "7872640aad4c80161ec93ba1ec743e02b5869e642ab6a11d6c3216433775e25c"
+  },
+  "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+  "manager": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+  "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+  "admin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+  "guardian": "oz8skK9o2N5w85rrkMfBVdeg6wnjAqMzriVSupERo3C",
+  "guardianPermissionsMask": 7,
+  "threshold": 1,
+  "catalogPolicySeedBefore": "42",
+  "terminalPolicySeed": "50",
+  "maxManagerOperationRaw": "200000000000",
+  "entries": [
+    {
+      "strategyId": "main",
+      "operation": "deposit",
+      "seed": "43",
+      "policy": "AwFR2cqo3PeUEetjDroixHFq35XNfCHSeZ2cia34fsZS",
+      "strategyGraphSha256": "ed0188c7b34cc0271cba4106961c3ae03f4de6f036c988d1e140faf93f3e1cb2",
+      "innerInstructionDataSha256": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f",
+      "policyCreateDataSha256": "3da31ec8fa3e7da155eed1a1d46595bbbfd9f41716b8993d7c23751e13eaaf9e",
+      "managerExecutionDataSha256": "a4445e23780ca3484a77b27393b3bf0fba077e29a93ea600f7244d848e7be85c"
+    },
+    {
+      "strategyId": "main",
+      "operation": "withdraw",
+      "seed": "44",
+      "policy": "4GraDkpzoX5VrtB1JaHzkWLrW8buUt9REqAF49ztvbmo",
+      "strategyGraphSha256": "ed0188c7b34cc0271cba4106961c3ae03f4de6f036c988d1e140faf93f3e1cb2",
+      "innerInstructionDataSha256": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871",
+      "policyCreateDataSha256": "fe461e15bb588824af720f75d714cdba3491e750529edf342299ef9500294743",
+      "managerExecutionDataSha256": "932765a60037dfb8a6d6459f6abe16eb952a81105651d8ab101a6141d1884935"
+    },
+    {
+      "strategyId": "onre",
+      "operation": "deposit",
+      "seed": "45",
+      "policy": "Hw6yXAwFGGs19dM5uCqjEVPQ3AmSZJnUxsQ9d23w8Z9s",
+      "strategyGraphSha256": "93d39f05ea4ef37d414efd1462ae3c60c2e5ee0eceb710f7efc0ae823f0dc844",
+      "innerInstructionDataSha256": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f",
+      "policyCreateDataSha256": "8510414e2dd24bc1df450ab4c64f972fa532d20fd02dd6bc11f7c05c5ca5352f",
+      "managerExecutionDataSha256": "a4445e23780ca3484a77b27393b3bf0fba077e29a93ea600f7244d848e7be85c"
+    },
+    {
+      "strategyId": "onre",
+      "operation": "withdraw",
+      "seed": "46",
+      "policy": "6j3ioh1ePD1Fzew8sJLbaVqQvSqw5SFYKapQ9AvX6aNy",
+      "strategyGraphSha256": "93d39f05ea4ef37d414efd1462ae3c60c2e5ee0eceb710f7efc0ae823f0dc844",
+      "innerInstructionDataSha256": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871",
+      "policyCreateDataSha256": "09b8d55f158f8168811b49353b7e6d26bd6b399833df1d3504b6af6e443b4d30",
+      "managerExecutionDataSha256": "932765a60037dfb8a6d6459f6abe16eb952a81105651d8ab101a6141d1884935"
+    },
+    {
+      "strategyId": "prime",
+      "operation": "deposit",
+      "seed": "47",
+      "policy": "EUz7R5inW7u6AWLMv8cGFRjKtYVebm2RADShuq57suok",
+      "strategyGraphSha256": "cce96da54f4727e3c90fac15a9c4050794277e2b36dc17d49a121c6589d69258",
+      "innerInstructionDataSha256": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f",
+      "policyCreateDataSha256": "5fc41c50f328370150383657a2b114815b66c617a6a218df05bb89045ba236c8",
+      "managerExecutionDataSha256": "a4445e23780ca3484a77b27393b3bf0fba077e29a93ea600f7244d848e7be85c"
+    },
+    {
+      "strategyId": "prime",
+      "operation": "withdraw",
+      "seed": "48",
+      "policy": "HnJoQAM2ayPSTKCXaaNpt8GyyMPuz2bKarmjozKXf3Ym",
+      "strategyGraphSha256": "cce96da54f4727e3c90fac15a9c4050794277e2b36dc17d49a121c6589d69258",
+      "innerInstructionDataSha256": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871",
+      "policyCreateDataSha256": "114e8ecba45a2ee6cb740fe8d1dd4f164785c4b8ded4232af48526be5488ace2",
+      "managerExecutionDataSha256": "932765a60037dfb8a6d6459f6abe16eb952a81105651d8ab101a6141d1884935"
+    },
+    {
+      "strategyId": "maple",
+      "operation": "deposit",
+      "seed": "49",
+      "policy": "139oqU3RQXvQATYCz6snWxZPiTbKNS5DzLxD74qDXw2F",
+      "strategyGraphSha256": "10c6c9435d6b169abc8d5850541769428baa707cfc7a3f9774ac0dc34bf2a58d",
+      "innerInstructionDataSha256": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f",
+      "policyCreateDataSha256": "d4578cf6dc6e0821b055e8aea8119032a81d652b5e756c31ec72a605b56a540d",
+      "managerExecutionDataSha256": "a4445e23780ca3484a77b27393b3bf0fba077e29a93ea600f7244d848e7be85c"
+    },
+    {
+      "strategyId": "maple",
+      "operation": "withdraw",
+      "seed": "50",
+      "policy": "3J2sCDRLumpNas1VswxiTiGow9Xhviiib2csxoxJYmUY",
+      "strategyGraphSha256": "10c6c9435d6b169abc8d5850541769428baa707cfc7a3f9774ac0dc34bf2a58d",
+      "innerInstructionDataSha256": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871",
+      "policyCreateDataSha256": "d0081b93d770dc2b224507693673dd08a71a4b1c88ff8e0577ef3fa81932c3dc",
+      "managerExecutionDataSha256": "932765a60037dfb8a6d6459f6abe16eb952a81105651d8ab101a6141d1884935"
+    }
+  ],
+  "authorizationSha256": "9f276ddb73b8883f01b5780c1f5355819a9f955d0bf3affe453d5a4f9c87bb3c"
+}
