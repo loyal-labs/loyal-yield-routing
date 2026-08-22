@@ -243,6 +243,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0039_unbroadcast_cross_mint_expiry_check.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 40,
+        name: "voltr_opportunity_classes",
+        sql: include_str!("../../../loyal-yield-store/migrations/0040_voltr_opportunity_classes.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

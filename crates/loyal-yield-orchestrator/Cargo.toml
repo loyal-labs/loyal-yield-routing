@@ -74,6 +74,10 @@ name = "verify-reusable-alt-db"
 path = "src/bin/verify-reusable-alt-db.rs"
 
 [[bin]]
+name = "backyard-voltr-earn-replay"
+path = "src/bin/backyard-voltr-earn-replay.rs"
+
+[[bin]]
 name = "yield-migrations"
 path = "src/bin/yield-migrations.rs"
 

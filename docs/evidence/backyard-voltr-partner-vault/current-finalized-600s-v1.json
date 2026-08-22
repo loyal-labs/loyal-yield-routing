@@ -1,0 +1,543 @@
+{
+  "verdict": "PARTNER_CURRENT_PASS",
+  "broadcast": false,
+  "contextSlot": 440584585,
+  "routeSpecSha256": "d73fb99b00c57153923f33560a7db13df02aba8b4c2a0b0fd181a893c8735f88",
+  "failedGateCount": 0,
+  "vault": {
+    "verdict": "PARTNER_VAULT_CURRENT_PASS",
+    "failedGateCount": 0,
+    "gates": [
+      {
+        "name": "vault exists",
+        "pass": true,
+        "observed": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+        "expected": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK"
+      },
+      {
+        "name": "LP mint exists",
+        "pass": true,
+        "observed": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+        "expected": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka"
+      },
+      {
+        "name": "idle ATA exists",
+        "pass": true,
+        "observed": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+        "expected": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P"
+      },
+      {
+        "name": "asset mint exists",
+        "pass": true,
+        "observed": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "expected": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+      },
+      {
+        "name": "vault owner",
+        "pass": true,
+        "observed": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "expected": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+      },
+      {
+        "name": "vault is not executable",
+        "pass": true,
+        "observed": false,
+        "expected": false
+      },
+      {
+        "name": "vault data length",
+        "pass": true,
+        "observed": 928,
+        "expected": 928
+      },
+      {
+        "name": "vault discriminator",
+        "pass": true,
+        "observed": "d308e82b02987577",
+        "expected": "d308e82b02987577"
+      },
+      {
+        "name": "LP mint token program",
+        "pass": true,
+        "observed": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "expected": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      },
+      {
+        "name": "idle ATA token program",
+        "pass": true,
+        "observed": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "expected": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      },
+      {
+        "name": "asset mint token program",
+        "pass": true,
+        "observed": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "expected": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      },
+      {
+        "name": "vault name",
+        "pass": true,
+        "observed": "Backyard Loyal USDC",
+        "expected": "Backyard Loyal USDC"
+      },
+      {
+        "name": "vault description",
+        "pass": true,
+        "observed": "Policy-constrained Voltr vault managed by Loyal Squads",
+        "expected": "Policy-constrained Voltr vault managed by Loyal Squads"
+      },
+      {
+        "name": "vault admin",
+        "pass": true,
+        "observed": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+        "expected": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+      },
+      {
+        "name": "vault pending admin",
+        "pass": true,
+        "observed": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+        "expected": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+      },
+      {
+        "name": "vault manager",
+        "pass": true,
+        "observed": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+        "expected": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK"
+      },
+      {
+        "name": "asset mint",
+        "pass": true,
+        "observed": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "expected": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+      },
+      {
+        "name": "idle ATA",
+        "pass": true,
+        "observed": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+        "expected": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P"
+      },
+      {
+        "name": "LP mint",
+        "pass": true,
+        "observed": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+        "expected": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka"
+      },
+      {
+        "name": "maximum cap",
+        "pass": true,
+        "observed": "10000000",
+        "expected": "10000000"
+      },
+      {
+        "name": "start timestamp",
+        "pass": true,
+        "observed": "0",
+        "expected": "0"
+      },
+      {
+        "name": "locked-profit duration",
+        "pass": true,
+        "observed": "86400",
+        "expected": "86400"
+      },
+      {
+        "name": "withdrawal waiting period",
+        "pass": true,
+        "observed": "600",
+        "expected": "600"
+      },
+      {
+        "name": "disabled operations",
+        "pass": true,
+        "observed": 0,
+        "expected": 0
+      },
+      {
+        "name": "manager performance fee",
+        "pass": true,
+        "observed": 0,
+        "expected": 0
+      },
+      {
+        "name": "admin performance fee",
+        "pass": true,
+        "observed": 0,
+        "expected": 0
+      },
+      {
+        "name": "manager management fee",
+        "pass": true,
+        "observed": 0,
+        "expected": 0
+      },
+      {
+        "name": "admin management fee",
+        "pass": true,
+        "observed": 0,
+        "expected": 0
+      },
+      {
+        "name": "redemption fee",
+        "pass": true,
+        "observed": 0,
+        "expected": 0
+      },
+      {
+        "name": "issuance fee",
+        "pass": true,
+        "observed": 0,
+        "expected": 0
+      },
+      {
+        "name": "adaptor bypass disabled",
+        "pass": true,
+        "observed": 0,
+        "expected": 0
+      },
+      {
+        "name": "LP mint authority",
+        "pass": true,
+        "observed": "BqKLmhKUy4Q7iHHGKKPSzenPL7LbEed9ZW3pTBofxuZn",
+        "expected": "BqKLmhKUy4Q7iHHGKKPSzenPL7LbEed9ZW3pTBofxuZn"
+      },
+      {
+        "name": "LP mint decimals",
+        "pass": true,
+        "observed": 9,
+        "expected": 9
+      },
+      {
+        "name": "asset mint decimals",
+        "pass": true,
+        "observed": 6,
+        "expected": 6
+      },
+      {
+        "name": "idle ATA mint",
+        "pass": true,
+        "observed": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "expected": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+      },
+      {
+        "name": "idle ATA owner",
+        "pass": true,
+        "observed": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo",
+        "expected": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo"
+      },
+      {
+        "name": "idle ATA amount matches total value",
+        "pass": true,
+        "observed": "1",
+        "expected": "1"
+      }
+    ],
+    "state": {
+      "vaultDataSha256": "21d3a30cd46104c0ab6dd1f251af631048508bb7238a2ea0a0631573c6a71a8b",
+      "manager": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+      "admin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "pendingAdmin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "waitingPeriodSeconds": "600",
+      "totalValueRaw": "1",
+      "lpSupplyRaw": "0",
+      "idleRaw": "1"
+    }
+  },
+  "adaptor": [
+    {
+      "name": "adaptor receipt exists",
+      "pass": true,
+      "observed": "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt",
+      "expected": "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt"
+    },
+    {
+      "name": "adaptor receipt owner",
+      "pass": true,
+      "observed": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      "expected": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+    },
+    {
+      "name": "deployed adaptor receipt length",
+      "pass": true,
+      "observed": 152,
+      "expected": 152
+    },
+    {
+      "name": "adaptor receipt discriminator",
+      "pass": true,
+      "observed": "6963db9b4df10777",
+      "expected": "6963db9b4df10777"
+    },
+    {
+      "name": "adaptor receipt vault",
+      "pass": true,
+      "observed": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+      "expected": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK"
+    },
+    {
+      "name": "adaptor receipt program",
+      "pass": true,
+      "observed": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+      "expected": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
+    }
+  ],
+  "strategy": [
+    {
+      "name": "strategy receipt exists",
+      "pass": true,
+      "observed": "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh",
+      "expected": "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh"
+    },
+    {
+      "name": "Kamino user metadata exists",
+      "pass": true,
+      "observed": "9pgc2m2YehaUP13rZRiFsC6UkV1nRJVEv3EjQTMzQSpD",
+      "expected": "9pgc2m2YehaUP13rZRiFsC6UkV1nRJVEv3EjQTMzQSpD"
+    },
+    {
+      "name": "Kamino farm user state exists",
+      "pass": true,
+      "observed": "98dATwikz9cioKBvbvSMC95XwSqS4Eht2EeBmdChHoWu",
+      "expected": "98dATwikz9cioKBvbvSMC95XwSqS4Eht2EeBmdChHoWu"
+    },
+    {
+      "name": "strategy receipt owner",
+      "pass": true,
+      "observed": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      "expected": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+    },
+    {
+      "name": "strategy receipt size",
+      "pass": true,
+      "observed": 192,
+      "expected": 192
+    },
+    {
+      "name": "strategy receipt discriminator",
+      "pass": true,
+      "observed": "3308c0fd734e70d6",
+      "expected": "3308c0fd734e70d6"
+    },
+    {
+      "name": "metadata owner program",
+      "pass": true,
+      "observed": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+      "expected": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+    },
+    {
+      "name": "farm state owner program",
+      "pass": true,
+      "observed": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+      "expected": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+    },
+    {
+      "name": "strategy receipt vault",
+      "pass": true,
+      "observed": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+      "expected": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK"
+    },
+    {
+      "name": "strategy receipt reserve",
+      "pass": true,
+      "observed": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+      "expected": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+    },
+    {
+      "name": "strategy receipt adaptor",
+      "pass": true,
+      "observed": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+      "expected": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
+    },
+    {
+      "name": "strategy receipt position decodes",
+      "pass": true,
+      "observed": "0",
+      "expected": "non-negative raw position"
+    },
+    {
+      "name": "metadata authority",
+      "pass": true,
+      "observed": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ",
+      "expected": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ"
+    },
+    {
+      "name": "Kamino obligation exists or strategy is exactly flat",
+      "pass": true,
+      "observed": null,
+      "expected": "absent allowed only at position=0"
+    },
+    {
+      "name": "farm authority",
+      "pass": true,
+      "observed": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ",
+      "expected": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ"
+    },
+    {
+      "name": "farm Main state",
+      "pass": true,
+      "observed": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh",
+      "expected": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh"
+    }
+  ],
+  "deployments": {
+    "observed": [
+      {
+        "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "programDataAddress": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+        "deployedSlot": "433299444",
+        "executableSha256": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd"
+      },
+      {
+        "programId": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+        "programDataAddress": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR",
+        "deployedSlot": "406317018",
+        "executableSha256": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0"
+      },
+      {
+        "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "programDataAddress": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA",
+        "deployedSlot": "440486775",
+        "executableSha256": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+      },
+      {
+        "programId": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+        "programDataAddress": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9",
+        "deployedSlot": "379693642",
+        "executableSha256": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564"
+      },
+      {
+        "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+        "programDataAddress": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T",
+        "deployedSlot": "383815455",
+        "executableSha256": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0"
+      }
+    ],
+    "gates": [
+      {
+        "name": "deployment count",
+        "pass": true,
+        "observed": 5,
+        "expected": 5
+      },
+      {
+        "name": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 program id",
+        "pass": true,
+        "observed": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "expected": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+      },
+      {
+        "name": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 program-data address",
+        "pass": true,
+        "observed": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+        "expected": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az"
+      },
+      {
+        "name": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 deployed slot",
+        "pass": true,
+        "observed": "433299444",
+        "expected": "433299444"
+      },
+      {
+        "name": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 executable hash",
+        "pass": true,
+        "observed": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd",
+        "expected": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd"
+      },
+      {
+        "name": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR program id",
+        "pass": true,
+        "observed": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+        "expected": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
+      },
+      {
+        "name": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR program-data address",
+        "pass": true,
+        "observed": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR",
+        "expected": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR"
+      },
+      {
+        "name": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR deployed slot",
+        "pass": true,
+        "observed": "406317018",
+        "expected": "406317018"
+      },
+      {
+        "name": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR executable hash",
+        "pass": true,
+        "observed": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0",
+        "expected": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0"
+      },
+      {
+        "name": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD program id",
+        "pass": true,
+        "observed": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "expected": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+      },
+      {
+        "name": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD program-data address",
+        "pass": true,
+        "observed": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA",
+        "expected": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA"
+      },
+      {
+        "name": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD deployed slot",
+        "pass": true,
+        "observed": "440486775",
+        "expected": "440486775"
+      },
+      {
+        "name": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD executable hash",
+        "pass": true,
+        "observed": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b",
+        "expected": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+      },
+      {
+        "name": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr program id",
+        "pass": true,
+        "observed": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+        "expected": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+      },
+      {
+        "name": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr program-data address",
+        "pass": true,
+        "observed": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9",
+        "expected": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9"
+      },
+      {
+        "name": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr deployed slot",
+        "pass": true,
+        "observed": "379693642",
+        "expected": "379693642"
+      },
+      {
+        "name": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr executable hash",
+        "pass": true,
+        "observed": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564",
+        "expected": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564"
+      },
+      {
+        "name": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG program id",
+        "pass": true,
+        "observed": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+        "expected": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      {
+        "name": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG program-data address",
+        "pass": true,
+        "observed": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T",
+        "expected": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T"
+      },
+      {
+        "name": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG deployed slot",
+        "pass": true,
+        "observed": "383815455",
+        "expected": "383815455"
+      },
+      {
+        "name": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG executable hash",
+        "pass": true,
+        "observed": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0",
+        "expected": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0"
+      }
+    ]
+  }
+}

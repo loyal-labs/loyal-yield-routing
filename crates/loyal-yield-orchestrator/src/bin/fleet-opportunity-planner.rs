@@ -8,21 +8,23 @@ use std::{
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use loyal_observability::{init_from_env, OperationalError};
 use loyal_yield_orchestrator::fleet_orchestration::{
-    code_owned_stablecoin_valuations, fleet_worker_role_probe, observe_fleet_opportunities,
-    observe_fleet_opportunities_for_vaults, observe_fleet_opportunities_without_queue_schema,
-    observe_market_epoch, plan_capacity_aware_wave, route_fee_budget, run_deterministic_benchmark,
+    code_owned_stablecoin_valuations, fleet_worker_role_probe, observe_backyard_voltr_confirmed,
+    observe_fleet_opportunities, observe_fleet_opportunities_for_vaults,
+    observe_fleet_opportunities_without_queue_schema, observe_market_epoch,
+    plan_backyard_voltr_opportunity, plan_capacity_aware_wave, route_fee_budget,
+    run_deterministic_benchmark, BackyardVoltrPlanningConfig, BackyardVoltrPlanningOutcome,
     CapacityBand, DurablePgWakeupEvent, DurablePgWakeupListener, EconomicPolicy,
     FleetObservationConfig, FleetPlanningDirtyVaultLease, FleetPlanningStateInput, FleetWorkerRole,
     IneligibleReason, MaterialMarketFrontier, ObservedFleetOpportunity, ObservedSourceKind,
-    OptimizerEpochInput, RebalanceOpportunityInput, RouteFeePolicy, TargetCapacityCurve,
-    WaveLimits, MARKET_MATERIAL_CAPACITY_DRIFT_PPM, MARKET_WAKE_PRICE_BUCKET_USD_MICROS,
-    MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS, MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG,
-    MAXIMUM_SUPPORTED_RESERVE_CATALOG_AGE_SECONDS, MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
-    RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT,
+    OptimizerEpochInput, RebalanceOpportunityInput, RebalanceOpportunityOperationClass,
+    RouteFeePolicy, TargetCapacityCurve, WaveLimits, MARKET_MATERIAL_CAPACITY_DRIFT_PPM,
+    MARKET_WAKE_PRICE_BUCKET_USD_MICROS, MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS,
+    MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG, MAXIMUM_SUPPORTED_RESERVE_CATALOG_AGE_SECONDS,
+    MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS, RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT,
 };
 use loyal_yield_orchestrator::{
     enabled_stable_mints_from_env, NeonSqlClient, NeonSqlConfig, OrchestratorError, SnapshotId,
-    STANDARD_POLICY_AUTHORITY,
+    VaultId, STANDARD_POLICY_AUTHORITY,
 };
 use loyal_yield_router::timescale::{TimescaleRouterClient, TimescaleRouterClientConfig};
 use loyal_yield_store::fleet_orchestration::{CrossMintEarnPolicyBinding, CrossMintPolicyBindings};
@@ -44,6 +46,11 @@ const CROSS_MINT_JUPITER_ENABLED_ENV: &str = "EARN_ROUTER_ENABLE_CROSS_MINT_JUPI
 const CROSS_MINT_MAXIMUM_VALUE_LOSS_BPS_ENV: &str = "EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS";
 const DEFAULT_CROSS_MINT_MAXIMUM_VALUE_LOSS_BPS: u16 = 50;
 const CROSS_MINT_LOGICAL_LEG_COUNT: i64 = 3;
+const BACKYARD_VOLTR_ENABLED_ENV: &str = "BACKYARD_VOLTR_ORCHESTRATION_ENABLED";
+const BACKYARD_VOLTR_VAULT_ID_ENV: &str = "BACKYARD_VOLTR_FLEET_VAULT_ID";
+const BACKYARD_VOLTR_RPC_URL_ENV: &str = "SOLANA_RPC_URL";
+const BACKYARD_VOLTR_PROBE_INTERVAL_SECONDS: u64 = 5;
+const DEFAULT_BACKYARD_VOLTR_ESTIMATED_COST_LAMPORTS: i64 = 100_000;
 
 fn cross_mint_fee_envelope_is_covered(fee_cap_lamports: i64, fee_policy: RouteFeePolicy) -> bool {
     fee_policy
@@ -589,6 +596,13 @@ fn rebalance_opportunity_input(
         expected_net_gain_usd_micros: terms.expected_net_gain_usd_micros,
         economic_priority: terms.economic_priority.max(1),
         priority_version: PRIORITY_VERSION.to_owned(),
+        operation_class: match observed.source_kind {
+            ObservedSourceKind::ReservePosition => {
+                RebalanceOpportunityOperationClass::YieldOptimization
+            }
+            ObservedSourceKind::IdleVaultUsdc => RebalanceOpportunityOperationClass::IdleAllocation,
+        },
+        service_deadline_at: None,
         execution_plan: opportunity_execution_plan(
             observed,
             terms.optimizer_market_slot,
@@ -1520,6 +1534,110 @@ fn planner_owner(cluster: &str) -> String {
     )
 }
 
+#[derive(Clone, Debug)]
+struct BackyardVoltrBinding {
+    vault_id: VaultId,
+    rpc_url: String,
+}
+
+fn backyard_voltr_binding_from_env() -> Result<Option<BackyardVoltrBinding>, Box<dyn Error>> {
+    let enabled = match env::var(BACKYARD_VOLTR_ENABLED_ENV) {
+        Err(env::VarError::NotPresent) => false,
+        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => true,
+        Ok(value) if value == "0" || value.eq_ignore_ascii_case("false") => false,
+        Ok(value) => {
+            return Err(format!(
+                "{BACKYARD_VOLTR_ENABLED_ENV} must be true, false, 1, or 0; got {value:?}"
+            )
+            .into())
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if !enabled {
+        return Ok(None);
+    }
+    let vault_id = env::var(BACKYARD_VOLTR_VAULT_ID_ENV)
+        .map_err(|_| format!("{BACKYARD_VOLTR_VAULT_ID_ENV} is required when enabled"))?
+        .parse::<i64>()?;
+    if vault_id <= 0 {
+        return Err(format!("{BACKYARD_VOLTR_VAULT_ID_ENV} must be positive").into());
+    }
+    let rpc_url = env::var(BACKYARD_VOLTR_RPC_URL_ENV)
+        .map_err(|_| format!("{BACKYARD_VOLTR_RPC_URL_ENV} is required when enabled"))?;
+    if rpc_url.trim().is_empty() {
+        return Err(format!("{BACKYARD_VOLTR_RPC_URL_ENV} must be nonempty").into());
+    }
+    Ok(Some(BackyardVoltrBinding {
+        vault_id: VaultId(vault_id),
+        rpc_url,
+    }))
+}
+
+async fn run_backyard_voltr_planning_cycle(
+    neon: &NeonSqlClient,
+    timescale: &TimescaleRouterClient,
+    observation_config: &FleetObservationConfig,
+    binding: &BackyardVoltrBinding,
+) -> Result<Value, Box<dyn Error>> {
+    let mut market_epoch = observe_market_epoch(timescale, observation_config).await?;
+    let durable_epoch = market_epoch.durable_optimizer_epoch_evidence();
+    let optimizer_epoch = neon
+        .upsert_optimizer_epoch(OptimizerEpochInput {
+            cluster: observation_config.cluster.clone(),
+            epoch_key: durable_epoch.fingerprint.clone(),
+            market_slot: durable_epoch.maximum_market_slot.unwrap_or_default(),
+            observed_at: durable_epoch.captured_at,
+            expires_at: durable_epoch.optimizer_envelope_expires_at(),
+            market_state: serde_json::to_value(&durable_epoch)?,
+        })
+        .await?;
+    market_epoch.optimizer_epoch_id = optimizer_epoch.id;
+    let min_context_slot = market_epoch
+        .maximum_market_slot
+        .and_then(|slot| u64::try_from(slot).ok())
+        .filter(|slot| *slot > 0)
+        .unwrap_or(1);
+    let observation = observe_backyard_voltr_confirmed(&binding.rpc_url, min_context_slot)?;
+    let durable = neon.voltr_vault_planning_state(binding.vault_id).await?;
+    let result = plan_backyard_voltr_opportunity(
+        &observation,
+        &market_epoch,
+        &durable,
+        BackyardVoltrPlanningConfig {
+            vault_id: binding.vault_id,
+            estimated_cost_lamports: DEFAULT_BACKYARD_VOLTR_ESTIMATED_COST_LAMPORTS,
+            now: Utc::now(),
+        },
+    )?;
+    match result {
+        BackyardVoltrPlanningOutcome::RecoverExisting => Ok(json!({
+            "status": "backyard_voltr_recovery_precedes_planning",
+            "vaultId": binding.vault_id.as_i64(),
+            "contextSlot": observation.context_slot,
+            "mutating": false,
+        })),
+        BackyardVoltrPlanningOutcome::Noop => Ok(json!({
+            "status": "backyard_voltr_noop",
+            "vaultId": binding.vault_id.as_i64(),
+            "contextSlot": observation.context_slot,
+            "mutating": false,
+        })),
+        BackyardVoltrPlanningOutcome::Opportunity(input) => {
+            let operation_class = input.operation_class.as_str();
+            let opportunity = neon.upsert_rebalance_opportunity(input).await?;
+            Ok(json!({
+                "status": "backyard_voltr_opportunity_upserted",
+                "vaultId": binding.vault_id.as_i64(),
+                "opportunityId": opportunity.id,
+                "operationClass": operation_class,
+                "contextSlot": observation.context_slot,
+                "oneLegOnly": true,
+                "mutating": true,
+            }))
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     if env::args().skip(1).eq(["--role-probe"]) {
@@ -1553,6 +1671,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 async fn run() -> Result<(), Box<dyn Error>> {
     let options = parse_options()?;
+    let backyard_voltr_binding = backyard_voltr_binding_from_env()?;
     if options.benchmark {
         let output = run_benchmark(&options)?;
         let passed = output.get("status").and_then(Value::as_str) == Some("pass");
@@ -1621,6 +1740,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .await?;
     neon.require_schema_migration(30, "fused_queue_accrual_binding")
         .await?;
+    neon.require_schema_migration(40, "voltr_opportunity_classes")
+        .await?;
     neon.register_fleet_planning_cluster(&options.cluster)
         .await?;
     let mut wakeup_listener = DurablePgWakeupListener::new("loyal_yield_fleet_planner_wakeup")?;
@@ -1632,6 +1753,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let mut current_market_epoch_key = None::<String>;
     let mut current_material_frontier_fingerprint = None::<String>;
     let mut current_material_frontier = None::<MaterialMarketFrontier>;
+    let mut next_backyard_voltr_probe_at = Instant::now();
     let mut consecutive_cycle_failures = 0u32;
     let mut log_limiter = PlannerLogLimiter::new();
     loop {
@@ -1643,6 +1765,20 @@ async fn run() -> Result<(), Box<dyn Error>> {
         let cycle: Result<(), Box<dyn Error>> = async {
             neon.heartbeat_fleet_planning_cluster(&options.cluster)
                 .await?;
+            if let Some(binding) = backyard_voltr_binding.as_ref() {
+                if Instant::now() >= next_backyard_voltr_probe_at {
+                    next_backyard_voltr_probe_at = Instant::now()
+                        + Duration::from_secs(BACKYARD_VOLTR_PROBE_INTERVAL_SECONDS);
+                    let output = run_backyard_voltr_planning_cycle(
+                        &neon,
+                        &timescale,
+                        &config,
+                        binding,
+                    )
+                    .await?;
+                    print_daemon_output(&output, options.json, &mut log_limiter)?;
+                }
+            }
         if Instant::now() < next_full_sweep_at && Instant::now() >= next_market_probe_at {
             next_market_probe_at = Instant::now() + market_probe_interval;
             match observe_market_epoch(&timescale, &config).await {

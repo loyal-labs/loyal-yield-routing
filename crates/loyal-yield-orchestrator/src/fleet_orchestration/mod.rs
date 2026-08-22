@@ -12,6 +12,9 @@ pub mod reconciliation;
 pub mod resilience;
 pub mod runtime_evidence;
 pub mod source_evidence;
+pub mod voltr_controller;
+pub mod voltr_observation;
+pub mod voltr_planning;
 
 pub use confirmation::*;
 pub use health::*;
@@ -21,6 +24,9 @@ pub use reconciliation::*;
 pub use resilience::*;
 pub use runtime_evidence::*;
 pub use source_evidence::*;
+pub use voltr_controller::*;
+pub use voltr_observation::*;
+pub use voltr_planning::*;
 
 pub mod capacity {
     #[doc(inline)]

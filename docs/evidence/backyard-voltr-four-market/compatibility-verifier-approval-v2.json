@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "evidenceType": "backyard-voltr-four-market-compatibility-approval",
+  "approvalId": "operator-fixed-verifier-v1",
+  "routeId": "loyal-backyard-four-market-usdc-v1",
+  "cluster": "mainnet-beta",
+  "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "routeSpec": {
+    "baseMainRouteSpecSha256": "d73fb99b00c57153923f33560a7db13df02aba8b4c2a0b0fd181a893c8735f88",
+    "fourMarketRouteSpecSha256": "a68ef28c8b9a9c8e34106cf78f1d10624d8bc9ebfd366cc15cbc5b273ecdf3e3",
+    "candidateCatalogSha256": "fa5bf20e4f5fd32f1453d5ae51e129f52286949e15850fa7abbf8c627c4b7a31"
+  },
+  "sourceBinding": {
+    "algorithm": "sha256",
+    "files": [
+      {
+        "path": "Cargo.lock",
+        "sha256": "5b2bde9b7886bddc46457cfde3b7f86029d88624a10457138b17af6010654dec"
+      },
+      {
+        "path": "Cargo.toml",
+        "sha256": "2bb8b97b1768053647bb623f406e77c5f3e72554064ae477b56939061358f461"
+      },
+      {
+        "path": "crates/loyal-actions/Cargo.toml",
+        "sha256": "47f99f493997d31a982b9600f999ea416036f32820a8819e39a8b72e6ab38131"
+      },
+      {
+        "path": "crates/loyal-actions/src/actions.rs",
+        "sha256": "a6f9e2768014054c0f6f61e8c664bad253a862452a082557c1f6fc42f6eb93fd"
+      },
+      {
+        "path": "crates/loyal-actions/src/autonomous_vaults/mod.rs",
+        "sha256": "8c886f5ee04ec88baa3e05431b23bac1c7b4f268fa685eecdaee03ccb8a8a2da"
+      },
+      {
+        "path": "crates/loyal-actions/src/autonomous_vaults/voltr_kamino.rs",
+        "sha256": "bb5cabe39df9afa959bcfaebb958a2ccde184351e9acb7421bfa78f6b6df794f"
+      },
+      {
+        "path": "crates/loyal-actions/src/bin/compile_voltr_kamino_runtime_policy.rs",
+        "sha256": "0a5785253701c22b8eb8d98003a77e2815fac39540b8ace2bc3552e0a6a17653"
+      },
+      {
+        "path": "crates/loyal-actions/src/detection.rs",
+        "sha256": "ad75f1cf9e9e4315604dabed1675a58babfc6d7636abfaa60af9b408005e11b3"
+      },
+      {
+        "path": "crates/loyal-actions/src/ids.rs",
+        "sha256": "e84651bc5426e63c11642832beede609f7369a9339aa6b5d4031c8efe1bf305b"
+      },
+      {
+        "path": "crates/loyal-actions/src/lib.rs",
+        "sha256": "49d8a87b7ce3ce5e7dfd6207e8be1e29acab18dcadc3c95dfa02a5bec9456d63"
+      },
+      {
+        "path": "crates/loyal-actions/src/protocols.rs",
+        "sha256": "4e439a5c98ef68ab5b6f5b77e0b0a30c42b7ac45adf8fb17e611a882add28510"
+      },
+      {
+        "path": "crates/loyal-actions/src/squads.rs",
+        "sha256": "1fee3be6cd9186620c50d65852c3ef91359398ce376a1f2275e0e6c488e1077c"
+      },
+      {
+        "path": "crates/loyal-actions/src/stablecoins.rs",
+        "sha256": "39c72044f69dc783170d92eaea1d2148b95c5fbfc9635204f99dac9218c3fe0b"
+      },
+      {
+        "path": "tools/backyard-voltr/bun.lock",
+        "sha256": "dc30467ef7e0a2d897855d6cd5f00cfb4dbc956e5a5654b9186a2af1865002e3"
+      },
+      {
+        "path": "tools/backyard-voltr/package.json",
+        "sha256": "b7b59b9fa4032fda71b5095784c3b15881258e86e988f090a37a8b74a510dd3c"
+      },
+      {
+        "path": "tools/backyard-voltr/src/cli.ts",
+        "sha256": "fcb1b0aa99cc7a6d9ee35e0e2e72113a2fe0f7e6ec9e178d9bc7de1a7625a4ae"
+      },
+      {
+        "path": "tools/backyard-voltr/src/domain/route-spec.ts",
+        "sha256": "a989079357e9f76e56f8518d35f642f4662f55aae45b7838aa2ca4e6da4a6aab"
+      },
+      {
+        "path": "tools/backyard-voltr/src/integrations/solana-compat.ts",
+        "sha256": "34e8c9e603caa0718da8bc7100727d36818cd5049c482bd94d7f505ddaf8abcc"
+      },
+      {
+        "path": "tools/backyard-voltr/src/integrations/voltr.ts",
+        "sha256": "f44f06676d70c19c221c1d12ca9de8266330fe8e7db781bff46e0121e0ea145d"
+      },
+      {
+        "path": "tools/backyard-voltr/src/policies/compiler.ts",
+        "sha256": "121786afc4ff585c2dbb5ef0cda9ecedf765c278af0ca4af6111f6188517c505"
+      },
+      {
+        "path": "tools/backyard-voltr/src/runtime/manager.ts",
+        "sha256": "2bf01b896e86cd871e8433a504134c3b6592cd2a210fa0fdfe6d5d5f7515c274"
+      },
+      {
+        "path": "tools/backyard-voltr/src/verify/compatibility.ts",
+        "sha256": "f0eaea18ae292c8bed9210d99548df55cd1ee4e3c727a4f704f9679428ecdd39"
+      },
+      {
+        "path": "tools/backyard-voltr/src/verify/current.ts",
+        "sha256": "63525d45dc2c24a22acb6cb03aba11fad1a7f3be7e46877017c329428d4b670e"
+      },
+      {
+        "path": "tools/backyard-voltr/tsconfig.json",
+        "sha256": "a693351823d74bb0e3190a765fc8295674d859c2d0d3cadc7e964c572d9e4c33"
+      }
+    ],
+    "aggregateSha256": "8952d0e96bb7e58bc12053c696712d3e85b649e4edfa7cf1c2093e391438c5ad"
+  },
+  "runtimePolicyArtifact": {
+    "path": "docs/evidence/backyard-voltr-partner-vault/runtime-policies-precreated-600s-v1.json",
+    "fileSha256": "bb01e3acde558bf40458962f13ff2f9749e32346cd0f3406940f322bb8ee38ea",
+    "artifactSha256": "6441b4403842011dcb91f1db4a6b233eb25d7067173c074acdbbe1cb6fab0331",
+    "sourceManifestSha256": "c5de2fd9cde31690833b42d9504e876026a6bb5b1e5d9cba5b687e5d9f519368"
+  }
+}

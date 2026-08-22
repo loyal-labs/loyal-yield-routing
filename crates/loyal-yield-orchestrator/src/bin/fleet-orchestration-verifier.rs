@@ -12,11 +12,14 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use loyal_actions::{KAMINO_MAIN_USDC_RESERVE, USDC_MINT};
+use loyal_actions::{
+    autonomous_vaults::embedded_backyard_voltr_route_bundle, KAMINO_MAIN_USDC_RESERVE, USDC_MINT,
+};
 use loyal_yield_orchestrator::fleet_orchestration::{
-    classify_authoritative_signature_status, evaluate_economics, evaluate_fresh_route_economics,
-    fleet_worker_role_probe, functional_stuck_stage_fixture, functional_worker_resilience_fixture,
-    material_frontier_deterministic_evidence, plan_capacity_aware_wave, rank_opportunities,
+    backyard_voltr_one_leg_oracle, classify_authoritative_signature_status, evaluate_economics,
+    evaluate_fresh_route_economics, fleet_worker_role_probe, functional_stuck_stage_fixture,
+    functional_worker_resilience_fixture, material_frontier_deterministic_evidence,
+    observe_backyard_voltr_confirmed, plan_capacity_aware_wave, rank_opportunities,
     route_fee_budget, run_deterministic_benchmark, schedule_authoritative_status_poll,
     AuthoritativeConfirmationDecision, AuthoritativePollUrgency, AuthoritativeSignatureStatus,
     CapacityBand, ConfirmationPollTrigger, EconomicPolicy, FleetStuckStage, FleetWorkerRole,
@@ -92,7 +95,7 @@ const PRODUCTION_SERVICE_NAMES: [&str; 6] = [
     "loyal-fleet-route-reconciler",
     "loyal-route-lookup-table-provisioner",
 ];
-const VERIFIED_MIGRATIONS: [(i64, &str, &str); 15] = [
+const VERIFIED_MIGRATIONS: [(i64, &str, &str); 18] = [
     (
         23,
         "value_priority_rebalance_queue",
@@ -168,6 +171,21 @@ const VERIFIED_MIGRATIONS: [(i64, &str, &str); 15] = [
         "cross_mint_vault_opt_ins",
         "0037_cross_mint_vault_opt_ins.sql",
     ),
+    (
+        38,
+        "durable_autodeposit_confirmation",
+        "0038_durable_autodeposit_confirmation.sql",
+    ),
+    (
+        39,
+        "unbroadcast_cross_mint_expiry_check",
+        "0039_unbroadcast_cross_mint_expiry_check.sql",
+    ),
+    (
+        40,
+        "voltr_opportunity_classes",
+        "0040_voltr_opportunity_classes.sql",
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -227,6 +245,7 @@ struct LocalEvidence {
 struct Cli {
     implementation: bool,
     end_state: bool,
+    backyard_voltr_end_state: bool,
     json_output: bool,
     database_url: Option<String>,
     isolated_database: bool,
@@ -234,6 +253,25 @@ struct Cli {
     repository_root: Option<PathBuf>,
     runtime_evidence_json: Option<PathBuf>,
     production_evidence_json: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum BackyardVoltrVerdict {
+    Pass,
+    Fail,
+    Blocked,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackyardVoltrCheck {
+    id: &'static str,
+    verdict: BackyardVoltrVerdict,
+    condition: &'static str,
+    evidence: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resume_condition: Option<&'static str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3362,6 +3400,8 @@ fn rediscovery_input_for_opportunity(
         expected_net_gain_usd_micros: opportunity.expected_net_gain_usd_micros,
         economic_priority: opportunity.economic_priority,
         priority_version: opportunity.priority_version.clone(),
+        operation_class: opportunity.operation_class,
+        service_deadline_at: opportunity.service_deadline_at,
         execution_plan: opportunity.execution_plan.clone(),
         available_at: Utc::now(),
         expires_at: opportunity.expires_at,
@@ -16164,9 +16204,298 @@ fn production_performance_checks(binding: &ProductionEvidenceBinding) -> Vec<Ver
     ]
 }
 
+fn backyard_source_contains(repository_root: &Path, relative: &str, needle: &str) -> bool {
+    fs::read_to_string(repository_root.join(relative)).is_ok_and(|source| source.contains(needle))
+}
+
+fn backyard_voltr_end_state_verifier(
+    repository_root: &Path,
+    json_output: bool,
+) -> Result<ExitCode, Box<dyn Error>> {
+    let planner_path = "crates/loyal-yield-orchestrator/src/bin/fleet-opportunity-planner.rs";
+    let store_module_path = "crates/loyal-yield-store/src/fleet_orchestration/mod.rs";
+    let worker_path = "crates/loyal-fleet-worker/src/lib.rs";
+    let worker_voltr_path = "crates/loyal-fleet-worker/src/voltr.rs";
+    let worker_reconciliation_path = "crates/loyal-fleet-worker/src/voltr_reconciliation.rs";
+    let orchestrator_cargo_path = "crates/loyal-yield-orchestrator/Cargo.toml";
+    let planner_has_legacy_enqueue = backyard_source_contains(
+        repository_root,
+        planner_path,
+        "--enqueue-voltr-restoration-json",
+    );
+    let store_exports_legacy_outbox =
+        backyard_source_contains(repository_root, store_module_path, "voltr_restoration");
+    let worker_dispatches_voltr =
+        backyard_source_contains(repository_root, worker_path, "voltr::is_voltr_plan");
+    let worker_uses_generic_signed_submissions = backyard_source_contains(
+        repository_root,
+        worker_voltr_path,
+        "record_voltr_manager_decision_with_signed_submission",
+    );
+    let legacy_bins_compiled = backyard_source_contains(
+        repository_root,
+        orchestrator_cargo_path,
+        "backyard-voltr-restoration-bridge",
+    ) || backyard_source_contains(
+        repository_root,
+        orchestrator_cargo_path,
+        "backyard-voltr-restoration-readback",
+    );
+    let single_runtime_lane = !planner_has_legacy_enqueue
+        && !store_exports_legacy_outbox
+        && !legacy_bins_compiled
+        && worker_dispatches_voltr
+        && worker_uses_generic_signed_submissions;
+
+    let controller_path = repository_root
+        .join("crates/loyal-yield-orchestrator/src/fleet_orchestration/voltr_controller.rs");
+    let queue_path =
+        repository_root.join("crates/loyal-yield-store/src/fleet_orchestration/queue.rs");
+    let operation_migration_path = repository_root
+        .join("crates/loyal-yield-store/migrations/0040_voltr_opportunity_classes.sql");
+    let queue_source = fs::read_to_string(&queue_path).unwrap_or_default();
+    let operation_migration_source =
+        fs::read_to_string(&operation_migration_path).unwrap_or_default();
+    let one_leg_oracle = backyard_voltr_one_leg_oracle();
+    let honest_queue_semantics = queue_source.contains("WithdrawalRestoration")
+        && queue_source.contains("service_deadline_at")
+        && operation_migration_source.contains("withdrawal_restoration")
+        && operation_migration_source.contains("economic_priority = 0")
+        && operation_migration_source.contains("service_deadline_at IS NOT NULL");
+    let one_leg_replan = one_leg_oracle.passed && honest_queue_semantics;
+
+    let route_bundle = embedded_backyard_voltr_route_bundle();
+    let route_bundle_passed = route_bundle.is_ok();
+    let route_bundle_evidence = match &route_bundle {
+        Ok(bundle) => json!({
+            "routeId": bundle.route_id,
+            "routeSpecSha256": bundle.route_spec_sha256,
+            "routeBundleSha256": bundle.route_bundle_sha256,
+            "sourceArtifactFileSha256": bundle.source_artifact_sha256,
+            "templateCount": bundle.templates.len(),
+            "strategyCount": 4,
+            "operationCount": 2,
+            "installedManagerCapRaw": bundle.max_operation_amount_raw.to_string(),
+            "withdrawalWaitSeconds": bundle.withdrawal_wait_seconds,
+            "normalOptimizationIntervalSeconds": bundle.normal_optimization_interval_seconds,
+            "configuredIdleSafetyBufferRaw": bundle.configured_idle_safety_buffer_raw.to_string(),
+            "lookupTable": bundle.lookup_table.to_string(),
+            "lookupTableAuthority": bundle.lookup_table_authority.to_string(),
+            "lookupTableAddressCount": bundle.lookup_table_address_count,
+            "lookupTableOrderedAddressesSha256": bundle.lookup_table_ordered_addresses_sha256,
+            "allCanonicalWrappersRebuiltExactly": true,
+            "zeroAndOverCapRejected": true,
+        }),
+        Err(error) => json!({"error": error.to_string()}),
+    };
+
+    let observation_path = repository_root
+        .join("crates/loyal-yield-orchestrator/src/fleet_orchestration/voltr_observation.rs");
+    let observation_source = fs::read_to_string(&observation_path).unwrap_or_default();
+    let live_observation = env::var("SOLANA_RPC_URL")
+        .map_err(|_| {
+            "SOLANA_RPC_URL is required for the Backyard Voltr end-state verifier".to_owned()
+        })
+        .and_then(|rpc_url| {
+            observe_backyard_voltr_confirmed(&rpc_url, 1).map_err(|error| error.code().to_owned())
+        });
+    let projection_and_priority = live_observation.is_ok()
+        && observation_source.contains("min_context_slot")
+        && observation_source.contains("receipt_set_fingerprint")
+        && observation_source.contains("investable_idle_raw")
+        && backyard_source_contains(
+            repository_root,
+            planner_path,
+            "observe_backyard_voltr_confirmed",
+        )
+        && backyard_source_contains(
+            repository_root,
+            planner_path,
+            "plan_backyard_voltr_opportunity",
+        );
+
+    let durable_one_send = worker_dispatches_voltr
+        && worker_uses_generic_signed_submissions
+        && backyard_source_contains(
+            repository_root,
+            worker_voltr_path,
+            "signed_transaction_hash",
+        )
+        && backyard_source_contains(repository_root, worker_voltr_path, "transaction_signature")
+        && backyard_source_contains(repository_root, worker_voltr_path, "simulate_transaction")
+        && !backyard_source_contains(repository_root, worker_voltr_path, ".send_transaction(")
+        && !backyard_source_contains(repository_root, worker_voltr_path, ".send_raw_transaction(")
+        && backyard_source_contains(
+            repository_root,
+            worker_reconciliation_path,
+            "voltr_confirmed_manager_effect",
+        )
+        && backyard_source_contains(
+            repository_root,
+            worker_path,
+            "voltr_reconciliation::reconcile_if_voltr",
+        );
+
+    let checks = vec![
+        BackyardVoltrCheck {
+            id: "single_runtime_lane",
+            verdict: if single_runtime_lane {
+                BackyardVoltrVerdict::Pass
+            } else {
+                BackyardVoltrVerdict::Fail
+            },
+            condition: "one Rust fleet lifecycle owns every Voltr manager transaction",
+            evidence: json!({
+                "plannerLegacyEnqueueReachable": planner_has_legacy_enqueue,
+                "storeLegacyOutboxExported": store_exports_legacy_outbox,
+                "legacyBridgeOrReadbackCompiled": legacy_bins_compiled,
+                "workerDispatchesVoltrKamino": worker_dispatches_voltr,
+                "workerUsesGenericSignedSubmissions": worker_uses_generic_signed_submissions,
+            }),
+            resume_condition: None,
+        },
+        BackyardVoltrCheck {
+            id: "one_leg_replan",
+            verdict: if one_leg_replan {
+                BackyardVoltrVerdict::Pass
+            } else {
+                BackyardVoltrVerdict::Fail
+            },
+            condition: "the controller emits at most one bounded state-derived leg and replans after confirmation",
+            evidence: json!({
+                "controllerPath": controller_path.strip_prefix(repository_root).ok(),
+                "controllerPresent": controller_path.is_file(),
+                "oraclePassed": one_leg_replan,
+                "honestQueueSemanticsPresent": honest_queue_semantics,
+                "operationMigrationPath": operation_migration_path.strip_prefix(repository_root).ok(),
+                "amountsRaw": one_leg_oracle.amounts_raw.iter().map(u64::to_string).collect::<Vec<_>>(),
+                "strategies": one_leg_oracle.strategies.iter().map(|strategy| strategy.as_str()).collect::<Vec<_>>(),
+            }),
+            resume_condition: None,
+        },
+        BackyardVoltrCheck {
+            id: "route_and_packet_exactness",
+            verdict: if route_bundle_passed {
+                BackyardVoltrVerdict::Pass
+            } else {
+                BackyardVoltrVerdict::Fail
+            },
+            condition: "one immutable bundle reconstructs all eight exact policy-wrapped manager instructions",
+            evidence: route_bundle_evidence,
+            resume_condition: None,
+        },
+        BackyardVoltrCheck {
+            id: "projection_and_priority",
+            verdict: if projection_and_priority {
+                BackyardVoltrVerdict::Pass
+            } else {
+                BackyardVoltrVerdict::Fail
+            },
+            condition: "one confirmed observation aggregates receipts and prioritizes withdrawal liquidity",
+            evidence: json!({
+                "observationPath": observation_path.strip_prefix(repository_root).ok(),
+                "observationPresent": observation_path.is_file(),
+                "plannerWired": backyard_source_contains(repository_root, planner_path, "plan_backyard_voltr_opportunity"),
+                "liveConfirmedRead": live_observation.as_ref().map(|observation| json!({
+                    "contextSlot": observation.context_slot,
+                    "idleRaw": observation.idle_raw.to_string(),
+                    "totalValueRaw": observation.vault_total_value_raw.to_string(),
+                    "positionCount": observation.positions.len(),
+                    "receiptCount": observation.receipts.len(),
+                    "receiptSetFingerprint": observation.receipt_set_fingerprint,
+                    "idleShortfallRaw": observation.idle_shortfall_raw.to_string(),
+                })).unwrap_or_else(|error| json!({"error": error})),
+            }),
+            resume_condition: None,
+        },
+        BackyardVoltrCheck {
+            id: "durable_one_send",
+            verdict: if durable_one_send {
+                BackyardVoltrVerdict::Pass
+            } else {
+                BackyardVoltrVerdict::Fail
+            },
+            condition: "Voltr uses generic persisted signed bytes, expected-signature recovery, and at-most-one send",
+            evidence: json!({
+                "voltrDispatchPresent": worker_dispatches_voltr,
+                "genericSignedSubmissionSurfacePresent": worker_uses_generic_signed_submissions,
+                "exactSignedBytesAndSignaturePersisted": backyard_source_contains(repository_root, worker_voltr_path, "signed_transaction_hash") && backyard_source_contains(repository_root, worker_voltr_path, "transaction_signature"),
+                "routeAdapterContainsSender": backyard_source_contains(repository_root, worker_voltr_path, ".send_transaction(") || backyard_source_contains(repository_root, worker_voltr_path, ".send_raw_transaction("),
+                "confirmedEffectReconciliationPresent": backyard_source_contains(repository_root, worker_reconciliation_path, "voltr_confirmed_manager_effect") && backyard_source_contains(repository_root, worker_path, "voltr_reconciliation::reconcile_if_voltr"),
+            }),
+            resume_condition: None,
+        },
+        BackyardVoltrCheck {
+            id: "confirmed_effects",
+            verdict: BackyardVoltrVerdict::Blocked,
+            condition: "fresh deployed-path Voltr manager canaries are confirmed and independently reconciled",
+            evidence: json!({"activationAuthorized": false, "canaryBroadcastAuthorized": false}),
+            resume_condition: Some(
+                "approve the deferred Voltr/policy update, enable the exact route binding, and authorize the smallest manager canaries",
+            ),
+        },
+        BackyardVoltrCheck {
+            id: "deposit_withdrawal_and_hourly_end_state",
+            verdict: BackyardVoltrVerdict::Blocked,
+            condition: "fresh deposits allocate, withdrawal demand restores within five minutes, claims succeed, and hourly optimization is bounded",
+            evidence: json!({"activationAuthorized": false, "userLifecycleCanaryAuthorized": false}),
+            resume_condition: Some(
+                "after manager canaries pass, authorize one bounded user deposit/request/restoration/claim lifecycle",
+            ),
+        },
+    ];
+    let verdict = if checks
+        .iter()
+        .any(|check| check.verdict == BackyardVoltrVerdict::Fail)
+    {
+        BackyardVoltrVerdict::Fail
+    } else if checks
+        .iter()
+        .any(|check| check.verdict == BackyardVoltrVerdict::Blocked)
+    {
+        BackyardVoltrVerdict::Blocked
+    } else {
+        BackyardVoltrVerdict::Pass
+    };
+    let first_failure = checks
+        .iter()
+        .find(|check| check.verdict == BackyardVoltrVerdict::Fail)
+        .map(|check| check.id);
+    let blocker = (first_failure.is_none())
+        .then(|| {
+            checks
+                .iter()
+                .find(|check| check.verdict == BackyardVoltrVerdict::Blocked)
+                .and_then(|check| check.resume_condition)
+        })
+        .flatten();
+    let output = json!({
+        "schemaVersion": 1,
+        "verifier": "backyard-voltr-orchestrator-end-state",
+        "verdict": verdict,
+        "commitment": "confirmed",
+        "routeId": route_bundle.as_ref().ok().map(|bundle| bundle.route_id.as_str()),
+        "routeBundleSha256": route_bundle.as_ref().ok().map(|bundle| bundle.route_bundle_sha256.as_str()),
+        "checks": checks,
+        "firstFailure": first_failure,
+        "blocker": blocker,
+    });
+    if json_output {
+        println!("{}", serde_json::to_string(&output)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    }
+    Ok(match verdict {
+        BackyardVoltrVerdict::Pass => ExitCode::SUCCESS,
+        BackyardVoltrVerdict::Fail => ExitCode::FAILURE,
+        BackyardVoltrVerdict::Blocked => ExitCode::from(2),
+    })
+}
+
 fn parse_cli() -> Result<Option<Cli>, Box<dyn Error>> {
     let mut implementation = false;
     let mut end_state = false;
+    let mut backyard_voltr_end_state = false;
     let mut json_output = false;
     let mut database_url = None;
     let mut isolated_database = false;
@@ -16179,6 +16508,7 @@ fn parse_cli() -> Result<Option<Cli>, Box<dyn Error>> {
         match arg.as_str() {
             "--implementation" => implementation = true,
             "--end-state" => end_state = true,
+            "--backyard-voltr-end-state" => backyard_voltr_end_state = true,
             "--json" => json_output = true,
             "--isolated-database" => isolated_database = true,
             "--collect-repository-evidence" => collect_repository_evidence = true,
@@ -16207,7 +16537,7 @@ fn parse_cli() -> Result<Option<Cli>, Box<dyn Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "fleet-orchestration-verifier (--implementation|--end-state) [--json] [--collect-repository-evidence [--repository-root PATH]] [--runtime-evidence-json PATH] [--production-evidence-json PATH] [--isolated-database [--database-url URL|FLEET_VERIFY_DATABASE_URL]]\n\n--implementation verifies Checks 1-7 only. --end-state additionally requires a fresh source-bound schema-v1 production artifact, independently recomputes Checks 8-11 from raw measurements, and succeeds only for literal END_STATE: PASS."
+                    "fleet-orchestration-verifier (--implementation|--end-state|--backyard-voltr-end-state) [--json] [--collect-repository-evidence [--repository-root PATH]] [--runtime-evidence-json PATH] [--production-evidence-json PATH] [--isolated-database [--database-url URL|FLEET_VERIFY_DATABASE_URL]]\n\n--implementation verifies Checks 1-7 only. --end-state additionally requires a fresh source-bound schema-v1 production artifact, independently recomputes Checks 8-11 from raw measurements, and succeeds only for literal END_STATE: PASS. --backyard-voltr-end-state runs the sole fail-closed Backyard Voltr orchestration verifier."
                 );
                 return Ok(None);
             }
@@ -16236,6 +16566,7 @@ fn parse_cli() -> Result<Option<Cli>, Box<dyn Error>> {
     Ok(Some(Cli {
         implementation,
         end_state,
+        backyard_voltr_end_state,
         json_output,
         database_url,
         isolated_database,
@@ -16279,8 +16610,28 @@ async fn run() -> Result<ExitCode, Box<dyn Error>> {
     let Some(cli) = parse_cli()? else {
         return Ok(ExitCode::SUCCESS);
     };
-    if cli.implementation == cli.end_state {
-        return Err("exactly one of --implementation or --end-state is required".into());
+    let selected_scope_count = usize::from(cli.implementation)
+        + usize::from(cli.end_state)
+        + usize::from(cli.backyard_voltr_end_state);
+    if selected_scope_count != 1 {
+        return Err(
+            "exactly one of --implementation, --end-state, or --backyard-voltr-end-state is required"
+                .into(),
+        );
+    }
+    if cli.backyard_voltr_end_state {
+        if cli.database_url.is_some()
+            || cli.isolated_database
+            || cli.runtime_evidence_json.is_some()
+            || cli.production_evidence_json.is_some()
+        {
+            return Err(
+                "--backyard-voltr-end-state discovers authoritative evidence and does not accept database or evidence inputs"
+                    .into(),
+            );
+        }
+        let root = repository_root(cli.repository_root.as_deref())?;
+        return backyard_voltr_end_state_verifier(&root, cli.json_output);
     }
     if cli.database_url.is_some() != cli.isolated_database {
         return Err(

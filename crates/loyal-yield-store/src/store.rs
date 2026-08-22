@@ -39,6 +39,7 @@ const MIGRATION_0038: &str =
     include_str!("../migrations/0038_durable_autodeposit_confirmation.sql");
 const MIGRATION_0039: &str =
     include_str!("../migrations/0039_unbroadcast_cross_mint_expiry_check.sql");
+const MIGRATION_0040: &str = include_str!("../migrations/0040_voltr_opportunity_classes.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -421,6 +422,12 @@ impl NeonSqlClient {
                 version: 39,
                 name: "unbroadcast_cross_mint_expiry_check",
                 sql: MIGRATION_0039,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 40,
+                name: "voltr_opportunity_classes",
+                sql: MIGRATION_0040,
                 expected_checksum: None,
             },
         ] {
@@ -2143,6 +2150,105 @@ impl NeonSqlClient {
         }
         tx.commit().await?;
         Ok((PlanOutcome::planned(vault_id, decision), submission))
+    }
+
+    /// Atomically links one exact Voltr manager transaction to the existing
+    /// generic decision/submission lifecycle. Voltr state is revalidated by
+    /// the route adapter; this method deliberately creates no second outbox,
+    /// movement graph, or target-capacity reservation.
+    pub async fn record_voltr_manager_decision_with_signed_submission(
+        &self,
+        opportunity_lease: &RebalanceOpportunityLease,
+        signed_input: SignedRouteSubmissionInput,
+    ) -> Result<(PlanOutcome, SignedRouteSubmissionRecord), OrchestratorError> {
+        let opportunity = &opportunity_lease.opportunity;
+        if opportunity
+            .execution_plan
+            .get("kind")
+            .and_then(Value::as_str)
+            != Some("voltr_kamino")
+            || signed_input.decision_id.is_some()
+            || signed_input.opportunity_id != opportunity.id
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "atomic Voltr handoff requires one unlinked voltr_kamino signed submission"
+                    .to_owned(),
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        let _vault = fetch_managed_vault_for_update(&mut tx, opportunity.vault_id).await?;
+        if active_decision_exists(&mut tx, opportunity.vault_id).await? {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "vault {} acquired an active decision before atomic Voltr handoff",
+                opportunity.vault_id
+            )));
+        }
+        let planned = PlannedDecision {
+            source_snapshot_id: opportunity.source_snapshot_id,
+            source_reserve: opportunity.source_reserve.clone(),
+            target_reserve: opportunity.target_reserve.clone(),
+            liquidity_mint: Some(opportunity.liquidity_mint.clone()),
+            source_liquidity_mint: opportunity.source_liquidity_mint.clone(),
+            target_liquidity_mint: opportunity.target_liquidity_mint.clone(),
+            amount_raw: opportunity.amount_raw,
+            source_apy_bps: opportunity.source_apy_bps,
+            target_apy_bps: opportunity.target_apy_bps,
+            estimated_edge_bps: opportunity.estimated_edge_bps,
+            route_amount_semantics: "voltr_manager_asset_amount".to_owned(),
+            source_amount_semantics: Some("voltr_confirmed_position_value".to_owned()),
+            source_collateral_amount_raw: None,
+            redeemable_source_liquidity_amount_raw: None,
+            idle_vault_liquidity_amount_raw: None,
+            decision_reason: DecisionReason::VoltrManagerOperation,
+            execution_plan: opportunity.execution_plan.clone(),
+        };
+        let mut submission = NeonSqlClient::persist_signed_route_submission_in_connection(
+            &mut tx,
+            opportunity_lease,
+            &signed_input,
+        )
+        .await?;
+        let row = insert_planned_decision(
+            &mut tx,
+            opportunity.vault_id,
+            &planned,
+            opportunity.estimated_cost_lamports,
+        )
+        .await?;
+        let decision = from_row_to_decision(row)?;
+        if decision.status != DecisionStatus::Planned {
+            return Err(OrchestratorError::StoreInvariant(
+                "atomic Voltr handoff matched a non-planned decision".to_owned(),
+            ));
+        }
+        let linked_decision_id: Option<i64> = sqlx::query_scalar(
+            "SELECT decision_id FROM loyal_yield.signed_route_submissions WHERE id = $1",
+        )
+        .bind(submission.id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if linked_decision_id != Some(decision.id.as_i64()) {
+            return Err(OrchestratorError::StoreInvariant(
+                "atomic Voltr handoff did not link its signed submission".to_owned(),
+            ));
+        }
+        submission.decision_id = Some(decision.id);
+        if let Err(error) = NeonSqlClient::assert_signed_route_publication_lifetime_in_connection(
+            &mut tx,
+            opportunity.id,
+            decision.id,
+            submission.id,
+        )
+        .await
+        {
+            tx.rollback().await?;
+            return Err(error);
+        }
+        tx.commit().await?;
+        Ok((
+            PlanOutcome::planned(opportunity.vault_id, decision),
+            submission,
+        ))
     }
 
     pub async fn prepare_same_mint_rebalance(

@@ -1,4 +1,6 @@
 mod cross_mint;
+mod voltr;
+mod voltr_reconciliation;
 
 use std::process::Command;
 use std::{
@@ -3333,6 +3335,9 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
     client
         .require_schema_migration(30, "fused_queue_accrual_binding")
         .await?;
+    client
+        .require_schema_migration(40, "voltr_opportunity_classes")
+        .await?;
     // The commit-lifetime fences must carry their dedicated SQLSTATE before
     // this worker can tell an expected end-of-epoch rejection from a real
     // persistence fault.
@@ -3618,6 +3623,59 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                         defer_cross_mint_opportunity_after_error(&client, &lease, &error).await?;
                         continue;
                     }
+                }
+                // Voltr manager opportunities must never fall through to the
+                // direct-Kamino same-mint executor. Admit and reconstruct the
+                // canonical wrapper first; the generic signed-submission
+                // handoff remains the only allowed persistence/send boundary.
+                // The adapter never submits directly; the generic sender and
+                // confirmer own publication and recovery.
+                if voltr::is_voltr_plan(&lease.opportunity.execution_plan) {
+                    let execute = lease.claim_kind == RebalanceOpportunityClaimKind::Execute;
+                    let result = match voltr::run(
+                        route_runtime.rpc.as_ref(),
+                        &client,
+                        &lease,
+                        execute,
+                    )
+                    .await
+                    {
+                        Ok(voltr::RunResult::Ready) => fleet_worker_voltr_result(
+                            lease,
+                            SameMintRouteExecutionState::Ready,
+                            None,
+                        ),
+                        Ok(voltr::RunResult::SubmissionQueued {
+                            signature,
+                            submission_id,
+                        }) => fleet_worker_voltr_result(
+                            lease,
+                            SameMintRouteExecutionState::SubmissionQueued,
+                            Some(format!(
+                                "Voltr signed submission {submission_id} queued with signature {signature}"
+                            )),
+                        ),
+                        Err(error) => fleet_worker_retry_result(
+                            lease,
+                            None,
+                            format!("Voltr route admission/execution failed closed: {error}"),
+                        ),
+                    };
+                    match finish_fleet_worker_task(&client, result).await {
+                        Ok(()) => completed = completed.saturating_add(1),
+                        Err(error) => {
+                            failed = failed.saturating_add(1);
+                            eprintln!(
+                                "{}",
+                                serde_json::to_string(&json!({
+                                    "status": "voltr_opportunity_terminal_transition_failed",
+                                    "error": redacted_external_error(&error.to_string()),
+                                    "transactionsSent": false,
+                                }))?
+                            );
+                        }
+                    }
+                    continue;
                 }
                 let fused_execute_permit =
                     if lease.claim_kind == RebalanceOpportunityClaimKind::Revalidate {
@@ -3977,6 +4035,9 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
         .await?;
     client
         .require_schema_migration(30, "fused_queue_accrual_binding")
+        .await?;
+    client
+        .require_schema_migration(40, "voltr_opportunity_classes")
         .await?;
     let mut wakeup_listener =
         DurablePgWakeupListener::new("loyal_yield_route_reconciliation_wakeup")?;
@@ -5555,6 +5616,20 @@ async fn reconcile_signed_route_submission(
             }
         };
     }
+    if let Some(reconciled_slot) = voltr_reconciliation::reconcile_if_voltr(&runtime, &lease)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return runtime
+            .client
+            .advance_signed_route_submission(
+                &lease,
+                SignedRouteSubmissionAdvance::Reconciled { reconciled_slot },
+            )
+            .await
+            .map(|_| true)
+            .map_err(|error| error.to_string());
+    }
     let result = reconcile_same_mint_submission_effect(&runtime, &lease).await;
     match result {
         Ok(reconciled_slot) => runtime
@@ -5690,6 +5765,21 @@ async fn inspect_expired_route(
         .rebalance_opportunity(submission.opportunity_id)
         .await?
         .ok_or("expiry-check opportunity no longer exists")?;
+    if voltr::is_voltr_plan(&opportunity.execution_plan) {
+        let (absent, observed_slot) = voltr_reconciliation::effect_absent_at_or_after(
+            runtime,
+            &opportunity,
+            u64::try_from(effect_check_slot)?,
+        )
+        .await?;
+        return Ok(if absent {
+            ExpiredRouteCheckOutcome::EffectAbsent { observed_slot }
+        } else {
+            ExpiredRouteCheckOutcome::EffectAmbiguous {
+                detail: "expired_voltr_manager_effect_present_or_chain_state_ambiguous".to_owned(),
+            }
+        });
+    }
     let vault = reconciliation_vault(runtime, &opportunity).await?;
     let minimum_slot = u64::try_from(effect_check_slot)?;
     let (source_kind, _) = validated_opportunity_route_source_contract(&opportunity)?;
@@ -6344,6 +6434,44 @@ fn fleet_worker_retry_result(
         },
         |request| request.outcome(SameMintRouteExecutionState::Retry, Some(reason.clone())),
     );
+    FleetWorkerTaskResult { lease, outcome }
+}
+
+fn fleet_worker_voltr_result(
+    lease: RebalanceOpportunityLease,
+    state: SameMintRouteExecutionState,
+    reason: Option<String>,
+) -> FleetWorkerTaskResult {
+    let plan = &lease.opportunity.execution_plan;
+    let source_kind = if plan.get("source_kind").and_then(Value::as_str) == Some("voltr_idle") {
+        SameMintRouteSourceKind::IdleVaultUsdc
+    } else {
+        SameMintRouteSourceKind::ReservePosition
+    };
+    let outcome = SameMintRouteExecutionOutcome {
+        state,
+        opportunity_id: lease.opportunity.id,
+        source_kind,
+        settings: optional_plan_string(plan, "settings").unwrap_or_default(),
+        vault_index: optional_plan_i64(plan, "vault_index")
+            .and_then(|value| i16::try_from(value).ok())
+            .unwrap_or_default(),
+        source_reserve: lease.opportunity.source_reserve.clone(),
+        target_reserve: lease.opportunity.target_reserve.clone(),
+        writes_decision: matches!(state, SameMintRouteExecutionState::SubmissionQueued),
+        sends_transactions: false,
+        reason,
+        route_fingerprint: lease.opportunity.route_fingerprint.clone(),
+        requirements_fingerprint: lease.opportunity.requirements_fingerprint.clone(),
+        provisioning_request_id: None,
+        readiness_evidence: Some(json!({
+            "routeKind": voltr::VOLTR_KAMINO_KIND,
+            "signedSubmissionLifecycle": "generic",
+            "transactionsSent": false,
+        })),
+        writable_account_keys: Vec::new(),
+        conflict_account_keys: Vec::new(),
+    };
     FleetWorkerTaskResult { lease, outcome }
 }
 
