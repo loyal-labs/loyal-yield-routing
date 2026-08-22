@@ -939,10 +939,15 @@ pub fn embedded_backyard_voltr_route_bundle(
         templates,
     };
     for template in &bundle.templates {
+        let canonical_amount_raw = u64::from_le_bytes(
+            template.inner_instruction.data[8..16]
+                .try_into()
+                .expect("validated manager instruction has an eight-byte amount"),
+        );
         let rebuilt = bundle.manager_instruction(
             template.strategy,
             template.operation,
-            bundle.max_operation_amount_raw,
+            canonical_amount_raw,
         )?;
         require_bundle(
             rebuilt == template.canonical_manager_instruction,
