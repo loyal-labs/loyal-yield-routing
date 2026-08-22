@@ -309,6 +309,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0050_autoswap_opt_in_realtime.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 52,
+        name: "voltr_opportunity_classes",
+        sql: include_str!("../../../loyal-yield-store/migrations/0052_voltr_opportunity_classes.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

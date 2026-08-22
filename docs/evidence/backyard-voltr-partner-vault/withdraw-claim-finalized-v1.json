@@ -1,0 +1,1113 @@
+{
+  "verdict": "PARTNER_WITHDRAW_CLAIM_FINALIZED_AND_VERIFIED",
+  "broadcast": true,
+  "intent": {
+    "schemaVersion": 1,
+    "kind": "runtime",
+    "operation": "withdraw-claim",
+    "signerRole": "user",
+    "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+    "amountRaw": "499999000",
+    "routeId": "loyal-backyard-main-usdc-v1",
+    "routeSpecSha256": "d73fb99b00c57153923f33560a7db13df02aba8b4c2a0b0fd181a893c8735f88",
+    "nonce": "withdraw-claim:FN6sJ1eNZBSgEMgrWWcswbBcNSwF1KyEgNedSP5kxqCc:post-deadline",
+    "prestateSlot": "440584228",
+    "expiresAtUnix": "1787275484",
+    "canonicalMessageSha256": "a0d02e858c465790f00f40a688bb36c202b2be03f9025307943d3b58cbb90373"
+  },
+  "intentSha256": "989d8698871c0080952417026c6910fe8cf96c2300c244010abbc40f853bb48d",
+  "preflight": {
+    "verdict": "PARTNER_WITHDRAW_CLAIM_SIMULATION_PASS",
+    "broadcast": false,
+    "readyForBroadcast": true,
+    "routeSpecSha256": "d73fb99b00c57153923f33560a7db13df02aba8b4c2a0b0fd181a893c8735f88",
+    "intentSha256": "989d8698871c0080952417026c6910fe8cf96c2300c244010abbc40f853bb48d",
+    "transaction": {
+      "operation": "withdraw-claim",
+      "mode": "post-deadline",
+      "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+      "receipt": "FN6sJ1eNZBSgEMgrWWcswbBcNSwF1KyEgNedSP5kxqCc",
+      "requestSignature": "5fe1appbYsYmTFQVbZAxmcmtyQoRABBn2K1hFk2qKw5zf1b2HU51fLYz1AWMg3bc3bWwuBK36nXYVPzMJMgkwn47",
+      "requestSlot": 440582280,
+      "withdrawableFromTs": "1787274961",
+      "amountLpEscrowed": "499999000",
+      "amountAssetToWithdrawDecimalBits": "140737206880351289344",
+      "packetBytes": 544,
+      "feeLamports": 5000,
+      "expectedSignature": "54f4fY1H6SeJH7ZQghi7hCMWKskC5t5G7xj7gxN9KggV9MYWJfY8XtgX8DX36LvK8dWabd3ywpqTn3UJNK1GGHRD",
+      "instruction": {
+        "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "data": "hwfteJVeXwc=",
+        "dataBase64": "hwfteJVeXwc=",
+        "dataSha256": "d8d6c6330d8ad60fe758f9b63ff1bd9bf53d08ed6074de43b6703d4c7881d104",
+        "dataLength": 8,
+        "accounts": [
+          {
+            "index": 0,
+            "label": "userTransferAuthority",
+            "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+            "signer": true,
+            "writable": true
+          },
+          {
+            "index": 1,
+            "label": "protocol",
+            "address": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 2,
+            "label": "vault",
+            "address": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 3,
+            "label": "vaultAssetMint",
+            "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 4,
+            "label": "vaultLpMint",
+            "address": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 5,
+            "label": "requestWithdrawLpAta",
+            "address": "3ZSDbfot1dFCDxCpREfgbmXdagGHEAGBTa131MW6jK33",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 6,
+            "label": "vaultAssetIdleAta",
+            "address": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 7,
+            "label": "vaultAssetIdleAuth",
+            "address": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 8,
+            "label": "userAssetAta",
+            "address": "8SoPTUZ4tcSXHJ3M4WMV6sMCAiAb26S2H51h34Pb24Ce",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 9,
+            "label": "requestWithdrawVaultReceipt",
+            "address": "FN6sJ1eNZBSgEMgrWWcswbBcNSwF1KyEgNedSP5kxqCc",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 10,
+            "label": "assetTokenProgram",
+            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 11,
+            "label": "lpTokenProgram",
+            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 12,
+            "label": "systemProgram",
+            "address": "11111111111111111111111111111111",
+            "signer": false,
+            "writable": false
+          }
+        ]
+      },
+      "canonicalMessageSha256": "a0d02e858c465790f00f40a688bb36c202b2be03f9025307943d3b58cbb90373"
+    },
+    "simulation": {
+      "prestateSlot": 440584228,
+      "contextSlot": 440584228,
+      "err": null,
+      "unitsConsumed": 37781,
+      "logsSha256": "9f351f85060c5f3a8839ca9d4c11cd45bacbb8a905666f8ab57e36e035b334d8"
+    },
+    "failedGateCount": 0,
+    "gates": [
+      {
+        "name": "withdraw claim SOL fee bounded",
+        "pass": true,
+        "observed": 5000,
+        "expected": "1..100000 lamports"
+      },
+      {
+        "name": "claim SOL delta is fee net receipt rent refund",
+        "pass": true,
+        "observed": -1665400,
+        "expected": {
+          "simulationBank": -1670400,
+          "finalizedTransaction": -1665400,
+          "feeLamports": 5000,
+          "createdRentLamports": 0,
+          "refundRentLamports": 1670400
+        }
+      },
+      {
+        "name": "claim bank time is before/after receipt deadline",
+        "pass": true,
+        "observed": 1787275167,
+        "expected": ">= 1787274961"
+      },
+      {
+        "name": "claim simulation succeeded",
+        "pass": true,
+        "observed": null,
+        "expected": null
+      },
+      {
+        "name": "one exact withdraw event",
+        "pass": true,
+        "observed": {
+          "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "userAmountAssetWithdrawn": "499999",
+          "userAmountLpBurned": "499999000",
+          "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+          "vaultAssetMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "vaultAssetTotalValueUnlockedBefore": "500000",
+          "vaultAssetTotalValueBefore": "500000",
+          "vaultAssetTotalValueAfter": "1",
+          "vaultLpSupplyInclFeesBefore": "500000000",
+          "vaultLpSupplyInclFeesAfter": "1000",
+          "vaultLpTotalAccumulatedFeesBefore": "0",
+          "vaultLpTotalAccumulatedFeesAfter": "0",
+          "vaultLpDeadWeightBefore": "1000",
+          "vaultLpDeadWeightAfter": "1000",
+          "vaultHighestAssetPerLpDecimalBitsBefore": "281474976710",
+          "vaultHighestAssetPerLpDecimalBitsAfter": "281474976710",
+          "withdrawnTs": "1787275167"
+        },
+        "expected": "WithdrawVaultEvent"
+      },
+      {
+        "name": "withdraw event exact route and amount",
+        "pass": true,
+        "observed": {
+          "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "userAmountAssetWithdrawn": "499999",
+          "userAmountLpBurned": "499999000",
+          "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+          "vaultAssetMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "vaultAssetTotalValueUnlockedBefore": "500000",
+          "vaultAssetTotalValueBefore": "500000",
+          "vaultAssetTotalValueAfter": "1",
+          "vaultLpSupplyInclFeesBefore": "500000000",
+          "vaultLpSupplyInclFeesAfter": "1000",
+          "vaultLpTotalAccumulatedFeesBefore": "0",
+          "vaultLpTotalAccumulatedFeesAfter": "0",
+          "vaultLpDeadWeightBefore": "1000",
+          "vaultLpDeadWeightAfter": "1000",
+          "vaultHighestAssetPerLpDecimalBitsBefore": "281474976710",
+          "vaultHighestAssetPerLpDecimalBitsAfter": "281474976710",
+          "withdrawnTs": "1787275167"
+        },
+        "expected": {
+          "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+          "amountLpBurned": "499999000",
+          "amountAssetWithdrawn": "499999"
+        }
+      },
+      {
+        "name": "receipt closed",
+        "pass": true,
+        "observed": null,
+        "expected": null
+      },
+      {
+        "name": "escrow LP retained empty for reuse",
+        "pass": true,
+        "observed": "0",
+        "expected": "0"
+      },
+      {
+        "name": "user receives exact quoted USDC",
+        "pass": true,
+        "observed": "499999",
+        "expected": "499999"
+      },
+      {
+        "name": "idle USDC pays exact quote",
+        "pass": true,
+        "observed": "-499999",
+        "expected": "-499999"
+      },
+      {
+        "name": "vault total value decreases by quote",
+        "pass": true,
+        "observed": "-499999",
+        "expected": "-499999"
+      },
+      {
+        "name": "LP supply burns escrow amount",
+        "pass": true,
+        "observed": "-499999000",
+        "expected": "-499999000"
+      },
+      {
+        "name": "unrelated user LP account unchanged",
+        "pass": true,
+        "observed": null,
+        "expected": null
+      },
+      {
+        "name": "receipt prestate escrow burns to retained empty ATA",
+        "pass": true,
+        "observed": {
+          "before": "499999000",
+          "after": "0"
+        },
+        "expected": {
+          "before": "499999000",
+          "after": "0"
+        }
+      },
+      {
+        "name": "claim escrow LP rent prestate is exact",
+        "pass": true,
+        "observed": 2039280,
+        "expected": 2039280
+      },
+      {
+        "name": "claim receipt rent prestate is exact",
+        "pass": true,
+        "observed": 1670400,
+        "expected": 1670400
+      },
+      {
+        "name": "claim escrow LP account retains exact rent for reuse",
+        "pass": true,
+        "observed": 2039280,
+        "expected": 2039280
+      },
+      {
+        "name": "claim receipt account closes",
+        "pass": true,
+        "observed": null,
+        "expected": null
+      },
+      {
+        "name": "prestate deployment: deployment count",
+        "pass": true,
+        "observed": 5,
+        "expected": 5
+      },
+      {
+        "name": "prestate deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 program id",
+        "pass": true,
+        "observed": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "expected": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+      },
+      {
+        "name": "prestate deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 program-data address",
+        "pass": true,
+        "observed": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+        "expected": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az"
+      },
+      {
+        "name": "prestate deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 deployed slot",
+        "pass": true,
+        "observed": "433299444",
+        "expected": "433299444"
+      },
+      {
+        "name": "prestate deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 executable hash",
+        "pass": true,
+        "observed": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd",
+        "expected": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd"
+      },
+      {
+        "name": "prestate deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR program id",
+        "pass": true,
+        "observed": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+        "expected": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
+      },
+      {
+        "name": "prestate deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR program-data address",
+        "pass": true,
+        "observed": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR",
+        "expected": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR"
+      },
+      {
+        "name": "prestate deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR deployed slot",
+        "pass": true,
+        "observed": "406317018",
+        "expected": "406317018"
+      },
+      {
+        "name": "prestate deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR executable hash",
+        "pass": true,
+        "observed": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0",
+        "expected": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0"
+      },
+      {
+        "name": "prestate deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD program id",
+        "pass": true,
+        "observed": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "expected": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+      },
+      {
+        "name": "prestate deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD program-data address",
+        "pass": true,
+        "observed": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA",
+        "expected": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA"
+      },
+      {
+        "name": "prestate deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD deployed slot",
+        "pass": true,
+        "observed": "440486775",
+        "expected": "440486775"
+      },
+      {
+        "name": "prestate deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD executable hash",
+        "pass": true,
+        "observed": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b",
+        "expected": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+      },
+      {
+        "name": "prestate deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr program id",
+        "pass": true,
+        "observed": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+        "expected": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+      },
+      {
+        "name": "prestate deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr program-data address",
+        "pass": true,
+        "observed": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9",
+        "expected": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9"
+      },
+      {
+        "name": "prestate deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr deployed slot",
+        "pass": true,
+        "observed": "379693642",
+        "expected": "379693642"
+      },
+      {
+        "name": "prestate deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr executable hash",
+        "pass": true,
+        "observed": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564",
+        "expected": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564"
+      },
+      {
+        "name": "prestate deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG program id",
+        "pass": true,
+        "observed": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+        "expected": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      {
+        "name": "prestate deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG program-data address",
+        "pass": true,
+        "observed": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T",
+        "expected": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T"
+      },
+      {
+        "name": "prestate deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG deployed slot",
+        "pass": true,
+        "observed": "383815455",
+        "expected": "383815455"
+      },
+      {
+        "name": "prestate deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG executable hash",
+        "pass": true,
+        "observed": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0",
+        "expected": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0"
+      },
+      {
+        "name": "simulation deployment: deployment count",
+        "pass": true,
+        "observed": 5,
+        "expected": 5
+      },
+      {
+        "name": "simulation deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 program id",
+        "pass": true,
+        "observed": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "expected": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+      },
+      {
+        "name": "simulation deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 program-data address",
+        "pass": true,
+        "observed": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+        "expected": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az"
+      },
+      {
+        "name": "simulation deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 deployed slot",
+        "pass": true,
+        "observed": "433299444",
+        "expected": "433299444"
+      },
+      {
+        "name": "simulation deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 executable hash",
+        "pass": true,
+        "observed": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd",
+        "expected": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd"
+      },
+      {
+        "name": "simulation deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR program id",
+        "pass": true,
+        "observed": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+        "expected": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
+      },
+      {
+        "name": "simulation deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR program-data address",
+        "pass": true,
+        "observed": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR",
+        "expected": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR"
+      },
+      {
+        "name": "simulation deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR deployed slot",
+        "pass": true,
+        "observed": "406317018",
+        "expected": "406317018"
+      },
+      {
+        "name": "simulation deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR executable hash",
+        "pass": true,
+        "observed": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0",
+        "expected": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0"
+      },
+      {
+        "name": "simulation deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD program id",
+        "pass": true,
+        "observed": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "expected": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+      },
+      {
+        "name": "simulation deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD program-data address",
+        "pass": true,
+        "observed": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA",
+        "expected": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA"
+      },
+      {
+        "name": "simulation deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD deployed slot",
+        "pass": true,
+        "observed": "440486775",
+        "expected": "440486775"
+      },
+      {
+        "name": "simulation deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD executable hash",
+        "pass": true,
+        "observed": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b",
+        "expected": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+      },
+      {
+        "name": "simulation deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr program id",
+        "pass": true,
+        "observed": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+        "expected": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+      },
+      {
+        "name": "simulation deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr program-data address",
+        "pass": true,
+        "observed": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9",
+        "expected": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9"
+      },
+      {
+        "name": "simulation deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr deployed slot",
+        "pass": true,
+        "observed": "379693642",
+        "expected": "379693642"
+      },
+      {
+        "name": "simulation deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr executable hash",
+        "pass": true,
+        "observed": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564",
+        "expected": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564"
+      },
+      {
+        "name": "simulation deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG program id",
+        "pass": true,
+        "observed": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+        "expected": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      {
+        "name": "simulation deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG program-data address",
+        "pass": true,
+        "observed": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T",
+        "expected": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T"
+      },
+      {
+        "name": "simulation deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG deployed slot",
+        "pass": true,
+        "observed": "383815455",
+        "expected": "383815455"
+      },
+      {
+        "name": "simulation deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG executable hash",
+        "pass": true,
+        "observed": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0",
+        "expected": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0"
+      },
+      {
+        "name": "privileged deployments unchanged across simulation",
+        "pass": true,
+        "observed": [
+          {
+            "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+            "programDataAddress": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+            "deployedSlot": "433299444",
+            "executableSha256": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd"
+          },
+          {
+            "programId": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+            "programDataAddress": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR",
+            "deployedSlot": "406317018",
+            "executableSha256": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0"
+          },
+          {
+            "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "programDataAddress": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA",
+            "deployedSlot": "440486775",
+            "executableSha256": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+          },
+          {
+            "programId": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+            "programDataAddress": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9",
+            "deployedSlot": "379693642",
+            "executableSha256": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564"
+          },
+          {
+            "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "programDataAddress": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T",
+            "deployedSlot": "383815455",
+            "executableSha256": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0"
+          }
+        ],
+        "expected": [
+          {
+            "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+            "programDataAddress": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+            "deployedSlot": "433299444",
+            "executableSha256": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd"
+          },
+          {
+            "programId": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+            "programDataAddress": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR",
+            "deployedSlot": "406317018",
+            "executableSha256": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0"
+          },
+          {
+            "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "programDataAddress": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA",
+            "deployedSlot": "440486775",
+            "executableSha256": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+          },
+          {
+            "programId": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+            "programDataAddress": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9",
+            "deployedSlot": "379693642",
+            "executableSha256": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564"
+          },
+          {
+            "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "programDataAddress": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T",
+            "deployedSlot": "383815455",
+            "executableSha256": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0"
+          }
+        ]
+      },
+      {
+        "name": "one canonical Voltr claim instruction",
+        "pass": true,
+        "observed": {
+          "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+          "accountCount": 13,
+          "dataLength": 8,
+          "dataSha256": "d8d6c6330d8ad60fe758f9b63ff1bd9bf53d08ed6074de43b6703d4c7881d104"
+        },
+        "expected": {
+          "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+          "accountCount": 13
+        }
+      },
+      {
+        "name": "request origin is exact 600-second Voltr request",
+        "pass": true,
+        "observed": {
+          "signature": "5fe1appbYsYmTFQVbZAxmcmtyQoRABBn2K1hFk2qKw5zf1b2HU51fLYz1AWMg3bc3bWwuBK36nXYVPzMJMgkwn47",
+          "slot": 440582280,
+          "event": {
+            "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+            "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+            "requestedAmount": "499999000",
+            "isAmountInLp": true,
+            "isWithdrawAll": true,
+            "requestWithdrawVaultReceipt": "FN6sJ1eNZBSgEMgrWWcswbBcNSwF1KyEgNedSP5kxqCc",
+            "amountLpEscrowed": "499999000",
+            "amountAssetToWithdrawDecimalBits": "140737206880351289344",
+            "withdrawableFromTs": "1787274961",
+            "vaultAssetMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "vaultAssetTotalValueUnlocked": "500000",
+            "vaultAssetTotalValue": "500000",
+            "vaultLpSupplyInclFees": "500000000",
+            "requestedTs": "1787274361"
+          }
+        },
+        "expected": "finalized request event bound to receipt"
+      }
+    ],
+    "prestateContextSlot": 440584222,
+    "bankBlockTime": 1787275165,
+    "deployments": {
+      "before": [
+        {
+          "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+          "programDataAddress": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+          "deployedSlot": "433299444",
+          "executableSha256": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd"
+        },
+        {
+          "programId": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+          "programDataAddress": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR",
+          "deployedSlot": "406317018",
+          "executableSha256": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0"
+        },
+        {
+          "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "programDataAddress": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA",
+          "deployedSlot": "440486775",
+          "executableSha256": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+        },
+        {
+          "programId": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+          "programDataAddress": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9",
+          "deployedSlot": "379693642",
+          "executableSha256": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564"
+        },
+        {
+          "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "programDataAddress": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T",
+          "deployedSlot": "383815455",
+          "executableSha256": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0"
+        }
+      ],
+      "after": [
+        {
+          "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+          "programDataAddress": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+          "deployedSlot": "433299444",
+          "executableSha256": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd"
+        },
+        {
+          "programId": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+          "programDataAddress": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR",
+          "deployedSlot": "406317018",
+          "executableSha256": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0"
+        },
+        {
+          "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "programDataAddress": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA",
+          "deployedSlot": "440486775",
+          "executableSha256": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+        },
+        {
+          "programId": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+          "programDataAddress": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9",
+          "deployedSlot": "379693642",
+          "executableSha256": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564"
+        },
+        {
+          "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "programDataAddress": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T",
+          "deployedSlot": "383815455",
+          "executableSha256": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0"
+        }
+      ]
+    }
+  },
+  "finalized": {
+    "signature": "54f4fY1H6SeJH7ZQghi7hCMWKskC5t5G7xj7gxN9KggV9MYWJfY8XtgX8DX36LvK8dWabd3ywpqTn3UJNK1GGHRD",
+    "confirmationSlot": 440584274,
+    "finalizedSlot": 440584274,
+    "authorizedContextSlot": 440584240,
+    "err": null,
+    "feeLamports": 5000,
+    "logs": [
+      "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 invoke [1]",
+      "Program log: Instruction: WithdrawVault",
+      "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+      "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 131 of 171160 compute units",
+      "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+      "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+      "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 105 of 168304 compute units",
+      "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+      "Program data: xHtP1wTWFMWXGiRiShf1nnezcq1tysSbxsmw/AY3Ao9ScCBf1Jd8CB+hBwAAAAAAGGHNHQAAAACPL4G+gN876dev9vTQMttaZO/wvEanjUkMEQrnw0wN6Mb6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hIKEHAAAAAAAgoQcAAAAAAAEAAAAAAAAAAGXNHQAAAADoAwAAAAAAAAAAAAAAAAAAAAAAAAAAAADoAwAAAAAAAOgDAAAAAAAAxks3iUEAAAAAAAAAAAAAAMZLN4lBAAAAAAAAAAAAAACyp4dqAAAAAA==",
+      "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 37781 of 200000 compute units",
+      "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+    ],
+    "tokenDeltas": [
+      {
+        "address": "3ZSDbfot1dFCDxCpREfgbmXdagGHEAGBTa131MW6jK33",
+        "mint": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+        "deltaRaw": "-499999000"
+      },
+      {
+        "address": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "deltaRaw": "-499999"
+      },
+      {
+        "address": "8SoPTUZ4tcSXHJ3M4WMV6sMCAiAb26S2H51h34Pb24Ce",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "deltaRaw": "499999"
+      }
+    ],
+    "lamportDeltas": [
+      {
+        "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+        "deltaRaw": "1665400"
+      },
+      {
+        "address": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+        "deltaRaw": "0"
+      },
+      {
+        "address": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+        "deltaRaw": "0"
+      },
+      {
+        "address": "3ZSDbfot1dFCDxCpREfgbmXdagGHEAGBTa131MW6jK33",
+        "deltaRaw": "0"
+      },
+      {
+        "address": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+        "deltaRaw": "0"
+      },
+      {
+        "address": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo",
+        "deltaRaw": "0"
+      },
+      {
+        "address": "8SoPTUZ4tcSXHJ3M4WMV6sMCAiAb26S2H51h34Pb24Ce",
+        "deltaRaw": "0"
+      },
+      {
+        "address": "FN6sJ1eNZBSgEMgrWWcswbBcNSwF1KyEgNedSP5kxqCc",
+        "deltaRaw": "-1670400"
+      },
+      {
+        "address": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "deltaRaw": "0"
+      },
+      {
+        "address": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+        "deltaRaw": "0"
+      },
+      {
+        "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "deltaRaw": "0"
+      },
+      {
+        "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "deltaRaw": "0"
+      },
+      {
+        "address": "11111111111111111111111111111111",
+        "deltaRaw": "0"
+      }
+    ]
+  },
+  "readbackContextSlot": 440584274,
+  "readback": {
+    "failedGateCount": 0,
+    "gates": [
+      {
+        "name": "withdraw claim SOL fee bounded",
+        "pass": true,
+        "observed": 5000,
+        "expected": "1..100000 lamports"
+      },
+      {
+        "name": "claim SOL delta is fee net receipt rent refund",
+        "pass": true,
+        "observed": -1665400,
+        "expected": {
+          "simulationBank": -1670400,
+          "finalizedTransaction": -1665400,
+          "feeLamports": 5000,
+          "createdRentLamports": 0,
+          "refundRentLamports": 1670400
+        }
+      },
+      {
+        "name": "claim bank time is before/after receipt deadline",
+        "pass": true,
+        "observed": 1787275186,
+        "expected": ">= 1787274961"
+      },
+      {
+        "name": "claim simulation succeeded",
+        "pass": true,
+        "observed": null,
+        "expected": null
+      },
+      {
+        "name": "one exact withdraw event",
+        "pass": true,
+        "observed": {
+          "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "userAmountAssetWithdrawn": "499999",
+          "userAmountLpBurned": "499999000",
+          "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+          "vaultAssetMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "vaultAssetTotalValueUnlockedBefore": "500000",
+          "vaultAssetTotalValueBefore": "500000",
+          "vaultAssetTotalValueAfter": "1",
+          "vaultLpSupplyInclFeesBefore": "500000000",
+          "vaultLpSupplyInclFeesAfter": "1000",
+          "vaultLpTotalAccumulatedFeesBefore": "0",
+          "vaultLpTotalAccumulatedFeesAfter": "0",
+          "vaultLpDeadWeightBefore": "1000",
+          "vaultLpDeadWeightAfter": "1000",
+          "vaultHighestAssetPerLpDecimalBitsBefore": "281474976710",
+          "vaultHighestAssetPerLpDecimalBitsAfter": "281474976710",
+          "withdrawnTs": "1787275186"
+        },
+        "expected": "WithdrawVaultEvent"
+      },
+      {
+        "name": "withdraw event exact route and amount",
+        "pass": true,
+        "observed": {
+          "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "userAmountAssetWithdrawn": "499999",
+          "userAmountLpBurned": "499999000",
+          "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+          "vaultAssetMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "vaultAssetTotalValueUnlockedBefore": "500000",
+          "vaultAssetTotalValueBefore": "500000",
+          "vaultAssetTotalValueAfter": "1",
+          "vaultLpSupplyInclFeesBefore": "500000000",
+          "vaultLpSupplyInclFeesAfter": "1000",
+          "vaultLpTotalAccumulatedFeesBefore": "0",
+          "vaultLpTotalAccumulatedFeesAfter": "0",
+          "vaultLpDeadWeightBefore": "1000",
+          "vaultLpDeadWeightAfter": "1000",
+          "vaultHighestAssetPerLpDecimalBitsBefore": "281474976710",
+          "vaultHighestAssetPerLpDecimalBitsAfter": "281474976710",
+          "withdrawnTs": "1787275186"
+        },
+        "expected": {
+          "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+          "amountLpBurned": "499999000",
+          "amountAssetWithdrawn": "499999"
+        }
+      },
+      {
+        "name": "receipt closed",
+        "pass": true,
+        "observed": null,
+        "expected": null
+      },
+      {
+        "name": "escrow LP retained empty for reuse",
+        "pass": true,
+        "observed": "0",
+        "expected": "0"
+      },
+      {
+        "name": "user receives exact quoted USDC",
+        "pass": true,
+        "observed": "499999",
+        "expected": "499999"
+      },
+      {
+        "name": "idle USDC pays exact quote",
+        "pass": true,
+        "observed": "-499999",
+        "expected": "-499999"
+      },
+      {
+        "name": "vault total value decreases by quote",
+        "pass": true,
+        "observed": "-499999",
+        "expected": "-499999"
+      },
+      {
+        "name": "LP supply burns escrow amount",
+        "pass": true,
+        "observed": "-499999000",
+        "expected": "-499999000"
+      },
+      {
+        "name": "unrelated user LP account unchanged",
+        "pass": true,
+        "observed": null,
+        "expected": null
+      },
+      {
+        "name": "receipt prestate escrow burns to retained empty ATA",
+        "pass": true,
+        "observed": {
+          "before": "499999000",
+          "after": "0"
+        },
+        "expected": {
+          "before": "499999000",
+          "after": "0"
+        }
+      },
+      {
+        "name": "finalized claim escrow LP account retains exact rent for reuse",
+        "pass": true,
+        "observed": 2039280,
+        "expected": 2039280
+      },
+      {
+        "name": "finalized claim receipt account closes",
+        "pass": true,
+        "observed": null,
+        "expected": null
+      },
+      {
+        "name": "finalized deployment: deployment count",
+        "pass": true,
+        "observed": 5,
+        "expected": 5
+      },
+      {
+        "name": "finalized deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 program id",
+        "pass": true,
+        "observed": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "expected": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+      },
+      {
+        "name": "finalized deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 program-data address",
+        "pass": true,
+        "observed": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+        "expected": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az"
+      },
+      {
+        "name": "finalized deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 deployed slot",
+        "pass": true,
+        "observed": "433299444",
+        "expected": "433299444"
+      },
+      {
+        "name": "finalized deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 executable hash",
+        "pass": true,
+        "observed": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd",
+        "expected": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd"
+      },
+      {
+        "name": "finalized deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR program id",
+        "pass": true,
+        "observed": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+        "expected": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
+      },
+      {
+        "name": "finalized deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR program-data address",
+        "pass": true,
+        "observed": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR",
+        "expected": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR"
+      },
+      {
+        "name": "finalized deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR deployed slot",
+        "pass": true,
+        "observed": "406317018",
+        "expected": "406317018"
+      },
+      {
+        "name": "finalized deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR executable hash",
+        "pass": true,
+        "observed": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0",
+        "expected": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0"
+      },
+      {
+        "name": "finalized deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD program id",
+        "pass": true,
+        "observed": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "expected": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+      },
+      {
+        "name": "finalized deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD program-data address",
+        "pass": true,
+        "observed": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA",
+        "expected": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA"
+      },
+      {
+        "name": "finalized deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD deployed slot",
+        "pass": true,
+        "observed": "440486775",
+        "expected": "440486775"
+      },
+      {
+        "name": "finalized deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD executable hash",
+        "pass": true,
+        "observed": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b",
+        "expected": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+      },
+      {
+        "name": "finalized deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr program id",
+        "pass": true,
+        "observed": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+        "expected": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+      },
+      {
+        "name": "finalized deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr program-data address",
+        "pass": true,
+        "observed": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9",
+        "expected": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9"
+      },
+      {
+        "name": "finalized deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr deployed slot",
+        "pass": true,
+        "observed": "379693642",
+        "expected": "379693642"
+      },
+      {
+        "name": "finalized deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr executable hash",
+        "pass": true,
+        "observed": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564",
+        "expected": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564"
+      },
+      {
+        "name": "finalized deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG program id",
+        "pass": true,
+        "observed": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+        "expected": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      {
+        "name": "finalized deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG program-data address",
+        "pass": true,
+        "observed": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T",
+        "expected": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T"
+      },
+      {
+        "name": "finalized deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG deployed slot",
+        "pass": true,
+        "observed": "383815455",
+        "expected": "383815455"
+      },
+      {
+        "name": "finalized deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG executable hash",
+        "pass": true,
+        "observed": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0",
+        "expected": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0"
+      }
+    ]
+  }
+}

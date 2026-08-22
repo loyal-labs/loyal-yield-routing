@@ -5,6 +5,7 @@ edition = "2021"
 description = "Postgres-backed state and durable queue contracts for Loyal yield routing"
 
 [dependencies]
+bs58 = "0.5"
 chrono = { workspace = true, default-features = false, features = ["clock", "serde"] }
 log = "0.4"
 serde = { workspace = true, features = ["derive"] }

@@ -3855,6 +3855,7 @@ dependencies = [
 name = "loyal-yield-store"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "chrono",
  "log",
  "serde",

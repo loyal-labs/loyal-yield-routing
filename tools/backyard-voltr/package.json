@@ -1,0 +1,33 @@
+{
+  "name": "@loyal/backyard-voltr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.2.17",
+  "scripts": {
+    "check": "tsc -p tsconfig.json --noEmit",
+    "policies:compile": "bun src/cli.ts policies compile",
+    "policies:verify": "bun src/cli.ts policies verify",
+    "verify:structure": "bun src/cli.ts verify structure",
+    "verify:compatibility": "bun src/cli.ts verify compatibility --commitment confirmed",
+    "verify:current": "bun src/cli.ts verify current --route main-usdc",
+    "verify:testing-handoff": "bun src/cli.ts verify testing-handoff --commitment confirmed",
+    "verify:lifecycle": "bun src/cli.ts verify lifecycle --route main-usdc",
+    "verify:four-market": "bun src/cli.ts verify four-market --commitment confirmed --evidence ../../docs/evidence/backyard-voltr-four-market/confirmed-lifecycle-v1.json"
+  },
+  "dependencies": {
+    "@kamino-finance/farms-sdk": "3.2.14",
+    "@kamino-finance/klend-sdk": "7.3.9",
+    "@kamino-finance/scope-sdk": "10.2.6",
+    "@loyal-labs/loyal-smart-accounts-core": "0.1.1",
+    "@solana-program/token": "0.13.0",
+    "@solana/kit": "6.8.0",
+    "@solana/web3.js": "1.98.4",
+    "@voltr/vault-sdk": "2.1.1",
+    "bs58": "6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.10",
+    "typescript": "5.7.3"
+  }
+}

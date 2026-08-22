@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "routeId": "loyal-backyard-main-usdc-v1",
+  "routeSpecSha256": "d73fb99b00c57153923f33560a7db13df02aba8b4c2a0b0fd181a893c8735f88",
+  "vault": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+  "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+  "manager": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+  "guardian": "oz8skK9o2N5w85rrkMfBVdeg6wnjAqMzriVSupERo3C",
+  "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+  "assetMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "reserve": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+  "lendingMarket": "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+  "collateralFarm": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh",
+  "assetAmountRaw": "500000",
+  "lpAmountRaw": "499999000",
+  "policyArtifactPath": "runtime-policies-precreated-600s-v1.json",
+  "policyArtifactFileSha256": "bb01e3acde558bf40458962f13ff2f9749e32346cd0f3406940f322bb8ee38ea",
+  "transactions": {
+    "initializeAndAdaptor": {
+      "signature": "2oMTtPyFpUUyWLQPeCKL2u1MDLnPp1cXePcmAWzPzN3EsxQSauUXdUQALB5N1cnPfEbMVpfHQJyqXvsq8q4qyKiJ",
+      "messageSha256": "8475f1fe0dc284bf99621484f7fdfe770f863bdc03ffcbc63064fd1cea10a749"
+    },
+    "initializeStrategy": {
+      "signature": "2P9X5VJ9K5h1MF53aqb5bGfy3HdikDXxajnmdpZvRZ9WXYb4AhZfoFSLju6u1BrZSmYKk3nHV7hKZpijQ2BMS8Df",
+      "messageSha256": "6c3ce44d8d812bc7d99fa55f7a7de11a5e939ad5076b084b2d0f25ab5b557dfb"
+    },
+    "depositPolicy": {
+      "signature": "4Mq12JSDVUDEnxYJcy9mSBMsrMajtkd6UbFW2LcrrCfQrre3VGFaYc2jWd4siCBNuTJRXH7NwGwnp9x2CgHa63p3",
+      "messageSha256": "814662d292453e4c868fb341dd49b057ac5269d195e4f016a3357841903ec9cb"
+    },
+    "withdrawPolicy": {
+      "signature": "51R7RX6fJndysPuJ48X8GfhjwPWPGXMEThp6tQRog7bHFLFp15QhuG7msmoVs6cPBaGBusNBjumnK6ELeKyhdKwj",
+      "messageSha256": "f7e421bc8081deae63ff49ac8398e268b7aacc333a6b587103a61ebe3634343a"
+    },
+    "userDeposit": {
+      "signature": "3PeA3JCzWvpA5uD9Bfa9pjnRRuT7A5VfVB8VFu5KWxzQ4XLmfmrMcmHtKTT3JmCytse9q5tem44kG7novMGBF6oy",
+      "messageSha256": "00d8d932f380046efdeb86ba4dbf8aa095beba3f6db1a643787c00191aa455bd"
+    },
+    "managerDeposit": {
+      "signature": "48yAskoD2vMMZHZkff1nhmSbHgP5PHmEakmohuXmvSxBnJpwu7tMa9MMzTUGnUUC4WfFgV2Aox31LinG2Xw1t5HZ",
+      "messageSha256": "4cda1338a57e24d39f3d6d034fc8452b4998707d18665d06145bb5d7ff355f75"
+    },
+    "managerWithdraw": {
+      "signature": "v6h3qSmaTcYM7oMMUVxZiyGHqnYMUz9ThzjkPGNHZfWZNsQPEa2SmnwM3K6KbiaycDayVAR2iqcTMtGF3H2ZKXf",
+      "messageSha256": "bc833194cd294ccb4b0fbb0b1c998b59b8b487ba354df222d807e824c3bb68ad"
+    },
+    "withdrawRequest": {
+      "signature": "5fe1appbYsYmTFQVbZAxmcmtyQoRABBn2K1hFk2qKw5zf1b2HU51fLYz1AWMg3bc3bWwuBK36nXYVPzMJMgkwn47",
+      "messageSha256": "43866f93e0b9083195989fe62424c5c941705f6b753a6e525e58efa3859c33ce"
+    },
+    "withdrawClaim": {
+      "signature": "54f4fY1H6SeJH7ZQghi7hCMWKskC5t5G7xj7gxN9KggV9MYWJfY8XtgX8DX36LvK8dWabd3ywpqTn3UJNK1GGHRD",
+      "messageSha256": "a0d02e858c465790f00f40a688bb36c202b2be03f9025307943d3b58cbb90373"
+    }
+  },
+  "prematureClaim": {
+    "artifactPath": "withdraw-claim-premature-600s-v2.json",
+    "artifactFileSha256": "b3ab006ea551a8e737770701df6df53a13edfbcfd3e20c9e950e76598bb8dc11"
+  }
+}

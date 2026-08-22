@@ -786,6 +786,7 @@ impl fmt::Display for DecisionStatus {
 pub enum DecisionReason {
     TargetSupplyApyExceedsSource,
     IdleVaultLiquidityAvailable,
+    VoltrManagerOperation,
     ActiveDecision,
     NoValueSource,
     CrossMintOnly,
@@ -798,6 +799,7 @@ impl DecisionReason {
         match self {
             Self::TargetSupplyApyExceedsSource => "target_supply_apy_exceeds_source",
             Self::IdleVaultLiquidityAvailable => "idle_vault_liquidity_available",
+            Self::VoltrManagerOperation => "voltr_manager_operation",
             Self::ActiveDecision => "active_decision",
             Self::NoValueSource => "no_value_source",
             Self::CrossMintOnly => "cross_mint_only",
@@ -810,6 +812,7 @@ impl DecisionReason {
         match value {
             "target_supply_apy_exceeds_source" => Some(Self::TargetSupplyApyExceedsSource),
             "idle_vault_liquidity_available" => Some(Self::IdleVaultLiquidityAvailable),
+            "voltr_manager_operation" => Some(Self::VoltrManagerOperation),
             "active_decision" => Some(Self::ActiveDecision),
             "no_value_source" => Some(Self::NoValueSource),
             "cross_mint_only" => Some(Self::CrossMintOnly),

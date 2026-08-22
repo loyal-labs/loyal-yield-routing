@@ -1,0 +1,3544 @@
+{
+  "verdict": "PARTNER_RUNTIME_POLICIES_FINALIZED_PASS",
+  "broadcast": false,
+  "routeSpecSha256": "d73fb99b00c57153923f33560a7db13df02aba8b4c2a0b0fd181a893c8735f88",
+  "artifact": {
+    "path": "/Users/user/loyal/loyal-yield-routing/docs/evidence/backyard-voltr-partner-vault/runtime-policies-precreated-600s-v1.json",
+    "fileSha256": "bb01e3acde558bf40458962f13ff2f9749e32346cd0f3406940f322bb8ee38ea",
+    "artifactSha256": "6441b4403842011dcb91f1db4a6b233eb25d7067173c074acdbbe1cb6fab0331"
+  },
+  "requestedMinContextSlot": null,
+  "contextSlot": 440579008,
+  "deploymentContextSlot": 440579012,
+  "deployments": [
+    {
+      "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      "programDataAddress": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+      "deployedSlot": "433299444",
+      "executableSha256": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd"
+    },
+    {
+      "programId": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+      "programDataAddress": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR",
+      "deployedSlot": "406317018",
+      "executableSha256": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0"
+    },
+    {
+      "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+      "programDataAddress": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA",
+      "deployedSlot": "440486775",
+      "executableSha256": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+    },
+    {
+      "programId": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+      "programDataAddress": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9",
+      "deployedSlot": "379693642",
+      "executableSha256": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564"
+    },
+    {
+      "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+      "programDataAddress": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T",
+      "deployedSlot": "383815455",
+      "executableSha256": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0"
+    }
+  ],
+  "policies": [
+    {
+      "operation": "deposit",
+      "seed": "17",
+      "policy": "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV",
+      "currentDataSha256": "0bbfe0398b4f4eec56b160c6a8a782fe25e9822cff3c466bbc50ee188e68b1d4",
+      "decodedLength": 1028,
+      "transactionIndex": "0",
+      "staleTransactionIndex": "0",
+      "origin": {
+        "signature": "4Mq12JSDVUDEnxYJcy9mSBMsrMajtkd6UbFW2LcrrCfQrre3VGFaYc2jWd4siCBNuTJRXH7NwGwnp9x2CgHa63p3",
+        "slot": 440578847,
+        "dataSha256": "ad753d89fd635e5c9a986ce7be7dcde4cc4102317da1fdd20168a4457693946c",
+        "accounts": [
+          "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "11111111111111111111111111111111",
+          "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV"
+        ],
+        "requiredSigners": [
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+        ],
+        "transactionVersion": 0,
+        "signatureMatches": true,
+        "accountKeySetExact": true,
+        "accountRolesExact": true,
+        "instructionRolesExact": true,
+        "topLevelInstructionCount": 1,
+        "lookupTableCount": 0
+      }
+    },
+    {
+      "operation": "withdraw",
+      "seed": "18",
+      "policy": "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn",
+      "currentDataSha256": "9fa15fb165bfe898f1ec64bad748439463126b78be06564f07331dbcd1fbad52",
+      "decodedLength": 1028,
+      "transactionIndex": "0",
+      "staleTransactionIndex": "0",
+      "origin": {
+        "signature": "51R7RX6fJndysPuJ48X8GfhjwPWPGXMEThp6tQRog7bHFLFp15QhuG7msmoVs6cPBaGBusNBjumnK6ELeKyhdKwj",
+        "slot": 440578995,
+        "dataSha256": "d9306eb42c634d28e5c4f3606aa9115be1c78c678e06e7541f51f7c99cd3fdff",
+        "accounts": [
+          "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "11111111111111111111111111111111",
+          "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn"
+        ],
+        "requiredSigners": [
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+        ],
+        "transactionVersion": 0,
+        "signatureMatches": true,
+        "accountKeySetExact": true,
+        "accountRolesExact": true,
+        "instructionRolesExact": true,
+        "topLevelInstructionCount": 1,
+        "lookupTableCount": 0
+      }
+    }
+  ],
+  "failedGateCount": 0,
+  "gates": [
+    {
+      "name": "runtime policy state context reaches requested minimum",
+      "pass": true,
+      "observed": 440579008,
+      "expected": "current finalized"
+    },
+    {
+      "name": "runtime policy deployment context reaches policy state",
+      "pass": true,
+      "observed": 440579012,
+      "expected": ">=440579008"
+    },
+    {
+      "name": "runtime policy deployment: deployment count",
+      "pass": true,
+      "observed": 5,
+      "expected": 5
+    },
+    {
+      "name": "runtime policy deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 program id",
+      "pass": true,
+      "observed": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      "expected": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+    },
+    {
+      "name": "runtime policy deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 program-data address",
+      "pass": true,
+      "observed": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+      "expected": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az"
+    },
+    {
+      "name": "runtime policy deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 deployed slot",
+      "pass": true,
+      "observed": "433299444",
+      "expected": "433299444"
+    },
+    {
+      "name": "runtime policy deployment: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 executable hash",
+      "pass": true,
+      "observed": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd",
+      "expected": "674066350ecf33114c430604bee65b23c7a4d65a01c606fa3863c93327ce9fbd"
+    },
+    {
+      "name": "runtime policy deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR program id",
+      "pass": true,
+      "observed": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+      "expected": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
+    },
+    {
+      "name": "runtime policy deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR program-data address",
+      "pass": true,
+      "observed": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR",
+      "expected": "9JAuHw1UPaKdpa1QhtzfSEQAGAP1NmTMdcuxgqiz1ovR"
+    },
+    {
+      "name": "runtime policy deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR deployed slot",
+      "pass": true,
+      "observed": "406317018",
+      "expected": "406317018"
+    },
+    {
+      "name": "runtime policy deployment: to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR executable hash",
+      "pass": true,
+      "observed": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0",
+      "expected": "933f17362069cc09f60e4267a5dbb929893a54068a913bd293ec7deee90129e0"
+    },
+    {
+      "name": "runtime policy deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD program id",
+      "pass": true,
+      "observed": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+      "expected": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+    },
+    {
+      "name": "runtime policy deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD program-data address",
+      "pass": true,
+      "observed": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA",
+      "expected": "9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA"
+    },
+    {
+      "name": "runtime policy deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD deployed slot",
+      "pass": true,
+      "observed": "440486775",
+      "expected": "440486775"
+    },
+    {
+      "name": "runtime policy deployment: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD executable hash",
+      "pass": true,
+      "observed": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b",
+      "expected": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+    },
+    {
+      "name": "runtime policy deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr program id",
+      "pass": true,
+      "observed": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+      "expected": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+    },
+    {
+      "name": "runtime policy deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr program-data address",
+      "pass": true,
+      "observed": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9",
+      "expected": "5Fz4tY19ihWJAW1j9RNoEQJKSdn5mQHjcVrcZ5BRK5E9"
+    },
+    {
+      "name": "runtime policy deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr deployed slot",
+      "pass": true,
+      "observed": "379693642",
+      "expected": "379693642"
+    },
+    {
+      "name": "runtime policy deployment: FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr executable hash",
+      "pass": true,
+      "observed": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564",
+      "expected": "5e42feeccadeb5dcd80e11a62b15141c4e127b21db2ae8ca2afa6c281505f564"
+    },
+    {
+      "name": "runtime policy deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG program id",
+      "pass": true,
+      "observed": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+      "expected": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+    },
+    {
+      "name": "runtime policy deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG program-data address",
+      "pass": true,
+      "observed": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T",
+      "expected": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T"
+    },
+    {
+      "name": "runtime policy deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG deployed slot",
+      "pass": true,
+      "observed": "383815455",
+      "expected": "383815455"
+    },
+    {
+      "name": "runtime policy deployment: SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG executable hash",
+      "pass": true,
+      "observed": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0",
+      "expected": "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0"
+    },
+    {
+      "name": "Settings finalized at exact terminal runtime-policy seed",
+      "pass": true,
+      "observed": "18",
+      "expected": "18"
+    },
+    {
+      "name": "deposit artifact linkage: artifact constrained indexes are exact, ordered, and unique",
+      "pass": true,
+      "observed": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        17,
+        21,
+        29,
+        30
+      ],
+      "expected": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        17,
+        21,
+        29,
+        30
+      ]
+    },
+    {
+      "name": "deposit artifact linkage: source manifest instruction equals current SDK route",
+      "pass": true,
+      "observed": {
+        "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "dataHex": "f65239e283defdf940420f00000000000108000000d435bac193358f7b00",
+        "dataBase64": "9lI54oPe/flAQg8AAAAAAAEIAAAA1DW6wZM1j3sA",
+        "dataSha256": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f",
+        "dataLength": 30,
+        "accounts": [
+          {
+            "index": 0,
+            "label": "manager",
+            "address": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+            "signer": true,
+            "writable": false
+          },
+          {
+            "index": 1,
+            "label": "protocol",
+            "address": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 2,
+            "label": "vault",
+            "address": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 3,
+            "label": "strategy",
+            "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 4,
+            "label": "adaptorAddReceipt",
+            "address": "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 5,
+            "label": "strategyInitReceipt",
+            "address": "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 6,
+            "label": "vaultAssetIdleAuth",
+            "address": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 7,
+            "label": "vaultStrategyAuth",
+            "address": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 8,
+            "label": "vaultAssetMint",
+            "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 9,
+            "label": "vaultLpMint",
+            "address": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 10,
+            "label": "vaultAssetIdleAta",
+            "address": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 11,
+            "label": "vaultStrategyAssetAta",
+            "address": "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 12,
+            "label": "assetTokenProgram",
+            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 13,
+            "label": "adaptorProgram",
+            "address": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 14,
+            "label": "kaminoObligation",
+            "address": "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 15,
+            "label": "lendingMarket",
+            "address": "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 16,
+            "label": "lendingMarketAuthority",
+            "address": "9DrvZvyWh1HuAoZxvYWMvkf2XCzryCpGgHqrMjyDWpmo",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 17,
+            "label": "reserve",
+            "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 18,
+            "label": "reserveLiquiditySupply",
+            "address": "Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 19,
+            "label": "reserveCollateralMint",
+            "address": "B8V6WVjPxW1UGwVDfxH2d2r8SyT4cqn7dQRK6XneVa7D",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 20,
+            "label": "reserveCollateralSupplyVault",
+            "address": "3DzjXRfxRm6iejfyyMynR4tScddaanrePJ1NJU2XnPPL",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 21,
+            "label": "tokenProgram",
+            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 22,
+            "label": "instructionsSysvar",
+            "address": "Sysvar1nstructions1111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 23,
+            "label": "obligationFarm",
+            "address": "98dATwikz9cioKBvbvSMC95XwSqS4Eht2EeBmdChHoWu",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 24,
+            "label": "reserveFarmState",
+            "address": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 25,
+            "label": "userMetadata",
+            "address": "9pgc2m2YehaUP13rZRiFsC6UkV1nRJVEv3EjQTMzQSpD",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 26,
+            "label": "scope",
+            "address": "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 27,
+            "label": "rentSysvar",
+            "address": "SysvarRent111111111111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 28,
+            "label": "systemProgram",
+            "address": "11111111111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 29,
+            "label": "farmsProgram",
+            "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 30,
+            "label": "klendProgram",
+            "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "signer": false,
+            "writable": false
+          }
+        ]
+      },
+      "expected": {
+        "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "dataHex": "f65239e283defdf940420f00000000000108000000d435bac193358f7b00",
+        "dataBase64": "9lI54oPe/flAQg8AAAAAAAEIAAAA1DW6wZM1j3sA",
+        "dataSha256": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f",
+        "dataLength": 30,
+        "accounts": [
+          {
+            "index": 0,
+            "label": "manager",
+            "address": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+            "signer": true,
+            "writable": false
+          },
+          {
+            "index": 1,
+            "label": "protocol",
+            "address": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 2,
+            "label": "vault",
+            "address": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 3,
+            "label": "strategy",
+            "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 4,
+            "label": "adaptorAddReceipt",
+            "address": "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 5,
+            "label": "strategyInitReceipt",
+            "address": "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 6,
+            "label": "vaultAssetIdleAuth",
+            "address": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 7,
+            "label": "vaultStrategyAuth",
+            "address": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 8,
+            "label": "vaultAssetMint",
+            "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 9,
+            "label": "vaultLpMint",
+            "address": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 10,
+            "label": "vaultAssetIdleAta",
+            "address": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 11,
+            "label": "vaultStrategyAssetAta",
+            "address": "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 12,
+            "label": "assetTokenProgram",
+            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 13,
+            "label": "adaptorProgram",
+            "address": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 14,
+            "label": "kaminoObligation",
+            "address": "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 15,
+            "label": "lendingMarket",
+            "address": "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 16,
+            "label": "lendingMarketAuthority",
+            "address": "9DrvZvyWh1HuAoZxvYWMvkf2XCzryCpGgHqrMjyDWpmo",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 17,
+            "label": "reserve",
+            "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 18,
+            "label": "reserveLiquiditySupply",
+            "address": "Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 19,
+            "label": "reserveCollateralMint",
+            "address": "B8V6WVjPxW1UGwVDfxH2d2r8SyT4cqn7dQRK6XneVa7D",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 20,
+            "label": "reserveCollateralSupplyVault",
+            "address": "3DzjXRfxRm6iejfyyMynR4tScddaanrePJ1NJU2XnPPL",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 21,
+            "label": "tokenProgram",
+            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 22,
+            "label": "instructionsSysvar",
+            "address": "Sysvar1nstructions1111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 23,
+            "label": "obligationFarm",
+            "address": "98dATwikz9cioKBvbvSMC95XwSqS4Eht2EeBmdChHoWu",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 24,
+            "label": "reserveFarmState",
+            "address": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 25,
+            "label": "userMetadata",
+            "address": "9pgc2m2YehaUP13rZRiFsC6UkV1nRJVEv3EjQTMzQSpD",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 26,
+            "label": "scope",
+            "address": "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 27,
+            "label": "rentSysvar",
+            "address": "SysvarRent111111111111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 28,
+            "label": "systemProgram",
+            "address": "11111111111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 29,
+            "label": "farmsProgram",
+            "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 30,
+            "label": "klendProgram",
+            "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "signer": false,
+            "writable": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "deposit artifact linkage: artifact inner hash equals current SDK instruction",
+      "pass": true,
+      "observed": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f",
+      "expected": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f"
+    },
+    {
+      "name": "deposit artifact linkage: runtime instruction has exact 30-byte bounded-amount layout",
+      "pass": true,
+      "observed": 30,
+      "expected": 30
+    },
+    {
+      "name": "deposit artifact linkage: policy-create account addresses and instruction roles are exact",
+      "pass": true,
+      "observed": [
+        {
+          "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "signer": true,
+          "writable": true
+        },
+        {
+          "address": "11111111111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "address": "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV",
+          "signer": false,
+          "writable": true
+        }
+      ],
+      "expected": [
+        {
+          "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "signer": true,
+          "writable": true
+        },
+        {
+          "address": "11111111111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "address": "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV",
+          "signer": false,
+          "writable": true
+        }
+      ]
+    },
+    {
+      "name": "deposit artifact linkage: manager wrapper bytes are self-consistent",
+      "pass": true,
+      "observed": {
+        "dataLength": 90,
+        "dataSha256": "a4445e23780ca3484a77b27393b3bf0fba077e29a93ea600f7244d848e7be85c"
+      },
+      "expected": {
+        "dataLength": 90,
+        "dataSha256": "a4445e23780ca3484a77b27393b3bf0fba077e29a93ea600f7244d848e7be85c"
+      }
+    },
+    {
+      "name": "deposit artifact linkage: manager wrapper program is Squads",
+      "pass": true,
+      "observed": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+      "expected": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+    },
+    {
+      "name": "deposit artifact linkage: manager wrapper accounts and instruction roles equal current SDK graph",
+      "pass": true,
+      "observed": [
+        {
+          "address": "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "oz8skK9o2N5w85rrkMfBVdeg6wnjAqMzriVSupERo3C",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "address": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "9DrvZvyWh1HuAoZxvYWMvkf2XCzryCpGgHqrMjyDWpmo",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "B8V6WVjPxW1UGwVDfxH2d2r8SyT4cqn7dQRK6XneVa7D",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "3DzjXRfxRm6iejfyyMynR4tScddaanrePJ1NJU2XnPPL",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "Sysvar1nstructions1111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "98dATwikz9cioKBvbvSMC95XwSqS4Eht2EeBmdChHoWu",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "9pgc2m2YehaUP13rZRiFsC6UkV1nRJVEv3EjQTMzQSpD",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "SysvarRent111111111111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "11111111111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+          "signer": false,
+          "writable": false
+        }
+      ],
+      "expected": [
+        {
+          "address": "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "oz8skK9o2N5w85rrkMfBVdeg6wnjAqMzriVSupERo3C",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "address": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "9DrvZvyWh1HuAoZxvYWMvkf2XCzryCpGgHqrMjyDWpmo",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "B8V6WVjPxW1UGwVDfxH2d2r8SyT4cqn7dQRK6XneVa7D",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "3DzjXRfxRm6iejfyyMynR4tScddaanrePJ1NJU2XnPPL",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "Sysvar1nstructions1111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "98dATwikz9cioKBvbvSMC95XwSqS4Eht2EeBmdChHoWu",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "9pgc2m2YehaUP13rZRiFsC6UkV1nRJVEv3EjQTMzQSpD",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "SysvarRent111111111111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "11111111111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+          "signer": false,
+          "writable": false
+        }
+      ]
+    },
+    {
+      "name": "deposit artifact linkage: manager wrapper embeds the exact current inner instruction",
+      "pass": true,
+      "observed": {
+        "encodedLength": 30,
+        "innerDataSha256": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f"
+      },
+      "expected": {
+        "encodedLength": 30,
+        "innerDataSha256": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f"
+      }
+    },
+    {
+      "name": "deposit current policy: policy exists",
+      "pass": true,
+      "observed": "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV",
+      "expected": "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV"
+    },
+    {
+      "name": "deposit current policy: policy address",
+      "pass": true,
+      "observed": "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV",
+      "expected": "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV"
+    },
+    {
+      "name": "deposit current policy: policy owner",
+      "pass": true,
+      "observed": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+      "expected": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+    },
+    {
+      "name": "deposit current policy: policy discriminator",
+      "pass": true,
+      "observed": "de8707a3ebb12144",
+      "expected": "de8707a3ebb12144"
+    },
+    {
+      "name": "deposit current policy: policy generated decoder",
+      "pass": true,
+      "observed": {
+        "decodedLength": 1028,
+        "accountDataLength": 1746
+      },
+      "expected": "decoded"
+    },
+    {
+      "name": "deposit current policy: policy Settings",
+      "pass": true,
+      "observed": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+      "expected": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
+    },
+    {
+      "name": "deposit current policy: policy seed",
+      "pass": true,
+      "observed": "17",
+      "expected": "17"
+    },
+    {
+      "name": "deposit current policy: policy PDA derived from Settings and seed",
+      "pass": true,
+      "observed": "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV",
+      "expected": "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV"
+    },
+    {
+      "name": "deposit current policy: policy bump",
+      "pass": true,
+      "observed": 255,
+      "expected": 255
+    },
+    {
+      "name": "deposit current policy: policy mutable counters remain ordered",
+      "pass": true,
+      "observed": {
+        "transactionIndex": "0",
+        "staleTransactionIndex": "0"
+      },
+      "expected": "staleTransactionIndex <= transactionIndex"
+    },
+    {
+      "name": "deposit current policy: policy signer count",
+      "pass": true,
+      "observed": 1,
+      "expected": 1
+    },
+    {
+      "name": "deposit current policy: policy delegated guardian",
+      "pass": true,
+      "observed": "oz8skK9o2N5w85rrkMfBVdeg6wnjAqMzriVSupERo3C",
+      "expected": "oz8skK9o2N5w85rrkMfBVdeg6wnjAqMzriVSupERo3C"
+    },
+    {
+      "name": "deposit current policy: policy guardian permissions",
+      "pass": true,
+      "observed": 7,
+      "expected": 7
+    },
+    {
+      "name": "deposit current policy: policy threshold",
+      "pass": true,
+      "observed": 1,
+      "expected": 1
+    },
+    {
+      "name": "deposit current policy: policy timelock",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "deposit current policy: policy start initialized",
+      "pass": true,
+      "observed": "1787272942",
+      "expected": "> 0"
+    },
+    {
+      "name": "deposit current policy: policy has no expiration",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "deposit current policy: policy rent collector",
+      "pass": true,
+      "observed": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "expected": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+    },
+    {
+      "name": "deposit current policy: policy unused allocation is zeroed",
+      "pass": true,
+      "observed": {
+        "decodedLength": 1028,
+        "accountDataLength": 1746
+      },
+      "expected": "all trailing allocation bytes are zero"
+    },
+    {
+      "name": "deposit current policy: policy state kind",
+      "pass": true,
+      "observed": "ProgramInteraction",
+      "expected": "ProgramInteraction"
+    },
+    {
+      "name": "deposit current policy: policy state payload count",
+      "pass": true,
+      "observed": 1,
+      "expected": 1
+    },
+    {
+      "name": "deposit current policy: policy vault index",
+      "pass": true,
+      "observed": 1,
+      "expected": 1
+    },
+    {
+      "name": "deposit current policy: policy pre-hook disabled",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "deposit current policy: policy post-hook disabled",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "deposit current policy: policy spending limits empty",
+      "pass": true,
+      "observed": [],
+      "expected": []
+    },
+    {
+      "name": "deposit current policy: policy instruction constraint count",
+      "pass": true,
+      "observed": 1,
+      "expected": 1
+    },
+    {
+      "name": "deposit current policy: policy outer program is Voltr",
+      "pass": true,
+      "observed": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      "expected": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+    },
+    {
+      "name": "deposit current policy: policy account constraint count",
+      "pass": true,
+      "observed": 19,
+      "expected": 19
+    },
+    {
+      "name": "deposit current policy: policy account constraint 0",
+      "pass": true,
+      "observed": {
+        "accountIndex": 0,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK"
+        ]
+      },
+      "expected": {
+        "accountIndex": 0,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 1",
+      "pass": true,
+      "observed": {
+        "accountIndex": 1,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y"
+        ]
+      },
+      "expected": {
+        "accountIndex": 1,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 2",
+      "pass": true,
+      "observed": {
+        "accountIndex": 2,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK"
+        ]
+      },
+      "expected": {
+        "accountIndex": 2,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 3",
+      "pass": true,
+      "observed": {
+        "accountIndex": 3,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+        ]
+      },
+      "expected": {
+        "accountIndex": 3,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 4",
+      "pass": true,
+      "observed": {
+        "accountIndex": 4,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt"
+        ]
+      },
+      "expected": {
+        "accountIndex": 4,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 5",
+      "pass": true,
+      "observed": {
+        "accountIndex": 5,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh"
+        ]
+      },
+      "expected": {
+        "accountIndex": 5,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 6",
+      "pass": true,
+      "observed": {
+        "accountIndex": 6,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo"
+        ]
+      },
+      "expected": {
+        "accountIndex": 6,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 7",
+      "pass": true,
+      "observed": {
+        "accountIndex": 7,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ"
+        ]
+      },
+      "expected": {
+        "accountIndex": 7,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 8",
+      "pass": true,
+      "observed": {
+        "accountIndex": 8,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        ]
+      },
+      "expected": {
+        "accountIndex": 8,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 9",
+      "pass": true,
+      "observed": {
+        "accountIndex": 10,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P"
+        ]
+      },
+      "expected": {
+        "accountIndex": 10,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 10",
+      "pass": true,
+      "observed": {
+        "accountIndex": 11,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn"
+        ]
+      },
+      "expected": {
+        "accountIndex": 11,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 11",
+      "pass": true,
+      "observed": {
+        "accountIndex": 12,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ]
+      },
+      "expected": {
+        "accountIndex": 12,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 12",
+      "pass": true,
+      "observed": {
+        "accountIndex": 13,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
+        ]
+      },
+      "expected": {
+        "accountIndex": 13,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 13",
+      "pass": true,
+      "observed": {
+        "accountIndex": 14,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj"
+        ]
+      },
+      "expected": {
+        "accountIndex": 14,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 14",
+      "pass": true,
+      "observed": {
+        "accountIndex": 15,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
+        ]
+      },
+      "expected": {
+        "accountIndex": 15,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 15",
+      "pass": true,
+      "observed": {
+        "accountIndex": 17,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+        ]
+      },
+      "expected": {
+        "accountIndex": 17,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 16",
+      "pass": true,
+      "observed": {
+        "accountIndex": 21,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ]
+      },
+      "expected": {
+        "accountIndex": 21,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 17",
+      "pass": true,
+      "observed": {
+        "accountIndex": 29,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+        ]
+      },
+      "expected": {
+        "accountIndex": 29,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: policy account constraint 18",
+      "pass": true,
+      "observed": {
+        "accountIndex": 30,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        ]
+      },
+      "expected": {
+        "accountIndex": 30,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        ]
+      }
+    },
+    {
+      "name": "deposit current policy: inner instruction encoding",
+      "pass": true,
+      "observed": {
+        "dataLength": 30,
+        "dataSha256": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f"
+      },
+      "expected": {
+        "dataLength": 30,
+        "dataSha256": "a450a8be047fdf9ba0643a6a0049072cd8c8897e12c7157ddc16157de1fe8c2f"
+      }
+    },
+    {
+      "name": "deposit current policy: policy bounded data constraint count",
+      "pass": true,
+      "observed": 4,
+      "expected": 4
+    },
+    {
+      "name": "deposit current policy: policy data constraint 0",
+      "pass": true,
+      "observed": {
+        "offset": "0",
+        "kind": "U8Slice",
+        "operator": 0,
+        "value": {
+          "dataLength": 8,
+          "dataSha256": "c0a9698fbac07e466de5e4e3cfa8e6fea1b4d4386961b34a36a7a74995f8f64e"
+        }
+      },
+      "expected": {
+        "offset": "0",
+        "kind": "U8Slice",
+        "operator": 0,
+        "value": {
+          "dataLength": 8,
+          "dataSha256": "c0a9698fbac07e466de5e4e3cfa8e6fea1b4d4386961b34a36a7a74995f8f64e"
+        }
+      }
+    },
+    {
+      "name": "deposit current policy: policy data constraint 1",
+      "pass": true,
+      "observed": {
+        "offset": "8",
+        "kind": "U64Le",
+        "operator": 2,
+        "value": "0"
+      },
+      "expected": {
+        "offset": "8",
+        "kind": "U64Le",
+        "operator": 2,
+        "value": "0"
+      }
+    },
+    {
+      "name": "deposit current policy: policy data constraint 2",
+      "pass": true,
+      "observed": {
+        "offset": "8",
+        "kind": "U64Le",
+        "operator": 5,
+        "value": "1000000"
+      },
+      "expected": {
+        "offset": "8",
+        "kind": "U64Le",
+        "operator": 5,
+        "value": "1000000"
+      }
+    },
+    {
+      "name": "deposit current policy: policy data constraint 3",
+      "pass": true,
+      "observed": {
+        "offset": "16",
+        "kind": "U8Slice",
+        "operator": 0,
+        "value": {
+          "dataLength": 14,
+          "dataSha256": "b4e3813bf8f6fb2c56666e894c1e2f358907dcbd1f7e4c94f634425ca6a3de4b"
+        }
+      },
+      "expected": {
+        "offset": "16",
+        "kind": "U8Slice",
+        "operator": 0,
+        "value": {
+          "dataLength": 14,
+          "dataSha256": "b4e3813bf8f6fb2c56666e894c1e2f358907dcbd1f7e4c94f634425ca6a3de4b"
+        }
+      }
+    },
+    {
+      "name": "deposit exact policy-create origin found",
+      "pass": true,
+      "observed": {
+        "signature": "4Mq12JSDVUDEnxYJcy9mSBMsrMajtkd6UbFW2LcrrCfQrre3VGFaYc2jWd4siCBNuTJRXH7NwGwnp9x2CgHa63p3",
+        "slot": 440578847,
+        "dataSha256": "ad753d89fd635e5c9a986ce7be7dcde4cc4102317da1fdd20168a4457693946c",
+        "accounts": [
+          "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "11111111111111111111111111111111",
+          "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV"
+        ],
+        "requiredSigners": [
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+        ],
+        "transactionVersion": 0,
+        "signatureMatches": true,
+        "accountKeySetExact": true,
+        "accountRolesExact": true,
+        "instructionRolesExact": true,
+        "topLevelInstructionCount": 1,
+        "lookupTableCount": 0
+      },
+      "expected": {
+        "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+        "dataSha256": "ad753d89fd635e5c9a986ce7be7dcde4cc4102317da1fdd20168a4457693946c",
+        "accounts": [
+          "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "11111111111111111111111111111111",
+          "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV"
+        ]
+      }
+    },
+    {
+      "name": "deposit origin has exact v0 signer, roles, keys, and one instruction",
+      "pass": true,
+      "observed": {
+        "signature": "4Mq12JSDVUDEnxYJcy9mSBMsrMajtkd6UbFW2LcrrCfQrre3VGFaYc2jWd4siCBNuTJRXH7NwGwnp9x2CgHa63p3",
+        "slot": 440578847,
+        "dataSha256": "ad753d89fd635e5c9a986ce7be7dcde4cc4102317da1fdd20168a4457693946c",
+        "accounts": [
+          "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "11111111111111111111111111111111",
+          "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "7HyFp3UepFCxQsPwUgsZ2pcPH23PQma77ofPJpBA8zWV"
+        ],
+        "requiredSigners": [
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+        ],
+        "transactionVersion": 0,
+        "signatureMatches": true,
+        "accountKeySetExact": true,
+        "accountRolesExact": true,
+        "instructionRolesExact": true,
+        "topLevelInstructionCount": 1,
+        "lookupTableCount": 0
+      },
+      "expected": {
+        "requiredSigners": [
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+        ],
+        "transactionVersion": 0,
+        "signatureMatches": true,
+        "accountKeySetExact": true,
+        "accountRolesExact": true,
+        "instructionRolesExact": true,
+        "topLevelInstructionCount": 1,
+        "lookupTableCount": 0
+      }
+    },
+    {
+      "name": "withdraw artifact linkage: artifact constrained indexes are exact, ordered, and unique",
+      "pass": true,
+      "observed": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        11,
+        12,
+        13,
+        14,
+        15,
+        17,
+        21,
+        26,
+        27
+      ],
+      "expected": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        11,
+        12,
+        13,
+        14,
+        15,
+        17,
+        21,
+        26,
+        27
+      ]
+    },
+    {
+      "name": "withdraw artifact linkage: source manifest instruction equals current SDK route",
+      "pass": true,
+      "observed": {
+        "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "dataHex": "1f2da205c1d986bc40420f000000000001080000007b6df50f9630cb7100",
+        "dataBase64": "Hy2iBcHZhrxAQg8AAAAAAAEIAAAAe231D5Ywy3EA",
+        "dataSha256": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871",
+        "dataLength": 30,
+        "accounts": [
+          {
+            "index": 0,
+            "label": "manager",
+            "address": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+            "signer": true,
+            "writable": false
+          },
+          {
+            "index": 1,
+            "label": "protocol",
+            "address": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 2,
+            "label": "vault",
+            "address": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 3,
+            "label": "adaptorAddReceipt",
+            "address": "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 4,
+            "label": "strategyInitReceipt",
+            "address": "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 5,
+            "label": "strategy",
+            "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 6,
+            "label": "adaptorProgram",
+            "address": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 7,
+            "label": "vaultAssetIdleAuth",
+            "address": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 8,
+            "label": "vaultStrategyAuth",
+            "address": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 9,
+            "label": "vaultAssetMint",
+            "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 10,
+            "label": "vaultLpMint",
+            "address": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 11,
+            "label": "vaultAssetIdleAta",
+            "address": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 12,
+            "label": "vaultStrategyAssetAta",
+            "address": "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 13,
+            "label": "assetTokenProgram",
+            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 14,
+            "label": "kaminoObligation",
+            "address": "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 15,
+            "label": "lendingMarket",
+            "address": "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 16,
+            "label": "lendingMarketAuthority",
+            "address": "9DrvZvyWh1HuAoZxvYWMvkf2XCzryCpGgHqrMjyDWpmo",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 17,
+            "label": "reserve",
+            "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 18,
+            "label": "reserveCollateralSupplyVault",
+            "address": "3DzjXRfxRm6iejfyyMynR4tScddaanrePJ1NJU2XnPPL",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 19,
+            "label": "reserveCollateralMint",
+            "address": "B8V6WVjPxW1UGwVDfxH2d2r8SyT4cqn7dQRK6XneVa7D",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 20,
+            "label": "reserveLiquiditySupply",
+            "address": "Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 21,
+            "label": "tokenProgram",
+            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 22,
+            "label": "instructionsSysvar",
+            "address": "Sysvar1nstructions1111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 23,
+            "label": "obligationFarm",
+            "address": "98dATwikz9cioKBvbvSMC95XwSqS4Eht2EeBmdChHoWu",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 24,
+            "label": "reserveFarmState",
+            "address": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 25,
+            "label": "scope",
+            "address": "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 26,
+            "label": "farmsProgram",
+            "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 27,
+            "label": "klendProgram",
+            "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "signer": false,
+            "writable": false
+          }
+        ]
+      },
+      "expected": {
+        "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "dataHex": "1f2da205c1d986bc40420f000000000001080000007b6df50f9630cb7100",
+        "dataBase64": "Hy2iBcHZhrxAQg8AAAAAAAEIAAAAe231D5Ywy3EA",
+        "dataSha256": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871",
+        "dataLength": 30,
+        "accounts": [
+          {
+            "index": 0,
+            "label": "manager",
+            "address": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+            "signer": true,
+            "writable": false
+          },
+          {
+            "index": 1,
+            "label": "protocol",
+            "address": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 2,
+            "label": "vault",
+            "address": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 3,
+            "label": "adaptorAddReceipt",
+            "address": "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 4,
+            "label": "strategyInitReceipt",
+            "address": "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 5,
+            "label": "strategy",
+            "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 6,
+            "label": "adaptorProgram",
+            "address": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 7,
+            "label": "vaultAssetIdleAuth",
+            "address": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 8,
+            "label": "vaultStrategyAuth",
+            "address": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 9,
+            "label": "vaultAssetMint",
+            "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 10,
+            "label": "vaultLpMint",
+            "address": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 11,
+            "label": "vaultAssetIdleAta",
+            "address": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 12,
+            "label": "vaultStrategyAssetAta",
+            "address": "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 13,
+            "label": "assetTokenProgram",
+            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 14,
+            "label": "kaminoObligation",
+            "address": "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 15,
+            "label": "lendingMarket",
+            "address": "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 16,
+            "label": "lendingMarketAuthority",
+            "address": "9DrvZvyWh1HuAoZxvYWMvkf2XCzryCpGgHqrMjyDWpmo",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 17,
+            "label": "reserve",
+            "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 18,
+            "label": "reserveCollateralSupplyVault",
+            "address": "3DzjXRfxRm6iejfyyMynR4tScddaanrePJ1NJU2XnPPL",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 19,
+            "label": "reserveCollateralMint",
+            "address": "B8V6WVjPxW1UGwVDfxH2d2r8SyT4cqn7dQRK6XneVa7D",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 20,
+            "label": "reserveLiquiditySupply",
+            "address": "Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 21,
+            "label": "tokenProgram",
+            "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 22,
+            "label": "instructionsSysvar",
+            "address": "Sysvar1nstructions1111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 23,
+            "label": "obligationFarm",
+            "address": "98dATwikz9cioKBvbvSMC95XwSqS4Eht2EeBmdChHoWu",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 24,
+            "label": "reserveFarmState",
+            "address": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "index": 25,
+            "label": "scope",
+            "address": "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 26,
+            "label": "farmsProgram",
+            "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "index": 27,
+            "label": "klendProgram",
+            "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "signer": false,
+            "writable": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "withdraw artifact linkage: artifact inner hash equals current SDK instruction",
+      "pass": true,
+      "observed": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871",
+      "expected": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871"
+    },
+    {
+      "name": "withdraw artifact linkage: runtime instruction has exact 30-byte bounded-amount layout",
+      "pass": true,
+      "observed": 30,
+      "expected": 30
+    },
+    {
+      "name": "withdraw artifact linkage: policy-create account addresses and instruction roles are exact",
+      "pass": true,
+      "observed": [
+        {
+          "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "signer": true,
+          "writable": true
+        },
+        {
+          "address": "11111111111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "address": "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn",
+          "signer": false,
+          "writable": true
+        }
+      ],
+      "expected": [
+        {
+          "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "signer": true,
+          "writable": true
+        },
+        {
+          "address": "11111111111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "address": "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn",
+          "signer": false,
+          "writable": true
+        }
+      ]
+    },
+    {
+      "name": "withdraw artifact linkage: manager wrapper bytes are self-consistent",
+      "pass": true,
+      "observed": {
+        "dataLength": 87,
+        "dataSha256": "932765a60037dfb8a6d6459f6abe16eb952a81105651d8ab101a6141d1884935"
+      },
+      "expected": {
+        "dataLength": 87,
+        "dataSha256": "932765a60037dfb8a6d6459f6abe16eb952a81105651d8ab101a6141d1884935"
+      }
+    },
+    {
+      "name": "withdraw artifact linkage: manager wrapper program is Squads",
+      "pass": true,
+      "observed": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+      "expected": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+    },
+    {
+      "name": "withdraw artifact linkage: manager wrapper accounts and instruction roles equal current SDK graph",
+      "pass": true,
+      "observed": [
+        {
+          "address": "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "oz8skK9o2N5w85rrkMfBVdeg6wnjAqMzriVSupERo3C",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "address": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "9DrvZvyWh1HuAoZxvYWMvkf2XCzryCpGgHqrMjyDWpmo",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "3DzjXRfxRm6iejfyyMynR4tScddaanrePJ1NJU2XnPPL",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "B8V6WVjPxW1UGwVDfxH2d2r8SyT4cqn7dQRK6XneVa7D",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "Sysvar1nstructions1111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "98dATwikz9cioKBvbvSMC95XwSqS4Eht2EeBmdChHoWu",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+          "signer": false,
+          "writable": false
+        }
+      ],
+      "expected": [
+        {
+          "address": "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "oz8skK9o2N5w85rrkMfBVdeg6wnjAqMzriVSupERo3C",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "address": "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "9DrvZvyWh1HuAoZxvYWMvkf2XCzryCpGgHqrMjyDWpmo",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "3DzjXRfxRm6iejfyyMynR4tScddaanrePJ1NJU2XnPPL",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "B8V6WVjPxW1UGwVDfxH2d2r8SyT4cqn7dQRK6XneVa7D",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "Sysvar1nstructions1111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "98dATwikz9cioKBvbvSMC95XwSqS4Eht2EeBmdChHoWu",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "JAvnB9AKtgPsTEoKmn24Bq64UMoYcrtWtq42HHBdsPkh",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+          "signer": false,
+          "writable": false
+        }
+      ]
+    },
+    {
+      "name": "withdraw artifact linkage: manager wrapper embeds the exact current inner instruction",
+      "pass": true,
+      "observed": {
+        "encodedLength": 30,
+        "innerDataSha256": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871"
+      },
+      "expected": {
+        "encodedLength": 30,
+        "innerDataSha256": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871"
+      }
+    },
+    {
+      "name": "withdraw current policy: policy exists",
+      "pass": true,
+      "observed": "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn",
+      "expected": "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn"
+    },
+    {
+      "name": "withdraw current policy: policy address",
+      "pass": true,
+      "observed": "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn",
+      "expected": "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn"
+    },
+    {
+      "name": "withdraw current policy: policy owner",
+      "pass": true,
+      "observed": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+      "expected": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+    },
+    {
+      "name": "withdraw current policy: policy discriminator",
+      "pass": true,
+      "observed": "de8707a3ebb12144",
+      "expected": "de8707a3ebb12144"
+    },
+    {
+      "name": "withdraw current policy: policy generated decoder",
+      "pass": true,
+      "observed": {
+        "decodedLength": 1028,
+        "accountDataLength": 1746
+      },
+      "expected": "decoded"
+    },
+    {
+      "name": "withdraw current policy: policy Settings",
+      "pass": true,
+      "observed": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+      "expected": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
+    },
+    {
+      "name": "withdraw current policy: policy seed",
+      "pass": true,
+      "observed": "18",
+      "expected": "18"
+    },
+    {
+      "name": "withdraw current policy: policy PDA derived from Settings and seed",
+      "pass": true,
+      "observed": "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn",
+      "expected": "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn"
+    },
+    {
+      "name": "withdraw current policy: policy bump",
+      "pass": true,
+      "observed": 255,
+      "expected": 255
+    },
+    {
+      "name": "withdraw current policy: policy mutable counters remain ordered",
+      "pass": true,
+      "observed": {
+        "transactionIndex": "0",
+        "staleTransactionIndex": "0"
+      },
+      "expected": "staleTransactionIndex <= transactionIndex"
+    },
+    {
+      "name": "withdraw current policy: policy signer count",
+      "pass": true,
+      "observed": 1,
+      "expected": 1
+    },
+    {
+      "name": "withdraw current policy: policy delegated guardian",
+      "pass": true,
+      "observed": "oz8skK9o2N5w85rrkMfBVdeg6wnjAqMzriVSupERo3C",
+      "expected": "oz8skK9o2N5w85rrkMfBVdeg6wnjAqMzriVSupERo3C"
+    },
+    {
+      "name": "withdraw current policy: policy guardian permissions",
+      "pass": true,
+      "observed": 7,
+      "expected": 7
+    },
+    {
+      "name": "withdraw current policy: policy threshold",
+      "pass": true,
+      "observed": 1,
+      "expected": 1
+    },
+    {
+      "name": "withdraw current policy: policy timelock",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "withdraw current policy: policy start initialized",
+      "pass": true,
+      "observed": "1787273003",
+      "expected": "> 0"
+    },
+    {
+      "name": "withdraw current policy: policy has no expiration",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "withdraw current policy: policy rent collector",
+      "pass": true,
+      "observed": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "expected": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+    },
+    {
+      "name": "withdraw current policy: policy unused allocation is zeroed",
+      "pass": true,
+      "observed": {
+        "decodedLength": 1028,
+        "accountDataLength": 1746
+      },
+      "expected": "all trailing allocation bytes are zero"
+    },
+    {
+      "name": "withdraw current policy: policy state kind",
+      "pass": true,
+      "observed": "ProgramInteraction",
+      "expected": "ProgramInteraction"
+    },
+    {
+      "name": "withdraw current policy: policy state payload count",
+      "pass": true,
+      "observed": 1,
+      "expected": 1
+    },
+    {
+      "name": "withdraw current policy: policy vault index",
+      "pass": true,
+      "observed": 1,
+      "expected": 1
+    },
+    {
+      "name": "withdraw current policy: policy pre-hook disabled",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "withdraw current policy: policy post-hook disabled",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "withdraw current policy: policy spending limits empty",
+      "pass": true,
+      "observed": [],
+      "expected": []
+    },
+    {
+      "name": "withdraw current policy: policy instruction constraint count",
+      "pass": true,
+      "observed": 1,
+      "expected": 1
+    },
+    {
+      "name": "withdraw current policy: policy outer program is Voltr",
+      "pass": true,
+      "observed": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      "expected": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+    },
+    {
+      "name": "withdraw current policy: policy account constraint count",
+      "pass": true,
+      "observed": 19,
+      "expected": 19
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 0",
+      "pass": true,
+      "observed": {
+        "accountIndex": 0,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK"
+        ]
+      },
+      "expected": {
+        "accountIndex": 0,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "DMPn3d7G2rcVVhvRbpSyEeq3cBW7bygiGjSgrLci5FYK"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 1",
+      "pass": true,
+      "observed": {
+        "accountIndex": 1,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y"
+        ]
+      },
+      "expected": {
+        "accountIndex": 1,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 2",
+      "pass": true,
+      "observed": {
+        "accountIndex": 2,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK"
+        ]
+      },
+      "expected": {
+        "accountIndex": 2,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 3",
+      "pass": true,
+      "observed": {
+        "accountIndex": 3,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt"
+        ]
+      },
+      "expected": {
+        "accountIndex": 3,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "Gaq7gNF3CyZucQS9XRKWz44fRfJuAVbs6pckJbuksDHt"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 4",
+      "pass": true,
+      "observed": {
+        "accountIndex": 4,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh"
+        ]
+      },
+      "expected": {
+        "accountIndex": 4,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "8TrCAoobPV9cygRG59LforafAmVE5QLa9HBS76GEG2gh"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 5",
+      "pass": true,
+      "observed": {
+        "accountIndex": 5,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+        ]
+      },
+      "expected": {
+        "accountIndex": 5,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 6",
+      "pass": true,
+      "observed": {
+        "accountIndex": 6,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
+        ]
+      },
+      "expected": {
+        "accountIndex": 6,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 7",
+      "pass": true,
+      "observed": {
+        "accountIndex": 7,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo"
+        ]
+      },
+      "expected": {
+        "accountIndex": 7,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "C8geyt5kKSDoXYPrSvDee6Rv9ooBzXLiQLmCSUjamcfo"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 8",
+      "pass": true,
+      "observed": {
+        "accountIndex": 8,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ"
+        ]
+      },
+      "expected": {
+        "accountIndex": 8,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "FMrNcfz8eRHzwAGwh1XHJxTjYebojcdfi7viEw8BdWfZ"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 9",
+      "pass": true,
+      "observed": {
+        "accountIndex": 9,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        ]
+      },
+      "expected": {
+        "accountIndex": 9,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 10",
+      "pass": true,
+      "observed": {
+        "accountIndex": 11,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P"
+        ]
+      },
+      "expected": {
+        "accountIndex": 11,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "9LHpTxtFDYb8xJAruX9uTrceohFms2KyRvkXREj3iV9P"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 11",
+      "pass": true,
+      "observed": {
+        "accountIndex": 12,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn"
+        ]
+      },
+      "expected": {
+        "accountIndex": 12,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "BjBuUPgRB6fNeLDWbSJ61owT1sRspmXP46sypLXAGbwn"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 12",
+      "pass": true,
+      "observed": {
+        "accountIndex": 13,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ]
+      },
+      "expected": {
+        "accountIndex": 13,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 13",
+      "pass": true,
+      "observed": {
+        "accountIndex": 14,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj"
+        ]
+      },
+      "expected": {
+        "accountIndex": 14,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "51YGhznwYD4pPfdwyGA1cqL2KPDtWUr4pJNyaLa8NwHj"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 14",
+      "pass": true,
+      "observed": {
+        "accountIndex": 15,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
+        ]
+      },
+      "expected": {
+        "accountIndex": 15,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 15",
+      "pass": true,
+      "observed": {
+        "accountIndex": 17,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+        ]
+      },
+      "expected": {
+        "accountIndex": 17,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 16",
+      "pass": true,
+      "observed": {
+        "accountIndex": 21,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ]
+      },
+      "expected": {
+        "accountIndex": 21,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 17",
+      "pass": true,
+      "observed": {
+        "accountIndex": 26,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+        ]
+      },
+      "expected": {
+        "accountIndex": 26,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: policy account constraint 18",
+      "pass": true,
+      "observed": {
+        "accountIndex": 27,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        ]
+      },
+      "expected": {
+        "accountIndex": 27,
+        "kind": "Pubkey",
+        "owner": null,
+        "pubkeys": [
+          "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        ]
+      }
+    },
+    {
+      "name": "withdraw current policy: inner instruction encoding",
+      "pass": true,
+      "observed": {
+        "dataLength": 30,
+        "dataSha256": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871"
+      },
+      "expected": {
+        "dataLength": 30,
+        "dataSha256": "0d4c71355c410ae675a1573a8903cdc61a8712985f817e9e7ea8f231a1b5b871"
+      }
+    },
+    {
+      "name": "withdraw current policy: policy bounded data constraint count",
+      "pass": true,
+      "observed": 4,
+      "expected": 4
+    },
+    {
+      "name": "withdraw current policy: policy data constraint 0",
+      "pass": true,
+      "observed": {
+        "offset": "0",
+        "kind": "U8Slice",
+        "operator": 0,
+        "value": {
+          "dataLength": 8,
+          "dataSha256": "ad4ff292c2f563d0db73afe593617e2ff2687337db99e54c6377edf48d6e9563"
+        }
+      },
+      "expected": {
+        "offset": "0",
+        "kind": "U8Slice",
+        "operator": 0,
+        "value": {
+          "dataLength": 8,
+          "dataSha256": "ad4ff292c2f563d0db73afe593617e2ff2687337db99e54c6377edf48d6e9563"
+        }
+      }
+    },
+    {
+      "name": "withdraw current policy: policy data constraint 1",
+      "pass": true,
+      "observed": {
+        "offset": "8",
+        "kind": "U64Le",
+        "operator": 2,
+        "value": "0"
+      },
+      "expected": {
+        "offset": "8",
+        "kind": "U64Le",
+        "operator": 2,
+        "value": "0"
+      }
+    },
+    {
+      "name": "withdraw current policy: policy data constraint 2",
+      "pass": true,
+      "observed": {
+        "offset": "8",
+        "kind": "U64Le",
+        "operator": 5,
+        "value": "1000000"
+      },
+      "expected": {
+        "offset": "8",
+        "kind": "U64Le",
+        "operator": 5,
+        "value": "1000000"
+      }
+    },
+    {
+      "name": "withdraw current policy: policy data constraint 3",
+      "pass": true,
+      "observed": {
+        "offset": "16",
+        "kind": "U8Slice",
+        "operator": 0,
+        "value": {
+          "dataLength": 14,
+          "dataSha256": "06dc4cb8260219a23b388355708454428a8ace7f0133296c7357790839561385"
+        }
+      },
+      "expected": {
+        "offset": "16",
+        "kind": "U8Slice",
+        "operator": 0,
+        "value": {
+          "dataLength": 14,
+          "dataSha256": "06dc4cb8260219a23b388355708454428a8ace7f0133296c7357790839561385"
+        }
+      }
+    },
+    {
+      "name": "withdraw exact policy-create origin found",
+      "pass": true,
+      "observed": {
+        "signature": "51R7RX6fJndysPuJ48X8GfhjwPWPGXMEThp6tQRog7bHFLFp15QhuG7msmoVs6cPBaGBusNBjumnK6ELeKyhdKwj",
+        "slot": 440578995,
+        "dataSha256": "d9306eb42c634d28e5c4f3606aa9115be1c78c678e06e7541f51f7c99cd3fdff",
+        "accounts": [
+          "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "11111111111111111111111111111111",
+          "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn"
+        ],
+        "requiredSigners": [
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+        ],
+        "transactionVersion": 0,
+        "signatureMatches": true,
+        "accountKeySetExact": true,
+        "accountRolesExact": true,
+        "instructionRolesExact": true,
+        "topLevelInstructionCount": 1,
+        "lookupTableCount": 0
+      },
+      "expected": {
+        "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+        "dataSha256": "d9306eb42c634d28e5c4f3606aa9115be1c78c678e06e7541f51f7c99cd3fdff",
+        "accounts": [
+          "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "11111111111111111111111111111111",
+          "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn"
+        ]
+      }
+    },
+    {
+      "name": "withdraw origin has exact v0 signer, roles, keys, and one instruction",
+      "pass": true,
+      "observed": {
+        "signature": "51R7RX6fJndysPuJ48X8GfhjwPWPGXMEThp6tQRog7bHFLFp15QhuG7msmoVs6cPBaGBusNBjumnK6ELeKyhdKwj",
+        "slot": 440578995,
+        "dataSha256": "d9306eb42c634d28e5c4f3606aa9115be1c78c678e06e7541f51f7c99cd3fdff",
+        "accounts": [
+          "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "11111111111111111111111111111111",
+          "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "BwqBwUZEF5kuwTWXAL7ot5edBG53Q54Rc4quvcAkwqXn"
+        ],
+        "requiredSigners": [
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+        ],
+        "transactionVersion": 0,
+        "signatureMatches": true,
+        "accountKeySetExact": true,
+        "accountRolesExact": true,
+        "instructionRolesExact": true,
+        "topLevelInstructionCount": 1,
+        "lookupTableCount": 0
+      },
+      "expected": {
+        "requiredSigners": [
+          "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+        ],
+        "transactionVersion": 0,
+        "signatureMatches": true,
+        "accountKeySetExact": true,
+        "accountRolesExact": true,
+        "instructionRolesExact": true,
+        "topLevelInstructionCount": 1,
+        "lookupTableCount": 0
+      }
+    }
+  ]
+}
