@@ -76,6 +76,8 @@ async fn main() -> anyhow::Result<()> {
             vault_pubkey: Some(state.vault_pubkey),
             policy_accounts,
             markets: Vec::new(),
+            autodeposit_accounts: Vec::new(),
+            observation_start_slot: None,
         }],
     )?;
     let store = OrchestratorStore::connect(OrchestratorConfig::new(args.postgres_url)).await?;

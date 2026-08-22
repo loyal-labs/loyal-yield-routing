@@ -31,6 +31,7 @@ use loyal_yield_store::{OrchestratorConfig, OrchestratorError, OrchestratorStore
 use opentelemetry::metrics::Meter;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
+use sqlx::postgres::PgListener;
 use tokio::{
     sync::{mpsc, Mutex, Notify, RwLock},
     task::JoinHandle,
@@ -264,6 +265,11 @@ async fn run(meter: Meter) -> Result<()> {
             earn_monitor_metrics.clone(),
         ))
     });
+    let autodeposit_watch_wake = Arc::new(Notify::new());
+    let autodeposit_watch_task = tokio::spawn(run_autodeposit_watch_listener(
+        args.postgres_url.clone(),
+        autodeposit_watch_wake.clone(),
+    ));
     let result = supervise_monitor_sessions(
         args,
         store,
@@ -273,6 +279,7 @@ async fn run(meter: Meter) -> Result<()> {
         watch_set,
         recheck,
         earn_wake.clone(),
+        autodeposit_watch_wake,
     )
     .await;
     earn_consumer_running.store(false, Ordering::Relaxed);
@@ -281,7 +288,35 @@ async fn run(meter: Meter) -> Result<()> {
         task.abort();
         let _ = task.await;
     }
+    autodeposit_watch_task.abort();
+    let _ = autodeposit_watch_task.await;
     result
+}
+
+async fn run_autodeposit_watch_listener(database_url: String, wake: Arc<Notify>) {
+    loop {
+        match PgListener::connect(&database_url).await {
+            Ok(mut listener) => {
+                if let Err(error) = listener.listen("loyal_yield_autodeposit_watch").await {
+                    tracing::warn!(error = %error, "failed to LISTEN for Autodeposit watch changes");
+                } else {
+                    loop {
+                        match listener.recv().await {
+                            Ok(_) => wake.notify_one(),
+                            Err(error) => {
+                                tracing::warn!(error = %error, "Autodeposit watch listener disconnected");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to connect Autodeposit watch listener");
+            }
+        }
+        time::sleep(Duration::from_secs(5)).await;
+    }
 }
 
 async fn connect_earn_apy_refresher(args: &Args) -> Result<EarnApySnapshotRefresher> {
@@ -372,6 +407,7 @@ async fn supervise_monitor_sessions(
     initial_watch_set: SubscriptionWatchSet,
     recheck: AtaRecheckHandle,
     earn_wake: Arc<Notify>,
+    autodeposit_watch_wake: Arc<Notify>,
 ) -> Result<()> {
     let refresh_interval = Duration::from_secs(args.target_refresh_seconds);
     let mut session: Option<MonitorSession> = None;
@@ -453,6 +489,7 @@ async fn supervise_monitor_sessions(
                 session.is_some(),
                 earn_changed,
                 earn_replay_checkpoint,
+                watch_set.observation_start_slot,
             );
             if let Some(existing) = session.take() {
                 tracing::info!(
@@ -506,12 +543,21 @@ async fn supervise_monitor_sessions(
         }
 
         if let Some(existing) = session.as_mut() {
-            if wait_for_refresh_or_session_exit(refresh_interval, &mut existing.finished).await {
+            if wait_for_refresh_or_session_exit(
+                refresh_interval,
+                &mut existing.finished,
+                &autodeposit_watch_wake,
+            )
+            .await
+            {
                 let finished = session.take().expect("session exit was observed");
                 log_finished_session(finished).await;
             }
         } else {
-            time::sleep(refresh_interval).await;
+            tokio::select! {
+                _ = time::sleep(refresh_interval) => {}
+                _ = autodeposit_watch_wake.notified() => {}
+            }
         }
     }
 }
@@ -524,10 +570,18 @@ fn replay_override_for_watch_set_change(
     session_present: bool,
     earn_changed: bool,
     replay_checkpoint: Option<u64>,
+    observation_start_slot: Option<u64>,
 ) -> Option<u64> {
-    (session_present && earn_changed)
-        .then_some(replay_checkpoint)
-        .flatten()
+    if !earn_changed {
+        return None;
+    }
+    match (
+        session_present.then_some(replay_checkpoint).flatten(),
+        observation_start_slot,
+    ) {
+        (Some(checkpoint), Some(start)) => Some(checkpoint.min(start)),
+        (checkpoint, start) => checkpoint.or(start),
+    }
 }
 
 fn replay_checkpoint_after_session_start(
@@ -540,10 +594,12 @@ fn replay_checkpoint_after_session_start(
 async fn wait_for_refresh_or_session_exit(
     refresh_interval: Duration,
     finished: &mut mpsc::UnboundedReceiver<()>,
+    autodeposit_watch_wake: &Notify,
 ) -> bool {
     tokio::select! {
         _ = time::sleep(refresh_interval) => false,
         _ = finished.recv() => true,
+        _ = autodeposit_watch_wake.notified() => false,
     }
 }
 
@@ -790,14 +846,14 @@ mod tests {
     fn earn_watch_change_replays_once_then_advances_checkpoint() {
         assert!(session_requires_rebuild(false, false, true));
         assert_eq!(
-            replay_override_for_watch_set_change(true, true, Some(42)),
+            replay_override_for_watch_set_change(true, true, Some(42), None),
             Some(42)
         );
 
         let advanced = replay_checkpoint_after_session_start(Some(90), Some(42));
         assert_eq!(advanced, Some(90));
         assert_eq!(
-            replay_override_for_watch_set_change(true, true, advanced),
+            replay_override_for_watch_set_change(true, true, advanced, None),
             Some(90)
         );
         assert_eq!(
@@ -809,7 +865,7 @@ mod tests {
     #[test]
     fn failed_session_restarts_from_durable_cursor() {
         assert_eq!(
-            replay_override_for_watch_set_change(false, true, Some(42)),
+            replay_override_for_watch_set_change(false, true, Some(42), None),
             None
         );
     }
@@ -818,14 +874,31 @@ mod tests {
     async fn failed_session_wakes_supervisor_before_refresh_deadline() {
         let (finished_tx, mut finished_rx) = mpsc::unbounded_channel();
         finished_tx.send(()).unwrap();
+        let watch_wake = Notify::new();
 
         let woke_for_exit = time::timeout(
             Duration::from_millis(100),
-            wait_for_refresh_or_session_exit(Duration::from_secs(300), &mut finished_rx),
+            wait_for_refresh_or_session_exit(
+                Duration::from_secs(300),
+                &mut finished_rx,
+                &watch_wake,
+            ),
         )
         .await
         .expect("supervisor stayed asleep after session exit");
 
         assert!(woke_for_exit);
+    }
+
+    #[test]
+    fn autodeposit_new_watch_replays_from_configuration_boundary() {
+        assert_eq!(
+            replay_override_for_watch_set_change(true, true, Some(900), Some(700)),
+            Some(700)
+        );
+        assert_eq!(
+            replay_override_for_watch_set_change(false, true, None, Some(700)),
+            Some(700)
+        );
     }
 }

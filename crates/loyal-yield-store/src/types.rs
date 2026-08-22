@@ -554,6 +554,69 @@ pub struct EarnSubscriptionTarget {
     pub vault_pubkey: Option<String>,
     pub policy_accounts: Vec<String>,
     pub markets: Vec<String>,
+    pub autodeposit_accounts: Vec<String>,
+    pub observation_start_slot: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AutodepositProjectionStatus {
+    Pending,
+    Active,
+    Closed,
+    Inconsistent,
+}
+
+impl AutodepositProjectionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Active => "active",
+            Self::Closed => "closed",
+            Self::Inconsistent => "inconsistent",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutodepositVaultConfigInput {
+    pub cluster: String,
+    pub settings: String,
+    pub wallet: String,
+    pub vault_index: u8,
+    pub vault_pubkey: String,
+    pub desired_active: bool,
+    pub wallet_balance_floor_raw: u64,
+    pub expected_policy_account: String,
+    pub expected_subscription_authority: String,
+    pub expected_recurring_delegation: String,
+    pub observation_start_slot: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutodepositVaultConfig {
+    pub id: i64,
+    pub input: AutodepositVaultConfigInput,
+    pub generation: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutodepositSnapshotInput {
+    pub config_id: i64,
+    pub observation_slot: u64,
+    pub observation_complete: bool,
+    pub policy_valid: bool,
+    pub subscription_authority_valid: bool,
+    pub recurring_delegation_valid: bool,
+    pub token_delegate_valid: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutodepositChainProjection {
+    pub config_id: i64,
+    pub status: AutodepositProjectionStatus,
+    pub observation_slot: u64,
+    pub bootstrap_generation: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

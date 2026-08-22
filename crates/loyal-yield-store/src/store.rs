@@ -50,6 +50,7 @@ const MIGRATION_0053: &str = include_str!("../migrations/0053_multiply_productio
 const MIGRATION_0054: &str = include_str!("../migrations/0054_earn_max_per_user.sql");
 const MIGRATION_0055: &str = include_str!("../migrations/0055_earn_max_repeated_lifecycle.sql");
 const MIGRATION_0056: &str = include_str!("../migrations/0056_earn_max_dynamic_policy_seeds.sql");
+const MIGRATION_0057: &str = include_str!("../migrations/0057_autodeposit_client_projection.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -499,6 +500,12 @@ impl NeonSqlClient {
                 sql: MIGRATION_0056,
                 expected_checksum: None,
             },
+            StoreMigration {
+                version: 57,
+                name: "autodeposit_client_projection",
+                sql: MIGRATION_0057,
+                expected_checksum: None,
+            },
         ] {
             apply_store_migration(&self.pool, migration).await?;
         }
@@ -829,6 +836,8 @@ impl NeonSqlClient {
                         vault_pubkey: None,
                         policy_accounts: Vec::new(),
                         markets: Vec::new(),
+                        autodeposit_accounts: Vec::new(),
+                        observation_start_slot: None,
                     });
                 }
             }
@@ -873,6 +882,8 @@ impl NeonSqlClient {
                         .try_get::<Option<String>, _>("market")?
                         .into_iter()
                         .collect(),
+                    autodeposit_accounts: Vec::new(),
+                    observation_start_slot: None,
                 });
             }
         }
@@ -930,6 +941,8 @@ impl NeonSqlClient {
                         .try_get::<Option<String>, _>("market")?
                         .into_iter()
                         .collect(),
+                    autodeposit_accounts: Vec::new(),
+                    observation_start_slot: None,
                 });
             }
         }
@@ -968,11 +981,254 @@ impl NeonSqlClient {
                     vault_pubkey: Some(row.get("vault_pubkey")),
                     policy_accounts: row.get("policy_accounts"),
                     markets: Vec::new(),
+                    autodeposit_accounts: Vec::new(),
+                    observation_start_slot: None,
+                });
+            }
+        }
+
+        let autodeposit_configs_exist: bool = sqlx::query_scalar(
+            "SELECT to_regclass('loyal_yield.autodeposit_vault_configs') IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if autodeposit_configs_exist {
+            let rows = sqlx::query(
+                r#"
+                SELECT settings, wallet, vault_index, vault_pubkey,
+                       expected_policy_account, expected_subscription_authority,
+                       expected_recurring_delegation, observation_start_slot
+                FROM loyal_yield.autodeposit_vault_configs
+                WHERE cluster = $1
+                "#,
+            )
+            .bind(environment)
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                targets.push(EarnSubscriptionTarget {
+                    environment: environment.to_owned(),
+                    settings: row.get("settings"),
+                    wallet: row.get("wallet"),
+                    vault_index: row.get("vault_index"),
+                    vault_pubkey: Some(row.get("vault_pubkey")),
+                    policy_accounts: vec![row.get("expected_policy_account")],
+                    markets: Vec::new(),
+                    autodeposit_accounts: vec![
+                        row.get("expected_subscription_authority"),
+                        row.get("expected_recurring_delegation"),
+                    ],
+                    observation_start_slot: Some(nonnegative_i64_to_u64(
+                        row.get("observation_start_slot"),
+                        "observation_start_slot",
+                    )?),
                 });
             }
         }
 
         Ok(targets)
+    }
+
+    pub async fn upsert_autodeposit_vault_config(
+        &self,
+        input: AutodepositVaultConfigInput,
+    ) -> Result<AutodepositVaultConfig, OrchestratorError> {
+        let floor = to_i64_amount(input.wallet_balance_floor_raw)?;
+        let start_slot = to_i64_slot(input.observation_start_slot)?;
+        let row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.autodeposit_vault_configs
+                (cluster, settings, wallet, vault_index, vault_pubkey, desired_active,
+                 wallet_balance_floor_raw, expected_policy_account,
+                 expected_subscription_authority, expected_recurring_delegation,
+                 observation_start_slot)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            ON CONFLICT (cluster, settings, wallet, vault_index) DO UPDATE SET
+                vault_pubkey = EXCLUDED.vault_pubkey,
+                desired_active = EXCLUDED.desired_active,
+                wallet_balance_floor_raw = EXCLUDED.wallet_balance_floor_raw,
+                expected_policy_account = EXCLUDED.expected_policy_account,
+                expected_subscription_authority = EXCLUDED.expected_subscription_authority,
+                expected_recurring_delegation = EXCLUDED.expected_recurring_delegation,
+                observation_start_slot = EXCLUDED.observation_start_slot,
+                generation = CASE WHEN
+                    (loyal_yield.autodeposit_vault_configs.vault_pubkey,
+                     loyal_yield.autodeposit_vault_configs.desired_active,
+                     loyal_yield.autodeposit_vault_configs.wallet_balance_floor_raw,
+                     loyal_yield.autodeposit_vault_configs.expected_policy_account,
+                     loyal_yield.autodeposit_vault_configs.expected_subscription_authority,
+                     loyal_yield.autodeposit_vault_configs.expected_recurring_delegation,
+                     loyal_yield.autodeposit_vault_configs.observation_start_slot)
+                    IS DISTINCT FROM
+                    (EXCLUDED.vault_pubkey, EXCLUDED.desired_active,
+                     EXCLUDED.wallet_balance_floor_raw, EXCLUDED.expected_policy_account,
+                     EXCLUDED.expected_subscription_authority,
+                     EXCLUDED.expected_recurring_delegation, EXCLUDED.observation_start_slot)
+                    THEN loyal_yield.autodeposit_vault_configs.generation + 1
+                    ELSE loyal_yield.autodeposit_vault_configs.generation END,
+                updated_at = now()
+            RETURNING id, generation
+            "#,
+        )
+        .bind(&input.cluster)
+        .bind(&input.settings)
+        .bind(&input.wallet)
+        .bind(i16::from(input.vault_index))
+        .bind(&input.vault_pubkey)
+        .bind(input.desired_active)
+        .bind(floor)
+        .bind(&input.expected_policy_account)
+        .bind(&input.expected_subscription_authority)
+        .bind(&input.expected_recurring_delegation)
+        .bind(start_slot)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(AutodepositVaultConfig {
+            id: row.get("id"),
+            input,
+            generation: row.get("generation"),
+        })
+    }
+
+    pub async fn load_autodeposit_vault_config(
+        &self,
+        settings: &str,
+        vault_pubkey: &str,
+    ) -> Result<Option<AutodepositVaultConfig>, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, cluster, settings, wallet, vault_index, vault_pubkey,
+                   desired_active, wallet_balance_floor_raw, expected_policy_account,
+                   expected_subscription_authority, expected_recurring_delegation,
+                   observation_start_slot, generation
+            FROM loyal_yield.autodeposit_vault_configs
+            WHERE settings = $1 AND vault_pubkey = $2
+            "#,
+        )
+        .bind(settings)
+        .bind(vault_pubkey)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(AutodepositVaultConfig {
+                id: row.get("id"),
+                generation: row.get("generation"),
+                input: AutodepositVaultConfigInput {
+                    cluster: row.get("cluster"),
+                    settings: row.get("settings"),
+                    wallet: row.get("wallet"),
+                    vault_index: u8::try_from(row.get::<i16, _>("vault_index")).map_err(|_| {
+                        OrchestratorError::StoreInvariant(
+                            "Autodeposit vault index does not fit u8".to_owned(),
+                        )
+                    })?,
+                    vault_pubkey: row.get("vault_pubkey"),
+                    desired_active: row.get("desired_active"),
+                    wallet_balance_floor_raw: nonnegative_i64_to_u64(
+                        row.get("wallet_balance_floor_raw"),
+                        "wallet_balance_floor_raw",
+                    )?,
+                    expected_policy_account: row.get("expected_policy_account"),
+                    expected_subscription_authority: row.get("expected_subscription_authority"),
+                    expected_recurring_delegation: row.get("expected_recurring_delegation"),
+                    observation_start_slot: nonnegative_i64_to_u64(
+                        row.get("observation_start_slot"),
+                        "observation_start_slot",
+                    )?,
+                },
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn reconcile_autodeposit_snapshot(
+        &self,
+        input: AutodepositSnapshotInput,
+    ) -> Result<AutodepositChainProjection, OrchestratorError> {
+        let observation_slot = to_i64_slot(input.observation_slot)?;
+        let status = if !input.observation_complete {
+            AutodepositProjectionStatus::Pending
+        } else if input.policy_valid
+            && input.subscription_authority_valid
+            && input.recurring_delegation_valid
+            && input.token_delegate_valid
+        {
+            AutodepositProjectionStatus::Active
+        } else if !input.policy_valid
+            && !input.subscription_authority_valid
+            && !input.recurring_delegation_valid
+            && !input.token_delegate_valid
+        {
+            AutodepositProjectionStatus::Closed
+        } else {
+            AutodepositProjectionStatus::Inconsistent
+        };
+        let row = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.autodeposit_chain_projections
+                (config_id, status, policy_valid, subscription_authority_valid,
+                 recurring_delegation_valid, token_delegate_valid, observation_complete,
+                 observation_slot, bootstrap_generation, reason)
+            SELECT $1,$2,$3,$4,$5,$6,$7,$8,
+                   CASE WHEN $2 = 'active' THEN config.generation ELSE NULL END,$9
+            FROM loyal_yield.autodeposit_vault_configs config WHERE config.id = $1
+            ON CONFLICT (config_id) DO UPDATE SET
+                status = EXCLUDED.status,
+                policy_valid = EXCLUDED.policy_valid,
+                subscription_authority_valid = EXCLUDED.subscription_authority_valid,
+                recurring_delegation_valid = EXCLUDED.recurring_delegation_valid,
+                token_delegate_valid = EXCLUDED.token_delegate_valid,
+                observation_complete = EXCLUDED.observation_complete,
+                observation_slot = EXCLUDED.observation_slot,
+                bootstrap_generation = CASE
+                    WHEN EXCLUDED.status = 'active'
+                     AND loyal_yield.autodeposit_chain_projections.bootstrap_generation
+                         IS DISTINCT FROM EXCLUDED.bootstrap_generation
+                    THEN EXCLUDED.bootstrap_generation
+                    ELSE loyal_yield.autodeposit_chain_projections.bootstrap_generation
+                END,
+                reason = EXCLUDED.reason,
+                updated_at = now()
+            WHERE EXCLUDED.observation_slot >= loyal_yield.autodeposit_chain_projections.observation_slot
+            RETURNING config_id, status, observation_slot, bootstrap_generation
+            "#,
+        )
+        .bind(input.config_id).bind(status.as_str()).bind(input.policy_valid)
+        .bind(input.subscription_authority_valid).bind(input.recurring_delegation_valid)
+        .bind(input.token_delegate_valid).bind(input.observation_complete)
+        .bind(observation_slot).bind(&input.reason).fetch_optional(&self.pool).await?;
+        let row = match row {
+            Some(row) => row,
+            None => sqlx::query("SELECT config_id, status, observation_slot, bootstrap_generation FROM loyal_yield.autodeposit_chain_projections WHERE config_id = $1")
+                .bind(input.config_id).fetch_one(&self.pool).await?,
+        };
+        let status = match row.get::<String, _>("status").as_str() {
+            "pending" => AutodepositProjectionStatus::Pending,
+            "active" => AutodepositProjectionStatus::Active,
+            "closed" => AutodepositProjectionStatus::Closed,
+            _ => AutodepositProjectionStatus::Inconsistent,
+        };
+        Ok(AutodepositChainProjection {
+            config_id: row.get("config_id"),
+            status,
+            observation_slot: nonnegative_i64_to_u64(
+                row.get("observation_slot"),
+                "observation_slot",
+            )?,
+            bootstrap_generation: row.get("bootstrap_generation"),
+        })
+    }
+
+    pub async fn effective_autodeposit_active(
+        &self,
+        config_id: i64,
+    ) -> Result<bool, OrchestratorError> {
+        Ok(sqlx::query_scalar(
+            "SELECT COALESCE(loyal_yield.effective_autodeposit_active($1), FALSE)",
+        )
+        .bind(config_id)
+        .fetch_one(&self.pool)
+        .await?)
     }
 
     pub async fn load_earn_reconciliation_context(
@@ -1737,8 +1993,12 @@ impl NeonSqlClient {
                 (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
                  wallet, wallet_usdc_ata, vault_usdc_ata, token_mint, wallet_token_ata,
                  vault_token_ata, delegated_signers, threshold, max_amount_per_period, active,
-                 last_seen_slot, last_seen_signature)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''), $10, $11, $12, $13, $14, $15, TRUE, $16, $17)
+                 wallet_balance_floor_raw, last_seen_slot, last_seen_signature)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''), $10, $11, $12, $13, $14, $15,
+                COALESCE((SELECT desired_active FROM loyal_yield.autodeposit_vault_configs
+                          WHERE settings = $1 AND wallet = $7 AND vault_index = $5), TRUE),
+                (SELECT wallet_balance_floor_raw FROM loyal_yield.autodeposit_vault_configs
+                 WHERE settings = $1 AND wallet = $7 AND vault_index = $5), $16, $17)
             ON CONFLICT (policy_account) DO UPDATE SET
                 settings = CASE
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
@@ -1807,8 +2067,14 @@ impl NeonSqlClient {
                 END,
                 active = CASE
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
-                    THEN TRUE
+                    THEN EXCLUDED.active
                     ELSE loyal_yield.balance_sweep_targets.active
+                END,
+                wallet_balance_floor_raw = CASE
+                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
+                    THEN COALESCE(EXCLUDED.wallet_balance_floor_raw,
+                                  loyal_yield.balance_sweep_targets.wallet_balance_floor_raw)
+                    ELSE loyal_yield.balance_sweep_targets.wallet_balance_floor_raw
                 END,
                 last_seen_at = CASE
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
@@ -1868,6 +2134,13 @@ impl NeonSqlClient {
             FROM loyal_yield.balance_sweep_targets
             WHERE active
               AND lifecycle_status = 'active'
+              AND NOT EXISTS (
+                SELECT 1 FROM loyal_yield.autodeposit_vault_configs config
+                WHERE config.settings = balance_sweep_targets.settings
+                  AND config.wallet = balance_sweep_targets.wallet
+                  AND config.vault_index = balance_sweep_targets.vault_index
+                  AND NOT loyal_yield.effective_autodeposit_active(config.id)
+              )
             ORDER BY id
             "#,
         )

@@ -21,13 +21,14 @@ use klend_interface::{
 use loyal_actions::{
     decode_squads_policy_create_actions, derive_associated_token_account,
     derive_kamino_vanilla_obligation, earn_stablecoin, earn_stablecoins, SquadsSettingsActionView,
-    SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+    SQUADS_SMART_ACCOUNT_PROGRAM_ID, SUBSCRIPTIONS_PROGRAM_ID, USDC_MINT,
 };
 use loyal_squads_policy_monitor::{PolicyMonitor, PostgresPolicyMatchSink};
 use loyal_yield_store::{
-    EarnCleanupMutation, EarnDepositMutation, EarnDirectMutation, EarnIdleTokenMutation,
-    EarnPolicyOnlyMutation, EarnReconciliationEnqueueInput, EarnReconciliationEnqueueOutcome,
-    EarnReconciliationVaultInput, EarnReserveMutation, OrchestratorStore, PolicyMatchInput,
+    AutodepositSnapshotInput, AutodepositVaultConfig, EarnCleanupMutation, EarnDepositMutation,
+    EarnDirectMutation, EarnIdleTokenMutation, EarnPolicyOnlyMutation,
+    EarnReconciliationEnqueueInput, EarnReconciliationEnqueueOutcome, EarnReconciliationVaultInput,
+    EarnReserveMutation, OrchestratorStore, PolicyMatchInput,
 };
 use num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
@@ -113,6 +114,21 @@ impl EarnChainReader for RpcEarnChainReader {
         vault: &'a EarnVaultWatch,
     ) -> Pin<Box<dyn Future<Output = Result<EarnDirectMutation>> + Send + 'a>> {
         Box::pin(async move {
+            if let Some(config) = self
+                .store
+                .load_autodeposit_vault_config(&vault.settings, &vault.vault)
+                .await?
+            {
+                let rpc = Arc::clone(&self.rpc);
+                let config_for_rpc = config.clone();
+                let slot = update.slot;
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    read_autodeposit_snapshot(rpc.as_ref(), &config_for_rpc, slot)
+                })
+                .await
+                .context("Autodeposit RPC snapshot task panicked")??;
+                self.store.reconcile_autodeposit_snapshot(snapshot).await?;
+            }
             let context = self
                 .store
                 .load_earn_reconciliation_context(&vault.settings, vault.vault_index, &vault.vault)
@@ -145,6 +161,70 @@ impl EarnChainReader for RpcEarnChainReader {
             .context("Autoswap RPC transaction proof task panicked")?
         })
     }
+}
+
+fn read_autodeposit_snapshot(
+    rpc: &RpcClient,
+    config: &AutodepositVaultConfig,
+    minimum_slot: u64,
+) -> Result<AutodepositSnapshotInput> {
+    let expected = &config.input;
+    let policy = Pubkey::from_str(&expected.expected_policy_account)?;
+    let subscription_authority = Pubkey::from_str(&expected.expected_subscription_authority)?;
+    let recurring_delegation = Pubkey::from_str(&expected.expected_recurring_delegation)?;
+    let wallet = Pubkey::from_str(&expected.wallet)?;
+    let wallet_ata = derive_associated_token_account(wallet, USDC_MINT, spl_token::ID);
+    let response = rpc.get_multiple_accounts_with_config(
+        &[
+            policy,
+            subscription_authority,
+            recurring_delegation,
+            wallet_ata,
+        ],
+        RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
+            commitment: Some(CommitmentConfig::finalized()),
+            min_context_slot: Some(minimum_slot.max(expected.observation_start_slot)),
+            ..RpcAccountInfoConfig::default()
+        },
+    )?;
+    let [policy_account, authority_account, delegation_account, token_account] =
+        response.value.as_slice()
+    else {
+        bail!("Autodeposit snapshot did not return four requested accounts");
+    };
+    let policy_valid = policy_account
+        .as_ref()
+        .is_some_and(|account| account.owner == SQUADS_SMART_ACCOUNT_PROGRAM_ID);
+    let subscription_authority_valid = authority_account
+        .as_ref()
+        .is_some_and(|account| account.owner == SUBSCRIPTIONS_PROGRAM_ID);
+    let recurring_delegation_valid = delegation_account
+        .as_ref()
+        .is_some_and(|account| account.owner == SUBSCRIPTIONS_PROGRAM_ID);
+    let token_delegate_valid = token_account.as_ref().is_some_and(|account| {
+        if account.owner != spl_token::ID {
+            return false;
+        }
+        spl_token::state::Account::unpack(&account.data)
+            .ok()
+            .is_some_and(|token| {
+                token.owner == wallet
+                    && token.mint == USDC_MINT
+                    && token.delegate
+                        == solana_program::program_option::COption::Some(subscription_authority)
+            })
+    });
+    Ok(AutodepositSnapshotInput {
+        config_id: config.id,
+        observation_slot: response.context.slot,
+        observation_complete: true,
+        policy_valid,
+        subscription_authority_valid,
+        recurring_delegation_valid,
+        token_delegate_valid,
+        reason: None,
+    })
 }
 
 fn resolve_rpc_mutation(
