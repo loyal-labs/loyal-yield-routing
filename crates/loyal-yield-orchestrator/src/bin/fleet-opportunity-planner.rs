@@ -17,8 +17,8 @@ use loyal_yield_orchestrator::fleet_orchestration::{
     EconomicPolicy, FleetObservationConfig, FleetPlanningDirtyVaultLease, FleetPlanningStateInput,
     FleetWorkerRole, IneligibleReason, MaterialMarketFrontier, ObservedFleetOpportunity,
     ObservedSourceKind, OptimizerEpochInput, RebalanceOpportunityInput,
-    RebalanceOpportunityOperationClass, RouteFeePolicy, TargetCapacityCurve, WaveLimits,
-    MARKET_MATERIAL_CAPACITY_DRIFT_PPM, MARKET_WAKE_PRICE_BUCKET_USD_MICROS,
+    RebalanceOpportunityOperationClass, RouteFeePolicy, TargetCapacityCurve, VoltrObservationError,
+    WaveLimits, MARKET_MATERIAL_CAPACITY_DRIFT_PPM, MARKET_WAKE_PRICE_BUCKET_USD_MICROS,
     MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS, MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG,
     MAXIMUM_SUPPORTED_RESERVE_CATALOG_AGE_SECONDS, MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
     RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT,
@@ -1598,7 +1598,26 @@ async fn run_backyard_voltr_planning_cycle(
         .and_then(|slot| u64::try_from(slot).ok())
         .filter(|slot| *slot > 0)
         .unwrap_or(1);
-    let observation = observe_backyard_voltr_confirmed(&binding.rpc_url, min_context_slot)?;
+    let observation = match observe_backyard_voltr_confirmed(&binding.rpc_url, min_context_slot) {
+        Ok(observation) => observation,
+        Err(error)
+            if matches!(&error, VoltrObservationError::MixedOrStaleContext)
+                || matches!(
+                    error.code(),
+                    "receipt_scan_rpc_failed"
+                        | "receipt_scan_rate_limited"
+                        | "vault_snapshot_rpc_failed"
+                ) =>
+        {
+            return Ok(json!({
+                "status": "backyard_voltr_deferred_observation",
+                "vaultId": binding.vault_id.as_i64(),
+                "reason": error.code(),
+                "mutating": false,
+            }));
+        }
+        Err(error) => return Err(error.into()),
+    };
     let durable = neon.voltr_vault_planning_state(binding.vault_id).await?;
     let result = match plan_backyard_voltr_opportunity(
         &observation,
