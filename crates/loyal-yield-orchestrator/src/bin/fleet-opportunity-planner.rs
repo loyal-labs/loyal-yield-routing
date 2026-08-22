@@ -12,15 +12,16 @@ use loyal_yield_orchestrator::fleet_orchestration::{
     observe_fleet_opportunities, observe_fleet_opportunities_for_vaults,
     observe_fleet_opportunities_without_queue_schema, observe_market_epoch,
     plan_backyard_voltr_opportunity, plan_capacity_aware_wave, route_fee_budget,
-    run_deterministic_benchmark, BackyardVoltrPlanningConfig, BackyardVoltrPlanningOutcome,
-    CapacityBand, DurablePgWakeupEvent, DurablePgWakeupListener, EconomicPolicy,
-    FleetObservationConfig, FleetPlanningDirtyVaultLease, FleetPlanningStateInput, FleetWorkerRole,
-    IneligibleReason, MaterialMarketFrontier, ObservedFleetOpportunity, ObservedSourceKind,
-    OptimizerEpochInput, RebalanceOpportunityInput, RebalanceOpportunityOperationClass,
-    RouteFeePolicy, TargetCapacityCurve, WaveLimits, MARKET_MATERIAL_CAPACITY_DRIFT_PPM,
-    MARKET_WAKE_PRICE_BUCKET_USD_MICROS, MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS,
-    MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG, MAXIMUM_SUPPORTED_RESERVE_CATALOG_AGE_SECONDS,
-    MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS, RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT,
+    run_deterministic_benchmark, BackyardVoltrPlanningConfig, BackyardVoltrPlanningError,
+    BackyardVoltrPlanningOutcome, CapacityBand, DurablePgWakeupEvent, DurablePgWakeupListener,
+    EconomicPolicy, FleetObservationConfig, FleetPlanningDirtyVaultLease, FleetPlanningStateInput,
+    FleetWorkerRole, IneligibleReason, MaterialMarketFrontier, ObservedFleetOpportunity,
+    ObservedSourceKind, OptimizerEpochInput, RebalanceOpportunityInput,
+    RebalanceOpportunityOperationClass, RouteFeePolicy, TargetCapacityCurve, WaveLimits,
+    MARKET_MATERIAL_CAPACITY_DRIFT_PPM, MARKET_WAKE_PRICE_BUCKET_USD_MICROS,
+    MAXIMUM_CONFIRMED_VERIFICATION_AGE_SECONDS, MAXIMUM_RESERVE_ECONOMIC_SLOT_LAG,
+    MAXIMUM_SUPPORTED_RESERVE_CATALOG_AGE_SECONDS, MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
+    RESERVE_ECONOMIC_EXPIRY_MILLIS_PER_SLOT,
 };
 use loyal_yield_orchestrator::{
     enabled_stable_mints_from_env, NeonSqlClient, NeonSqlConfig, OrchestratorError, SnapshotId,
@@ -1599,7 +1600,7 @@ async fn run_backyard_voltr_planning_cycle(
         .unwrap_or(1);
     let observation = observe_backyard_voltr_confirmed(&binding.rpc_url, min_context_slot)?;
     let durable = neon.voltr_vault_planning_state(binding.vault_id).await?;
-    let result = plan_backyard_voltr_opportunity(
+    let result = match plan_backyard_voltr_opportunity(
         &observation,
         &market_epoch,
         &durable,
@@ -1608,7 +1609,18 @@ async fn run_backyard_voltr_planning_cycle(
             estimated_cost_lamports: DEFAULT_BACKYARD_VOLTR_ESTIMATED_COST_LAMPORTS,
             now: Utc::now(),
         },
-    )?;
+    ) {
+        Ok(result) => result,
+        Err(BackyardVoltrPlanningError::MarketCoverage) => {
+            return Ok(json!({
+                "status": "backyard_voltr_deferred_market_coverage",
+                "vaultId": binding.vault_id.as_i64(),
+                "contextSlot": observation.context_slot,
+                "mutating": false,
+            }));
+        }
+        Err(error) => return Err(error.into()),
+    };
     match result {
         BackyardVoltrPlanningOutcome::RecoverExisting => Ok(json!({
             "status": "backyard_voltr_recovery_precedes_planning",

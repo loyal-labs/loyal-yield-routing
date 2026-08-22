@@ -218,11 +218,14 @@ pub fn plan_backyard_voltr_opportunity(
         target_apy_bps - source_apy_bps
     };
     let annual_gain = if edge_bps > 0 {
-        amount_raw
+        let gain = amount_raw
             .checked_mul(edge_bps)
             .and_then(|value| value.checked_div(10_000))
-            .filter(|value| *value > 0)
-            .ok_or(BackyardVoltrPlanningError::Arithmetic)?
+            .ok_or(BackyardVoltrPlanningError::Arithmetic)?;
+        if gain == 0 {
+            return Ok(BackyardVoltrPlanningOutcome::Noop);
+        }
+        gain
     } else {
         0
     };
