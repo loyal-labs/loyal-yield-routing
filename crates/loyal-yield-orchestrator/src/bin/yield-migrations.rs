@@ -327,6 +327,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0053_multiply_production_engine.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 54,
+        name: "earn_max_per_user",
+        sql: include_str!("../../../loyal-yield-store/migrations/0054_earn_max_per_user.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -446,7 +452,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     apply_migration(&pool, validation_fence).await?;
 
-    validate_schema(&pool).await?;
+    if validation_fence.version == 54 {
+        validate_earn_max_schema(&pool).await?;
+    } else {
+        validate_schema(&pool).await?;
+    }
     record_applied(&pool, validation_fence).await?;
     release_migration_apply_lock(migration_apply_lock_connection.as_mut()).await?;
     println!("loyal_yield migrations are up to date");
@@ -718,6 +728,53 @@ async fn record_applied(pool: &PgPool, migration: &Migration) -> Result<(), sqlx
     .bind(migration.checksum())
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+async fn validate_earn_max_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+    let valid: bool = sqlx::query_scalar(
+        r#"
+        SELECT
+            to_regclass('loyal_yield.earn_max_policy_sets') IS NOT NULL
+            AND to_regclass('loyal_yield.multiply_position_snapshots') IS NOT NULL
+            AND NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'loyal_yield'
+                  AND table_name = 'multiply_route_states'
+                  AND column_name = 'vault_id'
+            )
+            AND 3 = (
+                SELECT count(*)
+                FROM information_schema.columns
+                WHERE table_schema = 'loyal_yield'
+                  AND table_name = 'multiply_route_states'
+                  AND column_name IN ('settings', 'vault_index', 'vault')
+                  AND is_nullable = 'NO'
+            )
+            AND NOT EXISTS (
+                SELECT 1
+                FROM loyal_yield.multiply_route_states
+                WHERE state ->> 'schemaVersion' <> '5'
+                   OR state ->> 'engineVersion' <> 'earn_max_v1'
+                   OR state ->> 'settings' <> settings
+                   OR state ->> 'vaultIndex' <> vault_index::TEXT
+                   OR state ->> 'vault' <> vault
+            )
+            AND EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conrelid = 'loyal_yield.multiply_operations'::regclass
+                  AND conname = 'multiply_operations_engine_version_check'
+                  AND pg_get_constraintdef(oid) LIKE '%earn_max_v1%'
+            )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if !valid {
+        return Err("migration 54 Earn MAX schema validation failed".into());
+    }
     Ok(())
 }
 

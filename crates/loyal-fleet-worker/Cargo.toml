@@ -21,6 +21,7 @@ chrono = { workspace = true, default-features = false, features = ["clock", "ser
 futures-util.workspace = true
 klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
 loyal-actions = { path = "../loyal-actions" }
+loyal-kamino-codec = { path = "../loyal-kamino-codec" }
 loyal-observability = { path = "../loyal-observability" }
 loyal-yield-orchestrator = { path = "../loyal-yield-orchestrator" }
 loyal-yield-router = { path = "../loyal-yield-router" }

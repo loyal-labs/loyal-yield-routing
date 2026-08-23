@@ -1,11 +1,10 @@
-use super::config::{
-    strategy, StrategyConfig, KLEND, STRATEGIES, TOKEN, TOKEN_2022, USDC_CUSTODY, USDC_MINT, VAULT,
-};
+use super::config::{EarnMaxTopology, StrategyConfig, KLEND, TOKEN, TOKEN_2022, USDC_MINT};
 use klend_interface::{
     from_account_data,
     state::{Obligation, Reserve},
 };
 use loyal_yield_store::fleet_orchestration::{StrategyKey, TokenBalance};
+use loyal_kamino_codec::{snapshot_from_account, ReserveTarget};
 use num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -26,6 +25,8 @@ pub struct StrategyObservation {
     pub debt_mint_factor: u64,
     pub collateral_total_supply_raw: u64,
     pub collateral_total_liquidity_sf: String,
+    pub collateral_supply_apy_bps: u64,
+    pub debt_borrow_apy_bps: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -55,27 +56,30 @@ impl ObservedRoute {
     }
 }
 
-pub async fn observe_confirmed(rpc: &RpcClient) -> Result<ObservedRoute, Box<dyn Error>> {
-    observe_confirmed_with_extra(rpc, &[]).await
+pub async fn observe_confirmed(
+    rpc: &RpcClient,
+    topology: EarnMaxTopology,
+) -> Result<ObservedRoute, Box<dyn Error>> {
+    observe_confirmed_with_extra(rpc, topology, &[]).await
 }
 
 pub async fn observe_confirmed_with_extra(
     rpc: &RpcClient,
+    topology: EarnMaxTopology,
     extra: &[(&str, &str, &str)],
 ) -> Result<ObservedRoute, Box<dyn Error>> {
-    let keys = [
-        USDC_CUSTODY,
-        super::config::SYRUP_CUSTODY,
-        super::config::PYUSD_CUSTODY,
-        STRATEGIES[0].obligation,
-        STRATEGIES[1].obligation,
-        STRATEGIES[0].collateral_reserve,
-        STRATEGIES[0].debt_reserve,
-        STRATEGIES[1].debt_reserve,
-    ]
-    .map(Pubkey::from_str)
-    .into_iter()
-    .collect::<Result<Vec<_>, _>>()?;
+    let source_config = topology.strategy(StrategyKey::SyrupUsdcUsdc);
+    let target_config = topology.strategy(StrategyKey::SyrupUsdcPyusd);
+    let keys = vec![
+        topology.claim_custody,
+        topology.collateral_custody,
+        target_config.debt_custody,
+        source_config.obligation,
+        target_config.obligation,
+        Pubkey::from_str(source_config.collateral_reserve)?,
+        Pubkey::from_str(source_config.debt_reserve)?,
+        Pubkey::from_str(target_config.debt_reserve)?,
+    ];
     let response = rpc
         .get_multiple_accounts_with_commitment(&keys, CommitmentConfig::confirmed())
         .await?;
@@ -84,29 +88,65 @@ pub async fn observe_confirmed_with_extra(
             .as_ref()
             .ok_or_else(|| format!("required mainnet account {} is absent", keys[index]))
     };
-    let usdc = classic_balance(account(0)?, USDC_MINT)?;
-    let syrup = classic_balance(account(1)?, super::config::SYRUP_MINT)?;
-    let pyusd = token_2022_balance(account(2)?, super::config::PYUSD_MINT)?;
-    let collateral_reserve = decode_reserve(account(5)?, STRATEGIES[0].collateral_reserve)?;
-    let source_debt_reserve = decode_reserve(account(6)?, STRATEGIES[0].debt_reserve)?;
-    let target_debt_reserve = decode_reserve(account(7)?, STRATEGIES[1].debt_reserve)?;
+    let usdc = classic_balance(account(0)?, USDC_MINT, topology.vault)?;
+    let syrup = classic_balance(account(1)?, super::config::SYRUP_MINT, topology.vault)?;
+    let pyusd = token_2022_balance(account(2)?, super::config::PYUSD_MINT, topology.vault)?;
+    let collateral_reserve = decode_reserve(account(5)?, source_config)?;
+    let source_debt_reserve = decode_reserve(account(6)?, source_config)?;
+    let target_debt_reserve = decode_reserve(account(7)?, target_config)?;
+    let collateral_supply_apy_bps = reserve_apy_bps(
+        account(5)?,
+        response.context.slot,
+        Pubkey::from_str(source_config.collateral_reserve)?,
+        true,
+    )?;
+    let source_debt_borrow_apy_bps = reserve_apy_bps(
+        account(6)?,
+        response.context.slot,
+        Pubkey::from_str(source_config.debt_reserve)?,
+        false,
+    )?;
+    let target_debt_borrow_apy_bps = reserve_apy_bps(
+        account(7)?,
+        response.context.slot,
+        Pubkey::from_str(target_config.debt_reserve)?,
+        false,
+    )?;
     let source = match response.value[3].as_ref() {
         Some(value) => decode_obligation(
             value,
-            STRATEGIES[0],
+            source_config,
+            topology.vault,
             &collateral_reserve,
             &source_debt_reserve,
+            collateral_supply_apy_bps,
+            source_debt_borrow_apy_bps,
         )?,
-        None => empty_obligation(STRATEGIES[0], &collateral_reserve, &source_debt_reserve)?,
+        None => empty_obligation(
+            source_config,
+            &collateral_reserve,
+            &source_debt_reserve,
+            collateral_supply_apy_bps,
+            source_debt_borrow_apy_bps,
+        )?,
     };
     let target = match response.value[4].as_ref() {
         Some(value) => decode_obligation(
             value,
-            STRATEGIES[1],
+            target_config,
+            topology.vault,
             &collateral_reserve,
             &target_debt_reserve,
+            collateral_supply_apy_bps,
+            target_debt_borrow_apy_bps,
         )?,
-        None => empty_obligation(STRATEGIES[1], &collateral_reserve, &target_debt_reserve)?,
+        None => empty_obligation(
+            target_config,
+            &collateral_reserve,
+            &target_debt_reserve,
+            collateral_supply_apy_bps,
+            target_debt_borrow_apy_bps,
+        )?,
     };
     let mut external_custody = Vec::with_capacity(extra.len());
     for (account_key, mint, token_program) in extra {
@@ -129,16 +169,21 @@ pub async fn observe_confirmed_with_extra(
     }
     Ok(ObservedRoute {
         slot: response.context.slot,
-        claim: token_balance(USDC_CUSTODY, USDC_MINT, TOKEN, usdc),
+        claim: token_balance(&topology.claim_custody.to_string(), USDC_MINT, TOKEN, usdc),
         collateral_custody: token_balance(
-            super::config::SYRUP_CUSTODY,
+            &topology.collateral_custody.to_string(),
             super::config::SYRUP_MINT,
             TOKEN,
             syrup,
         ),
-        source_debt_custody: token_balance(USDC_CUSTODY, USDC_MINT, TOKEN, usdc),
+        source_debt_custody: token_balance(
+            &source_config.debt_custody.to_string(),
+            USDC_MINT,
+            TOKEN,
+            usdc,
+        ),
         target_debt_custody: token_balance(
-            super::config::PYUSD_CUSTODY,
+            &target_config.debt_custody.to_string(),
             super::config::PYUSD_MINT,
             TOKEN_2022,
             pyusd,
@@ -151,24 +196,22 @@ pub async fn observe_confirmed_with_extra(
 fn classic_balance(
     account: &solana_sdk::account::Account,
     mint: &str,
+    owner: Pubkey,
 ) -> Result<u64, Box<dyn Error>> {
-    classic_balance_for_owner(account, mint, Some(VAULT))
+    classic_balance_for_owner(account, mint, Some(owner))
 }
 
 fn classic_balance_for_owner(
     account: &solana_sdk::account::Account,
     mint: &str,
-    expected_owner: Option<&str>,
+    expected_owner: Option<Pubkey>,
 ) -> Result<u64, Box<dyn Error>> {
     if account.owner != spl_token::id() {
         return Err("classic token account has the wrong owner".into());
     }
     let token = spl_token::state::Account::unpack(&account.data)?;
     if token.mint != Pubkey::from_str(mint)?
-        || expected_owner
-            .map(Pubkey::from_str)
-            .transpose()?
-            .is_some_and(|owner| token.owner != owner)
+        || expected_owner.is_some_and(|owner| token.owner != owner)
     {
         return Err("classic custody mint or authority drifted".into());
     }
@@ -178,24 +221,22 @@ fn classic_balance_for_owner(
 fn token_2022_balance(
     account: &solana_sdk::account::Account,
     mint: &str,
+    owner: Pubkey,
 ) -> Result<u64, Box<dyn Error>> {
-    token_2022_balance_for_owner(account, mint, Some(VAULT))
+    token_2022_balance_for_owner(account, mint, Some(owner))
 }
 
 fn token_2022_balance_for_owner(
     account: &solana_sdk::account::Account,
     mint: &str,
-    expected_owner: Option<&str>,
+    expected_owner: Option<Pubkey>,
 ) -> Result<u64, Box<dyn Error>> {
     if account.owner != spl_token_2022::id() {
         return Err("Token-2022 account has the wrong owner".into());
     }
     let token = StateWithExtensions::<spl_token_2022::state::Account>::unpack(&account.data)?;
     if token.base.mint != Pubkey::from_str(mint)?
-        || expected_owner
-            .map(Pubkey::from_str)
-            .transpose()?
-            .is_some_and(|owner| token.base.owner != owner)
+        || expected_owner.is_some_and(|owner| token.base.owner != owner)
     {
         return Err("Token-2022 custody mint or authority drifted".into());
     }
@@ -214,14 +255,17 @@ fn token_balance(account: &str, mint: &str, token_program: &str, amount_raw: u64
 fn decode_obligation(
     account: &solana_sdk::account::Account,
     config: StrategyConfig,
+    vault: Pubkey,
     collateral_reserve: &Reserve,
     debt_reserve: &Reserve,
+    collateral_supply_apy_bps: u64,
+    debt_borrow_apy_bps: u64,
 ) -> Result<StrategyObservation, Box<dyn Error>> {
     if account.owner != Pubkey::from_str(KLEND)? {
         return Err("obligation has the wrong program owner".into());
     }
     let obligation = from_account_data::<Obligation>(&account.data)?;
-    if obligation.owner != Pubkey::from_str(VAULT)?
+    if obligation.owner != vault
         || obligation.lending_market != Pubkey::from_str(config.market)?
         || obligation.elevation_group != 0
     {
@@ -271,6 +315,8 @@ fn decode_obligation(
             .ok_or("debt mint factor overflow")?,
         collateral_total_supply_raw: collateral_reserve.collateral_total_supply(),
         collateral_total_liquidity_sf: reserve_total_liquidity_sf(collateral_reserve)?.to_string(),
+        collateral_supply_apy_bps,
+        debt_borrow_apy_bps,
     })
 }
 
@@ -278,6 +324,8 @@ fn empty_obligation(
     config: StrategyConfig,
     collateral_reserve: &Reserve,
     debt_reserve: &Reserve,
+    collateral_supply_apy_bps: u64,
+    debt_borrow_apy_bps: u64,
 ) -> Result<StrategyObservation, Box<dyn Error>> {
     Ok(StrategyObservation {
         strategy_key: config.key,
@@ -293,21 +341,55 @@ fn empty_obligation(
             .ok_or("debt mint factor overflow")?,
         collateral_total_supply_raw: collateral_reserve.collateral_total_supply(),
         collateral_total_liquidity_sf: reserve_total_liquidity_sf(collateral_reserve)?.to_string(),
+        collateral_supply_apy_bps,
+        debt_borrow_apy_bps,
     })
+}
+
+fn reserve_apy_bps(
+    account: &solana_sdk::account::Account,
+    slot: u64,
+    reserve: Pubkey,
+    supply: bool,
+) -> Result<u64, Box<dyn Error>> {
+    let snapshot = snapshot_from_account(
+        &ReserveTarget {
+            reserve,
+            market: None,
+            market_name: None,
+            symbol: None,
+            liquidity_mint: None,
+            api_supply_apy: None,
+            api_borrow_apy: None,
+            api_total_supply_usd: None,
+            api_total_borrow_usd: None,
+        },
+        slot,
+        &account.data,
+        500.0,
+    )?;
+    let ratio = if supply {
+        snapshot.supply_apy
+    } else {
+        snapshot.borrow_apy
+    };
+    if !ratio.is_finite() || ratio < 0.0 || ratio > (u64::MAX as f64) / 10_000.0 {
+        return Err("reserve APY is outside the supported range".into());
+    }
+    Ok((ratio * 10_000.0).round() as u64)
 }
 
 fn decode_reserve(
     account: &solana_sdk::account::Account,
-    expected: &str,
+    config: StrategyConfig,
 ) -> Result<Reserve, Box<dyn Error>> {
     if account.owner != Pubkey::from_str(KLEND)? {
         return Err("reserve has the wrong program owner".into());
     }
     let reserve = *from_account_data::<Reserve>(&account.data)?;
-    if reserve.lending_market != Pubkey::from_str(STRATEGIES[0].market)?
+    if reserve.lending_market != Pubkey::from_str(config.market)?
         || reserve.status() != 0
         || reserve.market_price() == 0
-        || Pubkey::from_str(expected)? == Pubkey::default()
     {
         return Err("reserve identity, status, or price drifted".into());
     }
@@ -354,8 +436,9 @@ pub fn collateral_to_liquidity_raw(
 pub fn position_balance(
     observation: &ObservedRoute,
     key: StrategyKey,
+    topology: EarnMaxTopology,
 ) -> loyal_yield_store::fleet_orchestration::MultiplyPosition {
-    let config = strategy(key);
+    let config = topology.strategy(key);
     let position = observation.position(key);
     let health_factor_ppm = if position.debt_value_sf == 0 {
         u64::MAX
@@ -367,15 +450,15 @@ pub fn position_balance(
     };
     loyal_yield_store::fleet_orchestration::MultiplyPosition::Active {
         strategy_key: key,
-        obligation: config.obligation.to_owned(),
+        obligation: config.obligation.to_string(),
         collateral: TokenBalance {
-            account: config.collateral_custody.to_owned(),
+            account: config.collateral_custody.to_string(),
             mint: config.collateral_mint.to_owned(),
             token_program: TOKEN.to_owned(),
             amount_raw: position.collateral_deposited_raw,
         },
         debt: TokenBalance {
-            account: config.debt_custody.to_owned(),
+            account: config.debt_custody.to_string(),
             mint: config.debt_mint.to_owned(),
             token_program: config.debt_token_program.to_owned(),
             amount_raw: position.debt_raw,

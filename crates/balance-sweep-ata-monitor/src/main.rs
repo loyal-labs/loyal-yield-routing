@@ -228,14 +228,20 @@ async fn run(meter: Meter) -> Result<()> {
             "devnet" => PolicyCluster::Devnet,
             other => anyhow::bail!("unsupported policy-monitor cluster {other}"),
         };
-        Some(Arc::new(Mutex::new(PolicyMonitor::new(
+        let earn_max_delegate = std::env::var("EARN_MAX_DELEGATE")
+            .context("EARN_MAX_DELEGATE is required for LaserStream policy projection")?
+            .parse::<Pubkey>()
+            .context("EARN_MAX_DELEGATE must be a Solana pubkey")?;
+        let monitor = PolicyMonitor::new(
             PolicyMonitorConfig {
                 cluster: policy_cluster,
-                commitment: PolicyCommitment::Finalized,
+                commitment: PolicyCommitment::Confirmed,
                 ws_url: String::new(),
             },
             PostgresPolicyMatchSink::from_store(store.clone()),
-        ))))
+        )
+        .with_earn_max_projection(args.rpc_url.clone(), earn_max_delegate);
+        Some(Arc::new(Mutex::new(monitor)))
     } else {
         None
     };

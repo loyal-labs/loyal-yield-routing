@@ -304,6 +304,30 @@ pub fn remove_policies_instruction(
     }
 }
 
+/// Updates one existing hookless ProgramInteraction policy to exact current
+/// instruction bytes and an explicit subset of account pubkeys. This is the
+/// narrow production operation used when a literal protocol primitive changes
+/// direction; it never adds hooks or spending limits.
+pub fn create_exact_program_interaction_policy_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    instructions: &[Instruction],
+    pinned_account_indices: &[Vec<u8>],
+) -> Result<Instruction> {
+    let constraints = exact_program_interaction_constraints(instructions, pinned_account_indices)?;
+    create_program_interaction_action_instruction(
+        settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        constraints,
+    )
+}
+
 pub fn update_exact_program_interaction_policy_instruction(
     settings: Pubkey,
     authority: Pubkey,
@@ -314,14 +338,37 @@ pub fn update_exact_program_interaction_policy_instruction(
     pinned_account_indices: &[Vec<u8>],
 ) -> Result<Instruction> {
     let constraints = exact_program_interaction_constraints(instructions, pinned_account_indices)?;
-    update_program_interaction_action_instruction(
-        settings,
-        authority,
+    let action = SquadsSettingsAction::PolicyUpdate {
         policy,
-        delegated_signer,
-        account_index,
-        constraints,
-    )
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        policy_update_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
+            compile_program_interaction_payload(
+                account_index,
+                constraints,
+                Vec::new(),
+            )?,
+        ),
+        expiration_args: None,
+    };
+    Ok(Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_settings_actions(vec![action]),
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -371,14 +418,39 @@ pub fn create_semantic_program_interaction_policy_instruction(
     specs: Vec<SemanticProgramInteractionConstraint>,
 ) -> Result<Instruction> {
     let constraints = semantic_program_interaction_constraints(specs)?;
-    create_program_interaction_action_instruction(
-        settings,
-        authority,
-        delegated_signer,
-        policy_seed,
-        account_index,
-        constraints,
-    )
+    let (policy, _) = derive_action_account(&settings, policy_seed);
+    let action = SquadsSettingsAction::PolicyCreate {
+        seed: policy_seed,
+        policy_creation_payload: SquadsPolicyCreationPayload::ProgramInteraction(
+            compile_compact_program_interaction_payload(
+                account_index,
+                constraints,
+                Vec::new(),
+            )?,
+        ),
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        start_timestamp: None,
+        expiration_args: None,
+    };
+    Ok(Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_settings_actions(vec![action]),
+    })
 }
 
 fn semantic_program_interaction_constraints(
@@ -840,7 +912,11 @@ fn create_program_interaction_action_instruction_with_spending_limits(
     let action = SquadsSettingsAction::PolicyCreate {
         seed: action_seed,
         policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
-            compile_program_interaction_payload(account_index, constraints, spending_limits)?,
+            compile_program_interaction_payload(
+                account_index,
+                constraints,
+                spending_limits,
+            )?,
         ),
         signers: vec![SquadsSmartAccountSigner {
             key: delegated_signer,
@@ -955,7 +1031,11 @@ fn compile_compact_program_interaction_payload(
     ensure_compact_u8_len(constraints.len())?;
     ensure_compact_u8_len(spending_limits.len())?;
 
-    let legacy = compile_program_interaction_payload(account_index, constraints, spending_limits)?;
+    let legacy = compile_program_interaction_payload(
+        account_index,
+        constraints,
+        spending_limits,
+    )?;
     let mut table = SquadsCompactPubkeyTable::default();
     let instructions_constraints = legacy
         .instructions_constraints

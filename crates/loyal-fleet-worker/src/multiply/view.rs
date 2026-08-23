@@ -5,7 +5,9 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct RouteView<'a> {
     pub route_key: &'a str,
-    pub vault_id: i64,
+    pub settings: &'a str,
+    pub vault_index: u8,
+    pub vault: &'a str,
     pub generation: u64,
     pub cycle: u64,
     pub goal: String,
@@ -16,7 +18,9 @@ pub struct RouteView<'a> {
 pub fn route_view(state: &MultiplyRouteState) -> RouteView<'_> {
     RouteView {
         route_key: &state.route_key,
-        vault_id: state.vault_id,
+        settings: &state.settings,
+        vault_index: state.vault_index,
+        vault: &state.vault,
         generation: state.generation,
         cycle: state.cycle,
         goal: serde_json::to_value(state.goal)

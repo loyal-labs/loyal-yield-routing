@@ -1,4 +1,6 @@
-use super::config::{PolicyConfig, StrategyConfig, JUPITER, KLEND, TOKEN, TOKEN_2022, USDC_MINT};
+use super::config::{
+    EarnMaxTopology, PolicyConfig, StrategyConfig, JUPITER, KLEND, TOKEN, TOKEN_2022, USDC_MINT,
+};
 use loyal_actions::{
     create_semantic_program_interaction_policy_instruction,
     decode_program_interaction_policy_account, decode_squads_policy_create_actions,
@@ -65,6 +67,7 @@ impl PolicyFamily {
 }
 
 pub fn canonical_policy_create(
+    topology: EarnMaxTopology,
     config: StrategyConfig,
     family: PolicyFamily,
     settings: Pubkey,
@@ -72,7 +75,7 @@ pub fn canonical_policy_create(
     delegate: Pubkey,
 ) -> Result<Instruction, Box<dyn Error>> {
     let policy = family.policy(config);
-    if derive_action_account(&settings, policy.seed).0 != Pubkey::from_str(policy.account)? {
+    if derive_action_account(&settings, policy.seed).0 != policy.account {
         return Err("configured policy account is not the PDA for its seed".into());
     }
     create_semantic_program_interaction_policy_instruction(
@@ -81,12 +84,13 @@ pub fn canonical_policy_create(
         delegate,
         policy.seed,
         0,
-        canonical_constraints(config, family)?,
+        canonical_constraints(topology, config, family)?,
     )
     .map_err(Into::into)
 }
 
 pub fn canonical_policy_update(
+    topology: EarnMaxTopology,
     config: StrategyConfig,
     family: PolicyFamily,
     settings: Pubkey,
@@ -96,10 +100,10 @@ pub fn canonical_policy_update(
     update_semantic_program_interaction_policy_instruction(
         settings,
         authority,
-        Pubkey::from_str(family.policy(config).account)?,
+        family.policy(config).account,
         delegate,
         0,
-        canonical_constraints(config, family)?,
+        canonical_constraints(topology, config, family)?,
     )
     .map_err(Into::into)
 }
@@ -124,7 +128,7 @@ pub fn current_policy_matches(
         return Ok(false);
     };
     Ok(current.policy_seed == policy.seed
-        && current.policy_account == Pubkey::from_str(policy.account)?
+        && current.policy_account == policy.account
         && current.delegated_signer == delegate
         && current.threshold == 1
         && current.payload == *expected)
@@ -161,12 +165,13 @@ pub fn constraint_indexes(
 }
 
 fn canonical_constraints(
+    topology: EarnMaxTopology,
     config: StrategyConfig,
     family: PolicyFamily,
 ) -> Result<Vec<Constraint>, Box<dyn Error>> {
     let key = |value: &str| Pubkey::from_str(value);
     let program = key(KLEND)?;
-    let obligation = key(config.obligation)?;
+    let obligation = config.obligation;
     let collateral = key(config.collateral_reserve)?;
     let debt = key(config.debt_reserve)?;
     let refresh = constraint(program, vec![(0, vec![collateral, debt])], REFRESH_RESERVE);
@@ -182,6 +187,7 @@ fn canonical_constraints(
             constraint(
                 program,
                 pins(
+                    topology,
                     config,
                     &[0, 1, 4, 9, 11, 12, 14, 15],
                     MultiplyAction::DepositCollateral,
@@ -195,6 +201,7 @@ fn canonical_constraints(
             constraint(
                 program,
                 pins(
+                    topology,
                     config,
                     &[0, 1, 4, 8, 10, 12, 13, 14],
                     MultiplyAction::BorrowDebt,
@@ -207,14 +214,14 @@ fn canonical_constraints(
         | PolicyFamily::SwapCollateralToDebt
         | PolicyFamily::SwapCollateralToClaim => {
             let (source, destination, source_mint, destination_mint, optional_program) =
-                swap_accounts(config, family);
+                swap_accounts(topology, config, family);
             vec![Constraint {
                 program_id: key(JUPITER)?,
                 account_pubkeys: vec![
                     (0, vec![key(TOKEN)?]),
-                    (2, vec![key(super::config::VAULT)?]),
-                    (3, vec![key(source)?]),
-                    (6, vec![key(destination)?]),
+                    (2, vec![topology.vault]),
+                    (3, vec![source]),
+                    (6, vec![destination]),
                     (7, vec![key(source_mint)?]),
                     (8, vec![key(destination_mint)?]),
                     (9, vec![key(JUPITER)?]),
@@ -232,6 +239,7 @@ fn canonical_constraints(
             constraint(
                 program,
                 pins(
+                    topology,
                     config,
                     &[0, 1, 3, 6, 7, 9, 10, 12],
                     MultiplyAction::RepayDebt,
@@ -245,6 +253,7 @@ fn canonical_constraints(
             constraint(
                 program,
                 pins(
+                    topology,
                     config,
                     &[0, 1, 4, 9, 11, 12, 14, 15],
                     MultiplyAction::WithdrawCollateral,
@@ -272,15 +281,10 @@ fn constraint(
 }
 
 fn swap_accounts(
+    topology: EarnMaxTopology,
     config: StrategyConfig,
     family: PolicyFamily,
-) -> (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-) {
+) -> (Pubkey, Pubkey, &'static str, &'static str, &'static str) {
     let optional = if config.debt_token_program == TOKEN_2022 {
         TOKEN_2022
     } else {
@@ -288,7 +292,7 @@ fn swap_accounts(
     };
     match family {
         PolicyFamily::SwapClaimToCollateral => (
-            super::config::USDC_CUSTODY,
+            topology.claim_custody,
             config.collateral_custody,
             USDC_MINT,
             config.collateral_mint,
@@ -310,7 +314,7 @@ fn swap_accounts(
         ),
         PolicyFamily::SwapCollateralToClaim => (
             config.collateral_custody,
-            super::config::USDC_CUSTODY,
+            topology.claim_custody,
             config.collateral_mint,
             USDC_MINT,
             JUPITER,
@@ -339,11 +343,12 @@ fn route_constraint_index(instructions: &[Instruction]) -> Result<u8, Box<dyn Er
 }
 
 fn pins(
+    topology: EarnMaxTopology,
     config: StrategyConfig,
     indexes: &[u8],
     action: MultiplyAction,
 ) -> Result<Vec<(u8, Vec<Pubkey>)>, Box<dyn Error>> {
-    let template = super::builder::policy_template(config, action)?;
+    let template = super::builder::policy_template(config, topology.vault, action)?;
     indexes
         .iter()
         .map(|index| {
