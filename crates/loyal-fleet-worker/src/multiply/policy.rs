@@ -118,6 +118,19 @@ pub fn canonical_policy_payload(
     Ok(action.payload.clone())
 }
 
+/// Compares the effective ProgramInteraction contract, independent of whether
+/// Squads stored it using the legacy inline-pubkey or compact pubkey-table
+/// encoding. Both decoders resolve account constraints to concrete pubkeys, so
+/// the table itself is serialization metadata rather than policy semantics.
+pub fn canonical_policy_payload_matches(
+    actual: &SquadsProgramInteractionPolicyView,
+    expected: &SquadsProgramInteractionPolicyView,
+) -> bool {
+    actual.vault_index == expected.vault_index
+        && actual.constraints == expected.constraints
+        && actual.spending_limits == expected.spending_limits
+}
+
 pub fn current_policy_matches(
     data: &[u8],
     policy: PolicyConfig,
@@ -131,7 +144,7 @@ pub fn current_policy_matches(
         && current.policy_account == policy.account
         && current.delegated_signer == delegate
         && current.threshold == 1
-        && current.payload == *expected)
+        && canonical_policy_payload_matches(&current.payload, expected))
 }
 
 pub fn constraint_indexes(
