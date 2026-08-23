@@ -59,6 +59,7 @@ const MIGRATION_0060: &str =
 const MIGRATION_0061: &str =
     include_str!("../migrations/0061_coalesced_autodeposit_reconciliation.sql");
 const MIGRATION_0062: &str = include_str!("../migrations/0062_earn_chain_cash_flow_projection.sql");
+const MIGRATION_0063: &str = include_str!("../migrations/0063_earn_max_external_operations.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -542,6 +543,12 @@ impl NeonSqlClient {
                 version: 62,
                 name: "earn_chain_cash_flow_projection",
                 sql: MIGRATION_0062,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 63,
+                name: "earn_max_external_operations",
+                sql: MIGRATION_0063,
                 expected_checksum: None,
             },
         ] {

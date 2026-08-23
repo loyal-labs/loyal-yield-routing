@@ -381,6 +381,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0062_earn_chain_cash_flow_projection.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 63,
+        name: "earn_max_external_operations",
+        sql: include_str!("../../../loyal-yield-store/migrations/0063_earn_max_external_operations.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

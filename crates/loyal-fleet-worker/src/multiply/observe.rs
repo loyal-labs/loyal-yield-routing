@@ -90,7 +90,14 @@ pub async fn observe_confirmed_with_extra(
     };
     let usdc = classic_balance(account(0)?, USDC_MINT, topology.vault)?;
     let syrup = classic_balance(account(1)?, super::config::SYRUP_MINT, topology.vault)?;
-    let pyusd = token_2022_balance(account(2)?, super::config::PYUSD_MINT, topology.vault)?;
+    // The first production strategy is syrupUSDC/USDC. Its vault does not pay
+    // rent for the unadvertised PYUSD custody until that strategy is admitted;
+    // an absent ATA is therefore the same observed balance as zero here.
+    let pyusd = response.value[2]
+        .as_ref()
+        .map(|value| token_2022_balance(value, super::config::PYUSD_MINT, topology.vault))
+        .transpose()?
+        .unwrap_or(0);
     let collateral_reserve = decode_reserve(account(5)?, source_config)?;
     let source_debt_reserve = decode_reserve(account(6)?, source_config)?;
     let target_debt_reserve = decode_reserve(account(7)?, target_config)?;
