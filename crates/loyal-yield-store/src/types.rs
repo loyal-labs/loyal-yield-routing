@@ -39,6 +39,7 @@ pub struct EarnMaxPolicySetProjectionInput {
     pub vault: String,
     pub manifest_version: String,
     pub manifest_sha256: String,
+    pub policy_seed_base: u64,
     pub status: String,
     pub policy_accounts: Value,
     pub observed_signature: String,

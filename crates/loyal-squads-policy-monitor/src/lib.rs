@@ -4,7 +4,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use clap::ValueEnum;
 use futures_util::{future::BoxFuture, SinkExt, StreamExt};
 use loyal_actions::{
-    decode_squads_policy_create_actions, detect_balance_sweep_policy_create,
+    decode_squads_policy_create_actions, derive_action_account, detect_balance_sweep_policy_create,
     detect_jupiter_cross_mint_policy_action, detect_squads_policy_removals,
     detect_squads_policy_update_identity, detect_yield_route_policy_create,
     generalized_cross_mint_manifest_fingerprint, DetectedBalanceSweepPolicy,
@@ -13,7 +13,10 @@ use loyal_actions::{
     SquadsSettingsActionView, YieldRouteUniversePreset, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
 };
 use loyal_fleet_worker::multiply::{
-    config::{derive_earn_max_topology, MANIFEST_VERSION},
+    config::{
+        derive_earn_max_topology, derive_earn_max_topology_with_policy_seed_base,
+        EARN_MAX_VAULT_INDEX, MANIFEST_VERSION,
+    },
     policy::{
         canonical_policy_payload, canonical_policy_update, current_policy_matches, PolicyFamily,
     },
@@ -34,7 +37,7 @@ use solana_sdk::{
     transaction::VersionedTransaction,
 };
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, HashSet},
     fmt,
     io::{self, Write},
     str::FromStr,
@@ -184,6 +187,12 @@ pub trait PolicyMatchSink {
     ) -> BoxFuture<'_, Result<(), MonitorError>> {
         Box::pin(async { Ok(()) })
     }
+    fn earn_max_policy_seed_base(
+        &mut self,
+        _settings: Pubkey,
+    ) -> BoxFuture<'_, Result<Option<u64>, MonitorError>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 pub struct StdoutPolicyMatchSink;
@@ -314,6 +323,18 @@ impl PolicyMatchSink for PostgresPolicyMatchSink {
                 .project_earn_max_policy_set(EARN_MAX_POLICY_PROJECTION_CONSUMER, input)
                 .await?;
             Ok(())
+        })
+    }
+
+    fn earn_max_policy_seed_base(
+        &mut self,
+        settings: Pubkey,
+    ) -> BoxFuture<'_, Result<Option<u64>, MonitorError>> {
+        let store = self.store.clone();
+        Box::pin(async move {
+            Ok(store
+                .load_earn_max_policy_seed_base(&settings.to_string(), EARN_MAX_VAULT_INDEX)
+                .await?)
         })
     }
 }
@@ -634,10 +655,14 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
         instructions: Vec<Instruction>,
     ) -> Result<usize, MonitorError> {
         let mut emitted = 0;
-        let mut earn_max_settings = BTreeSet::new();
+        let mut earn_max_settings = BTreeMap::new();
         for instruction in instructions {
             if self.earn_max_rpc.is_some() {
-                earn_max_settings.extend(affected_earn_max_settings(&instruction)?);
+                for (settings, policy_seed_base) in
+                    self.affected_earn_max_settings(&instruction).await?
+                {
+                    earn_max_settings.insert(settings, policy_seed_base);
+                }
             }
             if let Ok(Some(policy)) = detect_jupiter_cross_mint_policy_action(&instruction) {
                 self.sink
@@ -702,8 +727,8 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
             }
             emitted += recognized;
         }
-        for settings in earn_max_settings {
-            self.project_earn_max_manifest(settings, signature, slot)
+        for (settings, policy_seed_base) in earn_max_settings {
+            self.project_earn_max_manifest(settings, policy_seed_base, signature, slot)
                 .await?;
             emitted += 1;
         }
@@ -713,6 +738,7 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
     async fn project_earn_max_manifest(
         &mut self,
         settings: Pubkey,
+        policy_seed_base: u64,
         signature: &str,
         slot: u64,
     ) -> Result<(), MonitorError> {
@@ -722,7 +748,7 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
         let delegate = self.earn_max_delegate.ok_or_else(|| {
             MonitorError::Decode("Earn MAX projection delegate is not configured".to_owned())
         })?;
-        let topology = derive_earn_max_topology(settings)
+        let topology = derive_earn_max_topology_with_policy_seed_base(settings, policy_seed_base)
             .map_err(|error| MonitorError::Decode(error.to_string()))?;
         let strategy = topology.strategy(StrategyKey::SyrupUsdcUsdc);
         let families = [
@@ -736,10 +762,9 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
         let mut expected = Vec::with_capacity(families.len());
         for family in families {
             let policy = family.policy(strategy);
-            let update = canonical_policy_update(
-                topology, strategy, family, settings, settings, delegate,
-            )
-            .map_err(|error| MonitorError::Decode(error.to_string()))?;
+            let update =
+                canonical_policy_update(topology, strategy, family, settings, settings, delegate)
+                    .map_err(|error| MonitorError::Decode(error.to_string()))?;
             let payload = canonical_policy_payload(&update)
                 .map_err(|error| MonitorError::Decode(error.to_string()))?;
             expected.push((family, policy, update, payload));
@@ -822,6 +847,7 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
                 vault: topology.vault.to_string(),
                 manifest_version: MANIFEST_VERSION.to_owned(),
                 manifest_sha256,
+                policy_seed_base,
                 status: status.to_owned(),
                 policy_accounts: Value::Array(policy_accounts),
                 observed_signature: signature.to_owned(),
@@ -829,6 +855,53 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
                 observed_at: chrono::Utc::now(),
             })
             .await
+    }
+
+    async fn affected_earn_max_settings(
+        &mut self,
+        instruction: &Instruction,
+    ) -> Result<Vec<(Pubkey, u64)>, MonitorError> {
+        let delegate = self.earn_max_delegate.ok_or_else(|| {
+            MonitorError::Decode("Earn MAX projection delegate is not configured".to_owned())
+        })?;
+        let mut settings = BTreeMap::new();
+        if let Ok(actions) = decode_squads_policy_create_actions(instruction) {
+            for action in actions {
+                if let Some(policy_seed_base) = earn_max_policy_seed_base(&action, delegate)? {
+                    settings.insert(action.settings, policy_seed_base);
+                }
+            }
+        }
+        if let Ok(removals) = detect_squads_policy_removals(instruction) {
+            for identity in removals {
+                if let Some(policy_seed_base) = self
+                    .sink
+                    .earn_max_policy_seed_base(identity.settings)
+                    .await?
+                {
+                    if is_earn_max_policy(
+                        identity.settings,
+                        identity.policy_account,
+                        policy_seed_base,
+                    )? {
+                        settings.insert(identity.settings, policy_seed_base);
+                    }
+                }
+            }
+        }
+        if let Ok(Some(identity)) = detect_squads_policy_update_identity(instruction) {
+            if let Some(policy_seed_base) = self
+                .sink
+                .earn_max_policy_seed_base(identity.settings)
+                .await?
+            {
+                if is_earn_max_policy(identity.settings, identity.policy_account, policy_seed_base)?
+                {
+                    settings.insert(identity.settings, policy_seed_base);
+                }
+            }
+        }
+        Ok(settings.into_iter().collect())
     }
 
     async fn process_detected_action(
@@ -869,32 +942,57 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
     }
 }
 
-fn affected_earn_max_settings(instruction: &Instruction) -> Result<Vec<Pubkey>, MonitorError> {
-    let mut settings = BTreeSet::new();
-    if let Ok(actions) = decode_squads_policy_create_actions(instruction) {
-        for action in actions {
-            if is_earn_max_policy(action.settings, action.policy_account)? {
-                settings.insert(action.settings);
+fn earn_max_policy_seed_base(
+    action: &SquadsSettingsActionView,
+    delegate: Pubkey,
+) -> Result<Option<u64>, MonitorError> {
+    if action.threshold != 1 || action.delegated_signers != vec![delegate] {
+        return Ok(None);
+    }
+    let topology = derive_earn_max_topology(action.settings)
+        .map_err(|error| MonitorError::Decode(error.to_string()))?;
+    let strategy = topology.strategy(StrategyKey::SyrupUsdcUsdc);
+    let families = [
+        (PolicyFamily::Deposit, 0_u64),
+        (PolicyFamily::Repay, 1),
+        (PolicyFamily::Borrow, 2),
+        (PolicyFamily::SwapClaimToCollateral, 3),
+        (PolicyFamily::Withdraw, 4),
+        (PolicyFamily::SwapCollateralToClaim, 5),
+    ];
+    for (family, offset) in families {
+        let update = canonical_policy_update(
+            topology,
+            strategy,
+            family,
+            action.settings,
+            action.settings,
+            delegate,
+        )
+        .map_err(|error| MonitorError::Decode(error.to_string()))?;
+        let expected = canonical_policy_payload(&update)
+            .map_err(|error| MonitorError::Decode(error.to_string()))?;
+        if action.payload == expected {
+            let Some(policy_seed_base) = action.policy_seed.checked_sub(offset) else {
+                return Ok(None);
+            };
+            if policy_seed_base > 0
+                && derive_action_account(&action.settings, action.policy_seed).0
+                    == action.policy_account
+            {
+                return Ok(Some(policy_seed_base));
             }
         }
     }
-    if let Ok(removals) = detect_squads_policy_removals(instruction) {
-        for identity in removals {
-            if is_earn_max_policy(identity.settings, identity.policy_account)? {
-                settings.insert(identity.settings);
-            }
-        }
-    }
-    if let Ok(Some(identity)) = detect_squads_policy_update_identity(instruction) {
-        if is_earn_max_policy(identity.settings, identity.policy_account)? {
-            settings.insert(identity.settings);
-        }
-    }
-    Ok(settings.into_iter().collect())
+    Ok(None)
 }
 
-fn is_earn_max_policy(settings: Pubkey, account: Pubkey) -> Result<bool, MonitorError> {
-    let topology = derive_earn_max_topology(settings)
+fn is_earn_max_policy(
+    settings: Pubkey,
+    account: Pubkey,
+    policy_seed_base: u64,
+) -> Result<bool, MonitorError> {
+    let topology = derive_earn_max_topology_with_policy_seed_base(settings, policy_seed_base)
         .map_err(|error| MonitorError::Decode(error.to_string()))?;
     let strategy = topology.strategy(StrategyKey::SyrupUsdcUsdc);
     Ok([

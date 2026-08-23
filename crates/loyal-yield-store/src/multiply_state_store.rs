@@ -28,6 +28,7 @@ pub struct ReadyEarnMaxPolicySet {
     pub settings: String,
     pub vault_index: u8,
     pub vault: String,
+    pub policy_seed_base: u64,
     pub observed_slot: u64,
 }
 
@@ -127,11 +128,41 @@ impl NeonSqlClient {
         .bind(&input.equity_usd_micros)
         .bind(&input.collateral_value_usd_micros)
         .bind(&input.debt_value_usd_micros)
-        .bind(input.leverage_bps.map(i64::try_from).transpose().map_err(|_| invariant("leverage exceeds BIGINT"))?)
-        .bind(input.ltv_bps.map(i64::try_from).transpose().map_err(|_| invariant("LTV exceeds BIGINT"))?)
-        .bind(input.health_factor_ppm.map(i64::try_from).transpose().map_err(|_| invariant("health factor exceeds BIGINT"))?)
-        .bind(input.supply_apy_bps.map(i64::try_from).transpose().map_err(|_| invariant("supply APY exceeds BIGINT"))?)
-        .bind(input.borrow_apy_bps.map(i64::try_from).transpose().map_err(|_| invariant("borrow APY exceeds BIGINT"))?)
+        .bind(
+            input
+                .leverage_bps
+                .map(i64::try_from)
+                .transpose()
+                .map_err(|_| invariant("leverage exceeds BIGINT"))?,
+        )
+        .bind(
+            input
+                .ltv_bps
+                .map(i64::try_from)
+                .transpose()
+                .map_err(|_| invariant("LTV exceeds BIGINT"))?,
+        )
+        .bind(
+            input
+                .health_factor_ppm
+                .map(i64::try_from)
+                .transpose()
+                .map_err(|_| invariant("health factor exceeds BIGINT"))?,
+        )
+        .bind(
+            input
+                .supply_apy_bps
+                .map(i64::try_from)
+                .transpose()
+                .map_err(|_| invariant("supply APY exceeds BIGINT"))?,
+        )
+        .bind(
+            input
+                .borrow_apy_bps
+                .map(i64::try_from)
+                .transpose()
+                .map_err(|_| invariant("borrow APY exceeds BIGINT"))?,
+        )
         .bind(input.forecast_apy_bps)
         .bind(&input.valuation_source)
         .bind(valuation_slot)
@@ -147,7 +178,8 @@ impl NeonSqlClient {
     ) -> Result<Option<ReadyEarnMaxPolicySet>, OrchestratorError> {
         let row = sqlx::query(
             r#"
-            SELECT policy.settings, policy.vault_index, policy.vault, policy.observed_slot
+            SELECT policy.settings, policy.vault_index, policy.vault,
+                   policy.policy_seed_base, policy.observed_slot
             FROM loyal_yield.earn_max_policy_sets policy
             WHERE policy.status = 'ready'
               AND policy.manifest_version = 'earn-max-v1'
@@ -165,12 +197,15 @@ impl NeonSqlClient {
         .await?;
         row.map(|row| {
             let vault_index: i16 = row.try_get("vault_index")?;
+            let policy_seed_base: i64 = row.try_get("policy_seed_base")?;
             let observed_slot: i64 = row.try_get("observed_slot")?;
             Ok(ReadyEarnMaxPolicySet {
                 settings: row.try_get("settings")?,
                 vault_index: u8::try_from(vault_index)
                     .map_err(|_| invariant("Earn MAX vault index exceeds u8"))?,
                 vault: row.try_get("vault")?,
+                policy_seed_base: u64::try_from(policy_seed_base)
+                    .map_err(|_| invariant("Earn MAX policy seed base is negative"))?,
                 observed_slot: u64::try_from(observed_slot)
                     .map_err(|_| invariant("Earn MAX observed slot is negative"))?,
             })
@@ -178,10 +213,35 @@ impl NeonSqlClient {
         .transpose()
     }
 
+    pub async fn load_earn_max_policy_seed_base(
+        &self,
+        settings: &str,
+        vault_index: u8,
+    ) -> Result<Option<u64>, OrchestratorError> {
+        let value: Option<i64> = sqlx::query_scalar(
+            r#"
+            SELECT policy_seed_base
+            FROM loyal_yield.earn_max_policy_sets
+            WHERE settings = $1 AND vault_index = $2
+            LIMIT 1
+            "#,
+        )
+        .bind(settings)
+        .bind(i16::from(vault_index))
+        .fetch_optional(self.pool())
+        .await?;
+        value
+            .map(|seed| {
+                u64::try_from(seed).map_err(|_| invariant("Earn MAX policy seed base is negative"))
+            })
+            .transpose()
+    }
+
     pub async fn earn_max_policy_set_ready(
         &self,
         settings: &str,
         vault_index: u8,
+        policy_seed_base: u64,
     ) -> Result<bool, OrchestratorError> {
         let ready = sqlx::query_scalar(
             r#"
@@ -192,11 +252,16 @@ impl NeonSqlClient {
                   AND vault_index = $2
                   AND manifest_version = 'earn-max-v1'
                   AND status = 'ready'
+                  AND policy_seed_base = $3
             )
             "#,
         )
         .bind(settings)
         .bind(i16::from(vault_index))
+        .bind(
+            i64::try_from(policy_seed_base)
+                .map_err(|_| invariant("Earn MAX policy seed base exceeds BIGINT"))?,
+        )
         .fetch_one(self.pool())
         .await?;
         Ok(ready)
@@ -361,7 +426,7 @@ impl NeonSqlClient {
     ) -> Result<Option<MultiplyRouteLease>, OrchestratorError> {
         validate_lease_input(owner, expires_at)?;
         let row = sqlx::query(
-            "WITH candidate AS (SELECT route_key FROM loyal_yield.multiply_route_states WHERE lease_owner IS NULL OR lease_expires_at<=now() ORDER BY updated_at, route_key FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE loyal_yield.multiply_route_states route SET lease_owner=$1, lease_expires_at=$2, fencing_token=route.fencing_token+1 FROM candidate WHERE route.route_key=candidate.route_key RETURNING route.route_key, route.state_version, route.fencing_token",
+            "WITH candidate AS (SELECT route.route_key FROM loyal_yield.multiply_route_states route INNER JOIN loyal_yield.earn_max_policy_sets policy ON policy.settings=route.settings AND policy.vault_index=route.vault_index AND policy.status='ready' AND policy.policy_seed_base=(route.state->>'policySeedBase')::BIGINT WHERE route.lease_owner IS NULL OR route.lease_expires_at<=now() ORDER BY route.updated_at, route.route_key FOR UPDATE OF route SKIP LOCKED LIMIT 1) UPDATE loyal_yield.multiply_route_states route SET lease_owner=$1, lease_expires_at=$2, fencing_token=route.fencing_token+1 FROM candidate WHERE route.route_key=candidate.route_key RETURNING route.route_key, route.state_version, route.fencing_token",
         )
         .bind(owner)
         .bind(expires_at)
