@@ -357,6 +357,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0058_autoswap_confirmed_reconciliation.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 59,
+        name: "autodeposit_single_target_state",
+        sql: include_str!("../../../loyal-yield-store/migrations/0059_autodeposit_single_target_state.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

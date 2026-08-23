@@ -558,65 +558,50 @@ pub struct EarnSubscriptionTarget {
     pub observation_start_slot: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AutodepositProjectionStatus {
-    Pending,
-    Active,
-    Closed,
-    Inconsistent,
-}
-
-impl AutodepositProjectionStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Active => "active",
-            Self::Closed => "closed",
-            Self::Inconsistent => "inconsistent",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AutodepositVaultConfigInput {
-    pub cluster: String,
-    pub settings: String,
+pub struct AutodepositTargetSnapshotContext {
+    pub target_id: BalanceSweepTargetId,
     pub wallet: String,
-    pub vault_index: u8,
-    pub vault_pubkey: String,
-    pub desired_active: bool,
-    pub wallet_balance_floor_raw: u64,
-    pub expected_policy_account: String,
-    pub expected_subscription_authority: String,
-    pub expected_recurring_delegation: String,
-    pub observation_start_slot: u64,
+    pub wallet_token_ata: String,
+    pub policy_account: String,
+    pub subscription_authority: String,
+    pub recurring_delegation: String,
+    pub setup_generation: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AutodepositVaultConfig {
-    pub id: i64,
-    pub input: AutodepositVaultConfigInput,
-    pub generation: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AutodepositSnapshotInput {
-    pub config_id: i64,
+pub struct AutodepositChainObservation {
+    pub target_id: BalanceSweepTargetId,
     pub observation_slot: u64,
     pub observation_complete: bool,
     pub policy_valid: bool,
     pub subscription_authority_valid: bool,
     pub recurring_delegation_valid: bool,
     pub token_delegate_valid: bool,
-    pub reason: Option<String>,
+    pub wallet_balance_raw: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AutodepositChainProjection {
-    pub config_id: i64,
-    pub status: AutodepositProjectionStatus,
+pub struct AutodepositChainObservationResult {
+    pub target_id: BalanceSweepTargetId,
+    pub chain_status: String,
     pub observation_slot: u64,
     pub bootstrap_generation: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutodepositRecurringDelegationObserved {
+    pub wallet: String,
+    pub vault_pubkey: String,
+    pub subscription_authority: String,
+    pub recurring_delegation: String,
+    pub nonce: u64,
+    pub amount_per_period: u64,
+    pub period_length_seconds: u64,
+    pub start_timestamp: i64,
+    pub expiry_timestamp: i64,
+    pub signature: String,
+    pub slot: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

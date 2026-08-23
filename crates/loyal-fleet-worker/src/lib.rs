@@ -12146,7 +12146,9 @@ async fn repair_idle_vault_deposit_partial_pull_history(
           AND vault_index = $2
           AND vault_pubkey = $3
           AND token_mint = $4
-        ORDER BY active DESC, last_seen_at DESC, id DESC
+        ORDER BY (desired_active AND chain_status = 'active') DESC,
+                 last_seen_at DESC,
+                 id DESC
         LIMIT 1
         "#,
     )

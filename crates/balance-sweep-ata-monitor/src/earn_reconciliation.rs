@@ -21,14 +21,16 @@ use klend_interface::{
 use loyal_actions::{
     decode_squads_policy_create_actions, derive_associated_token_account,
     derive_kamino_vanilla_obligation, earn_stablecoin, earn_stablecoins, SquadsSettingsActionView,
-    SQUADS_SMART_ACCOUNT_PROGRAM_ID, SUBSCRIPTIONS_PROGRAM_ID, USDC_MINT,
+    SQUADS_SMART_ACCOUNT_PROGRAM_ID, SUBSCRIPTIONS_CREATE_RECURRING_DELEGATION,
+    SUBSCRIPTIONS_PROGRAM_ID, USDC_MINT,
 };
 use loyal_squads_policy_monitor::{PolicyMonitor, PostgresPolicyMatchSink};
 use loyal_yield_store::{
-    AutodepositSnapshotInput, AutodepositVaultConfig, EarnCleanupMutation, EarnDepositMutation,
-    EarnDirectMutation, EarnIdleTokenMutation, EarnPolicyOnlyMutation,
-    EarnReconciliationEnqueueInput, EarnReconciliationEnqueueOutcome, EarnReconciliationVaultInput,
-    EarnReserveMutation, OrchestratorStore, PolicyMatchInput,
+    AutodepositChainObservation, AutodepositRecurringDelegationObserved,
+    AutodepositTargetSnapshotContext, EarnCleanupMutation, EarnDepositMutation, EarnDirectMutation,
+    EarnIdleTokenMutation, EarnPolicyOnlyMutation, EarnReconciliationEnqueueInput,
+    EarnReconciliationEnqueueOutcome, EarnReconciliationVaultInput, EarnReserveMutation,
+    OrchestratorStore, PolicyMatchInput,
 };
 use num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
@@ -62,7 +64,7 @@ use crate::{
     monitor_observability::EarnMonitorMetrics,
     smart_account::{
         EarnVaultWatch, NormalizedEarnUpdate, SubscriptionWatchSet, EARN_POLICY_ACCOUNTS,
-        EARN_SMART_ACCOUNTS,
+        EARN_SMART_ACCOUNTS, EARN_WALLETS,
     },
 };
 
@@ -114,20 +116,22 @@ impl EarnChainReader for RpcEarnChainReader {
         vault: &'a EarnVaultWatch,
     ) -> Pin<Box<dyn Future<Output = Result<EarnDirectMutation>> + Send + 'a>> {
         Box::pin(async move {
-            if let Some(config) = self
+            if let Some(context) = self
                 .store
-                .load_autodeposit_vault_config(&vault.settings, &vault.vault)
+                .load_autodeposit_target_snapshot_context(&vault.settings, &vault.vault)
                 .await?
             {
                 let rpc = Arc::clone(&self.rpc);
-                let config_for_rpc = config.clone();
+                let context_for_rpc = context.clone();
                 let slot = update.slot;
                 let snapshot = tokio::task::spawn_blocking(move || {
-                    read_autodeposit_snapshot(rpc.as_ref(), &config_for_rpc, slot)
+                    read_autodeposit_snapshot(rpc.as_ref(), &context_for_rpc, slot)
                 })
                 .await
                 .context("Autodeposit RPC snapshot task panicked")??;
-                self.store.reconcile_autodeposit_snapshot(snapshot).await?;
+                self.store
+                    .reconcile_autodeposit_chain_observation(snapshot)
+                    .await?;
             }
             let context = self
                 .store
@@ -165,15 +169,14 @@ impl EarnChainReader for RpcEarnChainReader {
 
 fn read_autodeposit_snapshot(
     rpc: &RpcClient,
-    config: &AutodepositVaultConfig,
+    target: &AutodepositTargetSnapshotContext,
     minimum_slot: u64,
-) -> Result<AutodepositSnapshotInput> {
-    let expected = &config.input;
-    let policy = Pubkey::from_str(&expected.expected_policy_account)?;
-    let subscription_authority = Pubkey::from_str(&expected.expected_subscription_authority)?;
-    let recurring_delegation = Pubkey::from_str(&expected.expected_recurring_delegation)?;
-    let wallet = Pubkey::from_str(&expected.wallet)?;
-    let wallet_ata = derive_associated_token_account(wallet, USDC_MINT, spl_token::ID);
+) -> Result<AutodepositChainObservation> {
+    let policy = Pubkey::from_str(&target.policy_account)?;
+    let subscription_authority = Pubkey::from_str(&target.subscription_authority)?;
+    let recurring_delegation = Pubkey::from_str(&target.recurring_delegation)?;
+    let wallet = Pubkey::from_str(&target.wallet)?;
+    let wallet_ata = Pubkey::from_str(&target.wallet_token_ata)?;
     let response = rpc.get_multiple_accounts_with_config(
         &[
             policy,
@@ -184,7 +187,7 @@ fn read_autodeposit_snapshot(
         RpcAccountInfoConfig {
             encoding: Some(UiAccountEncoding::Base64),
             commitment: Some(CommitmentConfig::finalized()),
-            min_context_slot: Some(minimum_slot.max(expected.observation_start_slot)),
+            min_context_slot: Some(minimum_slot),
             ..RpcAccountInfoConfig::default()
         },
     )?;
@@ -215,15 +218,20 @@ fn read_autodeposit_snapshot(
                         == solana_program::program_option::COption::Some(subscription_authority)
             })
     });
-    Ok(AutodepositSnapshotInput {
-        config_id: config.id,
+    let wallet_balance_raw = token_account
+        .as_ref()
+        .and_then(|account| spl_token::state::Account::unpack(&account.data).ok())
+        .map(|token| token.amount)
+        .unwrap_or(0);
+    Ok(AutodepositChainObservation {
+        target_id: target.target_id,
         observation_slot: response.context.slot,
         observation_complete: true,
         policy_valid,
         subscription_authority_valid,
         recurring_delegation_valid,
         token_delegate_valid,
-        reason: None,
+        wallet_balance_raw,
     })
 }
 
@@ -687,7 +695,7 @@ fn read_squads_policy_transaction(
         else {
             continue;
         };
-        if program_id != SQUADS_SMART_ACCOUNT_PROGRAM_ID {
+        if program_id != SQUADS_SMART_ACCOUNT_PROGRAM_ID && program_id != SUBSCRIPTIONS_PROGRAM_ID {
             continue;
         }
         let accounts = compiled
@@ -1128,22 +1136,22 @@ pub enum EarnReconciliationProcessOutcome {
 }
 
 pub async fn reconcile_targeted_policy_vault_update(
+    store: &OrchestratorStore,
     chain: &dyn EarnChainReader,
     policy_monitor: &Mutex<PolicyMonitor<PostgresPolicyMatchSink>>,
     update: &NormalizedEarnUpdate,
     vault: &EarnVaultWatch,
 ) -> Result<bool> {
-    if !update
-        .filters
-        .iter()
-        .any(|filter| filter == EARN_SMART_ACCOUNTS || filter == EARN_POLICY_ACCOUNTS)
-    {
+    if !update.filters.iter().any(|filter| {
+        filter == EARN_SMART_ACCOUNTS || filter == EARN_POLICY_ACCOUNTS || filter == EARN_WALLETS
+    }) {
         return Ok(false);
     }
     let Some(account_pubkey) = update.account_pubkey.as_deref() else {
         return Ok(false);
     };
     if account_pubkey != vault.settings
+        && account_pubkey != vault.wallet
         && !vault.accounts.iter().any(|account| {
             account.pubkey == account_pubkey
                 && (account.role == "smart_account" || account.role == "policy")
@@ -1157,24 +1165,76 @@ pub async fn reconcile_targeted_policy_vault_update(
     let settings = Pubkey::from_str(&vault.settings)?;
     let instructions = transaction
         .instructions
-        .into_iter()
+        .iter()
         .filter(|instruction| {
-            instruction
-                .accounts
-                .iter()
-                .any(|account| account.pubkey == settings)
+            instruction.program_id == SQUADS_SMART_ACCOUNT_PROGRAM_ID
+                && instruction
+                    .accounts
+                    .iter()
+                    .any(|account| account.pubkey == settings)
         })
+        .cloned()
         .collect::<Vec<_>>();
-    if instructions.is_empty() {
-        return Ok(false);
+    let policy_reconciled = if instructions.is_empty() {
+        false
+    } else {
+        policy_monitor
+            .lock()
+            .await
+            .process_policy_instructions(&transaction.signature, transaction.slot, instructions)
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+        true
+    };
+
+    let mut recurring_observed = false;
+    for instruction in &transaction.instructions {
+        if instruction.program_id != SUBSCRIPTIONS_PROGRAM_ID
+            || instruction.data.first().copied() != Some(SUBSCRIPTIONS_CREATE_RECURRING_DELEGATION)
+            || instruction.accounts.len() < 4
+            || instruction.data.len() < 41
+        {
+            continue;
+        }
+        let wallet = instruction.accounts[0].pubkey;
+        let subscription_authority = instruction.accounts[1].pubkey;
+        let recurring_delegation = instruction.accounts[2].pubkey;
+        let delegatee = instruction.accounts[3].pubkey;
+        if wallet.to_string() != vault.wallet || delegatee.to_string() != vault.vault {
+            continue;
+        }
+        let read_u64 = |offset: usize| -> Result<u64> {
+            Ok(u64::from_le_bytes(
+                instruction.data[offset..offset + 8]
+                    .try_into()
+                    .context("decode recurring delegation u64")?,
+            ))
+        };
+        let read_i64 = |offset: usize| -> Result<i64> {
+            Ok(i64::from_le_bytes(
+                instruction.data[offset..offset + 8]
+                    .try_into()
+                    .context("decode recurring delegation i64")?,
+            ))
+        };
+        store
+            .record_autodeposit_recurring_delegation(AutodepositRecurringDelegationObserved {
+                wallet: wallet.to_string(),
+                vault_pubkey: delegatee.to_string(),
+                subscription_authority: subscription_authority.to_string(),
+                recurring_delegation: recurring_delegation.to_string(),
+                nonce: read_u64(1)?,
+                amount_per_period: read_u64(9)?,
+                period_length_seconds: read_u64(17)?,
+                start_timestamp: read_i64(25)?,
+                expiry_timestamp: read_i64(33)?,
+                signature: transaction.signature.clone(),
+                slot: transaction.slot,
+            })
+            .await?;
+        recurring_observed = true;
     }
-    policy_monitor
-        .lock()
-        .await
-        .process_policy_instructions(&transaction.signature, transaction.slot, instructions)
-        .await
-        .map_err(|error| anyhow::anyhow!(error))?;
-    Ok(true)
+    Ok(policy_reconciled && !recurring_observed)
 }
 
 pub async fn process_next_earn_reconciliation_job(
@@ -1236,7 +1296,9 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
         }
     };
     let policy_reconciled = if let Some(policy_monitor) = policy_monitor {
-        match reconcile_targeted_policy_vault_update(chain, policy_monitor, &update, &vault).await {
+        match reconcile_targeted_policy_vault_update(store, chain, policy_monitor, &update, &vault)
+            .await
+        {
             Ok(reconciled) => reconciled,
             Err(error) => {
                 return defer_earn_reconciliation_job(

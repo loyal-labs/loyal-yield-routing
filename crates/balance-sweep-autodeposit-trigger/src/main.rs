@@ -152,13 +152,6 @@ fn record_unsuccessful_executor_exit(
     alert
 }
 
-#[derive(Debug, Default)]
-struct MissingRoutePolicyPauseOutcome {
-    targets_paused: i64,
-    lots_suppressed: i64,
-    slots_canceled: i64,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ExecutableTargetRow {
     target_id: i64,
@@ -305,11 +298,6 @@ async fn main() -> Result<()> {
     let mut pending_slot_hints = SlotHintQueue::new(args.realtime_hint_queue_capacity);
     loop {
         drain_available_slot_hints(&mut realtime_hint_receiver, &mut pending_slot_hints);
-        let pause_outcome =
-            pause_targets_without_active_earn_route_policy_once(&pool, args.batch_limit)
-                .await
-                .inspect_err(|_| emit_missing_route_policy_pause_failed())?;
-        log_missing_route_policy_pause(&pause_outcome);
         let outcome = project_surplus_lots_once(&pool, args.batch_limit)
             .await
             .inspect_err(|_| {
@@ -667,29 +655,6 @@ fn emit_execution_queue_preparation_failed() {
     .emit();
 }
 
-fn emit_missing_route_policy_pause_failed() {
-    OperationalError::new(
-        "autodeposit_missing_route_policy_pause_failed",
-        "pause_autodeposit_without_route_policy",
-        "autodeposit targets could not be paused after route policies were missing",
-    )
-    .retryable(true)
-    .recovery_required(true)
-    .emit();
-}
-
-fn log_missing_route_policy_pause(outcome: &MissingRoutePolicyPauseOutcome) {
-    if outcome.targets_paused == 0 {
-        return;
-    }
-    tracing::info!(
-        targets_paused = outcome.targets_paused,
-        lots_suppressed = outcome.lots_suppressed,
-        slots_canceled = outcome.slots_canceled,
-        "paused autodeposit targets whose Earn route policy was missing"
-    );
-}
-
 fn emit_realtime_listener_failed() {
     OperationalError::new(
         "autodeposit_realtime_listener_failed",
@@ -699,89 +664,6 @@ fn emit_realtime_listener_failed() {
     .retryable(true)
     .recovery_required(false)
     .emit();
-}
-
-async fn pause_targets_without_active_earn_route_policy_once(
-    pool: &PgPool,
-    limit: i64,
-) -> Result<MissingRoutePolicyPauseOutcome> {
-    if limit <= 0 {
-        return Ok(MissingRoutePolicyPauseOutcome::default());
-    }
-
-    let row = sqlx::query(
-        r#"
-        WITH missing_policy_targets AS (
-            SELECT target.id
-            FROM loyal_yield.balance_sweep_targets AS target
-            WHERE target.active = true
-              AND target.lifecycle_status = 'active'
-              AND target.token_mint = $2
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM loyal_yield.managed_vaults AS managed
-                  JOIN loyal_yield.route_policies AS policy
-                    ON policy.id = managed.active_policy_id
-                   AND policy.active = true
-                   AND policy.authority = target.authority
-                   AND policy.settings = target.settings
-                   AND policy.vault_index = target.vault_index
-                   AND policy.vault_pubkey = target.vault_pubkey
-                   AND 'same_mint_kamino' = ANY(policy.route_modes)
-                  WHERE managed.active = true
-                    AND managed.settings = target.settings
-                    AND managed.vault_index = target.vault_index
-                    AND managed.vault_pubkey = target.vault_pubkey
-              )
-            ORDER BY target.id ASC
-            LIMIT $1
-            FOR UPDATE OF target SKIP LOCKED
-        ),
-        paused_targets AS (
-            UPDATE loyal_yield.balance_sweep_targets AS target
-            SET active = false,
-                lifecycle_status = 'paused_missing_position',
-                last_seen_at = now()
-            FROM missing_policy_targets AS missing
-            WHERE target.id = missing.id
-              AND target.active = true
-              AND target.lifecycle_status = 'active'
-            RETURNING target.id
-        ),
-        suppressed_lots AS (
-            UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
-            SET status = 'suppressed',
-                updated_at = now()
-            WHERE lot.target_id IN (SELECT id FROM paused_targets)
-              AND lot.status = 'open'
-              AND lot.remaining_amount_raw > 0
-            RETURNING lot.id
-        ),
-        canceled_slots AS (
-            UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
-            SET status = 'canceled',
-                last_error = 'reconciled: autodeposit paused, Earn position closed',
-                updated_at = now()
-            WHERE slot.target_id IN (SELECT id FROM paused_targets)
-              AND slot.status IN ('failed', 'released')
-            RETURNING slot.id
-        )
-        SELECT
-            (SELECT COUNT(*) FROM paused_targets)::bigint AS targets_paused,
-            (SELECT COUNT(*) FROM suppressed_lots)::bigint AS lots_suppressed,
-            (SELECT COUNT(*) FROM canceled_slots)::bigint AS slots_canceled
-        "#,
-    )
-    .bind(limit)
-    .bind(USDC_MINT_ADDRESS)
-    .fetch_one(pool)
-    .await?;
-
-    Ok(MissingRoutePolicyPauseOutcome {
-        targets_paused: row.try_get("targets_paused")?,
-        lots_suppressed: row.try_get("lots_suppressed")?,
-        slots_canceled: row.try_get("slots_canceled")?,
-    })
 }
 
 async fn fail_stale_requested_slots_once(pool: &PgPool, limit: i64) -> Result<i64> {
@@ -988,8 +870,8 @@ async fn load_executable_targets(
         JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
           ON balance.target_id = target.id
          AND balance.mint = target.token_mint
-        WHERE target.active = true
-          AND target.lifecycle_status = 'active'
+        WHERE target.desired_active = true
+          AND target.chain_status = 'active'
           AND target.token_mint = $2
           AND target.wallet_balance_floor_raw IS NOT NULL
           AND balance.amount_raw > target.wallet_balance_floor_raw
@@ -1295,7 +1177,7 @@ async fn claim_eligible_lots_once(
 
     let target_active = sqlx::query_scalar::<_, bool>(
         r#"
-        SELECT active AND lifecycle_status = 'active'
+        SELECT desired_active AND chain_status = 'active'
         FROM loyal_yield.balance_sweep_targets
         WHERE id = $1
           AND token_mint = $2
@@ -1819,8 +1701,8 @@ async fn fetch_events_after(
             event.delta_amount_raw,
             event.observed_at,
             event.txn_signature,
-            target.active
-                AND target.lifecycle_status = 'active'
+            target.desired_active
+                AND target.chain_status = 'active'
                 AND EXISTS (
                     SELECT 1
                     FROM loyal_yield.managed_vaults AS managed
