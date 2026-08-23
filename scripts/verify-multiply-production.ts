@@ -493,10 +493,13 @@ async function checkLivePrerequisites(): Promise<Json> {
   };
 }
 
-async function checkDeployedWorkers(imageRevision: string): Promise<Json> {
+async function checkDeployedWorkers(
+  monitorImageRevision: string,
+  workerImageRevision: string,
+): Promise<Json> {
   const expected = {
-    [POLICY_MONITOR_SERVICE]: `ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-${imageRevision}`,
-    [MULTIPLY_WORKER_SERVICE]: `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-${imageRevision}`,
+    [POLICY_MONITOR_SERVICE]: `ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-${monitorImageRevision}`,
+    [MULTIPLY_WORKER_SERVICE]: `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-${workerImageRevision}`,
   };
   const evidence: Json[] = [];
   for (const [service, image] of Object.entries(expected)) {
@@ -709,13 +712,18 @@ function checkReleaseSource(): Json {
   }
   const monitorImage = render.match(/name: loyal-balance-sweep-ata-monitor[\s\S]*?laserstream-workers:sha-([0-9a-f]{40})/)?.[1];
   const workerImage = render.match(/name: loyal-multiply-route-worker[\s\S]*?light-workers:sha-([0-9a-f]{40})/)?.[1];
-  if (!monitorImage || !workerImage || monitorImage !== workerImage) {
-    fail("earn_max_worker_image_pin_drift", { monitorImage, workerImage });
+  if (!monitorImage || !workerImage) {
+    fail("earn_max_worker_image_pin_missing", { monitorImage, workerImage });
   }
   const imageBuild = file(ROOT, "scripts/build-rust-image-binaries.sh");
   requireText(imageBuild, "laserstream-workers)\n    packages=(balance-sweep-ata-monitor kamino-reserve-monitor", "policy_projection_wrong_image_family", "scripts/build-rust-image-binaries.sh");
   requireText(imageBuild, "multiply-route-worker", "multiply_worker_missing_from_image", "scripts/build-rust-image-binaries.sh");
-  return { workerSha256: sha256(worker), renderSha256: sha256(render), imageRevision: monitorImage };
+  return {
+    workerSha256: sha256(worker),
+    renderSha256: sha256(render),
+    monitorImageRevision: monitorImage,
+    workerImageRevision: workerImage,
+  };
 }
 
 const contract = checkContractIdentity();
@@ -727,7 +735,10 @@ const engine = checkWorkerAndStoreSource();
 const release = checkReleaseSource();
 const targeted = await targetedChecks();
 const live = await checkLivePrerequisites();
-const deployedWorkers = await checkDeployedWorkers(String(release.imageRevision));
+const deployedWorkers = await checkDeployedWorkers(
+  String(release.monitorImageRevision),
+  String(release.workerImageRevision),
+);
 const lifecycle = await checkFreshLifecycle();
 
 emit(PASS, "earn_max_production_ready", {
