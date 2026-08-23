@@ -402,6 +402,7 @@ pub struct EarnReconciliationEnqueueInput {
     pub durable_slot: u64,
     pub event_payload: Value,
     pub vaults: Vec<EarnReconciliationVaultInput>,
+    pub autodeposit_target_ids: Vec<BalanceSweepTargetId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -415,7 +416,15 @@ pub struct EarnReconciliationVaultInput {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EarnReconciliationEnqueueOutcome {
     pub inserted_jobs: usize,
+    pub coalesced_autodeposit_requests: usize,
     pub cursor_slot: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutodepositReconciliationRequest {
+    pub target_id: BalanceSweepTargetId,
+    pub requested_slot: u64,
+    pub attempt_count: i32,
 }
 
 /// Authoritative durable state for Earn stream and reconciliation monitoring.

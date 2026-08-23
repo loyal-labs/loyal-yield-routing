@@ -61,6 +61,7 @@ async fn committed_health_snapshot_survives_restart_and_reports_stranded_work() 
                     vault_payload: json!({"vault_index": vault_index}),
                 })
                 .collect(),
+            autodeposit_target_ids: Vec::new(),
         })
         .await
         .expect("enqueue durable jobs and cursor");

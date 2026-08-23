@@ -130,6 +130,19 @@ impl RpcEarnChainReader {
             store,
         }
     }
+
+    async fn autodeposit_snapshot(
+        &self,
+        target: AutodepositTargetSnapshotContext,
+        minimum_slot: u64,
+    ) -> Result<AutodepositChainObservation> {
+        let rpc = Arc::clone(&self.rpc);
+        tokio::task::spawn_blocking(move || {
+            read_autodeposit_snapshot(rpc.as_ref(), &target, minimum_slot)
+        })
+        .await
+        .context("Autodeposit RPC snapshot task panicked")?
+    }
 }
 
 impl EarnChainReader for RpcEarnChainReader {
@@ -139,23 +152,6 @@ impl EarnChainReader for RpcEarnChainReader {
         vault: &'a EarnVaultWatch,
     ) -> Pin<Box<dyn Future<Output = Result<EarnDirectMutation>> + Send + 'a>> {
         Box::pin(async move {
-            if let Some(context) = self
-                .store
-                .load_autodeposit_target_snapshot_context(&vault.settings, &vault.vault)
-                .await?
-            {
-                let rpc = Arc::clone(&self.rpc);
-                let context_for_rpc = context.clone();
-                let slot = update.slot;
-                let snapshot = tokio::task::spawn_blocking(move || {
-                    read_autodeposit_snapshot(rpc.as_ref(), &context_for_rpc, slot)
-                })
-                .await
-                .context("Autodeposit RPC snapshot task panicked")??;
-                self.store
-                    .reconcile_autodeposit_chain_observation(snapshot)
-                    .await?;
-            }
             let context = self
                 .store
                 .load_earn_reconciliation_context(&vault.settings, vault.vault_index, &vault.vault)
@@ -1109,6 +1105,39 @@ fn decode_token_account(account: &solana_sdk::account::Account) -> Result<(Pubke
     bail!("account has unsupported token program {}", account.owner)
 }
 
+fn durable_earn_event_key(update: &NormalizedEarnUpdate, affected: &[&EarnVaultWatch]) -> String {
+    let policy_discovery_account = update.account_pubkey.as_deref().is_some_and(|pubkey| {
+        affected.iter().any(|vault| {
+            pubkey == vault.settings
+                || pubkey == vault.wallet
+                || vault.accounts.iter().any(|account| {
+                    account.pubkey == pubkey
+                        && (account.role == "smart_account" || account.role == "policy")
+                })
+        })
+    });
+    let policy_discovery_filter = update.filters.iter().any(|filter| {
+        filter == EARN_SMART_ACCOUNTS || filter == EARN_POLICY_ACCOUNTS || filter == EARN_WALLETS
+    });
+    if policy_discovery_account && policy_discovery_filter {
+        if let Some(signature) = update.signature.as_deref() {
+            return format!("policy-discovery:{}:{signature}", update.slot);
+        }
+    }
+    update.event_key.clone().unwrap_or_else(|| {
+        format!(
+            "{}:{}:{}:{}",
+            update.event_kind,
+            update.slot,
+            update.signature.as_deref().unwrap_or("missing-signature"),
+            update
+                .account_pubkey
+                .as_deref()
+                .unwrap_or("missing-account")
+        )
+    })
+}
+
 pub async fn enqueue_normalized_earn_update(
     store: &OrchestratorStore,
     consumer_name: &str,
@@ -1123,18 +1152,24 @@ pub async fn enqueue_normalized_earn_update(
             update.filters
         );
     }
-    let event_key = update.event_key.clone().unwrap_or_else(|| {
-        format!(
-            "{}:{}:{}:{}",
-            update.event_kind,
-            update.slot,
-            update.signature.as_deref().unwrap_or("missing-signature"),
-            update
-                .account_pubkey
-                .as_deref()
-                .unwrap_or("missing-account")
-        )
-    });
+    let mut autodeposit_target_ids = Vec::new();
+    if let Some(account_pubkey) = update.account_pubkey.as_deref() {
+        for vault in &affected {
+            if let Some(target_id) = store
+                .load_autodeposit_reconciliation_target_id(
+                    &vault.settings,
+                    &vault.vault,
+                    account_pubkey,
+                )
+                .await?
+            {
+                if !autodeposit_target_ids.contains(&target_id) {
+                    autodeposit_target_ids.push(target_id);
+                }
+            }
+        }
+    }
+    let event_key = durable_earn_event_key(update, &affected);
     let event_payload = serde_json::to_value(update)?;
     let vaults = affected
         .into_iter()
@@ -1154,6 +1189,7 @@ pub async fn enqueue_normalized_earn_update(
             durable_slot: update.slot,
             event_payload,
             vaults,
+            autodeposit_target_ids,
         })
         .await
         .map_err(Into::into)
@@ -1461,6 +1497,149 @@ pub async fn run_earn_reconciliation_consumer(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutodepositReconciliationProcessOutcome {
+    Idle,
+    Completed {
+        target_id: loyal_yield_store::BalanceSweepTargetId,
+        requested_slot: u64,
+        observed_slot: u64,
+        chain_status: String,
+        still_pending: bool,
+    },
+    Deferred {
+        target_id: loyal_yield_store::BalanceSweepTargetId,
+        error: String,
+    },
+}
+
+pub async fn process_next_autodeposit_reconciliation_request(
+    store: &OrchestratorStore,
+    claim_owner: &str,
+    chain: &RpcEarnChainReader,
+    lease_seconds: i64,
+    retry_after_seconds: i64,
+) -> Result<AutodepositReconciliationProcessOutcome> {
+    let Some(request) = store
+        .claim_autodeposit_reconciliation_request(claim_owner, lease_seconds)
+        .await?
+    else {
+        return Ok(AutodepositReconciliationProcessOutcome::Idle);
+    };
+    let retry_after_seconds = retry_after_seconds.saturating_mul(
+        1_i64 << u32::try_from(request.attempt_count.saturating_sub(1).min(5)).unwrap_or(5),
+    );
+    let result = async {
+        let context = store
+            .load_autodeposit_target_snapshot_context_by_id(request.target_id)
+            .await?
+            .with_context(|| {
+                format!(
+                    "Autodeposit target {} is not ready for a finalized snapshot",
+                    request.target_id
+                )
+            })?;
+        let observation = chain
+            .autodeposit_snapshot(context, request.requested_slot)
+            .await?;
+        let observed_slot = observation.observation_slot;
+        let projection = store
+            .reconcile_autodeposit_chain_observation(observation)
+            .await?;
+        let still_pending = store
+            .complete_autodeposit_reconciliation_request(
+                request.target_id,
+                claim_owner,
+                observed_slot,
+            )
+            .await?;
+        Ok::<_, anyhow::Error>((observed_slot, projection.chain_status, still_pending))
+    }
+    .await;
+    match result {
+        Ok((observed_slot, chain_status, still_pending)) => {
+            Ok(AutodepositReconciliationProcessOutcome::Completed {
+                target_id: request.target_id,
+                requested_slot: request.requested_slot,
+                observed_slot,
+                chain_status,
+                still_pending,
+            })
+        }
+        Err(error) => {
+            let error = format!("{error:#}");
+            store
+                .retry_autodeposit_reconciliation_request(
+                    request.target_id,
+                    claim_owner,
+                    &error,
+                    retry_after_seconds,
+                )
+                .await?;
+            Ok(AutodepositReconciliationProcessOutcome::Deferred {
+                target_id: request.target_id,
+                error,
+            })
+        }
+    }
+}
+
+pub async fn run_autodeposit_reconciliation_consumer(
+    store: OrchestratorStore,
+    claim_owner: String,
+    chain: Arc<RpcEarnChainReader>,
+    wake: Arc<Notify>,
+    running: Arc<AtomicBool>,
+) {
+    while running.load(Ordering::Relaxed) {
+        match process_next_autodeposit_reconciliation_request(
+            &store,
+            &claim_owner,
+            chain.as_ref(),
+            120,
+            15,
+        )
+        .await
+        {
+            Ok(AutodepositReconciliationProcessOutcome::Completed {
+                target_id,
+                requested_slot,
+                observed_slot,
+                chain_status,
+                still_pending,
+            }) => {
+                tracing::info!(
+                    target_id = target_id.as_i64(),
+                    requested_slot,
+                    observed_slot,
+                    chain_status,
+                    still_pending,
+                    "completed coalesced Autodeposit reconciliation"
+                );
+            }
+            Ok(AutodepositReconciliationProcessOutcome::Deferred { target_id, error }) => {
+                tracing::error!(
+                    target_id = target_id.as_i64(),
+                    error,
+                    "Autodeposit reconciliation failed; request retained for retry"
+                );
+                emit_earn_reconciliation_job_failed();
+            }
+            Ok(AutodepositReconciliationProcessOutcome::Idle) => {
+                tokio::select! {
+                    _ = wake.notified() => {}
+                    _ = time::sleep(Duration::from_secs(1)) => {}
+                }
+            }
+            Err(error) => {
+                tracing::error!(error = %error, "Autodeposit reconciliation consumer failed");
+                emit_earn_reconciliation_consumer_failed();
+                time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct FixtureEarnChainReader {
     signatures: BTreeMap<String, FixtureEvidence>,
@@ -1756,6 +1935,40 @@ mod tests {
             policy_transaction_disposition(None),
             PolicyTransactionDisposition::Decode
         );
+    }
+
+    #[test]
+    fn autodeposit_policy_discovery_event_key_coalesces_same_transaction() {
+        let vault = EarnVaultWatch {
+            environment: "mainnet-beta".to_owned(),
+            settings: "settings".to_owned(),
+            wallet: "wallet".to_owned(),
+            vault: "vault".to_owned(),
+            vault_index: 1,
+            accounts: vec![crate::smart_account::EarnWatchAccount {
+                pubkey: "smart-account".to_owned(),
+                role: "smart_account".to_owned(),
+            }],
+        };
+        let update = |account: &str, filter: &str| NormalizedEarnUpdate {
+            event_key: None,
+            filters: vec![filter.to_owned()],
+            event_kind: "account".to_owned(),
+            account_pubkey: Some(account.to_owned()),
+            slot: 500,
+            signature: Some("setup-signature".to_owned()),
+        };
+
+        let wallet_key = durable_earn_event_key(&update("wallet", EARN_WALLETS), &[&vault]);
+        let settings_key =
+            durable_earn_event_key(&update("settings", EARN_SMART_ACCOUNTS), &[&vault]);
+        assert_eq!(wallet_key, settings_key);
+
+        let obligation_key = durable_earn_event_key(
+            &update("obligation", crate::smart_account::EARN_OBLIGATIONS),
+            &[&vault],
+        );
+        assert_ne!(wallet_key, obligation_key);
     }
 
     fn token_balance(index: u64, owner: &str, mint: &str, amount: u64) -> Value {
