@@ -68,7 +68,10 @@ impl WorkerRuntime {
             return Ok(None);
         };
         let settings = Pubkey::from_str(&policy.settings)?;
-        let topology = config::derive_earn_max_topology(settings)?;
+        let topology = config::derive_earn_max_topology_with_policy_seed_base(
+            settings,
+            policy.policy_seed_base,
+        )?;
         if policy.vault_index != topology.vault_index || policy.vault != topology.vault.to_string()
         {
             return Err("ready policy projection drifted from deterministic topology".into());
@@ -79,6 +82,7 @@ impl WorkerRuntime {
             settings.to_string(),
             topology.vault_index,
             topology.vault.to_string(),
+            policy.policy_seed_base,
             loyal_yield_store::fleet_orchestration::TokenBalance {
                 account: topology.claim_custody.to_string(),
                 mint: config::USDC_MINT.to_owned(),
@@ -758,7 +762,11 @@ impl WorkerRuntime {
         }
         if !self
             .store
-            .earn_max_policy_set_ready(&stored.settings, stored.state.vault_index)
+            .earn_max_policy_set_ready(
+                &stored.settings,
+                stored.state.vault_index,
+                stored.state.policy_seed_base,
+            )
             .await?
         {
             return Ok(TickResult {
@@ -1302,9 +1310,12 @@ fn snapshot_input(
                 let cost = i128::try_from(debt_value)
                     .unwrap_or(i128::MAX)
                     .saturating_mul(i128::from(borrow));
-                let net = income.saturating_sub(cost)
-                    / i128::try_from(equity).unwrap_or(i128::MAX);
-                i64::try_from(net).unwrap_or(if net.is_negative() { i64::MIN } else { i64::MAX })
+                let net = income.saturating_sub(cost) / i128::try_from(equity).unwrap_or(i128::MAX);
+                i64::try_from(net).unwrap_or(if net.is_negative() {
+                    i64::MIN
+                } else {
+                    i64::MAX
+                })
             });
             (Some(supply), Some(borrow), forecast)
         }

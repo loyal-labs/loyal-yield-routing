@@ -375,13 +375,14 @@ async function checkLivePrerequisites(): Promise<Json> {
   const migrations = await sql`
     SELECT version, name, checksum
     FROM loyal_yield.schema_migrations
-    WHERE version IN (54, 55)
+    WHERE version IN (54, 55, 56)
     ORDER BY version
   `;
   if (
-    migrations.length !== 2 ||
+    migrations.length !== 3 ||
     String(migrations[0]?.name) !== "earn_max_per_user" ||
-    String(migrations[1]?.name) !== "earn_max_repeated_lifecycle"
+    String(migrations[1]?.name) !== "earn_max_repeated_lifecycle" ||
+    String(migrations[2]?.name) !== "earn_max_dynamic_policy_seeds"
   ) {
     fail("deployed_earn_max_migration_missing", { migrations });
   }

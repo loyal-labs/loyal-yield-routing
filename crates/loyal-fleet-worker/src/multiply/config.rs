@@ -190,6 +190,20 @@ const SYRUP_USDC_PYUSD_TEMPLATE: StrategyTemplate = StrategyTemplate {
 };
 
 pub fn derive_earn_max_topology(settings: Pubkey) -> Result<EarnMaxTopology, Box<dyn Error>> {
+    derive_earn_max_topology_inner(settings, None)
+}
+
+pub fn derive_earn_max_topology_with_policy_seed_base(
+    settings: Pubkey,
+    policy_seed_base: u64,
+) -> Result<EarnMaxTopology, Box<dyn Error>> {
+    derive_earn_max_topology_inner(settings, Some(policy_seed_base))
+}
+
+fn derive_earn_max_topology_inner(
+    settings: Pubkey,
+    policy_seed_base: Option<u64>,
+) -> Result<EarnMaxTopology, Box<dyn Error>> {
     let vault = derive_squads_vault(&settings, EARN_MAX_VAULT_INDEX).0;
     let collateral_mint = Pubkey::from_str(SYRUP_MINT)?;
     let usdc_mint = Pubkey::from_str(USDC_MINT)?;
@@ -204,14 +218,17 @@ pub fn derive_earn_max_topology(settings: Pubkey) -> Result<EarnMaxTopology, Box
         claim_custody,
         collateral_custody,
         strategies: [
-            derive_strategy(settings, vault, SYRUP_USDC_USDC_TEMPLATE)?,
-            derive_strategy(settings, vault, SYRUP_USDC_PYUSD_TEMPLATE)?,
+            derive_strategy(settings, vault, SYRUP_USDC_USDC_TEMPLATE, policy_seed_base)?,
+            derive_strategy(settings, vault, SYRUP_USDC_PYUSD_TEMPLATE, None)?,
         ],
     })
 }
 
 pub fn topology_for_route(route: &MultiplyRouteState) -> Result<EarnMaxTopology, Box<dyn Error>> {
-    let topology = derive_earn_max_topology(Pubkey::from_str(&route.settings)?)?;
+    let topology = derive_earn_max_topology_with_policy_seed_base(
+        Pubkey::from_str(&route.settings)?,
+        route.policy_seed_base,
+    )?;
     if route.vault_index != topology.vault_index || route.vault != topology.vault.to_string() {
         return Err("route identity does not match the deterministic Earn MAX topology".into());
     }
@@ -222,6 +239,7 @@ fn derive_strategy(
     settings: Pubkey,
     vault: Pubkey,
     template: StrategyTemplate,
+    policy_seed_base: Option<u64>,
 ) -> Result<StrategyConfig, Box<dyn Error>> {
     let market = Pubkey::from_str(template.market)?;
     let collateral_mint = Pubkey::from_str(template.collateral_mint)?;
@@ -240,7 +258,19 @@ fn derive_strategy(
         .map(Pubkey::from_str)
         .transpose()?
         .map(|farm| derive_kamino_obligation_farm_user_state(farm, obligation));
-    let seeds = template.policy_seeds;
+    let seeds = match policy_seed_base {
+        Some(base) => StrategyPolicySeeds {
+            deposit: base,
+            repay: base.checked_add(1).ok_or("Earn MAX policy seed overflow")?,
+            borrow: base.checked_add(2).ok_or("Earn MAX policy seed overflow")?,
+            claim_to_collateral: base.checked_add(3).ok_or("Earn MAX policy seed overflow")?,
+            debt_to_collateral: base.checked_add(3).ok_or("Earn MAX policy seed overflow")?,
+            withdraw: base.checked_add(4).ok_or("Earn MAX policy seed overflow")?,
+            collateral_to_debt: base.checked_add(5).ok_or("Earn MAX policy seed overflow")?,
+            collateral_to_claim: base.checked_add(5).ok_or("Earn MAX policy seed overflow")?,
+        },
+        None => template.policy_seeds,
+    };
     Ok(StrategyConfig {
         key: template.key,
         market: template.market,

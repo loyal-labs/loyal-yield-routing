@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const MULTIPLY_STATE_SCHEMA_VERSION: u16 = 5;
+pub const MULTIPLY_STATE_SCHEMA_VERSION: u16 = 6;
 pub const MULTIPLY_ENGINE_VERSION: &str = "earn_max_v1";
 pub const MULTIPLY_DEFAULT_LEASE_SECONDS: i64 = 30;
 
@@ -150,6 +150,7 @@ pub struct MultiplyRouteState {
     pub settings: String,
     pub vault_index: u8,
     pub vault: String,
+    pub policy_seed_base: u64,
     pub generation: u64,
     pub cycle: u64,
     pub goal: RouteGoal,
@@ -170,6 +171,7 @@ impl MultiplyRouteState {
         settings: String,
         vault_index: u8,
         vault: String,
+        policy_seed_base: u64,
         claim: TokenBalance,
         observed_slot: u64,
         observed_at: DateTime<Utc>,
@@ -181,6 +183,7 @@ impl MultiplyRouteState {
             settings,
             vault_index,
             vault,
+            policy_seed_base,
             generation: 1,
             cycle: 1,
             goal: RouteGoal::Idle,
@@ -227,6 +230,7 @@ impl MultiplyRouteState {
             || self.route_key.trim().is_empty()
             || self.settings.trim().is_empty()
             || self.vault.trim().is_empty()
+            || self.policy_seed_base == 0
             || self.generation == 0
             || self.cycle == 0
             || self.observed_slot == 0

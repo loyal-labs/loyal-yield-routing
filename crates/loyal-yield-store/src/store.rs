@@ -49,6 +49,7 @@ const MIGRATION_0052: &str = include_str!("../migrations/0052_voltr_opportunity_
 const MIGRATION_0053: &str = include_str!("../migrations/0053_multiply_production_engine.sql");
 const MIGRATION_0054: &str = include_str!("../migrations/0054_earn_max_per_user.sql");
 const MIGRATION_0055: &str = include_str!("../migrations/0055_earn_max_repeated_lifecycle.sql");
+const MIGRATION_0056: &str = include_str!("../migrations/0056_earn_max_dynamic_policy_seeds.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -490,6 +491,12 @@ impl NeonSqlClient {
                 version: 55,
                 name: "earn_max_repeated_lifecycle",
                 sql: MIGRATION_0055,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 56,
+                name: "earn_max_dynamic_policy_seeds",
+                sql: MIGRATION_0056,
                 expected_checksum: None,
             },
         ] {
@@ -1955,6 +1962,7 @@ impl NeonSqlClient {
             || input.vault.trim().is_empty()
             || input.manifest_version.trim().is_empty()
             || input.observed_signature.trim().is_empty()
+            || input.policy_seed_base == 0
             || !matches!(input.status.as_str(), "incomplete" | "ready" | "removed")
             || input.manifest_sha256.len() != 64
             || !input
@@ -1975,13 +1983,14 @@ impl NeonSqlClient {
             r#"
             INSERT INTO loyal_yield.earn_max_policy_sets (
                 settings, vault_index, vault, manifest_version, manifest_sha256,
-                status, policy_accounts, observed_signature, observed_slot,
-                observed_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+                policy_seed_base, status, policy_accounts, observed_signature,
+                observed_slot, observed_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
             ON CONFLICT (settings, vault_index) DO UPDATE SET
                 vault = EXCLUDED.vault,
                 manifest_version = EXCLUDED.manifest_version,
                 manifest_sha256 = EXCLUDED.manifest_sha256,
+                policy_seed_base = EXCLUDED.policy_seed_base,
                 status = EXCLUDED.status,
                 policy_accounts = EXCLUDED.policy_accounts,
                 observed_signature = EXCLUDED.observed_signature,
@@ -1996,6 +2005,9 @@ impl NeonSqlClient {
         .bind(&input.vault)
         .bind(&input.manifest_version)
         .bind(&input.manifest_sha256)
+        .bind(i64::try_from(input.policy_seed_base).map_err(|_| {
+            OrchestratorError::StoreInvariant("Earn MAX policy seed base exceeds BIGINT".to_owned())
+        })?)
         .bind(&input.status)
         .bind(input.policy_accounts)
         .bind(&input.observed_signature)
