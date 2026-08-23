@@ -1,7 +1,7 @@
 # Kamino Multiply production-engine simplification
 
 **Date:** 2026-08-22
-**Status:** Source implementation complete through image packaging; blocked on publishing the first immutable image that contains the worker before its Render service can be declared safely.
+**Status:** Source release candidate complete. Trusted `main` published and probed the immutable light-workers image at commit `e6cc09c22e85c4813ab485f016b6ccb6881b10f8`; the production Render worker is declared against that exact image but is not deployed by this source goal.
 
 ## Outcome contract
 
@@ -27,10 +27,10 @@ Verifier:
 
 External gates:
   Terminal-only 1Password environment plus current mainnet RPC and Neon are
-  required for live readback. Publishing the immutable image, applying the
-  Blueprint/private registry credential, installing Render secrets, and a tiny
-  deployed-image canary are release operations outside this source-change goal.
-  The verifier never deploys or sends a transaction.
+  required for live readback. Applying the Blueprint/private registry
+  credential, installing Render secrets, and a tiny deployed-image canary are
+  release operations outside this source-change goal. The verifier never
+  deploys or sends a transaction.
 
 Verdict:
   PASS_RWA_MULTIPLY_RELEASE_CANDIDATE

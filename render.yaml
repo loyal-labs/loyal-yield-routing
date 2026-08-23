@@ -260,6 +260,35 @@ projects:
                 value: warn,balance_sweep_autodeposit_trigger=info
 
           - type: worker
+            name: loyal-multiply-route-worker
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-e6cc09c22e85c4813ab485f016b6ccb6881b10f8
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/multiply-route-worker run
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: OBSERVABILITY_ENABLED
+                value: "true"
+              - key: OBSERVABILITY_ENVIRONMENT
+                value: production
+              - key: OBSERVABILITY_OTLP_ENDPOINT
+                value: https://loyal-clickstack.onrender.com
+              - key: OBSERVABILITY_INGESTION_API_KEY
+                sync: false
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: POLICY_KEYPAIR
+                sync: false
+              - key: RUST_LOG
+                value: warn,loyal_fleet_worker=info
+
+          - type: worker
             name: loyal-squads-policy-monitor
             runtime: image
             region: oregon
