@@ -46,7 +46,7 @@ use std::{
 use tokio::time::{interval, sleep, MissedTickBehavior};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-const EARN_MAX_POLICY_PROJECTION_CONSUMER: &str = "earn_max_policy_sets_laserstream_v1";
+pub const EARN_MAX_POLICY_PROJECTION_CONSUMER: &str = "earn_max_policy_sets_laserstream_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]

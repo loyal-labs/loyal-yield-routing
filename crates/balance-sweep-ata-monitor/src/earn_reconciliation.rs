@@ -177,12 +177,35 @@ impl EarnChainReader for RpcEarnChainReader {
             let rpc = Arc::clone(&self.rpc);
             let slot = update.slot;
             tokio::task::spawn_blocking(move || {
-                read_squads_policy_transaction(rpc.as_ref(), &signature, slot).map(Some)
+                read_squads_policy_transaction(
+                    rpc.as_ref(),
+                    &signature,
+                    slot,
+                    CommitmentConfig::finalized(),
+                )
+                .map(Some)
             })
             .await
             .context("Autoswap RPC transaction proof task panicked")?
         })
     }
+}
+
+pub async fn read_confirmed_squads_policy_transaction(
+    rpc: Arc<RpcClient>,
+    signature: String,
+    expected_slot: u64,
+) -> Result<EarnPolicyTransactionRead> {
+    tokio::task::spawn_blocking(move || {
+        read_squads_policy_transaction(
+            rpc.as_ref(),
+            &signature,
+            expected_slot,
+            CommitmentConfig::confirmed(),
+        )
+    })
+    .await
+    .context("confirmed Squads policy transaction proof task panicked")?
 }
 
 fn read_autodeposit_snapshot(
@@ -554,6 +577,7 @@ fn read_squads_policy_transaction(
     rpc: &RpcClient,
     signature: &str,
     expected_slot: u64,
+    commitment: CommitmentConfig,
 ) -> Result<EarnPolicyTransactionRead> {
     let parsed_signature =
         Signature::from_str(signature).context("invalid transaction signature")?;
@@ -561,7 +585,7 @@ fn read_squads_policy_transaction(
         &parsed_signature,
         RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::Base64),
-            commitment: Some(CommitmentConfig::finalized()),
+            commitment: Some(commitment),
             max_supported_transaction_version: Some(0),
         },
     )?;

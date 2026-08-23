@@ -22,6 +22,7 @@ const CONFIG = "crates/loyal-fleet-worker/src/multiply/config.rs";
 const POLICY_MONITOR = "crates/loyal-squads-policy-monitor/src/lib.rs";
 const POLICY_MONITOR_MANIFEST = "crates/loyal-squads-policy-monitor/Cargo.toml";
 const LASERSTREAM_MONITOR = "crates/balance-sweep-ata-monitor/src/main.rs";
+const LASERSTREAM_SOURCE = "crates/balance-sweep-ata-monitor/src/lib.rs";
 const LASERSTREAM_RECONCILIATION = "crates/balance-sweep-ata-monitor/src/earn_reconciliation.rs";
 const WORKER = "crates/loyal-fleet-worker/src/bin/multiply-route-worker.rs";
 const MIGRATIONS = "crates/loyal-yield-store/migrations";
@@ -256,6 +257,7 @@ function checkLaserStreamSource(): Json {
   const monitor = file(ROOT, POLICY_MONITOR);
   const manifest = file(ROOT, POLICY_MONITOR_MANIFEST);
   const laserstream = file(ROOT, LASERSTREAM_MONITOR);
+  const laserstreamSource = file(ROOT, LASERSTREAM_SOURCE);
   const reconciliation = file(ROOT, LASERSTREAM_RECONCILIATION);
   requireText(manifest, "loyal-fleet-worker", "policy_projection_manifest_contract_missing", POLICY_MONITOR_MANIFEST);
   for (const required of [
@@ -263,12 +265,22 @@ function checkLaserStreamSource(): Json {
     "with_earn_max_projection",
     "PolicyCommitment::Confirmed",
     "EARN_MAX_DELEGATE",
+    "LaserstreamPolicyUpdateSource",
+    "earn_max_policy_replay_start_slot",
   ]) {
     requireText(laserstream, required, "earn_max_projection_not_owned_by_existing_laserstream", LASERSTREAM_MONITOR);
   }
+  for (const required of [
+    "SubscribeRequestFilterTransactions",
+    "CommitmentLevel::Confirmed",
+    "SQUADS_SMART_ACCOUNT_PROGRAM_ID.to_string()",
+    "process_earn_max_policy_update",
+  ]) {
+    requireText(laserstreamSource, required, "earn_max_confirmed_transaction_stream_missing", LASERSTREAM_SOURCE);
+  }
   requireText(
     reconciliation,
-    "process_policy_instructions",
+    "read_confirmed_squads_policy_transaction",
     "laserstream_policy_reconciliation_bridge_missing",
     LASERSTREAM_RECONCILIATION,
   );
@@ -282,6 +294,7 @@ function checkLaserStreamSource(): Json {
   return {
     policyMonitorSha256: sha256(monitor),
     laserstreamOwnerSha256: sha256(laserstream),
+    laserstreamSourceSha256: sha256(laserstreamSource),
     reconciliationSha256: sha256(reconciliation),
   };
 }

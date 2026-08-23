@@ -16,8 +16,8 @@ use balance_sweep_ata_monitor::{
     run_autodeposit_reconciliation_consumer, run_earn_reconciliation_consumer, run_event_loop,
     seed_current_balances, spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget,
     AtaUpdateSource, EarnMonitorMetrics, EarnUpdateContext, LaserstreamAtaUpdateSource,
-    RpcEarnChainReader, SubscriptionConfig, SubscriptionWatchSet, TimescaleAtaConfig,
-    TimescaleAtaObservationSink, TimescaleAtaStream, WebsocketAtaUpdateSource,
+    LaserstreamPolicyUpdateSource, RpcEarnChainReader, SubscriptionConfig, SubscriptionWatchSet,
+    TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream, WebsocketAtaUpdateSource,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
@@ -25,7 +25,7 @@ use loyal_actions::USDC_MINT;
 use loyal_observability::{init_from_env, OperationalError};
 use loyal_squads_policy_monitor::{
     Cluster as PolicyCluster, Commitment as PolicyCommitment, MonitorConfig as PolicyMonitorConfig,
-    PolicyMonitor, PostgresPolicyMatchSink,
+    PolicyMonitor, PostgresPolicyMatchSink, EARN_MAX_POLICY_PROJECTION_CONSUMER,
 };
 use loyal_yield_store::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
 use opentelemetry::metrics::Meter;
@@ -41,6 +41,7 @@ use tokio::{
 const EARN_APY_FAILURE_REPORT_THRESHOLD: u32 = 3;
 const EARN_RECONCILIATION_CONCURRENCY: usize = 4;
 const AUTODEPOSIT_RECONCILIATION_CONCURRENCY: usize = 4;
+const EARN_MAX_POLICY_BOOTSTRAP_REPLAY_SLOTS: u64 = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum UpdateSourceKind {
@@ -250,9 +251,36 @@ async fn run(meter: Meter) -> Result<()> {
     };
     let mut earn_consumer_tasks = Vec::new();
     let mut autodeposit_consumer_tasks = Vec::new();
+    let mut policy_projection_task = None;
     if let Some(policy_monitor) = policy_monitor {
         let consumer_name = format!("earn-smart-account:{}", args.cluster);
         let chain = Arc::new(RpcEarnChainReader::new(&args.rpc_url, store.clone()));
+        let policy_from_slot = earn_max_policy_replay_start_slot(
+            &store,
+            &args.rpc_url,
+            args.laserstream_replay_overlap_slots,
+        )
+        .await?;
+        policy_projection_task = Some(
+            LaserstreamPolicyUpdateSource {
+                endpoint: args
+                    .laserstream_endpoint
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("LASERSTREAM_ENDPOINT is required"))?,
+                api_key: args
+                    .helius_api_key
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("HELIUS_API_KEY is required"))?,
+                rpc_url: args.rpc_url.clone(),
+                from_slot: policy_from_slot,
+                config,
+            }
+            .spawn(
+                store.clone(),
+                policy_monitor.clone(),
+                earn_consumer_running.clone(),
+            ),
+        );
         for worker_index in 0..AUTODEPOSIT_RECONCILIATION_CONCURRENCY {
             let claim_owner = format!(
                 "autodeposit:{}:{}:{}:{}",
@@ -313,6 +341,10 @@ async fn run(meter: Meter) -> Result<()> {
         let _ = task.await;
     }
     for task in autodeposit_consumer_tasks {
+        task.abort();
+        let _ = task.await;
+    }
+    if let Some(task) = policy_projection_task {
         task.abort();
         let _ = task.await;
     }
@@ -804,6 +836,32 @@ async fn laserstream_replay_start_slot(
     Ok(durable
         .map(|slot| laserstream_replay_from_slot(slot, replay_overlap_slots).min(current_slot))
         .unwrap_or(current_fallback))
+}
+
+async fn earn_max_policy_replay_start_slot(
+    store: &OrchestratorStore,
+    rpc_url: &str,
+    replay_overlap_slots: u64,
+) -> Result<u64> {
+    let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
+    let current_slot = rpc
+        .get_slot()
+        .context("fetch confirmed RPC slot for Earn MAX policy replay")?;
+    let durable = store
+        .projection_offset(EARN_MAX_POLICY_PROJECTION_CONSUMER)
+        .await
+        .map_err(orchestrator_error)?;
+    if durable > 0 {
+        return Ok(laserstream_replay_from_slot(
+            u64::try_from(durable).context("Earn MAX policy cursor is negative")?,
+            replay_overlap_slots,
+        )
+        .min(current_slot));
+    }
+    Ok(laserstream_replay_from_slot(
+        current_slot,
+        replay_overlap_slots.max(EARN_MAX_POLICY_BOOTSTRAP_REPLAY_SLOTS),
+    ))
 }
 
 async fn laserstream_current_replay_boundary(

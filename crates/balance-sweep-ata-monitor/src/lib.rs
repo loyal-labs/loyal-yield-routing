@@ -15,10 +15,16 @@ pub use balance_sweep_ata_observations::{
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 use helius_laserstream::{
-    grpc::{subscribe_update::UpdateOneof, SubscribeRequest, SubscribeUpdate},
+    grpc::{
+        subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
+        SubscribeRequestFilterTransactions, SubscribeUpdate,
+    },
     subscribe, LaserstreamConfig,
 };
-use loyal_actions::USDC_MINT;
+use loyal_actions::{SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT};
+use loyal_squads_policy_monitor::{
+    PolicyMonitor, PostgresPolicyMatchSink, EARN_MAX_POLICY_PROJECTION_CONSUMER,
+};
 use loyal_yield_store::{BalanceSweepTarget, BalanceSweepTargetId, OrchestratorStore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -29,7 +35,7 @@ use solana_program::program_pack::Pack;
 use solana_pubsub_client::nonblocking::pubsub_client::PubsubClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use tokio::{
-    sync::{mpsc, Notify, RwLock},
+    sync::{mpsc, Mutex, Notify, RwLock},
     task::{JoinHandle, JoinSet},
     time,
 };
@@ -43,9 +49,10 @@ pub mod smart_account;
 pub use earn_reconciliation::{
     enqueue_normalized_earn_update, process_next_autodeposit_reconciliation_request,
     process_next_earn_reconciliation_job, process_next_earn_reconciliation_job_with_policy_monitor,
-    reconcile_targeted_policy_vault_update, run_autodeposit_reconciliation_consumer,
-    run_earn_reconciliation_consumer, AutodepositReconciliationProcessOutcome, EarnChainReader,
-    EarnPolicyTransaction, EarnReconciliationProcessOutcome, FixtureEarnChainReader,
+    read_confirmed_squads_policy_transaction, reconcile_targeted_policy_vault_update,
+    run_autodeposit_reconciliation_consumer, run_earn_reconciliation_consumer,
+    AutodepositReconciliationProcessOutcome, EarnChainReader, EarnPolicyTransaction,
+    EarnPolicyTransactionRead, EarnReconciliationProcessOutcome, FixtureEarnChainReader,
     RpcEarnChainReader,
 };
 pub use monitor_observability::{
@@ -230,6 +237,28 @@ pub struct LaserstreamAtaUpdateSource {
     /// Optional Earn bindings are folded into the same physical LaserStream
     /// SubscribeRequest.  `None` preserves the legacy ATA-only caller.
     pub watch_set: Option<SubscriptionWatchSet>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LaserstreamPolicyUpdateSource {
+    pub endpoint: String,
+    pub api_key: String,
+    pub rpc_url: String,
+    pub from_slot: u64,
+    pub config: SubscriptionConfig,
+}
+
+impl LaserstreamPolicyUpdateSource {
+    pub fn spawn(
+        self,
+        store: OrchestratorStore,
+        policy_monitor: Arc<Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
+        running: Arc<AtomicBool>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            run_earn_max_policy_laserstream(self, store, policy_monitor, running).await;
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -653,6 +682,138 @@ async fn run_laserstream_loop(
         time::sleep(backoff).await;
         attempt += 1;
     }
+}
+
+async fn run_earn_max_policy_laserstream(
+    source: LaserstreamPolicyUpdateSource,
+    store: OrchestratorStore,
+    policy_monitor: Arc<Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
+    running: Arc<AtomicBool>,
+) {
+    let mut transactions = HashMap::new();
+    transactions.insert(
+        "earn_max_policy_transactions".to_owned(),
+        SubscribeRequestFilterTransactions {
+            vote: Some(false),
+            failed: Some(false),
+            account_include: vec![SQUADS_SMART_ACCOUNT_PROGRAM_ID.to_string()],
+            ..SubscribeRequestFilterTransactions::default()
+        },
+    );
+    let request = SubscribeRequest {
+        transactions,
+        commitment: Some(CommitmentLevel::Confirmed as i32),
+        from_slot: Some(source.from_slot),
+        ..SubscribeRequest::default()
+    };
+    let rpc = Arc::new(RpcClient::new_with_commitment(
+        source.rpc_url.clone(),
+        CommitmentConfig::confirmed(),
+    ));
+    tracing::info!(
+        endpoint = %source.endpoint,
+        from_slot = source.from_slot,
+        program = %SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        commitment = CONFIRMED_COMMITMENT,
+        "starting Earn MAX policy LaserStream subscription"
+    );
+
+    let mut attempt = 1;
+    while running.load(Ordering::Relaxed) && attempt <= source.config.max_reconnect_attempts {
+        let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
+            .with_max_reconnect_attempts(0)
+            .with_replay(true);
+        let (stream, _handle) = subscribe(config, request.clone());
+        futures_util::pin_mut!(stream);
+        tracing::info!(
+            attempt,
+            "Earn MAX policy LaserStream subscription connected"
+        );
+        let mut heartbeat = time::interval(source.config.heartbeat_interval);
+        let disconnect_error = loop {
+            if !running.load(Ordering::Relaxed) {
+                break None;
+            }
+            tokio::select! {
+                update = stream.next() => {
+                    match update {
+                        Some(Ok(update)) => {
+                            if let Err(error) = process_earn_max_policy_update(
+                                update,
+                                Arc::clone(&rpc),
+                                &store,
+                                Arc::clone(&policy_monitor),
+                            ).await {
+                                tracing::warn!(error = %error, attempt, "Earn MAX policy projection failed");
+                                break Some(error.to_string());
+                            }
+                        }
+                        Some(Err(error)) => {
+                            tracing::warn!(error = %error, attempt, "Earn MAX policy LaserStream failed");
+                            break Some(error.to_string());
+                        }
+                        None => break Some("Earn MAX policy LaserStream ended".to_owned()),
+                    }
+                }
+                _ = heartbeat.tick() => {}
+            }
+        };
+        let Some(error) = disconnect_error else {
+            break;
+        };
+        if attempt >= source.config.max_reconnect_attempts {
+            tracing::error!(attempt, error = %error, "Earn MAX policy LaserStream exhausted reconnects");
+            break;
+        }
+        let backoff = reconnect_backoff(source.config, attempt);
+        tracing::warn!(
+            attempt,
+            next_attempt = attempt + 1,
+            backoff_ms = backoff.as_millis(),
+            error = %error,
+            "reconnecting Earn MAX policy LaserStream"
+        );
+        time::sleep(backoff).await;
+        attempt += 1;
+    }
+}
+
+async fn process_earn_max_policy_update(
+    update: SubscribeUpdate,
+    rpc: Arc<RpcClient>,
+    store: &OrchestratorStore,
+    policy_monitor: Arc<Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
+) -> Result<()> {
+    let Some(UpdateOneof::Transaction(transaction_update)) = update.update_oneof else {
+        return Ok(());
+    };
+    let transaction = transaction_update
+        .transaction
+        .context("Earn MAX LaserStream transaction payload was missing")?;
+    let signature = signature_from_laserstream_bytes(&transaction.signature)?;
+    let slot = transaction_update.slot;
+    let transaction = read_confirmed_squads_policy_transaction(rpc, signature, slot).await?;
+    if let EarnPolicyTransactionRead::Transaction(transaction) = transaction {
+        if !transaction.instructions.is_empty() {
+            policy_monitor
+                .lock()
+                .await
+                .process_policy_instructions(
+                    &transaction.signature,
+                    transaction.slot,
+                    transaction.instructions,
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+        }
+    }
+    store
+        .advance_projection_offset(
+            EARN_MAX_POLICY_PROJECTION_CONSUMER,
+            i64::try_from(slot).context("Earn MAX policy slot exceeds BIGINT")?,
+        )
+        .await?;
+    Ok(())
 }
 
 pub fn reconnect_backoff(config: SubscriptionConfig, completed_attempt: usize) -> Duration {
