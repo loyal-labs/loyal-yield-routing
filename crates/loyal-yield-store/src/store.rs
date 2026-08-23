@@ -2284,6 +2284,93 @@ impl NeonSqlClient {
         let policy_seed = to_i64_policy_seed(event.policy_seed)?;
         let slot = to_i64_slot(event.slot)?;
         let max_amount_per_period = to_i64_amount(event.max_amount_per_period)?;
+        let mut tx = self.pool.begin().await?;
+        let rollover_lock = format!(
+            "{}|{}|{}|{}",
+            event.settings, event.wallet, event.vault_index, event.token_mint
+        );
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(rollover_lock)
+            .execute(&mut *tx)
+            .await?;
+
+        let current = sqlx::query(
+            r#"
+            SELECT id, policy_account,
+                   GREATEST(last_seen_slot, chain_observation_slot) AS observation_slot
+            FROM loyal_yield.balance_sweep_targets
+            WHERE settings = $1
+              AND wallet = $2
+              AND vault_index = $3
+              AND token_mint = $4
+              AND chain_status <> 'closed'
+            FOR UPDATE
+            "#,
+        )
+        .bind(&event.settings)
+        .bind(&event.wallet)
+        .bind(i16::from(event.vault_index))
+        .bind(&event.token_mint)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if let Some(current) = current {
+            let current_policy_account: String = current.get("policy_account");
+            let current_observation_slot: i64 = current.get("observation_slot");
+            if current_policy_account != event.policy_account {
+                if slot <= current_observation_slot {
+                    let row = sqlx::query(
+                        r#"
+                        SELECT
+                            id, settings, authority, policy_seed, policy_account, vault_index,
+                            vault_pubkey, wallet,
+                            COALESCE(wallet_usdc_ata, wallet_token_ata) AS wallet_usdc_ata,
+                            COALESCE(vault_usdc_ata, vault_token_ata) AS vault_usdc_ata,
+                            token_mint, wallet_token_ata, vault_token_ata, delegated_signers,
+                            threshold, max_amount_per_period, desired_active AS active,
+                            first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
+                        FROM loyal_yield.balance_sweep_targets
+                        WHERE id = $1
+                        "#,
+                    )
+                    .bind(current.get::<i64, _>("id"))
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    tx.commit().await?;
+                    return balance_sweep_target_from_row(&row);
+                }
+
+                sqlx::query(
+                    r#"
+                    WITH closed_target AS (
+                        UPDATE loyal_yield.balance_sweep_targets
+                        SET desired_active = FALSE,
+                            chain_status = 'closed',
+                            chain_observation_slot = GREATEST(chain_observation_slot, $1),
+                            closed_at = COALESCE(closed_at, now())
+                        WHERE id = $2
+                          AND chain_status <> 'closed'
+                        RETURNING id
+                    ), canceled_slots AS (
+                        UPDATE loyal_yield.balance_sweep_scheduled_slots
+                        SET status = 'canceled', updated_at = now()
+                        WHERE target_id IN (SELECT id FROM closed_target)
+                          AND status IN ('scheduled', 'requested')
+                    )
+                    UPDATE loyal_yield.balance_sweep_surplus_lots
+                    SET status = 'suppressed', updated_at = now()
+                    WHERE target_id IN (SELECT id FROM closed_target)
+                      AND status = 'open'
+                      AND remaining_amount_raw > 0
+                    "#,
+                )
+                .bind(slot)
+                .bind(current.get::<i64, _>("id"))
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
         let row = sqlx::query(
             r#"
             INSERT INTO loyal_yield.balance_sweep_targets
@@ -2407,9 +2494,10 @@ impl NeonSqlClient {
         .bind(max_amount_per_period)
         .bind(slot)
         .bind(&event.signature)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
 
+        tx.commit().await?;
         balance_sweep_target_from_row(&row)
     }
 

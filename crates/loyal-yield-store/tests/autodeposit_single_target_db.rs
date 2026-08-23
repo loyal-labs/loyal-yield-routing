@@ -1,9 +1,87 @@
 use loyal_yield_store::{
-    AutodepositChainObservation, AutodepositRecurringDelegationObserved, NeonSqlClient,
-    NeonSqlConfig,
+    AutodepositChainObservation, AutodepositRecurringDelegationObserved,
+    BalanceSweepPolicyMatchInput, NeonSqlClient, NeonSqlConfig,
 };
 
 const DATABASE_URL_ENV: &str = "ASK_2211_VERIFY_DATABASE_URL";
+
+fn policy_match(policy_account: &str, policy_seed: u64, slot: u64) -> BalanceSweepPolicyMatchInput {
+    BalanceSweepPolicyMatchInput {
+        signature: format!("signature-{policy_seed}"),
+        slot,
+        settings: "settings-rollover".to_owned(),
+        authority: "wallet-rollover".to_owned(),
+        policy_seed,
+        policy_account: policy_account.to_owned(),
+        vault_index: 1,
+        vault_pubkey: "vault-rollover".to_owned(),
+        wallet: "wallet-rollover".to_owned(),
+        wallet_usdc_ata: "wallet-ata-rollover".to_owned(),
+        vault_usdc_ata: "vault-ata-rollover".to_owned(),
+        token_mint: "mint-rollover".to_owned(),
+        wallet_token_ata: "wallet-ata-rollover".to_owned(),
+        vault_token_ata: "vault-ata-rollover".to_owned(),
+        delegated_signers: vec!["signer-rollover".to_owned()],
+        threshold: 1,
+        max_amount_per_period: 10_000_000,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires ASK_2211_VERIFY_DATABASE_URL pointing at a throwaway database"]
+async fn newer_policy_atomically_replaces_pending_target() {
+    let database_url = std::env::var(DATABASE_URL_ENV).expect("throwaway database URL");
+    let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url))
+        .await
+        .expect("connect to throwaway database");
+
+    let first = client
+        .record_balance_sweep_policy_match(policy_match("policy-rollover-1", 1, 100))
+        .await
+        .expect("record first pending policy");
+    let second = client
+        .record_balance_sweep_policy_match(policy_match("policy-rollover-2", 2, 101))
+        .await
+        .expect("replace the pending policy without a unique-index collision");
+    assert_ne!(first.id, second.id);
+
+    let rows: Vec<(String, bool, String)> = sqlx::query_as(
+        r#"
+        SELECT policy_account, desired_active, chain_status
+        FROM loyal_yield.balance_sweep_targets
+        WHERE settings = 'settings-rollover'
+        ORDER BY policy_seed
+        "#,
+    )
+    .fetch_all(client.pool())
+    .await
+    .expect("load rollover rows");
+    assert_eq!(
+        rows,
+        vec![
+            ("policy-rollover-1".to_owned(), false, "closed".to_owned()),
+            ("policy-rollover-2".to_owned(), true, "pending".to_owned()),
+        ]
+    );
+
+    let replay = client
+        .record_balance_sweep_policy_match(policy_match("policy-rollover-stale", 3, 99))
+        .await
+        .expect("ignore a stale policy observation without colliding");
+    assert_eq!(replay.id, second.id);
+    let current_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM loyal_yield.balance_sweep_targets
+        WHERE settings = 'settings-rollover'
+          AND chain_status <> 'closed'
+        "#,
+    )
+    .fetch_one(client.pool())
+    .await
+    .expect("count current rollover targets");
+    assert_eq!(current_count, 1);
+}
 
 #[tokio::test]
 #[ignore = "requires ASK_2211_VERIFY_DATABASE_URL pointing at a throwaway database"]
