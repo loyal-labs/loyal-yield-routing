@@ -50,6 +50,17 @@ WHERE target.settings = config.settings
   AND target.wallet = config.wallet
   AND target.vault_index = config.vault_index;
 
+-- Legacy workers mixed setup progress and safety pauses into lifecycle_status.
+-- Preserve desired_active from the old active column, but let LaserStream
+-- replace these transitional values with finalized chain state after deploy.
+UPDATE loyal_yield.balance_sweep_targets
+SET chain_status = 'pending'
+WHERE chain_status IN (
+    'pending_policy',
+    'pending_delegation',
+    'paused_missing_position'
+);
+
 DROP TRIGGER IF EXISTS autodeposit_chain_projection_changed
     ON loyal_yield.autodeposit_chain_projections;
 DROP TRIGGER IF EXISTS autodeposit_vault_configs_watch_set_changed
