@@ -215,7 +215,7 @@ echo "== Apply production routing and app-compatible Yield migrations"
   NEON_DATABASE_URL="$database_url" NO_DNA=1 \
     cargo run --quiet -p loyal-yield-orchestrator --bin yield-migrations -- --check
 )
-assert_scalar "40:durable_autodeposit_operation,41:optimizer_epochs_latest_cluster_index,42:rebalance_opportunities_optimizer_epoch_index,43:rebalance_opportunities_health_aggregate_index,44:fleet_health_status_query_optimization,45:atomic_autodeposit_finalization,46:laserstream_replay_cursor,47:unambiguous_autodeposit_finalization,48:admin_monitor_query_indexes,49:durable_earn_reconciliation_jobs,50:autoswap_opt_in_realtime" \
+assert_scalar "40:durable_autodeposit_operation,41:optimizer_epochs_latest_cluster_index,42:rebalance_opportunities_optimizer_epoch_index,43:rebalance_opportunities_health_aggregate_index,44:fleet_health_status_query_optimization,45:atomic_autodeposit_finalization,46:laserstream_replay_cursor,47:unambiguous_autodeposit_finalization,48:admin_monitor_query_indexes,49:durable_earn_reconciliation_jobs,50:autoswap_opt_in_realtime,51:multiply_route_state,52:voltr_opportunity_classes,53:multiply_production_engine,54:earn_max_per_user,55:earn_max_repeated_lifecycle,56:earn_max_dynamic_policy_seeds,57:autodeposit_client_projection,58:autoswap_confirmed_reconciliation,59:autodeposit_single_target_state" \
   "SELECT string_agg(version::text || ':' || name, ',' ORDER BY version) FROM loyal_yield.schema_migrations WHERE version >= 40" \
   "current-main migrations and durable Earn job migration coexist"
 psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0001_add_user_yield_deposit_positions.sql" >/dev/null
@@ -703,6 +703,19 @@ assert_scalar "3:3:0" \
 assert_scalar "3" \
   "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE event_payload->>'signature' = 'sig-cleanup-c' AND attempt_count = 2" \
   "each failed production-shaped frame retried and completed exactly once"
+
+echo "== Finalized failed transaction does not starve later vault work"
+run_fixture "$fixture_root/phase-3-finalized-failure.ndjson" \
+  "$fixture_root/chain-finalized-failure.json"
+assert_scalar "2:2:0" \
+  "SELECT count(*) || ':' || count(*) FILTER (WHERE completed_at IS NOT NULL) || ':' || count(*) FILTER (WHERE last_error IS NOT NULL) FROM loyal_yield.earn_reconciliation_jobs WHERE event_payload->>'signature' IN ('sig-finalized-failed', 'sig-after-finalized-failure')" \
+  "finalized failed transaction and later vault work both complete without retry evidence"
+assert_scalar "2" \
+  "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE event_payload->>'signature' IN ('sig-finalized-failed', 'sig-after-finalized-failure') AND attempt_count = 1" \
+  "finalized failure no-op and later work each run exactly once"
+assert_scalar "0" \
+  "SELECT count(*) FROM loyal_yield.user_yield_position_holding_events WHERE observed_slot IN (140, 141)" \
+  "finalized failure no-op and later no-op write no Earn mutation"
 
 echo "== Run focused production checks"
 (

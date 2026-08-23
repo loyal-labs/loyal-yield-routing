@@ -1,0 +1,3 @@
+{"event_key":"failed-policy-wallet","kind":"account","filters":["earn_smart_accounts"],"pubkey":"Vote111111111111111111111111111111111111111","slot":140,"signature":"sig-finalized-failed"}
+{"event_key":"later-wallet-update","kind":"account","filters":["earn_smart_accounts"],"pubkey":"Vote111111111111111111111111111111111111111","slot":141,"signature":"sig-after-finalized-failure"}
+

@@ -1,0 +1,7 @@
+{
+  "signatures": {
+    "sig-finalized-failed": { "kind": "failed_transaction", "slot": 140 },
+    "sig-after-finalized-failure": { "kind": "noop", "slot": 141 }
+  }
+}
+
