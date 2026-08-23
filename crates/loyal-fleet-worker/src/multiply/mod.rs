@@ -15,12 +15,13 @@ use loyal_yield_store::{
         MultiplyOperationStatus, MultiplyPosition, ObligationBefore, RouteGoal, StrategyKey,
         TokenAmountBefore, TokenDelta, MULTIPLY_ENGINE_VERSION,
     },
-    MultiplyRouteLease, NeonSqlClient, OrchestratorError,
+    MultiplyPositionSnapshotInput, MultiplyRouteLease, NeonSqlClient, OrchestratorError,
 };
 use planner::{next_action, PlannerDecision};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
 use solana_client::rpc_config::{RpcSendTransactionConfig, RpcTransactionConfig};
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -43,6 +44,16 @@ pub struct TickResult {
     pub signature: Option<String>,
 }
 
+struct ConfirmedTokenTransfer {
+    signature: Signature,
+    transaction: VersionedTransaction,
+    slot: u64,
+    source_pre: u64,
+    source_post: u64,
+    destination_pre: u64,
+    destination_post: u64,
+}
+
 pub struct WorkerRuntime {
     pub store: NeonSqlClient,
     pub rpc: RpcClient,
@@ -52,6 +63,382 @@ pub struct WorkerRuntime {
 }
 
 impl WorkerRuntime {
+    pub async fn bootstrap_ready_route(&self) -> Result<Option<String>, Box<dyn Error>> {
+        let Some(policy) = self.store.load_unbootstrapped_earn_max_policy_set().await? else {
+            return Ok(None);
+        };
+        let settings = Pubkey::from_str(&policy.settings)?;
+        let topology = config::derive_earn_max_topology(settings)?;
+        if policy.vault_index != topology.vault_index || policy.vault != topology.vault.to_string()
+        {
+            return Err("ready policy projection drifted from deterministic topology".into());
+        }
+        let route_key = format!("earn-max:{}:{}", settings, topology.vault_index);
+        let state = loyal_yield_store::fleet_orchestration::MultiplyRouteState::new(
+            route_key.clone(),
+            settings.to_string(),
+            topology.vault_index,
+            topology.vault.to_string(),
+            loyal_yield_store::fleet_orchestration::TokenBalance {
+                account: topology.claim_custody.to_string(),
+                mint: config::USDC_MINT.to_owned(),
+                token_program: config::TOKEN.to_owned(),
+                amount_raw: 0,
+            },
+            policy.observed_slot,
+            Utc::now(),
+        )?;
+        if self
+            .store
+            .create_multiply_route_state(&route_key, &state)
+            .await?
+        {
+            Ok(Some(route_key))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn admit_next_confirmed_deposit(&self) -> Result<Option<TickResult>, Box<dyn Error>> {
+        let Some(route) = self.store.load_unadmitted_multiply_route_state().await? else {
+            return Ok(None);
+        };
+        let topology = config::topology_for_route(&route.state)?;
+        let Some((signature, wallet_account)) = self
+            .find_confirmed_deposit(topology.claim_custody, route.state.observed_slot)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let result = self
+            .admit_confirmed_deposit(
+                &route.route_key,
+                format!("chain:{signature}"),
+                signature,
+                wallet_account,
+                StrategyKey::SyrupUsdcUsdc,
+            )
+            .await?;
+        Ok(Some(result))
+    }
+
+    async fn find_confirmed_deposit(
+        &self,
+        vault_account: Pubkey,
+        minimum_slot: u64,
+    ) -> Result<Option<(Signature, Pubkey)>, Box<dyn Error>> {
+        let signatures = self
+            .rpc
+            .get_signatures_for_address_with_config(
+                &vault_account,
+                GetConfirmedSignaturesForAddress2Config {
+                    before: None,
+                    until: None,
+                    limit: Some(32),
+                    commitment: Some(CommitmentConfig::confirmed()),
+                },
+            )
+            .await?;
+        for status in signatures {
+            if status.slot < minimum_slot || status.err.is_some() {
+                continue;
+            }
+            let signature = Signature::from_str(&status.signature)?;
+            let transaction = self
+                .rpc
+                .get_transaction_with_config(
+                    &signature,
+                    RpcTransactionConfig {
+                        encoding: Some(UiTransactionEncoding::Base64),
+                        commitment: Some(CommitmentConfig::confirmed()),
+                        max_supported_transaction_version: Some(0),
+                    },
+                )
+                .await?;
+            let decoded = transaction
+                .transaction
+                .transaction
+                .decode()
+                .ok_or("deposit transaction bytes did not decode")?;
+            let Some(meta) = transaction.transaction.meta.as_ref() else {
+                continue;
+            };
+            if meta.err.is_some() {
+                continue;
+            }
+            let keys = transaction_account_keys(&decoded, meta)?;
+            let vault_index = account_index(&keys, vault_account)?;
+            let Ok(vault_pre) =
+                token_amount(&meta.pre_token_balances, vault_index, config::USDC_MINT)
+            else {
+                continue;
+            };
+            let Ok(vault_post) =
+                token_amount(&meta.post_token_balances, vault_index, config::USDC_MINT)
+            else {
+                continue;
+            };
+            let Some(amount) = vault_post
+                .checked_sub(vault_pre)
+                .filter(|amount| *amount > 0)
+            else {
+                continue;
+            };
+            let pre_balances = match &meta.pre_token_balances {
+                OptionSerializer::Some(values) => values,
+                OptionSerializer::None | OptionSerializer::Skip => continue,
+            };
+            for pre in pre_balances {
+                if pre.account_index == vault_index || pre.mint != config::USDC_MINT {
+                    continue;
+                }
+                let Ok(post) = token_amount(
+                    &meta.post_token_balances,
+                    pre.account_index,
+                    config::USDC_MINT,
+                ) else {
+                    continue;
+                };
+                let before = pre.ui_token_amount.amount.parse::<u64>()?;
+                if before.checked_sub(post) == Some(amount) {
+                    let source = *keys
+                        .get(usize::from(pre.account_index))
+                        .ok_or("deposit source account index is outside the transaction")?;
+                    return Ok(Some((signature, source)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn admit_next_confirmed_claim(&self) -> Result<Option<TickResult>, Box<dyn Error>> {
+        let Some(route) = self.store.load_claimable_multiply_route_state().await? else {
+            return Ok(None);
+        };
+        let topology = config::topology_for_route(&route.state)?;
+        let withdrawal = route
+            .state
+            .withdrawal
+            .as_ref()
+            .ok_or("claimable route omitted withdrawal")?;
+        let destination = Pubkey::from_str(&withdrawal.destination_account)?;
+        let signatures = self
+            .rpc
+            .get_signatures_for_address_with_config(
+                &topology.claim_custody,
+                GetConfirmedSignaturesForAddress2Config {
+                    before: None,
+                    until: None,
+                    limit: Some(32),
+                    commitment: Some(CommitmentConfig::confirmed()),
+                },
+            )
+            .await?;
+        let mut transfer = None;
+        for status in signatures {
+            if status.slot < route.state.observed_slot || status.err.is_some() {
+                continue;
+            }
+            let signature = Signature::from_str(&status.signature)?;
+            if let Some(candidate) = self
+                .confirmed_token_transfer(
+                    signature,
+                    topology.claim_custody,
+                    destination,
+                    config::USDC_MINT,
+                )
+                .await?
+            {
+                if candidate.source_pre.saturating_sub(candidate.source_post)
+                    == withdrawal.amount_raw
+                {
+                    transfer = Some(candidate);
+                    break;
+                }
+            }
+        }
+        let Some(transfer) = transfer else {
+            return Ok(None);
+        };
+        let mut lease = self
+            .store
+            .lease_multiply_route_state(
+                &route.route_key,
+                &self.worker_id,
+                Utc::now() + ChronoDuration::seconds(30),
+            )
+            .await?
+            .ok_or("claimable route is already leased")?;
+        let stored = self
+            .store
+            .load_multiply_route_state(&route.route_key)
+            .await?
+            .ok_or("claimable route disappeared")?;
+        let mut next = stored.state;
+        let withdrawal = next
+            .withdrawal
+            .as_mut()
+            .ok_or("claimable route omitted withdrawal")?;
+        if withdrawal.status != loyal_yield_store::fleet_orchestration::WithdrawalStatus::Claimable
+            || withdrawal.amount_raw != transfer.source_pre.saturating_sub(transfer.source_post)
+        {
+            let _ = self.store.release_multiply_route_lease(&lease).await;
+            return Err("claimable route changed before claim admission".into());
+        }
+        withdrawal.status = loyal_yield_store::fleet_orchestration::WithdrawalStatus::Claimed;
+        withdrawal.claim_signature = Some(transfer.signature.to_string());
+        next.generation += 1;
+        next.goal = RouteGoal::Claimed;
+        next.position = MultiplyPosition::Idle {
+            claim: loyal_yield_store::fleet_orchestration::TokenBalance {
+                account: topology.claim_custody.to_string(),
+                mint: config::USDC_MINT.to_owned(),
+                token_program: config::TOKEN.to_owned(),
+                amount_raw: transfer.source_post,
+            },
+        };
+        next.observed_slot = transfer.slot;
+        next.observed_at = Utc::now();
+        next.frontend = project_frontend(&next);
+        let amount = transfer.source_pre - transfer.source_post;
+        let amount_delta = i64::try_from(amount).map_err(|_| "claim amount exceeds i64")?;
+        let wire = bincode::serialize(&transfer.transaction)?;
+        let message = bincode::serialize(&transfer.transaction.message)?;
+        let evidence = serde_json::json!({
+            "signature": transfer.signature.to_string(),
+            "slot": transfer.slot,
+            "sourcePre": transfer.source_pre,
+            "sourcePost": transfer.source_post,
+            "destinationPre": transfer.destination_pre,
+            "destinationPost": transfer.destination_post,
+        });
+        let operation = MultiplyOperation {
+            operation_id: format!("claim-{}", &hash_bytes(transfer.signature.as_ref())[..32]),
+            route_key: next.route_key.clone(),
+            cycle: next.cycle,
+            engine_version: MULTIPLY_ENGINE_VERSION.to_owned(),
+            action: MultiplyAction::Claim,
+            strategy_key: None,
+            status: MultiplyOperationStatus::Reconciled,
+            idempotency_key: format!("{MULTIPLY_ENGINE_VERSION}:claim:{}", transfer.signature),
+            expected_effects: ExpectedEffects {
+                token_amounts_before: vec![
+                    TokenAmountBefore {
+                        account: topology.claim_custody.to_string(),
+                        mint: config::USDC_MINT.to_owned(),
+                        amount_raw: transfer.source_pre,
+                    },
+                    TokenAmountBefore {
+                        account: destination.to_string(),
+                        mint: config::USDC_MINT.to_owned(),
+                        amount_raw: transfer.destination_pre,
+                    },
+                ],
+                token_deltas: vec![
+                    TokenDelta {
+                        account: topology.claim_custody.to_string(),
+                        mint: config::USDC_MINT.to_owned(),
+                        raw_delta: -amount_delta,
+                    },
+                    TokenDelta {
+                        account: destination.to_string(),
+                        mint: config::USDC_MINT.to_owned(),
+                        raw_delta: amount_delta,
+                    },
+                ],
+                obligation_before: None,
+                obligation_delta: None,
+            },
+            policy_account: None,
+            policy_data_sha256: None,
+            message_sha256: Some(hash_bytes(&message)),
+            signed_wire: None,
+            signed_wire_sha256: Some(hash_bytes(&wire)),
+            transaction_signature: Some(transfer.signature.to_string()),
+            recent_blockhash: Some(transfer.transaction.message.recent_blockhash().to_string()),
+            last_valid_block_height: None,
+            broadcast_intent_at: None,
+            confirmed_slot: Some(transfer.slot),
+            reconciliation_sha256: Some(hash_bytes(&serde_json::to_vec(&evidence)?)),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        if !self
+            .store
+            .admit_external_multiply_operation(&mut lease, &next, &operation)
+            .await?
+        {
+            return Err(
+                "claim transaction was already admitted or its route lease was lost".into(),
+            );
+        }
+        if !self.store.release_multiply_route_lease(&lease).await? {
+            return Err("claim admission lost its lease before release".into());
+        }
+        Ok(Some(TickResult {
+            route_key: Some(next.route_key),
+            condition: "confirmed_claim_admitted".to_owned(),
+            operation_id: Some(operation.operation_id),
+            signature: operation.transaction_signature,
+        }))
+    }
+
+    async fn confirmed_token_transfer(
+        &self,
+        signature: Signature,
+        source: Pubkey,
+        destination: Pubkey,
+        mint: &str,
+    ) -> Result<Option<ConfirmedTokenTransfer>, Box<dyn Error>> {
+        let transaction = self
+            .rpc
+            .get_transaction_with_config(
+                &signature,
+                RpcTransactionConfig {
+                    encoding: Some(UiTransactionEncoding::Base64),
+                    commitment: Some(CommitmentConfig::confirmed()),
+                    max_supported_transaction_version: Some(0),
+                },
+            )
+            .await?;
+        let decoded = transaction
+            .transaction
+            .transaction
+            .decode()
+            .ok_or("claim transaction bytes did not decode")?;
+        let Some(meta) = transaction.transaction.meta.as_ref() else {
+            return Ok(None);
+        };
+        if meta.err.is_some() {
+            return Ok(None);
+        }
+        let keys = transaction_account_keys(&decoded, meta)?;
+        let Ok(source_index) = account_index(&keys, source) else {
+            return Ok(None);
+        };
+        let Ok(destination_index) = account_index(&keys, destination) else {
+            return Ok(None);
+        };
+        let source_pre = token_amount(&meta.pre_token_balances, source_index, mint)?;
+        let source_post = token_amount(&meta.post_token_balances, source_index, mint)?;
+        let destination_pre =
+            token_amount(&meta.pre_token_balances, destination_index, mint).unwrap_or(0);
+        let destination_post = token_amount(&meta.post_token_balances, destination_index, mint)?;
+        let source_delta = source_pre.saturating_sub(source_post);
+        if source_delta == 0 || destination_post.saturating_sub(destination_pre) != source_delta {
+            return Ok(None);
+        }
+        Ok(Some(ConfirmedTokenTransfer {
+            signature,
+            transaction: decoded,
+            slot: transaction.slot,
+            source_pre,
+            source_post,
+            destination_pre,
+            destination_post,
+        }))
+    }
+
     pub async fn admit_confirmed_deposit(
         &self,
         route_key: &str,
@@ -60,6 +447,12 @@ impl WorkerRuntime {
         wallet_account: Pubkey,
         target: StrategyKey,
     ) -> Result<TickResult, Box<dyn Error>> {
+        let route = self
+            .store
+            .load_multiply_route_state(route_key)
+            .await?
+            .ok_or("route not found")?;
+        let topology = config::topology_for_route(&route.state)?;
         let transaction = self
             .rpc
             .get_transaction_with_config(
@@ -89,7 +482,7 @@ impl WorkerRuntime {
         }
         let keys = transaction_account_keys(&decoded, meta)?;
         let wallet_index = account_index(&keys, wallet_account)?;
-        let vault_index = account_index(&keys, Pubkey::from_str(config::USDC_CUSTODY)?)?;
+        let vault_index = account_index(&keys, topology.claim_custody)?;
         let wallet_pre = token_amount(&meta.pre_token_balances, wallet_index, config::USDC_MINT)?;
         let wallet_post = token_amount(&meta.post_token_balances, wallet_index, config::USDC_MINT)?;
         let vault_pre = token_amount(&meta.pre_token_balances, vault_index, config::USDC_MINT)?;
@@ -118,7 +511,7 @@ impl WorkerRuntime {
         let mut state = stored.state;
         state.position = MultiplyPosition::Idle {
             claim: loyal_yield_store::fleet_orchestration::TokenBalance {
-                account: config::USDC_CUSTODY.to_owned(),
+                account: topology.claim_custody.to_string(),
                 mint: config::USDC_MINT.to_owned(),
                 token_program: config::TOKEN.to_owned(),
                 amount_raw: vault_post,
@@ -160,7 +553,7 @@ impl WorkerRuntime {
                         amount_raw: wallet_pre,
                     },
                     TokenAmountBefore {
-                        account: config::USDC_CUSTODY.to_owned(),
+                        account: topology.claim_custody.to_string(),
                         mint: config::USDC_MINT.to_owned(),
                         amount_raw: vault_pre,
                     },
@@ -172,7 +565,7 @@ impl WorkerRuntime {
                         raw_delta: -amount_delta,
                     },
                     TokenDelta {
-                        account: config::USDC_CUSTODY.to_owned(),
+                        account: topology.claim_custody.to_string(),
                         mint: config::USDC_MINT.to_owned(),
                         raw_delta: amount_delta,
                     },
@@ -196,7 +589,7 @@ impl WorkerRuntime {
         };
         if !self
             .store
-            .admit_multiply_deposit(&mut lease, &state, &operation)
+            .admit_external_multiply_operation(&mut lease, &state, &operation)
             .await?
         {
             return Err(
@@ -359,8 +752,21 @@ impl WorkerRuntime {
         if stored.version != lease.version || stored.fencing_token != lease.fencing_token {
             return Err("leased route version or fencing token drifted".into());
         }
+        let topology = config::topology_for_route(&stored.state)?;
         if let Some(operation) = stored.current_operation {
             return self.recover(lease, &stored.state, operation).await;
+        }
+        if !self
+            .store
+            .earn_max_policy_set_ready(&stored.settings, stored.state.vault_index)
+            .await?
+        {
+            return Ok(TickResult {
+                route_key: Some(lease.route_key.clone()),
+                condition: "earn_max_policy_set_not_ready".to_owned(),
+                operation_id: None,
+                signature: None,
+            });
         }
         let extra = stored
             .state
@@ -374,11 +780,30 @@ impl WorkerRuntime {
                 )]
             })
             .unwrap_or_default();
-        let observed = observe::observe_confirmed_with_extra(&self.rpc, &extra).await?;
-        match next_action(&stored.state, &observed) {
+        let observed = observe::observe_confirmed_with_extra(&self.rpc, topology, &extra).await?;
+        self.store
+            .record_multiply_position_snapshot(&snapshot_input(&stored.state, &observed))
+            .await?;
+        match next_action(&stored.state, &observed, topology) {
             PlannerDecision::Complete => {
                 let mut next = stored.state;
-                if matches!(next.goal, RouteGoal::Deploy | RouteGoal::Move) {
+                if next.goal == RouteGoal::Withdraw
+                    && next.withdrawal.as_ref().is_some_and(|withdrawal| {
+                        withdrawal.status
+                            != loyal_yield_store::fleet_orchestration::WithdrawalStatus::Claimable
+                    })
+                {
+                    next.generation += 1;
+                    if let Some(withdrawal) = &mut next.withdrawal {
+                        withdrawal.status =
+                            loyal_yield_store::fleet_orchestration::WithdrawalStatus::Claimable;
+                        withdrawal.unwind_completed_at = Some(Utc::now());
+                    }
+                    next.frontend = project_frontend(&next);
+                    if !self.store.save_multiply_route_state(lease, &next).await? {
+                        return Err("claimable transition CAS lost its lease".into());
+                    }
+                } else if matches!(next.goal, RouteGoal::Deploy | RouteGoal::Move) {
                     next.generation += 1;
                     next.goal = RouteGoal::Idle;
                     next.frontend = project_frontend(&next);
@@ -395,8 +820,13 @@ impl WorkerRuntime {
             }
             PlannerDecision::Resume(_) => unreachable!("current operation was handled above"),
             PlannerDecision::Execute(plan) => {
-                let mut built = build_operation(&plan, &observed).await?;
-                bind_before(&mut built.expected_effects, &observed, plan.strategy_key)?;
+                let mut built = build_operation(&plan, &observed, topology).await?;
+                bind_before(
+                    &mut built.expected_effects,
+                    &observed,
+                    plan.strategy_key,
+                    topology,
+                )?;
                 let now = Utc::now();
                 let operation_id = operation_id(
                     &stored.state.route_key,
@@ -453,9 +883,10 @@ impl WorkerRuntime {
                     fee_payer: &self.fee_payer,
                     delegate: &self.delegate,
                 };
-                let next =
-                    execute_operation(&context, lease, &route, &operation, &plan, built, &observed)
-                        .await?;
+                let next = execute_operation(
+                    &context, lease, &route, &operation, &plan, built, &observed, topology,
+                )
+                .await?;
                 let completed = self
                     .store
                     .load_multiply_operation(&operation_id)
@@ -477,6 +908,7 @@ impl WorkerRuntime {
         route: &loyal_yield_store::fleet_orchestration::MultiplyRouteState,
         operation: MultiplyOperation,
     ) -> Result<TickResult, Box<dyn Error>> {
+        let topology = config::topology_for_route(route)?;
         let context = ExecutionContext {
             store: &self.store,
             rpc: &self.rpc,
@@ -542,7 +974,7 @@ impl WorkerRuntime {
                     .await?
                     .ok_or("confirmed operation disappeared")?;
                 if let Err(error) =
-                    reconcile_operation(&context, lease, route, &confirmed, slot).await
+                    reconcile_operation(&context, lease, route, &confirmed, slot, topology).await
                 {
                     return self
                         .enter_manual_recovery(
@@ -603,6 +1035,7 @@ impl WorkerRuntime {
                             route,
                             &confirmed,
                             status.slot,
+                            topology,
                         )
                         .await
                         {
@@ -650,7 +1083,7 @@ impl WorkerRuntime {
                     .confirmed_slot
                     .ok_or("confirmed operation omitted its slot")?;
                 if let Err(error) =
-                    reconcile_operation(&context, lease, route, &operation, slot).await
+                    reconcile_operation(&context, lease, route, &operation, slot, topology).await
                 {
                     return self
                         .enter_manual_recovery(
@@ -708,6 +1141,35 @@ pub async fn run(runtime: &WorkerRuntime, route_key: Option<&str>) -> Result<(),
                 serde_json::json!({"condition":"multiply_worker_drained"})
             );
             return Ok(());
+        }
+        if route_key.is_none() {
+            match runtime.bootstrap_ready_route().await {
+                Ok(Some(route_key)) => println!(
+                    "{}",
+                    serde_json::json!({"condition":"earn_max_route_bootstrapped","routeKey":route_key})
+                ),
+                Ok(None) => {}
+                Err(error) => eprintln!(
+                    "{}",
+                    serde_json::json!({"condition":"earn_max_route_bootstrap_failed","error":safe_error(error.as_ref())})
+                ),
+            }
+            match runtime.admit_next_confirmed_deposit().await {
+                Ok(Some(result)) => println!("{}", serde_json::to_string(&result)?),
+                Ok(None) => {}
+                Err(error) => eprintln!(
+                    "{}",
+                    serde_json::json!({"condition":"earn_max_deposit_observation_failed","error":safe_error(error.as_ref())})
+                ),
+            }
+            match runtime.admit_next_confirmed_claim().await {
+                Ok(Some(result)) => println!("{}", serde_json::to_string(&result)?),
+                Ok(None) => {}
+                Err(error) => eprintln!(
+                    "{}",
+                    serde_json::json!({"condition":"earn_max_claim_observation_failed","error":safe_error(error.as_ref())})
+                ),
+            }
         }
         match runtime.tick(route_key).await {
             Ok(result) => println!("{}", serde_json::to_string(&result)?),
@@ -771,10 +1233,117 @@ fn hash_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn snapshot_input(
+    route: &loyal_yield_store::fleet_orchestration::MultiplyRouteState,
+    observed: &observe::ObservedRoute,
+) -> MultiplyPositionSnapshotInput {
+    const FRACTION_ONE_SF: u128 = 1_u128 << 60;
+    let active = observed
+        .strategies
+        .iter()
+        .find(|value| value.collateral_deposited_raw > 0 || value.debt_raw > 0);
+    let to_usd_micros = |value: u128| value.saturating_mul(1_000_000) / FRACTION_ONE_SF;
+    let (
+        strategy_key,
+        collateral_raw,
+        debt_raw,
+        collateral_value,
+        debt_value,
+        leverage_bps,
+        ltv_bps,
+        health_factor_ppm,
+    ) = match active {
+        Some(position) => {
+            let collateral_value = to_usd_micros(position.collateral_value_sf);
+            let debt_value = to_usd_micros(position.debt_value_sf);
+            let equity = u128::from(observed.claim.amount_raw)
+                .saturating_add(collateral_value)
+                .saturating_sub(debt_value);
+            (
+                Some(position.strategy_key.as_str().to_owned()),
+                position.collateral_deposited_raw,
+                position.debt_raw,
+                collateral_value,
+                debt_value,
+                (equity > 0).then(|| {
+                    u64::try_from(collateral_value.saturating_mul(10_000) / equity)
+                        .unwrap_or(u64::MAX)
+                }),
+                (collateral_value > 0).then(|| {
+                    u64::try_from(debt_value.saturating_mul(10_000) / collateral_value)
+                        .unwrap_or(u64::MAX)
+                }),
+                (position.debt_value_sf > 0).then(|| {
+                    u64::try_from(
+                        position.unhealthy_value_sf.saturating_mul(1_000_000)
+                            / position.debt_value_sf,
+                    )
+                    .unwrap_or(u64::MAX)
+                }),
+            )
+        }
+        None => (None, 0, 0, 0, 0, None, None, None),
+    };
+    let equity = if active.is_some() {
+        u128::from(observed.claim.amount_raw)
+            .saturating_add(collateral_value)
+            .saturating_sub(debt_value)
+    } else {
+        u128::from(observed.claim.amount_raw)
+    };
+    let (supply_apy_bps, borrow_apy_bps, forecast_apy_bps) = match active {
+        Some(position) => {
+            let supply = position.collateral_supply_apy_bps;
+            let borrow = position.debt_borrow_apy_bps;
+            let forecast = (equity > 0).then(|| {
+                let income = i128::try_from(collateral_value)
+                    .unwrap_or(i128::MAX)
+                    .saturating_mul(i128::from(supply));
+                let cost = i128::try_from(debt_value)
+                    .unwrap_or(i128::MAX)
+                    .saturating_mul(i128::from(borrow));
+                let net = income.saturating_sub(cost)
+                    / i128::try_from(equity).unwrap_or(i128::MAX);
+                i64::try_from(net).unwrap_or(if net.is_negative() { i64::MIN } else { i64::MAX })
+            });
+            (Some(supply), Some(borrow), forecast)
+        }
+        None => (None, None, None),
+    };
+    MultiplyPositionSnapshotInput {
+        route_key: route.route_key.clone(),
+        generation: route.generation,
+        observed_slot: observed.slot,
+        observed_at: Utc::now(),
+        strategy_key,
+        claim_raw: observed.claim.amount_raw,
+        collateral_raw,
+        debt_raw,
+        equity_usd_micros: Some(equity.to_string()),
+        collateral_value_usd_micros: Some(collateral_value.to_string()),
+        debt_value_usd_micros: Some(debt_value.to_string()),
+        leverage_bps,
+        ltv_bps,
+        health_factor_ppm,
+        supply_apy_bps,
+        borrow_apy_bps,
+        forecast_apy_bps,
+        valuation_source: Some("confirmed_kamino_reserve_curve_500ms".to_owned()),
+        valuation_slot: Some(observed.slot),
+        valuation_observed_at: Some(Utc::now()),
+        coverage_start_at: route
+            .deposit
+            .as_ref()
+            .map(|deposit| deposit.observed_at)
+            .or(Some(route.observed_at)),
+    }
+}
+
 fn bind_before(
     effects: &mut loyal_yield_store::fleet_orchestration::ExpectedEffects,
     observed: &observe::ObservedRoute,
     strategy_key: Option<loyal_yield_store::fleet_orchestration::StrategyKey>,
+    topology: config::EarnMaxTopology,
 ) -> Result<(), Box<dyn Error>> {
     effects.token_amounts_before = effects
         .token_deltas
@@ -800,7 +1369,7 @@ fn bind_before(
     effects.obligation_before = strategy_key.map(|key| {
         let position = observed.position(key);
         ObligationBefore {
-            obligation: config::strategy(key).obligation.to_owned(),
+            obligation: topology.strategy(key).obligation.to_string(),
             collateral_raw: position.collateral_deposited_raw,
             debt_raw: position.debt_raw,
             debt_amount_sf: position.debt_amount_sf.clone(),

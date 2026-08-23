@@ -33,6 +33,45 @@ impl NeonSqlConfig {
 pub type OrchestratorConfig = NeonSqlConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnMaxPolicySetProjectionInput {
+    pub settings: String,
+    pub vault_index: u8,
+    pub vault: String,
+    pub manifest_version: String,
+    pub manifest_sha256: String,
+    pub status: String,
+    pub policy_accounts: Value,
+    pub observed_signature: String,
+    pub observed_slot: u64,
+    pub observed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MultiplyPositionSnapshotInput {
+    pub route_key: String,
+    pub generation: u64,
+    pub observed_slot: u64,
+    pub observed_at: DateTime<Utc>,
+    pub strategy_key: Option<String>,
+    pub claim_raw: u64,
+    pub collateral_raw: u64,
+    pub debt_raw: u64,
+    pub equity_usd_micros: Option<String>,
+    pub collateral_value_usd_micros: Option<String>,
+    pub debt_value_usd_micros: Option<String>,
+    pub leverage_bps: Option<u64>,
+    pub ltv_bps: Option<u64>,
+    pub health_factor_ppm: Option<u64>,
+    pub supply_apy_bps: Option<u64>,
+    pub borrow_apy_bps: Option<u64>,
+    pub forecast_apy_bps: Option<i64>,
+    pub valuation_source: Option<String>,
+    pub valuation_slot: Option<u64>,
+    pub valuation_observed_at: Option<DateTime<Utc>>,
+    pub coverage_start_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteLookupTable {
     pub id: i64,
     pub cluster: String,

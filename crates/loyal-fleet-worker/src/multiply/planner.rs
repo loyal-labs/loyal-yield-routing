@@ -1,4 +1,4 @@
-use super::{config::strategy, observe::ObservedRoute};
+use super::{config::EarnMaxTopology, observe::ObservedRoute};
 use loyal_yield_store::fleet_orchestration::{
     MultiplyAction, MultiplyRouteState, RouteGoal, StrategyKey,
 };
@@ -31,7 +31,11 @@ pub enum PlannerDecision {
 
 /// The only route planner. It selects one literal transaction from confirmed
 /// custody and obligation state; it never predicts a multi-transaction graph.
-pub fn next_action(route: &MultiplyRouteState, observed: &ObservedRoute) -> PlannerDecision {
+pub fn next_action(
+    route: &MultiplyRouteState,
+    observed: &ObservedRoute,
+    topology: EarnMaxTopology,
+) -> PlannerDecision {
     if let Some(operation_id) = &route.current_operation_id {
         return PlannerDecision::Resume(operation_id.clone());
     }
@@ -44,19 +48,19 @@ pub fn next_action(route: &MultiplyRouteState, observed: &ObservedRoute) -> Plan
         RouteGoal::Idle | RouteGoal::Claimed | RouteGoal::ManualRecovery => {
             PlannerDecision::Complete
         }
-        RouteGoal::Withdraw => down(route, observed, active, true),
+        RouteGoal::Withdraw => down(route, observed, active, true, topology),
         RouteGoal::Deploy | RouteGoal::Move => {
             let target = route.target_strategy_key.expect("validated route target");
             if active.is_some_and(|current| current != target) {
-                return down(route, observed, active, false);
+                return down(route, observed, active, false, topology);
             }
-            up(observed, target)
+            up(observed, target, topology)
         }
     }
 }
 
-fn up(observed: &ObservedRoute, target: StrategyKey) -> PlannerDecision {
-    let config = strategy(target);
+fn up(observed: &ObservedRoute, target: StrategyKey, topology: EarnMaxTopology) -> PlannerDecision {
+    let config = topology.strategy(target);
     let position = observed.position(target);
     if observed.collateral_custody.amount_raw > 0 {
         return execute(
@@ -126,6 +130,7 @@ fn down(
     observed: &ObservedRoute,
     active: Option<StrategyKey>,
     for_withdrawal: bool,
+    topology: EarnMaxTopology,
 ) -> PlannerDecision {
     if let Some(key) = active {
         let position = observed.position(key);
@@ -170,29 +175,14 @@ fn down(
             PlannedAmount::Exact(observed.collateral_custody.amount_raw),
         );
     }
-    if for_withdrawal {
-        let amount = route
-            .withdrawal
-            .as_ref()
-            .map_or(observed.claim.amount_raw, |value| {
-                value.amount_raw.min(observed.claim.amount_raw)
-            });
-        if amount > 0 {
-            return PlannerDecision::Execute(ActionPlan {
-                action: MultiplyAction::Claim,
-                strategy_key: None,
-                amount: PlannedAmount::Exact(amount),
-                destination_account: route
-                    .withdrawal
-                    .as_ref()
-                    .map(|value| value.destination_account.clone()),
-            });
-        }
-    }
+    // Claim is a root-signed user transaction prepared by the app. The
+    // delegate stops once the requested amount is liquid in claim custody.
+    let _ = for_withdrawal;
     if route.goal == RouteGoal::Move {
         return up(
             observed,
             route.target_strategy_key.expect("validated move target"),
+            topology,
         );
     }
     PlannerDecision::Complete

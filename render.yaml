@@ -66,6 +66,8 @@ projects:
                 value: production
               - key: SOLANA_RPC_URL
                 sync: false
+              - key: EARN_MAX_DELEGATE
+                sync: false
               - key: BALANCE_SWEEP_UPDATE_SOURCE
                 value: laserstream
               - key: BALANCE_SWEEP_TARGET_REFRESH_SECONDS

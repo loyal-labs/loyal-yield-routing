@@ -8,8 +8,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const MULTIPLY_STATE_SCHEMA_VERSION: u16 = 4;
-pub const MULTIPLY_ENGINE_VERSION: &str = "linus_v1";
+pub const MULTIPLY_STATE_SCHEMA_VERSION: u16 = 5;
+pub const MULTIPLY_ENGINE_VERSION: &str = "earn_max_v1";
 pub const MULTIPLY_DEFAULT_LEASE_SECONDS: i64 = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,7 +147,9 @@ pub struct MultiplyRouteState {
     pub schema_version: u16,
     pub engine_version: String,
     pub route_key: String,
-    pub vault_id: i64,
+    pub settings: String,
+    pub vault_index: u8,
+    pub vault: String,
     pub generation: u64,
     pub cycle: u64,
     pub goal: RouteGoal,
@@ -163,6 +165,49 @@ pub struct MultiplyRouteState {
 }
 
 impl MultiplyRouteState {
+    pub fn new(
+        route_key: String,
+        settings: String,
+        vault_index: u8,
+        vault: String,
+        claim: TokenBalance,
+        observed_slot: u64,
+        observed_at: DateTime<Utc>,
+    ) -> Result<Self, MultiplyStateError> {
+        let mut state = Self {
+            schema_version: MULTIPLY_STATE_SCHEMA_VERSION,
+            engine_version: MULTIPLY_ENGINE_VERSION.to_owned(),
+            route_key,
+            settings,
+            vault_index,
+            vault,
+            generation: 1,
+            cycle: 1,
+            goal: RouteGoal::Idle,
+            target_strategy_key: None,
+            position: MultiplyPosition::Idle { claim },
+            deposit: None,
+            withdrawal: None,
+            current_operation_id: None,
+            manual_recovery_reason: None,
+            observed_slot,
+            observed_at,
+            frontend: MultiplyFrontendView {
+                generation: 1,
+                status: String::new(),
+                strategy_key: None,
+                claim_amount_raw: 0,
+                collateral_amount_raw: 0,
+                debt_amount_raw: 0,
+                withdrawal_status: None,
+                observed_slot,
+            },
+        };
+        state.frontend = project_frontend(&state);
+        state.validate_persisted()?;
+        Ok(state)
+    }
+
     pub fn withdrawal_matches(
         &self,
         request_id: &str,
@@ -180,7 +225,8 @@ impl MultiplyRouteState {
         if self.schema_version != MULTIPLY_STATE_SCHEMA_VERSION
             || self.engine_version != MULTIPLY_ENGINE_VERSION
             || self.route_key.trim().is_empty()
-            || self.vault_id <= 0
+            || self.settings.trim().is_empty()
+            || self.vault.trim().is_empty()
             || self.generation == 0
             || self.cycle == 0
             || self.observed_slot == 0

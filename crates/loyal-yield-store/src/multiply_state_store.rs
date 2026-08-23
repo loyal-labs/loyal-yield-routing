@@ -2,6 +2,7 @@ use crate::fleet_orchestration::{
     MultiplyOperation, MultiplyOperationStatus, MultiplyRouteState, RouteGoal,
     MULTIPLY_ENGINE_VERSION,
 };
+use crate::MultiplyPositionSnapshotInput;
 use crate::{NeonSqlClient, OrchestratorError};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -13,11 +14,21 @@ const OPERATION_COLUMNS: &str = "operation_id, route_key, cycle, engine_version,
 #[derive(Clone, Debug)]
 pub struct StoredMultiplyRouteState {
     pub route_key: String,
-    pub vault_id: i64,
+    pub settings: String,
+    pub vault_index: i16,
+    pub vault: String,
     pub state: MultiplyRouteState,
     pub version: i64,
     pub fencing_token: i64,
     pub current_operation: Option<MultiplyOperation>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReadyEarnMaxPolicySet {
+    pub settings: String,
+    pub vault_index: u8,
+    pub vault: String,
+    pub observed_slot: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +80,128 @@ impl SignedOperation {
 }
 
 impl NeonSqlClient {
+    pub async fn record_multiply_position_snapshot(
+        &self,
+        input: &MultiplyPositionSnapshotInput,
+    ) -> Result<bool, OrchestratorError> {
+        if input.route_key.trim().is_empty() || input.generation == 0 || input.observed_slot == 0 {
+            return Err(invariant("Multiply position snapshot identity is invalid"));
+        }
+        let generation = i64::try_from(input.generation)
+            .map_err(|_| invariant("Multiply snapshot generation exceeds BIGINT"))?;
+        let observed_slot = i64::try_from(input.observed_slot)
+            .map_err(|_| invariant("Multiply snapshot slot exceeds BIGINT"))?;
+        let valuation_slot = input
+            .valuation_slot
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| invariant("Multiply valuation slot exceeds BIGINT"))?;
+        let result = sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.multiply_position_snapshots (
+                route_key, generation, observed_slot, observed_at, strategy_key,
+                claim_raw, collateral_raw, debt_raw, equity_usd_micros,
+                collateral_value_usd_micros, debt_value_usd_micros,
+                leverage_bps, ltv_bps, health_factor_ppm, supply_apy_bps,
+                borrow_apy_bps, forecast_apy_bps, valuation_source,
+                valuation_slot, valuation_observed_at, coverage_start_at
+            ) VALUES (
+                $1, $2, $3, $4, $5,
+                $6::numeric, $7::numeric, $8::numeric, $9::numeric,
+                $10::numeric, $11::numeric,
+                $12, $13, $14, $15,
+                $16, $17, $18,
+                $19, $20, $21
+            )
+            ON CONFLICT (route_key, generation) DO NOTHING
+            "#,
+        )
+        .bind(&input.route_key)
+        .bind(generation)
+        .bind(observed_slot)
+        .bind(input.observed_at)
+        .bind(&input.strategy_key)
+        .bind(input.claim_raw.to_string())
+        .bind(input.collateral_raw.to_string())
+        .bind(input.debt_raw.to_string())
+        .bind(&input.equity_usd_micros)
+        .bind(&input.collateral_value_usd_micros)
+        .bind(&input.debt_value_usd_micros)
+        .bind(input.leverage_bps.map(i64::try_from).transpose().map_err(|_| invariant("leverage exceeds BIGINT"))?)
+        .bind(input.ltv_bps.map(i64::try_from).transpose().map_err(|_| invariant("LTV exceeds BIGINT"))?)
+        .bind(input.health_factor_ppm.map(i64::try_from).transpose().map_err(|_| invariant("health factor exceeds BIGINT"))?)
+        .bind(input.supply_apy_bps.map(i64::try_from).transpose().map_err(|_| invariant("supply APY exceeds BIGINT"))?)
+        .bind(input.borrow_apy_bps.map(i64::try_from).transpose().map_err(|_| invariant("borrow APY exceeds BIGINT"))?)
+        .bind(input.forecast_apy_bps)
+        .bind(&input.valuation_source)
+        .bind(valuation_slot)
+        .bind(input.valuation_observed_at)
+        .bind(input.coverage_start_at)
+        .execute(self.pool())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn load_unbootstrapped_earn_max_policy_set(
+        &self,
+    ) -> Result<Option<ReadyEarnMaxPolicySet>, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            SELECT policy.settings, policy.vault_index, policy.vault, policy.observed_slot
+            FROM loyal_yield.earn_max_policy_sets policy
+            WHERE policy.status = 'ready'
+              AND policy.manifest_version = 'earn-max-v1'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.multiply_route_states route
+                  WHERE route.settings = policy.settings
+                    AND route.vault_index = policy.vault_index
+              )
+            ORDER BY policy.observed_slot, policy.settings
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| {
+            let vault_index: i16 = row.try_get("vault_index")?;
+            let observed_slot: i64 = row.try_get("observed_slot")?;
+            Ok(ReadyEarnMaxPolicySet {
+                settings: row.try_get("settings")?,
+                vault_index: u8::try_from(vault_index)
+                    .map_err(|_| invariant("Earn MAX vault index exceeds u8"))?,
+                vault: row.try_get("vault")?,
+                observed_slot: u64::try_from(observed_slot)
+                    .map_err(|_| invariant("Earn MAX observed slot is negative"))?,
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn earn_max_policy_set_ready(
+        &self,
+        settings: &str,
+        vault_index: u8,
+    ) -> Result<bool, OrchestratorError> {
+        let ready = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM loyal_yield.earn_max_policy_sets
+                WHERE settings = $1
+                  AND vault_index = $2
+                  AND manifest_version = 'earn-max-v1'
+                  AND status = 'ready'
+            )
+            "#,
+        )
+        .bind(settings)
+        .bind(i16::from(vault_index))
+        .fetch_one(self.pool())
+        .await?;
+        Ok(ready)
+    }
+
     pub async fn create_multiply_route_state(
         &self,
         route_key: &str,
@@ -80,10 +213,12 @@ impl NeonSqlClient {
         }
         let encoded = encode(state)?;
         let result = sqlx::query(
-            "INSERT INTO loyal_yield.multiply_route_states (route_key, vault_id, state) VALUES ($1, $2, $3) ON CONFLICT (route_key) DO NOTHING",
+            "INSERT INTO loyal_yield.multiply_route_states (route_key, settings, vault_index, vault, state) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (route_key) DO NOTHING",
         )
         .bind(route_key)
-        .bind(state.vault_id)
+        .bind(&state.settings)
+        .bind(i16::from(state.vault_index))
+        .bind(&state.vault)
         .bind(encoded)
         .execute(self.pool())
         .await?;
@@ -95,19 +230,25 @@ impl NeonSqlClient {
         route_key: &str,
     ) -> Result<Option<StoredMultiplyRouteState>, OrchestratorError> {
         let row = sqlx::query(
-            "SELECT route_key, vault_id, state, state_version, fencing_token FROM loyal_yield.multiply_route_states WHERE route_key=$1",
+            "SELECT route_key, settings, vault_index, vault, state, state_version, fencing_token FROM loyal_yield.multiply_route_states WHERE route_key=$1",
         )
         .bind(route_key)
         .fetch_optional(self.pool())
         .await?;
         let Some(row) = row else { return Ok(None) };
         let route_key: String = row.try_get("route_key")?;
-        let vault_id: i64 = row.try_get("vault_id")?;
+        let settings: String = row.try_get("settings")?;
+        let vault_index: i16 = row.try_get("vault_index")?;
+        let vault: String = row.try_get("vault")?;
         let version: i64 = row.try_get("state_version")?;
         let state: MultiplyRouteState = serde_json::from_value(row.try_get::<Value, _>("state")?)
             .map_err(|error| invariant(&error.to_string()))?;
         validate_route(&route_key, &state)?;
-        if state.vault_id != vault_id || u64::try_from(version).ok() != Some(state.generation) {
+        if state.settings != settings
+            || i16::from(state.vault_index) != vault_index
+            || state.vault != vault
+            || u64::try_from(version).ok() != Some(state.generation)
+        {
             return Err(invariant("route columns drifted from typed state"));
         }
         let current_operation = match &state.current_operation_id {
@@ -121,7 +262,9 @@ impl NeonSqlClient {
         }
         Ok(Some(StoredMultiplyRouteState {
             route_key,
-            vault_id,
+            settings,
+            vault_index,
+            vault,
             state,
             version,
             fencing_token: row.try_get("fencing_token")?,
@@ -129,17 +272,66 @@ impl NeonSqlClient {
         }))
     }
 
-    pub async fn load_multiply_route_state_by_vault_id(
+    pub async fn load_multiply_route_state_by_settings(
         &self,
-        vault_id: i64,
+        settings: &str,
+        vault_index: u8,
     ) -> Result<Option<StoredMultiplyRouteState>, OrchestratorError> {
-        if vault_id <= 0 {
-            return Err(invariant("vault id must be positive"));
+        if settings.trim().is_empty() {
+            return Err(invariant("settings is empty"));
         }
         let key = sqlx::query_scalar::<_, String>(
-            "SELECT route_key FROM loyal_yield.multiply_route_states WHERE vault_id=$1",
+            "SELECT route_key FROM loyal_yield.multiply_route_states WHERE settings=$1 AND vault_index=$2",
         )
-        .bind(vault_id)
+        .bind(settings)
+        .bind(i16::from(vault_index))
+        .fetch_optional(self.pool())
+        .await?;
+        match key {
+            Some(key) => self.load_multiply_route_state(&key).await,
+            None => Ok(None),
+        }
+    }
+
+    pub async fn load_unadmitted_multiply_route_state(
+        &self,
+    ) -> Result<Option<StoredMultiplyRouteState>, OrchestratorError> {
+        let key = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT route.route_key
+            FROM loyal_yield.multiply_route_states route
+            INNER JOIN loyal_yield.earn_max_policy_sets policy
+              ON policy.settings = route.settings
+             AND policy.vault_index = route.vault_index
+            WHERE policy.status = 'ready'
+              AND route.state ->> 'goal' = 'idle'
+              AND route.state -> 'deposit' = 'null'::jsonb
+              AND route.state -> 'currentOperationId' = 'null'::jsonb
+            ORDER BY route.updated_at, route.route_key
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(self.pool())
+        .await?;
+        match key {
+            Some(key) => self.load_multiply_route_state(&key).await,
+            None => Ok(None),
+        }
+    }
+
+    pub async fn load_claimable_multiply_route_state(
+        &self,
+    ) -> Result<Option<StoredMultiplyRouteState>, OrchestratorError> {
+        let key = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT route_key
+            FROM loyal_yield.multiply_route_states
+            WHERE state #>> '{withdrawal,status}' = 'claimable'
+              AND state -> 'currentOperationId' = 'null'::jsonb
+            ORDER BY updated_at, route_key
+            LIMIT 1
+            "#,
+        )
         .fetch_optional(self.pool())
         .await?;
         match key {
@@ -310,7 +502,7 @@ impl NeonSqlClient {
         Ok(true)
     }
 
-    pub async fn admit_multiply_deposit(
+    pub async fn admit_external_multiply_operation(
         &self,
         lease: &mut MultiplyRouteLease,
         route: &MultiplyRouteState,
@@ -321,21 +513,26 @@ impl NeonSqlClient {
             .validate()
             .map_err(|error| invariant(&error.to_string()))?;
         if operation.status != MultiplyOperationStatus::Reconciled
-            || operation.action != crate::fleet_orchestration::MultiplyAction::DepositClaimAsset
+            || !matches!(
+                operation.action,
+                crate::fleet_orchestration::MultiplyAction::DepositClaimAsset
+                    | crate::fleet_orchestration::MultiplyAction::Claim
+            )
             || operation.route_key != lease.route_key
             || operation.cycle != route.cycle
             || route.current_operation_id.is_some()
         {
-            return Err(invariant("admitted deposit is not bound to its route"));
+            return Err(invariant("external operation is not bound to its route"));
         }
         let mut tx = self.pool().begin().await?;
         let inserted = sqlx::query(
-            "INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, strategy_key, status, idempotency_key, expected_effects, message_sha256, signed_wire_sha256, transaction_signature, recent_blockhash, confirmed_slot, reconciliation_sha256, created_at, updated_at) VALUES ($1,$2,$3,$4,'deposit_claim_asset',$5,'reconciled',$6,$7,$8,$9,$10,$11,$12,$13,$14,$14) ON CONFLICT DO NOTHING",
+            "INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, strategy_key, status, idempotency_key, expected_effects, message_sha256, signed_wire_sha256, transaction_signature, recent_blockhash, confirmed_slot, reconciliation_sha256, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,'reconciled',$7,$8,$9,$10,$11,$12,$13,$14,$15,$15) ON CONFLICT DO NOTHING",
         )
         .bind(&operation.operation_id)
         .bind(&operation.route_key)
         .bind(i64_from_u64(operation.cycle, "cycle")?)
         .bind(MULTIPLY_ENGINE_VERSION)
+        .bind(operation.action.as_str())
         .bind(operation.strategy_key.map(|key| key.as_str()))
         .bind(&operation.idempotency_key)
         .bind(serde_json::to_value(&operation.expected_effects).map_err(|error| invariant(&error.to_string()))?)

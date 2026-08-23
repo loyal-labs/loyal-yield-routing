@@ -1,6 +1,6 @@
 use super::{
     builder::BuiltOperation,
-    config::{strategy, MAINNET_GENESIS_HASH},
+    config::{EarnMaxTopology, MAINNET_GENESIS_HASH},
     observe::{position_balance, ObservedRoute},
     planner::ActionPlan,
 };
@@ -50,17 +50,16 @@ pub async fn ensure_exact_policy(
     delegate: Pubkey,
     plan: &ActionPlan,
     built: &BuiltOperation,
+    topology: EarnMaxTopology,
 ) -> Result<PolicyEvidence, Box<dyn Error>> {
-    let policy = match plan.strategy_key {
-        Some(key) => strategy(key)
-            .policy(plan.action)
-            .ok_or("strategy has no policy for action")?,
-        None if plan.action == loyal_yield_store::fleet_orchestration::MultiplyAction::Claim => {
-            super::config::CLAIM_POLICY
-        }
-        None => return Err("policy-bound operation has no strategy".into()),
-    };
-    let account = Pubkey::from_str(policy.account)?;
+    let policy = topology
+        .strategy(
+            plan.strategy_key
+                .ok_or("delegate operation has no strategy")?,
+        )
+        .policy(plan.action)
+        .ok_or("strategy has no policy for action")?;
+    let account = policy.account;
     let response = rpc
         .get_account_with_commitment(&account, CommitmentConfig::confirmed())
         .await?;
@@ -71,12 +70,13 @@ pub async fn ensure_exact_policy(
         return Err("policy account is empty".into());
     }
     let constraint_indexes = if let Some(key) = plan.strategy_key {
-        let config = strategy(key);
+        let config = topology.strategy(key);
         let family = super::policy::family_for_action(plan.action)?;
         let update = super::policy::canonical_policy_update(
+            topology,
             config,
             family,
-            Pubkey::from_str(super::config::SETTINGS)?,
+            topology.settings,
             authority,
             delegate,
         )?;
@@ -100,7 +100,7 @@ pub async fn ensure_exact_policy(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let update = loyal_actions::update_exact_program_interaction_policy_instruction(
-            Pubkey::from_str(super::config::SETTINGS)?,
+            topology.settings,
             authority,
             account,
             delegate,
@@ -141,6 +141,7 @@ pub async fn execute_operation(
     plan: &ActionPlan,
     built: BuiltOperation,
     before: &ObservedRoute,
+    topology: EarnMaxTopology,
 ) -> Result<MultiplyRouteState, Box<dyn Error>> {
     verify_mainnet(context.rpc).await?;
     let policy = ensure_exact_policy(
@@ -149,6 +150,7 @@ pub async fn execute_operation(
         context.delegate.pubkey(),
         plan,
         &built,
+        topology,
     )
     .await?;
     let (transaction, last_valid_block_height) =
@@ -207,7 +209,7 @@ pub async fn execute_operation(
         .load_multiply_operation(&operation.operation_id)
         .await?
         .ok_or("confirmed operation disappeared")?;
-    reconcile_operation(context, lease, route, &persisted, confirmed_slot).await
+    reconcile_operation(context, lease, route, &persisted, confirmed_slot, topology).await
 }
 
 pub async fn persist_signed_operation(
@@ -244,6 +246,7 @@ pub async fn reconcile_operation(
     route: &MultiplyRouteState,
     operation: &MultiplyOperation,
     confirmed_slot: u64,
+    topology: EarnMaxTopology,
 ) -> Result<MultiplyRouteState, Box<dyn Error>> {
     let extra = operation
         .expected_effects
@@ -251,11 +254,13 @@ pub async fn reconcile_operation(
         .iter()
         .filter(|delta| {
             ![
-                super::config::USDC_CUSTODY,
-                super::config::SYRUP_CUSTODY,
-                super::config::PYUSD_CUSTODY,
+                topology.claim_custody,
+                topology.collateral_custody,
+                topology.strategies[0].debt_custody,
+                topology.strategies[1].debt_custody,
             ]
-            .contains(&delta.account.as_str())
+            .iter()
+            .any(|account| account.to_string() == delta.account)
         })
         .map(|delta| {
             (
@@ -265,7 +270,7 @@ pub async fn reconcile_operation(
             )
         })
         .collect::<Vec<_>>();
-    let after = super::observe::observe_confirmed_with_extra(context.rpc, &extra).await?;
+    let after = super::observe::observe_confirmed_with_extra(context.rpc, topology, &extra).await?;
     if after.slot < confirmed_slot {
         return Err("confirmed reconciliation read is older than the transaction".into());
     }
@@ -299,7 +304,7 @@ pub async fn reconcile_operation(
         || MultiplyPosition::Idle {
             claim: after.claim.clone(),
         },
-        |key| position_balance(&after, key),
+        |key| position_balance(&after, key, topology),
     );
     let mut next = route.clone();
     next.generation += 1;

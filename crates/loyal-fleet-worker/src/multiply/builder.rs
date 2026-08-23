@@ -1,5 +1,5 @@
 use super::{
-    config::{strategy, StrategyConfig, JUPITER, TOKEN, VAULT},
+    config::{EarnMaxTopology, StrategyConfig, JUPITER, TOKEN},
     observe::{collateral_to_liquidity_raw, ObservedRoute},
     planner::{ActionPlan, PlannedAmount},
 };
@@ -35,8 +35,9 @@ pub struct BuiltOperation {
 pub async fn build_operation(
     plan: &ActionPlan,
     observed: &ObservedRoute,
+    topology: EarnMaxTopology,
 ) -> Result<BuiltOperation, Box<dyn Error>> {
-    let config = plan.strategy_key.map(strategy);
+    let config = plan.strategy_key.map(|key| topology.strategy(key));
     match plan.action {
         MultiplyAction::DepositCollateral => {
             let config = required_strategy(config)?;
@@ -45,6 +46,7 @@ pub async fn build_operation(
             Ok(klend_operation(
                 deposit(
                     config,
+                    topology.vault,
                     amount,
                     position.collateral_deposited_raw > 0,
                     position.debt_raw > 0,
@@ -64,6 +66,7 @@ pub async fn build_operation(
             Ok(klend_operation(
                 borrow(
                     config,
+                    topology.vault,
                     amount,
                     position.collateral_deposited_raw > 0,
                     position.debt_raw > 0,
@@ -93,7 +96,12 @@ pub async fn build_operation(
                 return Err("collateral withdrawal would redeem zero liquidity".into());
             }
             Ok(klend_operation(
-                withdraw(config, wire_collateral_amount, position.debt_raw > 0)?,
+                withdraw(
+                    config,
+                    topology.vault,
+                    wire_collateral_amount,
+                    position.debt_raw > 0,
+                )?,
                 token_effect(
                     config.collateral_custody,
                     config.collateral_mint,
@@ -111,7 +119,7 @@ pub async fn build_operation(
                 _ => return Err("repay requires an exact partial amount or repay-all".into()),
             };
             Ok(klend_operation(
-                repay(config, wire_amount)?,
+                repay(config, topology.vault, wire_amount)?,
                 token_effect(
                     config.debt_custody,
                     config.debt_mint,
@@ -127,8 +135,9 @@ pub async fn build_operation(
                 super::config::USDC_MINT,
                 config.collateral_mint,
                 amount,
-                super::config::USDC_CUSTODY,
+                topology.claim_custody,
                 config.collateral_custody,
+                topology.vault,
             )
             .await
         }
@@ -141,6 +150,7 @@ pub async fn build_operation(
                 amount,
                 config.debt_custody,
                 config.collateral_custody,
+                topology.vault,
             )
             .await
         }
@@ -153,6 +163,7 @@ pub async fn build_operation(
                 amount,
                 config.collateral_custody,
                 config.debt_custody,
+                topology.vault,
             )
             .await
         }
@@ -164,7 +175,8 @@ pub async fn build_operation(
                 super::config::USDC_MINT,
                 amount,
                 config.collateral_custody,
-                super::config::USDC_CUSTODY,
+                topology.claim_custody,
+                topology.vault,
             )
             .await
         }
@@ -176,10 +188,10 @@ pub async fn build_operation(
                 .ok_or("claim omitted its request-bound destination")?;
             let instruction = spl_token::instruction::transfer_checked(
                 &spl_token::id(),
-                &Pubkey::from_str(super::config::USDC_CUSTODY)?,
+                &topology.claim_custody,
                 &Pubkey::from_str(super::config::USDC_MINT)?,
                 &Pubkey::from_str(destination)?,
-                &Pubkey::from_str(VAULT)?,
+                &topology.vault,
                 &[],
                 amount,
                 6,
@@ -191,7 +203,7 @@ pub async fn build_operation(
                     token_amounts_before: Vec::new(),
                     token_deltas: vec![
                         token_effect(
-                            super::config::USDC_CUSTODY,
+                            topology.claim_custody,
                             super::config::USDC_MINT,
                             -(amount as i64),
                         ),
@@ -227,9 +239,9 @@ fn klend_operation(
     }
 }
 
-fn token_effect(account: &str, mint: &str, raw_delta: i64) -> TokenDelta {
+fn token_effect(account: impl ToString, mint: &str, raw_delta: i64) -> TokenDelta {
     TokenDelta {
-        account: account.to_owned(),
+        account: account.to_string(),
         mint: mint.to_owned(),
         raw_delta,
     }
@@ -241,7 +253,7 @@ fn obligation_effect(
     debt_raw_delta: i64,
 ) -> ObligationDelta {
     ObligationDelta {
-        obligation: config.obligation.to_owned(),
+        obligation: config.obligation.to_string(),
         collateral_raw_delta,
         debt_raw_delta,
     }
@@ -260,13 +272,14 @@ fn exact_amount(amount: PlannedAmount) -> Result<u64, Box<dyn Error>> {
 
 pub(crate) fn policy_template(
     config: StrategyConfig,
+    vault: Pubkey,
     action: MultiplyAction,
 ) -> Result<Instruction, Box<dyn Error>> {
     let mut instructions = match action {
-        MultiplyAction::DepositCollateral => deposit(config, 1, true, true)?,
-        MultiplyAction::BorrowDebt => borrow(config, 1, true, true)?,
-        MultiplyAction::WithdrawCollateral => withdraw(config, 1, true)?,
-        MultiplyAction::RepayDebt => repay(config, u64::MAX)?,
+        MultiplyAction::DepositCollateral => deposit(config, vault, 1, true, true)?,
+        MultiplyAction::BorrowDebt => borrow(config, vault, 1, true, true)?,
+        MultiplyAction::WithdrawCollateral => withdraw(config, vault, 1, true)?,
+        MultiplyAction::RepayDebt => repay(config, vault, u64::MAX)?,
         _ => return Err("action has no KLend policy template".into()),
     };
     instructions
@@ -338,7 +351,7 @@ fn refresh_obligation(
     Ok(sdk_refresh_obligation(
         RefreshObligationAccounts {
             lending_market: Pubkey::from_str(config.market)?,
-            obligation: Pubkey::from_str(config.obligation)?,
+            obligation: config.obligation,
         },
         accounts,
     ))
@@ -346,6 +359,7 @@ fn refresh_obligation(
 
 fn deposit(
     config: StrategyConfig,
+    vault: Pubkey,
     amount: u64,
     include_collateral: bool,
     include_debt: bool,
@@ -356,8 +370,8 @@ fn deposit(
         refresh_obligation(config, include_collateral, include_debt)?,
         deposit_reserve_liquidity_and_obligation_collateral_v2(
             DepositReserveLiquidityAndObligationCollateralV2Accounts {
-                owner: Pubkey::from_str(VAULT)?,
-                obligation: Pubkey::from_str(config.obligation)?,
+                owner: vault,
+                obligation: config.obligation,
                 lending_market: Pubkey::from_str(config.market)?,
                 lending_market_authority: Pubkey::from_str(config.market_authority)?,
                 reserve: Pubkey::from_str(config.collateral_reserve)?,
@@ -367,13 +381,10 @@ fn deposit(
                 reserve_destination_deposit_collateral: Pubkey::from_str(
                     config.collateral_mint_supply,
                 )?,
-                user_source_liquidity: Pubkey::from_str(config.collateral_custody)?,
+                user_source_liquidity: config.collateral_custody,
                 placeholder_user_destination_collateral: None,
                 liquidity_token_program: Pubkey::from_str(TOKEN)?,
-                obligation_farm_user_state: config
-                    .collateral_farm_user
-                    .map(Pubkey::from_str)
-                    .transpose()?,
+                obligation_farm_user_state: config.collateral_farm_user,
                 reserve_farm_state: config
                     .collateral_farm_state
                     .map(Pubkey::from_str)
@@ -386,6 +397,7 @@ fn deposit(
 
 fn borrow(
     config: StrategyConfig,
+    vault: Pubkey,
     amount: u64,
     include_collateral: bool,
     include_debt: bool,
@@ -396,21 +408,18 @@ fn borrow(
         refresh_obligation(config, include_collateral, include_debt)?,
         borrow_obligation_liquidity_v2(
             BorrowObligationLiquidityV2Accounts {
-                owner: Pubkey::from_str(VAULT)?,
-                obligation: Pubkey::from_str(config.obligation)?,
+                owner: vault,
+                obligation: config.obligation,
                 lending_market: Pubkey::from_str(config.market)?,
                 lending_market_authority: Pubkey::from_str(config.market_authority)?,
                 borrow_reserve: Pubkey::from_str(config.debt_reserve)?,
                 borrow_reserve_liquidity_mint: Pubkey::from_str(config.debt_mint)?,
                 reserve_source_liquidity: Pubkey::from_str(config.debt_liquidity_supply)?,
                 borrow_reserve_liquidity_fee_receiver: Pubkey::from_str(config.debt_fee_vault)?,
-                user_destination_liquidity: Pubkey::from_str(config.debt_custody)?,
+                user_destination_liquidity: config.debt_custody,
                 referrer_token_state: None,
                 token_program: Pubkey::from_str(config.debt_token_program)?,
-                obligation_farm_user_state: config
-                    .debt_farm_user
-                    .map(Pubkey::from_str)
-                    .transpose()?,
+                obligation_farm_user_state: config.debt_farm_user,
                 reserve_farm_state: config.debt_farm_state.map(Pubkey::from_str).transpose()?,
             },
             amount,
@@ -421,6 +430,7 @@ fn borrow(
 
 fn withdraw(
     config: StrategyConfig,
+    vault: Pubkey,
     amount: u64,
     debt_aware: bool,
 ) -> Result<Vec<Instruction>, Box<dyn Error>> {
@@ -432,8 +442,8 @@ fn withdraw(
     result.push(
         withdraw_obligation_collateral_and_redeem_reserve_collateral_v2(
             WithdrawObligationCollateralAndRedeemReserveCollateralV2Accounts {
-                owner: Pubkey::from_str(VAULT)?,
-                obligation: Pubkey::from_str(config.obligation)?,
+                owner: vault,
+                obligation: config.obligation,
                 lending_market: Pubkey::from_str(config.market)?,
                 lending_market_authority: Pubkey::from_str(config.market_authority)?,
                 withdraw_reserve: Pubkey::from_str(config.collateral_reserve)?,
@@ -441,13 +451,10 @@ fn withdraw(
                 reserve_source_collateral: Pubkey::from_str(config.collateral_mint_supply)?,
                 reserve_collateral_mint: Pubkey::from_str(RESERVE_COLLATERAL_MINT)?,
                 reserve_liquidity_supply: Pubkey::from_str(config.collateral_liquidity_supply)?,
-                user_destination_liquidity: Pubkey::from_str(config.collateral_custody)?,
+                user_destination_liquidity: config.collateral_custody,
                 placeholder_user_destination_collateral: None,
                 liquidity_token_program: Pubkey::from_str(TOKEN)?,
-                obligation_farm_user_state: config
-                    .collateral_farm_user
-                    .map(Pubkey::from_str)
-                    .transpose()?,
+                obligation_farm_user_state: config.collateral_farm_user,
                 reserve_farm_state: config
                     .collateral_farm_state
                     .map(Pubkey::from_str)
@@ -459,25 +466,26 @@ fn withdraw(
     Ok(result)
 }
 
-fn repay(config: StrategyConfig, amount: u64) -> Result<Vec<Instruction>, Box<dyn Error>> {
+fn repay(
+    config: StrategyConfig,
+    vault: Pubkey,
+    amount: u64,
+) -> Result<Vec<Instruction>, Box<dyn Error>> {
     Ok(vec![
         refresh(config, config.collateral_reserve)?,
         refresh(config, config.debt_reserve)?,
         refresh_obligation(config, true, true)?,
         repay_obligation_liquidity_v2(
             RepayObligationLiquidityV2Accounts {
-                owner: Pubkey::from_str(VAULT)?,
-                obligation: Pubkey::from_str(config.obligation)?,
+                owner: vault,
+                obligation: config.obligation,
                 lending_market: Pubkey::from_str(config.market)?,
                 repay_reserve: Pubkey::from_str(config.debt_reserve)?,
                 reserve_liquidity_mint: Pubkey::from_str(config.debt_mint)?,
                 reserve_destination_liquidity: Pubkey::from_str(config.debt_liquidity_supply)?,
-                user_source_liquidity: Pubkey::from_str(config.debt_custody)?,
+                user_source_liquidity: config.debt_custody,
                 token_program: Pubkey::from_str(config.debt_token_program)?,
-                obligation_farm_user_state: config
-                    .debt_farm_user
-                    .map(Pubkey::from_str)
-                    .transpose()?,
+                obligation_farm_user_state: config.debt_farm_user,
                 reserve_farm_state: config.debt_farm_state.map(Pubkey::from_str).transpose()?,
                 lending_market_authority: Pubkey::from_str(config.market_authority)?,
             },
@@ -500,10 +508,11 @@ async fn swap_exact_in(
     input_mint: &str,
     output_mint: &str,
     amount: u64,
-    source: &str,
-    destination: &str,
+    source: Pubkey,
+    destination: Pubkey,
+    vault: Pubkey,
 ) -> Result<BuiltOperation, Box<dyn Error>> {
-    let quote = quote(input_mint, output_mint, amount, source, destination).await?;
+    let quote = quote(input_mint, output_mint, amount, source, destination, vault).await?;
     Ok(BuiltOperation {
         instructions: vec![quote.instruction],
         lookup_tables: quote.lookup_tables,
@@ -524,8 +533,9 @@ async fn quote(
     input_mint: &str,
     output_mint: &str,
     amount: u64,
-    source: &str,
-    destination: &str,
+    source: Pubkey,
+    destination: Pubkey,
+    vault: Pubkey,
 ) -> Result<JupiterQuote, Box<dyn Error>> {
     if amount == 0 {
         return Err("Jupiter amount must be positive".into());
@@ -583,7 +593,7 @@ async fn quote(
     let response: Value = client
         .post("https://lite-api.jup.ag/swap/v1/swap-instructions")
         .json(&json!({
-            "quoteResponse": quote, "userPublicKey": VAULT, "useSharedAccounts": true,
+            "quoteResponse": quote, "userPublicKey": vault.to_string(), "useSharedAccounts": true,
             "wrapAndUnwrapSol": false, "dynamicComputeUnitLimit": false,
         }))
         .send()
@@ -640,13 +650,13 @@ async fn quote(
         .collect::<Result<Vec<_>, _>>()?;
     if !accounts
         .iter()
-        .any(|value| value.pubkey.to_string() == source && value.is_writable)
+        .any(|value| value.pubkey == source && value.is_writable)
         || !accounts
             .iter()
-            .any(|value| value.pubkey.to_string() == destination && value.is_writable)
+            .any(|value| value.pubkey == destination && value.is_writable)
         || !accounts
             .iter()
-            .any(|value| value.pubkey.to_string() == VAULT && value.is_signer)
+            .any(|value| value.pubkey == vault && value.is_signer)
     {
         return Err("Jupiter did not bind vault custody".into());
     }

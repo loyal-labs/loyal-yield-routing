@@ -11,10 +11,12 @@ chrono = { workspace = true, default-features = false, features = ["clock", "ser
 clap = { workspace = true, features = ["derive", "env"] }
 futures-util.workspace = true
 loyal-actions = { path = "../loyal-actions" }
+loyal-fleet-worker = { path = "../loyal-fleet-worker" }
 loyal-yield-store = { path = "../loyal-yield-store" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 sha2.workspace = true
+solana-client.workspace = true
 solana-sdk.workspace = true
 spl-token.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
