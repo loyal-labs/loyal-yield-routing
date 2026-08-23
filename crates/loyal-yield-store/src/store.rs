@@ -45,6 +45,8 @@ const MIGRATION_0049: &str =
     include_str!("../migrations/0049_durable_earn_reconciliation_jobs.sql");
 const MIGRATION_0050: &str = include_str!("../migrations/0050_autoswap_opt_in_realtime.sql");
 const MIGRATION_0052: &str = include_str!("../migrations/0052_voltr_opportunity_classes.sql");
+const MIGRATION_0051: &str = include_str!("../migrations/0051_multiply_route_state.sql");
+const MIGRATION_0053: &str = include_str!("../migrations/0053_multiply_production_engine.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -459,9 +461,21 @@ impl NeonSqlClient {
                 expected_checksum: None,
             },
             StoreMigration {
+                version: 51,
+                name: "multiply_route_state",
+                sql: MIGRATION_0051,
+                expected_checksum: None,
+            },
+            StoreMigration {
                 version: 52,
                 name: "voltr_opportunity_classes",
                 sql: MIGRATION_0052,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 53,
+                name: "multiply_production_engine",
+                sql: MIGRATION_0053,
                 expected_checksum: None,
             },
         ] {

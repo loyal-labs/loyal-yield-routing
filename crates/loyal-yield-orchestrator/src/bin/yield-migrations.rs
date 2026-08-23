@@ -310,9 +310,21 @@ const MIGRATIONS: &[Migration] = &[
         expected_checksum: None,
     },
     Migration {
+        version: 51,
+        name: "multiply_route_state",
+        sql: include_str!("../../../loyal-yield-store/migrations/0051_multiply_route_state.sql"),
+        expected_checksum: None,
+    },
+    Migration {
         version: 52,
         name: "voltr_opportunity_classes",
         sql: include_str!("../../../loyal-yield-store/migrations/0052_voltr_opportunity_classes.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 53,
+        name: "multiply_production_engine",
+        sql: include_str!("../../../loyal-yield-store/migrations/0053_multiply_production_engine.sql"),
         expected_checksum: None,
     },
 ];

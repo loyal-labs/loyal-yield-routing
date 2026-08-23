@@ -9,6 +9,10 @@ autobins = false
 name = "same-mint-reserve-swap"
 path = "src/main.rs"
 
+[[bin]]
+name = "multiply-route-worker"
+path = "src/bin/multiply-route-worker.rs"
+
 [dependencies]
 bincode = "1.3"
 base64.workspace = true
@@ -35,7 +39,7 @@ solana-transaction-status-client-types = "2.3"
 spl-token.workspace = true
 spl-token-2022.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
 bytemuck = "1"
