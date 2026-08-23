@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { neon } from "@neondatabase/serverless";
-import { Connection } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
 
 const CONTRACT_VERSION = "earn-max-v1";
 const CONTRACT_SHA256 = "50d25c214d1c813da09f20b8e1c187c756ce31261bf0b645c0795be1058cb3e3";
@@ -11,6 +11,10 @@ const PASS = "PASS_EARN_MAX_PRODUCTION_READY";
 const FAIL = "FAIL_EARN_MAX_PRODUCTION_READY";
 const BLOCKED = "BLOCKED_EARN_MAX_PRODUCTION_READY";
 const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+const VERIFY_SETTINGS = "6jgkucnbz1RuHq6NULqACQY3r2XegHaWhgPpaCEGPCA3";
+const APP_URL = "https://askloyal.com";
+const POLICY_MONITOR_SERVICE = "srv-d8j87m6q1p3s73ff8n8g";
+const MULTIPLY_WORKER_SERVICE = "srv-da56asrncjis73fu9psg";
 const ROOT = resolve(import.meta.dir, "..");
 const APPS_ROOT = resolve(ROOT, "../loyal-apps");
 const CONTRACT = "docs/plans/multiply-rwa-looping-policy-architecture.md";
@@ -50,6 +54,70 @@ function blocked(condition: string, evidence: Json = {}): never {
 
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function array(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function integer(value: unknown): bigint | null {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number" && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === "string" && /^-?\d+$/.test(value)) return BigInt(value);
+  return null;
+}
+
+function timestamp(value: unknown): number | null {
+  if (typeof value !== "string" && !(value instanceof Date)) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function commandJson(command: string[], cwd = ROOT): Promise<unknown> {
+  const child = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (exitCode !== 0) {
+    fail("read_only_command_failed", {
+      command: command.join(" "),
+      exitCode,
+      stderrTail: stderr.split(/\r?\n/).slice(-12).join("\n"),
+    });
+  }
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    fail("read_only_command_returned_invalid_json", {
+      command: command.join(" "),
+      stdoutSha256: sha256(stdout),
+    });
+  }
+}
+
+async function commandText(command: string[], cwd = ROOT): Promise<string> {
+  const child = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  if (exitCode !== 0) {
+    fail("read_only_command_failed", {
+      command: command.join(" "),
+      exitCode,
+      stderrTail: stderr.split(/\r?\n/).slice(-12).join("\n"),
+    });
+  }
+  return stdout.trim();
 }
 
 function file(root: string, relative: string): string {
@@ -300,7 +368,16 @@ async function targetedChecks(): Promise<Json> {
     { command: ["cargo", "check", "-q", "-p", "loyal-squads-policy-monitor"], cwd: ROOT },
     { command: ["cargo", "check", "-q", "-p", "balance-sweep-ata-monitor", "--bin", "balance-sweep-ata-monitor"], cwd: ROOT },
     { command: ["cargo", "check", "-q", "-p", "loyal-fleet-worker", "--bin", "multiply-route-worker"], cwd: ROOT },
-    { command: ["bun", "run", "typecheck"], cwd: resolve(APPS_ROOT, "packages/loyal-actions") },
+    {
+      command: [
+        "bunx", "turbo", "run", "build",
+        "--filter=@loyal-labs/smart-account-vaults...",
+        "--filter=@loyal-labs/actions...",
+        "--filter=@loyal-labs/auth-core...",
+        "--filter=@loyal-labs/db-adapter-neon...",
+      ],
+      cwd: APPS_ROOT,
+    },
     { command: ["bunx", "tsc", "-p", "apps/web/tsconfig.earn-max.json", "--pretty", "false"], cwd: APPS_ROOT },
   ];
   const results: Json[] = [];
@@ -318,6 +395,7 @@ async function targetedChecks(): Promise<Json> {
         exitCode,
         stdoutSha256: sha256(stdout),
         stderrSha256: sha256(stderr),
+        stdoutTail: stdout.split(/\r?\n/).slice(-20).join("\n"),
         stderrTail: stderr.split(/\r?\n/).slice(-20).join("\n"),
       });
     }
@@ -340,8 +418,6 @@ function requiredEnv(name: string): string {
 async function checkLivePrerequisites(): Promise<Json> {
   const rpcUrl = requiredEnv("SOLANA_RPC_URL");
   const databaseUrl = requiredEnv("NEON_DATABASE_URL");
-  requiredEnv("EARN_MAX_VERIFY_SETTINGS");
-  requiredEnv("EARN_MAX_APP_URL");
 
   const connection = new Connection(rpcUrl, { commitment: "confirmed", httpAgent: false });
   const genesisHash = await connection.getGenesisHash();
@@ -386,8 +462,7 @@ async function checkLivePrerequisites(): Promise<Json> {
   ) {
     fail("deployed_earn_max_migration_missing", { migrations });
   }
-  const appUrl = requiredEnv("EARN_MAX_APP_URL").replace(/\/$/, "");
-  const response = await fetch(`${appUrl}/api/smart-accounts/earn-max/state`, {
+  const response = await fetch(`${APP_URL}/api/smart-accounts/earn-max/state`, {
     redirect: "manual",
   });
   const contractHeader = response.headers.get("x-loyal-earn-max-contract");
@@ -399,7 +474,227 @@ async function checkLivePrerequisites(): Promise<Json> {
       deployedRevision,
     });
   }
-  return { genesisHash, tables, migration: migrations[0], deployedRevision };
+  if (response.status !== 401) {
+    fail("deployed_earn_max_auth_boundary_missing", { status: response.status });
+  }
+  const appRevision = await commandText(["git", "rev-parse", "HEAD"], APPS_ROOT);
+  if (deployedRevision !== appRevision) {
+    fail("deployed_earn_max_application_revision_drift", { deployedRevision, appRevision });
+  }
+  return {
+    genesisHash,
+    tables,
+    migrations: migrations.map((migration) => ({
+      version: migration.version,
+      name: migration.name,
+      checksum: migration.checksum,
+    })),
+    deployedRevision,
+  };
+}
+
+async function checkDeployedWorkers(imageRevision: string): Promise<Json> {
+  const expected = {
+    [POLICY_MONITOR_SERVICE]: `ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-${imageRevision}`,
+    [MULTIPLY_WORKER_SERVICE]: `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-${imageRevision}`,
+  };
+  const evidence: Json[] = [];
+  for (const [service, image] of Object.entries(expected)) {
+    const deploys = array(await commandJson(["render", "deploys", "list", service, "-o", "json"]));
+    const latest = record(deploys[0]);
+    const deployedImage = record(latest?.image)?.ref;
+    if (latest?.status !== "live" || deployedImage !== image) {
+      fail("earn_max_worker_deployment_drift", {
+        service,
+        expectedImage: image,
+        actualStatus: latest?.status,
+        actualImage: deployedImage,
+      });
+    }
+    evidence.push({ service, deployId: latest.id, image: deployedImage, status: latest.status });
+  }
+  return { services: evidence };
+}
+
+async function confirmedSignatures(
+  connection: Connection,
+  signatures: string[],
+): Promise<Json> {
+  const invalidFormat = signatures.filter((value) => !/^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(value));
+  const unique = [...new Set(signatures.filter((value) => /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(value)))];
+  if (invalidFormat.length > 0 || unique.length === 0) {
+    fail("earn_max_lifecycle_signature_inventory_invalid", {
+      supplied: signatures.length,
+      unique: unique.length,
+      invalidFormatCount: invalidFormat.length,
+    });
+  }
+  const statuses = await connection.getSignatureStatuses(unique, { searchTransactionHistory: true });
+  const invalid = unique.flatMap((signature, index) => {
+    const status = statuses.value[index];
+    return status && status.err === null && ["confirmed", "finalized"].includes(status.confirmationStatus ?? "")
+      ? []
+      : [{ signature, status }];
+  });
+  if (invalid.length > 0) fail("earn_max_lifecycle_signature_not_confirmed", { invalid });
+  return { count: unique.length, slots: statuses.value.map((status) => status?.slot ?? null) };
+}
+
+async function checkFreshLifecycle(): Promise<Json> {
+  const rpcUrl = requiredEnv("SOLANA_RPC_URL");
+  const databaseUrl = requiredEnv("NEON_DATABASE_URL");
+  const sql = neon(databaseUrl);
+  const connection = new Connection(rpcUrl, { commitment: "confirmed", httpAgent: false });
+  const policies = await sql`
+    SELECT * FROM loyal_yield.earn_max_policy_sets
+    WHERE settings = ${VERIFY_SETTINGS} AND vault_index = 0
+    LIMIT 1
+  `;
+  const policy = record(policies[0]);
+  const bindings = array(policy?.policy_accounts).map(record).filter((value): value is Record<string, unknown> => value !== null);
+  const seeds = bindings.map((binding) => integer(binding.seed));
+  const accounts = bindings.map((binding) => String(binding.account ?? ""));
+  const base = integer(policy?.policy_seed_base);
+  if (
+    policy?.manifest_version !== CONTRACT_VERSION ||
+    policy?.status !== "removed" ||
+    base === null || base <= 0n ||
+    bindings.length !== 6 ||
+    seeds.some((seed, index) => seed !== base + BigInt(index)) ||
+    new Set(accounts).size !== 6 ||
+    bindings.some((binding) => binding.matches !== false)
+  ) {
+    blocked("fresh_laserstream_policy_removal_missing", {
+      settings: VERIFY_SETTINGS,
+      policyStatus: policy?.status,
+      policySeedBase: policy?.policy_seed_base,
+      policyCount: bindings.length,
+      resume: "complete the fresh confirmed install-to-removal product lifecycle",
+    });
+  }
+
+  const routes = await sql`
+    SELECT route_key, settings, vault_index, vault, state, state_version, updated_at
+    FROM loyal_yield.multiply_route_states
+    WHERE settings = ${VERIFY_SETTINGS} AND vault_index = 0
+    LIMIT 1
+  `;
+  const route = record(routes[0]);
+  const state = record(route?.state);
+  const deposit = record(state?.deposit);
+  const withdrawal = record(state?.withdrawal);
+  const frontend = record(state?.frontend);
+  const depositAmount = integer(deposit?.amountRaw);
+  const walletPre = integer(deposit?.walletPreAmountRaw);
+  const walletPost = integer(deposit?.walletPostAmountRaw);
+  const vaultPre = integer(deposit?.vaultPreAmountRaw);
+  const vaultPost = integer(deposit?.vaultPostAmountRaw);
+  const requestedAt = timestamp(withdrawal?.requestedAt);
+  const unwindAt = timestamp(withdrawal?.unwindCompletedAt);
+  if (
+    state?.schemaVersion !== 6 ||
+    state?.engineVersion !== "earn_max_v1" ||
+    integer(state?.policySeedBase) !== base ||
+    state?.goal !== "claimed" ||
+    state?.currentOperationId !== null ||
+    state?.manualRecoveryReason !== null ||
+    withdrawal?.status !== "claimed" ||
+    frontend?.status !== "claimed" ||
+    depositAmount === null || depositAmount <= 0n ||
+    walletPre === null || walletPost === null || walletPre - walletPost !== depositAmount ||
+    vaultPre === null || vaultPost === null || vaultPost - vaultPre !== depositAmount ||
+    requestedAt === null || unwindAt === null || unwindAt < requestedAt || unwindAt - requestedAt > 600_000
+  ) {
+    blocked("fresh_claimed_route_reconciliation_missing", {
+      settings: VERIFY_SETTINGS,
+      goal: state?.goal,
+      withdrawalStatus: withdrawal?.status,
+      unwindMilliseconds: requestedAt !== null && unwindAt !== null ? unwindAt - requestedAt : null,
+      resume: "complete and reconcile the fresh deposit, unwind, and claim lifecycle within 600 seconds",
+    });
+  }
+
+  const operations = await sql`
+    SELECT operation_id, action, status, transaction_signature, confirmed_slot,
+           expected_effects, created_at, updated_at
+    FROM loyal_yield.multiply_operations
+    WHERE route_key = ${String(route?.route_key ?? "")}
+    ORDER BY created_at, operation_id
+  `;
+  const requiredActions = [
+    "deposit_claim_asset",
+    "swap_claim_to_collateral",
+    "deposit_collateral",
+    "borrow_debt",
+    "withdraw_collateral",
+    "repay_debt",
+    "withdraw_remaining_collateral",
+    "swap_collateral_to_claim",
+    "claim",
+  ];
+  const actionSet = new Set(operations.map((operation) => String(operation.action)));
+  const badOperations = operations.filter((operation) => operation.status !== "reconciled");
+  if (operations.length === 0 || requiredActions.some((action) => !actionSet.has(action)) || badOperations.length > 0) {
+    blocked("fresh_hookless_operation_graph_incomplete", {
+      actions: [...actionSet].sort(),
+      nonReconciled: badOperations.map((operation) => ({ id: operation.operation_id, status: operation.status })),
+      resume: "complete the real hookless KLend and Jupiter open/unwind graph",
+    });
+  }
+
+  const snapshots = await sql`
+    SELECT * FROM loyal_yield.multiply_position_snapshots
+    WHERE route_key = ${String(route?.route_key ?? "")}
+    ORDER BY observed_slot, id
+  `;
+  const open = snapshots.find((snapshot) => (integer(snapshot.collateral_raw) ?? 0n) > 0n && (integer(snapshot.debt_raw) ?? 0n) > 0n);
+  const finalSnapshot = snapshots.at(-1);
+  if (
+    !open || !finalSnapshot ||
+    integer(finalSnapshot.claim_raw) !== 0n ||
+    integer(finalSnapshot.collateral_raw) !== 0n ||
+    integer(finalSnapshot.debt_raw) !== 0n ||
+    integer(finalSnapshot.equity_usd_micros) !== 0n ||
+    !finalSnapshot.valuation_source || !finalSnapshot.valuation_slot
+  ) {
+    blocked("fresh_position_history_or_final_zero_missing", {
+      snapshotCount: snapshots.length,
+      hasRealOpen: Boolean(open),
+      final: finalSnapshot ? {
+        claimRaw: finalSnapshot.claim_raw,
+        collateralRaw: finalSnapshot.collateral_raw,
+        debtRaw: finalSnapshot.debt_raw,
+        equityUsdMicros: finalSnapshot.equity_usd_micros,
+      } : null,
+      resume: "observe one nonzero real position and a reconciled zero final position",
+    });
+  }
+
+  const policyAccounts = await connection.getMultipleAccountsInfo(
+    accounts.map((account) => new PublicKey(account)),
+    { commitment: "confirmed" },
+  );
+  if (policyAccounts.some(Boolean)) fail("removed_earn_max_policy_still_exists_on_chain", { accounts });
+  const signatures = [
+    String(policy?.observed_signature ?? ""),
+    String(deposit?.transactionSignature ?? ""),
+    String(withdrawal?.claimSignature ?? ""),
+    ...operations.map((operation) => String(operation.transaction_signature ?? "")),
+  ];
+  const chain = await confirmedSignatures(connection, signatures);
+  return {
+    settings: VERIFY_SETTINGS,
+    routeKey: route?.route_key,
+    vault: route?.vault,
+    policySeedBase: base.toString(),
+    policyAccounts: accounts,
+    operationCount: operations.length,
+    snapshotCount: snapshots.length,
+    openSnapshotSlot: open.observed_slot,
+    finalSnapshotSlot: finalSnapshot.observed_slot,
+    unwindMilliseconds: unwindAt - requestedAt,
+    chain,
+  };
 }
 
 function checkReleaseSource(): Json {
@@ -432,8 +727,19 @@ const engine = checkWorkerAndStoreSource();
 const release = checkReleaseSource();
 const targeted = await targetedChecks();
 const live = await checkLivePrerequisites();
+const deployedWorkers = await checkDeployedWorkers(String(release.imageRevision));
+const lifecycle = await checkFreshLifecycle();
 
-blocked("fresh_deployed_earn_max_lifecycle_missing", {
-  evidence: { contract, topology, schema, laserStream, app, engine, release, targeted, live },
-  resume: "deploy the exact inspected revisions, execute one funded authenticated confirmed-mainnet lifecycle through the product, then rerun this verifier",
-});
+emit(PASS, "earn_max_production_ready", {
+  contract,
+  topology,
+  schema,
+  laserStream,
+  app,
+  engine,
+  release,
+  targeted,
+  live,
+  deployedWorkers,
+  lifecycle,
+}, 0);
