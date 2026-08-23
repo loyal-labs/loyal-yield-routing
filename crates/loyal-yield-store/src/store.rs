@@ -58,6 +58,7 @@ const MIGRATION_0060: &str =
     include_str!("../migrations/0060_rebalance_confirmation_target_state.sql");
 const MIGRATION_0061: &str =
     include_str!("../migrations/0061_coalesced_autodeposit_reconciliation.sql");
+const MIGRATION_0062: &str = include_str!("../migrations/0062_earn_chain_cash_flow_projection.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -537,6 +538,12 @@ impl NeonSqlClient {
                 sql: MIGRATION_0061,
                 expected_checksum: None,
             },
+            StoreMigration {
+                version: 62,
+                name: "earn_chain_cash_flow_projection",
+                sql: MIGRATION_0062,
+                expected_checksum: None,
+            },
         ] {
             apply_store_migration(&self.pool, migration).await?;
         }
@@ -868,6 +875,66 @@ impl NeonSqlClient {
                 "Earn reconciliation job {job_id} lost claim before completion"
             )));
         }
+        let identity = match mutation {
+            EarnDirectMutation::Deposit(value) => Some((
+                "deposit",
+                value.deposit_signature.as_str(),
+                value.route_policy.settings.as_str(),
+                value.route_policy.vault_index,
+                value.route_policy.vault_pubkey.as_str(),
+                value.deposit_slot,
+            )),
+            EarnDirectMutation::Withdrawal(value) => Some((
+                "withdrawal",
+                value.withdrawal_signature.as_str(),
+                value.route_policy.settings.as_str(),
+                value.route_policy.vault_index,
+                value.vault_pubkey.as_str(),
+                value.confirmed_slot,
+            )),
+            EarnDirectMutation::Cleanup(value) => Some((
+                "cleanup",
+                value.cleanup_signature.as_str(),
+                value.settings.as_str(),
+                value.vault_index,
+                value.vault_pubkey.as_str(),
+                value.confirmed_slot,
+            )),
+            EarnDirectMutation::Refund(value) => Some((
+                "refund",
+                value.refund_signature.as_str(),
+                value.settings.as_str(),
+                value.vault_index,
+                value.vault_pubkey.as_str(),
+                value.confirmed_slot,
+            )),
+            EarnDirectMutation::PolicyOnly(_) | EarnDirectMutation::Noop => None,
+        };
+        if let Some((kind, signature, settings, vault_index, vault_pubkey, slot)) = identity {
+            let claimed = sqlx::query(
+                r#"
+                INSERT INTO loyal_yield.earn_chain_mutations (
+                    mutation_kind, chain_signature, settings, vault_index,
+                    vault_pubkey, confirmed_slot, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, now())
+                ON CONFLICT (mutation_kind, chain_signature, vault_pubkey) DO NOTHING
+                "#,
+            )
+            .bind(kind)
+            .bind(signature)
+            .bind(settings)
+            .bind(i16::from(vault_index))
+            .bind(vault_pubkey)
+            .bind(to_i64_slot(slot)?)
+            .execute(&mut *tx)
+            .await?;
+            if claimed.rows_affected() == 0 {
+                tx.commit().await?;
+                return Ok(EarnReconciliationCompletionOutcome {
+                    applied_mutations: 0,
+                });
+            }
+        }
         let applied_mutations = match mutation {
             EarnDirectMutation::PolicyOnly(policy) => {
                 apply_earn_policy_only(&mut tx, policy).await?;
@@ -877,8 +944,30 @@ impl NeonSqlClient {
                 apply_earn_deposit(&mut tx, deposit).await?;
                 1
             }
+            EarnDirectMutation::Withdrawal(withdrawal) => {
+                apply_earn_withdrawal(&mut tx, withdrawal).await?;
+                1
+            }
             EarnDirectMutation::Cleanup(cleanup) => {
                 apply_earn_cleanup(&mut tx, cleanup).await?;
+                1
+            }
+            EarnDirectMutation::Refund(refund) => {
+                apply_earn_refund(&mut tx, refund).await?;
+                if refund.full_cleanup {
+                    apply_earn_cleanup(
+                        &mut tx,
+                        &EarnCleanupMutation {
+                            settings: refund.settings.clone(),
+                            vault_index: refund.vault_index,
+                            vault_pubkey: refund.vault_pubkey.clone(),
+                            cleanup_signature: refund.refund_signature.clone(),
+                            confirmed_slot: refund.confirmed_slot,
+                            observed_at: refund.observed_at,
+                        },
+                    )
+                    .await?;
+                }
                 1
             }
             EarnDirectMutation::Noop => 0,
@@ -1523,8 +1612,7 @@ impl NeonSqlClient {
     ) -> Result<EarnReconciliationContext, OrchestratorError> {
         let app_schema_ready: bool = sqlx::query_scalar(
             r#"
-            SELECT to_regclass('loyal_yield.earn_deposit_onboarding_attempts') IS NOT NULL
-               AND to_regclass('loyal_yield.user_yield_positions') IS NOT NULL
+            SELECT to_regclass('loyal_yield.user_yield_positions') IS NOT NULL
                AND to_regclass('loyal_yield.user_yield_position_deposits') IS NOT NULL
                AND to_regclass('loyal_yield.user_yield_position_withdrawals') IS NOT NULL
                AND to_regclass('loyal_yield.user_yield_position_holding_events') IS NOT NULL
@@ -1549,7 +1637,6 @@ impl NeonSqlClient {
                    policy.source_commitment,
                    CASE
                      WHEN policy.id = vault.setup_policy_id
-                       OR policy.policy_account = onboarding.setup_policy_account
                      THEN 'setup'
                      ELSE 'route'
                    END AS role
@@ -1558,26 +1645,9 @@ impl NeonSqlClient {
               ON vault.settings = policy.settings
              AND vault.vault_index = policy.vault_index
              AND vault.vault_pubkey = policy.vault_pubkey
-            LEFT JOIN LATERAL (
-              SELECT candidate.policy_account, candidate.setup_policy_account
-              FROM loyal_yield.earn_deposit_onboarding_attempts candidate
-              WHERE candidate.settings = policy.settings
-                AND candidate.vault_index = policy.vault_index
-                AND candidate.vault_pubkey = policy.vault_pubkey
-              ORDER BY (candidate.status <> 'complete') DESC,
-                       candidate.updated_at DESC,
-                       candidate.id DESC
-              LIMIT 1
-            ) onboarding ON TRUE
             WHERE policy.settings = $1 AND policy.vault_index = $2
               AND policy.vault_pubkey = $3
-              AND (
-                policy.id IN (vault.active_policy_id, vault.setup_policy_id)
-                OR policy.policy_account IN (
-                  onboarding.policy_account,
-                  onboarding.setup_policy_account
-                )
-              )
+              AND policy.id IN (vault.active_policy_id, vault.setup_policy_id)
             "#,
         )
         .bind(settings)
@@ -1596,99 +1666,9 @@ impl NeonSqlClient {
                 route_policy = Some(policy);
             }
         }
-
-        let onboarding_row = sqlx::query(
-            r#"
-            SELECT status, deposit_signature, delegated_signer, policy_account, policy_seed,
-                   route_policy_signature, route_policy_confirmed_slot,
-                   setup_policy_account, setup_policy_seed,
-                   setup_policy_signature, setup_policy_confirmed_slot,
-                   target_reserve, market, liquidity_mint
-            FROM loyal_yield.earn_deposit_onboarding_attempts
-            WHERE settings = $1 AND vault_index = $2 AND vault_pubkey = $3
-            ORDER BY (status <> 'complete') DESC, updated_at DESC, id DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(settings)
-        .bind(i16::from(vault_index))
-        .bind(vault_pubkey)
-        .fetch_optional(&self.pool)
-        .await?;
-        let onboarding = onboarding_row
-            .map(|row| -> Result<EarnOnboardingContext, OrchestratorError> {
-                Ok(EarnOnboardingContext {
-                    status: row.try_get("status")?,
-                    deposit_signature: row.try_get("deposit_signature")?,
-                    delegated_signer: row.try_get("delegated_signer")?,
-                    route_policy_account: row.try_get("policy_account")?,
-                    route_policy_seed: nonnegative_i64_to_u64(
-                        row.try_get("policy_seed")?,
-                        "onboarding policy seed",
-                    )?,
-                    route_policy_signature: row.try_get("route_policy_signature")?,
-                    route_policy_confirmed_slot: optional_nonnegative_i64_to_u64(
-                        row.try_get("route_policy_confirmed_slot")?,
-                        "onboarding route policy slot",
-                    )?,
-                    setup_policy_account: row.try_get("setup_policy_account")?,
-                    setup_policy_seed: optional_nonnegative_i64_to_u64(
-                        row.try_get("setup_policy_seed")?,
-                        "onboarding setup policy seed",
-                    )?,
-                    setup_policy_signature: row.try_get("setup_policy_signature")?,
-                    setup_policy_confirmed_slot: optional_nonnegative_i64_to_u64(
-                        row.try_get("setup_policy_confirmed_slot")?,
-                        "onboarding setup policy slot",
-                    )?,
-                    target_reserve: row.try_get("target_reserve")?,
-                    market: row.try_get("market")?,
-                    liquidity_mint: row.try_get("liquidity_mint")?,
-                })
-            })
-            .transpose()?;
-
-        let withdrawal_row = sqlx::query(
-            r#"
-            SELECT withdrawal.withdrawal_signature, withdrawal.confirmed_slot
-            FROM loyal_yield.user_yield_positions position
-            JOIN loyal_yield.user_yield_position_withdrawals withdrawal
-              ON withdrawal.settings = position.settings
-             AND withdrawal.vault_index = position.vault_index
-             AND withdrawal.vault_pubkey = position.vault_pubkey
-             AND withdrawal.wallet_address = position.wallet_address
-            WHERE position.settings = $1 AND position.vault_index = $2
-              AND position.vault_pubkey = $3 AND position.status::text = 'active'
-              AND withdrawal.mode = 'full'
-              AND withdrawal.confirmed_slot >= position.last_confirmed_slot
-            ORDER BY withdrawal.confirmed_slot DESC, withdrawal.id DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(settings)
-        .bind(i16::from(vault_index))
-        .bind(vault_pubkey)
-        .fetch_optional(&self.pool)
-        .await?;
-        let full_withdrawal = withdrawal_row
-            .map(
-                |row| -> Result<EarnFullWithdrawalContext, OrchestratorError> {
-                    Ok(EarnFullWithdrawalContext {
-                        signature: row.try_get("withdrawal_signature")?,
-                        confirmed_slot: nonnegative_i64_to_u64(
-                            row.try_get("confirmed_slot")?,
-                            "full withdrawal slot",
-                        )?,
-                    })
-                },
-            )
-            .transpose()?;
-
         Ok(EarnReconciliationContext {
             route_policy,
             setup_policy,
-            onboarding,
-            full_withdrawal,
         })
     }
 
@@ -5481,36 +5461,14 @@ async fn apply_earn_deposit(
     .execute(&mut *conn)
     .await?;
 
-    apply_earn_observed_balances(conn, &vault, mutation, balance_observed_slot, observed_at)
-        .await?;
-    sqlx::query(
-        r#"
-        UPDATE loyal_yield.earn_deposit_onboarding_attempts
-        SET route_policy_db_id = $1,
-            route_policy_signature = $2,
-            route_policy_confirmed_slot = $3,
-            deposit_signature = $4,
-            deposit_confirmed_slot = $5,
-            deposit_mint = $6,
-            principal_amount_raw = $7,
-            status = 'complete',
-            last_error_code = NULL,
-            updated_at = now()
-        WHERE settings = $8 AND vault_index = $9 AND vault_pubkey = $10
-          AND status <> 'complete'
-        "#,
+    apply_earn_observed_balances(
+        conn,
+        &vault,
+        &mutation.reserve_state,
+        &mutation.idle_state,
+        balance_observed_slot,
+        observed_at,
     )
-    .bind(route.id.as_i64())
-    .bind(&mutation.route_policy.signature)
-    .bind(to_i64_slot(mutation.route_policy.slot)?)
-    .bind(&mutation.deposit_signature)
-    .bind(confirmed_slot)
-    .bind(&mutation.deposit_mint)
-    .bind(amount)
-    .bind(&mutation.route_policy.settings)
-    .bind(i16::from(mutation.route_policy.vault_index))
-    .bind(&mutation.route_policy.vault_pubkey)
-    .execute(conn)
     .await?;
     Ok(())
 }
@@ -5518,7 +5476,8 @@ async fn apply_earn_deposit(
 async fn apply_earn_observed_balances(
     conn: &mut PgConnection,
     vault: &ManagedVault,
-    mutation: &EarnDepositMutation,
+    reserve_state: &[EarnReserveMutation],
+    idle_state: &[EarnIdleTokenMutation],
     observed_slot: i64,
     observed_at: DateTime<Utc>,
 ) -> Result<(), OrchestratorError> {
@@ -5549,7 +5508,41 @@ async fn apply_earn_observed_balances(
     .bind(observed_at)
     .fetch_one(&mut *conn)
     .await?;
-    for reserve in &mutation.reserve_state {
+    let observed_reserves = reserve_state
+        .iter()
+        .map(|reserve| reserve.reserve.clone())
+        .collect::<Vec<_>>();
+    sqlx::query(
+        r#"
+        DELETE FROM loyal_yield.vault_reserve_positions_current
+        WHERE vault_id = $1
+          AND observed_slot <= $3
+          AND NOT (reserve = ANY($2::text[]))
+        "#,
+    )
+    .bind(vault.id.as_i64())
+    .bind(&observed_reserves)
+    .bind(observed_slot)
+    .execute(&mut *conn)
+    .await?;
+    let observed_idle_mints = idle_state
+        .iter()
+        .map(|idle| idle.mint.clone())
+        .collect::<Vec<_>>();
+    sqlx::query(
+        r#"
+        DELETE FROM loyal_yield.vault_idle_token_balances_current
+        WHERE vault_id = $1
+          AND observed_slot <= $3
+          AND NOT (mint = ANY($2::text[]))
+        "#,
+    )
+    .bind(vault.id.as_i64())
+    .bind(&observed_idle_mints)
+    .bind(observed_slot)
+    .execute(&mut *conn)
+    .await?;
+    for reserve in reserve_state {
         let amount = to_i64_amount(reserve.amount_raw)?;
         sqlx::query(
             r#"
@@ -5605,7 +5598,7 @@ async fn apply_earn_observed_balances(
         .execute(&mut *conn)
         .await?;
     }
-    for idle in &mutation.idle_state {
+    for idle in idle_state {
         sqlx::query(
             r#"
             INSERT INTO loyal_yield.vault_idle_token_balances_current
@@ -5633,6 +5626,216 @@ async fn apply_earn_observed_balances(
         .execute(&mut *conn)
         .await?;
     }
+    Ok(())
+}
+
+async fn apply_earn_withdrawal(
+    conn: &mut PgConnection,
+    mutation: &EarnWithdrawalMutation,
+) -> Result<(), OrchestratorError> {
+    let route = upsert_policy(conn, &mutation.route_policy).await?;
+    let vault = upsert_vault(conn, route.id, &mutation.route_policy).await?;
+    let confirmed_slot = to_i64_slot(mutation.confirmed_slot)?;
+    let observed_slot = to_i64_slot(mutation.observed_slot)?;
+    let withdrawn_amount = to_i64_amount(mutation.withdrawn_amount_raw)?;
+    let remaining_amount = to_i64_amount(mutation.remaining_amount_raw)?;
+    let observed_at = mutation.observed_at.unwrap_or_else(Utc::now);
+
+    let position = sqlx::query(
+        r#"
+        SELECT id, principal_amount_raw, current_amount_raw, current_observed_slot
+        FROM loyal_yield.user_yield_positions
+        WHERE settings = $1 AND vault_index = $2 AND wallet_address = $3
+          AND vault_pubkey = $4 AND status = 'active'::loyal_yield.yield_position_status
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        FOR UPDATE
+        "#,
+    )
+    .bind(&mutation.route_policy.settings)
+    .bind(i16::from(mutation.route_policy.vault_index))
+    .bind(&mutation.wallet)
+    .bind(&mutation.vault_pubkey)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(position) = position else {
+        let replayed: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM loyal_yield.user_yield_position_withdrawals WHERE withdrawal_signature = $1)",
+        )
+        .bind(&mutation.withdrawal_signature)
+        .fetch_one(&mut *conn)
+        .await?;
+        if replayed {
+            return Ok(());
+        }
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "finalized Earn withdrawal {} has no active projected position",
+            mutation.withdrawal_signature
+        )));
+    };
+    let position_id: i64 = position.try_get("id")?;
+    let principal: i64 = position.try_get("principal_amount_raw")?;
+    let previous_amount: i64 = position.try_get("current_amount_raw")?;
+    let previous_observed_slot: i64 = position.try_get("current_observed_slot")?;
+    let mode = if remaining_amount == 0 {
+        "full"
+    } else {
+        "partial"
+    };
+    let withdrawal_id = sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO loyal_yield.user_yield_position_withdrawals (
+            withdrawal_signature, confirmed_slot, wallet_address,
+            smart_account_address, settings, vault_index, vault_pubkey, policy_id,
+            policy_account, policy_seed, target_reserve, market, liquidity_mint,
+            withdrawn_amount_raw, source_type, source_id, source_metadata,
+            reserve_withdrawals, mode, confirmed_at, created_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+            'chain_snapshot', $11, jsonb_build_object('kind', 'earn_laserstream_finalized'),
+            '[]'::jsonb, $15, $16, now()
+        )
+        ON CONFLICT (withdrawal_signature) DO NOTHING
+        RETURNING id
+        "#,
+    )
+    .bind(&mutation.withdrawal_signature)
+    .bind(confirmed_slot)
+    .bind(&mutation.wallet)
+    .bind(&mutation.vault_pubkey)
+    .bind(&mutation.route_policy.settings)
+    .bind(i16::from(mutation.route_policy.vault_index))
+    .bind(&mutation.vault_pubkey)
+    .bind(route.id.as_i64())
+    .bind(&mutation.route_policy.policy_account)
+    .bind(to_i64_policy_seed(mutation.route_policy.policy_seed)?)
+    .bind(&mutation.target_reserve)
+    .bind(&mutation.market)
+    .bind(&mutation.liquidity_mint)
+    .bind(withdrawn_amount)
+    .bind(mode)
+    .bind(observed_at)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(withdrawal_id) = withdrawal_id else {
+        return Ok(());
+    };
+
+    let principal_delta = -principal.min(withdrawn_amount);
+    let next_principal = principal.saturating_sub(withdrawn_amount);
+    let snapshot_is_current = observed_slot >= previous_observed_slot;
+    let resulting_amount = if snapshot_is_current {
+        remaining_amount
+    } else {
+        previous_amount
+    };
+    let event_slot = if snapshot_is_current {
+        observed_slot
+    } else {
+        previous_observed_slot
+    };
+    let holding_delta = resulting_amount
+        .checked_sub(previous_amount)
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "Earn holding delta overflow during withdrawal reconciliation".to_owned(),
+            )
+        })?;
+    let holding_id = sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO loyal_yield.user_yield_position_holding_events (
+            position_id, event_type, reserve, market, liquidity_mint,
+            amount_raw, principal_delta_raw, holding_delta_raw, observed_slot,
+            observed_at, source_signature, source_withdrawal_id, created_at
+        ) VALUES (
+            $1, $2::text::loyal_yield.user_yield_holding_event_type, $3, $4, $5,
+            $6, $7, $8, $9, $10, $11, $12, now()
+        ) RETURNING id
+        "#,
+    )
+    .bind(position_id)
+    .bind(if mode == "full" {
+        "withdrawal_full"
+    } else {
+        "withdrawal_partial"
+    })
+    .bind(&mutation.target_reserve)
+    .bind(&mutation.market)
+    .bind(&mutation.liquidity_mint)
+    .bind(resulting_amount)
+    .bind(principal_delta)
+    .bind(holding_delta)
+    .bind(event_slot)
+    .bind(observed_at)
+    .bind(&mutation.withdrawal_signature)
+    .bind(withdrawal_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.user_yield_positions
+        SET principal_amount_raw = $2,
+            current_reserve = CASE WHEN $3 THEN $4 ELSE current_reserve END,
+            current_market = CASE WHEN $3 THEN $5 ELSE current_market END,
+            current_liquidity_mint = CASE WHEN $3 THEN $6 ELSE current_liquidity_mint END,
+            current_amount_raw = $7,
+            current_observed_slot = $8,
+            current_observed_at = $9,
+            last_confirmed_slot = GREATEST(last_confirmed_slot, $10),
+            last_holding_event_id = $11,
+            updated_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(position_id)
+    .bind(next_principal)
+    .bind(snapshot_is_current)
+    .bind(&mutation.target_reserve)
+    .bind(&mutation.market)
+    .bind(&mutation.liquidity_mint)
+    .bind(resulting_amount)
+    .bind(event_slot)
+    .bind(observed_at)
+    .bind(confirmed_slot)
+    .bind(holding_id)
+    .execute(&mut *conn)
+    .await?;
+    apply_earn_observed_balances(
+        conn,
+        &vault,
+        &mutation.reserve_state,
+        &mutation.idle_state,
+        observed_slot,
+        observed_at,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn apply_earn_refund(
+    conn: &mut PgConnection,
+    mutation: &EarnRefundMutation,
+) -> Result<(), OrchestratorError> {
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.earn_chain_refund_events (
+            cluster, settings, vault_index, vault_pubkey, wallet_address,
+            refund_signature, confirmed_slot, refund_kind, confirmed_at, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+        ON CONFLICT (refund_signature) DO NOTHING
+        "#,
+    )
+    .bind(&mutation.cluster)
+    .bind(&mutation.settings)
+    .bind(i16::from(mutation.vault_index))
+    .bind(&mutation.vault_pubkey)
+    .bind(&mutation.wallet)
+    .bind(&mutation.refund_signature)
+    .bind(to_i64_slot(mutation.confirmed_slot)?)
+    .bind(&mutation.refund_kind)
+    .bind(mutation.observed_at.unwrap_or_else(Utc::now))
+    .execute(conn)
+    .await?;
     Ok(())
 }
 
@@ -8074,15 +8277,6 @@ fn to_i64_policy_seed(policy_seed: u64) -> Result<i64, OrchestratorError> {
 fn nonnegative_i64_to_u64(value: i64, field: &str) -> Result<u64, OrchestratorError> {
     u64::try_from(value)
         .map_err(|_| OrchestratorError::StoreInvariant(format!("{field} {value} is negative")))
-}
-
-fn optional_nonnegative_i64_to_u64(
-    value: Option<i64>,
-    field: &str,
-) -> Result<Option<u64>, OrchestratorError> {
-    value
-        .map(|value| nonnegative_i64_to_u64(value, field))
-        .transpose()
 }
 
 fn policy_match_from_dynamic_row(

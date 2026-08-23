@@ -451,7 +451,9 @@ pub struct EarnReconciliationJob {
 pub enum EarnDirectMutation {
     PolicyOnly(EarnPolicyOnlyMutation),
     Deposit(EarnDepositMutation),
+    Withdrawal(EarnWithdrawalMutation),
     Cleanup(EarnCleanupMutation),
+    Refund(EarnRefundMutation),
     Noop,
 }
 
@@ -515,6 +517,38 @@ pub struct EarnCleanupMutation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnWithdrawalMutation {
+    pub route_policy: PolicyMatchInput,
+    pub withdrawal_signature: String,
+    pub confirmed_slot: u64,
+    pub observed_slot: u64,
+    pub wallet: String,
+    pub vault_pubkey: String,
+    pub target_reserve: String,
+    pub market: Option<String>,
+    pub liquidity_mint: String,
+    pub withdrawn_amount_raw: u64,
+    pub remaining_amount_raw: u64,
+    pub reserve_state: Vec<EarnReserveMutation>,
+    pub idle_state: Vec<EarnIdleTokenMutation>,
+    pub observed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnRefundMutation {
+    pub cluster: String,
+    pub full_cleanup: bool,
+    pub settings: String,
+    pub vault_index: u8,
+    pub vault_pubkey: String,
+    pub wallet: String,
+    pub refund_signature: String,
+    pub confirmed_slot: u64,
+    pub refund_kind: String,
+    pub observed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EarnReconciliationCompletionOutcome {
     pub applied_mutations: usize,
 }
@@ -523,32 +557,6 @@ pub struct EarnReconciliationCompletionOutcome {
 pub struct EarnReconciliationContext {
     pub route_policy: Option<PolicyMatchInput>,
     pub setup_policy: Option<PolicyMatchInput>,
-    pub onboarding: Option<EarnOnboardingContext>,
-    pub full_withdrawal: Option<EarnFullWithdrawalContext>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EarnOnboardingContext {
-    pub status: String,
-    pub deposit_signature: Option<String>,
-    pub delegated_signer: String,
-    pub route_policy_account: String,
-    pub route_policy_seed: u64,
-    pub route_policy_signature: Option<String>,
-    pub route_policy_confirmed_slot: Option<u64>,
-    pub setup_policy_account: Option<String>,
-    pub setup_policy_seed: Option<u64>,
-    pub setup_policy_signature: Option<String>,
-    pub setup_policy_confirmed_slot: Option<u64>,
-    pub target_reserve: String,
-    pub market: Option<String>,
-    pub liquidity_mint: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EarnFullWithdrawalContext {
-    pub signature: String,
-    pub confirmed_slot: u64,
 }
 
 /// Database identity used to build the in-memory Earn LaserStream watch set.

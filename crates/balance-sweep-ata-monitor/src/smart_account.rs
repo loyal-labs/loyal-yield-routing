@@ -27,17 +27,19 @@ pub const EARN_SMART_ACCOUNTS: &str = "earn_smart_accounts";
 pub const EARN_POLICY_ACCOUNTS: &str = "earn_policy_accounts";
 pub const EARN_VAULT_ACCOUNTS: &str = "earn_vault_accounts";
 pub const EARN_IDLE_TOKEN_ACCOUNTS: &str = "earn_idle_token_accounts";
+pub const EARN_WALLET_TOKEN_ACCOUNTS: &str = "earn_wallet_token_accounts";
 pub const EARN_OBLIGATIONS: &str = "earn_obligations";
 pub const EARN_AUTODEPOSIT_WALLET_ATAS: &str = "earn_autodeposit_wallet_atas";
 pub const EARN_SUBSCRIPTION_AUTHORITIES: &str = "earn_subscription_authorities";
 pub const EARN_RECURRING_DELEGATIONS: &str = "earn_recurring_delegations";
 pub const EARN_WALLETS: &str = "earn_wallets";
 
-const EARN_ACCOUNT_CHANNELS: [&str; 9] = [
+const EARN_ACCOUNT_CHANNELS: [&str; 10] = [
     EARN_SMART_ACCOUNTS,
     EARN_POLICY_ACCOUNTS,
     EARN_VAULT_ACCOUNTS,
     EARN_IDLE_TOKEN_ACCOUNTS,
+    EARN_WALLET_TOKEN_ACCOUNTS,
     EARN_OBLIGATIONS,
     EARN_AUTODEPOSIT_WALLET_ATAS,
     EARN_SUBSCRIPTION_AUTHORITIES,
@@ -156,6 +158,19 @@ impl SubscriptionWatchSet {
                         role: "idle_token".to_owned(),
                     }
                 }));
+            entry
+                .accounts
+                .extend(earn_stablecoins().iter().map(|asset| {
+                    EarnWatchAccount {
+                        pubkey: derive_associated_token_account(
+                            wallet,
+                            asset.mint,
+                            asset.token_program,
+                        )
+                        .to_string(),
+                        role: "wallet_token".to_owned(),
+                    }
+                }));
             let markets = safe_markets
                 .iter()
                 .copied()
@@ -265,6 +280,7 @@ impl SubscriptionWatchSet {
                     "policy" => EARN_POLICY_ACCOUNTS,
                     "vault" => EARN_VAULT_ACCOUNTS,
                     "idle_token" => EARN_IDLE_TOKEN_ACCOUNTS,
+                    "wallet_token" => EARN_WALLET_TOKEN_ACCOUNTS,
                     "obligation" => EARN_OBLIGATIONS,
                     "autodeposit_wallet_ata" => EARN_AUTODEPOSIT_WALLET_ATAS,
                     "subscription_authority" => EARN_SUBSCRIPTION_AUTHORITIES,
