@@ -1,7 +1,7 @@
 # Kamino Multiply production-engine simplification
 
 **Date:** 2026-08-22
-**Status:** Source release candidate complete. Trusted `main` published and probed the immutable light-workers image at commit `e6cc09c22e85c4813ab485f016b6ccb6881b10f8`; the production Render worker is declared against that exact image but is not deployed by this source goal.
+**Status:** Production deployed. Trusted `main` published and probed the immutable light-workers image at commit `e6cc09c22e85c4813ab485f016b6ccb6881b10f8`; Render service `srv-da56asrncjis73fu9psg` runs that exact image in the light-workers production environment.
 
 ## Outcome contract
 
@@ -23,19 +23,17 @@ Scope:
   manual repair commands.
 
 Verifier:
-  op run --env-file=.env.1password -- bun run verify:multiply:production
+  op run --env-file=.env.1password -- bun scripts/verify-multiply-deployment.ts
 
 External gates:
-  Terminal-only 1Password environment plus current mainnet RPC and Neon are
-  required for live readback. Applying the Blueprint/private registry
-  credential, installing Render secrets, and a tiny deployed-image canary are
-  release operations outside this source-change goal. The verifier never
-  deploys or sends a transaction.
+  Terminal-only 1Password environment, Render API access, current mainnet RPC,
+  and Neon are required for live readback. The verifier never deploys or sends
+  a transaction.
 
 Verdict:
-  PASS_RWA_MULTIPLY_RELEASE_CANDIDATE
-  FAIL_RWA_MULTIPLY_RELEASE_CANDIDATE <first false condition and evidence>
-  BLOCKED_RWA_MULTIPLY_RELEASE_CANDIDATE <dependency and resume condition>
+  PASS_DEPLOYED_RWA_MULTIPLY_WORKER
+  FAIL_DEPLOYED_RWA_MULTIPLY_WORKER <first false condition and evidence>
+  BLOCKED_DEPLOYED_RWA_MULTIPLY_WORKER <dependency and resume condition>
 ```
 
 The verifier is independent of the worker planner, builders, transition code,
