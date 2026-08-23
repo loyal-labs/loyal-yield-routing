@@ -48,6 +48,7 @@ const MIGRATION_0051: &str = include_str!("../migrations/0051_multiply_route_sta
 const MIGRATION_0052: &str = include_str!("../migrations/0052_voltr_opportunity_classes.sql");
 const MIGRATION_0053: &str = include_str!("../migrations/0053_multiply_production_engine.sql");
 const MIGRATION_0054: &str = include_str!("../migrations/0054_earn_max_per_user.sql");
+const MIGRATION_0055: &str = include_str!("../migrations/0055_earn_max_repeated_lifecycle.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -483,6 +484,12 @@ impl NeonSqlClient {
                 version: 54,
                 name: "earn_max_per_user",
                 sql: MIGRATION_0054,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 55,
+                name: "earn_max_repeated_lifecycle",
+                sql: MIGRATION_0055,
                 expected_checksum: None,
             },
         ] {
