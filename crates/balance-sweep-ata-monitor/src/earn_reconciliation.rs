@@ -19,8 +19,7 @@ use klend_interface::{
     KLEND_PROGRAM_ID,
 };
 use loyal_actions::{
-    decode_squads_policy_create_actions, derive_associated_token_account,
-    derive_kamino_vanilla_obligation, earn_stablecoin, earn_stablecoins, SquadsSettingsActionView,
+    derive_associated_token_account, earn_stablecoin, earn_stablecoins,
     SQUADS_SMART_ACCOUNT_PROGRAM_ID, SUBSCRIPTIONS_CREATE_RECURRING_DELEGATION,
     SUBSCRIPTIONS_PROGRAM_ID, USDC_MINT,
 };
@@ -29,8 +28,8 @@ use loyal_yield_store::{
     AutodepositChainObservation, AutodepositRecurringDelegationObserved,
     AutodepositTargetSnapshotContext, EarnCleanupMutation, EarnDepositMutation, EarnDirectMutation,
     EarnIdleTokenMutation, EarnPolicyOnlyMutation, EarnReconciliationEnqueueInput,
-    EarnReconciliationEnqueueOutcome, EarnReconciliationVaultInput, EarnReserveMutation,
-    OrchestratorStore, PolicyMatchInput,
+    EarnReconciliationEnqueueOutcome, EarnReconciliationVaultInput, EarnRefundMutation,
+    EarnReserveMutation, EarnWithdrawalMutation, OrchestratorStore, PolicyMatchInput,
 };
 use num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
@@ -125,7 +124,7 @@ impl RpcEarnChainReader {
         Self {
             rpc: Arc::new(RpcClient::new_with_commitment(
                 rpc_url.into(),
-                CommitmentConfig::confirmed(),
+                CommitmentConfig::finalized(),
             )),
             store,
         }
@@ -260,75 +259,115 @@ fn resolve_rpc_mutation(
     vault: &EarnVaultWatch,
     context: loyal_yield_store::EarnReconciliationContext,
 ) -> Result<EarnDirectMutation> {
-    if let Some(withdrawal) = context.full_withdrawal.as_ref() {
-        let proof = read_cleanup_proof(rpc, vault, withdrawal.confirmed_slot)?;
-        if !proof.balances_zero {
+    let is_policy_deletion = update.event_kind == "account_deleted"
+        && update.account_pubkey.as_deref().is_some_and(|pubkey| {
+            vault
+                .accounts
+                .iter()
+                .any(|account| account.role == "policy" && account.pubkey == pubkey)
+        });
+    if is_policy_deletion {
+        let signature = update
+            .signature
+            .as_deref()
+            .context("closed policy update has no transaction signature")?;
+        let transaction = read_transaction_json(rpc, signature)?;
+        let transaction_slot = transaction
+            .get("slot")
+            .and_then(Value::as_u64)
+            .context("finalized policy-close transaction has no slot")?;
+        if transaction_slot != update.slot {
+            bail!(
+                "transaction {signature} landed at slot {transaction_slot}, expected account-update slot {}",
+                update.slot
+            );
+        }
+        let proof = read_cleanup_proof(rpc, vault, update.slot)?;
+        if transaction_owner_lamport_credit(&transaction, &vault.wallet)? > 0 {
+            return Ok(EarnDirectMutation::Refund(EarnRefundMutation {
+                cluster: vault.environment.clone(),
+                full_cleanup: proof.balances_zero && proof.policies_closed,
+                settings: vault.settings.clone(),
+                vault_index: vault.vault_index,
+                vault_pubkey: vault.vault.clone(),
+                wallet: vault.wallet.clone(),
+                refund_signature: signature.to_owned(),
+                confirmed_slot: transaction_slot,
+                refund_kind: "policy".to_owned(),
+                observed_at: None,
+            }));
+        }
+        if !proof.balances_zero || !proof.policies_closed {
             return Ok(EarnDirectMutation::Noop);
         }
-        let (cleanup_signature, confirmed_slot) = if proof.policies_closed {
-            let is_policy_deletion = update.event_kind == "account_deleted"
-                && update.account_pubkey.as_deref().is_some_and(|pubkey| {
-                    vault
-                        .accounts
-                        .iter()
-                        .any(|account| account.role == "policy" && account.pubkey == pubkey)
-                });
-            if !is_policy_deletion {
-                // Policy closure has its own account-deletion frame carrying
-                // the close transaction. A later idle/obligation frame must
-                // not replace that evidence with an unrelated signature.
-                return Ok(EarnDirectMutation::Noop);
-            }
-            (
-                update
-                    .signature
-                    .clone()
-                    .context("closed policy update has no transaction signature")?,
-                update.slot,
-            )
-        } else {
-            (withdrawal.signature.clone(), withdrawal.confirmed_slot)
-        };
         return Ok(EarnDirectMutation::Cleanup(EarnCleanupMutation {
             settings: vault.settings.clone(),
             vault_index: vault.vault_index,
             vault_pubkey: vault.vault.clone(),
-            cleanup_signature,
-            confirmed_slot,
+            cleanup_signature: update
+                .signature
+                .clone()
+                .context("closed policy update has no transaction signature")?,
+            confirmed_slot: update.slot,
             observed_at: None,
         }));
     }
 
-    if let Some(onboarding) = context.onboarding.as_ref() {
-        if onboarding.status == "route_policy_confirmed" {
-            if let Some(policy) = read_policy_only_proof(
-                rpc,
-                update,
-                vault,
-                onboarding,
-                context.route_policy.as_ref(),
-            )? {
-                return Ok(EarnDirectMutation::PolicyOnly(policy));
-            }
-        }
+    let Some(signature) = update.signature.as_deref() else {
+        return Ok(EarnDirectMutation::Noop);
+    };
+    let transaction = read_transaction_json(rpc, signature)?;
+    let transaction_slot = transaction
+        .get("slot")
+        .and_then(Value::as_u64)
+        .context("finalized transaction has no slot")?;
+    if transaction_slot != update.slot {
+        bail!(
+            "transaction {signature} landed at slot {transaction_slot}, expected account-update slot {}",
+            update.slot
+        );
     }
-
+    let supported_mints = earn_stablecoins()
+        .iter()
+        .map(|asset| asset.mint.to_string())
+        .collect::<Vec<_>>();
+    let Some(cash_flow) = classify_transaction_cash_flow(
+        &transaction,
+        &vault.wallet,
+        supported_mints.iter().map(String::as_str),
+        update,
+        vault,
+    )?
+    else {
+        return Ok(EarnDirectMutation::Noop);
+    };
+    if cash_flow.kind == CashFlowKind::Refund {
+        return Ok(EarnDirectMutation::Refund(EarnRefundMutation {
+            cluster: vault.environment.clone(),
+            full_cleanup: false,
+            settings: vault.settings.clone(),
+            vault_index: vault.vault_index,
+            vault_pubkey: vault.vault.clone(),
+            wallet: vault.wallet.clone(),
+            refund_signature: signature.to_owned(),
+            confirmed_slot: transaction_slot,
+            refund_kind: cash_flow
+                .refund_kind
+                .unwrap_or_else(|| "account".to_owned()),
+            observed_at: None,
+        }));
+    }
     let Some(route_policy) = context.route_policy else {
-        return Ok(EarnDirectMutation::Noop);
+        bail!("cash flow {signature} arrived before its finalized route policy projection");
     };
-    let Some(onboarding) = context.onboarding.as_ref() else {
-        return Ok(EarnDirectMutation::Noop);
-    };
-    if onboarding.status == "complete" || onboarding.deposit_signature.is_some() {
-        return Ok(EarnDirectMutation::Noop);
-    }
-    read_deposit_proof(
+    read_cash_flow_proof(
         rpc,
         update,
         vault,
         route_policy,
         context.setup_policy,
-        onboarding,
+        transaction,
+        cash_flow,
     )
 }
 
@@ -351,7 +390,7 @@ fn read_cleanup_proof(
         &addresses,
         RpcAccountInfoConfig {
             encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(CommitmentConfig::confirmed()),
+            commitment: Some(CommitmentConfig::finalized()),
             min_context_slot: Some(min_context_slot),
             ..RpcAccountInfoConfig::default()
         },
@@ -496,7 +535,7 @@ fn get_token_accounts_by_owner_with_config(
 ) -> Result<RpcResponse<Vec<RpcKeyedAccount>>> {
     let config = RpcAccountInfoConfig {
         encoding: Some(UiAccountEncoding::Base64),
-        commitment: Some(CommitmentConfig::confirmed()),
+        commitment: Some(CommitmentConfig::finalized()),
         min_context_slot: Some(min_context_slot),
         ..RpcAccountInfoConfig::default()
     };
@@ -509,165 +548,6 @@ fn get_token_accounts_by_owner_with_config(
         ]),
     )
     .context("get token accounts by owner")
-}
-
-fn read_policy_only_proof(
-    rpc: &RpcClient,
-    update: &NormalizedEarnUpdate,
-    vault: &EarnVaultWatch,
-    onboarding: &loyal_yield_store::EarnOnboardingContext,
-    recorded_route: Option<&PolicyMatchInput>,
-) -> Result<Option<EarnPolicyOnlyMutation>> {
-    let Some(setup_account) = onboarding.setup_policy_account.as_deref() else {
-        return Ok(None);
-    };
-    // Route and setup policies are commonly created by different
-    // transactions. The route notification cannot prove the setup stage and
-    // must remain a no-op; the setup account's own notification performs the
-    // convergence once both accounts exist.
-    if update.account_pubkey.as_deref() != Some(setup_account) {
-        return Ok(None);
-    }
-    let addresses = [
-        Pubkey::from_str(&onboarding.route_policy_account)?,
-        Pubkey::from_str(setup_account)?,
-    ];
-    let response = rpc.get_multiple_accounts_with_config(
-        &addresses,
-        RpcAccountInfoConfig {
-            encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(CommitmentConfig::confirmed()),
-            min_context_slot: Some(update.slot),
-            ..RpcAccountInfoConfig::default()
-        },
-    )?;
-    if response.value.iter().any(Option::is_none) {
-        return Ok(None);
-    }
-    if response
-        .value
-        .iter()
-        .flatten()
-        .any(|account| account.owner != SQUADS_SMART_ACCOUNT_PROGRAM_ID)
-    {
-        bail!("policy-only proof observed a non-Squads policy owner");
-    }
-    let update_signature = update
-        .signature
-        .as_deref()
-        .context("policy-only update is missing its transaction signature")?;
-    let actions = read_squads_policy_actions(rpc, update_signature, update.slot)?;
-    let settings = Pubkey::from_str(&vault.settings)?;
-    let wallet = Pubkey::from_str(&vault.wallet)?;
-    let setup_account_key = Pubkey::from_str(setup_account)?;
-    let delegated_signer = Pubkey::from_str(&onboarding.delegated_signer)?;
-    let setup_seed = onboarding
-        .setup_policy_seed
-        .context("policy-only onboarding has no setup policy seed")?;
-    let setup_action = actions
-        .iter()
-        .find(|action| action.policy_account == setup_account_key)
-        .context("setup transaction did not create the expected policy")?;
-    validate_setup_policy_action(
-        setup_action,
-        settings,
-        wallet,
-        delegated_signer,
-        setup_seed,
-        vault.vault_index,
-        onboarding,
-    )?;
-
-    let route_policy = recorded_route
-        .cloned()
-        .context("route policy is not canonical before setup reconciliation")?;
-    if route_policy.policy_account != onboarding.route_policy_account
-        || route_policy.policy_seed != onboarding.route_policy_seed
-        || route_policy.settings != vault.settings
-        || route_policy.authority != vault.wallet
-    {
-        bail!("recorded route policy does not match onboarding identity");
-    }
-    let setup_policy = PolicyMatchInput {
-        signature: onboarding
-            .setup_policy_signature
-            .clone()
-            .unwrap_or_else(|| update_signature.to_owned()),
-        slot: onboarding
-            .setup_policy_confirmed_slot
-            .unwrap_or(update.slot),
-        cluster: vault.environment.clone(),
-        source_commitment: "confirmed".to_owned(),
-        settings: vault.settings.clone(),
-        authority: vault.wallet.clone(),
-        policy_seed: setup_seed,
-        policy_account: setup_account.to_owned(),
-        vault_index: vault.vault_index,
-        vault_pubkey: vault.vault.clone(),
-        delegated_signers: vec![onboarding.delegated_signer.clone()],
-        threshold: 1,
-        route_modes: vec!["kamino_init_obligation".to_owned()],
-        stable_mints: vec![onboarding.liquidity_mint.clone()],
-        kamino_markets: onboarding.market.iter().cloned().collect(),
-        kamino_liquidity_mints: vec![onboarding.liquidity_mint.clone()],
-        universe_preset: None,
-        risk_profile: None,
-        swap_lanes: Value::Array(Vec::new()),
-    };
-    Ok(Some(EarnPolicyOnlyMutation {
-        route_policy,
-        setup_policy,
-    }))
-}
-
-fn validate_setup_policy_action(
-    action: &SquadsSettingsActionView,
-    settings: Pubkey,
-    wallet: Pubkey,
-    delegated_signer: Pubkey,
-    expected_seed: u64,
-    vault_index: u8,
-    onboarding: &loyal_yield_store::EarnOnboardingContext,
-) -> Result<()> {
-    if action.settings != settings
-        || action.authority != wallet
-        || action.policy_seed != expected_seed
-        || action.payload.vault_index != vault_index
-        || action.threshold != 1
-        || action.delegated_signers != vec![delegated_signer]
-    {
-        bail!("decoded setup policy identity does not match onboarding");
-    }
-    let market = onboarding
-        .market
-        .as_deref()
-        .map(Pubkey::from_str)
-        .transpose()?
-        .context("policy-only onboarding has no market")?;
-    if !action.payload.pubkey_table.contains(&market) {
-        bail!("decoded setup policy does not contain the onboarding market");
-    }
-    Ok(())
-}
-
-fn read_squads_policy_actions(
-    rpc: &RpcClient,
-    signature: &str,
-    expected_slot: u64,
-) -> Result<Vec<SquadsSettingsActionView>> {
-    let EarnPolicyTransactionRead::Transaction(transaction) =
-        read_squads_policy_transaction(rpc, signature, expected_slot)?
-    else {
-        return Ok(Vec::new());
-    };
-    let mut actions = Vec::new();
-    for instruction in transaction.instructions {
-        actions.extend(
-            decode_squads_policy_create_actions(&instruction)
-                .context("decode Squads policy creation")?,
-        );
-    }
-    Ok(actions)
 }
 
 fn read_squads_policy_transaction(
@@ -750,114 +630,431 @@ fn read_squads_policy_transaction(
     ))
 }
 
-fn read_deposit_proof(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CashFlowKind {
+    Deposit,
+    Withdrawal,
+    Refund,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CashFlowEvidence {
+    kind: CashFlowKind,
+    mint: String,
+    amount_raw: u64,
+    refund_kind: Option<String>,
+}
+
+#[derive(Debug)]
+struct CompleteVaultSnapshot {
+    observed_slot: u64,
+    reserve_state: Vec<EarnReserveMutation>,
+    idle_state: Vec<EarnIdleTokenMutation>,
+}
+
+fn classify_transaction_cash_flow<'a>(
+    transaction: &Value,
+    wallet: &str,
+    mints: impl IntoIterator<Item = &'a str>,
+    update: &NormalizedEarnUpdate,
+    vault: &EarnVaultWatch,
+) -> Result<Option<CashFlowEvidence>> {
+    let deleted_role = (update.event_kind == "account_deleted")
+        .then(|| {
+            update.account_pubkey.as_deref().and_then(|pubkey| {
+                vault
+                    .accounts
+                    .iter()
+                    .find(|account| account.pubkey == pubkey)
+                    .map(|account| account.role.as_str())
+            })
+        })
+        .flatten();
+    if matches!(deleted_role, Some("policy" | "idle_token" | "vault"))
+        && transaction_owner_lamport_credit(transaction, wallet)? > 0
+    {
+        return Ok(Some(CashFlowEvidence {
+            kind: CashFlowKind::Refund,
+            mint: String::new(),
+            amount_raw: transaction_owner_lamport_credit(transaction, wallet)?,
+            refund_kind: Some(
+                match deleted_role {
+                    Some("policy") => "policy",
+                    Some("idle_token") => "vault_token_account",
+                    _ => "vault_account",
+                }
+                .to_owned(),
+            ),
+        }));
+    }
+
+    let mut result = None;
+    for mint in mints {
+        let delta = transaction_owner_token_delta(transaction, mint, wallet)?;
+        if delta == 0 {
+            continue;
+        }
+        if result.is_some() {
+            bail!("one Earn transaction changed more than one supported wallet mint");
+        }
+        let (kind, amount_raw) = if delta < 0 {
+            (CashFlowKind::Deposit, u64::try_from(-delta)?)
+        } else {
+            (CashFlowKind::Withdrawal, u64::try_from(delta)?)
+        };
+        result = Some(CashFlowEvidence {
+            kind,
+            mint: mint.to_owned(),
+            amount_raw,
+            refund_kind: None,
+        });
+    }
+    Ok(result)
+}
+
+fn transaction_owner_token_delta(transaction: &Value, mint: &str, owner: &str) -> Result<i128> {
+    let balances = |name: &str| -> Result<BTreeMap<u64, (Option<String>, u64)>> {
+        transaction
+            .pointer(&format!("/transaction/meta/{name}"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|row| row.get("mint").and_then(Value::as_str) == Some(mint))
+            .try_fold(BTreeMap::new(), |mut parsed, row| {
+                let index = row
+                    .get("accountIndex")
+                    .and_then(Value::as_u64)
+                    .context("token balance has no account index")?;
+                let amount = row
+                    .pointer("/uiTokenAmount/amount")
+                    .and_then(Value::as_str)
+                    .context("token balance has no raw amount")?
+                    .parse::<u64>()?;
+                let row_owner = row
+                    .get("owner")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                if parsed.insert(index, (row_owner, amount)).is_some() {
+                    bail!("duplicate token balance account index {index} in {name}");
+                }
+                Ok(parsed)
+            })
+    };
+    let pre = balances("preTokenBalances")?;
+    let post = balances("postTokenBalances")?;
+    pre.keys()
+        .chain(post.keys())
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .try_fold(0_i128, |delta, index| {
+            let pre_row = pre.get(&index);
+            let post_row = post.get(&index);
+            let row_owner = post_row
+                .and_then(|row| row.0.as_deref())
+                .or_else(|| pre_row.and_then(|row| row.0.as_deref()));
+            if row_owner != Some(owner) {
+                return Ok(delta);
+            }
+            let pre_amount = pre_row.map(|row| row.1).unwrap_or_default();
+            let post_amount = post_row.map(|row| row.1).unwrap_or_default();
+            delta
+                .checked_add(i128::from(post_amount) - i128::from(pre_amount))
+                .context("wallet token delta overflow")
+        })
+}
+
+fn transaction_owner_lamport_credit(transaction: &Value, owner: &str) -> Result<u64> {
+    let keys = transaction
+        .pointer("/transaction/transaction/message/accountKeys")
+        .and_then(Value::as_array)
+        .context("transaction has no account keys")?;
+    let Some(index) = keys.iter().position(|key| {
+        key.as_str()
+            .or_else(|| key.get("pubkey").and_then(Value::as_str))
+            == Some(owner)
+    }) else {
+        return Ok(0);
+    };
+    let pre = transaction
+        .pointer("/transaction/meta/preBalances")
+        .and_then(Value::as_array)
+        .and_then(|balances| balances.get(index))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let post = transaction
+        .pointer("/transaction/meta/postBalances")
+        .and_then(Value::as_array)
+        .and_then(|balances| balances.get(index))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let fee = if index == 0 {
+        transaction
+            .pointer("/transaction/meta/fee")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+    } else {
+        0
+    };
+    Ok(post.saturating_add(fee).saturating_sub(pre))
+}
+
+fn read_cash_flow_proof(
     rpc: &RpcClient,
     update: &NormalizedEarnUpdate,
     vault: &EarnVaultWatch,
     route_policy: PolicyMatchInput,
     setup_policy: Option<PolicyMatchInput>,
-    onboarding: &loyal_yield_store::EarnOnboardingContext,
+    transaction: Value,
+    cash_flow: CashFlowEvidence,
 ) -> Result<EarnDirectMutation> {
     let signature = update
         .signature
         .as_deref()
-        .context("deposit candidate is missing its transaction signature")?;
-    let transaction = read_transaction_json(rpc, signature)?;
-    let transaction_slot = transaction
-        .get("slot")
-        .and_then(Value::as_u64)
-        .context("confirmed transaction has no slot")?;
-    if transaction_slot != update.slot {
-        bail!(
-            "transaction {signature} landed at slot {transaction_slot}, expected account-update slot {}",
-            update.slot
-        );
+        .context("cash-flow update is missing its transaction signature")?;
+    let snapshot = read_complete_vault_snapshot(rpc, vault, &route_policy, update.slot)?;
+    let transaction_accounts = transaction_accounts(&transaction);
+    let target = snapshot
+        .reserve_state
+        .iter()
+        .find(|reserve| {
+            reserve.liquidity_mint == cash_flow.mint
+                && transaction_accounts.contains(&reserve.reserve)
+        })
+        .or_else(|| {
+            let mut matching = snapshot
+                .reserve_state
+                .iter()
+                .filter(|reserve| reserve.liquidity_mint == cash_flow.mint);
+            let first = matching.next()?;
+            matching.next().is_none().then_some(first)
+        })
+        .context("cash-flow transaction did not identify one canonical Earn reserve")?;
+    let remaining_amount_raw = snapshot
+        .reserve_state
+        .iter()
+        .filter(|reserve| reserve.liquidity_mint == cash_flow.mint)
+        .try_fold(0_u64, |sum, reserve| sum.checked_add(reserve.amount_raw))
+        .context("Earn reserve balance overflow")?
+        .checked_add(
+            snapshot
+                .idle_state
+                .iter()
+                .filter(|idle| idle.mint == cash_flow.mint)
+                .try_fold(0_u64, |sum, idle| sum.checked_add(idle.amount_raw))
+                .context("Earn idle balance overflow")?,
+        )
+        .context("Earn remaining balance overflow")?;
+    match cash_flow.kind {
+        CashFlowKind::Deposit => Ok(EarnDirectMutation::Deposit(EarnDepositMutation {
+            route_policy,
+            setup_policy,
+            deposit_signature: signature.to_owned(),
+            deposit_slot: update.slot,
+            observed_slot: snapshot.observed_slot,
+            deposit_mint: cash_flow.mint.clone(),
+            principal_amount_raw: cash_flow.amount_raw,
+            target_reserve: target.reserve.clone(),
+            market: target.market.clone(),
+            liquidity_mint: cash_flow.mint,
+            target_supply_apy_bps: target.supply_apy_bps,
+            wallet: vault.wallet.clone(),
+            smart_account_address: vault.vault.clone(),
+            reserve_state: snapshot.reserve_state,
+            idle_state: snapshot.idle_state,
+            observed_at: None,
+        })),
+        CashFlowKind::Withdrawal => Ok(EarnDirectMutation::Withdrawal(EarnWithdrawalMutation {
+            route_policy,
+            withdrawal_signature: signature.to_owned(),
+            confirmed_slot: update.slot,
+            observed_slot: snapshot.observed_slot,
+            wallet: vault.wallet.clone(),
+            vault_pubkey: vault.vault.clone(),
+            target_reserve: target.reserve.clone(),
+            market: target.market.clone(),
+            liquidity_mint: cash_flow.mint,
+            withdrawn_amount_raw: cash_flow.amount_raw,
+            remaining_amount_raw,
+            reserve_state: snapshot.reserve_state,
+            idle_state: snapshot.idle_state,
+            observed_at: None,
+        })),
+        CashFlowKind::Refund => unreachable!("refunds are returned before reserve proof"),
     }
-    let accounts = transaction_accounts(&transaction);
-    if !accounts.contains(&onboarding.target_reserve) {
-        return Ok(EarnDirectMutation::Noop);
-    }
-    let amount = transaction_owner_debit(
-        &transaction,
-        &onboarding.liquidity_mint,
-        [&vault.wallet, &vault.vault],
-    )?;
-    if amount == 0 {
-        return Ok(EarnDirectMutation::Noop);
-    }
-    let (reserve_amount, observed_slot) =
-        read_current_reserve_amount(rpc, vault, onboarding, update.slot)?;
-    if reserve_amount == 0 {
-        return Ok(EarnDirectMutation::Noop);
-    }
+}
 
-    let mut idle_state = Vec::new();
-    for binding in vault
+fn read_complete_vault_snapshot(
+    rpc: &RpcClient,
+    vault: &EarnVaultWatch,
+    route_policy: &PolicyMatchInput,
+    min_context_slot: u64,
+) -> Result<CompleteVaultSnapshot> {
+    let vault_pubkey = Pubkey::from_str(&vault.vault)?;
+    let obligations = vault
         .accounts
         .iter()
-        .filter(|binding| binding.role == "idle_token")
+        .filter(|account| account.role == "obligation")
+        .map(|account| Pubkey::from_str(&account.pubkey))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let discovery = rpc.get_multiple_accounts_with_config(
+        &obligations,
+        RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
+            commitment: Some(CommitmentConfig::finalized()),
+            min_context_slot: Some(min_context_slot),
+            ..RpcAccountInfoConfig::default()
+        },
+    )?;
+    let mut reserves = BTreeSet::new();
+    for account in discovery.value.iter().flatten() {
+        if account.owner != KLEND_PROGRAM_ID {
+            continue;
+        }
+        let obligation = from_account_data::<Obligation>(&account.data)
+            .context("decode discovered Earn obligation")?;
+        if obligation.owner != vault_pubkey {
+            continue;
+        }
+        reserves.extend(
+            obligation
+                .deposits
+                .iter()
+                .map(|deposit| deposit.deposit_reserve)
+                .filter(|reserve| *reserve != Pubkey::default()),
+        );
+    }
+    let idle = vault
+        .accounts
+        .iter()
+        .filter(|account| account.role == "idle_token")
+        .map(|account| Pubkey::from_str(&account.pubkey))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let addresses = obligations
+        .iter()
+        .copied()
+        .chain(reserves.iter().copied())
+        .chain(idle.iter().copied())
+        .collect::<Vec<_>>();
+    let response = rpc.get_multiple_accounts_with_config(
+        &addresses,
+        RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
+            commitment: Some(CommitmentConfig::finalized()),
+            min_context_slot: Some(discovery.context.slot.max(min_context_slot)),
+            ..RpcAccountInfoConfig::default()
+        },
+    )?;
+    if response.context.slot < min_context_slot {
+        bail!(
+            "Earn snapshot context slot {} is below minimum {min_context_slot}",
+            response.context.slot
+        );
+    }
+    let obligation_count = obligations.len();
+    let reserve_count = reserves.len();
+    let reserve_accounts = reserves
+        .iter()
+        .copied()
+        .zip(response.value[obligation_count..obligation_count + reserve_count].iter())
+        .filter_map(|(address, account)| account.as_ref().map(|account| (address, account)))
+        .map(|(address, account)| {
+            if account.owner != KLEND_PROGRAM_ID {
+                bail!(
+                    "Earn reserve {address} has unexpected owner {}",
+                    account.owner
+                );
+            }
+            Ok((
+                address,
+                from_account_data::<Reserve>(&account.data).context("decode Earn reserve")?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let allowed_markets = route_policy
+        .kamino_markets
+        .iter()
+        .map(|market| Pubkey::from_str(market))
+        .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+    let allowed_mints = route_policy
+        .kamino_liquidity_mints
+        .iter()
+        .map(|mint| Pubkey::from_str(mint))
+        .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+    let mut reserve_state = Vec::new();
+    for account in response.value[..obligation_count].iter().flatten() {
+        if account.owner != KLEND_PROGRAM_ID {
+            continue;
+        }
+        let obligation = from_account_data::<Obligation>(&account.data)
+            .context("decode canonical Earn obligation")?;
+        if obligation.owner != vault_pubkey || !allowed_markets.contains(&obligation.lending_market)
+        {
+            continue;
+        }
+        for deposit in obligation
+            .deposits
+            .iter()
+            .filter(|deposit| deposit.deposit_reserve != Pubkey::default())
+        {
+            let Some(reserve) = reserve_accounts.get(&deposit.deposit_reserve) else {
+                continue;
+            };
+            if reserve.lending_market != obligation.lending_market
+                || !allowed_mints.contains(&reserve.liquidity.mint_pubkey)
+            {
+                continue;
+            }
+            let amount_raw = collateral_to_redeemable_liquidity(
+                reserve.collateral.mint_total_supply,
+                reserve_total_liquidity_scaled(reserve)?,
+                deposit.deposited_amount,
+            )?;
+            reserve_state.push(EarnReserveMutation {
+                reserve: deposit.deposit_reserve.to_string(),
+                market: Some(obligation.lending_market.to_string()),
+                liquidity_mint: reserve.liquidity.mint_pubkey.to_string(),
+                amount_raw,
+                has_value: amount_raw > 0,
+                supply_apy_bps: None,
+                borrow_apy_bps: None,
+                planning_metadata: json!({
+                    "kind": "earn_laserstream_complete_snapshot",
+                    "slot": response.context.slot,
+                }),
+            });
+        }
+    }
+    reserve_state.sort_by(|left, right| left.reserve.cmp(&right.reserve));
+    reserve_state.dedup_by(|left, right| left.reserve == right.reserve);
+    let mut idle_state = Vec::new();
+    for (address, account) in idle
+        .iter()
+        .zip(response.value[obligation_count + reserve_count..].iter())
     {
-        let address = Pubkey::from_str(&binding.pubkey)?;
-        let response = rpc.get_account_with_config(
-            &address,
-            RpcAccountInfoConfig {
-                encoding: Some(UiAccountEncoding::Base64),
-                commitment: Some(CommitmentConfig::confirmed()),
-                min_context_slot: Some(update.slot),
-                ..RpcAccountInfoConfig::default()
-            },
-        )?;
-        let Some(account) = response.value else {
+        let Some(account) = account else {
             continue;
         };
-        let (mint, owner, balance) = decode_token_account(&account)?;
-        if owner != Pubkey::from_str(&vault.vault)? {
-            bail!(
-                "watched idle token account {} has unexpected owner {owner}",
-                binding.pubkey
-            );
+        let (mint, owner, amount_raw) = decode_token_account(account)?;
+        if owner != vault_pubkey {
+            bail!("Earn idle account {address} belongs to {owner}, expected {vault_pubkey}");
         }
         idle_state.push(EarnIdleTokenMutation {
             mint: mint.to_string(),
-            amount_raw: balance,
+            amount_raw,
             owner: owner.to_string(),
-            token_account: binding.pubkey.clone(),
+            token_account: address.to_string(),
             observed_slot: response.context.slot,
             observed_at: None,
-            source_commitment: "confirmed".to_owned(),
+            source_commitment: "finalized".to_owned(),
         });
     }
-    Ok(EarnDirectMutation::Deposit(EarnDepositMutation {
-        route_policy,
-        setup_policy,
-        deposit_signature: signature.to_owned(),
-        deposit_slot: transaction_slot,
-        observed_slot,
-        deposit_mint: onboarding.liquidity_mint.clone(),
-        principal_amount_raw: amount,
-        target_reserve: onboarding.target_reserve.clone(),
-        market: onboarding.market.clone(),
-        liquidity_mint: onboarding.liquidity_mint.clone(),
-        target_supply_apy_bps: None,
-        wallet: vault.wallet.clone(),
-        smart_account_address: vault.vault.clone(),
-        reserve_state: vec![EarnReserveMutation {
-            reserve: onboarding.target_reserve.clone(),
-            market: onboarding.market.clone(),
-            liquidity_mint: onboarding.liquidity_mint.clone(),
-            amount_raw: reserve_amount,
-            has_value: true,
-            supply_apy_bps: None,
-            borrow_apy_bps: None,
-            planning_metadata: json!({
-                "kind": "earn_laserstream_transaction_proof",
-                "signature": signature,
-                "amount_semantics": "principal_transaction_debit",
-            }),
-        }],
+    Ok(CompleteVaultSnapshot {
+        observed_slot: response.context.slot,
+        reserve_state,
         idle_state,
-        observed_at: None,
-    }))
+    })
 }
 
 fn read_transaction_json(rpc: &RpcClient, signature: &str) -> Result<Value> {
@@ -866,7 +1063,7 @@ fn read_transaction_json(rpc: &RpcClient, signature: &str) -> Result<Value> {
         &signature,
         RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::JsonParsed),
-            commitment: Some(CommitmentConfig::confirmed()),
+            commitment: Some(CommitmentConfig::finalized()),
             max_supported_transaction_version: Some(0),
         },
     )?;
@@ -879,72 +1076,6 @@ fn read_transaction_json(rpc: &RpcClient, signature: &str) -> Result<Value> {
         bail!("transaction {signature} failed on chain");
     }
     Ok(transaction)
-}
-
-fn read_current_reserve_amount(
-    rpc: &RpcClient,
-    vault: &EarnVaultWatch,
-    onboarding: &loyal_yield_store::EarnOnboardingContext,
-    min_context_slot: u64,
-) -> Result<(u64, u64)> {
-    let vault_pubkey = Pubkey::from_str(&vault.vault)?;
-    let market = Pubkey::from_str(
-        onboarding
-            .market
-            .as_deref()
-            .context("deposit onboarding has no Kamino market")?,
-    )?;
-    let reserve = Pubkey::from_str(&onboarding.target_reserve)?;
-    let expected_mint = Pubkey::from_str(&onboarding.liquidity_mint)?;
-    let obligation = derive_kamino_vanilla_obligation(vault_pubkey, market);
-    let response = rpc.get_multiple_accounts_with_config(
-        &[obligation, reserve],
-        RpcAccountInfoConfig {
-            encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(CommitmentConfig::confirmed()),
-            min_context_slot: Some(min_context_slot),
-            ..RpcAccountInfoConfig::default()
-        },
-    )?;
-    if response.context.slot < min_context_slot {
-        bail!(
-            "deposit proof context slot {} is below minimum {min_context_slot}",
-            response.context.slot
-        );
-    }
-    let obligation_account = response.value[0]
-        .as_ref()
-        .context("deposit obligation account is absent")?;
-    let reserve_account = response.value[1]
-        .as_ref()
-        .context("deposit reserve account is absent")?;
-    if obligation_account.owner != KLEND_PROGRAM_ID || reserve_account.owner != KLEND_PROGRAM_ID {
-        bail!("deposit proof observed a non-Kamino obligation or reserve");
-    }
-    let obligation_state = from_account_data::<Obligation>(&obligation_account.data)
-        .context("decode deposit obligation")?;
-    if obligation_state.owner != vault_pubkey || obligation_state.lending_market != market {
-        bail!("deposit obligation identity does not match the watched vault/market");
-    }
-    let collateral_amount = obligation_state
-        .deposits
-        .iter()
-        .find(|deposit| deposit.deposit_reserve == reserve)
-        .map(|deposit| deposit.deposited_amount)
-        .unwrap_or_default();
-    let reserve_state =
-        from_account_data::<Reserve>(&reserve_account.data).context("decode deposit reserve")?;
-    if reserve_state.lending_market != market
-        || reserve_state.liquidity.mint_pubkey != expected_mint
-    {
-        bail!("deposit reserve identity does not match onboarding");
-    }
-    let redeemable = collateral_to_redeemable_liquidity(
-        reserve_state.collateral.mint_total_supply,
-        reserve_total_liquidity_scaled(&reserve_state)?,
-        collateral_amount,
-    )?;
-    Ok((redeemable, response.context.slot))
 }
 
 fn reserve_total_liquidity_scaled(reserve: &Reserve) -> Result<BigUint> {
@@ -1007,6 +1138,7 @@ fn transaction_accounts(transaction: &Value) -> BTreeSet<String> {
         .collect()
 }
 
+#[cfg(test)]
 fn transaction_owner_debit<'a>(
     transaction: &Value,
     mint: &str,
@@ -1833,7 +1965,7 @@ impl EarnChainReader for FixtureEarnChainReader {
                                 token_account: token_account.clone(),
                                 observed_slot,
                                 observed_at: None,
-                                source_commitment: "confirmed".to_owned(),
+                                source_commitment: "finalized".to_owned(),
                             })
                             .into_iter()
                             .collect(),
@@ -1899,7 +2031,7 @@ fn fixture_policy_match(
         signature: policy.signature.clone(),
         slot: policy.confirmed_slot,
         cluster: vault.environment.clone(),
-        source_commitment: "confirmed".to_owned(),
+        source_commitment: "finalized".to_owned(),
         settings: vault.settings.clone(),
         authority: vault.wallet.clone(),
         policy_seed: policy.policy_seed,
@@ -1978,6 +2110,201 @@ mod tests {
             "mint": mint,
             "uiTokenAmount": { "amount": amount.to_string() }
         })
+    }
+
+    fn cash_flow_transaction(wallet: &str, mint: &str, pre: u64, post: u64) -> Value {
+        json!({
+            "transaction": {
+                "meta": {
+                    "preTokenBalances": [token_balance(0, wallet, mint, pre)],
+                    "postTokenBalances": [token_balance(0, wallet, mint, post)],
+                    "preBalances": [1_000_000],
+                    "postBalances": [995_000],
+                    "fee": 5_000
+                },
+                "transaction": {
+                    "message": { "accountKeys": [wallet] }
+                }
+            }
+        })
+    }
+
+    fn test_vault(role: &str, account: &str) -> EarnVaultWatch {
+        EarnVaultWatch {
+            environment: "mainnet-beta".to_owned(),
+            settings: "settings".to_owned(),
+            wallet: "wallet-owner".to_owned(),
+            vault: "vault-owner".to_owned(),
+            vault_index: 1,
+            accounts: vec![crate::smart_account::EarnWatchAccount {
+                pubkey: account.to_owned(),
+                role: role.to_owned(),
+            }],
+        }
+    }
+
+    fn test_update(kind: &str, account: &str, signature: &str, slot: u64) -> NormalizedEarnUpdate {
+        NormalizedEarnUpdate {
+            event_key: None,
+            filters: vec!["earn".to_owned()],
+            event_kind: kind.to_owned(),
+            account_pubkey: Some(account.to_owned()),
+            slot,
+            signature: Some(signature.to_owned()),
+        }
+    }
+
+    #[test]
+    fn initial_deposit_without_onboarding() {
+        let vault = test_vault("wallet_token", "wallet-ata");
+        let update = test_update("account_updated", "wallet-ata", "deposit-1", 10);
+        let evidence = classify_transaction_cash_flow(
+            &cash_flow_transaction(&vault.wallet, "mint", 125, 25),
+            &vault.wallet,
+            ["mint"],
+            &update,
+            &vault,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(evidence.kind, CashFlowKind::Deposit);
+        assert_eq!(evidence.amount_raw, 100);
+    }
+
+    #[test]
+    fn top_up_without_onboarding() {
+        let vault = test_vault("wallet_token", "wallet-ata");
+        let update = test_update("account_updated", "wallet-ata", "deposit-2", 11);
+        let evidence = classify_transaction_cash_flow(
+            &cash_flow_transaction(&vault.wallet, "mint", 80, 50),
+            &vault.wallet,
+            ["mint"],
+            &update,
+            &vault,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(evidence.kind, CashFlowKind::Deposit);
+        assert_eq!(evidence.amount_raw, 30);
+    }
+
+    #[test]
+    fn partial_withdrawal_from_chain() {
+        let vault = test_vault("wallet_token", "wallet-ata");
+        let update = test_update("account_updated", "wallet-ata", "withdraw-1", 12);
+        let evidence = classify_transaction_cash_flow(
+            &cash_flow_transaction(&vault.wallet, "mint", 10, 35),
+            &vault.wallet,
+            ["mint"],
+            &update,
+            &vault,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(evidence.kind, CashFlowKind::Withdrawal);
+        assert_eq!(evidence.amount_raw, 25);
+    }
+
+    #[test]
+    fn multi_step_full_withdrawal_from_chain() {
+        let vault = test_vault("wallet_token", "wallet-ata");
+        let first = test_update("account_updated", "wallet-ata", "withdraw-a", 20);
+        let second = test_update("account_updated", "wallet-ata", "withdraw-b", 21);
+        let first_evidence = classify_transaction_cash_flow(
+            &cash_flow_transaction(&vault.wallet, "mint", 0, 60),
+            &vault.wallet,
+            ["mint"],
+            &first,
+            &vault,
+        )
+        .unwrap()
+        .unwrap();
+        let second_evidence = classify_transaction_cash_flow(
+            &cash_flow_transaction(&vault.wallet, "mint", 60, 100),
+            &vault.wallet,
+            ["mint"],
+            &second,
+            &vault,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(first_evidence.amount_raw + second_evidence.amount_raw, 100);
+        assert_eq!(second_evidence.kind, CashFlowKind::Withdrawal);
+    }
+
+    #[test]
+    fn cleanup_without_seed_withdrawal() {
+        let proof = CleanupProof {
+            balances_zero: true,
+            policies_closed: true,
+        };
+        assert!(proof.balances_zero && proof.policies_closed);
+    }
+
+    #[test]
+    fn policy_refund_from_chain() {
+        let vault = test_vault("policy", "policy-account");
+        let update = test_update("account_deleted", "policy-account", "refund-policy", 30);
+        let transaction = json!({
+            "transaction": {
+                "meta": {
+                    "preTokenBalances": [], "postTokenBalances": [],
+                    "preBalances": [1_000_000], "postBalances": [1_995_000], "fee": 5_000
+                },
+                "transaction": { "message": { "accountKeys": [vault.wallet] } }
+            }
+        });
+        let evidence =
+            classify_transaction_cash_flow(&transaction, &vault.wallet, ["mint"], &update, &vault)
+                .unwrap()
+                .unwrap();
+        assert_eq!(evidence.kind, CashFlowKind::Refund);
+        assert_eq!(evidence.refund_kind.as_deref(), Some("policy"));
+    }
+
+    #[test]
+    fn vault_refund_from_chain() {
+        let vault = test_vault("idle_token", "vault-token-account");
+        let update = test_update("account_deleted", "vault-token-account", "refund-vault", 31);
+        let transaction = json!({
+            "transaction": {
+                "meta": {
+                    "preTokenBalances": [], "postTokenBalances": [],
+                    "preBalances": [1_000_000], "postBalances": [2_995_000], "fee": 5_000
+                },
+                "transaction": { "message": { "accountKeys": [vault.wallet] } }
+            }
+        });
+        let evidence =
+            classify_transaction_cash_flow(&transaction, &vault.wallet, ["mint"], &update, &vault)
+                .unwrap()
+                .unwrap();
+        assert_eq!(evidence.refund_kind.as_deref(), Some("vault_token_account"));
+    }
+
+    #[test]
+    fn replay_is_idempotent() {
+        let vault = test_vault("wallet_token", "wallet-ata");
+        let update = test_update("account_updated", "wallet-ata", "stable-signature", 40);
+        let transaction = cash_flow_transaction(&vault.wallet, "mint", 50, 25);
+        let first =
+            classify_transaction_cash_flow(&transaction, &vault.wallet, ["mint"], &update, &vault)
+                .unwrap();
+        let replay =
+            classify_transaction_cash_flow(&transaction, &vault.wallet, ["mint"], &update, &vault)
+                .unwrap();
+        assert_eq!(first, replay);
+    }
+
+    #[test]
+    fn same_slot_siblings_all_complete() {
+        let vault = test_vault("wallet_token", "wallet-ata");
+        let first = test_update("account_updated", "account-a", "same-signature", 50);
+        let second = test_update("account_updated", "account-b", "same-signature", 50);
+        assert_ne!(
+            durable_earn_event_key(&first, &[&vault]),
+            durable_earn_event_key(&second, &[&vault])
+        );
     }
 
     #[test]
