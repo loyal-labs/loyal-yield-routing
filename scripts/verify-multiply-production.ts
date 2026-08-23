@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 import { neon } from "@neondatabase/serverless";
 import { Connection } from "@solana/web3.js";
@@ -9,6 +9,7 @@ const PASS = "PASS_RWA_MULTIPLY_RELEASE_CANDIDATE";
 const FAIL = "FAIL_RWA_MULTIPLY_RELEASE_CANDIDATE";
 const BLOCKED = "BLOCKED_RWA_MULTIPLY_RELEASE_CANDIDATE";
 const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+const PUBLISHED_LIGHT_WORKER_IMAGE = "ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-e6cc09c22e85c4813ab485f016b6ccb6881b10f8";
 const ROOT = resolve(import.meta.dir, "..");
 const WORKER = "crates/loyal-fleet-worker/src/bin/multiply-route-worker.rs";
 const DOMAIN = "crates/loyal-yield-store/src/fleet_orchestration/multiply.rs";
@@ -240,7 +241,7 @@ function checkReleaseTopology(): Json {
   for (const required of [
     "runtime: image",
     "autoDeploy: false",
-    "light-workers:sha-",
+    `url: ${PUBLISHED_LIGHT_WORKER_IMAGE}`,
     "preDeployCommand: /usr/local/bin/yield-migrations --apply",
     "dockerCommand: /usr/local/bin/multiply-route-worker run",
     "maxShutdownDelaySeconds: 60",
@@ -264,13 +265,17 @@ function checkReleaseTopology(): Json {
     imageSha256: sha256(dockerfile),
     workflowSha256: sha256(workflow),
     renderServiceSha256: sha256(renderService),
+    publishedLightWorkerImage: PUBLISHED_LIGHT_WORKER_IMAGE,
   };
 }
 
 async function probeWorkerRole(): Promise<Json> {
+  const cargo = Bun.which("cargo");
+  if (!cargo) blocked("cargo_missing", { resume: "install Cargo or add it to PATH, then rerun the verifier" });
+  const toolPath = [dirname(cargo), "/usr/bin", "/bin"].join(":");
   const child = Bun.spawn(
-    ["cargo", "run", "-q", "-p", "loyal-fleet-worker", "--bin", "multiply-route-worker", "--", "--role-probe"],
-    { cwd: ROOT, stdout: "pipe", stderr: "pipe", env: {} },
+    [cargo, "run", "-q", "-p", "loyal-fleet-worker", "--bin", "multiply-route-worker", "--", "--role-probe"],
+    { cwd: ROOT, stdout: "pipe", stderr: "pipe", env: { PATH: toolPath } },
   );
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
