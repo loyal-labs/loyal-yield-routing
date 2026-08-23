@@ -31,8 +31,9 @@ pub const EARN_OBLIGATIONS: &str = "earn_obligations";
 pub const EARN_AUTODEPOSIT_WALLET_ATAS: &str = "earn_autodeposit_wallet_atas";
 pub const EARN_SUBSCRIPTION_AUTHORITIES: &str = "earn_subscription_authorities";
 pub const EARN_RECURRING_DELEGATIONS: &str = "earn_recurring_delegations";
+pub const EARN_WALLETS: &str = "earn_wallets";
 
-const EARN_ACCOUNT_CHANNELS: [&str; 8] = [
+const EARN_ACCOUNT_CHANNELS: [&str; 9] = [
     EARN_SMART_ACCOUNTS,
     EARN_POLICY_ACCOUNTS,
     EARN_VAULT_ACCOUNTS,
@@ -41,6 +42,7 @@ const EARN_ACCOUNT_CHANNELS: [&str; 8] = [
     EARN_AUTODEPOSIT_WALLET_ATAS,
     EARN_SUBSCRIPTION_AUTHORITIES,
     EARN_RECURRING_DELEGATIONS,
+    EARN_WALLETS,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,21 +111,22 @@ impl SubscriptionWatchSet {
                 pubkey: settings.to_string(),
                 role: "smart_account".to_owned(),
             });
-            if target.observation_start_slot.is_some() {
-                let wallet = Pubkey::from_str(&target.wallet)
-                    .with_context(|| format!("invalid Autodeposit wallet {}", target.wallet))?;
-                entry.accounts.push(EarnWatchAccount {
-                    pubkey: derive_associated_token_account(wallet, USDC_MINT, spl_token::ID)
-                        .to_string(),
-                    role: "autodeposit_wallet_ata".to_owned(),
-                });
-                observation_start_slot =
-                    match (observation_start_slot, target.observation_start_slot) {
-                        (Some(current), Some(next)) => Some(current.min(next)),
-                        (None, next) => next,
-                        (current, None) => current,
-                    };
-            }
+            let wallet = Pubkey::from_str(&target.wallet)
+                .with_context(|| format!("invalid Autodeposit wallet {}", target.wallet))?;
+            entry.accounts.push(EarnWatchAccount {
+                pubkey: wallet.to_string(),
+                role: "wallet".to_owned(),
+            });
+            entry.accounts.push(EarnWatchAccount {
+                pubkey: derive_associated_token_account(wallet, USDC_MINT, spl_token::ID)
+                    .to_string(),
+                role: "autodeposit_wallet_ata".to_owned(),
+            });
+            observation_start_slot = match (observation_start_slot, target.observation_start_slot) {
+                (Some(current), Some(next)) => Some(current.min(next)),
+                (None, next) => next,
+                (current, None) => current,
+            };
             for (index, account) in target.autodeposit_accounts.into_iter().enumerate() {
                 Pubkey::from_str(&account)
                     .with_context(|| format!("invalid Autodeposit account {account}"))?;
@@ -257,6 +260,7 @@ impl SubscriptionWatchSet {
         for vault in &self.earn_vaults {
             for account in &vault.accounts {
                 let channel = match account.role.as_str() {
+                    "wallet" => EARN_WALLETS,
                     "smart_account" => EARN_SMART_ACCOUNTS,
                     "policy" => EARN_POLICY_ACCOUNTS,
                     "vault" => EARN_VAULT_ACCOUNTS,

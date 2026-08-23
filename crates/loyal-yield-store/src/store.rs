@@ -53,6 +53,7 @@ const MIGRATION_0056: &str = include_str!("../migrations/0056_earn_max_dynamic_p
 const MIGRATION_0057: &str = include_str!("../migrations/0057_autodeposit_client_projection.sql");
 const MIGRATION_0058: &str =
     include_str!("../migrations/0058_autoswap_confirmed_reconciliation.sql");
+const MIGRATION_0059: &str = include_str!("../migrations/0059_autodeposit_single_target_state.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -512,6 +513,12 @@ impl NeonSqlClient {
                 version: 58,
                 name: "autoswap_confirmed_reconciliation",
                 sql: MIGRATION_0058,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 59,
+                name: "autodeposit_single_target_state",
+                sql: MIGRATION_0059,
                 expected_checksum: None,
             },
         ] {
@@ -995,19 +1002,18 @@ impl NeonSqlClient {
             }
         }
 
-        let autodeposit_configs_exist: bool = sqlx::query_scalar(
-            "SELECT to_regclass('loyal_yield.autodeposit_vault_configs') IS NOT NULL",
+        let autodeposit_targets_exist: bool = sqlx::query_scalar(
+            "SELECT to_regclass('loyal_yield.balance_sweep_targets') IS NOT NULL",
         )
         .fetch_one(&self.pool)
         .await?;
-        if autodeposit_configs_exist {
+        if autodeposit_targets_exist {
             let rows = sqlx::query(
                 r#"
                 SELECT settings, wallet, vault_index, vault_pubkey,
-                       expected_policy_account, expected_subscription_authority,
-                       expected_recurring_delegation, observation_start_slot
-                FROM loyal_yield.autodeposit_vault_configs
-                WHERE cluster = $1
+                       policy_account, subscription_authority, recurring_delegation
+                FROM loyal_yield.balance_sweep_targets
+                WHERE cluster = $1 AND chain_status <> 'closed'
                 "#,
             )
             .bind(environment)
@@ -1020,16 +1026,16 @@ impl NeonSqlClient {
                     wallet: row.get("wallet"),
                     vault_index: row.get("vault_index"),
                     vault_pubkey: Some(row.get("vault_pubkey")),
-                    policy_accounts: vec![row.get("expected_policy_account")],
+                    policy_accounts: vec![row.get("policy_account")],
                     markets: Vec::new(),
-                    autodeposit_accounts: vec![
-                        row.get("expected_subscription_authority"),
-                        row.get("expected_recurring_delegation"),
-                    ],
-                    observation_start_slot: Some(nonnegative_i64_to_u64(
-                        row.get("observation_start_slot"),
-                        "observation_start_slot",
-                    )?),
+                    autodeposit_accounts: [
+                        row.try_get::<Option<String>, _>("subscription_authority")?,
+                        row.try_get::<Option<String>, _>("recurring_delegation")?,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+                    observation_start_slot: None,
                 });
             }
         }
@@ -1037,206 +1043,261 @@ impl NeonSqlClient {
         Ok(targets)
     }
 
-    pub async fn upsert_autodeposit_vault_config(
+    pub async fn record_autodeposit_recurring_delegation(
         &self,
-        input: AutodepositVaultConfigInput,
-    ) -> Result<AutodepositVaultConfig, OrchestratorError> {
-        let floor = to_i64_amount(input.wallet_balance_floor_raw)?;
-        let start_slot = to_i64_slot(input.observation_start_slot)?;
+        input: AutodepositRecurringDelegationObserved,
+    ) -> Result<BalanceSweepTargetId, OrchestratorError> {
+        let slot = to_i64_slot(input.slot)?;
+        let nonce = to_i64_amount(input.nonce)?;
+        let amount = to_i64_amount(input.amount_per_period)?;
+        let period = to_i64_amount(input.period_length_seconds)?;
         let row = sqlx::query(
             r#"
-            INSERT INTO loyal_yield.autodeposit_vault_configs
-                (cluster, settings, wallet, vault_index, vault_pubkey, desired_active,
-                 wallet_balance_floor_raw, expected_policy_account,
-                 expected_subscription_authority, expected_recurring_delegation,
-                 observation_start_slot)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-            ON CONFLICT (cluster, settings, wallet, vault_index) DO UPDATE SET
-                vault_pubkey = EXCLUDED.vault_pubkey,
-                desired_active = EXCLUDED.desired_active,
-                wallet_balance_floor_raw = EXCLUDED.wallet_balance_floor_raw,
-                expected_policy_account = EXCLUDED.expected_policy_account,
-                expected_subscription_authority = EXCLUDED.expected_subscription_authority,
-                expected_recurring_delegation = EXCLUDED.expected_recurring_delegation,
-                observation_start_slot = EXCLUDED.observation_start_slot,
-                generation = CASE WHEN
-                    (loyal_yield.autodeposit_vault_configs.vault_pubkey,
-                     loyal_yield.autodeposit_vault_configs.desired_active,
-                     loyal_yield.autodeposit_vault_configs.wallet_balance_floor_raw,
-                     loyal_yield.autodeposit_vault_configs.expected_policy_account,
-                     loyal_yield.autodeposit_vault_configs.expected_subscription_authority,
-                     loyal_yield.autodeposit_vault_configs.expected_recurring_delegation,
-                     loyal_yield.autodeposit_vault_configs.observation_start_slot)
-                    IS DISTINCT FROM
-                    (EXCLUDED.vault_pubkey, EXCLUDED.desired_active,
-                     EXCLUDED.wallet_balance_floor_raw, EXCLUDED.expected_policy_account,
-                     EXCLUDED.expected_subscription_authority,
-                     EXCLUDED.expected_recurring_delegation, EXCLUDED.observation_start_slot)
-                    THEN loyal_yield.autodeposit_vault_configs.generation + 1
-                    ELSE loyal_yield.autodeposit_vault_configs.generation END,
-                updated_at = now()
-            RETURNING id, generation
+            UPDATE loyal_yield.balance_sweep_targets
+            SET setup_generation = CASE
+                    WHEN recurring_delegation IS NOT NULL
+                         AND recurring_delegation IS DISTINCT FROM $2
+                    THEN setup_generation + 1
+                    ELSE setup_generation
+                END,
+                subscription_authority = $1,
+                recurring_delegation = $2,
+                recurring_delegation_nonce = $3,
+                max_amount_per_period = $4,
+                period_length_seconds = $5,
+                start_timestamp = $6,
+                recurring_delegation_expiry_timestamp = $7,
+                recurring_delegation_signature = $8,
+                recurring_delegation_confirmed_slot = $9,
+                chain_status = CASE WHEN chain_status = 'closed' THEN chain_status ELSE 'pending' END,
+                chain_observation_slot = GREATEST(chain_observation_slot, $9),
+                last_seen_at = now(),
+                last_seen_slot = GREATEST(last_seen_slot, $9),
+                last_seen_signature = CASE WHEN $9 >= last_seen_slot THEN $8 ELSE last_seen_signature END
+            WHERE wallet = $10
+              AND vault_pubkey = $11
+              AND chain_status <> 'closed'
+            RETURNING id
             "#,
         )
-        .bind(&input.cluster)
-        .bind(&input.settings)
+        .bind(&input.subscription_authority)
+        .bind(&input.recurring_delegation)
+        .bind(nonce)
+        .bind(amount)
+        .bind(period)
+        .bind(input.start_timestamp)
+        .bind(input.expiry_timestamp)
+        .bind(&input.signature)
+        .bind(slot)
         .bind(&input.wallet)
-        .bind(i16::from(input.vault_index))
         .bind(&input.vault_pubkey)
-        .bind(input.desired_active)
-        .bind(floor)
-        .bind(&input.expected_policy_account)
-        .bind(&input.expected_subscription_authority)
-        .bind(&input.expected_recurring_delegation)
-        .bind(start_slot)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(AutodepositVaultConfig {
-            id: row.get("id"),
-            input,
-            generation: row.get("generation"),
-        })
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "Autodeposit policy target is not indexed yet; retry the durable event".to_owned(),
+            )
+        })?;
+        Ok(BalanceSweepTargetId(row.get("id")))
     }
 
-    pub async fn load_autodeposit_vault_config(
+    pub async fn load_autodeposit_target_snapshot_context(
         &self,
         settings: &str,
         vault_pubkey: &str,
-    ) -> Result<Option<AutodepositVaultConfig>, OrchestratorError> {
+    ) -> Result<Option<AutodepositTargetSnapshotContext>, OrchestratorError> {
         let row = sqlx::query(
             r#"
-            SELECT id, cluster, settings, wallet, vault_index, vault_pubkey,
-                   desired_active, wallet_balance_floor_raw, expected_policy_account,
-                   expected_subscription_authority, expected_recurring_delegation,
-                   observation_start_slot, generation
-            FROM loyal_yield.autodeposit_vault_configs
-            WHERE settings = $1 AND vault_pubkey = $2
+            SELECT id, wallet, wallet_token_ata, policy_account,
+                   subscription_authority, recurring_delegation, setup_generation
+            FROM loyal_yield.balance_sweep_targets
+            WHERE settings = $1 AND vault_pubkey = $2 AND chain_status <> 'closed'
+              AND subscription_authority IS NOT NULL
+              AND recurring_delegation IS NOT NULL
+            ORDER BY policy_seed DESC
+            LIMIT 1
             "#,
         )
         .bind(settings)
         .bind(vault_pubkey)
         .fetch_optional(&self.pool)
         .await?;
-        row.map(|row| {
-            Ok(AutodepositVaultConfig {
-                id: row.get("id"),
-                generation: row.get("generation"),
-                input: AutodepositVaultConfigInput {
-                    cluster: row.get("cluster"),
-                    settings: row.get("settings"),
-                    wallet: row.get("wallet"),
-                    vault_index: u8::try_from(row.get::<i16, _>("vault_index")).map_err(|_| {
-                        OrchestratorError::StoreInvariant(
-                            "Autodeposit vault index does not fit u8".to_owned(),
-                        )
-                    })?,
-                    vault_pubkey: row.get("vault_pubkey"),
-                    desired_active: row.get("desired_active"),
-                    wallet_balance_floor_raw: nonnegative_i64_to_u64(
-                        row.get("wallet_balance_floor_raw"),
-                        "wallet_balance_floor_raw",
-                    )?,
-                    expected_policy_account: row.get("expected_policy_account"),
-                    expected_subscription_authority: row.get("expected_subscription_authority"),
-                    expected_recurring_delegation: row.get("expected_recurring_delegation"),
-                    observation_start_slot: nonnegative_i64_to_u64(
-                        row.get("observation_start_slot"),
-                        "observation_start_slot",
-                    )?,
-                },
-            })
-        })
-        .transpose()
+        Ok(row.map(|row| AutodepositTargetSnapshotContext {
+            target_id: BalanceSweepTargetId(row.get("id")),
+            wallet: row.get("wallet"),
+            wallet_token_ata: row.get("wallet_token_ata"),
+            policy_account: row.get("policy_account"),
+            subscription_authority: row.get("subscription_authority"),
+            recurring_delegation: row.get("recurring_delegation"),
+            setup_generation: row.get("setup_generation"),
+        }))
     }
 
-    pub async fn reconcile_autodeposit_snapshot(
+    pub async fn reconcile_autodeposit_chain_observation(
         &self,
-        input: AutodepositSnapshotInput,
-    ) -> Result<AutodepositChainProjection, OrchestratorError> {
+        input: AutodepositChainObservation,
+    ) -> Result<AutodepositChainObservationResult, OrchestratorError> {
         let observation_slot = to_i64_slot(input.observation_slot)?;
-        let status = if !input.observation_complete {
-            AutodepositProjectionStatus::Pending
+        let wallet_balance_raw = to_i64_amount(input.wallet_balance_raw)?;
+        let chain_status = if !input.observation_complete {
+            "pending"
         } else if input.policy_valid
             && input.subscription_authority_valid
             && input.recurring_delegation_valid
             && input.token_delegate_valid
         {
-            AutodepositProjectionStatus::Active
-        } else if !input.policy_valid
-            && !input.subscription_authority_valid
-            && !input.recurring_delegation_valid
-            && !input.token_delegate_valid
-        {
-            AutodepositProjectionStatus::Closed
+            "active"
+        } else if !input.policy_valid && !input.recurring_delegation_valid {
+            "closed"
         } else {
-            AutodepositProjectionStatus::Inconsistent
+            "inconsistent"
         };
-        let row = sqlx::query(
+
+        let mut tx = self.pool.begin().await?;
+        let current = sqlx::query(
             r#"
-            INSERT INTO loyal_yield.autodeposit_chain_projections
-                (config_id, status, policy_valid, subscription_authority_valid,
-                 recurring_delegation_valid, token_delegate_valid, observation_complete,
-                 observation_slot, bootstrap_generation, reason)
-            SELECT $1,$2,$3,$4,$5,$6,$7,$8,
-                   CASE WHEN $2 = 'active' THEN config.generation ELSE NULL END,$9
-            FROM loyal_yield.autodeposit_vault_configs config WHERE config.id = $1
-            ON CONFLICT (config_id) DO UPDATE SET
-                status = EXCLUDED.status,
-                policy_valid = EXCLUDED.policy_valid,
-                subscription_authority_valid = EXCLUDED.subscription_authority_valid,
-                recurring_delegation_valid = EXCLUDED.recurring_delegation_valid,
-                token_delegate_valid = EXCLUDED.token_delegate_valid,
-                observation_complete = EXCLUDED.observation_complete,
-                observation_slot = EXCLUDED.observation_slot,
-                bootstrap_generation = CASE
-                    WHEN EXCLUDED.status = 'active'
-                     AND loyal_yield.autodeposit_chain_projections.bootstrap_generation
-                         IS DISTINCT FROM EXCLUDED.bootstrap_generation
-                    THEN EXCLUDED.bootstrap_generation
-                    ELSE loyal_yield.autodeposit_chain_projections.bootstrap_generation
-                END,
-                reason = EXCLUDED.reason,
-                updated_at = now()
-            WHERE EXCLUDED.observation_slot >= loyal_yield.autodeposit_chain_projections.observation_slot
-            RETURNING config_id, status, observation_slot, bootstrap_generation
+            SELECT id, setup_generation, bootstrap_generation, chain_status,
+                   chain_observation_slot, wallet, wallet_token_ata, token_mint,
+                   wallet_balance_floor_raw
+            FROM loyal_yield.balance_sweep_targets
+            WHERE id = $1
+            FOR UPDATE
             "#,
         )
-        .bind(input.config_id).bind(status.as_str()).bind(input.policy_valid)
-        .bind(input.subscription_authority_valid).bind(input.recurring_delegation_valid)
-        .bind(input.token_delegate_valid).bind(input.observation_complete)
-        .bind(observation_slot).bind(&input.reason).fetch_optional(&self.pool).await?;
-        let row = match row {
-            Some(row) => row,
-            None => sqlx::query("SELECT config_id, status, observation_slot, bootstrap_generation FROM loyal_yield.autodeposit_chain_projections WHERE config_id = $1")
-                .bind(input.config_id).fetch_one(&self.pool).await?,
-        };
-        let status = match row.get::<String, _>("status").as_str() {
-            "pending" => AutodepositProjectionStatus::Pending,
-            "active" => AutodepositProjectionStatus::Active,
-            "closed" => AutodepositProjectionStatus::Closed,
-            _ => AutodepositProjectionStatus::Inconsistent,
-        };
-        Ok(AutodepositChainProjection {
-            config_id: row.get("config_id"),
-            status,
-            observation_slot: nonnegative_i64_to_u64(
-                row.get("observation_slot"),
-                "observation_slot",
-            )?,
-            bootstrap_generation: row.get("bootstrap_generation"),
-        })
-    }
+        .bind(input.target_id.as_i64())
+        .fetch_one(&mut *tx)
+        .await?;
+        let current_slot: i64 = current.get("chain_observation_slot");
+        if observation_slot < current_slot {
+            tx.commit().await?;
+            return Ok(AutodepositChainObservationResult {
+                target_id: input.target_id,
+                chain_status: current.get("chain_status"),
+                observation_slot: nonnegative_i64_to_u64(current_slot, "chain_observation_slot")?,
+                bootstrap_generation: current.get("bootstrap_generation"),
+            });
+        }
 
-    pub async fn effective_autodeposit_active(
-        &self,
-        config_id: i64,
-    ) -> Result<bool, OrchestratorError> {
-        Ok(sqlx::query_scalar(
-            "SELECT COALESCE(loyal_yield.effective_autodeposit_active($1), FALSE)",
+        let generation: i64 = current.get("setup_generation");
+        let bootstrap_generation: Option<i64> = current.get("bootstrap_generation");
+        sqlx::query(
+            r#"
+            UPDATE loyal_yield.balance_sweep_targets
+            SET chain_status = $1,
+                chain_observation_slot = $2,
+                last_seen_at = now(),
+                last_seen_slot = GREATEST(last_seen_slot, $2)
+            WHERE id = $3
+            "#,
         )
-        .bind(config_id)
-        .fetch_one(&self.pool)
-        .await?)
+        .bind(chain_status)
+        .bind(observation_slot)
+        .bind(input.target_id.as_i64())
+        .execute(&mut *tx)
+        .await?;
+
+        let mut stored_bootstrap_generation = bootstrap_generation;
+        if chain_status == "active" && bootstrap_generation != Some(generation) {
+            if let Some(floor) = current.get::<Option<i64>, _>("wallet_balance_floor_raw") {
+                if wallet_balance_raw > floor {
+                    let event_id: i64 = sqlx::query_scalar(
+                        "SELECT nextval('loyal_yield.autodeposit_bootstrap_event_id_seq')",
+                    )
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    sqlx::query(
+                        r#"
+                    INSERT INTO loyal_yield.balance_sweep_wallet_balance_events
+                        (event_id, target_id, wallet, wallet_usdc_ata, wallet_token_ata,
+                         mint, previous_amount_raw, amount_raw, delta_amount_raw,
+                         observed_slot, observed_at, source, source_commitment,
+                         raw_evidence, projected_at)
+                    VALUES ($1,$2,$3,$4,$4,$5,NULL,$6,NULL,$7,now(),
+                            'laserstream_autodeposit_activation','finalized',
+                            jsonb_build_object('bootstrapGeneration',$8),now())
+                    "#,
+                    )
+                    .bind(event_id)
+                    .bind(input.target_id.as_i64())
+                    .bind(current.get::<String, _>("wallet"))
+                    .bind(current.get::<String, _>("wallet_token_ata"))
+                    .bind(current.get::<String, _>("token_mint"))
+                    .bind(wallet_balance_raw)
+                    .bind(observation_slot)
+                    .bind(generation)
+                    .execute(&mut *tx)
+                    .await?;
+                    let slot_id: i64 = sqlx::query_scalar(
+                        r#"
+                    INSERT INTO loyal_yield.balance_sweep_scheduled_slots
+                        (target_id, token_mint, eligible_after, status)
+                    VALUES ($1,$2,now() + interval '1 hour','scheduled')
+                    RETURNING id
+                    "#,
+                    )
+                    .bind(input.target_id.as_i64())
+                    .bind(current.get::<String, _>("token_mint"))
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    sqlx::query(
+                        r#"
+                    INSERT INTO loyal_yield.balance_sweep_surplus_lots
+                        (target_id, scheduled_slot_id, source_event_id, original_amount_raw,
+                         remaining_amount_raw, classification, eligible_after, status,
+                         confidence, reason)
+                    VALUES ($1,$2,$3,$4,$4,'initial_surplus',now() + interval '1 hour',
+                            'open','confirmed_snapshot',
+                            'initial Autodeposit surplus observed by LaserStream')
+                    "#,
+                    )
+                    .bind(input.target_id.as_i64())
+                    .bind(slot_id)
+                    .bind(event_id)
+                    .bind(wallet_balance_raw - floor)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                sqlx::query(
+                    "UPDATE loyal_yield.balance_sweep_targets SET bootstrap_generation = $1 WHERE id = $2",
+                )
+                .bind(generation)
+                .bind(input.target_id.as_i64())
+                .execute(&mut *tx)
+                .await?;
+                stored_bootstrap_generation = Some(generation);
+            }
+        }
+
+        if chain_status == "closed" {
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.balance_sweep_scheduled_slots
+                SET status = 'canceled', updated_at = now()
+                WHERE target_id = $1 AND status IN ('scheduled','requested')
+                "#,
+            )
+            .bind(input.target_id.as_i64())
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.balance_sweep_surplus_lots
+                SET status = 'suppressed', updated_at = now()
+                WHERE target_id = $1 AND status = 'open' AND remaining_amount_raw > 0
+                "#,
+            )
+            .bind(input.target_id.as_i64())
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+
+        Ok(AutodepositChainObservationResult {
+            target_id: input.target_id,
+            chain_status: chain_status.to_owned(),
+            observation_slot: input.observation_slot,
+            bootstrap_generation: stored_bootstrap_generation,
+        })
     }
 
     pub async fn load_earn_reconciliation_context(
@@ -1934,18 +1995,33 @@ impl NeonSqlClient {
             false
         };
 
-        let balance_sweep_target_deactivated = sqlx::query(
+        let balance_sweep_target_deactivated: bool = sqlx::query_scalar(
             r#"
+            WITH closed_target AS (
             UPDATE loyal_yield.balance_sweep_targets
-            SET active = FALSE,
+            SET chain_status = 'closed',
+                chain_observation_slot = GREATEST(chain_observation_slot, $1),
                 last_seen_at = now(),
                 last_seen_slot = $1,
                 last_seen_signature = $2
             WHERE policy_account = $3
               AND settings = $4
               AND authority = $5
-              AND $1 >= last_seen_slot
-              AND active
+              AND $1 >= chain_observation_slot
+              AND chain_status <> 'closed'
+            RETURNING id
+            ), canceled_slots AS (
+              UPDATE loyal_yield.balance_sweep_scheduled_slots
+              SET status = 'canceled', updated_at = now()
+              WHERE target_id IN (SELECT id FROM closed_target)
+                AND status IN ('scheduled','requested')
+            ), suppressed_lots AS (
+              UPDATE loyal_yield.balance_sweep_surplus_lots
+              SET status = 'suppressed', updated_at = now()
+              WHERE target_id IN (SELECT id FROM closed_target)
+                AND status = 'open' AND remaining_amount_raw > 0
+            )
+            SELECT EXISTS(SELECT 1 FROM closed_target)
             "#,
         )
         .bind(slot)
@@ -1953,10 +2029,8 @@ impl NeonSqlClient {
         .bind(&event.policy_account)
         .bind(&event.settings)
         .bind(&event.authority)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-            > 0;
+        .fetch_one(&mut *tx)
+        .await?;
 
         tx.commit().await?;
         Ok(PolicyRemovalResult {
@@ -2000,13 +2074,11 @@ impl NeonSqlClient {
             INSERT INTO loyal_yield.balance_sweep_targets
                 (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
                  wallet, wallet_usdc_ata, vault_usdc_ata, token_mint, wallet_token_ata,
-                 vault_token_ata, delegated_signers, threshold, max_amount_per_period, active,
+                 vault_token_ata, delegated_signers, threshold, max_amount_per_period,
+                 desired_active, chain_status, chain_observation_slot,
                  wallet_balance_floor_raw, last_seen_slot, last_seen_signature)
             VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''), $10, $11, $12, $13, $14, $15,
-                COALESCE((SELECT desired_active FROM loyal_yield.autodeposit_vault_configs
-                          WHERE settings = $1 AND wallet = $7 AND vault_index = $5), TRUE),
-                (SELECT wallet_balance_floor_raw FROM loyal_yield.autodeposit_vault_configs
-                 WHERE settings = $1 AND wallet = $7 AND vault_index = $5), $16, $17)
+                TRUE, 'pending', $16, NULL, $16, $17)
             ON CONFLICT (policy_account) DO UPDATE SET
                 settings = CASE
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
@@ -2073,17 +2145,16 @@ impl NeonSqlClient {
                     THEN EXCLUDED.max_amount_per_period
                     ELSE loyal_yield.balance_sweep_targets.max_amount_per_period
                 END,
-                active = CASE
+                chain_status = CASE
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
-                    THEN EXCLUDED.active
-                    ELSE loyal_yield.balance_sweep_targets.active
+                         AND loyal_yield.balance_sweep_targets.chain_status <> 'closed'
+                    THEN 'pending'
+                    ELSE loyal_yield.balance_sweep_targets.chain_status
                 END,
-                wallet_balance_floor_raw = CASE
-                    WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
-                    THEN COALESCE(EXCLUDED.wallet_balance_floor_raw,
-                                  loyal_yield.balance_sweep_targets.wallet_balance_floor_raw)
-                    ELSE loyal_yield.balance_sweep_targets.wallet_balance_floor_raw
-                END,
+                chain_observation_slot = GREATEST(
+                    loyal_yield.balance_sweep_targets.chain_observation_slot,
+                    EXCLUDED.chain_observation_slot
+                ),
                 last_seen_at = CASE
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
                     THEN now()
@@ -2101,7 +2172,7 @@ impl NeonSqlClient {
                 COALESCE(wallet_usdc_ata, wallet_token_ata) AS wallet_usdc_ata,
                 COALESCE(vault_usdc_ata, vault_token_ata) AS vault_usdc_ata,
                 token_mint, wallet_token_ata, vault_token_ata, delegated_signers, threshold,
-                max_amount_per_period, active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
+                max_amount_per_period, desired_active AS active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
             "#,
         )
         .bind(&event.settings)
@@ -2138,17 +2209,10 @@ impl NeonSqlClient {
                 COALESCE(wallet_usdc_ata, wallet_token_ata) AS wallet_usdc_ata,
                 COALESCE(vault_usdc_ata, vault_token_ata) AS vault_usdc_ata,
                 token_mint, wallet_token_ata, vault_token_ata, delegated_signers, threshold,
-                max_amount_per_period, active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
+                max_amount_per_period, desired_active AS active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
             FROM loyal_yield.balance_sweep_targets
-            WHERE active
-              AND lifecycle_status = 'active'
-              AND NOT EXISTS (
-                SELECT 1 FROM loyal_yield.autodeposit_vault_configs config
-                WHERE config.settings = balance_sweep_targets.settings
-                  AND config.wallet = balance_sweep_targets.wallet
-                  AND config.vault_index = balance_sweep_targets.vault_index
-                  AND NOT loyal_yield.effective_autodeposit_active(config.id)
-              )
+            WHERE desired_active
+              AND chain_status = 'active'
             ORDER BY id
             "#,
         )
