@@ -776,8 +776,8 @@ async function loadEligibleTarget(
       ORDER BY yp.updated_at DESC, yp.id DESC
       LIMIT 1
     ) yp ON TRUE
-    WHERE t.active
-      AND t.lifecycle_status = 'active'
+    WHERE t.desired_active
+      AND t.chain_status = 'active'
       AND t.wallet_balance_floor_raw IS NOT NULL
       AND t.recurring_delegation IS NOT NULL
       AND (${targetId === null} OR t.id = ${targetId?.toString() ?? null})
@@ -976,8 +976,8 @@ async function claimAutodepositLots(args: {
       SELECT id, token_mint
       FROM loyal_yield.balance_sweep_targets
       WHERE id = ${args.targetId.toString()}
-        AND active
-        AND lifecycle_status = 'active'
+        AND desired_active
+        AND chain_status = 'active'
         AND token_mint = ${args.tokenMint}
       FOR UPDATE
     ),
@@ -1263,14 +1263,12 @@ export async function releaseAutodepositLotClaim(args: {
     ),
     paused_target AS (
       UPDATE loyal_yield.balance_sweep_targets t
-      SET active = false,
-          lifecycle_status = 'pending_delegation',
-          last_seen_at = now()
+      SET desired_active = false
       FROM loyal_yield.balance_sweep_lot_claims c
       WHERE c.claim_token = (SELECT claim_token FROM selected_claim)
         AND c.target_id = t.id
-        AND t.active
-        AND t.lifecycle_status = 'active'
+        AND t.desired_active
+        AND t.chain_status = 'active'
         AND ${args.pauseTargetForMissingDelegate}
         AND EXISTS (SELECT 1 FROM restored)
       RETURNING t.id

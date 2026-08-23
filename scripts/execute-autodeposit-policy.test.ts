@@ -632,8 +632,10 @@ describe("runtime dependency boundary", () => {
       /updated_claim AS \([\s\S]*?\n    \),\n    -- The replacement slot/
     )?.[0];
 
-    expect(pausedTargetSql).toContain("AND t.active");
-    expect(pausedTargetSql).toContain("AND t.lifecycle_status = 'active'");
+    expect(pausedTargetSql).toContain("SET desired_active = false");
+    expect(pausedTargetSql).toContain("AND t.desired_active");
+    expect(pausedTargetSql).toContain("AND t.chain_status = 'active'");
+    expect(pausedTargetSql).not.toContain("SET chain_status");
     expect(pausedTargetSql).toContain("pauseTargetForMissingDelegate");
     expect(updatedClaimSql).toContain("EXISTS (SELECT 1 FROM restored)");
     expect(updatedClaimSql).not.toContain("paused_target");

@@ -22,6 +22,7 @@ web_client="$app_root/apps/web/src/hooks/use-smart-account-sidebar-data.ts"
 mobile_client="$app_root/apps/mobile/src/lib/solana/earn/autodeposit.ts"
 monitor_root="$routing_root/crates/balance-sweep-ata-monitor/src"
 store_root="$routing_root/crates/loyal-yield-store"
+executor="$routing_root/scripts/execute-autodeposit-policy.ts"
 
 printf '== Client transaction ownership\n'
 for removed_route in \
@@ -92,6 +93,14 @@ for required in \
   rg --quiet --fixed-strings "$required" "$store_root/migrations" "$store_root/src" "$monitor_root" ||
     fail "missing single-target contract: $required"
 done
+
+rg --quiet 't\.desired_active' "$executor" ||
+  fail "executor does not enforce desired Autodeposit intent"
+rg --quiet "t\.chain_status = 'active'" "$executor" ||
+  fail "executor does not enforce finalized active chain state"
+if rg --quiet 't\.active|t\.lifecycle_status|[[:space:]]lifecycle_status[[:space:]]*=' "$executor"; then
+  fail "executor still reads the removed target lifecycle columns"
+fi
 
 printf '== Focused behavior checks\n'
 scratch_dir="$(mktemp -d /private/tmp/ask-2211-single-target.XXXXXX)"
