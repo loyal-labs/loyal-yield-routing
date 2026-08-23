@@ -191,3 +191,162 @@ async fn single_target_preserves_intent_and_owns_chain_lifecycle() {
     assert!(reasons.contains(&"allowance_updated".to_owned()));
     assert!(reasons.contains(&"allowance_removed".to_owned()));
 }
+
+#[tokio::test]
+#[ignore = "requires ASK_2211_VERIFY_DATABASE_URL pointing at a throwaway database"]
+async fn confirmed_rebalance_emits_once_after_single_target_migration() {
+    let database_url = std::env::var(DATABASE_URL_ENV).expect("throwaway database URL");
+    let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url))
+        .await
+        .expect("connect to throwaway database");
+
+    let policy_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO loyal_yield.route_policies
+            (settings, authority, policy_seed, policy_account, vault_index,
+             vault_pubkey, delegated_signers, threshold, route_modes,
+             stable_mints, kamino_markets, kamino_liquidity_mints,
+             last_seen_slot, last_seen_signature)
+        VALUES
+            ('settings-rebalance-60', 'wallet-rebalance-60', 60,
+             'route-policy-rebalance-60', 1, 'vault-rebalance-60',
+             ARRAY['signer-rebalance-60'], 1, ARRAY['same_mint_kamino'],
+             ARRAY['mint-rebalance-60'], ARRAY['market-rebalance-60'],
+             ARRAY['mint-rebalance-60'], 600, 'route-policy-signature-60')
+        RETURNING id
+        "#,
+    )
+    .fetch_one(client.pool())
+    .await
+    .expect("insert route policy");
+
+    let vault_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO loyal_yield.managed_vaults
+            (settings, vault_index, vault_pubkey, active_policy_id)
+        VALUES ('settings-rebalance-60', 1, 'vault-rebalance-60', $1)
+        RETURNING id
+        "#,
+    )
+    .bind(policy_id)
+    .fetch_one(client.pool())
+    .await
+    .expect("insert managed vault");
+
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.balance_sweep_targets
+            (settings, authority, policy_seed, policy_account, vault_index,
+             vault_pubkey, wallet, wallet_usdc_ata, vault_usdc_ata, token_mint,
+             wallet_token_ata, vault_token_ata, delegated_signers, threshold,
+             max_amount_per_period, desired_active, chain_status,
+             chain_observation_slot, wallet_balance_floor_raw, last_seen_slot,
+             last_seen_signature, cluster)
+        VALUES
+            ('settings-rebalance-60', 'wallet-rebalance-60', 60,
+             'sweep-policy-rebalance-60', 1, 'vault-rebalance-60',
+             'wallet-rebalance-60', 'wallet-ata-rebalance-60',
+             'vault-ata-rebalance-60', 'mint-rebalance-60',
+             'wallet-ata-rebalance-60', 'vault-ata-rebalance-60',
+             ARRAY['signer-rebalance-60'], 1, 1000000, FALSE, 'active',
+             600, 0, 600, 'target-signature-rebalance-60', 'mainnet-beta')
+        "#,
+    )
+    .execute(client.pool())
+    .await
+    .expect("insert paused but chain-current target");
+
+    let source_snapshot_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO loyal_yield.vault_position_snapshots
+            (vault_id, policy_id, observed_slot, is_current)
+        VALUES ($1, $2, 600, FALSE)
+        RETURNING id
+        "#,
+    )
+    .bind(vault_id)
+    .bind(policy_id)
+    .fetch_one(client.pool())
+    .await
+    .expect("insert source snapshot");
+    let post_snapshot_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO loyal_yield.vault_position_snapshots
+            (vault_id, policy_id, observed_slot, is_current)
+        VALUES ($1, $2, 601, TRUE)
+        RETURNING id
+        "#,
+    )
+    .bind(vault_id)
+    .bind(policy_id)
+    .fetch_one(client.pool())
+    .await
+    .expect("insert post snapshot");
+
+    let decision_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO loyal_yield.rebalance_decisions
+            (vault_id, source_snapshot_id, status, source_reserve,
+             target_reserve, liquidity_mint, source_liquidity_mint,
+             target_liquidity_mint, amount_raw, source_apy_bps,
+             target_apy_bps, estimated_edge_bps, decision_reason,
+             idempotency_key)
+        VALUES
+            ($1, $2, 'confirming', 'source-reserve-rebalance-60',
+             'target-reserve-rebalance-60', 'mint-rebalance-60',
+             'mint-rebalance-60', 'mint-rebalance-60', 1000000, 100,
+             200, 100, 'target_supply_apy_exceeds_source',
+             'decision-rebalance-60')
+        RETURNING id
+        "#,
+    )
+    .bind(vault_id)
+    .bind(source_snapshot_id)
+    .fetch_one(client.pool())
+    .await
+    .expect("insert confirming decision");
+
+    sqlx::query(
+        r#"
+        UPDATE loyal_yield.rebalance_decisions
+        SET status = 'confirmed',
+            confirmed_slot = 601,
+            post_snapshot_id = $2,
+            updated_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(decision_id)
+    .bind(post_snapshot_id)
+    .execute(client.pool())
+    .await
+    .expect("confirm rebalance after migration 60");
+
+    sqlx::query("UPDATE loyal_yield.rebalance_decisions SET updated_at = now() WHERE id = $1")
+        .bind(decision_id)
+        .execute(client.pool())
+        .await
+        .expect("repeat confirmed update");
+
+    let events: Vec<(String, String, String)> = sqlx::query_as(
+        r#"
+        SELECT event_type, solana_env, source_id
+        FROM loyal_yield.realtime_events
+        WHERE source_table = 'rebalance_decisions'
+          AND source_id = $1
+        ORDER BY id
+        "#,
+    )
+    .bind(decision_id.to_string())
+    .fetch_all(client.pool())
+    .await
+    .expect("load rebalance realtime events");
+    assert_eq!(
+        events,
+        vec![(
+            "earn.rebalance.confirmed".to_owned(),
+            "mainnet-beta".to_owned(),
+            decision_id.to_string(),
+        )]
+    );
+}
