@@ -410,10 +410,12 @@ async fn build_transaction(
         )
         .into());
     }
-    Ok((
-        VersionedTransaction::try_new(message, &[context.fee_payer, context.delegate])?,
-        last_valid_block_height,
-    ))
+    let transaction = if context.fee_payer.pubkey() == context.delegate.pubkey() {
+        VersionedTransaction::try_new(message, &[context.fee_payer])?
+    } else {
+        VersionedTransaction::try_new(message, &[context.fee_payer, context.delegate])?
+    };
+    Ok((transaction, last_valid_block_height))
 }
 
 async fn load_lookup_tables(
