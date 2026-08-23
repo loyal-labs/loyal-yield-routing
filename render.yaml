@@ -45,7 +45,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-9a14054d6c3335a5fdca9abba4c5dd36728953bb
             preDeployCommand: /bin/sh -lc '/usr/local/bin/loyal-timescale-migrations --apply && /usr/local/bin/yield-migrations --apply'
             dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
             maxShutdownDelaySeconds: 60
@@ -268,7 +268,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-e6cc09c22e85c4813ab485f016b6ccb6881b10f8
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-9a14054d6c3335a5fdca9abba4c5dd36728953bb
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/multiply-route-worker run
             maxShutdownDelaySeconds: 60
