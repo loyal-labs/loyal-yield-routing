@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 routing_root="$(cd "$script_dir/.." && pwd)"
 app_root=""
+policy_commitment="finalized"
 scratch_dir="$(mktemp -d "/tmp/ask-2168-autoswap-local-e2e.XXXXXX")"
 postgres_data="$scratch_dir/postgres"
 postgres_socket="$scratch_dir/postgres-socket"
@@ -55,7 +56,10 @@ cleanup() {
   if [[ "$postgres_started" -eq 1 ]]; then
     "$pg_bindir/pg_ctl" -D "$postgres_data" -m immediate -w stop >/dev/null 2>&1 || true
   fi
-  rm -rf "$scratch_dir"
+  rm -rf "$scratch_dir" 2>/dev/null || {
+    sleep 0.2
+    rm -rf "$scratch_dir"
+  }
 }
 trap cleanup EXIT
 
@@ -65,6 +69,10 @@ while [[ $# -gt 0 ]]; do
       app_root="${2:-}"
       shift 2
       ;;
+    --policy-commitment)
+      policy_commitment="${2:-}"
+      shift 2
+      ;;
     *)
       fail "unknown argument: $1"
       ;;
@@ -72,6 +80,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$app_root" ]] || fail "--app-root is required"
+[[ "$policy_commitment" == "confirmed" || "$policy_commitment" == "finalized" ]] ||
+  fail "--policy-commitment must be confirmed or finalized"
 app_root="$(cd "$app_root" && pwd)"
 [[ "$app_root" != "$routing_root" ]] || fail "app and routing worktrees must be separate"
 
@@ -224,12 +234,13 @@ start_web_listener "autoswap_installed" "$setup_events_json"
     --rpc-url "http://127.0.0.1:$rpc_port" \
     --state "$state_json" \
     --transactions "$state_json.transactions.ndjson" \
-    --account-kind smart-account
+    --account-kind smart-account \
+    --policy-commitment "$policy_commitment"
 )
 wait "$listener_pid"
 listener_pid=""
-[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.cross_mint_swap_policies WHERE active AND start_eligible AND source_commitment = 'finalized'")" == "2" ]] ||
-  fail "LaserStream emulator did not persist both finalized policies"
+[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.cross_mint_swap_policies WHERE active AND start_eligible AND source_commitment = '$policy_commitment'")" == "2" ]] ||
+  fail "LaserStream emulator did not persist both $policy_commitment policies"
 [[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.cross_mint_vault_opt_ins WHERE enabled")" == "1" ]] ||
   fail "targeted account reconciliation did not materialize the enabled Autoswap opt-in"
 [[ "$(sql_scalar "SELECT to_regclass('loyal_yield.cross_mint_vault_controls') IS NULL")" == "t" ]] ||
@@ -260,7 +271,8 @@ start_web_listener "autoswap_removed" "$close_events_json"
     --rpc-url "http://127.0.0.1:$rpc_port" \
     --state "$state_json" \
     --transactions "$close_transactions" \
-    --account-kind policy-deleted
+    --account-kind policy-deleted \
+    --policy-commitment "$policy_commitment"
 )
 wait "$listener_pid"
 listener_pid=""
