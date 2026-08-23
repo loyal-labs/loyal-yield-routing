@@ -36,6 +36,7 @@ COPY --chmod=0755 build-artifacts/rust/same-mint-yield-monitor /usr/local/bin/sa
 COPY --chmod=0755 build-artifacts/rust/fleet-opportunity-planner /usr/local/bin/fleet-opportunity-planner
 COPY --chmod=0755 build-artifacts/rust/fleet-health-projector /usr/local/bin/fleet-health-projector
 COPY --chmod=0755 build-artifacts/rust/fleet-route-confirmer /usr/local/bin/fleet-route-confirmer
+COPY --chmod=0755 build-artifacts/rust/multiply-route-worker /usr/local/bin/multiply-route-worker
 COPY --chmod=0755 build-artifacts/rust/route-lookup-table-provisioner /usr/local/bin/route-lookup-table-provisioner
 
 CMD ["/usr/local/bin/balance-sweep-ata-projector"]

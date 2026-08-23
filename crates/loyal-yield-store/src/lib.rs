@@ -11,6 +11,7 @@
 
 pub mod domain;
 pub mod fleet_orchestration;
+pub mod multiply_state_store;
 mod store;
 pub mod types;
 
@@ -19,6 +20,7 @@ pub use domain::{
     AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, FIXED_KAMINO_MAIN_ROUTE_MODE,
     MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
+pub use multiply_state_store::{MultiplyRouteLease, SignedOperation, StoredMultiplyRouteState};
 pub use store::{NeonSqlClient, OrchestratorStore, RouteLookupTableProvisioningLock};
 pub use types::*;
 
