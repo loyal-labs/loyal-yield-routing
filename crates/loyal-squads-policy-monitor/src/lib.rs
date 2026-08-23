@@ -18,7 +18,8 @@ use loyal_fleet_worker::multiply::{
         EARN_MAX_VAULT_INDEX, MANIFEST_VERSION,
     },
     policy::{
-        canonical_policy_payload, canonical_policy_update, current_policy_matches, PolicyFamily,
+        canonical_policy_payload, canonical_policy_payload_matches, canonical_policy_update,
+        current_policy_matches, PolicyFamily,
     },
 };
 use loyal_yield_store::{
@@ -46,7 +47,7 @@ use std::{
 use tokio::time::{interval, sleep, MissedTickBehavior};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-pub const EARN_MAX_POLICY_PROJECTION_CONSUMER: &str = "earn_max_policy_sets_laserstream_v1";
+pub const EARN_MAX_POLICY_PROJECTION_CONSUMER: &str = "earn_max_policy_sets_laserstream_v2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -972,7 +973,7 @@ fn earn_max_policy_seed_base(
         .map_err(|error| MonitorError::Decode(error.to_string()))?;
         let expected = canonical_policy_payload(&update)
             .map_err(|error| MonitorError::Decode(error.to_string()))?;
-        if action.payload == expected {
+        if canonical_policy_payload_matches(&action.payload, &expected) {
             let Some(policy_seed_base) = action.policy_seed.checked_sub(offset) else {
                 return Ok(None);
             };
