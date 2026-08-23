@@ -51,6 +51,8 @@ const MIGRATION_0054: &str = include_str!("../migrations/0054_earn_max_per_user.
 const MIGRATION_0055: &str = include_str!("../migrations/0055_earn_max_repeated_lifecycle.sql");
 const MIGRATION_0056: &str = include_str!("../migrations/0056_earn_max_dynamic_policy_seeds.sql");
 const MIGRATION_0057: &str = include_str!("../migrations/0057_autodeposit_client_projection.sql");
+const MIGRATION_0058: &str =
+    include_str!("../migrations/0058_autoswap_confirmed_reconciliation.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -504,6 +506,12 @@ impl NeonSqlClient {
                 version: 57,
                 name: "autodeposit_client_projection",
                 sql: MIGRATION_0057,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 58,
+                name: "autoswap_confirmed_reconciliation",
+                sql: MIGRATION_0058,
                 expected_checksum: None,
             },
         ] {
@@ -1689,7 +1697,7 @@ impl NeonSqlClient {
               AND last_seen_slot >= $5
               AND active
               AND start_eligible
-              AND source_commitment = 'finalized'
+              AND source_commitment IN ('confirmed', 'finalized')
               AND last_mutation IN ('create', 'update')
             ORDER BY last_seen_slot DESC, source_shard ASC, policy_account ASC
             "#,
@@ -4230,6 +4238,10 @@ fn commitment_rank(commitment: &str) -> Result<u8, OrchestratorError> {
     }
 }
 
+fn autoswap_commitment_eligible(commitment: &str) -> Result<bool, OrchestratorError> {
+    Ok(commitment_rank(commitment)? >= commitment_rank("confirmed")?)
+}
+
 fn stronger_commitment(left: &str, right: &str) -> Result<&'static str, OrchestratorError> {
     match commitment_rank(left)?.max(commitment_rank(right)?) {
         0 => Ok("processed"),
@@ -4259,7 +4271,7 @@ async fn ensure_cross_mint_vault_opt_in_for_canonical_pair(
             WHERE cluster = $1 AND settings = $2
               AND vault_index = $3 AND vault_pubkey = $4
               AND active AND start_eligible
-              AND source_commitment = 'finalized'
+              AND source_commitment IN ('confirmed', 'finalized')
               AND last_mutation IN ('create', 'update')
               AND source_shard IN ('classic', 'token_2022')
         )
@@ -4291,7 +4303,7 @@ async fn canonical_cross_mint_pair_exists(
         WHERE cluster = $1 AND settings = $2
           AND vault_index = $3 AND vault_pubkey = $4
           AND active AND start_eligible
-          AND source_commitment = 'finalized'
+          AND source_commitment IN ('confirmed', 'finalized')
           AND last_mutation IN ('create', 'update')
           AND source_shard IN ('classic', 'token_2022')
         "#,
@@ -4341,7 +4353,7 @@ async fn insert_cross_mint_swap_policy(
     .bind(i32::from(event.max_slippage_bps))
     .bind(daily_cap)
     .bind(&event.manifest_fingerprint)
-    .bind(event.source_commitment == "finalized")
+    .bind(autoswap_commitment_eligible(&event.source_commitment)?)
     .bind(&event.mutation)
     .bind(&event.source_commitment)
     .bind(slot)
@@ -4379,7 +4391,7 @@ async fn update_cross_mint_policy_finality(
         r#"
         UPDATE loyal_yield.cross_mint_swap_policies
         SET source_commitment = $3,
-            start_eligible = active AND $3 = 'finalized'
+            start_eligible = active AND $3 IN ('confirmed', 'finalized')
                 AND last_mutation IN ('create', 'update'),
             last_seen_at = now()
         WHERE cluster = $1 AND policy_account = $2

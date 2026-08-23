@@ -324,7 +324,10 @@ impl CrossMintPolicyBindings {
             || self.withdraw.constraint_index != 0
             || self.deposit.constraint_index != 1
             || !finalized
-            || self.swap.source_commitment != "finalized"
+            || !matches!(
+                self.swap.source_commitment.as_str(),
+                "confirmed" | "finalized"
+            )
             || !matches!(self.swap.source_shard.as_str(), "classic" | "token_2022")
             || self.swap.enrollment_generation <= 0
             || self.swap.max_slippage_bps == 0
@@ -566,7 +569,7 @@ impl NeonSqlClient {
              AND swap_policy.manifest_fingerprint = $17
              AND swap_policy.active
              AND swap_policy.start_eligible
-             AND swap_policy.source_commitment = 'finalized'
+             AND swap_policy.source_commitment IN ('confirmed', 'finalized')
              AND swap_policy.last_mutation IN ('create', 'update')
             JOIN loyal_yield.cross_mint_vault_opt_ins opt_in
               ON opt_in.enabled = TRUE
@@ -586,7 +589,7 @@ impl NeonSqlClient {
              AND sibling_policy.source_shard <> swap_policy.source_shard
              AND sibling_policy.active
              AND sibling_policy.start_eligible
-             AND sibling_policy.source_commitment = 'finalized'
+             AND sibling_policy.source_commitment IN ('confirmed', 'finalized')
              AND sibling_policy.last_mutation IN ('create', 'update')
              AND sibling_policy.max_slippage_bps = swap_policy.max_slippage_bps
              AND sibling_policy.daily_source_mint_spending_cap =
@@ -602,7 +605,7 @@ impl NeonSqlClient {
                    AND sibling.delegated_signer = swap_policy.delegated_signer
                    AND sibling.active
                    AND sibling.start_eligible
-                   AND sibling.source_commitment = 'finalized'
+                   AND sibling.source_commitment IN ('confirmed', 'finalized')
                    AND sibling.last_mutation IN ('create', 'update')
                    AND sibling.max_slippage_bps = swap_policy.max_slippage_bps
                    AND sibling.daily_source_mint_spending_cap =
@@ -2438,7 +2441,7 @@ async fn validate_initial_cross_mint_policy_bindings(
          AND swap_policy.manifest_fingerprint = $17
          AND swap_policy.active
          AND swap_policy.start_eligible
-         AND swap_policy.source_commitment = 'finalized'
+         AND swap_policy.source_commitment IN ('confirmed', 'finalized')
          AND swap_policy.last_mutation IN ('create', 'update')
         JOIN loyal_yield.cross_mint_vault_opt_ins opt_in
           ON opt_in.enabled = TRUE
@@ -2458,7 +2461,7 @@ async fn validate_initial_cross_mint_policy_bindings(
          AND sibling_policy.source_shard <> swap_policy.source_shard
          AND sibling_policy.active
          AND sibling_policy.start_eligible
-         AND sibling_policy.source_commitment = 'finalized'
+         AND sibling_policy.source_commitment IN ('confirmed', 'finalized')
          AND sibling_policy.last_mutation IN ('create', 'update')
          AND sibling_policy.max_slippage_bps = swap_policy.max_slippage_bps
          AND sibling_policy.daily_source_mint_spending_cap =
@@ -2474,7 +2477,7 @@ async fn validate_initial_cross_mint_policy_bindings(
                AND sibling.delegated_signer = swap_policy.delegated_signer
                AND sibling.active
                AND sibling.start_eligible
-               AND sibling.source_commitment = 'finalized'
+               AND sibling.source_commitment IN ('confirmed', 'finalized')
                AND sibling.last_mutation IN ('create', 'update')
                AND sibling.max_slippage_bps = swap_policy.max_slippage_bps
                AND sibling.daily_source_mint_spending_cap =
@@ -2713,4 +2716,53 @@ fn cross_mint_movement_from_row(
         continuation_fencing_token: row.try_get("continuation_fencing_token")?,
         continuation_attempt_count: row.try_get("continuation_attempt_count")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn autoswap_confirmed_bindings(commitment: &str) -> CrossMintPolicyBindings {
+        let earn = |account: &str, constraint_index| CrossMintEarnPolicyBinding {
+            policy_account: account.to_owned(),
+            observed_slot: 10,
+            observed_signature: format!("{account}-signature"),
+            source_commitment: "finalized".to_owned(),
+            constraint_index,
+        };
+        CrossMintPolicyBindings {
+            settings: "settings".to_owned(),
+            vault_index: 1,
+            vault_pubkey: "vault".to_owned(),
+            delegated_signer: "delegate".to_owned(),
+            withdraw: earn("withdraw", 0),
+            swap: CrossMintSwapPolicyBinding {
+                policy_account: "swap".to_owned(),
+                source_shard: "classic".to_owned(),
+                enrollment_generation: 1,
+                observed_slot: 11,
+                observed_signature: "swap-signature".to_owned(),
+                source_commitment: commitment.to_owned(),
+                max_slippage_bps: 50,
+                daily_source_mint_spending_cap: 1_000_000,
+                manifest_fingerprint: "manifest".to_owned(),
+            },
+            deposit: earn("deposit", 1),
+        }
+    }
+
+    #[test]
+    fn autoswap_confirmed_binding_is_admitted_with_finalized_earn_policies() {
+        autoswap_confirmed_bindings("confirmed")
+            .validate()
+            .expect("confirmed Autoswap binding must be admitted");
+        autoswap_confirmed_bindings("finalized")
+            .validate()
+            .expect("finalized Autoswap binding remains admitted");
+        assert!(autoswap_confirmed_bindings("processed").validate().is_err());
+
+        let mut unfinalized_earn = autoswap_confirmed_bindings("confirmed");
+        unfinalized_earn.withdraw.source_commitment = "confirmed".to_owned();
+        assert!(unfinalized_earn.validate().is_err());
+    }
 }

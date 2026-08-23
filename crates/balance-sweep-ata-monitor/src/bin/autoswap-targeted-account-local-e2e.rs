@@ -25,6 +25,8 @@ struct Args {
     transactions: PathBuf,
     #[arg(long)]
     account_kind: String,
+    #[arg(long, default_value = "finalized")]
+    policy_commitment: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,10 +83,15 @@ async fn main() -> anyhow::Result<()> {
         }],
     )?;
     let store = OrchestratorStore::connect(OrchestratorConfig::new(args.postgres_url)).await?;
+    let policy_commitment = match args.policy_commitment.as_str() {
+        "confirmed" => Commitment::Confirmed,
+        "finalized" => Commitment::Finalized,
+        other => anyhow::bail!("unsupported --policy-commitment {other}"),
+    };
     let monitor = Mutex::new(PolicyMonitor::new(
         MonitorConfig {
             cluster: Cluster::Mainnet,
-            commitment: Commitment::Finalized,
+            commitment: policy_commitment,
             ws_url: "local-targeted-account-emulator".to_owned(),
         },
         PostgresPolicyMatchSink::from_store(store.clone()),
