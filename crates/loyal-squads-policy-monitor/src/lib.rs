@@ -12,19 +12,29 @@ use loyal_actions::{
     DetectedSwapLane, DetectedYieldRouteMode, DetectedYieldRoutePolicy, KaminoStableRiskProfile,
     SquadsSettingsActionView, YieldRouteUniversePreset, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
 };
+use loyal_fleet_worker::multiply::{
+    config::{derive_earn_max_topology, MANIFEST_VERSION},
+    policy::{
+        canonical_policy_payload, canonical_policy_update, current_policy_matches, PolicyFamily,
+    },
+};
 use loyal_yield_store::{
-    BalanceSweepExecutionInput, BalanceSweepPolicyMatchInput, CrossMintSwapPolicyManifestInput,
-    OrchestratorConfig, OrchestratorError, OrchestratorStore, PolicyMatchInput, PolicyRemovalInput,
+    fleet_orchestration::StrategyKey, BalanceSweepExecutionInput, BalanceSweepPolicyMatchInput,
+    CrossMintSwapPolicyManifestInput, EarnMaxPolicySetProjectionInput, OrchestratorConfig,
+    OrchestratorError, OrchestratorStore, PolicyMatchInput, PolicyRemovalInput,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
+    commitment_config::CommitmentConfig,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
     transaction::VersionedTransaction,
 };
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     fmt,
     io::{self, Write},
     str::FromStr,
@@ -32,6 +42,8 @@ use std::{
 };
 use tokio::time::{interval, sleep, MissedTickBehavior};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+const EARN_MAX_POLICY_PROJECTION_CONSUMER: &str = "earn_max_policy_sets_laserstream_v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -166,6 +178,12 @@ pub trait PolicyMatchSink {
         &mut self,
         event: BalanceSweepExecutionEvent,
     ) -> BoxFuture<'_, Result<(), MonitorError>>;
+    fn project_earn_max_policy_set(
+        &mut self,
+        _input: EarnMaxPolicySetProjectionInput,
+    ) -> BoxFuture<'_, Result<(), MonitorError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 pub struct StdoutPolicyMatchSink;
@@ -282,6 +300,19 @@ impl PolicyMatchSink for PostgresPolicyMatchSink {
                     break;
                 }
             }
+            Ok(())
+        })
+    }
+
+    fn project_earn_max_policy_set(
+        &mut self,
+        input: EarnMaxPolicySetProjectionInput,
+    ) -> BoxFuture<'_, Result<(), MonitorError>> {
+        let store = self.store.clone();
+        Box::pin(async move {
+            store
+                .project_earn_max_policy_set(EARN_MAX_POLICY_PROJECTION_CONSUMER, input)
+                .await?;
             Ok(())
         })
     }
@@ -428,6 +459,8 @@ pub enum SwapLaneEvent {
 pub struct PolicyMonitor<S> {
     config: MonitorConfig,
     sink: S,
+    earn_max_rpc: Option<RpcClient>,
+    earn_max_delegate: Option<Pubkey>,
     seen_signatures: HashSet<String>,
 }
 
@@ -436,8 +469,19 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
         Self {
             config,
             sink,
+            earn_max_rpc: None,
+            earn_max_delegate: None,
             seen_signatures: HashSet::new(),
         }
+    }
+
+    pub fn with_earn_max_projection(mut self, rpc_url: String, delegate: Pubkey) -> Self {
+        self.earn_max_rpc = Some(RpcClient::new_with_commitment(
+            rpc_url,
+            CommitmentConfig::confirmed(),
+        ));
+        self.earn_max_delegate = Some(delegate);
+        self
     }
 
     pub async fn run(&mut self, once: bool) -> Result<(), MonitorError> {
@@ -590,7 +634,11 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
         instructions: Vec<Instruction>,
     ) -> Result<usize, MonitorError> {
         let mut emitted = 0;
+        let mut earn_max_settings = BTreeSet::new();
         for instruction in instructions {
+            if self.earn_max_rpc.is_some() {
+                earn_max_settings.extend(affected_earn_max_settings(&instruction)?);
+            }
             if let Ok(Some(policy)) = detect_jupiter_cross_mint_policy_action(&instruction) {
                 self.sink
                     .emit(PolicyMonitorEvent::CrossMintSwapPolicyManifest(
@@ -654,7 +702,133 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
             }
             emitted += recognized;
         }
+        for settings in earn_max_settings {
+            self.project_earn_max_manifest(settings, signature, slot)
+                .await?;
+            emitted += 1;
+        }
         Ok(emitted)
+    }
+
+    async fn project_earn_max_manifest(
+        &mut self,
+        settings: Pubkey,
+        signature: &str,
+        slot: u64,
+    ) -> Result<(), MonitorError> {
+        let rpc = self.earn_max_rpc.as_ref().ok_or_else(|| {
+            MonitorError::Decode("Earn MAX projection RPC is not configured".to_owned())
+        })?;
+        let delegate = self.earn_max_delegate.ok_or_else(|| {
+            MonitorError::Decode("Earn MAX projection delegate is not configured".to_owned())
+        })?;
+        let topology = derive_earn_max_topology(settings)
+            .map_err(|error| MonitorError::Decode(error.to_string()))?;
+        let strategy = topology.strategy(StrategyKey::SyrupUsdcUsdc);
+        let families = [
+            PolicyFamily::Deposit,
+            PolicyFamily::Borrow,
+            PolicyFamily::SwapClaimToCollateral,
+            PolicyFamily::SwapCollateralToClaim,
+            PolicyFamily::Repay,
+            PolicyFamily::Withdraw,
+        ];
+        let mut expected = Vec::with_capacity(families.len());
+        for family in families {
+            let policy = family.policy(strategy);
+            let update = canonical_policy_update(
+                topology, strategy, family, settings, settings, delegate,
+            )
+            .map_err(|error| MonitorError::Decode(error.to_string()))?;
+            let payload = canonical_policy_payload(&update)
+                .map_err(|error| MonitorError::Decode(error.to_string()))?;
+            expected.push((family, policy, update, payload));
+        }
+        let addresses = expected
+            .iter()
+            .map(|(_, policy, _, _)| policy.account)
+            .collect::<Vec<_>>();
+        let response = rpc
+            .get_multiple_accounts_with_commitment(&addresses, CommitmentConfig::confirmed())
+            .await
+            .map_err(|error| {
+                MonitorError::Decode(format!("confirmed policy reload failed: {error}"))
+            })?;
+        let mut policy_accounts = Vec::with_capacity(expected.len());
+        let mut manifest_basis = Vec::with_capacity(expected.len());
+        let mut matched = 0_usize;
+        let mut present = 0_usize;
+        for ((family, policy, update, payload), account) in
+            expected.into_iter().zip(response.value.into_iter())
+        {
+            let semantic_sha256 = format!("{:x}", Sha256::digest(&update.data));
+            let (exists, matches, data_sha256) = match account {
+                Some(account) => {
+                    present += 1;
+                    let matches = account.owner == SQUADS_SMART_ACCOUNT_PROGRAM_ID
+                        && !account.executable
+                        && current_policy_matches(&account.data, policy, delegate, &payload)
+                            .map_err(|error| MonitorError::Decode(error.to_string()))?;
+                    if matches {
+                        matched += 1;
+                    }
+                    (
+                        true,
+                        matches,
+                        Some(format!("{:x}", Sha256::digest(&account.data))),
+                    )
+                }
+                None => (false, false, None),
+            };
+            let family = format!("{family:?}").to_ascii_lowercase();
+            manifest_basis.push(json!({
+                "family": family.as_str(),
+                "seed": policy.seed,
+                "account": policy.account.to_string(),
+                "semanticSha256": semantic_sha256,
+            }));
+            policy_accounts.push(json!({
+                "family": family.as_str(),
+                "seed": policy.seed,
+                "account": policy.account.to_string(),
+                "semanticSha256": semantic_sha256,
+                "dataSha256": data_sha256,
+                "exists": exists,
+                "matches": matches,
+            }));
+        }
+        let manifest = json!({
+            "version": MANIFEST_VERSION,
+            "settings": settings.to_string(),
+            "vaultIndex": topology.vault_index,
+            "vault": topology.vault.to_string(),
+            "policies": manifest_basis,
+        });
+        let manifest_sha256 = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&manifest).map_err(MonitorError::Json)?)
+        );
+        let status = if matched == addresses.len() {
+            "ready"
+        } else if present == 0 {
+            "removed"
+        } else {
+            "incomplete"
+        };
+        self.sink
+            .project_earn_max_policy_set(EarnMaxPolicySetProjectionInput {
+                settings: settings.to_string(),
+                vault_index: topology.vault_index,
+                vault: topology.vault.to_string(),
+                manifest_version: MANIFEST_VERSION.to_owned(),
+                manifest_sha256,
+                status: status.to_owned(),
+                policy_accounts: Value::Array(policy_accounts),
+                observed_signature: signature.to_owned(),
+                observed_slot: slot,
+                observed_at: chrono::Utc::now(),
+            })
+            .await
     }
 
     async fn process_detected_action(
@@ -693,6 +867,46 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
         }
         Ok(emitted)
     }
+}
+
+fn affected_earn_max_settings(instruction: &Instruction) -> Result<Vec<Pubkey>, MonitorError> {
+    let mut settings = BTreeSet::new();
+    if let Ok(actions) = decode_squads_policy_create_actions(instruction) {
+        for action in actions {
+            if is_earn_max_policy(action.settings, action.policy_account)? {
+                settings.insert(action.settings);
+            }
+        }
+    }
+    if let Ok(removals) = detect_squads_policy_removals(instruction) {
+        for identity in removals {
+            if is_earn_max_policy(identity.settings, identity.policy_account)? {
+                settings.insert(identity.settings);
+            }
+        }
+    }
+    if let Ok(Some(identity)) = detect_squads_policy_update_identity(instruction) {
+        if is_earn_max_policy(identity.settings, identity.policy_account)? {
+            settings.insert(identity.settings);
+        }
+    }
+    Ok(settings.into_iter().collect())
+}
+
+fn is_earn_max_policy(settings: Pubkey, account: Pubkey) -> Result<bool, MonitorError> {
+    let topology = derive_earn_max_topology(settings)
+        .map_err(|error| MonitorError::Decode(error.to_string()))?;
+    let strategy = topology.strategy(StrategyKey::SyrupUsdcUsdc);
+    Ok([
+        PolicyFamily::Deposit,
+        PolicyFamily::Borrow,
+        PolicyFamily::SwapClaimToCollateral,
+        PolicyFamily::SwapCollateralToClaim,
+        PolicyFamily::Repay,
+        PolicyFamily::Withdraw,
+    ]
+    .into_iter()
+    .any(|family| family.policy(strategy).account == account))
 }
 
 impl CrossMintSwapPolicyManifestEvent {

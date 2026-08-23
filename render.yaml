@@ -66,6 +66,8 @@ projects:
                 value: production
               - key: SOLANA_RPC_URL
                 sync: false
+              - key: EARN_MAX_DELEGATE
+                sync: false
               - key: BALANCE_SWEEP_UPDATE_SOURCE
                 value: laserstream
               - key: BALANCE_SWEEP_TARGET_REFRESH_SECONDS
@@ -279,6 +281,27 @@ projects:
                 sync: false
               - key: RUST_LOG
                 value: warn,loyal_squads_policy_monitor=info
+
+          - type: worker
+            name: loyal-multiply-route-worker
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/multiply-route-worker run
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: POLICY_KEYPAIR
+                sync: false
+              - key: RUST_LOG
+                value: warn,loyal_fleet_worker=info
 
           - type: worker
             name: loyal-fleet-opportunity-planner

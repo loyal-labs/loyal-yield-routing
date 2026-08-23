@@ -18,6 +18,7 @@ pub enum LoyalActionError {
     EmptyAllowedMints,
     DuplicateActionSeeds,
     PubkeyTableOverflow,
+    CompactPolicyPayloadOverflow,
     InvalidFeeBps,
     InvalidHubAdmin,
     InvalidAllowedMintCount,
@@ -31,6 +32,7 @@ pub enum LoyalActionError {
     TooManyStablecoinPairs,
     InvalidSlippageBps,
     InvalidDailySpendingCap,
+    InvalidPolicyConstraint,
 }
 
 impl fmt::Display for LoyalActionError {
@@ -56,6 +58,9 @@ impl fmt::Display for LoyalActionError {
             Self::DuplicateActionSeeds => formatter.write_str("action seeds must be distinct"),
             Self::PubkeyTableOverflow => {
                 formatter.write_str("Squads ProgramInteraction pubkey table overflow")
+            }
+            Self::CompactPolicyPayloadOverflow => {
+                formatter.write_str("Squads compact ProgramInteraction payload overflow")
             }
             Self::InvalidFeeBps => write!(
                 formatter,
@@ -102,6 +107,9 @@ impl fmt::Display for LoyalActionError {
             }
             Self::InvalidDailySpendingCap => {
                 formatter.write_str("daily source-mint spending cap must be positive")
+            }
+            Self::InvalidPolicyConstraint => {
+                formatter.write_str("exact ProgramInteraction policy constraint is invalid")
             }
         }
     }
@@ -294,6 +302,281 @@ pub fn remove_policies_instruction(
         accounts,
         data: serialize_settings_actions(actions),
     }
+}
+
+/// Updates one existing hookless ProgramInteraction policy to exact current
+/// instruction bytes and an explicit subset of account pubkeys. This is the
+/// narrow production operation used when a literal protocol primitive changes
+/// direction; it never adds hooks or spending limits.
+pub fn create_exact_program_interaction_policy_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    instructions: &[Instruction],
+    pinned_account_indices: &[Vec<u8>],
+) -> Result<Instruction> {
+    let constraints = exact_program_interaction_constraints(instructions, pinned_account_indices)?;
+    create_program_interaction_action_instruction(
+        settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        constraints,
+    )
+}
+
+pub fn update_exact_program_interaction_policy_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    policy: Pubkey,
+    delegated_signer: Pubkey,
+    account_index: u8,
+    instructions: &[Instruction],
+    pinned_account_indices: &[Vec<u8>],
+) -> Result<Instruction> {
+    let constraints = exact_program_interaction_constraints(instructions, pinned_account_indices)?;
+    let action = SquadsSettingsAction::PolicyUpdate {
+        policy,
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        policy_update_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
+            compile_program_interaction_payload(
+                account_index,
+                constraints,
+                Vec::new(),
+            )?,
+        ),
+        expiration_args: None,
+    };
+    Ok(Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_settings_actions(vec![action]),
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct SemanticProgramInteractionConstraint {
+    pub program_id: Pubkey,
+    pub account_pubkeys: Vec<(u8, Vec<Pubkey>)>,
+    pub data: Vec<SemanticProgramInteractionDataConstraint>,
+}
+
+#[derive(Clone, Debug)]
+pub enum SemanticProgramInteractionDataConstraint {
+    SliceEquals { offset: u64, value: Vec<u8> },
+    U8Equals { offset: u64, value: u8 },
+    U16LessThanOrEqual { offset: u64, value: u16 },
+    U32Equals { offset: u64, value: u32 },
+}
+
+/// Update a long-lived hookless policy from a small semantic contract. This is
+/// intentionally the only generic surface: callers name protocol programs,
+/// fixed custody accounts, and bounded wire fields; hooks, account-data
+/// predicates, spending limits, and expirations cannot be expressed here.
+pub fn update_semantic_program_interaction_policy_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    policy: Pubkey,
+    delegated_signer: Pubkey,
+    account_index: u8,
+    specs: Vec<SemanticProgramInteractionConstraint>,
+) -> Result<Instruction> {
+    let constraints = semantic_program_interaction_constraints(specs)?;
+    update_program_interaction_action_instruction(
+        settings,
+        authority,
+        policy,
+        delegated_signer,
+        account_index,
+        constraints,
+    )
+}
+
+pub fn create_semantic_program_interaction_policy_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    specs: Vec<SemanticProgramInteractionConstraint>,
+) -> Result<Instruction> {
+    let constraints = semantic_program_interaction_constraints(specs)?;
+    let (policy, _) = derive_action_account(&settings, policy_seed);
+    let action = SquadsSettingsAction::PolicyCreate {
+        seed: policy_seed,
+        policy_creation_payload: SquadsPolicyCreationPayload::ProgramInteraction(
+            compile_compact_program_interaction_payload(
+                account_index,
+                constraints,
+                Vec::new(),
+            )?,
+        ),
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        start_timestamp: None,
+        expiration_args: None,
+    };
+    Ok(Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_settings_actions(vec![action]),
+    })
+}
+
+fn semantic_program_interaction_constraints(
+    specs: Vec<SemanticProgramInteractionConstraint>,
+) -> Result<Vec<SquadsInstructionConstraint>> {
+    if specs.is_empty() {
+        return Err(LoyalActionError::InvalidPolicyConstraint);
+    }
+    specs
+        .into_iter()
+        .map(|spec| {
+            let mut seen = std::collections::BTreeSet::new();
+            let account_constraints = spec
+                .account_pubkeys
+                .into_iter()
+                .map(|(account_index, pubkeys)| {
+                    if pubkeys.is_empty() || !seen.insert(account_index) {
+                        return Err(LoyalActionError::InvalidPolicyConstraint);
+                    }
+                    Ok(SquadsAccountConstraint {
+                        account_index,
+                        account_constraint: SquadsAccountConstraintType::Pubkey(pubkeys),
+                        owner: None,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let data_constraints = semantic_data_constraints(spec.data)?;
+            Ok(SquadsInstructionConstraint {
+                program_id: spec.program_id,
+                account_constraints,
+                data_constraints,
+            })
+        })
+        .collect()
+}
+
+fn semantic_data_constraints(
+    specs: Vec<SemanticProgramInteractionDataConstraint>,
+) -> Result<Vec<SquadsDataConstraint>> {
+    let constraints = specs
+        .into_iter()
+        .map(|constraint| match constraint {
+            SemanticProgramInteractionDataConstraint::SliceEquals { offset, value }
+                if !value.is_empty() =>
+            {
+                Ok(SquadsDataConstraint {
+                    data_offset: offset,
+                    data_value: SquadsDataValue::U8Slice(value),
+                    operator: SquadsDataOperator::Equals,
+                })
+            }
+            SemanticProgramInteractionDataConstraint::U8Equals { offset, value } => {
+                Ok(SquadsDataConstraint {
+                    data_offset: offset,
+                    data_value: SquadsDataValue::U8(value),
+                    operator: SquadsDataOperator::Equals,
+                })
+            }
+            SemanticProgramInteractionDataConstraint::U16LessThanOrEqual { offset, value }
+                if value > 0 =>
+            {
+                Ok(SquadsDataConstraint {
+                    data_offset: offset,
+                    data_value: SquadsDataValue::U16Le(value),
+                    operator: SquadsDataOperator::LessThanOrEqualTo,
+                })
+            }
+            SemanticProgramInteractionDataConstraint::U32Equals { offset, value } => {
+                Ok(SquadsDataConstraint {
+                    data_offset: offset,
+                    data_value: SquadsDataValue::U32Le(value),
+                    operator: SquadsDataOperator::Equals,
+                })
+            }
+            _ => Err(LoyalActionError::InvalidPolicyConstraint),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if constraints.is_empty() {
+        return Err(LoyalActionError::InvalidPolicyConstraint);
+    }
+    Ok(constraints)
+}
+
+fn exact_program_interaction_constraints(
+    instructions: &[Instruction],
+    pinned_account_indices: &[Vec<u8>],
+) -> Result<Vec<SquadsInstructionConstraint>> {
+    if instructions.is_empty() || instructions.len() != pinned_account_indices.len() {
+        return Err(LoyalActionError::InvalidPolicyConstraint);
+    }
+    instructions
+        .iter()
+        .zip(pinned_account_indices)
+        .map(|(instruction, pins)| {
+            let mut seen = std::collections::BTreeSet::new();
+            let account_constraints = pins
+                .iter()
+                .copied()
+                .map(|index| {
+                    if !seen.insert(index) {
+                        return Err(LoyalActionError::InvalidPolicyConstraint);
+                    }
+                    let account = instruction
+                        .accounts
+                        .get(usize::from(index))
+                        .ok_or(LoyalActionError::InvalidPolicyConstraint)?;
+                    Ok(SquadsAccountConstraint {
+                        account_index: index,
+                        account_constraint: SquadsAccountConstraintType::Pubkey(vec![
+                            account.pubkey,
+                        ]),
+                        owner: None,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(SquadsInstructionConstraint {
+                program_id: instruction.program_id,
+                account_constraints,
+                data_constraints: vec![SquadsDataConstraint {
+                    data_offset: 0,
+                    data_value: SquadsDataValue::U8Slice(instruction.data.clone()),
+                    operator: SquadsDataOperator::Equals,
+                }],
+            })
+        })
+        .collect()
 }
 
 /// Atomically installs a full-permission Settings signer before removing the
@@ -628,8 +911,12 @@ fn create_program_interaction_action_instruction_with_spending_limits(
     let (action_account, _) = derive_action_account(&settings, action_seed);
     let action = SquadsSettingsAction::PolicyCreate {
         seed: action_seed,
-        policy_creation_payload: SquadsPolicyCreationPayload::ProgramInteraction(
-            compile_program_interaction_payload(account_index, constraints, spending_limits)?,
+        policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
+            compile_program_interaction_payload(
+                account_index,
+                constraints,
+                spending_limits,
+            )?,
         ),
         signers: vec![SquadsSmartAccountSigner {
             key: delegated_signer,
@@ -688,7 +975,11 @@ fn update_program_interaction_action_instruction_with_spending_limits(
     let action = SquadsSettingsAction::PolicyUpdate {
         policy,
         policy_update_payload: SquadsPolicyCreationPayload::ProgramInteraction(
-            compile_program_interaction_payload(account_index, constraints, spending_limits)?,
+            compile_compact_program_interaction_payload(
+                account_index,
+                constraints,
+                spending_limits,
+            )?,
         ),
         signers: vec![SquadsSmartAccountSigner {
             key: delegated_signer,
@@ -726,6 +1017,133 @@ fn compile_program_interaction_payload(
         pre_hook: None,
         post_hook: None,
         spending_limits,
+    })
+}
+
+fn compile_compact_program_interaction_payload(
+    account_index: u8,
+    constraints: Vec<SquadsInstructionConstraint>,
+    spending_limits: Vec<SquadsLimitedSpendingLimit>,
+) -> Result<SquadsCompactProgramInteractionPolicyCreationPayload> {
+    if constraints.len() > 20 || spending_limits.len() > 10 {
+        return Err(LoyalActionError::CompactPolicyPayloadOverflow);
+    }
+    ensure_compact_u8_len(constraints.len())?;
+    ensure_compact_u8_len(spending_limits.len())?;
+
+    let legacy = compile_program_interaction_payload(
+        account_index,
+        constraints,
+        spending_limits,
+    )?;
+    let mut table = SquadsCompactPubkeyTable::default();
+    let instructions_constraints = legacy
+        .instructions_constraints
+        .into_iter()
+        .map(|constraint| compile_compact_instruction_constraint(&mut table, constraint))
+        .collect::<Result<Vec<_>>>()?;
+    let spending_limits = legacy
+        .spending_limits
+        .into_iter()
+        .map(|limit| compile_compact_spending_limit(&mut table, limit))
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(SquadsCompactProgramInteractionPolicyCreationPayload {
+        account_index: legacy.account_index,
+        pubkey_table: SquadsSmallVecU8(table.pubkeys),
+        instructions_constraints: SquadsSmallVecU8(instructions_constraints),
+        pre_hook: None,
+        post_hook: None,
+        spending_limits: SquadsSmallVecU8(spending_limits),
+    })
+}
+
+#[derive(Default)]
+struct SquadsCompactPubkeyTable {
+    pubkeys: Vec<Pubkey>,
+}
+
+impl SquadsCompactPubkeyTable {
+    fn index(&mut self, pubkey: Pubkey) -> Result<u8> {
+        if let Some(index) = self
+            .pubkeys
+            .iter()
+            .position(|candidate| candidate == &pubkey)
+        {
+            return u8::try_from(index).map_err(|_| LoyalActionError::PubkeyTableOverflow);
+        }
+        if self.pubkeys.len() >= 240 {
+            return Err(LoyalActionError::PubkeyTableOverflow);
+        }
+        let index =
+            u8::try_from(self.pubkeys.len()).map_err(|_| LoyalActionError::PubkeyTableOverflow)?;
+        self.pubkeys.push(pubkey);
+        Ok(index)
+    }
+}
+
+fn ensure_compact_u8_len(len: usize) -> Result<()> {
+    u8::try_from(len)
+        .map(|_| ())
+        .map_err(|_| LoyalActionError::CompactPolicyPayloadOverflow)
+}
+
+fn compile_compact_instruction_constraint(
+    table: &mut SquadsCompactPubkeyTable,
+    constraint: SquadsInstructionConstraint,
+) -> Result<SquadsCompiledInstructionConstraint> {
+    ensure_compact_u8_len(constraint.account_constraints.len())?;
+    ensure_compact_u8_len(constraint.data_constraints.len())?;
+    let program_id_index = table.index(constraint.program_id)?;
+    let account_constraints = constraint
+        .account_constraints
+        .into_iter()
+        .map(|constraint| compile_compact_account_constraint(table, constraint))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(SquadsCompiledInstructionConstraint {
+        program_id_index,
+        account_constraints: SquadsSmallVecU8(account_constraints),
+        data_constraints: SquadsSmallVecU8(constraint.data_constraints),
+    })
+}
+
+fn compile_compact_account_constraint(
+    table: &mut SquadsCompactPubkeyTable,
+    constraint: SquadsAccountConstraint,
+) -> Result<SquadsCompiledAccountConstraint> {
+    let account_constraint = match constraint.account_constraint {
+        SquadsAccountConstraintType::Pubkey(pubkeys) => {
+            ensure_compact_u8_len(pubkeys.len())?;
+            let indices = pubkeys
+                .into_iter()
+                .map(|pubkey| table.index(pubkey))
+                .collect::<Result<Vec<_>>>()?;
+            SquadsCompiledAccountConstraintType::Pubkey(SquadsSmallVecU8(indices))
+        }
+        SquadsAccountConstraintType::AccountData(data_constraints) => {
+            ensure_compact_u8_len(data_constraints.len())?;
+            SquadsCompiledAccountConstraintType::AccountData(SquadsSmallVecU8(data_constraints))
+        }
+    };
+    let owner_index = constraint
+        .owner
+        .map(|owner| table.index(owner))
+        .transpose()?;
+    Ok(SquadsCompiledAccountConstraint {
+        account_index: constraint.account_index,
+        account_constraint,
+        owner_index,
+    })
+}
+
+fn compile_compact_spending_limit(
+    table: &mut SquadsCompactPubkeyTable,
+    limit: SquadsLimitedSpendingLimit,
+) -> Result<SquadsCompiledLimitedSpendingLimit> {
+    Ok(SquadsCompiledLimitedSpendingLimit {
+        mint_index: table.index(limit.mint)?,
+        time_constraints: limit.time_constraints,
+        quantity_constraints: limit.quantity_constraints,
     })
 }
 
@@ -847,7 +1265,13 @@ enum SquadsPolicyCreationPayload {
     InternalFundTransfer(Vec<u8>),
     SpendingLimit(SquadsSpendingLimitPolicyCreationPayload),
     SettingsChange(Vec<u8>),
-    ProgramInteraction(SquadsProgramInteractionPolicyCreationPayload),
+    /// The pinned Squads SBF retains the embedded-pubkey creation variant at
+    /// index 3 for compatibility. PolicyUpdate deliberately rejects it.
+    LegacyProgramInteraction(SquadsProgramInteractionPolicyCreationPayload),
+    /// Compact indexed payload at enum index 4. Squads requires this variant
+    /// when updating a ProgramInteraction policy created through the legacy
+    /// compatibility path.
+    ProgramInteraction(SquadsCompactProgramInteractionPolicyCreationPayload),
 }
 
 #[derive(BorshSerialize)]
@@ -888,6 +1312,88 @@ struct SquadsProgramInteractionPolicyCreationPayload {
     pre_hook: Option<SquadsHook>,
     post_hook: Option<SquadsHook>,
     spending_limits: Vec<SquadsLimitedSpendingLimit>,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsCompactProgramInteractionPolicyCreationPayload {
+    account_index: u8,
+    pubkey_table: SquadsSmallVecU8<Pubkey>,
+    instructions_constraints: SquadsSmallVecU8<SquadsCompiledInstructionConstraint>,
+    pre_hook: Option<SquadsCompiledHook>,
+    post_hook: Option<SquadsCompiledHook>,
+    spending_limits: SquadsSmallVecU8<SquadsCompiledLimitedSpendingLimit>,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsCompiledInstructionConstraint {
+    program_id_index: u8,
+    account_constraints: SquadsSmallVecU8<SquadsCompiledAccountConstraint>,
+    data_constraints: SquadsSmallVecU8<SquadsDataConstraint>,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsCompiledHook {
+    num_extra_accounts: u8,
+    account_constraints: SquadsSmallVecU8<SquadsCompiledAccountConstraint>,
+    instruction_data: SquadsSmallVecU16<u8>,
+    program_id_index: u8,
+    pass_inner_instructions: bool,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsCompiledLimitedSpendingLimit {
+    mint_index: u8,
+    time_constraints: SquadsLimitedTimeConstraints,
+    quantity_constraints: SquadsLimitedQuantityConstraints,
+}
+
+#[derive(BorshSerialize)]
+struct SquadsCompiledAccountConstraint {
+    account_index: u8,
+    account_constraint: SquadsCompiledAccountConstraintType,
+    owner_index: Option<u8>,
+}
+
+#[derive(BorshSerialize)]
+enum SquadsCompiledAccountConstraintType {
+    Pubkey(SquadsSmallVecU8<u8>),
+    AccountData(SquadsSmallVecU8<SquadsDataConstraint>),
+}
+
+struct SquadsSmallVecU8<T>(Vec<T>);
+
+impl<T: BorshSerialize> BorshSerialize for SquadsSmallVecU8<T> {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let len = u8::try_from(self.0.len()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Squads SmallVec<u8> length overflow",
+            )
+        })?;
+        len.serialize(writer)?;
+        for value in &self.0 {
+            value.serialize(writer)?;
+        }
+        Ok(())
+    }
+}
+
+struct SquadsSmallVecU16<T>(Vec<T>);
+
+impl<T: BorshSerialize> BorshSerialize for SquadsSmallVecU16<T> {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let len = u16::try_from(self.0.len()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Squads SmallVec<u16> length overflow",
+            )
+        })?;
+        len.serialize(writer)?;
+        for value in &self.0 {
+            value.serialize(writer)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(BorshSerialize)]

@@ -44,7 +44,10 @@ const MIGRATION_0046: &str = include_str!("../migrations/0046_laserstream_replay
 const MIGRATION_0049: &str =
     include_str!("../migrations/0049_durable_earn_reconciliation_jobs.sql");
 const MIGRATION_0050: &str = include_str!("../migrations/0050_autoswap_opt_in_realtime.sql");
+const MIGRATION_0051: &str = include_str!("../migrations/0051_multiply_route_state.sql");
 const MIGRATION_0052: &str = include_str!("../migrations/0052_voltr_opportunity_classes.sql");
+const MIGRATION_0053: &str = include_str!("../migrations/0053_multiply_production_engine.sql");
+const MIGRATION_0054: &str = include_str!("../migrations/0054_earn_max_per_user.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -459,9 +462,27 @@ impl NeonSqlClient {
                 expected_checksum: None,
             },
             StoreMigration {
+                version: 51,
+                name: "multiply_route_state",
+                sql: MIGRATION_0051,
+                expected_checksum: None,
+            },
+            StoreMigration {
                 version: 52,
                 name: "voltr_opportunity_classes",
                 sql: MIGRATION_0052,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 53,
+                name: "multiply_production_engine",
+                sql: MIGRATION_0053,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 54,
+                name: "earn_max_per_user",
+                sql: MIGRATION_0054,
                 expected_checksum: None,
             },
         ] {
@@ -1916,6 +1937,80 @@ impl NeonSqlClient {
         .await?
         .unwrap_or(0);
         Ok(event_id)
+    }
+
+    pub async fn project_earn_max_policy_set(
+        &self,
+        consumer_name: &str,
+        input: EarnMaxPolicySetProjectionInput,
+    ) -> Result<(), OrchestratorError> {
+        if input.settings.trim().is_empty()
+            || input.vault.trim().is_empty()
+            || input.manifest_version.trim().is_empty()
+            || input.observed_signature.trim().is_empty()
+            || !matches!(input.status.as_str(), "incomplete" | "ready" | "removed")
+            || input.manifest_sha256.len() != 64
+            || !input
+                .manifest_sha256
+                .bytes()
+                .all(|value| value.is_ascii_hexdigit() && !value.is_ascii_uppercase())
+            || !input.policy_accounts.is_array()
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "Earn MAX policy projection is malformed".to_owned(),
+            ));
+        }
+        let observed_slot = i64::try_from(input.observed_slot)
+            .map_err(|_| OrchestratorError::SlotOutOfRange(input.observed_slot))?;
+        let mut tx = self.pool.begin().await?;
+        let cursor = lock_projection_offset(&mut tx, consumer_name).await?;
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.earn_max_policy_sets (
+                settings, vault_index, vault, manifest_version, manifest_sha256,
+                status, policy_accounts, observed_signature, observed_slot,
+                observed_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+            ON CONFLICT (settings, vault_index) DO UPDATE SET
+                vault = EXCLUDED.vault,
+                manifest_version = EXCLUDED.manifest_version,
+                manifest_sha256 = EXCLUDED.manifest_sha256,
+                status = EXCLUDED.status,
+                policy_accounts = EXCLUDED.policy_accounts,
+                observed_signature = EXCLUDED.observed_signature,
+                observed_slot = EXCLUDED.observed_slot,
+                observed_at = EXCLUDED.observed_at,
+                updated_at = now()
+            WHERE EXCLUDED.observed_slot >= loyal_yield.earn_max_policy_sets.observed_slot
+            "#,
+        )
+        .bind(&input.settings)
+        .bind(i16::from(input.vault_index))
+        .bind(&input.vault)
+        .bind(&input.manifest_version)
+        .bind(&input.manifest_sha256)
+        .bind(&input.status)
+        .bind(input.policy_accounts)
+        .bind(&input.observed_signature)
+        .bind(observed_slot)
+        .bind(input.observed_at)
+        .execute(&mut *tx)
+        .await?;
+        if observed_slot > cursor {
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.projection_offsets
+                SET last_event_id = $2, updated_at = now()
+                WHERE consumer_name = $1
+                "#,
+            )
+            .bind(consumer_name)
+            .bind(observed_slot)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn advance_projection_offset(

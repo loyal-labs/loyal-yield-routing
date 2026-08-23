@@ -54,6 +54,16 @@ pub struct SquadsProgramInteractionPolicyView {
     pub spending_limits: Vec<SquadsLimitedSpendingLimitView>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SquadsProgramInteractionPolicyAccountView {
+    pub settings: Pubkey,
+    pub policy_seed: u64,
+    pub policy_account: Pubkey,
+    pub delegated_signer: Pubkey,
+    pub threshold: u16,
+    pub payload: SquadsProgramInteractionPolicyView,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SquadsLimitedSpendingLimitView {
     pub mint: Pubkey,
@@ -537,6 +547,86 @@ pub fn detect_jupiter_cross_mint_policy_account(
         return Ok(None);
     }
     Ok(Some(first))
+}
+
+/// Decode the complete security-relevant contract of a hookless, unlimited,
+/// one-signer ProgramInteraction policy account. Legacy and compact account
+/// encodings are accepted, but hooks, spending limits, expiration, malformed
+/// signer metadata, and non-canonical policy identity are rejected.
+pub fn decode_program_interaction_policy_account(
+    account_data: &[u8],
+) -> Result<Option<SquadsProgramInteractionPolicyAccountView>, PolicyDetectionError> {
+    let mut cursor = Cursor::new(account_data);
+    if cursor.read_array::<8>()? != anchor_account_discriminator("Policy") {
+        return Err(PolicyDetectionError::InvalidInstructionData(
+            "account discriminator is not a Squads Policy account",
+        ));
+    }
+    let settings = cursor.read_pubkey()?;
+    let policy_seed = cursor.read_u64()?;
+    let policy_bump = cursor.read_u8()?;
+    let transaction_index = cursor.read_u64()?;
+    let stale_transaction_index = cursor.read_u64()?;
+    let signer_count = read_bounded_u32_len(&mut cursor, 32, "too many policy signers")?;
+    let mut signers = Vec::with_capacity(signer_count);
+    for _ in 0..signer_count {
+        signers.push((cursor.read_pubkey()?, cursor.read_u8()?));
+    }
+    let threshold = cursor.read_u16()?;
+    let time_lock = cursor.read_u32()?;
+    if cursor.read_u8()? != 3 {
+        return Ok(None);
+    }
+    let account_index = cursor.read_u8()?;
+    let candidates = [
+        read_legacy_program_interaction_policy_account(cursor, account_index).ok(),
+        read_compact_program_interaction_policy_account(cursor, account_index).ok(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let (policy_account, expected_bump) = derive_action_account(&settings, policy_seed);
+    let Some((delegated_signer, permissions)) = signers.as_slice().first().copied() else {
+        return Ok(None);
+    };
+    if signers.len() != 1
+        || permissions != SQUADS_FULL_PERMISSIONS_MASK
+        || threshold != 1
+        || time_lock != 0
+        || stale_transaction_index > transaction_index
+        || policy_bump != expected_bump
+    {
+        return Ok(None);
+    }
+    let valid = candidates
+        .into_iter()
+        .filter(|candidate| {
+            !candidate.pre_hook
+                && !candidate.post_hook
+                && candidate.exact_spending_limit_state
+                && candidate.payload.spending_limits.is_empty()
+                && candidate.start >= 0
+                && !candidate.has_expiration
+                && compact_pubkey_table_is_tight(&candidate.payload)
+        })
+        .map(|candidate| candidate.payload)
+        .collect::<Vec<_>>();
+    let Some(first) = valid.first().cloned() else {
+        return Ok(None);
+    };
+    if valid.iter().any(|candidate| candidate != &first) {
+        return Err(PolicyDetectionError::InvalidInstructionData(
+            "ambiguous ProgramInteraction account encoding",
+        ));
+    }
+    Ok(Some(SquadsProgramInteractionPolicyAccountView {
+        settings,
+        policy_seed,
+        policy_account,
+        delegated_signer,
+        threshold,
+        payload: first,
+    }))
 }
 
 /// Detect canonical one- or multi-action Squads policy removals.

@@ -90,6 +90,7 @@ case "$family" in
       fleet-route-confirmer
       loyal-squads-policy-monitor
       loyal-yield-realtime
+      multiply-route-worker
       route-lookup-table-provisioner
       same-mint-reserve-swap
       same-mint-yield-monitor
