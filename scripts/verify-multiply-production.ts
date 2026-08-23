@@ -375,9 +375,14 @@ async function checkLivePrerequisites(): Promise<Json> {
   const migrations = await sql`
     SELECT version, name, checksum
     FROM loyal_yield.schema_migrations
-    WHERE version = 54
+    WHERE version IN (54, 55)
+    ORDER BY version
   `;
-  if (migrations.length !== 1 || String(migrations[0]?.name) !== "earn_max_per_user") {
+  if (
+    migrations.length !== 2 ||
+    String(migrations[0]?.name) !== "earn_max_per_user" ||
+    String(migrations[1]?.name) !== "earn_max_repeated_lifecycle"
+  ) {
     fail("deployed_earn_max_migration_missing", { migrations });
   }
   const appUrl = requiredEnv("EARN_MAX_APP_URL").replace(/\/$/, "");

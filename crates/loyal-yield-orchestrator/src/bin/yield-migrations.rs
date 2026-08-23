@@ -333,6 +333,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0054_earn_max_per_user.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 55,
+        name: "earn_max_repeated_lifecycle",
+        sql: include_str!("../../../loyal-yield-store/migrations/0055_earn_max_repeated_lifecycle.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

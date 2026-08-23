@@ -140,7 +140,7 @@ impl WorkerRuntime {
             )
             .await?;
         for status in signatures {
-            if status.slot < minimum_slot || status.err.is_some() {
+            if status.slot <= minimum_slot || status.err.is_some() {
                 continue;
             }
             let signature = Signature::from_str(&status.signature)?;

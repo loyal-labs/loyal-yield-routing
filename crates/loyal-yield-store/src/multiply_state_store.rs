@@ -304,8 +304,7 @@ impl NeonSqlClient {
               ON policy.settings = route.settings
              AND policy.vault_index = route.vault_index
             WHERE policy.status = 'ready'
-              AND route.state ->> 'goal' = 'idle'
-              AND route.state -> 'deposit' = 'null'::jsonb
+              AND route.state ->> 'goal' IN ('idle', 'claimed')
               AND route.state -> 'currentOperationId' = 'null'::jsonb
             ORDER BY route.updated_at, route.route_key
             LIMIT 1
