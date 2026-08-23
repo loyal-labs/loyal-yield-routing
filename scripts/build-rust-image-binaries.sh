@@ -57,6 +57,7 @@ case "$family" in
       loyal-timescale-migrations
       loyal-squads-policy-monitor
       loyal-yield-realtime
+      multiply-route-worker
       route-lookup-table-alert-monitor
       route-lookup-table-cleanup
       route-lookup-table-legacy-import
