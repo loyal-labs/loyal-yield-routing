@@ -54,6 +54,8 @@ const MIGRATION_0057: &str = include_str!("../migrations/0057_autodeposit_client
 const MIGRATION_0058: &str =
     include_str!("../migrations/0058_autoswap_confirmed_reconciliation.sql");
 const MIGRATION_0059: &str = include_str!("../migrations/0059_autodeposit_single_target_state.sql");
+const MIGRATION_0060: &str =
+    include_str!("../migrations/0060_rebalance_confirmation_target_state.sql");
 const MIGRATION_0061: &str =
     include_str!("../migrations/0061_coalesced_autodeposit_reconciliation.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
@@ -521,6 +523,12 @@ impl NeonSqlClient {
                 version: 59,
                 name: "autodeposit_single_target_state",
                 sql: MIGRATION_0059,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 60,
+                name: "rebalance_confirmation_target_state",
+                sql: MIGRATION_0060,
                 expected_checksum: None,
             },
             StoreMigration {

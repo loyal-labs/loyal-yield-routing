@@ -21,9 +21,24 @@ store_root="$routing_root/crates/loyal-yield-store"
 monitor_root="$routing_root/crates/balance-sweep-ata-monitor"
 migration="$store_root/migrations/0061_coalesced_autodeposit_reconciliation.sql"
 db_test="$store_root/tests/autodeposit_reconciliation_requests_db.rs"
+store_source="$store_root/src/store.rs"
+migration_runner="$routing_root/crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs"
 
 [[ -f "$migration" ]] || fail "migration 0061 is missing"
 [[ -f "$db_test" ]] || fail "coalesced reconciliation database contract test is missing"
+
+printf '== Migration registry continuity\n'
+for registry in "$store_source" "$migration_runner"; do
+  for entry in \
+    'version: 59,' \
+    'version: 60,' \
+    'version: 61,' \
+    'name: "rebalance_confirmation_target_state"'; do
+    rg --quiet --fixed-strings "$entry" "$registry" ||
+      fail "$(basename "$registry") is missing migration registry entry: $entry"
+  done
+done
+pass "migration 60 is registered between migrations 59 and 61"
 
 printf '== Bounded queue schema\n'
 for required in \
