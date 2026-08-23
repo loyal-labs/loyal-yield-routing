@@ -10,6 +10,11 @@ ALTER TABLE loyal_yield.balance_sweep_targets
 ALTER TABLE loyal_yield.balance_sweep_targets
     RENAME COLUMN lifecycle_status TO chain_status;
 
+-- PostgreSQL preserves the legacy lifecycle check across the rename. Drop it
+-- before config projection or normalization writes the new state vocabulary.
+ALTER TABLE loyal_yield.balance_sweep_targets
+    DROP CONSTRAINT IF EXISTS balance_sweep_targets_lifecycle_status_chk;
+
 ALTER TABLE loyal_yield.balance_sweep_targets
     ADD COLUMN IF NOT EXISTS chain_observation_slot BIGINT NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS setup_generation BIGINT NOT NULL DEFAULT 1,
@@ -58,6 +63,7 @@ SET chain_status = 'pending'
 WHERE chain_status IN (
     'pending_policy',
     'pending_delegation',
+    'closing',
     'paused_missing_position'
 );
 
