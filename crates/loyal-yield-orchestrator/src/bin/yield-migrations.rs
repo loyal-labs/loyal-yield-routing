@@ -345,6 +345,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0056_earn_max_dynamic_policy_seeds.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 57,
+        name: "autodeposit_client_projection",
+        sql: include_str!("../../../loyal-yield-store/migrations/0057_autodeposit_client_projection.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

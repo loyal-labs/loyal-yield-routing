@@ -263,6 +263,7 @@ impl AtaUpdateSource for LaserstreamAtaUpdateSource {
         let initial_watch_set = self.watch_set.clone().unwrap_or(SubscriptionWatchSet {
             balance_sweep_accounts: accounts.iter().map(ToString::to_string).collect(),
             earn_vaults: Vec::new(),
+            observation_start_slot: None,
         });
         let watch_set = Arc::new(RwLock::new(initial_watch_set));
         self.spawn_with_watch_set(accounts, tx, running, watch_set)
@@ -539,6 +540,7 @@ pub fn build_laserstream_subscribe_request(
         &SubscriptionWatchSet {
             balance_sweep_accounts: accounts.iter().map(ToString::to_string).collect(),
             earn_vaults: Vec::new(),
+            observation_start_slot: None,
         },
         from_slot,
     )
@@ -554,6 +556,7 @@ async fn run_laserstream_loop(
     let mut current_watch_set = source.watch_set.clone().unwrap_or(SubscriptionWatchSet {
         balance_sweep_accounts: Vec::new(),
         earn_vaults: Vec::new(),
+        observation_start_slot: None,
     });
     current_watch_set
         .balance_sweep_accounts
@@ -826,6 +829,7 @@ mod tests {
             &SubscriptionWatchSet {
                 balance_sweep_accounts: vec!["11111111111111111111111111111111".to_owned()],
                 earn_vaults: Vec::new(),
+                observation_start_slot: None,
             },
             42,
         );

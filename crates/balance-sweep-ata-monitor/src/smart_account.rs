@@ -15,7 +15,7 @@ use helius_laserstream::grpc::{
 };
 use loyal_actions::{
     derive_associated_token_account, derive_kamino_vanilla_obligation, derive_squads_vault,
-    earn_stablecoins,
+    earn_stablecoins, USDC_MINT,
 };
 use loyal_kamino_data::targets::loyal_safe_markets;
 use loyal_yield_store::EarnSubscriptionTarget;
@@ -28,13 +28,19 @@ pub const EARN_POLICY_ACCOUNTS: &str = "earn_policy_accounts";
 pub const EARN_VAULT_ACCOUNTS: &str = "earn_vault_accounts";
 pub const EARN_IDLE_TOKEN_ACCOUNTS: &str = "earn_idle_token_accounts";
 pub const EARN_OBLIGATIONS: &str = "earn_obligations";
+pub const EARN_AUTODEPOSIT_WALLET_ATAS: &str = "earn_autodeposit_wallet_atas";
+pub const EARN_SUBSCRIPTION_AUTHORITIES: &str = "earn_subscription_authorities";
+pub const EARN_RECURRING_DELEGATIONS: &str = "earn_recurring_delegations";
 
-const EARN_ACCOUNT_CHANNELS: [&str; 5] = [
+const EARN_ACCOUNT_CHANNELS: [&str; 8] = [
     EARN_SMART_ACCOUNTS,
     EARN_POLICY_ACCOUNTS,
     EARN_VAULT_ACCOUNTS,
     EARN_IDLE_TOKEN_ACCOUNTS,
     EARN_OBLIGATIONS,
+    EARN_AUTODEPOSIT_WALLET_ATAS,
+    EARN_SUBSCRIPTION_AUTHORITIES,
+    EARN_RECURRING_DELEGATIONS,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -57,6 +63,7 @@ pub struct EarnVaultWatch {
 pub struct SubscriptionWatchSet {
     pub balance_sweep_accounts: Vec<String>,
     pub earn_vaults: Vec<EarnVaultWatch>,
+    pub observation_start_slot: Option<u64>,
 }
 
 impl SubscriptionWatchSet {
@@ -66,6 +73,7 @@ impl SubscriptionWatchSet {
     ) -> Result<Self> {
         let safe_markets = loyal_safe_markets();
         let mut vaults = BTreeMap::<(String, String), EarnVaultWatch>::new();
+        let mut observation_start_slot: Option<u64> = None;
         for target in targets {
             let settings = Pubkey::from_str(&target.settings)
                 .with_context(|| format!("invalid Earn settings {}", target.settings))?;
@@ -101,6 +109,33 @@ impl SubscriptionWatchSet {
                 pubkey: settings.to_string(),
                 role: "smart_account".to_owned(),
             });
+            if target.observation_start_slot.is_some() {
+                let wallet = Pubkey::from_str(&target.wallet)
+                    .with_context(|| format!("invalid Autodeposit wallet {}", target.wallet))?;
+                entry.accounts.push(EarnWatchAccount {
+                    pubkey: derive_associated_token_account(wallet, USDC_MINT, spl_token::ID)
+                        .to_string(),
+                    role: "autodeposit_wallet_ata".to_owned(),
+                });
+                observation_start_slot =
+                    match (observation_start_slot, target.observation_start_slot) {
+                        (Some(current), Some(next)) => Some(current.min(next)),
+                        (None, next) => next,
+                        (current, None) => current,
+                    };
+            }
+            for (index, account) in target.autodeposit_accounts.into_iter().enumerate() {
+                Pubkey::from_str(&account)
+                    .with_context(|| format!("invalid Autodeposit account {account}"))?;
+                entry.accounts.push(EarnWatchAccount {
+                    pubkey: account,
+                    role: if index == 0 {
+                        "subscription_authority".to_owned()
+                    } else {
+                        "recurring_delegation".to_owned()
+                    },
+                });
+            }
             entry.accounts.push(EarnWatchAccount {
                 pubkey: vault.to_string(),
                 role: "vault".to_owned(),
@@ -153,6 +188,7 @@ impl SubscriptionWatchSet {
         Ok(Self {
             balance_sweep_accounts,
             earn_vaults,
+            observation_start_slot,
         })
     }
 
@@ -189,6 +225,12 @@ impl SubscriptionWatchSet {
             }
         }
         self.earn_vaults = current.into_values().collect();
+        self.observation_start_slot =
+            match (self.observation_start_slot, previous.observation_start_slot) {
+                (Some(current), Some(old)) => Some(current.min(old)),
+                (None, old) => old,
+                (current, None) => current,
+            };
         Ok(())
     }
 
@@ -220,6 +262,9 @@ impl SubscriptionWatchSet {
                     "vault" => EARN_VAULT_ACCOUNTS,
                     "idle_token" => EARN_IDLE_TOKEN_ACCOUNTS,
                     "obligation" => EARN_OBLIGATIONS,
+                    "autodeposit_wallet_ata" => EARN_AUTODEPOSIT_WALLET_ATAS,
+                    "subscription_authority" => EARN_SUBSCRIPTION_AUTHORITIES,
+                    "recurring_delegation" => EARN_RECURRING_DELEGATIONS,
                     _ => continue,
                 };
                 channels
@@ -398,6 +443,8 @@ mod tests {
                     vault_pubkey: Some(vault.to_string()),
                     policy_accounts: vec![policy.to_string()],
                     markets: Vec::new(),
+                    autodeposit_accounts: Vec::new(),
+                    observation_start_slot: None,
                 }],
             )
             .expect("valid targeted watch set"),

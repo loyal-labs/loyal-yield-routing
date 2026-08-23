@@ -349,11 +349,7 @@ pub fn update_exact_program_interaction_policy_instruction(
         threshold: 1,
         time_lock: 0,
         policy_update_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
-            compile_program_interaction_payload(
-                account_index,
-                constraints,
-                Vec::new(),
-            )?,
+            compile_program_interaction_payload(account_index, constraints, Vec::new())?,
         ),
         expiration_args: None,
     };
@@ -422,11 +418,7 @@ pub fn create_semantic_program_interaction_policy_instruction(
     let action = SquadsSettingsAction::PolicyCreate {
         seed: policy_seed,
         policy_creation_payload: SquadsPolicyCreationPayload::ProgramInteraction(
-            compile_compact_program_interaction_payload(
-                account_index,
-                constraints,
-                Vec::new(),
-            )?,
+            compile_compact_program_interaction_payload(account_index, constraints, Vec::new())?,
         ),
         signers: vec![SquadsSmartAccountSigner {
             key: delegated_signer,
@@ -912,11 +904,7 @@ fn create_program_interaction_action_instruction_with_spending_limits(
     let action = SquadsSettingsAction::PolicyCreate {
         seed: action_seed,
         policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
-            compile_program_interaction_payload(
-                account_index,
-                constraints,
-                spending_limits,
-            )?,
+            compile_program_interaction_payload(account_index, constraints, spending_limits)?,
         ),
         signers: vec![SquadsSmartAccountSigner {
             key: delegated_signer,
@@ -1031,11 +1019,7 @@ fn compile_compact_program_interaction_payload(
     ensure_compact_u8_len(constraints.len())?;
     ensure_compact_u8_len(spending_limits.len())?;
 
-    let legacy = compile_program_interaction_payload(
-        account_index,
-        constraints,
-        spending_limits,
-    )?;
+    let legacy = compile_program_interaction_payload(account_index, constraints, spending_limits)?;
     let mut table = SquadsCompactPubkeyTable::default();
     let instructions_constraints = legacy
         .instructions_constraints
