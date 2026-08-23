@@ -49,6 +49,7 @@ use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
     signature::Signature,
+    transaction::TransactionError,
 };
 use solana_transaction_status_client_types::{
     option_serializer::OptionSerializer, UiTransactionEncoding,
@@ -77,6 +78,28 @@ pub struct EarnPolicyTransaction {
     pub instructions: Vec<Instruction>,
 }
 
+#[derive(Debug, Clone)]
+pub enum EarnPolicyTransactionRead {
+    NoStateChange,
+    Transaction(EarnPolicyTransaction),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolicyTransactionDisposition {
+    Decode,
+    NoStateChange,
+}
+
+fn policy_transaction_disposition(
+    error: Option<&TransactionError>,
+) -> PolicyTransactionDisposition {
+    if error.is_some() {
+        PolicyTransactionDisposition::NoStateChange
+    } else {
+        PolicyTransactionDisposition::Decode
+    }
+}
+
 pub trait EarnChainReader: Send + Sync {
     fn mutation_for<'a>(
         &'a self,
@@ -87,7 +110,7 @@ pub trait EarnChainReader: Send + Sync {
     fn policy_transaction_for<'a>(
         &'a self,
         _update: &'a NormalizedEarnUpdate,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<EarnPolicyTransaction>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<EarnPolicyTransactionRead>>> + Send + 'a>> {
         Box::pin(async { Ok(None) })
     }
 }
@@ -151,7 +174,7 @@ impl EarnChainReader for RpcEarnChainReader {
     fn policy_transaction_for<'a>(
         &'a self,
         update: &'a NormalizedEarnUpdate,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<EarnPolicyTransaction>>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<EarnPolicyTransactionRead>>> + Send + 'a>> {
         Box::pin(async move {
             let Some(signature) = update.signature.clone() else {
                 return Ok(None);
@@ -636,7 +659,11 @@ fn read_squads_policy_actions(
     signature: &str,
     expected_slot: u64,
 ) -> Result<Vec<SquadsSettingsActionView>> {
-    let transaction = read_squads_policy_transaction(rpc, signature, expected_slot)?;
+    let EarnPolicyTransactionRead::Transaction(transaction) =
+        read_squads_policy_transaction(rpc, signature, expected_slot)?
+    else {
+        return Ok(Vec::new());
+    };
     let mut actions = Vec::new();
     for instruction in transaction.instructions {
         actions.extend(
@@ -651,7 +678,7 @@ fn read_squads_policy_transaction(
     rpc: &RpcClient,
     signature: &str,
     expected_slot: u64,
-) -> Result<EarnPolicyTransaction> {
+) -> Result<EarnPolicyTransactionRead> {
     let parsed_signature =
         Signature::from_str(signature).context("invalid transaction signature")?;
     let transaction = rpc.get_transaction_with_config(
@@ -673,8 +700,10 @@ fn read_squads_policy_transaction(
         .meta
         .as_ref()
         .context("policy transaction has no status metadata")?;
-    if meta.err.is_some() {
-        bail!("policy transaction {signature} failed on chain");
+    if policy_transaction_disposition(meta.err.as_ref())
+        == PolicyTransactionDisposition::NoStateChange
+    {
+        return Ok(EarnPolicyTransactionRead::NoStateChange);
     }
     let transaction = transaction
         .transaction
@@ -716,11 +745,13 @@ fn read_squads_policy_transaction(
             data: compiled.data.clone(),
         });
     }
-    Ok(EarnPolicyTransaction {
-        signature: signature.to_owned(),
-        slot: expected_slot,
-        instructions,
-    })
+    Ok(EarnPolicyTransactionRead::Transaction(
+        EarnPolicyTransaction {
+            signature: signature.to_owned(),
+            slot: expected_slot,
+            instructions,
+        },
+    ))
 }
 
 fn read_deposit_proof(
@@ -1138,7 +1169,7 @@ pub enum EarnReconciliationProcessOutcome {
 pub async fn reconcile_targeted_policy_vault_update(
     store: &OrchestratorStore,
     chain: &dyn EarnChainReader,
-    policy_monitor: &Mutex<PolicyMonitor<PostgresPolicyMatchSink>>,
+    policy_monitor: Option<&Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
     update: &NormalizedEarnUpdate,
     vault: &EarnVaultWatch,
 ) -> Result<bool> {
@@ -1160,6 +1191,12 @@ pub async fn reconcile_targeted_policy_vault_update(
         return Ok(false);
     }
     let Some(transaction) = chain.policy_transaction_for(update).await? else {
+        return Ok(false);
+    };
+    let EarnPolicyTransactionRead::Transaction(transaction) = transaction else {
+        return Ok(true);
+    };
+    let Some(policy_monitor) = policy_monitor else {
         return Ok(false);
     };
     let settings = Pubkey::from_str(&vault.settings)?;
@@ -1295,7 +1332,7 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
             .await;
         }
     };
-    let policy_reconciled = if let Some(policy_monitor) = policy_monitor {
+    let policy_reconciled =
         match reconcile_targeted_policy_vault_update(store, chain, policy_monitor, &update, &vault)
             .await
         {
@@ -1310,10 +1347,7 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
                 )
                 .await;
             }
-        }
-    } else {
-        false
-    };
+        };
     let mutation = if policy_reconciled {
         Ok(EarnDirectMutation::Noop)
     } else {
@@ -1489,6 +1523,29 @@ struct FixturePolicy {
 }
 
 impl EarnChainReader for FixtureEarnChainReader {
+    fn policy_transaction_for<'a>(
+        &'a self,
+        update: &'a NormalizedEarnUpdate,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<EarnPolicyTransactionRead>>> + Send + 'a>> {
+        Box::pin(async move {
+            let Some(signature) = update.signature.as_deref() else {
+                return Ok(None);
+            };
+            let Some(evidence) = self.signatures.get(signature) else {
+                return Ok(None);
+            };
+            if evidence.slot != update.slot {
+                bail!(
+                    "fixture evidence slot {} does not match update slot {}",
+                    evidence.slot,
+                    update.slot
+                );
+            }
+            Ok((evidence.kind == "failed_transaction")
+                .then_some(EarnPolicyTransactionRead::NoStateChange))
+        })
+    }
+
     fn mutation_for<'a>(
         &'a self,
         update: &'a NormalizedEarnUpdate,
@@ -1685,6 +1742,21 @@ fn fixture_policy_match(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_sdk::{instruction::InstructionError, transaction::TransactionError};
+
+    #[test]
+    fn finalized_failed_policy_transaction_is_noop() {
+        let error = TransactionError::InstructionError(2, InstructionError::Custom(15_001));
+
+        assert_eq!(
+            policy_transaction_disposition(Some(&error)),
+            PolicyTransactionDisposition::NoStateChange
+        );
+        assert_eq!(
+            policy_transaction_disposition(None),
+            PolicyTransactionDisposition::Decode
+        );
+    }
 
     fn token_balance(index: u64, owner: &str, mint: &str, amount: u64) -> Value {
         json!({
