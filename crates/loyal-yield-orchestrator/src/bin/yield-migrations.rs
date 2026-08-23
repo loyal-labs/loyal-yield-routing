@@ -369,6 +369,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0060_rebalance_confirmation_target_state.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 61,
+        name: "coalesced_autodeposit_reconciliation",
+        sql: include_str!("../../../loyal-yield-store/migrations/0061_coalesced_autodeposit_reconciliation.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

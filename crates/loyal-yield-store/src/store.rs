@@ -54,6 +54,8 @@ const MIGRATION_0057: &str = include_str!("../migrations/0057_autodeposit_client
 const MIGRATION_0058: &str =
     include_str!("../migrations/0058_autoswap_confirmed_reconciliation.sql");
 const MIGRATION_0059: &str = include_str!("../migrations/0059_autodeposit_single_target_state.sql");
+const MIGRATION_0061: &str =
+    include_str!("../migrations/0061_coalesced_autodeposit_reconciliation.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -521,6 +523,12 @@ impl NeonSqlClient {
                 sql: MIGRATION_0059,
                 expected_checksum: None,
             },
+            StoreMigration {
+                version: 61,
+                name: "coalesced_autodeposit_reconciliation",
+                sql: MIGRATION_0061,
+                expected_checksum: None,
+            },
         ] {
             apply_store_migration(&self.pool, migration).await?;
         }
@@ -564,6 +572,14 @@ impl NeonSqlClient {
             inserted_jobs += usize::try_from(inserted.rows_affected()).unwrap_or(usize::MAX);
         }
 
+        let mut coalesced_autodeposit_requests = 0_usize;
+        for target_id in &input.autodeposit_target_ids {
+            let changed =
+                upsert_autodeposit_reconciliation_request(&mut tx, *target_id, durable_slot)
+                    .await?;
+            coalesced_autodeposit_requests += usize::from(changed);
+        }
+
         sqlx::query(
             r#"
             INSERT INTO loyal_yield.laserstream_replay_cursors (consumer_name, durable_slot)
@@ -584,8 +600,136 @@ impl NeonSqlClient {
         tx.commit().await?;
         Ok(EarnReconciliationEnqueueOutcome {
             inserted_jobs,
+            coalesced_autodeposit_requests,
             cursor_slot: input.durable_slot,
         })
+    }
+
+    pub async fn enqueue_autodeposit_reconciliation_request(
+        &self,
+        target_id: BalanceSweepTargetId,
+        requested_slot: u64,
+    ) -> Result<bool, OrchestratorError> {
+        let requested_slot = to_i64_slot(requested_slot)?;
+        let mut tx = self.pool.begin().await?;
+        let changed =
+            upsert_autodeposit_reconciliation_request(&mut tx, target_id, requested_slot).await?;
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    pub async fn claim_autodeposit_reconciliation_request(
+        &self,
+        claim_owner: &str,
+        lease_seconds: i64,
+    ) -> Result<Option<AutodepositReconciliationRequest>, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            WITH candidate AS (
+                SELECT target_id
+                FROM loyal_yield.autodeposit_reconciliation_requests
+                WHERE processed_slot < requested_slot
+                  AND next_attempt_at <= NOW()
+                  AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())
+                ORDER BY requested_slot, target_id
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            )
+            UPDATE loyal_yield.autodeposit_reconciliation_requests request
+            SET claim_owner = $1,
+                claim_expires_at = NOW() + make_interval(secs => $2::double precision),
+                attempt_count = attempt_count + 1,
+                updated_at = NOW()
+            FROM candidate
+            WHERE request.target_id = candidate.target_id
+            RETURNING request.target_id, request.requested_slot, request.attempt_count
+            "#,
+        )
+        .bind(claim_owner)
+        .bind(lease_seconds)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(AutodepositReconciliationRequest {
+                target_id: BalanceSweepTargetId(row.get("target_id")),
+                requested_slot: nonnegative_i64_to_u64(
+                    row.get("requested_slot"),
+                    "Autodeposit requested slot",
+                )?,
+                attempt_count: row.get("attempt_count"),
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn complete_autodeposit_reconciliation_request(
+        &self,
+        target_id: BalanceSweepTargetId,
+        claim_owner: &str,
+        processed_slot: u64,
+    ) -> Result<bool, OrchestratorError> {
+        let processed_slot = to_i64_slot(processed_slot)?;
+        let row = sqlx::query(
+            r#"
+            UPDATE loyal_yield.autodeposit_reconciliation_requests
+            SET requested_slot = GREATEST(requested_slot, $3),
+                processed_slot = GREATEST(processed_slot, $3),
+                attempt_count = 0,
+                claim_owner = NULL,
+                claim_expires_at = NULL,
+                last_error = NULL,
+                updated_at = NOW()
+            WHERE target_id = $1
+              AND claim_owner = $2
+              AND claim_expires_at > NOW()
+            RETURNING processed_slot < requested_slot AS still_pending
+            "#,
+        )
+        .bind(target_id.as_i64())
+        .bind(claim_owner)
+        .bind(processed_slot)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(format!(
+                "Autodeposit reconciliation request {target_id} lost claim before completion"
+            ))
+        })?;
+        Ok(row.get("still_pending"))
+    }
+
+    pub async fn retry_autodeposit_reconciliation_request(
+        &self,
+        target_id: BalanceSweepTargetId,
+        claim_owner: &str,
+        error: &str,
+        retry_after_seconds: i64,
+    ) -> Result<(), OrchestratorError> {
+        let updated = sqlx::query(
+            r#"
+            UPDATE loyal_yield.autodeposit_reconciliation_requests
+            SET claim_owner = NULL,
+                claim_expires_at = NULL,
+                next_attempt_at = NOW() + make_interval(secs => $3::double precision),
+                last_error = $4,
+                updated_at = NOW()
+            WHERE target_id = $1
+              AND claim_owner = $2
+              AND claim_expires_at > NOW()
+            "#,
+        )
+        .bind(target_id.as_i64())
+        .bind(claim_owner)
+        .bind(retry_after_seconds)
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "Autodeposit reconciliation request {target_id} lost claim before retry"
+            )));
+        }
+        Ok(())
     }
 
     pub async fn claim_earn_reconciliation_job(
@@ -1051,6 +1195,7 @@ impl NeonSqlClient {
         let nonce = to_i64_amount(input.nonce)?;
         let amount = to_i64_amount(input.amount_per_period)?;
         let period = to_i64_amount(input.period_length_seconds)?;
+        let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
             r#"
             UPDATE loyal_yield.balance_sweep_targets
@@ -1091,14 +1236,17 @@ impl NeonSqlClient {
         .bind(slot)
         .bind(&input.wallet)
         .bind(&input.vault_pubkey)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| {
             OrchestratorError::StoreInvariant(
                 "Autodeposit policy target is not indexed yet; retry the durable event".to_owned(),
             )
         })?;
-        Ok(BalanceSweepTargetId(row.get("id")))
+        let target_id = BalanceSweepTargetId(row.get("id"));
+        upsert_autodeposit_reconciliation_request(&mut tx, target_id, slot).await?;
+        tx.commit().await?;
+        Ok(target_id)
     }
 
     pub async fn load_autodeposit_target_snapshot_context(
@@ -1131,6 +1279,65 @@ impl NeonSqlClient {
             recurring_delegation: row.get("recurring_delegation"),
             setup_generation: row.get("setup_generation"),
         }))
+    }
+
+    pub async fn load_autodeposit_target_snapshot_context_by_id(
+        &self,
+        target_id: BalanceSweepTargetId,
+    ) -> Result<Option<AutodepositTargetSnapshotContext>, OrchestratorError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, wallet, wallet_token_ata, policy_account,
+                   subscription_authority, recurring_delegation, setup_generation
+            FROM loyal_yield.balance_sweep_targets
+            WHERE id = $1
+              AND subscription_authority IS NOT NULL
+              AND recurring_delegation IS NOT NULL
+            "#,
+        )
+        .bind(target_id.as_i64())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| AutodepositTargetSnapshotContext {
+            target_id: BalanceSweepTargetId(row.get("id")),
+            wallet: row.get("wallet"),
+            wallet_token_ata: row.get("wallet_token_ata"),
+            policy_account: row.get("policy_account"),
+            subscription_authority: row.get("subscription_authority"),
+            recurring_delegation: row.get("recurring_delegation"),
+            setup_generation: row.get("setup_generation"),
+        }))
+    }
+
+    pub async fn load_autodeposit_reconciliation_target_id(
+        &self,
+        settings: &str,
+        vault_pubkey: &str,
+        account_pubkey: &str,
+    ) -> Result<Option<BalanceSweepTargetId>, OrchestratorError> {
+        let target_id = sqlx::query_scalar(
+            r#"
+            SELECT id
+            FROM loyal_yield.balance_sweep_targets
+            WHERE settings = $1
+              AND vault_pubkey = $2
+              AND chain_status <> 'closed'
+              AND (
+                    policy_account = $3
+                 OR subscription_authority = $3
+                 OR recurring_delegation = $3
+                 OR wallet_token_ata = $3
+              )
+            ORDER BY policy_seed DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(settings)
+        .bind(vault_pubkey)
+        .bind(account_pubkey)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(target_id.map(BalanceSweepTargetId))
     }
 
     pub async fn reconcile_autodeposit_chain_observation(
@@ -7729,6 +7936,35 @@ fn skipped_idempotency_key(vault_id: VaultId, reason: SkipReason) -> String {
 
 fn to_i64_amount(amount: u64) -> Result<i64, OrchestratorError> {
     i64::try_from(amount).map_err(|_| OrchestratorError::amount_out_of_range(amount))
+}
+
+async fn upsert_autodeposit_reconciliation_request(
+    tx: &mut Transaction<'_, Postgres>,
+    target_id: BalanceSweepTargetId,
+    requested_slot: i64,
+) -> Result<bool, OrchestratorError> {
+    let row = sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.autodeposit_reconciliation_requests
+            (target_id, requested_slot)
+        VALUES ($1, $2)
+        ON CONFLICT (target_id) DO UPDATE SET
+            requested_slot = EXCLUDED.requested_slot,
+            next_attempt_at = LEAST(
+                loyal_yield.autodeposit_reconciliation_requests.next_attempt_at,
+                NOW()
+            ),
+            updated_at = NOW()
+        WHERE EXCLUDED.requested_slot
+            > loyal_yield.autodeposit_reconciliation_requests.requested_slot
+        RETURNING target_id
+        "#,
+    )
+    .bind(target_id.as_i64())
+    .bind(requested_slot)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.is_some())
 }
 
 fn to_i64_slot(slot: u64) -> Result<i64, OrchestratorError> {

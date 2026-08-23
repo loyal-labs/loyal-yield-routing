@@ -41,9 +41,10 @@ pub mod monitor_observability;
 pub mod smart_account;
 
 pub use earn_reconciliation::{
-    enqueue_normalized_earn_update, process_next_earn_reconciliation_job,
-    process_next_earn_reconciliation_job_with_policy_monitor,
-    reconcile_targeted_policy_vault_update, run_earn_reconciliation_consumer, EarnChainReader,
+    enqueue_normalized_earn_update, process_next_autodeposit_reconciliation_request,
+    process_next_earn_reconciliation_job, process_next_earn_reconciliation_job_with_policy_monitor,
+    reconcile_targeted_policy_vault_update, run_autodeposit_reconciliation_consumer,
+    run_earn_reconciliation_consumer, AutodepositReconciliationProcessOutcome, EarnChainReader,
     EarnPolicyTransaction, EarnReconciliationProcessOutcome, FixtureEarnChainReader,
     RpcEarnChainReader,
 };
@@ -472,7 +473,7 @@ pub async fn run_event_loop(
                 )
                 .await
                 .map_err(|error| anyhow::anyhow!(error))?;
-                earn.wake.notify_one();
+                earn.wake.notify_waiters();
                 continue;
             }
             other => other,

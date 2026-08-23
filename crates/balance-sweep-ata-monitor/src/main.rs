@@ -13,11 +13,11 @@ use balance_sweep_ata_monitor::earn_apy::{
 };
 use balance_sweep_ata_monitor::{
     ata_target_set, diff_ata_target_sets, laserstream_replay_from_slot,
-    run_earn_reconciliation_consumer, run_event_loop, seed_current_balances,
-    spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget, AtaUpdateSource,
-    EarnMonitorMetrics, EarnUpdateContext, LaserstreamAtaUpdateSource, RpcEarnChainReader,
-    SubscriptionConfig, SubscriptionWatchSet, TimescaleAtaConfig, TimescaleAtaObservationSink,
-    TimescaleAtaStream, WebsocketAtaUpdateSource,
+    run_autodeposit_reconciliation_consumer, run_earn_reconciliation_consumer, run_event_loop,
+    seed_current_balances, spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget,
+    AtaUpdateSource, EarnMonitorMetrics, EarnUpdateContext, LaserstreamAtaUpdateSource,
+    RpcEarnChainReader, SubscriptionConfig, SubscriptionWatchSet, TimescaleAtaConfig,
+    TimescaleAtaObservationSink, TimescaleAtaStream, WebsocketAtaUpdateSource,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
@@ -39,6 +39,8 @@ use tokio::{
 };
 
 const EARN_APY_FAILURE_REPORT_THRESHOLD: u32 = 3;
+const EARN_RECONCILIATION_CONCURRENCY: usize = 4;
+const AUTODEPOSIT_RECONCILIATION_CONCURRENCY: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum UpdateSourceKind {
@@ -246,25 +248,47 @@ async fn run(meter: Meter) -> Result<()> {
     } else {
         None
     };
-    let earn_consumer_task = policy_monitor.map(|policy_monitor| {
+    let mut earn_consumer_tasks = Vec::new();
+    let mut autodeposit_consumer_tasks = Vec::new();
+    if let Some(policy_monitor) = policy_monitor {
         let consumer_name = format!("earn-smart-account:{}", args.cluster);
-        let claim_owner = format!(
-            "{}:{}:{}",
-            consumer_name,
-            std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        );
-        tokio::spawn(run_earn_reconciliation_consumer(
-            store.clone(),
-            consumer_name,
-            claim_owner,
-            Arc::new(RpcEarnChainReader::new(&args.rpc_url, store.clone())),
-            policy_monitor,
-            earn_wake.clone(),
-            earn_consumer_running.clone(),
-            earn_monitor_metrics.clone(),
-        ))
-    });
+        let chain = Arc::new(RpcEarnChainReader::new(&args.rpc_url, store.clone()));
+        for worker_index in 0..AUTODEPOSIT_RECONCILIATION_CONCURRENCY {
+            let claim_owner = format!(
+                "autodeposit:{}:{}:{}:{}",
+                args.cluster,
+                std::process::id(),
+                Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+                worker_index
+            );
+            autodeposit_consumer_tasks.push(tokio::spawn(run_autodeposit_reconciliation_consumer(
+                store.clone(),
+                claim_owner,
+                chain.clone(),
+                earn_wake.clone(),
+                earn_consumer_running.clone(),
+            )));
+        }
+        for worker_index in 0..EARN_RECONCILIATION_CONCURRENCY {
+            let claim_owner = format!(
+                "{}:{}:{}:{}",
+                consumer_name,
+                std::process::id(),
+                Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+                worker_index
+            );
+            earn_consumer_tasks.push(tokio::spawn(run_earn_reconciliation_consumer(
+                store.clone(),
+                consumer_name.clone(),
+                claim_owner,
+                chain.clone(),
+                policy_monitor.clone(),
+                earn_wake.clone(),
+                earn_consumer_running.clone(),
+                earn_monitor_metrics.clone(),
+            )));
+        }
+    }
     let autodeposit_watch_wake = Arc::new(Notify::new());
     let autodeposit_watch_task = tokio::spawn(run_autodeposit_watch_listener(
         args.postgres_url.clone(),
@@ -284,7 +308,11 @@ async fn run(meter: Meter) -> Result<()> {
     .await;
     earn_consumer_running.store(false, Ordering::Relaxed);
     earn_wake.notify_waiters();
-    if let Some(task) = earn_consumer_task {
+    for task in earn_consumer_tasks {
+        task.abort();
+        let _ = task.await;
+    }
+    for task in autodeposit_consumer_tasks {
         task.abort();
         let _ = task.await;
     }
