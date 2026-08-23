@@ -1,3 +1,9 @@
+-- Migration 0018's trigger reads the legacy active and lifecycle_status
+-- columns. Remove it before renaming either column or updating target rows;
+-- otherwise its first invocation aborts this migration with undefined_column.
+DROP TRIGGER IF EXISTS balance_sweep_targets_configuration_realtime_event
+    ON loyal_yield.balance_sweep_targets;
+
 ALTER TABLE loyal_yield.balance_sweep_targets
     RENAME COLUMN active TO desired_active;
 
@@ -64,14 +70,30 @@ WITH ranked_current AS (
            ) AS rank
     FROM loyal_yield.balance_sweep_targets
     WHERE chain_status <> 'closed'
+), closed_targets AS (
+    UPDATE loyal_yield.balance_sweep_targets AS target
+    SET chain_status = 'closed',
+        desired_active = FALSE,
+        closed_at = COALESCE(closed_at, now())
+    FROM ranked_current AS ranked
+    WHERE target.id = ranked.id
+      AND ranked.rank > 1
+    RETURNING target.id
+), canceled_slots AS (
+    UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+    SET status = 'canceled',
+        updated_at = now()
+    FROM closed_targets AS target
+    WHERE slot.target_id = target.id
+      AND slot.status IN ('scheduled', 'requested')
 )
-UPDATE loyal_yield.balance_sweep_targets AS target
-SET chain_status = 'closed',
-    desired_active = FALSE,
-    closed_at = COALESCE(closed_at, now())
-FROM ranked_current AS ranked
-WHERE target.id = ranked.id
-  AND ranked.rank > 1;
+UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
+SET status = 'suppressed',
+    updated_at = now()
+FROM closed_targets AS target
+WHERE lot.target_id = target.id
+  AND lot.status = 'open'
+  AND lot.remaining_amount_raw > 0;
 
 ALTER TABLE loyal_yield.balance_sweep_targets
     DROP CONSTRAINT IF EXISTS balance_sweep_targets_chain_status_check,
@@ -155,8 +177,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS balance_sweep_targets_configuration_realtime_event
-    ON loyal_yield.balance_sweep_targets;
 CREATE TRIGGER balance_sweep_targets_configuration_realtime_event
 AFTER INSERT OR UPDATE ON loyal_yield.balance_sweep_targets
 FOR EACH ROW
