@@ -571,12 +571,18 @@ async function checkFreshLifecycle(): Promise<Json> {
   const seeds = bindings.map((binding) => integer(binding.seed));
   const accounts = bindings.map((binding) => String(binding.account ?? ""));
   const base = integer(policy?.policy_seed_base);
+  const actualSeeds = seeds.filter((seed): seed is bigint => seed !== null);
+  const expectedSeeds = base === null
+    ? []
+    : Array.from({ length: 6 }, (_, index) => base + BigInt(index));
   if (
     policy?.manifest_version !== CONTRACT_VERSION ||
     policy?.status !== "removed" ||
     base === null || base <= 0n ||
     bindings.length !== 6 ||
-    seeds.some((seed, index) => seed !== base + BigInt(index)) ||
+    actualSeeds.length !== 6 ||
+    new Set(actualSeeds).size !== 6 ||
+    expectedSeeds.some((seed) => !actualSeeds.includes(seed)) ||
     new Set(accounts).size !== 6 ||
     bindings.some((binding) => binding.matches !== false)
   ) {
@@ -584,6 +590,7 @@ async function checkFreshLifecycle(): Promise<Json> {
       settings: VERIFY_SETTINGS,
       policyStatus: policy?.status,
       policySeedBase: policy?.policy_seed_base,
+      policySeeds: actualSeeds.map(String),
       policyCount: bindings.length,
       resume: "complete the fresh confirmed install-to-removal product lifecycle",
     });
