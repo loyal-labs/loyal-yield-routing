@@ -769,6 +769,39 @@ impl NeonSqlClient {
         Ok(())
     }
 
+    pub async fn await_autodeposit_setup_reconciliation_request(
+        &self,
+        target_id: BalanceSweepTargetId,
+        claim_owner: &str,
+        retry_after_seconds: i64,
+    ) -> Result<(), OrchestratorError> {
+        let updated = sqlx::query(
+            r#"
+            UPDATE loyal_yield.autodeposit_reconciliation_requests
+            SET claim_owner = NULL,
+                claim_expires_at = NULL,
+                attempt_count = 0,
+                next_attempt_at = NOW() + make_interval(secs => $3::double precision),
+                last_error = NULL,
+                updated_at = NOW()
+            WHERE target_id = $1
+              AND claim_owner = $2
+              AND claim_expires_at > NOW()
+            "#,
+        )
+        .bind(target_id.as_i64())
+        .bind(claim_owner)
+        .bind(retry_after_seconds)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "Autodeposit reconciliation request {target_id} lost claim while awaiting setup"
+            )));
+        }
+        Ok(())
+    }
+
     pub async fn claim_earn_reconciliation_job(
         &self,
         consumer_name: &str,
