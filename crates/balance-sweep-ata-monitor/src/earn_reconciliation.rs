@@ -1404,7 +1404,7 @@ fn parse_earn_max_intent(data: &[u8]) -> Result<Option<EarnMaxIntent>> {
         return Ok(None);
     };
     let fields = value.split(':').collect::<Vec<_>>();
-    if fields.get(0..3) != Some(&["loyal", "earn-max", "v1"]) {
+    if fields.get(0..3) != Some(&["loyal", "earn-max", "v2"]) {
         return Ok(None);
     }
     let valid_request_id = |request_id: &str| {
@@ -1448,7 +1448,7 @@ fn parse_earn_max_cash_flow(data: &[u8]) -> Result<Option<EarnMaxCashFlowMemo>> 
         return Ok(None);
     };
     let fields = value.split(':').collect::<Vec<_>>();
-    if fields.get(0..3) != Some(&["loyal", "earn-max", "v1"]) {
+    if fields.get(0..3) != Some(&["loyal", "earn-max", "v2"]) {
         return Ok(None);
     }
     match fields.as_slice() {

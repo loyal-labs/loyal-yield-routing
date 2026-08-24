@@ -114,7 +114,7 @@ impl NeonSqlClient {
                 $16, $17, $18,
                 $19, $20, $21
             )
-            ON CONFLICT (route_key, generation) DO NOTHING
+            ON CONFLICT (route_key, observed_slot) DO NOTHING
             "#,
         )
         .bind(&input.route_key)
@@ -182,7 +182,7 @@ impl NeonSqlClient {
                    policy.policy_seed_base, policy.observed_slot
             FROM loyal_yield.earn_max_policy_sets policy
             WHERE policy.status = 'ready'
-              AND policy.manifest_version = 'earn-max-v1'
+              AND policy.manifest_version = 'earn-max-v2'
               AND NOT EXISTS (
                   SELECT 1
                   FROM loyal_yield.multiply_route_states route
@@ -250,7 +250,7 @@ impl NeonSqlClient {
                 FROM loyal_yield.earn_max_policy_sets
                 WHERE settings = $1
                   AND vault_index = $2
-                  AND manifest_version = 'earn-max-v1'
+                  AND manifest_version = 'earn-max-v2'
                   AND status = 'ready'
                   AND policy_seed_base = $3
             )
@@ -369,6 +369,8 @@ impl NeonSqlClient {
               ON policy.settings = route.settings
              AND policy.vault_index = route.vault_index
             WHERE policy.status = 'ready'
+              AND policy.manifest_version = 'earn-max-v2'
+              AND route.state ->> 'engineVersion' = 'earn_max_v2'
               AND route.state ->> 'goal' IN ('idle', 'claimed')
               AND route.state -> 'currentOperationId' = 'null'::jsonb
             ORDER BY route.updated_at, route.route_key
@@ -391,6 +393,7 @@ impl NeonSqlClient {
             SELECT route_key
             FROM loyal_yield.multiply_route_states
             WHERE state #>> '{withdrawal,status}' = 'claimable'
+              AND state ->> 'engineVersion' = 'earn_max_v2'
               AND state -> 'currentOperationId' = 'null'::jsonb
             ORDER BY updated_at, route_key
             LIMIT 1
@@ -434,14 +437,25 @@ impl NeonSqlClient {
                   ON policy.settings = route.settings
                  AND policy.vault_index = route.vault_index
                  AND policy.status = 'ready'
+                 AND policy.manifest_version = 'earn-max-v2'
                  AND policy.policy_seed_base = (route.state ->> 'policySeedBase')::BIGINT
                 WHERE (route.lease_owner IS NULL OR route.lease_expires_at <= now())
+                  AND route.state ->> 'engineVersion' = 'earn_max_v2'
                   AND (
                     route.state -> 'currentOperationId' <> 'null'::jsonb
                     OR route.state ->> 'goal' IN ('deploy', 'move')
                     OR (
                       route.state ->> 'goal' = 'withdraw'
                       AND route.state #>> '{withdrawal,status}' <> 'claimable'
+                    )
+                    OR (
+                      route.state ->> 'goal' IN ('idle', 'claimed')
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM loyal_yield.multiply_position_snapshots snapshot
+                        WHERE snapshot.route_key = route.route_key
+                          AND snapshot.observed_at > now() - interval '5 minutes'
+                      )
                     )
                   )
                   AND NOT COALESCE((

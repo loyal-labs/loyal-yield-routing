@@ -87,10 +87,10 @@ pub async fn ensure_exact_policy(
             )
             .into());
         }
-        super::policy::constraint_indexes(config, plan.action, &built.instructions)?
+        super::policy::constraint_indexes(config, plan.action, &built.policy_instructions)?
     } else {
         let pins = built
-            .instructions
+            .policy_instructions
             .iter()
             .map(|instruction| {
                 (0..instruction.accounts.len())
@@ -104,7 +104,7 @@ pub async fn ensure_exact_policy(
             account,
             delegate,
             0,
-            &built.instructions,
+            &built.policy_instructions,
             &pins,
         )?;
         let actions = loyal_actions::decode_squads_policy_create_actions(&update)?;
@@ -121,7 +121,7 @@ pub async fn ensure_exact_policy(
         {
             return Err("claim destination is not bound by the installed exact policy".into());
         }
-        (0..built.instructions.len())
+        (0..built.policy_instructions.len())
             .map(u8::try_from)
             .collect::<Result<Vec<_>, _>>()?
     };
@@ -255,7 +255,12 @@ pub async fn reconcile_operation(
             ![
                 topology.claim_custody,
                 topology.collateral_custody,
-                topology.strategy.debt_custody,
+                topology
+                    .strategy(loyal_yield_store::fleet_orchestration::StrategyKey::SyrupUsdcUsdc)
+                    .debt_custody,
+                topology
+                    .strategy(loyal_yield_store::fleet_orchestration::StrategyKey::SyrupUsdcPyusd)
+                    .debt_custody,
             ]
             .iter()
             .any(|account| account.to_string() == delta.account)
@@ -362,9 +367,12 @@ async fn build_transaction(
     policy: &PolicyEvidence,
     built: &BuiltOperation,
 ) -> Result<(VersionedTransaction, u64), Box<dyn Error>> {
+    if built.policy_instructions.len() != 1 {
+        return Err("policy execution must contain exactly one terminal instruction".into());
+    }
     let mut table = Vec::new();
     let compiled = built
-        .instructions
+        .policy_instructions
         .iter()
         .cloned()
         .map(|instruction| loyal_actions::compile_squads_inner_instruction(&mut table, instruction))
@@ -381,10 +389,10 @@ async fn build_transaction(
         .rpc
         .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
         .await?;
-    let instructions = [
-        ComputeBudgetInstruction::set_compute_unit_limit(400_000),
-        execute,
-    ];
+    let mut instructions = Vec::with_capacity(built.pre_instructions.len() + 2);
+    instructions.push(ComputeBudgetInstruction::set_compute_unit_limit(400_000));
+    instructions.extend(built.pre_instructions.iter().cloned());
+    instructions.push(execute);
     let message = if built.lookup_tables.is_empty() {
         VersionedMessage::Legacy(Message::new_with_blockhash(
             &instructions,
@@ -571,8 +579,9 @@ fn verify_expected_effects(
 }
 
 fn observed_token_amount(after: &ObservedRoute, account: &str, mint: &str) -> Option<u64> {
-    [&after.claim, &after.collateral_custody, &after.debt_custody]
+    [&after.claim, &after.collateral_custody]
         .into_iter()
+        .chain(after.debt_custodies.iter().map(|(_, balance)| balance))
         .chain(after.external_custody.iter())
         .find(|value| value.account == account && value.mint == mint)
         .map(|value| value.amount_raw)

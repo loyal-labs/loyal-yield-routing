@@ -5,12 +5,12 @@ import { resolve } from "node:path";
 import { neon } from "@neondatabase/serverless";
 import { Connection, PublicKey } from "@solana/web3.js";
 
-const CONTRACT_VERSION = "earn-max-v3";
-const POLICY_MANIFEST_VERSION = "earn-max-v1";
-const CONTRACT_SHA256 = "9a97a92cd5ac8ec9cb6e77c3bcd8a849e3dbaf977c20c9f53c58c2972abf33fd";
-const PASS = "PASS_EARN_MAX_SIMPLIFIED_PRODUCTION_READY";
-const FAIL = "FAIL_EARN_MAX_PRODUCTION_READY";
-const BLOCKED = "BLOCKED_EARN_MAX_PRODUCTION_READY";
+const CONTRACT_VERSION = "earn-max-v4";
+const POLICY_MANIFEST_VERSION = "earn-max-v2";
+const CONTRACT_SHA256 = "0732e58aee5f8c9676d9d72939260acd1114b609056fb2280c1711a5f5637443";
+const PASS = "PASS_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
+const FAIL = "FAIL_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
+const BLOCKED = "BLOCKED_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
 const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const VERIFY_SETTINGS = "6jgkucnbz1RuHq6NULqACQY3r2XegHaWhgPpaCEGPCA3";
 const APP_URL = "https://askloyal.com";
@@ -20,6 +20,9 @@ const ROOT = resolve(import.meta.dir, "..");
 const APPS_ROOT = resolve(ROOT, "../loyal-apps");
 const CONTRACT = "docs/plans/multiply-rwa-looping-policy-architecture.md";
 const CONFIG = "crates/loyal-fleet-worker/src/multiply/config.rs";
+const POLICY = "crates/loyal-fleet-worker/src/multiply/policy.rs";
+const BUILDER = "crates/loyal-fleet-worker/src/multiply/builder.rs";
+const EXECUTOR = "crates/loyal-fleet-worker/src/multiply/executor.rs";
 const POLICY_MONITOR = "crates/loyal-squads-policy-monitor/src/lib.rs";
 const POLICY_MONITOR_MANIFEST = "crates/loyal-squads-policy-monitor/Cargo.toml";
 const LASERSTREAM_MONITOR = "crates/balance-sweep-ata-monitor/src/main.rs";
@@ -212,16 +215,102 @@ function checkPerUserTopology(): Json {
     fail("multiply_topology_still_fixed", {
       path: CONFIG,
       matches,
-      resume: "derive user-owned accounts and policy PDAs from Settings plus the earn-max-v1 manifest",
+      resume: "derive user-owned accounts and exactly three policy PDAs from Settings plus the earn-max-v2 manifest",
     });
   }
-  for (const required of ["EarnMaxTopology", "derive_earn_max_topology", "manifest_version"] as const) {
+  for (const required of [
+    "EarnMaxTopology",
+    "derive_earn_max_topology",
+    "manifest_version",
+    'MANIFEST_VERSION: &str = "earn-max-v2"',
+    "collateral_policy",
+    "debt_policy",
+    "swap_policy",
+    "PYUSD_MINT",
+  ] as const) {
     requireText(config, required, "deterministic_per_user_topology_missing", CONFIG);
   }
-  for (const forbidden of ["PYUSD", "SyrupUsdcPyusd", "USX", "guard", "flashBorrow", "flash_borrow"] as const) {
+  for (const forbidden of [
+    "deposit_policy",
+    "borrow_policy",
+    "claim_to_collateral_policy",
+    "debt_to_collateral_policy",
+    "collateral_to_debt_policy",
+    "collateral_to_claim_policy",
+    "repay_policy",
+    "withdraw_policy",
+    "USX",
+    "guard",
+    "flashBorrow",
+    "flash_borrow",
+  ] as const) {
     rejectText(config, forbidden, "forbidden_strategy_or_program_survived", CONFIG);
   }
   return { path: CONFIG, sha256: sha256(config) };
+}
+
+function checkThreePolicySourceContract(): Json {
+  const policy = file(ROOT, POLICY);
+  const builder = file(ROOT, BUILDER);
+  const executor = file(ROOT, EXECUTOR);
+  const appActions = file(APPS_ROOT, APP_ACTIONS);
+  const monitor = file(ROOT, POLICY_MONITOR);
+
+  for (const required of [
+    "PolicyFamily::Collateral",
+    "PolicyFamily::Debt",
+    "PolicyFamily::Swap",
+    "CollateralLifecycle",
+    "DebtLifecycle",
+    "SwapRoutes",
+  ]) {
+    requireText(`${policy}\n${monitor}`, required, "three_policy_family_missing", `${POLICY} + ${POLICY_MONITOR}`);
+  }
+  for (const required of [
+    "pre_instructions",
+    "policy_instructions",
+  ]) {
+    requireText(`${builder}\n${executor}`, required, "top_level_refresh_split_missing", `${BUILDER} + ${EXECUTOR}`);
+  }
+  requireText(
+    executor,
+    "policy_instructions.len() != 1",
+    "single_terminal_execution_gate_missing",
+    EXECUTOR,
+  );
+  for (const required of [
+    'EARN_MAX_MANIFEST_VERSION = "earn-max-v2"',
+    '"collateral"',
+    '"debt"',
+    '"swap"',
+    "PYUSD_MINT",
+    "USDC_TO_SYRUP",
+    "SYRUP_TO_USDC",
+    "PYUSD_TO_SYRUP",
+    "SYRUP_TO_PYUSD",
+    "USDC_TO_PYUSD",
+    "PYUSD_TO_USDC",
+  ]) {
+    requireText(appActions, required, "three_policy_client_manifest_missing", APP_ACTIONS);
+  }
+  for (const forbidden of [
+    '"forward_swap"',
+    '"reverse_swap"',
+    "PolicyFamily::Deposit",
+    "PolicyFamily::Borrow",
+    "PolicyFamily::Repay",
+    "PolicyFamily::Withdraw",
+  ]) {
+    rejectText(`${policy}\n${appActions}`, forbidden, "six_policy_manifest_survived", `${POLICY} + ${APP_ACTIONS}`);
+  }
+
+  return {
+    policySha256: sha256(policy),
+    builderSha256: sha256(builder),
+    executorSha256: sha256(executor),
+    appActionsSha256: sha256(appActions),
+    monitorSha256: sha256(monitor),
+  };
 }
 
 function checkMinimalSchemaSource(): Json {
@@ -245,7 +334,7 @@ function checkMinimalSchemaSource(): Json {
   );
   for (const required of [
     "0064_earn_max_partial_lifecycle.sql",
-    "0066_earn_max_single_owner_state.sql",
+    "0067_earn_max_three_policy_v2.sql",
     "source_instruction_index",
     "state - 'frontend' - 'targetStrategyKey'",
     "request_withdrawal",
@@ -271,9 +360,9 @@ function checkMinimalSchemaSource(): Json {
     rejectText(source, forbidden, "forbidden_earn_max_table_survived", MIGRATIONS);
   }
   for (const required of [
-    'version: 66',
-    'name: "earn_max_single_owner_state"',
-    '0066_earn_max_single_owner_state.sql',
+    'version: 67',
+    'name: "earn_max_three_policy_v2"',
+    '0067_earn_max_three_policy_v2.sql',
   ]) {
     requireText(
       runner,
@@ -335,7 +424,7 @@ function checkLaserStreamSource(): Json {
     ".saturating_sub(transfer.destination_pre)",
     "source_instruction_index: Some",
     "signed_wire_sha256: None",
-    '["loyal", "earn-max", "v1"]',
+    '["loyal", "earn-max", "v2"]',
   ]) {
     requireText(
       reconciliation,
@@ -397,8 +486,8 @@ function checkAppSource(): Json {
     "realized_apy_bps",
     "forecast_apy_bps",
     "x-loyal-deployment-revision",
-    "loyal:earn-max:v1:withdraw:",
-    "loyal:earn-max:v1:cancel:",
+    "loyal:earn-max:v2:withdraw:",
+    "loyal:earn-max:v2:cancel:",
     "confirm: true",
   ]) {
     requireText(source, required, "earn_max_application_contract_missing", APP_FEATURE_ROOT);
@@ -559,16 +648,17 @@ async function checkLivePrerequisites(): Promise<Json> {
   const migrations = await sql`
     SELECT version, name, checksum
     FROM loyal_yield.schema_migrations
-    WHERE version IN (54, 55, 56, 64, 66)
+    WHERE version IN (54, 55, 56, 64, 66, 67)
     ORDER BY version
   `;
   if (
-    migrations.length !== 5 ||
+    migrations.length !== 6 ||
     String(migrations[0]?.name) !== "earn_max_per_user" ||
     String(migrations[1]?.name) !== "earn_max_repeated_lifecycle" ||
     String(migrations[2]?.name) !== "earn_max_dynamic_policy_seeds" ||
     String(migrations[3]?.name) !== "earn_max_partial_lifecycle" ||
-    String(migrations[4]?.name) !== "earn_max_single_owner_state"
+    String(migrations[4]?.name) !== "earn_max_single_owner_state" ||
+    String(migrations[5]?.name) !== "earn_max_three_policy_v2"
   ) {
     fail("deployed_earn_max_migration_missing", { migrations });
   }
@@ -708,16 +798,16 @@ async function checkFreshLifecycle(): Promise<Json> {
   const actualSeeds = seeds.filter((seed): seed is bigint => seed !== null);
   const expectedSeeds = base === null
     ? []
-    : Array.from({ length: 6 }, (_, index) => base + BigInt(index));
+    : Array.from({ length: 3 }, (_, index) => base + BigInt(index));
   if (
     policy?.manifest_version !== POLICY_MANIFEST_VERSION ||
     policy?.status !== "removed" ||
     base === null || base <= 0n ||
-    bindings.length !== 6 ||
-    actualSeeds.length !== 6 ||
-    new Set(actualSeeds).size !== 6 ||
+    bindings.length !== 3 ||
+    actualSeeds.length !== 3 ||
+    new Set(actualSeeds).size !== 3 ||
     expectedSeeds.some((seed) => !actualSeeds.includes(seed)) ||
-    new Set(accounts).size !== 6 ||
+    new Set(accounts).size !== 3 ||
     bindings.some((binding) => binding.matches !== false)
   ) {
     blocked("fresh_laserstream_policy_removal_missing", {
@@ -749,8 +839,8 @@ async function checkFreshLifecycle(): Promise<Json> {
   const readyBy = timestamp(withdrawal?.readyBy);
   const unwindAt = timestamp(withdrawal?.unwindCompletedAt);
   if (
-    state?.schemaVersion !== 8 ||
-    state?.engineVersion !== "earn_max_v1" ||
+    state?.schemaVersion !== 9 ||
+    state?.engineVersion !== "earn_max_v2" ||
     integer(state?.policySeedBase) !== base ||
     state?.goal !== "claimed" ||
     state?.currentOperationId !== null ||
@@ -1050,6 +1140,7 @@ function checkReleaseSource(): Json {
 const contract = checkContractIdentity();
 const laserStream = checkLaserStreamSource();
 const topology = checkPerUserTopology();
+const threePolicy = checkThreePolicySourceContract();
 const schema = checkMinimalSchemaSource();
 const app = checkAppSource();
 const engine = checkWorkerAndStoreSource();
@@ -1063,9 +1154,10 @@ const deployedWorkers = await checkDeployedWorkers(
 const lifecycle = await checkFreshLifecycle();
 const replay = checkReplayEvidence(deployedWorkers, lifecycle);
 
-emit(PASS, "earn_max_simplified_production_ready", {
+emit(PASS, "earn_max_three_policy_production_ready", {
   contract,
   topology,
+  threePolicy,
   schema,
   laserStream,
   app,

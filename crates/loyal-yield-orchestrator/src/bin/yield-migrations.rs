@@ -405,6 +405,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0066_earn_max_single_owner_state.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 67,
+        name: "earn_max_three_policy_v2",
+        sql: include_str!("../../../loyal-yield-store/migrations/0067_earn_max_three_policy_v2.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

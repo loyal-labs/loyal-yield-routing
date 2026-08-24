@@ -26,7 +26,8 @@ const RESERVE_COLLATERAL_MINT: &str = "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfm
 
 #[derive(Clone, Debug)]
 pub struct BuiltOperation {
-    pub instructions: Vec<Instruction>,
+    pub pre_instructions: Vec<Instruction>,
+    pub policy_instructions: Vec<Instruction>,
     pub lookup_tables: Vec<Pubkey>,
     pub expected_effects: ExpectedEffects,
     pub quote_context_slot: Option<u64>,
@@ -197,7 +198,8 @@ pub async fn build_operation(
                 6,
             )?;
             Ok(BuiltOperation {
-                instructions: vec![instruction],
+                pre_instructions: Vec::new(),
+                policy_instructions: vec![instruction],
                 lookup_tables: Vec::new(),
                 expected_effects: ExpectedEffects {
                     token_amounts_before: Vec::new(),
@@ -225,12 +227,16 @@ pub async fn build_operation(
 }
 
 fn klend_operation(
-    instructions: Vec<Instruction>,
+    mut instructions: Vec<Instruction>,
     token_delta: TokenDelta,
     obligation_delta: ObligationDelta,
 ) -> BuiltOperation {
+    let terminal = instructions
+        .pop()
+        .expect("canonical KLend graph always has one terminal instruction");
     BuiltOperation {
-        instructions,
+        pre_instructions: instructions,
+        policy_instructions: vec![terminal],
         lookup_tables: Vec::new(),
         expected_effects: ExpectedEffects {
             token_amounts_before: Vec::new(),
@@ -517,7 +523,8 @@ async fn swap_exact_in(
 ) -> Result<BuiltOperation, Box<dyn Error>> {
     let quote = quote(input_mint, output_mint, amount, source, destination, vault).await?;
     Ok(BuiltOperation {
-        instructions: vec![quote.instruction],
+        pre_instructions: Vec::new(),
+        policy_instructions: vec![quote.instruction],
         lookup_tables: quote.lookup_tables,
         expected_effects: ExpectedEffects {
             token_amounts_before: Vec::new(),

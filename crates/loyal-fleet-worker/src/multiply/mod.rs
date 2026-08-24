@@ -720,15 +720,12 @@ fn bind_before(
         .token_deltas
         .iter()
         .map(|delta| {
-            let balance = [
-                &observed.claim,
-                &observed.collateral_custody,
-                &observed.debt_custody,
-            ]
-            .into_iter()
-            .chain(observed.external_custody.iter())
-            .find(|balance| balance.account == delta.account && balance.mint == delta.mint)
-            .ok_or("expected token effect is not in the confirmed observation")?;
+            let balance = [&observed.claim, &observed.collateral_custody]
+                .into_iter()
+                .chain(observed.debt_custodies.iter().map(|(_, balance)| balance))
+                .chain(observed.external_custody.iter())
+                .find(|balance| balance.account == delta.account && balance.mint == delta.mint)
+                .ok_or("expected token effect is not in the confirmed observation")?;
             Ok(TokenAmountBefore {
                 account: balance.account.clone(),
                 mint: balance.mint.clone(),

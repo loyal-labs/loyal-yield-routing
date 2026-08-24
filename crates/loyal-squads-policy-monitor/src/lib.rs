@@ -761,12 +761,9 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
             .map_err(|error| MonitorError::Decode(error.to_string()))?;
         let strategy = topology.strategy(StrategyKey::SyrupUsdcUsdc);
         let families = [
-            PolicyFamily::Deposit,
-            PolicyFamily::Borrow,
-            PolicyFamily::SwapClaimToCollateral,
-            PolicyFamily::SwapCollateralToClaim,
-            PolicyFamily::Repay,
-            PolicyFamily::Withdraw,
+            PolicyFamily::Collateral,
+            PolicyFamily::Debt,
+            PolicyFamily::Swap,
         ];
         let mut expected = Vec::with_capacity(families.len());
         for family in families {
@@ -814,15 +811,15 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
                 }
                 None => (false, false, None),
             };
-            let family = format!("{family:?}").to_ascii_lowercase();
+            let family = family.label();
             manifest_basis.push(json!({
-                "family": family.as_str(),
+                "family": family,
                 "seed": policy.seed,
                 "account": policy.account.to_string(),
                 "semanticSha256": semantic_sha256,
             }));
             policy_accounts.push(json!({
-                "family": family.as_str(),
+                "family": family,
                 "seed": policy.seed,
                 "account": policy.account.to_string(),
                 "semanticSha256": semantic_sha256,
@@ -976,12 +973,9 @@ fn earn_max_policy_seed_base(
         .map_err(|error| MonitorError::Decode(error.to_string()))?;
     let strategy = topology.strategy(StrategyKey::SyrupUsdcUsdc);
     let families = [
-        (PolicyFamily::Deposit, 0_u64),
-        (PolicyFamily::Repay, 1),
-        (PolicyFamily::Borrow, 2),
-        (PolicyFamily::SwapClaimToCollateral, 3),
-        (PolicyFamily::Withdraw, 4),
-        (PolicyFamily::SwapCollateralToClaim, 5),
+        (PolicyFamily::Collateral, 0_u64),
+        (PolicyFamily::Debt, 1),
+        (PolicyFamily::Swap, 2),
     ];
     for (family, offset) in families {
         let update = canonical_policy_update(
@@ -995,7 +989,20 @@ fn earn_max_policy_seed_base(
         .map_err(|error| MonitorError::Decode(error.to_string()))?;
         let expected = canonical_policy_payload(&update)
             .map_err(|error| MonitorError::Decode(error.to_string()))?;
-        if canonical_policy_payload_matches(&action.payload, &expected) {
+        let create = loyal_fleet_worker::multiply::policy::canonical_policy_create(
+            topology,
+            strategy,
+            family,
+            action.settings,
+            action.authority,
+            delegate,
+        )
+        .map_err(|error| MonitorError::Decode(error.to_string()))?;
+        let bootstrap = canonical_policy_payload(&create)
+            .map_err(|error| MonitorError::Decode(error.to_string()))?;
+        if canonical_policy_payload_matches(&action.payload, &expected)
+            || canonical_policy_payload_matches(&action.payload, &bootstrap)
+        {
             let Some(policy_seed_base) = action.policy_seed.checked_sub(offset) else {
                 return Ok(None);
             };
@@ -1019,12 +1026,9 @@ fn is_earn_max_policy(
         .map_err(|error| MonitorError::Decode(error.to_string()))?;
     let strategy = topology.strategy(StrategyKey::SyrupUsdcUsdc);
     Ok([
-        PolicyFamily::Deposit,
-        PolicyFamily::Borrow,
-        PolicyFamily::SwapClaimToCollateral,
-        PolicyFamily::SwapCollateralToClaim,
-        PolicyFamily::Repay,
-        PolicyFamily::Withdraw,
+        PolicyFamily::Collateral,
+        PolicyFamily::Debt,
+        PolicyFamily::Swap,
     ]
     .into_iter()
     .any(|family| family.policy(strategy).account == account))

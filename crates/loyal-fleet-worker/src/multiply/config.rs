@@ -6,7 +6,7 @@ use loyal_yield_store::fleet_orchestration::{MultiplyAction, MultiplyRouteState,
 use solana_sdk::pubkey::Pubkey;
 use std::{error::Error, str::FromStr};
 
-pub const MANIFEST_VERSION: &str = "earn-max-v1";
+pub const MANIFEST_VERSION: &str = "earn-max-v2";
 pub const EARN_MAX_VAULT_INDEX: u8 = 0;
 pub const MAINNET_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 pub const KLEND: &str = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
@@ -16,6 +16,7 @@ pub const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub const TOKEN_2022: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 pub const SYRUP_MINT: &str = "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj";
 pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+pub const PYUSD_MINT: &str = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
 
 const MULTIPLY_OBLIGATION_TAG: u8 = 1;
 const MULTIPLY_OBLIGATION_ID: u8 = 0;
@@ -49,29 +50,22 @@ pub struct StrategyConfig {
     pub debt_farm_user: Option<Pubkey>,
     pub obligation: Pubkey,
     pub target_ltv_bps: u16,
-    pub deposit_policy: PolicyConfig,
-    pub borrow_policy: PolicyConfig,
-    pub claim_to_collateral_policy: PolicyConfig,
-    pub debt_to_collateral_policy: PolicyConfig,
-    pub collateral_to_debt_policy: PolicyConfig,
-    pub collateral_to_claim_policy: PolicyConfig,
-    pub repay_policy: PolicyConfig,
-    pub withdraw_policy: PolicyConfig,
+    pub collateral_policy: PolicyConfig,
+    pub debt_policy: PolicyConfig,
+    pub swap_policy: PolicyConfig,
 }
 
 impl StrategyConfig {
     pub fn policy(self, action: MultiplyAction) -> Option<PolicyConfig> {
         match action {
-            MultiplyAction::DepositCollateral => Some(self.deposit_policy),
-            MultiplyAction::BorrowDebt => Some(self.borrow_policy),
-            MultiplyAction::SwapClaimToCollateral => Some(self.claim_to_collateral_policy),
-            MultiplyAction::SwapDebtToCollateral => Some(self.debt_to_collateral_policy),
-            MultiplyAction::SwapCollateralToDebt => Some(self.collateral_to_debt_policy),
-            MultiplyAction::SwapCollateralToClaim => Some(self.collateral_to_claim_policy),
-            MultiplyAction::RepayDebt => Some(self.repay_policy),
-            MultiplyAction::WithdrawCollateral | MultiplyAction::WithdrawRemainingCollateral => {
-                Some(self.withdraw_policy)
-            }
+            MultiplyAction::DepositCollateral
+            | MultiplyAction::WithdrawCollateral
+            | MultiplyAction::WithdrawRemainingCollateral => Some(self.collateral_policy),
+            MultiplyAction::BorrowDebt | MultiplyAction::RepayDebt => Some(self.debt_policy),
+            MultiplyAction::SwapClaimToCollateral
+            | MultiplyAction::SwapDebtToCollateral
+            | MultiplyAction::SwapCollateralToDebt
+            | MultiplyAction::SwapCollateralToClaim => Some(self.swap_policy),
             MultiplyAction::Claim
             | MultiplyAction::DepositClaimAsset
             | MultiplyAction::RequestWithdrawal
@@ -88,12 +82,19 @@ pub struct EarnMaxTopology {
     pub vault: Pubkey,
     pub claim_custody: Pubkey,
     pub collateral_custody: Pubkey,
-    pub strategy: StrategyConfig,
+    pub strategies: [StrategyConfig; 2],
 }
 
 impl EarnMaxTopology {
-    pub fn strategy(self, _key: StrategyKey) -> StrategyConfig {
-        self.strategy
+    pub fn strategy(self, key: StrategyKey) -> StrategyConfig {
+        match key {
+            StrategyKey::SyrupUsdcUsdc => self.strategies[0],
+            StrategyKey::SyrupUsdcPyusd => self.strategies[1],
+        }
+    }
+
+    pub fn strategy_catalog(self) -> [StrategyConfig; 2] {
+        self.strategies
     }
 }
 
@@ -120,14 +121,9 @@ struct StrategyTemplate {
 
 #[derive(Clone, Copy)]
 struct StrategyPolicySeeds {
-    deposit: u64,
-    borrow: u64,
-    claim_to_collateral: u64,
-    debt_to_collateral: u64,
-    collateral_to_debt: u64,
-    collateral_to_claim: u64,
-    repay: u64,
-    withdraw: u64,
+    collateral: u64,
+    debt: u64,
+    swap: u64,
 }
 
 const COMMON_MARKET: &str = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y";
@@ -155,14 +151,33 @@ const SYRUP_USDC_USDC_TEMPLATE: StrategyTemplate = StrategyTemplate {
     debt_farm_state: Some("87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y"),
     target_ltv_bps: 6_500,
     policy_seeds: StrategyPolicySeeds {
-        deposit: 32,
-        borrow: 34,
-        claim_to_collateral: 35,
-        debt_to_collateral: 35,
-        collateral_to_debt: 44,
-        collateral_to_claim: 44,
-        repay: 33,
-        withdraw: 36,
+        collateral: 32,
+        debt: 33,
+        swap: 34,
+    },
+};
+
+const SYRUP_USDC_PYUSD_TEMPLATE: StrategyTemplate = StrategyTemplate {
+    key: StrategyKey::SyrupUsdcPyusd,
+    market: COMMON_MARKET,
+    market_authority: COMMON_MARKET_AUTHORITY,
+    oracle: COMMON_ORACLE,
+    collateral_reserve: COLLATERAL_RESERVE,
+    collateral_mint: SYRUP_MINT,
+    collateral_liquidity_supply: COLLATERAL_LIQUIDITY_SUPPLY,
+    collateral_mint_supply: COLLATERAL_MINT_SUPPLY,
+    collateral_farm_state: None,
+    debt_reserve: "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS",
+    debt_mint: PYUSD_MINT,
+    debt_token_program: TOKEN_2022,
+    debt_liquidity_supply: "GUENeLN1ufX4K5622DbyYoQFhaWxMKoCFycvLSEYsykN",
+    debt_fee_vault: "AwnzukUiajn7b3T9hXcwy19RLPZcHmLANUeqZnzXT6dU",
+    debt_farm_state: Some("9AUA7XZ1rynUsZcmVCgj8UFdQuDozFSMpaNGBZAtiPWj"),
+    target_ltv_bps: 6_500,
+    policy_seeds: StrategyPolicySeeds {
+        collateral: 32,
+        debt: 33,
+        swap: 34,
     },
 };
 
@@ -194,7 +209,10 @@ fn derive_earn_max_topology_inner(
         vault,
         claim_custody,
         collateral_custody,
-        strategy: derive_strategy(settings, vault, SYRUP_USDC_USDC_TEMPLATE, policy_seed_base)?,
+        strategies: [
+            derive_strategy(settings, vault, SYRUP_USDC_USDC_TEMPLATE, policy_seed_base)?,
+            derive_strategy(settings, vault, SYRUP_USDC_PYUSD_TEMPLATE, policy_seed_base)?,
+        ],
     })
 }
 
@@ -234,14 +252,9 @@ fn derive_strategy(
         .map(|farm| derive_kamino_obligation_farm_user_state(farm, obligation));
     let seeds = match policy_seed_base {
         Some(base) => StrategyPolicySeeds {
-            deposit: base,
-            repay: base.checked_add(1).ok_or("Earn MAX policy seed overflow")?,
-            borrow: base.checked_add(2).ok_or("Earn MAX policy seed overflow")?,
-            claim_to_collateral: base.checked_add(3).ok_or("Earn MAX policy seed overflow")?,
-            debt_to_collateral: base.checked_add(3).ok_or("Earn MAX policy seed overflow")?,
-            withdraw: base.checked_add(4).ok_or("Earn MAX policy seed overflow")?,
-            collateral_to_debt: base.checked_add(5).ok_or("Earn MAX policy seed overflow")?,
-            collateral_to_claim: base.checked_add(5).ok_or("Earn MAX policy seed overflow")?,
+            collateral: base,
+            debt: base.checked_add(1).ok_or("Earn MAX policy seed overflow")?,
+            swap: base.checked_add(2).ok_or("Earn MAX policy seed overflow")?,
         },
         None => template.policy_seeds,
     };
@@ -275,14 +288,9 @@ fn derive_strategy(
         debt_farm_user: farm_user,
         obligation,
         target_ltv_bps: template.target_ltv_bps,
-        deposit_policy: policy(settings, seeds.deposit),
-        borrow_policy: policy(settings, seeds.borrow),
-        claim_to_collateral_policy: policy(settings, seeds.claim_to_collateral),
-        debt_to_collateral_policy: policy(settings, seeds.debt_to_collateral),
-        collateral_to_debt_policy: policy(settings, seeds.collateral_to_debt),
-        collateral_to_claim_policy: policy(settings, seeds.collateral_to_claim),
-        repay_policy: policy(settings, seeds.repay),
-        withdraw_policy: policy(settings, seeds.withdraw),
+        collateral_policy: policy(settings, seeds.collateral),
+        debt_policy: policy(settings, seeds.debt),
+        swap_policy: policy(settings, seeds.swap),
     })
 }
 

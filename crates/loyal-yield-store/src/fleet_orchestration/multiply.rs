@@ -8,20 +8,22 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const MULTIPLY_STATE_SCHEMA_VERSION: u16 = 8;
-pub const MULTIPLY_ENGINE_VERSION: &str = "earn_max_v1";
+pub const MULTIPLY_STATE_SCHEMA_VERSION: u16 = 9;
+pub const MULTIPLY_ENGINE_VERSION: &str = "earn_max_v2";
 pub const MULTIPLY_DEFAULT_LEASE_SECONDS: i64 = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StrategyKey {
     SyrupUsdcUsdc,
+    SyrupUsdcPyusd,
 }
 
 impl StrategyKey {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SyrupUsdcUsdc => "syrup_usdc_usdc",
+            Self::SyrupUsdcPyusd => "syrup_usdc_pyusd",
         }
     }
 }
@@ -364,6 +366,42 @@ impl MultiplyRouteState {
         {
             return Err(MultiplyStateError::InvalidGoalChange);
         }
+        self.generation += 1;
+        self.policy_seed_base = policy_seed_base;
+        self.observed_slot = observed_slot;
+        self.observed_at = observed_at;
+        self.validate_persisted()?;
+        Ok(self)
+    }
+
+    pub fn upgrade_terminal_three_policy_manifest(
+        mut self,
+        policy_seed_base: u64,
+        observed_slot: u64,
+        observed_at: DateTime<Utc>,
+    ) -> Result<Self, MultiplyStateError> {
+        let empty_claim = matches!(
+            &self.position,
+            MultiplyPosition::Idle { claim } if claim.amount_raw == 0
+        );
+        let claimed = self
+            .withdrawal
+            .as_ref()
+            .is_some_and(|withdrawal| withdrawal.status == WithdrawalStatus::Claimed);
+        if self.engine_version != "earn_max_v1"
+            || self.schema_version != 8
+            || policy_seed_base <= self.policy_seed_base
+            || observed_slot < self.observed_slot
+            || self.goal != RouteGoal::Claimed
+            || !empty_claim
+            || !claimed
+            || self.current_operation_id.is_some()
+            || self.manual_recovery_reason.is_some()
+        {
+            return Err(MultiplyStateError::InvalidGoalChange);
+        }
+        self.schema_version = MULTIPLY_STATE_SCHEMA_VERSION;
+        self.engine_version = MULTIPLY_ENGINE_VERSION.to_owned();
         self.generation += 1;
         self.policy_seed_base = policy_seed_base;
         self.observed_slot = observed_slot;
