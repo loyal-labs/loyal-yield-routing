@@ -35,8 +35,8 @@ use loyal_yield_orchestrator::fleet_orchestration::{
 use loyal_yield_orchestrator::{
     lookup_table_manifest_address_records_hash, lookup_table_rollout_lock_acquisition_count,
     supported_stable_mints, AtomicVaultAllocationResult, CrossMintVaultOptInLookup,
-    DecisionAdvance, LookupTableAllocationKind, LookupTableFamilyKind, LookupTableFamilyRecord,
-    LookupTableFamilyState, LookupTableFamilyUpsert, LookupTableLifecycle,
+    CrossMintVaultOptInUpsert, DecisionAdvance, LookupTableAllocationKind, LookupTableFamilyKind,
+    LookupTableFamilyRecord, LookupTableFamilyState, LookupTableFamilyUpsert, LookupTableLifecycle,
     LookupTableManifestAddressRecord, LookupTableManifestSubject, LookupTableMembershipAddress,
     LookupTableOperationEnqueue, LookupTableOperationKind, LookupTableOperationLease,
     LookupTableOperationRecord, LookupTableProvisionerBroadcastPermitResult,
@@ -4590,24 +4590,16 @@ async fn seed_cross_mint_ready_opportunity(
     .bind(&token_2022_swap_signature)
     .execute(fixture.client.pool())
     .await?;
-    sqlx::query(
-        r#"
-        INSERT INTO loyal_yield.cross_mint_vault_opt_ins
-            (cluster, settings, vault_index, vault_pubkey, enabled,
-             classic_policy_account, classic_policy_seed,
-             token_2022_policy_account, token_2022_policy_seed,
-             max_slippage_bps, daily_source_mint_spending_cap)
-        VALUES ($1, $2, $3, $4, TRUE, $5, 2, $6, 3, 50, 1000000000)
-        "#,
-    )
-    .bind(cluster)
-    .bind(&settings)
-    .bind(vault_index)
-    .bind(&vault_pubkey)
-    .bind(&swap_policy_account)
-    .bind(&token_2022_swap_policy_account)
-    .execute(fixture.client.pool())
-    .await?;
+    fixture
+        .client
+        .upsert_cross_mint_vault_opt_in(CrossMintVaultOptInUpsert {
+            cluster: cluster.to_owned(),
+            settings: settings.clone(),
+            vault_index: u8::try_from(vault_index)?,
+            vault_pubkey: vault_pubkey.clone(),
+            enabled: true,
+        })
+        .await?;
     let updated = sqlx::query(
         r#"
         UPDATE loyal_yield.rebalance_opportunities
@@ -6920,64 +6912,186 @@ async fn cross_mint_movement_subchecks(
         }),
     ));
 
-    let seed_mismatch_cluster = fixture.cluster("cross_mint_policy_seed_mismatch");
-    let seed_mismatch_epoch = fixture.seed_epoch(&seed_mismatch_cluster).await?;
+    let stale_policy_cluster = fixture.cluster("cross_mint_stale_policy_binding");
+    let stale_policy_epoch = fixture.seed_epoch(&stale_policy_cluster).await?;
     seed_cross_mint_ready_opportunity(
         fixture,
-        &seed_mismatch_cluster,
-        seed_mismatch_epoch,
-        "cross_mint_policy_seed_mismatch",
+        &stale_policy_cluster,
+        stale_policy_epoch,
+        "cross_mint_stale_policy_binding",
         50_000,
     )
     .await?;
-    set_cross_mint_gates(fixture, &seed_mismatch_cluster, true, true).await?;
-    let seed_mismatch_lease = claim_one(
+    set_cross_mint_gates(fixture, &stale_policy_cluster, true, true).await?;
+    let stale_policy_lease = claim_one(
         &fixture.client,
-        &seed_mismatch_cluster,
-        "cross-mint-policy-seed-mismatch",
+        &stale_policy_cluster,
+        "cross-mint-stale-policy-binding",
         RebalanceOpportunityClaimKind::Execute,
     )
     .await?;
-    let seed_mismatch_capacity =
-        cross_mint_capacity_input_for_lease(fixture, &seed_mismatch_lease).await?;
-    let seed_mismatch_bindings =
-        cross_mint_fixture_policy_bindings(&seed_mismatch_lease.opportunity)?;
-    let corrupted_opt_in = sqlx::query(
+    let stale_policy_capacity =
+        cross_mint_capacity_input_for_lease(fixture, &stale_policy_lease).await?;
+    let stale_policy_bindings =
+        cross_mint_fixture_policy_bindings(&stale_policy_lease.opportunity)?;
+    let newer_policy = sqlx::query(
         r#"
-        UPDATE loyal_yield.cross_mint_vault_opt_ins
-        SET classic_policy_seed = classic_policy_seed + 1000000,
-            updated_at = now()
-        WHERE cluster = $1
+        INSERT INTO loyal_yield.cross_mint_swap_policies
+            (cluster, settings, authority, policy_seed, policy_account,
+             vault_index, vault_pubkey, delegated_signer, source_shard,
+             max_slippage_bps, daily_source_mint_spending_cap,
+             manifest_fingerprint, active, start_eligible, last_mutation,
+             source_commitment, last_seen_slot, last_seen_signature)
+        SELECT cluster, settings, authority, policy_seed + 1000000,
+               policy_account || ':newer', vault_index, vault_pubkey,
+               delegated_signer, source_shard, max_slippage_bps,
+               daily_source_mint_spending_cap, manifest_fingerprint,
+               active, start_eligible, last_mutation, source_commitment,
+               last_seen_slot + 1, last_seen_signature || ':newer'
+        FROM loyal_yield.cross_mint_swap_policies
+        WHERE cluster = $1 AND policy_account = $2
         "#,
     )
-    .bind(&seed_mismatch_cluster)
+    .bind(&stale_policy_cluster)
+    .bind(&stale_policy_bindings.swap.policy_account)
     .execute(fixture.client.pool())
     .await?;
-    let seed_mismatch_error = fixture
+    let deprecated_identity_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM loyal_yield.cross_mint_vault_opt_ins
+        WHERE cluster = $1
+          AND classic_policy_account IS NULL
+          AND classic_policy_seed IS NULL
+          AND token_2022_policy_account IS NULL
+          AND token_2022_policy_seed IS NULL
+        "#,
+    )
+    .bind(&stale_policy_cluster)
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let stale_policy_error = fixture
         .client
         .activate_cross_mint_movement(
-            &seed_mismatch_lease,
+            &stale_policy_lease,
             CrossMintMovementActivationInput {
-                capacity: seed_mismatch_capacity,
+                capacity: stale_policy_capacity,
                 initial_withdraw_compiled_fee_lamports: 5_000,
                 preflight_certification: json!({
                     "kind": "cross_mint_preflight",
-                    "fixture": "policy_seed_mismatch",
+                    "fixture": "stale_policy_binding",
                 }),
-                policy_bindings: seed_mismatch_bindings,
+                policy_bindings: stale_policy_bindings,
             },
         )
         .await
-        .expect_err("a mismatched enrolled policy seed cannot activate a movement");
+        .expect_err("a noncanonical projected policy cannot activate a movement");
     checks.push(subcheck(
-        "cross_mint_activation_requires_exact_opted_in_policy_seed",
-        corrupted_opt_in.rows_affected() == 1
-            && seed_mismatch_error
+        "cross_mint_activation_uses_canonical_projection_with_normal_opt_in",
+        newer_policy.rows_affected() == 1
+            && deprecated_identity_count == 1
+            && stale_policy_error
                 .to_string()
                 .contains("lost an opted-in finalized policy binding"),
         json!({
-            "corruptedEnrollmentRows": corrupted_opt_in.rows_affected(),
-            "activationError": seed_mismatch_error.to_string(),
+            "newerCanonicalPolicyRows": newer_policy.rows_affected(),
+            "normalOptInsWithNullDeprecatedIdentity": deprecated_identity_count,
+            "activationError": stale_policy_error.to_string(),
+        }),
+    ));
+
+    let stale_before_withdraw =
+        activate_cross_mint_fixture(fixture, "cross_mint_stale_before_withdraw").await?;
+    let stale_before_withdraw_lease = fixture
+        .client
+        .claim_cross_mint_continuation(
+            &stale_before_withdraw.movement.cluster,
+            "stale-before-withdraw",
+            60,
+        )
+        .await?
+        .ok_or("stale-before-withdraw movement was not claimable")?;
+    let stale_before_withdraw_input = cross_mint_leg_input(
+        fixture,
+        &stale_before_withdraw.opportunity_lease,
+        &stale_before_withdraw_lease,
+        "stale-before-withdraw",
+        CrossMintMovementLeg::Withdraw,
+        CrossMintLegPurpose::OptimizeYield,
+        1,
+        CrossMintExpectedEffect {
+            debit: None,
+            credit_mint: Some("USDC".to_owned()),
+            credit_token_account: Some(format!(
+                "source-idle:{}",
+                stale_before_withdraw.movement.decision_id.as_i64()
+            )),
+            minimum_credit_amount_raw: Some(600_000),
+        },
+    )
+    .await?;
+    let newer_before_withdraw = sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.cross_mint_swap_policies
+            (cluster, settings, authority, policy_seed, policy_account,
+             vault_index, vault_pubkey, delegated_signer, source_shard,
+             max_slippage_bps, daily_source_mint_spending_cap,
+             manifest_fingerprint, active, start_eligible, last_mutation,
+             source_commitment, last_seen_slot, last_seen_signature)
+        SELECT cluster, settings, authority, policy_seed + 1000000,
+               policy_account || ':newer', vault_index, vault_pubkey,
+               delegated_signer, source_shard, max_slippage_bps,
+               daily_source_mint_spending_cap, manifest_fingerprint,
+               active, start_eligible, last_mutation, source_commitment,
+               last_seen_slot + 1, last_seen_signature || ':newer'
+        FROM loyal_yield.cross_mint_swap_policies
+        WHERE cluster = $1 AND policy_account = $2
+        "#,
+    )
+    .bind(&stale_before_withdraw.movement.cluster)
+    .bind(&stale_before_withdraw.policy_bindings.swap.policy_account)
+    .execute(fixture.client.pool())
+    .await?;
+    let stale_withdraw_error = fixture
+        .client
+        .append_cross_mint_leg(&stale_before_withdraw_lease, stale_before_withdraw_input)
+        .await
+        .expect_err("a noncanonical projected policy cannot publish the initial withdrawal");
+    let stale_withdraw_signed_count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::BIGINT FROM loyal_yield.signed_route_submissions WHERE decision_id = $1",
+    )
+    .bind(stale_before_withdraw.movement.decision_id.as_i64())
+    .fetch_one(fixture.client.pool())
+    .await?;
+    let stale_before_withdraw_closed = fixture
+        .client
+        .close_cross_mint_movement(
+            &stale_before_withdraw_lease,
+            CrossMintMovementCloseInput {
+                outcome: CrossMintTerminalOutcome::CancelledBeforeWithdraw,
+                observed_slot: 10_639,
+                reason: "start_authority_revoked_before_withdraw".to_owned(),
+                evidence: json!({
+                    "kind": "start_authority_revoked_before_withdraw",
+                    "cause": "noncanonical_policy_binding",
+                }),
+            },
+        )
+        .await?;
+    checks.push(subcheck(
+        "cross_mint_initial_withdraw_uses_canonical_policy_projection",
+        newer_before_withdraw.rows_affected() == 1
+            && stale_withdraw_signed_count == 0
+            && stale_withdraw_error
+                .to_string()
+                .contains("lost an opted-in finalized policy binding")
+            && stale_before_withdraw_closed.terminal_outcome
+                == Some(CrossMintTerminalOutcome::CancelledBeforeWithdraw),
+        json!({
+            "newerCanonicalPolicyRows": newer_before_withdraw.rows_affected(),
+            "signedSubmissions": stale_withdraw_signed_count,
+            "withdrawError": stale_withdraw_error.to_string(),
+            "terminalOutcome": stale_before_withdraw_closed.terminal_outcome,
         }),
     ));
 
