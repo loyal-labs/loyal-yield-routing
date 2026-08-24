@@ -2652,12 +2652,70 @@ impl NeonSqlClient {
             OrchestratorError::StoreInvariant("Earn MAX policy seed base exceeds BIGINT".to_owned())
         })?)
         .bind(&input.status)
-        .bind(input.policy_accounts)
+        .bind(&input.policy_accounts)
         .bind(&input.observed_signature)
         .bind(observed_slot)
-        .bind(input.observed_at)
+        .bind(&input.observed_at)
         .execute(&mut *tx)
         .await?;
+        if input.status == "ready" {
+            let route = sqlx::query(
+                r#"
+                SELECT state, lease_owner, lease_expires_at
+                FROM loyal_yield.multiply_route_states
+                WHERE settings=$1 AND vault_index=$2
+                FOR UPDATE
+                "#,
+            )
+            .bind(&input.settings)
+            .bind(i16::from(input.vault_index))
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(route) = route {
+                let lease_owner: Option<String> = route.try_get("lease_owner")?;
+                let lease_expires_at: Option<DateTime<Utc>> = route.try_get("lease_expires_at")?;
+                if lease_owner.is_some()
+                    && lease_expires_at.is_some_and(|expiry| expiry > Utc::now())
+                {
+                    return Err(OrchestratorError::StoreInvariant(
+                        "terminal Earn MAX route is actively leased; retry policy projection"
+                            .to_owned(),
+                    ));
+                }
+                let state: MultiplyRouteState = serde_json::from_value(route.try_get("state")?)
+                    .map_err(|error| OrchestratorError::StoreInvariant(error.to_string()))?;
+                if state.policy_seed_base != input.policy_seed_base {
+                    let state = state
+                        .roll_terminal_policy_seed_base(
+                            input.policy_seed_base,
+                            input.observed_slot,
+                            input.observed_at,
+                        )
+                        .map_err(|error| OrchestratorError::StoreInvariant(error.to_string()))?;
+                    sqlx::query(
+                        r#"
+                        UPDATE loyal_yield.multiply_route_states
+                        SET state=$2, state_version=$3, lease_owner=NULL,
+                            lease_expires_at=NULL, updated_at=now()
+                        WHERE route_key=$1
+                        "#,
+                    )
+                    .bind(&state.route_key)
+                    .bind(
+                        serde_json::to_value(&state).map_err(|error| {
+                            OrchestratorError::StoreInvariant(error.to_string())
+                        })?,
+                    )
+                    .bind(i64::try_from(state.generation).map_err(|_| {
+                        OrchestratorError::StoreInvariant(
+                            "Earn MAX generation exceeds BIGINT".to_owned(),
+                        )
+                    })?)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+        }
         if observed_slot > cursor {
             sqlx::query(
                 r#"

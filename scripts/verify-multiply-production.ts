@@ -364,6 +364,7 @@ function checkAppSource(): Json {
     "buildEarnMaxClaimInstructions",
     "buildEarnMaxCloseInstructions",
     "createEarnMaxPolicyManifest",
+    "resolveEarnMaxInstallSeedBase",
     "EarnMaxViewModel",
     "history_incomplete",
     "realized_apy_bps",
@@ -419,6 +420,7 @@ function checkWorkerAndStoreSource(): Json {
   requireText(planner, "if observed.claim.amount_raw > 0", "active_position_top_up_not_deployed", "crates/loyal-fleet-worker/src/multiply/planner.rs");
   requireText(state, "ready_by", "withdrawal_sla_not_explicit", "crates/loyal-yield-store/src/fleet_orchestration/multiply.rs");
   requireText(state, "cancel_withdrawal", "withdrawal_cancellation_state_missing", "crates/loyal-yield-store/src/fleet_orchestration/multiply.rs");
+  requireText(state, "roll_terminal_policy_seed_base", "repeated_policy_install_state_transition_missing", "crates/loyal-yield-store/src/fleet_orchestration/multiply.rs");
   requireText(store, "interval '30 seconds'", "withdrawal_cancel_grace_missing", MULTIPLY_STORE);
   return {
     workerSha256: sha256(worker),

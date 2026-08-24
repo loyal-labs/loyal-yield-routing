@@ -394,6 +394,42 @@ impl MultiplyRouteState {
         self.frontend = project_frontend(&self);
         Ok(self)
     }
+
+    pub fn roll_terminal_policy_seed_base(
+        mut self,
+        policy_seed_base: u64,
+        observed_slot: u64,
+        observed_at: DateTime<Utc>,
+    ) -> Result<Self, MultiplyStateError> {
+        if policy_seed_base == self.policy_seed_base {
+            return Ok(self);
+        }
+        let empty_claim = matches!(
+            &self.position,
+            MultiplyPosition::Idle { claim } if claim.amount_raw == 0
+        );
+        let claimed = self
+            .withdrawal
+            .as_ref()
+            .is_some_and(|withdrawal| withdrawal.status == WithdrawalStatus::Claimed);
+        if policy_seed_base <= self.policy_seed_base
+            || observed_slot < self.observed_slot
+            || self.goal != RouteGoal::Claimed
+            || !empty_claim
+            || !claimed
+            || self.current_operation_id.is_some()
+            || self.manual_recovery_reason.is_some()
+        {
+            return Err(MultiplyStateError::InvalidGoalChange);
+        }
+        self.generation += 1;
+        self.policy_seed_base = policy_seed_base;
+        self.observed_slot = observed_slot;
+        self.observed_at = observed_at;
+        self.frontend = project_frontend(&self);
+        self.validate_persisted()?;
+        Ok(self)
+    }
 }
 
 pub fn project_frontend(state: &MultiplyRouteState) -> MultiplyFrontendView {
