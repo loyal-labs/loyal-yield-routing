@@ -677,11 +677,11 @@ pub fn detect_squads_policy_removals(
             policy_account,
         });
     }
-    let memo = read_option(&mut cursor, |cursor| {
+    let _memo = read_option(&mut cursor, |cursor| {
         let len = cursor.read_u32()? as usize;
         cursor.skip(len)
     })?;
-    if memo.is_some() || cursor.remaining() != 0 {
+    if cursor.remaining() != 0 {
         return Ok(Vec::new());
     }
     Ok(removals)
@@ -3537,6 +3537,21 @@ mod tests {
             vec![policy_account, second_policy]
         );
         assert!(detect_squads_policy_remove(&remove_pair).unwrap().is_none());
+
+        let mut memoed_remove_pair = remove_pair;
+        *memoed_remove_pair.data.last_mut().unwrap() = 1;
+        memoed_remove_pair
+            .data
+            .extend_from_slice(&("Earn MAX close".len() as u32).to_le_bytes());
+        memoed_remove_pair.data.extend_from_slice(b"Earn MAX close");
+        let memoed_pair = detect_squads_policy_removals(&memoed_remove_pair).unwrap();
+        assert_eq!(
+            memoed_pair
+                .iter()
+                .map(|removal| removal.policy_account)
+                .collect::<Vec<_>>(),
+            vec![policy_account, second_policy]
+        );
     }
 
     #[test]
