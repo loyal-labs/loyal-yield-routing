@@ -789,6 +789,14 @@ impl WorkerRuntime {
             })
             .unwrap_or_default();
         let observed = observe::observe_confirmed_with_extra(&self.rpc, topology, &extra).await?;
+        if !observed.active_strategy_is_coherent() {
+            return Ok(TickResult {
+                route_key: Some(lease.route_key.clone()),
+                condition: "awaiting_coherent_confirmed_observation".to_owned(),
+                operation_id: None,
+                signature: None,
+            });
+        }
         self.store
             .record_multiply_position_snapshot(&snapshot_input(&stored.state, &observed))
             .await?;

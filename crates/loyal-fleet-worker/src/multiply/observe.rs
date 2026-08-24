@@ -15,6 +15,9 @@ use std::{error::Error, str::FromStr};
 #[derive(Clone, Debug)]
 pub struct StrategyObservation {
     pub strategy_key: StrategyKey,
+    pub obligation_last_update_slot: u64,
+    pub collateral_reserve_last_update_slot: u64,
+    pub debt_reserve_last_update_slot: u64,
     pub collateral_deposited_raw: u64,
     pub debt_raw: u64,
     pub debt_amount_sf: String,
@@ -53,6 +56,17 @@ impl ObservedRoute {
             StrategyKey::SyrupUsdcUsdc => &self.source_debt_custody,
             StrategyKey::SyrupUsdcPyusd => &self.target_debt_custody,
         }
+    }
+
+    pub fn active_strategy_is_coherent(&self) -> bool {
+        self.strategies
+            .iter()
+            .find(|position| position.collateral_deposited_raw > 0 || position.debt_raw > 0)
+            .is_none_or(|position| {
+                position.collateral_reserve_last_update_slot >= position.obligation_last_update_slot
+                    && position.debt_reserve_last_update_slot
+                        >= position.obligation_last_update_slot
+            })
     }
 }
 
@@ -311,6 +325,9 @@ fn decode_obligation(
     let collateral_deposited_raw = deposits.first().map_or(0, |value| value.deposited_amount);
     Ok(StrategyObservation {
         strategy_key: config.key,
+        obligation_last_update_slot: obligation.last_update.slot,
+        collateral_reserve_last_update_slot: collateral_reserve.last_update.slot,
+        debt_reserve_last_update_slot: debt_reserve.last_update.slot,
         collateral_deposited_raw,
         debt_raw,
         debt_amount_sf: debt_sf.to_string(),
@@ -340,6 +357,9 @@ fn empty_obligation(
 ) -> Result<StrategyObservation, Box<dyn Error>> {
     Ok(StrategyObservation {
         strategy_key: config.key,
+        obligation_last_update_slot: 0,
+        collateral_reserve_last_update_slot: collateral_reserve.last_update.slot,
+        debt_reserve_last_update_slot: debt_reserve.last_update.slot,
         collateral_deposited_raw: 0,
         debt_raw: 0,
         debt_amount_sf: "0".to_owned(),
