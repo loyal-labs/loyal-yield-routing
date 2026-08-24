@@ -63,6 +63,7 @@ const MIGRATION_0062: &str = include_str!("../migrations/0062_earn_chain_cash_fl
 const MIGRATION_0063: &str = include_str!("../migrations/0063_earn_max_external_operations.sql");
 const MIGRATION_0064: &str = include_str!("../migrations/0064_earn_max_partial_lifecycle.sql");
 const MIGRATION_0065: &str = include_str!("../migrations/0065_autodeposit_target_cluster.sql");
+const MIGRATION_0066: &str = include_str!("../migrations/0066_earn_activity_events.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -165,6 +166,21 @@ struct CrossMintVaultOptInRow {
     generation: i64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+struct EarnActivityEventInsert<'a> {
+    cluster: &'a str,
+    settings: &'a str,
+    authority: &'a str,
+    wallet: &'a str,
+    vault_index: i16,
+    vault_pubkey: &'a str,
+    event_type: &'a str,
+    signature: &'a str,
+    event_slot: i64,
+    entity_kind: &'a str,
+    entity_key: &'a str,
+    metadata: Value,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -564,6 +580,12 @@ impl NeonSqlClient {
                 version: 65,
                 name: "autodeposit_target_cluster",
                 sql: MIGRATION_0065,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 66,
+                name: "earn_activity_events",
+                sql: MIGRATION_0066,
                 expected_checksum: None,
             },
         ] {
@@ -1988,6 +2010,29 @@ impl NeonSqlClient {
         if row.as_ref().is_some_and(|policy| policy.start_eligible) {
             ensure_cross_mint_vault_opt_in_for_canonical_pair(&mut tx, &event).await?;
         }
+        if event.source_commitment == "finalized"
+            && event.mutation == "create"
+            && row.as_ref().is_some_and(|policy| policy.active)
+        {
+            insert_earn_activity_event(
+                &mut tx,
+                EarnActivityEventInsert {
+                    cluster: &event.cluster,
+                    settings: &event.settings,
+                    authority: &event.authority,
+                    wallet: &event.authority,
+                    vault_index: i16::from(event.vault_index),
+                    vault_pubkey: &event.vault_pubkey,
+                    event_type: "autoswap_created",
+                    signature: &event.signature,
+                    event_slot: slot,
+                    entity_kind: "autoswap_policy",
+                    entity_key: &event.policy_account,
+                    metadata: json!({ "sourceShard": event.source_shard }),
+                },
+            )
+            .await?;
+        }
         tx.commit().await?;
         row.map(cross_mint_swap_policy_from_row).transpose()
     }
@@ -2245,18 +2290,26 @@ impl NeonSqlClient {
             false
         };
 
-        let balance_sweep_target_deactivated: bool = sqlx::query_scalar(
+        let balance_sweep_target = sqlx::query(
             r#"
-            WITH closed_target AS (
+            WITH existing_target AS (
+              SELECT id, vault_index, vault_pubkey, wallet
+              FROM loyal_yield.balance_sweep_targets
+              WHERE policy_account = $3
+                AND settings = $4
+                AND authority = $5
+              FOR UPDATE
+            ), closed_target AS (
             UPDATE loyal_yield.balance_sweep_targets
             SET chain_status = 'closed',
                 chain_observation_slot = GREATEST(chain_observation_slot, $1),
                 last_seen_at = now(),
                 last_seen_slot = $1,
-                last_seen_signature = $2
-            WHERE policy_account = $3
-              AND settings = $4
-              AND authority = $5
+                last_seen_signature = $2,
+                close_signature = COALESCE(close_signature, $2),
+                close_slot = COALESCE(close_slot, $1),
+                closed_at = COALESCE(closed_at, now())
+            WHERE id IN (SELECT id FROM existing_target)
               AND $1 >= chain_observation_slot
               AND chain_status <> 'closed'
             RETURNING id
@@ -2271,7 +2324,11 @@ impl NeonSqlClient {
               WHERE target_id IN (SELECT id FROM closed_target)
                 AND status = 'open' AND remaining_amount_raw > 0
             )
-            SELECT EXISTS(SELECT 1 FROM closed_target)
+            SELECT existing_target.vault_index,
+                   existing_target.vault_pubkey,
+                   existing_target.wallet,
+                   EXISTS(SELECT 1 FROM closed_target) AS was_deactivated
+            FROM existing_target
             "#,
         )
         .bind(slot)
@@ -2279,8 +2336,34 @@ impl NeonSqlClient {
         .bind(&event.policy_account)
         .bind(&event.settings)
         .bind(&event.authority)
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
+
+        let balance_sweep_target_deactivated = balance_sweep_target
+            .as_ref()
+            .is_some_and(|row| row.get("was_deactivated"));
+        if event.source_commitment == "finalized" {
+            if let Some(target) = balance_sweep_target.as_ref() {
+                insert_earn_activity_event(
+                    &mut tx,
+                    EarnActivityEventInsert {
+                        cluster: &event.cluster,
+                        settings: &event.settings,
+                        authority: &event.authority,
+                        wallet: target.get("wallet"),
+                        vault_index: target.get("vault_index"),
+                        vault_pubkey: target.get("vault_pubkey"),
+                        event_type: "autodeposit_closed",
+                        signature: &event.signature,
+                        event_slot: slot,
+                        entity_kind: "autodeposit_policy",
+                        entity_key: &event.policy_account,
+                        metadata: json!({}),
+                    },
+                )
+                .await?;
+            }
+        }
 
         tx.commit().await?;
         Ok(PolicyRemovalResult {
@@ -2568,6 +2651,25 @@ impl NeonSqlClient {
         .bind(slot)
         .bind(&event.signature)
         .fetch_one(&mut *tx)
+        .await?;
+
+        insert_earn_activity_event(
+            &mut tx,
+            EarnActivityEventInsert {
+                cluster: &event.cluster,
+                settings: &event.settings,
+                authority: &event.authority,
+                wallet: &event.wallet,
+                vault_index: i16::from(event.vault_index),
+                vault_pubkey: &event.vault_pubkey,
+                event_type: "autodeposit_created",
+                signature: &event.signature,
+                event_slot: slot,
+                entity_kind: "autodeposit_policy",
+                entity_key: &event.policy_account,
+                metadata: json!({ "tokenMint": event.token_mint }),
+            },
+        )
         .await?;
 
         tx.commit().await?;
@@ -5187,6 +5289,9 @@ async fn deactivate_cross_mint_swap_policy(
         && commitment_rank(&event.source_commitment)?
             <= commitment_rank(&current.source_commitment)?
     {
+        if event.source_commitment == "finalized" {
+            insert_autoswap_closed_activity_event(tx, event, slot, &current).await?;
+        }
         return Ok(false);
     }
 
@@ -5210,7 +5315,77 @@ async fn deactivate_cross_mint_swap_policy(
     .bind(&event.signature)
     .execute(&mut **tx)
     .await?;
+    if event.source_commitment == "finalized" && was_enabled {
+        insert_autoswap_closed_activity_event(tx, event, slot, &current).await?;
+    }
     Ok(was_enabled)
+}
+
+async fn insert_autoswap_closed_activity_event(
+    tx: &mut Transaction<'_, Postgres>,
+    event: &PolicyRemovalInput,
+    slot: i64,
+    current: &CrossMintSwapPolicyRow,
+) -> Result<(), OrchestratorError> {
+    let (Some(vault_index), Some(vault_pubkey)) =
+        (current.vault_index, current.vault_pubkey.as_deref())
+    else {
+        return Ok(());
+    };
+    insert_earn_activity_event(
+        tx,
+        EarnActivityEventInsert {
+            cluster: &event.cluster,
+            settings: &event.settings,
+            authority: &event.authority,
+            wallet: &event.authority,
+            vault_index,
+            vault_pubkey,
+            event_type: "autoswap_closed",
+            signature: &event.signature,
+            event_slot: slot,
+            entity_kind: "autoswap_policy",
+            entity_key: &event.policy_account,
+            metadata: json!({ "sourceShard": current.source_shard }),
+        },
+    )
+    .await
+}
+
+async fn insert_earn_activity_event(
+    tx: &mut Transaction<'_, Postgres>,
+    event: EarnActivityEventInsert<'_>,
+) -> Result<(), OrchestratorError> {
+    let idempotency_key = format!(
+        "{}:{}:{}:{}",
+        event.cluster, event.signature, event.event_type, event.entity_key
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO loyal_yield.earn_activity_events (
+            idempotency_key, cluster, settings, authority, wallet,
+            vault_index, vault_pubkey, event_type, signature,
+            instruction_index, event_slot, entity_kind, entity_key, metadata
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,$10,$11,$12,$13)
+        ON CONFLICT (idempotency_key) DO NOTHING
+        "#,
+    )
+    .bind(idempotency_key)
+    .bind(event.cluster)
+    .bind(event.settings)
+    .bind(event.authority)
+    .bind(event.wallet)
+    .bind(event.vault_index)
+    .bind(event.vault_pubkey)
+    .bind(event.event_type)
+    .bind(event.signature)
+    .bind(event.event_slot)
+    .bind(event.entity_kind)
+    .bind(event.entity_key)
+    .bind(event.metadata)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 async fn delete_cross_mint_vault_opt_in_after_complete_removal(
