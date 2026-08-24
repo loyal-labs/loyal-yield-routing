@@ -82,6 +82,7 @@
     "verify:fleet-health-projector": "bash scripts/verify-ask-2150-fleet-health-projector.sh",
     "verify:fleet-health-poll": "bash scripts/verify-fleet-health-poll-contention.sh",
     "verify:earn-rebalance-success-metrics": "bun scripts/verify-earn-rebalance-success-metrics.ts",
+    "verify:ask-2222-conflict-ownership-e2e": "bash scripts/verify-ask-2222-conflict-ownership-e2e.sh",
     "verify:fleet-latency-speedup-e2e": "bash scripts/verify-fleet-latency-speedup-e2e.sh",
     "verify:ask-1973-fleet-e2e": "bash scripts/verify-ask-1973-fleet-e2e.sh",
     "verify:ask-1973-images": "bash scripts/verify-ask-1973-images.sh",

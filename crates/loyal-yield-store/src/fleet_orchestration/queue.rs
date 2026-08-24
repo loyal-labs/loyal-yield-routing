@@ -6976,15 +6976,22 @@ pub(crate) fn canonical_conflict_account_keys(
         .iter()
         .filter(|key| key.starts_with("kamino:reserve:"))
         .count();
+    let policy_setup_funding_key_count = canonical
+        .iter()
+        .filter(|key| key.starts_with("policy-setup-funding:"))
+        .count();
     let generic_pair = vault_key_count == 1 && lane_key_count == 1;
     let voltr_pair = voltr_vault_key_count == 1 && voltr_reserve_key_count == 1;
+    let ownership_key_count = canonical
+        .len()
+        .saturating_sub(policy_setup_funding_key_count);
     if canonical.len() != conflict_account_keys.len()
-        || canonical.len() != 2
+        || ownership_key_count != 2
+        || policy_setup_funding_key_count > 1
         || generic_pair == voltr_pair
     {
         return Err(OrchestratorError::StoreInvariant(
-            "route conflict ownership requires exactly one admitted vault and execution-lane pair"
-                .to_owned(),
+            "route conflict ownership requires exactly one admitted vault and execution-lane pair, with at most one policy setup funding lock".to_owned(),
         ));
     }
     Ok(canonical)
@@ -7394,6 +7401,28 @@ fn require_exact_confirmation_defer_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conflict_ownership_allows_the_legacy_policy_setup_funding_lock() {
+        let keys = vec![
+            "vault-write:vault".to_owned(),
+            "fleet-shared-write-lane:03".to_owned(),
+            "policy-setup-funding:policy".to_owned(),
+        ];
+
+        assert_eq!(canonical_conflict_account_keys(&keys).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn conflict_ownership_rejects_an_unrecognized_third_key() {
+        let keys = vec![
+            "vault-write:vault".to_owned(),
+            "fleet-shared-write-lane:03".to_owned(),
+            "scheduler-only:key".to_owned(),
+        ];
+
+        assert!(canonical_conflict_account_keys(&keys).is_err());
+    }
 
     #[test]
     fn advance_rebalance_opportunity_non_applied_outcomes_remain_errors_for_strict_callers() {
