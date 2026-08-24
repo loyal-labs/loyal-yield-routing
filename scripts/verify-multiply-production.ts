@@ -414,6 +414,7 @@ function checkWorkerAndStoreSource(): Json {
     "load_claimable_multiply_route_state",
     "admit_external_multiply_operation",
     "confirmed_claim_transfer",
+    "AND NOT COALESCE((",
   ]) {
     requireText(store, required, "earn_max_store_contract_missing", MULTIPLY_STORE);
   }

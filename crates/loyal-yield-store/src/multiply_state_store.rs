@@ -444,11 +444,11 @@ impl NeonSqlClient {
                       AND route.state #>> '{withdrawal,status}' <> 'claimable'
                     )
                   )
-                  AND NOT (
+                  AND NOT COALESCE((
                     route.state #>> '{withdrawal,status}' = 'requested'
                     AND (route.state #>> '{withdrawal,requestedAt}')::timestamptz
                       > now() - interval '30 seconds'
-                  )
+                  ), FALSE)
                 ORDER BY route.updated_at, route.route_key
                 FOR UPDATE OF route SKIP LOCKED
                 LIMIT 1
