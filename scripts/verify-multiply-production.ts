@@ -34,6 +34,7 @@ const APP_ACTIONS = "packages/loyal-actions/src/earn-max.ts";
 const APP_UI = "apps/web/src/components/wallet-workspace/facelift/earn-max-pane.tsx";
 const APP_SHELL = "apps/web/src/components/wallet-workspace/facelift/shell.tsx";
 const MULTIPLY_STORE = "crates/loyal-yield-store/src/multiply_state_store.rs";
+const MIGRATION_RUNNER = "crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs";
 
 type Json = Record<string, unknown>;
 
@@ -227,6 +228,7 @@ function checkMinimalSchemaSource(): Json {
   const migrationRoot = resolve(ROOT, MIGRATIONS);
   const migrations = relativeFiles(migrationRoot).filter((path) => path.endsWith(".sql"));
   const source = migrations.map((path) => file(migrationRoot, path)).join("\n");
+  const runner = file(ROOT, MIGRATION_RUNNER);
   for (const table of [
     "earn_max_policy_sets",
     "multiply_route_states",
@@ -268,7 +270,23 @@ function checkMinimalSchemaSource(): Json {
   ]) {
     rejectText(source, forbidden, "forbidden_earn_max_table_survived", MIGRATIONS);
   }
-  return { migrations, sha256: sha256(source) };
+  for (const required of [
+    'version: 66',
+    'name: "earn_max_single_owner_state"',
+    '0066_earn_max_single_owner_state.sql',
+  ]) {
+    requireText(
+      runner,
+      required,
+      "earn_max_production_migration_registry_missing",
+      MIGRATION_RUNNER,
+    );
+  }
+  return {
+    migrations,
+    sha256: sha256(source),
+    runnerSha256: sha256(runner),
+  };
 }
 
 function checkLaserStreamSource(): Json {
