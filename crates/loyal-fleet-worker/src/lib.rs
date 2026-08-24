@@ -60,7 +60,9 @@ use loyal_actions::{
     KAMINO_MAIN_USDC_RESERVE, SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT,
     YIELD_ROUTE_WITHDRAW_ACTION_SEED,
 };
-use loyal_observability::{init_from_env, OperationalError};
+use loyal_observability::{
+    init_from_env, EarnRebalanceMetrics, EarnRebalanceStage, OperationalError,
+};
 use loyal_yield_orchestrator::sqlx;
 use loyal_yield_orchestrator::sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -972,6 +974,53 @@ enum FleetReconcilerTaskOutcome {
         kind: OuterTaskFailureKind,
         error: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FleetWorkerStageSuccess {
+    None,
+    Revalidated,
+    ExecutionHandoffPersisted,
+}
+
+fn classify_fleet_worker_stage_success(
+    claim_kind: RebalanceOpportunityClaimKind,
+    state: SameMintRouteExecutionState,
+    durable_transition_applied: bool,
+) -> FleetWorkerStageSuccess {
+    if !durable_transition_applied {
+        return FleetWorkerStageSuccess::None;
+    }
+    match (claim_kind, state) {
+        (RebalanceOpportunityClaimKind::Revalidate, SameMintRouteExecutionState::Ready) => {
+            FleetWorkerStageSuccess::Revalidated
+        }
+        (
+            RebalanceOpportunityClaimKind::Execute,
+            SameMintRouteExecutionState::SubmissionQueued | SameMintRouteExecutionState::Executed,
+        ) => FleetWorkerStageSuccess::ExecutionHandoffPersisted,
+        _ => FleetWorkerStageSuccess::None,
+    }
+}
+
+fn fleet_worker_success_stages(
+    success: FleetWorkerStageSuccess,
+    fused_execution: bool,
+) -> [Option<EarnRebalanceStage>; 2] {
+    match (success, fused_execution) {
+        (FleetWorkerStageSuccess::Revalidated, _) => {
+            [Some(EarnRebalanceStage::RouteRevalidated), None]
+        }
+        (FleetWorkerStageSuccess::ExecutionHandoffPersisted, true) => [
+            Some(EarnRebalanceStage::RouteRevalidated),
+            Some(EarnRebalanceStage::RouteExecutionHandoffPersisted),
+        ],
+        (FleetWorkerStageSuccess::ExecutionHandoffPersisted, false) => [
+            Some(EarnRebalanceStage::RouteExecutionHandoffPersisted),
+            None,
+        ],
+        (FleetWorkerStageSuccess::None, _) => [None, None],
+    }
 }
 
 type FusedExecutionLeaseState = Arc<Mutex<Option<RebalanceOpportunityLease>>>;
@@ -2585,7 +2634,8 @@ pub async fn run_main() {
         }
     };
     let failure_args = args.clone();
-    if let Err(error) = run(args).await {
+    let earn_rebalance_metrics = observability.earn_rebalance_metrics();
+    if let Err(error) = run(args, earn_rebalance_metrics).await {
         match same_mint_process_failure_disposition(&failure_args, &error.to_string()) {
             SameMintProcessFailureDisposition::RoutePolicyMissing { policy_account } => {
                 eprintln!(
@@ -2653,7 +2703,10 @@ fn run_startup_probe(args: &[String]) -> Result<bool, Box<dyn Error>> {
     Ok(false)
 }
 
-async fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
+async fn run(
+    args: Vec<String>,
+    earn_rebalance_metrics: EarnRebalanceMetrics,
+) -> Result<(), Box<dyn Error>> {
     if matches!(
         args.as_slice(),
         [flag] if flag == "--fleet-rpc-hot-path-model"
@@ -2667,11 +2720,11 @@ async fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
     }
     if args.first().is_some_and(|arg| arg == "--fleet-reconciler") {
         let options = parse_fleet_reconciler_options(args.into_iter().skip(1))?;
-        return run_fleet_reconciler(options).await;
+        return run_fleet_reconciler(options, earn_rebalance_metrics).await;
     }
     if args.first().is_some_and(|arg| arg == "--fleet-worker") {
         let options = parse_fleet_worker_options(args.into_iter().skip(1))?;
-        return run_fleet_worker(options).await;
+        return run_fleet_worker(options, earn_rebalance_metrics).await;
     }
     let options = match parse_args(args) {
         Ok(value) => value,
@@ -3307,7 +3360,10 @@ fn parse_fleet_reconciler_options(
     })
 }
 
-async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Error>> {
+async fn run_fleet_worker(
+    options: FleetWorkerOptions,
+    earn_rebalance_metrics: EarnRebalanceMetrics,
+) -> Result<(), Box<dyn Error>> {
     let database_url =
         env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL must be set")?;
     let max_connections = u32::try_from(options.concurrency)
@@ -3376,7 +3432,7 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
     );
     let fused_execute_slots = Arc::new(Semaphore::new(options.fused_execute_concurrency));
     let mut wakeup_listener = DurablePgWakeupListener::new("loyal_yield_rebalance_wakeup")?;
-    let mut tasks = JoinSet::<FleetWorkerTaskResult>::new();
+    let mut tasks = JoinSet::<(FleetWorkerTaskResult, Instant)>::new();
     let mut claimed = 0u64;
     let mut completed = 0u64;
     let mut failed = 0u64;
@@ -3633,6 +3689,7 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                 // The adapter never submits directly; the generic sender and
                 // confirmer own publication and recovery.
                 if voltr::is_voltr_plan(&lease.opportunity.execution_plan) {
+                    let task_started = Instant::now();
                     let execute = lease.claim_kind == RebalanceOpportunityClaimKind::Execute;
                     let result = match voltr::run(
                         route_runtime.rpc.as_ref(),
@@ -3664,7 +3721,16 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                         ),
                     };
                     match finish_fleet_worker_task(&client, result).await {
-                        Ok(()) => completed = completed.saturating_add(1),
+                        Ok(success) => {
+                            completed = completed.saturating_add(1);
+                            for stage in fleet_worker_success_stages(success, false)
+                                .into_iter()
+                                .flatten()
+                            {
+                                earn_rebalance_metrics
+                                    .record_success(stage, task_started.elapsed());
+                            }
+                        }
                         Err(error) => {
                             failed = failed.saturating_add(1);
                             eprintln!(
@@ -3712,6 +3778,7 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                 // is fenced back to its queue immediately instead of waiting
                 // for the full crash-recovery TTL.
                 tasks.spawn_blocking(move || {
+                    let task_started = Instant::now();
                     let _fused_execute_permit = fused_execute_permit;
                     let attempt = catch_unwind(AssertUnwindSafe(
                         || -> Result<SameMintRouteExecutionOutcome, String> {
@@ -3749,7 +3816,7 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                         .ok()
                         .and_then(|promoted| promoted.clone())
                         .unwrap_or(fallback_lease);
-                    match attempt {
+                    let result = match attempt {
                         Ok(Ok(outcome)) => FleetWorkerTaskResult {
                             lease: effective_lease,
                             outcome,
@@ -3774,7 +3841,8 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
                                 "fleet route task panicked before its fenced transition".to_owned(),
                             )
                         }
-                    }
+                    };
+                    (result, task_started)
                 });
             }
         }
@@ -3852,14 +3920,25 @@ async fn run_fleet_worker(options: FleetWorkerOptions) -> Result<(), Box<dyn Err
         }
         .ok_or("fleet worker task set unexpectedly became empty")?;
         match task {
-            Ok(result) => {
+            Ok((result, task_started)) => {
                 if options.claim_kind == RebalanceOpportunityClaimKind::Revalidate
                     && result.lease.claim_kind == RebalanceOpportunityClaimKind::Execute
                 {
                     fused_execute_promotions = fused_execute_promotions.saturating_add(1);
                 }
+                let fused_execution = options.claim_kind
+                    == RebalanceOpportunityClaimKind::Revalidate
+                    && result.lease.claim_kind == RebalanceOpportunityClaimKind::Execute;
                 match finish_fleet_worker_task(&client, result).await {
-                    Ok(()) => completed = completed.saturating_add(1),
+                    Ok(success) => {
+                        completed = completed.saturating_add(1);
+                        for stage in fleet_worker_success_stages(success, fused_execution)
+                            .into_iter()
+                            .flatten()
+                        {
+                            earn_rebalance_metrics.record_success(stage, task_started.elapsed());
+                        }
+                    }
                     Err(error) => {
                         if is_commit_lifetime_fence_rejection(error.as_ref()) {
                             lifetime_fenced = lifetime_fenced.saturating_add(1);
@@ -4008,7 +4087,10 @@ async fn defer_cross_mint_opportunity_after_error(
     Ok(())
 }
 
-async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box<dyn Error>> {
+async fn run_fleet_reconciler(
+    options: FleetReconcilerOptions,
+    earn_rebalance_metrics: EarnRebalanceMetrics,
+) -> Result<(), Box<dyn Error>> {
     let database_url =
         env::var("NEON_DATABASE_URL").map_err(|_| "NEON_DATABASE_URL must be set")?;
     let max_connections = u32::try_from(options.concurrency)
@@ -4095,11 +4177,15 @@ async fn run_fleet_reconciler(options: FleetReconcilerOptions) -> Result<(), Box
                 };
                 let fallback_lease = lease.clone();
                 let task_runtime = runtime.clone();
+                let task_metrics = earn_rebalance_metrics.clone();
                 let runtime_handle = tokio::runtime::Handle::current();
                 tasks.spawn_blocking(move || {
                     let attempt = catch_unwind(AssertUnwindSafe(|| {
-                        runtime_handle
-                            .block_on(reconcile_signed_route_submission(task_runtime, lease))
+                        runtime_handle.block_on(reconcile_signed_route_submission(
+                            task_runtime,
+                            lease,
+                            task_metrics,
+                        ))
                     }));
                     let outcome = match attempt {
                         Ok(Ok(completed)) => FleetReconcilerTaskOutcome::Completed(completed),
@@ -5299,7 +5385,9 @@ async fn reconcile_fleet_position_sweep_vault(
 async fn reconcile_signed_route_submission(
     runtime: Arc<SameMintRouteRuntime>,
     lease: SignedRouteSubmissionLease,
+    earn_rebalance_metrics: EarnRebalanceMetrics,
 ) -> Result<bool, String> {
+    let started = Instant::now();
     if matches!(
         lease.submission.state,
         SignedRouteSubmissionState::ExpiryCheckPending
@@ -5563,7 +5651,11 @@ async fn reconcile_signed_route_submission(
     }
     if cross_mint::is_cross_mint_submission(&lease.submission) {
         return match cross_mint::reconcile_finalized_submission(&runtime, &lease).await {
-            Ok(_) => Ok(true),
+            Ok(_) => {
+                earn_rebalance_metrics
+                    .record_success(EarnRebalanceStage::RouteReconciled, started.elapsed());
+                Ok(true)
+            }
             Err(error) => {
                 let detail = safe_same_mint_operational_error(error.as_ref());
                 if cross_mint::reconciliation_error_requires_quarantine(error.as_ref()) {
@@ -5622,27 +5714,33 @@ async fn reconcile_signed_route_submission(
         .await
         .map_err(|error| error.to_string())?
     {
-        return runtime
+        runtime
             .client
             .advance_signed_route_submission(
                 &lease,
                 SignedRouteSubmissionAdvance::Reconciled { reconciled_slot },
             )
             .await
-            .map(|_| true)
-            .map_err(|error| error.to_string());
+            .map_err(|error| error.to_string())?;
+        earn_rebalance_metrics
+            .record_success(EarnRebalanceStage::RouteReconciled, started.elapsed());
+        return Ok(true);
     }
     let result = reconcile_same_mint_submission_effect(&runtime, &lease).await;
     match result {
-        Ok(reconciled_slot) => runtime
-            .client
-            .advance_signed_route_submission(
-                &lease,
-                SignedRouteSubmissionAdvance::Reconciled { reconciled_slot },
-            )
-            .await
-            .map(|_| true)
-            .map_err(|error| error.to_string()),
+        Ok(reconciled_slot) => {
+            runtime
+                .client
+                .advance_signed_route_submission(
+                    &lease,
+                    SignedRouteSubmissionAdvance::Reconciled { reconciled_slot },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            earn_rebalance_metrics
+                .record_success(EarnRebalanceStage::RouteReconciled, started.elapsed());
+            Ok(true)
+        }
         Err(error) => {
             let detail = safe_same_mint_operational_error(error.as_ref());
             runtime
@@ -6480,7 +6578,7 @@ fn fleet_worker_voltr_result(
 async fn finish_fleet_worker_task(
     client: &NeonSqlClient,
     result: FleetWorkerTaskResult,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<FleetWorkerStageSuccess, Box<dyn Error>> {
     let FleetWorkerTaskResult { lease, outcome } = result;
     if lease.claim_kind == RebalanceOpportunityClaimKind::Execute
         && matches!(
@@ -6515,7 +6613,7 @@ async fn finish_fleet_worker_task(
             current.decision_id.is_some(),
         )
         .map_err(|error| -> Box<dyn Error> { error.into() })?;
-        return Ok(());
+        return Ok(FleetWorkerStageSuccess::ExecutionHandoffPersisted);
     }
 
     let (next_state, available_at, reason, provisioning_request_id) =
@@ -6647,13 +6745,14 @@ async fn finish_fleet_worker_task(
             },
         )
         .await?;
-    if validate_fleet_worker_advance_outcome(
+    let transition_expired = validate_fleet_worker_advance_outcome(
         opportunity_id,
         outcome_state,
         writes_decision,
         sends_transactions,
         advance_outcome,
-    )? {
+    )?;
+    if transition_expired {
         println!(
             "{}",
             serde_json::to_string(&json!({
@@ -6667,7 +6766,11 @@ async fn finish_fleet_worker_task(
             }))?
         );
     }
-    Ok(())
+    Ok(classify_fleet_worker_stage_success(
+        lease.claim_kind,
+        outcome_state,
+        !transition_expired,
+    ))
 }
 
 fn validate_fleet_worker_advance_outcome(
@@ -22464,6 +22567,8 @@ mod tests {
             expected_net_gain_usd_micros: 90_000,
             economic_priority: 90_000,
             priority_version: "test".to_owned(),
+            operation_class: loyal_yield_orchestrator::fleet_orchestration::RebalanceOpportunityOperationClass::YieldOptimization,
+            service_deadline_at: None,
             state: RebalanceOpportunityState::Ready,
             execution_plan: json!({}),
             available_at: now,
@@ -22478,6 +22583,56 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    #[test]
+    fn earn_rebalance_stage_success_classification() {
+        assert_eq!(
+            classify_fleet_worker_stage_success(
+                RebalanceOpportunityClaimKind::Revalidate,
+                SameMintRouteExecutionState::Ready,
+                true,
+            ),
+            FleetWorkerStageSuccess::Revalidated
+        );
+        assert_eq!(
+            classify_fleet_worker_stage_success(
+                RebalanceOpportunityClaimKind::Execute,
+                SameMintRouteExecutionState::SubmissionQueued,
+                true,
+            ),
+            FleetWorkerStageSuccess::ExecutionHandoffPersisted
+        );
+        for state in [
+            SameMintRouteExecutionState::WaitingAlt,
+            SameMintRouteExecutionState::Retry,
+            SameMintRouteExecutionState::Stale,
+            SameMintRouteExecutionState::Terminal,
+        ] {
+            assert_eq!(
+                classify_fleet_worker_stage_success(
+                    RebalanceOpportunityClaimKind::Revalidate,
+                    state,
+                    true,
+                ),
+                FleetWorkerStageSuccess::None
+            );
+        }
+        assert_eq!(
+            classify_fleet_worker_stage_success(
+                RebalanceOpportunityClaimKind::Revalidate,
+                SameMintRouteExecutionState::Ready,
+                false,
+            ),
+            FleetWorkerStageSuccess::None
+        );
+        assert_eq!(
+            fleet_worker_success_stages(FleetWorkerStageSuccess::ExecutionHandoffPersisted, true,),
+            [
+                Some(EarnRebalanceStage::RouteRevalidated),
+                Some(EarnRebalanceStage::RouteExecutionHandoffPersisted),
+            ]
+        );
     }
 
     #[test]

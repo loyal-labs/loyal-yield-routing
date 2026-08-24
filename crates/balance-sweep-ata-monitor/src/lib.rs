@@ -4,7 +4,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{bail, Context, Result};
@@ -22,6 +22,7 @@ use helius_laserstream::{
     subscribe, LaserstreamConfig,
 };
 use loyal_actions::{SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT};
+use loyal_observability::{EarnRebalanceMetrics, EarnRebalanceStage};
 use loyal_squads_policy_monitor::{
     PolicyMonitor, PostgresPolicyMatchSink, EARN_MAX_POLICY_PROJECTION_CONSUMER,
 };
@@ -478,6 +479,7 @@ pub async fn run_event_loop(
     running: Arc<AtomicBool>,
     recheck: Option<AtaRecheckHandle>,
     earn: Option<EarnUpdateContext>,
+    earn_rebalance_metrics: EarnRebalanceMetrics,
 ) -> Result<()> {
     while running.load(Ordering::Relaxed) {
         let Some(event) = rx.recv().await else {
@@ -529,6 +531,7 @@ pub async fn run_event_loop(
                 source,
                 "writing raw wallet ATA observation"
             );
+            let started = Instant::now();
             let outcome = process_account_update(
                 target,
                 lamports,
@@ -542,6 +545,12 @@ pub async fn run_event_loop(
                 &sink,
             )
             .await?;
+            if matches!(outcome, AtaUpdateOutcome::Recorded(insert) if insert.inserted) {
+                earn_rebalance_metrics.record_success(
+                    EarnRebalanceStage::AtaObservationPersisted,
+                    started.elapsed(),
+                );
+            }
             // The streamed frame cannot be trusted to describe the account's
             // settled state, so hand the target to the recheck queue and keep
             // serving every other target on this session.

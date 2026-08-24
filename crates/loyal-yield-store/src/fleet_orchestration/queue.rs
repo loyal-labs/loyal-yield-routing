@@ -280,6 +280,29 @@ pub struct RebalanceOpportunityRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Result of publishing an idempotent opportunity attempt.
+#[derive(Debug, Clone)]
+pub struct RebalanceOpportunityUpsertOutcome {
+    pub opportunity: RebalanceOpportunityRecord,
+    /// True only when this call committed a new durable attempt row.
+    pub inserted: bool,
+}
+
+impl std::ops::Deref for RebalanceOpportunityUpsertOutcome {
+    type Target = RebalanceOpportunityRecord;
+
+    fn deref(&self) -> &Self::Target {
+        &self.opportunity
+    }
+}
+
+/// Result of attempting to move an ALT-cold opportunity back to revalidation.
+#[derive(Debug, Clone)]
+pub struct RebalanceOpportunityReadmissionOutcome {
+    pub opportunity: RebalanceOpportunityRecord,
+    pub readmitted: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct RebalanceOpportunityLease {
     pub opportunity: RebalanceOpportunityRecord,
@@ -1430,10 +1453,18 @@ impl NeonSqlClient {
     /// Publishes one exact, immutable opportunity and supersedes any older
     /// scheduling intent for the same vault. If an ALT request is linked, its
     /// row is share-locked so satisfaction cannot race past consumer creation.
-    pub async fn upsert_rebalance_opportunity(
+    pub async fn upsert_rebalance_opportunity_record(
         &self,
         input: RebalanceOpportunityInput,
     ) -> Result<RebalanceOpportunityRecord, OrchestratorError> {
+        Ok(self.upsert_rebalance_opportunity(input).await?.opportunity)
+    }
+
+    /// Publishes an opportunity and reports whether this call inserted it.
+    pub async fn upsert_rebalance_opportunity(
+        &self,
+        input: RebalanceOpportunityInput,
+    ) -> Result<RebalanceOpportunityUpsertOutcome, OrchestratorError> {
         validate_opportunity_input(&input)?;
         let rediscovery_key = rebalance_opportunity_idempotency_key(&input);
         let mut tx = self.pool().begin().await?;
@@ -1649,7 +1680,10 @@ impl NeonSqlClient {
             .await?;
             if !terminal_no_effect_proved {
                 tx.commit().await?;
-                return Ok(latest);
+                return Ok(RebalanceOpportunityUpsertOutcome {
+                    opportunity: latest,
+                    inserted: false,
+                });
             }
             let generation = latest.attempt_generation.checked_add(1).ok_or_else(|| {
                 OrchestratorError::StoreInvariant(
@@ -1811,6 +1845,7 @@ impl NeonSqlClient {
             }
             Err(error) => return Err(error.into()),
         };
+        let inserted = row.is_some();
         let row = match row {
             Some(row) => row,
             None => {
@@ -1916,7 +1951,10 @@ impl NeonSqlClient {
             }
             return Err(error.into());
         }
-        Ok(opportunity)
+        Ok(RebalanceOpportunityUpsertOutcome {
+            opportunity,
+            inserted,
+        })
     }
 
     /// Re-admits an ALT-cold opportunity only after the current planner wave
@@ -1927,6 +1965,18 @@ impl NeonSqlClient {
         opportunity_id: i64,
         optimizer_epoch_id: i64,
     ) -> Result<RebalanceOpportunityRecord, OrchestratorError> {
+        Ok(self
+            .re_admit_waiting_alt_opportunity_with_outcome(opportunity_id, optimizer_epoch_id)
+            .await?
+            .opportunity)
+    }
+
+    /// Re-admits an ALT-cold opportunity and reports whether this call moved it.
+    pub async fn re_admit_waiting_alt_opportunity_with_outcome(
+        &self,
+        opportunity_id: i64,
+        optimizer_epoch_id: i64,
+    ) -> Result<RebalanceOpportunityReadmissionOutcome, OrchestratorError> {
         if opportunity_id <= 0 || optimizer_epoch_id <= 0 {
             return Err(OrchestratorError::StoreInvariant(
                 "ALT-cold re-admission requires positive opportunity and optimizer epoch ids"
@@ -1955,7 +2005,10 @@ impl NeonSqlClient {
         }
         if current.state != RebalanceOpportunityState::WaitingAlt {
             tx.commit().await?;
-            return Ok(current);
+            return Ok(RebalanceOpportunityReadmissionOutcome {
+                opportunity: current,
+                readmitted: false,
+            });
         }
 
         let alt_satisfied: bool = sqlx::query_scalar(
@@ -1984,7 +2037,10 @@ impl NeonSqlClient {
         .await?;
         if !alt_satisfied || current.expires_at <= Utc::now() {
             tx.commit().await?;
-            return Ok(current);
+            return Ok(RebalanceOpportunityReadmissionOutcome {
+                opportunity: current,
+                readmitted: false,
+            });
         }
 
         let minimum_publication_lifetime_seconds =
@@ -2019,11 +2075,17 @@ impl NeonSqlClient {
         .await?;
         let Some(row) = row else {
             tx.commit().await?;
-            return Ok(current);
+            return Ok(RebalanceOpportunityReadmissionOutcome {
+                opportunity: current,
+                readmitted: false,
+            });
         };
         let readmitted = rebalance_opportunity_from_row(&row)?;
         tx.commit().await?;
-        Ok(readmitted)
+        Ok(RebalanceOpportunityReadmissionOutcome {
+            opportunity: readmitted,
+            readmitted: true,
+        })
     }
 
     pub async fn rebalance_opportunity(
