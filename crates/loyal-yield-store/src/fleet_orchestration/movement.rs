@@ -578,6 +578,17 @@ impl NeonSqlClient {
              AND opt_in.vault_index = swap_policy.vault_index
              AND opt_in.vault_pubkey = swap_policy.vault_pubkey
              AND opt_in.generation = $18
+             AND NOT EXISTS (
+                 SELECT 1
+                 FROM loyal_yield.cross_mint_swap_policies newer_swap_policy
+                 WHERE newer_swap_policy.cluster = swap_policy.cluster
+                   AND newer_swap_policy.settings = swap_policy.settings
+                   AND newer_swap_policy.vault_index = swap_policy.vault_index
+                   AND newer_swap_policy.vault_pubkey = swap_policy.vault_pubkey
+                   AND newer_swap_policy.source_shard = swap_policy.source_shard
+                   AND (newer_swap_policy.last_seen_slot, newer_swap_policy.id)
+                       > (swap_policy.last_seen_slot, swap_policy.id)
+             )
             JOIN loyal_yield.cross_mint_swap_policies sibling_policy
               ON sibling_policy.cluster = swap_policy.cluster
              AND sibling_policy.settings = swap_policy.settings
@@ -594,6 +605,17 @@ impl NeonSqlClient {
              AND sibling_policy.max_slippage_bps = swap_policy.max_slippage_bps
              AND sibling_policy.daily_source_mint_spending_cap =
                  swap_policy.daily_source_mint_spending_cap
+             AND NOT EXISTS (
+                 SELECT 1
+                 FROM loyal_yield.cross_mint_swap_policies newer_sibling_policy
+                 WHERE newer_sibling_policy.cluster = sibling_policy.cluster
+                   AND newer_sibling_policy.settings = sibling_policy.settings
+                   AND newer_sibling_policy.vault_index = sibling_policy.vault_index
+                   AND newer_sibling_policy.vault_pubkey = sibling_policy.vault_pubkey
+                   AND newer_sibling_policy.source_shard = sibling_policy.source_shard
+                   AND (newer_sibling_policy.last_seen_slot, newer_sibling_policy.id)
+                       > (sibling_policy.last_seen_slot, sibling_policy.id)
+             )
              AND 2 = (
                  SELECT count(DISTINCT sibling.source_shard)
                  FROM loyal_yield.cross_mint_swap_policies sibling
@@ -2450,6 +2472,17 @@ async fn validate_initial_cross_mint_policy_bindings(
          AND opt_in.vault_index = swap_policy.vault_index
          AND opt_in.vault_pubkey = swap_policy.vault_pubkey
          AND opt_in.generation = $18
+         AND NOT EXISTS (
+             SELECT 1
+             FROM loyal_yield.cross_mint_swap_policies newer_swap_policy
+             WHERE newer_swap_policy.cluster = swap_policy.cluster
+               AND newer_swap_policy.settings = swap_policy.settings
+               AND newer_swap_policy.vault_index = swap_policy.vault_index
+               AND newer_swap_policy.vault_pubkey = swap_policy.vault_pubkey
+               AND newer_swap_policy.source_shard = swap_policy.source_shard
+               AND (newer_swap_policy.last_seen_slot, newer_swap_policy.id)
+                   > (swap_policy.last_seen_slot, swap_policy.id)
+         )
         JOIN loyal_yield.cross_mint_swap_policies sibling_policy
           ON sibling_policy.cluster = swap_policy.cluster
          AND sibling_policy.settings = swap_policy.settings
@@ -2466,6 +2499,17 @@ async fn validate_initial_cross_mint_policy_bindings(
          AND sibling_policy.max_slippage_bps = swap_policy.max_slippage_bps
          AND sibling_policy.daily_source_mint_spending_cap =
              swap_policy.daily_source_mint_spending_cap
+         AND NOT EXISTS (
+             SELECT 1
+             FROM loyal_yield.cross_mint_swap_policies newer_sibling_policy
+             WHERE newer_sibling_policy.cluster = sibling_policy.cluster
+               AND newer_sibling_policy.settings = sibling_policy.settings
+               AND newer_sibling_policy.vault_index = sibling_policy.vault_index
+               AND newer_sibling_policy.vault_pubkey = sibling_policy.vault_pubkey
+               AND newer_sibling_policy.source_shard = sibling_policy.source_shard
+               AND (newer_sibling_policy.last_seen_slot, newer_sibling_policy.id)
+                   > (sibling_policy.last_seen_slot, sibling_policy.id)
+         )
          AND 2 = (
              SELECT count(DISTINCT sibling.source_shard)
              FROM loyal_yield.cross_mint_swap_policies sibling

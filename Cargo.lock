@@ -3705,10 +3705,15 @@ dependencies = [
 name = "loyal-local-e2e"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "balance-sweep-ata-monitor",
  "base64 0.22.1",
+ "loyal-yield-store",
+ "serde",
  "serde_json",
  "spl-token 8.0.0",
  "squads-test-harness",
+ "tokio",
 ]
 
 [[package]]

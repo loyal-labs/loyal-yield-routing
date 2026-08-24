@@ -44,6 +44,8 @@ use tokio::{
 pub mod ata_recheck;
 pub mod earn_apy;
 pub mod earn_reconciliation;
+#[cfg(feature = "local-e2e")]
+pub mod local_e2e;
 pub mod monitor_observability;
 pub mod smart_account;
 

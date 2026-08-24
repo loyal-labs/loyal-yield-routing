@@ -95,9 +95,15 @@ for emitter in emit_fleet_worker_health emit_fleet_reconciler_health; do
     index($0, fn) { capture = 1 }
     capture { print }
     capture && /^}$/ { exit }
-  ' "$worker_source" | rg --fixed-strings --quiet "fleet_orchestration_status" ||
-    fail "$emitter no longer reads fleet_orchestration_status"
+  ' "$worker_source" | rg --fixed-strings --quiet "fleet_health_snapshot_or_degraded" ||
+    fail "$emitter no longer reads the authoritative fleet health snapshot"
 done
+awk '
+  /async fn fleet_health_snapshot_or_degraded/ { capture = 1 }
+  capture { print }
+  capture && /^}$/ { exit }
+' "$worker_source" | rg --fixed-strings --quiet "fleet_orchestration_status" ||
+  fail "fleet health snapshot helper no longer reads fleet_orchestration_status"
 
 skip_sites="$(rg --count --fixed-strings \
   "health_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip)" \

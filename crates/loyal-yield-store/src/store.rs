@@ -4958,19 +4958,31 @@ async fn canonical_cross_mint_pair_exists(
 ) -> Result<bool, OrchestratorError> {
     Ok(sqlx::query_scalar::<_, bool>(
         r#"
+        WITH ranked AS (
+            SELECT policy.*,
+                   row_number() OVER (
+                       PARTITION BY source_shard
+                       ORDER BY last_seen_slot DESC, id DESC
+                   ) AS canonical_rank
+            FROM loyal_yield.cross_mint_swap_policies policy
+            WHERE cluster = $1 AND settings = $2
+              AND vault_index = $3 AND vault_pubkey = $4
+              AND source_shard IN ('classic', 'token_2022')
+        ), canonical AS (
+            SELECT *
+            FROM ranked
+            WHERE canonical_rank = 1
+              AND active AND start_eligible
+              AND source_commitment IN ('confirmed', 'finalized')
+              AND last_mutation IN ('create', 'update')
+        )
         SELECT count(*) = 2
            AND count(DISTINCT source_shard) = 2
            AND count(DISTINCT authority) = 1
            AND count(DISTINCT delegated_signer) = 1
            AND count(DISTINCT max_slippage_bps) = 1
            AND count(DISTINCT daily_source_mint_spending_cap) = 1
-        FROM loyal_yield.cross_mint_swap_policies
-        WHERE cluster = $1 AND settings = $2
-          AND vault_index = $3 AND vault_pubkey = $4
-          AND active AND start_eligible
-          AND source_commitment IN ('confirmed', 'finalized')
-          AND last_mutation IN ('create', 'update')
-          AND source_shard IN ('classic', 'token_2022')
+        FROM canonical
         "#,
     )
     .bind(&lookup.cluster)
@@ -6134,6 +6146,15 @@ async fn apply_earn_refund(
     conn: &mut PgConnection,
     mutation: &EarnRefundMutation,
 ) -> Result<(), OrchestratorError> {
+    let cluster = match mutation.cluster.as_str() {
+        "mainnet" | "mainnet-beta" => "mainnet-beta",
+        "devnet" => "devnet",
+        other => {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "unsupported Earn refund cluster {other:?}"
+            )))
+        }
+    };
     sqlx::query(
         r#"
         INSERT INTO loyal_yield.earn_chain_refund_events (
@@ -6143,7 +6164,7 @@ async fn apply_earn_refund(
         ON CONFLICT (refund_signature) DO NOTHING
         "#,
     )
-    .bind(&mutation.cluster)
+    .bind(cluster)
     .bind(&mutation.settings)
     .bind(i16::from(mutation.vault_index))
     .bind(&mutation.vault_pubkey)
