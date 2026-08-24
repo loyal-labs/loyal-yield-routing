@@ -42,6 +42,15 @@ pub const KAMINO_RESERVE_LIQUIDITY_AUTHORITY_SEED: &[u8] = b"kamino-reserve-liq-
 pub const KAMINO_COLLATERAL_MINT_AUTHORITY_SEED: &[u8] = b"kamino-collateral-mint-authority";
 pub const KAMINO_LENDING_MARKET_AUTHORITY_SEED: &[u8] = b"kamino-lending-market-authority";
 pub const KAMINO_RESERVE_STATE_LEN: usize = 160;
+const KAMINO_RESERVE_DISCRIMINATOR: [u8; 8] = [43, 242, 204, 202, 26, 247, 59, 127];
+const KAMINO_OBLIGATION_DISCRIMINATOR: [u8; 8] = [168, 206, 141, 106, 88, 76, 172, 167];
+const KAMINO_RESERVE_LENDING_MARKET_OFFSET: usize = 32;
+const KAMINO_RESERVE_LIQUIDITY_MINT_OFFSET: usize = 128;
+const KAMINO_RESERVE_LIQUIDITY_SUPPLY_OFFSET: usize = 160;
+const KAMINO_RESERVE_COLLATERAL_MINT_OFFSET: usize = 2560;
+const KAMINO_RESERVE_COLLATERAL_SUPPLY_OFFSET: usize = 2600;
+const KAMINO_OBLIGATION_FIRST_DEPOSIT_RESERVE_OFFSET: usize = 96;
+const KAMINO_OBLIGATION_FIRST_DEPOSIT_AMOUNT_OFFSET: usize = 128;
 
 entrypoint!(process_instruction);
 
@@ -364,6 +373,7 @@ fn parse_kamino_instruction(data: &[u8]) -> Result<KaminoInstruction, ProgramErr
 
 struct KaminoDepositAccounts<'a, 'info> {
     owner: &'a AccountInfo<'info>,
+    obligation: &'a AccountInfo<'info>,
     reserve: &'a AccountInfo<'info>,
     lending_market: &'a AccountInfo<'info>,
     lending_market_authority: &'a AccountInfo<'info>,
@@ -379,6 +389,7 @@ struct KaminoDepositAccounts<'a, 'info> {
 
 struct KaminoRedeemAccounts<'a, 'info> {
     owner: &'a AccountInfo<'info>,
+    obligation: &'a AccountInfo<'info>,
     lending_market: &'a AccountInfo<'info>,
     reserve: &'a AccountInfo<'info>,
     lending_market_authority: &'a AccountInfo<'info>,
@@ -427,7 +438,8 @@ fn process_kamino_deposit(
             KAMINO_LENDING_MARKET_AUTHORITY_SEED,
             kamino.lending_market.key.as_ref(),
         ],
-    )
+    )?;
+    adjust_kamino_obligation(kamino.obligation, kamino.reserve.key, amount, true)
 }
 
 fn process_kamino_withdraw(
@@ -436,19 +448,32 @@ fn process_kamino_withdraw(
     amount: u64,
 ) -> ProgramResult {
     let kamino = parse_kamino_redeem_accounts(program_id, accounts)?;
-    burn_checked_signed(
-        program_id,
-        kamino.reserve_source_collateral,
-        kamino.reserve_collateral_mint,
-        kamino.lending_market_authority,
-        kamino.collateral_token_program,
-        amount,
-        KAMINO_COLLATERAL_DECIMALS,
-        &[
-            KAMINO_LENDING_MARKET_AUTHORITY_SEED,
-            kamino.lending_market.key.as_ref(),
-        ],
-    )?;
+    let collateral_owner =
+        spl_token::state::Account::unpack(&kamino.reserve_source_collateral.data.borrow())?.owner;
+    if collateral_owner == *kamino.owner.key {
+        burn_checked(
+            kamino.reserve_source_collateral,
+            kamino.reserve_collateral_mint,
+            kamino.owner,
+            kamino.collateral_token_program,
+            amount,
+            KAMINO_COLLATERAL_DECIMALS,
+        )?;
+    } else {
+        burn_checked_signed(
+            program_id,
+            kamino.reserve_source_collateral,
+            kamino.reserve_collateral_mint,
+            kamino.lending_market_authority,
+            kamino.collateral_token_program,
+            amount,
+            KAMINO_COLLATERAL_DECIMALS,
+            &[
+                KAMINO_LENDING_MARKET_AUTHORITY_SEED,
+                kamino.lending_market.key.as_ref(),
+            ],
+        )?;
+    }
     transfer_checked_signed(
         program_id,
         kamino.reserve_liquidity_supply,
@@ -462,7 +487,8 @@ fn process_kamino_withdraw(
             KAMINO_LENDING_MARKET_AUTHORITY_SEED,
             kamino.lending_market.key.as_ref(),
         ],
-    )
+    )?;
+    adjust_kamino_obligation(kamino.obligation, kamino.reserve.key, amount, false)
 }
 
 fn parse_kamino_deposit_accounts<'a, 'info>(
@@ -471,7 +497,7 @@ fn parse_kamino_deposit_accounts<'a, 'info>(
 ) -> Result<KaminoDepositAccounts<'a, 'info>, ProgramError> {
     let account_info_iter = &mut accounts.iter();
     let owner = next_account_info(account_info_iter)?;
-    let _obligation = next_account_info(account_info_iter)?;
+    let obligation = next_account_info(account_info_iter)?;
     let lending_market = next_account_info(account_info_iter)?;
     let lending_market_authority = next_account_info(account_info_iter)?;
     let reserve = next_account_info(account_info_iter)?;
@@ -489,6 +515,7 @@ fn parse_kamino_deposit_accounts<'a, 'info>(
     let _farms_program = next_account_info(account_info_iter)?;
     let mut kamino = KaminoDepositAccounts {
         owner,
+        obligation,
         reserve,
         lending_market,
         lending_market_authority,
@@ -533,7 +560,7 @@ fn parse_kamino_redeem_accounts<'a, 'info>(
 ) -> Result<KaminoRedeemAccounts<'a, 'info>, ProgramError> {
     let account_info_iter = &mut accounts.iter();
     let owner = next_account_info(account_info_iter)?;
-    let _obligation = next_account_info(account_info_iter)?;
+    let obligation = next_account_info(account_info_iter)?;
     let lending_market = next_account_info(account_info_iter)?;
     let lending_market_authority = next_account_info(account_info_iter)?;
     let reserve = next_account_info(account_info_iter)?;
@@ -551,6 +578,7 @@ fn parse_kamino_redeem_accounts<'a, 'info>(
     let _farms_program = next_account_info(account_info_iter)?;
     let mut kamino = KaminoRedeemAccounts {
         owner,
+        obligation,
         lending_market,
         reserve,
         lending_market_authority,
@@ -612,6 +640,34 @@ fn read_kamino_reserve_state(reserve: &AccountInfo) -> Result<KaminoReserveState
         return Err(ProgramError::InvalidAccountData);
     }
 
+    if data.starts_with(&KAMINO_RESERVE_DISCRIMINATOR) {
+        if data.len() < KAMINO_RESERVE_COLLATERAL_SUPPLY_OFFSET + 32 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        return Ok(KaminoReserveState {
+            lending_market: Pubkey::new_from_array(read_pubkey(
+                &data[KAMINO_RESERVE_LENDING_MARKET_OFFSET
+                    ..KAMINO_RESERVE_LENDING_MARKET_OFFSET + 32],
+            )?),
+            liquidity_mint: Pubkey::new_from_array(read_pubkey(
+                &data[KAMINO_RESERVE_LIQUIDITY_MINT_OFFSET
+                    ..KAMINO_RESERVE_LIQUIDITY_MINT_OFFSET + 32],
+            )?),
+            collateral_mint: Pubkey::new_from_array(read_pubkey(
+                &data[KAMINO_RESERVE_COLLATERAL_MINT_OFFSET
+                    ..KAMINO_RESERVE_COLLATERAL_MINT_OFFSET + 32],
+            )?),
+            liquidity_supply: Pubkey::new_from_array(read_pubkey(
+                &data[KAMINO_RESERVE_LIQUIDITY_SUPPLY_OFFSET
+                    ..KAMINO_RESERVE_LIQUIDITY_SUPPLY_OFFSET + 32],
+            )?),
+            collateral_supply: Pubkey::new_from_array(read_pubkey(
+                &data[KAMINO_RESERVE_COLLATERAL_SUPPLY_OFFSET
+                    ..KAMINO_RESERVE_COLLATERAL_SUPPLY_OFFSET + 32],
+            )?),
+        });
+    }
+
     Ok(KaminoReserveState {
         lending_market: Pubkey::new_from_array(read_pubkey(&data[0..32])?),
         liquidity_mint: Pubkey::new_from_array(read_pubkey(&data[32..64])?),
@@ -619,6 +675,44 @@ fn read_kamino_reserve_state(reserve: &AccountInfo) -> Result<KaminoReserveState
         liquidity_supply: Pubkey::new_from_array(read_pubkey(&data[96..128])?),
         collateral_supply: Pubkey::new_from_array(read_pubkey(&data[128..160])?),
     })
+}
+
+fn adjust_kamino_obligation(
+    obligation: &AccountInfo,
+    reserve: &Pubkey,
+    amount: u64,
+    deposit: bool,
+) -> ProgramResult {
+    if obligation.owner != &KAMINO_LEND_PROGRAM_ID {
+        return Err(ProgramError::IllegalOwner);
+    }
+    let mut data = obligation.try_borrow_mut_data()?;
+    if data.len() < KAMINO_OBLIGATION_FIRST_DEPOSIT_AMOUNT_OFFSET + 8
+        || !data.starts_with(&KAMINO_OBLIGATION_DISCRIMINATOR)
+    {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let reserve_range = KAMINO_OBLIGATION_FIRST_DEPOSIT_RESERVE_OFFSET
+        ..KAMINO_OBLIGATION_FIRST_DEPOSIT_RESERVE_OFFSET + 32;
+    let current_reserve = Pubkey::new_from_array(read_pubkey(&data[reserve_range.clone()])?);
+    if current_reserve != Pubkey::default() && current_reserve != *reserve {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    data[reserve_range].copy_from_slice(reserve.as_ref());
+    let amount_range = KAMINO_OBLIGATION_FIRST_DEPOSIT_AMOUNT_OFFSET
+        ..KAMINO_OBLIGATION_FIRST_DEPOSIT_AMOUNT_OFFSET + 8;
+    let current_amount = read_u64(&data[amount_range.clone()])?;
+    let next_amount = if deposit {
+        current_amount
+            .checked_add(amount)
+            .ok_or(ProgramError::ArithmeticOverflow)?
+    } else {
+        current_amount
+            .checked_sub(amount)
+            .ok_or(ProgramError::InsufficientFunds)?
+    };
+    data[amount_range].copy_from_slice(&next_amount.to_le_bytes());
+    Ok(())
 }
 
 fn transfer_checked<'info>(
@@ -758,6 +852,34 @@ fn burn_checked_signed<'info>(
         [seed_a, seed_b] => invoke_signed(&ix, &account_infos, &[&[*seed_a, *seed_b, &bump_seed]]),
         _ => Err(ProgramError::InvalidSeeds),
     }
+}
+
+fn burn_checked<'info>(
+    source: &AccountInfo<'info>,
+    mint: &AccountInfo<'info>,
+    authority: &AccountInfo<'info>,
+    token_program: &AccountInfo<'info>,
+    amount: u64,
+    decimals: u8,
+) -> ProgramResult {
+    let ix = spl_token::instruction::burn_checked(
+        token_program.key,
+        source.key,
+        mint.key,
+        authority.key,
+        &[],
+        amount,
+        decimals,
+    )?;
+    invoke(
+        &ix,
+        &[
+            source.clone(),
+            mint.clone(),
+            authority.clone(),
+            token_program.clone(),
+        ],
+    )
 }
 
 fn require_signer(account: &AccountInfo) -> ProgramResult {

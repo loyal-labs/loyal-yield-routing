@@ -311,6 +311,20 @@ pub(crate) fn decode_laserstream_squads_policy_transaction(
             else {
                 continue;
             };
+            let accounts = instruction
+                .accounts
+                .iter()
+                .filter_map(|index| account_meta(usize::from(*index)))
+                .collect::<Vec<_>>();
+            if program_id == SQUADS_SMART_ACCOUNT_PROGRAM_ID
+                || program_id == SUBSCRIPTIONS_PROGRAM_ID
+            {
+                instructions.push(Instruction {
+                    program_id,
+                    accounts: accounts.clone(),
+                    data: instruction.data.clone(),
+                });
+            }
             if program_id.to_string() != EARN_MAX_MEMO_PROGRAM {
                 continue;
             }
@@ -321,11 +335,7 @@ pub(crate) fn decode_laserstream_squads_policy_transaction(
                 .context("Earn MAX memo instruction index overflow")?;
             earn_max_memos.push(EarnMaxMemoInstruction {
                 source_instruction_index,
-                accounts: instruction
-                    .accounts
-                    .iter()
-                    .filter_map(|index| account_keys.get(usize::from(*index)).copied())
-                    .collect(),
+                accounts: accounts.into_iter().map(|account| account.pubkey).collect(),
                 data: instruction.data,
             });
         }
@@ -792,6 +802,13 @@ fn read_squads_policy_transaction(
             account_keys.push(Pubkey::from_str(address)?);
         }
     }
+    let account_meta = |index: usize| {
+        account_keys.get(index).copied().map(|pubkey| AccountMeta {
+            pubkey,
+            is_signer: transaction.message.is_signer(index),
+            is_writable: transaction.message.is_maybe_writable(index, None),
+        })
+    };
     let mut instructions = Vec::new();
     for compiled in transaction.message.instructions() {
         let Some(program_id) = account_keys
@@ -806,14 +823,7 @@ fn read_squads_policy_transaction(
         let accounts = compiled
             .accounts
             .iter()
-            .filter_map(|index| {
-                let index = usize::from(*index);
-                account_keys.get(index).copied().map(|pubkey| AccountMeta {
-                    pubkey,
-                    is_signer: transaction.message.is_signer(index),
-                    is_writable: transaction.message.is_maybe_writable(index, None),
-                })
-            })
+            .filter_map(|index| account_meta(usize::from(*index)))
             .collect();
         instructions.push(Instruction {
             program_id,
@@ -836,26 +846,48 @@ fn read_squads_policy_transaction(
                         let accounts = compiled
                             .accounts
                             .iter()
-                            .filter_map(|index| account_keys.get(usize::from(*index)).copied())
+                            .filter_map(|index| account_meta(usize::from(*index)))
                             .collect::<Vec<_>>();
                         (
-                            program_id.to_string(),
+                            program_id,
                             accounts,
                             bs58::decode(&compiled.data).into_vec()?,
                         )
                     }
-                    UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(decoded)) => (
-                        decoded.program_id.clone(),
-                        decoded
+                    UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(decoded)) => {
+                        let program_id = Pubkey::from_str(&decoded.program_id)?;
+                        let accounts = decoded
                             .accounts
                             .iter()
                             .map(|account| Pubkey::from_str(account))
-                            .collect::<Result<Vec<_>, _>>()?,
-                        bs58::decode(&decoded.data).into_vec()?,
-                    ),
+                            .collect::<Result<Vec<_>, _>>()?
+                            .into_iter()
+                            .map(|pubkey| {
+                                account_keys
+                                    .iter()
+                                    .position(|candidate| *candidate == pubkey)
+                                    .and_then(account_meta)
+                                    .unwrap_or(AccountMeta::new_readonly(pubkey, false))
+                            })
+                            .collect();
+                        (
+                            program_id,
+                            accounts,
+                            bs58::decode(&decoded.data).into_vec()?,
+                        )
+                    }
                     UiInstruction::Parsed(UiParsedInstruction::Parsed(_)) => continue,
                 };
-                if program_id != EARN_MAX_MEMO_PROGRAM {
+                if program_id == SQUADS_SMART_ACCOUNT_PROGRAM_ID
+                    || program_id == SUBSCRIPTIONS_PROGRAM_ID
+                {
+                    instructions.push(Instruction {
+                        program_id,
+                        accounts: accounts.clone(),
+                        data: data.clone(),
+                    });
+                }
+                if program_id.to_string() != EARN_MAX_MEMO_PROGRAM {
                     continue;
                 }
                 let source_instruction_index = u16::from(group.index)
@@ -864,7 +896,7 @@ fn read_squads_policy_transaction(
                     .context("Earn MAX memo instruction index overflow")?;
                 earn_max_memos.push(EarnMaxMemoInstruction {
                     source_instruction_index,
-                    accounts,
+                    accounts: accounts.into_iter().map(|account| account.pubkey).collect(),
                     data,
                 });
             }

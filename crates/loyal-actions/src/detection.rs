@@ -147,6 +147,18 @@ pub struct DetectedYieldRoutePolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectedYieldSetupPolicy {
+    pub settings: Pubkey,
+    pub authority: Pubkey,
+    pub policy_seed: u64,
+    pub policy_account: Pubkey,
+    pub vault_index: u8,
+    pub delegated_signers: Vec<Pubkey>,
+    pub threshold: u16,
+    pub kamino_markets: Vec<Pubkey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedBalanceSweepPolicy {
     pub settings: Pubkey,
     pub authority: Pubkey,
@@ -1519,6 +1531,29 @@ pub fn detect_yield_route_policy_create(
     })
 }
 
+pub fn detect_yield_setup_policy_create(
+    action: &SquadsSettingsActionView,
+) -> Option<DetectedYieldSetupPolicy> {
+    let [constraint] = action.payload.constraints.as_slice() else {
+        return None;
+    };
+    let vault = derive_squads_vault(&action.settings, action.payload.vault_index);
+    let kamino_markets = unique_pubkeys(classify_kamino_init_obligation(constraint, vault)?);
+    if !same_mint_usdc_markets_are_supported(&kamino_markets) {
+        return None;
+    }
+    Some(DetectedYieldSetupPolicy {
+        settings: action.settings,
+        authority: action.authority,
+        policy_seed: action.policy_seed,
+        policy_account: action.policy_account,
+        vault_index: action.payload.vault_index,
+        delegated_signers: unique_pubkeys(delegated_signers_as_pubkeys(&action.delegated_signers)),
+        threshold: action.threshold,
+        kamino_markets,
+    })
+}
+
 pub fn detect_balance_sweep_policy_create(
     action: &SquadsSettingsActionView,
 ) -> Option<DetectedBalanceSweepPolicy> {
@@ -1613,8 +1648,20 @@ fn classify_compact_same_mint_kamino_leg(
     vault: Pubkey,
 ) -> Option<KaminoLeg> {
     let markets = unique_pubkeys(pubkeys(accounts.get(&2)?, None)?);
-    let liquidity_mints = unique_pubkeys(pubkeys(accounts.get(&5)?, None)?);
-    if !same_mint_usdc_markets_are_supported(&markets) || liquidity_mints != vec![USDC_MINT] {
+    let liquidity_mints = accounts
+        .get(&5)
+        .and_then(|constraint| pubkeys(constraint, None))
+        .map(unique_pubkeys)
+        .unwrap_or_default();
+    let supported_mints = earn_stablecoins()
+        .iter()
+        .map(|stablecoin| stablecoin.mint)
+        .collect::<BTreeSet<_>>();
+    if !same_mint_usdc_markets_are_supported(&markets)
+        || liquidity_mints
+            .iter()
+            .any(|mint| !supported_mints.contains(mint))
+    {
         return None;
     }
     Some(KaminoLeg {
@@ -3686,6 +3733,26 @@ mod tests {
                 KaminoStableRiskProfile::Safe
             ))
         );
+    }
+
+    #[test]
+    fn detects_client_compact_route_with_mint_only_on_deposit() {
+        let setup = create_all_in_one_market_mint_yield_route_action(
+            context(),
+            YieldRouteUniverse::new(vec![USDC_MINT], vec![KAMINO_MAIN_MARKET], vec![USDC_MINT]),
+            vec![],
+        )
+        .unwrap();
+        let mut action = decode_squads_policy_create_actions(&setup.instructions[0])
+            .unwrap()
+            .remove(0);
+        action.payload.constraints[0]
+            .account_constraints
+            .retain(|constraint| constraint.account_index != 5);
+
+        let detected = detect_yield_route_policy_create(&action).unwrap();
+        assert_eq!(detected.kamino_markets, vec![KAMINO_MAIN_MARKET]);
+        assert_eq!(detected.kamino_liquidity_mints, vec![USDC_MINT]);
     }
 
     #[test]

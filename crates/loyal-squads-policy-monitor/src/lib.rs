@@ -7,10 +7,12 @@ use loyal_actions::{
     decode_squads_policy_create_actions, derive_action_account, detect_balance_sweep_policy_create,
     detect_jupiter_cross_mint_policy_action, detect_squads_policy_removals,
     detect_squads_policy_update_identity, detect_yield_route_policy_create,
+    detect_yield_route_universe_preset, detect_yield_setup_policy_create,
     generalized_cross_mint_manifest_fingerprint, DetectedBalanceSweepPolicy,
     DetectedJupiterCrossMintPolicy, DetectedJupiterPolicyIdentity, DetectedPolicyRemoval,
-    DetectedSwapLane, DetectedYieldRouteMode, DetectedYieldRoutePolicy, KaminoStableRiskProfile,
-    SquadsSettingsActionView, YieldRouteUniversePreset, SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+    DetectedSwapLane, DetectedYieldRouteMode, DetectedYieldRoutePolicy, DetectedYieldSetupPolicy,
+    KaminoStableRiskProfile, SquadsSettingsActionView, YieldRouteUniversePreset,
+    SQUADS_SMART_ACCOUNT_PROGRAM_ID,
 };
 use loyal_fleet_worker::multiply::{
     config::{
@@ -248,6 +250,11 @@ impl PolicyMatchSink for PostgresPolicyMatchSink {
                         .record_policy_match(PolicyMatchInput::from(event))
                         .await?;
                 }
+                PolicyMonitorEvent::YieldSetup(event) => {
+                    store
+                        .record_setup_policy_match(PolicyMatchInput::from(event))
+                        .await?;
+                }
                 PolicyMonitorEvent::BalanceSweep(event) => {
                     store
                         .record_balance_sweep_policy_match(BalanceSweepPolicyMatchInput::from(
@@ -344,6 +351,7 @@ impl PolicyMatchSink for PostgresPolicyMatchSink {
 #[serde(tag = "policy_kind", rename_all = "snake_case")]
 pub enum PolicyMonitorEvent {
     YieldRoute(PolicyMatchEvent),
+    YieldSetup(PolicyMatchEvent),
     BalanceSweep(BalanceSweepPolicyEvent),
     CrossMintSwapPolicyManifest(CrossMintSwapPolicyManifestEvent),
     PolicyRemoval(PolicyRemovalEvent),
@@ -926,6 +934,20 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
                 .await?;
             emitted += 1;
         }
+        if let Some(policy) = detect_yield_setup_policy_create(action) {
+            self.sink
+                .emit(PolicyMonitorEvent::YieldSetup(
+                    PolicyMatchEvent::from_setup_policy(
+                        signature,
+                        slot,
+                        self.config.cluster,
+                        self.config.commitment,
+                        policy,
+                    ),
+                ))
+                .await?;
+            emitted += 1;
+        }
         if let Some(policy) = detect_balance_sweep_policy_create(action) {
             self.sink
                 .emit(PolicyMonitorEvent::BalanceSweep(
@@ -1131,6 +1153,38 @@ impl PolicyMatchEvent {
                 .into_iter()
                 .map(SwapLaneEvent::from)
                 .collect(),
+        }
+    }
+
+    fn from_setup_policy(
+        signature: &str,
+        slot: u64,
+        cluster: Cluster,
+        commitment: Commitment,
+        policy: DetectedYieldSetupPolicy,
+    ) -> Self {
+        let universe_preset = detect_yield_route_universe_preset(&policy.kamino_markets);
+        Self {
+            signature: signature.to_owned(),
+            slot,
+            cluster,
+            source_commitment: commitment.to_string(),
+            finalized_eligible: commitment.finalized_eligible(),
+            settings: policy.settings.to_string(),
+            authority: policy.authority.to_string(),
+            policy_seed: policy.policy_seed,
+            policy_account: policy.policy_account.to_string(),
+            vault_index: policy.vault_index,
+            vault_pubkey: derive_squads_vault(&policy.settings, policy.vault_index).to_string(),
+            delegated_signers: pubkeys_to_strings(policy.delegated_signers),
+            threshold: policy.threshold,
+            route_modes: vec!["kamino_setup".to_owned()],
+            stable_mints: vec![],
+            kamino_markets: pubkeys_to_strings(policy.kamino_markets),
+            kamino_liquidity_mints: vec![],
+            universe_preset: universe_preset.map(universe_preset_name),
+            risk_profile: universe_preset.and_then(preset_risk_profile_name),
+            swap_lanes: vec![],
         }
     }
 }
