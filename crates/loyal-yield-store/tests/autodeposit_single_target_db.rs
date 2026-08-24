@@ -9,6 +9,7 @@ fn policy_match(policy_account: &str, policy_seed: u64, slot: u64) -> BalanceSwe
     BalanceSweepPolicyMatchInput {
         signature: format!("signature-{policy_seed}"),
         slot,
+        cluster: "mainnet-beta".to_owned(),
         settings: "settings-rollover".to_owned(),
         authority: "wallet-rollover".to_owned(),
         policy_seed,

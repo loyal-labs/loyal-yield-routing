@@ -23,7 +23,7 @@ use klend_interface::{
 use loyal_actions::{
     derive_associated_token_account, derive_squads_vault, earn_stablecoin, earn_stablecoins,
     SQUADS_SMART_ACCOUNT_PROGRAM_ID, SUBSCRIPTIONS_CREATE_RECURRING_DELEGATION,
-    SUBSCRIPTIONS_PROGRAM_ID, USDC_MINT,
+    SUBSCRIPTIONS_INIT_AUTHORITY, SUBSCRIPTIONS_PROGRAM_ID, USDC_MINT,
 };
 use loyal_squads_policy_monitor::{PolicyMonitor, PostgresPolicyMatchSink};
 use loyal_yield_store::{
@@ -1711,10 +1711,22 @@ pub async fn reconcile_targeted_policy_vault_update(
         }
     }
 
-    let mut recurring_observed = false;
+    let mut subscription_control_observed = false;
     for instruction in &transaction.instructions {
-        if instruction.program_id != SUBSCRIPTIONS_PROGRAM_ID
-            || instruction.data.first().copied() != Some(SUBSCRIPTIONS_CREATE_RECURRING_DELEGATION)
+        if instruction.program_id != SUBSCRIPTIONS_PROGRAM_ID {
+            continue;
+        }
+        if instruction.data.first().copied() == Some(SUBSCRIPTIONS_INIT_AUTHORITY) {
+            if instruction
+                .accounts
+                .first()
+                .is_some_and(|account| account.pubkey.to_string() == vault.wallet)
+            {
+                subscription_control_observed = true;
+            }
+            continue;
+        }
+        if instruction.data.first().copied() != Some(SUBSCRIPTIONS_CREATE_RECURRING_DELEGATION)
             || instruction.accounts.len() < 4
             || instruction.data.len() < 41
         {
@@ -1756,9 +1768,9 @@ pub async fn reconcile_targeted_policy_vault_update(
                 slot: transaction.slot,
             })
             .await?;
-        recurring_observed = true;
+        subscription_control_observed = true;
     }
-    Ok(intent_reconciled || (policy_reconciled && !recurring_observed))
+    Ok(intent_reconciled || policy_reconciled || subscription_control_observed)
 }
 
 pub async fn process_next_earn_reconciliation_job(

@@ -393,6 +393,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0064_earn_max_partial_lifecycle.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 65,
+        name: "autodeposit_target_cluster",
+        sql: include_str!("../../../loyal-yield-store/migrations/0065_autodeposit_target_cluster.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
