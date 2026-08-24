@@ -322,7 +322,10 @@ pub async fn reconcile_operation(
         } else {
             RouteGoal::Claimed
         };
-    } else if next.goal == RouteGoal::Withdraw && active.is_none() {
+    } else if next.goal == RouteGoal::Withdraw
+        && active.is_none()
+        && after.collateral_custody.amount_raw == 0
+    {
         if let Some(withdrawal) = &mut next.withdrawal {
             withdrawal.status = WithdrawalStatus::Claimable;
             withdrawal.unwind_completed_at = Some(Utc::now());
