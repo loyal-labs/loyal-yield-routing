@@ -308,13 +308,17 @@ fn decode_obligation(
         .checked_shr(60)
         .and_then(|value| u64::try_from(value).ok())
         .ok_or("obligation debt exceeds u64")?;
+    let collateral_deposited_raw = deposits.first().map_or(0, |value| value.deposited_amount);
     Ok(StrategyObservation {
         strategy_key: config.key,
-        collateral_deposited_raw: deposits.first().map_or(0, |value| value.deposited_amount),
+        collateral_deposited_raw,
         debt_raw,
         debt_amount_sf: debt_sf.to_string(),
-        collateral_value_sf: u128::from(obligation.deposited_value_sf),
-        debt_value_sf: u128::from(obligation.borrowed_assets_market_value_sf),
+        collateral_value_sf: collateral_market_value_sf(
+            collateral_reserve,
+            collateral_deposited_raw,
+        )?,
+        debt_value_sf: debt_market_value_sf(debt_reserve, debt_sf)?,
         unhealthy_value_sf: u128::from(obligation.unhealthy_borrow_value_sf),
         debt_market_price_sf: debt_reserve.market_price(),
         debt_mint_factor: 10_u64
@@ -421,6 +425,40 @@ fn reserve_total_liquidity_sf(reserve: &Reserve) -> Result<BigUint, Box<dyn Erro
         return Err("reserve total liquidity is zero".into());
     }
     Ok(total)
+}
+
+fn collateral_market_value_sf(
+    reserve: &Reserve,
+    collateral_raw: u64,
+) -> Result<u128, Box<dyn Error>> {
+    if collateral_raw == 0 {
+        return Ok(0);
+    }
+    let denominator = BigUint::from(reserve.collateral_total_supply()) << 60_usize;
+    if denominator.is_zero() {
+        return Err("collateral reserve supply is zero".into());
+    }
+    let liquidity_raw =
+        BigUint::from(collateral_raw) * reserve_total_liquidity_sf(reserve)? / denominator;
+    let mint_factor = 10_u64
+        .checked_pow(u32::try_from(reserve.mint_decimals())?)
+        .ok_or("collateral mint factor overflow")?;
+    (liquidity_raw * BigUint::from(reserve.market_price()) / BigUint::from(mint_factor))
+        .to_u128()
+        .ok_or_else(|| "collateral market value exceeds u128".into())
+}
+
+fn debt_market_value_sf(reserve: &Reserve, debt_amount_sf: u128) -> Result<u128, Box<dyn Error>> {
+    if debt_amount_sf == 0 {
+        return Ok(0);
+    }
+    let mint_factor = 10_u64
+        .checked_pow(u32::try_from(reserve.mint_decimals())?)
+        .ok_or("debt mint factor overflow")?;
+    let denominator = BigUint::from(mint_factor) << 60_usize;
+    (BigUint::from(debt_amount_sf) * BigUint::from(reserve.market_price()) / denominator)
+        .to_u128()
+        .ok_or_else(|| "debt market value exceeds u128".into())
 }
 
 pub fn collateral_to_liquidity_raw(
