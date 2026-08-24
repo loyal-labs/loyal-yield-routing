@@ -848,10 +848,12 @@ async function checkFreshLifecycle(): Promise<Json> {
     const topUp = deposits[index + 1];
     const depositSlot = operationSlot(deposit);
     const topUpSlot = operationSlot(topUp ?? {});
-    const borrow = depositSlot === null || topUpSlot === null ? undefined : borrows.find((candidate) =>
-      (operationSlot(candidate) ?? 0n) > depositSlot &&
-      (operationSlot(candidate) ?? 0n) < topUpSlot
-    );
+    const borrow = depositSlot === null || topUpSlot === null || cancelSlot === null || topUpSlot > cancelSlot
+      ? undefined
+      : borrows.find((candidate) =>
+        (operationSlot(candidate) ?? 0n) > depositSlot &&
+        (operationSlot(candidate) ?? 0n) < topUpSlot
+      );
     return borrow ? [{ deposit, topUp, borrow }] : [];
   }).at(-1);
   const firstDepositSlot = operationSlot(depositPair?.deposit ?? {});
