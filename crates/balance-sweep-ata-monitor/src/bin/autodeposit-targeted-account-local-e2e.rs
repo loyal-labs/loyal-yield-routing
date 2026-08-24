@@ -1,5 +1,6 @@
 use std::{fs, path::PathBuf, str::FromStr};
 
+use anyhow::Context;
 use balance_sweep_ata_monitor::smart_account::{EARN_AUTODEPOSIT_WALLET_ATAS, EARN_WALLETS};
 use balance_sweep_ata_monitor::{
     enqueue_normalized_earn_update, normalize_laserstream_update,
@@ -169,6 +170,33 @@ async fn main() -> anyhow::Result<()> {
                 watch_set = SubscriptionWatchSet::from_targets(Vec::new(), targets)?;
             }
         }
+        if saw_policy && !saw_recurring_delegation {
+            let target_id = store
+                .load_autodeposit_reconciliation_target_id(
+                    &state.settings_pda,
+                    &state.vault_pubkey,
+                    &state.policy_account,
+                )
+                .await?
+                .context("partial setup policy target was not indexed")?;
+            store
+                .enqueue_autodeposit_reconciliation_request(target_id, update.slot)
+                .await?;
+            match process_next_autodeposit_reconciliation_request(
+                &store,
+                claim_owner,
+                &chain,
+                120,
+                1,
+            )
+            .await?
+            {
+                AutodepositReconciliationProcessOutcome::AwaitingSetup { .. } => {}
+                outcome => anyhow::bail!(
+                    "partial Autodeposit setup was not retained as incomplete: {outcome:?}"
+                ),
+            }
+        }
     }
     if !(saw_policy && saw_recurring_delegation) {
         anyhow::bail!("emulated stream missed policy or recurring-delegation setup");
@@ -206,6 +234,9 @@ async fn main() -> anyhow::Result<()> {
             .await?
         {
             AutodepositReconciliationProcessOutcome::Idle => break,
+            outcome @ AutodepositReconciliationProcessOutcome::AwaitingSetup { .. } => {
+                anyhow::bail!("completed setup remained incomplete: {outcome:?}");
+            }
             AutodepositReconciliationProcessOutcome::Completed {
                 chain_status,
                 still_pending,

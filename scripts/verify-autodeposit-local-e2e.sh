@@ -204,7 +204,7 @@ jq -s -e \
   'map(.stage) == ["initialize_subscription_authority", "create_policy", "create_recurring_delegation"]' \
   "$state_json.transactions.ndjson" >/dev/null ||
   fail "web setup transaction sequence does not match the production stage machine"
-pass "web client setup created the authority, policy, delegation, and ATA approval"
+pass "web client recovered a policy-only setup before projection and completed the delegation"
 
 (
   cd "$routing_root"
@@ -282,7 +282,7 @@ jq -e \
   '.event.eventType == "earn.autodeposit.configuration.changed" and .event.reason == "allowance_created" and .refreshPlan.earnState == true and .refreshPlan.transactions == true' \
   "$sse_event_json" >/dev/null ||
   fail "web SSE Autodeposit invalidation is incorrect"
-pass "monitor projected finalized chain state and web consumed its realtime invalidation"
+pass "monitor held partial setup without an alert, then projected finalized chain state and notified web"
 
 for removed_route in \
   "$app_root/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/setup/confirm/route.ts" \

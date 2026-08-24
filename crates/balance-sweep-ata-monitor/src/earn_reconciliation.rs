@@ -1963,6 +1963,10 @@ pub async fn run_earn_reconciliation_consumer(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutodepositReconciliationProcessOutcome {
     Idle,
+    AwaitingSetup {
+        target_id: loyal_yield_store::BalanceSweepTargetId,
+        requested_slot: u64,
+    },
     Completed {
         target_id: loyal_yield_store::BalanceSweepTargetId,
         requested_slot: u64,
@@ -1992,16 +1996,23 @@ pub async fn process_next_autodeposit_reconciliation_request(
     let retry_after_seconds = retry_after_seconds.saturating_mul(
         1_i64 << u32::try_from(request.attempt_count.saturating_sub(1).min(5)).unwrap_or(5),
     );
+    let Some(context) = store
+        .load_autodeposit_target_snapshot_context_by_id(request.target_id)
+        .await?
+    else {
+        // Policy discovery can legitimately precede recurring-delegation
+        // creation. Keep the durable request dormant until a later account
+        // update advances its requested slot instead of treating an
+        // incomplete user setup as a failed reconciliation job.
+        store
+            .await_autodeposit_setup_reconciliation_request(request.target_id, claim_owner, 3_600)
+            .await?;
+        return Ok(AutodepositReconciliationProcessOutcome::AwaitingSetup {
+            target_id: request.target_id,
+            requested_slot: request.requested_slot,
+        });
+    };
     let result = async {
-        let context = store
-            .load_autodeposit_target_snapshot_context_by_id(request.target_id)
-            .await?
-            .with_context(|| {
-                format!(
-                    "Autodeposit target {} is not ready for a finalized snapshot",
-                    request.target_id
-                )
-            })?;
         let observation = chain
             .autodeposit_snapshot(context, request.requested_slot)
             .await?;
@@ -2078,6 +2089,16 @@ pub async fn run_autodeposit_reconciliation_consumer(
                     chain_status,
                     still_pending,
                     "completed coalesced Autodeposit reconciliation"
+                );
+            }
+            Ok(AutodepositReconciliationProcessOutcome::AwaitingSetup {
+                target_id,
+                requested_slot,
+            }) => {
+                tracing::info!(
+                    target_id = target_id.as_i64(),
+                    requested_slot,
+                    "Autodeposit reconciliation is waiting for setup to complete"
                 );
             }
             Ok(AutodepositReconciliationProcessOutcome::Deferred { target_id, error }) => {
