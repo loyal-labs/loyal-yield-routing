@@ -11,14 +11,16 @@ use std::{
     error::Error,
     process::ExitCode,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use chrono::{Duration as ChronoDuration, Utc};
 use futures_util::StreamExt;
-use loyal_observability::{init_from_env, OperationalError};
+use loyal_observability::{
+    init_from_env, EarnRebalanceMetrics, EarnRebalanceStage, OperationalError,
+};
 use loyal_yield_orchestrator::{
     fleet_orchestration::{
         classify_authoritative_signature_status_for_commitment, fleet_worker_role_probe,
@@ -58,6 +60,8 @@ const DEFAULT_POLL_INTERVAL_MILLISECONDS: u64 = 1_000;
 const DEFAULT_BATCH_SIZE: i64 = 128;
 const DEFAULT_LEASE_SECONDS: i64 = 30;
 const DEFAULT_BROADCAST_CONCURRENCY: usize = 16;
+
+static EARN_REBALANCE_METRICS: OnceLock<EarnRebalanceMetrics> = OnceLock::new();
 const MAX_BATCH_SIZE: i64 = 256;
 const RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const RETRY_ALERT_AFTER: Duration = Duration::from_secs(60);
@@ -584,13 +588,20 @@ async fn main() -> ExitCode {
         println!("{}", fleet_worker_role_probe(FleetWorkerRole::Confirmer));
         return ExitCode::SUCCESS;
     }
-    let _observability = match init_from_env("loyal-fleet-route-confirmer") {
+    let observability = match init_from_env("loyal-fleet-route-confirmer") {
         Ok(observability) => observability,
         Err(error) => {
             eprintln!("failed to initialize observability: {error}");
             return ExitCode::FAILURE;
         }
     };
+    if EARN_REBALANCE_METRICS
+        .set(observability.earn_rebalance_metrics())
+        .is_err()
+    {
+        eprintln!("Earn rebalance metrics initialized more than once");
+        return ExitCode::FAILURE;
+    }
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -795,6 +806,7 @@ async fn run_poll(
     signature_hints: Arc<SignatureHintPool>,
     authoritative_status_batcher: Arc<AuthoritativeStatusBatcher>,
 ) -> Result<PollHealth, Box<dyn Error>> {
+    let started = Instant::now();
     let lease_expires_at = Utc::now() + ChronoDuration::seconds(options.lease_seconds);
     let leases = neon
         .lease_pending_signed_route_submissions(
@@ -1321,6 +1333,7 @@ async fn run_poll(
     if let Some(error) = join_error {
         return Err(error.into());
     }
+    record_confirmed_successes(outcome.reconciliation_pending, started.elapsed());
     Ok(PollHealth {
         event: "fleet_route_confirmer_poll",
         cluster: options.cluster.clone(),
@@ -1853,6 +1866,13 @@ async fn advance_finalized_submission_to_reconciliation(
     )
     .await?;
     Ok(())
+}
+
+fn record_confirmed_successes(count: usize, duration: Duration) {
+    EARN_REBALANCE_METRICS
+        .get()
+        .expect("Earn rebalance metrics initialized before confirmer runs")
+        .record_successes(EarnRebalanceStage::RouteConfirmed, count, duration);
 }
 
 async fn ensure_decision_confirming(

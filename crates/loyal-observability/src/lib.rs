@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod earn_rebalance;
 mod sqlx_metrics;
 mod wallet;
 mod workflow;
@@ -33,6 +34,7 @@ use tracing::Level;
 use tracing_subscriber::{filter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 use url::Url;
 
+pub use earn_rebalance::{EarnRebalanceMetrics, EarnRebalanceStage, EARN_REBALANCE_WORKFLOW};
 use sqlx_metrics::{is_database_metrics_event, SqlxMetrics, SqlxMetricsLayer};
 pub use sqlx_metrics::{record_database_query_phase_duration, DatabaseQuery, DatabaseQueryPhase};
 pub use wallet::ObservabilityWalletAddress;
@@ -223,6 +225,13 @@ impl ObservabilityGuard {
     /// The returned handle is a no-op when [`ENABLED_ENV`] is false.
     pub fn workflow_metrics(&self) -> WorkflowMetrics {
         self.workflow_metrics.clone()
+    }
+
+    /// Returns the typed success metrics for durable Earn rebalance stages.
+    pub fn earn_rebalance_metrics(&self) -> EarnRebalanceMetrics {
+        EarnRebalanceMetrics {
+            workflow: self.workflow_metrics.clone(),
+        }
     }
 
     /// Returns a service-owned meter backed by the configured OTLP provider.

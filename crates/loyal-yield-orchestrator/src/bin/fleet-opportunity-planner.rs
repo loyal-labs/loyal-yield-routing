@@ -2,11 +2,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     error::Error,
+    sync::OnceLock,
     time::Instant,
 };
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use loyal_observability::{init_from_env, OperationalError};
+use loyal_observability::{
+    init_from_env, EarnRebalanceMetrics, EarnRebalanceStage, OperationalError,
+};
 use loyal_yield_orchestrator::fleet_orchestration::{
     code_owned_stablecoin_valuations, fleet_worker_role_probe, observe_backyard_voltr_confirmed,
     observe_fleet_opportunities, observe_fleet_opportunities_for_vaults,
@@ -62,6 +65,8 @@ fn cross_mint_fee_envelope_is_covered(fee_cap_lamports: i64, fee_policy: RouteFe
 const PLANNER_MAXIMUM_CYCLE_BACKOFF_SECONDS: u64 = 30;
 const PLANNER_RECOVERY_VERIFICATION_CYCLES: usize = 10_000;
 const PRIORITY_VERSION: &str = "lost-yield-service-net-reserve-capacity-v3";
+
+static EARN_REBALANCE_METRICS: OnceLock<EarnRebalanceMetrics> = OnceLock::new();
 
 #[derive(Debug)]
 struct Options {
@@ -653,14 +658,36 @@ async fn publish_wave(
         let neon = neon.clone();
         let vault_id = input.vault_id;
         tasks.spawn(async move {
+            let started = Instant::now();
             let result = async {
                 let optimizer_epoch_id = input.optimizer_epoch_id;
-                let opportunity = neon.upsert_rebalance_opportunity(input).await?;
+                let published = neon.upsert_rebalance_opportunity(input).await?;
+                let inserted = published.inserted;
+                let mut opportunity = published.opportunity;
+                let mut readmitted = false;
                 if opportunity.state
                     == loyal_yield_orchestrator::fleet_orchestration::RebalanceOpportunityState::WaitingAlt
                 {
-                    neon.re_admit_waiting_alt_opportunity(opportunity.id, optimizer_epoch_id)
+                    let outcome = neon
+                        .re_admit_waiting_alt_opportunity_with_outcome(
+                            opportunity.id,
+                            optimizer_epoch_id,
+                        )
                         .await?;
+                    opportunity = outcome.opportunity;
+                    readmitted = outcome.readmitted;
+                }
+                if (inserted || readmitted)
+                    && opportunity.state
+                    != loyal_yield_orchestrator::fleet_orchestration::RebalanceOpportunityState::WaitingAlt
+                {
+                    EARN_REBALANCE_METRICS
+                        .get()
+                        .expect("Earn rebalance metrics initialized before planner runs")
+                        .record_success(
+                            EarnRebalanceStage::OpportunityPublished,
+                            started.elapsed(),
+                        );
                 }
                 Ok::<(), OrchestratorError>(())
             }
@@ -1654,8 +1681,16 @@ async fn run_backyard_voltr_planning_cycle(
             "mutating": false,
         })),
         BackyardVoltrPlanningOutcome::Opportunity(input) => {
+            let started = Instant::now();
             let operation_class = input.operation_class.as_str();
-            let opportunity = neon.upsert_rebalance_opportunity(input).await?;
+            let published = neon.upsert_rebalance_opportunity(input).await?;
+            let opportunity = published.opportunity;
+            if published.inserted {
+                EARN_REBALANCE_METRICS
+                    .get()
+                    .expect("Earn rebalance metrics initialized before planner runs")
+                    .record_success(EarnRebalanceStage::OpportunityPublished, started.elapsed());
+            }
             Ok(json!({
                 "status": "backyard_voltr_opportunity_upserted",
                 "vaultId": binding.vault_id.as_i64(),
@@ -1685,7 +1720,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
         return Ok(());
     }
-    let _observability = init_from_env("loyal-fleet-opportunity-planner")?;
+    let observability = init_from_env("loyal-fleet-opportunity-planner")?;
+    EARN_REBALANCE_METRICS
+        .set(observability.earn_rebalance_metrics())
+        .map_err(|_| "Earn rebalance metrics initialized more than once")?;
     if let Err(error) = run().await {
         OperationalError::new(
             "fleet_opportunity_planner_fatal",

@@ -22,7 +22,7 @@ use balance_sweep_ata_monitor::{
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use loyal_actions::USDC_MINT;
-use loyal_observability::{init_from_env, OperationalError};
+use loyal_observability::{init_from_env, EarnRebalanceMetrics, OperationalError};
 use loyal_squads_policy_monitor::{
     Cluster as PolicyCluster, Commitment as PolicyCommitment, MonitorConfig as PolicyMonitorConfig,
     PolicyMonitor, PostgresPolicyMatchSink, EARN_MAX_POLICY_PROJECTION_CONSUMER,
@@ -145,7 +145,8 @@ impl MonitorSession {
 async fn main() -> Result<()> {
     let observability = init_from_env("loyal-balance-sweep-ata-monitor")?;
     let meter = observability.meter("loyal-balance-sweep-ata-monitor");
-    if let Err(error) = run(meter).await {
+    let earn_rebalance_metrics = observability.earn_rebalance_metrics();
+    if let Err(error) = run(meter, earn_rebalance_metrics).await {
         OperationalError::new(
             "balance_sweep_ata_monitor_fatal",
             "run_balance_sweep_ata_monitor",
@@ -159,7 +160,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run(meter: Meter) -> Result<()> {
+async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Result<()> {
     let args = Args::parse();
     tracing::info!(
         cluster = %args.cluster,
@@ -331,6 +332,7 @@ async fn run(meter: Meter) -> Result<()> {
         recheck,
         earn_wake.clone(),
         autodeposit_watch_wake,
+        earn_rebalance_metrics,
     )
     .await;
     earn_consumer_running.store(false, Ordering::Relaxed);
@@ -467,6 +469,7 @@ async fn supervise_monitor_sessions(
     recheck: AtaRecheckHandle,
     earn_wake: Arc<Notify>,
     autodeposit_watch_wake: Arc<Notify>,
+    earn_rebalance_metrics: EarnRebalanceMetrics,
 ) -> Result<()> {
     let refresh_interval = Duration::from_secs(args.target_refresh_seconds);
     let mut session: Option<MonitorSession> = None;
@@ -582,6 +585,7 @@ async fn supervise_monitor_sessions(
                 recheck.clone(),
                 replay_from_slot_override,
                 earn_wake.clone(),
+                earn_rebalance_metrics.clone(),
             )
             .await
             .context("start balance sweep ATA monitor session")?;
@@ -710,6 +714,7 @@ async fn start_session(
     recheck: AtaRecheckHandle,
     replay_from_slot_override: Option<u64>,
     earn_wake: Arc<Notify>,
+    earn_rebalance_metrics: EarnRebalanceMetrics,
 ) -> Result<MonitorSession> {
     if args.update_source == UpdateSourceKind::Websocket && !watch_set.earn_vaults.is_empty() {
         anyhow::bail!(
@@ -800,6 +805,7 @@ async fn start_session(
             event_running,
             Some(recheck),
             earn,
+            earn_rebalance_metrics,
         )
         .await;
         let _ = event_finished_tx.send(());
