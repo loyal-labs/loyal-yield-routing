@@ -1,6 +1,6 @@
 use crate::fleet_orchestration::{
-    MultiplyOperation, MultiplyOperationStatus, MultiplyRouteState, RouteGoal,
-    MULTIPLY_ENGINE_VERSION,
+    MultiplyAction, MultiplyOperation, MultiplyOperationStatus, MultiplyPosition,
+    MultiplyRouteState, RouteGoal, MULTIPLY_ENGINE_VERSION,
 };
 use crate::MultiplyPositionSnapshotInput;
 use crate::{NeonSqlClient, OrchestratorError};
@@ -652,6 +652,53 @@ impl NeonSqlClient {
             tx.rollback().await?;
             return Ok(false);
         };
+        if operation.action == MultiplyAction::Claim {
+            let MultiplyPosition::Idle { claim } = &route.position else {
+                tx.rollback().await?;
+                return Err(invariant("Claimed route must have an idle position"));
+            };
+            let confirmed_slot = operation
+                .confirmed_slot
+                .ok_or_else(|| invariant("Claim operation omitted its confirmed slot"))?;
+            let snapshot = sqlx::query(
+                r#"
+                INSERT INTO loyal_yield.multiply_position_snapshots (
+                    route_key, generation, observed_slot, observed_at, strategy_key,
+                    claim_raw, collateral_raw, debt_raw, equity_usd_micros,
+                    collateral_value_usd_micros, debt_value_usd_micros,
+                    leverage_bps, ltv_bps, health_factor_ppm, supply_apy_bps,
+                    borrow_apy_bps, forecast_apy_bps, valuation_source,
+                    valuation_slot, valuation_observed_at, coverage_start_at
+                ) VALUES (
+                    $1, $2, $3, $4, NULL,
+                    $5::numeric, 0, 0, $5::numeric,
+                    0, 0,
+                    NULL, NULL, NULL, NULL,
+                    NULL, NULL, 'confirmed_claim_transfer',
+                    $3, $4, $6
+                )
+                ON CONFLICT (route_key, generation) DO NOTHING
+                "#,
+            )
+            .bind(&route.route_key)
+            .bind(i64_from_u64(route.generation, "generation")?)
+            .bind(i64_from_u64(confirmed_slot, "slot")?)
+            .bind(route.observed_at)
+            .bind(claim.amount_raw.to_string())
+            .bind(
+                route
+                    .deposit
+                    .as_ref()
+                    .map(|deposit| deposit.observed_at)
+                    .unwrap_or(route.observed_at),
+            )
+            .execute(&mut *tx)
+            .await?;
+            if snapshot.rows_affected() != 1 {
+                tx.rollback().await?;
+                return Err(invariant("Claim snapshot generation already exists"));
+            }
+        }
         tx.commit().await?;
         lease.version = version;
         Ok(true)

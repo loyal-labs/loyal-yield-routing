@@ -413,6 +413,7 @@ function checkWorkerAndStoreSource(): Json {
     "load_unadmitted_multiply_route_state",
     "load_claimable_multiply_route_state",
     "admit_external_multiply_operation",
+    "confirmed_claim_transfer",
   ]) {
     requireText(store, required, "earn_max_store_contract_missing", MULTIPLY_STORE);
   }
@@ -567,9 +568,16 @@ async function checkLivePrerequisites(): Promise<Json> {
       });
     }
   }
-  const appRevision = await commandText(["git", "rev-parse", "HEAD"], APPS_ROOT);
-  if (deployedRevision !== appRevision) {
-    fail("deployed_earn_max_application_revision_drift", { deployedRevision, appRevision });
+  const localAppTree = await commandText(["git", "rev-parse", "HEAD^{tree}"], APPS_ROOT);
+  const deployedAppTree = await commandText([
+    "gh", "api", `repos/loyal-labs/loyal-app/git/commits/${deployedRevision}`, "--jq", ".tree.sha",
+  ]);
+  if (deployedAppTree !== localAppTree) {
+    fail("deployed_earn_max_application_revision_drift", {
+      deployedRevision,
+      deployedAppTree,
+      localAppTree,
+    });
   }
   return {
     genesisHash,
@@ -746,17 +754,33 @@ async function checkFreshLifecycle(): Promise<Json> {
     "swap_collateral_to_claim",
     "claim",
   ];
-  const actionSet = new Set(operations.map((operation) => String(operation.action)));
-  const badOperations = operations.filter((operation) => operation.status !== "reconciled");
-  const actionCount = (action: string) => operations.filter((operation) => operation.action === action).length;
-  const chainLocations = operations
+  const reconciledOperations = operations.filter((operation) => operation.status === "reconciled");
+  const expiredOperations = operations.filter((operation) => operation.status === "expired");
+  const unexpectedOperations = operations.filter(
+    (operation) => operation.status !== "reconciled" && operation.status !== "expired",
+  );
+  const expiredSignatures = expiredOperations.map((operation) => String(operation.transaction_signature ?? ""));
+  const expiredStatuses = expiredSignatures.length === 0
+    ? []
+    : (await connection.getSignatureStatuses(expiredSignatures, { searchTransactionHistory: true })).value;
+  const unsafeExpiredOperations = expiredOperations.filter((operation, index) =>
+    operation.confirmed_slot !== null ||
+    operation.source_instruction_index !== null ||
+    !/^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(expiredSignatures[index] ?? "") ||
+    expiredStatuses[index] !== null
+  );
+  const actionSet = new Set(reconciledOperations.map((operation) => String(operation.action)));
+  const actionCount = (action: string) =>
+    reconciledOperations.filter((operation) => operation.action === action).length;
+  const chainLocations = reconciledOperations
     .filter((operation) => operation.source_instruction_index !== null)
     .map((operation) => `${operation.transaction_signature}:${operation.source_instruction_index}`);
   const intentLocationsUnique = new Set(chainLocations).size === chainLocations.length;
   if (
     operations.length === 0 ||
     requiredActions.some((action) => !actionSet.has(action)) ||
-    badOperations.length > 0 ||
+    unexpectedOperations.length > 0 ||
+    unsafeExpiredOperations.length > 0 ||
     actionCount("deposit_claim_asset") < 2 ||
     actionCount("request_withdrawal") < 3 ||
     actionCount("cancel_withdrawal") < 1 ||
@@ -767,7 +791,8 @@ async function checkFreshLifecycle(): Promise<Json> {
       actions: [...actionSet].sort(),
       counts: Object.fromEntries(requiredActions.map((action) => [action, actionCount(action)])),
       intentLocationsUnique,
-      nonReconciled: badOperations.map((operation) => ({ id: operation.operation_id, status: operation.status })),
+      unexpected: unexpectedOperations.map((operation) => ({ id: operation.operation_id, status: operation.status })),
+      unsafeExpired: unsafeExpiredOperations.map((operation) => operation.operation_id),
       resume: "complete the confirmed deposit, top-up, cancel, partial/full claim, and hookless open/unwind graph",
     });
   }
@@ -791,11 +816,11 @@ async function checkFreshLifecycle(): Promise<Json> {
   };
   const bySlot = (left: Record<string, unknown>, right: Record<string, unknown>) =>
     Number((operationSlot(left) ?? 0n) - (operationSlot(right) ?? 0n));
-  const deposits = operations.filter((operation) => operation.action === "deposit_claim_asset").sort(bySlot);
-  const borrows = operations.filter((operation) => operation.action === "borrow_debt").sort(bySlot);
-  const requests = operations.filter((operation) => operation.action === "request_withdrawal").sort(bySlot);
-  const cancels = operations.filter((operation) => operation.action === "cancel_withdrawal").sort(bySlot);
-  const claims = operations.filter((operation) => operation.action === "claim").sort(bySlot);
+  const deposits = reconciledOperations.filter((operation) => operation.action === "deposit_claim_asset").sort(bySlot);
+  const borrows = reconciledOperations.filter((operation) => operation.action === "borrow_debt").sort(bySlot);
+  const requests = reconciledOperations.filter((operation) => operation.action === "request_withdrawal").sort(bySlot);
+  const cancels = reconciledOperations.filter((operation) => operation.action === "cancel_withdrawal").sort(bySlot);
+  const claims = reconciledOperations.filter((operation) => operation.action === "claim").sort(bySlot);
   const partialClaim = claims.find((operation) => (claimSourcePost(operation) ?? 0n) > 0n);
   const fullClaim = [...claims].reverse().find((operation) => claimSourcePost(operation) === 0n);
   const cancel = cancels.find((candidate) => requests.some((request) =>
@@ -809,7 +834,7 @@ async function checkFreshLifecycle(): Promise<Json> {
     intent(request)?.requestId !== intent(cancel ?? {})?.requestId &&
     (operationSlot(request) ?? 0n) <= partialClaimSlot
   );
-  const redeploy = partialClaimSlot === null ? undefined : operations.find((operation) =>
+  const redeploy = partialClaimSlot === null ? undefined : reconciledOperations.find((operation) =>
     operation.action === "swap_claim_to_collateral" &&
     (operationSlot(operation) ?? 0n) > partialClaimSlot
   );
@@ -818,12 +843,19 @@ async function checkFreshLifecycle(): Promise<Json> {
     (operationSlot(request) ?? 0n) > redeploySlot &&
     (operationSlot(request) ?? 0n) <= fullClaimSlot
   );
-  const firstDepositSlot = operationSlot(deposits[0] ?? {});
-  const topUpSlot = operationSlot(deposits[1] ?? {});
-  const initialBorrow = firstDepositSlot === null || topUpSlot === null ? undefined : borrows.find((borrow) =>
-    (operationSlot(borrow) ?? 0n) > firstDepositSlot &&
-    (operationSlot(borrow) ?? 0n) < topUpSlot
-  );
+  const depositPair = deposits.slice(0, -1).flatMap((deposit, index) => {
+    const topUp = deposits[index + 1];
+    const depositSlot = operationSlot(deposit);
+    const topUpSlot = operationSlot(topUp ?? {});
+    const borrow = depositSlot === null || topUpSlot === null ? undefined : borrows.find((candidate) =>
+      (operationSlot(candidate) ?? 0n) > depositSlot &&
+      (operationSlot(candidate) ?? 0n) < topUpSlot
+    );
+    return borrow ? [{ deposit, topUp, borrow }] : [];
+  }).at(-1);
+  const firstDepositSlot = operationSlot(depositPair?.deposit ?? {});
+  const topUpSlot = operationSlot(depositPair?.topUp ?? {});
+  const initialBorrow = depositPair?.borrow;
   const lifecycleSlots = [
     firstDepositSlot,
     initialBorrow ? operationSlot(initialBorrow) : null,
@@ -892,7 +924,7 @@ async function checkFreshLifecycle(): Promise<Json> {
     String(policy?.observed_signature ?? ""),
     String(deposit?.transactionSignature ?? ""),
     String(withdrawal?.claimSignature ?? ""),
-    ...operations.map((operation) => String(operation.transaction_signature ?? "")),
+    ...reconciledOperations.map((operation) => String(operation.transaction_signature ?? "")),
   ];
   const chain = await confirmedSignatures(connection, signatures);
   const latestOperationUpdatedAt = Math.max(
@@ -904,7 +936,8 @@ async function checkFreshLifecycle(): Promise<Json> {
     vault: route?.vault,
     policySeedBase: base.toString(),
     policyAccounts: accounts,
-    operationCount: operations.length,
+    operationCount: reconciledOperations.length,
+    inertExpiredOperationCount: expiredOperations.length,
     actionCounts: Object.fromEntries(requiredActions.map((action) => [action, actionCount(action)])),
     intentLocationCount: chainLocations.length,
     partialClaimSourcePost: partialClaim ? claimSourcePost(partialClaim)?.toString() : null,
