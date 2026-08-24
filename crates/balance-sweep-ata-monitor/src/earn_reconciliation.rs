@@ -1008,7 +1008,7 @@ fn classify_transaction_cash_flow<'a>(
 fn transaction_owner_token_delta(transaction: &Value, mint: &str, owner: &str) -> Result<i128> {
     let balances = |name: &str| -> Result<BTreeMap<u64, (Option<String>, u64)>> {
         transaction
-            .pointer(&format!("/transaction/meta/{name}"))
+            .pointer(&format!("/meta/{name}"))
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default()
@@ -1060,7 +1060,7 @@ fn transaction_owner_token_delta(transaction: &Value, mint: &str, owner: &str) -
 
 fn transaction_owner_lamport_credit(transaction: &Value, owner: &str) -> Result<u64> {
     let keys = transaction
-        .pointer("/transaction/transaction/message/accountKeys")
+        .pointer("/transaction/message/accountKeys")
         .and_then(Value::as_array)
         .context("transaction has no account keys")?;
     let Some(index) = keys.iter().position(|key| {
@@ -1071,20 +1071,20 @@ fn transaction_owner_lamport_credit(transaction: &Value, owner: &str) -> Result<
         return Ok(0);
     };
     let pre = transaction
-        .pointer("/transaction/meta/preBalances")
+        .pointer("/meta/preBalances")
         .and_then(Value::as_array)
         .and_then(|balances| balances.get(index))
         .and_then(Value::as_u64)
         .unwrap_or_default();
     let post = transaction
-        .pointer("/transaction/meta/postBalances")
+        .pointer("/meta/postBalances")
         .and_then(Value::as_array)
         .and_then(|balances| balances.get(index))
         .and_then(Value::as_u64)
         .unwrap_or_default();
     let fee = if index == 0 {
         transaction
-            .pointer("/transaction/meta/fee")
+            .pointer("/meta/fee")
             .and_then(Value::as_u64)
             .unwrap_or_default()
     } else {
@@ -1363,7 +1363,7 @@ fn read_transaction_json(rpc: &RpcClient, signature: &str) -> Result<Value> {
     let transaction =
         serde_json::to_value(transaction).context("serialize confirmed transaction")?;
     if transaction
-        .pointer("/transaction/meta/err")
+        .pointer("/meta/err")
         .is_some_and(|error| !error.is_null())
     {
         bail!("transaction {signature} failed on chain");
@@ -1419,7 +1419,7 @@ fn collateral_to_redeemable_liquidity(
 
 fn transaction_accounts(transaction: &Value) -> BTreeSet<String> {
     transaction
-        .pointer("/transaction/transaction/message/accountKeys")
+        .pointer("/transaction/message/accountKeys")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
@@ -1443,7 +1443,7 @@ fn transaction_owner_debit<'a>(
         .collect::<BTreeSet<_>>();
     let balances = |name: &str| -> Result<BTreeMap<u64, (Option<String>, u64)>> {
         transaction
-            .pointer(&format!("/transaction/meta/{name}"))
+            .pointer(&format!("/meta/{name}"))
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default()
@@ -2433,17 +2433,16 @@ mod tests {
 
     fn cash_flow_transaction(wallet: &str, mint: &str, pre: u64, post: u64) -> Value {
         json!({
+            "slot": 1,
+            "meta": {
+                "preTokenBalances": [token_balance(0, wallet, mint, pre)],
+                "postTokenBalances": [token_balance(0, wallet, mint, post)],
+                "preBalances": [1_000_000],
+                "postBalances": [995_000],
+                "fee": 5_000
+            },
             "transaction": {
-                "meta": {
-                    "preTokenBalances": [token_balance(0, wallet, mint, pre)],
-                    "postTokenBalances": [token_balance(0, wallet, mint, post)],
-                    "preBalances": [1_000_000],
-                    "postBalances": [995_000],
-                    "fee": 5_000
-                },
-                "transaction": {
-                    "message": { "accountKeys": [wallet] }
-                }
+                "message": { "accountKeys": [wallet] }
             }
         })
     }
@@ -2565,12 +2564,13 @@ mod tests {
         let vault = test_vault("policy", "policy-account");
         let update = test_update("account_deleted", "policy-account", "refund-policy", 30);
         let transaction = json!({
+            "slot": 30,
+            "meta": {
+                "preTokenBalances": [], "postTokenBalances": [],
+                "preBalances": [1_000_000], "postBalances": [1_995_000], "fee": 5_000
+            },
             "transaction": {
-                "meta": {
-                    "preTokenBalances": [], "postTokenBalances": [],
-                    "preBalances": [1_000_000], "postBalances": [1_995_000], "fee": 5_000
-                },
-                "transaction": { "message": { "accountKeys": [vault.wallet] } }
+                "message": { "accountKeys": [vault.wallet] }
             }
         });
         let evidence =
@@ -2586,12 +2586,13 @@ mod tests {
         let vault = test_vault("idle_token", "vault-token-account");
         let update = test_update("account_deleted", "vault-token-account", "refund-vault", 31);
         let transaction = json!({
+            "slot": 31,
+            "meta": {
+                "preTokenBalances": [], "postTokenBalances": [],
+                "preBalances": [1_000_000], "postBalances": [2_995_000], "fee": 5_000
+            },
             "transaction": {
-                "meta": {
-                    "preTokenBalances": [], "postTokenBalances": [],
-                    "preBalances": [1_000_000], "postBalances": [2_995_000], "fee": 5_000
-                },
-                "transaction": { "message": { "accountKeys": [vault.wallet] } }
+                "message": { "accountKeys": [vault.wallet] }
             }
         });
         let evidence =
@@ -2631,17 +2632,15 @@ mod tests {
         let owner = "wallet-owner".to_owned();
         let mint = "deposit-mint";
         let transaction = json!({
-            "transaction": {
-                "meta": {
-                    "preTokenBalances": [
-                        token_balance(0, &owner, mint, 100),
-                        token_balance(1, &owner, mint, 0)
-                    ],
-                    "postTokenBalances": [
-                        token_balance(0, &owner, mint, 0),
-                        token_balance(1, &owner, mint, 100)
-                    ]
-                }
+            "meta": {
+                "preTokenBalances": [
+                    token_balance(0, &owner, mint, 100),
+                    token_balance(1, &owner, mint, 0)
+                ],
+                "postTokenBalances": [
+                    token_balance(0, &owner, mint, 0),
+                    token_balance(1, &owner, mint, 100)
+                ]
             }
         });
 
@@ -2657,19 +2656,17 @@ mod tests {
         let vault = "vault-owner".to_owned();
         let mint = "deposit-mint";
         let transaction = json!({
-            "transaction": {
-                "meta": {
-                    "preTokenBalances": [
-                        token_balance(0, &wallet, mint, 200),
-                        token_balance(1, &vault, mint, 50),
-                        token_balance(2, &vault, mint, 0)
-                    ],
-                    "postTokenBalances": [
-                        token_balance(0, &wallet, mint, 100),
-                        token_balance(1, &vault, mint, 0),
-                        token_balance(2, &vault, mint, 50)
-                    ]
-                }
+            "meta": {
+                "preTokenBalances": [
+                    token_balance(0, &wallet, mint, 200),
+                    token_balance(1, &vault, mint, 50),
+                    token_balance(2, &vault, mint, 0)
+                ],
+                "postTokenBalances": [
+                    token_balance(0, &wallet, mint, 100),
+                    token_balance(1, &vault, mint, 0),
+                    token_balance(2, &vault, mint, 50)
+                ]
             }
         });
 
