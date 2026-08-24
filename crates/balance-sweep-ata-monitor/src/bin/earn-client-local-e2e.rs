@@ -16,7 +16,7 @@ use loyal_squads_policy_monitor::{
     Cluster, Commitment, MonitorConfig, PolicyMonitor, PostgresPolicyMatchSink,
 };
 use loyal_yield_store::{EarnSubscriptionTarget, OrchestratorConfig, OrchestratorStore};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use solana_sdk::{pubkey::Pubkey, signature::Signature};
 use tokio::sync::Mutex;
 
@@ -32,6 +32,8 @@ struct Args {
     transaction: PathBuf,
     #[arg(long)]
     subscribe_request_output: Option<PathBuf>,
+    #[arg(long)]
+    projected_earn_state_output: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +62,27 @@ struct ChainTransaction {
     signature: String,
     slot: u64,
     stage: Stage,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectedPolicyIdentity<'a> {
+    account: &'a str,
+    seed: String,
+    setup_policy: ProjectedSetupPolicyIdentity<'a>,
+}
+
+#[derive(Serialize)]
+struct ProjectedSetupPolicyIdentity<'a> {
+    account: &'a str,
+    seed: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectedEarnState<'a> {
+    settings_pda: &'a str,
+    policy: ProjectedPolicyIdentity<'a>,
 }
 
 fn initial_watch_set(state: &LocalState) -> anyhow::Result<SubscriptionWatchSet> {
@@ -165,6 +188,29 @@ async fn main() -> anyhow::Result<()> {
         context.route_policy.is_some(),
         context.setup_policy.is_some()
     );
+
+    if let Some(output) = args.projected_earn_state_output {
+        let route = context
+            .route_policy
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("projected route policy is missing"))?;
+        let setup = context
+            .setup_policy
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("projected setup policy is missing"))?;
+        let projected = ProjectedEarnState {
+            settings_pda: &state.settings_pda,
+            policy: ProjectedPolicyIdentity {
+                account: &route.policy_account,
+                seed: route.policy_seed.to_string(),
+                setup_policy: ProjectedSetupPolicyIdentity {
+                    account: &setup.policy_account,
+                    seed: setup.policy_seed.to_string(),
+                },
+            },
+        };
+        fs::write(output, serde_json::to_vec_pretty(&projected)?)?;
+    }
 
     if let Some(output) = args.subscribe_request_output {
         let refreshed = store.load_earn_subscription_targets("mainnet-beta").await?;
