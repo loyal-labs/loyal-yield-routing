@@ -17,8 +17,11 @@ use helius_laserstream::grpc::{
 use loyal_squads_policy_monitor::{
     Cluster, Commitment, MonitorConfig, PolicyMonitor, PostgresPolicyMatchSink,
 };
-use loyal_yield_store::{EarnSubscriptionTarget, OrchestratorConfig, OrchestratorStore};
+use loyal_yield_store::{
+    EarnSubscriptionTarget, OrchestratorConfig, OrchestratorStore, PolicyMatchInput,
+};
 use serde::Deserialize;
+use serde_json::json;
 use solana_sdk::{pubkey::Pubkey, signature::Signature};
 use tokio::sync::Mutex;
 
@@ -34,6 +37,8 @@ struct Args {
     transactions: PathBuf,
     #[arg(long)]
     subscribe_request_output: PathBuf,
+    #[arg(long)]
+    pending_floor_ready: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,12 +149,56 @@ async fn main() -> anyhow::Result<()> {
     {
         let transaction: ChainTransaction = serde_json::from_str(line)
             .map_err(|error| anyhow::anyhow!("decode line {}: {error}", line_number + 1))?;
-        saw_policy |= matches!(transaction.stage, SetupStage::CreatePolicy);
-        saw_recurring_delegation |=
+        let is_recurring_delegation =
             matches!(transaction.stage, SetupStage::CreateRecurringDelegation);
+        saw_policy |= matches!(transaction.stage, SetupStage::CreatePolicy);
+        saw_recurring_delegation |= is_recurring_delegation;
         let update = normalize_laserstream_update(emulated_update(&state, transaction)?)?
             .ok_or_else(|| anyhow::anyhow!("emulated LaserStream account update was ignored"))?;
         enqueue_normalized_earn_update(&store, consumer_name, &update, &watch_set).await?;
+        if is_recurring_delegation {
+            let legacy_policy = PolicyMatchInput {
+                signature: "legacy-policy-observation".to_owned(),
+                slot: update.slot.saturating_sub(1),
+                cluster: "mainnet-beta".to_owned(),
+                source_commitment: "unknown".to_owned(),
+                settings: state.settings_pda.clone(),
+                authority: state.wallet_address.clone(),
+                policy_seed: 999,
+                policy_account: state.subscription_authority.clone(),
+                vault_index: 1,
+                vault_pubkey: state.vault_pubkey.clone(),
+                delegated_signers: Vec::new(),
+                threshold: 1,
+                route_modes: vec!["same_mint_kamino".to_owned()],
+                stable_mints: Vec::new(),
+                kamino_markets: Vec::new(),
+                kamino_liquidity_mints: Vec::new(),
+                universe_preset: None,
+                risk_profile: None,
+                swap_lanes: json!([]),
+            };
+            store.record_policy_match(legacy_policy.clone()).await?;
+            let repaired = store
+                .record_policy_match(PolicyMatchInput {
+                    source_commitment: "finalized".to_owned(),
+                    slot: update.slot,
+                    ..legacy_policy
+                })
+                .await?;
+            if repaired.policy.source_commitment != "finalized" {
+                anyhow::bail!("legacy unknown policy commitment was not repaired");
+            }
+            for _ in 0..300 {
+                if args.pending_floor_ready.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            if !args.pending_floor_ready.exists() {
+                anyhow::bail!("web did not persist the floor on the pending target");
+            }
+        }
         let outcome = process_next_earn_reconciliation_job_with_policy_monitor(
             &store,
             consumer_name,
