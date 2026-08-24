@@ -272,6 +272,7 @@ async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Resu
                     .helius_api_key
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("HELIUS_API_KEY is required"))?,
+                rpc_url: args.rpc_url.clone(),
                 from_slot: policy_from_slot,
                 config,
             }

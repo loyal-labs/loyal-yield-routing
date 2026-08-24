@@ -48,14 +48,8 @@ pub fn next_action(
         RouteGoal::Idle | RouteGoal::Claimed | RouteGoal::ManualRecovery => {
             PlannerDecision::Complete
         }
-        RouteGoal::Withdraw => down(route, observed, active, true, topology),
-        RouteGoal::Deploy | RouteGoal::Move => {
-            let target = route.target_strategy_key.expect("validated route target");
-            if active.is_some_and(|current| current != target) {
-                return down(route, observed, active, false, topology);
-            }
-            up(observed, target, topology)
-        }
+        RouteGoal::Withdraw => down(observed, active),
+        RouteGoal::Deploy => up(observed, StrategyKey::SyrupUsdcUsdc, topology),
     }
 }
 
@@ -125,13 +119,7 @@ fn up(observed: &ObservedRoute, target: StrategyKey, topology: EarnMaxTopology) 
     PlannerDecision::Complete
 }
 
-fn down(
-    route: &MultiplyRouteState,
-    observed: &ObservedRoute,
-    active: Option<StrategyKey>,
-    for_withdrawal: bool,
-    topology: EarnMaxTopology,
-) -> PlannerDecision {
+fn down(observed: &ObservedRoute, active: Option<StrategyKey>) -> PlannerDecision {
     if let Some(key) = active {
         let position = observed.position(key);
         let debt_custody = observed.debt_custody(key).amount_raw;
@@ -171,20 +159,12 @@ fn down(
     if observed.collateral_custody.amount_raw > 0 {
         return execute(
             MultiplyAction::SwapCollateralToClaim,
-            route.target_strategy_key,
+            Some(StrategyKey::SyrupUsdcUsdc),
             PlannedAmount::Exact(observed.collateral_custody.amount_raw),
         );
     }
     // Claim is a root-signed user transaction prepared by the app. The
     // delegate stops once the requested amount is liquid in claim custody.
-    let _ = for_withdrawal;
-    if route.goal == RouteGoal::Move {
-        return up(
-            observed,
-            route.target_strategy_key.expect("validated move target"),
-            topology,
-        );
-    }
     PlannerDecision::Complete
 }
 

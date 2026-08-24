@@ -16,7 +16,6 @@ pub const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub const TOKEN_2022: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 pub const SYRUP_MINT: &str = "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj";
 pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-pub const PYUSD_MINT: &str = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
 
 const MULTIPLY_OBLIGATION_TAG: u8 = 1;
 const MULTIPLY_OBLIGATION_ID: u8 = 0;
@@ -89,15 +88,12 @@ pub struct EarnMaxTopology {
     pub vault: Pubkey,
     pub claim_custody: Pubkey,
     pub collateral_custody: Pubkey,
-    pub strategies: [StrategyConfig; 2],
+    pub strategy: StrategyConfig,
 }
 
 impl EarnMaxTopology {
-    pub fn strategy(self, key: StrategyKey) -> StrategyConfig {
-        match key {
-            StrategyKey::SyrupUsdcUsdc => self.strategies[0],
-            StrategyKey::SyrupUsdcPyusd => self.strategies[1],
-        }
+    pub fn strategy(self, _key: StrategyKey) -> StrategyConfig {
+        self.strategy
     }
 }
 
@@ -170,28 +166,6 @@ const SYRUP_USDC_USDC_TEMPLATE: StrategyTemplate = StrategyTemplate {
     },
 };
 
-const SYRUP_USDC_PYUSD_TEMPLATE: StrategyTemplate = StrategyTemplate {
-    key: StrategyKey::SyrupUsdcPyusd,
-    debt_reserve: "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS",
-    debt_mint: PYUSD_MINT,
-    debt_token_program: TOKEN_2022,
-    debt_liquidity_supply: "GUENeLN1ufX4K5622DbyYoQFhaWxMKoCFycvLSEYsykN",
-    debt_fee_vault: "AwnzukUiajn7b3T9hXcwy19RLPZcHmLANUeqZnzXT6dU",
-    debt_farm_state: Some("9AUA7XZ1rynUsZcmVCgj8UFdQuDozFSMpaNGBZAtiPWj"),
-    target_ltv_bps: 8_000,
-    policy_seeds: StrategyPolicySeeds {
-        deposit: 40,
-        borrow: 38,
-        claim_to_collateral: 37,
-        debt_to_collateral: 39,
-        collateral_to_debt: 45,
-        collateral_to_claim: 46,
-        repay: 41,
-        withdraw: 42,
-    },
-    ..SYRUP_USDC_USDC_TEMPLATE
-};
-
 pub fn derive_earn_max_topology(settings: Pubkey) -> Result<EarnMaxTopology, Box<dyn Error>> {
     derive_earn_max_topology_inner(settings, None)
 }
@@ -220,10 +194,7 @@ fn derive_earn_max_topology_inner(
         vault,
         claim_custody,
         collateral_custody,
-        strategies: [
-            derive_strategy(settings, vault, SYRUP_USDC_USDC_TEMPLATE, policy_seed_base)?,
-            derive_strategy(settings, vault, SYRUP_USDC_PYUSD_TEMPLATE, None)?,
-        ],
+        strategy: derive_strategy(settings, vault, SYRUP_USDC_USDC_TEMPLATE, policy_seed_base)?,
     })
 }
 

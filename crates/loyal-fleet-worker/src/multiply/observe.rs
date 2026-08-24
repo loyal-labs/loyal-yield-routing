@@ -37,8 +37,7 @@ pub struct ObservedRoute {
     pub slot: u64,
     pub claim: TokenBalance,
     pub collateral_custody: TokenBalance,
-    pub source_debt_custody: TokenBalance,
-    pub target_debt_custody: TokenBalance,
+    pub debt_custody: TokenBalance,
     pub strategies: Vec<StrategyObservation>,
     pub external_custody: Vec<TokenBalance>,
 }
@@ -48,14 +47,12 @@ impl ObservedRoute {
         self.strategies
             .iter()
             .find(|value| value.strategy_key == key)
-            .expect("both configured strategies are always observed")
+            .expect("the configured strategy is always observed")
     }
 
     pub fn debt_custody(&self, key: StrategyKey) -> &TokenBalance {
-        match key {
-            StrategyKey::SyrupUsdcUsdc => &self.source_debt_custody,
-            StrategyKey::SyrupUsdcPyusd => &self.target_debt_custody,
-        }
+        let _ = key;
+        &self.debt_custody
     }
 
     pub fn active_strategy_is_coherent(&self) -> bool {
@@ -82,17 +79,13 @@ pub async fn observe_confirmed_with_extra(
     topology: EarnMaxTopology,
     extra: &[(&str, &str, &str)],
 ) -> Result<ObservedRoute, Box<dyn Error>> {
-    let source_config = topology.strategy(StrategyKey::SyrupUsdcUsdc);
-    let target_config = topology.strategy(StrategyKey::SyrupUsdcPyusd);
+    let config = topology.strategy(StrategyKey::SyrupUsdcUsdc);
     let keys = vec![
         topology.claim_custody,
         topology.collateral_custody,
-        target_config.debt_custody,
-        source_config.obligation,
-        target_config.obligation,
-        Pubkey::from_str(source_config.collateral_reserve)?,
-        Pubkey::from_str(source_config.debt_reserve)?,
-        Pubkey::from_str(target_config.debt_reserve)?,
+        config.obligation,
+        Pubkey::from_str(config.collateral_reserve)?,
+        Pubkey::from_str(config.debt_reserve)?,
     ];
     let response = rpc
         .get_multiple_accounts_with_commitment(&keys, CommitmentConfig::confirmed())
@@ -104,69 +97,36 @@ pub async fn observe_confirmed_with_extra(
     };
     let usdc = classic_balance(account(0)?, USDC_MINT, topology.vault)?;
     let syrup = classic_balance(account(1)?, super::config::SYRUP_MINT, topology.vault)?;
-    // The first production strategy is syrupUSDC/USDC. Its vault does not pay
-    // rent for the unadvertised PYUSD custody until that strategy is admitted;
-    // an absent ATA is therefore the same observed balance as zero here.
-    let pyusd = response.value[2]
-        .as_ref()
-        .map(|value| token_2022_balance(value, super::config::PYUSD_MINT, topology.vault))
-        .transpose()?
-        .unwrap_or(0);
-    let collateral_reserve = decode_reserve(account(5)?, source_config)?;
-    let source_debt_reserve = decode_reserve(account(6)?, source_config)?;
-    let target_debt_reserve = decode_reserve(account(7)?, target_config)?;
+    let collateral_reserve = decode_reserve(account(3)?, config)?;
+    let debt_reserve = decode_reserve(account(4)?, config)?;
     let collateral_supply_apy_bps = reserve_apy_bps(
-        account(5)?,
+        account(3)?,
         response.context.slot,
-        Pubkey::from_str(source_config.collateral_reserve)?,
+        Pubkey::from_str(config.collateral_reserve)?,
         true,
     )?;
-    let source_debt_borrow_apy_bps = reserve_apy_bps(
-        account(6)?,
+    let debt_borrow_apy_bps = reserve_apy_bps(
+        account(4)?,
         response.context.slot,
-        Pubkey::from_str(source_config.debt_reserve)?,
+        Pubkey::from_str(config.debt_reserve)?,
         false,
     )?;
-    let target_debt_borrow_apy_bps = reserve_apy_bps(
-        account(7)?,
-        response.context.slot,
-        Pubkey::from_str(target_config.debt_reserve)?,
-        false,
-    )?;
-    let source = match response.value[3].as_ref() {
+    let strategy = match response.value[2].as_ref() {
         Some(value) => decode_obligation(
             value,
-            source_config,
+            config,
             topology.vault,
             &collateral_reserve,
-            &source_debt_reserve,
+            &debt_reserve,
             collateral_supply_apy_bps,
-            source_debt_borrow_apy_bps,
+            debt_borrow_apy_bps,
         )?,
         None => empty_obligation(
-            source_config,
+            config,
             &collateral_reserve,
-            &source_debt_reserve,
+            &debt_reserve,
             collateral_supply_apy_bps,
-            source_debt_borrow_apy_bps,
-        )?,
-    };
-    let target = match response.value[4].as_ref() {
-        Some(value) => decode_obligation(
-            value,
-            target_config,
-            topology.vault,
-            &collateral_reserve,
-            &target_debt_reserve,
-            collateral_supply_apy_bps,
-            target_debt_borrow_apy_bps,
-        )?,
-        None => empty_obligation(
-            target_config,
-            &collateral_reserve,
-            &target_debt_reserve,
-            collateral_supply_apy_bps,
-            target_debt_borrow_apy_bps,
+            debt_borrow_apy_bps,
         )?,
     };
     let mut external_custody = Vec::with_capacity(extra.len());
@@ -197,19 +157,8 @@ pub async fn observe_confirmed_with_extra(
             TOKEN,
             syrup,
         ),
-        source_debt_custody: token_balance(
-            &source_config.debt_custody.to_string(),
-            USDC_MINT,
-            TOKEN,
-            usdc,
-        ),
-        target_debt_custody: token_balance(
-            &target_config.debt_custody.to_string(),
-            super::config::PYUSD_MINT,
-            TOKEN_2022,
-            pyusd,
-        ),
-        strategies: vec![source, target],
+        debt_custody: token_balance(&config.debt_custody.to_string(), USDC_MINT, TOKEN, usdc),
+        strategies: vec![strategy],
         external_custody,
     })
 }
@@ -237,14 +186,6 @@ fn classic_balance_for_owner(
         return Err("classic custody mint or authority drifted".into());
     }
     Ok(token.amount)
-}
-
-fn token_2022_balance(
-    account: &solana_sdk::account::Account,
-    mint: &str,
-    owner: Pubkey,
-) -> Result<u64, Box<dyn Error>> {
-    token_2022_balance_for_owner(account, mint, Some(owner))
 }
 
 fn token_2022_balance_for_owner(

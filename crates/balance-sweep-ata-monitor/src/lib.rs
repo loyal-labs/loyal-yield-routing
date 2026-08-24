@@ -246,6 +246,7 @@ pub struct LaserstreamAtaUpdateSource {
 pub struct LaserstreamPolicyUpdateSource {
     pub endpoint: String,
     pub api_key: String,
+    pub rpc_url: String,
     pub from_slot: u64,
     pub config: SubscriptionConfig,
 }
@@ -700,6 +701,10 @@ async fn run_earn_max_policy_laserstream(
     policy_monitor: Arc<Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
     running: Arc<AtomicBool>,
 ) {
+    let rpc = Arc::new(RpcClient::new_with_commitment(
+        source.rpc_url.clone(),
+        CommitmentConfig::confirmed(),
+    ));
     let mut transactions = HashMap::new();
     transactions.insert(
         "earn_max_policy_transactions".to_owned(),
@@ -747,6 +752,7 @@ async fn run_earn_max_policy_laserstream(
                             if let Err(error) = process_earn_max_policy_update(
                                 update,
                                 &store,
+                                Arc::clone(&rpc),
                                 Arc::clone(&policy_monitor),
                             ).await {
                                 tracing::warn!(error = %error, attempt, "Earn MAX policy projection failed");
@@ -786,6 +792,7 @@ async fn run_earn_max_policy_laserstream(
 async fn process_earn_max_policy_update(
     update: SubscribeUpdate,
     store: &OrchestratorStore,
+    rpc: Arc<RpcClient>,
     policy_monitor: Arc<Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
 ) -> Result<()> {
     let Some(UpdateOneof::Transaction(transaction_update)) = update.update_oneof else {
@@ -811,6 +818,7 @@ async fn process_earn_max_policy_update(
                 .map_err(|error| anyhow::anyhow!(error))?;
         }
         earn_reconciliation::project_earn_max_memos(store, &transaction).await?;
+        earn_reconciliation::project_earn_max_cash_flows(store, rpc, &transaction).await?;
     }
     store
         .advance_projection_offset(

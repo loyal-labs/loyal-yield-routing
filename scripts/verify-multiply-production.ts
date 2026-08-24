@@ -5,10 +5,10 @@ import { resolve } from "node:path";
 import { neon } from "@neondatabase/serverless";
 import { Connection, PublicKey } from "@solana/web3.js";
 
-const CONTRACT_VERSION = "earn-max-v2";
+const CONTRACT_VERSION = "earn-max-v3";
 const POLICY_MANIFEST_VERSION = "earn-max-v1";
-const CONTRACT_SHA256 = "1ecb25c88473a316532012c7ee5cff727b55860cd6cd3106c281ebdfa4ba80fa";
-const PASS = "PASS_EARN_MAX_PRODUCTION_READY";
+const CONTRACT_SHA256 = "9a97a92cd5ac8ec9cb6e77c3bcd8a849e3dbaf977c20c9f53c58c2972abf33fd";
+const PASS = "PASS_EARN_MAX_SIMPLIFIED_PRODUCTION_READY";
 const FAIL = "FAIL_EARN_MAX_PRODUCTION_READY";
 const BLOCKED = "BLOCKED_EARN_MAX_PRODUCTION_READY";
 const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
@@ -32,6 +32,7 @@ const APP_API_ROOT = "apps/web/src/app/api/smart-accounts/earn-max";
 const APP_FEATURE_ROOT = "apps/web/src/features/earn-max";
 const APP_ACTIONS = "packages/loyal-actions/src/earn-max.ts";
 const APP_UI = "apps/web/src/components/wallet-workspace/facelift/earn-max-pane.tsx";
+const APP_SHELL = "apps/web/src/components/wallet-workspace/facelift/shell.tsx";
 const MULTIPLY_STORE = "crates/loyal-yield-store/src/multiply_state_store.rs";
 
 type Json = Record<string, unknown>;
@@ -216,7 +217,7 @@ function checkPerUserTopology(): Json {
   for (const required of ["EarnMaxTopology", "derive_earn_max_topology", "manifest_version"] as const) {
     requireText(config, required, "deterministic_per_user_topology_missing", CONFIG);
   }
-  for (const forbidden of ["USX", "guard", "flashBorrow", "flash_borrow"] as const) {
+  for (const forbidden of ["PYUSD", "SyrupUsdcPyusd", "USX", "guard", "flashBorrow", "flash_borrow"] as const) {
     rejectText(config, forbidden, "forbidden_strategy_or_program_survived", CONFIG);
   }
   return { path: CONFIG, sha256: sha256(config) };
@@ -242,7 +243,9 @@ function checkMinimalSchemaSource(): Json {
   );
   for (const required of [
     "0064_earn_max_partial_lifecycle.sql",
+    "0066_earn_max_single_owner_state.sql",
     "source_instruction_index",
+    "state - 'frontend' - 'targetStrategyKey'",
     "request_withdrawal",
     "cancel_withdrawal",
   ]) {
@@ -302,10 +305,18 @@ function checkLaserStreamSource(): Json {
   for (const required of [
     "parse_earn_max_intent",
     "project_earn_max_intent",
+    "project_earn_max_cash_flow",
+    "earn_max_cash_flows",
     "source_instruction_index",
     "CommitmentConfig::confirmed()",
     "memo.accounts.contains(&vault_pubkey)",
     "has_squads_execution",
+    "transaction.signers.contains(wallet)",
+    "read_confirmed_earn_max_transfer",
+    ".destination_post",
+    ".saturating_sub(transfer.destination_pre)",
+    "source_instruction_index: Some",
+    "signed_wire_sha256: None",
     '["loyal", "earn-max", "v1"]',
   ]) {
     requireText(
@@ -334,11 +345,7 @@ function checkAppSource(): Json {
   if (!existsSync(APPS_ROOT)) fail("loyal_apps_checkout_missing", { path: APPS_ROOT });
   const apiRoot = resolve(APPS_ROOT, APP_API_ROOT);
   const files = relativeFiles(apiRoot).filter((path) => path.endsWith("route.ts"));
-  const expected = [
-    "activity/route.ts",
-    "performance/route.ts",
-    "state/route.ts",
-  ];
+  const expected = ["activity/route.ts", "summary/route.ts"];
   if (JSON.stringify(files) !== JSON.stringify(expected)) {
     fail("earn_max_endpoint_inventory_drift", { expected, actual: files });
   }
@@ -366,6 +373,8 @@ function checkAppSource(): Json {
     "createEarnMaxPolicyManifest",
     "resolveEarnMaxInstallSeedBase",
     "EarnMaxViewModel",
+    "EarnMaxSummaryResponse",
+    "EarnMaxActivityResponse",
     "history_incomplete",
     "realized_apy_bps",
     "forecast_apy_bps",
@@ -379,7 +388,8 @@ function checkAppSource(): Json {
   for (const forbidden of [
     "preparation_pending", "SOLANA_TESTING_PK", "flashBorrow", "flash_borrow",
     "guard", "hook", "EARN_MAX_BALANCE_USD", "EARN_MAX_APY_LABEL",
-    "NOOP_EXECUTE_NOW", "mock no-op", "Mocked Earn MAX",
+    "NOOP_EXECUTE_NOW", "mock no-op", "Mocked Earn MAX", "Promise<unknown>",
+    "useState<unknown>", 'readJson("/api/smart-accounts/earn-max/performance")',
   ]) {
     rejectText(source, forbidden, "earn_max_application_placeholder_or_forbidden_graph", APP_FEATURE_ROOT);
   }
@@ -388,6 +398,12 @@ function checkAppSource(): Json {
     "src/features/earn-max/**/*.ts",
     "earn_max_scoped_typecheck_missing",
     "apps/web/tsconfig.earn-max.json",
+  );
+  requireText(
+    file(APPS_ROOT, APP_SHELL),
+    "const EARN_MAX_VISIBLE = false",
+    "earn_max_not_hidden_before_release",
+    APP_SHELL,
   );
   return { root: APP_API_ROOT, files, featureFiles, sha256: sha256(source) };
 }
@@ -399,24 +415,29 @@ function checkWorkerAndStoreSource(): Json {
   const store = file(ROOT, MULTIPLY_STORE);
   for (const required of [
     "bootstrap_ready_route",
-    "admit_next_confirmed_deposit",
-    "admit_next_confirmed_claim",
     "record_multiply_position_snapshot",
     "confirmed_kamino_reserve_curve_500ms",
     "forecast_apy_bps",
-    "redeploy_after_partial_claim",
   ]) {
     requireText(worker, required, "earn_max_worker_bridge_missing", "crates/loyal-fleet-worker/src/multiply/mod.rs");
   }
   for (const required of [
     "load_unbootstrapped_earn_max_policy_set",
-    "load_unadmitted_multiply_route_state",
-    "load_claimable_multiply_route_state",
-    "admit_external_multiply_operation",
     "confirmed_claim_transfer",
     "AND NOT COALESCE((",
   ]) {
     requireText(store, required, "earn_max_store_contract_missing", MULTIPLY_STORE);
+  }
+  for (const forbidden of [
+    "find_confirmed_deposit",
+    "admit_next_confirmed_deposit",
+    "admit_next_confirmed_claim",
+    "get_signatures_for_address_with_config",
+  ]) {
+    rejectText(worker, forbidden, "duplicate_worker_chain_ingestion_survived", "crates/loyal-fleet-worker/src/multiply/mod.rs");
+  }
+  for (const forbidden of ["MultiplyFrontendView", "pub frontend:", "RouteGoal::Move", "request_move"] as const) {
+    rejectText(`${state}\n${planner}`, forbidden, "unproven_or_duplicated_route_state_survived", "crates/loyal-yield-store/src/fleet_orchestration/multiply.rs");
   }
   rejectText(worker, "build_operation(.*MultiplyAction::Claim", "delegate_claim_execution_survived", "crates/loyal-fleet-worker/src/multiply/mod.rs");
   requireText(planner, "if observed.claim.amount_raw > 0", "active_position_top_up_not_deployed", "crates/loyal-fleet-worker/src/multiply/planner.rs");
@@ -520,19 +541,20 @@ async function checkLivePrerequisites(): Promise<Json> {
   const migrations = await sql`
     SELECT version, name, checksum
     FROM loyal_yield.schema_migrations
-    WHERE version IN (54, 55, 56, 64)
+    WHERE version IN (54, 55, 56, 64, 66)
     ORDER BY version
   `;
   if (
-    migrations.length !== 4 ||
+    migrations.length !== 5 ||
     String(migrations[0]?.name) !== "earn_max_per_user" ||
     String(migrations[1]?.name) !== "earn_max_repeated_lifecycle" ||
     String(migrations[2]?.name) !== "earn_max_dynamic_policy_seeds" ||
-    String(migrations[3]?.name) !== "earn_max_partial_lifecycle"
+    String(migrations[3]?.name) !== "earn_max_partial_lifecycle" ||
+    String(migrations[4]?.name) !== "earn_max_single_owner_state"
   ) {
     fail("deployed_earn_max_migration_missing", { migrations });
   }
-  const liveRoutes = ["state", "performance", "activity"];
+  const liveRoutes = ["summary", "activity"];
   const routeEvidence: Json[] = [];
   let deployedRevision: string | null = null;
   for (const route of liveRoutes) {
@@ -558,7 +580,7 @@ async function checkLivePrerequisites(): Promise<Json> {
     deployedRevision = revision;
     routeEvidence.push({ route, status: response.status, contractHeader, revision });
   }
-  for (const removed of ["history", "withdrawals", "transactions/prepare"]) {
+  for (const removed of ["state", "performance", "history", "withdrawals", "transactions/prepare"]) {
     const response = await fetch(`${APP_URL}/api/smart-accounts/earn-max/${removed}`, {
       redirect: "manual",
     });
@@ -700,7 +722,6 @@ async function checkFreshLifecycle(): Promise<Json> {
   const state = record(route?.state);
   const deposit = record(state?.deposit);
   const withdrawal = record(state?.withdrawal);
-  const frontend = record(state?.frontend);
   const depositAmount = integer(deposit?.amountRaw);
   const walletPre = integer(deposit?.walletPreAmountRaw);
   const walletPost = integer(deposit?.walletPostAmountRaw);
@@ -710,14 +731,13 @@ async function checkFreshLifecycle(): Promise<Json> {
   const readyBy = timestamp(withdrawal?.readyBy);
   const unwindAt = timestamp(withdrawal?.unwindCompletedAt);
   if (
-    state?.schemaVersion !== 7 ||
+    state?.schemaVersion !== 8 ||
     state?.engineVersion !== "earn_max_v1" ||
     integer(state?.policySeedBase) !== base ||
     state?.goal !== "claimed" ||
     state?.currentOperationId !== null ||
     state?.manualRecoveryReason !== null ||
     withdrawal?.status !== "claimed" ||
-    frontend?.status !== "claimed" ||
     depositAmount === null || depositAmount <= 0n ||
     walletPre === null || walletPost === null || walletPre - walletPost !== depositAmount ||
     vaultPre === null || vaultPost === null || vaultPost - vaultPre !== depositAmount ||
@@ -1010,9 +1030,9 @@ function checkReleaseSource(): Json {
 }
 
 const contract = checkContractIdentity();
+const laserStream = checkLaserStreamSource();
 const topology = checkPerUserTopology();
 const schema = checkMinimalSchemaSource();
-const laserStream = checkLaserStreamSource();
 const app = checkAppSource();
 const engine = checkWorkerAndStoreSource();
 const release = checkReleaseSource();
@@ -1025,7 +1045,7 @@ const deployedWorkers = await checkDeployedWorkers(
 const lifecycle = await checkFreshLifecycle();
 const replay = checkReplayEvidence(deployedWorkers, lifecycle);
 
-emit(PASS, "earn_max_production_ready", {
+emit(PASS, "earn_max_simplified_production_ready", {
   contract,
   topology,
   schema,

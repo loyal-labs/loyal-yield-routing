@@ -11,9 +11,8 @@ use chrono::{Duration as ChronoDuration, Utc};
 use executor::{execute_operation, reconcile_operation, wait_confirmed, ExecutionContext};
 use loyal_yield_store::{
     fleet_orchestration::{
-        project_frontend, DepositEvidence, ExpectedEffects, MultiplyAction, MultiplyOperation,
-        MultiplyOperationStatus, MultiplyPosition, ObligationBefore, RouteGoal, StrategyKey,
-        TokenAmountBefore, TokenDelta, MULTIPLY_ENGINE_VERSION,
+        MultiplyOperation, MultiplyOperationStatus, ObligationBefore, RouteGoal, TokenAmountBefore,
+        MULTIPLY_ENGINE_VERSION,
     },
     MultiplyPositionSnapshotInput, MultiplyRouteLease, NeonSqlClient, OrchestratorError,
 };
@@ -21,16 +20,12 @@ use planner::{next_action, PlannerDecision};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_client::GetConfirmedSignaturesForAddress2Config;
-use solana_client::rpc_config::{RpcSendTransactionConfig, RpcTransactionConfig};
+use solana_client::rpc_config::RpcSendTransactionConfig;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     pubkey::Pubkey,
     signature::{Keypair, Signature},
     transaction::VersionedTransaction,
-};
-use solana_transaction_status_client_types::{
-    option_serializer::OptionSerializer, UiTransactionEncoding, UiTransactionTokenBalance,
 };
 use std::{error::Error, str::FromStr, time::Duration};
 use tokio::sync::watch;
@@ -42,16 +37,6 @@ pub struct TickResult {
     pub condition: String,
     pub operation_id: Option<String>,
     pub signature: Option<String>,
-}
-
-struct ConfirmedTokenTransfer {
-    signature: Signature,
-    transaction: VersionedTransaction,
-    slot: u64,
-    source_pre: u64,
-    source_post: u64,
-    destination_pre: u64,
-    destination_post: u64,
 }
 
 pub struct WorkerRuntime {
@@ -101,624 +86,6 @@ impl WorkerRuntime {
         } else {
             Ok(None)
         }
-    }
-
-    pub async fn admit_next_confirmed_deposit(&self) -> Result<Option<TickResult>, Box<dyn Error>> {
-        let Some(route) = self.store.load_unadmitted_multiply_route_state().await? else {
-            return Ok(None);
-        };
-        let topology = config::topology_for_route(&route.state)?;
-        let Some((signature, wallet_account)) = self
-            .find_confirmed_deposit(topology.claim_custody, route.state.observed_slot)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let result = self
-            .admit_confirmed_deposit(
-                &route.route_key,
-                format!("chain:{signature}"),
-                signature,
-                wallet_account,
-                StrategyKey::SyrupUsdcUsdc,
-            )
-            .await?;
-        Ok(Some(result))
-    }
-
-    async fn find_confirmed_deposit(
-        &self,
-        vault_account: Pubkey,
-        minimum_slot: u64,
-    ) -> Result<Option<(Signature, Pubkey)>, Box<dyn Error>> {
-        let signatures = self
-            .rpc
-            .get_signatures_for_address_with_config(
-                &vault_account,
-                GetConfirmedSignaturesForAddress2Config {
-                    before: None,
-                    until: None,
-                    limit: Some(32),
-                    commitment: Some(CommitmentConfig::confirmed()),
-                },
-            )
-            .await?;
-        for status in signatures {
-            if status.slot <= minimum_slot || status.err.is_some() {
-                continue;
-            }
-            let signature = Signature::from_str(&status.signature)?;
-            let transaction = self
-                .rpc
-                .get_transaction_with_config(
-                    &signature,
-                    RpcTransactionConfig {
-                        encoding: Some(UiTransactionEncoding::Base64),
-                        commitment: Some(CommitmentConfig::confirmed()),
-                        max_supported_transaction_version: Some(0),
-                    },
-                )
-                .await?;
-            let decoded = transaction
-                .transaction
-                .transaction
-                .decode()
-                .ok_or("deposit transaction bytes did not decode")?;
-            let Some(meta) = transaction.transaction.meta.as_ref() else {
-                continue;
-            };
-            if meta.err.is_some() {
-                continue;
-            }
-            let keys = transaction_account_keys(&decoded, meta)?;
-            let vault_index = account_index(&keys, vault_account)?;
-            let Ok(vault_pre) =
-                token_amount(&meta.pre_token_balances, vault_index, config::USDC_MINT)
-            else {
-                continue;
-            };
-            let Ok(vault_post) =
-                token_amount(&meta.post_token_balances, vault_index, config::USDC_MINT)
-            else {
-                continue;
-            };
-            let Some(amount) = vault_post
-                .checked_sub(vault_pre)
-                .filter(|amount| *amount > 0)
-            else {
-                continue;
-            };
-            let pre_balances = match &meta.pre_token_balances {
-                OptionSerializer::Some(values) => values,
-                OptionSerializer::None | OptionSerializer::Skip => continue,
-            };
-            for pre in pre_balances {
-                if pre.account_index == vault_index || pre.mint != config::USDC_MINT {
-                    continue;
-                }
-                let Ok(post) = token_amount(
-                    &meta.post_token_balances,
-                    pre.account_index,
-                    config::USDC_MINT,
-                ) else {
-                    continue;
-                };
-                let before = pre.ui_token_amount.amount.parse::<u64>()?;
-                if before.checked_sub(post) == Some(amount) {
-                    let source = *keys
-                        .get(usize::from(pre.account_index))
-                        .ok_or("deposit source account index is outside the transaction")?;
-                    return Ok(Some((signature, source)));
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    pub async fn admit_next_confirmed_claim(&self) -> Result<Option<TickResult>, Box<dyn Error>> {
-        let Some(route) = self.store.load_claimable_multiply_route_state().await? else {
-            return Ok(None);
-        };
-        let topology = config::topology_for_route(&route.state)?;
-        let withdrawal = route
-            .state
-            .withdrawal
-            .as_ref()
-            .ok_or("claimable route omitted withdrawal")?;
-        let destination = Pubkey::from_str(&withdrawal.destination_account)?;
-        let signatures = self
-            .rpc
-            .get_signatures_for_address_with_config(
-                &topology.claim_custody,
-                GetConfirmedSignaturesForAddress2Config {
-                    before: None,
-                    until: None,
-                    limit: Some(32),
-                    commitment: Some(CommitmentConfig::confirmed()),
-                },
-            )
-            .await?;
-        let mut transfer = None;
-        for status in signatures {
-            if status.slot < route.state.observed_slot || status.err.is_some() {
-                continue;
-            }
-            let signature = Signature::from_str(&status.signature)?;
-            if let Some(candidate) = self
-                .confirmed_token_transfer(
-                    signature,
-                    topology.claim_custody,
-                    destination,
-                    config::USDC_MINT,
-                )
-                .await?
-            {
-                if candidate.source_pre.saturating_sub(candidate.source_post)
-                    == withdrawal.amount_raw.min(candidate.source_pre)
-                {
-                    transfer = Some(candidate);
-                    break;
-                }
-            }
-        }
-        let Some(transfer) = transfer else {
-            return Ok(None);
-        };
-        let mut lease = self
-            .store
-            .lease_multiply_route_state(
-                &route.route_key,
-                &self.worker_id,
-                Utc::now() + ChronoDuration::seconds(30),
-            )
-            .await?
-            .ok_or("claimable route is already leased")?;
-        let stored = self
-            .store
-            .load_multiply_route_state(&route.route_key)
-            .await?
-            .ok_or("claimable route disappeared")?;
-        let mut next = stored.state;
-        let withdrawal = next
-            .withdrawal
-            .as_mut()
-            .ok_or("claimable route omitted withdrawal")?;
-        if withdrawal.status != loyal_yield_store::fleet_orchestration::WithdrawalStatus::Claimable
-            || withdrawal.amount_raw.min(transfer.source_pre)
-                != transfer.source_pre.saturating_sub(transfer.source_post)
-        {
-            let _ = self.store.release_multiply_route_lease(&lease).await;
-            return Err("claimable route changed before claim admission".into());
-        }
-        withdrawal.status = loyal_yield_store::fleet_orchestration::WithdrawalStatus::Claimed;
-        withdrawal.claim_signature = Some(transfer.signature.to_string());
-        next.generation += 1;
-        let redeploy_after_partial_claim = transfer.source_post > 0;
-        next.goal = if redeploy_after_partial_claim {
-            RouteGoal::Deploy
-        } else {
-            RouteGoal::Claimed
-        };
-        next.position = MultiplyPosition::Idle {
-            claim: loyal_yield_store::fleet_orchestration::TokenBalance {
-                account: topology.claim_custody.to_string(),
-                mint: config::USDC_MINT.to_owned(),
-                token_program: config::TOKEN.to_owned(),
-                amount_raw: transfer.source_post,
-            },
-        };
-        next.observed_slot = transfer.slot;
-        next.observed_at = Utc::now();
-        next.frontend = project_frontend(&next);
-        let amount = transfer.source_pre - transfer.source_post;
-        let amount_delta = i64::try_from(amount).map_err(|_| "claim amount exceeds i64")?;
-        let wire = bincode::serialize(&transfer.transaction)?;
-        let message = bincode::serialize(&transfer.transaction.message)?;
-        let evidence = serde_json::json!({
-            "signature": transfer.signature.to_string(),
-            "slot": transfer.slot,
-            "sourcePre": transfer.source_pre,
-            "sourcePost": transfer.source_post,
-            "destinationPre": transfer.destination_pre,
-            "destinationPost": transfer.destination_post,
-        });
-        let operation = MultiplyOperation {
-            operation_id: format!("claim-{}", &hash_bytes(transfer.signature.as_ref())[..32]),
-            route_key: next.route_key.clone(),
-            cycle: next.cycle,
-            engine_version: MULTIPLY_ENGINE_VERSION.to_owned(),
-            action: MultiplyAction::Claim,
-            strategy_key: None,
-            status: MultiplyOperationStatus::Reconciled,
-            idempotency_key: format!("{MULTIPLY_ENGINE_VERSION}:claim:{}", transfer.signature),
-            expected_effects: ExpectedEffects {
-                token_amounts_before: vec![
-                    TokenAmountBefore {
-                        account: topology.claim_custody.to_string(),
-                        mint: config::USDC_MINT.to_owned(),
-                        amount_raw: transfer.source_pre,
-                    },
-                    TokenAmountBefore {
-                        account: destination.to_string(),
-                        mint: config::USDC_MINT.to_owned(),
-                        amount_raw: transfer.destination_pre,
-                    },
-                ],
-                token_deltas: vec![
-                    TokenDelta {
-                        account: topology.claim_custody.to_string(),
-                        mint: config::USDC_MINT.to_owned(),
-                        raw_delta: -amount_delta,
-                    },
-                    TokenDelta {
-                        account: destination.to_string(),
-                        mint: config::USDC_MINT.to_owned(),
-                        raw_delta: amount_delta,
-                    },
-                ],
-                obligation_before: None,
-                obligation_delta: None,
-            },
-            policy_account: None,
-            policy_data_sha256: None,
-            message_sha256: Some(hash_bytes(&message)),
-            signed_wire: None,
-            signed_wire_sha256: Some(hash_bytes(&wire)),
-            transaction_signature: Some(transfer.signature.to_string()),
-            source_instruction_index: None,
-            recent_blockhash: Some(transfer.transaction.message.recent_blockhash().to_string()),
-            last_valid_block_height: None,
-            broadcast_intent_at: None,
-            confirmed_slot: Some(transfer.slot),
-            reconciliation_sha256: Some(hash_bytes(&serde_json::to_vec(&evidence)?)),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-        if !self
-            .store
-            .admit_external_multiply_operation(&mut lease, &next, &operation)
-            .await?
-        {
-            return Err(
-                "claim transaction was already admitted or its route lease was lost".into(),
-            );
-        }
-        if !self.store.release_multiply_route_lease(&lease).await? {
-            return Err("claim admission lost its lease before release".into());
-        }
-        Ok(Some(TickResult {
-            route_key: Some(next.route_key),
-            condition: "confirmed_claim_admitted".to_owned(),
-            operation_id: Some(operation.operation_id),
-            signature: operation.transaction_signature,
-        }))
-    }
-
-    async fn confirmed_token_transfer(
-        &self,
-        signature: Signature,
-        source: Pubkey,
-        destination: Pubkey,
-        mint: &str,
-    ) -> Result<Option<ConfirmedTokenTransfer>, Box<dyn Error>> {
-        let transaction = self
-            .rpc
-            .get_transaction_with_config(
-                &signature,
-                RpcTransactionConfig {
-                    encoding: Some(UiTransactionEncoding::Base64),
-                    commitment: Some(CommitmentConfig::confirmed()),
-                    max_supported_transaction_version: Some(0),
-                },
-            )
-            .await?;
-        let decoded = transaction
-            .transaction
-            .transaction
-            .decode()
-            .ok_or("claim transaction bytes did not decode")?;
-        let Some(meta) = transaction.transaction.meta.as_ref() else {
-            return Ok(None);
-        };
-        if meta.err.is_some() {
-            return Ok(None);
-        }
-        let keys = transaction_account_keys(&decoded, meta)?;
-        let Ok(source_index) = account_index(&keys, source) else {
-            return Ok(None);
-        };
-        let Ok(destination_index) = account_index(&keys, destination) else {
-            return Ok(None);
-        };
-        let source_pre = token_amount(&meta.pre_token_balances, source_index, mint)?;
-        let source_post = token_amount(&meta.post_token_balances, source_index, mint)?;
-        let destination_pre =
-            token_amount(&meta.pre_token_balances, destination_index, mint).unwrap_or(0);
-        let destination_post = token_amount(&meta.post_token_balances, destination_index, mint)?;
-        let source_delta = source_pre.saturating_sub(source_post);
-        if source_delta == 0 || destination_post.saturating_sub(destination_pre) != source_delta {
-            return Ok(None);
-        }
-        Ok(Some(ConfirmedTokenTransfer {
-            signature,
-            transaction: decoded,
-            slot: transaction.slot,
-            source_pre,
-            source_post,
-            destination_pre,
-            destination_post,
-        }))
-    }
-
-    pub async fn admit_confirmed_deposit(
-        &self,
-        route_key: &str,
-        request_id: String,
-        signature: Signature,
-        wallet_account: Pubkey,
-        target: StrategyKey,
-    ) -> Result<TickResult, Box<dyn Error>> {
-        let route = self
-            .store
-            .load_multiply_route_state(route_key)
-            .await?
-            .ok_or("route not found")?;
-        let topology = config::topology_for_route(&route.state)?;
-        let transaction = self
-            .rpc
-            .get_transaction_with_config(
-                &signature,
-                RpcTransactionConfig {
-                    encoding: Some(UiTransactionEncoding::Base64),
-                    commitment: Some(CommitmentConfig::confirmed()),
-                    max_supported_transaction_version: Some(0),
-                },
-            )
-            .await?;
-        let decoded = transaction
-            .transaction
-            .transaction
-            .decode()
-            .ok_or("deposit transaction bytes did not decode")?;
-        if decoded.signatures.first() != Some(&signature) {
-            return Err("deposit transaction signature drifted".into());
-        }
-        let meta = transaction
-            .transaction
-            .meta
-            .as_ref()
-            .ok_or("deposit transaction omitted metadata")?;
-        if let Some(error) = &meta.err {
-            return Err(format!("deposit transaction failed: {error:?}").into());
-        }
-        let keys = transaction_account_keys(&decoded, meta)?;
-        let wallet_index = account_index(&keys, wallet_account)?;
-        let vault_index = account_index(&keys, topology.claim_custody)?;
-        let wallet_pre = token_amount(&meta.pre_token_balances, wallet_index, config::USDC_MINT)?;
-        let wallet_post = token_amount(&meta.post_token_balances, wallet_index, config::USDC_MINT)?;
-        let vault_pre = token_amount(&meta.pre_token_balances, vault_index, config::USDC_MINT)?;
-        let vault_post = token_amount(&meta.post_token_balances, vault_index, config::USDC_MINT)?;
-        let amount = wallet_pre
-            .checked_sub(wallet_post)
-            .ok_or("deposit wallet did not debit")?;
-        if amount == 0 || vault_post.checked_sub(vault_pre) != Some(amount) {
-            return Err("deposit did not produce equal wallet and vault deltas".into());
-        }
-        let mut lease = self
-            .store
-            .lease_multiply_route_state(
-                route_key,
-                &self.worker_id,
-                Utc::now() + ChronoDuration::seconds(30),
-            )
-            .await?
-            .ok_or("route is already leased")?;
-        let stored = self
-            .store
-            .load_multiply_route_state(route_key)
-            .await?
-            .ok_or("route not found")?;
-        let now = Utc::now();
-        let mut state = stored.state;
-        if matches!(state.position, MultiplyPosition::Idle { .. }) {
-            state.position = MultiplyPosition::Idle {
-                claim: loyal_yield_store::fleet_orchestration::TokenBalance {
-                    account: topology.claim_custody.to_string(),
-                    mint: config::USDC_MINT.to_owned(),
-                    token_program: config::TOKEN.to_owned(),
-                    amount_raw: vault_post,
-                },
-            };
-        }
-        state.observed_slot = transaction.slot;
-        state.observed_at = now;
-        let evidence = DepositEvidence {
-            request_id,
-            transaction_signature: signature.to_string(),
-            wallet_account: wallet_account.to_string(),
-            wallet_pre_amount_raw: wallet_pre,
-            wallet_post_amount_raw: wallet_post,
-            vault_pre_amount_raw: vault_pre,
-            vault_post_amount_raw: vault_post,
-            amount_raw: amount,
-            observed_slot: transaction.slot,
-            observed_at: now,
-        };
-        state = state.admit_deposit(evidence.clone(), target)?;
-        let wire = bincode::serialize(&decoded)?;
-        let message = bincode::serialize(&decoded.message)?;
-        let reconciliation_sha256 = hash_bytes(&serde_json::to_vec(&evidence)?);
-        let amount_delta = i64::try_from(amount).map_err(|_| "deposit amount exceeds i64")?;
-        let operation = MultiplyOperation {
-            operation_id: format!("deposit-{}", &hash_bytes(signature.as_ref())[..32]),
-            route_key: route_key.to_owned(),
-            cycle: state.cycle,
-            engine_version: MULTIPLY_ENGINE_VERSION.to_owned(),
-            action: MultiplyAction::DepositClaimAsset,
-            strategy_key: Some(target),
-            status: MultiplyOperationStatus::Reconciled,
-            idempotency_key: format!("{MULTIPLY_ENGINE_VERSION}:deposit:{signature}"),
-            expected_effects: ExpectedEffects {
-                token_amounts_before: vec![
-                    TokenAmountBefore {
-                        account: wallet_account.to_string(),
-                        mint: config::USDC_MINT.to_owned(),
-                        amount_raw: wallet_pre,
-                    },
-                    TokenAmountBefore {
-                        account: topology.claim_custody.to_string(),
-                        mint: config::USDC_MINT.to_owned(),
-                        amount_raw: vault_pre,
-                    },
-                ],
-                token_deltas: vec![
-                    TokenDelta {
-                        account: wallet_account.to_string(),
-                        mint: config::USDC_MINT.to_owned(),
-                        raw_delta: -amount_delta,
-                    },
-                    TokenDelta {
-                        account: topology.claim_custody.to_string(),
-                        mint: config::USDC_MINT.to_owned(),
-                        raw_delta: amount_delta,
-                    },
-                ],
-                obligation_before: None,
-                obligation_delta: None,
-            },
-            policy_account: None,
-            policy_data_sha256: None,
-            message_sha256: Some(hash_bytes(&message)),
-            signed_wire: None,
-            signed_wire_sha256: Some(hash_bytes(&wire)),
-            transaction_signature: Some(signature.to_string()),
-            source_instruction_index: None,
-            recent_blockhash: Some(decoded.message.recent_blockhash().to_string()),
-            last_valid_block_height: None,
-            broadcast_intent_at: None,
-            confirmed_slot: Some(transaction.slot),
-            reconciliation_sha256: Some(reconciliation_sha256),
-            created_at: now,
-            updated_at: now,
-        };
-        if !self
-            .store
-            .admit_external_multiply_operation(&mut lease, &state, &operation)
-            .await?
-        {
-            return Err(
-                "deposit transaction was already admitted or its route lease was lost".into(),
-            );
-        }
-        if !self.store.release_multiply_route_lease(&lease).await? {
-            return Err("deposit admission lost its lease before release".into());
-        }
-        Ok(TickResult {
-            route_key: Some(route_key.to_owned()),
-            condition: "confirmed_deposit_admitted".to_owned(),
-            operation_id: None,
-            signature: Some(signature.to_string()),
-        })
-    }
-
-    pub async fn request_withdrawal(
-        &self,
-        route_key: &str,
-        request_id: String,
-        destination_account: String,
-        amount_raw: u64,
-    ) -> Result<TickResult, Box<dyn Error>> {
-        let mut lease = self
-            .store
-            .lease_multiply_route_state(
-                route_key,
-                &self.worker_id,
-                Utc::now() + ChronoDuration::seconds(30),
-            )
-            .await?
-            .ok_or("route is already leased")?;
-        let stored = self
-            .store
-            .load_multiply_route_state(route_key)
-            .await?
-            .ok_or("route not found")?;
-        if stored
-            .state
-            .withdrawal_matches(&request_id, &destination_account, amount_raw)
-        {
-            if !self.store.release_multiply_route_lease(&lease).await? {
-                return Err("idempotent withdrawal request lost its lease before release".into());
-            }
-            return Ok(TickResult {
-                route_key: Some(route_key.to_owned()),
-                condition: "withdrawal_already_requested".to_owned(),
-                operation_id: stored.state.current_operation_id,
-                signature: stored
-                    .state
-                    .withdrawal
-                    .and_then(|withdrawal| withdrawal.claim_signature),
-            });
-        }
-        let state = stored.state.request_withdrawal(
-            request_id,
-            destination_account,
-            amount_raw,
-            Utc::now(),
-        )?;
-        if !self
-            .store
-            .save_multiply_route_state(&mut lease, &state)
-            .await?
-        {
-            return Err("withdrawal request CAS lost its lease".into());
-        }
-        if !self.store.release_multiply_route_lease(&lease).await? {
-            return Err("withdrawal request lost its lease before release".into());
-        }
-        Ok(TickResult {
-            route_key: Some(route_key.to_owned()),
-            condition: "withdrawal_requested".to_owned(),
-            operation_id: None,
-            signature: None,
-        })
-    }
-
-    pub async fn request_move(
-        &self,
-        route_key: &str,
-        target: StrategyKey,
-    ) -> Result<TickResult, Box<dyn Error>> {
-        let mut lease = self
-            .store
-            .lease_multiply_route_state(
-                route_key,
-                &self.worker_id,
-                Utc::now() + ChronoDuration::seconds(30),
-            )
-            .await?
-            .ok_or("route is already leased")?;
-        let stored = self
-            .store
-            .load_multiply_route_state(route_key)
-            .await?
-            .ok_or("route not found")?;
-        let state = stored.state.request_move(target)?;
-        if !self
-            .store
-            .save_multiply_route_state(&mut lease, &state)
-            .await?
-        {
-            return Err("move request CAS lost its lease".into());
-        }
-        if !self.store.release_multiply_route_lease(&lease).await? {
-            return Err("move request lost its lease before release".into());
-        }
-        Ok(TickResult {
-            route_key: Some(route_key.to_owned()),
-            condition: "move_requested".to_owned(),
-            operation_id: None,
-            signature: None,
-        })
     }
 
     pub async fn tick(&self, route_key: Option<&str>) -> Result<TickResult, Box<dyn Error>> {
@@ -825,14 +192,12 @@ impl WorkerRuntime {
                             loyal_yield_store::fleet_orchestration::WithdrawalStatus::Claimable;
                         withdrawal.unwind_completed_at = Some(Utc::now());
                     }
-                    next.frontend = project_frontend(&next);
                     if !self.store.save_multiply_route_state(lease, &next).await? {
                         return Err("claimable transition CAS lost its lease".into());
                     }
-                } else if matches!(next.goal, RouteGoal::Deploy | RouteGoal::Move) {
+                } else if next.goal == RouteGoal::Deploy {
                     next.generation += 1;
                     next.goal = RouteGoal::Idle;
-                    next.frontend = project_frontend(&next);
                     if !self.store.save_multiply_route_state(lease, &next).await? {
                         return Err("route completion CAS lost its lease".into());
                     }
@@ -896,7 +261,6 @@ impl WorkerRuntime {
                 route.current_operation_id = Some(operation_id.clone());
                 route.observed_slot = observed.slot;
                 route.observed_at = now;
-                route.frontend = project_frontend(&route);
                 if !self
                     .store
                     .prepare_multiply_operation(lease, &route, &operation)
@@ -947,7 +311,6 @@ impl WorkerRuntime {
                 let mut next = route.clone();
                 next.generation += 1;
                 next.current_operation_id = None;
-                next.frontend = project_frontend(&next);
                 if !self
                     .store
                     .cancel_prepared_multiply_operation(lease, &operation.operation_id, &next)
@@ -1089,7 +452,6 @@ impl WorkerRuntime {
                     let mut next = route.clone();
                     next.generation += 1;
                     next.current_operation_id = None;
-                    next.frontend = project_frontend(&next);
                     if !self
                         .store
                         .expire_multiply_operation(lease, &operation.operation_id, &next)
@@ -1147,7 +509,6 @@ impl WorkerRuntime {
         next.goal = RouteGoal::ManualRecovery;
         next.current_operation_id = None;
         next.manual_recovery_reason = Some(reason);
-        next.frontend = project_frontend(&next);
         if !self
             .store
             .mark_multiply_manual_recovery(lease, &operation.operation_id, &next)
@@ -1179,22 +540,6 @@ pub async fn run(runtime: &WorkerRuntime, route_key: Option<&str>) -> Result<(),
                 Err(error) => eprintln!(
                     "{}",
                     serde_json::json!({"condition":"earn_max_route_bootstrap_failed","error":safe_error(error.as_ref())})
-                ),
-            }
-            match runtime.admit_next_confirmed_deposit().await {
-                Ok(Some(result)) => println!("{}", serde_json::to_string(&result)?),
-                Ok(None) => {}
-                Err(error) => eprintln!(
-                    "{}",
-                    serde_json::json!({"condition":"earn_max_deposit_observation_failed","error":safe_error(error.as_ref())})
-                ),
-            }
-            match runtime.admit_next_confirmed_claim().await {
-                Ok(Some(result)) => println!("{}", serde_json::to_string(&result)?),
-                Ok(None) => {}
-                Err(error) => eprintln!(
-                    "{}",
-                    serde_json::json!({"condition":"earn_max_claim_observation_failed","error":safe_error(error.as_ref())})
                 ),
             }
         }
@@ -1254,10 +599,6 @@ fn operation_id(route_key: &str, cycle: u64, generation: u64, action: &str) -> S
     hash.update(generation.to_le_bytes());
     hash.update(action);
     format!("mul-{}", &format!("{:x}", hash.finalize())[..32])
-}
-
-fn hash_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn snapshot_input(
@@ -1382,8 +723,7 @@ fn bind_before(
             let balance = [
                 &observed.claim,
                 &observed.collateral_custody,
-                &observed.source_debt_custody,
-                &observed.target_debt_custody,
+                &observed.debt_custody,
             ]
             .into_iter()
             .chain(observed.external_custody.iter())
@@ -1455,57 +795,6 @@ fn tick_result(
         operation_id: Some(operation.operation_id.clone()),
         signature: operation.transaction_signature.clone(),
     }
-}
-
-fn transaction_account_keys(
-    transaction: &VersionedTransaction,
-    meta: &solana_transaction_status_client_types::UiTransactionStatusMeta,
-) -> Result<Vec<Pubkey>, Box<dyn Error>> {
-    let mut keys = transaction.message.static_account_keys().to_vec();
-    match &meta.loaded_addresses {
-        OptionSerializer::Some(loaded) => {
-            for key in loaded.writable.iter().chain(&loaded.readonly) {
-                keys.push(Pubkey::from_str(key)?);
-            }
-        }
-        OptionSerializer::None | OptionSerializer::Skip => {
-            if matches!(
-                transaction.message,
-                solana_sdk::message::VersionedMessage::V0(_)
-            ) {
-                return Err("versioned deposit transaction omitted loaded addresses".into());
-            }
-        }
-    }
-    Ok(keys)
-}
-
-fn account_index(keys: &[Pubkey], expected: Pubkey) -> Result<u8, Box<dyn Error>> {
-    keys.iter()
-        .position(|key| key == &expected)
-        .ok_or_else(|| "expected token account is absent from the deposit transaction".into())
-        .and_then(|value| u8::try_from(value).map_err(Into::into))
-}
-
-fn token_amount(
-    balances: &OptionSerializer<Vec<UiTransactionTokenBalance>>,
-    account_index: u8,
-    mint: &str,
-) -> Result<u64, Box<dyn Error>> {
-    let balances = match balances {
-        OptionSerializer::Some(values) => values,
-        OptionSerializer::None | OptionSerializer::Skip => {
-            return Err("deposit transaction omitted token balances".into())
-        }
-    };
-    let mut matches = balances
-        .iter()
-        .filter(|value| value.account_index == account_index && value.mint == mint);
-    let value = matches.next().ok_or("deposit token balance is absent")?;
-    if matches.next().is_some() || value.ui_token_amount.decimals != 6 {
-        return Err("deposit token balance is ambiguous or has the wrong decimals".into());
-    }
-    Ok(value.ui_token_amount.amount.parse()?)
 }
 
 fn safe_error(error: &dyn Error) -> String {

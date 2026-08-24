@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const MULTIPLY_STATE_SCHEMA_VERSION: u16 = 7;
+pub const MULTIPLY_STATE_SCHEMA_VERSION: u16 = 8;
 pub const MULTIPLY_ENGINE_VERSION: &str = "earn_max_v1";
 pub const MULTIPLY_DEFAULT_LEASE_SECONDS: i64 = 30;
 
@@ -16,14 +16,12 @@ pub const MULTIPLY_DEFAULT_LEASE_SECONDS: i64 = 30;
 #[serde(rename_all = "snake_case")]
 pub enum StrategyKey {
     SyrupUsdcUsdc,
-    SyrupUsdcPyusd,
 }
 
 impl StrategyKey {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SyrupUsdcUsdc => "syrup_usdc_usdc",
-            Self::SyrupUsdcPyusd => "syrup_usdc_pyusd",
         }
     }
 }
@@ -33,7 +31,6 @@ impl StrategyKey {
 pub enum RouteGoal {
     Idle,
     Deploy,
-    Move,
     Withdraw,
     Claimed,
     ManualRecovery,
@@ -131,19 +128,6 @@ pub struct Withdrawal {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct MultiplyFrontendView {
-    pub generation: u64,
-    pub status: String,
-    pub strategy_key: Option<StrategyKey>,
-    pub claim_amount_raw: u64,
-    pub collateral_amount_raw: u64,
-    pub debt_amount_raw: u64,
-    pub withdrawal_status: Option<WithdrawalStatus>,
-    pub observed_slot: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MultiplyRouteState {
     pub schema_version: u16,
     pub engine_version: String,
@@ -155,7 +139,6 @@ pub struct MultiplyRouteState {
     pub generation: u64,
     pub cycle: u64,
     pub goal: RouteGoal,
-    pub target_strategy_key: Option<StrategyKey>,
     pub position: MultiplyPosition,
     pub deposit: Option<DepositEvidence>,
     pub withdrawal: Option<Withdrawal>,
@@ -163,7 +146,6 @@ pub struct MultiplyRouteState {
     pub manual_recovery_reason: Option<String>,
     pub observed_slot: u64,
     pub observed_at: DateTime<Utc>,
-    pub frontend: MultiplyFrontendView,
 }
 
 impl MultiplyRouteState {
@@ -177,7 +159,7 @@ impl MultiplyRouteState {
         observed_slot: u64,
         observed_at: DateTime<Utc>,
     ) -> Result<Self, MultiplyStateError> {
-        let mut state = Self {
+        let state = Self {
             schema_version: MULTIPLY_STATE_SCHEMA_VERSION,
             engine_version: MULTIPLY_ENGINE_VERSION.to_owned(),
             route_key,
@@ -188,7 +170,6 @@ impl MultiplyRouteState {
             generation: 1,
             cycle: 1,
             goal: RouteGoal::Idle,
-            target_strategy_key: None,
             position: MultiplyPosition::Idle { claim },
             deposit: None,
             withdrawal: None,
@@ -196,18 +177,7 @@ impl MultiplyRouteState {
             manual_recovery_reason: None,
             observed_slot,
             observed_at,
-            frontend: MultiplyFrontendView {
-                generation: 1,
-                status: String::new(),
-                strategy_key: None,
-                claim_amount_raw: 0,
-                collateral_amount_raw: 0,
-                debt_amount_raw: 0,
-                withdrawal_status: None,
-                observed_slot,
-            },
         };
-        state.frontend = project_frontend(&state);
         state.validate_persisted()?;
         Ok(state)
     }
@@ -252,11 +222,6 @@ impl MultiplyRouteState {
         if self.goal != RouteGoal::ManualRecovery && self.manual_recovery_reason.is_some() {
             return Err(MultiplyStateError::UnexpectedManualRecoveryReason);
         }
-        if matches!(self.goal, RouteGoal::Deploy | RouteGoal::Move)
-            && self.target_strategy_key.is_none()
-        {
-            return Err(MultiplyStateError::TargetStrategyMissing);
-        }
         if let Some(withdrawal) = &self.withdrawal {
             if withdrawal.request_id.trim().is_empty()
                 || withdrawal.destination_account.trim().is_empty()
@@ -272,9 +237,6 @@ impl MultiplyRouteState {
                 return Err(MultiplyStateError::InvalidWithdrawal);
             }
         }
-        if self.frontend != project_frontend(self) {
-            return Err(MultiplyStateError::FrontendProjectionDrift);
-        }
         Ok(())
     }
 
@@ -288,15 +250,10 @@ impl MultiplyRouteState {
         self.position = position;
         self.observed_slot = observed_slot;
         self.observed_at = observed_at;
-        self.frontend = project_frontend(&self);
         self
     }
 
-    pub fn admit_deposit(
-        mut self,
-        evidence: DepositEvidence,
-        target: StrategyKey,
-    ) -> Result<Self, MultiplyStateError> {
+    pub fn admit_deposit(mut self, evidence: DepositEvidence) -> Result<Self, MultiplyStateError> {
         if evidence.request_id.trim().is_empty()
             || evidence.transaction_signature.trim().is_empty()
             || evidence.wallet_account.trim().is_empty()
@@ -315,22 +272,9 @@ impl MultiplyRouteState {
         self.generation += 1;
         self.cycle += 1;
         self.goal = RouteGoal::Deploy;
-        self.target_strategy_key = Some(target);
         self.deposit = Some(evidence);
         self.withdrawal = None;
         self.manual_recovery_reason = None;
-        self.frontend = project_frontend(&self);
-        Ok(self)
-    }
-
-    pub fn request_move(mut self, target: StrategyKey) -> Result<Self, MultiplyStateError> {
-        if self.current_operation_id.is_some() || self.position.strategy_key() == Some(target) {
-            return Err(MultiplyStateError::InvalidGoalChange);
-        }
-        self.generation += 1;
-        self.goal = RouteGoal::Move;
-        self.target_strategy_key = Some(target);
-        self.frontend = project_frontend(&self);
         Ok(self)
     }
 
@@ -375,7 +319,6 @@ impl MultiplyRouteState {
             unwind_completed_at: None,
             claim_signature: None,
         });
-        self.frontend = project_frontend(&self);
         Ok(self)
     }
 
@@ -391,7 +334,6 @@ impl MultiplyRouteState {
         self.generation += 1;
         self.goal = RouteGoal::Idle;
         self.withdrawal = None;
-        self.frontend = project_frontend(&self);
         Ok(self)
     }
 
@@ -426,36 +368,8 @@ impl MultiplyRouteState {
         self.policy_seed_base = policy_seed_base;
         self.observed_slot = observed_slot;
         self.observed_at = observed_at;
-        self.frontend = project_frontend(&self);
         self.validate_persisted()?;
         Ok(self)
-    }
-}
-
-pub fn project_frontend(state: &MultiplyRouteState) -> MultiplyFrontendView {
-    let (claim, collateral, debt) = match &state.position {
-        MultiplyPosition::Idle { claim } => (claim.amount_raw, 0, 0),
-        MultiplyPosition::Active {
-            collateral, debt, ..
-        } => (0, collateral.amount_raw, debt.amount_raw),
-    };
-    MultiplyFrontendView {
-        generation: state.generation,
-        status: match state.goal {
-            RouteGoal::Idle => "idle",
-            RouteGoal::Deploy => "deploying",
-            RouteGoal::Move => "moving",
-            RouteGoal::Withdraw => "withdrawing",
-            RouteGoal::Claimed => "claimed",
-            RouteGoal::ManualRecovery => "manual_recovery",
-        }
-        .to_owned(),
-        strategy_key: state.position.strategy_key(),
-        claim_amount_raw: claim,
-        collateral_amount_raw: collateral,
-        debt_amount_raw: debt,
-        withdrawal_status: state.withdrawal.as_ref().map(|value| value.status),
-        observed_slot: state.observed_slot,
     }
 }
 
@@ -628,16 +542,12 @@ pub enum MultiplyStateError {
     InvalidRouteIdentity,
     #[error("invalid token balance identity")]
     InvalidTokenBalance,
-    #[error("target strategy is required for this goal")]
-    TargetStrategyMissing,
     #[error("manual recovery requires a reason")]
     ManualRecoveryReasonMissing,
     #[error("manual recovery reason is present outside manual recovery")]
     UnexpectedManualRecoveryReason,
     #[error("withdrawal violates identity, amount, time, or claim evidence")]
     InvalidWithdrawal,
-    #[error("frontend view is not the projection of the route state")]
-    FrontendProjectionDrift,
     #[error("invalid operation identity")]
     InvalidOperationIdentity,
     #[error("invalid operation expected effects")]

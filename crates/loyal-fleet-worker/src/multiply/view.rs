@@ -12,7 +12,6 @@ pub struct RouteView<'a> {
     pub cycle: u64,
     pub goal: String,
     pub current_operation_id: Option<&'a str>,
-    pub frontend: &'a loyal_yield_store::fleet_orchestration::MultiplyFrontendView,
 }
 
 pub fn route_view(state: &MultiplyRouteState) -> RouteView<'_> {
@@ -28,6 +27,5 @@ pub fn route_view(state: &MultiplyRouteState) -> RouteView<'_> {
             .and_then(|value| value.as_str().map(ToOwned::to_owned))
             .unwrap_or_else(|| "invalid".to_owned()),
         current_operation_id: state.current_operation_id.as_deref(),
-        frontend: &state.frontend,
     }
 }

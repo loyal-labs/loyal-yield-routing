@@ -624,7 +624,7 @@ impl NeonSqlClient {
         }
         let mut tx = self.pool().begin().await?;
         let inserted = sqlx::query(
-            "INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, strategy_key, status, idempotency_key, expected_effects, message_sha256, signed_wire_sha256, transaction_signature, recent_blockhash, confirmed_slot, reconciliation_sha256, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,'reconciled',$7,$8,$9,$10,$11,$12,$13,$14,$15,$15) ON CONFLICT DO NOTHING",
+            "INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, strategy_key, status, idempotency_key, expected_effects, message_sha256, signed_wire_sha256, transaction_signature, source_instruction_index, recent_blockhash, confirmed_slot, reconciliation_sha256, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,'reconciled',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16) ON CONFLICT DO NOTHING",
         )
         .bind(&operation.operation_id)
         .bind(&operation.route_key)
@@ -637,6 +637,7 @@ impl NeonSqlClient {
         .bind(&operation.message_sha256)
         .bind(&operation.signed_wire_sha256)
         .bind(&operation.transaction_signature)
+        .bind(operation.source_instruction_index.map(i32::from))
         .bind(&operation.recent_blockhash)
         .bind(operation.confirmed_slot.map(|slot| i64_from_u64(slot, "slot")).transpose()?)
         .bind(&operation.reconciliation_sha256)

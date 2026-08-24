@@ -7,8 +7,7 @@ use super::{
 use chrono::Utc;
 use loyal_yield_store::{
     fleet_orchestration::{
-        project_frontend, MultiplyOperation, MultiplyPosition, MultiplyRouteState, RouteGoal,
-        WithdrawalStatus,
+        MultiplyOperation, MultiplyPosition, MultiplyRouteState, RouteGoal, WithdrawalStatus,
     },
     MultiplyRouteLease, NeonSqlClient, OrchestratorError, SignedOperation,
 };
@@ -256,8 +255,7 @@ pub async fn reconcile_operation(
             ![
                 topology.claim_custody,
                 topology.collateral_custody,
-                topology.strategies[0].debt_custody,
-                topology.strategies[1].debt_custody,
+                topology.strategy.debt_custody,
             ]
             .iter()
             .any(|account| account.to_string() == delta.account)
@@ -317,8 +315,8 @@ pub async fn reconcile_operation(
             withdrawal.status = WithdrawalStatus::Claimed;
             withdrawal.claim_signature = operation.transaction_signature.clone();
         }
-        next.goal = if after.claim.amount_raw > 0 && next.target_strategy_key.is_some() {
-            RouteGoal::Move
+        next.goal = if after.claim.amount_raw > 0 {
+            RouteGoal::Deploy
         } else {
             RouteGoal::Claimed
         };
@@ -331,7 +329,6 @@ pub async fn reconcile_operation(
             withdrawal.unwind_completed_at = Some(Utc::now());
         }
     }
-    next.frontend = project_frontend(&next);
     let reconciliation_sha256 = hex_hash(&serde_json::to_vec(&serde_json::json!({
         "operationId": operation.operation_id,
         "signature": operation.transaction_signature,
@@ -574,16 +571,11 @@ fn verify_expected_effects(
 }
 
 fn observed_token_amount(after: &ObservedRoute, account: &str, mint: &str) -> Option<u64> {
-    [
-        &after.claim,
-        &after.collateral_custody,
-        &after.source_debt_custody,
-        &after.target_debt_custody,
-    ]
-    .into_iter()
-    .chain(after.external_custody.iter())
-    .find(|value| value.account == account && value.mint == mint)
-    .map(|value| value.amount_raw)
+    [&after.claim, &after.collateral_custody, &after.debt_custody]
+        .into_iter()
+        .chain(after.external_custody.iter())
+        .find(|value| value.account == account && value.mint == mint)
+        .map(|value| value.amount_raw)
 }
 
 async fn verify_mainnet(rpc: &RpcClient) -> Result<(), Box<dyn Error>> {

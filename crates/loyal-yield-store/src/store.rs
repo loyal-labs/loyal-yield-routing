@@ -4,7 +4,7 @@ use crate::domain::{
     MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 use crate::fleet_orchestration::{
-    project_frontend, MultiplyRouteState, RebalanceOpportunityLease, RebalanceOpportunityRecord,
+    MultiplyRouteState, RebalanceOpportunityLease, RebalanceOpportunityRecord,
     SignedRouteSubmissionInput, SignedRouteSubmissionRecord, TargetCapacityReservationInput,
     MULTIPLY_ENGINE_VERSION,
 };
@@ -63,6 +63,7 @@ const MIGRATION_0062: &str = include_str!("../migrations/0062_earn_chain_cash_fl
 const MIGRATION_0063: &str = include_str!("../migrations/0063_earn_max_external_operations.sql");
 const MIGRATION_0064: &str = include_str!("../migrations/0064_earn_max_partial_lifecycle.sql");
 const MIGRATION_0065: &str = include_str!("../migrations/0065_autodeposit_target_cluster.sql");
+const MIGRATION_0066: &str = include_str!("../migrations/0066_earn_max_single_owner_state.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -564,6 +565,12 @@ impl NeonSqlClient {
                 version: 65,
                 name: "autodeposit_target_cluster",
                 sql: MIGRATION_0065,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 66,
+                name: "earn_max_single_owner_state",
+                sql: MIGRATION_0066,
                 expected_checksum: None,
             },
         ] {
@@ -2938,7 +2945,6 @@ impl NeonSqlClient {
         };
         state.observed_slot = input.slot;
         state.observed_at = input.observed_at;
-        state.frontend = project_frontend(&state);
         state
             .validate_persisted()
             .map_err(|error| OrchestratorError::StoreInvariant(error.to_string()))?;
