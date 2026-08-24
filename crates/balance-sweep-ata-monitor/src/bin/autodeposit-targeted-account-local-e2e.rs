@@ -53,16 +53,17 @@ struct LocalState {
     wallet_usdc_ata: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SetupStage {
     ApproveTokenDelegate,
+    CloseAutodeposit,
     CreatePolicy,
     CreateRecurringDelegation,
     InitializeSubscriptionAuthority,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ChainTransaction {
     signature: String,
     slot: u64,
@@ -90,13 +91,22 @@ fn emulated_update(
     state: &LocalState,
     transaction: ChainTransaction,
 ) -> anyhow::Result<SubscribeUpdate> {
-    let (filter, account_pubkey) = match transaction.stage {
-        SetupStage::InitializeSubscriptionAuthority => (EARN_WALLETS, state.wallet_address.clone()),
-        SetupStage::CreatePolicy => (EARN_SMART_ACCOUNTS, state.settings_pda.clone()),
-        SetupStage::CreateRecurringDelegation => (EARN_WALLETS, state.wallet_address.clone()),
-        SetupStage::ApproveTokenDelegate => {
-            (EARN_AUTODEPOSIT_WALLET_ATAS, state.wallet_usdc_ata.clone())
+    let (filter, account_pubkey, lamports) = match transaction.stage {
+        SetupStage::InitializeSubscriptionAuthority => {
+            (EARN_WALLETS, state.wallet_address.clone(), 1)
         }
+        SetupStage::CloseAutodeposit => (EARN_SMART_ACCOUNTS, state.policy_account.clone(), 0),
+        SetupStage::CreatePolicy => (EARN_SMART_ACCOUNTS, state.settings_pda.clone(), 1),
+        SetupStage::CreateRecurringDelegation => (
+            EARN_AUTODEPOSIT_WALLET_ATAS,
+            state.wallet_usdc_ata.clone(),
+            1,
+        ),
+        SetupStage::ApproveTokenDelegate => (
+            EARN_AUTODEPOSIT_WALLET_ATAS,
+            state.wallet_usdc_ata.clone(),
+            1,
+        ),
     };
     Ok(SubscribeUpdate {
         filters: vec![filter.to_owned()],
@@ -104,7 +114,7 @@ fn emulated_update(
         update_oneof: Some(UpdateOneof::Account(SubscribeUpdateAccount {
             account: Some(SubscribeUpdateAccountInfo {
                 pubkey: Pubkey::from_str(&account_pubkey)?.to_bytes().to_vec(),
-                lamports: 1,
+                lamports,
                 owner: Vec::new(),
                 executable: false,
                 rent_epoch: 0,
@@ -138,9 +148,16 @@ async fn main() -> anyhow::Result<()> {
     let chain = RpcEarnChainReader::new(args.rpc_url, store.clone());
     let consumer_name = "ask-2211-local-autodeposit";
     let claim_owner = "ask-2211-local-autodeposit-e2e";
-    let mut watch_set = initial_watch_set(&state)?;
+    let persisted_targets = store.load_earn_subscription_targets("mainnet-beta").await?;
+    let mut watch_set = if persisted_targets.is_empty() {
+        initial_watch_set(&state)?
+    } else {
+        SubscriptionWatchSet::from_targets(Vec::new(), persisted_targets)?
+    };
     let mut saw_policy = false;
     let mut saw_recurring_delegation = false;
+    let mut saw_close = false;
+    let mut observed_chain_status = None;
 
     for (line_number, line) in fs::read_to_string(args.transactions)?
         .lines()
@@ -151,11 +168,67 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|error| anyhow::anyhow!("decode line {}: {error}", line_number + 1))?;
         let is_recurring_delegation =
             matches!(transaction.stage, SetupStage::CreateRecurringDelegation);
+        let is_close = matches!(transaction.stage, SetupStage::CloseAutodeposit);
         saw_policy |= matches!(transaction.stage, SetupStage::CreatePolicy);
         saw_recurring_delegation |= is_recurring_delegation;
-        let update = normalize_laserstream_update(emulated_update(&state, transaction)?)?
-            .ok_or_else(|| anyhow::anyhow!("emulated LaserStream account update was ignored"))?;
+        saw_close |= is_close;
+        let update = normalize_laserstream_update(emulated_update(&state, transaction.clone())?)?
+            .ok_or_else(|| {
+            anyhow::anyhow!("emulated LaserStream account update was ignored")
+        })?;
         enqueue_normalized_earn_update(&store, consumer_name, &update, &watch_set).await?;
+        if is_recurring_delegation {
+            match process_next_autodeposit_reconciliation_request(
+                &store,
+                claim_owner,
+                &chain,
+                120,
+                1,
+            )
+            .await?
+            {
+                AutodepositReconciliationProcessOutcome::AwaitingSetup {
+                    requested_slot, ..
+                } if requested_slot == update.slot => {}
+                outcome => anyhow::bail!(
+                    "same-slot token update did not put incomplete setup to sleep: {outcome:?}"
+                ),
+            }
+            let policy_sibling = normalize_laserstream_update(emulated_update(
+                &state,
+                ChainTransaction {
+                    stage: SetupStage::InitializeSubscriptionAuthority,
+                    ..transaction
+                },
+            )?)?
+            .ok_or_else(|| {
+                anyhow::anyhow!("emulated same-slot policy account update was ignored")
+            })?;
+            enqueue_normalized_earn_update(&store, consumer_name, &policy_sibling, &watch_set)
+                .await?;
+        }
+        if is_close {
+            match process_next_autodeposit_reconciliation_request(
+                &store,
+                claim_owner,
+                &chain,
+                120,
+                1,
+            )
+            .await?
+            {
+                AutodepositReconciliationProcessOutcome::Completed {
+                    chain_status,
+                    still_pending,
+                    ..
+                } if chain_status == "closed" && !still_pending => {
+                    observed_chain_status = Some(chain_status);
+                }
+                outcome => anyhow::bail!(
+                    "finalized Autodeposit close did not reconcile as closed: {outcome:?}"
+                ),
+            }
+        }
         if is_recurring_delegation {
             let legacy_policy = PolicyMatchInput {
                 signature: "legacy-policy-observation".to_owned(),
@@ -199,23 +272,35 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("web did not persist the floor on the pending target");
             }
         }
-        let outcome = process_next_earn_reconciliation_job_with_policy_monitor(
-            &store,
-            consumer_name,
-            claim_owner,
-            &chain,
-            Some(&monitor),
-            120,
-            1,
-        )
-        .await?;
-        if !matches!(outcome, EarnReconciliationProcessOutcome::Completed { .. }) {
-            anyhow::bail!("targeted account reconciliation did not complete: {outcome:?}");
+        let mut completed_jobs = 0;
+        loop {
+            match process_next_earn_reconciliation_job_with_policy_monitor(
+                &store,
+                consumer_name,
+                claim_owner,
+                &chain,
+                Some(&monitor),
+                120,
+                1,
+            )
+            .await?
+            {
+                EarnReconciliationProcessOutcome::Completed { .. } => completed_jobs += 1,
+                EarnReconciliationProcessOutcome::Idle => break,
+                outcome => {
+                    anyhow::bail!("targeted account reconciliation did not complete: {outcome:?}")
+                }
+            }
+        }
+        if completed_jobs == 0 {
+            anyhow::bail!("targeted account notification created no durable reconciliation job");
         }
 
-        if saw_policy {
+        if saw_policy || saw_close {
             let targets = store.load_earn_subscription_targets("mainnet-beta").await?;
-            if !targets.is_empty() {
+            if targets.is_empty() {
+                watch_set = initial_watch_set(&state)?;
+            } else {
                 watch_set = SubscriptionWatchSet::from_targets(Vec::new(), targets)?;
             }
         }
@@ -247,8 +332,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-    if !(saw_policy && saw_recurring_delegation) {
+    if !saw_close && !(saw_policy && saw_recurring_delegation) {
         anyhow::bail!("emulated stream missed policy or recurring-delegation setup");
+    }
+    if saw_close && (saw_policy || saw_recurring_delegation) {
+        anyhow::bail!("close verification must use a separate finalized transaction stream");
     }
 
     let request = subscribe_request_json(&watch_set);
@@ -257,13 +345,26 @@ async fn main() -> anyhow::Result<()> {
         serde_json::to_vec_pretty(&request)?,
     )?;
     let request_text = request.to_string();
-    for (label, expected_account) in [
-        ("policy account", &state.policy_account),
-        ("subscription authority", &state.subscription_authority),
-        ("recurring delegation", &state.recurring_delegation),
-        ("wallet USDC ATA", &state.wallet_usdc_ata),
-    ] {
-        if !request_text.contains(expected_account) {
+    if saw_close {
+        for (label, closed_account) in [
+            ("policy account", &state.policy_account),
+            ("subscription authority", &state.subscription_authority),
+            ("recurring delegation", &state.recurring_delegation),
+        ] {
+            if request_text.contains(closed_account) {
+                anyhow::bail!("refreshed subscription retained closed {label} {closed_account}");
+            }
+        }
+    } else {
+        for (label, expected_account) in [
+            ("policy account", &state.policy_account),
+            ("subscription authority", &state.subscription_authority),
+            ("recurring delegation", &state.recurring_delegation),
+            ("wallet USDC ATA", &state.wallet_usdc_ata),
+        ] {
+            if request_text.contains(expected_account) {
+                continue;
+            }
             let watched_policy_accounts = watch_set
                 .earn_vaults
                 .iter()
@@ -277,7 +378,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let mut completed = None;
+    let expected_status = if saw_close { "closed" } else { "active" };
     loop {
         match process_next_autodeposit_reconciliation_request(&store, claim_owner, &chain, 120, 1)
             .await?
@@ -291,8 +392,8 @@ async fn main() -> anyhow::Result<()> {
                 still_pending,
                 ..
             } => {
-                if chain_status == "active" && !still_pending {
-                    completed = Some(chain_status);
+                if chain_status == expected_status && !still_pending {
+                    observed_chain_status = Some(chain_status);
                 }
             }
             outcome @ AutodepositReconciliationProcessOutcome::Deferred { .. } => {
@@ -300,8 +401,8 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-    if completed.as_deref() != Some("active") {
-        anyhow::bail!("Autodeposit target never reached active chain state");
+    if observed_chain_status.as_deref() != Some(expected_status) {
+        anyhow::bail!("Autodeposit target never reached {expected_status} chain state");
     }
     Ok(())
 }

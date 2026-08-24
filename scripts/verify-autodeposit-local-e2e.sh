@@ -10,11 +10,16 @@ postgres_socket="$scratch_dir/postgres-socket"
 postgres_log="$scratch_dir/postgres.log"
 validator_log="$scratch_dir/validator.log"
 realtime_log="$scratch_dir/realtime.log"
+setup_log="$scratch_dir/setup.log"
 program_config_json="$scratch_dir/program-config.json"
 usdc_mint_json="$scratch_dir/usdc-mint.json"
 state_json="$scratch_dir/state.json"
 subscribe_request_json="$scratch_dir/subscribe-request.json"
 sse_event_json="$scratch_dir/setup-sse.json"
+close_sse_event_json="$scratch_dir/close-sse.json"
+close_subscribe_request_json="$scratch_dir/close-subscribe-request.json"
+close_transactions_json="$scratch_dir/close-transactions.ndjson"
+close_ready="$scratch_dir/close-ready"
 pending_floor_ready="$scratch_dir/pending-floor-ready"
 database_name="ask_2211_autodeposit_client_local_e2e"
 base_port="$((24500 + RANDOM % 1200))"
@@ -28,6 +33,7 @@ postgres_port="$((base_port + 60))"
 validator_pid=""
 realtime_pid=""
 listener_pid=""
+setup_pid=""
 postgres_started=0
 auth_secret="ask-2211-local-e2e-auth-secret-0000000000000000000000000000"
 
@@ -41,6 +47,10 @@ pass() {
 }
 
 cleanup() {
+  if [[ -n "$setup_pid" ]]; then
+    kill "$setup_pid" >/dev/null 2>&1 || true
+    wait "$setup_pid" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$listener_pid" ]]; then
     kill "$listener_pid" >/dev/null 2>&1 || true
     wait "$listener_pid" >/dev/null 2>&1 || true
@@ -123,6 +133,8 @@ echo "== Isolated database and local chain"
   NEON_DATABASE_URL="$database_url" NO_DNA=1 \
     cargo run --quiet -p loyal-yield-orchestrator --bin yield-migrations -- --apply
 )
+psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0001_add_user_yield_deposit_positions.sql" >/dev/null
+psql_verify --file="$app_root/apps/web/src/lib/yield-optimization/migrations/0004_add_verifiable_earn_holdings.sql" >/dev/null
 psql_verify --command="
   CREATE TABLE loyal_yield.balance_sweep_policies (
     id BIGSERIAL PRIMARY KEY,
@@ -227,8 +239,27 @@ echo "== Web client builds and submits Autodeposit setup"
   bun run scripts/verify-autodeposit-local-chain.ts setup \
     --rpc-url "http://127.0.0.1:$rpc_port" \
     --treasury "$treasury" \
+    --close-ready "$close_ready" \
+    --close-output "$close_transactions_json" \
     --output "$state_json"
-)
+) >"$setup_log" 2>&1 &
+setup_pid=$!
+setup_ready=0
+for _ in $(seq 1 1200); do
+  if [[ -s "$state_json" && -s "$state_json.transactions.ndjson" ]]; then
+    setup_ready=1
+    break
+  fi
+  if ! kill -0 "$setup_pid" >/dev/null 2>&1; then
+    cat "$setup_log" >&2 || true
+    fail "web setup driver exited before publishing finalized setup"
+  fi
+  sleep 0.1
+done
+if [[ "$setup_ready" -ne 1 ]]; then
+  cat "$setup_log" >&2 || true
+  fail "web setup driver did not publish finalized setup"
+fi
 [[ "$(wc -l < "$state_json.transactions.ndjson" | tr -d '[:space:]')" == "3" ]] ||
   fail "web setup did not produce the three expected finalized transactions"
 jq -s -e \
@@ -307,8 +338,10 @@ listener_pid=""
   fail "pending Autodeposit floor did not survive finalized activation"
 [[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.autodeposit_reconciliation_requests WHERE processed_slot >= requested_slot AND last_error IS NULL")" == "1" ]] ||
   fail "Autodeposit reconciliation request was not fully processed"
-[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'ask-2211-local-autodeposit' AND completed_at IS NOT NULL AND last_error IS NULL")" == "3" ]] ||
-  fail "not every emulated LaserStream notification completed durably"
+[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'ask-2211-local-autodeposit' AND completed_at IS NULL")" == "0" ]] ||
+  fail "an emulated setup reconciliation job remained incomplete"
+[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'ask-2211-local-autodeposit' AND completed_at IS NOT NULL AND last_error IS NULL")" -ge 3 ]] ||
+  fail "setup notifications did not complete durably"
 [[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.realtime_events WHERE event_type = 'earn.autodeposit.configuration.changed' AND reason = 'allowance_created'")" == "1" ]] ||
   fail "chain activation did not emit exactly one allowance_created event"
 jq -e \
@@ -321,10 +354,91 @@ jq -e \
   fail "web SSE did not refresh Autodeposit into the active UI state"
 pass "monitor repaired a legacy queue blocker, projected the delegation, and refreshed active web state through SSE"
 
+echo "== Web client submits delete and SSE refreshes the removed state"
+touch "$close_ready"
+close_ready_on_chain=0
+for _ in $(seq 1 1200); do
+  if [[ -s "$close_transactions_json" ]]; then
+    close_ready_on_chain=1
+    break
+  fi
+  if ! kill -0 "$setup_pid" >/dev/null 2>&1; then
+    cat "$setup_log" >&2 || true
+    fail "web close driver exited before publishing the finalized close"
+  fi
+  sleep 0.1
+done
+if [[ "$close_ready_on_chain" -ne 1 ]]; then
+  cat "$setup_log" >&2 || true
+  fail "web close driver did not publish the finalized close"
+fi
+wait "$setup_pid"
+setup_pid=""
+[[ "$(wc -l < "$close_transactions_json" | tr -d '[:space:]')" == "1" ]] ||
+  fail "web delete did not produce exactly one finalized transaction"
+jq -s -e 'map(.stage) == ["close_autodeposit"]' \
+  "$close_transactions_json" >/dev/null ||
+  fail "web delete transaction did not use the Autodeposit close stage"
+
+(
+  cd "$app_root/apps/web"
+  YIELD_OPTIMIZATION_LOCAL_DATABASE_URL="$database_url" \
+  bun --conditions=react-server run scripts/verify-autodeposit-local-chain.ts listen \
+    --auth-secret "$auth_secret" \
+    --events-url "http://127.0.0.1:$realtime_port/events" \
+    --expected-reason "allowance_removed" \
+    --expected-ui-state "deleted" \
+    --postgres-url "$database_url" \
+    --state "$state_json" \
+    --output "$close_sse_event_json"
+) &
+listener_pid=$!
+
+connected=0
+for _ in $(seq 1 100); do
+  if curl --silent --fail "http://127.0.0.1:$realtime_port/metrics" |
+    grep -q '^loyal_realtime_active_connections 1$'; then
+    connected=1
+    break
+  fi
+  sleep 0.1
+done
+[[ "$connected" -eq 1 ]] || fail "web close SSE consumer did not connect"
+
+(
+  cd "$routing_root"
+  cargo run --quiet -p balance-sweep-ata-monitor \
+    --bin autodeposit-targeted-account-local-e2e -- \
+    --postgres-url "$database_url" \
+    --rpc-url "http://127.0.0.1:$rpc_port" \
+    --state "$state_json" \
+    --transactions "$close_transactions_json" \
+    --pending-floor-ready "$pending_floor_ready" \
+    --subscribe-request-output "$close_subscribe_request_json"
+)
+wait "$listener_pid"
+listener_pid=""
+
+[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.balance_sweep_targets WHERE chain_status = 'closed'")" == "1" ]] ||
+  fail "monitor did not project exactly one deleted Autodeposit target"
+[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.autodeposit_reconciliation_requests WHERE processed_slot >= requested_slot AND last_error IS NULL")" == "1" ]] ||
+  fail "Autodeposit close reconciliation request was not fully processed"
+[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'ask-2211-local-autodeposit' AND completed_at IS NULL")" == "0" ]] ||
+  fail "an emulated close reconciliation job remained incomplete"
+[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'ask-2211-local-autodeposit' AND completed_at IS NOT NULL AND last_error IS NULL")" -ge 4 ]] ||
+  fail "Autodeposit close notification did not complete durably"
+[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.realtime_events WHERE event_type = 'earn.autodeposit.configuration.changed' AND reason = 'allowance_removed'")" == "1" ]] ||
+  fail "chain close did not emit exactly one allowance_removed event"
+jq -e \
+  '.event.eventType == "earn.autodeposit.configuration.changed" and .event.reason == "allowance_removed" and .refreshPlan.earnState == true and .refreshPlan.transactions == true and .ui.state == "deleted" and .ui.keepAmount == null and .ui.isOn == false and .ui.isPending == false' \
+  "$close_sse_event_json" >/dev/null ||
+  fail "web SSE did not refresh Autodeposit into the deleted UI state"
+pass "web delete closed finalized accounts, monitor projected removal, and SSE removed the UI rule"
+
 for removed_route in \
   "$app_root/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/setup/confirm/route.ts" \
   "$app_root/apps/web/src/app/api/smart-accounts/mobile/earn/autodeposit/setup/confirm/route.ts"; do
   [[ ! -e "$removed_route" ]] || fail "client setup confirmation route still writes database state: $removed_route"
 done
 pass "Autodeposit setup has no client confirmation API database write"
-pass "ASK-2211 isolated local Autodeposit setup, reconciliation, realtime, and web SSE E2E"
+pass "ASK-2211 isolated local Autodeposit setup, same-slot wakeup, delete, reconciliation, realtime, and web SSE E2E"

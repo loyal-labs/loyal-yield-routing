@@ -8573,7 +8573,7 @@ async fn upsert_autodeposit_reconciliation_request(
             ),
             updated_at = NOW()
         WHERE EXCLUDED.requested_slot
-            > loyal_yield.autodeposit_reconciliation_requests.requested_slot
+            >= loyal_yield.autodeposit_reconciliation_requests.requested_slot
         RETURNING target_id
         "#,
     )
