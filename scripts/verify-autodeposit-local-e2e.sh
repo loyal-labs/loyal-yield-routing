@@ -15,6 +15,7 @@ usdc_mint_json="$scratch_dir/usdc-mint.json"
 state_json="$scratch_dir/state.json"
 subscribe_request_json="$scratch_dir/subscribe-request.json"
 sse_event_json="$scratch_dir/setup-sse.json"
+pending_floor_ready="$scratch_dir/pending-floor-ready"
 database_name="ask_2211_autodeposit_client_local_e2e"
 base_port="$((24500 + RANDOM % 1200))"
 rpc_port="$base_port"
@@ -122,6 +123,36 @@ echo "== Isolated database and local chain"
   NEON_DATABASE_URL="$database_url" NO_DNA=1 \
     cargo run --quiet -p loyal-yield-orchestrator --bin yield-migrations -- --apply
 )
+psql_verify --command="
+  CREATE TABLE loyal_yield.balance_sweep_policies (
+    id BIGSERIAL PRIMARY KEY,
+    settings TEXT NOT NULL,
+    authority TEXT NOT NULL,
+    policy_seed BIGINT NOT NULL,
+    policy_account TEXT NOT NULL UNIQUE,
+    policy_type TEXT NOT NULL DEFAULT 'subscription_sweep',
+    vault_index SMALLINT NOT NULL,
+    vault_pubkey TEXT NOT NULL,
+    delegated_signers TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    threshold INTEGER NOT NULL,
+    liquidity_mint TEXT,
+    subscription_authority TEXT,
+    subscription_delegatee TEXT,
+    wallet_usdc_ata TEXT,
+    vault_usdc_ata TEXT,
+    max_amount_per_period BIGINT,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_slot BIGINT NOT NULL,
+    last_seen_signature TEXT NOT NULL,
+    closed_at TIMESTAMPTZ,
+    close_signature TEXT,
+    close_slot BIGINT
+  );
+  ALTER TABLE loyal_yield.balance_sweep_targets
+    ADD COLUMN balance_sweep_policy_id BIGINT;
+" >/dev/null
 [[ "$(sql_scalar "SELECT max(version) FROM loyal_yield.schema_migrations")" == "65" ]] ||
   fail "isolated database did not apply Autodeposit target cluster migration 65"
 psql_verify --command="
@@ -232,10 +263,13 @@ fi
 
 (
   cd "$app_root/apps/web"
-  bun run scripts/verify-autodeposit-local-chain.ts listen \
+  YIELD_OPTIMIZATION_LOCAL_DATABASE_URL="$database_url" \
+  bun --conditions=react-server run scripts/verify-autodeposit-local-chain.ts listen \
     --auth-secret "$auth_secret" \
     --events-url "http://127.0.0.1:$realtime_port/events" \
     --expected-reason "allowance_created" \
+    --pending-floor-ready "$pending_floor_ready" \
+    --postgres-url "$database_url" \
     --state "$state_json" \
     --output "$sse_event_json"
 ) &
@@ -261,6 +295,7 @@ echo "== Emulated LaserStream notifications drive monitor reconciliation"
     --rpc-url "http://127.0.0.1:$rpc_port" \
     --state "$state_json" \
     --transactions "$state_json.transactions.ndjson" \
+    --pending-floor-ready "$pending_floor_ready" \
     --subscribe-request-output "$subscribe_request_json"
 )
 wait "$listener_pid"
@@ -268,6 +303,8 @@ listener_pid=""
 
 [[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.balance_sweep_targets WHERE desired_active AND chain_status = 'active' AND policy_account IS NOT NULL AND subscription_authority IS NOT NULL AND recurring_delegation IS NOT NULL")" == "1" ]] ||
   fail "monitor did not project exactly one active Autodeposit target"
+[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.balance_sweep_targets WHERE desired_active AND chain_status = 'active' AND wallet_balance_floor_raw = 2000000")" == "1" ]] ||
+  fail "pending Autodeposit floor did not survive finalized activation"
 [[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.autodeposit_reconciliation_requests WHERE processed_slot >= requested_slot AND last_error IS NULL")" == "1" ]] ||
   fail "Autodeposit reconciliation request was not fully processed"
 [[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'ask-2211-local-autodeposit' AND completed_at IS NOT NULL AND last_error IS NULL")" == "3" ]] ||
@@ -279,10 +316,10 @@ jq -e \
   "$subscribe_request_json" >/dev/null ||
   fail "refreshed monitor subscription is not finalized and account-only"
 jq -e \
-  '.event.eventType == "earn.autodeposit.configuration.changed" and .event.reason == "allowance_created" and .refreshPlan.earnState == true and .refreshPlan.transactions == true' \
+  '.event.eventType == "earn.autodeposit.configuration.changed" and .event.reason == "allowance_created" and .refreshPlan.earnState == true and .refreshPlan.transactions == true and .ui.state == "created" and .ui.keepAmount == "2" and .ui.isOn == true and .ui.isPending == false' \
   "$sse_event_json" >/dev/null ||
-  fail "web SSE Autodeposit invalidation is incorrect"
-pass "monitor held partial setup without an alert, then projected finalized chain state and notified web"
+  fail "web SSE did not refresh Autodeposit into the active UI state"
+pass "monitor repaired a legacy queue blocker, projected the delegation, and refreshed active web state through SSE"
 
 for removed_route in \
   "$app_root/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/setup/confirm/route.ts" \

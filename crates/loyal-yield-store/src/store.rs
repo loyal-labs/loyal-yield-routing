@@ -4888,9 +4888,14 @@ fn validate_cross_mint_vault_opt_in_upsert(
 
 fn commitment_rank(commitment: &str) -> Result<u8, OrchestratorError> {
     match commitment {
-        "processed" => Ok(0),
-        "confirmed" => Ok(1),
-        "finalized" => Ok(2),
+        // Migration 36 used `unknown` for policy rows that predate durable
+        // commitment tracking. Treat it as the weakest state so a later
+        // finalized observation repairs the row instead of poisoning this
+        // vault's ordered reconciliation queue forever.
+        "unknown" => Ok(0),
+        "processed" => Ok(1),
+        "confirmed" => Ok(2),
+        "finalized" => Ok(3),
         other => Err(OrchestratorError::StoreInvariant(format!(
             "unsupported policy source commitment {other:?}"
         ))),
@@ -4903,9 +4908,10 @@ fn autoswap_commitment_eligible(commitment: &str) -> Result<bool, OrchestratorEr
 
 fn stronger_commitment(left: &str, right: &str) -> Result<&'static str, OrchestratorError> {
     match commitment_rank(left)?.max(commitment_rank(right)?) {
-        0 => Ok("processed"),
-        1 => Ok("confirmed"),
-        2 => Ok("finalized"),
+        0 => Ok("unknown"),
+        1 => Ok("processed"),
+        2 => Ok("confirmed"),
+        3 => Ok("finalized"),
         _ => unreachable!("commitment rank is bounded"),
     }
 }
