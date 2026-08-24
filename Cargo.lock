@@ -3702,6 +3702,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "loyal-local-e2e"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde_json",
+ "spl-token 8.0.0",
+ "squads-test-harness",
+]
+
+[[package]]
 name = "loyal-observability"
 version = "0.1.0"
 dependencies = [

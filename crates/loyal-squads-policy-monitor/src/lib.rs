@@ -1232,6 +1232,7 @@ impl From<BalanceSweepPolicyEvent> for BalanceSweepPolicyMatchInput {
         Self {
             signature: event.signature,
             slot: event.slot,
+            cluster: event.cluster.to_string(),
             settings: event.settings,
             authority: event.authority,
             policy_seed: event.policy_seed,

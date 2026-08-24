@@ -62,6 +62,7 @@ const MIGRATION_0061: &str =
 const MIGRATION_0062: &str = include_str!("../migrations/0062_earn_chain_cash_flow_projection.sql");
 const MIGRATION_0063: &str = include_str!("../migrations/0063_earn_max_external_operations.sql");
 const MIGRATION_0064: &str = include_str!("../migrations/0064_earn_max_partial_lifecycle.sql");
+const MIGRATION_0065: &str = include_str!("../migrations/0065_autodeposit_target_cluster.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -557,6 +558,12 @@ impl NeonSqlClient {
                 version: 64,
                 name: "earn_max_partial_lifecycle",
                 sql: MIGRATION_0064,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 65,
+                name: "autodeposit_target_cluster",
+                sql: MIGRATION_0065,
                 expected_checksum: None,
             },
         ] {
@@ -2369,14 +2376,18 @@ impl NeonSqlClient {
         let row = sqlx::query(
             r#"
             INSERT INTO loyal_yield.balance_sweep_targets
-                (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+                (cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
                  wallet, wallet_usdc_ata, vault_usdc_ata, token_mint, wallet_token_ata,
                  vault_token_ata, delegated_signers, threshold, max_amount_per_period,
                  desired_active, chain_status, chain_observation_slot,
                  wallet_balance_floor_raw, last_seen_slot, last_seen_signature)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), NULLIF($9, ''), $10, $11, $12, $13, $14, $15,
-                TRUE, 'pending', $16, NULL, $16, $17)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), NULLIF($10, ''), $11, $12, $13, $14, $15, $16,
+                TRUE, 'pending', $17, NULL, $17, $18)
             ON CONFLICT (policy_account) DO UPDATE SET
+                cluster = COALESCE(
+                    loyal_yield.balance_sweep_targets.cluster,
+                    EXCLUDED.cluster
+                ),
                 settings = CASE
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
                     THEN EXCLUDED.settings
@@ -2472,6 +2483,7 @@ impl NeonSqlClient {
                 max_amount_per_period, desired_active AS active, first_seen_at, last_seen_at, last_seen_slot, last_seen_signature
             "#,
         )
+        .bind(&event.cluster)
         .bind(&event.settings)
         .bind(&event.authority)
         .bind(policy_seed)

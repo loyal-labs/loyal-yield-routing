@@ -127,7 +127,7 @@ echo "== Isolated database and local chain"
 )
 read -r program_config treasury < <(
   cd "$routing_root"
-  cargo run --quiet -p squads-test-harness --bin autoswap-local-genesis -- "$program_config_json"
+  cargo run --quiet -p loyal-local-e2e --bin autoswap-local-genesis -- "$program_config_json"
 )
 
 (

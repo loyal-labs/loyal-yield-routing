@@ -358,6 +358,7 @@ impl fmt::Display for BalanceSweepTargetId {
 pub struct BalanceSweepPolicyMatchInput {
     pub signature: String,
     pub slot: u64,
+    pub cluster: String,
     pub settings: String,
     pub authority: String,
     pub policy_seed: u64,
