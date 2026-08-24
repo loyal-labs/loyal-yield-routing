@@ -56,11 +56,12 @@ pub fn next_action(
 fn up(observed: &ObservedRoute, target: StrategyKey, topology: EarnMaxTopology) -> PlannerDecision {
     let config = topology.strategy(target);
     let position = observed.position(target);
-    if observed.collateral_custody.amount_raw > 0 {
+    let collateral_custody = observed.collateral_custody(target);
+    if collateral_custody.amount_raw > 0 {
         return execute(
             MultiplyAction::DepositCollateral,
             Some(target),
-            PlannedAmount::Exact(observed.collateral_custody.amount_raw),
+            PlannedAmount::Exact(collateral_custody.amount_raw),
         );
     }
     if observed.claim.amount_raw > 0 {
@@ -135,11 +136,12 @@ fn down(observed: &ObservedRoute, active: Option<StrategyKey>) -> PlannerDecisio
                     },
                 );
             }
-            if observed.collateral_custody.amount_raw > 0 {
+            let collateral_custody = observed.collateral_custody(key);
+            if collateral_custody.amount_raw > 0 {
                 return execute(
                     MultiplyAction::SwapCollateralToDebt,
                     Some(key),
-                    PlannedAmount::Exact(observed.collateral_custody.amount_raw),
+                    PlannedAmount::Exact(collateral_custody.amount_raw),
                 );
             }
             return execute(
@@ -156,11 +158,15 @@ fn down(observed: &ObservedRoute, active: Option<StrategyKey>) -> PlannerDecisio
             );
         }
     }
-    if observed.collateral_custody.amount_raw > 0 {
+    if let Some((key, collateral_custody)) = observed
+        .collateral_custodies
+        .iter()
+        .find(|(_, balance)| balance.amount_raw > 0)
+    {
         return execute(
             MultiplyAction::SwapCollateralToClaim,
-            Some(StrategyKey::SyrupUsdcUsdc),
-            PlannedAmount::Exact(observed.collateral_custody.amount_raw),
+            Some(*key),
+            PlannedAmount::Exact(collateral_custody.amount_raw),
         );
     }
     // Claim is a root-signed user transaction prepared by the app. The

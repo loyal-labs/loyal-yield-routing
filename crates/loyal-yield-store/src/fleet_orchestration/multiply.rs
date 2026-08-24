@@ -15,6 +15,11 @@ pub const MULTIPLY_DEFAULT_LEASE_SECONDS: i64 = 30;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StrategyKey {
+    OnycUsdc,
+    OnycUsds,
+    PrimeUsdc,
+    PrimePyusd,
+    PrimeUsds,
     SyrupUsdcUsdc,
     SyrupUsdcPyusd,
 }
@@ -22,6 +27,11 @@ pub enum StrategyKey {
 impl StrategyKey {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::OnycUsdc => "onyc_usdc",
+            Self::OnycUsds => "onyc_usds",
+            Self::PrimeUsdc => "prime_usdc",
+            Self::PrimePyusd => "prime_pyusd",
+            Self::PrimeUsds => "prime_usds",
             Self::SyrupUsdcUsdc => "syrup_usdc_usdc",
             Self::SyrupUsdcPyusd => "syrup_usdc_pyusd",
         }

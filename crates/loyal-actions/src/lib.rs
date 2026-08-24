@@ -6,6 +6,7 @@
 mod actions;
 pub mod autonomous_vaults;
 mod detection;
+mod earn_max;
 mod ids;
 pub mod jupiter;
 pub mod lookup_tables;
@@ -15,6 +16,7 @@ mod stablecoins;
 
 pub use actions::*;
 pub use detection::*;
+pub use earn_max::*;
 pub use ids::*;
 pub use lookup_tables::*;
 pub use loyal_hub_abi as hub_abi;

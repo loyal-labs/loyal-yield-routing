@@ -7,7 +7,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 
 const CONTRACT_VERSION = "earn-max-v4";
 const POLICY_MANIFEST_VERSION = "earn-max-v2";
-const CONTRACT_SHA256 = "0732e58aee5f8c9676d9d72939260acd1114b609056fb2280c1711a5f5637443";
+const CONTRACT_SHA256 = "51fb6b662039b6bd87a1444c7e60623a46f28e7b18bba8f90ec88fd815b43449";
 const PASS = "PASS_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
 const FAIL = "FAIL_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
 const BLOCKED = "BLOCKED_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
@@ -21,6 +21,7 @@ const APPS_ROOT = resolve(ROOT, "../loyal-apps");
 const CONTRACT = "docs/plans/multiply-rwa-looping-policy-architecture.md";
 const CONFIG = "crates/loyal-fleet-worker/src/multiply/config.rs";
 const POLICY = "crates/loyal-fleet-worker/src/multiply/policy.rs";
+const RUST_EARN_MAX_POLICY = "crates/loyal-actions/src/earn_max.rs";
 const BUILDER = "crates/loyal-fleet-worker/src/multiply/builder.rs";
 const EXECUTOR = "crates/loyal-fleet-worker/src/multiply/executor.rs";
 const POLICY_MONITOR = "crates/loyal-squads-policy-monitor/src/lib.rs";
@@ -38,6 +39,61 @@ const APP_UI = "apps/web/src/components/wallet-workspace/facelift/earn-max-pane.
 const APP_SHELL = "apps/web/src/components/wallet-workspace/facelift/shell.tsx";
 const MULTIPLY_STORE = "crates/loyal-yield-store/src/multiply_state_store.rs";
 const MIGRATION_RUNNER = "crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs";
+const KLEND_PROGRAM = new PublicKey("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
+const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const TOKEN_2022_PROGRAM = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+
+const MAINNET_POOL_CATALOG = [
+  {
+    key: "onyc_usdc", market: "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+    collateralReserve: "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ", collateralMint: "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+    collateralSupply: "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG", collateralReceiptMint: "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd", collateralReceiptSupply: "2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo",
+    debtReserve: "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z", debtMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", debtTokenProgram: TOKEN_PROGRAM,
+    debtSupply: "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB", debtFee: "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+  },
+  {
+    key: "onyc_usds", market: "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+    collateralReserve: "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ", collateralMint: "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+    collateralSupply: "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG", collateralReceiptMint: "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd", collateralReceiptSupply: "2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo",
+    debtReserve: "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC", debtMint: "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", debtTokenProgram: TOKEN_PROGRAM,
+    debtSupply: "21Skwocv5cJoftyejSTtXVaHJWTg88xcWGQtnRvUyKLx", debtFee: "CmMAn2UtLWHsQhwv31Trz4BZwVravs2jgxZYK2daTHaK",
+  },
+  {
+    key: "prime_usdc", market: "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+    collateralReserve: "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", collateralMint: "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+    collateralSupply: "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352", collateralReceiptMint: "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW", collateralReceiptSupply: "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN",
+    debtReserve: "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu", debtMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", debtTokenProgram: TOKEN_PROGRAM,
+    debtSupply: "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC", debtFee: "BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6",
+  },
+  {
+    key: "prime_pyusd", market: "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+    collateralReserve: "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", collateralMint: "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+    collateralSupply: "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352", collateralReceiptMint: "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW", collateralReceiptSupply: "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN",
+    debtReserve: "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5", debtMint: "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", debtTokenProgram: TOKEN_2022_PROGRAM,
+    debtSupply: "4LF3i8grZPRbk8d6gXvzRux4rYjGd5AmqrpLLYFpPKKt", debtFee: "4b9U55muKtwx9RimJSuztvyZaKWkmaoferVexgvxrYJr",
+  },
+  {
+    key: "prime_usds", market: "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+    collateralReserve: "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", collateralMint: "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+    collateralSupply: "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352", collateralReceiptMint: "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW", collateralReceiptSupply: "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN",
+    debtReserve: "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4", debtMint: "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", debtTokenProgram: TOKEN_PROGRAM,
+    debtSupply: "5tP1kDJBYnjtrpUaRQhsrU1Y28ahiJVjz8p9mbqJFpz5", debtFee: "DjmdtvsvctUXCZ32y6UGdCEvXPTds6Ci7LFnVhw5HaQY",
+  },
+  {
+    key: "syrup_usdc_usdc", market: "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+    collateralReserve: "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY", collateralMint: "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+    collateralSupply: "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i", collateralReceiptMint: "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu", collateralReceiptSupply: "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58",
+    debtReserve: "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo", debtMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", debtTokenProgram: TOKEN_PROGRAM,
+    debtSupply: "BBcwMNSMyhhBnYE9pevEvkxKHGzTafMP9v3j7Kk7nAWM", debtFee: "HH7GLnRcGHJrdkEueVVj7mccNUjnSeWobDmtu9cHLkJV",
+  },
+  {
+    key: "syrup_usdc_pyusd", market: "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+    collateralReserve: "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY", collateralMint: "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+    collateralSupply: "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i", collateralReceiptMint: "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu", collateralReceiptSupply: "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58",
+    debtReserve: "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS", debtMint: "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", debtTokenProgram: TOKEN_2022_PROGRAM,
+    debtSupply: "GUENeLN1ufX4K5622DbyYoQFhaWxMKoCFycvLSEYsykN", debtFee: "AwnzukUiajn7b3T9hXcwy19RLPZcHmLANUeqZnzXT6dU",
+  },
+] as const;
 
 type Json = Record<string, unknown>;
 
@@ -227,6 +283,14 @@ function checkPerUserTopology(): Json {
     "debt_policy",
     "swap_policy",
     "PYUSD_MINT",
+    "USDS_MINT",
+    "StrategyKey::OnycUsdc",
+    "StrategyKey::OnycUsds",
+    "StrategyKey::PrimeUsdc",
+    "StrategyKey::PrimePyusd",
+    "StrategyKey::PrimeUsds",
+    "StrategyKey::SyrupUsdcUsdc",
+    "StrategyKey::SyrupUsdcPyusd",
   ] as const) {
     requireText(config, required, "deterministic_per_user_topology_missing", CONFIG);
   }
@@ -240,6 +304,8 @@ function checkPerUserTopology(): Json {
     "repay_policy",
     "withdraw_policy",
     "USX",
+    "CASH_MINT",
+    "USDG_MINT",
     "guard",
     "flashBorrow",
     "flash_borrow",
@@ -251,6 +317,7 @@ function checkPerUserTopology(): Json {
 
 function checkThreePolicySourceContract(): Json {
   const policy = file(ROOT, POLICY);
+  const rustPolicy = file(ROOT, RUST_EARN_MAX_POLICY);
   const builder = file(ROOT, BUILDER);
   const executor = file(ROOT, EXECUTOR);
   const appActions = file(APPS_ROOT, APP_ACTIONS);
@@ -264,7 +331,17 @@ function checkThreePolicySourceContract(): Json {
     "DebtLifecycle",
     "SwapRoutes",
   ]) {
-    requireText(`${policy}\n${monitor}`, required, "three_policy_family_missing", `${POLICY} + ${POLICY_MONITOR}`);
+    requireText(`${policy}\n${rustPolicy}\n${monitor}`, required, "three_policy_family_missing", `${POLICY} + ${RUST_EARN_MAX_POLICY} + ${POLICY_MONITOR}`);
+  }
+  for (const required of [
+    "EarnMaxPolicyBoundary",
+    "EarnMaxPolicyLane",
+    "earn_max_policy_constraints",
+    "validate_earn_max_jupiter_route",
+    "three_policy_wire_contract_matches_the_typescript_sdk",
+    "jupiter_mutation_boundary_rejects_value_redirection_and_quote_drift",
+  ]) {
+    requireText(rustPolicy, required, "rust_policy_byte_or_mutation_contract_missing", RUST_EARN_MAX_POLICY);
   }
   for (const required of [
     "pre_instructions",
@@ -284,12 +361,16 @@ function checkThreePolicySourceContract(): Json {
     '"debt"',
     '"swap"',
     "PYUSD_MINT",
-    "USDC_TO_SYRUP",
-    "SYRUP_TO_USDC",
-    "PYUSD_TO_SYRUP",
-    "SYRUP_TO_PYUSD",
-    "USDC_TO_PYUSD",
-    "PYUSD_TO_USDC",
+    "USDS_MINT",
+    '"onyc_usdc"',
+    '"onyc_usds"',
+    '"prime_usdc"',
+    '"prime_pyusd"',
+    '"prime_usds"',
+    '"syrup_usdc_usdc"',
+    '"syrup_usdc_pyusd"',
+    "strategy.debtCustody",
+    "strategy.collateralCustody",
   ]) {
     requireText(appActions, required, "three_policy_client_manifest_missing", APP_ACTIONS);
   }
@@ -308,6 +389,7 @@ function checkThreePolicySourceContract(): Json {
     policySha256: sha256(policy),
     builderSha256: sha256(builder),
     executorSha256: sha256(executor),
+    rustPolicySha256: sha256(rustPolicy),
     appActionsSha256: sha256(appActions),
     monitorSha256: sha256(monitor),
   };
@@ -562,6 +644,7 @@ function checkWorkerAndStoreSource(): Json {
 
 async function targetedChecks(): Promise<Json> {
   const commands: Array<{ command: string[]; cwd: string }> = [
+    { command: ["cargo", "test", "-q", "-p", "loyal-actions", "earn_max::tests"], cwd: ROOT },
     { command: ["cargo", "check", "-q", "-p", "loyal-squads-policy-monitor"], cwd: ROOT },
     { command: ["cargo", "check", "-q", "-p", "balance-sweep-ata-monitor", "--bin", "balance-sweep-ata-monitor"], cwd: ROOT },
     { command: ["cargo", "check", "-q", "-p", "loyal-fleet-worker", "--bin", "multiply-route-worker"], cwd: ROOT },
@@ -576,6 +659,7 @@ async function targetedChecks(): Promise<Json> {
       cwd: APPS_ROOT,
     },
     { command: ["bunx", "tsc", "-p", "apps/web/tsconfig.earn-max.json", "--pretty", "false"], cwd: APPS_ROOT },
+    { command: ["bun", "test", "packages/loyal-actions/test/sdk.test.ts"], cwd: APPS_ROOT },
   ];
   const results: Json[] = [];
   for (const check of commands) {
@@ -610,6 +694,119 @@ function requiredEnv(name: string): string {
     });
   }
   return value;
+}
+
+function reservePubkey(data: Buffer, offset: number): string {
+  if (data.length !== 8_624 || offset < 0 || offset + 32 > data.length) {
+    fail("mainnet_kamino_reserve_layout_drift", { dataLength: data.length, offset });
+  }
+  return new PublicKey(data.subarray(offset, offset + 32)).toBase58();
+}
+
+async function checkMainnetPoolCatalog(): Promise<Json> {
+  const connection = new Connection(requiredEnv("SOLANA_RPC_URL"), {
+    commitment: "confirmed",
+    httpAgent: false,
+  });
+  const keys = [...new Set(MAINNET_POOL_CATALOG.flatMap((pool) => [
+    pool.market,
+    pool.collateralReserve,
+    pool.collateralMint,
+    pool.collateralSupply,
+    pool.collateralReceiptMint,
+    pool.collateralReceiptSupply,
+    pool.debtReserve,
+    pool.debtMint,
+    pool.debtSupply,
+    pool.debtFee,
+  ]))].map((value) => new PublicKey(value));
+  const response = await connection.getMultipleAccountsInfoAndContext(keys, {
+    commitment: "confirmed",
+  });
+  const accounts = new Map(keys.map((key, index) => [key.toBase58(), response.value[index]]));
+  const owner = (address: string, expected: PublicKey, field: string, pool: string) => {
+    const account = accounts.get(address);
+    if (!account || !account.owner.equals(expected)) {
+      fail("mainnet_pool_catalog_account_drift", {
+        pool,
+        field,
+        address,
+        expectedOwner: expected.toBase58(),
+        actualOwner: account?.owner.toBase58() ?? null,
+      });
+    }
+    return account;
+  };
+  const checkedReserves = new Set<string>();
+  for (const pool of MAINNET_POOL_CATALOG) {
+    owner(pool.market, KLEND_PROGRAM, "market", pool.key);
+    owner(pool.collateralMint, TOKEN_PROGRAM, "collateralMint", pool.key);
+    owner(pool.debtMint, pool.debtTokenProgram, "debtMint", pool.key);
+    for (const [kind, reserveAddress, expected] of [
+      ["collateral", pool.collateralReserve, {
+        market: pool.market,
+        mint: pool.collateralMint,
+        tokenProgram: TOKEN_PROGRAM.toBase58(),
+        supply: pool.collateralSupply,
+        collateralMint: pool.collateralReceiptMint,
+        collateralSupply: pool.collateralReceiptSupply,
+      }],
+      ["debt", pool.debtReserve, {
+        market: pool.market,
+        mint: pool.debtMint,
+        tokenProgram: pool.debtTokenProgram.toBase58(),
+        supply: pool.debtSupply,
+        fee: pool.debtFee,
+      }],
+    ] as const) {
+      if (checkedReserves.has(reserveAddress)) continue;
+      const reserve = owner(reserveAddress, KLEND_PROGRAM, `${kind}Reserve`, pool.key);
+      const data = Buffer.from(reserve.data);
+      const actual = {
+        market: reservePubkey(data, 32),
+        mint: reservePubkey(data, 128),
+        supply: reservePubkey(data, 160),
+        fee: reservePubkey(data, 192),
+        tokenProgram: reservePubkey(data, 408),
+        collateralMint: reservePubkey(data, 2_560),
+        collateralSupply: reservePubkey(data, 2_600),
+      };
+      for (const [field, value] of Object.entries(expected)) {
+        if (actual[field as keyof typeof actual] !== value) {
+          fail("mainnet_pool_catalog_reserve_identity_drift", {
+            pool: pool.key,
+            kind,
+            reserve: reserveAddress,
+            field,
+            expected: value,
+            actual: actual[field as keyof typeof actual],
+            slot: response.context.slot,
+          });
+        }
+      }
+      const derivedAuthority = PublicKey.findProgramAddressSync(
+        [Buffer.from("lma"), new PublicKey(pool.market).toBytes()],
+        KLEND_PROGRAM,
+      )[0];
+      const configuredAuthority = kind === "collateral"
+        ? file(ROOT, CONFIG).includes(derivedAuthority.toBase58())
+        : true;
+      if (!configuredAuthority) {
+        fail("mainnet_pool_catalog_market_authority_drift", {
+          pool: pool.key,
+          market: pool.market,
+          derivedAuthority: derivedAuthority.toBase58(),
+        });
+      }
+      checkedReserves.add(reserveAddress);
+    }
+  }
+  return {
+    slot: response.context.slot,
+    pools: MAINNET_POOL_CATALOG.map((pool) => pool.key),
+    uniqueReserves: checkedReserves.size,
+    accountCount: keys.length,
+  };
 }
 
 async function checkLivePrerequisites(): Promise<Json> {
@@ -1146,6 +1343,7 @@ const app = checkAppSource();
 const engine = checkWorkerAndStoreSource();
 const release = checkReleaseSource();
 const targeted = await targetedChecks();
+const mainnetCatalog = await checkMainnetPoolCatalog();
 const live = await checkLivePrerequisites();
 const deployedWorkers = await checkDeployedWorkers(
   String(release.monitorImageRevision),
@@ -1164,6 +1362,7 @@ emit(PASS, "earn_max_three_policy_production_ready", {
   engine,
   release,
   targeted,
+  mainnetCatalog,
   live,
   deployedWorkers,
   lifecycle,

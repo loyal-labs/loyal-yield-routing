@@ -247,23 +247,22 @@ pub async fn reconcile_operation(
     confirmed_slot: u64,
     topology: EarnMaxTopology,
 ) -> Result<MultiplyRouteState, Box<dyn Error>> {
+    let known_custodies = std::iter::once(topology.claim_custody)
+        .chain(
+            topology
+                .strategy_catalog()
+                .into_iter()
+                .flat_map(|strategy| [strategy.collateral_custody, strategy.debt_custody]),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
     let extra = operation
         .expected_effects
         .token_deltas
         .iter()
         .filter(|delta| {
-            ![
-                topology.claim_custody,
-                topology.collateral_custody,
-                topology
-                    .strategy(loyal_yield_store::fleet_orchestration::StrategyKey::SyrupUsdcUsdc)
-                    .debt_custody,
-                topology
-                    .strategy(loyal_yield_store::fleet_orchestration::StrategyKey::SyrupUsdcPyusd)
-                    .debt_custody,
-            ]
-            .iter()
-            .any(|account| account.to_string() == delta.account)
+            !known_custodies
+                .iter()
+                .any(|account| account.to_string() == delta.account)
         })
         .map(|delta| {
             (
@@ -327,7 +326,10 @@ pub async fn reconcile_operation(
         };
     } else if next.goal == RouteGoal::Withdraw
         && active.is_none()
-        && after.collateral_custody.amount_raw == 0
+        && after
+            .collateral_custodies
+            .iter()
+            .all(|(_, balance)| balance.amount_raw == 0)
     {
         if let Some(withdrawal) = &mut next.withdrawal {
             withdrawal.status = WithdrawalStatus::Claimable;
@@ -430,6 +432,12 @@ async fn load_lookup_tables(
     rpc: &RpcClient,
     keys: &[Pubkey],
 ) -> Result<Vec<AddressLookupTableAccount>, Box<dyn Error>> {
+    if keys.is_empty()
+        || keys.len() > 4
+        || keys.iter().collect::<std::collections::BTreeSet<_>>().len() != keys.len()
+    {
+        return Err("Jupiter lookup table set is empty, duplicated, or too large".into());
+    }
     let response = rpc
         .get_multiple_accounts_with_commitment(keys, CommitmentConfig::confirmed())
         .await?;
@@ -437,7 +445,13 @@ async fn load_lookup_tables(
         .zip(response.value)
         .map(|(key, account)| {
             let account = account.ok_or("Jupiter lookup table is absent")?;
+            if account.owner != solana_sdk::address_lookup_table::program::id() {
+                return Err("Jupiter lookup table has the wrong owner".into());
+            }
             let table = AddressLookupTable::deserialize(&account.data)?;
+            if table.meta.deactivation_slot != u64::MAX {
+                return Err("Jupiter lookup table is deactivated".into());
+            }
             Ok(AddressLookupTableAccount {
                 key: *key,
                 addresses: table.addresses.to_vec(),
@@ -579,8 +593,13 @@ fn verify_expected_effects(
 }
 
 fn observed_token_amount(after: &ObservedRoute, account: &str, mint: &str) -> Option<u64> {
-    [&after.claim, &after.collateral_custody]
-        .into_iter()
+    std::iter::once(&after.claim)
+        .chain(
+            after
+                .collateral_custodies
+                .iter()
+                .map(|(_, balance)| balance),
+        )
         .chain(after.debt_custodies.iter().map(|(_, balance)| balance))
         .chain(after.external_custody.iter())
         .find(|value| value.account == account && value.mint == mint)

@@ -12,6 +12,7 @@ use klend_interface::instructions::{
     RefreshObligationAccounts, RefreshReserveAccounts, RepayObligationLiquidityV2Accounts,
     WithdrawObligationCollateralAndRedeemReserveCollateralV2Accounts,
 };
+use loyal_actions::{validate_earn_max_jupiter_route, EarnMaxJupiterRouteExpectation};
 use loyal_yield_store::fleet_orchestration::{
     ExpectedEffects, MultiplyAction, ObligationDelta, TokenDelta,
 };
@@ -21,8 +22,6 @@ use solana_sdk::{
     pubkey::Pubkey,
 };
 use std::{error::Error, str::FromStr, time::Duration};
-
-const RESERVE_COLLATERAL_MINT: &str = "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu";
 
 #[derive(Clone, Debug)]
 pub struct BuiltOperation {
@@ -279,23 +278,6 @@ fn exact_amount(amount: PlannedAmount) -> Result<u64, Box<dyn Error>> {
     }
 }
 
-pub(crate) fn policy_template(
-    config: StrategyConfig,
-    vault: Pubkey,
-    action: MultiplyAction,
-) -> Result<Instruction, Box<dyn Error>> {
-    let mut instructions = match action {
-        MultiplyAction::DepositCollateral => deposit(config, vault, 1, true, true)?,
-        MultiplyAction::BorrowDebt => borrow(config, vault, 1, true, true)?,
-        MultiplyAction::WithdrawCollateral => withdraw(config, vault, 1, true)?,
-        MultiplyAction::RepayDebt => repay(config, vault, u64::MAX)?,
-        _ => return Err("action has no KLend policy template".into()),
-    };
-    instructions
-        .pop()
-        .ok_or_else(|| "KLend policy template is empty".into())
-}
-
 fn resolve_borrow(
     amount: PlannedAmount,
     observed: &ObservedRoute,
@@ -386,7 +368,7 @@ fn deposit(
                 reserve: Pubkey::from_str(config.collateral_reserve)?,
                 reserve_liquidity_mint: Pubkey::from_str(config.collateral_mint)?,
                 reserve_liquidity_supply: Pubkey::from_str(config.collateral_liquidity_supply)?,
-                reserve_collateral_mint: Pubkey::from_str(RESERVE_COLLATERAL_MINT)?,
+                reserve_collateral_mint: Pubkey::from_str(config.collateral_receipt_mint)?,
                 reserve_destination_deposit_collateral: Pubkey::from_str(
                     config.collateral_mint_supply,
                 )?,
@@ -458,7 +440,7 @@ fn withdraw(
                 withdraw_reserve: Pubkey::from_str(config.collateral_reserve)?,
                 reserve_liquidity_mint: Pubkey::from_str(config.collateral_mint)?,
                 reserve_source_collateral: Pubkey::from_str(config.collateral_mint_supply)?,
-                reserve_collateral_mint: Pubkey::from_str(RESERVE_COLLATERAL_MINT)?,
+                reserve_collateral_mint: Pubkey::from_str(config.collateral_receipt_mint)?,
                 reserve_liquidity_supply: Pubkey::from_str(config.collateral_liquidity_supply)?,
                 user_destination_liquidity: config.collateral_custody,
                 placeholder_user_destination_collateral: None,
@@ -682,16 +664,32 @@ async fn quote(
             Pubkey::from_str(value).map_err(|error| -> Box<dyn Error> { Box::new(error) })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(JupiterQuote {
-        instruction: Instruction {
-            program_id: Pubkey::from_str(JUPITER)?,
-            accounts,
-            data: STANDARD.decode(
-                swap.get("data")
-                    .and_then(Value::as_str)
-                    .ok_or("swap data missing")?,
-            )?,
+    let instruction = Instruction {
+        program_id: Pubkey::from_str(JUPITER)?,
+        accounts,
+        data: STANDARD.decode(
+            swap.get("data")
+                .and_then(Value::as_str)
+                .ok_or("swap data missing")?,
+        )?,
+    };
+    validate_earn_max_jupiter_route(
+        &instruction,
+        EarnMaxJupiterRouteExpectation {
+            jupiter_program: Pubkey::from_str(JUPITER)?,
+            vault,
+            source,
+            destination,
+            input_mint: Pubkey::from_str(input_mint)?,
+            output_mint: Pubkey::from_str(output_mint)?,
+            input_amount: input_raw,
+            quoted_output_amount: output_raw,
+            minimum_output_amount: threshold_raw,
+            slippage_bps: 50,
         },
+    )?;
+    Ok(JupiterQuote {
+        instruction,
         lookup_tables,
         input_raw,
         threshold_raw,

@@ -720,8 +720,13 @@ fn bind_before(
         .token_deltas
         .iter()
         .map(|delta| {
-            let balance = [&observed.claim, &observed.collateral_custody]
-                .into_iter()
+            let balance = std::iter::once(&observed.claim)
+                .chain(
+                    observed
+                        .collateral_custodies
+                        .iter()
+                        .map(|(_, balance)| balance),
+                )
                 .chain(observed.debt_custodies.iter().map(|(_, balance)| balance))
                 .chain(observed.external_custody.iter())
                 .find(|balance| balance.account == delta.account && balance.mint == delta.mint)

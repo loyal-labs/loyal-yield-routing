@@ -29,8 +29,8 @@ use loyal_squads_policy_monitor::{PolicyMonitor, PostgresPolicyMatchSink};
 use loyal_yield_store::{
     fleet_orchestration::{
         DepositEvidence, ExpectedEffects, MultiplyAction, MultiplyOperation,
-        MultiplyOperationStatus, MultiplyPosition, RouteGoal, StrategyKey, TokenAmountBefore,
-        TokenBalance, TokenDelta, WithdrawalStatus, MULTIPLY_ENGINE_VERSION,
+        MultiplyOperationStatus, MultiplyPosition, RouteGoal, TokenAmountBefore, TokenBalance,
+        TokenDelta, WithdrawalStatus, MULTIPLY_ENGINE_VERSION,
     },
     AutodepositChainObservation, AutodepositRecurringDelegationObserved,
     AutodepositTargetSnapshotContext, EarnCleanupMutation, EarnDepositMutation, EarnDirectMutation,
@@ -591,7 +591,7 @@ async fn project_earn_max_cash_flow(
             state = state.admit_deposit(evidence)?;
             (
                 MultiplyAction::DepositClaimAsset,
-                Some(StrategyKey::SyrupUsdcUsdc),
+                None,
                 ExpectedEffects {
                     token_amounts_before: vec![
                         TokenAmountBefore {

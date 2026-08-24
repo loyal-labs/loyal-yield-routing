@@ -23,22 +23,44 @@ Objective:
 
 Scope:
   Mainnet at confirmed commitment. One user-owned Squads Settings account,
-  vault index 0, syrupUSDC collateral, USDC and PYUSD debt/base assets, and the
-  existing worker/projector/read model. No SVM fixture is production authority.
+  vault index 0, the exact seven-strategy catalog below, and the existing
+  worker/projector/read model. No SVM fixture is production authority.
+
+  Required catalog:
+    ONyc/USDC, ONyc/USDS
+    PRIME/USDC, PRIME/PYUSD, PRIME/USDS
+    syrupUSDC/USDC, syrupUSDC/PYUSD
+
+  CASH, USDG, AUTO and USDe are absent. USDS remains even when current
+  utilization makes a lane temporarily capacity-blocked.
 
 Hard constraints:
   Exactly three physical policy accounts at fresh consecutive seeds:
     base+0 CollateralLifecycle: deposit collateral, withdraw collateral
     base+1 DebtLifecycle: borrow debt, repay debt
-    base+2 SwapRoutes: USDC<->syrupUSDC, PYUSD<->syrupUSDC,
-                       USDC<->PYUSD
+    base+2 SwapRoutes: one exact directed lane in each direction for every
+                       catalog pair (14 constraints total)
 
   Each KLend transaction places permissionless refreshes at top level and
   exactly one signer-bearing terminal mutation inside Squads. Each directed
-  swap lane pins authority, source/destination custody, mint, token-program and
-  Jupiter identities. Dynamic route-tail accounts are allowed only where a
-  mutation proof shows they cannot redirect value. Independent mint, custody
-  or reserve allowlists that create a Cartesian product are forbidden.
+  swap lane pins the vault plus exact source and destination custody and the
+  Jupiter SharedAccountsRoute discriminator. Dynamic mint, token-program and
+  route-tail accounts are accepted only because Jupiter validates them against
+  the pinned token accounts and a mutation matrix proves they cannot redirect
+  value. The client and worker independently require the exact expected mint,
+  token-program and route semantics before submission.
+
+  CollateralLifecycle and DebtLifecycle pin the vault and finite catalog sets
+  of obligations, reserves, custody accounts and token programs. Farm user and
+  farm state accounts are not pinned because the fully pinned payload cannot
+  fit one policy; KLend validates farm derivation from the selected reserve and
+  obligation. The compact format cannot express relationships between two
+  allowlisted account positions: a same-market catalog cross-product can be
+  accepted by KLend. That residual case cannot redirect value outside the
+  vault's finite catalog custodies, is never built by the worker, and must be
+  detected as obligation-topology drift during reconciliation. Outside-catalog,
+  cross-market and invalid-farm mutations must reject with no custody delta.
+  This exact KLend/Jupiter validation boundary was owner-approved on 2026-08-24.
 
   Every legacy policy-create wire is below 1232 bytes and within the deployed
   Squads constraint limit. Packet overflow is BLOCKED; it is not permission for
@@ -110,9 +132,14 @@ ledger, event bus, command table, scheduler, saga, outbox or repair table.
 
 ## Policy and execution contract
 
-The three accounts contain a bounded catalog of exact terminal constraints.
-Current USDC and PYUSD strategy tuples must be generated from canonical traces;
-they are not assembled from independently interchangeable account allowlists.
+The three accounts contain the bounded seven-strategy terminal catalog above.
+The approved compact KLend constraints use finite account allowlists and rely
+on KLend for reserve/market and farm coherence. No account outside the catalog
+is admitted. A same-market combination assembled from individually approved
+positions is a known delegated-signer residual: mutation verification must
+prove that it cannot leave approved vault custody, the canonical worker cannot
+construct it, and reconciliation fails closed if obligation reserves differ
+from the selected strategy.
 Rust worker and TypeScript client implementations are independent and must
 produce identical family order, seeds, PDAs, constraints and semantic hashes.
 
@@ -130,9 +157,9 @@ ExecuteProgramInteraction(
 )
 ```
 
-The policy must pin every caller-controlled identity that can redirect value or
-authority. Stable Jupiter data fields are constrained where the deployed policy
-format can express them. The worker additionally requires ExactIn, a fresh
+The policy pins every caller-controlled endpoint that can redirect value or
+authority within the measured packet envelope. Stable Jupiter data fields are
+constrained where the deployed policy format can express them. The worker additionally requires ExactIn, a fresh
 quote, bounded slippage, zero platform fee, no setup/cleanup/ledger instruction,
 and confirmed output reconciliation. Anything not statically enforceable is an
 explicit delegated-signer residual risk covered by a testing AUM cap and a
@@ -176,16 +203,22 @@ visible. `earn-max-v1` policy sets are never resumed or updated as v2.
 The verifier stops at the first false condition:
 
 1. Contract hash/version and forbidden-artifact inventory.
-2. Exactly three semantic policy families and exactly six directed swap lanes;
+2. Exactly three semantic policy families, exactly seven strategy keys and
+   exactly fourteen directed swap lanes;
    Rust/TypeScript parity; no six-account or two-account executable manifest.
 3. Three exit-safe legacy creation packets and three full compact update packets
    below 1232 bytes and within constraint limits; update readback must prove the
    final full payload on the same three PDAs.
-4. Canonical trace and mutation matrix for KLend identities and every directed
-   Jupiter lane; no account cross-products.
+4. Canonical trace and mutation matrix for every KLend allowlist cross-product,
+   omitted farm account, and directed Jupiter lane. Outside-catalog,
+   cross-market and invalid-farm KLend tuples must reject. Any admitted
+   same-market catalog cross-product must remain in exact approved custody and
+   trigger the worker/reconciliation fail-closed checks. Every mutated Jupiter
+   route must reject or be byte-and-economically inert with no endpoint
+   diversion.
 5. Current-chain signed-unsent simulation with fresh Settings, seeds, quotes,
    reserves, obligations, packet sizes and final signer/payer topology.
-6. Confirmed install transitions `incomplete -> ready`, all six operation
+6. Confirmed install transitions `incomplete -> ready`, all required operation
    directions, user deposit/top-up/cancel/partial/Max lifecycle, reconciliation,
    policy removal, final zero and rent return.
 7. Malformed-event survival, supervised projector health, canonical same-slot

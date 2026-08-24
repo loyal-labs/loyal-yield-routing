@@ -11,12 +11,16 @@ pub const EARN_MAX_VAULT_INDEX: u8 = 0;
 pub const MAINNET_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 pub const KLEND: &str = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
 pub const JUPITER: &str = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+pub const JUPITER_SHARED_ACCOUNTS_ROUTE: [u8; 8] = [0xc1, 0x20, 0x9b, 0x33, 0x41, 0xd6, 0x9c, 0x81];
 pub const FARMS: &str = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr";
 pub const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub const TOKEN_2022: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+pub const ONYC_MINT: &str = "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5";
+pub const PRIME_MINT: &str = "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7";
 pub const SYRUP_MINT: &str = "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj";
 pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 pub const PYUSD_MINT: &str = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
+pub const USDS_MINT: &str = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA";
 
 const MULTIPLY_OBLIGATION_TAG: u8 = 1;
 const MULTIPLY_OBLIGATION_ID: u8 = 0;
@@ -37,6 +41,7 @@ pub struct StrategyConfig {
     pub collateral_mint: &'static str,
     pub collateral_custody: Pubkey,
     pub collateral_liquidity_supply: &'static str,
+    pub collateral_receipt_mint: &'static str,
     pub collateral_mint_supply: &'static str,
     pub collateral_farm_state: Option<&'static str>,
     pub collateral_farm_user: Option<Pubkey>,
@@ -82,18 +87,23 @@ pub struct EarnMaxTopology {
     pub vault: Pubkey,
     pub claim_custody: Pubkey,
     pub collateral_custody: Pubkey,
-    pub strategies: [StrategyConfig; 2],
+    pub strategies: [StrategyConfig; 7],
 }
 
 impl EarnMaxTopology {
     pub fn strategy(self, key: StrategyKey) -> StrategyConfig {
         match key {
-            StrategyKey::SyrupUsdcUsdc => self.strategies[0],
-            StrategyKey::SyrupUsdcPyusd => self.strategies[1],
+            StrategyKey::OnycUsdc => self.strategies[0],
+            StrategyKey::OnycUsds => self.strategies[1],
+            StrategyKey::PrimeUsdc => self.strategies[2],
+            StrategyKey::PrimePyusd => self.strategies[3],
+            StrategyKey::PrimeUsds => self.strategies[4],
+            StrategyKey::SyrupUsdcUsdc => self.strategies[5],
+            StrategyKey::SyrupUsdcPyusd => self.strategies[6],
         }
     }
 
-    pub fn strategy_catalog(self) -> [StrategyConfig; 2] {
+    pub fn strategy_catalog(self) -> [StrategyConfig; 7] {
         self.strategies
     }
 }
@@ -107,6 +117,7 @@ struct StrategyTemplate {
     collateral_reserve: &'static str,
     collateral_mint: &'static str,
     collateral_liquidity_supply: &'static str,
+    collateral_receipt_mint: &'static str,
     collateral_mint_supply: &'static str,
     collateral_farm_state: Option<&'static str>,
     debt_reserve: &'static str,
@@ -126,11 +137,152 @@ struct StrategyPolicySeeds {
     swap: u64,
 }
 
+const COMMON_ORACLE: &str = "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH";
+
+const ONYC_MARKET: &str = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8";
+const ONYC_MARKET_AUTHORITY: &str = "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss";
+const ONYC_COLLATERAL_RESERVE: &str = "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ";
+const ONYC_COLLATERAL_LIQUIDITY_SUPPLY: &str = "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG";
+const ONYC_COLLATERAL_RECEIPT_MINT: &str = "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd";
+const ONYC_COLLATERAL_RECEIPT_SUPPLY: &str = "2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo";
+
+const ONYC_USDC_TEMPLATE: StrategyTemplate = StrategyTemplate {
+    key: StrategyKey::OnycUsdc,
+    market: ONYC_MARKET,
+    market_authority: ONYC_MARKET_AUTHORITY,
+    oracle: COMMON_ORACLE,
+    collateral_reserve: ONYC_COLLATERAL_RESERVE,
+    collateral_mint: ONYC_MINT,
+    collateral_liquidity_supply: ONYC_COLLATERAL_LIQUIDITY_SUPPLY,
+    collateral_receipt_mint: ONYC_COLLATERAL_RECEIPT_MINT,
+    collateral_mint_supply: ONYC_COLLATERAL_RECEIPT_SUPPLY,
+    collateral_farm_state: None,
+    debt_reserve: "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+    debt_mint: USDC_MINT,
+    debt_token_program: TOKEN,
+    debt_liquidity_supply: "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+    debt_fee_vault: "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+    debt_farm_state: Some("7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF"),
+    target_ltv_bps: 5_000,
+    policy_seeds: StrategyPolicySeeds {
+        collateral: 32,
+        debt: 33,
+        swap: 34,
+    },
+};
+
+const ONYC_USDS_TEMPLATE: StrategyTemplate = StrategyTemplate {
+    key: StrategyKey::OnycUsds,
+    market: ONYC_MARKET,
+    market_authority: ONYC_MARKET_AUTHORITY,
+    oracle: COMMON_ORACLE,
+    collateral_reserve: ONYC_COLLATERAL_RESERVE,
+    collateral_mint: ONYC_MINT,
+    collateral_liquidity_supply: ONYC_COLLATERAL_LIQUIDITY_SUPPLY,
+    collateral_receipt_mint: ONYC_COLLATERAL_RECEIPT_MINT,
+    collateral_mint_supply: ONYC_COLLATERAL_RECEIPT_SUPPLY,
+    collateral_farm_state: None,
+    debt_reserve: "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC",
+    debt_mint: USDS_MINT,
+    debt_token_program: TOKEN,
+    debt_liquidity_supply: "21Skwocv5cJoftyejSTtXVaHJWTg88xcWGQtnRvUyKLx",
+    debt_fee_vault: "CmMAn2UtLWHsQhwv31Trz4BZwVravs2jgxZYK2daTHaK",
+    debt_farm_state: Some("5piFMvvPonJM8zJbCGoPD2jZt59hNURDLDTpXQzgbydc"),
+    target_ltv_bps: 5_000,
+    policy_seeds: StrategyPolicySeeds {
+        collateral: 32,
+        debt: 33,
+        swap: 34,
+    },
+};
+
+const PRIME_MARKET: &str = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA";
+const PRIME_MARKET_AUTHORITY: &str = "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM";
+const PRIME_COLLATERAL_RESERVE: &str = "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh";
+const PRIME_COLLATERAL_LIQUIDITY_SUPPLY: &str = "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352";
+const PRIME_COLLATERAL_RECEIPT_MINT: &str = "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW";
+const PRIME_COLLATERAL_RECEIPT_SUPPLY: &str = "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN";
+
+const PRIME_USDC_TEMPLATE: StrategyTemplate = StrategyTemplate {
+    key: StrategyKey::PrimeUsdc,
+    market: PRIME_MARKET,
+    market_authority: PRIME_MARKET_AUTHORITY,
+    oracle: COMMON_ORACLE,
+    collateral_reserve: PRIME_COLLATERAL_RESERVE,
+    collateral_mint: PRIME_MINT,
+    collateral_liquidity_supply: PRIME_COLLATERAL_LIQUIDITY_SUPPLY,
+    collateral_receipt_mint: PRIME_COLLATERAL_RECEIPT_MINT,
+    collateral_mint_supply: PRIME_COLLATERAL_RECEIPT_SUPPLY,
+    collateral_farm_state: None,
+    debt_reserve: "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+    debt_mint: USDC_MINT,
+    debt_token_program: TOKEN,
+    debt_liquidity_supply: "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC",
+    debt_fee_vault: "BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6",
+    debt_farm_state: None,
+    target_ltv_bps: 6_500,
+    policy_seeds: StrategyPolicySeeds {
+        collateral: 32,
+        debt: 33,
+        swap: 34,
+    },
+};
+
+const PRIME_PYUSD_TEMPLATE: StrategyTemplate = StrategyTemplate {
+    key: StrategyKey::PrimePyusd,
+    market: PRIME_MARKET,
+    market_authority: PRIME_MARKET_AUTHORITY,
+    oracle: COMMON_ORACLE,
+    collateral_reserve: PRIME_COLLATERAL_RESERVE,
+    collateral_mint: PRIME_MINT,
+    collateral_liquidity_supply: PRIME_COLLATERAL_LIQUIDITY_SUPPLY,
+    collateral_receipt_mint: PRIME_COLLATERAL_RECEIPT_MINT,
+    collateral_mint_supply: PRIME_COLLATERAL_RECEIPT_SUPPLY,
+    collateral_farm_state: None,
+    debt_reserve: "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5",
+    debt_mint: PYUSD_MINT,
+    debt_token_program: TOKEN_2022,
+    debt_liquidity_supply: "4LF3i8grZPRbk8d6gXvzRux4rYjGd5AmqrpLLYFpPKKt",
+    debt_fee_vault: "4b9U55muKtwx9RimJSuztvyZaKWkmaoferVexgvxrYJr",
+    debt_farm_state: None,
+    target_ltv_bps: 6_500,
+    policy_seeds: StrategyPolicySeeds {
+        collateral: 32,
+        debt: 33,
+        swap: 34,
+    },
+};
+
+const PRIME_USDS_TEMPLATE: StrategyTemplate = StrategyTemplate {
+    key: StrategyKey::PrimeUsds,
+    market: PRIME_MARKET,
+    market_authority: PRIME_MARKET_AUTHORITY,
+    oracle: COMMON_ORACLE,
+    collateral_reserve: PRIME_COLLATERAL_RESERVE,
+    collateral_mint: PRIME_MINT,
+    collateral_liquidity_supply: PRIME_COLLATERAL_LIQUIDITY_SUPPLY,
+    collateral_receipt_mint: PRIME_COLLATERAL_RECEIPT_MINT,
+    collateral_mint_supply: PRIME_COLLATERAL_RECEIPT_SUPPLY,
+    collateral_farm_state: None,
+    debt_reserve: "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4",
+    debt_mint: USDS_MINT,
+    debt_token_program: TOKEN,
+    debt_liquidity_supply: "5tP1kDJBYnjtrpUaRQhsrU1Y28ahiJVjz8p9mbqJFpz5",
+    debt_fee_vault: "DjmdtvsvctUXCZ32y6UGdCEvXPTds6Ci7LFnVhw5HaQY",
+    debt_farm_state: None,
+    target_ltv_bps: 6_500,
+    policy_seeds: StrategyPolicySeeds {
+        collateral: 32,
+        debt: 33,
+        swap: 34,
+    },
+};
+
 const COMMON_MARKET: &str = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y";
 const COMMON_MARKET_AUTHORITY: &str = "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g";
-const COMMON_ORACLE: &str = "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH";
 const COLLATERAL_RESERVE: &str = "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY";
 const COLLATERAL_LIQUIDITY_SUPPLY: &str = "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i";
+const COLLATERAL_RECEIPT_MINT: &str = "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu";
 const COLLATERAL_MINT_SUPPLY: &str = "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58";
 
 const SYRUP_USDC_USDC_TEMPLATE: StrategyTemplate = StrategyTemplate {
@@ -141,6 +293,7 @@ const SYRUP_USDC_USDC_TEMPLATE: StrategyTemplate = StrategyTemplate {
     collateral_reserve: COLLATERAL_RESERVE,
     collateral_mint: SYRUP_MINT,
     collateral_liquidity_supply: COLLATERAL_LIQUIDITY_SUPPLY,
+    collateral_receipt_mint: COLLATERAL_RECEIPT_MINT,
     collateral_mint_supply: COLLATERAL_MINT_SUPPLY,
     collateral_farm_state: None,
     debt_reserve: "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
@@ -165,6 +318,7 @@ const SYRUP_USDC_PYUSD_TEMPLATE: StrategyTemplate = StrategyTemplate {
     collateral_reserve: COLLATERAL_RESERVE,
     collateral_mint: SYRUP_MINT,
     collateral_liquidity_supply: COLLATERAL_LIQUIDITY_SUPPLY,
+    collateral_receipt_mint: COLLATERAL_RECEIPT_MINT,
     collateral_mint_supply: COLLATERAL_MINT_SUPPLY,
     collateral_farm_state: None,
     debt_reserve: "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS",
@@ -197,11 +351,11 @@ fn derive_earn_max_topology_inner(
     policy_seed_base: Option<u64>,
 ) -> Result<EarnMaxTopology, Box<dyn Error>> {
     let vault = derive_squads_vault(&settings, EARN_MAX_VAULT_INDEX).0;
-    let collateral_mint = Pubkey::from_str(SYRUP_MINT)?;
     let usdc_mint = Pubkey::from_str(USDC_MINT)?;
     let token = Pubkey::from_str(TOKEN)?;
     let claim_custody = derive_associated_token_account(vault, usdc_mint, token);
-    let collateral_custody = derive_associated_token_account(vault, collateral_mint, token);
+    let collateral_custody =
+        derive_associated_token_account(vault, Pubkey::from_str(SYRUP_MINT)?, token);
     Ok(EarnMaxTopology {
         manifest_version: MANIFEST_VERSION,
         settings,
@@ -210,6 +364,11 @@ fn derive_earn_max_topology_inner(
         claim_custody,
         collateral_custody,
         strategies: [
+            derive_strategy(settings, vault, ONYC_USDC_TEMPLATE, policy_seed_base)?,
+            derive_strategy(settings, vault, ONYC_USDS_TEMPLATE, policy_seed_base)?,
+            derive_strategy(settings, vault, PRIME_USDC_TEMPLATE, policy_seed_base)?,
+            derive_strategy(settings, vault, PRIME_PYUSD_TEMPLATE, policy_seed_base)?,
+            derive_strategy(settings, vault, PRIME_USDS_TEMPLATE, policy_seed_base)?,
             derive_strategy(settings, vault, SYRUP_USDC_USDC_TEMPLATE, policy_seed_base)?,
             derive_strategy(settings, vault, SYRUP_USDC_PYUSD_TEMPLATE, policy_seed_base)?,
         ],
@@ -271,6 +430,7 @@ fn derive_strategy(
             Pubkey::from_str(TOKEN)?,
         ),
         collateral_liquidity_supply: template.collateral_liquidity_supply,
+        collateral_receipt_mint: template.collateral_receipt_mint,
         collateral_mint_supply: template.collateral_mint_supply,
         collateral_farm_state: template.collateral_farm_state,
         collateral_farm_user: template

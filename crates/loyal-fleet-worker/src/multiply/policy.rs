@@ -1,13 +1,11 @@
-use super::config::{
-    EarnMaxTopology, PolicyConfig, StrategyConfig, JUPITER, KLEND, PYUSD_MINT, TOKEN, TOKEN_2022,
-    USDC_MINT,
-};
+use super::config::{EarnMaxTopology, PolicyConfig, StrategyConfig, FARMS, JUPITER, KLEND, TOKEN};
 use loyal_actions::{
     create_semantic_program_interaction_policy_instruction,
     decode_program_interaction_policy_account, decode_squads_policy_create_actions,
-    derive_action_account, update_semantic_program_interaction_policy_instruction,
-    SemanticProgramInteractionConstraint as Constraint,
-    SemanticProgramInteractionDataConstraint as DataConstraint, SquadsProgramInteractionPolicyView,
+    derive_action_account, earn_max_policy_constraints,
+    update_semantic_program_interaction_policy_instruction, EarnMaxPolicyBoundary,
+    EarnMaxPolicyFamily, EarnMaxPolicyLane, SemanticProgramInteractionConstraint as Constraint,
+    SquadsProgramInteractionPolicyView, EARN_MAX_SHARED_ACCOUNTS_ROUTE,
 };
 use loyal_yield_store::fleet_orchestration::{MultiplyAction, StrategyKey};
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
@@ -18,7 +16,6 @@ pub const DEPOSIT_COLLATERAL: [u8; 8] =
 pub const BORROW_DEBT: [u8; 8] = klend_interface::discriminators::BORROW_OBLIGATION_LIQUIDITY_V2;
 pub const WITHDRAW_COLLATERAL: [u8; 8] = klend_interface::discriminators::WITHDRAW_OBLIGATION_COLLATERAL_AND_REDEEM_RESERVE_COLLATERAL_V2;
 pub const REPAY_DEBT: [u8; 8] = klend_interface::discriminators::REPAY_OBLIGATION_LIQUIDITY_V2;
-const SHARED_ACCOUNTS_ROUTE: [u8; 8] = [0xc1, 0x20, 0x9b, 0x33, 0x41, 0xd6, 0x9c, 0x81];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PolicyFamily {
@@ -150,30 +147,20 @@ pub fn constraint_indexes(
     let index = match action {
         MultiplyAction::DepositCollateral => 0,
         MultiplyAction::WithdrawCollateral | MultiplyAction::WithdrawRemainingCollateral => 1,
-        MultiplyAction::BorrowDebt => match config.key {
-            StrategyKey::SyrupUsdcUsdc => 0,
-            StrategyKey::SyrupUsdcPyusd => 2,
-        },
-        MultiplyAction::RepayDebt => match config.key {
-            StrategyKey::SyrupUsdcUsdc => 1,
-            StrategyKey::SyrupUsdcPyusd => 3,
-        },
-        MultiplyAction::SwapClaimToCollateral => route_constraint_index(instruction, 0)?,
-        MultiplyAction::SwapDebtToCollateral => route_constraint_index(
-            instruction,
-            match config.key {
-                StrategyKey::SyrupUsdcUsdc => 0,
-                StrategyKey::SyrupUsdcPyusd => 2,
-            },
-        )?,
-        MultiplyAction::SwapCollateralToDebt => route_constraint_index(
-            instruction,
-            match config.key {
-                StrategyKey::SyrupUsdcUsdc => 1,
-                StrategyKey::SyrupUsdcPyusd => 3,
-            },
-        )?,
-        MultiplyAction::SwapCollateralToClaim => route_constraint_index(instruction, 1)?,
+        MultiplyAction::BorrowDebt => 0,
+        MultiplyAction::RepayDebt => 1,
+        MultiplyAction::SwapClaimToCollateral => {
+            route_constraint_index(instruction, usdc_lane_index(config.key, false)?)?
+        }
+        MultiplyAction::SwapDebtToCollateral => {
+            route_constraint_index(instruction, strategy_lane_index(config.key, false))?
+        }
+        MultiplyAction::SwapCollateralToDebt => {
+            route_constraint_index(instruction, strategy_lane_index(config.key, true))?
+        }
+        MultiplyAction::SwapCollateralToClaim => {
+            route_constraint_index(instruction, usdc_lane_index(config.key, true)?)?
+        }
         MultiplyAction::Claim
         | MultiplyAction::DepositClaimAsset
         | MultiplyAction::RequestWithdrawal
@@ -204,205 +191,65 @@ fn canonical_constraints(
     topology: EarnMaxTopology,
     family: PolicyFamily,
 ) -> Result<Vec<Constraint>, Box<dyn Error>> {
-    let usdc = topology.strategy(StrategyKey::SyrupUsdcUsdc);
-    let pyusd = topology.strategy(StrategyKey::SyrupUsdcPyusd);
-    ensure_shared_collateral(usdc, pyusd)?;
-    let program = Pubkey::from_str(KLEND)?;
-    match family {
-        PolicyFamily::Collateral => Ok(vec![
-            collateral_constraint(
-                topology,
-                usdc,
-                pyusd,
-                MultiplyAction::DepositCollateral,
-                DEPOSIT_COLLATERAL,
-            )?,
-            collateral_constraint(
-                topology,
-                usdc,
-                pyusd,
-                MultiplyAction::WithdrawCollateral,
-                WITHDRAW_COLLATERAL,
-            )?,
-        ]),
-        PolicyFamily::Debt => Ok(vec![
-            constraint(
-                program,
-                pins(
-                    topology,
-                    usdc,
-                    &[0, 1, 4, 8, 10, 12, 13, 14],
-                    MultiplyAction::BorrowDebt,
-                )?,
-                BORROW_DEBT,
-            ),
-            constraint(
-                program,
-                pins(
-                    topology,
-                    usdc,
-                    &[0, 1, 3, 6, 7, 9, 10, 12],
-                    MultiplyAction::RepayDebt,
-                )?,
-                REPAY_DEBT,
-            ),
-            constraint(
-                program,
-                pins(
-                    topology,
-                    pyusd,
-                    &[0, 1, 4, 8, 10, 12, 13, 14],
-                    MultiplyAction::BorrowDebt,
-                )?,
-                BORROW_DEBT,
-            ),
-            constraint(
-                program,
-                pins(
-                    topology,
-                    pyusd,
-                    &[0, 1, 3, 6, 7, 9, 10, 12],
-                    MultiplyAction::RepayDebt,
-                )?,
-                REPAY_DEBT,
-            ),
-        ]),
-        PolicyFamily::Swap => Ok(vec![
-            swap_constraint(
-                topology,
-                topology.claim_custody,
-                usdc.collateral_custody,
-                USDC_MINT,
-                usdc.collateral_mint,
-                JUPITER,
-            )?,
-            swap_constraint(
-                topology,
-                usdc.collateral_custody,
-                topology.claim_custody,
-                usdc.collateral_mint,
-                USDC_MINT,
-                JUPITER,
-            )?,
-            swap_constraint(
-                topology,
-                pyusd.debt_custody,
-                pyusd.collateral_custody,
-                PYUSD_MINT,
-                pyusd.collateral_mint,
-                TOKEN_2022,
-            )?,
-            swap_constraint(
-                topology,
-                pyusd.collateral_custody,
-                pyusd.debt_custody,
-                pyusd.collateral_mint,
-                PYUSD_MINT,
-                TOKEN_2022,
-            )?,
-            swap_constraint(
-                topology,
-                topology.claim_custody,
-                pyusd.debt_custody,
-                USDC_MINT,
-                PYUSD_MINT,
-                TOKEN_2022,
-            )?,
-            swap_constraint(
-                topology,
-                pyusd.debt_custody,
-                topology.claim_custody,
-                PYUSD_MINT,
-                USDC_MINT,
-                TOKEN_2022,
-            )?,
-        ]),
-    }
-}
-
-fn ensure_shared_collateral(
-    usdc: StrategyConfig,
-    pyusd: StrategyConfig,
-) -> Result<(), Box<dyn Error>> {
-    if usdc.market != pyusd.market
-        || usdc.collateral_reserve != pyusd.collateral_reserve
-        || usdc.collateral_mint != pyusd.collateral_mint
-        || usdc.collateral_custody != pyusd.collateral_custody
-    {
-        return Err("Earn MAX debt variants do not share the exact collateral tuple".into());
-    }
-    Ok(())
-}
-
-fn collateral_constraint(
-    topology: EarnMaxTopology,
-    usdc: StrategyConfig,
-    pyusd: StrategyConfig,
-    action: MultiplyAction,
-    discriminator: [u8; 8],
-) -> Result<Constraint, Box<dyn Error>> {
-    let indexes: &[u8] = match action {
-        MultiplyAction::DepositCollateral => &[0, 1, 4, 9, 11, 12, 14, 15],
-        MultiplyAction::WithdrawCollateral => &[0, 1, 4, 9, 11, 12, 14, 15],
-        _ => return Err("invalid collateral policy action".into()),
+    let strategies = topology.strategy_catalog();
+    let boundary = EarnMaxPolicyBoundary {
+        vault: topology.vault,
+        klend_program: Pubkey::from_str(KLEND)?,
+        farms_program: Pubkey::from_str(FARMS)?,
+        jupiter_program: Pubkey::from_str(JUPITER)?,
+        classic_token_program: Pubkey::from_str(TOKEN)?,
+        deposit_discriminator: DEPOSIT_COLLATERAL,
+        withdraw_discriminator: WITHDRAW_COLLATERAL,
+        borrow_discriminator: BORROW_DEBT,
+        repay_discriminator: REPAY_DEBT,
+        lanes: strategies
+            .iter()
+            .map(|strategy| {
+                Ok(EarnMaxPolicyLane {
+                    obligation: strategy.obligation,
+                    collateral_reserve: Pubkey::from_str(strategy.collateral_reserve)?,
+                    collateral_custody: strategy.collateral_custody,
+                    debt_reserve: Pubkey::from_str(strategy.debt_reserve)?,
+                    debt_custody: strategy.debt_custody,
+                    debt_token_program: Pubkey::from_str(strategy.debt_token_program)?,
+                })
+            })
+            .collect::<Result<Vec<_>, solana_sdk::pubkey::ParsePubkeyError>>()?,
     };
-    let mut account_pubkeys = pins(topology, usdc, indexes, action)?;
-    let obligation = account_pubkeys
-        .iter_mut()
-        .find(|(index, _)| *index == 1)
-        .ok_or("collateral policy omitted obligation pin")?;
-    obligation.1 = vec![usdc.obligation, pyusd.obligation];
-    Ok(constraint(
-        Pubkey::from_str(KLEND)?,
-        account_pubkeys,
-        discriminator,
-    ))
+    let family = match family {
+        PolicyFamily::Collateral => EarnMaxPolicyFamily::Collateral,
+        PolicyFamily::Debt => EarnMaxPolicyFamily::Debt,
+        PolicyFamily::Swap => EarnMaxPolicyFamily::Swap,
+    };
+    earn_max_policy_constraints(&boundary, family).map_err(Into::into)
 }
 
-fn swap_constraint(
-    topology: EarnMaxTopology,
-    source: Pubkey,
-    destination: Pubkey,
-    source_mint: &str,
-    destination_mint: &str,
-    optional_program: &str,
-) -> Result<Constraint, Box<dyn Error>> {
-    Ok(Constraint {
-        program_id: Pubkey::from_str(JUPITER)?,
-        account_pubkeys: vec![
-            (0, vec![Pubkey::from_str(TOKEN)?]),
-            (2, vec![topology.vault]),
-            (3, vec![source]),
-            (6, vec![destination]),
-            (7, vec![Pubkey::from_str(source_mint)?]),
-            (8, vec![Pubkey::from_str(destination_mint)?]),
-            (9, vec![Pubkey::from_str(JUPITER)?]),
-            (10, vec![Pubkey::from_str(optional_program)?]),
-        ],
-        data: vec![DataConstraint::SliceEquals {
-            offset: 0,
-            value: SHARED_ACCOUNTS_ROUTE.to_vec(),
-        }],
-    })
+const fn strategy_lane_index(key: StrategyKey, reverse: bool) -> u8 {
+    let base = match key {
+        StrategyKey::OnycUsdc => 0,
+        StrategyKey::OnycUsds => 2,
+        StrategyKey::PrimeUsdc => 4,
+        StrategyKey::PrimePyusd => 6,
+        StrategyKey::PrimeUsds => 8,
+        StrategyKey::SyrupUsdcUsdc => 10,
+        StrategyKey::SyrupUsdcPyusd => 12,
+    };
+    base + reverse as u8
 }
 
-fn constraint(
-    program_id: Pubkey,
-    account_pubkeys: Vec<(u8, Vec<Pubkey>)>,
-    discriminator: [u8; 8],
-) -> Constraint {
-    Constraint {
-        program_id,
-        account_pubkeys,
-        data: vec![DataConstraint::SliceEquals {
-            offset: 0,
-            value: discriminator.to_vec(),
-        }],
-    }
+fn usdc_lane_index(key: StrategyKey, reverse: bool) -> Result<u8, Box<dyn Error>> {
+    let usdc_key = match key {
+        StrategyKey::OnycUsdc | StrategyKey::OnycUsds => StrategyKey::OnycUsdc,
+        StrategyKey::PrimeUsdc | StrategyKey::PrimePyusd | StrategyKey::PrimeUsds => {
+            StrategyKey::PrimeUsdc
+        }
+        StrategyKey::SyrupUsdcUsdc | StrategyKey::SyrupUsdcPyusd => StrategyKey::SyrupUsdcUsdc,
+    };
+    Ok(strategy_lane_index(usdc_key, reverse))
 }
 
 fn route_constraint_index(instruction: &Instruction, index: u8) -> Result<u8, Box<dyn Error>> {
-    if instruction.data.get(..8) != Some(SHARED_ACCOUNTS_ROUTE.as_slice()) {
+    if instruction.data.get(..8) != Some(EARN_MAX_SHARED_ACCOUNTS_ROUTE.as_slice()) {
         return Err("Jupiter action is not SharedAccountsRoute".into());
     }
     let route_count = instruction
@@ -415,23 +262,4 @@ fn route_constraint_index(instruction: &Instruction, index: u8) -> Result<u8, Bo
         return Err("Jupiter route must contain one to four legs".into());
     }
     Ok(index)
-}
-
-fn pins(
-    topology: EarnMaxTopology,
-    config: StrategyConfig,
-    indexes: &[u8],
-    action: MultiplyAction,
-) -> Result<Vec<(u8, Vec<Pubkey>)>, Box<dyn Error>> {
-    let template = super::builder::policy_template(config, topology.vault, action)?;
-    indexes
-        .iter()
-        .map(|index| {
-            let account = template
-                .accounts
-                .get(usize::from(*index))
-                .ok_or("policy pin is outside the canonical instruction")?;
-            Ok((*index, vec![account.pubkey]))
-        })
-        .collect()
 }
