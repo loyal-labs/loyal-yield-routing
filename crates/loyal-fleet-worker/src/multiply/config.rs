@@ -73,7 +73,10 @@ impl StrategyConfig {
             MultiplyAction::WithdrawCollateral | MultiplyAction::WithdrawRemainingCollateral => {
                 Some(self.withdraw_policy)
             }
-            MultiplyAction::Claim | MultiplyAction::DepositClaimAsset => None,
+            MultiplyAction::Claim
+            | MultiplyAction::DepositClaimAsset
+            | MultiplyAction::RequestWithdrawal
+            | MultiplyAction::CancelWithdrawal => None,
         }
     }
 }

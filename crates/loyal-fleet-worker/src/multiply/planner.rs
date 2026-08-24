@@ -69,15 +69,15 @@ fn up(observed: &ObservedRoute, target: StrategyKey, topology: EarnMaxTopology) 
             PlannedAmount::Exact(observed.collateral_custody.amount_raw),
         );
     }
-    if position.collateral_deposited_raw == 0 {
-        if observed.claim.amount_raw == 0 {
-            return PlannerDecision::Complete;
-        }
+    if observed.claim.amount_raw > 0 {
         return execute(
             MultiplyAction::SwapClaimToCollateral,
             Some(target),
             PlannedAmount::Exact(observed.claim.amount_raw),
         );
+    }
+    if position.collateral_deposited_raw == 0 {
+        return PlannerDecision::Complete;
     }
     let debt_custody = observed.debt_custody(target).amount_raw;
     if debt_custody > 0 {

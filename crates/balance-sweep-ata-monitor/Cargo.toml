@@ -7,6 +7,7 @@ description = "Wallet USDC ATA monitor for Loyal balance sweep targets"
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
+bs58 = "0.5"
 balance-sweep-ata-observations = { path = "../balance-sweep-ata-observations" }
 chrono = { workspace = true, default-features = false, features = ["clock", "serde"] }
 clap = { workspace = true, features = ["derive", "env"] }

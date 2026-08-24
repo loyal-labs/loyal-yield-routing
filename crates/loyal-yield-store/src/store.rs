@@ -4,8 +4,9 @@ use crate::domain::{
     MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
 };
 use crate::fleet_orchestration::{
-    RebalanceOpportunityLease, RebalanceOpportunityRecord, SignedRouteSubmissionInput,
-    SignedRouteSubmissionRecord, TargetCapacityReservationInput,
+    project_frontend, MultiplyRouteState, RebalanceOpportunityLease, RebalanceOpportunityRecord,
+    SignedRouteSubmissionInput, SignedRouteSubmissionRecord, TargetCapacityReservationInput,
+    MULTIPLY_ENGINE_VERSION,
 };
 use crate::types::*;
 use crate::{OrchestratorError, ACTIVE_DECISION_STATUSES};
@@ -60,6 +61,7 @@ const MIGRATION_0061: &str =
     include_str!("../migrations/0061_coalesced_autodeposit_reconciliation.sql");
 const MIGRATION_0062: &str = include_str!("../migrations/0062_earn_chain_cash_flow_projection.sql");
 const MIGRATION_0063: &str = include_str!("../migrations/0063_earn_max_external_operations.sql");
+const MIGRATION_0064: &str = include_str!("../migrations/0064_earn_max_partial_lifecycle.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -549,6 +551,12 @@ impl NeonSqlClient {
                 version: 63,
                 name: "earn_max_external_operations",
                 sql: MIGRATION_0063,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 64,
+                name: "earn_max_partial_lifecycle",
+                sql: MIGRATION_0064,
                 expected_checksum: None,
             },
         ] {
@@ -2665,6 +2673,200 @@ impl NeonSqlClient {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Applies one root-signed Earn MAX memo observed in a confirmed Smart
+    /// Account transaction. The operation key is the chain location itself;
+    /// replaying the same transaction is a no-op.
+    pub async fn project_earn_max_intent(
+        &self,
+        input: EarnMaxIntentProjectionInput,
+    ) -> Result<bool, OrchestratorError> {
+        if input.settings.trim().is_empty() || input.signature.trim().is_empty() || input.slot == 0
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "Earn MAX intent identity is malformed".to_owned(),
+            ));
+        }
+        let idempotency_key = format!(
+            "{MULTIPLY_ENGINE_VERSION}:intent:{}:{}",
+            input.signature, input.instruction_index
+        );
+        let source_instruction_index = i32::from(input.instruction_index);
+        let confirmed_slot =
+            i64::try_from(input.slot).map_err(|_| OrchestratorError::SlotOutOfRange(input.slot))?;
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
+            r#"
+            SELECT route_key, state, lease_owner, lease_expires_at
+            FROM loyal_yield.multiply_route_states
+            WHERE settings=$1 AND vault_index=$2
+            FOR UPDATE
+            "#,
+        )
+        .bind(&input.settings)
+        .bind(i16::from(input.vault_index))
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "Earn MAX intent route is not projected yet".to_owned(),
+            )
+        })?;
+        let duplicate = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM loyal_yield.multiply_operations WHERE idempotency_key=$1)",
+        )
+        .bind(&idempotency_key)
+        .fetch_one(&mut *tx)
+        .await?;
+        if duplicate {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let lease_owner: Option<String> = row.try_get("lease_owner")?;
+        let lease_expires_at: Option<DateTime<Utc>> = row.try_get("lease_expires_at")?;
+        if lease_owner.is_some() && lease_expires_at.is_some_and(|expiry| expiry > Utc::now()) {
+            return Err(OrchestratorError::StoreInvariant(
+                "Earn MAX intent route is actively leased; retry projection".to_owned(),
+            ));
+        }
+        let route_key: String = row.try_get("route_key")?;
+        let mut state: MultiplyRouteState = serde_json::from_value(row.try_get("state")?)
+            .map_err(|error| OrchestratorError::StoreInvariant(error.to_string()))?;
+        if input.slot < state.observed_slot {
+            return Err(OrchestratorError::StoreInvariant(
+                "Earn MAX intent is older than the projected route".to_owned(),
+            ));
+        }
+        let (action, evidence) = match &input.intent {
+            EarnMaxIntent::Withdraw {
+                request_id,
+                destination_account,
+                amount_raw,
+            } => {
+                let amount_raw = match amount_raw {
+                    Some(value) => *value,
+                    None => {
+                        let value = sqlx::query_scalar::<_, Option<String>>(
+                            r#"
+                            SELECT equity_usd_micros::text
+                            FROM loyal_yield.multiply_position_snapshots
+                            WHERE route_key=$1
+                            ORDER BY observed_slot DESC, id DESC
+                            LIMIT 1
+                            "#,
+                        )
+                        .bind(&route_key)
+                        .fetch_optional(&mut *tx)
+                        .await?
+                        .flatten()
+                        .ok_or_else(|| {
+                            OrchestratorError::StoreInvariant(
+                                "Earn MAX full withdrawal has no current equity".to_owned(),
+                            )
+                        })?;
+                        value.parse::<u64>().map_err(|_| {
+                            OrchestratorError::StoreInvariant(
+                                "Earn MAX full withdrawal equity does not fit u64".to_owned(),
+                            )
+                        })?
+                    }
+                };
+                state = state
+                    .request_withdrawal(
+                        request_id.clone(),
+                        destination_account.clone(),
+                        amount_raw,
+                        input.observed_at,
+                    )
+                    .map_err(|error| OrchestratorError::StoreInvariant(error.to_string()))?;
+                (
+                    "request_withdrawal",
+                    json!({
+                        "kind": "withdraw",
+                        "requestId": request_id,
+                        "destinationAccount": destination_account,
+                        "amountRaw": amount_raw,
+                    }),
+                )
+            }
+            EarnMaxIntent::Cancel { request_id } => {
+                state = state
+                    .cancel_withdrawal(request_id)
+                    .map_err(|error| OrchestratorError::StoreInvariant(error.to_string()))?;
+                (
+                    "cancel_withdrawal",
+                    json!({ "kind": "cancel", "requestId": request_id }),
+                )
+            }
+        };
+        state.observed_slot = input.slot;
+        state.observed_at = input.observed_at;
+        state.frontend = project_frontend(&state);
+        state
+            .validate_persisted()
+            .map_err(|error| OrchestratorError::StoreInvariant(error.to_string()))?;
+        let evidence_bytes = serde_json::to_vec(&evidence)
+            .map_err(|error| OrchestratorError::StoreInvariant(error.to_string()))?;
+        let reconciliation_sha256 = format!("{:x}", Sha256::digest(&evidence_bytes));
+        let operation_id = format!(
+            "intent-{}",
+            &format!("{:x}", Sha256::digest(idempotency_key.as_bytes()))[..32]
+        );
+        let changed = sqlx::query(
+            r#"
+            UPDATE loyal_yield.multiply_route_states
+            SET state=$2, state_version=$3, lease_owner=NULL,
+                lease_expires_at=NULL, updated_at=now()
+            WHERE route_key=$1
+            "#,
+        )
+        .bind(&route_key)
+        .bind(
+            serde_json::to_value(&state)
+                .map_err(|error| OrchestratorError::StoreInvariant(error.to_string()))?,
+        )
+        .bind(i64::try_from(state.generation).map_err(|_| {
+            OrchestratorError::StoreInvariant("Earn MAX generation exceeds BIGINT".to_owned())
+        })?)
+        .execute(&mut *tx)
+        .await?;
+        if changed.rows_affected() != 1 {
+            return Err(OrchestratorError::StoreInvariant(
+                "Earn MAX intent route update missed".to_owned(),
+            ));
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.multiply_operations (
+                operation_id, route_key, cycle, engine_version, action, status,
+                idempotency_key, expected_effects, transaction_signature,
+                source_instruction_index, confirmed_slot, reconciliation_sha256,
+                created_at, updated_at
+            ) VALUES (
+                $1, $2, $3, $4, $5, 'reconciled',
+                $6, $7, $8, $9, $10, $11, $12, $12
+            )
+            "#,
+        )
+        .bind(operation_id)
+        .bind(&route_key)
+        .bind(i64::try_from(state.cycle).map_err(|_| {
+            OrchestratorError::StoreInvariant("Earn MAX cycle exceeds BIGINT".to_owned())
+        })?)
+        .bind(MULTIPLY_ENGINE_VERSION)
+        .bind(action)
+        .bind(idempotency_key)
+        .bind(json!({ "tokenDeltas": [], "obligationDelta": null, "intent": evidence }))
+        .bind(&input.signature)
+        .bind(source_instruction_index)
+        .bind(confirmed_slot)
+        .bind(reconciliation_sha256)
+        .bind(input.observed_at)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub async fn advance_projection_offset(

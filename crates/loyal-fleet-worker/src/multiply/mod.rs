@@ -293,7 +293,12 @@ impl WorkerRuntime {
         withdrawal.status = loyal_yield_store::fleet_orchestration::WithdrawalStatus::Claimed;
         withdrawal.claim_signature = Some(transfer.signature.to_string());
         next.generation += 1;
-        next.goal = RouteGoal::Claimed;
+        let redeploy_after_partial_claim = transfer.source_post > 0;
+        next.goal = if redeploy_after_partial_claim {
+            RouteGoal::Deploy
+        } else {
+            RouteGoal::Claimed
+        };
         next.position = MultiplyPosition::Idle {
             claim: loyal_yield_store::fleet_orchestration::TokenBalance {
                 account: topology.claim_custody.to_string(),
@@ -360,6 +365,7 @@ impl WorkerRuntime {
             signed_wire: None,
             signed_wire_sha256: Some(hash_bytes(&wire)),
             transaction_signature: Some(transfer.signature.to_string()),
+            source_instruction_index: None,
             recent_blockhash: Some(transfer.transaction.message.recent_blockhash().to_string()),
             last_valid_block_height: None,
             broadcast_intent_at: None,
@@ -514,14 +520,16 @@ impl WorkerRuntime {
             .ok_or("route not found")?;
         let now = Utc::now();
         let mut state = stored.state;
-        state.position = MultiplyPosition::Idle {
-            claim: loyal_yield_store::fleet_orchestration::TokenBalance {
-                account: topology.claim_custody.to_string(),
-                mint: config::USDC_MINT.to_owned(),
-                token_program: config::TOKEN.to_owned(),
-                amount_raw: vault_post,
-            },
-        };
+        if matches!(state.position, MultiplyPosition::Idle { .. }) {
+            state.position = MultiplyPosition::Idle {
+                claim: loyal_yield_store::fleet_orchestration::TokenBalance {
+                    account: topology.claim_custody.to_string(),
+                    mint: config::USDC_MINT.to_owned(),
+                    token_program: config::TOKEN.to_owned(),
+                    amount_raw: vault_post,
+                },
+            };
+        }
         state.observed_slot = transaction.slot;
         state.observed_at = now;
         let evidence = DepositEvidence {
@@ -584,6 +592,7 @@ impl WorkerRuntime {
             signed_wire: None,
             signed_wire_sha256: Some(hash_bytes(&wire)),
             transaction_signature: Some(signature.to_string()),
+            source_instruction_index: None,
             recent_blockhash: Some(decoded.message.recent_blockhash().to_string()),
             last_valid_block_height: None,
             broadcast_intent_at: None,
@@ -873,6 +882,7 @@ impl WorkerRuntime {
                     signed_wire: None,
                     signed_wire_sha256: None,
                     transaction_signature: None,
+                    source_instruction_index: None,
                     recent_blockhash: None,
                     last_valid_block_height: None,
                     broadcast_intent_at: None,

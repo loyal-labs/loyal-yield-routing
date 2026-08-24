@@ -5,8 +5,9 @@ import { resolve } from "node:path";
 import { neon } from "@neondatabase/serverless";
 import { Connection, PublicKey } from "@solana/web3.js";
 
-const CONTRACT_VERSION = "earn-max-v1";
-const CONTRACT_SHA256 = "50d25c214d1c813da09f20b8e1c187c756ce31261bf0b645c0795be1058cb3e3";
+const CONTRACT_VERSION = "earn-max-v2";
+const POLICY_MANIFEST_VERSION = "earn-max-v1";
+const CONTRACT_SHA256 = "1ecb25c88473a316532012c7ee5cff727b55860cd6cd3106c281ebdfa4ba80fa";
 const PASS = "PASS_EARN_MAX_PRODUCTION_READY";
 const FAIL = "FAIL_EARN_MAX_PRODUCTION_READY";
 const BLOCKED = "BLOCKED_EARN_MAX_PRODUCTION_READY";
@@ -30,6 +31,7 @@ const RENDER_BLUEPRINT = "render.yaml";
 const APP_API_ROOT = "apps/web/src/app/api/smart-accounts/earn-max";
 const APP_FEATURE_ROOT = "apps/web/src/features/earn-max";
 const APP_ACTIONS = "packages/loyal-actions/src/earn-max.ts";
+const APP_UI = "apps/web/src/components/wallet-workspace/facelift/earn-max-pane.tsx";
 const MULTIPLY_STORE = "crates/loyal-yield-store/src/multiply_state_store.rs";
 
 type Json = Record<string, unknown>;
@@ -238,6 +240,19 @@ function checkMinimalSchemaSource(): Json {
     "multiply_one_nonterminal_constraint_missing",
     MIGRATIONS,
   );
+  for (const required of [
+    "0064_earn_max_partial_lifecycle.sql",
+    "source_instruction_index",
+    "request_withdrawal",
+    "cancel_withdrawal",
+  ]) {
+    requireText(
+      `${migrations.join("\n")}\n${source}`,
+      required,
+      "earn_max_partial_lifecycle_schema_missing",
+      MIGRATIONS,
+    );
+  }
   for (const forbidden of [
     "earn_max_policy_events",
     "earn_max_decisions",
@@ -285,6 +300,22 @@ function checkLaserStreamSource(): Json {
     LASERSTREAM_RECONCILIATION,
   );
   for (const required of [
+    "parse_earn_max_intent",
+    "project_earn_max_intent",
+    "source_instruction_index",
+    "CommitmentConfig::confirmed()",
+    "memo.accounts.contains(&vault_pubkey)",
+    "has_squads_execution",
+    '["loyal", "earn-max", "v1"]',
+  ]) {
+    requireText(
+      reconciliation,
+      required,
+      "earn_max_intent_projection_missing",
+      LASERSTREAM_RECONCILIATION,
+    );
+  }
+  for (const required of [
     "project_earn_max_policy_set",
     "current_policy_matches",
     "get_multiple_accounts_with_commitment",
@@ -304,42 +335,51 @@ function checkAppSource(): Json {
   const apiRoot = resolve(APPS_ROOT, APP_API_ROOT);
   const files = relativeFiles(apiRoot).filter((path) => path.endsWith("route.ts"));
   const expected = [
-    "history/route.ts",
+    "activity/route.ts",
+    "performance/route.ts",
     "state/route.ts",
-    "transactions/prepare/route.ts",
-    "withdrawals/route.ts",
   ];
   if (JSON.stringify(files) !== JSON.stringify(expected)) {
     fail("earn_max_endpoint_inventory_drift", { expected, actual: files });
   }
   const featureRoot = resolve(APPS_ROOT, APP_FEATURE_ROOT);
-  const featureFiles = relativeFiles(featureRoot).filter((path) => path.endsWith(".ts"));
+  const featureFiles = relativeFiles(featureRoot).filter((path) => /\.tsx?$/.test(path));
   const source = [
     ...files.map((path) => file(apiRoot, path)),
     ...featureFiles.map((path) => file(featureRoot, path)),
     file(APPS_ROOT, APP_ACTIONS),
+    file(APPS_ROOT, APP_UI),
   ].join("\n");
-  for (const action of ["install_policies", "deposit", "claim", "close_policies"] as const) {
-    requireText(source, action, "earn_max_prepare_action_missing", APP_API_ROOT);
-  }
-  for (const forbidden of ["programId", "policySeed", "claimDestination", "/confirm"] as const) {
+  for (const forbidden of [
+    "programId", "policySeed", "claimDestination", "/confirm",
+    "prepareTransaction", "requestWithdrawal", "requestEarnMaxWithdrawal",
+  ] as const) {
     rejectText(files.map((path) => file(apiRoot, path)).join("\n"), forbidden, "earn_max_arbitrary_or_confirmation_surface", APP_API_ROOT);
   }
   for (const required of [
-    "prepareEarnMaxInstall",
-    "prepareEarnMaxDeposit",
-    "prepareEarnMaxClaim",
-    "prepareEarnMaxClose",
+    "buildEarnMaxInstallInstructions",
+    "buildEarnMaxDepositInstructions",
+    "buildEarnMaxWithdrawalRequestInstructions",
+    "buildEarnMaxWithdrawalCancelInstructions",
+    "buildEarnMaxClaimInstructions",
+    "buildEarnMaxCloseInstructions",
     "createEarnMaxPolicyManifest",
-    "serializePreparedOperation",
+    "EarnMaxViewModel",
     "history_incomplete",
     "realized_apy_bps",
     "forecast_apy_bps",
     "x-loyal-deployment-revision",
+    "loyal:earn-max:v1:withdraw:",
+    "loyal:earn-max:v1:cancel:",
+    "confirm: true",
   ]) {
     requireText(source, required, "earn_max_application_contract_missing", APP_FEATURE_ROOT);
   }
-  for (const forbidden of ["preparation_pending", "SOLANA_TESTING_PK", "flashBorrow", "flash_borrow", "guard", "hook"]) {
+  for (const forbidden of [
+    "preparation_pending", "SOLANA_TESTING_PK", "flashBorrow", "flash_borrow",
+    "guard", "hook", "EARN_MAX_BALANCE_USD", "EARN_MAX_APY_LABEL",
+    "NOOP_EXECUTE_NOW", "mock no-op", "Mocked Earn MAX",
+  ]) {
     rejectText(source, forbidden, "earn_max_application_placeholder_or_forbidden_graph", APP_FEATURE_ROOT);
   }
   requireText(
@@ -353,6 +393,8 @@ function checkAppSource(): Json {
 
 function checkWorkerAndStoreSource(): Json {
   const worker = file(ROOT, "crates/loyal-fleet-worker/src/multiply/mod.rs");
+  const state = file(ROOT, "crates/loyal-yield-store/src/fleet_orchestration/multiply.rs");
+  const planner = file(ROOT, "crates/loyal-fleet-worker/src/multiply/planner.rs");
   const store = file(ROOT, MULTIPLY_STORE);
   for (const required of [
     "bootstrap_ready_route",
@@ -361,6 +403,7 @@ function checkWorkerAndStoreSource(): Json {
     "record_multiply_position_snapshot",
     "confirmed_kamino_reserve_curve_500ms",
     "forecast_apy_bps",
+    "redeploy_after_partial_claim",
   ]) {
     requireText(worker, required, "earn_max_worker_bridge_missing", "crates/loyal-fleet-worker/src/multiply/mod.rs");
   }
@@ -373,7 +416,16 @@ function checkWorkerAndStoreSource(): Json {
     requireText(store, required, "earn_max_store_contract_missing", MULTIPLY_STORE);
   }
   rejectText(worker, "build_operation(.*MultiplyAction::Claim", "delegate_claim_execution_survived", "crates/loyal-fleet-worker/src/multiply/mod.rs");
-  return { workerSha256: sha256(worker), storeSha256: sha256(store) };
+  requireText(planner, "if observed.claim.amount_raw > 0", "active_position_top_up_not_deployed", "crates/loyal-fleet-worker/src/multiply/planner.rs");
+  requireText(state, "ready_by", "withdrawal_sla_not_explicit", "crates/loyal-yield-store/src/fleet_orchestration/multiply.rs");
+  requireText(state, "cancel_withdrawal", "withdrawal_cancellation_state_missing", "crates/loyal-yield-store/src/fleet_orchestration/multiply.rs");
+  requireText(store, "interval '30 seconds'", "withdrawal_cancel_grace_missing", MULTIPLY_STORE);
+  return {
+    workerSha256: sha256(worker),
+    stateSha256: sha256(state),
+    plannerSha256: sha256(planner),
+    storeSha256: sha256(store),
+  };
 }
 
 async function targetedChecks(): Promise<Json> {
@@ -464,31 +516,54 @@ async function checkLivePrerequisites(): Promise<Json> {
   const migrations = await sql`
     SELECT version, name, checksum
     FROM loyal_yield.schema_migrations
-    WHERE version IN (54, 55, 56)
+    WHERE version IN (54, 55, 56, 64)
     ORDER BY version
   `;
   if (
-    migrations.length !== 3 ||
+    migrations.length !== 4 ||
     String(migrations[0]?.name) !== "earn_max_per_user" ||
     String(migrations[1]?.name) !== "earn_max_repeated_lifecycle" ||
-    String(migrations[2]?.name) !== "earn_max_dynamic_policy_seeds"
+    String(migrations[2]?.name) !== "earn_max_dynamic_policy_seeds" ||
+    String(migrations[3]?.name) !== "earn_max_partial_lifecycle"
   ) {
     fail("deployed_earn_max_migration_missing", { migrations });
   }
-  const response = await fetch(`${APP_URL}/api/smart-accounts/earn-max/state`, {
-    redirect: "manual",
-  });
-  const contractHeader = response.headers.get("x-loyal-earn-max-contract");
-  const deployedRevision = response.headers.get("x-loyal-deployment-revision");
-  if (contractHeader !== CONTRACT_VERSION || !deployedRevision?.match(/^[0-9a-f]{40}$/)) {
-    fail("deployed_earn_max_application_identity_missing", {
-      status: response.status,
-      contractHeader,
-      deployedRevision,
+  const liveRoutes = ["state", "performance", "activity"];
+  const routeEvidence: Json[] = [];
+  let deployedRevision: string | null = null;
+  for (const route of liveRoutes) {
+    const response = await fetch(`${APP_URL}/api/smart-accounts/earn-max/${route}`, {
+      redirect: "manual",
     });
+    const contractHeader = response.headers.get("x-loyal-earn-max-contract");
+    const revision = response.headers.get("x-loyal-deployment-revision");
+    if (
+      response.status !== 401 ||
+      contractHeader !== CONTRACT_VERSION ||
+      !revision?.match(/^[0-9a-f]{40}$/) ||
+      (deployedRevision !== null && revision !== deployedRevision)
+    ) {
+      fail("deployed_earn_max_application_identity_missing", {
+        route,
+        status: response.status,
+        contractHeader,
+        revision,
+        deployedRevision,
+      });
+    }
+    deployedRevision = revision;
+    routeEvidence.push({ route, status: response.status, contractHeader, revision });
   }
-  if (response.status !== 401) {
-    fail("deployed_earn_max_auth_boundary_missing", { status: response.status });
+  for (const removed of ["history", "withdrawals", "transactions/prepare"]) {
+    const response = await fetch(`${APP_URL}/api/smart-accounts/earn-max/${removed}`, {
+      redirect: "manual",
+    });
+    if (response.status !== 404) {
+      fail("deployed_earn_max_mutation_or_obsolete_endpoint_survived", {
+        route: removed,
+        status: response.status,
+      });
+    }
   }
   const appRevision = await commandText(["git", "rev-parse", "HEAD"], APPS_ROOT);
   if (deployedRevision !== appRevision) {
@@ -503,6 +578,7 @@ async function checkLivePrerequisites(): Promise<Json> {
       checksum: migration.checksum,
     })),
     deployedRevision,
+    routes: routeEvidence,
   };
 }
 
@@ -527,7 +603,14 @@ async function checkDeployedWorkers(
         actualImage: deployedImage,
       });
     }
-    evidence.push({ service, deployId: latest.id, image: deployedImage, status: latest.status });
+    evidence.push({
+      service,
+      deployId: latest.id,
+      image: deployedImage,
+      status: latest.status,
+      createdAt: latest.createdAt,
+      finishedAt: latest.finishedAt,
+    });
   }
   return { services: evidence };
 }
@@ -576,7 +659,7 @@ async function checkFreshLifecycle(): Promise<Json> {
     ? []
     : Array.from({ length: 6 }, (_, index) => base + BigInt(index));
   if (
-    policy?.manifest_version !== CONTRACT_VERSION ||
+    policy?.manifest_version !== POLICY_MANIFEST_VERSION ||
     policy?.status !== "removed" ||
     base === null || base <= 0n ||
     bindings.length !== 6 ||
@@ -613,9 +696,10 @@ async function checkFreshLifecycle(): Promise<Json> {
   const vaultPre = integer(deposit?.vaultPreAmountRaw);
   const vaultPost = integer(deposit?.vaultPostAmountRaw);
   const requestedAt = timestamp(withdrawal?.requestedAt);
+  const readyBy = timestamp(withdrawal?.readyBy);
   const unwindAt = timestamp(withdrawal?.unwindCompletedAt);
   if (
-    state?.schemaVersion !== 6 ||
+    state?.schemaVersion !== 7 ||
     state?.engineVersion !== "earn_max_v1" ||
     integer(state?.policySeedBase) !== base ||
     state?.goal !== "claimed" ||
@@ -626,25 +710,30 @@ async function checkFreshLifecycle(): Promise<Json> {
     depositAmount === null || depositAmount <= 0n ||
     walletPre === null || walletPost === null || walletPre - walletPost !== depositAmount ||
     vaultPre === null || vaultPost === null || vaultPost - vaultPre !== depositAmount ||
-    requestedAt === null || unwindAt === null || unwindAt < requestedAt || unwindAt - requestedAt > 600_000
+    requestedAt === null || readyBy === null || unwindAt === null ||
+    readyBy - requestedAt !== 600_000 || unwindAt < requestedAt || unwindAt > readyBy
   ) {
     blocked("fresh_claimed_route_reconciliation_missing", {
       settings: VERIFY_SETTINGS,
       goal: state?.goal,
       withdrawalStatus: withdrawal?.status,
+      readyBy,
       unwindMilliseconds: requestedAt !== null && unwindAt !== null ? unwindAt - requestedAt : null,
       resume: "complete and reconcile the fresh deposit, unwind, and claim lifecycle within 600 seconds",
     });
   }
 
   const operations = await sql`
-    SELECT operation_id, action, status, transaction_signature, confirmed_slot,
-           expected_effects, created_at, updated_at
+    SELECT operation_id, action, status, transaction_signature,
+           source_instruction_index, confirmed_slot, expected_effects,
+           created_at, updated_at
     FROM loyal_yield.multiply_operations
     WHERE route_key = ${String(route?.route_key ?? "")}
     ORDER BY created_at, operation_id
   `;
   const requiredActions = [
+    "request_withdrawal",
+    "cancel_withdrawal",
     "deposit_claim_asset",
     "swap_claim_to_collateral",
     "deposit_collateral",
@@ -657,11 +746,110 @@ async function checkFreshLifecycle(): Promise<Json> {
   ];
   const actionSet = new Set(operations.map((operation) => String(operation.action)));
   const badOperations = operations.filter((operation) => operation.status !== "reconciled");
-  if (operations.length === 0 || requiredActions.some((action) => !actionSet.has(action)) || badOperations.length > 0) {
+  const actionCount = (action: string) => operations.filter((operation) => operation.action === action).length;
+  const chainLocations = operations
+    .filter((operation) => operation.source_instruction_index !== null)
+    .map((operation) => `${operation.transaction_signature}:${operation.source_instruction_index}`);
+  const intentLocationsUnique = new Set(chainLocations).size === chainLocations.length;
+  if (
+    operations.length === 0 ||
+    requiredActions.some((action) => !actionSet.has(action)) ||
+    badOperations.length > 0 ||
+    actionCount("deposit_claim_asset") < 2 ||
+    actionCount("request_withdrawal") < 3 ||
+    actionCount("cancel_withdrawal") < 1 ||
+    actionCount("claim") < 2 ||
+    !intentLocationsUnique
+  ) {
     blocked("fresh_hookless_operation_graph_incomplete", {
       actions: [...actionSet].sort(),
+      counts: Object.fromEntries(requiredActions.map((action) => [action, actionCount(action)])),
+      intentLocationsUnique,
       nonReconciled: badOperations.map((operation) => ({ id: operation.operation_id, status: operation.status })),
-      resume: "complete the real hookless KLend and Jupiter open/unwind graph",
+      resume: "complete the confirmed deposit, top-up, cancel, partial/full claim, and hookless open/unwind graph",
+    });
+  }
+
+  const operationSlot = (operation: Record<string, unknown>) => integer(operation.confirmed_slot);
+  const intent = (operation: Record<string, unknown>) =>
+    record(record(operation.expected_effects)?.intent);
+  const claimSourcePost = (operation: Record<string, unknown>): bigint | null => {
+    const effects = record(operation.expected_effects);
+    const before = array(effects?.tokenAmountsBefore)
+      .map(record)
+      .filter((value): value is Record<string, unknown> => value !== null);
+    const deltas = array(effects?.tokenDeltas)
+      .map(record)
+      .filter((value): value is Record<string, unknown> => value !== null);
+    const sourceDelta = deltas.find((delta) => (integer(delta.rawDelta) ?? 0n) < 0n);
+    const sourceBefore = before.find((amount) => amount.account === sourceDelta?.account);
+    const amount = integer(sourceBefore?.amountRaw);
+    const delta = integer(sourceDelta?.rawDelta);
+    return amount === null || delta === null ? null : amount + delta;
+  };
+  const bySlot = (left: Record<string, unknown>, right: Record<string, unknown>) =>
+    Number((operationSlot(left) ?? 0n) - (operationSlot(right) ?? 0n));
+  const deposits = operations.filter((operation) => operation.action === "deposit_claim_asset").sort(bySlot);
+  const borrows = operations.filter((operation) => operation.action === "borrow_debt").sort(bySlot);
+  const requests = operations.filter((operation) => operation.action === "request_withdrawal").sort(bySlot);
+  const cancels = operations.filter((operation) => operation.action === "cancel_withdrawal").sort(bySlot);
+  const claims = operations.filter((operation) => operation.action === "claim").sort(bySlot);
+  const partialClaim = claims.find((operation) => (claimSourcePost(operation) ?? 0n) > 0n);
+  const fullClaim = [...claims].reverse().find((operation) => claimSourcePost(operation) === 0n);
+  const cancel = cancels.find((candidate) => requests.some((request) =>
+    intent(request)?.requestId === intent(candidate)?.requestId &&
+    (operationSlot(request) ?? 0n) <= (operationSlot(candidate) ?? 0n)
+  ));
+  const partialClaimSlot = partialClaim ? operationSlot(partialClaim) : null;
+  const fullClaimSlot = fullClaim ? operationSlot(fullClaim) : null;
+  const cancelSlot = cancel ? operationSlot(cancel) : null;
+  const partialRequest = partialClaimSlot === null ? undefined : [...requests].reverse().find((request) =>
+    intent(request)?.requestId !== intent(cancel ?? {})?.requestId &&
+    (operationSlot(request) ?? 0n) <= partialClaimSlot
+  );
+  const redeploy = partialClaimSlot === null ? undefined : operations.find((operation) =>
+    operation.action === "swap_claim_to_collateral" &&
+    (operationSlot(operation) ?? 0n) > partialClaimSlot
+  );
+  const redeploySlot = redeploy ? operationSlot(redeploy) : null;
+  const fullRequest = fullClaimSlot === null || redeploySlot === null ? undefined : requests.find((request) =>
+    (operationSlot(request) ?? 0n) > redeploySlot &&
+    (operationSlot(request) ?? 0n) <= fullClaimSlot
+  );
+  const firstDepositSlot = operationSlot(deposits[0] ?? {});
+  const topUpSlot = operationSlot(deposits[1] ?? {});
+  const initialBorrow = firstDepositSlot === null || topUpSlot === null ? undefined : borrows.find((borrow) =>
+    (operationSlot(borrow) ?? 0n) > firstDepositSlot &&
+    (operationSlot(borrow) ?? 0n) < topUpSlot
+  );
+  const lifecycleSlots = [
+    firstDepositSlot,
+    initialBorrow ? operationSlot(initialBorrow) : null,
+    topUpSlot,
+    cancelSlot,
+    partialRequest ? operationSlot(partialRequest) : null,
+    partialClaimSlot,
+    redeploySlot,
+    fullRequest ? operationSlot(fullRequest) : null,
+    fullClaimSlot,
+  ];
+  const lifecycleOrdered = lifecycleSlots.every((slot) => slot !== null) &&
+    lifecycleSlots.every((slot, index) =>
+      index === 0 || (slot ?? 0n) >= (lifecycleSlots[index - 1] ?? 0n)
+    );
+  if (!lifecycleOrdered) {
+    blocked("fresh_partial_and_repeated_lifecycle_missing", {
+      firstDepositSlot: firstDepositSlot?.toString(),
+      initialBorrowSlot: initialBorrow ? operationSlot(initialBorrow)?.toString() : null,
+      topUpSlot: topUpSlot?.toString(),
+      cancelSlot: cancelSlot?.toString(),
+      partialRequestSlot: partialRequest ? operationSlot(partialRequest)?.toString() : null,
+      partialClaimSlot: partialClaimSlot?.toString(),
+      partialClaimSourcePost: partialClaim ? claimSourcePost(partialClaim)?.toString() : null,
+      redeploySlot: redeploySlot?.toString(),
+      fullRequestSlot: fullRequest ? operationSlot(fullRequest)?.toString() : null,
+      fullClaimSlot: fullClaimSlot?.toString(),
+      resume: "complete the ordered initial-open, top-up, cancel, partial-claim/redeploy, and full-claim lifecycle",
     });
   }
 
@@ -705,6 +893,9 @@ async function checkFreshLifecycle(): Promise<Json> {
     ...operations.map((operation) => String(operation.transaction_signature ?? "")),
   ];
   const chain = await confirmedSignatures(connection, signatures);
+  const latestOperationUpdatedAt = Math.max(
+    ...operations.map((operation) => timestamp(operation.updated_at) ?? 0),
+  );
   return {
     settings: VERIFY_SETTINGS,
     routeKey: route?.route_key,
@@ -712,11 +903,45 @@ async function checkFreshLifecycle(): Promise<Json> {
     policySeedBase: base.toString(),
     policyAccounts: accounts,
     operationCount: operations.length,
+    actionCounts: Object.fromEntries(requiredActions.map((action) => [action, actionCount(action)])),
+    intentLocationCount: chainLocations.length,
+    partialClaimSourcePost: partialClaim ? claimSourcePost(partialClaim)?.toString() : null,
+    latestOperationUpdatedAt: new Date(latestOperationUpdatedAt).toISOString(),
     snapshotCount: snapshots.length,
     openSnapshotSlot: open.observed_slot,
     finalSnapshotSlot: finalSnapshot.observed_slot,
     unwindMilliseconds: unwindAt - requestedAt,
     chain,
+  };
+}
+
+function checkReplayEvidence(deployedWorkers: Json, lifecycle: Json): Json {
+  const projector = array(deployedWorkers.services)
+    .map(record)
+    .find((service) => service?.service === POLICY_MONITOR_SERVICE);
+  const replayStartedAt = timestamp(projector?.createdAt);
+  const latestOperationAt = timestamp(lifecycle.latestOperationUpdatedAt);
+  if (
+    replayStartedAt === null ||
+    latestOperationAt === null ||
+    replayStartedAt <= latestOperationAt ||
+    projector?.status !== "live"
+  ) {
+    blocked("post_lifecycle_projector_replay_missing", {
+      service: POLICY_MONITOR_SERVICE,
+      replayStartedAt: projector?.createdAt,
+      latestOperationUpdatedAt: lifecycle.latestOperationUpdatedAt,
+      status: projector?.status,
+      resume: "restart the exact pinned LaserStream worker after the lifecycle and rerun the read-only verifier",
+    });
+  }
+  return {
+    service: POLICY_MONITOR_SERVICE,
+    deployId: projector?.deployId,
+    replayStartedAt: projector?.createdAt,
+    latestOperationUpdatedAt: lifecycle.latestOperationUpdatedAt,
+    operationCountAfterReplay: lifecycle.operationCount,
+    intentLocationCountAfterReplay: lifecycle.intentLocationCount,
   };
 }
 
@@ -760,6 +985,7 @@ const deployedWorkers = await checkDeployedWorkers(
   String(release.workerImageRevision),
 );
 const lifecycle = await checkFreshLifecycle();
+const replay = checkReplayEvidence(deployedWorkers, lifecycle);
 
 emit(PASS, "earn_max_production_ready", {
   contract,
@@ -773,4 +999,5 @@ emit(PASS, "earn_max_production_ready", {
   live,
   deployedWorkers,
   lifecycle,
+  replay,
 }, 0);

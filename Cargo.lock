@@ -1080,6 +1080,7 @@ dependencies = [
  "anyhow",
  "balance-sweep-ata-observations",
  "base64 0.22.1",
+ "bs58",
  "chrono",
  "clap",
  "futures-util",

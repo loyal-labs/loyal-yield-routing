@@ -45,9 +45,10 @@ pub fn family_for_action(action: MultiplyAction) -> Result<PolicyFamily, Box<dyn
         MultiplyAction::WithdrawCollateral | MultiplyAction::WithdrawRemainingCollateral => {
             Ok(PolicyFamily::Withdraw)
         }
-        MultiplyAction::Claim | MultiplyAction::DepositClaimAsset => {
-            Err("action has no strategy policy family".into())
-        }
+        MultiplyAction::Claim
+        | MultiplyAction::DepositClaimAsset
+        | MultiplyAction::RequestWithdrawal
+        | MultiplyAction::CancelWithdrawal => Err("action has no strategy policy family".into()),
     }
 }
 
@@ -167,7 +168,10 @@ pub fn constraint_indexes(
         | MultiplyAction::SwapDebtToCollateral
         | MultiplyAction::SwapCollateralToDebt
         | MultiplyAction::SwapCollateralToClaim => vec![route_constraint_index(instructions)?],
-        MultiplyAction::Claim | MultiplyAction::DepositClaimAsset => {
+        MultiplyAction::Claim
+        | MultiplyAction::DepositClaimAsset
+        | MultiplyAction::RequestWithdrawal
+        | MultiplyAction::CancelWithdrawal => {
             return Err("action does not use a strategy policy".into())
         }
     };

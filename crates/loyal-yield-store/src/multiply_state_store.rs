@@ -9,7 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgRow, Row};
 
-const OPERATION_COLUMNS: &str = "operation_id, route_key, cycle, engine_version, action, strategy_key, status, idempotency_key, expected_effects, policy_account, policy_data_sha256, message_sha256, signed_wire, signed_wire_sha256, transaction_signature, recent_blockhash, last_valid_block_height, broadcast_intent_at, confirmed_slot, reconciliation_sha256, created_at, updated_at";
+const OPERATION_COLUMNS: &str = "operation_id, route_key, cycle, engine_version, action, strategy_key, status, idempotency_key, expected_effects, policy_account, policy_data_sha256, message_sha256, signed_wire, signed_wire_sha256, transaction_signature, source_instruction_index, recent_blockhash, last_valid_block_height, broadcast_intent_at, confirmed_slot, reconciliation_sha256, created_at, updated_at";
 
 #[derive(Clone, Debug)]
 pub struct StoredMultiplyRouteState {
@@ -426,7 +426,41 @@ impl NeonSqlClient {
     ) -> Result<Option<MultiplyRouteLease>, OrchestratorError> {
         validate_lease_input(owner, expires_at)?;
         let row = sqlx::query(
-            "WITH candidate AS (SELECT route.route_key FROM loyal_yield.multiply_route_states route INNER JOIN loyal_yield.earn_max_policy_sets policy ON policy.settings=route.settings AND policy.vault_index=route.vault_index AND policy.status='ready' AND policy.policy_seed_base=(route.state->>'policySeedBase')::BIGINT WHERE route.lease_owner IS NULL OR route.lease_expires_at<=now() ORDER BY route.updated_at, route.route_key FOR UPDATE OF route SKIP LOCKED LIMIT 1) UPDATE loyal_yield.multiply_route_states route SET lease_owner=$1, lease_expires_at=$2, fencing_token=route.fencing_token+1 FROM candidate WHERE route.route_key=candidate.route_key RETURNING route.route_key, route.state_version, route.fencing_token",
+            r#"
+            WITH candidate AS (
+                SELECT route.route_key
+                FROM loyal_yield.multiply_route_states route
+                INNER JOIN loyal_yield.earn_max_policy_sets policy
+                  ON policy.settings = route.settings
+                 AND policy.vault_index = route.vault_index
+                 AND policy.status = 'ready'
+                 AND policy.policy_seed_base = (route.state ->> 'policySeedBase')::BIGINT
+                WHERE (route.lease_owner IS NULL OR route.lease_expires_at <= now())
+                  AND (
+                    route.state -> 'currentOperationId' <> 'null'::jsonb
+                    OR route.state ->> 'goal' IN ('deploy', 'move')
+                    OR (
+                      route.state ->> 'goal' = 'withdraw'
+                      AND route.state #>> '{withdrawal,status}' <> 'claimable'
+                    )
+                  )
+                  AND NOT (
+                    route.state #>> '{withdrawal,status}' = 'requested'
+                    AND (route.state #>> '{withdrawal,requestedAt}')::timestamptz
+                      > now() - interval '30 seconds'
+                  )
+                ORDER BY route.updated_at, route.route_key
+                FOR UPDATE OF route SKIP LOCKED
+                LIMIT 1
+            )
+            UPDATE loyal_yield.multiply_route_states route
+            SET lease_owner = $1,
+                lease_expires_at = $2,
+                fencing_token = route.fencing_token + 1
+            FROM candidate
+            WHERE route.route_key = candidate.route_key
+            RETURNING route.route_key, route.state_version, route.fencing_token
+            "#,
         )
         .bind(owner)
         .bind(expires_at)
@@ -1002,6 +1036,12 @@ fn decode_operation(row: PgRow) -> Result<MultiplyOperation, OrchestratorError> 
         signed_wire: row.try_get("signed_wire")?,
         signed_wire_sha256: row.try_get("signed_wire_sha256")?,
         transaction_signature: row.try_get("transaction_signature")?,
+        source_instruction_index: row
+            .try_get::<Option<i32>, _>("source_instruction_index")?
+            .map(|value| {
+                u16::try_from(value).map_err(|_| invariant("source instruction index is invalid"))
+            })
+            .transpose()?,
         recent_blockhash: row.try_get("recent_blockhash")?,
         last_valid_block_height: last_valid
             .map(|value| u64::try_from(value).map_err(|_| invariant("operation expiry is invalid")))

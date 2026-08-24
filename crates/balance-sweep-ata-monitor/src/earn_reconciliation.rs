@@ -13,6 +13,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use chrono::Utc;
 use klend_interface::{
     from_account_data,
     state::{Obligation, Reserve},
@@ -27,9 +28,10 @@ use loyal_squads_policy_monitor::{PolicyMonitor, PostgresPolicyMatchSink};
 use loyal_yield_store::{
     AutodepositChainObservation, AutodepositRecurringDelegationObserved,
     AutodepositTargetSnapshotContext, EarnCleanupMutation, EarnDepositMutation, EarnDirectMutation,
-    EarnIdleTokenMutation, EarnPolicyOnlyMutation, EarnReconciliationEnqueueInput,
-    EarnReconciliationEnqueueOutcome, EarnReconciliationVaultInput, EarnRefundMutation,
-    EarnReserveMutation, EarnWithdrawalMutation, OrchestratorStore, PolicyMatchInput,
+    EarnIdleTokenMutation, EarnMaxIntent, EarnMaxIntentProjectionInput, EarnPolicyOnlyMutation,
+    EarnReconciliationEnqueueInput, EarnReconciliationEnqueueOutcome, EarnReconciliationVaultInput,
+    EarnRefundMutation, EarnReserveMutation, EarnWithdrawalMutation, OrchestratorStore,
+    PolicyMatchInput,
 };
 use num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
@@ -51,7 +53,7 @@ use solana_sdk::{
     transaction::TransactionError,
 };
 use solana_transaction_status_client_types::{
-    option_serializer::OptionSerializer, UiTransactionEncoding,
+    option_serializer::OptionSerializer, UiInstruction, UiParsedInstruction, UiTransactionEncoding,
 };
 use tokio::{
     sync::{Mutex, Notify},
@@ -69,12 +71,21 @@ use crate::{
 };
 
 const EARN_RECONCILIATION_HEALTH_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
+const EARN_MAX_MEMO_PROGRAM: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 
 #[derive(Debug, Clone)]
 pub struct EarnPolicyTransaction {
     pub signature: String,
     pub slot: u64,
     pub instructions: Vec<Instruction>,
+    pub earn_max_memos: Vec<EarnMaxMemoInstruction>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EarnMaxMemoInstruction {
+    pub source_instruction_index: u16,
+    pub accounts: Vec<Pubkey>,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -181,7 +192,7 @@ impl EarnChainReader for RpcEarnChainReader {
                     rpc.as_ref(),
                     &signature,
                     slot,
-                    CommitmentConfig::finalized(),
+                    CommitmentConfig::confirmed(),
                 )
                 .map(Some)
             })
@@ -645,13 +656,106 @@ fn read_squads_policy_transaction(
             data: compiled.data.clone(),
         });
     }
+    let mut earn_max_memos = Vec::new();
+    if let OptionSerializer::Some(groups) = &meta.inner_instructions {
+        for group in groups {
+            for (inner_index, instruction) in group.instructions.iter().enumerate() {
+                let (program_id, accounts, data) = match instruction {
+                    UiInstruction::Compiled(compiled) => {
+                        let Some(program_id) = account_keys
+                            .get(usize::from(compiled.program_id_index))
+                            .copied()
+                        else {
+                            continue;
+                        };
+                        let accounts = compiled
+                            .accounts
+                            .iter()
+                            .filter_map(|index| account_keys.get(usize::from(*index)).copied())
+                            .collect::<Vec<_>>();
+                        (
+                            program_id.to_string(),
+                            accounts,
+                            bs58::decode(&compiled.data).into_vec()?,
+                        )
+                    }
+                    UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(decoded)) => (
+                        decoded.program_id.clone(),
+                        decoded
+                            .accounts
+                            .iter()
+                            .map(|account| Pubkey::from_str(account))
+                            .collect::<Result<Vec<_>, _>>()?,
+                        bs58::decode(&decoded.data).into_vec()?,
+                    ),
+                    UiInstruction::Parsed(UiParsedInstruction::Parsed(_)) => continue,
+                };
+                if program_id != EARN_MAX_MEMO_PROGRAM {
+                    continue;
+                }
+                let source_instruction_index = u16::from(group.index)
+                    .checked_mul(256)
+                    .and_then(|value| value.checked_add(u16::try_from(inner_index + 1).ok()?))
+                    .context("Earn MAX memo instruction index overflow")?;
+                earn_max_memos.push(EarnMaxMemoInstruction {
+                    source_instruction_index,
+                    accounts,
+                    data,
+                });
+            }
+        }
+    }
     Ok(EarnPolicyTransactionRead::Transaction(
         EarnPolicyTransaction {
             signature: signature.to_owned(),
             slot: expected_slot,
             instructions,
+            earn_max_memos,
         },
     ))
+}
+
+fn parse_earn_max_intent(data: &[u8]) -> Result<Option<EarnMaxIntent>> {
+    let Ok(value) = std::str::from_utf8(data) else {
+        return Ok(None);
+    };
+    let fields = value.split(':').collect::<Vec<_>>();
+    if fields.get(0..3) != Some(&["loyal", "earn-max", "v1"]) {
+        return Ok(None);
+    }
+    let valid_request_id = |request_id: &str| {
+        (8..=64).contains(&request_id.len())
+            && request_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    };
+    match fields.as_slice() {
+        [_, _, _, "withdraw", request_id, amount, destination] if valid_request_id(request_id) => {
+            Pubkey::from_str(destination).context("invalid Earn MAX withdrawal destination")?;
+            let amount_raw = if *amount == "max" {
+                None
+            } else {
+                let parsed = amount
+                    .parse::<u64>()
+                    .context("invalid Earn MAX withdrawal amount")?;
+                if parsed == 0 {
+                    bail!("Earn MAX withdrawal amount is zero");
+                }
+                Some(parsed)
+            };
+            Ok(Some(EarnMaxIntent::Withdraw {
+                request_id: (*request_id).to_owned(),
+                destination_account: (*destination).to_owned(),
+                amount_raw,
+            }))
+        }
+        [_, _, _, "cancel", request_id] if valid_request_id(request_id) => {
+            Ok(Some(EarnMaxIntent::Cancel {
+                request_id: (*request_id).to_owned(),
+            }))
+        }
+        _ => bail!("malformed Earn MAX intent memo"),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1404,7 +1508,8 @@ pub async fn reconcile_targeted_policy_vault_update(
         })
         .cloned()
         .collect::<Vec<_>>();
-    let policy_reconciled = if instructions.is_empty() {
+    let has_squads_execution = !instructions.is_empty();
+    let policy_reconciled = if !has_squads_execution {
         false
     } else {
         policy_monitor
@@ -1415,6 +1520,31 @@ pub async fn reconcile_targeted_policy_vault_update(
             .map_err(|error| anyhow::anyhow!(error))?;
         true
     };
+
+    let vault_pubkey = Pubkey::from_str(&vault.vault)?;
+    let mut intent_reconciled = false;
+    if has_squads_execution {
+        for memo in &transaction.earn_max_memos {
+            if !memo.accounts.contains(&vault_pubkey) {
+                continue;
+            }
+            let Some(intent) = parse_earn_max_intent(&memo.data)? else {
+                continue;
+            };
+            store
+                .project_earn_max_intent(EarnMaxIntentProjectionInput {
+                    settings: vault.settings.clone(),
+                    vault_index: vault.vault_index,
+                    signature: transaction.signature.clone(),
+                    instruction_index: memo.source_instruction_index,
+                    slot: transaction.slot,
+                    observed_at: Utc::now(),
+                    intent,
+                })
+                .await?;
+            intent_reconciled = true;
+        }
+    }
 
     let mut recurring_observed = false;
     for instruction in &transaction.instructions {
@@ -1463,7 +1593,7 @@ pub async fn reconcile_targeted_policy_vault_update(
             .await?;
         recurring_observed = true;
     }
-    Ok(policy_reconciled && !recurring_observed)
+    Ok(intent_reconciled || (policy_reconciled && !recurring_observed))
 }
 
 pub async fn process_next_earn_reconciliation_job(

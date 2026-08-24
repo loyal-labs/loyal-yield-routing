@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const MULTIPLY_STATE_SCHEMA_VERSION: u16 = 6;
+pub const MULTIPLY_STATE_SCHEMA_VERSION: u16 = 7;
 pub const MULTIPLY_ENGINE_VERSION: &str = "earn_max_v1";
 pub const MULTIPLY_DEFAULT_LEASE_SECONDS: i64 = 30;
 
@@ -123,7 +123,8 @@ pub struct Withdrawal {
     pub amount_raw: u64,
     pub status: WithdrawalStatus,
     pub requested_at: DateTime<Utc>,
-    pub claimable_at: DateTime<Utc>,
+    /// Product SLA. A claim may become available sooner when unwind completes.
+    pub ready_by: DateTime<Utc>,
     pub unwind_completed_at: Option<DateTime<Utc>>,
     pub claim_signature: Option<String>,
 }
@@ -260,8 +261,8 @@ impl MultiplyRouteState {
             if withdrawal.request_id.trim().is_empty()
                 || withdrawal.destination_account.trim().is_empty()
                 || withdrawal.amount_raw == 0
-                || withdrawal.claimable_at < withdrawal.requested_at
-                || withdrawal.claimable_at - withdrawal.requested_at > chrono::Duration::minutes(10)
+                || withdrawal.ready_by < withdrawal.requested_at
+                || withdrawal.ready_by - withdrawal.requested_at > chrono::Duration::minutes(10)
                 || (withdrawal.status == WithdrawalStatus::Claimed
                     && withdrawal
                         .claim_signature
@@ -370,10 +371,26 @@ impl MultiplyRouteState {
             amount_raw,
             status: WithdrawalStatus::Requested,
             requested_at,
-            claimable_at: requested_at + chrono::Duration::minutes(10),
+            ready_by: requested_at + chrono::Duration::minutes(10),
             unwind_completed_at: None,
             claim_signature: None,
         });
+        self.frontend = project_frontend(&self);
+        Ok(self)
+    }
+
+    pub fn cancel_withdrawal(mut self, request_id: &str) -> Result<Self, MultiplyStateError> {
+        let can_cancel = self.current_operation_id.is_none()
+            && self.withdrawal.as_ref().is_some_and(|withdrawal| {
+                withdrawal.request_id == request_id
+                    && withdrawal.status == WithdrawalStatus::Requested
+            });
+        if !can_cancel {
+            return Err(MultiplyStateError::InvalidGoalChange);
+        }
+        self.generation += 1;
+        self.goal = RouteGoal::Idle;
+        self.withdrawal = None;
         self.frontend = project_frontend(&self);
         Ok(self)
     }
@@ -409,6 +426,8 @@ pub fn project_frontend(state: &MultiplyRouteState) -> MultiplyFrontendView {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MultiplyAction {
+    RequestWithdrawal,
+    CancelWithdrawal,
     DepositClaimAsset,
     SwapClaimToCollateral,
     DepositCollateral,
@@ -425,6 +444,8 @@ pub enum MultiplyAction {
 impl MultiplyAction {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::RequestWithdrawal => "request_withdrawal",
+            Self::CancelWithdrawal => "cancel_withdrawal",
             Self::DepositClaimAsset => "deposit_claim_asset",
             Self::SwapClaimToCollateral => "swap_claim_to_collateral",
             Self::DepositCollateral => "deposit_collateral",
@@ -525,6 +546,7 @@ pub struct MultiplyOperation {
     pub signed_wire: Option<Vec<u8>>,
     pub signed_wire_sha256: Option<String>,
     pub transaction_signature: Option<String>,
+    pub source_instruction_index: Option<u16>,
     pub recent_blockhash: Option<String>,
     pub last_valid_block_height: Option<u64>,
     pub broadcast_intent_at: Option<DateTime<Utc>>,

@@ -218,6 +218,9 @@ pub async fn build_operation(
         MultiplyAction::DepositClaimAsset => {
             Err("user deposits are admitted from their confirmed wallet transaction".into())
         }
+        MultiplyAction::RequestWithdrawal | MultiplyAction::CancelWithdrawal => {
+            Err("withdrawal intents are admitted from their confirmed wallet transaction".into())
+        }
     }
 }
 

@@ -48,6 +48,30 @@ pub struct EarnMaxPolicySetProjectionInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EarnMaxIntent {
+    Withdraw {
+        request_id: String,
+        destination_account: String,
+        amount_raw: Option<u64>,
+    },
+    Cancel {
+        request_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnMaxIntentProjectionInput {
+    pub settings: String,
+    pub vault_index: u8,
+    pub signature: String,
+    pub instruction_index: u16,
+    pub slot: u64,
+    pub observed_at: DateTime<Utc>,
+    pub intent: EarnMaxIntent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MultiplyPositionSnapshotInput {
     pub route_key: String,
     pub generation: u64,
