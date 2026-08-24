@@ -254,7 +254,7 @@ impl WorkerRuntime {
                 .await?
             {
                 if candidate.source_pre.saturating_sub(candidate.source_post)
-                    == withdrawal.amount_raw
+                    == withdrawal.amount_raw.min(candidate.source_pre)
                 {
                     transfer = Some(candidate);
                     break;
@@ -284,7 +284,8 @@ impl WorkerRuntime {
             .as_mut()
             .ok_or("claimable route omitted withdrawal")?;
         if withdrawal.status != loyal_yield_store::fleet_orchestration::WithdrawalStatus::Claimable
-            || withdrawal.amount_raw != transfer.source_pre.saturating_sub(transfer.source_post)
+            || withdrawal.amount_raw.min(transfer.source_pre)
+                != transfer.source_pre.saturating_sub(transfer.source_post)
         {
             let _ = self.store.release_multiply_route_lease(&lease).await;
             return Err("claimable route changed before claim admission".into());
