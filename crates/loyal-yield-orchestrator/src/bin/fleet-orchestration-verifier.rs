@@ -2500,6 +2500,7 @@ impl DatabaseFixture {
     }
 
     async fn seed_epoch(&self, cluster: &str) -> Result<i64, Box<dyn Error>> {
+        self.client.register_fleet_planning_cluster(cluster).await?;
         let now = Utc::now();
         let policy_payer = format!("authority:{cluster}");
         let family_id: i64 = sqlx::query_scalar(

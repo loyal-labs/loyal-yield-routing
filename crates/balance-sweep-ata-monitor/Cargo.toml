@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Wallet USDC ATA monitor for Loyal balance sweep targets"
 
+[features]
+local-e2e = []
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true

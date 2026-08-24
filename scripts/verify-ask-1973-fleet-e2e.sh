@@ -96,6 +96,7 @@ cargo build --release --locked \
   -p loyal-yield-orchestrator \
   --bin yield-migrations \
   --bin fleet-opportunity-planner \
+  --bin fleet-health-projector \
   --bin fleet-route-confirmer \
   --bin route-lookup-table-provisioner \
   --bin fleet-orchestration-verifier \
@@ -105,6 +106,7 @@ cargo build --release --locked \
 for binary in \
   yield-migrations \
   fleet-opportunity-planner \
+  fleet-health-projector \
   fleet-route-confirmer \
   route-lookup-table-provisioner \
   fleet-orchestration-verifier \
@@ -130,12 +132,16 @@ echo "PASS: migrations 1-33 are available in disposable PostgreSQL"
 echo
 
 echo "== Production-sized isolated database verification"
-target/release/fleet-orchestration-verifier \
+if ! target/release/fleet-orchestration-verifier \
   --implementation \
   --json \
   --isolated-database \
   --database-url "$database_url" \
-  >"$evidence_dir/isolated-database-verifier.json"
+  >"$evidence_dir/isolated-database-verifier.json"; then
+  jq '{requestedScopeStatus, isolatedDatabase, firstBlockingCheck, failedSubchecks: [.checks[].subchecks[]? | select(.verdict != "PASS") | {name, verdict, evidence}]}' \
+    "$evidence_dir/isolated-database-verifier.json" >&2 || true
+  fail "isolated database verifier exited non-zero"
+fi
 
 jq -e '
   .requestedScope == "ISOLATED_DATABASE"
@@ -319,6 +325,10 @@ unset YIELD_ROUTE_FEE_PAYER_KEYPAIRS SOLANA_TESTING_PK YIELD_ROUTER_KEYPAIR
 # classify, and durably terminalize every row without reading chain state. This
 # is a fail-closed process/load check, not a simulated successful transaction.
 psql -X --set=ON_ERROR_STOP=1 "$database_url" >/dev/null <<'SQL'
+INSERT INTO loyal_yield.fleet_planning_clusters (cluster)
+VALUES ('localnet')
+ON CONFLICT (cluster) DO UPDATE SET last_seen_at = clock_timestamp();
+
 WITH policy AS (
   INSERT INTO loyal_yield.route_policies (
     settings,
@@ -446,6 +456,16 @@ process_load_seeded="$(psql -X -At "$database_url" -c \
   "SELECT count(*) FROM loyal_yield.rebalance_opportunities WHERE idempotency_key LIKE 'ask1973-process-load-%'")"
 [[ "$process_load_seeded" == "4160" ]] || \
   fail "expected 4,160 process-load jobs, seeded $process_load_seeded"
+
+target/release/fleet-health-projector --once --cluster localnet \
+  >"$evidence_dir/fleet-health-projector.log"
+rg --quiet '"status":"fleet_health_snapshot_refreshed"' \
+  "$evidence_dir/fleet-health-projector.log" ||
+  fail "fleet health projector did not publish the localnet snapshot"
+[[ "$(psql -X -At "$database_url" -c \
+  "SELECT count(*) FROM loyal_yield.fleet_orchestration_health_snapshots WHERE cluster = 'localnet' AND row_count > 0")" == "1" ]] ||
+  fail "fleet health projector did not persist a nonempty localnet snapshot"
+echo "PASS: real fleet health projector published the worker startup snapshot"
 
 # The negative-control workers prove their explicit cluster binding at startup.
 # Serve only getGenesisHash with a non-canonical hash accepted exclusively for

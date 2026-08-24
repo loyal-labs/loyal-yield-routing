@@ -578,6 +578,18 @@ impl NeonSqlClient {
              AND opt_in.vault_index = swap_policy.vault_index
              AND opt_in.vault_pubkey = swap_policy.vault_pubkey
              AND opt_in.generation = $18
+             AND (
+                 (
+                     swap_policy.source_shard = 'classic'
+                     AND opt_in.classic_policy_account = swap_policy.policy_account
+                     AND opt_in.classic_policy_seed = swap_policy.policy_seed
+                 )
+                 OR (
+                     swap_policy.source_shard = 'token_2022'
+                     AND opt_in.token_2022_policy_account = swap_policy.policy_account
+                     AND opt_in.token_2022_policy_seed = swap_policy.policy_seed
+                 )
+             )
             JOIN loyal_yield.cross_mint_swap_policies sibling_policy
               ON sibling_policy.cluster = swap_policy.cluster
              AND sibling_policy.settings = swap_policy.settings
@@ -2450,6 +2462,18 @@ async fn validate_initial_cross_mint_policy_bindings(
          AND opt_in.vault_index = swap_policy.vault_index
          AND opt_in.vault_pubkey = swap_policy.vault_pubkey
          AND opt_in.generation = $18
+         AND (
+             (
+                 swap_policy.source_shard = 'classic'
+                 AND opt_in.classic_policy_account = swap_policy.policy_account
+                 AND opt_in.classic_policy_seed = swap_policy.policy_seed
+             )
+             OR (
+                 swap_policy.source_shard = 'token_2022'
+                 AND opt_in.token_2022_policy_account = swap_policy.policy_account
+                 AND opt_in.token_2022_policy_seed = swap_policy.policy_seed
+             )
+         )
         JOIN loyal_yield.cross_mint_swap_policies sibling_policy
           ON sibling_policy.cluster = swap_policy.cluster
          AND sibling_policy.settings = swap_policy.settings

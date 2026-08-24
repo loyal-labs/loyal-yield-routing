@@ -21,6 +21,7 @@ close_subscribe_request_json="$scratch_dir/close-subscribe-request.json"
 close_transactions_json="$scratch_dir/close-transactions.ndjson"
 close_ready="$scratch_dir/close-ready"
 pending_floor_ready="$scratch_dir/pending-floor-ready"
+reconciliation_regression_json="$scratch_dir/earn-reconciliation-regression.json"
 database_name="ask_2211_autodeposit_client_local_e2e"
 base_port="$((24500 + RANDOM % 1200))"
 rpc_port="$base_port"
@@ -101,8 +102,10 @@ done
 for postgres_command in initdb pg_ctl psql; do
   [[ -x "$pg_bindir/$postgres_command" ]] || fail "$postgres_command is required"
 done
-[[ -f "$app_root/apps/web/scripts/verify-autodeposit-local-chain.ts" ]] ||
-  fail "app worktree is missing the Autodeposit local-chain verifier"
+[[ -d "$app_root/node_modules" ]] ||
+  fail "app worktree dependencies are required as a read-only package source"
+[[ -f "$routing_root/crates/loyal-local-e2e/scripts/verify-autodeposit-local-chain.ts" ]] ||
+  fail "routing worktree is missing the Autodeposit local-chain verifier"
 [[ -f "$routing_root/crates/squads-test-harness/fixtures/subscriptions/subscriptions_program.so" ]] ||
   fail "subscriptions program fixture is missing"
 
@@ -235,8 +238,10 @@ pass "isolated PostgreSQL and Solana validator are ready"
 
 echo "== Web client builds and submits Autodeposit setup"
 (
-  cd "$app_root/apps/web"
-  bun run scripts/verify-autodeposit-local-chain.ts setup \
+  cd "$routing_root"
+  NODE_PATH="$app_root/node_modules:$app_root/apps/web/node_modules" \
+  LOYAL_APP_ROOT="$app_root" \
+    bun run crates/loyal-local-e2e/scripts/verify-autodeposit-local-chain.ts setup \
     --rpc-url "http://127.0.0.1:$rpc_port" \
     --treasury "$treasury" \
     --close-ready "$close_ready" \
@@ -293,9 +298,10 @@ if [[ "$realtime_ready" -ne 1 ]]; then
 fi
 
 (
-  cd "$app_root/apps/web"
-  YIELD_OPTIMIZATION_LOCAL_DATABASE_URL="$database_url" \
-  bun --conditions=react-server run scripts/verify-autodeposit-local-chain.ts listen \
+  cd "$routing_root"
+  NODE_PATH="$app_root/node_modules:$app_root/apps/web/node_modules" \
+  LOYAL_APP_ROOT="$app_root" \
+    bun run crates/loyal-local-e2e/scripts/verify-autodeposit-local-chain.ts listen \
     --auth-secret "$auth_secret" \
     --events-url "http://127.0.0.1:$realtime_port/events" \
     --expected-reason "allowance_created" \
@@ -381,9 +387,10 @@ jq -s -e 'map(.stage) == ["close_autodeposit"]' \
   fail "web delete transaction did not use the Autodeposit close stage"
 
 (
-  cd "$app_root/apps/web"
-  YIELD_OPTIMIZATION_LOCAL_DATABASE_URL="$database_url" \
-  bun --conditions=react-server run scripts/verify-autodeposit-local-chain.ts listen \
+  cd "$routing_root"
+  NODE_PATH="$app_root/node_modules:$app_root/apps/web/node_modules" \
+  LOYAL_APP_ROOT="$app_root" \
+    bun run crates/loyal-local-e2e/scripts/verify-autodeposit-local-chain.ts listen \
     --auth-secret "$auth_secret" \
     --events-url "http://127.0.0.1:$realtime_port/events" \
     --expected-reason "allowance_removed" \
@@ -435,10 +442,29 @@ jq -e \
   fail "web SSE did not refresh Autodeposit into the deleted UI state"
 pass "web delete closed finalized accounts, monitor projected removal, and SSE removed the UI rule"
 
-for removed_route in \
-  "$app_root/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/setup/confirm/route.ts" \
-  "$app_root/apps/web/src/app/api/smart-accounts/mobile/earn/autodeposit/setup/confirm/route.ts"; do
-  [[ ! -e "$removed_route" ]] || fail "client setup confirmation route still writes database state: $removed_route"
-done
-pass "Autodeposit setup has no client confirmation API database write"
-pass "ASK-2211 isolated local Autodeposit setup, same-slot wakeup, delete, reconciliation, realtime, and web SSE E2E"
+if rg -q 'autodeposit/(setup|close)/confirm' \
+  "$routing_root/crates/loyal-local-e2e/scripts/verify-autodeposit-local-chain.ts"; then
+  fail "routing-owned client driver called an Autodeposit confirmation API"
+fi
+pass "routing-owned Autodeposit client submitted directly without a confirmation API"
+echo "== Production-shaped Earn reconciliation regression load"
+(
+  cd "$routing_root"
+  cargo run --quiet -p loyal-local-e2e --bin earn-reconciliation-regression -- \
+    --postgres-url "$database_url" \
+    --output "$reconciliation_regression_json"
+)
+jq -e '
+  .transactionClassification.unrelatedSingleMintIsNoop
+  and .transactionClassification.unrelatedMultiMintIsNoop
+  and .transactionClassification.earnAnchoredSingleMintIsDetected
+  and .transactionClassification.retryAlertEmissions == 1
+  and .legacyUnknownPolicyAccepted
+  and .mainnetRefundNormalized
+  and .operationalAlerts == 0
+' "$reconciliation_regression_json" >/dev/null ||
+  fail "Earn reconciliation regression load did not complete alert-free"
+pass "production-shaped reconciliation load drained with zero operational alerts"
+
+pass "Autodeposit client driver remained isolated inside loyal-yield-routing"
+pass "ASK-2211 isolated local Autodeposit setup, same-slot wakeup, delete, reconciliation, realtime, and SSE E2E"

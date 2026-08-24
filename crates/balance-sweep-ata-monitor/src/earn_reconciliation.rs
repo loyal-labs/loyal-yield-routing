@@ -931,7 +931,7 @@ enum CashFlowKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CashFlowEvidence {
+pub(crate) struct CashFlowEvidence {
     kind: CashFlowKind,
     mint: String,
     amount_raw: u64,
@@ -945,7 +945,7 @@ struct CompleteVaultSnapshot {
     idle_state: Vec<EarnIdleTokenMutation>,
 }
 
-fn classify_transaction_cash_flow<'a>(
+pub(crate) fn classify_transaction_cash_flow<'a>(
     transaction: &Value,
     wallet: &str,
     mints: impl IntoIterator<Item = &'a str>,
@@ -981,6 +981,10 @@ fn classify_transaction_cash_flow<'a>(
         }));
     }
 
+    if !transaction_has_earn_anchor(transaction, vault) {
+        return Ok(None);
+    }
+
     let mut result = None;
     for mint in mints {
         let delta = transaction_owner_token_delta(transaction, mint, wallet)?;
@@ -1003,6 +1007,18 @@ fn classify_transaction_cash_flow<'a>(
         });
     }
     Ok(result)
+}
+
+fn transaction_has_earn_anchor(transaction: &Value, vault: &EarnVaultWatch) -> bool {
+    let accounts = transaction_accounts(transaction);
+    accounts.contains(&vault.settings)
+        || accounts.contains(&vault.vault)
+        || vault.accounts.iter().any(|account| {
+            matches!(
+                account.role.as_str(),
+                "smart_account" | "policy" | "vault" | "idle_token" | "obligation"
+            ) && accounts.contains(&account.pubkey)
+        })
 }
 
 fn transaction_owner_token_delta(transaction: &Value, mint: &str, owner: &str) -> Result<i128> {
@@ -1108,22 +1124,12 @@ fn read_cash_flow_proof(
         .context("cash-flow update is missing its transaction signature")?;
     let snapshot = read_complete_vault_snapshot(rpc, vault, &route_policy, update.slot)?;
     let transaction_accounts = transaction_accounts(&transaction);
-    let target = snapshot
-        .reserve_state
-        .iter()
-        .find(|reserve| {
-            reserve.liquidity_mint == cash_flow.mint
-                && transaction_accounts.contains(&reserve.reserve)
-        })
-        .or_else(|| {
-            let mut matching = snapshot
-                .reserve_state
-                .iter()
-                .filter(|reserve| reserve.liquidity_mint == cash_flow.mint);
-            let first = matching.next()?;
-            matching.next().is_none().then_some(first)
-        })
-        .context("cash-flow transaction did not identify one canonical Earn reserve")?;
+    let target = snapshot.reserve_state.iter().find(|reserve| {
+        reserve.liquidity_mint == cash_flow.mint && transaction_accounts.contains(&reserve.reserve)
+    });
+    let Some(target) = target else {
+        return Ok(EarnDirectMutation::Noop);
+    };
     let remaining_amount_raw = snapshot
         .reserve_state
         .iter()
@@ -1623,8 +1629,19 @@ pub async fn enqueue_normalized_earn_update(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EarnReconciliationProcessOutcome {
     Idle,
-    Completed { job_id: i64, applied: usize },
-    Deferred { job_id: i64, error: String },
+    Completed {
+        job_id: i64,
+        applied: usize,
+    },
+    Deferred {
+        job_id: i64,
+        attempt_count: i32,
+        error: String,
+    },
+}
+
+pub(crate) fn should_emit_reconciliation_retry_alert(attempt_count: i32) -> bool {
+    attempt_count == 1
 }
 
 pub async fn reconcile_targeted_policy_vault_update(
@@ -1824,6 +1841,7 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
             return defer_earn_reconciliation_job(
                 store,
                 job.id,
+                job.attempt_count,
                 claim_owner,
                 error,
                 retry_after_seconds,
@@ -1840,6 +1858,7 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
                 return defer_earn_reconciliation_job(
                     store,
                     job.id,
+                    job.attempt_count,
                     claim_owner,
                     error,
                     retry_after_seconds,
@@ -1865,6 +1884,7 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
                 defer_earn_reconciliation_job(
                     store,
                     job.id,
+                    job.attempt_count,
                     claim_owner,
                     error.into(),
                     retry_after_seconds,
@@ -1873,8 +1893,15 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
             }
         },
         Err(error) => {
-            defer_earn_reconciliation_job(store, job.id, claim_owner, error, retry_after_seconds)
-                .await
+            defer_earn_reconciliation_job(
+                store,
+                job.id,
+                job.attempt_count,
+                claim_owner,
+                error,
+                retry_after_seconds,
+            )
+            .await
         }
     }
 }
@@ -1882,6 +1909,7 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
 async fn defer_earn_reconciliation_job(
     store: &OrchestratorStore,
     job_id: i64,
+    attempt_count: i32,
     claim_owner: &str,
     error: anyhow::Error,
     retry_after_seconds: i64,
@@ -1890,7 +1918,11 @@ async fn defer_earn_reconciliation_job(
     store
         .retry_earn_reconciliation_job(job_id, claim_owner, &error, retry_after_seconds)
         .await?;
-    Ok(EarnReconciliationProcessOutcome::Deferred { job_id, error })
+    Ok(EarnReconciliationProcessOutcome::Deferred {
+        job_id,
+        attempt_count,
+        error,
+    })
 }
 
 pub async fn run_earn_reconciliation_consumer(
@@ -1937,13 +1969,27 @@ pub async fn run_earn_reconciliation_consumer(
             Ok(EarnReconciliationProcessOutcome::Completed { job_id, applied }) => {
                 tracing::info!(job_id, applied, "completed durable Earn reconciliation job");
             }
-            Ok(EarnReconciliationProcessOutcome::Deferred { job_id, error }) => {
-                tracing::error!(
-                    job_id,
-                    error,
-                    "Earn reconciliation proof failed; job retained for retry"
-                );
-                emit_earn_reconciliation_job_failed();
+            Ok(EarnReconciliationProcessOutcome::Deferred {
+                job_id,
+                attempt_count,
+                error,
+            }) => {
+                if should_emit_reconciliation_retry_alert(attempt_count) {
+                    tracing::error!(
+                        job_id,
+                        attempt_count,
+                        error,
+                        "Earn reconciliation proof failed; job retained for retry"
+                    );
+                    emit_earn_reconciliation_job_failed();
+                } else {
+                    tracing::warn!(
+                        job_id,
+                        attempt_count,
+                        error,
+                        "Earn reconciliation proof is still pending"
+                    );
+                }
             }
             Ok(EarnReconciliationProcessOutcome::Idle) => {
                 tokio::select! {
@@ -1976,6 +2022,7 @@ pub enum AutodepositReconciliationProcessOutcome {
     },
     Deferred {
         target_id: loyal_yield_store::BalanceSweepTargetId,
+        attempt_count: i32,
         error: String,
     },
 }
@@ -2052,6 +2099,7 @@ pub async fn process_next_autodeposit_reconciliation_request(
                 .await?;
             Ok(AutodepositReconciliationProcessOutcome::Deferred {
                 target_id: request.target_id,
+                attempt_count: request.attempt_count,
                 error,
             })
         }
@@ -2101,13 +2149,27 @@ pub async fn run_autodeposit_reconciliation_consumer(
                     "Autodeposit reconciliation is waiting for setup to complete"
                 );
             }
-            Ok(AutodepositReconciliationProcessOutcome::Deferred { target_id, error }) => {
-                tracing::error!(
-                    target_id = target_id.as_i64(),
-                    error,
-                    "Autodeposit reconciliation failed; request retained for retry"
-                );
-                emit_earn_reconciliation_job_failed();
+            Ok(AutodepositReconciliationProcessOutcome::Deferred {
+                target_id,
+                attempt_count,
+                error,
+            }) => {
+                if should_emit_reconciliation_retry_alert(attempt_count) {
+                    tracing::error!(
+                        target_id = target_id.as_i64(),
+                        attempt_count,
+                        error,
+                        "Autodeposit reconciliation failed; request retained for retry"
+                    );
+                    emit_earn_reconciliation_job_failed();
+                } else {
+                    tracing::warn!(
+                        target_id = target_id.as_i64(),
+                        attempt_count,
+                        error,
+                        "Autodeposit reconciliation is still pending"
+                    );
+                }
             }
             Ok(AutodepositReconciliationProcessOutcome::Idle) => {
                 tokio::select! {
@@ -2475,7 +2537,7 @@ mod tests {
                 "fee": 5_000
             },
             "transaction": {
-                "message": { "accountKeys": [wallet] }
+                "message": { "accountKeys": [wallet, "vault-owner"] }
             }
         })
     }
