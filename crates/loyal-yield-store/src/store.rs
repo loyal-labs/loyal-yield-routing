@@ -2312,6 +2312,39 @@ impl NeonSqlClient {
         ))
     }
 
+    pub async fn record_setup_policy_match(
+        &self,
+        event: PolicyMatchInput,
+    ) -> Result<RoutePolicy, OrchestratorError> {
+        let mut tx = self.pool.begin().await?;
+        let setup_policy = upsert_policy(&mut tx, &event).await?;
+        let updated = sqlx::query(
+            r#"
+            UPDATE loyal_yield.managed_vaults
+            SET setup_policy_id = $1,
+                active = TRUE,
+                last_seen_at = now()
+            WHERE settings = $2
+              AND vault_index = $3
+              AND vault_pubkey = $4
+            "#,
+        )
+        .bind(setup_policy.id.as_i64())
+        .bind(&event.settings)
+        .bind(i16::from(event.vault_index))
+        .bind(&event.vault_pubkey)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "setup policy {} arrived before its route policy",
+                event.policy_account
+            )));
+        }
+        tx.commit().await?;
+        Ok(setup_policy)
+    }
+
     pub async fn record_balance_sweep_policy_match(
         &self,
         event: BalanceSweepPolicyMatchInput,

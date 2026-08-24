@@ -11,7 +11,11 @@ base64.workspace = true
 balance-sweep-ata-monitor = { path = "../balance-sweep-ata-monitor", features = ["local-e2e"] }
 loyal-yield-store = { path = "../loyal-yield-store" }
 serde = { workspace = true, features = ["derive"] }
+bytemuck = "1"
+klend-interface = { git = "https://github.com/Kamino-Finance/klend" }
 serde_json = "1"
+solana-sdk.workspace = true
+spl-associated-token-account.workspace = true
 spl-token.workspace = true
 squads-test-harness = { path = "../squads-test-harness" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

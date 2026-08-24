@@ -133,6 +133,20 @@ require_match \
   'invalidate|refetch|refresh' \
   "$APP_DIR/apps/mobile/src/features/earn-realtime"
 
+require_match \
+  "isolated web E2E guards against confirmation API calls" \
+  'FORBIDDEN_EARN_API_PATTERN|forbiddenApiRequests' \
+  "$APP_DIR/apps/web/scripts/verify-earn-client-local-chain.ts"
+require_match \
+  "isolated web E2E covers initial top-up partial and full cash flow" \
+  'initial_deposit|top_up|partial_withdrawal|full_withdrawal' \
+  "$APP_DIR/apps/web/scripts/verify-earn-client-local-chain.ts" \
+  "$ROUTING_DIR/scripts/verify-earn-client-local-e2e.sh"
+
+run_check \
+  "isolated web client Earn chain projection and SSE E2E passes" \
+  bash "$ROUTING_DIR/scripts/verify-earn-client-local-e2e.sh" --app-root "$APP_DIR"
+
 run_check \
   "routing focused chain projection scenarios pass" \
   cargo test --manifest-path "$ROUTING_DIR/Cargo.toml" -p balance-sweep-ata-monitor earn_reconciliation
