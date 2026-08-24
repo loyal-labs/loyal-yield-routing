@@ -243,7 +243,6 @@ pub struct LaserstreamAtaUpdateSource {
 pub struct LaserstreamPolicyUpdateSource {
     pub endpoint: String,
     pub api_key: String,
-    pub rpc_url: String,
     pub from_slot: u64,
     pub config: SubscriptionConfig,
 }
@@ -706,10 +705,6 @@ async fn run_earn_max_policy_laserstream(
         from_slot: Some(source.from_slot),
         ..SubscribeRequest::default()
     };
-    let rpc = Arc::new(RpcClient::new_with_commitment(
-        source.rpc_url.clone(),
-        CommitmentConfig::confirmed(),
-    ));
     tracing::info!(
         endpoint = %source.endpoint,
         from_slot = source.from_slot,
@@ -740,7 +735,6 @@ async fn run_earn_max_policy_laserstream(
                         Some(Ok(update)) => {
                             if let Err(error) = process_earn_max_policy_update(
                                 update,
-                                Arc::clone(&rpc),
                                 &store,
                                 Arc::clone(&policy_monitor),
                             ).await {
@@ -780,7 +774,6 @@ async fn run_earn_max_policy_laserstream(
 
 async fn process_earn_max_policy_update(
     update: SubscribeUpdate,
-    rpc: Arc<RpcClient>,
     store: &OrchestratorStore,
     policy_monitor: Arc<Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
 ) -> Result<()> {
@@ -790,9 +783,9 @@ async fn process_earn_max_policy_update(
     let transaction = transaction_update
         .transaction
         .context("Earn MAX LaserStream transaction payload was missing")?;
-    let signature = signature_from_laserstream_bytes(&transaction.signature)?;
     let slot = transaction_update.slot;
-    let transaction = read_confirmed_squads_policy_transaction(rpc, signature, slot).await?;
+    let transaction =
+        earn_reconciliation::decode_laserstream_squads_policy_transaction(transaction, slot)?;
     if let EarnPolicyTransactionRead::Transaction(transaction) = transaction {
         if !transaction.instructions.is_empty() {
             policy_monitor
@@ -801,11 +794,12 @@ async fn process_earn_max_policy_update(
                 .process_policy_instructions(
                     &transaction.signature,
                     transaction.slot,
-                    transaction.instructions,
+                    transaction.instructions.clone(),
                 )
                 .await
                 .map_err(|error| anyhow::anyhow!(error))?;
         }
+        earn_reconciliation::project_earn_max_memos(store, &transaction).await?;
     }
     store
         .advance_projection_offset(

@@ -14,13 +14,14 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
+use helius_laserstream::grpc::SubscribeUpdateTransactionInfo;
 use klend_interface::{
     from_account_data,
     state::{Obligation, Reserve},
     KLEND_PROGRAM_ID,
 };
 use loyal_actions::{
-    derive_associated_token_account, earn_stablecoin, earn_stablecoins,
+    derive_associated_token_account, derive_squads_vault, earn_stablecoin, earn_stablecoins,
     SQUADS_SMART_ACCOUNT_PROGRAM_ID, SUBSCRIPTIONS_CREATE_RECURRING_DELEGATION,
     SUBSCRIPTIONS_PROGRAM_ID, USDC_MINT,
 };
@@ -217,6 +218,170 @@ pub async fn read_confirmed_squads_policy_transaction(
     })
     .await
     .context("confirmed Squads policy transaction proof task panicked")?
+}
+
+pub(crate) fn decode_laserstream_squads_policy_transaction(
+    transaction: SubscribeUpdateTransactionInfo,
+    slot: u64,
+) -> Result<EarnPolicyTransactionRead> {
+    let signature = Signature::try_from(transaction.signature.as_slice())
+        .context("LaserStream policy transaction signature")?
+        .to_string();
+    let meta = transaction
+        .meta
+        .context("LaserStream policy transaction metadata was missing")?;
+    if meta.err.is_some() {
+        return Ok(EarnPolicyTransactionRead::NoStateChange);
+    }
+    let message = transaction
+        .transaction
+        .and_then(|transaction| transaction.message)
+        .context("LaserStream policy transaction message was missing")?;
+    let header = message
+        .header
+        .context("LaserStream policy transaction header was missing")?;
+    let static_len = message.account_keys.len();
+    let mut account_keys = message
+        .account_keys
+        .iter()
+        .map(|bytes| Pubkey::try_from(bytes.as_slice()).context("LaserStream account key"))
+        .collect::<Result<Vec<_>>>()?;
+    let loaded_writable_len = meta.loaded_writable_addresses.len();
+    account_keys.extend(
+        meta.loaded_writable_addresses
+            .iter()
+            .chain(&meta.loaded_readonly_addresses)
+            .map(|bytes| Pubkey::try_from(bytes.as_slice()).context("LaserStream loaded address"))
+            .collect::<Result<Vec<_>>>()?,
+    );
+    let required_signers =
+        usize::try_from(header.num_required_signatures).context("LaserStream signer count")?;
+    let readonly_signers = usize::try_from(header.num_readonly_signed_accounts)
+        .context("LaserStream readonly signer count")?;
+    let readonly_unsigned = usize::try_from(header.num_readonly_unsigned_accounts)
+        .context("LaserStream readonly unsigned count")?;
+
+    let account_meta = |index: usize| -> Option<AccountMeta> {
+        let pubkey = account_keys.get(index).copied()?;
+        let is_signer = index < required_signers;
+        let is_writable = if is_signer {
+            index < required_signers.saturating_sub(readonly_signers)
+        } else if index < static_len {
+            index < static_len.saturating_sub(readonly_unsigned)
+        } else {
+            index < static_len.saturating_add(loaded_writable_len)
+        };
+        Some(AccountMeta {
+            pubkey,
+            is_signer,
+            is_writable,
+        })
+    };
+
+    let mut instructions = Vec::new();
+    for compiled in message.instructions {
+        let Some(program_id) = usize::try_from(compiled.program_id_index)
+            .ok()
+            .and_then(|index| account_keys.get(index))
+            .copied()
+        else {
+            continue;
+        };
+        if program_id != SQUADS_SMART_ACCOUNT_PROGRAM_ID && program_id != SUBSCRIPTIONS_PROGRAM_ID {
+            continue;
+        }
+        instructions.push(Instruction {
+            program_id,
+            accounts: compiled
+                .accounts
+                .iter()
+                .filter_map(|index| account_meta(usize::from(*index)))
+                .collect(),
+            data: compiled.data,
+        });
+    }
+
+    let mut earn_max_memos = Vec::new();
+    for group in meta.inner_instructions {
+        for (inner_index, instruction) in group.instructions.into_iter().enumerate() {
+            let Some(program_id) = usize::try_from(instruction.program_id_index)
+                .ok()
+                .and_then(|index| account_keys.get(index))
+                .copied()
+            else {
+                continue;
+            };
+            if program_id.to_string() != EARN_MAX_MEMO_PROGRAM {
+                continue;
+            }
+            let source_instruction_index = u16::try_from(group.index)
+                .ok()
+                .and_then(|index| index.checked_mul(256))
+                .and_then(|value| value.checked_add(u16::try_from(inner_index + 1).ok()?))
+                .context("Earn MAX memo instruction index overflow")?;
+            earn_max_memos.push(EarnMaxMemoInstruction {
+                source_instruction_index,
+                accounts: instruction
+                    .accounts
+                    .iter()
+                    .filter_map(|index| account_keys.get(usize::from(*index)).copied())
+                    .collect(),
+                data: instruction.data,
+            });
+        }
+    }
+    Ok(EarnPolicyTransactionRead::Transaction(
+        EarnPolicyTransaction {
+            signature,
+            slot,
+            instructions,
+            earn_max_memos,
+        },
+    ))
+}
+
+pub(crate) async fn project_earn_max_memos(
+    store: &OrchestratorStore,
+    transaction: &EarnPolicyTransaction,
+) -> Result<usize> {
+    let mut applied = 0;
+    for memo in &transaction.earn_max_memos {
+        let Some(intent) = parse_earn_max_intent(&memo.data)? else {
+            continue;
+        };
+        let matches = memo
+            .accounts
+            .iter()
+            .flat_map(|vault| {
+                transaction
+                    .instructions
+                    .iter()
+                    .flat_map(move |instruction| {
+                        instruction.accounts.iter().filter_map(move |account| {
+                            (derive_squads_vault(&account.pubkey, 0).0 == *vault)
+                                .then_some((account.pubkey, *vault))
+                        })
+                    })
+            })
+            .collect::<BTreeSet<_>>();
+        let matches = matches.into_iter().collect::<Vec<_>>();
+        let [(settings, _vault)] = matches.as_slice() else {
+            continue;
+        };
+        store
+            .project_earn_max_intent(EarnMaxIntentProjectionInput {
+                settings: settings.to_string(),
+                vault_index: 0,
+                signature: transaction.signature.clone(),
+                instruction_index: memo.source_instruction_index,
+                slot: transaction.slot,
+                observed_at: Utc::now(),
+                intent,
+            })
+            .await?;
+        applied += 1;
+    }
+    Ok(applied)
 }
 
 fn read_autodeposit_snapshot(
