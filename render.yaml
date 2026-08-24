@@ -268,7 +268,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-706e15c40226f1e67ae103ed03c78a942b6f5b0a
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-628808a98a79ea8e53a8780401add0098ba66b3e
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/multiply-route-worker run
             maxShutdownDelaySeconds: 60
