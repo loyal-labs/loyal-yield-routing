@@ -666,10 +666,17 @@ function checkWorkerAndStoreSource(): Json {
   for (const required of [
     "load_unbootstrapped_earn_max_policy_set",
     "confirmed_claim_transfer",
+    "ON CONFLICT (route_key, observed_slot) DO NOTHING",
     "AND NOT COALESCE((",
   ]) {
     requireText(store, required, "earn_max_store_contract_missing", MULTIPLY_STORE);
   }
+  rejectText(
+    store,
+    "ON CONFLICT (route_key, generation) DO NOTHING",
+    "earn_max_claim_snapshot_conflict_target_drift",
+    MULTIPLY_STORE,
+  );
   for (const forbidden of [
     "find_confirmed_deposit",
     "admit_next_confirmed_deposit",

@@ -714,7 +714,7 @@ impl NeonSqlClient {
                     NULL, NULL, 'confirmed_claim_transfer',
                     $3, $4, $6
                 )
-                ON CONFLICT (route_key, generation) DO NOTHING
+                ON CONFLICT (route_key, observed_slot) DO NOTHING
                 "#,
             )
             .bind(&route.route_key)
@@ -733,7 +733,7 @@ impl NeonSqlClient {
             .await?;
             if snapshot.rows_affected() != 1 {
                 tx.rollback().await?;
-                return Err(invariant("Claim snapshot generation already exists"));
+                return Err(invariant("Claim snapshot observed slot already exists"));
             }
         }
         tx.commit().await?;
