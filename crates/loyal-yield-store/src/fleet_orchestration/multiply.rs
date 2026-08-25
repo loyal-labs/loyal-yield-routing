@@ -338,13 +338,19 @@ impl MultiplyRouteState {
         let can_cancel = self.current_operation_id.is_none()
             && self.withdrawal.as_ref().is_some_and(|withdrawal| {
                 withdrawal.request_id == request_id
-                    && withdrawal.status == WithdrawalStatus::Requested
+                    && matches!(
+                        withdrawal.status,
+                        WithdrawalStatus::Requested | WithdrawalStatus::Claimable
+                    )
             });
         if !can_cancel {
             return Err(MultiplyStateError::InvalidGoalChange);
         }
         self.generation += 1;
-        self.goal = RouteGoal::Idle;
+        // Claimable custody may already have been unwound. Re-entering Deploy
+        // makes the existing planner put it back into the active strategy;
+        // canceling before unwind simply converges to Idle without a mutation.
+        self.goal = RouteGoal::Deploy;
         self.withdrawal = None;
         Ok(self)
     }

@@ -460,48 +460,42 @@ pub(crate) async fn project_earn_max_cash_flows(
         };
         let (source, destination) = match &cash_flow {
             EarnMaxCashFlowMemo::Deposit { settings, .. } => {
-                let [wallet, memo_settings, custody, source, routing_program] =
-                    memo.accounts.as_slice()
-                else {
+                let [wallet] = memo.accounts.as_slice() else {
                     bail!("Earn MAX deposit memo account shape drifted");
                 };
-                if memo_settings != settings
-                    || *routing_program != SQUADS_SMART_ACCOUNT_PROGRAM_ID
-                    || !transaction.signers.contains(wallet)
+                if transaction.signers.as_slice() != [*wallet]
+                    || memo.source_instruction_index % 256 != 0
+                    || !transaction.instructions.is_empty()
                 {
-                    bail!("Earn MAX deposit memo is not transaction-signer bound");
+                    bail!("Earn MAX deposit memo is not exact outer-signer bound");
                 }
                 let expected_custody = derive_associated_token_account(
                     derive_squads_vault(settings, 0).0,
                     USDC_MINT,
                     spl_token::ID,
                 );
-                if *custody != expected_custody {
-                    bail!("Earn MAX deposit memo custody drifted");
-                }
-                (*source, *custody)
+                let expected_source =
+                    derive_associated_token_account(*wallet, USDC_MINT, spl_token::ID);
+                (expected_source, expected_custody)
             }
             EarnMaxCashFlowMemo::Claim {
                 settings,
                 destination,
                 ..
             } => {
-                let [vault, memo_settings, custody, memo_destination] = memo.accounts.as_slice()
-                else {
+                let [vault] = memo.accounts.as_slice() else {
                     bail!("Earn MAX claim memo account shape drifted");
                 };
                 let expected_vault = derive_squads_vault(settings, 0).0;
                 let expected_custody =
                     derive_associated_token_account(expected_vault, USDC_MINT, spl_token::ID);
-                if memo_settings != settings
-                    || *vault != expected_vault
-                    || *custody != expected_custody
-                    || memo_destination != destination
+                if *vault != expected_vault
+                    || memo.source_instruction_index % 256 == 0
                     || transaction.instructions.is_empty()
                 {
-                    bail!("Earn MAX claim memo topology drifted");
+                    bail!("Earn MAX claim memo is not exact inner-vault bound");
                 }
-                (*custody, *destination)
+                (expected_custody, *destination)
             }
         };
         let transfer = read_confirmed_earn_max_transfer(
