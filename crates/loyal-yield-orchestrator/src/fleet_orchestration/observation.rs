@@ -3,8 +3,11 @@ use super::{
     domain::OpportunityInput,
     planner::{CandidateExecutionCosts, CandidateRouteKind},
 };
-use crate::{route_amount_evidence_from_metadata, NeonSqlClient, ACTIVE_DECISION_STATUSES};
+use crate::{
+    route_amount_evidence_from_metadata, NeonSqlClient, OrchestratorError, ACTIVE_DECISION_STATUSES,
+};
 use chrono::{DateTime, Duration, Utc};
+use futures_util::future::try_join_all;
 use loyal_actions::earn_stablecoins;
 use loyal_observability::{
     record_database_query_phase_duration, DatabaseQuery, DatabaseQueryPhase,
@@ -13,7 +16,9 @@ use loyal_yield_router::timescale::{
     SupportedReserveCatalogRow, SupportedReserveMarketSnapshot,
     SupportedReserveMarketSnapshotQuery, TimescaleRouterClient, VerifiedSupportedReserveRow,
 };
-use loyal_yield_store::fleet_orchestration::CrossMintSwapPolicyBinding;
+use loyal_yield_store::fleet_orchestration::{
+    maximum_target_inflight_usd_micros, CrossMintSwapPolicyBinding, TargetCapacityObservation,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -758,6 +763,7 @@ pub struct FleetObservationStats {
     pub complete_vault_accounting: bool,
     pub committed_target_inflow_reserve_count: usize,
     pub committed_target_inflow_usd_micros: i64,
+    pub released_target_capacity_reservation_count: u64,
     pub committed_source_outflow_reserve_count: usize,
     pub committed_source_outflow_usd_micros: i64,
     pub valued_position_source_count: usize,
@@ -810,6 +816,8 @@ pub enum FleetObservationError {
     MarketRead(#[source] crate::sqlx::Error),
     #[error("fleet observation query failed: {0}")]
     NeonRead(#[source] crate::sqlx::Error),
+    #[error("target capacity refresh failed: {0}")]
+    CapacityRefresh(#[source] OrchestratorError),
     #[error("fleet observation row decode failed: {0}")]
     RowDecode(#[source] serde_json::Error),
     #[error("fleet observation completeness invariant failed: {0}")]
@@ -891,6 +899,41 @@ pub async fn observe_fleet_opportunities_without_queue_schema(
     )
 }
 
+async fn refresh_committed_target_capacity(
+    neon: &NeonSqlClient,
+    cluster: &str,
+    market_epoch: &ImmutableMarketEpoch,
+    committed_target_inflows: &[CommittedTargetInflow],
+) -> Result<u64, FleetObservationError> {
+    let committed_targets = committed_target_inflows
+        .iter()
+        .map(|flow| flow.target_reserve.as_str())
+        .collect::<BTreeSet<_>>();
+    if committed_targets.is_empty() {
+        return Ok(0);
+    }
+    let refreshes = market_epoch
+        .reserves
+        .iter()
+        .filter(|reserve| committed_targets.contains(reserve.reserve.as_str()))
+        .map(|reserve| {
+            neon.refresh_target_capacity_from_market_epoch(TargetCapacityObservation {
+                cluster: cluster.to_owned(),
+                target_reserve: reserve.reserve.clone(),
+                liquidity_mint: reserve.liquidity_mint.clone(),
+                observed_supply_usd_micros: reserve.total_supply_usd_micros,
+                observed_slot: reserve.slot,
+                maximum_inflight_usd_micros: maximum_target_inflight_usd_micros(
+                    reserve.total_supply_usd_micros,
+                ),
+            })
+        });
+    try_join_all(refreshes)
+        .await
+        .map(|counts| counts.into_iter().sum())
+        .map_err(FleetObservationError::CapacityRefresh)
+}
+
 /// Observes one durable dirty cohort while retaining a fleet-wide committed
 /// inflow aggregate. This reduces source work from O(fleet) to O(cohort), but
 /// callers must still prove that reusing the previous global ranking frontier
@@ -921,7 +964,9 @@ pub async fn observe_fleet_opportunities_for_vaults(
     .await
 }
 
-/// Executes exactly one Timescale market read and one set-based Neon read.
+/// Executes one Timescale market read and one set-based Neon source read.
+/// When fresh market telemetry releases committed target capacity, the source
+/// read repeats once so the same planning cycle ranks against the freed headroom.
 pub async fn observe_fleet_opportunities_at(
     neon: &NeonSqlClient,
     timescale: &TimescaleRouterClient,
@@ -951,7 +996,7 @@ async fn observe_fleet_opportunities_at_scope(
     let validated = ValidatedConfig::new(config, delegated_signer)?;
     let market_started = Instant::now();
     let source_started = Instant::now();
-    let ((market_epoch, market_read_micros), (source_set, neon_read_micros)) = tokio::try_join!(
+    let ((market_epoch, market_read_micros), (mut source_set, mut neon_read_micros)) = tokio::try_join!(
         async {
             Ok::<_, FleetObservationError>((
                 load_market_epoch(timescale, config, &validated.enabled_mints, captured_at).await?,
@@ -973,14 +1018,41 @@ async fn observe_fleet_opportunities_at_scope(
             ))
         },
     )?;
-    build_timed_observation_result(
+    let released_target_capacity_reservation_count = refresh_committed_target_capacity(
+        neon,
+        &config.cluster,
+        &market_epoch,
+        &source_set.committed_target_inflows,
+    )
+    .await?;
+    let source_reloaded = released_target_capacity_reservation_count > 0;
+    if source_reloaded {
+        let reload_started = Instant::now();
+        source_set = load_fleet_sources(
+            neon,
+            delegated_signer,
+            config,
+            &validated.enabled_mints,
+            captured_at,
+            vault_ids,
+        )
+        .await?;
+        neon_read_micros = neon_read_micros.saturating_add(elapsed_micros(reload_started));
+    }
+    let mut result = build_timed_observation_result(
         market_epoch,
         source_set,
         &validated,
         config,
         market_read_micros,
         neon_read_micros,
-    )
+    )?;
+    result.stats.released_target_capacity_reservation_count =
+        released_target_capacity_reservation_count;
+    if source_reloaded {
+        result.stats.neon_read_count = result.stats.neon_read_count.saturating_add(1);
+    }
+    Ok(result)
 }
 
 fn elapsed_micros(started: Instant) -> u64 {
