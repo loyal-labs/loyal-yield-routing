@@ -66,6 +66,13 @@ Hard constraints:
   Squads constraint limit. Packet overflow is BLOCKED; it is not permission for
   a fourth policy or weaker pins.
 
+  The verifier reads and hashes the deployed Squads ProgramData account before
+  any lifecycle check. Compact PolicyCreate and PolicyUpdate are usable only
+  when that exact binary hash is allowlisted after an independent deployed
+  simulation proves both compact variants deserialize. A legacy binary that
+  returns InstructionDidNotDeserialize is BLOCKED even when the compact packet
+  itself fits; raw payload overflow never permits weaker constraints.
+
   Installation may use multiple confirmed transactions. Each missing PDA is
   first created with a minimal exit-safe legacy payload, then compact-updated
   in place to the complete family catalog. Readiness remains incomplete until
@@ -206,26 +213,28 @@ The verifier stops at the first false condition:
 2. Exactly three semantic policy families, exactly seven strategy keys and
    exactly fourteen directed swap lanes;
    Rust/TypeScript parity; no six-account or two-account executable manifest.
-3. Three exit-safe legacy creation packets and three full compact update packets
+3. Deployed Squads program and ProgramData identity, exact binary hash, and
+   signed-unsent proof that compact PolicyCreate and PolicyUpdate deserialize.
+4. Three exit-safe legacy creation packets and three full compact update packets
    below 1232 bytes and within constraint limits; update readback must prove the
    final full payload on the same three PDAs.
-4. Canonical trace and mutation matrix for every KLend allowlist cross-product,
+5. Canonical trace and mutation matrix for every KLend allowlist cross-product,
    omitted farm account, and directed Jupiter lane. Outside-catalog,
    cross-market and invalid-farm KLend tuples must reject. Any admitted
    same-market catalog cross-product must remain in exact approved custody and
    trigger the worker/reconciliation fail-closed checks. Every mutated Jupiter
    route must reject or be byte-and-economically inert with no endpoint
    diversion.
-5. Current-chain signed-unsent simulation with fresh Settings, seeds, quotes,
+6. Current-chain signed-unsent simulation with fresh Settings, seeds, quotes,
    reserves, obligations, packet sizes and final signer/payer topology.
-6. Confirmed install transitions `incomplete -> ready`, all required operation
+7. Confirmed install transitions `incomplete -> ready`, all required operation
    directions, user deposit/top-up/cancel/partial/Max lifecycle, reconciliation,
    policy removal, final zero and rent return.
-7. Malformed-event survival, supervised projector health, canonical same-slot
+8. Malformed-event survival, supervised projector health, canonical same-slot
    ordering, bounded dedupe and measured restart/replay idempotency.
-8. Two fresh same-generation position observations, honest APY coverage,
+9. Two fresh same-generation position observations, honest APY coverage,
    authenticated API truth, bounded frontend convergence and withdrawal SLA.
-9. Exact immutable app and worker revisions/images deployed before the sole PASS.
+10. Exact immutable app and worker revisions/images deployed before the sole PASS.
 
 Static compilation, an old lifecycle, an unsigned packet, a simulated signature,
 an unauthenticated 401, deployment health alone, or a DB-only repair cannot

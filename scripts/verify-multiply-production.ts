@@ -7,7 +7,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 
 const CONTRACT_VERSION = "earn-max-v4";
 const POLICY_MANIFEST_VERSION = "earn-max-v2";
-const CONTRACT_SHA256 = "51fb6b662039b6bd87a1444c7e60623a46f28e7b18bba8f90ec88fd815b43449";
+const CONTRACT_SHA256 = "f39cf568b264627c8b918cc899a06db0438e7c9840885a015efdc2cb0fc6aa3b";
 const PASS = "PASS_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
 const FAIL = "FAIL_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
 const BLOCKED = "BLOCKED_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
@@ -42,6 +42,9 @@ const MIGRATION_RUNNER = "crates/loyal-yield-orchestrator/src/bin/yield-migratio
 const KLEND_PROGRAM = new PublicKey("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
 const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const TOKEN_2022_PROGRAM = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+const SQUADS_PROGRAM = new PublicKey("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG");
+const BPF_UPGRADEABLE_LOADER = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
+const SUPPORTED_COMPACT_POLICY_PROGRAM_DATA_HASHES = new Set<string>([]);
 
 const MAINNET_POOL_CATALOG = [
   {
@@ -814,6 +817,79 @@ async function checkMainnetPoolCatalog(): Promise<Json> {
   };
 }
 
+async function checkSquadsPolicyPayloadDialect(): Promise<Json> {
+  const connection = new Connection(requiredEnv("SOLANA_RPC_URL"), {
+    commitment: "confirmed",
+    httpAgent: false,
+  });
+  const program = await connection.getAccountInfo(SQUADS_PROGRAM, "confirmed");
+  if (
+    !program ||
+    !program.executable ||
+    !program.owner.equals(BPF_UPGRADEABLE_LOADER) ||
+    program.data.length !== 36 ||
+    program.data.readUInt32LE(0) !== 2
+  ) {
+    fail("deployed_squads_program_account_invalid", {
+      program: SQUADS_PROGRAM.toBase58(),
+      exists: Boolean(program),
+      executable: program?.executable ?? null,
+      owner: program?.owner.toBase58() ?? null,
+      dataLength: program?.data.length ?? null,
+      stateTag: program && program.data.length >= 4 ? program.data.readUInt32LE(0) : null,
+    });
+  }
+
+  const programDataAddress = new PublicKey(program.data.subarray(4, 36));
+  const programData = await connection.getAccountInfo(programDataAddress, "confirmed");
+  if (
+    !programData ||
+    !programData.owner.equals(BPF_UPGRADEABLE_LOADER) ||
+    programData.data.length < 13 ||
+    programData.data.readUInt32LE(0) !== 3
+  ) {
+    fail("deployed_squads_program_data_invalid", {
+      program: SQUADS_PROGRAM.toBase58(),
+      programData: programDataAddress.toBase58(),
+      exists: Boolean(programData),
+      owner: programData?.owner.toBase58() ?? null,
+      dataLength: programData?.data.length ?? null,
+      stateTag: programData && programData.data.length >= 4
+        ? programData.data.readUInt32LE(0)
+        : null,
+    });
+  }
+
+  const deployedSlot = Number(programData.data.readBigUInt64LE(4));
+  const programDataSha256 = sha256(programData.data);
+  if (!SUPPORTED_COMPACT_POLICY_PROGRAM_DATA_HASHES.has(programDataSha256)) {
+    blocked("deployed_squads_compact_policy_payload_unsupported", {
+      program: SQUADS_PROGRAM.toBase58(),
+      programData: programDataAddress.toBase58(),
+      deployedSlot,
+      programDataSha256,
+      observedError: "InstructionDidNotDeserialize (Custom 102)",
+      rawFinalInstructionDataBytes: {
+        collateral: 1_569,
+        debt: 1_655,
+        swap: 2_609,
+      },
+      compactProbePacketBytes: {
+        debt: 1_193,
+        swap: 1_165,
+      },
+      resume: "deploy and independently prove a Squads binary that accepts compact PolicyCreate and PolicyUpdate, then add its exact ProgramData hash to the verifier allowlist",
+    });
+  }
+
+  return {
+    program: SQUADS_PROGRAM.toBase58(),
+    programData: programDataAddress.toBase58(),
+    deployedSlot,
+    programDataSha256,
+  };
+}
+
 async function checkLivePrerequisites(): Promise<Json> {
   const rpcUrl = requiredEnv("SOLANA_RPC_URL");
   const databaseUrl = requiredEnv("NEON_DATABASE_URL");
@@ -1349,6 +1425,7 @@ const engine = checkWorkerAndStoreSource();
 const release = checkReleaseSource();
 const targeted = await targetedChecks();
 const mainnetCatalog = await checkMainnetPoolCatalog();
+const squadsPolicyDialect = await checkSquadsPolicyPayloadDialect();
 const live = await checkLivePrerequisites();
 const deployedWorkers = await checkDeployedWorkers(
   String(release.monitorImageRevision),
@@ -1368,6 +1445,7 @@ emit(PASS, "earn_max_three_policy_production_ready", {
   release,
   targeted,
   mainnetCatalog,
+  squadsPolicyDialect,
   live,
   deployedWorkers,
   lifecycle,
