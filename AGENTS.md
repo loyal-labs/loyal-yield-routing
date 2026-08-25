@@ -32,6 +32,10 @@ Render pulls the private GHCR images with the `loyal-ghcr` registry credential c
 
 This project should follow Loyal's vertical-slice architecture style as it grows.
 
+### Autodeposit transaction boundary
+
+Do not propose combining the Autodeposit subscription pull and Kamino deposit into one Solana transaction. The combined route exceeds Solana's transaction size limit, so these operations must remain separate transactions. Solve failures between them through clear ownership and durable handoff state.
+
 ### Current Structure
 
 The current app surface is intentionally small. `src/app/` owns App Router routes and route handlers. `src/app/page.tsx` is the main page entrypoint, `src/app/layout.tsx` is the root document shell, and `src/app/globals.css` is the global Tailwind/CSS entrypoint.

@@ -3263,18 +3263,42 @@ impl NeonSqlClient {
         let row = sqlx::query(
             r#"
             SELECT
-                vault_id,
-                mint,
-                amount_raw,
-                owner,
-                token_account,
-                observed_slot,
-                observed_at,
-                source_commitment,
-                updated_at
-            FROM loyal_yield.vault_idle_token_balances_current
-            WHERE vault_id = $1
-              AND mint = $2
+                idle.vault_id,
+                idle.mint,
+                idle.amount_raw,
+                idle.owner,
+                idle.token_account,
+                idle.observed_slot,
+                idle.observed_at,
+                idle.source_commitment,
+                idle.updated_at
+            FROM loyal_yield.vault_idle_token_balances_current AS idle
+            WHERE idle.vault_id = $1
+              AND idle.mint = $2
+              AND NOT EXISTS (
+                SELECT 1
+                FROM loyal_yield.balance_sweep_lot_claims AS direct_claim
+                JOIN loyal_yield.balance_sweep_targets AS direct_target
+                  ON direct_target.id = direct_claim.target_id
+                 AND direct_target.token_mint = idle.mint
+                JOIN loyal_yield.managed_vaults AS direct_vault
+                  ON direct_vault.settings = direct_target.settings
+                 AND direct_vault.vault_index = direct_target.vault_index
+                 AND direct_vault.vault_pubkey = direct_target.vault_pubkey
+                 AND direct_vault.id = idle.vault_id
+                JOIN loyal_yield.balance_sweep_transaction_attempts AS direct_pull
+                  ON direct_pull.claim_token = direct_claim.claim_token
+                 AND direct_pull.operation_kind = 'pull'
+                 AND direct_pull.attempt_state IN (
+                     'prepared', 'submitted', 'confirmed', 'unknown', 'ambiguous'
+                 )
+                LEFT JOIN loyal_yield.balance_sweep_transaction_attempts AS direct_top_up
+                  ON direct_top_up.claim_token = direct_claim.claim_token
+                 AND direct_top_up.operation_kind = 'top_up'
+                 AND direct_top_up.attempt_state = 'confirmed'
+                WHERE direct_claim.status = 'selected'
+                  AND direct_top_up.id IS NULL
+              )
             "#,
         )
         .bind(vault_id.as_i64())
@@ -3324,7 +3348,9 @@ impl NeonSqlClient {
                 JOIN loyal_yield.balance_sweep_transaction_attempts AS direct_pull
                   ON direct_pull.claim_token = direct_claim.claim_token
                  AND direct_pull.operation_kind = 'pull'
-                 AND direct_pull.attempt_state = 'confirmed'
+                 AND direct_pull.attempt_state IN (
+                     'prepared', 'submitted', 'confirmed', 'unknown', 'ambiguous'
+                 )
                 LEFT JOIN loyal_yield.balance_sweep_transaction_attempts AS direct_top_up
                   ON direct_top_up.claim_token = direct_claim.claim_token
                  AND direct_top_up.operation_kind = 'top_up'
@@ -3802,7 +3828,15 @@ impl NeonSqlClient {
         input: IdleVaultDepositDecisionInput,
     ) -> Result<PlanOutcome, OrchestratorError> {
         let mut tx = self.pool.begin().await?;
-        let _ = fetch_managed_vault_for_update(&mut tx, vault_id).await?;
+        let vault = fetch_managed_vault_for_update(&mut tx, vault_id).await?;
+
+        validate_idle_vault_deposit_decision_input(&input)?;
+        acquire_idle_vault_handoff_lock(&mut tx, vault_id, &input.liquidity_mint).await?;
+        if active_autodeposit_pull_exists(&mut tx, &vault, &input.liquidity_mint).await? {
+            return Err(OrchestratorError::SameMintRebalanceValidation(
+                "idle vault source is owned by an active Autodeposit pull".to_owned(),
+            ));
+        }
 
         if active_decision_exists(&mut tx, vault_id).await? {
             let decision =
@@ -3815,7 +3849,6 @@ impl NeonSqlClient {
             ));
         }
 
-        validate_idle_vault_deposit_decision_input(&input)?;
         let execution_plan = idle_vault_deposit_execution_plan(&input);
         let planned = PlannedDecision {
             source_snapshot_id: None,
@@ -3863,13 +3896,20 @@ impl NeonSqlClient {
         }
         let mut tx = self.pool.begin().await?;
         let vault = fetch_managed_vault_for_update(&mut tx, vault_id).await?;
+
+        validate_idle_vault_deposit_decision_input(&input)?;
+        acquire_idle_vault_handoff_lock(&mut tx, vault_id, &input.liquidity_mint).await?;
+        if active_autodeposit_pull_exists(&mut tx, &vault, &input.liquidity_mint).await? {
+            return Err(OrchestratorError::SameMintRebalanceValidation(
+                "idle vault source is owned by an active Autodeposit pull".to_owned(),
+            ));
+        }
         if active_decision_exists(&mut tx, vault_id).await? {
             return Err(OrchestratorError::StoreInvariant(format!(
                 "vault {vault_id} acquired an active decision before atomic fleet handoff"
             )));
         }
 
-        validate_idle_vault_deposit_decision_input(&input)?;
         validate_idle_vault_source_for_update(&mut tx, &vault, &input).await?;
         NeonSqlClient::reserve_target_capacity_in_connection(
             &mut tx,
@@ -7138,6 +7178,69 @@ fn validate_idle_vault_deposit_decision_input(
         ));
     }
     Ok(())
+}
+
+async fn acquire_idle_vault_handoff_lock(
+    conn: &mut PgConnection,
+    vault_id: VaultId,
+    mint: &str,
+) -> Result<(), OrchestratorError> {
+    sqlx::query(
+        r#"
+        SELECT pg_advisory_xact_lock(
+            hashtextextended(
+                format('idle-vault-handoff:%s:%s', $1::BIGINT, $2::TEXT),
+                0::BIGINT
+            )
+        )
+        "#,
+    )
+    .bind(vault_id.as_i64())
+    .bind(mint)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+async fn active_autodeposit_pull_exists(
+    conn: &mut PgConnection,
+    vault: &ManagedVault,
+    mint: &str,
+) -> Result<bool, OrchestratorError> {
+    sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM loyal_yield.balance_sweep_lot_claims AS direct_claim
+            JOIN loyal_yield.balance_sweep_targets AS direct_target
+              ON direct_target.id = direct_claim.target_id
+             AND direct_target.token_mint = $4
+            JOIN loyal_yield.balance_sweep_transaction_attempts AS direct_pull
+              ON direct_pull.claim_token = direct_claim.claim_token
+             AND direct_pull.operation_kind = 'pull'
+             AND direct_pull.attempt_state IN (
+                 'prepared', 'submitted', 'confirmed', 'unknown', 'ambiguous'
+             )
+            LEFT JOIN loyal_yield.balance_sweep_transaction_attempts AS direct_top_up
+              ON direct_top_up.claim_token = direct_claim.claim_token
+             AND direct_top_up.operation_kind = 'top_up'
+             AND direct_top_up.attempt_state = 'confirmed'
+            WHERE direct_claim.status = 'selected'
+              AND direct_target.settings = $1
+              AND direct_target.vault_index = $2
+              AND direct_target.vault_pubkey = $3
+              AND direct_target.token_mint = $4
+              AND direct_top_up.id IS NULL
+        )
+        "#,
+    )
+    .bind(&vault.settings)
+    .bind(vault.vault_index)
+    .bind(&vault.vault_pubkey)
+    .bind(mint)
+    .fetch_one(conn)
+    .await
+    .map_err(OrchestratorError::from)
 }
 
 async fn validate_idle_vault_source_for_update(

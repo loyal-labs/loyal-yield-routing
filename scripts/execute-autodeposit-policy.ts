@@ -58,10 +58,10 @@ type SmartAccountVaultsClient = {
   }) => Promise<PreparedAutodepositPull>;
 };
 
-type NeonQuery = (
-  strings: TemplateStringsArray,
-  ...values: unknown[]
-) => Promise<unknown[]>;
+type NeonQuery = {
+  (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>;
+  transaction: (queries: Promise<unknown[]>[]) => Promise<unknown[][]>;
+};
 
 type AppModules = {
   Keypair: typeof Keypair;
@@ -2566,7 +2566,22 @@ async function persistPreparedAutodepositAttempt(args: {
   lastValidBlockHeight: bigint;
 }): Promise<DurableAutodepositAttempt> {
   const sql = args.neon(args.databaseUrl);
-  const rows = await sql`
+  const [lockRows, rows] = await sql.transaction([
+    sql`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(
+          format('idle-vault-handoff:%s:%s', vault.id, target.token_mint),
+          0::bigint
+        )
+      )
+      FROM loyal_yield.balance_sweep_targets AS target
+      JOIN loyal_yield.managed_vaults AS vault
+        ON vault.settings = target.settings
+       AND vault.vault_index = target.vault_index
+       AND vault.vault_pubkey = target.vault_pubkey
+      WHERE target.id = ${args.targetId.toString()}
+    `,
+    sql`
     WITH guarded_claim AS (
       UPDATE loyal_yield.balance_sweep_lot_claims
       SET updated_at = now()
@@ -2631,6 +2646,25 @@ async function persistPreparedAutodepositAttempt(args: {
       FROM next_attempt
       CROSS JOIN guarded_claim
       WHERE NOT EXISTS (SELECT 1 FROM existing_active)
+        AND (
+          ${args.operationKind} <> 'pull'
+          OR NOT EXISTS (
+            SELECT 1
+            FROM loyal_yield.balance_sweep_targets AS target
+            JOIN loyal_yield.managed_vaults AS vault
+              ON vault.settings = target.settings
+             AND vault.vault_index = target.vault_index
+             AND vault.vault_pubkey = target.vault_pubkey
+            JOIN loyal_yield.rebalance_decisions AS fleet_decision
+              ON fleet_decision.vault_id = vault.id
+             AND fleet_decision.liquidity_mint = target.token_mint
+             AND fleet_decision.status::text IN (
+               'planned', 'simulating', 'ready', 'submitted', 'confirming'
+             )
+             AND fleet_decision.execution_plan ->> 'kind' = 'idle_vault_deposit'
+            WHERE target.id = ${args.targetId.toString()}
+          )
+        )
       ON CONFLICT DO NOTHING
       RETURNING *
     )
@@ -2638,11 +2672,17 @@ async function persistPreparedAutodepositAttempt(args: {
     UNION ALL
     SELECT * FROM existing_active
     LIMIT 1
-  `;
+    `,
+  ]);
+  if (lockRows.length !== 1) {
+    throw new AutodepositOwnershipLostError(
+      `Autodeposit target ${args.targetId} has no managed vault for its idle handoff.`
+    );
+  }
   const row = rows[0] as Record<string, unknown> | undefined;
   if (!row) {
-    throw new Error(
-      `Could not persist or recover durable ${args.operationKind} attempt for claim ${args.claimToken}.`
+    throw new AutodepositOwnershipLostError(
+      `Could not acquire idle ownership for durable ${args.operationKind} attempt on claim ${args.claimToken}.`
     );
   }
   return parseDurableAutodepositAttempt(row);

@@ -2285,6 +2285,30 @@ async fn load_fleet_sources(
               AND idle.mint = ANY($2::TEXT[])
               AND idle.mint = ANY(eligible.policy_stable_mints)
               AND idle.mint = ANY(eligible.policy_liquidity_mints)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM loyal_yield.balance_sweep_lot_claims AS direct_claim
+                  JOIN loyal_yield.balance_sweep_targets AS direct_target
+                    ON direct_target.id = direct_claim.target_id
+                   AND direct_target.token_mint = idle.mint
+                  JOIN loyal_yield.managed_vaults AS direct_vault
+                    ON direct_vault.settings = direct_target.settings
+                   AND direct_vault.vault_index = direct_target.vault_index
+                   AND direct_vault.vault_pubkey = direct_target.vault_pubkey
+                   AND direct_vault.id = idle.vault_id
+                  JOIN loyal_yield.balance_sweep_transaction_attempts AS direct_pull
+                    ON direct_pull.claim_token = direct_claim.claim_token
+                   AND direct_pull.operation_kind = 'pull'
+                   AND direct_pull.attempt_state IN (
+                       'prepared', 'submitted', 'confirmed', 'unknown', 'ambiguous'
+                   )
+                  LEFT JOIN loyal_yield.balance_sweep_transaction_attempts AS direct_top_up
+                    ON direct_top_up.claim_token = direct_claim.claim_token
+                   AND direct_top_up.operation_kind = 'top_up'
+                   AND direct_top_up.attempt_state = 'confirmed'
+                  WHERE direct_claim.status = 'selected'
+                    AND direct_top_up.id IS NULL
+              )
               AND (
                   $5::BIGINT = 0 OR NOT EXISTS (
                       SELECT 1 FROM loyal_yield.rebalance_decisions recent
