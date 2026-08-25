@@ -66,7 +66,12 @@ pub fn earn_reconciliation_regression_report() -> EarnReconciliationRegressionRe
         unrelated_multi_mint_is_noop: matches!(unrelated_multi, Ok(None)),
         earn_anchored_single_mint_is_detected: matches!(anchored_single, Ok(Some(_))),
         retry_alert_emissions: (1..=4)
-            .filter(|attempt_count| should_emit_reconciliation_retry_alert(*attempt_count))
+            .filter(|attempt_count| {
+                should_emit_reconciliation_retry_alert(
+                    crate::earn_reconciliation::EarnReconciliationDeferralKind::Failure,
+                    *attempt_count,
+                )
+            })
             .count(),
     }
 }

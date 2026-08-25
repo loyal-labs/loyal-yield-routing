@@ -61,8 +61,8 @@ use solana_sdk::{
     transaction::VersionedTransaction,
 };
 use solana_transaction_status_client_types::{
-    option_serializer::OptionSerializer, UiInstruction, UiParsedInstruction, UiTransactionEncoding,
-    UiTransactionStatusMeta, UiTransactionTokenBalance,
+    option_serializer::OptionSerializer, EncodedConfirmedTransactionWithStatusMeta, UiInstruction,
+    UiParsedInstruction, UiTransactionEncoding, UiTransactionStatusMeta, UiTransactionTokenBalance,
 };
 use tokio::{
     sync::{Mutex, Notify},
@@ -81,6 +81,12 @@ use crate::{
 
 const EARN_RECONCILIATION_HEALTH_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 const EARN_MAX_MEMO_PROGRAM: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+const EARN_MAX_TRANSACTION_PROOF_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+];
+const EARN_MAX_TRANSACTION_PROOF_STALE_ATTEMPT: i32 = 6;
 
 #[derive(Debug, Clone)]
 pub struct EarnPolicyTransaction {
@@ -117,6 +123,18 @@ struct ConfirmedCashFlowTransfer {
     destination_pre: u64,
     destination_post: u64,
 }
+
+#[derive(Debug)]
+struct EarnMaxTransactionProofPending;
+
+impl std::fmt::Display for EarnMaxTransactionProofPending {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .write_str("Earn MAX transaction proof is not yet available at confirmed commitment")
+    }
+}
+
+impl std::error::Error for EarnMaxTransactionProofPending {}
 
 #[derive(Debug, Clone)]
 pub enum EarnPolicyTransactionRead {
@@ -751,13 +769,21 @@ async fn read_confirmed_earn_max_account_transfer(
 ) -> Result<ConfirmedCashFlowTransfer> {
     tokio::task::spawn_blocking(move || {
         let signature = Signature::from_str(&signature)?;
-        let transaction = rpc.get_transaction_with_config(
-            &signature,
-            RpcTransactionConfig {
-                encoding: Some(UiTransactionEncoding::Base64),
-                commitment: Some(CommitmentConfig::confirmed()),
-                max_supported_transaction_version: Some(0),
+        let config = RpcTransactionConfig {
+            encoding: Some(UiTransactionEncoding::Base64),
+            commitment: Some(CommitmentConfig::confirmed()),
+            max_supported_transaction_version: Some(0),
+        };
+        let transaction = read_earn_max_transaction_proof_with_backoff(
+            || {
+                rpc.send::<Option<EncodedConfirmedTransactionWithStatusMeta>>(
+                    RpcRequest::GetTransaction,
+                    json!([signature.to_string(), &config]),
+                )
+                .map_err(Into::into)
             },
+            &EARN_MAX_TRANSACTION_PROOF_RETRY_DELAYS,
+            std::thread::sleep,
         )?;
         if transaction.slot != expected_slot {
             bail!("Earn MAX account cash-flow RPC slot drifted from LaserStream");
@@ -838,6 +864,20 @@ async fn read_confirmed_earn_max_account_transfer(
     })
     .await
     .context("Earn MAX account cash-flow readback task panicked")?
+}
+
+fn read_earn_max_transaction_proof_with_backoff<T>(
+    mut read: impl FnMut() -> Result<Option<T>>,
+    retry_delays: &[Duration],
+    mut sleep: impl FnMut(Duration),
+) -> Result<T> {
+    for &delay in retry_delays {
+        if let Some(proof) = read()? {
+            return Ok(proof);
+        }
+        sleep(delay);
+    }
+    read()?.ok_or_else(|| EarnMaxTransactionProofPending.into())
 }
 
 fn hex_hash(bytes: &[u8]) -> String {
@@ -2180,6 +2220,12 @@ pub async fn enqueue_normalized_earn_update(
         .map_err(Into::into)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EarnReconciliationDeferralKind {
+    ProofPending,
+    Failure,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EarnReconciliationProcessOutcome {
     Idle,
@@ -2190,12 +2236,32 @@ pub enum EarnReconciliationProcessOutcome {
     Deferred {
         job_id: i64,
         attempt_count: i32,
+        kind: EarnReconciliationDeferralKind,
         error: String,
     },
 }
 
-pub(crate) fn should_emit_reconciliation_retry_alert(attempt_count: i32) -> bool {
-    attempt_count == 1
+fn earn_reconciliation_deferral_kind(error: &anyhow::Error) -> EarnReconciliationDeferralKind {
+    if error
+        .downcast_ref::<EarnMaxTransactionProofPending>()
+        .is_some()
+    {
+        EarnReconciliationDeferralKind::ProofPending
+    } else {
+        EarnReconciliationDeferralKind::Failure
+    }
+}
+
+pub(crate) fn should_emit_reconciliation_retry_alert(
+    kind: EarnReconciliationDeferralKind,
+    attempt_count: i32,
+) -> bool {
+    match kind {
+        EarnReconciliationDeferralKind::ProofPending => {
+            attempt_count == EARN_MAX_TRANSACTION_PROOF_STALE_ATTEMPT
+        }
+        EarnReconciliationDeferralKind::Failure => attempt_count == 1,
+    }
 }
 
 pub async fn reconcile_targeted_policy_vault_update(
@@ -2484,6 +2550,7 @@ async fn defer_earn_reconciliation_job(
     error: anyhow::Error,
     retry_after_seconds: i64,
 ) -> Result<EarnReconciliationProcessOutcome> {
+    let kind = earn_reconciliation_deferral_kind(&error);
     let error = format!("{error:#}");
     store
         .retry_earn_reconciliation_job(job_id, claim_owner, &error, retry_after_seconds)
@@ -2491,6 +2558,7 @@ async fn defer_earn_reconciliation_job(
     Ok(EarnReconciliationProcessOutcome::Deferred {
         job_id,
         attempt_count,
+        kind,
         error,
     })
 }
@@ -2542,15 +2610,24 @@ pub async fn run_earn_reconciliation_consumer(
             Ok(EarnReconciliationProcessOutcome::Deferred {
                 job_id,
                 attempt_count,
+                kind,
                 error,
             }) => {
-                if should_emit_reconciliation_retry_alert(attempt_count) {
-                    tracing::error!(
-                        job_id,
-                        attempt_count,
-                        error,
-                        "Earn reconciliation proof failed; job retained for retry"
-                    );
+                if should_emit_reconciliation_retry_alert(kind, attempt_count) {
+                    match kind {
+                        EarnReconciliationDeferralKind::ProofPending => tracing::error!(
+                            job_id,
+                            attempt_count,
+                            error,
+                            "Earn reconciliation proof stayed unavailable beyond the retry horizon"
+                        ),
+                        EarnReconciliationDeferralKind::Failure => tracing::error!(
+                            job_id,
+                            attempt_count,
+                            error,
+                            "Earn reconciliation proof failed; job retained for retry"
+                        ),
+                    }
                     emit_earn_reconciliation_job_failed();
                 } else {
                     tracing::warn!(
@@ -2724,7 +2801,10 @@ pub async fn run_autodeposit_reconciliation_consumer(
                 attempt_count,
                 error,
             }) => {
-                if should_emit_reconciliation_retry_alert(attempt_count) {
+                if should_emit_reconciliation_retry_alert(
+                    EarnReconciliationDeferralKind::Failure,
+                    attempt_count,
+                ) {
                     tracing::error!(
                         target_id = target_id.as_i64(),
                         attempt_count,
@@ -3038,6 +3118,64 @@ fn fixture_policy_match(
 mod tests {
     use super::*;
     use solana_sdk::{instruction::InstructionError, transaction::TransactionError};
+
+    #[test]
+    fn earn_max_transaction_proof_availability_contract() {
+        use std::collections::VecDeque;
+
+        let null_proof: Option<EncodedConfirmedTransactionWithStatusMeta> =
+            serde_json::from_value(Value::Null).expect("RPC null must deserialize as pending");
+        assert!(null_proof.is_none());
+        assert_eq!(
+            EARN_MAX_TRANSACTION_PROOF_RETRY_DELAYS,
+            [
+                Duration::from_secs(2),
+                Duration::from_secs(5),
+                Duration::from_secs(10),
+            ]
+        );
+
+        let mut reads = VecDeque::from([None, None, Some(42_u64)]);
+        let mut sleeps = Vec::new();
+        let proof = read_earn_max_transaction_proof_with_backoff(
+            || Ok(reads.pop_front().expect("bounded read count")),
+            &EARN_MAX_TRANSACTION_PROOF_RETRY_DELAYS,
+            |delay| sleeps.push(delay),
+        )
+        .expect("proof should become available within the bounded window");
+        assert_eq!(proof, 42);
+        assert_eq!(sleeps, [Duration::from_secs(2), Duration::from_secs(5)]);
+        assert!(reads.is_empty());
+
+        let mut reads = VecDeque::from([None::<u64>, None, None, None]);
+        let error = read_earn_max_transaction_proof_with_backoff(
+            || Ok(reads.pop_front().expect("bounded read count")),
+            &EARN_MAX_TRANSACTION_PROOF_RETRY_DELAYS,
+            |_| {},
+        )
+        .expect_err("persistent null must remain pending without fabricating proof");
+        assert!(reads.is_empty());
+        assert_eq!(
+            earn_reconciliation_deferral_kind(&error),
+            EarnReconciliationDeferralKind::ProofPending
+        );
+        assert!(!should_emit_reconciliation_retry_alert(
+            EarnReconciliationDeferralKind::ProofPending,
+            1
+        ));
+        assert!(should_emit_reconciliation_retry_alert(
+            EarnReconciliationDeferralKind::ProofPending,
+            6
+        ));
+        assert!(!should_emit_reconciliation_retry_alert(
+            EarnReconciliationDeferralKind::ProofPending,
+            7
+        ));
+        assert!(should_emit_reconciliation_retry_alert(
+            EarnReconciliationDeferralKind::Failure,
+            1
+        ));
+    }
 
     #[test]
     fn autodeposit_snapshot_uses_confirmed_state() {
