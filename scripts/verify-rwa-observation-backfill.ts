@@ -26,7 +26,7 @@ const RESERVES = [
 ] as const;
 
 type Json = Record<string, unknown>;
-type SourceEvidence = { rows: number; counts: Record<string, number>; digest: string };
+type SourceEvidence = { rows: number; counts: Record<string, number>; digest: string; keys: string[] };
 
 function emit(verdict: string, condition: string, evidence: Json, exitCode: number): never {
   console.log(JSON.stringify({ verdict, condition, evidence }, null, 2));
@@ -125,18 +125,19 @@ function sourceContract(): SourceEvidence {
     if (points.some((point, index) => index > 0 && point - points[index - 1]! > 86_400_000)) fail("backfill_history_gap", { reserve });
   }
   keys.sort();
-  return { rows: rows.length, counts, digest: hash("md5", keys.join("\n")) };
+  return { rows: rows.length, counts, digest: hash("md5", keys.join("\n")), keys };
 }
 
 async function databaseContract(source: SourceEvidence): Promise<Json> {
   if (!process.env.TIMESCALEDB_URL) blocked("timescale_environment_missing", { missing: ["TIMESCALEDB_URL"] });
   const values = RESERVES.map(([, reserve]) => `('${reserve}')`).join(",");
+  const expectedKeys = source.keys.map((key) => `('${key}')`).join(",");
   const checksum = hash("sha256", file(MIGRATION));
   const sql = `
-WITH required(reserve) AS (VALUES ${values}), scoped AS (
-  SELECT updates.*, dedupe.dedupe_key FROM kamino.reserve_updates updates
-  JOIN kamino.reserve_update_dedupe dedupe ON dedupe.event_id = updates.event_id
-  JOIN required ON required.reserve = updates.reserve
+WITH required(reserve) AS (VALUES ${values}), expected(dedupe_key) AS (VALUES ${expectedKeys}), scoped AS (
+  SELECT updates.*, dedupe.dedupe_key FROM expected
+  JOIN kamino.reserve_update_dedupe dedupe USING (dedupe_key)
+  JOIN kamino.reserve_updates updates ON updates.event_id = dedupe.event_id
   WHERE updates.source = '${SOURCE}' AND observed_at >= '${START_ISO}'::timestamptz AND observed_at < '${END_ISO}'::timestamptz
 ), counts AS (SELECT reserve, count(*)::int AS row_count FROM scoped GROUP BY reserve), latest AS (
   SELECT count(*)::int AS row_count, count(*) FILTER (WHERE source = '${SOURCE}')::int AS historic_count,
