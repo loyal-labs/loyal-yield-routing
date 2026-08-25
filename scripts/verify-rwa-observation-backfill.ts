@@ -135,7 +135,8 @@ async function databaseContract(source: SourceEvidence): Promise<Json> {
   const sql = `
 WITH required(reserve) AS (VALUES ${values}), scoped AS (
   SELECT updates.*, dedupe.dedupe_key FROM kamino.reserve_updates updates
-  JOIN kamino.reserve_update_dedupe dedupe USING (event_id) JOIN required USING (reserve)
+  JOIN kamino.reserve_update_dedupe dedupe ON dedupe.event_id = updates.event_id
+  JOIN required ON required.reserve = updates.reserve
   WHERE updates.source = '${SOURCE}' AND observed_at >= '${START_ISO}'::timestamptz AND observed_at < '${END_ISO}'::timestamptz
 ), counts AS (SELECT reserve, count(*)::int AS row_count FROM scoped GROUP BY reserve), latest AS (
   SELECT count(*)::int AS row_count, count(*) FILTER (WHERE source = '${SOURCE}')::int AS historic_count,
