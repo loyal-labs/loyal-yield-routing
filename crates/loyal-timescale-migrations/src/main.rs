@@ -37,6 +37,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "kamino_verification_slot_tolerance",
         sql: include_str!("../migrations/0006_kamino_verification_slot_tolerance.sql"),
     },
+    Migration {
+        version: 7,
+        name: "kamino_rwa_decision_observations",
+        sql: include_str!("../migrations/0007_kamino_rwa_decision_observations.sql"),
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal";
@@ -243,6 +248,39 @@ async fn validate_kamino_market_verification_schema(pool: &PgPool) -> Result<(),
     .await?;
     if verified_market_columns != 4 {
         return Err("Kamino latest verified reserve view is missing economic state columns".into());
+    }
+
+    let rwa_decision_columns: i64 = sqlx::query_scalar(
+        r#"
+        SELECT count(*)
+        FROM information_schema.columns
+        WHERE table_schema = 'kamino'
+          AND table_name = 'latest_verified_reserve_updates'
+          AND column_name = ANY($1)
+        "#,
+    )
+    .bind([
+        "reserve_status",
+        "emergency_mode",
+        "loan_to_value_pct",
+        "liquidation_threshold_pct",
+        "borrow_factor_pct",
+        "deposit_limit",
+        "borrow_limit",
+        "utilization_limit_block_borrowing_above_pct",
+        "disable_usage_as_coll_outside_emode",
+        "borrow_limit_outside_elevation_group",
+        "borrowed_amount_outside_elevation_group",
+        "origination_fee_sf",
+        "flash_loan_fee_sf",
+        "borrow_rate_curve",
+        "deposit_withdrawal_cap",
+        "debt_withdrawal_cap",
+    ])
+    .fetch_one(pool)
+    .await?;
+    if rwa_decision_columns != 16 {
+        return Err("Kamino latest verified reserve view is missing RWA decision columns".into());
     }
     Ok(())
 }

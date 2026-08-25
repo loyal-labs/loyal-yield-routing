@@ -10,6 +10,89 @@ pub const EARN_MAX_SHARED_ACCOUNTS_ROUTE: [u8; 8] =
     [0xc1, 0x20, 0x9b, 0x33, 0x41, 0xd6, 0x9c, 0x81];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EarnMaxObservationReserve {
+    pub market: &'static str,
+    pub reserve: &'static str,
+    pub liquidity_mint: &'static str,
+}
+
+pub const EARN_MAX_ONRE_MARKET: &str = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8";
+pub const EARN_MAX_FIGURE_MARKET: &str = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA";
+pub const EARN_MAX_MAPLE_MARKET: &str = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y";
+pub const EARN_MAX_ONYC_MINT: &str = "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5";
+pub const EARN_MAX_PRIME_MINT: &str = "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7";
+pub const EARN_MAX_SYRUP_USDC_MINT: &str = "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj";
+pub const EARN_MAX_USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+pub const EARN_MAX_PYUSD_MINT: &str = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
+pub const EARN_MAX_USDS_MINT: &str = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA";
+pub const EARN_MAX_ONYC_COLLATERAL_RESERVE: &str = "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ";
+pub const EARN_MAX_ONYC_USDC_DEBT_RESERVE: &str = "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z";
+pub const EARN_MAX_ONYC_USDS_DEBT_RESERVE: &str = "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC";
+pub const EARN_MAX_PRIME_COLLATERAL_RESERVE: &str = "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh";
+pub const EARN_MAX_PRIME_USDC_DEBT_RESERVE: &str = "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu";
+pub const EARN_MAX_PRIME_PYUSD_DEBT_RESERVE: &str = "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5";
+pub const EARN_MAX_PRIME_USDS_DEBT_RESERVE: &str = "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4";
+pub const EARN_MAX_SYRUP_COLLATERAL_RESERVE: &str = "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY";
+pub const EARN_MAX_SYRUP_USDC_DEBT_RESERVE: &str = "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo";
+pub const EARN_MAX_SYRUP_PYUSD_DEBT_RESERVE: &str = "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS";
+
+/// The ten exact Kamino reserves referenced by the seven approved Earn Max
+/// strategies. This is shared by policy construction and observation so a
+/// market with multiple same-mint reserves cannot select the wrong account.
+pub const EARN_MAX_OBSERVATION_RESERVES: [EarnMaxObservationReserve; 10] = [
+    EarnMaxObservationReserve {
+        market: EARN_MAX_ONRE_MARKET,
+        reserve: EARN_MAX_ONYC_COLLATERAL_RESERVE,
+        liquidity_mint: EARN_MAX_ONYC_MINT,
+    },
+    EarnMaxObservationReserve {
+        market: EARN_MAX_ONRE_MARKET,
+        reserve: EARN_MAX_ONYC_USDC_DEBT_RESERVE,
+        liquidity_mint: EARN_MAX_USDC_MINT,
+    },
+    EarnMaxObservationReserve {
+        market: EARN_MAX_ONRE_MARKET,
+        reserve: EARN_MAX_ONYC_USDS_DEBT_RESERVE,
+        liquidity_mint: EARN_MAX_USDS_MINT,
+    },
+    EarnMaxObservationReserve {
+        market: EARN_MAX_FIGURE_MARKET,
+        reserve: EARN_MAX_PRIME_COLLATERAL_RESERVE,
+        liquidity_mint: EARN_MAX_PRIME_MINT,
+    },
+    EarnMaxObservationReserve {
+        market: EARN_MAX_FIGURE_MARKET,
+        reserve: EARN_MAX_PRIME_USDC_DEBT_RESERVE,
+        liquidity_mint: EARN_MAX_USDC_MINT,
+    },
+    EarnMaxObservationReserve {
+        market: EARN_MAX_FIGURE_MARKET,
+        reserve: EARN_MAX_PRIME_PYUSD_DEBT_RESERVE,
+        liquidity_mint: EARN_MAX_PYUSD_MINT,
+    },
+    EarnMaxObservationReserve {
+        market: EARN_MAX_FIGURE_MARKET,
+        reserve: EARN_MAX_PRIME_USDS_DEBT_RESERVE,
+        liquidity_mint: EARN_MAX_USDS_MINT,
+    },
+    EarnMaxObservationReserve {
+        market: EARN_MAX_MAPLE_MARKET,
+        reserve: EARN_MAX_SYRUP_COLLATERAL_RESERVE,
+        liquidity_mint: EARN_MAX_SYRUP_USDC_MINT,
+    },
+    EarnMaxObservationReserve {
+        market: EARN_MAX_MAPLE_MARKET,
+        reserve: EARN_MAX_SYRUP_USDC_DEBT_RESERVE,
+        liquidity_mint: EARN_MAX_USDC_MINT,
+    },
+    EarnMaxObservationReserve {
+        market: EARN_MAX_MAPLE_MARKET,
+        reserve: EARN_MAX_SYRUP_PYUSD_DEBT_RESERVE,
+        liquidity_mint: EARN_MAX_PYUSD_MINT,
+    },
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EarnMaxPolicyFamily {
     Collateral,
     Debt,

@@ -9,6 +9,20 @@ use crate::ReserveTarget;
 const SLOTS_PER_SECOND: f64 = 2.0;
 const SECONDS_PER_YEAR: f64 = 365.25 * 24.0 * 60.0 * 60.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct BorrowRateCurvePointSnapshot {
+    pub utilization_rate_bps: u32,
+    pub borrow_rate_bps: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct WithdrawalCapSnapshot {
+    pub config_capacity: i64,
+    pub current_total: i64,
+    pub last_interval_start_timestamp: u64,
+    pub interval_length_seconds: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReserveSnapshot {
     pub observed_at: DateTime<Utc>,
@@ -37,6 +51,22 @@ pub struct ReserveSnapshot {
     pub supply_apy: f64,
     pub protocol_take_rate_pct: u8,
     pub host_fixed_interest_rate_bps: u16,
+    pub reserve_status: u8,
+    pub emergency_mode: bool,
+    pub loan_to_value_pct: u8,
+    pub liquidation_threshold_pct: u8,
+    pub borrow_factor_pct: u64,
+    pub deposit_limit: u64,
+    pub borrow_limit: u64,
+    pub utilization_limit_block_borrowing_above_pct: u8,
+    pub disable_usage_as_coll_outside_emode: bool,
+    pub borrow_limit_outside_elevation_group: u64,
+    pub borrowed_amount_outside_elevation_group: u64,
+    pub origination_fee_sf: u64,
+    pub flash_loan_fee_sf: u64,
+    pub borrow_rate_curve: [BorrowRateCurvePointSnapshot; 11],
+    pub deposit_withdrawal_cap: WithdrawalCapSnapshot,
+    pub debt_withdrawal_cap: WithdrawalCapSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -314,6 +344,39 @@ fn snapshot_from_reserve(
         supply_apy: apy.supply_apy,
         protocol_take_rate_pct: reserve.config.protocol_take_rate_pct,
         host_fixed_interest_rate_bps: reserve.config.host_fixed_interest_rate_bps,
+        reserve_status: reserve.config.status,
+        emergency_mode: reserve.config.emergency_mode != 0,
+        loan_to_value_pct: reserve.config.loan_to_value_pct,
+        liquidation_threshold_pct: reserve.config.liquidation_threshold_pct,
+        borrow_factor_pct: reserve.config.borrow_factor_pct,
+        deposit_limit: reserve.config.deposit_limit,
+        borrow_limit: reserve.config.borrow_limit,
+        utilization_limit_block_borrowing_above_pct: reserve
+            .config
+            .utilization_limit_block_borrowing_above_pct,
+        disable_usage_as_coll_outside_emode: reserve.config.disable_usage_as_coll_outside_emode
+            != 0,
+        borrow_limit_outside_elevation_group: reserve.config.borrow_limit_outside_elevation_group,
+        borrowed_amount_outside_elevation_group: reserve.borrowed_amount_outside_elevation_group,
+        origination_fee_sf: reserve.config.fees.origination_fee_sf,
+        flash_loan_fee_sf: reserve.config.fees.flash_loan_fee_sf,
+        borrow_rate_curve: reserve.config.borrow_rate_curve.points.map(|point| {
+            BorrowRateCurvePointSnapshot {
+                utilization_rate_bps: point.utilization_rate_bps,
+                borrow_rate_bps: point.borrow_rate_bps,
+            }
+        }),
+        deposit_withdrawal_cap: withdrawal_cap_snapshot(reserve.config.deposit_withdrawal_cap),
+        debt_withdrawal_cap: withdrawal_cap_snapshot(reserve.config.debt_withdrawal_cap),
+    }
+}
+
+fn withdrawal_cap_snapshot(cap: klend_interface::state::WithdrawalCaps) -> WithdrawalCapSnapshot {
+    WithdrawalCapSnapshot {
+        config_capacity: cap.config_capacity,
+        current_total: cap.current_total,
+        last_interval_start_timestamp: cap.last_interval_start_timestamp,
+        interval_length_seconds: cap.config_interval_length_seconds,
     }
 }
 
@@ -531,6 +594,89 @@ pub fn diff_snapshot(previous: &ReserveSnapshot, current: &ReserveSnapshot) -> R
             current.total_borrow_usd_estimate,
         ),
     );
+    track_field_change(
+        &mut changed_fields,
+        "reserve_status",
+        previous.reserve_status != current.reserve_status,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "emergency_mode",
+        previous.emergency_mode != current.emergency_mode,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "loan_to_value_pct",
+        previous.loan_to_value_pct != current.loan_to_value_pct,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "liquidation_threshold_pct",
+        previous.liquidation_threshold_pct != current.liquidation_threshold_pct,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "borrow_factor_pct",
+        previous.borrow_factor_pct != current.borrow_factor_pct,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "deposit_limit",
+        previous.deposit_limit != current.deposit_limit,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "borrow_limit",
+        previous.borrow_limit != current.borrow_limit,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "utilization_limit_block_borrowing_above_pct",
+        previous.utilization_limit_block_borrowing_above_pct
+            != current.utilization_limit_block_borrowing_above_pct,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "disable_usage_as_coll_outside_emode",
+        previous.disable_usage_as_coll_outside_emode != current.disable_usage_as_coll_outside_emode,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "borrow_limit_outside_elevation_group",
+        previous.borrow_limit_outside_elevation_group
+            != current.borrow_limit_outside_elevation_group,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "borrowed_amount_outside_elevation_group",
+        previous.borrowed_amount_outside_elevation_group
+            != current.borrowed_amount_outside_elevation_group,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "origination_fee_sf",
+        previous.origination_fee_sf != current.origination_fee_sf,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "flash_loan_fee_sf",
+        previous.flash_loan_fee_sf != current.flash_loan_fee_sf,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "borrow_rate_curve",
+        previous.borrow_rate_curve != current.borrow_rate_curve,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "deposit_withdrawal_cap",
+        previous.deposit_withdrawal_cap != current.deposit_withdrawal_cap,
+    );
+    track_field_change(
+        &mut changed_fields,
+        "debt_withdrawal_cap",
+        previous.debt_withdrawal_cap != current.debt_withdrawal_cap,
+    );
 
     ReserveDiff {
         changed: !changed_fields.is_empty(),
@@ -550,6 +696,12 @@ pub fn diff_snapshot(previous: &ReserveSnapshot, current: &ReserveSnapshot) -> R
         supply_apy,
         total_supply_usd_estimate,
         total_borrow_usd_estimate,
+    }
+}
+
+fn track_field_change(changed_fields: &mut Vec<&'static str>, field: &'static str, changed: bool) {
+    if changed {
+        changed_fields.push(field);
     }
 }
 

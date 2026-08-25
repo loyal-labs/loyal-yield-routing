@@ -15,8 +15,8 @@ pub mod apy;
 mod catalog;
 
 pub use apy::{
-    diff_snapshot, snapshot_from_account, snapshot_from_account_at, DiffSummaryItem, ReserveDiff,
-    ReserveSnapshot,
+    diff_snapshot, snapshot_from_account, snapshot_from_account_at, BorrowRateCurvePointSnapshot,
+    DiffSummaryItem, ReserveDiff, ReserveSnapshot, WithdrawalCapSnapshot,
 };
 pub use catalog::{
     decode_kamino_reserve_account, validate_supported_reserve, KaminoReserveCatalogAccount,

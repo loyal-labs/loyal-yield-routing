@@ -1,6 +1,16 @@
 use loyal_actions::{
     derive_action_account, derive_associated_token_account, derive_kamino_obligation,
     derive_kamino_obligation_farm_user_state, derive_squads_vault,
+    EARN_MAX_FIGURE_MARKET as PRIME_MARKET, EARN_MAX_MAPLE_MARKET as COMMON_MARKET,
+    EARN_MAX_ONRE_MARKET as ONYC_MARKET,
+    EARN_MAX_ONYC_COLLATERAL_RESERVE as ONYC_COLLATERAL_RESERVE, EARN_MAX_ONYC_MINT,
+    EARN_MAX_ONYC_USDC_DEBT_RESERVE, EARN_MAX_ONYC_USDS_DEBT_RESERVE,
+    EARN_MAX_PRIME_COLLATERAL_RESERVE as PRIME_COLLATERAL_RESERVE, EARN_MAX_PRIME_MINT,
+    EARN_MAX_PRIME_PYUSD_DEBT_RESERVE, EARN_MAX_PRIME_USDC_DEBT_RESERVE,
+    EARN_MAX_PRIME_USDS_DEBT_RESERVE, EARN_MAX_PYUSD_MINT,
+    EARN_MAX_SYRUP_COLLATERAL_RESERVE as COLLATERAL_RESERVE, EARN_MAX_SYRUP_PYUSD_DEBT_RESERVE,
+    EARN_MAX_SYRUP_USDC_DEBT_RESERVE, EARN_MAX_SYRUP_USDC_MINT, EARN_MAX_USDC_MINT,
+    EARN_MAX_USDS_MINT,
 };
 use loyal_yield_store::fleet_orchestration::{MultiplyAction, MultiplyRouteState, StrategyKey};
 use solana_sdk::pubkey::Pubkey;
@@ -15,13 +25,12 @@ pub const JUPITER_SHARED_ACCOUNTS_ROUTE: [u8; 8] = [0xc1, 0x20, 0x9b, 0x33, 0x41
 pub const FARMS: &str = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr";
 pub const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub const TOKEN_2022: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
-pub const ONYC_MINT: &str = "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5";
-pub const PRIME_MINT: &str = "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7";
-pub const SYRUP_MINT: &str = "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj";
-pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-pub const PYUSD_MINT: &str = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
-pub const USDS_MINT: &str = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA";
-
+pub const ONYC_MINT: &str = EARN_MAX_ONYC_MINT;
+pub const PRIME_MINT: &str = EARN_MAX_PRIME_MINT;
+pub const SYRUP_MINT: &str = EARN_MAX_SYRUP_USDC_MINT;
+pub const USDC_MINT: &str = EARN_MAX_USDC_MINT;
+pub const PYUSD_MINT: &str = EARN_MAX_PYUSD_MINT;
+pub const USDS_MINT: &str = EARN_MAX_USDS_MINT;
 const MULTIPLY_OBLIGATION_TAG: u8 = 1;
 const MULTIPLY_OBLIGATION_ID: u8 = 0;
 
@@ -139,9 +148,7 @@ struct StrategyPolicySeeds {
 
 const COMMON_ORACLE: &str = "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH";
 
-const ONYC_MARKET: &str = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8";
 const ONYC_MARKET_AUTHORITY: &str = "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss";
-const ONYC_COLLATERAL_RESERVE: &str = "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ";
 const ONYC_COLLATERAL_LIQUIDITY_SUPPLY: &str = "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG";
 const ONYC_COLLATERAL_RECEIPT_MINT: &str = "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd";
 const ONYC_COLLATERAL_RECEIPT_SUPPLY: &str = "2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo";
@@ -157,7 +164,7 @@ const ONYC_USDC_TEMPLATE: StrategyTemplate = StrategyTemplate {
     collateral_receipt_mint: ONYC_COLLATERAL_RECEIPT_MINT,
     collateral_mint_supply: ONYC_COLLATERAL_RECEIPT_SUPPLY,
     collateral_farm_state: None,
-    debt_reserve: "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+    debt_reserve: EARN_MAX_ONYC_USDC_DEBT_RESERVE,
     debt_mint: USDC_MINT,
     debt_token_program: TOKEN,
     debt_liquidity_supply: "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
@@ -182,7 +189,7 @@ const ONYC_USDS_TEMPLATE: StrategyTemplate = StrategyTemplate {
     collateral_receipt_mint: ONYC_COLLATERAL_RECEIPT_MINT,
     collateral_mint_supply: ONYC_COLLATERAL_RECEIPT_SUPPLY,
     collateral_farm_state: None,
-    debt_reserve: "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC",
+    debt_reserve: EARN_MAX_ONYC_USDS_DEBT_RESERVE,
     debt_mint: USDS_MINT,
     debt_token_program: TOKEN,
     debt_liquidity_supply: "21Skwocv5cJoftyejSTtXVaHJWTg88xcWGQtnRvUyKLx",
@@ -196,9 +203,7 @@ const ONYC_USDS_TEMPLATE: StrategyTemplate = StrategyTemplate {
     },
 };
 
-const PRIME_MARKET: &str = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA";
 const PRIME_MARKET_AUTHORITY: &str = "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM";
-const PRIME_COLLATERAL_RESERVE: &str = "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh";
 const PRIME_COLLATERAL_LIQUIDITY_SUPPLY: &str = "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352";
 const PRIME_COLLATERAL_RECEIPT_MINT: &str = "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW";
 const PRIME_COLLATERAL_RECEIPT_SUPPLY: &str = "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN";
@@ -214,7 +219,7 @@ const PRIME_USDC_TEMPLATE: StrategyTemplate = StrategyTemplate {
     collateral_receipt_mint: PRIME_COLLATERAL_RECEIPT_MINT,
     collateral_mint_supply: PRIME_COLLATERAL_RECEIPT_SUPPLY,
     collateral_farm_state: None,
-    debt_reserve: "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+    debt_reserve: EARN_MAX_PRIME_USDC_DEBT_RESERVE,
     debt_mint: USDC_MINT,
     debt_token_program: TOKEN,
     debt_liquidity_supply: "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC",
@@ -239,7 +244,7 @@ const PRIME_PYUSD_TEMPLATE: StrategyTemplate = StrategyTemplate {
     collateral_receipt_mint: PRIME_COLLATERAL_RECEIPT_MINT,
     collateral_mint_supply: PRIME_COLLATERAL_RECEIPT_SUPPLY,
     collateral_farm_state: None,
-    debt_reserve: "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5",
+    debt_reserve: EARN_MAX_PRIME_PYUSD_DEBT_RESERVE,
     debt_mint: PYUSD_MINT,
     debt_token_program: TOKEN_2022,
     debt_liquidity_supply: "4LF3i8grZPRbk8d6gXvzRux4rYjGd5AmqrpLLYFpPKKt",
@@ -264,7 +269,7 @@ const PRIME_USDS_TEMPLATE: StrategyTemplate = StrategyTemplate {
     collateral_receipt_mint: PRIME_COLLATERAL_RECEIPT_MINT,
     collateral_mint_supply: PRIME_COLLATERAL_RECEIPT_SUPPLY,
     collateral_farm_state: None,
-    debt_reserve: "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4",
+    debt_reserve: EARN_MAX_PRIME_USDS_DEBT_RESERVE,
     debt_mint: USDS_MINT,
     debt_token_program: TOKEN,
     debt_liquidity_supply: "5tP1kDJBYnjtrpUaRQhsrU1Y28ahiJVjz8p9mbqJFpz5",
@@ -278,9 +283,7 @@ const PRIME_USDS_TEMPLATE: StrategyTemplate = StrategyTemplate {
     },
 };
 
-const COMMON_MARKET: &str = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y";
 const COMMON_MARKET_AUTHORITY: &str = "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g";
-const COLLATERAL_RESERVE: &str = "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY";
 const COLLATERAL_LIQUIDITY_SUPPLY: &str = "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i";
 const COLLATERAL_RECEIPT_MINT: &str = "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu";
 const COLLATERAL_MINT_SUPPLY: &str = "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58";
@@ -296,7 +299,7 @@ const SYRUP_USDC_USDC_TEMPLATE: StrategyTemplate = StrategyTemplate {
     collateral_receipt_mint: COLLATERAL_RECEIPT_MINT,
     collateral_mint_supply: COLLATERAL_MINT_SUPPLY,
     collateral_farm_state: None,
-    debt_reserve: "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+    debt_reserve: EARN_MAX_SYRUP_USDC_DEBT_RESERVE,
     debt_mint: USDC_MINT,
     debt_token_program: TOKEN,
     debt_liquidity_supply: "BBcwMNSMyhhBnYE9pevEvkxKHGzTafMP9v3j7Kk7nAWM",
@@ -321,7 +324,7 @@ const SYRUP_USDC_PYUSD_TEMPLATE: StrategyTemplate = StrategyTemplate {
     collateral_receipt_mint: COLLATERAL_RECEIPT_MINT,
     collateral_mint_supply: COLLATERAL_MINT_SUPPLY,
     collateral_farm_state: None,
-    debt_reserve: "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS",
+    debt_reserve: EARN_MAX_SYRUP_PYUSD_DEBT_RESERVE,
     debt_mint: PYUSD_MINT,
     debt_token_program: TOKEN_2022,
     debt_liquidity_supply: "GUENeLN1ufX4K5622DbyYoQFhaWxMKoCFycvLSEYsykN",

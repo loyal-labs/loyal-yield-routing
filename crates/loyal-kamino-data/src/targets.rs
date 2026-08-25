@@ -1,18 +1,18 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     str::FromStr,
     time::Duration,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use klend_interface::KLEND_PROGRAM_ID;
 use loyal_actions::{
-    AUSD_MINT, CASH_MINT, EUSX_MINT, FDUSD_MINT, KAMINO_ALTCOINS_MARKET, KAMINO_BITCOIN_MARKET,
-    KAMINO_ETHENA_MARKET, KAMINO_FIGURE_MARKET, KAMINO_HUMA_MARKET, KAMINO_JLP_MARKET,
-    KAMINO_MAIN_MARKET, KAMINO_MAIN_USDC_RESERVE, KAMINO_MAPLE_MARKET, KAMINO_ONRE_MARKET,
-    KAMINO_SOLSTICE_MARKET, KAMINO_SUPERSTATE_OPENING_BELL_MARKET, KAMINO_XSTOCKS_MARKET,
-    PYUSD_MINT, SUSDE_MINT, SYRUP_USDC_MINT, USCC_MINT, USD1_MINT, USDC_MINT, USDE_MINT, USDG_MINT,
-    USDS_MINT, USDT_MINT,
+    AUSD_MINT, CASH_MINT, EARN_MAX_OBSERVATION_RESERVES, EUSX_MINT, FDUSD_MINT,
+    KAMINO_ALTCOINS_MARKET, KAMINO_BITCOIN_MARKET, KAMINO_ETHENA_MARKET, KAMINO_FIGURE_MARKET,
+    KAMINO_HUMA_MARKET, KAMINO_JLP_MARKET, KAMINO_MAIN_MARKET, KAMINO_MAIN_USDC_RESERVE,
+    KAMINO_MAPLE_MARKET, KAMINO_ONRE_MARKET, KAMINO_SOLSTICE_MARKET,
+    KAMINO_SUPERSTATE_OPENING_BELL_MARKET, KAMINO_XSTOCKS_MARKET, PYUSD_MINT, SUSDE_MINT,
+    SYRUP_USDC_MINT, USCC_MINT, USD1_MINT, USDC_MINT, USDE_MINT, USDG_MINT, USDS_MINT, USDT_MINT,
 };
 pub use loyal_kamino_codec::{ReserveTarget, SupportedReserveRecord};
 use reqwest::blocking::Client;
@@ -263,6 +263,33 @@ impl KaminoApi {
         Ok(records)
     }
 
+    /// Resolve the exact reserve identities required by the seven approved RWA
+    /// loops without adding RWA collateral mints to the stable Earn catalog.
+    pub fn fetch_earn_max_observation_targets(&self) -> Result<Vec<ReserveTarget>> {
+        let required_markets = EARN_MAX_OBSERVATION_RESERVES
+            .iter()
+            .map(|entry| Pubkey::from_str(entry.market).context("invalid Earn Max market"))
+            .collect::<Result<BTreeSet<_>>>()?;
+        let market_names = policy_supported_markets()
+            .into_iter()
+            .map(|market| (market.market, market.name))
+            .collect::<HashMap<_, _>>();
+        let mut candidates = Vec::new();
+
+        for market in required_markets {
+            let name = market_names
+                .get(&market)
+                .copied()
+                .ok_or_else(|| anyhow!("Earn Max observation market {market} is not supported"))?;
+            candidates.extend(self.fetch_targets_for_market(MarketDto {
+                lending_market: market.to_string(),
+                name: Some(name.to_string()),
+            })?);
+        }
+
+        select_earn_max_observation_targets(candidates)
+    }
+
     fn fetch_all_targets(&self, requested_markets: &[Pubkey]) -> Result<Vec<ReserveTarget>> {
         let requested = requested_markets
             .iter()
@@ -343,6 +370,53 @@ impl KaminoApi {
     fn base_url(&self) -> &str {
         self.base_url.trim_end_matches('/')
     }
+}
+
+fn select_earn_max_observation_targets(
+    candidates: Vec<ReserveTarget>,
+) -> Result<Vec<ReserveTarget>> {
+    let required = EARN_MAX_OBSERVATION_RESERVES
+        .iter()
+        .map(|entry| {
+            Ok((
+                Pubkey::from_str(entry.market).context("invalid Earn Max market")?,
+                Pubkey::from_str(entry.reserve).context("invalid Earn Max reserve")?,
+                Pubkey::from_str(entry.liquidity_mint).context("invalid Earn Max mint")?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let required_reserves = required
+        .iter()
+        .map(|(_, reserve, _)| *reserve)
+        .collect::<BTreeSet<_>>();
+    if required_reserves.len() != required.len() {
+        bail!("Earn Max observation manifest contains duplicate reserves");
+    }
+    let mut by_reserve = HashMap::<Pubkey, Vec<ReserveTarget>>::new();
+
+    for target in candidates {
+        if required_reserves.contains(&target.reserve) {
+            by_reserve.entry(target.reserve).or_default().push(target);
+        }
+    }
+
+    let mut selected = Vec::with_capacity(required.len());
+    for (market, reserve, mint) in required {
+        let matches = by_reserve.remove(&reserve).unwrap_or_default();
+        if matches.len() != 1 {
+            bail!(
+                "Earn Max observation reserve={reserve} resolved {} API rows; expected exactly one",
+                matches.len()
+            );
+        }
+        let target = matches.into_iter().next().expect("one target");
+        if target.market != Some(market) || target.liquidity_mint != Some(mint) {
+            bail!("Earn Max observation reserve={reserve} returned unexpected market or mint");
+        }
+        selected.push(target);
+    }
+    selected.sort_by_key(|target| target.reserve.to_string());
+    Ok(selected)
 }
 
 pub fn resolve_loyal_targets(
@@ -562,5 +636,54 @@ where
             .map(Some)
             .map_err(|err| de::Error::custom(format!("invalid numeric string {value:?}: {err}"))),
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(market: Pubkey, reserve: Pubkey, mint: Pubkey) -> ReserveTarget {
+        ReserveTarget {
+            reserve,
+            market: Some(market),
+            market_name: None,
+            symbol: None,
+            liquidity_mint: Some(mint),
+            api_supply_apy: None,
+            api_borrow_apy: None,
+            api_total_supply_usd: None,
+            api_total_borrow_usd: None,
+        }
+    }
+
+    fn complete_candidates() -> Vec<ReserveTarget> {
+        EARN_MAX_OBSERVATION_RESERVES
+            .iter()
+            .map(|entry| {
+                target(
+                    Pubkey::from_str(entry.market).unwrap(),
+                    Pubkey::from_str(entry.reserve).unwrap(),
+                    Pubkey::from_str(entry.liquidity_mint).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn targets_selects_ten_unique_reserve_identities() {
+        let selected = select_earn_max_observation_targets(complete_candidates()).unwrap();
+        assert_eq!(selected.len(), 10);
+    }
+
+    #[test]
+    fn targets_fail_closed_on_missing_or_duplicate_identity() {
+        let mut missing = complete_candidates();
+        missing.pop();
+        assert!(select_earn_max_observation_targets(missing).is_err());
+
+        let mut duplicate = complete_candidates();
+        duplicate.push(duplicate[0].clone());
+        assert!(select_earn_max_observation_targets(duplicate).is_err());
     }
 }

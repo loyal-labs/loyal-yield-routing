@@ -65,6 +65,11 @@ enum SupportedReserveCatalogRefreshEvent {
     Failed(String),
 }
 
+struct ObservationCatalog {
+    supported_reserves: Vec<kamino_reserve_monitor::targets::SupportedReserveRecord>,
+    earn_max_targets: Vec<ReserveTarget>,
+}
+
 impl SubscriptionRuntimeState {
     fn is_terminal(self) -> bool {
         matches!(self, Self::Failed | Self::Stopped)
@@ -166,17 +171,22 @@ async fn run() -> Result<()> {
     // Normal and one-shot monitors must not begin from an arbitrarily old
     // database catalog. A complete API response is committed atomically
     // before decoding targets are selected; any failure aborts startup.
-    let supported_reserves = fetch_supported_reserves_blocking(
+    let observation_catalog = fetch_observation_catalog_blocking(
         args.kamino_api_base.clone(),
         args.kamino_api_timeout_secs,
     )
     .await
-    .context("fetch supported Kamino reserves before monitor startup")?;
-    let targets = timescale
-        .refresh_supported_reserves(&supported_reserves, &args.reserve)
+    .context("fetch Kamino observation catalog before monitor startup")?;
+    let catalog_targets = timescale
+        .refresh_supported_reserves(&observation_catalog.supported_reserves, &[])
         .await
         .context("publish supported Kamino reserves before monitor startup")?;
-    let supported_reserve_count = supported_reserves.len();
+    let targets = merge_observation_targets(
+        catalog_targets,
+        observation_catalog.earn_max_targets,
+        &args.reserve,
+    )?;
+    let supported_reserve_count = observation_catalog.supported_reserves.len();
     tracing::info!(
         supported_reserve_count,
         "supported Kamino reserve catalog refreshed before target selection"
@@ -334,6 +344,60 @@ async fn fetch_supported_reserves_blocking(
     .context("join Kamino supported reserve sync task")?
 }
 
+async fn fetch_observation_catalog_blocking(
+    kamino_api_base: String,
+    timeout_secs: u64,
+) -> Result<ObservationCatalog> {
+    tokio::task::spawn_blocking(move || {
+        let api = KaminoApi::new(kamino_api_base, Duration::from_secs(timeout_secs))?;
+        Ok(ObservationCatalog {
+            supported_reserves: api.fetch_supported_reserves()?,
+            earn_max_targets: api.fetch_earn_max_observation_targets()?,
+        })
+    })
+    .await
+    .context("join Kamino observation catalog task")?
+}
+
+fn merge_observation_targets(
+    catalog_targets: Vec<ReserveTarget>,
+    earn_max_targets: Vec<ReserveTarget>,
+    requested_reserves: &[Pubkey],
+) -> Result<Vec<ReserveTarget>> {
+    let mut targets = HashMap::<Pubkey, ReserveTarget>::new();
+    for target in catalog_targets.into_iter().chain(earn_max_targets) {
+        if let Some(previous) = targets.insert(target.reserve, target.clone()) {
+            if previous.market != target.market || previous.liquidity_mint != target.liquidity_mint
+            {
+                bail!(
+                    "reserve {} resolved conflicting observation identities",
+                    target.reserve
+                );
+            }
+        }
+    }
+
+    if !requested_reserves.is_empty() {
+        let requested = requested_reserves.iter().copied().collect::<BTreeSet<_>>();
+        targets.retain(|reserve, _| requested.contains(reserve));
+        if targets.len() != requested.len() {
+            let missing = requested
+                .into_iter()
+                .filter(|reserve| !targets.contains_key(reserve))
+                .map(|reserve| reserve.to_string())
+                .collect::<Vec<_>>();
+            bail!(
+                "requested observation reserves were not resolved: {}",
+                missing.join(",")
+            );
+        }
+    }
+
+    let mut targets = targets.into_values().collect::<Vec<_>>();
+    targets.sort_by_key(|target| target.reserve.to_string());
+    Ok(targets)
+}
+
 fn spawn_supported_reserve_catalog_refresh(
     timescale: TimescaleSink,
     kamino_api_base: String,
@@ -352,21 +416,30 @@ fn spawn_supported_reserve_catalog_refresh(
                 break;
             }
 
-            let event = match fetch_supported_reserves_blocking(
+            let event = match fetch_observation_catalog_blocking(
                 kamino_api_base.clone(),
                 kamino_api_timeout_secs,
             )
             .await
             {
-                Ok(records) => {
-                    let catalog_count = records.len();
+                Ok(observation_catalog) => {
+                    let catalog_count = observation_catalog.supported_reserves.len();
                     let refreshed = timescale
-                        .refresh_supported_reserves(&records, &requested_reserves)
+                        .refresh_supported_reserves(&observation_catalog.supported_reserves, &[])
                         .await;
                     match refreshed {
-                        Ok(targets) => SupportedReserveCatalogRefreshEvent::Synced {
-                            catalog_count,
-                            targets,
+                        Ok(catalog_targets) => match merge_observation_targets(
+                            catalog_targets,
+                            observation_catalog.earn_max_targets,
+                            &requested_reserves,
+                        ) {
+                            Ok(targets) => SupportedReserveCatalogRefreshEvent::Synced {
+                                catalog_count,
+                                targets,
+                            },
+                            Err(error) => {
+                                SupportedReserveCatalogRefreshEvent::Failed(format!("{error:#}"))
+                            }
                         },
                         Err(error) => {
                             SupportedReserveCatalogRefreshEvent::Failed(format!("{error:#}"))
