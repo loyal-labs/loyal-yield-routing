@@ -141,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
     let monitor = Mutex::new(PolicyMonitor::new(
         MonitorConfig {
             cluster: Cluster::Mainnet,
-            commitment: Commitment::Finalized,
+            commitment: Commitment::Confirmed,
             ws_url: "local-targeted-account-emulator".to_owned(),
         },
         PostgresPolicyMatchSink::from_store(store.clone()),
@@ -226,7 +226,7 @@ async fn main() -> anyhow::Result<()> {
                     observed_chain_status = Some(chain_status);
                 }
                 outcome => anyhow::bail!(
-                    "finalized Autodeposit close did not reconcile as closed: {outcome:?}"
+                    "confirmed Autodeposit close did not reconcile as closed: {outcome:?}"
                 ),
             }
         }
@@ -255,12 +255,12 @@ async fn main() -> anyhow::Result<()> {
             store.record_policy_match(legacy_policy.clone()).await?;
             let repaired = store
                 .record_policy_match(PolicyMatchInput {
-                    source_commitment: "finalized".to_owned(),
+                    source_commitment: "confirmed".to_owned(),
                     slot: update.slot,
                     ..legacy_policy
                 })
                 .await?;
-            if repaired.policy.source_commitment != "finalized" {
+            if repaired.policy.source_commitment != "confirmed" {
                 anyhow::bail!("legacy unknown policy commitment was not repaired");
             }
             for _ in 0..300 {
@@ -337,7 +337,7 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("emulated stream missed policy or recurring-delegation setup");
     }
     if saw_close && (saw_policy || saw_recurring_delegation) {
-        anyhow::bail!("close verification must use a separate finalized transaction stream");
+        anyhow::bail!("close verification must use a separate confirmed transaction stream");
     }
 
     let request = subscribe_request_json(&watch_set);

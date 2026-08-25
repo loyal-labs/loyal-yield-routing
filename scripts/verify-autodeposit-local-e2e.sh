@@ -168,7 +168,7 @@ psql_verify --command="
   ALTER TABLE loyal_yield.balance_sweep_targets
     ADD COLUMN balance_sweep_policy_id BIGINT;
 " >/dev/null
-[[ "$(sql_scalar "SELECT max(version) FROM loyal_yield.schema_migrations")" == "65" ]] ||
+[[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.schema_migrations WHERE version = 65")" == "1" ]] ||
   fail "isolated database did not apply Autodeposit target cluster migration 65"
 psql_verify --command="
   INSERT INTO loyal_yield.realtime_configuration (singleton, solana_env)
@@ -341,7 +341,7 @@ listener_pid=""
 [[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.balance_sweep_targets WHERE desired_active AND chain_status = 'active' AND policy_account IS NOT NULL AND subscription_authority IS NOT NULL AND recurring_delegation IS NOT NULL")" == "1" ]] ||
   fail "monitor did not project exactly one active Autodeposit target"
 [[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.balance_sweep_targets WHERE desired_active AND chain_status = 'active' AND wallet_balance_floor_raw = 2000000")" == "1" ]] ||
-  fail "pending Autodeposit floor did not survive finalized activation"
+  fail "pending Autodeposit floor did not survive confirmed activation"
 [[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.autodeposit_reconciliation_requests WHERE processed_slot >= requested_slot AND last_error IS NULL")" == "1" ]] ||
   fail "Autodeposit reconciliation request was not fully processed"
 [[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name = 'ask-2211-local-autodeposit' AND completed_at IS NULL")" == "0" ]] ||
@@ -351,9 +351,9 @@ listener_pid=""
 [[ "$(sql_scalar "SELECT count(*) FROM loyal_yield.realtime_events WHERE event_type = 'earn.autodeposit.configuration.changed' AND reason = 'allowance_created'")" == "1" ]] ||
   fail "chain activation did not emit exactly one allowance_created event"
 jq -e \
-  '.commitment == "finalized" and (.transactions | length) == 0 and (.accounts.earn_autodeposit_wallet_atas | length) == 1 and (.accounts.earn_subscription_authorities | length) == 1 and (.accounts.earn_recurring_delegations | length) == 1' \
+  '.commitment == "confirmed" and (.transactions | length) == 0 and (.accounts.earn_autodeposit_wallet_atas | length) == 1 and (.accounts.earn_subscription_authorities | length) == 1 and (.accounts.earn_recurring_delegations | length) == 1' \
   "$subscribe_request_json" >/dev/null ||
-  fail "refreshed monitor subscription is not finalized and account-only"
+  fail "refreshed monitor subscription is not confirmed and account-only"
 jq -e \
   '.event.eventType == "earn.autodeposit.configuration.changed" and .event.reason == "allowance_created" and .refreshPlan.earnState == true and .refreshPlan.transactions == true and .ui.state == "created" and .ui.keepAmount == "2" and .ui.isOn == true and .ui.isPending == false' \
   "$sse_event_json" >/dev/null ||
@@ -440,7 +440,7 @@ jq -e \
   '.event.eventType == "earn.autodeposit.configuration.changed" and .event.reason == "allowance_removed" and .refreshPlan.earnState == true and .refreshPlan.transactions == true and .ui.state == "deleted" and .ui.keepAmount == null and .ui.isOn == false and .ui.isPending == false' \
   "$close_sse_event_json" >/dev/null ||
   fail "web SSE did not refresh Autodeposit into the deleted UI state"
-pass "web delete closed finalized accounts, monitor projected removal, and SSE removed the UI rule"
+pass "web delete closed confirmed accounts, monitor projected removal, and SSE removed the UI rule"
 
 if rg -q 'autodeposit/(setup|close)/confirm' \
   "$routing_root/crates/loyal-local-e2e/scripts/verify-autodeposit-local-chain.ts"; then

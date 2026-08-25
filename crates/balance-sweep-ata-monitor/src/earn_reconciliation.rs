@@ -173,7 +173,7 @@ impl RpcEarnChainReader {
         Self {
             rpc: Arc::new(RpcClient::new_with_commitment(
                 rpc_url.into(),
-                CommitmentConfig::finalized(),
+                CommitmentConfig::confirmed(),
             )),
             store,
         }
@@ -921,12 +921,7 @@ fn read_autodeposit_snapshot(
             recurring_delegation,
             wallet_ata,
         ],
-        RpcAccountInfoConfig {
-            encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(CommitmentConfig::finalized()),
-            min_context_slot: Some(minimum_slot),
-            ..RpcAccountInfoConfig::default()
-        },
+        autodeposit_snapshot_config(minimum_slot),
     )?;
     let [policy_account, authority_account, delegation_account, token_account] =
         response.value.as_slice()
@@ -970,6 +965,15 @@ fn read_autodeposit_snapshot(
         token_delegate_valid,
         wallet_balance_raw,
     })
+}
+
+fn autodeposit_snapshot_config(minimum_slot: u64) -> RpcAccountInfoConfig {
+    RpcAccountInfoConfig {
+        encoding: Some(UiAccountEncoding::Base64),
+        commitment: Some(CommitmentConfig::confirmed()),
+        min_context_slot: Some(minimum_slot),
+        ..RpcAccountInfoConfig::default()
+    }
 }
 
 fn resolve_rpc_mutation(
@@ -3034,6 +3038,14 @@ fn fixture_policy_match(
 mod tests {
     use super::*;
     use solana_sdk::{instruction::InstructionError, transaction::TransactionError};
+
+    #[test]
+    fn autodeposit_snapshot_uses_confirmed_state() {
+        let config = autodeposit_snapshot_config(42);
+
+        assert_eq!(config.commitment, Some(CommitmentConfig::confirmed()));
+        assert_eq!(config.min_context_slot, Some(42));
+    }
 
     #[test]
     fn finalized_failed_policy_transaction_is_noop() {
