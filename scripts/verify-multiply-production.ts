@@ -28,6 +28,7 @@ const POLICY_MONITOR = "crates/loyal-squads-policy-monitor/src/lib.rs";
 const POLICY_MONITOR_MANIFEST = "crates/loyal-squads-policy-monitor/Cargo.toml";
 const LASERSTREAM_MONITOR = "crates/balance-sweep-ata-monitor/src/main.rs";
 const LASERSTREAM_SOURCE = "crates/balance-sweep-ata-monitor/src/lib.rs";
+const LASERSTREAM_ACCOUNT_SOURCE = "crates/balance-sweep-ata-monitor/src/smart_account.rs";
 const LASERSTREAM_RECONCILIATION = "crates/balance-sweep-ata-monitor/src/earn_reconciliation.rs";
 const WORKER = "crates/loyal-fleet-worker/src/bin/multiply-route-worker.rs";
 const MIGRATIONS = "crates/loyal-yield-store/migrations";
@@ -38,6 +39,7 @@ const APP_ACTIONS = "packages/loyal-actions/src/earn-max.ts";
 const APP_UI = "apps/web/src/components/wallet-workspace/facelift/earn-max-pane.tsx";
 const APP_SHELL = "apps/web/src/components/wallet-workspace/facelift/shell.tsx";
 const MULTIPLY_STORE = "crates/loyal-yield-store/src/multiply_state_store.rs";
+const ORCHESTRATOR_STORE = "crates/loyal-yield-store/src/store.rs";
 const MIGRATION_RUNNER = "crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs";
 const KLEND_PROGRAM = new PublicKey("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
 const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
@@ -428,6 +430,7 @@ function checkMinimalSchemaSource(): Json {
   for (const required of [
     "0064_earn_max_partial_lifecycle.sql",
     "0067_earn_max_three_policy_v2.sql",
+    "0068_earn_max_account_cash_flows.sql",
     "source_instruction_index",
     "state - 'frontend' - 'targetStrategyKey'",
     "request_withdrawal",
@@ -456,6 +459,9 @@ function checkMinimalSchemaSource(): Json {
     'version: 67',
     'name: "earn_max_three_policy_v2"',
     '0067_earn_max_three_policy_v2.sql',
+    'version: 68',
+    'name: "earn_max_account_cash_flows"',
+    '0068_earn_max_account_cash_flows.sql',
   ]) {
     requireText(
       runner,
@@ -476,7 +482,9 @@ function checkLaserStreamSource(): Json {
   const manifest = file(ROOT, POLICY_MONITOR_MANIFEST);
   const laserstream = file(ROOT, LASERSTREAM_MONITOR);
   const laserstreamSource = file(ROOT, LASERSTREAM_SOURCE);
+  const accountSource = file(ROOT, LASERSTREAM_ACCOUNT_SOURCE);
   const reconciliation = file(ROOT, LASERSTREAM_RECONCILIATION);
+  const store = file(ROOT, ORCHESTRATOR_STORE);
   requireText(manifest, "loyal-fleet-worker", "policy_projection_manifest_contract_missing", POLICY_MONITOR_MANIFEST);
   for (const required of [
     "UpdateSourceKind::Laserstream",
@@ -492,21 +500,34 @@ function checkLaserStreamSource(): Json {
     "SubscribeRequestFilterTransactions",
     "CommitmentLevel::Confirmed",
     "SQUADS_SMART_ACCOUNT_PROGRAM_ID.to_string()",
-    '"earn_max_usdc_cash_flows"',
-    "account_include: vec![USDC_MINT.to_string()]",
-    "account_required",
-    "EARN_MAX_MEMO_PROGRAM_ID.to_owned()",
-    "USDC_MINT.to_string()",
-    "spl_token::ID.to_string()",
-    "EarnMaxProjectionKind::CashFlow",
-    "EARN_MAX_CASH_FLOW_PROJECTION_CONSUMER",
-    "cash_flow_from_slot",
-    "kind.consumer_name()",
-    'memo.data.starts_with(b"loyal:earn-max:v2:")',
-    "tokio::join!(policy, cash_flow)",
     "process_earn_max_policy_update",
+    "forward_laserstream_update",
   ]) {
     requireText(laserstreamSource, required, "earn_max_confirmed_transaction_stream_missing", LASERSTREAM_SOURCE);
+  }
+  for (const forbidden of [
+    '"earn_max_usdc_cash_flows"',
+    "EARN_MAX_CASH_FLOW_PROJECTION_CONSUMER",
+    "EARN_MAX_MEMO_PROGRAM_ID",
+    "project_earn_max_cash_flows",
+  ]) {
+    rejectText(laserstreamSource, forbidden, "earn_max_memo_cash_flow_stream_survived", LASERSTREAM_SOURCE);
+  }
+  for (const required of [
+    "route.state ->> 'engineVersion' = 'earn_max_v2'",
+    "policy.status = 'ready'",
+    "observation_start_slot",
+    "earn_max: true",
+  ]) {
+    requireText(store, required, "earn_max_exact_ata_target_missing", ORCHESTRATOR_STORE);
+  }
+  for (const required of [
+    "EARN_IDLE_TOKEN_ACCOUNTS",
+    "nonempty_txn_signature: Some(true)",
+    "CommitmentLevel::Confirmed",
+    'commitment: "confirmed"',
+  ]) {
+    requireText(accountSource, required, "earn_max_exact_ata_subscription_missing", LASERSTREAM_ACCOUNT_SOURCE);
   }
   requireText(
     reconciliation,
@@ -517,22 +538,19 @@ function checkLaserStreamSource(): Json {
   for (const required of [
     "parse_earn_max_intent",
     "project_earn_max_intent",
-    "project_earn_max_cash_flow",
-    "earn_max_cash_flows",
-    "source_instruction_index",
+    "project_earn_max_account_update",
+    "project_earn_max_confirmed_cash_flow",
+    "read_confirmed_earn_max_account_transfer",
+    "multiply_operation_exists_for_signature",
+    '"observationSource": "exact_vault_ata"',
+    "source_instruction_index: None",
     "CommitmentConfig::confirmed()",
     "memo.accounts.contains(&vault_pubkey)",
     "has_squads_execution",
-    "transaction.signers.as_slice() != [*wallet]",
-    "memo.source_instruction_index % 256 != 0",
-    "memo.source_instruction_index % 256 == 0",
-    "let [wallet] = memo.accounts.as_slice()",
-    "let [vault] = memo.accounts.as_slice()",
-    "derive_associated_token_account(*wallet, USDC_MINT, spl_token::ID)",
-    "read_confirmed_earn_max_transfer",
+    "EARN_IDLE_TOKEN_ACCOUNTS",
+    "claim_custody",
+    "WithdrawalStatus::Claimable",
     ".destination_post",
-    ".saturating_sub(transfer.destination_pre)",
-    "source_instruction_index: Some",
     "signed_wire_sha256: None",
     '["loyal", "earn-max", "v2"]',
   ]) {

@@ -74,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
             environment: "mainnet-beta".to_owned(),
             settings: state.settings_pda,
             wallet: state.wallet_address,
+            earn_max: false,
             vault_index: 1,
             vault_pubkey: Some(state.vault_pubkey),
             policy_accounts,

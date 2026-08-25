@@ -74,8 +74,8 @@ use crate::{
     emit_earn_reconciliation_job_failed,
     monitor_observability::EarnMonitorMetrics,
     smart_account::{
-        EarnVaultWatch, NormalizedEarnUpdate, SubscriptionWatchSet, EARN_POLICY_ACCOUNTS,
-        EARN_SMART_ACCOUNTS, EARN_WALLETS,
+        EarnVaultWatch, NormalizedEarnUpdate, SubscriptionWatchSet, EARN_IDLE_TOKEN_ACCOUNTS,
+        EARN_POLICY_ACCOUNTS, EARN_SMART_ACCOUNTS, EARN_WALLETS,
     },
 };
 
@@ -99,15 +99,10 @@ pub struct EarnMaxMemoInstruction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum EarnMaxCashFlowMemo {
-    Deposit {
-        settings: Pubkey,
-        amount_raw: u64,
-    },
+enum EarnMaxExternalCashFlow {
+    Deposit,
     Claim {
-        settings: Pubkey,
         request_id: String,
-        amount_raw: u64,
         destination: Pubkey,
     },
 }
@@ -157,6 +152,14 @@ pub trait EarnChainReader: Send + Sync {
         _update: &'a NormalizedEarnUpdate,
     ) -> Pin<Box<dyn Future<Output = Result<Option<EarnPolicyTransactionRead>>> + Send + 'a>> {
         Box::pin(async { Ok(None) })
+    }
+
+    fn project_earn_max_update<'a>(
+        &'a self,
+        _update: &'a NormalizedEarnUpdate,
+        _vault: &'a EarnVaultWatch,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async { bail!("Earn MAX projection requires an RPC chain reader") })
     }
 }
 
@@ -233,6 +236,16 @@ impl EarnChainReader for RpcEarnChainReader {
             })
             .await
             .context("Autoswap RPC transaction proof task panicked")?
+        })
+    }
+
+    fn project_earn_max_update<'a>(
+        &'a self,
+        update: &'a NormalizedEarnUpdate,
+        vault: &'a EarnVaultWatch,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            project_earn_max_account_update(&self.store, Arc::clone(&self.rpc), update, vault).await
         })
     }
 }
@@ -448,98 +461,91 @@ pub(crate) async fn project_earn_max_memos(
     Ok(applied)
 }
 
-pub(crate) async fn project_earn_max_cash_flows(
+async fn project_earn_max_account_update(
     store: &OrchestratorStore,
     rpc: Arc<RpcClient>,
-    transaction: &EarnPolicyTransaction,
-) -> Result<usize> {
-    let mut applied = 0;
-    for memo in &transaction.earn_max_memos {
-        let Some(cash_flow) = parse_earn_max_cash_flow(&memo.data)? else {
-            continue;
-        };
-        let (source, destination) = match &cash_flow {
-            EarnMaxCashFlowMemo::Deposit { settings, .. } => {
-                let [wallet] = memo.accounts.as_slice() else {
-                    bail!("Earn MAX deposit memo account shape drifted");
-                };
-                if transaction.signers.as_slice() != [*wallet]
-                    || memo.source_instruction_index % 256 != 0
-                    || !transaction.instructions.is_empty()
-                {
-                    bail!("Earn MAX deposit memo is not exact outer-signer bound");
-                }
-                let expected_custody = derive_associated_token_account(
-                    derive_squads_vault(settings, 0).0,
-                    USDC_MINT,
-                    spl_token::ID,
-                );
-                let expected_source =
-                    derive_associated_token_account(*wallet, USDC_MINT, spl_token::ID);
-                (expected_source, expected_custody)
-            }
-            EarnMaxCashFlowMemo::Claim {
-                settings,
-                destination,
-                ..
-            } => {
-                let [vault] = memo.accounts.as_slice() else {
-                    bail!("Earn MAX claim memo account shape drifted");
-                };
-                let expected_vault = derive_squads_vault(settings, 0).0;
-                let expected_custody =
-                    derive_associated_token_account(expected_vault, USDC_MINT, spl_token::ID);
-                if *vault != expected_vault
-                    || memo.source_instruction_index % 256 == 0
-                    || transaction.instructions.is_empty()
-                {
-                    bail!("Earn MAX claim memo is not exact inner-vault bound");
-                }
-                (expected_custody, *destination)
-            }
-        };
-        let transfer = read_confirmed_earn_max_transfer(
-            Arc::clone(&rpc),
-            transaction.signature.clone(),
-            transaction.slot,
-            source,
-            destination,
-        )
-        .await?;
-        let amount = transfer.source_pre.saturating_sub(transfer.source_post);
-        let expected_amount = match &cash_flow {
-            EarnMaxCashFlowMemo::Deposit { amount_raw, .. }
-            | EarnMaxCashFlowMemo::Claim { amount_raw, .. } => *amount_raw,
-        };
-        if amount != expected_amount
-            || transfer
-                .destination_post
-                .saturating_sub(transfer.destination_pre)
-                != amount
-        {
-            bail!("Earn MAX cash-flow memo amount did not match confirmed token deltas");
-        }
-        if project_earn_max_cash_flow(store, memo, cash_flow, transfer).await? {
-            applied += 1;
-        }
+    update: &NormalizedEarnUpdate,
+    vault: &EarnVaultWatch,
+) -> Result<()> {
+    if !vault.earn_max
+        || !update
+            .filters
+            .iter()
+            .any(|filter| filter == EARN_IDLE_TOKEN_ACCOUNTS)
+    {
+        return Ok(());
     }
-    Ok(applied)
+    let settings = Pubkey::from_str(&vault.settings)?;
+    let vault_pubkey = Pubkey::from_str(&vault.vault)?;
+    let claim_custody = derive_associated_token_account(vault_pubkey, USDC_MINT, spl_token::ID);
+    let claim_custody_string = claim_custody.to_string();
+    if update.account_pubkey.as_deref() != Some(claim_custody_string.as_str()) {
+        return Ok(());
+    }
+    let signature = update
+        .signature
+        .clone()
+        .context("Earn MAX claim-custody update omitted transaction signature")?;
+    let route_key = format!("earn-max:{settings}:{}", vault.vault_index);
+    if store
+        .multiply_operation_exists_for_signature(&route_key, &signature)
+        .await?
+    {
+        return Ok(());
+    }
+    let stored = store
+        .load_multiply_route_state(&route_key)
+        .await?
+        .context("Earn MAX account update has no route state")?;
+    if stored.state.engine_version != MULTIPLY_ENGINE_VERSION {
+        return Ok(());
+    }
+    let transfer =
+        read_confirmed_earn_max_account_transfer(rpc, signature, update.slot, claim_custody)
+            .await?;
+    let flow = if transfer.destination == claim_custody {
+        if stored.state.goal == RouteGoal::Withdraw {
+            bail!("Earn MAX deposit arrived while withdrawal is active; retry after claim");
+        }
+        EarnMaxExternalCashFlow::Deposit
+    } else if transfer.source == claim_custody {
+        let withdrawal = stored
+            .state
+            .withdrawal
+            .as_ref()
+            .context("unrecognized Earn MAX claim-custody debit")?;
+        if withdrawal.status != WithdrawalStatus::Claimable
+            || withdrawal.destination_account != transfer.destination.to_string()
+        {
+            bail!("Earn MAX claim-custody debit does not match a claimable withdrawal");
+        }
+        EarnMaxExternalCashFlow::Claim {
+            request_id: withdrawal.request_id.clone(),
+            destination: transfer.destination,
+        }
+    } else {
+        bail!("Earn MAX account update did not change claim custody");
+    };
+    project_earn_max_confirmed_cash_flow(store, settings, flow, transfer).await?;
+    Ok(())
 }
 
-async fn project_earn_max_cash_flow(
+async fn project_earn_max_confirmed_cash_flow(
     store: &OrchestratorStore,
-    memo: &EarnMaxMemoInstruction,
-    cash_flow: EarnMaxCashFlowMemo,
+    settings: Pubkey,
+    cash_flow: EarnMaxExternalCashFlow,
     transfer: ConfirmedCashFlowTransfer,
 ) -> Result<bool> {
-    let settings = match &cash_flow {
-        EarnMaxCashFlowMemo::Deposit { settings, .. }
-        | EarnMaxCashFlowMemo::Claim { settings, .. } => *settings,
-    };
+    let route_key = format!("earn-max:{settings}:0");
+    if store
+        .multiply_operation_exists_for_signature(&route_key, &transfer.signature.to_string())
+        .await?
+    {
+        return Ok(false);
+    }
     let operation_id = format!(
         "cash-{}",
-        &hex_hash(format!("{}:{}", transfer.signature, memo.source_instruction_index).as_bytes())
-            [..32]
+        &hex_hash(format!("{}:account", transfer.signature).as_bytes())[..32]
     );
     if store
         .load_multiply_operation(&operation_id)
@@ -548,7 +554,6 @@ async fn project_earn_max_cash_flow(
     {
         return Ok(false);
     }
-    let route_key = format!("earn-max:{settings}:0");
     let mut lease = store
         .lease_multiply_route_state(
             &route_key,
@@ -566,7 +571,7 @@ async fn project_earn_max_cash_flow(
     let amount_delta = i64::try_from(amount).context("Earn MAX cash flow exceeds i64")?;
     let now = Utc::now();
     let (action, strategy_key, expected_effects) = match cash_flow {
-        EarnMaxCashFlowMemo::Deposit { .. } => {
+        EarnMaxExternalCashFlow::Deposit => {
             if matches!(state.position, MultiplyPosition::Idle { .. }) {
                 state.position = MultiplyPosition::Idle {
                     claim: TokenBalance {
@@ -580,10 +585,7 @@ async fn project_earn_max_cash_flow(
             state.observed_slot = transfer.slot;
             state.observed_at = now;
             let evidence = DepositEvidence {
-                request_id: format!(
-                    "chain:{}:{}",
-                    transfer.signature, memo.source_instruction_index
-                ),
+                request_id: format!("chain:{}", transfer.signature),
                 transaction_signature: transfer.signature.to_string(),
                 wallet_account: transfer.source.to_string(),
                 wallet_pre_amount_raw: transfer.source_pre,
@@ -628,10 +630,9 @@ async fn project_earn_max_cash_flow(
                 },
             )
         }
-        EarnMaxCashFlowMemo::Claim {
+        EarnMaxExternalCashFlow::Claim {
             request_id,
             destination,
-            ..
         } => {
             let withdrawal = state
                 .withdrawal
@@ -698,7 +699,7 @@ async fn project_earn_max_cash_flow(
     };
     let evidence = json!({
         "signature": transfer.signature.to_string(),
-        "instructionIndex": memo.source_instruction_index,
+        "observationSource": "exact_vault_ata",
         "slot": transfer.slot,
         "source": transfer.source.to_string(),
         "sourcePre": transfer.source_pre,
@@ -716,10 +717,7 @@ async fn project_earn_max_cash_flow(
         action,
         strategy_key,
         status: MultiplyOperationStatus::Reconciled,
-        idempotency_key: format!(
-            "{MULTIPLY_ENGINE_VERSION}:cash-flow:{}:{}",
-            transfer.signature, memo.source_instruction_index
-        ),
+        idempotency_key: format!("{MULTIPLY_ENGINE_VERSION}:cash-flow:{}", transfer.signature),
         expected_effects,
         policy_account: None,
         policy_data_sha256: None,
@@ -727,7 +725,7 @@ async fn project_earn_max_cash_flow(
         signed_wire: None,
         signed_wire_sha256: None,
         transaction_signature: Some(transfer.signature.to_string()),
-        source_instruction_index: Some(memo.source_instruction_index),
+        source_instruction_index: None,
         recent_blockhash: None,
         last_valid_block_height: None,
         broadcast_intent_at: None,
@@ -745,12 +743,11 @@ async fn project_earn_max_cash_flow(
     Ok(inserted)
 }
 
-async fn read_confirmed_earn_max_transfer(
+async fn read_confirmed_earn_max_account_transfer(
     rpc: Arc<RpcClient>,
     signature: String,
     expected_slot: u64,
-    source: Pubkey,
-    destination: Pubkey,
+    claim_custody: Pubkey,
 ) -> Result<ConfirmedCashFlowTransfer> {
     tokio::task::spawn_blocking(move || {
         let signature = Signature::from_str(&signature)?;
@@ -763,54 +760,84 @@ async fn read_confirmed_earn_max_transfer(
             },
         )?;
         if transaction.slot != expected_slot {
-            bail!("Earn MAX cash-flow RPC slot drifted from LaserStream");
+            bail!("Earn MAX account cash-flow RPC slot drifted from LaserStream");
         }
         let decoded = transaction
             .transaction
             .transaction
             .decode()
-            .context("Earn MAX cash-flow transaction bytes did not decode")?;
+            .context("Earn MAX account cash-flow transaction bytes did not decode")?;
         let meta = transaction
             .transaction
             .meta
             .as_ref()
-            .context("Earn MAX cash-flow metadata was missing")?;
+            .context("Earn MAX account cash-flow metadata was missing")?;
         if meta.err.is_some() {
-            bail!("Earn MAX cash-flow transaction failed");
+            bail!("Earn MAX account cash-flow transaction failed");
         }
         let keys = transaction_account_keys(&decoded, meta)?;
-        let source_index = account_index(&keys, source)?;
-        let destination_index = account_index(&keys, destination)?;
-        Ok(ConfirmedCashFlowTransfer {
-            signature,
-            slot: transaction.slot,
-            source,
-            destination,
-            source_pre: token_amount(
-                &meta.pre_token_balances,
-                source_index,
-                &USDC_MINT.to_string(),
-            )?,
-            source_post: token_amount(
-                &meta.post_token_balances,
-                source_index,
-                &USDC_MINT.to_string(),
-            )?,
-            destination_pre: token_amount(
-                &meta.pre_token_balances,
-                destination_index,
-                &USDC_MINT.to_string(),
-            )
-            .unwrap_or(0),
-            destination_post: token_amount(
-                &meta.post_token_balances,
-                destination_index,
-                &USDC_MINT.to_string(),
-            )?,
+        let claim_index = account_index(&keys, claim_custody)?;
+        let mint = USDC_MINT.to_string();
+        let claim_pre = token_amount_optional(&meta.pre_token_balances, claim_index, &mint)?
+            .unwrap_or_default();
+        let claim_post = token_amount_optional(&meta.post_token_balances, claim_index, &mint)?
+            .unwrap_or_default();
+        if claim_pre == claim_post {
+            bail!("Earn MAX claim-custody account update has no token delta");
+        }
+        let amount = claim_pre.abs_diff(claim_post);
+        let claim_increased = claim_post > claim_pre;
+        let mut peers = Vec::new();
+        for (index, key) in keys.iter().copied().enumerate() {
+            let index = u8::try_from(index).context("Earn MAX token account index exceeds u8")?;
+            if index == claim_index {
+                continue;
+            }
+            let pre =
+                token_amount_optional(&meta.pre_token_balances, index, &mint)?.unwrap_or_default();
+            let post =
+                token_amount_optional(&meta.post_token_balances, index, &mint)?.unwrap_or_default();
+            let opposite_delta = if claim_increased {
+                pre.saturating_sub(post)
+            } else {
+                post.saturating_sub(pre)
+            };
+            if opposite_delta == amount {
+                peers.push((key, pre, post));
+            }
+        }
+        let [(peer, peer_pre, peer_post)] = peers.as_slice() else {
+            bail!(
+                "Earn MAX claim-custody delta has {} exact counterparty token accounts",
+                peers.len()
+            );
+        };
+        Ok(if claim_increased {
+            ConfirmedCashFlowTransfer {
+                signature,
+                slot: transaction.slot,
+                source: *peer,
+                destination: claim_custody,
+                source_pre: *peer_pre,
+                source_post: *peer_post,
+                destination_pre: claim_pre,
+                destination_post: claim_post,
+            }
+        } else {
+            ConfirmedCashFlowTransfer {
+                signature,
+                slot: transaction.slot,
+                source: claim_custody,
+                destination: *peer,
+                source_pre: claim_pre,
+                source_post: claim_post,
+                destination_pre: *peer_pre,
+                destination_post: *peer_post,
+            }
         })
     })
     .await
-    .context("Earn MAX cash-flow readback task panicked")?
+    .context("Earn MAX account cash-flow readback task panicked")?
 }
 
 fn hex_hash(bytes: &[u8]) -> String {
@@ -848,11 +875,11 @@ fn account_index(keys: &[Pubkey], expected: Pubkey) -> Result<u8> {
     u8::try_from(index).context("Earn MAX cash-flow account index exceeds u8")
 }
 
-fn token_amount(
+fn token_amount_optional(
     balances: &OptionSerializer<Vec<UiTransactionTokenBalance>>,
     account_index: u8,
     mint: &str,
-) -> Result<u64> {
+) -> Result<Option<u64>> {
     let balances = match balances {
         OptionSerializer::Some(values) => values,
         OptionSerializer::None | OptionSerializer::Skip => {
@@ -862,17 +889,19 @@ fn token_amount(
     let mut matches = balances
         .iter()
         .filter(|value| value.account_index == account_index && value.mint == mint);
-    let value = matches
-        .next()
-        .context("Earn MAX cash-flow token balance is absent")?;
+    let Some(value) = matches.next() else {
+        return Ok(None);
+    };
     if matches.next().is_some() || value.ui_token_amount.decimals != 6 {
         bail!("Earn MAX cash-flow token balance is ambiguous");
     }
-    value
-        .ui_token_amount
-        .amount
-        .parse()
-        .context("Earn MAX cash-flow token amount is invalid")
+    Ok(Some(
+        value
+            .ui_token_amount
+            .amount
+            .parse()
+            .context("Earn MAX cash-flow token amount is invalid")?,
+    ))
 }
 
 fn read_autodeposit_snapshot(
@@ -1441,53 +1470,6 @@ fn parse_earn_max_intent(data: &[u8]) -> Result<Option<EarnMaxIntent>> {
         }
         [_, _, _, "deposit", ..] | [_, _, _, "claim", ..] => Ok(None),
         _ => bail!("malformed Earn MAX intent memo"),
-    }
-}
-
-fn parse_earn_max_cash_flow(data: &[u8]) -> Result<Option<EarnMaxCashFlowMemo>> {
-    let Ok(value) = std::str::from_utf8(data) else {
-        return Ok(None);
-    };
-    let fields = value.split(':').collect::<Vec<_>>();
-    if fields.get(0..3) != Some(&["loyal", "earn-max", "v2"]) {
-        return Ok(None);
-    }
-    match fields.as_slice() {
-        [_, _, _, "deposit", amount, settings] => {
-            let amount_raw = amount
-                .parse::<u64>()
-                .context("invalid Earn MAX deposit amount")?;
-            if amount_raw == 0 {
-                bail!("Earn MAX deposit amount is zero");
-            }
-            Ok(Some(EarnMaxCashFlowMemo::Deposit {
-                settings: Pubkey::from_str(settings)
-                    .context("invalid Earn MAX deposit Settings")?,
-                amount_raw,
-            }))
-        }
-        [_, _, _, "claim", request_id, amount, destination, settings]
-            if (8..=64).contains(&request_id.len())
-                && request_id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')) =>
-        {
-            let amount_raw = amount
-                .parse::<u64>()
-                .context("invalid Earn MAX claim amount")?;
-            if amount_raw == 0 {
-                bail!("Earn MAX claim amount is zero");
-            }
-            Ok(Some(EarnMaxCashFlowMemo::Claim {
-                settings: Pubkey::from_str(settings).context("invalid Earn MAX claim Settings")?,
-                request_id: (*request_id).to_owned(),
-                amount_raw,
-                destination: Pubkey::from_str(destination)
-                    .context("invalid Earn MAX claim destination")?,
-            }))
-        }
-        [_, _, _, "withdraw", ..] | [_, _, _, "cancel", ..] => Ok(None),
-        _ => bail!("malformed Earn MAX cash-flow memo"),
     }
 }
 
@@ -2417,7 +2399,22 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
             .await;
         }
     };
-    let policy_reconciled =
+    let policy_reconciled = if vault.earn_max {
+        match chain.project_earn_max_update(&update, &vault).await {
+            Ok(()) => true,
+            Err(error) => {
+                return defer_earn_reconciliation_job(
+                    store,
+                    job.id,
+                    job.attempt_count,
+                    claim_owner,
+                    error,
+                    retry_after_seconds,
+                )
+                .await;
+            }
+        }
+    } else {
         match reconcile_targeted_policy_vault_update(store, chain, policy_monitor, &update, &vault)
             .await
         {
@@ -2433,7 +2430,8 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
                 )
                 .await;
             }
-        };
+        }
+    };
     let mutation = if policy_reconciled {
         Ok(EarnDirectMutation::Noop)
     } else {
@@ -3057,6 +3055,7 @@ mod tests {
             environment: "mainnet-beta".to_owned(),
             settings: "settings".to_owned(),
             wallet: "wallet".to_owned(),
+            earn_max: false,
             vault: "vault".to_owned(),
             vault_index: 1,
             accounts: vec![crate::smart_account::EarnWatchAccount {
@@ -3115,6 +3114,7 @@ mod tests {
             environment: "mainnet-beta".to_owned(),
             settings: "settings".to_owned(),
             wallet: "wallet-owner".to_owned(),
+            earn_max: false,
             vault: "vault-owner".to_owned(),
             vault_index: 1,
             accounts: vec![crate::smart_account::EarnWatchAccount {

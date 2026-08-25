@@ -20,6 +20,7 @@ pub fn earn_reconciliation_regression_report() -> EarnReconciliationRegressionRe
         environment: "mainnet".to_owned(),
         settings: "local-e2e-settings".to_owned(),
         wallet: "local-e2e-wallet".to_owned(),
+        earn_max: false,
         vault: "local-e2e-vault".to_owned(),
         vault_index: 0,
         accounts: vec![EarnWatchAccount {

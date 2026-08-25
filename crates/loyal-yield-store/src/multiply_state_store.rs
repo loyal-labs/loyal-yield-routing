@@ -422,6 +422,28 @@ impl NeonSqlClient {
             .transpose()
     }
 
+    pub async fn multiply_operation_exists_for_signature(
+        &self,
+        route_key: &str,
+        transaction_signature: &str,
+    ) -> Result<bool, OrchestratorError> {
+        let exists = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM loyal_yield.multiply_operations
+                WHERE route_key = $1
+                  AND transaction_signature = $2
+            )
+            "#,
+        )
+        .bind(route_key)
+        .bind(transaction_signature)
+        .fetch_one(self.pool())
+        .await?;
+        Ok(exists)
+    }
+
     pub async fn lease_next_multiply_route_state(
         &self,
         owner: &str,

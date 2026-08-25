@@ -65,6 +65,7 @@ const MIGRATION_0064: &str = include_str!("../migrations/0064_earn_max_partial_l
 const MIGRATION_0065: &str = include_str!("../migrations/0065_autodeposit_target_cluster.sql");
 const MIGRATION_0066: &str = include_str!("../migrations/0066_earn_max_single_owner_state.sql");
 const MIGRATION_0067: &str = include_str!("../migrations/0067_earn_max_three_policy_v2.sql");
+const MIGRATION_0068: &str = include_str!("../migrations/0068_earn_max_account_cash_flows.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -578,6 +579,12 @@ impl NeonSqlClient {
                 version: 67,
                 name: "earn_max_three_policy_v2",
                 sql: MIGRATION_0067,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 68,
+                name: "earn_max_account_cash_flows",
+                sql: MIGRATION_0068,
                 expected_checksum: None,
             },
         ] {
@@ -1157,6 +1164,7 @@ impl NeonSqlClient {
                         environment: row.get("environment"),
                         settings,
                         wallet: row.get("wallet"),
+                        earn_max: false,
                         vault_index: 1,
                         vault_pubkey: None,
                         policy_accounts: Vec::new(),
@@ -1194,6 +1202,7 @@ impl NeonSqlClient {
                     environment: environment.to_owned(),
                     settings,
                     wallet: row.get("wallet"),
+                    earn_max: false,
                     vault_index: row.get("vault_index"),
                     vault_pubkey: Some(row.get("vault_pubkey")),
                     policy_accounts: [
@@ -1252,6 +1261,7 @@ impl NeonSqlClient {
                     environment: environment.to_owned(),
                     settings,
                     wallet: row.get("wallet"),
+                    earn_max: false,
                     vault_index: row.get("vault_index"),
                     vault_pubkey: Some(row.get("vault_pubkey")),
                     policy_accounts: [
@@ -1302,6 +1312,7 @@ impl NeonSqlClient {
                     environment: environment.to_owned(),
                     settings,
                     wallet: row.get("wallet"),
+                    earn_max: false,
                     vault_index: row.get("vault_index"),
                     vault_pubkey: Some(row.get("vault_pubkey")),
                     policy_accounts: row.get("policy_accounts"),
@@ -1334,6 +1345,7 @@ impl NeonSqlClient {
                     environment: environment.to_owned(),
                     settings: row.get("settings"),
                     wallet: row.get("wallet"),
+                    earn_max: false,
                     vault_index: row.get("vault_index"),
                     vault_pubkey: Some(row.get("vault_pubkey")),
                     policy_accounts: vec![row.get("policy_account")],
@@ -1346,6 +1358,63 @@ impl NeonSqlClient {
                     .flatten()
                     .collect(),
                     observation_start_slot: None,
+                });
+            }
+        }
+
+        let earn_max_exists: bool = sqlx::query_scalar(
+            "SELECT to_regclass('loyal_yield.multiply_route_states') IS NOT NULL AND to_regclass('loyal_yield.earn_max_policy_sets') IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if earn_max_exists {
+            let rows = sqlx::query(
+                r#"
+                SELECT route.settings,
+                       route.vault_index,
+                       route.vault,
+                       ARRAY(
+                           SELECT policy_account ->> 'account'
+                           FROM jsonb_array_elements(policy.policy_accounts) policy_account
+                           WHERE policy_account ->> 'account' IS NOT NULL
+                           ORDER BY (policy_account ->> 'seed')::BIGINT
+                       ) AS policy_accounts,
+                       (route.state ->> 'observedSlot')::BIGINT AS observation_start_slot
+                FROM loyal_yield.multiply_route_states route
+                JOIN loyal_yield.earn_max_policy_sets policy
+                  ON policy.settings = route.settings
+                 AND policy.vault_index = route.vault_index
+                 AND policy.vault = route.vault
+                WHERE route.state ->> 'engineVersion' = 'earn_max_v2'
+                  AND policy.manifest_version = 'earn-max-v2'
+                  AND policy.status = 'ready'
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                let observation_start_slot = row
+                    .try_get::<Option<i64>, _>("observation_start_slot")?
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(|_| {
+                        OrchestratorError::StoreInvariant(
+                            "Earn MAX observation start slot is negative".to_owned(),
+                        )
+                    })?;
+                targets.push(EarnSubscriptionTarget {
+                    environment: environment.to_owned(),
+                    settings: row.get("settings"),
+                    // Earn MAX admission is bound to exact vault token-account
+                    // deltas, not an application-owned wallet record.
+                    wallet: String::new(),
+                    earn_max: true,
+                    vault_index: row.get("vault_index"),
+                    vault_pubkey: Some(row.get("vault")),
+                    policy_accounts: row.get("policy_accounts"),
+                    markets: Vec::new(),
+                    autodeposit_accounts: Vec::new(),
+                    observation_start_slot,
                 });
             }
         }

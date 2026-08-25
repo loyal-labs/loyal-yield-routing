@@ -18,7 +18,6 @@ use balance_sweep_ata_monitor::{
     AtaUpdateSource, EarnMonitorMetrics, EarnUpdateContext, LaserstreamAtaUpdateSource,
     LaserstreamPolicyUpdateSource, RpcEarnChainReader, SubscriptionConfig, SubscriptionWatchSet,
     TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream, WebsocketAtaUpdateSource,
-    EARN_MAX_CASH_FLOW_PROJECTION_CONSUMER,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
@@ -263,13 +262,6 @@ async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Resu
             args.laserstream_replay_overlap_slots,
         )
         .await?;
-        let cash_flow_from_slot = earn_max_projection_replay_start_slot(
-            &store,
-            &args.rpc_url,
-            EARN_MAX_CASH_FLOW_PROJECTION_CONSUMER,
-            args.laserstream_replay_overlap_slots,
-        )
-        .await?;
         policy_projection_task = Some(
             LaserstreamPolicyUpdateSource {
                 endpoint: args
@@ -280,9 +272,7 @@ async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Resu
                     .helius_api_key
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("HELIUS_API_KEY is required"))?,
-                rpc_url: args.rpc_url.clone(),
                 from_slot: policy_from_slot,
-                cash_flow_from_slot,
                 config,
             }
             .spawn(

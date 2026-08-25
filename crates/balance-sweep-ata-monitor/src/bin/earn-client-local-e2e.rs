@@ -69,6 +69,7 @@ fn initial_watch_set(state: &LocalState) -> anyhow::Result<SubscriptionWatchSet>
             environment: "mainnet-beta".to_owned(),
             settings: state.settings_pda.clone(),
             wallet: state.wallet_address.clone(),
+            earn_max: false,
             vault_index: 1,
             vault_pubkey: Some(state.vault_pubkey.clone()),
             policy_accounts: Vec::new(),

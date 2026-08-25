@@ -592,6 +592,11 @@ pub struct EarnSubscriptionTarget {
     pub environment: String,
     pub settings: String,
     pub wallet: String,
+    /// Earn MAX routes are account-state driven and may not have a separate
+    /// application wallet identity in this database. Their exact vault ATAs,
+    /// obligations, and policies are still sufficient subscription keys.
+    #[serde(default)]
+    pub earn_max: bool,
     pub vault_index: i16,
     pub vault_pubkey: Option<String>,
     pub policy_accounts: Vec<String>,

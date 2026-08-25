@@ -58,6 +58,8 @@ pub struct EarnVaultWatch {
     pub environment: String,
     pub settings: String,
     pub wallet: String,
+    #[serde(default)]
+    pub earn_max: bool,
     pub vault: String,
     pub vault_index: u8,
     pub accounts: Vec<EarnWatchAccount>,
@@ -102,28 +104,54 @@ impl SubscriptionWatchSet {
                     environment: target.environment.clone(),
                     settings: target.settings.clone(),
                     wallet: target.wallet.clone(),
+                    earn_max: target.earn_max,
                     vault: vault.to_string(),
                     vault_index,
                     accounts: Vec::new(),
                 });
-            if entry.settings != target.settings || entry.wallet != target.wallet {
+            if entry.settings != target.settings
+                || (!entry.wallet.is_empty()
+                    && !target.wallet.is_empty()
+                    && entry.wallet != target.wallet)
+            {
                 anyhow::bail!("conflicting Earn identity for vault {vault}");
             }
+            if entry.wallet.is_empty() && !target.wallet.is_empty() {
+                entry.wallet.clone_from(&target.wallet);
+            }
+            entry.earn_max |= target.earn_max;
             entry.accounts.push(EarnWatchAccount {
                 pubkey: settings.to_string(),
                 role: "smart_account".to_owned(),
             });
-            let wallet = Pubkey::from_str(&target.wallet)
-                .with_context(|| format!("invalid Autodeposit wallet {}", target.wallet))?;
-            entry.accounts.push(EarnWatchAccount {
-                pubkey: wallet.to_string(),
-                role: "wallet".to_owned(),
-            });
-            entry.accounts.push(EarnWatchAccount {
-                pubkey: derive_associated_token_account(wallet, USDC_MINT, spl_token::ID)
-                    .to_string(),
-                role: "autodeposit_wallet_ata".to_owned(),
-            });
+            let wallet = (!target.wallet.is_empty())
+                .then(|| Pubkey::from_str(&target.wallet))
+                .transpose()
+                .with_context(|| format!("invalid Earn wallet {}", target.wallet))?;
+            if let Some(wallet) = wallet {
+                entry.accounts.push(EarnWatchAccount {
+                    pubkey: wallet.to_string(),
+                    role: "wallet".to_owned(),
+                });
+                entry.accounts.push(EarnWatchAccount {
+                    pubkey: derive_associated_token_account(wallet, USDC_MINT, spl_token::ID)
+                        .to_string(),
+                    role: "autodeposit_wallet_ata".to_owned(),
+                });
+                entry
+                    .accounts
+                    .extend(earn_stablecoins().iter().map(|asset| {
+                        EarnWatchAccount {
+                            pubkey: derive_associated_token_account(
+                                wallet,
+                                asset.mint,
+                                asset.token_program,
+                            )
+                            .to_string(),
+                            role: "wallet_token".to_owned(),
+                        }
+                    }));
+            }
             observation_start_slot = match (observation_start_slot, target.observation_start_slot) {
                 (Some(current), Some(next)) => Some(current.min(next)),
                 (None, next) => next,
@@ -156,19 +184,6 @@ impl SubscriptionWatchSet {
                         )
                         .to_string(),
                         role: "idle_token".to_owned(),
-                    }
-                }));
-            entry
-                .accounts
-                .extend(earn_stablecoins().iter().map(|asset| {
-                    EarnWatchAccount {
-                        pubkey: derive_associated_token_account(
-                            wallet,
-                            asset.mint,
-                            asset.token_program,
-                        )
-                        .to_string(),
-                        role: "wallet_token".to_owned(),
                     }
                 }));
             let markets = safe_markets
@@ -226,11 +241,17 @@ impl SubscriptionWatchSet {
             match current.get_mut(&key) {
                 Some(next) => {
                     if next.settings != old.settings
-                        || next.wallet != old.wallet
+                        || (!next.wallet.is_empty()
+                            && !old.wallet.is_empty()
+                            && next.wallet != old.wallet)
                         || next.vault_index != old.vault_index
                     {
                         anyhow::bail!("conflicting retained Earn identity for vault {}", old.vault);
                     }
+                    if next.wallet.is_empty() && !old.wallet.is_empty() {
+                        next.wallet.clone_from(&old.wallet);
+                    }
+                    next.earn_max |= old.earn_max;
                     next.accounts.extend(old.accounts.iter().cloned());
                     next.accounts.sort_by(|left, right| {
                         (&left.role, &left.pubkey).cmp(&(&right.role, &right.pubkey))
@@ -392,7 +413,7 @@ pub fn build_multi_channel_subscribe_request(
     SubscribeRequest {
         accounts,
         transactions: BTreeMap::new().into_iter().collect(),
-        commitment: Some(helius_laserstream::grpc::CommitmentLevel::Finalized as i32),
+        commitment: Some(helius_laserstream::grpc::CommitmentLevel::Confirmed as i32),
         from_slot: Some(from_slot),
         ..Default::default()
     }
@@ -416,7 +437,7 @@ pub fn subscribe_request_json(watch_set: &SubscriptionWatchSet) -> serde_json::V
         .collect();
     serde_json::to_value(RequestJson {
         request_count: 1,
-        commitment: "finalized",
+        commitment: "confirmed",
         accounts,
         transactions: BTreeMap::new(),
         _marker: None,
@@ -459,6 +480,7 @@ mod tests {
                     environment: "mainnet-beta".to_owned(),
                     settings: settings.to_string(),
                     wallet: Pubkey::new_unique().to_string(),
+                    earn_max: false,
                     vault_index: 1,
                     vault_pubkey: Some(vault.to_string()),
                     policy_accounts: vec![policy.to_string()],
@@ -473,7 +495,7 @@ mod tests {
         assert_eq!(request.from_slot, Some(42));
         assert_eq!(
             request.commitment,
-            Some(helius_laserstream::grpc::CommitmentLevel::Finalized as i32)
+            Some(helius_laserstream::grpc::CommitmentLevel::Confirmed as i32)
         );
         assert!(request.transactions.is_empty());
         assert_eq!(
