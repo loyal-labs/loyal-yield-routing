@@ -536,6 +536,18 @@ async fn project_earn_max_cash_flow(
         EarnMaxCashFlowMemo::Deposit { settings, .. }
         | EarnMaxCashFlowMemo::Claim { settings, .. } => *settings,
     };
+    let operation_id = format!(
+        "cash-{}",
+        &hex_hash(format!("{}:{}", transfer.signature, memo.source_instruction_index).as_bytes())
+            [..32]
+    );
+    if store
+        .load_multiply_operation(&operation_id)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
     let route_key = format!("earn-max:{settings}:0");
     let mut lease = store
         .lease_multiply_route_state(
@@ -697,12 +709,7 @@ async fn project_earn_max_cash_flow(
     });
     let evidence_bytes = serde_json::to_vec(&evidence)?;
     let operation = MultiplyOperation {
-        operation_id: format!(
-            "cash-{}",
-            &hex_hash(
-                format!("{}:{}", transfer.signature, memo.source_instruction_index).as_bytes()
-            )[..32]
-        ),
+        operation_id,
         route_key: route_key.clone(),
         cycle: state.cycle,
         engine_version: MULTIPLY_ENGINE_VERSION.to_owned(),

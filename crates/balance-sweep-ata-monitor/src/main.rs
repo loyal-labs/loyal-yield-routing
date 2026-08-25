@@ -18,6 +18,7 @@ use balance_sweep_ata_monitor::{
     AtaUpdateSource, EarnMonitorMetrics, EarnUpdateContext, LaserstreamAtaUpdateSource,
     LaserstreamPolicyUpdateSource, RpcEarnChainReader, SubscriptionConfig, SubscriptionWatchSet,
     TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream, WebsocketAtaUpdateSource,
+    EARN_MAX_CASH_FLOW_PROJECTION_CONSUMER,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
@@ -262,6 +263,13 @@ async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Resu
             args.laserstream_replay_overlap_slots,
         )
         .await?;
+        let cash_flow_from_slot = earn_max_projection_replay_start_slot(
+            &store,
+            &args.rpc_url,
+            EARN_MAX_CASH_FLOW_PROJECTION_CONSUMER,
+            args.laserstream_replay_overlap_slots,
+        )
+        .await?;
         policy_projection_task = Some(
             LaserstreamPolicyUpdateSource {
                 endpoint: args
@@ -274,6 +282,7 @@ async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Resu
                     .ok_or_else(|| anyhow::anyhow!("HELIUS_API_KEY is required"))?,
                 rpc_url: args.rpc_url.clone(),
                 from_slot: policy_from_slot,
+                cash_flow_from_slot,
                 config,
             }
             .spawn(
@@ -849,12 +858,27 @@ async fn earn_max_policy_replay_start_slot(
     rpc_url: &str,
     replay_overlap_slots: u64,
 ) -> Result<u64> {
+    earn_max_projection_replay_start_slot(
+        store,
+        rpc_url,
+        EARN_MAX_POLICY_PROJECTION_CONSUMER,
+        replay_overlap_slots,
+    )
+    .await
+}
+
+async fn earn_max_projection_replay_start_slot(
+    store: &OrchestratorStore,
+    rpc_url: &str,
+    consumer_name: &str,
+    replay_overlap_slots: u64,
+) -> Result<u64> {
     let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
     let current_slot = rpc
         .get_slot()
         .context("fetch confirmed RPC slot for Earn MAX policy replay")?;
     let durable = store
-        .projection_offset(EARN_MAX_POLICY_PROJECTION_CONSUMER)
+        .projection_offset(consumer_name)
         .await
         .map_err(orchestrator_error)?;
     if durable > 0 {

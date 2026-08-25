@@ -82,6 +82,7 @@ const EARN_MAX_MEMO_PROGRAM_ID: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmf
 pub const RPC_SEED_SOURCE: &str = "rpc_seed";
 pub const CONFIRMED_COMMITMENT: &str = "confirmed";
 pub const FINALIZED_LASERSTREAM_COMMITMENT: &str = "finalized";
+pub const EARN_MAX_CASH_FLOW_PROJECTION_CONSUMER: &str = "earn_max_cash_flows_laserstream_v2";
 
 #[derive(Clone, Copy, Debug)]
 pub struct SubscriptionConfig {
@@ -249,6 +250,7 @@ pub struct LaserstreamPolicyUpdateSource {
     pub api_key: String,
     pub rpc_url: String,
     pub from_slot: u64,
+    pub cash_flow_from_slot: u64,
     pub config: SubscriptionConfig,
 }
 
@@ -735,18 +737,20 @@ async fn run_earn_max_policy_laserstream(
     tracing::info!(
         endpoint = %source.endpoint,
         from_slot = source.from_slot,
+        cash_flow_from_slot = source.cash_flow_from_slot,
         program = %SQUADS_SMART_ACCOUNT_PROGRAM_ID,
         commitment = CONFIRMED_COMMITMENT,
         "starting Earn MAX policy LaserStream subscription"
     );
-    let from_slot = source.from_slot;
+    let policy_from_slot = source.from_slot;
+    let cash_flow_from_slot = source.cash_flow_from_slot;
 
     let policy = run_earn_max_laserstream_subscription(
         source.clone(),
         SubscribeRequest {
             transactions: policy_transactions,
             commitment: Some(CommitmentLevel::Confirmed as i32),
-            from_slot: Some(from_slot),
+            from_slot: Some(policy_from_slot),
             ..SubscribeRequest::default()
         },
         EarnMaxProjectionKind::Policy,
@@ -759,7 +763,7 @@ async fn run_earn_max_policy_laserstream(
         SubscribeRequest {
             transactions: cash_flow_transactions,
             commitment: Some(CommitmentLevel::Confirmed as i32),
-            from_slot: Some(from_slot),
+            from_slot: Some(cash_flow_from_slot),
             ..SubscribeRequest::default()
         },
         EarnMaxProjectionKind::CashFlow,
@@ -774,6 +778,15 @@ async fn run_earn_max_policy_laserstream(
 enum EarnMaxProjectionKind {
     Policy,
     CashFlow,
+}
+
+impl EarnMaxProjectionKind {
+    fn consumer_name(self) -> &'static str {
+        match self {
+            Self::Policy => EARN_MAX_POLICY_PROJECTION_CONSUMER,
+            Self::CashFlow => EARN_MAX_CASH_FLOW_PROJECTION_CONSUMER,
+        }
+    }
 }
 
 async fn run_earn_max_laserstream_subscription(
@@ -897,7 +910,7 @@ async fn process_earn_max_policy_update(
     }
     store
         .advance_projection_offset(
-            EARN_MAX_POLICY_PROJECTION_CONSUMER,
+            kind.consumer_name(),
             i64::try_from(slot).context("Earn MAX policy slot exceeds BIGINT")?,
         )
         .await?;
