@@ -1,3 +1,4 @@
+use loyal_yield_store::{fleet_orchestration::TargetCapacityObservation, NeonSqlClient};
 use sqlx::{postgres::PgPoolOptions, Row};
 
 const DATABASE_URL_ENV: &str = "CROSS_MINT_STORE_TEST_DATABASE_URL";
@@ -398,7 +399,59 @@ async fn finalized_effects_drive_custody_parent_and_capacity_lifecycle() {
         terminal.get::<String, _>("reservation_state"),
         "awaiting_telemetry"
     );
-    tx.rollback().await.expect("rollback fixture transaction");
+    tx.commit()
+        .await
+        .expect("commit terminal lifecycle fixture");
+
+    let client = NeonSqlClient::from_pool(pool.clone());
+    let movement_slot: i64 = sqlx::query_scalar(
+        "SELECT movement_slot FROM loyal_yield.target_capacity_reservations WHERE decision_id = $1",
+    )
+    .bind(decision_id)
+    .fetch_one(&pool)
+    .await
+    .expect("read durable capacity movement slot");
+    let equal_slot_released = client
+        .refresh_target_capacity_from_market_epoch(TargetCapacityObservation {
+            cluster: "cross-mint-store-test".to_owned(),
+            target_reserve: "target-reserve".to_owned(),
+            liquidity_mint: "target-mint".to_owned(),
+            observed_supply_usd_micros: 101_000_000,
+            observed_slot: movement_slot,
+            maximum_inflight_usd_micros: 10_000_000,
+        })
+        .await
+        .expect("refresh equal-slot target telemetry");
+    assert_eq!(equal_slot_released, 0);
+
+    let newer_slot_released = client
+        .refresh_target_capacity_from_market_epoch(TargetCapacityObservation {
+            cluster: "cross-mint-store-test".to_owned(),
+            target_reserve: "target-reserve".to_owned(),
+            liquidity_mint: "target-mint".to_owned(),
+            observed_supply_usd_micros: 101_000_000,
+            observed_slot: movement_slot + 1,
+            maximum_inflight_usd_micros: 10_000_000,
+        })
+        .await
+        .expect("refresh newer target telemetry");
+    assert_eq!(newer_slot_released, 1);
+    let released = sqlx::query(
+        r#"
+        SELECT reservation_state, release_reason
+        FROM loyal_yield.target_capacity_reservations
+        WHERE decision_id = $1
+        "#,
+    )
+    .bind(decision_id)
+    .fetch_one(&pool)
+    .await
+    .expect("read planner-refreshed capacity lifecycle");
+    assert_eq!(released.get::<String, _>("reservation_state"), "released");
+    assert_eq!(
+        released.get::<String, _>("release_reason"),
+        "planner_target_telemetry_reflected_movement"
+    );
 }
 
 #[allow(clippy::too_many_arguments)]

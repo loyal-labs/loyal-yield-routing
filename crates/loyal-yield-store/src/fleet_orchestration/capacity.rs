@@ -140,6 +140,113 @@ pub struct TargetCapacityReservationRecord {
 }
 
 impl NeonSqlClient {
+    /// Advances planner-owned target telemetry without making an execution
+    /// admission decision. This breaks the capacity-release dependency on a
+    /// later executor: a completed movement can release as soon as the
+    /// planner's verified market epoch contains a strictly newer target slot.
+    /// Older planner snapshots are harmless no-ops because an executor may
+    /// already have advanced the durable frontier.
+    pub async fn refresh_target_capacity_from_market_epoch(
+        &self,
+        observation: TargetCapacityObservation,
+    ) -> Result<u64, OrchestratorError> {
+        validate_observation(&observation)?;
+        let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO loyal_yield.target_capacity_frontiers
+                (cluster, target_reserve, liquidity_mint,
+                 observed_supply_usd_micros, observed_slot,
+                 maximum_inflight_usd_micros)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (cluster, target_reserve, liquidity_mint) DO NOTHING
+            "#,
+        )
+        .bind(&observation.cluster)
+        .bind(&observation.target_reserve)
+        .bind(&observation.liquidity_mint)
+        .bind(observation.observed_supply_usd_micros)
+        .bind(observation.observed_slot)
+        .bind(observation.maximum_inflight_usd_micros)
+        .execute(&mut *tx)
+        .await?;
+
+        let frontier = sqlx::query(
+            r#"
+            SELECT observed_supply_usd_micros, observed_slot,
+                   maximum_inflight_usd_micros
+            FROM loyal_yield.target_capacity_frontiers
+            WHERE cluster = $1 AND target_reserve = $2 AND liquidity_mint = $3
+            FOR UPDATE
+            "#,
+        )
+        .bind(&observation.cluster)
+        .bind(&observation.target_reserve)
+        .bind(&observation.liquidity_mint)
+        .fetch_one(&mut *tx)
+        .await?;
+        let durable_slot: i64 = frontier.try_get("observed_slot")?;
+        let durable_supply: i64 = frontier.try_get("observed_supply_usd_micros")?;
+        let durable_maximum: i64 = frontier.try_get("maximum_inflight_usd_micros")?;
+        if observation.observed_slot < durable_slot {
+            tx.rollback().await?;
+            return Ok(0);
+        }
+        if observation.observed_slot == durable_slot
+            && (observation.observed_supply_usd_micros != durable_supply
+                || observation.maximum_inflight_usd_micros != durable_maximum)
+        {
+            return Err(OrchestratorError::StoreInvariant(
+                "planner target capacity observation conflicts with durable evidence at the same slot"
+                    .to_owned(),
+            ));
+        }
+
+        if observation.observed_slot > durable_slot {
+            sqlx::query(
+                r#"
+                UPDATE loyal_yield.target_capacity_frontiers
+                SET observed_supply_usd_micros = $4,
+                    observed_slot = $5,
+                    maximum_inflight_usd_micros = $6,
+                    telemetry_version = telemetry_version + 1,
+                    updated_at = now()
+                WHERE cluster = $1 AND target_reserve = $2 AND liquidity_mint = $3
+                "#,
+            )
+            .bind(&observation.cluster)
+            .bind(&observation.target_reserve)
+            .bind(&observation.liquidity_mint)
+            .bind(observation.observed_supply_usd_micros)
+            .bind(observation.observed_slot)
+            .bind(observation.maximum_inflight_usd_micros)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let released = sqlx::query(
+            r#"
+            UPDATE loyal_yield.target_capacity_reservations
+            SET reservation_state = 'released',
+                released_at = now(),
+                release_reason = 'planner_target_telemetry_reflected_movement',
+                state_version = state_version + 1,
+                updated_at = now()
+            WHERE cluster = $1 AND target_reserve = $2 AND liquidity_mint = $3
+              AND reservation_state = 'awaiting_telemetry'
+              AND movement_slot < $4
+            "#,
+        )
+        .bind(&observation.cluster)
+        .bind(&observation.target_reserve)
+        .bind(&observation.liquidity_mint)
+        .bind(observation.observed_slot)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(released.rows_affected())
+    }
+
     /// Incorporates a fresh target observation and releases only movements the
     /// observation is new enough to contain. The returned version is an
     /// telemetry fence: decision admission fails only if the underlying market
