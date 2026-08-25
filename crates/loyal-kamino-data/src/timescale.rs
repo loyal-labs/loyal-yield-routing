@@ -10,7 +10,10 @@ use sqlx::{
     FromRow, PgPool, Row,
 };
 
-use loyal_kamino_codec::{ReserveDiff, ReserveSnapshot, ReserveTarget, SupportedReserveRecord};
+use loyal_kamino_codec::{
+    ReserveDiff, ReserveSnapshot, ReserveTarget, SupportedReserveRecord,
+    RESERVE_OBSERVATION_SCHEMA_VERSION,
+};
 
 const TABLE_NAME: &str = "reserve_updates";
 const HTTP_SNAPSHOT_SOURCE: &str = "http_snapshot";
@@ -196,7 +199,9 @@ impl TimescaleSink {
         } else {
             ""
         };
-        format!("{source_commitment}{provenance}:{reserve}:{slot}:{account_data_hash}")
+        format!(
+            "v{RESERVE_OBSERVATION_SCHEMA_VERSION}:{source_commitment}{provenance}:{reserve}:{slot}:{account_data_hash}"
+        )
     }
 
     pub async fn insert(&self, record: &ReserveUpdateRecord<'_>) -> Result<TimescaleInsertOutcome> {
@@ -1344,6 +1349,7 @@ WHERE verification.reserve = observation_floor.reserve
 }
 
 fn verify_confirmed_states_sql(schema: &str) -> String {
+    let qualified_updates = format!("{}.{}", quote_ident(schema), quote_ident("reserve_updates"));
     let qualified_current = format!(
         "{}.{}",
         quote_ident(schema),
@@ -1360,6 +1366,7 @@ fn verify_confirmed_states_sql(schema: &str) -> String {
         quote_ident("reserve_confirmed_observation_floors")
     );
     let slot_tolerance = qualified_slot_tolerance(schema);
+    let observation_schema_version = RESERVE_OBSERVATION_SCHEMA_VERSION;
     format!(
         r#"
 WITH input AS (
@@ -1494,6 +1501,10 @@ WITH input AS (
         current_state.account_data_hash AS current_account_data_hash,
         current_state.state_slot,
         current_state.state_source,
+        COALESCE(
+            (current_update.snapshot ->> 'observation_schema_version')::integer,
+            0
+        ) AS current_observation_schema_version,
         floor.floor_slot,
         floor.floor_account_data_hash,
         floor.floor_state_valid
@@ -1502,6 +1513,11 @@ WITH input AS (
       ON floor.reserve = input.reserve
     JOIN {qualified_current} current_state
       ON current_state.reserve = input.reserve
+    JOIN {qualified_updates} current_update
+      ON current_update.reserve = current_state.reserve
+     AND current_update.event_id = current_state.state_event_id
+     AND current_update.account_data_hash = current_state.account_data_hash
+     AND current_update.slot = current_state.state_slot
     FOR UPDATE OF current_state
 ), invalidated AS (
     DELETE FROM {qualified_verifications} verification
@@ -1538,6 +1554,7 @@ WITH input AS (
       AND state.confirmed_account_data_hash = state.current_account_data_hash
       AND state.verified_slot >= state.state_slot
       AND state.state_source IN ('http_snapshot', 'http_confirmed_refresh')
+      AND state.current_observation_schema_version = {observation_schema_version}
       AND (
             state.verified_slot > state.floor_slot
          OR (

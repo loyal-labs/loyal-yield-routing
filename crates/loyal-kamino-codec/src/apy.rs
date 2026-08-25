@@ -8,6 +8,7 @@ use crate::ReserveTarget;
 
 const SLOTS_PER_SECOND: f64 = 2.0;
 const SECONDS_PER_YEAR: f64 = 365.25 * 24.0 * 60.0 * 60.0;
+pub const RESERVE_OBSERVATION_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BorrowRateCurvePointSnapshot {
@@ -25,6 +26,7 @@ pub struct WithdrawalCapSnapshot {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReserveSnapshot {
+    pub observation_schema_version: u16,
     pub observed_at: DateTime<Utc>,
     pub slot: u64,
     pub reserve: Pubkey,
@@ -318,6 +320,7 @@ fn snapshot_from_reserve(
     let mint_factor = 10_f64.powi(mint_decimals as i32);
 
     ReserveSnapshot {
+        observation_schema_version: RESERVE_OBSERVATION_SCHEMA_VERSION,
         observed_at,
         slot,
         reserve: target.reserve,

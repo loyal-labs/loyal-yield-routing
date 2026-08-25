@@ -103,6 +103,7 @@ function staticContract(): void {
   const codecPath = "crates/loyal-kamino-codec/src/apy.rs";
   const codec = requireFile(codecPath);
   for (const field of [
+    "observation_schema_version",
     "reserve_status", "emergency_mode", "loan_to_value_pct",
     "liquidation_threshold_pct", "borrow_factor_pct", "deposit_limit",
     "borrow_limit", "utilization_limit_block_borrowing_above_pct",
@@ -112,6 +113,7 @@ function staticContract(): void {
     "debt_withdrawal_cap",
   ]) requireText(codec, `pub ${field}:`, codecPath);
   requireText(codec, "previous.borrow_rate_curve != current.borrow_rate_curve", codecPath);
+  requireText(codec, "RESERVE_OBSERVATION_SCHEMA_VERSION: u16 = 2", codecPath);
 
   const actionsPath = "crates/loyal-actions/src/earn_max.rs";
   requireText(requireFile(actionsPath), "EARN_MAX_OBSERVATION_RESERVES", actionsPath);
@@ -127,7 +129,10 @@ function staticContract(): void {
   const targetsPath = "crates/loyal-kamino-data/src/targets.rs";
   requireText(requireFile(targetsPath), "fetch_earn_max_observation_targets", targetsPath);
   const writerPath = "crates/loyal-kamino-data/src/timescale.rs";
-  requireText(requireFile(writerPath), "serde_json::to_value(record.snapshot)", writerPath);
+  const writer = requireFile(writerPath);
+  requireText(writer, "serde_json::to_value(record.snapshot)", writerPath);
+  requireText(writer, "v{RESERVE_OBSERVATION_SCHEMA_VERSION}", writerPath);
+  requireText(writer, "current_observation_schema_version", writerPath);
   const monitorPath = "crates/kamino-reserve-monitor/src/main.rs";
   requireText(requireFile(monitorPath), "merge_observation_targets", monitorPath);
 
@@ -236,9 +241,10 @@ async function timescaleContract(deployedAt: string): Promise<Json> {
   const sql = `
 WITH required(reserve) AS (VALUES ${values}),
 covered AS (
-  SELECT required.reserve, latest.*
+  SELECT required.reserve, latest.*, updates.snapshot AS raw_snapshot
   FROM required
   LEFT JOIN kamino.latest_verified_reserve_updates latest USING (reserve)
+  LEFT JOIN kamino.reserve_updates updates ON updates.event_id = latest.event_id
 ),
 live_stream AS (
   SELECT count(DISTINCT updates.reserve)::int AS reserve_count,
@@ -271,7 +277,8 @@ SELECT json_build_object(
       AND observed_at >= '${deployedAt}'::timestamptz
   ),
   'decisionFieldReserveCount', count(*) FILTER (
-    WHERE reserve_status IS NOT NULL
+    WHERE (raw_snapshot ->> 'observation_schema_version')::int = 2
+      AND reserve_status IS NOT NULL
       AND emergency_mode IS NOT NULL
       AND loan_to_value_pct IS NOT NULL
       AND liquidation_threshold_pct IS NOT NULL
