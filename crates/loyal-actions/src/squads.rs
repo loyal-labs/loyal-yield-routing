@@ -371,6 +371,14 @@ pub fn update_exact_program_interaction_policy_instruction(
 pub struct SemanticProgramInteractionConstraint {
     pub program_id: Pubkey,
     pub account_pubkeys: Vec<(u8, Vec<Pubkey>)>,
+    pub account_data: Vec<SemanticProgramInteractionAccountDataConstraint>,
+    pub data: Vec<SemanticProgramInteractionDataConstraint>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SemanticProgramInteractionAccountDataConstraint {
+    pub account_index: u8,
+    pub owner: Option<Pubkey>,
     pub data: Vec<SemanticProgramInteractionDataConstraint>,
 }
 
@@ -378,6 +386,7 @@ pub struct SemanticProgramInteractionConstraint {
 pub enum SemanticProgramInteractionDataConstraint {
     SliceEquals { offset: u64, value: Vec<u8> },
     U8Equals { offset: u64, value: u8 },
+    U16Equals { offset: u64, value: u16 },
     U16LessThanOrEqual { offset: u64, value: u16 },
     U32Equals { offset: u64, value: u32 },
 }
@@ -414,35 +423,14 @@ pub fn create_semantic_program_interaction_policy_instruction(
     specs: Vec<SemanticProgramInteractionConstraint>,
 ) -> Result<Instruction> {
     let constraints = semantic_program_interaction_constraints(specs)?;
-    let (policy, _) = derive_action_account(&settings, policy_seed);
-    let action = SquadsSettingsAction::PolicyCreate {
-        seed: policy_seed,
-        policy_creation_payload: SquadsPolicyCreationPayload::ProgramInteraction(
-            compile_compact_program_interaction_payload(account_index, constraints, Vec::new())?,
-        ),
-        signers: vec![SquadsSmartAccountSigner {
-            key: delegated_signer,
-            permissions: SquadsPermissions {
-                mask: SQUADS_FULL_PERMISSIONS_MASK,
-            },
-        }],
-        threshold: 1,
-        time_lock: 0,
-        start_timestamp: None,
-        expiration_args: None,
-    };
-    Ok(Instruction {
-        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(settings, false),
-            AccountMeta::new(authority, true),
-            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
-            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(policy, false),
-        ],
-        data: serialize_settings_actions(vec![action]),
-    })
+    create_program_interaction_action_instruction(
+        settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        constraints,
+    )
 }
 
 fn semantic_program_interaction_constraints(
@@ -455,7 +443,7 @@ fn semantic_program_interaction_constraints(
         .into_iter()
         .map(|spec| {
             let mut seen = std::collections::BTreeSet::new();
-            let account_constraints = spec
+            let mut account_constraints = spec
                 .account_pubkeys
                 .into_iter()
                 .map(|(account_index, pubkeys)| {
@@ -469,6 +457,19 @@ fn semantic_program_interaction_constraints(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
+            for constraint in spec.account_data {
+                if !seen.insert(constraint.account_index) {
+                    return Err(LoyalActionError::InvalidPolicyConstraint);
+                }
+                account_constraints.push(SquadsAccountConstraint {
+                    account_index: constraint.account_index,
+                    account_constraint: SquadsAccountConstraintType::AccountData(
+                        semantic_data_constraints(constraint.data)?,
+                    ),
+                    owner: constraint.owner,
+                });
+            }
+            account_constraints.sort_by_key(|constraint| constraint.account_index);
             let data_constraints = semantic_data_constraints(spec.data)?;
             Ok(SquadsInstructionConstraint {
                 program_id: spec.program_id,
@@ -498,6 +499,13 @@ fn semantic_data_constraints(
                 Ok(SquadsDataConstraint {
                     data_offset: offset,
                     data_value: SquadsDataValue::U8(value),
+                    operator: SquadsDataOperator::Equals,
+                })
+            }
+            SemanticProgramInteractionDataConstraint::U16Equals { offset, value } => {
+                Ok(SquadsDataConstraint {
+                    data_offset: offset,
+                    data_value: SquadsDataValue::U16Le(value),
                     operator: SquadsDataOperator::Equals,
                 })
             }

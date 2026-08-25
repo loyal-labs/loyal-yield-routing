@@ -80,8 +80,9 @@ pub use squads::{
     handoff_settings_signer_instruction, remove_policies_instruction, remove_policy_instruction,
     update_exact_program_interaction_policy_instruction,
     update_semantic_program_interaction_policy_instruction, LoyalActionError, Result,
-    SemanticProgramInteractionConstraint, SemanticProgramInteractionDataConstraint,
-    SquadsCompiledInstruction, SquadsSettingsSignerHandoff,
+    SemanticProgramInteractionAccountDataConstraint, SemanticProgramInteractionConstraint,
+    SemanticProgramInteractionDataConstraint, SquadsCompiledInstruction,
+    SquadsSettingsSignerHandoff,
 };
 pub use stablecoins::{
     earn_stablecoin, earn_stablecoin_pairs, earn_stablecoins, EarnStablecoin, EarnStablecoinPair,

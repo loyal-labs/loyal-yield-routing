@@ -7,7 +7,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 
 const CONTRACT_VERSION = "earn-max-v4";
 const POLICY_MANIFEST_VERSION = "earn-max-v2";
-const CONTRACT_SHA256 = "f39cf568b264627c8b918cc899a06db0438e7c9840885a015efdc2cb0fc6aa3b";
+const CONTRACT_SHA256 = "945e64c1e3afc8f66b7dd9a4a4a3ac317dd9583f6ba28d4bef54ab61eafc947a";
 const PASS = "PASS_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
 const FAIL = "FAIL_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
 const BLOCKED = "BLOCKED_EARN_MAX_THREE_POLICY_PRODUCTION_READY";
@@ -44,7 +44,9 @@ const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
 const TOKEN_2022_PROGRAM = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 const SQUADS_PROGRAM = new PublicKey("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG");
 const BPF_UPGRADEABLE_LOADER = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
-const SUPPORTED_COMPACT_POLICY_PROGRAM_DATA_HASHES = new Set<string>([]);
+const SUPPORTED_LEGACY_POLICY_PROGRAM_DATA_HASHES = new Set<string>([
+  "4242cc6453644e9d76622181800800c20a62b36c53466a8b052777c60bb14db2",
+]);
 
 const MAINNET_POOL_CATALOG = [
   {
@@ -374,6 +376,10 @@ function checkThreePolicySourceContract(): Json {
     '"syrup_usdc_pyusd"',
     "strategy.debtCustody",
     "strategy.collateralCustody",
+    "accountDataPubkey",
+    "swapBiclique",
+    "AddressLookupTableProgram.createLookupTable",
+    '"legacy"',
   ]) {
     requireText(appActions, required, "three_policy_client_manifest_missing", APP_ACTIONS);
   }
@@ -384,6 +390,8 @@ function checkThreePolicySourceContract(): Json {
     "PolicyFamily::Borrow",
     "PolicyFamily::Repay",
     "PolicyFamily::Withdraw",
+    "updateProgramInteractionPolicyInstruction",
+    "updateInstruction",
   ]) {
     rejectText(`${policy}\n${appActions}`, forbidden, "six_policy_manifest_survived", `${POLICY} + ${APP_ACTIONS}`);
   }
@@ -817,7 +825,7 @@ async function checkMainnetPoolCatalog(): Promise<Json> {
   };
 }
 
-async function checkSquadsPolicyPayloadDialect(): Promise<Json> {
+async function checkSquadsLegacyPolicyCompatibility(): Promise<Json> {
   const connection = new Connection(requiredEnv("SOLANA_RPC_URL"), {
     commitment: "confirmed",
     httpAgent: false,
@@ -862,23 +870,14 @@ async function checkSquadsPolicyPayloadDialect(): Promise<Json> {
 
   const deployedSlot = Number(programData.data.readBigUInt64LE(4));
   const programDataSha256 = sha256(programData.data);
-  if (!SUPPORTED_COMPACT_POLICY_PROGRAM_DATA_HASHES.has(programDataSha256)) {
-    blocked("deployed_squads_compact_policy_payload_unsupported", {
+  if (!SUPPORTED_LEGACY_POLICY_PROGRAM_DATA_HASHES.has(programDataSha256)) {
+    blocked("deployed_squads_legacy_policy_payload_unverified", {
       program: SQUADS_PROGRAM.toBase58(),
       programData: programDataAddress.toBase58(),
       deployedSlot,
       programDataSha256,
-      observedError: "InstructionDidNotDeserialize (Custom 102)",
-      rawFinalInstructionDataBytes: {
-        collateral: 1_569,
-        debt: 1_655,
-        swap: 2_609,
-      },
-      compactProbePacketBytes: {
-        debt: 1_193,
-        swap: 1_165,
-      },
-      resume: "deploy and independently prove a Squads binary that accepts compact PolicyCreate and PolicyUpdate, then add its exact ProgramData hash to the verifier allowlist",
+      expectedInstallPackets: { collateral: 1_138, debt: 1_138, swapV0: 1_227 },
+      resume: "independently prove direct legacy PolicyCreate deserialization for this exact ProgramData hash before allowlisting it",
     });
   }
 
@@ -1425,7 +1424,7 @@ const engine = checkWorkerAndStoreSource();
 const release = checkReleaseSource();
 const targeted = await targetedChecks();
 const mainnetCatalog = await checkMainnetPoolCatalog();
-const squadsPolicyDialect = await checkSquadsPolicyPayloadDialect();
+const squadsPolicyDialect = await checkSquadsLegacyPolicyCompatibility();
 const live = await checkLivePrerequisites();
 const deployedWorkers = await checkDeployedWorkers(
   String(release.monitorImageRevision),

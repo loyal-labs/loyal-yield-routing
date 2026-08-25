@@ -1,5 +1,6 @@
 use crate::{
     jupiter::JupiterBuildError, LoyalActionError, Result,
+    SemanticProgramInteractionAccountDataConstraint as AccountDataConstraint,
     SemanticProgramInteractionConstraint as Constraint,
     SemanticProgramInteractionDataConstraint as DataConstraint,
 };
@@ -17,6 +18,7 @@ pub enum EarnMaxPolicyFamily {
 
 #[derive(Clone, Copy, Debug)]
 pub struct EarnMaxPolicyLane {
+    pub market: Pubkey,
     pub obligation: Pubkey,
     pub collateral_reserve: Pubkey,
     pub collateral_custody: Pubkey,
@@ -29,9 +31,13 @@ pub struct EarnMaxPolicyLane {
 pub struct EarnMaxPolicyBoundary {
     pub vault: Pubkey,
     pub klend_program: Pubkey,
-    pub farms_program: Pubkey,
     pub jupiter_program: Pubkey,
-    pub classic_token_program: Pubkey,
+    pub usdc_custody: Pubkey,
+    pub pyusd_custody: Pubkey,
+    pub usds_custody: Pubkey,
+    pub onyc_custody: Pubkey,
+    pub prime_custody: Pubkey,
+    pub syrup_usdc_custody: Pubkey,
     pub deposit_discriminator: [u8; 8],
     pub withdraw_discriminator: [u8; 8],
     pub borrow_discriminator: [u8; 8],
@@ -138,61 +144,51 @@ pub fn earn_max_policy_constraints(
                 program_id: boundary.klend_program,
                 account_pubkeys: vec![
                     (0, vec![boundary.vault]),
-                    (
-                        1,
-                        boundary.lanes.iter().map(|lane| lane.obligation).collect(),
-                    ),
-                    (
-                        4,
-                        unique(boundary.lanes.iter().map(|lane| lane.debt_reserve)),
-                    ),
+                    (2, unique(boundary.lanes.iter().map(|lane| lane.market))),
                     (
                         8,
                         unique(boundary.lanes.iter().map(|lane| lane.debt_custody)),
                     ),
-                    (
-                        10,
-                        unique(boundary.lanes.iter().map(|lane| lane.debt_token_program)),
-                    ),
-                    (14, vec![boundary.farms_program]),
                 ],
+                account_data: vec![obligation_owned_by_vault(boundary)],
                 data: vec![slice_equals(boundary.borrow_discriminator)],
             },
             Constraint {
                 program_id: boundary.klend_program,
                 account_pubkeys: vec![
                     (0, vec![boundary.vault]),
-                    (
-                        1,
-                        boundary.lanes.iter().map(|lane| lane.obligation).collect(),
-                    ),
-                    (
-                        3,
-                        unique(boundary.lanes.iter().map(|lane| lane.debt_reserve)),
-                    ),
+                    (2, unique(boundary.lanes.iter().map(|lane| lane.market))),
                     (
                         6,
                         unique(boundary.lanes.iter().map(|lane| lane.debt_custody)),
                     ),
-                    (
-                        7,
-                        unique(boundary.lanes.iter().map(|lane| lane.debt_token_program)),
-                    ),
-                    (12, vec![boundary.farms_program]),
                 ],
+                account_data: vec![obligation_owned_by_vault(boundary)],
                 data: vec![slice_equals(boundary.repay_discriminator)],
             },
         ]),
-        EarnMaxPolicyFamily::Swap => Ok(boundary
-            .lanes
-            .iter()
-            .flat_map(|lane| {
-                [
-                    swap_constraint(boundary, lane.debt_custody, lane.collateral_custody),
-                    swap_constraint(boundary, lane.collateral_custody, lane.debt_custody),
-                ]
-            })
-            .collect()),
+        EarnMaxPolicyFamily::Swap => Ok(vec![
+            swap_constraint(
+                boundary,
+                vec![boundary.usdc_custody, boundary.usds_custody],
+                vec![boundary.onyc_custody, boundary.prime_custody],
+            ),
+            swap_constraint(
+                boundary,
+                vec![boundary.usdc_custody, boundary.pyusd_custody],
+                vec![boundary.prime_custody, boundary.syrup_usdc_custody],
+            ),
+            swap_constraint(
+                boundary,
+                vec![boundary.onyc_custody, boundary.prime_custody],
+                vec![boundary.usdc_custody, boundary.usds_custody],
+            ),
+            swap_constraint(
+                boundary,
+                vec![boundary.prime_custody, boundary.syrup_usdc_custody],
+                vec![boundary.usdc_custody, boundary.pyusd_custody],
+            ),
+        ]),
     }
 }
 
@@ -202,10 +198,6 @@ fn collateral_constraint(boundary: &EarnMaxPolicyBoundary, discriminator: [u8; 8
         account_pubkeys: vec![
             (0, vec![boundary.vault]),
             (
-                1,
-                boundary.lanes.iter().map(|lane| lane.obligation).collect(),
-            ),
-            (
                 4,
                 unique(boundary.lanes.iter().map(|lane| lane.collateral_reserve)),
             ),
@@ -213,29 +205,39 @@ fn collateral_constraint(boundary: &EarnMaxPolicyBoundary, discriminator: [u8; 8
                 9,
                 unique(boundary.lanes.iter().map(|lane| lane.collateral_custody)),
             ),
-            (11, vec![boundary.classic_token_program]),
-            (12, vec![boundary.classic_token_program]),
-            (14, vec![boundary.klend_program]),
-            (15, vec![boundary.klend_program]),
-            (16, vec![boundary.farms_program]),
         ],
+        account_data: vec![obligation_owned_by_vault(boundary)],
         data: vec![slice_equals(discriminator)],
+    }
+}
+
+fn obligation_owned_by_vault(boundary: &EarnMaxPolicyBoundary) -> AccountDataConstraint {
+    AccountDataConstraint {
+        account_index: 1,
+        owner: Some(boundary.klend_program),
+        data: vec![DataConstraint::SliceEquals {
+            offset: 64,
+            value: boundary.vault.to_bytes().to_vec(),
+        }],
     }
 }
 
 fn swap_constraint(
     boundary: &EarnMaxPolicyBoundary,
-    source: Pubkey,
-    destination: Pubkey,
+    sources: Vec<Pubkey>,
+    destinations: Vec<Pubkey>,
 ) -> Constraint {
     Constraint {
         program_id: boundary.jupiter_program,
-        account_pubkeys: vec![
-            (2, vec![boundary.vault]),
-            (3, vec![source]),
-            (6, vec![destination]),
-        ],
-        data: vec![slice_equals(EARN_MAX_SHARED_ACCOUNTS_ROUTE)],
+        account_pubkeys: vec![(2, vec![boundary.vault]), (3, sources), (6, destinations)],
+        account_data: vec![],
+        data: vec![DataConstraint::U16Equals {
+            offset: 0,
+            value: u16::from_le_bytes([
+                EARN_MAX_SHARED_ACCOUNTS_ROUTE[0],
+                EARN_MAX_SHARED_ACCOUNTS_ROUTE[1],
+            ]),
+        }],
     }
 }
 
@@ -278,8 +280,8 @@ fn read_u64(data: &[u8], offset: usize) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::{
-        derive_action_account, derive_associated_token_account, derive_kamino_obligation,
-        derive_squads_vault, update_semantic_program_interaction_policy_instruction,
+        create_semantic_program_interaction_policy_instruction, derive_associated_token_account,
+        derive_kamino_obligation, derive_squads_vault,
     };
     use sha2::{Digest, Sha256};
     use solana_sdk::instruction::{AccountMeta, Instruction};
@@ -365,6 +367,7 @@ mod tests {
                     let collateral_mint = key(collateral_mint);
                     let debt_mint = key(debt_mint);
                     EarnMaxPolicyLane {
+                        market,
                         obligation: derive_kamino_obligation(
                             vault,
                             market,
@@ -393,9 +396,13 @@ mod tests {
         EarnMaxPolicyBoundary {
             vault,
             klend_program: key("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"),
-            farms_program: key("FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"),
             jupiter_program: key("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"),
-            classic_token_program: token,
+            usdc_custody: lanes[0].debt_custody,
+            pyusd_custody: lanes[3].debt_custody,
+            usds_custody: lanes[1].debt_custody,
+            onyc_custody: lanes[0].collateral_custody,
+            prime_custody: lanes[2].collateral_custody,
+            syrup_usdc_custody: lanes[5].collateral_custody,
             deposit_discriminator: [216, 224, 191, 27, 204, 151, 102, 175],
             withdraw_discriminator: [235, 52, 119, 152, 149, 197, 20, 7],
             borrow_discriminator: [161, 128, 143, 245, 171, 199, 194, 6],
@@ -433,12 +440,11 @@ mod tests {
             (EarnMaxPolicyFamily::Swap, 236),
         ]
         .map(|(family, seed)| {
-            let policy = derive_action_account(&settings, seed).0;
-            let instruction = update_semantic_program_interaction_policy_instruction(
+            let instruction = create_semantic_program_interaction_policy_instruction(
                 settings,
                 authority,
-                policy,
                 delegate,
+                seed,
                 0,
                 earn_max_policy_constraints(&boundary, family).unwrap(),
             )
@@ -448,9 +454,9 @@ mod tests {
         assert_eq!(
             fingerprints,
             [
-                "ef32ee403e4a472b19f927e14a224e318b8572073c7bd40260b6c4b1be45e224",
-                "ad1b0ca8316a1e03644b27c0e6050dc58703326f9f095db2697e58de5df72f5c",
-                "88320a43b00cafad090780a28ec23c773e5ef595621d4262ba08fc208ebbc2af",
+                "c9aae4e32ef1659c0f9ef7367f7e3f920809bb5842e4d838c67681b6de39ca43",
+                "791ba0305d76427d970f3550989707767da2aadac7d0979acecaff2a40a7db4e",
+                "6e50e231456bb7a67fb551b219ef56fc2bf83b5f1594a5b6d80c82eb1e0475ad",
             ]
         );
         assert_eq!(
@@ -462,7 +468,7 @@ mod tests {
             .map(|family| earn_max_policy_constraints(&boundary, family)
                 .unwrap()
                 .len()),
-            [2, 2, 14]
+            [2, 2, 4]
         );
     }
 

@@ -1,4 +1,4 @@
-use super::config::{EarnMaxTopology, PolicyConfig, StrategyConfig, FARMS, JUPITER, KLEND, TOKEN};
+use super::config::{EarnMaxTopology, PolicyConfig, StrategyConfig, JUPITER, KLEND};
 use loyal_actions::{
     create_semantic_program_interaction_policy_instruction,
     decode_program_interaction_policy_account, decode_squads_policy_create_actions,
@@ -77,7 +77,7 @@ pub fn canonical_policy_create(
         delegate,
         policy.seed,
         0,
-        canonical_bootstrap_constraints(topology, family)?,
+        canonical_constraints(topology, family)?,
     )
     .map_err(Into::into)
 }
@@ -150,16 +150,16 @@ pub fn constraint_indexes(
         MultiplyAction::BorrowDebt => 0,
         MultiplyAction::RepayDebt => 1,
         MultiplyAction::SwapClaimToCollateral => {
-            route_constraint_index(instruction, usdc_lane_index(config.key, false)?)?
+            route_constraint_index(instruction, claim_to_collateral_index(config.key))?
         }
         MultiplyAction::SwapDebtToCollateral => {
-            route_constraint_index(instruction, strategy_lane_index(config.key, false))?
+            route_constraint_index(instruction, debt_to_collateral_index(config.key))?
         }
         MultiplyAction::SwapCollateralToDebt => {
-            route_constraint_index(instruction, strategy_lane_index(config.key, true))?
+            route_constraint_index(instruction, collateral_to_debt_index(config.key))?
         }
         MultiplyAction::SwapCollateralToClaim => {
-            route_constraint_index(instruction, usdc_lane_index(config.key, true)?)?
+            route_constraint_index(instruction, collateral_to_claim_index(config.key))?
         }
         MultiplyAction::Claim
         | MultiplyAction::DepositClaimAsset
@@ -171,22 +171,6 @@ pub fn constraint_indexes(
     Ok(vec![index])
 }
 
-fn canonical_bootstrap_constraints(
-    topology: EarnMaxTopology,
-    family: PolicyFamily,
-) -> Result<Vec<Constraint>, Box<dyn Error>> {
-    let full = canonical_constraints(topology, family)?;
-    let safe_index = match family {
-        PolicyFamily::Collateral => 1,
-        PolicyFamily::Debt => 1,
-        PolicyFamily::Swap => 1,
-    };
-    Ok(vec![full
-        .get(safe_index)
-        .ok_or("bootstrap constraint is absent")?
-        .clone()])
-}
-
 fn canonical_constraints(
     topology: EarnMaxTopology,
     family: PolicyFamily,
@@ -195,9 +179,15 @@ fn canonical_constraints(
     let boundary = EarnMaxPolicyBoundary {
         vault: topology.vault,
         klend_program: Pubkey::from_str(KLEND)?,
-        farms_program: Pubkey::from_str(FARMS)?,
         jupiter_program: Pubkey::from_str(JUPITER)?,
-        classic_token_program: Pubkey::from_str(TOKEN)?,
+        usdc_custody: topology.strategy(StrategyKey::OnycUsdc).debt_custody,
+        pyusd_custody: topology.strategy(StrategyKey::PrimePyusd).debt_custody,
+        usds_custody: topology.strategy(StrategyKey::OnycUsds).debt_custody,
+        onyc_custody: topology.strategy(StrategyKey::OnycUsdc).collateral_custody,
+        prime_custody: topology.strategy(StrategyKey::PrimeUsdc).collateral_custody,
+        syrup_usdc_custody: topology
+            .strategy(StrategyKey::SyrupUsdcUsdc)
+            .collateral_custody,
         deposit_discriminator: DEPOSIT_COLLATERAL,
         withdraw_discriminator: WITHDRAW_COLLATERAL,
         borrow_discriminator: BORROW_DEBT,
@@ -206,6 +196,7 @@ fn canonical_constraints(
             .iter()
             .map(|strategy| {
                 Ok(EarnMaxPolicyLane {
+                    market: Pubkey::from_str(strategy.market)?,
                     obligation: strategy.obligation,
                     collateral_reserve: Pubkey::from_str(strategy.collateral_reserve)?,
                     collateral_custody: strategy.collateral_custody,
@@ -224,28 +215,46 @@ fn canonical_constraints(
     earn_max_policy_constraints(&boundary, family).map_err(Into::into)
 }
 
-const fn strategy_lane_index(key: StrategyKey, reverse: bool) -> u8 {
-    let base = match key {
-        StrategyKey::OnycUsdc => 0,
-        StrategyKey::OnycUsds => 2,
-        StrategyKey::PrimeUsdc => 4,
-        StrategyKey::PrimePyusd => 6,
-        StrategyKey::PrimeUsds => 8,
-        StrategyKey::SyrupUsdcUsdc => 10,
-        StrategyKey::SyrupUsdcPyusd => 12,
-    };
-    base + reverse as u8
+const fn claim_to_collateral_index(key: StrategyKey) -> u8 {
+    match key {
+        StrategyKey::OnycUsdc
+        | StrategyKey::OnycUsds
+        | StrategyKey::PrimeUsdc
+        | StrategyKey::PrimePyusd
+        | StrategyKey::PrimeUsds => 0,
+        StrategyKey::SyrupUsdcUsdc | StrategyKey::SyrupUsdcPyusd => 1,
+    }
 }
 
-fn usdc_lane_index(key: StrategyKey, reverse: bool) -> Result<u8, Box<dyn Error>> {
-    let usdc_key = match key {
-        StrategyKey::OnycUsdc | StrategyKey::OnycUsds => StrategyKey::OnycUsdc,
-        StrategyKey::PrimeUsdc | StrategyKey::PrimePyusd | StrategyKey::PrimeUsds => {
-            StrategyKey::PrimeUsdc
-        }
-        StrategyKey::SyrupUsdcUsdc | StrategyKey::SyrupUsdcPyusd => StrategyKey::SyrupUsdcUsdc,
-    };
-    Ok(strategy_lane_index(usdc_key, reverse))
+const fn debt_to_collateral_index(key: StrategyKey) -> u8 {
+    match key {
+        StrategyKey::OnycUsdc
+        | StrategyKey::OnycUsds
+        | StrategyKey::PrimeUsdc
+        | StrategyKey::PrimeUsds => 0,
+        StrategyKey::PrimePyusd | StrategyKey::SyrupUsdcUsdc | StrategyKey::SyrupUsdcPyusd => 1,
+    }
+}
+
+const fn collateral_to_debt_index(key: StrategyKey) -> u8 {
+    match key {
+        StrategyKey::OnycUsdc
+        | StrategyKey::OnycUsds
+        | StrategyKey::PrimeUsdc
+        | StrategyKey::PrimeUsds => 2,
+        StrategyKey::PrimePyusd | StrategyKey::SyrupUsdcUsdc | StrategyKey::SyrupUsdcPyusd => 3,
+    }
+}
+
+const fn collateral_to_claim_index(key: StrategyKey) -> u8 {
+    match key {
+        StrategyKey::OnycUsdc
+        | StrategyKey::OnycUsds
+        | StrategyKey::PrimeUsdc
+        | StrategyKey::PrimePyusd
+        | StrategyKey::PrimeUsds => 2,
+        StrategyKey::SyrupUsdcUsdc | StrategyKey::SyrupUsdcPyusd => 3,
+    }
 }
 
 fn route_constraint_index(instruction: &Instruction, index: u8) -> Result<u8, Box<dyn Error>> {
