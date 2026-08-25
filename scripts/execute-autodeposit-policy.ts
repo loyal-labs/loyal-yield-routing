@@ -2799,17 +2799,34 @@ export async function observeDurableAutodepositAttempt(args: {
     statusError = error;
   }
 
-  if (status?.err) {
-    return { state: "failed", confirmedSlot: null, error: status.err };
-  }
-  if (
-    status?.confirmationStatus === "confirmed" ||
-    status?.confirmationStatus === "finalized"
-  ) {
+  if (status) {
+    const reachedConfirmedCommitment =
+      status.confirmationStatus === "confirmed" ||
+      status.confirmationStatus === "finalized" ||
+      (status.confirmationStatus === undefined &&
+        (status.confirmations === null || status.confirmations > 0));
+    if (reachedConfirmedCommitment && status.err) {
+      return { state: "failed", confirmedSlot: null, error: status.err };
+    }
+    if (reachedConfirmedCommitment) {
+      return {
+        state: "confirmed",
+        confirmedSlot: BigInt(status.slot),
+        error: null,
+      };
+    }
+
+    // A processed signature was accepted before the blockhash expired and can still
+    // reach confirmed or finalized commitment afterward. Keep the immutable attempt
+    // pending. The blockhash deadline only prevents a new landing; it does not revoke
+    // a transaction the cluster has already processed.
+    //
+    // A processed error is not terminal either because it may belong to a fork. Only
+    // confirmed or finalized status can release the claim as failed.
     return {
-      state: "confirmed",
-      confirmedSlot: BigInt(status.slot),
-      error: null,
+      state: "unknown",
+      confirmedSlot: null,
+      error: status.err ?? null,
     };
   }
 
@@ -2825,9 +2842,9 @@ export async function observeDurableAutodepositAttempt(args: {
   const expired =
     currentBlockHeight !== null &&
     currentBlockHeight > args.attempt.lastValidBlockHeight;
-  if (status || (expired && statusError !== null)) {
+  if (expired && statusError !== null) {
     return {
-      state: expired ? "ambiguous" : "unknown",
+      state: "ambiguous",
       confirmedSlot: null,
       error: statusError ?? heightError,
     };

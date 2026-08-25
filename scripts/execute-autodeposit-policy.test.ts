@@ -313,6 +313,90 @@ describe("durable pull signature observations", () => {
     });
   });
 
+  test("classifies rooted legacy history without confirmationStatus as landed", async () => {
+    const connection = {
+      getSignatureStatuses: async () => ({
+        value: [
+          {
+            confirmations: null,
+            err: null,
+            slot: 42,
+            status: { Ok: null },
+          },
+        ],
+      }),
+      getBlockHeight: async () => 101,
+    } as unknown as Connection;
+
+    await expect(
+      observeDurableAutodepositAttempt({
+        connection,
+        attempt: durableAttempt,
+      })
+    ).resolves.toEqual({
+      state: "confirmed",
+      confirmedSlot: BigInt(42),
+      error: null,
+    });
+  });
+
+  test("classifies an error as failed only after confirmed commitment", async () => {
+    const confirmedError = { InstructionError: [0, "Custom"] };
+    const connection = {
+      getSignatureStatuses: async () => ({
+        value: [
+          {
+            confirmationStatus: "confirmed",
+            confirmations: 1,
+            err: confirmedError,
+            slot: 42,
+            status: { Err: confirmedError },
+          },
+        ],
+      }),
+      getBlockHeight: async () => 101,
+    } as unknown as Connection;
+
+    await expect(
+      observeDurableAutodepositAttempt({
+        connection,
+        attempt: durableAttempt,
+      })
+    ).resolves.toEqual({
+      state: "failed",
+      confirmedSlot: null,
+      error: confirmedError,
+    });
+  });
+
+  test("classifies a voted legacy error without confirmationStatus as failed", async () => {
+    const confirmedError = { InstructionError: [0, "Custom"] };
+    const connection = {
+      getSignatureStatuses: async () => ({
+        value: [
+          {
+            confirmations: 1,
+            err: confirmedError,
+            slot: 42,
+            status: { Err: confirmedError },
+          },
+        ],
+      }),
+      getBlockHeight: async () => 101,
+    } as unknown as Connection;
+
+    await expect(
+      observeDurableAutodepositAttempt({
+        connection,
+        attempt: durableAttempt,
+      })
+    ).resolves.toEqual({
+      state: "failed",
+      confirmedSlot: null,
+      error: confirmedError,
+    });
+  });
+
   test("classifies a missing expired signature as safe to requeue", async () => {
     const connection = {
       getSignatureStatuses: async () => ({ value: [null] }),
@@ -331,7 +415,7 @@ describe("durable pull signature observations", () => {
     });
   });
 
-  test("holds a processed fork after expiry as ambiguous", async () => {
+  test("keeps a processed signature pending after blockhash expiry", async () => {
     const connection = {
       getSignatureStatuses: async () => ({
         value: [
@@ -351,7 +435,61 @@ describe("durable pull signature observations", () => {
       connection,
       attempt: durableAttempt,
     });
-    expect(observation.state).toBe("ambiguous");
+    expect(observation).toEqual({
+      state: "unknown",
+      confirmedSlot: null,
+      error: null,
+    });
+  });
+
+  test("keeps a processed fork error pending until confirmed commitment", async () => {
+    const processedError = { InstructionError: [0, "Custom"] };
+    const connection = {
+      getSignatureStatuses: async () => ({
+        value: [
+          {
+            confirmationStatus: "processed",
+            confirmations: 0,
+            err: processedError,
+            slot: 42,
+            status: { Err: processedError },
+          },
+        ],
+      }),
+      getBlockHeight: async () => 101,
+    } as unknown as Connection;
+
+    await expect(
+      observeDurableAutodepositAttempt({
+        connection,
+        attempt: durableAttempt,
+      })
+    ).resolves.toEqual({
+      state: "unknown",
+      confirmedSlot: null,
+      error: processedError,
+    });
+  });
+
+  test("alerts only when signature history is unavailable after expiry", async () => {
+    const statusError = new Error("signature history unavailable");
+    const connection = {
+      getSignatureStatuses: async () => {
+        throw statusError;
+      },
+      getBlockHeight: async () => 101,
+    } as unknown as Connection;
+
+    await expect(
+      observeDurableAutodepositAttempt({
+        connection,
+        attempt: durableAttempt,
+      })
+    ).resolves.toEqual({
+      state: "ambiguous",
+      confirmedSlot: null,
+      error: statusError,
+    });
   });
 
   test("keeps a missing unexpired signature pending", async () => {

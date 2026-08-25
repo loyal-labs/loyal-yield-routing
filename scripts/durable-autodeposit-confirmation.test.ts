@@ -162,7 +162,7 @@ describe("durable autodeposit confirmation", () => {
     const ambiguous: AttemptObservation = {
       state: "ambiguous",
       confirmedSlot: null,
-      error: "processed signature did not reach confirmation before expiry",
+      error: "signature history was unavailable after expiry",
     };
     const testHarness = harness([ambiguous]);
     const settled = await settleDurableAutodepositAttempt({

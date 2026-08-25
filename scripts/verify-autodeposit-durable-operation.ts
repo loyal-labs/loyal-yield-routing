@@ -151,7 +151,10 @@ async function main() {
     "fleet idle candidates exclude an in-flight direct deposit",
     store.includes("balance_sweep_transaction_attempts AS direct_pull") &&
       store.includes("direct_pull.operation_kind = 'pull'") &&
-      store.includes("direct_pull.attempt_state = 'confirmed'") &&
+      store.includes("direct_pull.attempt_state IN (") &&
+      store.includes(
+        "'prepared', 'submitted', 'confirmed', 'unknown', 'ambiguous'",
+      ) &&
       store.includes("direct_top_up.operation_kind = 'top_up'") &&
       store.includes("direct_top_up.attempt_state = 'confirmed'") &&
       store.includes("direct_top_up.id IS NULL") &&
