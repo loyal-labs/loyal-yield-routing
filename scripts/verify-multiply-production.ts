@@ -493,6 +493,7 @@ function checkLaserStreamSource(): Json {
     "CommitmentLevel::Confirmed",
     "SQUADS_SMART_ACCOUNT_PROGRAM_ID.to_string()",
     '"earn_max_usdc_cash_flows"',
+    "account_include: vec![USDC_MINT.to_string()]",
     "account_required",
     "EARN_MAX_MEMO_PROGRAM_ID.to_owned()",
     "USDC_MINT.to_string()",

@@ -724,9 +724,13 @@ async fn run_earn_max_policy_laserstream(
         SubscribeRequestFilterTransactions {
             vote: Some(false),
             failed: Some(false),
+            // LaserStream applies account_include as OR and account_required as
+            // AND. Name USDC explicitly instead of relying on an empty include
+            // set so historical replay and the live stream use the same exact
+            // transaction boundary.
+            account_include: vec![USDC_MINT.to_string()],
             account_required: vec![
                 EARN_MAX_MEMO_PROGRAM_ID.to_owned(),
-                USDC_MINT.to_string(),
                 spl_token::ID.to_string(),
             ],
             ..SubscribeRequestFilterTransactions::default()
