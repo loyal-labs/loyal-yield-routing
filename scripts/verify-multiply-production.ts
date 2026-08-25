@@ -499,6 +499,7 @@ function checkLaserStreamSource(): Json {
     "USDC_MINT.to_string()",
     "spl_token::ID.to_string()",
     "EarnMaxProjectionKind::CashFlow",
+    'memo.data.starts_with(b"loyal:earn-max:v2:")',
     "tokio::join!(policy, cash_flow)",
     "process_earn_max_policy_update",
   ]) {

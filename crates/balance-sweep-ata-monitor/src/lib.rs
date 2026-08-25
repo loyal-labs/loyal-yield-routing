@@ -884,6 +884,13 @@ async fn process_earn_max_policy_update(
                 earn_reconciliation::project_earn_max_memos(store, &transaction).await?;
             }
             EarnMaxProjectionKind::CashFlow => {
+                if !transaction
+                    .earn_max_memos
+                    .iter()
+                    .any(|memo| memo.data.starts_with(b"loyal:earn-max:v2:"))
+                {
+                    return Ok(());
+                }
                 earn_reconciliation::project_earn_max_cash_flows(store, rpc, &transaction).await?;
             }
         }
