@@ -53,6 +53,8 @@
     "verify:rwa-observation-v1": "bun scripts/verify-rwa-observation.ts",
     "backfill:rwa-observation-history": "bun scripts/backfill-rwa-observation-history.ts",
     "verify:rwa-observation-backfill-v1": "bun scripts/verify-rwa-observation-backfill.ts",
+    "rwa:decision-shadow": "bun scripts/rwa-decision-shadow.ts",
+    "verify:rwa-decision-v1": "bun scripts/verify-rwa-decision.ts",
     "verify:cross-mint:store": "bash scripts/verify-cross-mint-store.sh",
     "verify:cross-mint:render-release": "bun scripts/verify-cross-mint-render-release.ts",
     "promote:cross-mint:production-baseline": "bun scripts/promote-cross-mint-production-baseline.ts",
