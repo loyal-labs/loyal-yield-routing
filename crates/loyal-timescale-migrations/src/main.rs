@@ -42,6 +42,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "kamino_rwa_decision_observations",
         sql: include_str!("../migrations/0007_kamino_rwa_decision_observations.sql"),
     },
+    Migration {
+        version: 8,
+        name: "kamino_historic_backfill_semantics",
+        sql: include_str!("../migrations/0008_kamino_historic_backfill_semantics.sql"),
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal";

@@ -51,6 +51,8 @@
     "verify:cross-mint:routes-mainnet": "CROSS_MINT_MAINNET_ROUTES_EXECUTE=1 cargo test -p squads-test-harness --test jupiter_mainnet_cross_mint_policy historical_withdraw_swap_deposit_routes_finalize_on_mainnet -- --ignored --nocapture",
     "verify:earn-max:production": "bun scripts/verify-multiply-production.ts",
     "verify:rwa-observation-v1": "bun scripts/verify-rwa-observation.ts",
+    "backfill:rwa-observation-history": "bun scripts/backfill-rwa-observation-history.ts",
+    "verify:rwa-observation-backfill-v1": "bun scripts/verify-rwa-observation-backfill.ts",
     "verify:cross-mint:store": "bash scripts/verify-cross-mint-store.sh",
     "verify:cross-mint:render-release": "bun scripts/verify-cross-mint-render-release.ts",
     "promote:cross-mint:production-baseline": "bun scripts/promote-cross-mint-production-baseline.ts",
