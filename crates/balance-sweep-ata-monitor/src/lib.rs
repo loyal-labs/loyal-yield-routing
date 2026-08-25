@@ -55,8 +55,8 @@ pub use earn_reconciliation::{
     read_confirmed_squads_policy_transaction, reconcile_targeted_policy_vault_update,
     run_autodeposit_reconciliation_consumer, run_earn_reconciliation_consumer,
     AutodepositReconciliationProcessOutcome, EarnChainReader, EarnPolicyTransaction,
-    EarnPolicyTransactionRead, EarnReconciliationProcessOutcome, FixtureEarnChainReader,
-    RpcEarnChainReader,
+    EarnPolicyTransactionRead, EarnReconciliationDeferralKind, EarnReconciliationProcessOutcome,
+    FixtureEarnChainReader, RpcEarnChainReader,
 };
 pub use monitor_observability::{
     emit_earn_reconciliation_consumer_failed, emit_earn_reconciliation_health_snapshot_failed,
