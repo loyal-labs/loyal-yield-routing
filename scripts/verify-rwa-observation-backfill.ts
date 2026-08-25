@@ -58,6 +58,18 @@ async function command(argv: string[], kind: "local" | "external", env = process
   }
   return stdout.trim();
 }
+async function externalSql(sql: string): Promise<string> {
+  const child = Bun.spawn(["sh", "-c", "exec psql \"$TIMESCALEDB_URL\" -X -A -t -v ON_ERROR_STOP=1"], {
+    cwd: ROOT,
+    env: process.env,
+    stdin: new Blob([sql]),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  if (exitCode !== 0) blocked("external_read_unavailable", { command: "psql", exitCode, stderrTail: stderr.split(/\r?\n/).slice(-12).join("\n") });
+  return stdout.trim();
+}
 
 function staticContract(): void {
   const pkg = JSON.parse(file("package.json")) as { scripts?: Record<string, string> };
@@ -165,7 +177,7 @@ SELECT json_build_object(
   'notifyGuarded', position('${SOURCE}' in pg_get_functiondef('kamino.notify_reserve_update()'::regprocedure)) > 0,
   'latestViewChronological', position('observed_at DESC' in pg_get_viewdef('kamino.latest_reserve_updates'::regclass, true)) > 0
 );`;
-  const output = await command(["sh", "-c", "exec psql \"$TIMESCALEDB_URL\" -X -A -t -v ON_ERROR_STOP=1 -c \"$RWA_SQL\""], "external", { ...process.env, RWA_SQL: sql });
+  const output = await externalSql(sql);
   let parsed: unknown;
   try { parsed = JSON.parse(output); } catch { blocked("timescale_invalid_json", { outputSha256: hash("sha256", output) }); }
   const db = object(parsed);
