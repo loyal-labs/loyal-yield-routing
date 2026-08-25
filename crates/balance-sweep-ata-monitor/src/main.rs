@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -12,16 +13,18 @@ use balance_sweep_ata_monitor::earn_apy::{
     earn_apy_strategy_for_risk_profile, EarnApyRefreshConfig, EarnApySnapshotRefresher,
 };
 use balance_sweep_ata_monitor::{
-    ata_target_set, diff_ata_target_sets, laserstream_replay_from_slot,
-    run_autodeposit_reconciliation_consumer, run_earn_reconciliation_consumer, run_event_loop,
-    seed_current_balances, spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget,
-    AtaUpdateSource, EarnMonitorMetrics, EarnUpdateContext, LaserstreamAtaUpdateSource,
-    LaserstreamPolicyUpdateSource, RpcEarnChainReader, SubscriptionConfig, SubscriptionWatchSet,
-    TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream, WebsocketAtaUpdateSource,
+    ata_target_set, diff_ata_target_sets, enqueue_normalized_earn_update,
+    laserstream_replay_from_slot, run_autodeposit_reconciliation_consumer,
+    run_earn_reconciliation_consumer, run_event_loop, seed_current_balances,
+    spawn_ata_recheck_worker, AtaRecheckConfig, AtaRecheckHandle, AtaTarget, AtaUpdateSource,
+    EarnMonitorMetrics, EarnUpdateContext, LaserstreamAtaUpdateSource,
+    LaserstreamPolicyUpdateSource, NormalizedEarnUpdate, RpcEarnChainReader, SubscriptionConfig,
+    SubscriptionWatchSet, TimescaleAtaConfig, TimescaleAtaObservationSink, TimescaleAtaStream,
+    WebsocketAtaUpdateSource, EARN_IDLE_TOKEN_ACCOUNTS,
 };
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
-use loyal_actions::USDC_MINT;
+use loyal_actions::{derive_associated_token_account, USDC_MINT};
 use loyal_observability::{init_from_env, EarnRebalanceMetrics, OperationalError};
 use loyal_squads_policy_monitor::{
     Cluster as PolicyCluster, Commitment as PolicyCommitment, MonitorConfig as PolicyMonitorConfig,
@@ -29,8 +32,8 @@ use loyal_squads_policy_monitor::{
 };
 use loyal_yield_store::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
 use opentelemetry::metrics::Meter;
-use solana_client::rpc_client::RpcClient;
-use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
+use solana_client::rpc_client::{GetConfirmedSignaturesForAddress2Config, RpcClient};
+use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use sqlx::postgres::PgListener;
 use tokio::{
     sync::{mpsc, Mutex, Notify, RwLock},
@@ -42,6 +45,8 @@ const EARN_APY_FAILURE_REPORT_THRESHOLD: u32 = 3;
 const EARN_RECONCILIATION_CONCURRENCY: usize = 4;
 const AUTODEPOSIT_RECONCILIATION_CONCURRENCY: usize = 4;
 const EARN_MAX_POLICY_BOOTSTRAP_REPLAY_SLOTS: u64 = 10_000;
+const EARN_MAX_ACCOUNT_HISTORY_PAGE_SIZE: usize = 1_000;
+const EARN_MAX_ACCOUNT_HISTORY_LIMIT: usize = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum UpdateSourceKind {
@@ -515,6 +520,29 @@ async fn supervise_monitor_sessions(
         if let Some(existing) = session.as_ref() {
             watch_set.retain_previous_earn_bindings(&existing.earn_watch_set)?;
         }
+        if args.update_source == UpdateSourceKind::Laserstream {
+            match enqueue_earn_max_rpc_gap_updates(
+                &store,
+                &args.rpc_url,
+                &format!("earn-smart-account:{}", args.cluster),
+                &watch_set,
+            )
+            .await
+            {
+                Ok(inserted_jobs) if inserted_jobs > 0 => {
+                    tracing::info!(
+                        inserted_jobs,
+                        "enqueued Earn MAX custody updates recovered from confirmed account history"
+                    );
+                    earn_wake.notify_waiters();
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "failed to reconcile Earn MAX custody history gap"
+                ),
+            }
+        }
         let desired_atas = ata_target_set(&targets);
         let current_atas = session
             .as_ref()
@@ -623,6 +651,97 @@ async fn supervise_monitor_sessions(
             }
         }
     }
+}
+
+async fn enqueue_earn_max_rpc_gap_updates(
+    store: &OrchestratorStore,
+    rpc_url: &str,
+    consumer_name: &str,
+    watch_set: &SubscriptionWatchSet,
+) -> Result<usize> {
+    let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
+    let mut inserted_jobs = 0_usize;
+    for vault in watch_set.earn_vaults.iter().filter(|vault| vault.earn_max) {
+        let route_key = format!("earn-max:{}:{}", vault.settings, vault.vault_index);
+        let Some(stored) = store
+            .load_multiply_route_state(&route_key)
+            .await
+            .map_err(orchestrator_error)?
+        else {
+            continue;
+        };
+        if stored.state.engine_version != "earn_max_v2" {
+            continue;
+        }
+        let vault_pubkey = Pubkey::from_str(&vault.vault)
+            .with_context(|| format!("invalid Earn MAX vault {}", vault.vault))?;
+        let claim_custody = derive_associated_token_account(vault_pubkey, USDC_MINT, spl_token::ID);
+        let anchor_slot = stored.state.observed_slot;
+        let mut before = None;
+        let mut candidates = Vec::new();
+        let mut reached_anchor = false;
+        loop {
+            let page = rpc
+                .get_signatures_for_address_with_config(
+                    &claim_custody,
+                    GetConfirmedSignaturesForAddress2Config {
+                        before,
+                        until: None,
+                        limit: Some(EARN_MAX_ACCOUNT_HISTORY_PAGE_SIZE),
+                        commitment: Some(CommitmentConfig::confirmed()),
+                    },
+                )
+                .with_context(|| {
+                    format!("read confirmed Earn MAX custody history for {claim_custody}")
+                })?;
+            if page.is_empty() {
+                break;
+            }
+            for status in &page {
+                if status.slot <= anchor_slot {
+                    reached_anchor = true;
+                    break;
+                }
+                if status.err.is_none() {
+                    candidates.push((status.slot, status.signature.clone()));
+                }
+            }
+            if reached_anchor || page.len() < EARN_MAX_ACCOUNT_HISTORY_PAGE_SIZE {
+                break;
+            }
+            if candidates.len() >= EARN_MAX_ACCOUNT_HISTORY_LIMIT {
+                anyhow::bail!(
+                    "Earn MAX custody history exceeded {} signatures before anchor slot {} for {}",
+                    EARN_MAX_ACCOUNT_HISTORY_LIMIT,
+                    anchor_slot,
+                    claim_custody
+                );
+            }
+            before = Some(Signature::from_str(
+                &page
+                    .last()
+                    .context("Earn MAX custody history page unexpectedly became empty")?
+                    .signature,
+            )?);
+        }
+        candidates.sort_by(|left, right| left.cmp(right));
+        for (slot, signature) in candidates {
+            let update = NormalizedEarnUpdate {
+                event_key: Some(format!(
+                    "earn-max-rpc-gap:{slot}:{signature}:{claim_custody}"
+                )),
+                filters: vec![EARN_IDLE_TOKEN_ACCOUNTS.to_owned()],
+                event_kind: "account".to_owned(),
+                account_pubkey: Some(claim_custody.to_string()),
+                slot,
+                signature: Some(signature),
+            };
+            let outcome =
+                enqueue_normalized_earn_update(store, consumer_name, &update, watch_set).await?;
+            inserted_jobs = inserted_jobs.saturating_add(outcome.inserted_jobs);
+        }
+    }
+    Ok(inserted_jobs)
 }
 
 fn session_requires_rebuild(session_missing: bool, ata_changed: bool, earn_changed: bool) -> bool {

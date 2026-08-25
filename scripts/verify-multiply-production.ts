@@ -493,6 +493,13 @@ function checkLaserStreamSource(): Json {
     "EARN_MAX_DELEGATE",
     "LaserstreamPolicyUpdateSource",
     "earn_max_policy_replay_start_slot",
+    "enqueue_earn_max_rpc_gap_updates",
+    "get_signatures_for_address_with_config",
+    "stored.state.observed_slot",
+    "EARN_MAX_ACCOUNT_HISTORY_LIMIT",
+    "NormalizedEarnUpdate",
+    "earn-max-rpc-gap",
+    "CommitmentConfig::confirmed()",
   ]) {
     requireText(laserstream, required, "earn_max_projection_not_owned_by_existing_laserstream", LASERSTREAM_MONITOR);
   }
@@ -955,17 +962,18 @@ async function checkLivePrerequisites(): Promise<Json> {
   const migrations = await sql`
     SELECT version, name, checksum
     FROM loyal_yield.schema_migrations
-    WHERE version IN (54, 55, 56, 64, 66, 67)
+    WHERE version IN (54, 55, 56, 64, 66, 67, 68)
     ORDER BY version
   `;
   if (
-    migrations.length !== 6 ||
+    migrations.length !== 7 ||
     String(migrations[0]?.name) !== "earn_max_per_user" ||
     String(migrations[1]?.name) !== "earn_max_repeated_lifecycle" ||
     String(migrations[2]?.name) !== "earn_max_dynamic_policy_seeds" ||
     String(migrations[3]?.name) !== "earn_max_partial_lifecycle" ||
     String(migrations[4]?.name) !== "earn_max_single_owner_state" ||
-    String(migrations[5]?.name) !== "earn_max_three_policy_v2"
+    String(migrations[5]?.name) !== "earn_max_three_policy_v2" ||
+    String(migrations[6]?.name) !== "earn_max_account_cash_flows"
   ) {
     fail("deployed_earn_max_migration_missing", { migrations });
   }
