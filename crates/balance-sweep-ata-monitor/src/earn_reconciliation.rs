@@ -81,12 +81,12 @@ use crate::{
 
 const EARN_RECONCILIATION_HEALTH_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 const EARN_MAX_MEMO_PROGRAM: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
-const EARN_MAX_TRANSACTION_PROOF_RETRY_DELAYS: [Duration; 3] = [
+const TRANSACTION_PROOF_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(2),
     Duration::from_secs(5),
     Duration::from_secs(10),
 ];
-const EARN_MAX_TRANSACTION_PROOF_STALE_ATTEMPT: i32 = 6;
+const TRANSACTION_PROOF_STALE_ATTEMPT: i32 = 6;
 
 #[derive(Debug, Clone)]
 pub struct EarnPolicyTransaction {
@@ -125,16 +125,15 @@ struct ConfirmedCashFlowTransfer {
 }
 
 #[derive(Debug)]
-struct EarnMaxTransactionProofPending;
+struct TransactionProofPending;
 
-impl std::fmt::Display for EarnMaxTransactionProofPending {
+impl std::fmt::Display for TransactionProofPending {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .write_str("Earn MAX transaction proof is not yet available at confirmed commitment")
+        formatter.write_str("transaction proof is not yet available at the requested commitment")
     }
 }
 
-impl std::error::Error for EarnMaxTransactionProofPending {}
+impl std::error::Error for TransactionProofPending {}
 
 #[derive(Debug, Clone)]
 pub enum EarnPolicyTransactionRead {
@@ -774,17 +773,7 @@ async fn read_confirmed_earn_max_account_transfer(
             commitment: Some(CommitmentConfig::confirmed()),
             max_supported_transaction_version: Some(0),
         };
-        let transaction = read_earn_max_transaction_proof_with_backoff(
-            || {
-                rpc.send::<Option<EncodedConfirmedTransactionWithStatusMeta>>(
-                    RpcRequest::GetTransaction,
-                    json!([signature.to_string(), &config]),
-                )
-                .map_err(Into::into)
-            },
-            &EARN_MAX_TRANSACTION_PROOF_RETRY_DELAYS,
-            std::thread::sleep,
-        )?;
+        let transaction = read_transaction_with_config(rpc.as_ref(), &signature, config)?;
         if transaction.slot != expected_slot {
             bail!("Earn MAX account cash-flow RPC slot drifted from LaserStream");
         }
@@ -866,7 +855,25 @@ async fn read_confirmed_earn_max_account_transfer(
     .context("Earn MAX account cash-flow readback task panicked")?
 }
 
-fn read_earn_max_transaction_proof_with_backoff<T>(
+fn read_transaction_with_config(
+    rpc: &RpcClient,
+    signature: &Signature,
+    config: RpcTransactionConfig,
+) -> Result<EncodedConfirmedTransactionWithStatusMeta> {
+    read_transaction_proof_with_backoff(
+        || {
+            rpc.send::<Option<EncodedConfirmedTransactionWithStatusMeta>>(
+                RpcRequest::GetTransaction,
+                json!([signature.to_string(), &config]),
+            )
+            .map_err(Into::into)
+        },
+        &TRANSACTION_PROOF_RETRY_DELAYS,
+        std::thread::sleep,
+    )
+}
+
+fn read_transaction_proof_with_backoff<T>(
     mut read: impl FnMut() -> Result<Option<T>>,
     retry_delays: &[Duration],
     mut sleep: impl FnMut(Duration),
@@ -877,7 +884,7 @@ fn read_earn_max_transaction_proof_with_backoff<T>(
         }
         sleep(delay);
     }
-    read()?.ok_or_else(|| EarnMaxTransactionProofPending.into())
+    read()?.ok_or_else(|| TransactionProofPending.into())
 }
 
 fn hex_hash(bytes: &[u8]) -> String {
@@ -1321,7 +1328,8 @@ fn read_squads_policy_transaction(
 ) -> Result<EarnPolicyTransactionRead> {
     let parsed_signature =
         Signature::from_str(signature).context("invalid transaction signature")?;
-    let transaction = rpc.get_transaction_with_config(
+    let transaction = read_transaction_with_config(
+        rpc,
         &parsed_signature,
         RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::Base64),
@@ -1952,7 +1960,8 @@ fn read_complete_vault_snapshot(
 
 fn read_transaction_json(rpc: &RpcClient, signature: &str) -> Result<Value> {
     let signature = Signature::from_str(signature).context("invalid transaction signature")?;
-    let transaction = rpc.get_transaction_with_config(
+    let transaction = read_transaction_with_config(
+        rpc,
         &signature,
         RpcTransactionConfig {
             encoding: Some(UiTransactionEncoding::JsonParsed),
@@ -2242,10 +2251,7 @@ pub enum EarnReconciliationProcessOutcome {
 }
 
 fn earn_reconciliation_deferral_kind(error: &anyhow::Error) -> EarnReconciliationDeferralKind {
-    if error
-        .downcast_ref::<EarnMaxTransactionProofPending>()
-        .is_some()
-    {
+    if error.downcast_ref::<TransactionProofPending>().is_some() {
         EarnReconciliationDeferralKind::ProofPending
     } else {
         EarnReconciliationDeferralKind::Failure
@@ -2258,7 +2264,7 @@ pub(crate) fn should_emit_reconciliation_retry_alert(
 ) -> bool {
     match kind {
         EarnReconciliationDeferralKind::ProofPending => {
-            attempt_count == EARN_MAX_TRANSACTION_PROOF_STALE_ATTEMPT
+            attempt_count == TRANSACTION_PROOF_STALE_ATTEMPT
         }
         EarnReconciliationDeferralKind::Failure => attempt_count == 1,
     }
@@ -3127,7 +3133,7 @@ mod tests {
             serde_json::from_value(Value::Null).expect("RPC null must deserialize as pending");
         assert!(null_proof.is_none());
         assert_eq!(
-            EARN_MAX_TRANSACTION_PROOF_RETRY_DELAYS,
+            TRANSACTION_PROOF_RETRY_DELAYS,
             [
                 Duration::from_secs(2),
                 Duration::from_secs(5),
@@ -3137,9 +3143,9 @@ mod tests {
 
         let mut reads = VecDeque::from([None, None, Some(42_u64)]);
         let mut sleeps = Vec::new();
-        let proof = read_earn_max_transaction_proof_with_backoff(
+        let proof = read_transaction_proof_with_backoff(
             || Ok(reads.pop_front().expect("bounded read count")),
-            &EARN_MAX_TRANSACTION_PROOF_RETRY_DELAYS,
+            &TRANSACTION_PROOF_RETRY_DELAYS,
             |delay| sleeps.push(delay),
         )
         .expect("proof should become available within the bounded window");
@@ -3148,9 +3154,9 @@ mod tests {
         assert!(reads.is_empty());
 
         let mut reads = VecDeque::from([None::<u64>, None, None, None]);
-        let error = read_earn_max_transaction_proof_with_backoff(
+        let error = read_transaction_proof_with_backoff(
             || Ok(reads.pop_front().expect("bounded read count")),
-            &EARN_MAX_TRANSACTION_PROOF_RETRY_DELAYS,
+            &TRANSACTION_PROOF_RETRY_DELAYS,
             |_| {},
         )
         .expect_err("persistent null must remain pending without fabricating proof");
