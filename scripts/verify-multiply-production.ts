@@ -498,6 +498,8 @@ function checkLaserStreamSource(): Json {
     "EARN_MAX_MEMO_PROGRAM_ID.to_owned()",
     "USDC_MINT.to_string()",
     "spl_token::ID.to_string()",
+    "EarnMaxProjectionKind::CashFlow",
+    "tokio::join!(policy, cash_flow)",
     "process_earn_max_policy_update",
   ]) {
     requireText(laserstreamSource, required, "earn_max_confirmed_transaction_stream_missing", LASERSTREAM_SOURCE);

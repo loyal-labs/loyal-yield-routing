@@ -702,12 +702,7 @@ async fn run_earn_max_policy_laserstream(
     policy_monitor: Arc<Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
     running: Arc<AtomicBool>,
 ) {
-    let rpc = Arc::new(RpcClient::new_with_commitment(
-        source.rpc_url.clone(),
-        CommitmentConfig::confirmed(),
-    ));
-    let mut transactions = HashMap::new();
-    transactions.insert(
+    let policy_transactions = HashMap::from([(
         "earn_max_policy_transactions".to_owned(),
         SubscribeRequestFilterTransactions {
             vote: Some(false),
@@ -715,11 +710,12 @@ async fn run_earn_max_policy_laserstream(
             account_include: vec![SQUADS_SMART_ACCOUNT_PROGRAM_ID.to_string()],
             ..SubscribeRequestFilterTransactions::default()
         },
-    );
+    )]);
     // Deposits are deliberately light outer SPL Token + Memo transactions.
-    // Keep policy/claim traffic on the Squads filter and admit only USDC memo
-    // cash flows here; the projector still proves the exact confirmed deltas.
-    transactions.insert(
+    // Give their exact filter an independent stream so a global Squads replay
+    // cannot delay user cash flows. Both streams retain the same confirmed,
+    // idempotent projection boundary and durable offset.
+    let cash_flow_transactions = HashMap::from([(
         "earn_max_usdc_cash_flows".to_owned(),
         SubscribeRequestFilterTransactions {
             vote: Some(false),
@@ -735,13 +731,7 @@ async fn run_earn_max_policy_laserstream(
             ],
             ..SubscribeRequestFilterTransactions::default()
         },
-    );
-    let request = SubscribeRequest {
-        transactions,
-        commitment: Some(CommitmentLevel::Confirmed as i32),
-        from_slot: Some(source.from_slot),
-        ..SubscribeRequest::default()
-    };
+    )]);
     tracing::info!(
         endpoint = %source.endpoint,
         from_slot = source.from_slot,
@@ -749,7 +739,55 @@ async fn run_earn_max_policy_laserstream(
         commitment = CONFIRMED_COMMITMENT,
         "starting Earn MAX policy LaserStream subscription"
     );
+    let from_slot = source.from_slot;
 
+    let policy = run_earn_max_laserstream_subscription(
+        source.clone(),
+        SubscribeRequest {
+            transactions: policy_transactions,
+            commitment: Some(CommitmentLevel::Confirmed as i32),
+            from_slot: Some(from_slot),
+            ..SubscribeRequest::default()
+        },
+        EarnMaxProjectionKind::Policy,
+        store.clone(),
+        Arc::clone(&policy_monitor),
+        Arc::clone(&running),
+    );
+    let cash_flow = run_earn_max_laserstream_subscription(
+        source,
+        SubscribeRequest {
+            transactions: cash_flow_transactions,
+            commitment: Some(CommitmentLevel::Confirmed as i32),
+            from_slot: Some(from_slot),
+            ..SubscribeRequest::default()
+        },
+        EarnMaxProjectionKind::CashFlow,
+        store,
+        policy_monitor,
+        running,
+    );
+    tokio::join!(policy, cash_flow);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EarnMaxProjectionKind {
+    Policy,
+    CashFlow,
+}
+
+async fn run_earn_max_laserstream_subscription(
+    source: LaserstreamPolicyUpdateSource,
+    request: SubscribeRequest,
+    kind: EarnMaxProjectionKind,
+    store: OrchestratorStore,
+    policy_monitor: Arc<Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
+    running: Arc<AtomicBool>,
+) {
+    let rpc = Arc::new(RpcClient::new_with_commitment(
+        source.rpc_url.clone(),
+        CommitmentConfig::confirmed(),
+    ));
     let mut attempt = 1;
     while running.load(Ordering::Relaxed) && attempt <= source.config.max_reconnect_attempts {
         let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
@@ -759,6 +797,7 @@ async fn run_earn_max_policy_laserstream(
         futures_util::pin_mut!(stream);
         tracing::info!(
             attempt,
+            ?kind,
             "Earn MAX policy LaserStream subscription connected"
         );
         let mut heartbeat = time::interval(source.config.heartbeat_interval);
@@ -775,8 +814,9 @@ async fn run_earn_max_policy_laserstream(
                                 &store,
                                 Arc::clone(&rpc),
                                 Arc::clone(&policy_monitor),
+                                kind,
                             ).await {
-                                tracing::warn!(error = %error, attempt, "Earn MAX policy projection failed");
+                                tracing::warn!(error = %error, attempt, ?kind, "Earn MAX policy projection failed");
                                 break Some(error.to_string());
                             }
                         }
@@ -815,6 +855,7 @@ async fn process_earn_max_policy_update(
     store: &OrchestratorStore,
     rpc: Arc<RpcClient>,
     policy_monitor: Arc<Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
+    kind: EarnMaxProjectionKind,
 ) -> Result<()> {
     let Some(UpdateOneof::Transaction(transaction_update)) = update.update_oneof else {
         return Ok(());
@@ -826,20 +867,26 @@ async fn process_earn_max_policy_update(
     let transaction =
         earn_reconciliation::decode_laserstream_squads_policy_transaction(transaction, slot)?;
     if let EarnPolicyTransactionRead::Transaction(transaction) = transaction {
-        if !transaction.instructions.is_empty() {
-            policy_monitor
-                .lock()
-                .await
-                .process_policy_instructions(
-                    &transaction.signature,
-                    transaction.slot,
-                    transaction.instructions.clone(),
-                )
-                .await
-                .map_err(|error| anyhow::anyhow!(error))?;
+        match kind {
+            EarnMaxProjectionKind::Policy => {
+                if !transaction.instructions.is_empty() {
+                    policy_monitor
+                        .lock()
+                        .await
+                        .process_policy_instructions(
+                            &transaction.signature,
+                            transaction.slot,
+                            transaction.instructions.clone(),
+                        )
+                        .await
+                        .map_err(|error| anyhow::anyhow!(error))?;
+                }
+                earn_reconciliation::project_earn_max_memos(store, &transaction).await?;
+            }
+            EarnMaxProjectionKind::CashFlow => {
+                earn_reconciliation::project_earn_max_cash_flows(store, rpc, &transaction).await?;
+            }
         }
-        earn_reconciliation::project_earn_max_memos(store, &transaction).await?;
-        earn_reconciliation::project_earn_max_cash_flows(store, rpc, &transaction).await?;
     }
     store
         .advance_projection_offset(
