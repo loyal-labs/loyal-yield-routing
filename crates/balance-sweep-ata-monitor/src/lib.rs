@@ -78,6 +78,7 @@ type AccountNotification = solana_client::rpc_response::Response<UiAccount>;
 
 pub const LASERSTREAM_SOURCE: &str = "laserstream_grpc";
 pub const WEBSOCKET_SOURCE: &str = "websocket";
+const EARN_MAX_MEMO_PROGRAM_ID: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 pub const RPC_SEED_SOURCE: &str = "rpc_seed";
 pub const CONFIRMED_COMMITMENT: &str = "confirmed";
 pub const FINALIZED_LASERSTREAM_COMMITMENT: &str = "finalized";
@@ -712,6 +713,22 @@ async fn run_earn_max_policy_laserstream(
             vote: Some(false),
             failed: Some(false),
             account_include: vec![SQUADS_SMART_ACCOUNT_PROGRAM_ID.to_string()],
+            ..SubscribeRequestFilterTransactions::default()
+        },
+    );
+    // Deposits are deliberately light outer SPL Token + Memo transactions.
+    // Keep policy/claim traffic on the Squads filter and admit only USDC memo
+    // cash flows here; the projector still proves the exact confirmed deltas.
+    transactions.insert(
+        "earn_max_usdc_cash_flows".to_owned(),
+        SubscribeRequestFilterTransactions {
+            vote: Some(false),
+            failed: Some(false),
+            account_required: vec![
+                EARN_MAX_MEMO_PROGRAM_ID.to_owned(),
+                USDC_MINT.to_string(),
+                spl_token::ID.to_string(),
+            ],
             ..SubscribeRequestFilterTransactions::default()
         },
     );

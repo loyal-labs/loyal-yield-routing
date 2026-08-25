@@ -492,6 +492,11 @@ function checkLaserStreamSource(): Json {
     "SubscribeRequestFilterTransactions",
     "CommitmentLevel::Confirmed",
     "SQUADS_SMART_ACCOUNT_PROGRAM_ID.to_string()",
+    '"earn_max_usdc_cash_flows"',
+    "account_required",
+    "EARN_MAX_MEMO_PROGRAM_ID.to_owned()",
+    "USDC_MINT.to_string()",
+    "spl_token::ID.to_string()",
     "process_earn_max_policy_update",
   ]) {
     requireText(laserstreamSource, required, "earn_max_confirmed_transaction_stream_missing", LASERSTREAM_SOURCE);
