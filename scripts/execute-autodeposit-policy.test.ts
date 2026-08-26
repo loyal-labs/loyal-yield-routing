@@ -5,6 +5,7 @@ import {
   AutodepositEffectAmbiguousError,
   assertEmptyVaultBeforeDirectAutodeposit,
   assertSolBalance,
+  autodepositFailureDisposition,
   autodepositExecutorFailureExitCode,
   buildDirectDepositPositionReconciliationCommand,
   computeSweepAmount,
@@ -857,6 +858,27 @@ describe("shouldNotifyFailedSweep", () => {
     expect(shouldNotifyFailedSweep("not_actionable")).toBe(false);
     expect(shouldNotifyFailedSweep("yield_persistence_failed")).toBe(false);
     expect(shouldNotifyFailedSweep(null)).toBe(false);
+  });
+});
+
+describe("autodepositFailureDisposition", () => {
+  test("classifies retryable HTTP dependency failures", () => {
+    expect(
+      autodepositFailureDisposition(
+        new Error("500 Internal Server Error: Internal server error")
+      ).failureCode
+    ).toBe("dependency_unavailable");
+    expect(
+      autodepositFailureDisposition(new Error("503 Service Unavailable"))
+        .failureCode
+    ).toBe("dependency_unavailable");
+  });
+
+  test("keeps unrelated failures on the generic path", () => {
+    expect(
+      autodepositFailureDisposition(new Error("invalid route account"))
+        .failureCode
+    ).toBeNull();
   });
 });
 

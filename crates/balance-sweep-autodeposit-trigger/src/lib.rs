@@ -25,6 +25,9 @@ pub const AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE: i32 = 25;
 pub const AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE_ENV: &str =
     "AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE";
 pub const AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE: i32 = 26;
+pub const AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE_ENV: &str =
+    "AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE";
+pub const AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE: i32 = 27;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutorFailureAlert {
@@ -82,6 +85,13 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
             code: "autodeposit_idle_handoff_failed",
             operation: "publish_autodeposit_idle_vault_balance",
             summary: "confirmed autodeposit pull could not be published to idle-vault recovery",
+            retryable: true,
+        }),
+        Some(AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE) => Some(ExecutorFailureAlert {
+            code: "autodeposit_dependency_unavailable",
+            operation: "retry_autodeposit_after_dependency_recovers",
+            summary:
+                "autodeposit dependency returned a transient server error; execution will retry",
             retryable: true,
         }),
         Some(AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE) => None,
@@ -528,6 +538,12 @@ mod tests {
                 AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE,
                 "autodeposit_idle_handoff_failed",
                 "publish_autodeposit_idle_vault_balance",
+                true,
+            ),
+            (
+                AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE,
+                "autodeposit_dependency_unavailable",
+                "retry_autodeposit_after_dependency_recovers",
                 true,
             ),
         ];

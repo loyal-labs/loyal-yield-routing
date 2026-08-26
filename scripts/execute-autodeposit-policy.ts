@@ -427,6 +427,8 @@ const AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE_ENV =
   "AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE";
 const AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE_ENV =
   "AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE";
+const AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE_ENV =
+  "AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE";
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
 const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
@@ -438,7 +440,8 @@ type AutodepositExecutorFailureCode =
   | "not_actionable"
   | "fee_payer_exhausted"
   | "transaction_effect_ambiguous"
-  | "idle_handoff_failed";
+  | "idle_handoff_failed"
+  | "dependency_unavailable";
 
 const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
   AutodepositExecutorFailureCode,
@@ -452,6 +455,7 @@ const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
   transaction_effect_ambiguous:
     AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE_ENV,
   idle_handoff_failed: AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE_ENV,
+  dependency_unavailable: AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE_ENV,
 };
 
 export function autodepositExecutorFailureExitCode(
@@ -1600,6 +1604,16 @@ export function isFeePayerExhaustedFailure(error: unknown): boolean {
   return /fee payer \w+ has \d+ lamports; \d+ required\./.test(message);
 }
 
+/** True when an external HTTP dependency returned a retryable server failure. */
+export function isAutodepositDependencyUnavailableFailure(
+  error: unknown
+): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(?:500 Internal Server Error|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout)\b/i.test(
+    message
+  );
+}
+
 /**
  * Whether a pre-send failure is worth waking the user for (ASK-2091).
  *
@@ -1639,6 +1653,12 @@ export function autodepositFailureDisposition(
   if (isFeePayerExhaustedFailure(error)) {
     return {
       failureCode: "fee_payer_exhausted",
+      retryDelaySeconds: PRE_SEND_FAILURE_RETRY_DELAY_SECONDS,
+    };
+  }
+  if (isAutodepositDependencyUnavailableFailure(error)) {
+    return {
+      failureCode: "dependency_unavailable",
       retryDelaySeconds: PRE_SEND_FAILURE_RETRY_DELAY_SECONDS,
     };
   }

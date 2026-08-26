@@ -6,8 +6,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 type FailureCase = {
-  failureCode: "kamino_top_up_failed" | "yield_persistence_failed";
+  failureCode:
+    | "kamino_top_up_failed"
+    | "yield_persistence_failed"
+    | "dependency_unavailable";
   expectedExitCode: number;
+  expectedAlertCode: string;
   expectedOperation: string;
   expectedSummary: string;
 };
@@ -29,15 +33,25 @@ const CASES: FailureCase[] = [
   {
     failureCode: "kamino_top_up_failed",
     expectedExitCode: 20,
+    expectedAlertCode: "kamino_top_up_failed",
     expectedOperation: "top_up_autodeposit_to_kamino",
     expectedSummary: "autodeposit pull succeeded but Kamino top-up failed",
   },
   {
     failureCode: "yield_persistence_failed",
     expectedExitCode: 21,
+    expectedAlertCode: "yield_persistence_failed",
     expectedOperation: "persist_autodeposit_yield_position",
     expectedSummary:
       "autodeposit top-up succeeded but yield persistence failed",
+  },
+  {
+    failureCode: "dependency_unavailable",
+    expectedExitCode: 27,
+    expectedAlertCode: "autodeposit_dependency_unavailable",
+    expectedOperation: "retry_autodeposit_after_dependency_recovers",
+    expectedSummary:
+      "autodeposit dependency returned a transient server error; execution will retry",
   },
 ];
 
@@ -157,7 +171,8 @@ async function main() {
         )};`,
         "const failureCode = process.argv[2] as",
         '  | "kamino_top_up_failed"',
-        '  | "yield_persistence_failed";',
+        '  | "yield_persistence_failed"',
+        '  | "dependency_unavailable";',
         "process.exit(autodepositExecutorFailureExitCode(failureCode));",
         "",
       ].join("\n")
@@ -209,6 +224,7 @@ async function main() {
             ...process.env,
             AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE: "20",
             AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE: "21",
+            AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE: "27",
           },
         }
       );
@@ -238,7 +254,7 @@ async function main() {
       const combinedOutput = `${rust.stdout}\n${rust.stderr}`;
       const result = resultFromOutput(combinedOutput);
       assert(
-        result.code === failureCase.failureCode,
+        result.code === failureCase.expectedAlertCode,
         "Rust error code mismatch"
       );
       assert(
@@ -254,12 +270,12 @@ async function main() {
         "Embedded image version did not take precedence over RENDER_GIT_COMMIT"
       );
       assert(
-        combinedOutput.includes(`error_code="${failureCase.failureCode}"`),
+        combinedOutput.includes(`error_code="${failureCase.expectedAlertCode}"`),
         `OperationalError omitted error_code for ${failureCase.failureCode}`
       );
       assert(
         combinedOutput.includes(
-          `loyal.error.code="${failureCase.failureCode}"`
+          `loyal.error.code="${failureCase.expectedAlertCode}"`
         ),
         `OperationalError omitted loyal.error.code for ${failureCase.failureCode}`
       );
