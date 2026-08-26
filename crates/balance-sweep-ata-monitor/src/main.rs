@@ -54,6 +54,13 @@ enum UpdateSourceKind {
     Websocket,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum LaserstreamColdStartMode {
+    #[default]
+    Durable,
+    Finalized,
+}
+
 #[derive(Debug, Parser)]
 #[command(about = "Monitor wallet USDC ATAs for active Loyal balance sweep targets")]
 struct Args {
@@ -85,6 +92,13 @@ struct Args {
     laserstream_endpoint: Option<String>,
     #[arg(long, default_value_t = 32)]
     laserstream_replay_overlap_slots: u64,
+    #[arg(
+        long,
+        env = "LASERSTREAM_COLD_START_MODE",
+        value_enum,
+        default_value_t = LaserstreamColdStartMode::Durable
+    )]
+    laserstream_cold_start_mode: LaserstreamColdStartMode,
     #[arg(
         long,
         env = "BALANCE_SWEEP_TARGET_REFRESH_SECONDS",
@@ -485,6 +499,8 @@ async fn supervise_monitor_sessions(
     let mut session: Option<MonitorSession> = None;
     let mut next_state = Some((initial_targets, initial_watch_set));
     let mut resume_from_durable_cursor = false;
+    let mut finalized_cold_start_pending =
+        args.laserstream_cold_start_mode == LaserstreamColdStartMode::Finalized;
 
     loop {
         if session.as_ref().is_some_and(MonitorSession::has_exited) {
@@ -564,7 +580,7 @@ async fn supervise_monitor_sessions(
                 "waiting for active balance sweep ATA targets"
             );
         } else if session_requires_rebuild(session.is_none(), diff.has_changes(), earn_changed) {
-            let replay_from_slot_override =
+            let watch_set_replay_from_slot_override =
                 replay_override_for_watch_set_change(WatchSetReplayContext {
                     session_present: session.is_some(),
                     resume_from_durable_cursor,
@@ -597,6 +613,27 @@ async fn supervise_monitor_sessions(
                 "seeded current wallet ATA balances before subscription start"
             );
 
+            let replay_from_slot_override = if should_use_finalized_cold_start(
+                finalized_cold_start_pending,
+                resume_from_durable_cursor,
+                args.update_source,
+            ) {
+                let (finalized_slot, from_slot) = finalized_laserstream_replay_start_slot(
+                    &args.rpc_url,
+                    args.laserstream_replay_overlap_slots,
+                )
+                .await?;
+                tracing::info!(
+                    finalized_slot,
+                    replay_overlap_slots = args.laserstream_replay_overlap_slots,
+                    from_slot,
+                    "starting first Laserstream session from finalized chain tip minus overlap"
+                );
+                Some(from_slot)
+            } else {
+                watch_set_replay_from_slot_override
+            };
+
             let started = start_session(
                 &args,
                 targets,
@@ -612,6 +649,7 @@ async fn supervise_monitor_sessions(
             .await
             .context("start balance sweep ATA monitor session")?;
             session = Some(started);
+            finalized_cold_start_pending = false;
             resume_from_durable_cursor = false;
         } else {
             tracing::debug!(
@@ -734,6 +772,16 @@ async fn enqueue_earn_max_rpc_gap_updates(
 
 fn session_requires_rebuild(session_missing: bool, ata_changed: bool, earn_changed: bool) -> bool {
     session_missing || ata_changed || earn_changed
+}
+
+fn should_use_finalized_cold_start(
+    finalized_cold_start_pending: bool,
+    resume_from_durable_cursor: bool,
+    update_source: UpdateSourceKind,
+) -> bool {
+    finalized_cold_start_pending
+        && !resume_from_durable_cursor
+        && update_source == UpdateSourceKind::Laserstream
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -953,6 +1001,20 @@ async fn laserstream_replay_start_slot(
         .unwrap_or(current_fallback))
 }
 
+async fn finalized_laserstream_replay_start_slot(
+    rpc_url: &str,
+    replay_overlap_slots: u64,
+) -> Result<(u64, u64)> {
+    let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::finalized());
+    let finalized_slot = rpc
+        .get_slot()
+        .context("fetch finalized RPC slot for Laserstream cold start")?;
+    Ok((
+        finalized_slot,
+        laserstream_replay_from_slot(finalized_slot, replay_overlap_slots),
+    ))
+}
+
 async fn earn_max_policy_replay_start_slot(
     store: &OrchestratorStore,
     rpc_url: &str,
@@ -1062,6 +1124,11 @@ mod tests {
 
     #[test]
     fn failed_session_restarts_from_durable_cursor() {
+        assert!(!should_use_finalized_cold_start(
+            true,
+            true,
+            UpdateSourceKind::Laserstream,
+        ));
         assert_eq!(
             replay_override_for_watch_set_change(WatchSetReplayContext {
                 session_present: false,
@@ -1073,6 +1140,25 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn finalized_cold_start_only_applies_to_first_laserstream_session() {
+        assert!(should_use_finalized_cold_start(
+            true,
+            false,
+            UpdateSourceKind::Laserstream,
+        ));
+        assert!(!should_use_finalized_cold_start(
+            false,
+            false,
+            UpdateSourceKind::Laserstream,
+        ));
+        assert!(!should_use_finalized_cold_start(
+            true,
+            false,
+            UpdateSourceKind::Websocket,
+        ));
     }
 
     #[tokio::test]
