@@ -42,6 +42,7 @@ use solana_sdk::{
 use std::{
     collections::{BTreeMap, HashSet},
     fmt,
+    future::Future,
     io::{self, Write},
     str::FromStr,
     time::Duration,
@@ -50,6 +51,33 @@ use tokio::time::{interval, sleep, MissedTickBehavior};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 pub const EARN_MAX_POLICY_PROJECTION_CONSUMER: &str = "earn_max_policy_sets_laserstream_v2";
+const EARN_MAX_POLICY_RELOAD_ATTEMPTS: usize = 4;
+const EARN_MAX_POLICY_RELOAD_BASE_DELAY: Duration = Duration::from_millis(250);
+
+async fn reload_latest<T, E, F, Fut>(
+    attempts: usize,
+    base_delay: Duration,
+    mut load: F,
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    assert!(attempts > 0, "reload attempts must be positive");
+    let mut latest = None;
+    let mut last_error = None;
+    for attempt in 0..attempts {
+        match load().await {
+            Ok(value) => latest = Some(value),
+            Err(error) => last_error = Some(error),
+        }
+        if attempt + 1 < attempts {
+            let multiplier = 1_u32 << u32::try_from(attempt).unwrap_or(u32::MAX).min(31);
+            sleep(base_delay.saturating_mul(multiplier)).await;
+        }
+    }
+    latest.ok_or_else(|| last_error.expect("a positive attempt count records an error"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -779,12 +807,33 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
             .iter()
             .map(|(_, policy, _, _)| policy.account)
             .collect::<Vec<_>>();
-        let response = rpc
-            .get_multiple_accounts_with_commitment(&addresses, CommitmentConfig::confirmed())
-            .await
-            .map_err(|error| {
-                MonitorError::Decode(format!("confirmed policy reload failed: {error}"))
-            })?;
+        // LaserStream can deliver the transaction before the separately configured
+        // RPC has made the same account write visible. Keep the policy event as the
+        // trigger, but use the latest of a few bounded confirmed reloads so a newly
+        // created policy cannot be projected permanently as absent.
+        let response = reload_latest(
+            EARN_MAX_POLICY_RELOAD_ATTEMPTS,
+            EARN_MAX_POLICY_RELOAD_BASE_DELAY,
+            || async {
+                let response = rpc
+                    .get_multiple_accounts_with_commitment(
+                        &addresses,
+                        CommitmentConfig::confirmed(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        MonitorError::Decode(format!("confirmed policy reload failed: {error}"))
+                    })?;
+                if response.context.slot < slot {
+                    return Err(MonitorError::Decode(format!(
+                        "confirmed policy reload context {} is behind event slot {slot}",
+                        response.context.slot
+                    )));
+                }
+                Ok(response)
+            },
+        )
+        .await?;
         let mut policy_accounts = Vec::with_capacity(expected.len());
         let mut manifest_basis = Vec::with_capacity(expected.len());
         let mut matched = 0_usize;
@@ -1649,6 +1698,50 @@ mod tests {
         message::{Message as SolanaMessage, VersionedMessage},
         signature::Signature,
     };
+
+    #[tokio::test]
+    async fn bounded_reload_uses_the_latest_successful_snapshot() {
+        let attempt = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = reload_latest(3, Duration::ZERO, {
+            let attempt = attempt.clone();
+            move || {
+                let attempt = attempt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    match attempt {
+                        0 => Ok::<_, &'static str>("stale"),
+                        1 => Err("transient"),
+                        _ => Ok("fresh"),
+                    }
+                }
+            }
+        })
+        .await
+        .expect("a later successful snapshot must replace an earlier one");
+
+        assert_eq!(result, "fresh");
+    }
+
+    #[tokio::test]
+    async fn bounded_reload_preserves_a_success_across_a_later_rpc_error() {
+        let attempt = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = reload_latest(2, Duration::ZERO, {
+            let attempt = attempt.clone();
+            move || {
+                let attempt = attempt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    if attempt == 0 {
+                        Ok::<_, &'static str>("confirmed")
+                    } else {
+                        Err("transient")
+                    }
+                }
+            }
+        })
+        .await
+        .expect("a transient final RPC error must not discard confirmed evidence");
+
+        assert_eq!(result, "confirmed");
+    }
 
     #[test]
     fn mainnet_events_use_the_orchestration_cluster_name() {
