@@ -403,7 +403,7 @@ jq -e \
   '.transactionReasons == ["holding_event_deposit_initialized", "holding_event_deposit_top_up", "holding_event_withdrawal_partial", "holding_event_withdrawal_full"] and .refreshPlan.position == true and .refreshPlan.transactions == true and .refreshPlan.earnings == true' \
   "$sse_events_json" >/dev/null ||
   fail "web SSE invalidations or refresh plan are incorrect"
-jq -e '.forbiddenApiRequests == [] and .kaminoRequestCount == 4' "$state_json" >/dev/null ||
+jq -e '.forbiddenApiRequests == [] and .kaminoRequestCount == 5 and .resumedInitialDeposit == true' "$state_json" >/dev/null ||
   fail "web flow called an Earn confirmation API or skipped a client instruction build"
 
 pass "initial/top-up deposits and partial/full withdrawals projected 4M -> 6M -> 4M -> 0"
