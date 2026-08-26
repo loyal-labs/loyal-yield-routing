@@ -66,8 +66,6 @@ const MIGRATION_0065: &str = include_str!("../migrations/0065_autodeposit_target
 const MIGRATION_0066: &str = include_str!("../migrations/0066_earn_max_single_owner_state.sql");
 const MIGRATION_0067: &str = include_str!("../migrations/0067_earn_max_three_policy_v2.sql");
 const MIGRATION_0068: &str = include_str!("../migrations/0068_earn_max_account_cash_flows.sql");
-const MIGRATION_0069: &str =
-    include_str!("../migrations/0069_autodeposit_fleet_handoff_recovery.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -587,12 +585,6 @@ impl NeonSqlClient {
                 version: 68,
                 name: "earn_max_account_cash_flows",
                 sql: MIGRATION_0068,
-                expected_checksum: None,
-            },
-            StoreMigration {
-                version: 69,
-                name: "autodeposit_fleet_handoff_recovery",
-                sql: MIGRATION_0069,
                 expected_checksum: None,
             },
         ] {
