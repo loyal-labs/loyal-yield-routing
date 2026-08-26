@@ -64,6 +64,7 @@ use solana_transaction_status_client_types::{
     option_serializer::OptionSerializer, EncodedConfirmedTransactionWithStatusMeta, UiInstruction,
     UiParsedInstruction, UiTransactionEncoding, UiTransactionStatusMeta, UiTransactionTokenBalance,
 };
+use spl_token_2022::extension::StateWithExtensions;
 use tokio::{
     sync::{Mutex, Notify},
     time,
@@ -2133,8 +2134,8 @@ fn decode_token_account(account: &solana_sdk::account::Account) -> Result<(Pubke
         return Ok((decoded.mint, decoded.owner, decoded.amount));
     }
     if account.owner == spl_token_2022::id() {
-        let decoded = spl_token_2022::state::Account::unpack(&account.data)?;
-        return Ok((decoded.mint, decoded.owner, decoded.amount));
+        let decoded = StateWithExtensions::<spl_token_2022::state::Account>::unpack(&account.data)?;
+        return Ok((decoded.base.mint, decoded.base.owner, decoded.base.amount));
     }
     bail!("account has unsupported token program {}", account.owner)
 }
@@ -2631,17 +2632,25 @@ pub async fn run_earn_reconciliation_consumer(
                             job_id,
                             attempt_count,
                             error,
-                            "Earn reconciliation proof failed; job retained for retry"
+                            "Earn reconciliation job failed; retained for retry"
                         ),
                     }
                     emit_earn_reconciliation_job_failed();
                 } else {
-                    tracing::warn!(
-                        job_id,
-                        attempt_count,
-                        error,
-                        "Earn reconciliation proof is still pending"
-                    );
+                    match kind {
+                        EarnReconciliationDeferralKind::ProofPending => tracing::warn!(
+                            job_id,
+                            attempt_count,
+                            error,
+                            "Earn reconciliation proof is still pending"
+                        ),
+                        EarnReconciliationDeferralKind::Failure => tracing::warn!(
+                            job_id,
+                            attempt_count,
+                            error,
+                            "Earn reconciliation job failed; retained for retry"
+                        ),
+                    }
                 }
             }
             Ok(EarnReconciliationProcessOutcome::Idle) => {
@@ -3124,6 +3133,13 @@ fn fixture_policy_match(
 mod tests {
     use super::*;
     use solana_sdk::{instruction::InstructionError, transaction::TransactionError};
+    use spl_token_2022::{
+        extension::{
+            immutable_owner::ImmutableOwner, BaseStateWithExtensionsMut, ExtensionType,
+            StateWithExtensionsMut,
+        },
+        state::{Account as Token2022Account, AccountState as Token2022AccountState},
+    };
 
     #[test]
     fn earn_max_transaction_proof_availability_contract() {
@@ -3202,6 +3218,48 @@ mod tests {
         assert_eq!(
             policy_transaction_disposition(None),
             PolicyTransactionDisposition::Decode
+        );
+    }
+
+    #[test]
+    fn extended_token_2022_account_decodes() {
+        let mint = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let amount = 42_u64;
+        let account_len = ExtensionType::try_calculate_account_len::<Token2022Account>(&[
+            ExtensionType::ImmutableOwner,
+        ])
+        .expect("Token-2022 account length");
+        let mut data = vec![0; account_len];
+        let mut state = StateWithExtensionsMut::<Token2022Account>::unpack_uninitialized(&mut data)
+            .expect("uninitialized Token-2022 account");
+        state
+            .init_extension::<ImmutableOwner>(true)
+            .expect("immutable owner extension");
+        state.base = Token2022Account {
+            mint,
+            owner,
+            amount,
+            delegate: solana_program::program_option::COption::None,
+            state: Token2022AccountState::Initialized,
+            is_native: solana_program::program_option::COption::None,
+            delegated_amount: 0,
+            close_authority: solana_program::program_option::COption::None,
+        };
+        state.pack_base();
+        state.init_account_type().expect("Token-2022 account type");
+        drop(state);
+
+        assert!(data.len() > Token2022Account::LEN);
+        let account = solana_sdk::account::Account {
+            owner: spl_token_2022::id(),
+            data,
+            ..solana_sdk::account::Account::default()
+        };
+
+        assert_eq!(
+            decode_token_account(&account).unwrap(),
+            (mint, owner, amount)
         );
     }
 
