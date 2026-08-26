@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result};
 use helius_laserstream::grpc::{
     subscribe_update::UpdateOneof, SubscribeRequest, SubscribeRequestFilterAccounts,
-    SubscribeUpdate,
+    SubscribeRequestFilterSlots, SubscribeUpdate,
 };
 use loyal_actions::{
     derive_associated_token_account, derive_kamino_vanilla_obligation, derive_squads_vault,
@@ -33,6 +33,7 @@ pub const EARN_AUTODEPOSIT_WALLET_ATAS: &str = "earn_autodeposit_wallet_atas";
 pub const EARN_SUBSCRIPTION_AUTHORITIES: &str = "earn_subscription_authorities";
 pub const EARN_RECURRING_DELEGATIONS: &str = "earn_recurring_delegations";
 pub const EARN_WALLETS: &str = "earn_wallets";
+pub const STREAM_PROGRESS: &str = "stream_progress";
 
 const EARN_ACCOUNT_CHANNELS: [&str; 10] = [
     EARN_SMART_ACCOUNTS,
@@ -65,12 +66,26 @@ pub struct EarnVaultWatch {
     pub accounts: Vec<EarnWatchAccount>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+type EarnBindingKey = (String, String, String, String);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionWatchSet {
     pub balance_sweep_accounts: Vec<String>,
     pub earn_vaults: Vec<EarnVaultWatch>,
     pub observation_start_slot: Option<u64>,
+    #[serde(skip)]
+    pub(crate) earn_binding_start_slots: BTreeMap<EarnBindingKey, u64>,
 }
+
+impl PartialEq for SubscriptionWatchSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.balance_sweep_accounts == other.balance_sweep_accounts
+            && self.earn_vaults == other.earn_vaults
+            && self.observation_start_slot == other.observation_start_slot
+    }
+}
+
+impl Eq for SubscriptionWatchSet {}
 
 impl SubscriptionWatchSet {
     pub fn from_targets(
@@ -80,6 +95,7 @@ impl SubscriptionWatchSet {
         let safe_markets = loyal_safe_markets();
         let mut vaults = BTreeMap::<(String, String), EarnVaultWatch>::new();
         let mut observation_start_slot: Option<u64> = None;
+        let mut earn_binding_start_slots = BTreeMap::new();
         for target in targets {
             let settings = Pubkey::from_str(&target.settings)
                 .with_context(|| format!("invalid Earn settings {}", target.settings))?;
@@ -98,6 +114,9 @@ impl SubscriptionWatchSet {
                     "recorded Earn vault {vault} does not match derived vault {derived_vault}"
                 );
             }
+            let target_environment = target.environment.clone();
+            let target_vault = vault.to_string();
+            let target_observation_start_slot = target.observation_start_slot;
             let entry = vaults
                 .entry((target.environment.clone(), vault.to_string()))
                 .or_insert_with(|| EarnVaultWatch {
@@ -109,6 +128,7 @@ impl SubscriptionWatchSet {
                     vault_index,
                     accounts: Vec::new(),
                 });
+            let target_account_start = entry.accounts.len();
             if entry.settings != target.settings
                 || (!entry.wallet.is_empty()
                     && !target.wallet.is_empty()
@@ -210,6 +230,20 @@ impl SubscriptionWatchSet {
                     role: "policy".to_owned(),
                 });
             }
+            if let Some(start_slot) = target_observation_start_slot {
+                for account in &entry.accounts[target_account_start..] {
+                    let key = (
+                        target_environment.clone(),
+                        target_vault.clone(),
+                        account.role.clone(),
+                        account.pubkey.clone(),
+                    );
+                    earn_binding_start_slots
+                        .entry(key)
+                        .and_modify(|current: &mut u64| *current = (*current).min(start_slot))
+                        .or_insert(start_slot);
+                }
+            }
         }
         let mut earn_vaults = vaults.into_values().collect::<Vec<_>>();
         for vault in &mut earn_vaults {
@@ -222,7 +256,30 @@ impl SubscriptionWatchSet {
             balance_sweep_accounts,
             earn_vaults,
             observation_start_slot,
+            earn_binding_start_slots,
         })
+    }
+
+    pub fn new_earn_binding_observation_start_slot(&self, previous: Option<&Self>) -> Option<u64> {
+        let previous_bindings = previous
+            .into_iter()
+            .flat_map(|set| set.earn_vaults.iter())
+            .flat_map(|vault| {
+                vault.accounts.iter().map(|account| {
+                    (
+                        vault.environment.clone(),
+                        vault.vault.clone(),
+                        account.role.clone(),
+                        account.pubkey.clone(),
+                    )
+                })
+            })
+            .collect::<BTreeSet<_>>();
+        self.earn_binding_start_slots
+            .iter()
+            .filter(|(binding, _)| !previous_bindings.contains(*binding))
+            .map(|(_, slot)| *slot)
+            .min()
     }
 
     /// Keep Earn routing bindings monotonic for the lifetime of one monitor
@@ -270,6 +327,12 @@ impl SubscriptionWatchSet {
                 (None, old) => old,
                 (current, None) => current,
             };
+        for (binding, start_slot) in &previous.earn_binding_start_slots {
+            self.earn_binding_start_slots
+                .entry(binding.clone())
+                .and_modify(|current| *current = (*current).min(*start_slot))
+                .or_insert(*start_slot);
+        }
         Ok(())
     }
 
@@ -412,6 +475,15 @@ pub fn build_multi_channel_subscribe_request(
         .collect();
     SubscribeRequest {
         accounts,
+        slots: [(
+            STREAM_PROGRESS.to_owned(),
+            SubscribeRequestFilterSlots {
+                filter_by_commitment: Some(true),
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
         transactions: BTreeMap::new().into_iter().collect(),
         commitment: Some(helius_laserstream::grpc::CommitmentLevel::Confirmed as i32),
         from_slot: Some(from_slot),
@@ -493,6 +565,7 @@ mod tests {
             42,
         );
         assert_eq!(request.from_slot, Some(42));
+        assert!(request.slots.contains_key(STREAM_PROGRESS));
         assert_eq!(
             request.commitment,
             Some(helius_laserstream::grpc::CommitmentLevel::Confirmed as i32)
@@ -505,6 +578,41 @@ mod tests {
         assert_eq!(
             request.accounts[EARN_POLICY_ACCOUNTS].account,
             vec![policy.to_string()]
+        );
+    }
+
+    #[test]
+    fn new_binding_uses_its_own_observation_start_slot() {
+        let settings = Pubkey::new_unique();
+        let vault = derive_squads_vault(&settings, 1).0;
+        let wallet = Pubkey::new_unique();
+        let base = EarnSubscriptionTarget {
+            environment: "mainnet-beta".to_owned(),
+            settings: settings.to_string(),
+            wallet: wallet.to_string(),
+            earn_max: false,
+            vault_index: 1,
+            vault_pubkey: Some(vault.to_string()),
+            policy_accounts: Vec::new(),
+            markets: Vec::new(),
+            autodeposit_accounts: Vec::new(),
+            observation_start_slot: Some(100),
+        };
+        let previous = SubscriptionWatchSet::from_targets(Vec::new(), vec![base.clone()])
+            .expect("valid previous watch set");
+        let added_account = Pubkey::new_unique();
+        let added = EarnSubscriptionTarget {
+            autodeposit_accounts: vec![added_account.to_string()],
+            observation_start_slot: Some(900),
+            ..base.clone()
+        };
+        let next = SubscriptionWatchSet::from_targets(Vec::new(), vec![base, added])
+            .expect("valid next watch set");
+
+        assert_eq!(next.observation_start_slot, Some(100));
+        assert_eq!(
+            next.new_earn_binding_observation_start_slot(Some(&previous)),
+            Some(900)
         );
     }
 }

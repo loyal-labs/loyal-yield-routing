@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -145,6 +145,9 @@ pub enum AtaUpdateEvent {
     },
     EarnUpdate {
         update: NormalizedEarnUpdate,
+    },
+    StreamProgress {
+        slot: u64,
     },
     Heartbeat {
         account: Pubkey,
@@ -295,6 +298,7 @@ impl AtaUpdateSource for LaserstreamAtaUpdateSource {
             balance_sweep_accounts: accounts.iter().map(ToString::to_string).collect(),
             earn_vaults: Vec::new(),
             observation_start_slot: None,
+            earn_binding_start_slots: Default::default(),
         });
         let watch_set = Arc::new(RwLock::new(initial_watch_set));
         self.spawn_with_watch_set(accounts, tx, running, watch_set)
@@ -481,12 +485,17 @@ pub async fn run_event_loop(
     recheck: Option<AtaRecheckHandle>,
     earn: Option<EarnUpdateContext>,
     earn_rebalance_metrics: EarnRebalanceMetrics,
+    processed_frontier: Arc<AtomicU64>,
 ) -> Result<()> {
     while running.load(Ordering::Relaxed) {
         let Some(event) = rx.recv().await else {
             break;
         };
         let event = match event {
+            AtaUpdateEvent::StreamProgress { slot } => {
+                processed_frontier.fetch_max(slot, Ordering::Release);
+                continue;
+            }
             AtaUpdateEvent::EarnUpdate { update } => {
                 let Some(earn) = earn.as_ref() else {
                     tracing::warn!(
@@ -580,6 +589,7 @@ pub fn build_laserstream_subscribe_request(
             balance_sweep_accounts: accounts.iter().map(ToString::to_string).collect(),
             earn_vaults: Vec::new(),
             observation_start_slot: None,
+            earn_binding_start_slots: Default::default(),
         },
         from_slot,
     )
@@ -596,6 +606,7 @@ async fn run_laserstream_loop(
         balance_sweep_accounts: Vec::new(),
         earn_vaults: Vec::new(),
         observation_start_slot: None,
+        earn_binding_start_slots: Default::default(),
     });
     current_watch_set
         .balance_sweep_accounts
@@ -849,31 +860,39 @@ fn forward_laserstream_update(
     tx: &mpsc::UnboundedSender<AtaUpdateEvent>,
 ) -> Result<()> {
     let earn_update = normalize_laserstream_update(update.clone())?;
-    if let Some(UpdateOneof::Account(account_update)) = update.update_oneof {
-        let account = account_update
-            .account
-            .context("LaserStream account update was missing account payload")?;
-        let pubkey = pubkey_from_laserstream_bytes(&account.pubkey, "account pubkey")?;
-        let owner = pubkey_from_laserstream_bytes(&account.owner, "account owner")?;
-        let txn_signature = account
-            .txn_signature
-            .as_deref()
-            .map(signature_from_laserstream_bytes)
-            .transpose()?;
-        // A shared binding is first delivered to the established ATA path;
-        // its independent Earn wake-up follows below and is never decoded as
-        // a balance delta.
-        let _ = tx.send(AtaUpdateEvent::AccountUpdate {
-            account: pubkey,
-            lamports: account.lamports,
-            slot: account_update.slot,
-            owner,
-            data: account.data,
-            source: LASERSTREAM_SOURCE,
-            source_commitment: CONFIRMED_COMMITMENT,
-            txn_signature,
-            received_at: Utc::now(),
-        });
+    match update.update_oneof {
+        Some(UpdateOneof::Account(account_update)) => {
+            let account = account_update
+                .account
+                .context("LaserStream account update was missing account payload")?;
+            let pubkey = pubkey_from_laserstream_bytes(&account.pubkey, "account pubkey")?;
+            let owner = pubkey_from_laserstream_bytes(&account.owner, "account owner")?;
+            let txn_signature = account
+                .txn_signature
+                .as_deref()
+                .map(signature_from_laserstream_bytes)
+                .transpose()?;
+            // A shared binding is first delivered to the established ATA path;
+            // its independent Earn wake-up follows below and is never decoded as
+            // a balance delta.
+            let _ = tx.send(AtaUpdateEvent::AccountUpdate {
+                account: pubkey,
+                lamports: account.lamports,
+                slot: account_update.slot,
+                owner,
+                data: account.data,
+                source: LASERSTREAM_SOURCE,
+                source_commitment: CONFIRMED_COMMITMENT,
+                txn_signature,
+                received_at: Utc::now(),
+            });
+        }
+        Some(UpdateOneof::Slot(slot_update)) => {
+            let _ = tx.send(AtaUpdateEvent::StreamProgress {
+                slot: slot_update.slot,
+            });
+        }
+        _ => {}
     }
     if let Some(earn_update) = earn_update {
         let _ = tx.send(AtaUpdateEvent::EarnUpdate {
@@ -1011,6 +1030,7 @@ mod tests {
                 balance_sweep_accounts: vec!["11111111111111111111111111111111".to_owned()],
                 earn_vaults: Vec::new(),
                 observation_start_slot: None,
+                earn_binding_start_slots: Default::default(),
             },
             42,
         );

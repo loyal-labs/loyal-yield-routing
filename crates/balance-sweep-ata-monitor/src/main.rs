@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -133,7 +133,7 @@ struct Args {
 struct MonitorSession {
     target_atas: HashSet<Pubkey>,
     earn_watch_set: SubscriptionWatchSet,
-    replay_from_slot: Option<u64>,
+    processed_frontier: Arc<AtomicU64>,
     running: Arc<AtomicBool>,
     source_task: JoinHandle<()>,
     event_loop_task: JoinHandle<Result<()>>,
@@ -143,6 +143,11 @@ struct MonitorSession {
 impl MonitorSession {
     fn has_exited(&self) -> bool {
         self.source_task.is_finished() || self.event_loop_task.is_finished()
+    }
+
+    fn processed_frontier(&self) -> Option<u64> {
+        let slot = self.processed_frontier.load(Ordering::Acquire);
+        (slot > 0).then_some(slot)
     }
 }
 
@@ -479,34 +484,14 @@ async fn supervise_monitor_sessions(
     let refresh_interval = Duration::from_secs(args.target_refresh_seconds);
     let mut session: Option<MonitorSession> = None;
     let mut next_state = Some((initial_targets, initial_watch_set));
-    let mut earn_replay_checkpoint = None;
+    let mut resume_from_durable_cursor = false;
 
     loop {
         if session.as_ref().is_some_and(MonitorSession::has_exited) {
             let finished = session.take().expect("checked session exists");
             log_finished_session(finished).await;
+            resume_from_durable_cursor = true;
         }
-
-        let refresh_replay_boundary =
-            if session.is_some() && args.update_source == UpdateSourceKind::Laserstream {
-                match laserstream_current_replay_boundary(
-                    &args.rpc_url,
-                    args.laserstream_replay_overlap_slots,
-                )
-                .await
-                {
-                    Ok(boundary) => Some(boundary),
-                    Err(error) => {
-                        tracing::warn!(
-                            error = %error,
-                            "failed to advance Earn watch-set replay checkpoint"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            };
 
         let (targets, mut watch_set) = match next_state.take() {
             Some(state) => state,
@@ -517,6 +502,10 @@ async fn supervise_monitor_sessions(
                 (targets, watch_set)
             }
         };
+        let new_earn_binding_observation_start_slot = watch_set
+            .new_earn_binding_observation_start_slot(
+                session.as_ref().map(|existing| &existing.earn_watch_set),
+            );
         if let Some(existing) = session.as_ref() {
             watch_set.retain_previous_earn_bindings(&existing.earn_watch_set)?;
         }
@@ -569,18 +558,23 @@ async fn supervise_monitor_sessions(
                 );
                 stop_session(existing).await;
             }
-            earn_replay_checkpoint = None;
+            resume_from_durable_cursor = false;
             tracing::info!(
                 refresh_seconds = args.target_refresh_seconds,
                 "waiting for active balance sweep ATA targets"
             );
         } else if session_requires_rebuild(session.is_none(), diff.has_changes(), earn_changed) {
-            let replay_from_slot_override = replay_override_for_watch_set_change(
-                session.is_some(),
-                earn_changed,
-                earn_replay_checkpoint,
-                watch_set.observation_start_slot,
-            );
+            let replay_from_slot_override =
+                replay_override_for_watch_set_change(WatchSetReplayContext {
+                    session_present: session.is_some(),
+                    resume_from_durable_cursor,
+                    watch_set_changed: diff.has_changes() || earn_changed,
+                    processed_frontier: session
+                        .as_ref()
+                        .and_then(MonitorSession::processed_frontier),
+                    new_earn_binding_observation_start_slot,
+                    replay_overlap_slots: args.laserstream_replay_overlap_slots,
+                });
             if let Some(existing) = session.take() {
                 tracing::info!(
                     added_count = diff.added.len(),
@@ -617,20 +611,13 @@ async fn supervise_monitor_sessions(
             )
             .await
             .context("start balance sweep ATA monitor session")?;
-            earn_replay_checkpoint = replay_checkpoint_after_session_start(
-                refresh_replay_boundary,
-                started.replay_from_slot,
-            );
             session = Some(started);
+            resume_from_durable_cursor = false;
         } else {
             tracing::debug!(
                 target_count = targets.len(),
                 "balance sweep ATA target set unchanged"
             );
-        }
-
-        if session.is_some() && !earn_changed {
-            earn_replay_checkpoint = refresh_replay_boundary.or(earn_replay_checkpoint);
         }
 
         if let Some(existing) = session.as_mut() {
@@ -643,6 +630,7 @@ async fn supervise_monitor_sessions(
             {
                 let finished = session.take().expect("session exit was observed");
                 log_finished_session(finished).await;
+                resume_from_durable_cursor = true;
             }
         } else {
             tokio::select! {
@@ -748,29 +736,34 @@ fn session_requires_rebuild(session_missing: bool, ata_changed: bool, earn_chang
     session_missing || ata_changed || earn_changed
 }
 
-fn replay_override_for_watch_set_change(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WatchSetReplayContext {
     session_present: bool,
-    earn_changed: bool,
-    replay_checkpoint: Option<u64>,
-    observation_start_slot: Option<u64>,
-) -> Option<u64> {
-    if !earn_changed {
+    resume_from_durable_cursor: bool,
+    watch_set_changed: bool,
+    processed_frontier: Option<u64>,
+    new_earn_binding_observation_start_slot: Option<u64>,
+    replay_overlap_slots: u64,
+}
+
+fn replay_override_for_watch_set_change(context: WatchSetReplayContext) -> Option<u64> {
+    if !context.watch_set_changed || context.resume_from_durable_cursor {
         return None;
     }
-    match (
-        session_present.then_some(replay_checkpoint).flatten(),
-        observation_start_slot,
-    ) {
+
+    let continuity_start = context
+        .session_present
+        .then_some(context.processed_frontier)
+        .flatten()
+        .map(|slot| laserstream_replay_from_slot(slot, context.replay_overlap_slots));
+    let new_binding_start = context
+        .new_earn_binding_observation_start_slot
+        .map(|slot| laserstream_replay_from_slot(slot, context.replay_overlap_slots));
+
+    match (continuity_start, new_binding_start) {
         (Some(checkpoint), Some(start)) => Some(checkpoint.min(start)),
         (checkpoint, start) => checkpoint.or(start),
     }
-}
-
-fn replay_checkpoint_after_session_start(
-    refresh_boundary: Option<u64>,
-    session_replay_from_slot: Option<u64>,
-) -> Option<u64> {
-    refresh_boundary.or(session_replay_from_slot)
 }
 
 async fn wait_for_refresh_or_session_exit(
@@ -852,8 +845,9 @@ async fn start_session(
     let (tx, rx) = mpsc::unbounded_channel();
     let (finished_tx, finished) = mpsc::unbounded_channel();
     let running = Arc::new(AtomicBool::new(true));
+    let processed_frontier = Arc::new(AtomicU64::new(0));
     let watch_set_state = Arc::new(RwLock::new(watch_set.clone()));
-    let (raw_source_task, replay_from_slot) = match args.update_source {
+    let raw_source_task = match args.update_source {
         UpdateSourceKind::Laserstream => {
             let consumer_name = format!("earn-smart-account:{}", args.cluster);
             let from_slot = match replay_from_slot_override {
@@ -868,6 +862,7 @@ async fn start_session(
                     .await?
                 }
             };
+            processed_frontier.store(from_slot, Ordering::Release);
             let source = LaserstreamAtaUpdateSource {
                 endpoint: args
                     .laserstream_endpoint
@@ -881,22 +876,16 @@ async fn start_session(
                 config,
                 watch_set: Some(watch_set.clone()),
             };
-            (
-                source.spawn_with_watch_set(accounts, tx, running.clone(), watch_set_state.clone()),
-                Some(from_slot),
-            )
+            source.spawn_with_watch_set(accounts, tx, running.clone(), watch_set_state.clone())
         }
-        UpdateSourceKind::Websocket => (
-            WebsocketAtaUpdateSource {
-                ws_url: args
-                    .ws_url
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("SOLANA_WS_URL is required"))?,
-                config,
-            }
-            .spawn(accounts, tx, running.clone()),
-            None,
-        ),
+        UpdateSourceKind::Websocket => WebsocketAtaUpdateSource {
+            ws_url: args
+                .ws_url
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("SOLANA_WS_URL is required"))?,
+            config,
+        }
+        .spawn(accounts, tx, running.clone()),
     };
     let source_finished_tx = finished_tx.clone();
     let source_task = tokio::spawn(async move {
@@ -915,6 +904,7 @@ async fn start_session(
         wake: earn_wake,
     });
     let event_running = running.clone();
+    let event_processed_frontier = processed_frontier.clone();
     let event_finished_tx = finished_tx.clone();
     let event_loop_task = tokio::spawn(async move {
         let result = run_event_loop(
@@ -925,6 +915,7 @@ async fn start_session(
             Some(recheck),
             earn,
             earn_rebalance_metrics,
+            event_processed_frontier,
         )
         .await;
         let _ = event_finished_tx.send(());
@@ -934,7 +925,7 @@ async fn start_session(
     Ok(MonitorSession {
         target_atas,
         earn_watch_set: watch_set,
-        replay_from_slot,
+        processed_frontier,
         running,
         source_task,
         event_loop_task,
@@ -1003,20 +994,6 @@ async fn earn_max_projection_replay_start_slot(
     ))
 }
 
-async fn laserstream_current_replay_boundary(
-    rpc_url: &str,
-    replay_overlap_slots: u64,
-) -> Result<u64> {
-    let rpc = RpcClient::new_with_commitment(rpc_url.to_owned(), CommitmentConfig::confirmed());
-    let current_slot = rpc
-        .get_slot()
-        .context("fetch confirmed RPC slot for Earn watch-set replay checkpoint")?;
-    Ok(laserstream_replay_from_slot(
-        current_slot,
-        replay_overlap_slots,
-    ))
-}
-
 async fn stop_session(session: MonitorSession) {
     session.running.store(false, Ordering::Relaxed);
     session.source_task.abort();
@@ -1068,29 +1045,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn earn_watch_change_replays_once_then_advances_checkpoint() {
+    fn watch_change_replays_from_live_processed_frontier() {
         assert!(session_requires_rebuild(false, false, true));
         assert_eq!(
-            replay_override_for_watch_set_change(true, true, Some(42), None),
-            Some(42)
-        );
-
-        let advanced = replay_checkpoint_after_session_start(Some(90), Some(42));
-        assert_eq!(advanced, Some(90));
-        assert_eq!(
-            replay_override_for_watch_set_change(true, true, advanced, None),
-            Some(90)
-        );
-        assert_eq!(
-            replay_checkpoint_after_session_start(Some(140), Some(90)),
-            Some(140)
+            replay_override_for_watch_set_change(WatchSetReplayContext {
+                session_present: true,
+                resume_from_durable_cursor: false,
+                watch_set_changed: true,
+                processed_frontier: Some(90),
+                new_earn_binding_observation_start_slot: None,
+                replay_overlap_slots: 32,
+            }),
+            Some(58)
         );
     }
 
     #[test]
     fn failed_session_restarts_from_durable_cursor() {
         assert_eq!(
-            replay_override_for_watch_set_change(false, true, Some(42), None),
+            replay_override_for_watch_set_change(WatchSetReplayContext {
+                session_present: false,
+                resume_from_durable_cursor: true,
+                watch_set_changed: true,
+                processed_frontier: Some(900),
+                new_earn_binding_observation_start_slot: Some(700),
+                replay_overlap_slots: 32,
+            }),
             None
         );
     }
@@ -1118,12 +1098,41 @@ mod tests {
     #[test]
     fn autodeposit_new_watch_replays_from_configuration_boundary() {
         assert_eq!(
-            replay_override_for_watch_set_change(true, true, Some(900), Some(700)),
-            Some(700)
+            replay_override_for_watch_set_change(WatchSetReplayContext {
+                session_present: true,
+                resume_from_durable_cursor: false,
+                watch_set_changed: true,
+                processed_frontier: Some(900),
+                new_earn_binding_observation_start_slot: Some(700),
+                replay_overlap_slots: 32,
+            }),
+            Some(668)
         );
         assert_eq!(
-            replay_override_for_watch_set_change(false, true, None, Some(700)),
-            Some(700)
+            replay_override_for_watch_set_change(WatchSetReplayContext {
+                session_present: false,
+                resume_from_durable_cursor: false,
+                watch_set_changed: true,
+                processed_frontier: None,
+                new_earn_binding_observation_start_slot: Some(700),
+                replay_overlap_slots: 32,
+            }),
+            Some(668)
+        );
+    }
+
+    #[test]
+    fn ata_only_watch_change_uses_live_frontier() {
+        assert_eq!(
+            replay_override_for_watch_set_change(WatchSetReplayContext {
+                session_present: true,
+                resume_from_durable_cursor: false,
+                watch_set_changed: true,
+                processed_frontier: Some(900),
+                new_earn_binding_observation_start_slot: None,
+                replay_overlap_slots: 32,
+            }),
+            Some(868)
         );
     }
 }
