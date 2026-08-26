@@ -142,6 +142,21 @@ require_match \
   'initial_deposit|top_up|partial_withdrawal|full_withdrawal' \
   "$APP_DIR/apps/web/scripts/verify-earn-client-local-chain.ts" \
   "$ROUTING_DIR/scripts/verify-earn-client-local-e2e.sh"
+require_match \
+  "isolated web E2E recovers an existing projected policy from stale client state" \
+  'resolveRequiredClientEarnPolicy|projectedPolicyRefreshCount|projected-earn-state-output' \
+  "$APP_DIR/apps/web/scripts/verify-earn-client-local-chain.ts" \
+  "$ROUTING_DIR/scripts/verify-earn-client-local-e2e.sh" \
+  "$ROUTING_DIR/crates/balance-sweep-ata-monitor/src/bin/earn-client-local-e2e.rs"
+require_match \
+  "client waits for confirmed while finalized projection remains the accounting boundary" \
+  'confirmedSlot|wait-finalized|wait_for_finalized' \
+  "$APP_DIR/apps/web/scripts/verify-earn-client-local-chain.ts" \
+  "$ROUTING_DIR/scripts/verify-earn-client-local-e2e.sh"
+require_match \
+  "isolated routing worktrees share the primary Cargo build cache" \
+  'git-common-dir|CARGO_TARGET_DIR' \
+  "$ROUTING_DIR/scripts/verify-earn-client-local-e2e.sh"
 
 run_check \
   "isolated web client Earn chain projection and SSE E2E passes" \

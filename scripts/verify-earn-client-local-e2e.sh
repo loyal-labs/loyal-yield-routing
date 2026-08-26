@@ -3,6 +3,9 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 routing_root="$(cd "$script_dir/.." && pwd)"
+git_common_dir="$(git -C "$routing_root" rev-parse --path-format=absolute --git-common-dir)"
+shared_routing_root="$(dirname "$git_common_dir")"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$shared_routing_root/target}"
 app_root=""
 scratch_dir="$(mktemp -d "/tmp/ask-2212-client-earn-local-e2e.XXXXXX")"
 postgres_data="$scratch_dir/postgres"
@@ -13,6 +16,7 @@ realtime_log="$scratch_dir/realtime.log"
 genesis_dir="$scratch_dir/genesis"
 genesis_manifest="$scratch_dir/genesis.json"
 state_json="$scratch_dir/state.json"
+projected_earn_state_json="$scratch_dir/projected-earn-state.json"
 initial_transactions="$scratch_dir/initial.ndjson"
 topup_transaction="$scratch_dir/topup.ndjson"
 partial_transaction="$scratch_dir/partial.ndjson"
@@ -36,6 +40,8 @@ realtime_pid=""
 listener_pid=""
 postgres_started=0
 auth_secret="ask-2212-local-e2e-auth-secret-0000000000000000000000000000"
+run_started_at=$SECONDS
+last_timing_at=$SECONDS
 
 fail() {
   echo "FAIL: $*" >&2
@@ -44,6 +50,12 @@ fail() {
 
 pass() {
   echo "PASS: $*"
+}
+
+timing() {
+  local now=$SECONDS
+  echo "TIMING: $* took $((now - last_timing_at))s (total $((now - run_started_at))s)"
+  last_timing_at=$now
 }
 
 cleanup() {
@@ -172,6 +184,7 @@ psql_verify --command="
   ON CONFLICT (singleton) DO UPDATE SET solana_env = EXCLUDED.solana_env;
 " >/dev/null
 pass "isolated database and client-executable Kamino fixture are ready"
+timing "database and fixture setup"
 
 program_config="$(jq -r .addresses.programConfig "$genesis_manifest")"
 usdc_mint="$(jq -r .addresses.usdcMint "$genesis_manifest")"
@@ -187,6 +200,7 @@ treasury="$(jq -r .addresses.treasury "$genesis_manifest")"
   cd "$routing_root"
   solana-test-validator \
     --reset \
+    --ticks-per-slot 8 \
     --ledger "$scratch_dir/ledger" \
     --rpc-port "$rpc_port" \
     --faucet-port "$faucet_port" \
@@ -223,6 +237,7 @@ if [[ "$validator_ready" -ne 1 ]]; then
   fail "isolated Solana validator did not become healthy"
 fi
 pass "isolated finalized Solana chain is ready"
+timing "validator startup"
 
 echo "== Initial deposit is built and submitted by the web client"
 (
@@ -243,6 +258,7 @@ jq -e '.stage == "route_policy"' "$route_policy_transaction" >/dev/null
 jq -e '.stage == "setup_policy"' "$setup_policy_transaction" >/dev/null
 jq -e '.stage == "initial_deposit"' "$initial_deposit_transaction" >/dev/null
 pass "web submitted both policy stages and the client-built initial deposit"
+timing "initial client transactions through confirmed"
 
 (
   cd "$routing_root"
@@ -288,10 +304,12 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 [[ "$connected" -eq 1 ]] || fail "web SSE consumer did not connect"
+timing "realtime service and SSE connection"
 
 process_update() {
   local transaction="$1"
   local subscribe_output="${2:-}"
+  local projected_state_output="${3:-}"
   local command=(
     cargo run --quiet -p balance-sweep-ata-monitor --bin earn-client-local-e2e --
     --postgres-url "$database_url"
@@ -302,14 +320,29 @@ process_update() {
   if [[ -n "$subscribe_output" ]]; then
     command+=(--subscribe-request-output "$subscribe_output")
   fi
+  if [[ -n "$projected_state_output" ]]; then
+    command+=(--projected-earn-state-output "$projected_state_output")
+  fi
   (cd "$routing_root" && "${command[@]}")
 }
 
+wait_for_finalized() {
+  local transaction="$1"
+  (
+    cd "$app_root/apps/web"
+    bun run scripts/verify-earn-client-local-chain.ts wait-finalized \
+      --rpc-url "http://127.0.0.1:$rpc_port" \
+      --transaction "$transaction"
+  )
+}
+
 echo "== Finalized account updates project each client operation"
+wait_for_finalized "$initial_transactions"
 process_update "$route_policy_transaction"
-process_update "$setup_policy_transaction"
+process_update "$setup_policy_transaction" "" "$projected_earn_state_json"
 process_update "$initial_deposit_transaction"
 assert_position_amount 4000000
+timing "initial transactions through finalized projection"
 
 (
   cd "$app_root/apps/web"
@@ -317,17 +350,25 @@ assert_position_amount 4000000
     --rpc-url "http://127.0.0.1:$rpc_port" --state "$state_json" \
     --transaction "$topup_transaction"
 )
+wait_for_finalized "$topup_transaction"
 process_update "$topup_transaction"
 assert_position_amount 6000000
+timing "top-up through finalized projection"
 
 (
   cd "$app_root/apps/web"
   bun run scripts/verify-earn-client-local-chain.ts partial \
     --rpc-url "http://127.0.0.1:$rpc_port" --state "$state_json" \
+    --projected-state "$projected_earn_state_json" \
     --transaction "$partial_transaction"
 )
+wait_for_finalized "$partial_transaction"
+[[ "$(jq -r .projectedPolicyRefreshCount "$state_json")" == "1" ]] ||
+  fail "partial withdrawal did not recover the projected policy from a stale client snapshot"
+pass "existing-position withdrawal recovered its LaserStream-projected policy"
 process_update "$partial_transaction"
 assert_position_amount 4000000
+timing "partial withdrawal through finalized projection"
 
 (
   cd "$app_root/apps/web"
@@ -335,8 +376,10 @@ assert_position_amount 4000000
     --rpc-url "http://127.0.0.1:$rpc_port" --state "$state_json" \
     --transaction "$full_transaction"
 )
+wait_for_finalized "$full_transaction"
 process_update "$full_transaction" "$subscribe_request_json"
 assert_position_amount 0
+timing "full withdrawal through finalized projection"
 
 wait "$listener_pid"
 listener_pid=""
@@ -353,9 +396,9 @@ listener_pid=""
   fail "holding event sequence does not match initial/top-up/partial/full flow"
 
 jq -e \
-  '.commitment == "finalized" and (.transactions | length) == 0 and (.accounts.earn_obligations | length) >= 1' \
+  '.commitment == "confirmed" and (.transactions | length) == 0 and (.accounts.earn_obligations | length) >= 1' \
   "$subscribe_request_json" >/dev/null ||
-  fail "refreshed LaserStream request is not finalized and account-only"
+  fail "refreshed LaserStream request is not confirmed and account-only"
 jq -e \
   '.transactionReasons == ["holding_event_deposit_initialized", "holding_event_deposit_top_up", "holding_event_withdrawal_partial", "holding_event_withdrawal_full"] and .refreshPlan.position == true and .refreshPlan.transactions == true and .refreshPlan.earnings == true' \
   "$sse_events_json" >/dev/null ||
@@ -367,3 +410,4 @@ pass "initial/top-up deposits and partial/full withdrawals projected 4M -> 6M ->
 pass "finalized account updates emitted the expected SSE sequence and web refresh plan"
 pass "web built every operation on-client and sent no confirmation or reconciliation API request"
 pass "ASK-2212 isolated local web Earn deposit/withdraw E2E"
+timing "durable state and client invalidation assertions"
