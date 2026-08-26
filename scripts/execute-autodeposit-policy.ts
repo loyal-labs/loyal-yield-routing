@@ -192,6 +192,7 @@ type AutodepositRecoveryContext = {
 
 class AutodepositOwnershipLostError extends Error {}
 export class AutodepositEffectAmbiguousError extends Error {}
+class AutodepositDepositHandoffAmbiguousError extends Error {}
 class AutodepositYieldPersistenceError extends Error {}
 
 export type DirectTopUpRecoveryAction =
@@ -427,6 +428,8 @@ const AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE_ENV =
   "AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE";
 const AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE_ENV =
   "AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE";
+const AUTODEPOSIT_DEPOSIT_HANDOFF_AMBIGUOUS_EXIT_CODE_ENV =
+  "AUTODEPOSIT_DEPOSIT_HANDOFF_AMBIGUOUS_EXIT_CODE";
 const SOLANA_WEEK_NOTIFY_ENDPOINT_ENV = "SOLANA_WEEK_NOTIFY_ENDPOINT";
 const SOLANA_WEEK_NOTIFY_SECRET_ENV = "SOLANA_WEEK_NOTIFY_SECRET";
 const SOLANA_WEEK_NOTIFY_TIMEOUT_MS = 5_000;
@@ -438,7 +441,8 @@ type AutodepositExecutorFailureCode =
   | "not_actionable"
   | "fee_payer_exhausted"
   | "transaction_effect_ambiguous"
-  | "idle_handoff_failed";
+  | "idle_handoff_failed"
+  | "deposit_handoff_ambiguous";
 
 const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
   AutodepositExecutorFailureCode,
@@ -452,6 +456,8 @@ const AUTODEPOSIT_EXECUTOR_FAILURE_EXIT_CODE_ENVS: Record<
   transaction_effect_ambiguous:
     AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE_ENV,
   idle_handoff_failed: AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE_ENV,
+  deposit_handoff_ambiguous:
+    AUTODEPOSIT_DEPOSIT_HANDOFF_AMBIGUOUS_EXIT_CODE_ENV,
 };
 
 export function autodepositExecutorFailureExitCode(
@@ -482,6 +488,24 @@ async function loadAppModules(): Promise<AppModules> {
     import("@loyal/actions"),
   ]);
 
+  const neon = ((databaseUrl: string) => {
+    if (process.env.AUTODEPOSIT_LOCAL_POSTGRES_E2E !== "1") {
+      return neonModule.neon(databaseUrl);
+    }
+    const parsed = new URL(databaseUrl);
+    if (
+      !["127.0.0.1", "localhost", "::1"].includes(parsed.hostname) ||
+      !parsed.pathname.includes("autodeposit_verify")
+    ) {
+      throw new Error(
+        "AUTODEPOSIT_LOCAL_POSTGRES_E2E only permits a loopback autodeposit_verify database."
+      );
+    }
+    return new Bun.SQL(databaseUrl) as unknown as ReturnType<
+      AppModules["neon"]
+    >;
+  }) as AppModules["neon"];
+
   return {
     Keypair,
     PublicKey,
@@ -491,7 +515,7 @@ async function loadAppModules(): Promise<AppModules> {
     getKaminoUsdcEarnTargetForCluster:
       loyalActionsModule.getKaminoUsdcEarnTargetForCluster as AppModules["getKaminoUsdcEarnTargetForCluster"],
     LoyalCluster: loyalActionsModule.LoyalCluster,
-    neon: neonModule.neon,
+    neon,
     PROGRAM_ADDRESS: smartAccountsModule.PROGRAM_ADDRESS,
     SUBSCRIPTIONS_PROGRAM_ID: loyalActionsModule.SUBSCRIPTIONS_PROGRAM_ID,
     SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET:
@@ -4453,6 +4477,217 @@ async function completeAutodepositClaim(args: {
     );
   }
 }
+
+type FleetAutodepositHandoff = {
+  decisionId: bigint;
+  signature: string;
+  confirmedSlot: bigint;
+  postSnapshotId: bigint;
+  postObservedSlot: bigint;
+  postAmountRaw: bigint;
+};
+
+async function loadRecordedPullExecution(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  targetId: bigint;
+  pullSignature: string;
+}): Promise<{ executionId: string } | null> {
+  const sql = args.neon(args.databaseUrl);
+  const dedupeKey = `${args.targetId.toString()}:autodeposit-pull:${
+    args.pullSignature
+  }`;
+  const rows = await sql`
+    SELECT id
+    FROM loyal_yield.balance_sweep_executions
+    WHERE dedupe_key = ${dedupeKey}
+      AND completed_at IS NULL
+    LIMIT 1
+  `;
+  const row = rows[0] as Record<string, unknown> | undefined;
+  return row
+    ? { executionId: readRequiredString(row.id, "balance_sweep_execution.id") }
+    : null;
+}
+
+async function loadUniqueFleetAutodepositHandoff(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+  plan: AutodepositDepositPlan;
+}): Promise<FleetAutodepositHandoff | null> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    WITH candidates AS (
+      SELECT
+        decision.id AS decision_id,
+        decision.signature,
+        decision.confirmed_slot,
+        decision.post_snapshot_id,
+        snapshot.observed_slot AS post_observed_slot,
+        snapshot_position.amount_raw AS post_amount_raw,
+        decision.execution_plan ->> 'idle_token_account' =
+          COALESCE(execution.destination_token_ata, execution.destination_vault_ata)
+          AND decision.execution_plan ->> 'idle_observed_slot' ~ '^[0-9]+$'
+          AND (decision.execution_plan ->> 'idle_observed_slot')::bigint >=
+            pull.confirmed_slot AS provenance_matches
+      FROM loyal_yield.balance_sweep_lot_claims AS claim
+      JOIN loyal_yield.balance_sweep_transaction_attempts AS pull
+        ON pull.claim_token = claim.claim_token
+       AND pull.operation_kind = 'pull'
+       AND pull.attempt_state = 'confirmed'
+       AND pull.confirmed_slot IS NOT NULL
+      JOIN loyal_yield.balance_sweep_executions AS execution
+        ON execution.target_id = claim.target_id
+       AND execution.signature = pull.signature
+       AND execution.slot = pull.confirmed_slot
+       AND execution.amount_raw = pull.amount_raw
+       AND execution.completed_at IS NULL
+      JOIN loyal_yield.managed_vaults AS vault
+        ON vault.id = ${args.plan.target.managedVaultId.toString()}::bigint
+       AND vault.settings = ${args.plan.target.settings}
+       AND vault.vault_index = ${args.plan.target.vaultIndex}
+       AND vault.vault_pubkey = ${args.plan.target.vaultPubkey}
+      JOIN loyal_yield.rebalance_decisions AS decision
+        ON decision.vault_id = vault.id
+       AND decision.status = 'confirmed'
+       AND decision.decision_reason = 'idle_vault_liquidity_available'
+       AND decision.execution_plan ->> 'kind' = 'idle_vault_deposit'
+       AND decision.amount_raw = claim.amount_raw
+       AND COALESCE(decision.target_liquidity_mint, decision.liquidity_mint) = ${
+         args.plan.liquidityMint
+       }
+       AND decision.signature IS NOT NULL
+       AND decision.confirmed_slot > pull.confirmed_slot
+       AND decision.post_snapshot_id IS NOT NULL
+      JOIN loyal_yield.vault_position_snapshots AS snapshot
+        ON snapshot.id = decision.post_snapshot_id
+       AND snapshot.observed_slot >= decision.confirmed_slot
+      JOIN loyal_yield.vault_position_snapshot_positions AS snapshot_position
+        ON snapshot_position.snapshot_id = snapshot.id
+       AND snapshot_position.reserve = decision.target_reserve
+       AND snapshot_position.liquidity_mint = ${args.plan.liquidityMint}
+      WHERE claim.claim_token = ${args.claimToken}
+        AND claim.status = 'selected'
+        AND claim.amount_raw = ${args.plan.amountRaw.toString()}::bigint
+        AND NOT EXISTS (
+          SELECT 1
+          FROM loyal_yield.balance_sweep_transaction_attempts AS top_up
+          WHERE top_up.claim_token = claim.claim_token
+            AND top_up.operation_kind = 'top_up'
+        )
+    )
+    SELECT *
+    FROM candidates
+  `;
+  if (rows.length === 0) {
+    return null;
+  }
+  const matching = rows.filter(
+    (candidate) => (candidate as Record<string, unknown>).provenance_matches === true
+  );
+  if (matching.length !== 1) {
+    throw new AutodepositDepositHandoffAmbiguousError(
+      `Autodeposit claim ${args.claimToken} has ${matching.length} Fleet deposits with exact pull provenance out of ${rows.length} matching confirmed Fleet decisions.`
+    );
+  }
+  const row = matching[0] as Record<string, unknown>;
+  return {
+    decisionId: BigInt(readRequiredString(row.decision_id, "Fleet decision id")),
+    signature: readRequiredString(row.signature, "Fleet signature"),
+    confirmedSlot: BigInt(
+      readRequiredString(row.confirmed_slot, "Fleet confirmed slot")
+    ),
+    postSnapshotId: BigInt(
+      readRequiredString(row.post_snapshot_id, "Fleet post snapshot id")
+    ),
+    postObservedSlot: BigInt(
+      readRequiredString(row.post_observed_slot, "Fleet post observed slot")
+    ),
+    postAmountRaw: BigInt(
+      readRequiredString(row.post_amount_raw, "Fleet post amount")
+    ),
+  };
+}
+
+async function verifyConfirmedFleetHandoff(args: {
+  connection: Connection;
+  handoff: FleetAutodepositHandoff;
+}): Promise<boolean> {
+  const statuses = await args.connection.getSignatureStatuses(
+    [args.handoff.signature],
+    { searchTransactionHistory: true }
+  );
+  const status = statuses.value[0] ?? null;
+  if (
+    (status?.confirmationStatus !== "confirmed" &&
+      status?.confirmationStatus !== "finalized") ||
+    status.err !== null ||
+    BigInt(status.slot) !== args.handoff.confirmedSlot
+  ) {
+    return false;
+  }
+  const transaction = await args.connection.getTransaction(
+    args.handoff.signature,
+    { commitment: "confirmed", maxSupportedTransactionVersion: 0 }
+  );
+  return (
+    transaction !== null &&
+    transaction.meta?.err === null &&
+    BigInt(transaction.slot) === args.handoff.confirmedSlot
+  );
+}
+
+async function finalizeFleetAutodepositHandoff(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  claimToken: string;
+  executionId: string;
+  scheduledSlotId: bigint;
+  leaseToken: string;
+  decisionId: bigint;
+}): Promise<void> {
+  const sql = args.neon(args.databaseUrl);
+  let rows: unknown[];
+  try {
+    rows = await sql`
+      SELECT loyal_yield.finalize_fleet_handoff_autodeposit(
+        ${args.claimToken},
+        ${args.executionId}::bigint,
+        ${args.scheduledSlotId.toString()}::bigint,
+        ${args.leaseToken},
+        ${args.decisionId.toString()}::bigint
+      ) AS status
+    `;
+  } catch (error) {
+    const code = String(readRecord(error)?.code ?? "");
+    if (code === "55P03") {
+      throw new AutodepositOwnershipLostError(
+        `Autodeposit claim ${args.claimToken} is owned by another executor.`
+      );
+    }
+    if (code === "P2187") {
+      throw new AutodepositDepositHandoffAmbiguousError(
+        `Confirmed Fleet handoff for claim ${args.claimToken} stopped matching uniquely during finalization.`
+      );
+    }
+    throw new AutodepositYieldPersistenceError(
+      `Confirmed Fleet handoff for claim ${args.claimToken} could not be persisted atomically: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+  const status = readRequiredString(
+    (rows[0] as Record<string, unknown> | undefined)?.status,
+    "Fleet handoff finalization status"
+  );
+  if (status !== "completed" && status !== "already_completed") {
+    throw new AutodepositYieldPersistenceError(
+      `Confirmed Fleet handoff for claim ${args.claimToken} returned ${status}.`
+    );
+  }
+}
+
 async function resumeDirectKaminoDeposit(args: {
   attempt: DurableAutodepositAttempt;
   claimToken: string;
@@ -4469,6 +4704,52 @@ async function resumeDirectKaminoDeposit(args: {
     throw new Error(
       `Confirmed autodeposit pull ${args.attempt.id} has no confirmed slot.`
     );
+  }
+  const recordedExecution = await loadRecordedPullExecution({
+    neon: args.neon,
+    databaseUrl: args.databaseUrl,
+    targetId: args.target.id,
+    pullSignature: args.attempt.signature,
+  });
+  if (recordedExecution) {
+    const handoff = await loadUniqueFleetAutodepositHandoff({
+      neon: args.neon,
+      databaseUrl: args.databaseUrl,
+      claimToken: args.claimToken,
+      plan: args.plan,
+    });
+    if (handoff && (await verifyConfirmedFleetHandoff({
+      connection: args.connection,
+      handoff,
+    }))) {
+      await finalizeFleetAutodepositHandoff({
+        neon: args.neon,
+        databaseUrl: args.databaseUrl,
+        claimToken: args.claimToken,
+        executionId: recordedExecution.executionId,
+        scheduledSlotId: args.scheduledSlotId,
+        leaseToken: args.leaseToken,
+        decisionId: handoff.decisionId,
+      });
+      return {
+        status: "completed" as const,
+        deposit: {
+          signature: handoff.signature,
+          confirmedSlot: handoff.confirmedSlot,
+        },
+        executionRecord: {
+          dedupeKey: `${args.target.id.toString()}:autodeposit-pull:${
+            args.attempt.signature
+          }`,
+          executionId: recordedExecution.executionId,
+        },
+        vaultObservation: {
+          amountRaw: handoff.postAmountRaw,
+          observedSlot: handoff.postObservedSlot,
+        },
+        walletPostPullRaw: 0n,
+      };
+    }
   }
   const walletPostPullRaw = await getTokenBalanceRaw(
     args.connection,
@@ -4517,8 +4798,8 @@ async function resumeDirectKaminoDeposit(args: {
       claimToken: args.claimToken,
       leaseToken: args.leaseToken,
     });
-    throw new AutodepositEffectAmbiguousError(
-      `Autodeposit deposit effect is ambiguous for claim ${args.claimToken}; refusing to submit another deposit.`
+    throw new AutodepositDepositHandoffAmbiguousError(
+      `Autodeposit deposit handoff is ambiguous for claim ${args.claimToken}; no unique confirmed direct or Fleet deposit can be adopted.`
     );
   }
   let topUpSend: DurablePreparedOperationResult;
@@ -4553,7 +4834,10 @@ async function resumeDirectKaminoDeposit(args: {
       claimToken: args.claimToken,
       leaseToken: args.leaseToken,
     });
-    if (error instanceof AutodepositEffectAmbiguousError) {
+    if (
+      error instanceof AutodepositEffectAmbiguousError ||
+      error instanceof AutodepositDepositHandoffAmbiguousError
+    ) {
       throw error;
     }
     return {
@@ -4754,6 +5038,12 @@ async function recoverAutodepositClaim(args: {
     if (error instanceof AutodepositEffectAmbiguousError) {
       process.exitCode = autodepositExecutorFailureExitCode(
         "transaction_effect_ambiguous"
+      );
+      throw error;
+    }
+    if (error instanceof AutodepositDepositHandoffAmbiguousError) {
+      process.exitCode = autodepositExecutorFailureExitCode(
+        "deposit_handoff_ambiguous"
       );
       throw error;
     }
@@ -5338,6 +5628,12 @@ async function main() {
       if (error instanceof AutodepositYieldPersistenceError) {
         process.exitCode = autodepositExecutorFailureExitCode(
           "yield_persistence_failed"
+        );
+        throw error;
+      }
+      if (error instanceof AutodepositDepositHandoffAmbiguousError) {
+        process.exitCode = autodepositExecutorFailureExitCode(
+          "deposit_handoff_ambiguous"
         );
         throw error;
       }

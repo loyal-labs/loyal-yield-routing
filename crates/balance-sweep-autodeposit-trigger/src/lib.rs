@@ -25,6 +25,9 @@ pub const AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE: i32 = 25;
 pub const AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE_ENV: &str =
     "AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE";
 pub const AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE: i32 = 26;
+pub const AUTODEPOSIT_DEPOSIT_HANDOFF_AMBIGUOUS_EXIT_CODE_ENV: &str =
+    "AUTODEPOSIT_DEPOSIT_HANDOFF_AMBIGUOUS_EXIT_CODE";
+pub const AUTODEPOSIT_DEPOSIT_HANDOFF_AMBIGUOUS_EXIT_CODE: i32 = 27;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutorFailureAlert {
@@ -83,6 +86,12 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
             operation: "publish_autodeposit_idle_vault_balance",
             summary: "confirmed autodeposit pull could not be published to idle-vault recovery",
             retryable: true,
+        }),
+        Some(AUTODEPOSIT_DEPOSIT_HANDOFF_AMBIGUOUS_EXIT_CODE) => Some(ExecutorFailureAlert {
+            code: "autodeposit_deposit_handoff_ambiguous",
+            operation: "reconcile_autodeposit_deposit_handoff",
+            summary: "confirmed autodeposit pull has no uniquely provable deposit handoff",
+            retryable: false,
         }),
         Some(AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE) => None,
         _ => Some(ExecutorFailureAlert {
@@ -529,6 +538,12 @@ mod tests {
                 "autodeposit_idle_handoff_failed",
                 "publish_autodeposit_idle_vault_balance",
                 true,
+            ),
+            (
+                AUTODEPOSIT_DEPOSIT_HANDOFF_AMBIGUOUS_EXIT_CODE,
+                "autodeposit_deposit_handoff_ambiguous",
+                "reconcile_autodeposit_deposit_handoff",
+                false,
             ),
         ];
 
