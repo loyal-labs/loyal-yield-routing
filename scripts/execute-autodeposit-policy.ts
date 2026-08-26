@@ -482,6 +482,24 @@ async function loadAppModules(): Promise<AppModules> {
     import("@loyal/actions"),
   ]);
 
+  const neon = ((databaseUrl: string) => {
+    if (process.env.AUTODEPOSIT_LOCAL_POSTGRES_E2E !== "1") {
+      return neonModule.neon(databaseUrl);
+    }
+    const parsed = new URL(databaseUrl);
+    if (
+      !["127.0.0.1", "localhost", "::1"].includes(parsed.hostname) ||
+      !parsed.pathname.includes("autodeposit_verify")
+    ) {
+      throw new Error(
+        "AUTODEPOSIT_LOCAL_POSTGRES_E2E only permits a loopback autodeposit_verify database."
+      );
+    }
+    return new Bun.SQL(databaseUrl) as unknown as ReturnType<
+      AppModules["neon"]
+    >;
+  }) as AppModules["neon"];
+
   return {
     Keypair,
     PublicKey,
@@ -491,7 +509,7 @@ async function loadAppModules(): Promise<AppModules> {
     getKaminoUsdcEarnTargetForCluster:
       loyalActionsModule.getKaminoUsdcEarnTargetForCluster as AppModules["getKaminoUsdcEarnTargetForCluster"],
     LoyalCluster: loyalActionsModule.LoyalCluster,
-    neon: neonModule.neon,
+    neon,
     PROGRAM_ADDRESS: smartAccountsModule.PROGRAM_ADDRESS,
     SUBSCRIPTIONS_PROGRAM_ID: loyalActionsModule.SUBSCRIPTIONS_PROGRAM_ID,
     SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET:
@@ -4453,6 +4471,7 @@ async function completeAutodepositClaim(args: {
     );
   }
 }
+
 async function resumeDirectKaminoDeposit(args: {
   attempt: DurableAutodepositAttempt;
   claimToken: string;
