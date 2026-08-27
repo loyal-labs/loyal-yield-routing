@@ -187,14 +187,9 @@ func (m *Manager) Handoff(ctx context.Context, replacement *pb.SubscribeRequest)
 	default:
 	}
 
-	m.mu.Lock()
-	if m.closed || m.active != old {
-		m.mu.Unlock()
-		return errors.New("active subscription changed during handoff")
+	if err := m.promoteCandidate(old, candidate, replacement); err != nil {
+		return err
 	}
-	m.active = candidate
-	m.request = cloneRequest(replacement)
-	m.mu.Unlock()
 
 	promoted = true
 	old.Stop()
@@ -245,17 +240,45 @@ func (m *Manager) openSession(ctx context.Context, request *pb.SubscribeRequest)
 		start:    make(chan struct{}),
 	}
 	go s.run(func(err error) {
-		m.mu.RLock()
-		isActive := !m.closed && m.active == s
-		m.mu.RUnlock()
-		if isActive && err != nil && !errors.Is(err, context.Canceled) {
-			select {
-			case m.fatal <- err:
-			default:
-			}
-		}
+		m.sessionFinished(s, err)
 	})
 	return s, nil
+}
+
+// promoteCandidate serializes the active-session swap with sessionFinished.
+// If completion wins the lock, a terminal candidate cannot be promoted. If
+// promotion wins, completion observes the candidate as active and reports its
+// error through the fatal channel.
+func (m *Manager) promoteCandidate(old, candidate *session, replacement *pb.SubscribeRequest) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || m.active != old {
+		return errors.New("active subscription changed during handoff")
+	}
+	if candidate.terminal {
+		err := candidate.terminalErr
+		if err == nil {
+			err = errors.New("candidate stopped without an error")
+		}
+		return fmt.Errorf("handoff candidate stopped before promotion: %w", err)
+	}
+	m.active = candidate
+	m.request = cloneRequest(replacement)
+	return nil
+}
+
+func (m *Manager) sessionFinished(s *session, err error) {
+	m.mu.Lock()
+	s.terminal = true
+	s.terminalErr = err
+	isActive := !m.closed && m.active == s
+	if isActive && err != nil && !errors.Is(err, context.Canceled) {
+		select {
+		case m.fatal <- err:
+		default:
+		}
+	}
+	m.mu.Unlock()
 }
 
 type session struct {
@@ -272,22 +295,31 @@ type session struct {
 	start      chan struct{}
 	startOnce  sync.Once
 	stopOnce   sync.Once
+
+	// terminal and terminalErr are guarded by the owning Manager's mu so
+	// completion state and active-session promotion form one critical section.
+	terminal    bool
+	terminalErr error
 }
 
 func (s *session) run(onDone func(error)) {
 	select {
 	case <-s.start:
 	case <-s.ctx.Done():
+		onDone(context.Canceled)
+		_ = s.stream.Close()
 		s.done <- context.Canceled
 		close(s.done)
-		onDone(context.Canceled)
 		return
 	}
 	err := s.receive()
+	// Publish terminal state before connection cleanup or waking Done readers.
+	// This closes the promotion race between a non-blocking Done check and the
+	// active session swap, even if transport cleanup is slow.
+	onDone(err)
 	_ = s.stream.Close()
 	s.done <- err
 	close(s.done)
-	onDone(err)
 }
 
 func (s *session) receive() error {
@@ -347,6 +379,12 @@ func (s *session) Done() <-chan error        { return s.done }
 func (s *session) Start()                    { s.startOnce.Do(func() { close(s.start) }) }
 func (s *session) Stop()                     { s.stopOnce.Do(s.cancel) }
 func handoffReplayStart(frontier, overlap uint64, requested *uint64) uint64 {
+	// A zero frontier means the active stream has not established a durable
+	// boundary yet. Preserve the replacement's validated cursor rather than
+	// turning an immediate handoff into a genesis replay.
+	if frontier == 0 && requested != nil {
+		return *requested
+	}
 	overlapStart := frontier - min(frontier, overlap)
 	if requested != nil && *requested < overlapStart {
 		return *requested
