@@ -448,13 +448,18 @@ if rg -q 'autodeposit/(setup|close)/confirm' \
 fi
 pass "routing-owned Autodeposit client submitted directly without a confirmation API"
 
-for removed_web_route in \
+for retired_web_prepare_route in \
   "$app_root/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/setup/prepare/route.ts" \
+  "$app_root/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/close/prepare/route.ts"; do
+  [[ ! -e "$retired_web_prepare_route" ]] ||
+    fail "retired web Autodeposit prepare route still exists: $retired_web_prepare_route"
+done
+
+for compatible_web_confirmation_route in \
   "$app_root/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/setup/confirm/route.ts" \
-  "$app_root/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/close/prepare/route.ts" \
   "$app_root/apps/web/src/app/api/smart-accounts/yield-optimization/autodeposit/close/confirm/route.ts"; do
-  [[ ! -e "$removed_web_route" ]] ||
-    fail "retired web Autodeposit route still exists: $removed_web_route"
+  [[ -f "$compatible_web_confirmation_route" ]] ||
+    fail "web Autodeposit confirmation compatibility route is missing: $compatible_web_confirmation_route"
 done
 
 for compatible_mobile_route in \
@@ -465,7 +470,7 @@ for compatible_mobile_route in \
   [[ -f "$compatible_mobile_route" ]] ||
     fail "released mobile Autodeposit contract is missing: $compatible_mobile_route"
 done
-pass "retired web routes are absent and released mobile Autodeposit routes remain compatible"
+pass "retired web prepare routes are absent and web/mobile confirmation compatibility remains available"
 
 echo "== Production-shaped Earn reconciliation regression load"
 (
