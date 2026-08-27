@@ -41,6 +41,7 @@
     "yield:migrate:check": "cargo run -p loyal-yield-orchestrator --bin yield-migrations -- --check",
     "reconcile:earn-laserstream-gap": "bash scripts/reconcile-earn-laserstream-gap.sh",
     "verify:earn-laserstream-gap": "bash scripts/verify-earn-laserstream-gap-reconciliation.sh",
+    "verify:go-laserstream-handoff": "bash scripts/verify-go-laserstream-handoff.sh",
     "timescale:migrate": "cargo run -p loyal-timescale-migrations",
     "timescale:migrate:check": "cargo run -p loyal-timescale-migrations -- --check",
     "test:squads": "cargo build-sbf -- -p mock-yield-protocols-program -p loyal-hub-swap-program && cargo test -p squads-test-harness",
