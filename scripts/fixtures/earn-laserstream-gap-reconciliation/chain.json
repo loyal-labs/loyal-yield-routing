@@ -1,0 +1,6 @@
+{
+  "signatures": {
+    "sig-deposit": { "kind": "noop", "slot": 110 },
+    "sig-shared": { "kind": "noop", "slot": 120 }
+  }
+}

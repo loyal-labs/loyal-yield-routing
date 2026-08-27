@@ -1,0 +1,23 @@
+{
+  "balance_sweep_accounts": [],
+  "earn_vaults": [
+    {
+      "environment": "verification",
+      "settings": "Vote111111111111111111111111111111111111111",
+      "wallet": "Stake11111111111111111111111111111111111111",
+      "vault": "Config1111111111111111111111111111111111111",
+      "vault_index": 1,
+      "accounts": [
+        {
+          "pubkey": "Config1111111111111111111111111111111111111",
+          "role": "vault"
+        },
+        {
+          "pubkey": "SysvarRent111111111111111111111111111111111",
+          "role": "idle_token"
+        }
+      ]
+    }
+  ],
+  "observation_start_slot": 90
+}

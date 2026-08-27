@@ -1,0 +1,11 @@
+{
+  "finalized_slot": 150,
+  "accounts": {
+    "GfF666CzUDE1s4A3FqbJoP6iWVWvLB3ShXUiXpxjX771": [
+      { "signature": "sig-verification-a", "slot": 130 }
+    ],
+    "HzNg46dNAFj2Bfcrs8U4oLPvAZtBr2B9jB2LLUXeVLMd": [
+      { "signature": "sig-verification-b", "slot": 140 }
+    ]
+  }
+}

@@ -1422,6 +1422,196 @@ impl NeonSqlClient {
         Ok(targets)
     }
 
+    /// Load known classic Earn identities regardless of their projected
+    /// lifecycle. A bounded RPC-history repair must include closed positions
+    /// and completed onboarding attempts because a missed deposit can reopen
+    /// them while the normal live subscription correctly omits stale state.
+    pub async fn load_earn_historical_reconciliation_targets(
+        &self,
+        environment: &str,
+        wallet: Option<&str>,
+    ) -> Result<Vec<EarnSubscriptionTarget>, OrchestratorError> {
+        let mut targets = Vec::new();
+        let mut environment_settings = BTreeSet::new();
+        let app_accounts_exist: bool =
+            sqlx::query_scalar("SELECT to_regclass('app_user_smart_accounts') IS NOT NULL")
+                .fetch_one(&self.pool)
+                .await?;
+        if app_accounts_exist {
+            let settings = sqlx::query_scalar::<_, String>(
+                r#"
+                SELECT DISTINCT settings_pda
+                FROM app_user_smart_accounts
+                WHERE CASE
+                    WHEN $1 IN ('mainnet', 'mainnet-beta')
+                    THEN solana_env IN ('mainnet', 'mainnet-beta')
+                    ELSE solana_env = $1
+                END
+                "#,
+            )
+            .bind(environment)
+            .fetch_all(&self.pool)
+            .await?;
+            environment_settings.extend(settings);
+        }
+
+        let balance_sweep_targets_exist: bool = sqlx::query_scalar(
+            "SELECT to_regclass('loyal_yield.balance_sweep_targets') IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if balance_sweep_targets_exist {
+            let settings = sqlx::query_scalar::<_, String>(
+                r#"
+                SELECT DISTINCT settings
+                FROM loyal_yield.balance_sweep_targets
+                WHERE CASE
+                    WHEN $1 IN ('mainnet', 'mainnet-beta')
+                    THEN cluster IN ('mainnet', 'mainnet-beta')
+                    ELSE cluster = $1
+                END
+                "#,
+            )
+            .bind(environment)
+            .fetch_all(&self.pool)
+            .await?;
+            environment_settings.extend(settings);
+        }
+
+        let cross_mint_policies_exist: bool = sqlx::query_scalar(
+            "SELECT to_regclass('loyal_yield.cross_mint_swap_policies') IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if cross_mint_policies_exist {
+            let settings = sqlx::query_scalar::<_, String>(
+                r#"
+                SELECT DISTINCT settings
+                FROM loyal_yield.cross_mint_swap_policies
+                WHERE CASE
+                    WHEN $1 IN ('mainnet', 'mainnet-beta')
+                    THEN cluster IN ('mainnet', 'mainnet-beta')
+                    ELSE cluster = $1
+                END
+                "#,
+            )
+            .bind(environment)
+            .fetch_all(&self.pool)
+            .await?;
+            environment_settings.extend(settings);
+        }
+
+        if environment_settings.is_empty() {
+            return Ok(targets);
+        }
+        let environment_settings = environment_settings.into_iter().collect::<Vec<_>>();
+        let positions_exist: bool = sqlx::query_scalar(
+            "SELECT to_regclass('loyal_yield.user_yield_positions') IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if positions_exist {
+            let rows = sqlx::query(
+                r#"
+                SELECT position.wallet_address AS wallet,
+                       position.settings,
+                       position.vault_index,
+                       position.vault_pubkey,
+                       position.policy_account,
+                       position.current_market AS market,
+                       active_policy.policy_account AS active_policy_account,
+                       setup_policy.policy_account AS setup_policy_account
+                FROM loyal_yield.user_yield_positions position
+                LEFT JOIN loyal_yield.managed_vaults vault
+                  ON vault.settings = position.settings
+                 AND vault.vault_index = position.vault_index
+                 AND vault.vault_pubkey = position.vault_pubkey
+                LEFT JOIN loyal_yield.route_policies active_policy
+                  ON active_policy.id = vault.active_policy_id
+                LEFT JOIN loyal_yield.route_policies setup_policy
+                  ON setup_policy.id = vault.setup_policy_id
+                WHERE position.settings = ANY($1)
+                  AND ($2::TEXT IS NULL OR position.wallet_address = $2)
+                "#,
+            )
+            .bind(&environment_settings)
+            .bind(wallet)
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                targets.push(EarnSubscriptionTarget {
+                    environment: environment.to_owned(),
+                    settings: row.get("settings"),
+                    wallet: row.get("wallet"),
+                    earn_max: false,
+                    vault_index: row.get("vault_index"),
+                    vault_pubkey: Some(row.get("vault_pubkey")),
+                    policy_accounts: [
+                        row.try_get::<Option<String>, _>("policy_account")?,
+                        row.try_get::<Option<String>, _>("active_policy_account")?,
+                        row.try_get::<Option<String>, _>("setup_policy_account")?,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+                    markets: row
+                        .try_get::<Option<String>, _>("market")?
+                        .into_iter()
+                        .collect(),
+                    autodeposit_accounts: Vec::new(),
+                    observation_start_slot: None,
+                });
+            }
+        }
+
+        let onboarding_exists: bool = sqlx::query_scalar(
+            "SELECT to_regclass('loyal_yield.earn_deposit_onboarding_attempts') IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if onboarding_exists {
+            let rows = sqlx::query(
+                r#"
+                SELECT wallet_address AS wallet, settings, vault_index,
+                       vault_pubkey, policy_account, setup_policy_account,
+                       market
+                FROM loyal_yield.earn_deposit_onboarding_attempts
+                WHERE settings = ANY($1)
+                  AND ($2::TEXT IS NULL OR wallet_address = $2)
+                "#,
+            )
+            .bind(&environment_settings)
+            .bind(wallet)
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                targets.push(EarnSubscriptionTarget {
+                    environment: environment.to_owned(),
+                    settings: row.get("settings"),
+                    wallet: row.get("wallet"),
+                    earn_max: false,
+                    vault_index: row.get("vault_index"),
+                    vault_pubkey: Some(row.get("vault_pubkey")),
+                    policy_accounts: [
+                        row.try_get::<Option<String>, _>("policy_account")?,
+                        row.try_get::<Option<String>, _>("setup_policy_account")?,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+                    markets: row
+                        .try_get::<Option<String>, _>("market")?
+                        .into_iter()
+                        .collect(),
+                    autodeposit_accounts: Vec::new(),
+                    observation_start_slot: None,
+                });
+            }
+        }
+
+        Ok(targets)
+    }
+
     pub async fn record_autodeposit_recurring_delegation(
         &self,
         input: AutodepositRecurringDelegationObserved,
