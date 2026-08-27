@@ -14,6 +14,7 @@ pub const EARN_RECONCILIATION_HEALTH_SNAPSHOT_FAILED: &str =
 #[derive(Clone)]
 pub struct EarnMonitorMetrics {
     cursor_slot: Gauge<u64>,
+    stream_frontier_slot: Gauge<u64>,
     pending_jobs: Gauge<u64>,
     failed_pending_jobs: Gauge<u64>,
     oldest_pending_age_seconds: Gauge<u64>,
@@ -25,7 +26,14 @@ impl EarnMonitorMetrics {
         Self {
             cursor_slot: meter
                 .u64_gauge("loyal.laserstream.cursor.slot")
-                .with_description("Committed durable LaserStream cursor slot")
+                .with_description("Latest watched event committed to the LaserStream replay cursor")
+                .with_unit("{slot}")
+                .build(),
+            stream_frontier_slot: meter
+                .u64_gauge("loyal.laserstream.stream_frontier.slot")
+                .with_description(
+                    "Latest confirmed slot-progress update processed from LaserStream",
+                )
                 .with_unit("{slot}")
                 .build(),
             pending_jobs: meter
@@ -59,6 +67,10 @@ impl EarnMonitorMetrics {
             .record(snapshot.failed_pending_jobs, &self.attributes);
         self.oldest_pending_age_seconds
             .record(snapshot.oldest_pending_age_seconds, &self.attributes);
+    }
+
+    pub fn record_stream_frontier(&self, slot: u64) {
+        self.stream_frontier_slot.record(slot, &self.attributes);
     }
 }
 
@@ -124,6 +136,7 @@ mod tests {
             failed_pending_jobs: 1,
             oldest_pending_age_seconds: 120,
         });
+        metrics.record_stream_frontier(440_700_032);
 
         provider.force_flush().expect("metrics should flush");
         let exported = exporter
@@ -136,6 +149,7 @@ mod tests {
             ("loyal.earn.reconciliation.oldest_pending_age", 120),
             ("loyal.earn.reconciliation.pending", 3),
             ("loyal.laserstream.cursor.slot", 440_700_000),
+            ("loyal.laserstream.stream_frontier.slot", 440_700_032),
         ]);
         let actual = gauge_values(&exported);
         assert_eq!(actual, expected);

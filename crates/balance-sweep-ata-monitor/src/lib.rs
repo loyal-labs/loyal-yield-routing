@@ -485,6 +485,7 @@ pub async fn run_event_loop(
     recheck: Option<AtaRecheckHandle>,
     earn: Option<EarnUpdateContext>,
     earn_rebalance_metrics: EarnRebalanceMetrics,
+    earn_monitor_metrics: EarnMonitorMetrics,
     processed_frontier: Arc<AtomicU64>,
 ) -> Result<()> {
     while running.load(Ordering::Relaxed) {
@@ -494,6 +495,7 @@ pub async fn run_event_loop(
         let event = match event {
             AtaUpdateEvent::StreamProgress { slot } => {
                 processed_frontier.fetch_max(slot, Ordering::Release);
+                earn_monitor_metrics.record_stream_frontier(slot);
                 continue;
             }
             AtaUpdateEvent::EarnUpdate { update } => {

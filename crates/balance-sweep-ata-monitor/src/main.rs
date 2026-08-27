@@ -357,6 +357,7 @@ async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Resu
         earn_wake.clone(),
         autodeposit_watch_wake,
         earn_rebalance_metrics,
+        earn_monitor_metrics,
     )
     .await;
     earn_consumer_running.store(false, Ordering::Relaxed);
@@ -494,6 +495,7 @@ async fn supervise_monitor_sessions(
     earn_wake: Arc<Notify>,
     autodeposit_watch_wake: Arc<Notify>,
     earn_rebalance_metrics: EarnRebalanceMetrics,
+    earn_monitor_metrics: EarnMonitorMetrics,
 ) -> Result<()> {
     let refresh_interval = Duration::from_secs(args.target_refresh_seconds);
     let mut session: Option<MonitorSession> = None;
@@ -645,6 +647,7 @@ async fn supervise_monitor_sessions(
                 replay_from_slot_override,
                 earn_wake.clone(),
                 earn_rebalance_metrics.clone(),
+                earn_monitor_metrics.clone(),
             )
             .await
             .context("start balance sweep ATA monitor session")?;
@@ -875,6 +878,7 @@ async fn start_session(
     replay_from_slot_override: Option<u64>,
     earn_wake: Arc<Notify>,
     earn_rebalance_metrics: EarnRebalanceMetrics,
+    earn_monitor_metrics: EarnMonitorMetrics,
 ) -> Result<MonitorSession> {
     if args.update_source == UpdateSourceKind::Websocket && !watch_set.earn_vaults.is_empty() {
         anyhow::bail!(
@@ -963,6 +967,7 @@ async fn start_session(
             Some(recheck),
             earn,
             earn_rebalance_metrics,
+            earn_monitor_metrics,
             event_processed_frontier,
         )
         .await;
