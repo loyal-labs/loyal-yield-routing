@@ -287,7 +287,7 @@ pub async fn read_confirmed_squads_policy_transaction(
     .context("confirmed Squads policy transaction proof task panicked")?
 }
 
-pub(crate) fn decode_laserstream_squads_policy_transaction(
+pub fn decode_laserstream_squads_policy_transaction(
     transaction: SubscribeUpdateTransactionInfo,
     slot: u64,
 ) -> Result<EarnPolicyTransactionRead> {
@@ -437,7 +437,7 @@ pub(crate) fn decode_laserstream_squads_policy_transaction(
     ))
 }
 
-pub(crate) async fn project_earn_max_memos(
+pub async fn project_earn_max_memos(
     store: &OrchestratorStore,
     transaction: &EarnPolicyTransaction,
 ) -> Result<usize> {

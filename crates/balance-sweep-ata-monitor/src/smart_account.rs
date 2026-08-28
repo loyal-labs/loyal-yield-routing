@@ -434,7 +434,7 @@ pub fn normalize_laserstream_update(
                 .account
                 .as_ref()
                 .and_then(|account| account.txn_signature.as_deref())
-                .map(|bytes| signature_from_bytes(bytes))
+                .map(signature_from_bytes)
                 .transpose()?;
             Ok(Some(NormalizedEarnUpdate {
                 event_key: None,

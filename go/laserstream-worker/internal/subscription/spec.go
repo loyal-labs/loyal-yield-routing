@@ -50,10 +50,8 @@ func Build(spec Spec) (*pb.SubscribeRequest, error) {
 			NonemptyTxnSignature: &requireSignature,
 		}
 	}
-	for _, required := range []string{KaminoReserves, BalanceSweepWalletATAs} {
-		if _, ok := accounts[required]; !ok {
-			return nil, fmt.Errorf("required combined account filter %q is missing", required)
-		}
+	if _, ok := accounts[KaminoReserves]; !ok {
+		return nil, fmt.Errorf("required combined account filter %q is missing", KaminoReserves)
 	}
 
 	policyProgram := spec.PolicyProgram

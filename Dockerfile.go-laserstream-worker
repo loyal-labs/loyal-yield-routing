@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1.7
+
+FROM golang:1.25.1-bookworm AS go-builder
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+WORKDIR /src/go/laserstream-worker
+COPY go/laserstream-worker/go.mod go/laserstream-worker/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY go/laserstream-worker/ ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags='-s -w' -o /out/loyal-laserstream-worker ./cmd/loyal-laserstream-worker
+
+FROM rust:1.89.0-bookworm AS rust-builder
+WORKDIR /src
+ENV SQLX_OFFLINE=true
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .sqlx/ .sqlx/
+COPY docs/evidence/backyard-voltr-four-market/runtime-policy-catalog-v2.json docs/evidence/backyard-voltr-four-market/runtime-policy-catalog-v2.json
+COPY crates/ crates/
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p balance-sweep-ata-monitor --bin earn-domain-bridge \
+    && cp target/release/earn-domain-bridge /tmp/earn-domain-bridge
+
+FROM debian:bookworm-slim AS runtime
+ARG LOYAL_IMAGE_VERSION
+ENV LOYAL_IMAGE_VERSION=${LOYAL_IMAGE_VERSION} \
+    EARN_DOMAIN_BRIDGE_BINARY=/usr/local/bin/earn-domain-bridge \
+    PORT=10000
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home loyal
+COPY --from=go-builder --chmod=0755 /out/loyal-laserstream-worker /usr/local/bin/loyal-laserstream-worker
+COPY --from=rust-builder --chmod=0755 /tmp/earn-domain-bridge /usr/local/bin/earn-domain-bridge
+USER loyal
+EXPOSE 10000
+ENTRYPOINT ["/usr/local/bin/loyal-laserstream-worker"]
