@@ -43,6 +43,7 @@
     "verify:earn-laserstream-gap": "bash scripts/verify-earn-laserstream-gap-reconciliation.sh",
     "verify:go-laserstream-handoff": "bash scripts/verify-go-laserstream-handoff.sh",
     "verify:go-laserstream-worker": "bash scripts/verify-go-laserstream-handoff.sh",
+    "build:go-laserstream-worker": "bash scripts/build-go-laserstream-worker-binaries.sh",
     "timescale:migrate": "cargo run -p loyal-timescale-migrations",
     "timescale:migrate:check": "cargo run -p loyal-timescale-migrations -- --check",
     "test:squads": "cargo build-sbf -- -p mock-yield-protocols-program -p loyal-hub-swap-program && cargo test -p squads-test-harness",
