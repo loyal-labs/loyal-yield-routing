@@ -66,9 +66,11 @@ const MIGRATION_0065: &str = include_str!("../migrations/0065_autodeposit_target
 const MIGRATION_0066: &str = include_str!("../migrations/0066_earn_max_single_owner_state.sql");
 const MIGRATION_0067: &str = include_str!("../migrations/0067_earn_max_three_policy_v2.sql");
 const MIGRATION_0068: &str = include_str!("../migrations/0068_earn_max_account_cash_flows.sql");
+const MIGRATION_0069: &str = include_str!("../migrations/0069_autodeposit_event_id_ranges.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
+const AUTODEPOSIT_BOOTSTRAP_EVENT_ID_INSERT_ATTEMPTS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VaultPublicationScope {
@@ -585,6 +587,12 @@ impl NeonSqlClient {
                 version: 68,
                 name: "earn_max_account_cash_flows",
                 sql: MIGRATION_0068,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 69,
+                name: "autodeposit_event_id_ranges",
+                sql: MIGRATION_0069,
                 expected_checksum: None,
             },
         ] {
@@ -1832,33 +1840,46 @@ impl NeonSqlClient {
         if chain_status == "active" && bootstrap_generation != Some(generation) {
             if let Some(floor) = current.get::<Option<i64>, _>("wallet_balance_floor_raw") {
                 if wallet_balance_raw > floor {
-                    let event_id: i64 = sqlx::query_scalar(
-                        "SELECT nextval('loyal_yield.autodeposit_bootstrap_event_id_seq')",
-                    )
-                    .fetch_one(&mut *tx)
-                    .await?;
-                    sqlx::query(
-                        r#"
-                    INSERT INTO loyal_yield.balance_sweep_wallet_balance_events
-                        (event_id, target_id, wallet, wallet_usdc_ata, wallet_token_ata,
-                         mint, previous_amount_raw, amount_raw, delta_amount_raw,
-                         observed_slot, observed_at, source, source_commitment,
-                         raw_evidence, projected_at)
-                    VALUES ($1,$2,$3,$4,$4,$5,NULL,$6,NULL,$7,now(),
-                            'laserstream_autodeposit_activation','finalized',
-                            jsonb_build_object('bootstrapGeneration',$8),now())
-                    "#,
-                    )
-                    .bind(event_id)
-                    .bind(input.target_id.as_i64())
-                    .bind(current.get::<String, _>("wallet"))
-                    .bind(current.get::<String, _>("wallet_token_ata"))
-                    .bind(current.get::<String, _>("token_mint"))
-                    .bind(wallet_balance_raw)
-                    .bind(observation_slot)
-                    .bind(generation)
-                    .execute(&mut *tx)
-                    .await?;
+                    let mut event_id: Option<i64> = None;
+                    for _ in 0..AUTODEPOSIT_BOOTSTRAP_EVENT_ID_INSERT_ATTEMPTS {
+                        event_id = sqlx::query_scalar(
+                            r#"
+                            INSERT INTO loyal_yield.balance_sweep_wallet_balance_events
+                                (event_id, target_id, wallet, wallet_usdc_ata,
+                                 wallet_token_ata, mint, previous_amount_raw,
+                                 amount_raw, delta_amount_raw, observed_slot,
+                                 observed_at, source, source_commitment,
+                                 raw_evidence, projected_at)
+                            VALUES (
+                                nextval('loyal_yield.autodeposit_bootstrap_event_id_seq'),
+                                $1,$2,$3,$3,$4,NULL,$5,NULL,$6,now(),
+                                'laserstream_autodeposit_activation','finalized',
+                                jsonb_build_object('bootstrapGeneration',$7),now()
+                            )
+                            ON CONFLICT (event_id) DO NOTHING
+                            RETURNING event_id
+                            "#,
+                        )
+                        .bind(input.target_id.as_i64())
+                        .bind(current.get::<String, _>("wallet"))
+                        .bind(current.get::<String, _>("wallet_token_ata"))
+                        .bind(current.get::<String, _>("token_mint"))
+                        .bind(wallet_balance_raw)
+                        .bind(observation_slot)
+                        .bind(generation)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                        if event_id.is_some() {
+                            break;
+                        }
+                    }
+                    let event_id = event_id.ok_or_else(|| {
+                        OrchestratorError::StoreInvariant(format!(
+                            "Autodeposit target {} could not allocate a bootstrap event ID after {} attempts",
+                            input.target_id,
+                            AUTODEPOSIT_BOOTSTRAP_EVENT_ID_INSERT_ATTEMPTS
+                        ))
+                    })?;
                     let slot_id: i64 = sqlx::query_scalar(
                         r#"
                     INSERT INTO loyal_yield.balance_sweep_scheduled_slots

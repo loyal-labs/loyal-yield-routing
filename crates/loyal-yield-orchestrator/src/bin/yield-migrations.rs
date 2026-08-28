@@ -417,6 +417,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0068_earn_max_account_cash_flows.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 69,
+        name: "autodeposit_event_id_ranges",
+        sql: include_str!("../../../loyal-yield-store/migrations/0069_autodeposit_event_id_ranges.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
