@@ -185,6 +185,14 @@ pub trait EarnChainReader: Send + Sync {
     }
 }
 
+pub trait AutodepositChainReader: Send + Sync {
+    fn autodeposit_snapshot<'a>(
+        &'a self,
+        target: AutodepositTargetSnapshotContext,
+        minimum_slot: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<AutodepositChainObservation>> + Send + 'a>>;
+}
+
 pub struct RpcEarnChainReader {
     rpc: Arc<RpcClient>,
     store: OrchestratorStore,
@@ -200,18 +208,22 @@ impl RpcEarnChainReader {
             store,
         }
     }
+}
 
-    async fn autodeposit_snapshot(
-        &self,
+impl AutodepositChainReader for RpcEarnChainReader {
+    fn autodeposit_snapshot<'a>(
+        &'a self,
         target: AutodepositTargetSnapshotContext,
         minimum_slot: u64,
-    ) -> Result<AutodepositChainObservation> {
+    ) -> Pin<Box<dyn Future<Output = Result<AutodepositChainObservation>> + Send + 'a>> {
         let rpc = Arc::clone(&self.rpc);
-        tokio::task::spawn_blocking(move || {
-            read_autodeposit_snapshot(rpc.as_ref(), &target, minimum_slot)
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                read_autodeposit_snapshot(rpc.as_ref(), &target, minimum_slot)
+            })
+            .await
+            .context("Autodeposit RPC snapshot task panicked")?
         })
-        .await
-        .context("Autodeposit RPC snapshot task panicked")?
     }
 }
 
@@ -2710,10 +2722,42 @@ pub enum AutodepositReconciliationProcessOutcome {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutodepositReconciliationAlertKind {
+    RequestFailed,
+    RpcBehind,
+}
+
+impl AutodepositReconciliationAlertKind {
+    pub const fn error_code(self) -> &'static str {
+        match self {
+            Self::RequestFailed => {
+                crate::monitor_observability::AUTODEPOSIT_RECONCILIATION_REQUEST_FAILED
+            }
+            Self::RpcBehind => crate::monitor_observability::AUTODEPOSIT_RECONCILIATION_RPC_BEHIND,
+        }
+    }
+}
+
+pub fn autodeposit_reconciliation_retry_alert(
+    kind: EarnReconciliationDeferralKind,
+    attempt_count: i32,
+) -> Option<AutodepositReconciliationAlertKind> {
+    if !should_emit_reconciliation_retry_alert(kind, attempt_count) {
+        return None;
+    }
+    Some(match kind {
+        EarnReconciliationDeferralKind::RpcBehind => AutodepositReconciliationAlertKind::RpcBehind,
+        EarnReconciliationDeferralKind::ProofPending | EarnReconciliationDeferralKind::Failure => {
+            AutodepositReconciliationAlertKind::RequestFailed
+        }
+    })
+}
+
 pub async fn process_next_autodeposit_reconciliation_request(
     store: &OrchestratorStore,
     claim_owner: &str,
-    chain: &RpcEarnChainReader,
+    chain: &dyn AutodepositChainReader,
     lease_seconds: i64,
     retry_after_seconds: i64,
 ) -> Result<AutodepositReconciliationProcessOutcome> {
@@ -2840,7 +2884,8 @@ pub async fn run_autodeposit_reconciliation_consumer(
                 kind,
                 error,
             }) => {
-                if should_emit_reconciliation_retry_alert(kind, attempt_count) {
+                let operational_alert = autodeposit_reconciliation_retry_alert(kind, attempt_count);
+                if operational_alert.is_some() {
                     match kind {
                         EarnReconciliationDeferralKind::ProofPending => tracing::error!(
                             target_id = target_id.as_i64(),
@@ -2864,12 +2909,11 @@ pub async fn run_autodeposit_reconciliation_consumer(
                             "Autodeposit reconciliation failed; request retained for retry"
                         ),
                     }
-                    match kind {
-                        EarnReconciliationDeferralKind::RpcBehind => {
+                    match operational_alert.expect("alert kind exists after escalation") {
+                        AutodepositReconciliationAlertKind::RpcBehind => {
                             emit_autodeposit_reconciliation_rpc_behind();
                         }
-                        EarnReconciliationDeferralKind::ProofPending
-                        | EarnReconciliationDeferralKind::Failure => {
+                        AutodepositReconciliationAlertKind::RequestFailed => {
                             emit_autodeposit_reconciliation_request_failed();
                         }
                     }
