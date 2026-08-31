@@ -6374,7 +6374,7 @@ async fn apply_earn_withdrawal(
             return Ok(());
         }
         return Err(OrchestratorError::StoreInvariant(format!(
-            "finalized Earn withdrawal {} has no active projected position",
+            "confirmed Earn withdrawal {} has no active projected position",
             mutation.withdrawal_signature
         )));
     };
@@ -6397,7 +6397,7 @@ async fn apply_earn_withdrawal(
             reserve_withdrawals, mode, confirmed_at, created_at
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-            'chain_snapshot', $11, jsonb_build_object('kind', 'earn_laserstream_finalized'),
+            'chain_snapshot', $11, jsonb_build_object('kind', 'earn_laserstream_confirmed'),
             '[]'::jsonb, $15, $16, now()
         )
         ON CONFLICT (withdrawal_signature) DO NOTHING

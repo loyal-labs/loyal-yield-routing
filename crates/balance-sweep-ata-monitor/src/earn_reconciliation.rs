@@ -46,9 +46,11 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use solana_account_decoder::UiAccountEncoding;
 use solana_client::{
+    client_error::{ClientError, ClientErrorKind},
     rpc_client::RpcClient,
     rpc_config::{RpcAccountInfoConfig, RpcTokenAccountsFilter, RpcTransactionConfig},
-    rpc_request::RpcRequest,
+    rpc_custom_error::JSON_RPC_SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED,
+    rpc_request::{RpcError as SolanaRpcError, RpcRequest},
     rpc_response::{Response as RpcResponse, RpcKeyedAccount},
 };
 use solana_program::program_pack::Pack;
@@ -1046,7 +1048,7 @@ fn resolve_rpc_mutation(
         let transaction_slot = transaction
             .get("slot")
             .and_then(Value::as_u64)
-            .context("finalized policy-close transaction has no slot")?;
+            .context("confirmed policy-close transaction has no slot")?;
         if transaction_slot != update.slot {
             bail!(
                 "transaction {signature} landed at slot {transaction_slot}, expected account-update slot {}",
@@ -1091,7 +1093,7 @@ fn resolve_rpc_mutation(
     let transaction_slot = transaction
         .get("slot")
         .and_then(Value::as_u64)
-        .context("finalized transaction has no slot")?;
+        .context("confirmed transaction has no slot")?;
     if transaction_slot != update.slot {
         bail!(
             "transaction {signature} landed at slot {transaction_slot}, expected account-update slot {}",
@@ -1129,7 +1131,7 @@ fn resolve_rpc_mutation(
         }));
     }
     let Some(route_policy) = context.route_policy else {
-        bail!("cash flow {signature} arrived before its finalized route policy projection");
+        bail!("cash flow {signature} arrived before its route policy projection");
     };
     read_cash_flow_proof(
         rpc,
@@ -1157,15 +1159,8 @@ fn read_cleanup_proof(
         .iter()
         .map(|account| Pubkey::from_str(&account.pubkey))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let response = rpc.get_multiple_accounts_with_config(
-        &addresses,
-        RpcAccountInfoConfig {
-            encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(CommitmentConfig::finalized()),
-            min_context_slot: Some(min_context_slot),
-            ..RpcAccountInfoConfig::default()
-        },
-    )?;
+    let response =
+        rpc.get_multiple_accounts_with_config(&addresses, earn_snapshot_config(min_context_slot))?;
     if response.context.slot < min_context_slot {
         bail!(
             "cleanup proof context slot {} is below minimum {min_context_slot}",
@@ -1304,12 +1299,7 @@ fn get_token_accounts_by_owner_with_config(
     token_program: Pubkey,
     min_context_slot: u64,
 ) -> Result<RpcResponse<Vec<RpcKeyedAccount>>> {
-    let config = RpcAccountInfoConfig {
-        encoding: Some(UiAccountEncoding::Base64),
-        commitment: Some(CommitmentConfig::finalized()),
-        min_context_slot: Some(min_context_slot),
-        ..RpcAccountInfoConfig::default()
-    };
+    let config = earn_snapshot_config(min_context_slot);
     rpc.send(
         RpcRequest::GetTokenAccountsByOwner,
         json!([
@@ -1787,6 +1777,18 @@ fn read_cash_flow_proof(
     }
 }
 
+// Direct Earn projection follows the confirmed LaserStream frontier. Fleet
+// movement submissions keep their independent finalized confirmation and
+// reconciliation fences in loyal-yield-store.
+fn earn_snapshot_config(minimum_slot: u64) -> RpcAccountInfoConfig {
+    RpcAccountInfoConfig {
+        encoding: Some(UiAccountEncoding::Base64),
+        commitment: Some(CommitmentConfig::confirmed()),
+        min_context_slot: Some(minimum_slot),
+        ..RpcAccountInfoConfig::default()
+    }
+}
+
 fn read_complete_vault_snapshot(
     rpc: &RpcClient,
     vault: &EarnVaultWatch,
@@ -1800,15 +1802,8 @@ fn read_complete_vault_snapshot(
         .filter(|account| account.role == "obligation")
         .map(|account| Pubkey::from_str(&account.pubkey))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let discovery = rpc.get_multiple_accounts_with_config(
-        &obligations,
-        RpcAccountInfoConfig {
-            encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(CommitmentConfig::finalized()),
-            min_context_slot: Some(min_context_slot),
-            ..RpcAccountInfoConfig::default()
-        },
-    )?;
+    let discovery = rpc
+        .get_multiple_accounts_with_config(&obligations, earn_snapshot_config(min_context_slot))?;
     let mut reserves = BTreeSet::new();
     for account in discovery.value.iter().flatten() {
         if account.owner != KLEND_PROGRAM_ID {
@@ -1841,12 +1836,7 @@ fn read_complete_vault_snapshot(
         .collect::<Vec<_>>();
     let response = rpc.get_multiple_accounts_with_config(
         &addresses,
-        RpcAccountInfoConfig {
-            encoding: Some(UiAccountEncoding::Base64),
-            commitment: Some(CommitmentConfig::finalized()),
-            min_context_slot: Some(discovery.context.slot.max(min_context_slot)),
-            ..RpcAccountInfoConfig::default()
-        },
+        earn_snapshot_config(discovery.context.slot.max(min_context_slot)),
     )?;
     if response.context.slot < min_context_slot {
         bail!(
@@ -1949,7 +1939,7 @@ fn read_complete_vault_snapshot(
             token_account: address.to_string(),
             observed_slot: response.context.slot,
             observed_at: None,
-            source_commitment: "finalized".to_owned(),
+            source_commitment: "confirmed".to_owned(),
         });
     }
     Ok(CompleteVaultSnapshot {
@@ -1959,17 +1949,17 @@ fn read_complete_vault_snapshot(
     })
 }
 
+fn earn_transaction_config() -> RpcTransactionConfig {
+    RpcTransactionConfig {
+        encoding: Some(UiTransactionEncoding::JsonParsed),
+        commitment: Some(CommitmentConfig::confirmed()),
+        max_supported_transaction_version: Some(0),
+    }
+}
+
 fn read_transaction_json(rpc: &RpcClient, signature: &str) -> Result<Value> {
     let signature = Signature::from_str(signature).context("invalid transaction signature")?;
-    let transaction = read_transaction_with_config(
-        rpc,
-        &signature,
-        RpcTransactionConfig {
-            encoding: Some(UiTransactionEncoding::JsonParsed),
-            commitment: Some(CommitmentConfig::finalized()),
-            max_supported_transaction_version: Some(0),
-        },
-    )?;
+    let transaction = read_transaction_with_config(rpc, &signature, earn_transaction_config())?;
     let transaction =
         serde_json::to_value(transaction).context("serialize confirmed transaction")?;
     if transaction
@@ -2233,6 +2223,7 @@ pub async fn enqueue_normalized_earn_update(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EarnReconciliationDeferralKind {
     ProofPending,
+    RpcBehind,
     Failure,
 }
 
@@ -2254,6 +2245,16 @@ pub enum EarnReconciliationProcessOutcome {
 fn earn_reconciliation_deferral_kind(error: &anyhow::Error) -> EarnReconciliationDeferralKind {
     if error.downcast_ref::<TransactionProofPending>().is_some() {
         EarnReconciliationDeferralKind::ProofPending
+    } else if error.chain().any(|cause| {
+        cause.downcast_ref::<ClientError>().is_some_and(|error| {
+            matches!(
+                error.kind(),
+                ClientErrorKind::RpcError(SolanaRpcError::RpcResponseError { code, .. })
+                    if *code == JSON_RPC_SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED
+            )
+        })
+    }) {
+        EarnReconciliationDeferralKind::RpcBehind
     } else {
         EarnReconciliationDeferralKind::Failure
     }
@@ -2264,7 +2265,8 @@ pub(crate) fn should_emit_reconciliation_retry_alert(
     attempt_count: i32,
 ) -> bool {
     match kind {
-        EarnReconciliationDeferralKind::ProofPending => {
+        EarnReconciliationDeferralKind::ProofPending
+        | EarnReconciliationDeferralKind::RpcBehind => {
             attempt_count == TRANSACTION_PROOF_STALE_ATTEMPT
         }
         EarnReconciliationDeferralKind::Failure => attempt_count == 1,
@@ -2626,7 +2628,15 @@ pub async fn run_earn_reconciliation_consumer(
                             job_id,
                             attempt_count,
                             error,
+                            reason = "proof_pending",
                             "Earn reconciliation proof stayed unavailable beyond the retry horizon"
+                        ),
+                        EarnReconciliationDeferralKind::RpcBehind => tracing::error!(
+                            job_id,
+                            attempt_count,
+                            error,
+                            reason = "rpc_behind",
+                            "Earn reconciliation RPC stayed behind beyond the retry horizon"
                         ),
                         EarnReconciliationDeferralKind::Failure => tracing::error!(
                             job_id,
@@ -2642,7 +2652,15 @@ pub async fn run_earn_reconciliation_consumer(
                             job_id,
                             attempt_count,
                             error,
+                            reason = "proof_pending",
                             "Earn reconciliation proof is still pending"
+                        ),
+                        EarnReconciliationDeferralKind::RpcBehind => tracing::warn!(
+                            job_id,
+                            attempt_count,
+                            error,
+                            reason = "rpc_behind",
+                            "Earn reconciliation RPC is still behind"
                         ),
                         EarnReconciliationDeferralKind::Failure => tracing::warn!(
                             job_id,
@@ -3197,6 +3215,45 @@ mod tests {
             EarnReconciliationDeferralKind::Failure,
             1
         ));
+    }
+
+    #[test]
+    fn minimum_context_slot_lag_is_retryable_without_an_immediate_alert() {
+        let error = anyhow::Error::new(ClientError::from(ClientErrorKind::RpcError(
+            SolanaRpcError::RpcResponseError {
+                code: JSON_RPC_SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED,
+                message: "minimum context slot has not been reached".to_owned(),
+                data: solana_client::rpc_request::RpcResponseErrorData::Empty,
+            },
+        )))
+        .context("read confirmed Earn snapshot");
+
+        assert_eq!(
+            earn_reconciliation_deferral_kind(&error),
+            EarnReconciliationDeferralKind::RpcBehind
+        );
+        assert!(!should_emit_reconciliation_retry_alert(
+            EarnReconciliationDeferralKind::RpcBehind,
+            1
+        ));
+        assert!(should_emit_reconciliation_retry_alert(
+            EarnReconciliationDeferralKind::RpcBehind,
+            6
+        ));
+        assert!(!should_emit_reconciliation_retry_alert(
+            EarnReconciliationDeferralKind::RpcBehind,
+            7
+        ));
+    }
+
+    #[test]
+    fn earn_reads_use_confirmed_state_with_a_slot_fence() {
+        let snapshot = earn_snapshot_config(42);
+        assert_eq!(snapshot.commitment, Some(CommitmentConfig::confirmed()));
+        assert_eq!(snapshot.min_context_slot, Some(42));
+
+        let transaction = earn_transaction_config();
+        assert_eq!(transaction.commitment, Some(CommitmentConfig::confirmed()));
     }
 
     #[test]
