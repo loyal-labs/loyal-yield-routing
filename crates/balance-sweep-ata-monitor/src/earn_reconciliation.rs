@@ -73,6 +73,8 @@ use tokio::{
 };
 
 use crate::{
+    emit_autodeposit_reconciliation_consumer_failed,
+    emit_autodeposit_reconciliation_request_failed, emit_autodeposit_reconciliation_rpc_behind,
     emit_earn_reconciliation_consumer_failed, emit_earn_reconciliation_health_snapshot_failed,
     emit_earn_reconciliation_job_failed,
     monitor_observability::EarnMonitorMetrics,
@@ -2242,7 +2244,7 @@ pub enum EarnReconciliationProcessOutcome {
     },
 }
 
-fn earn_reconciliation_deferral_kind(error: &anyhow::Error) -> EarnReconciliationDeferralKind {
+fn reconciliation_deferral_kind(error: &anyhow::Error) -> EarnReconciliationDeferralKind {
     if error.downcast_ref::<TransactionProofPending>().is_some() {
         EarnReconciliationDeferralKind::ProofPending
     } else if error.chain().any(|cause| {
@@ -2559,7 +2561,7 @@ async fn defer_earn_reconciliation_job(
     error: anyhow::Error,
     retry_after_seconds: i64,
 ) -> Result<EarnReconciliationProcessOutcome> {
-    let kind = earn_reconciliation_deferral_kind(&error);
+    let kind = reconciliation_deferral_kind(&error);
     let error = format!("{error:#}");
     store
         .retry_earn_reconciliation_job(job_id, claim_owner, &error, retry_after_seconds)
@@ -2703,6 +2705,7 @@ pub enum AutodepositReconciliationProcessOutcome {
     Deferred {
         target_id: loyal_yield_store::BalanceSweepTargetId,
         attempt_count: i32,
+        kind: EarnReconciliationDeferralKind,
         error: String,
     },
 }
@@ -2768,6 +2771,7 @@ pub async fn process_next_autodeposit_reconciliation_request(
             })
         }
         Err(error) => {
+            let kind = reconciliation_deferral_kind(&error);
             let error = format!("{error:#}");
             store
                 .retry_autodeposit_reconciliation_request(
@@ -2780,6 +2784,7 @@ pub async fn process_next_autodeposit_reconciliation_request(
             Ok(AutodepositReconciliationProcessOutcome::Deferred {
                 target_id: request.target_id,
                 attempt_count: request.attempt_count,
+                kind,
                 error,
             })
         }
@@ -2832,26 +2837,66 @@ pub async fn run_autodeposit_reconciliation_consumer(
             Ok(AutodepositReconciliationProcessOutcome::Deferred {
                 target_id,
                 attempt_count,
+                kind,
                 error,
             }) => {
-                if should_emit_reconciliation_retry_alert(
-                    EarnReconciliationDeferralKind::Failure,
-                    attempt_count,
-                ) {
-                    tracing::error!(
-                        target_id = target_id.as_i64(),
-                        attempt_count,
-                        error,
-                        "Autodeposit reconciliation failed; request retained for retry"
-                    );
-                    emit_earn_reconciliation_job_failed();
+                if should_emit_reconciliation_retry_alert(kind, attempt_count) {
+                    match kind {
+                        EarnReconciliationDeferralKind::ProofPending => tracing::error!(
+                            target_id = target_id.as_i64(),
+                            attempt_count,
+                            error,
+                            reason = "proof_pending",
+                            "Autodeposit reconciliation proof stayed unavailable beyond the retry horizon"
+                        ),
+                        EarnReconciliationDeferralKind::RpcBehind => tracing::error!(
+                            target_id = target_id.as_i64(),
+                            attempt_count,
+                            error,
+                            reason = "rpc_behind",
+                            "Autodeposit reconciliation RPC stayed behind beyond the retry horizon"
+                        ),
+                        EarnReconciliationDeferralKind::Failure => tracing::error!(
+                            target_id = target_id.as_i64(),
+                            attempt_count,
+                            error,
+                            reason = "failure",
+                            "Autodeposit reconciliation failed; request retained for retry"
+                        ),
+                    }
+                    match kind {
+                        EarnReconciliationDeferralKind::RpcBehind => {
+                            emit_autodeposit_reconciliation_rpc_behind();
+                        }
+                        EarnReconciliationDeferralKind::ProofPending
+                        | EarnReconciliationDeferralKind::Failure => {
+                            emit_autodeposit_reconciliation_request_failed();
+                        }
+                    }
                 } else {
-                    tracing::warn!(
-                        target_id = target_id.as_i64(),
-                        attempt_count,
-                        error,
-                        "Autodeposit reconciliation is still pending"
-                    );
+                    match kind {
+                        EarnReconciliationDeferralKind::ProofPending => tracing::warn!(
+                            target_id = target_id.as_i64(),
+                            attempt_count,
+                            error,
+                            reason = "proof_pending",
+                            "Autodeposit reconciliation proof is still pending"
+                        ),
+                        EarnReconciliationDeferralKind::RpcBehind => tracing::warn!(
+                            target_id = target_id.as_i64(),
+                            attempt_count,
+                            error,
+                            reason = "rpc_behind",
+                            "Autodeposit reconciliation RPC is still behind"
+                        ),
+                        EarnReconciliationDeferralKind::Failure => tracing::warn!(
+                            target_id = target_id.as_i64(),
+                            attempt_count,
+                            error,
+                            reason = "failure",
+                            "Autodeposit reconciliation is still pending"
+                        ),
+                    }
                 }
             }
             Ok(AutodepositReconciliationProcessOutcome::Idle) => {
@@ -2862,7 +2907,7 @@ pub async fn run_autodeposit_reconciliation_consumer(
             }
             Err(error) => {
                 tracing::error!(error = %error, "Autodeposit reconciliation consumer failed");
-                emit_earn_reconciliation_consumer_failed();
+                emit_autodeposit_reconciliation_consumer_failed();
                 time::sleep(Duration::from_secs(1)).await;
             }
         }
@@ -3196,7 +3241,7 @@ mod tests {
         .expect_err("persistent null must remain pending without fabricating proof");
         assert!(reads.is_empty());
         assert_eq!(
-            earn_reconciliation_deferral_kind(&error),
+            reconciliation_deferral_kind(&error),
             EarnReconciliationDeferralKind::ProofPending
         );
         assert!(!should_emit_reconciliation_retry_alert(
@@ -3218,7 +3263,7 @@ mod tests {
     }
 
     #[test]
-    fn minimum_context_slot_lag_is_retryable_without_an_immediate_alert() {
+    fn minimum_context_slot_lag_uses_the_shared_delayed_alert_policy() {
         let error = anyhow::Error::new(ClientError::from(ClientErrorKind::RpcError(
             SolanaRpcError::RpcResponseError {
                 code: JSON_RPC_SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED,
@@ -3229,7 +3274,7 @@ mod tests {
         .context("read confirmed Earn snapshot");
 
         assert_eq!(
-            earn_reconciliation_deferral_kind(&error),
+            reconciliation_deferral_kind(&error),
             EarnReconciliationDeferralKind::RpcBehind
         );
         assert!(!should_emit_reconciliation_retry_alert(

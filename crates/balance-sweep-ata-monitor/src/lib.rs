@@ -59,6 +59,8 @@ pub use earn_reconciliation::{
     FixtureEarnChainReader, RpcEarnChainReader,
 };
 pub use monitor_observability::{
+    emit_autodeposit_reconciliation_consumer_failed,
+    emit_autodeposit_reconciliation_request_failed, emit_autodeposit_reconciliation_rpc_behind,
     emit_earn_reconciliation_consumer_failed, emit_earn_reconciliation_health_snapshot_failed,
     emit_earn_reconciliation_job_failed, EarnMonitorMetrics,
 };
