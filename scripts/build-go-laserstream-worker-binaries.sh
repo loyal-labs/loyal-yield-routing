@@ -4,11 +4,11 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 go_bin="${GO_BIN:-$(command -v go || true)}"
 if [[ -z "$go_bin" || ! -x "$go_bin" ]]; then
-  echo "Go 1.25.1 is required; set GO_BIN" >&2
+  echo "Go 1.27.0 is required; set GO_BIN" >&2
   exit 1
 fi
-if [[ "$($go_bin env GOVERSION)" != "go1.25.1" ]]; then
-  echo "expected Go go1.25.1" >&2
+if [[ "$($go_bin env GOVERSION)" != "go1.27.0" ]]; then
+  echo "expected Go go1.27.0" >&2
   exit 1
 fi
 

@@ -64,11 +64,10 @@ restarts it from durable cursors.
 
 ## Verification
 
-Go 1.25.1 is pinned by `go.mod`.
+Go 1.27.0 is pinned by `go.mod`.
 
 ```sh
-GO_BIN=/path/to/go1.25.1/bin/go \
-  ../../scripts/verify-go-laserstream-handoff.sh
+../../scripts/verify-go-laserstream-handoff.sh
 ```
 
 The isolated verifier creates a PostgreSQL cluster and a TimescaleDB container,
