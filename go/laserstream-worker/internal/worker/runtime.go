@@ -22,6 +22,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/laserstream-worker/internal/watch"
 )
 
+const kaminoVerificationFailureThreshold = 3
+
 type Runtime struct {
 	cfg           config.Config
 	logger        *slog.Logger
@@ -96,9 +98,29 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	fromSlot, err := r.replayStart(ctx, seedSlot, currentWatch.ObservationStartSlot)
+	watchObservationConsumer := r.earn.ConsumerName() + ":watch-observation"
+	watchObservationSlot, err := r.earnStore.ReplayCursor(ctx, watchObservationConsumer)
 	if err != nil {
 		return err
+	}
+	firstWatchObservation := watchObservationSlot == 0
+	fromSlot, err := r.replayStart(ctx, seedSlot, currentWatch.ObservationStartSlot, watchObservationSlot)
+	if err != nil {
+		return err
+	}
+	if err = currentWatch.AnchorNewEarnBindings(nil, fromSlot); err != nil {
+		return err
+	}
+	if firstWatchObservation {
+		recovered, recoveryErr := r.recoverNewEarnBindings(ctx, nil, currentWatch)
+		if recoveryErr != nil {
+			return fmt.Errorf("recover initial Earn bindings: %w", recoveryErr)
+		}
+		r.logger.Info("recovered initial Earn binding state from confirmed RPC", "insertedJobs", recovered)
+		watchObservationSlot = fromSlot
+		if err = r.earnStore.AdvanceReplayCursor(ctx, watchObservationConsumer, watchObservationSlot); err != nil {
+			return fmt.Errorf("persist initial watch observation: %w", err)
+		}
 	}
 	request, err := r.request(currentWatch, targets, fromSlot)
 	if err != nil {
@@ -114,8 +136,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.health.SetReady(true)
 	sessionStarted := time.Now()
 	r.logger.Info("combined LaserStream worker started", "fromSlot", fromSlot, "kaminoReserves", len(targets), "ataTargets", len(currentWatch.ATAs), "earnVaults", len(currentWatch.Vaults))
-	watchTicker := time.NewTicker(r.cfg.WatchRefresh)
-	defer watchTicker.Stop()
+	watchCtx, cancelWatch := context.WithCancel(ctx)
+	defer cancelWatch()
+	watchRefresh := startWatchRefreshSignals(watchCtx, r.cfg.NeonDatabaseURL, r.cfg.WatchRefresh, r.logger)
 	verifyTicker := time.NewTicker(r.cfg.VerifyRefresh)
 	defer verifyTicker.Stop()
 	progressTicker := time.NewTicker(5 * time.Second)
@@ -158,12 +181,29 @@ func (r *Runtime) Run(ctx context.Context) error {
 			r.health.SetConnected(true)
 			r.health.SetReady(true)
 			sessionStarted = time.Now()
-		case <-watchTicker.C:
+		case <-watchRefresh:
+			scanBoundary := manager.ActiveFrontier()
+			if scanBoundary == 0 {
+				scanBoundary = watchObservationSlot
+			}
 			nextWatch, nextTargets, loadErr := r.load(ctx)
 			if loadErr != nil {
 				r.metrics.RecordFailure(ctx, "watch_refresh")
 				r.logger.Error("failed to refresh combined LaserStream watch set", "error", loadErr)
 				continue
+			}
+			if anchorErr := nextWatch.AnchorNewEarnBindings(currentWatch, watchObservationSlot); anchorErr != nil {
+				return anchorErr
+			}
+			if retainErr := nextWatch.RetainPreviousEarnBindings(currentWatch); retainErr != nil {
+				return retainErr
+			}
+			if recovered, recoveryErr := r.recoverNewEarnBindings(ctx, currentWatch, nextWatch); recoveryErr != nil {
+				r.metrics.RecordFailure(ctx, "earn_binding_rpc_recovery")
+				r.logger.Error("failed to recover newly discovered Earn bindings; old stream retained", "event", "earn_binding_rpc_recovery_failed", "error", recoveryErr)
+				continue
+			} else if recovered > 0 {
+				r.logger.Info("recovered newly discovered Earn binding state from confirmed RPC", "insertedJobs", recovered)
 			}
 			if recovered, gapErr := r.recoverEarnMaxGaps(ctx, nextWatch); gapErr != nil {
 				r.metrics.RecordFailure(ctx, "earn_max_rpc_gap_recovery")
@@ -174,13 +214,23 @@ func (r *Runtime) Run(ctx context.Context) error {
 			if nextWatch.Fingerprint() == currentWatch.Fingerprint() && targetFingerprint(nextTargets) == targetFingerprint(targets) {
 				r.kamino.SetTargets(nextTargets)
 				targets = nextTargets
+				if scanBoundary > watchObservationSlot {
+					if cursorErr := r.earnStore.AdvanceReplayCursor(ctx, watchObservationConsumer, scanBoundary); cursorErr != nil {
+						return fmt.Errorf("persist watch observation: %w", cursorErr)
+					}
+					watchObservationSlot = scanBoundary
+				}
 				continue
 			}
 			r.ata.SetTargets(nextWatch.ATAs)
 			r.earn.SetWatchSet(nextWatch)
 			r.kamino.SetTargets(nextTargets)
 			requested := manager.ActiveFrontier()
-			if bindingStart := newBindingStart(currentWatch, nextWatch); bindingStart != nil && *bindingStart < requested {
+			bindingStart, anchorErr := nextWatch.NewEarnBindingStart(currentWatch)
+			if anchorErr != nil {
+				return anchorErr
+			}
+			if bindingStart != nil && *bindingStart < requested {
 				requested = *bindingStart
 			}
 			replacement, buildErr := r.request(nextWatch, nextTargets, requested)
@@ -195,6 +245,12 @@ func (r *Runtime) Run(ctx context.Context) error {
 				r.kamino.SetTargets(targets)
 				continue
 			}
+			if scanBoundary > watchObservationSlot {
+				if cursorErr := r.earnStore.AdvanceReplayCursor(ctx, watchObservationConsumer, scanBoundary); cursorErr != nil {
+					return fmt.Errorf("persist watch observation after handoff: %w", cursorErr)
+				}
+				watchObservationSlot = scanBoundary
+			}
 			r.metrics.RecordHandoff(ctx, "promoted")
 			request = replacement
 			currentWatch, targets = nextWatch, nextTargets
@@ -203,11 +259,12 @@ func (r *Runtime) Run(ctx context.Context) error {
 			if verifyErr := r.kamino.Verify(ctx); verifyErr != nil {
 				verificationFailures++
 				r.metrics.RecordFailure(ctx, "kamino_confirmed_verification")
-				level := r.logger.Warn
-				if verificationFailures >= 3 {
-					level = r.logger.Error
+				if terminalErr := persistentVerificationError(verificationFailures, verifyErr); terminalErr != nil {
+					r.health.Fatal(terminalErr)
+					r.logger.Error("Kamino confirmed-state verification exhausted retries; restarting", "event", "kamino_confirmed_verification_stalled", "consecutiveFailures", verificationFailures, "error", verifyErr)
+					return terminalErr
 				}
-				level("Kamino confirmed-state verification failed", "event", "kamino_confirmed_verification_failed", "consecutiveFailures", verificationFailures, "error", verifyErr)
+				r.logger.Warn("Kamino confirmed-state verification failed", "event", "kamino_confirmed_verification_failed", "consecutiveFailures", verificationFailures, "error", verifyErr)
 			} else {
 				verificationFailures = 0
 			}
@@ -288,7 +345,7 @@ func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target,
 	}
 	return set, targets, kaminoSlot, nil
 }
-func (r *Runtime) replayStart(ctx context.Context, seed uint64, observationStart *uint64) (uint64, error) {
+func (r *Runtime) replayStart(ctx context.Context, seed uint64, observationStart *uint64, watchCursor uint64) (uint64, error) {
 	current, err := r.rpc.Slot(ctx, "confirmed")
 	if err != nil {
 		return 0, err
@@ -301,17 +358,22 @@ func (r *Runtime) replayStart(ctx context.Context, seed uint64, observationStart
 	if err != nil {
 		return 0, err
 	}
-	return selectReplayStart(current, seed, earnCursor, policyCursor, r.cfg.ReplayOverlapSlots, observationStart)
+	return selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, r.cfg.ReplayOverlapSlots, observationStart)
 }
 
-func selectReplayStart(current, seed, earnCursor, policyCursor, overlap uint64, observationStart *uint64) (uint64, error) {
+func selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, overlap uint64, observationStart *uint64) (uint64, error) {
 	starts := []uint64{subtract(seed, overlap)}
 	if earnCursor > 0 {
 		starts = append(starts, subtract(earnCursor, overlap))
 	}
 	if policyCursor > 0 {
 		starts = append(starts, subtract(policyCursor, overlap))
+	}
+	if watchCursor > 0 {
+		starts = append(starts, subtract(watchCursor, overlap))
 	} else {
+		// First deployment has no durable watch scan yet. Bound discovery gaps
+		// independently of ahead Earn/projection cursors.
 		starts = append(starts, subtract(current, max(overlap, 10_000)))
 	}
 	if observationStart != nil {
@@ -341,6 +403,88 @@ func (r *Runtime) request(set *watch.Set, targets []kamino.Target, from uint64) 
 		}
 	}
 	return subscription.Build(subscription.Spec{FromSlot: from, Accounts: accounts})
+}
+
+type earnBindingRecovery struct {
+	address string
+	filters []string
+}
+
+func newEarnBindingRecoveries(previous, next *watch.Set) []earnBindingRecovery {
+	existing := make(map[string]struct{})
+	if previous != nil {
+		for _, vault := range previous.Vaults {
+			for _, account := range vault.Accounts {
+				existing[vault.Environment+":"+vault.Vault+":"+account.Role+":"+account.Pubkey] = struct{}{}
+			}
+		}
+	}
+	filtersByAddress := make(map[string]map[string]struct{})
+	for _, vault := range next.Vaults {
+		for _, account := range vault.Accounts {
+			key := vault.Environment + ":" + vault.Vault + ":" + account.Role + ":" + account.Pubkey
+			if _, ok := existing[key]; ok {
+				continue
+			}
+			channel := watch.ChannelForRole(account.Role)
+			if channel == "" {
+				continue
+			}
+			if filtersByAddress[account.Pubkey] == nil {
+				filtersByAddress[account.Pubkey] = make(map[string]struct{})
+			}
+			filtersByAddress[account.Pubkey][channel] = struct{}{}
+		}
+	}
+	result := make([]earnBindingRecovery, 0, len(filtersByAddress))
+	for address, filterSet := range filtersByAddress {
+		filters := make([]string, 0, len(filterSet))
+		for filter := range filterSet {
+			filters = append(filters, filter)
+		}
+		sort.Strings(filters)
+		result = append(result, earnBindingRecovery{address: address, filters: filters})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].address < result[j].address })
+	return result
+}
+
+func (r *Runtime) recoverNewEarnBindings(ctx context.Context, previous, next *watch.Set) (int64, error) {
+	bindings := newEarnBindingRecoveries(previous, next)
+	var inserted int64
+	for start := 0; start < len(bindings); start += 100 {
+		end := min(start+100, len(bindings))
+		addresses := make([]string, end-start)
+		for index, binding := range bindings[start:end] {
+			addresses[index] = binding.address
+		}
+		response, err := r.rpc.MultipleAccounts(ctx, addresses, "confirmed", nil)
+		if err != nil {
+			return inserted, fmt.Errorf("read newly discovered Earn accounts: %w", err)
+		}
+		if response.Slot == 0 || len(response.Accounts) != len(addresses) {
+			return inserted, fmt.Errorf("new Earn account recovery returned slot %d and %d/%d accounts", response.Slot, len(response.Accounts), len(addresses))
+		}
+		for index, binding := range bindings[start:end] {
+			kind := "account_deleted"
+			if account := response.Accounts[index]; account != nil && account.Lamports > 0 {
+				kind = "account"
+			}
+			eventKey := fmt.Sprintf("watch-discovery:%d:%s", response.Slot, binding.address)
+			address := binding.address
+			update := earn.NormalizedUpdate{EventKey: &eventKey, Filters: binding.filters, EventKind: kind, AccountPubkey: &address, Slot: response.Slot}
+			vaults := next.AffectedVaults(binding.address)
+			if len(vaults) == 0 {
+				return inserted, fmt.Errorf("new Earn binding %s has no affected vault", binding.address)
+			}
+			outcome, err := r.earnStore.Enqueue(ctx, r.earn.ConsumerName(), eventKey, response.Slot, update, vaults, binding.address)
+			if err != nil {
+				return inserted, fmt.Errorf("enqueue new Earn binding recovery for %s: %w", binding.address, err)
+			}
+			inserted += outcome.InsertedJobs
+		}
+	}
+	return inserted, nil
 }
 
 func (r *Runtime) recoverEarnMaxGaps(ctx context.Context, set *watch.Set) (int64, error) {
@@ -407,39 +551,11 @@ func (r *Runtime) recoverEarnMaxGaps(ctx context.Context, set *watch.Set) (int64
 	return inserted, nil
 }
 
-func newBindingStart(previous, next *watch.Set) *uint64 {
-	existing := make(map[string]struct{})
-	for _, vault := range previous.Vaults {
-		for _, account := range vault.Accounts {
-			existing[vault.Environment+":"+vault.Vault+":"+account.Role+":"+account.Pubkey] = struct{}{}
-		}
+func persistentVerificationError(consecutiveFailures int, cause error) error {
+	if consecutiveFailures < kaminoVerificationFailureThreshold {
+		return nil
 	}
-	var result *uint64
-	for _, vault := range next.Vaults {
-		if vault.ObservationStartSlot == nil {
-			continue
-		}
-		for _, account := range vault.Accounts {
-			key := vault.Environment + ":" + vault.Vault + ":" + account.Role + ":" + account.Pubkey
-			if _, ok := existing[key]; !ok {
-				result = minimum(result, vault.ObservationStartSlot)
-			}
-		}
-	}
-	return result
-}
-func minimum(left, right *uint64) *uint64 {
-	if left == nil {
-		return right
-	}
-	if right == nil {
-		return left
-	}
-	value := *left
-	if *right < value {
-		value = *right
-	}
-	return &value
+	return fmt.Errorf("Kamino confirmed-state verification failed %d consecutive times: %w", consecutiveFailures, cause)
 }
 
 func targetFingerprint(targets []kamino.Target) string {

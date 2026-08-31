@@ -73,6 +73,17 @@ func (s *Store) Enqueue(ctx context.Context, consumer, eventKey string, slot uin
 	return outcome, nil
 }
 
+func (s *Store) AdvanceReplayCursor(ctx context.Context, consumer string, slot uint64) error {
+	if slot == 0 || slot > math.MaxInt64 {
+		return fmt.Errorf("replay cursor slot is invalid")
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO loyal_yield.laserstream_replay_cursors(consumer_name,durable_slot) VALUES($1,$2) ON CONFLICT(consumer_name) DO UPDATE SET durable_slot=GREATEST(loyal_yield.laserstream_replay_cursors.durable_slot,EXCLUDED.durable_slot),updated_at=now()`, consumer, int64(slot))
+	if err != nil {
+		return fmt.Errorf("advance replay cursor: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) ReplayCursor(ctx context.Context, consumer string) (uint64, error) {
 	var value int64
 	err := s.pool.QueryRow(ctx, `SELECT durable_slot FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name=$1`, consumer).Scan(&value)

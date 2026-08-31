@@ -76,6 +76,7 @@ type Set struct {
 	ATAs                 map[string]ATATarget
 	Vaults               []Vault
 	Channels             map[string][]string
+	BindingStartSlots    map[string]uint64
 	ObservationStartSlot *uint64
 }
 
@@ -114,7 +115,7 @@ func (l *Loader) Load(ctx context.Context) (*Set, error) {
 	if err != nil {
 		return nil, err
 	}
-	set := &Set{ATAs: atas, Channels: make(map[string][]string)}
+	set := &Set{ATAs: atas, Channels: make(map[string][]string), BindingStartSlots: make(map[string]uint64)}
 	targets, err := l.loadEarnTargets(ctx)
 	if err != nil {
 		return nil, err
@@ -124,6 +125,11 @@ func (l *Loader) Load(ctx context.Context) (*Set, error) {
 		vault, err := buildVault(target)
 		if err != nil {
 			return nil, err
+		}
+		if target.ObservationStartSlot != nil && *target.ObservationStartSlot > 0 {
+			for _, account := range vault.Accounts {
+				set.recordBindingStart(vault, account, *target.ObservationStartSlot)
+			}
 		}
 		key := vault.Environment + ":" + vault.Vault
 		if current := vaults[key]; current != nil {
@@ -152,23 +158,150 @@ func (l *Loader) Load(ctx context.Context) (*Set, error) {
 		vault.Accounts = compactAccounts(vault.Accounts)
 		set.Vaults = append(set.Vaults, *vault)
 	}
-	sort.Slice(set.Vaults, func(i, j int) bool { return set.Vaults[i].Vault < set.Vaults[j].Vault })
-	for address := range set.ATAs {
-		set.Channels[BalanceSweepWalletATAs] = append(set.Channels[BalanceSweepWalletATAs], address)
+	sort.Slice(set.Vaults, func(i, j int) bool { return vaultKey(set.Vaults[i]) < vaultKey(set.Vaults[j]) })
+	set.rebuildChannels()
+	return set, nil
+}
+
+func (s *Set) AnchorNewEarnBindings(previous *Set, fallback uint64) error {
+	existing := earnBindingSet(previous)
+	if s.BindingStartSlots == nil {
+		s.BindingStartSlots = make(map[string]uint64)
 	}
-	for _, vault := range set.Vaults {
+	for _, vault := range s.Vaults {
+		for _, account := range vault.Accounts {
+			key := earnBindingKey(vault, account)
+			if _, ok := existing[key]; ok {
+				continue
+			}
+			if slot := s.BindingStartSlots[key]; slot > 0 {
+				continue
+			}
+			if fallback == 0 {
+				return fmt.Errorf("new Earn binding %s has no replay anchor", key)
+			}
+			s.BindingStartSlots[key] = fallback
+		}
+	}
+	return nil
+}
+
+func (s *Set) NewEarnBindingStart(previous *Set) (*uint64, error) {
+	existing := earnBindingSet(previous)
+	var result *uint64
+	for _, vault := range s.Vaults {
+		for _, account := range vault.Accounts {
+			key := earnBindingKey(vault, account)
+			if _, ok := existing[key]; ok {
+				continue
+			}
+			slot := s.BindingStartSlots[key]
+			if slot == 0 {
+				return nil, fmt.Errorf("new Earn binding %s has no replay anchor", key)
+			}
+			result = minimumSlot(result, &slot)
+		}
+	}
+	return result, nil
+}
+
+// RetainPreviousEarnBindings keeps Earn routing monotonic for this process.
+// An update for a just-removed account may still be in flight on the old
+// subscription during handoff. A restart rebuilds the compact current set.
+func (s *Set) RetainPreviousEarnBindings(previous *Set) error {
+	if previous == nil {
+		return nil
+	}
+	current := make(map[string]Vault, len(s.Vaults)+len(previous.Vaults))
+	for _, vault := range s.Vaults {
+		current[vaultKey(vault)] = vault
+	}
+	for _, old := range previous.Vaults {
+		key := vaultKey(old)
+		next, ok := current[key]
+		if !ok {
+			current[key] = old
+			continue
+		}
+		if next.Settings != old.Settings || next.VaultIndex != old.VaultIndex || (next.Wallet != "" && old.Wallet != "" && next.Wallet != old.Wallet) {
+			return fmt.Errorf("conflicting retained Earn identity for vault %s", old.Vault)
+		}
+		if next.Wallet == "" {
+			next.Wallet = old.Wallet
+		}
+		next.EarnMax = next.EarnMax || old.EarnMax
+		next.ObservationStartSlot = minimumSlot(next.ObservationStartSlot, old.ObservationStartSlot)
+		next.Accounts = append(next.Accounts, old.Accounts...)
+		sort.Slice(next.Accounts, func(i, j int) bool {
+			if next.Accounts[i].Role == next.Accounts[j].Role {
+				return next.Accounts[i].Pubkey < next.Accounts[j].Pubkey
+			}
+			return next.Accounts[i].Role < next.Accounts[j].Role
+		})
+		next.Accounts = compactAccounts(next.Accounts)
+		current[key] = next
+	}
+	s.Vaults = s.Vaults[:0]
+	for _, vault := range current {
+		s.Vaults = append(s.Vaults, vault)
+	}
+	if s.BindingStartSlots == nil {
+		s.BindingStartSlots = make(map[string]uint64)
+	}
+	for key, slot := range previous.BindingStartSlots {
+		if current, ok := s.BindingStartSlots[key]; !ok || slot < current {
+			s.BindingStartSlots[key] = slot
+		}
+	}
+	s.ObservationStartSlot = minimumSlot(s.ObservationStartSlot, previous.ObservationStartSlot)
+	sort.Slice(s.Vaults, func(i, j int) bool { return vaultKey(s.Vaults[i]) < vaultKey(s.Vaults[j]) })
+	s.rebuildChannels()
+	return nil
+}
+
+func (s *Set) rebuildChannels() {
+	s.Channels = make(map[string][]string)
+	for address := range s.ATAs {
+		s.Channels[BalanceSweepWalletATAs] = append(s.Channels[BalanceSweepWalletATAs], address)
+	}
+	for _, vault := range s.Vaults {
 		for _, account := range vault.Accounts {
 			if channel := roleChannel(account.Role); channel != "" {
-				set.Channels[channel] = append(set.Channels[channel], account.Pubkey)
+				s.Channels[channel] = append(s.Channels[channel], account.Pubkey)
 			}
 		}
 	}
-	for channel, addresses := range set.Channels {
+	for channel, addresses := range s.Channels {
 		sort.Strings(addresses)
-		set.Channels[channel] = compactStrings(addresses)
+		s.Channels[channel] = compactStrings(addresses)
 	}
-	return set, nil
 }
+
+func (s *Set) recordBindingStart(vault Vault, account Account, slot uint64) {
+	key := earnBindingKey(vault, account)
+	if current, ok := s.BindingStartSlots[key]; !ok || slot < current {
+		s.BindingStartSlots[key] = slot
+	}
+}
+
+func earnBindingSet(set *Set) map[string]struct{} {
+	result := make(map[string]struct{})
+	if set == nil {
+		return result
+	}
+	for _, vault := range set.Vaults {
+		for _, account := range vault.Accounts {
+			result[earnBindingKey(vault, account)] = struct{}{}
+		}
+	}
+	return result
+}
+
+func earnBindingKey(vault Vault, account Account) string {
+	return vault.Environment + ":" + vault.Vault + ":" + account.Role + ":" + account.Pubkey
+}
+
+func vaultKey(vault Vault) string { return vault.Environment + ":" + vault.Vault }
 
 func (l *Loader) loadATATargets(ctx context.Context) (map[string]ATATarget, error) {
 	rows, err := l.pool.Query(ctx, `
@@ -389,7 +522,7 @@ func scanEarnMaxTarget(row rowScanner) (earnTarget, error) {
 	var slot *int64
 	err := row.Scan(&t.Environment, &t.Settings, &t.VaultIndex, &t.Vault, &t.PolicyAccounts, &slot)
 	t.EarnMax = true
-	if slot != nil && *slot >= 0 {
+	if slot != nil && *slot > 0 {
 		v := uint64(*slot)
 		t.ObservationStartSlot = &v
 	}
@@ -474,9 +607,10 @@ func associatedToken(owner solana.PublicKey, coin Stablecoin) string {
 	address, _, _ := solana.FindProgramAddress([][]byte{owner[:], coin.TokenProgram[:], coin.Mint[:]}, associatedTokenProgram)
 	return address.String()
 }
-func roleChannel(role string) string {
+func ChannelForRole(role string) string {
 	return map[string]string{"wallet": EarnWallets, "smart_account": EarnSmartAccounts, "policy": EarnPolicyAccounts, "vault": EarnVaultAccounts, "idle_token": EarnIdleTokenAccounts, "wallet_token": EarnWalletTokenAccounts, "obligation": EarnObligations, "autodeposit_wallet_ata": EarnAutodepositWalletATAs, "subscription_authority": EarnSubscriptionAuthorities, "recurring_delegation": EarnRecurringDelegations}[role]
 }
+func roleChannel(role string) string { return ChannelForRole(role) }
 func minimumSlot(a, b *uint64) *uint64 {
 	if a == nil {
 		return b

@@ -69,4 +69,17 @@ func TestHandlerAtomicallyEnqueuesJobsAutodepositAndCursor(t *testing.T) {
 	if jobs != 1 || cursor != 88 || requested != 88 {
 		t.Fatalf("durable state jobs=%d cursor=%d requested=%d", jobs, cursor, requested)
 	}
+	if err := store.AdvanceReplayCursor(ctx, "watch-observation", 75); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AdvanceReplayCursor(ctx, "watch-observation", 50); err != nil {
+		t.Fatal(err)
+	}
+	watchCursor, err := store.ReplayCursor(ctx, "watch-observation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watchCursor != 75 {
+		t.Fatalf("watch observation cursor = %d, want monotonic 75", watchCursor)
+	}
 }
