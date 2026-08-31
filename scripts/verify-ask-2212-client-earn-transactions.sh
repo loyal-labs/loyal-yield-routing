@@ -95,7 +95,11 @@ require_match \
   'wallet_token' \
   "$ROUTING_DIR/crates/balance-sweep-ata-monitor/src/smart_account.rs"
 require_match \
-  "routing uses finalized canonical reads" \
+  "routing uses confirmed canonical reads" \
+  'fn (earn_snapshot_config|earn_transaction_config)' \
+  "$ROUTING_DIR/crates/balance-sweep-ata-monitor/src/earn_reconciliation.rs"
+reject_match \
+  "Earn reconciliation does not request finalized RPC state" \
   'CommitmentConfig::finalized\(\)' \
   "$ROUTING_DIR/crates/balance-sweep-ata-monitor/src/earn_reconciliation.rs"
 require_match \
@@ -149,8 +153,8 @@ require_match \
   "$ROUTING_DIR/scripts/verify-earn-client-local-e2e.sh" \
   "$ROUTING_DIR/crates/balance-sweep-ata-monitor/src/bin/earn-client-local-e2e.rs"
 require_match \
-  "client waits for confirmed while finalized projection remains the accounting boundary" \
-  'confirmedSlot|wait-finalized|wait_for_finalized' \
+  "client and projection share the confirmed accounting boundary" \
+  'confirmedSlot|wait-confirmed|wait_for_confirmed' \
   "$APP_DIR/apps/web/scripts/verify-earn-client-local-chain.ts" \
   "$ROUTING_DIR/scripts/verify-earn-client-local-e2e.sh"
 require_match \
@@ -191,8 +195,8 @@ run_check \
   bash -lc "cd '$APP_DIR/apps/mobile' && node_modules/.bin/eslint src/lib/solana/earn/deposit.ts src/lib/solana/earn/withdraw.ts src/lib/solana/earn/refund.ts src/lib/solana/earn/earn-api.ts src/lib/solana/earn/__tests__/withdraw.test.ts"
 
 if ((FAILURES > 0)); then
-  echo "FAIL: ASK-2212 client-built finalized-chain-projected Earn architecture ($FAILURES checks failed)"
+  echo "FAIL: ASK-2212 client-built confirmed-chain-projected Earn architecture ($FAILURES checks failed)"
   exit 1
 fi
 
-echo "PASS: ASK-2212 client-built finalized-chain-projected Earn architecture"
+echo "PASS: ASK-2212 client-built confirmed-chain-projected Earn architecture"
