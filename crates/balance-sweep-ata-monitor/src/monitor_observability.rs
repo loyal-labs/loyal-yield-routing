@@ -9,6 +9,11 @@ pub const EARN_RECONCILIATION_JOB_FAILED: &str = "earn_reconciliation_job_failed
 pub const EARN_RECONCILIATION_CONSUMER_FAILED: &str = "earn_reconciliation_consumer_failed";
 pub const EARN_RECONCILIATION_HEALTH_SNAPSHOT_FAILED: &str =
     "earn_reconciliation_health_snapshot_failed";
+pub const AUTODEPOSIT_RECONCILIATION_REQUEST_FAILED: &str =
+    "autodeposit_reconciliation_request_failed";
+pub const AUTODEPOSIT_RECONCILIATION_RPC_BEHIND: &str = "autodeposit_reconciliation_rpc_behind";
+pub const AUTODEPOSIT_RECONCILIATION_CONSUMER_FAILED: &str =
+    "autodeposit_reconciliation_consumer_failed";
 
 /// Service-owned, low-cardinality gauges backed by the shared OTLP transport.
 #[derive(Clone)]
@@ -96,6 +101,39 @@ pub fn emit_earn_reconciliation_consumer_failed() {
     .emit();
 }
 
+pub fn emit_autodeposit_reconciliation_request_failed() {
+    OperationalError::new(
+        AUTODEPOSIT_RECONCILIATION_REQUEST_FAILED,
+        "process_autodeposit_reconciliation_request",
+        "Autodeposit reconciliation request failed and was retained for retry",
+    )
+    .retryable(true)
+    .recovery_required(false)
+    .emit();
+}
+
+pub fn emit_autodeposit_reconciliation_rpc_behind() {
+    OperationalError::new(
+        AUTODEPOSIT_RECONCILIATION_RPC_BEHIND,
+        "process_autodeposit_reconciliation_request",
+        "Autodeposit reconciliation RPC stayed behind beyond the retry horizon",
+    )
+    .retryable(true)
+    .recovery_required(false)
+    .emit();
+}
+
+pub fn emit_autodeposit_reconciliation_consumer_failed() {
+    OperationalError::new(
+        AUTODEPOSIT_RECONCILIATION_CONSUMER_FAILED,
+        "run_autodeposit_reconciliation_consumer",
+        "Autodeposit reconciliation consumer failed",
+    )
+    .retryable(true)
+    .recovery_required(false)
+    .emit();
+}
+
 pub fn emit_earn_reconciliation_health_snapshot_failed() {
     OperationalError::new(
         EARN_RECONCILIATION_HEALTH_SNAPSHOT_FAILED,
@@ -165,12 +203,24 @@ mod tests {
             EARN_RECONCILIATION_CONSUMER_FAILED,
             "earn_reconciliation_consumer_failed"
         );
+        assert_eq!(
+            AUTODEPOSIT_RECONCILIATION_REQUEST_FAILED,
+            "autodeposit_reconciliation_request_failed"
+        );
+        assert_eq!(
+            AUTODEPOSIT_RECONCILIATION_RPC_BEHIND,
+            "autodeposit_reconciliation_rpc_behind"
+        );
+        assert_eq!(
+            AUTODEPOSIT_RECONCILIATION_CONSUMER_FAILED,
+            "autodeposit_reconciliation_consumer_failed"
+        );
     }
 
     #[test]
     fn local_metrics_and_error_emission_stay_non_blocking() {
         const METRIC_RECORDINGS: usize = 10_000;
-        const ERROR_EMISSIONS: usize = 3_000;
+        const ERROR_EMISSIONS: usize = 6_000;
         const LOCAL_OVERHEAD_BUDGET: Duration = Duration::from_secs(1);
 
         let exporter = InMemoryMetricExporter::default();
@@ -197,10 +247,13 @@ mod tests {
         );
 
         let error_started_at = Instant::now();
-        for _ in 0..(ERROR_EMISSIONS / 3) {
+        for _ in 0..(ERROR_EMISSIONS / 6) {
             emit_earn_reconciliation_job_failed();
             emit_earn_reconciliation_consumer_failed();
             emit_earn_reconciliation_health_snapshot_failed();
+            emit_autodeposit_reconciliation_request_failed();
+            emit_autodeposit_reconciliation_rpc_behind();
+            emit_autodeposit_reconciliation_consumer_failed();
         }
         let error_elapsed = error_started_at.elapsed();
         assert!(

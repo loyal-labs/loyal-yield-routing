@@ -30,6 +30,15 @@ rg -q --fixed-strings 'earn_reconciliation_job_failed' \
 rg -q --fixed-strings 'earn_reconciliation_consumer_failed' \
   crates/balance-sweep-ata-monitor \
   || fail "consumer-loop failures are not exported as operational errors"
+rg -q --fixed-strings 'autodeposit_reconciliation_request_failed' \
+  crates/balance-sweep-ata-monitor \
+  || fail "Autodeposit request failures do not have a distinct operational error"
+rg -q --fixed-strings 'autodeposit_reconciliation_rpc_behind' \
+  crates/balance-sweep-ata-monitor \
+  || fail "persistent Autodeposit RPC lag does not have a distinct operational error"
+rg -q --fixed-strings 'autodeposit_reconciliation_consumer_failed' \
+  crates/balance-sweep-ata-monitor \
+  || fail "Autodeposit consumer failures do not have a distinct operational error"
 
 if rg -q 'advanced_slots|cursor[_\.]advance(_rate|ment_speed)' \
   crates/balance-sweep-ata-monitor crates/loyal-observability; then

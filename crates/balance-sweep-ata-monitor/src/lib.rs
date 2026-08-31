@@ -50,15 +50,19 @@ pub mod monitor_observability;
 pub mod smart_account;
 
 pub use earn_reconciliation::{
-    enqueue_normalized_earn_update, process_next_autodeposit_reconciliation_request,
-    process_next_earn_reconciliation_job, process_next_earn_reconciliation_job_with_policy_monitor,
+    autodeposit_reconciliation_retry_alert, enqueue_normalized_earn_update,
+    process_next_autodeposit_reconciliation_request, process_next_earn_reconciliation_job,
+    process_next_earn_reconciliation_job_with_policy_monitor,
     read_confirmed_squads_policy_transaction, reconcile_targeted_policy_vault_update,
     run_autodeposit_reconciliation_consumer, run_earn_reconciliation_consumer,
+    AutodepositChainReader, AutodepositReconciliationAlertKind,
     AutodepositReconciliationProcessOutcome, EarnChainReader, EarnPolicyTransaction,
     EarnPolicyTransactionRead, EarnReconciliationDeferralKind, EarnReconciliationProcessOutcome,
     FixtureEarnChainReader, RpcEarnChainReader,
 };
 pub use monitor_observability::{
+    emit_autodeposit_reconciliation_consumer_failed,
+    emit_autodeposit_reconciliation_request_failed, emit_autodeposit_reconciliation_rpc_behind,
     emit_earn_reconciliation_consumer_failed, emit_earn_reconciliation_health_snapshot_failed,
     emit_earn_reconciliation_job_failed, EarnMonitorMetrics,
 };
