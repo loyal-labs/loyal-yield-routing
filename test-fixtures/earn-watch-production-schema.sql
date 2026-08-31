@@ -38,11 +38,19 @@ CREATE TABLE loyal_yield.managed_vaults (
     vault_index SMALLINT NOT NULL,
     vault_pubkey TEXT NOT NULL,
     active_policy_id BIGINT,
-    setup_policy_id BIGINT
+    setup_policy_id BIGINT,
+    active BOOLEAN NOT NULL
 );
 CREATE TABLE loyal_yield.route_policies (
     id BIGINT PRIMARY KEY,
-    policy_account TEXT NOT NULL
+    settings TEXT NOT NULL,
+    authority TEXT NOT NULL,
+    vault_index SMALLINT NOT NULL,
+    vault_pubkey TEXT NOT NULL,
+    policy_account TEXT NOT NULL,
+    kamino_markets TEXT[] NOT NULL,
+    active BOOLEAN NOT NULL,
+    last_seen_slot BIGINT NOT NULL
 );
 CREATE TABLE loyal_yield.cross_mint_swap_policies (
     cluster TEXT NOT NULL,
@@ -89,6 +97,22 @@ INSERT INTO app_users (id, subject_address)
 VALUES (1, 'wallet-a');
 INSERT INTO app_user_smart_accounts (user_id, solana_env, settings_pda, state)
 VALUES (1, 'mainnet-beta', 'settings-a', 'ready');
+
+INSERT INTO loyal_yield.route_policies
+    (id, settings, authority, vault_index, vault_pubkey, policy_account,
+     kamino_markets, active, last_seen_slot)
+VALUES
+    (1, 'settings-a', 'wallet-a', 2, 'managed-vault-a', 'managed-active-policy-a',
+     ARRAY['managed-market-a'], TRUE, 91),
+    (2, 'settings-a', 'wallet-a', 2, 'managed-vault-a', 'managed-setup-policy-a',
+     ARRAY[]::TEXT[], FALSE, 89),
+    (3, 'settings-b', 'wallet-b', 2, 'managed-vault-b', 'managed-active-policy-b',
+     ARRAY['managed-market-b'], TRUE, 92);
+INSERT INTO loyal_yield.managed_vaults
+    (settings, vault_index, vault_pubkey, active_policy_id, setup_policy_id, active)
+VALUES
+    ('settings-a', 2, 'managed-vault-a', 1, 2, TRUE),
+    ('settings-b', 2, 'managed-vault-b', 3, NULL, TRUE);
 
 INSERT INTO loyal_yield.cross_mint_swap_policies
     (cluster, authority, settings, vault_index, vault_pubkey, policy_account, source_shard, active)

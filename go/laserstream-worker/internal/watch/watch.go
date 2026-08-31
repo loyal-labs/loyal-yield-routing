@@ -366,8 +366,29 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 	}
 	onboardingFilter := appSettingsFilter(appReady, "onboarding.settings")
 	positionFilter := appSettingsFilter(appReady, "position.settings")
+	managedVaultFilter := appSettingsFilter(appReady, "vault.settings")
 	crossMintFilter := appSettingsFilter(appReady, "cross_mint_swap_policies.settings")
 	earnMaxFilter := appSettingsFilter(appReady, "route.settings")
+	managedVaultsReady, err := l.relationsExist(ctx, "loyal_yield.managed_vaults", "loyal_yield.route_policies")
+	if err != nil {
+		return nil, err
+	}
+	if managedVaultsReady {
+		queries = append(queries, watchQuery{`
+			SELECT $1::text, active_policy.authority, vault.settings,
+			       vault.vault_index, vault.vault_pubkey,
+			       active_policy.policy_account,
+			       setup_policy.policy_account,
+			       active_policy.kamino_markets,
+			       LEAST(active_policy.last_seen_slot,
+			             setup_policy.last_seen_slot)
+			FROM loyal_yield.managed_vaults AS vault
+			JOIN loyal_yield.route_policies AS active_policy
+			  ON active_policy.id = vault.active_policy_id
+			LEFT JOIN loyal_yield.route_policies AS setup_policy
+			  ON setup_policy.id = vault.setup_policy_id
+			WHERE vault.active AND active_policy.active` + managedVaultFilter, scanManagedVaultTarget})
+	}
 	optional := []struct {
 		relation, sql string
 		scan          func(rowScanner) (earnTarget, error)
@@ -502,6 +523,25 @@ func scanPositionTarget(row rowScanner) (earnTarget, error) {
 	t.PolicyAccounts = nonNil(policy, active, setup)
 	t.Markets = nonNil(market)
 	return t, err
+}
+func scanManagedVaultTarget(row rowScanner) (earnTarget, error) {
+	var t earnTarget
+	var active, setup *string
+	var slot *int64
+	if err := row.Scan(&t.Environment, &t.Wallet, &t.Settings, &t.VaultIndex, &t.Vault, &active, &setup, &t.Markets, &slot); err != nil {
+		return t, err
+	}
+	if slot != nil {
+		if *slot < 0 {
+			return t, fmt.Errorf("Earn observation start slot is negative")
+		}
+		if *slot > 0 {
+			value := uint64(*slot)
+			t.ObservationStartSlot = &value
+		}
+	}
+	t.PolicyAccounts = nonNil(active, setup)
+	return t, nil
 }
 func scanCrossMintTarget(row rowScanner) (earnTarget, error) {
 	var t earnTarget

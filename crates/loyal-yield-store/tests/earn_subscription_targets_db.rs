@@ -26,8 +26,8 @@ async fn production_schema_combination_filters_app_settings_in_sql() {
         .expect("load Earn subscription targets");
     assert_eq!(
         targets.len(),
-        3,
-        "expected app, cross-mint, and Earn MAX targets"
+        4,
+        "expected app, managed-vault, cross-mint, and Earn MAX targets"
     );
     assert!(targets.iter().all(|target| target.settings == "settings-a"));
     assert_eq!(targets.iter().filter(|target| target.earn_max).count(), 1);
@@ -38,6 +38,21 @@ async fn production_schema_combination_filters_app_settings_in_sql() {
             .count(),
         1
     );
+    let managed = targets
+        .iter()
+        .find(|target| target.vault_pubkey.as_deref() == Some("managed-vault-a"))
+        .expect("managed-vault-only target");
+    assert_eq!(managed.wallet, "wallet-a");
+    assert_eq!(managed.vault_index, 2);
+    assert_eq!(
+        managed.policy_accounts,
+        vec![
+            "managed-active-policy-a".to_owned(),
+            "managed-setup-policy-a".to_owned()
+        ]
+    );
+    assert_eq!(managed.markets, vec!["managed-market-a".to_owned()]);
+    assert_eq!(managed.observation_start_slot, Some(89));
 
     let unowned_targets = store
         .load_earn_subscription_targets("devnet")

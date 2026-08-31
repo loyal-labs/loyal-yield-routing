@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -41,10 +42,10 @@ func TestLoaderProductionSchemaCombinationFiltersAppSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 3 {
-		t.Fatalf("target count = %d, want app, cross-mint, and Earn MAX targets", len(targets))
+	if len(targets) != 4 {
+		t.Fatalf("target count = %d, want app, managed-vault, cross-mint, and Earn MAX targets", len(targets))
 	}
-	var appTargets, crossMintTargets, earnMaxTargets int
+	var appTargets, managedVaultTargets, crossMintTargets, earnMaxTargets int
 	for _, target := range targets {
 		if target.Settings != "settings-a" {
 			t.Fatalf("loaded non-app settings %q", target.Settings)
@@ -52,14 +53,21 @@ func TestLoaderProductionSchemaCombinationFiltersAppSettings(t *testing.T) {
 		switch {
 		case target.EarnMax:
 			earnMaxTargets++
+		case target.Vault == "managed-vault-a":
+			managedVaultTargets++
+			if !slices.Equal(target.PolicyAccounts, []string{"managed-active-policy-a", "managed-setup-policy-a"}) ||
+				!slices.Equal(target.Markets, []string{"managed-market-a"}) ||
+				target.ObservationStartSlot == nil || *target.ObservationStartSlot != 89 {
+				t.Fatalf("managed-vault target = %#v", target)
+			}
 		case len(target.PolicyAccounts) > 0:
 			crossMintTargets++
 		default:
 			appTargets++
 		}
 	}
-	if appTargets != 1 || crossMintTargets != 1 || earnMaxTargets != 1 {
-		t.Fatalf("targets app=%d cross_mint=%d earn_max=%d", appTargets, crossMintTargets, earnMaxTargets)
+	if appTargets != 1 || managedVaultTargets != 1 || crossMintTargets != 1 || earnMaxTargets != 1 {
+		t.Fatalf("targets app=%d managed_vault=%d cross_mint=%d earn_max=%d", appTargets, managedVaultTargets, crossMintTargets, earnMaxTargets)
 	}
 
 	if _, err := pool.Exec(ctx, `
