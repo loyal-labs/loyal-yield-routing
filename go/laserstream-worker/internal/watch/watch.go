@@ -110,29 +110,11 @@ func NewLoader(pool *pgxpool.Pool, cluster string) *Loader {
 }
 
 func (l *Loader) Load(ctx context.Context) (*Set, error) {
-	set := &Set{ATAs: make(map[string]ATATarget), Channels: make(map[string][]string)}
-	rows, err := l.pool.Query(ctx, `
-		SELECT id, cluster, wallet, wallet_token_ata, vault_pubkey, vault_token_ata, token_mint
-		FROM loyal_yield.balance_sweep_targets
-		WHERE desired_active AND chain_status='active' AND token_mint=$1
-		ORDER BY id`, stablecoins[3].Mint.String())
+	atas, err := l.loadATATargets(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("load active ATA targets: %w", err)
-	}
-	for rows.Next() {
-		var target ATATarget
-		if err := rows.Scan(&target.ID, &target.Cluster, &target.Wallet, &target.WalletATA, &target.Vault, &target.VaultATA, &target.Mint); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		set.ATAs[target.WalletATA] = target
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
 		return nil, err
 	}
-	rows.Close()
-
+	set := &Set{ATAs: atas, Channels: make(map[string][]string)}
 	targets, err := l.loadEarnTargets(ctx)
 	if err != nil {
 		return nil, err
@@ -186,6 +168,34 @@ func (l *Loader) Load(ctx context.Context) (*Set, error) {
 		set.Channels[channel] = compactStrings(addresses)
 	}
 	return set, nil
+}
+
+func (l *Loader) loadATATargets(ctx context.Context) (map[string]ATATarget, error) {
+	rows, err := l.pool.Query(ctx, `
+		SELECT target.id, target.cluster, target.wallet, target.wallet_token_ata,
+		       target.vault_pubkey, target.vault_token_ata, target.token_mint
+		FROM loyal_yield.balance_sweep_targets AS target
+		WHERE target.cluster = $1
+		  AND target.desired_active
+		  AND target.chain_status = 'active'
+		  AND target.token_mint = $2
+		ORDER BY target.id`, l.cluster, stablecoins[3].Mint.String())
+	if err != nil {
+		return nil, fmt.Errorf("load active ATA targets: %w", err)
+	}
+	defer rows.Close()
+	targets := make(map[string]ATATarget)
+	for rows.Next() {
+		var target ATATarget
+		if err := rows.Scan(&target.ID, &target.Cluster, &target.Wallet, &target.WalletATA, &target.Vault, &target.VaultATA, &target.Mint); err != nil {
+			return nil, err
+		}
+		targets[target.WalletATA] = target
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return targets, nil
 }
 
 type earnTarget struct {
@@ -266,7 +276,13 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			         cross_mint_swap_policies.settings,
 			         cross_mint_swap_policies.vault_index,
 			         cross_mint_swap_policies.vault_pubkey`, scanCrossMintTarget},
-		{"loyal_yield.balance_sweep_targets", `SELECT $1::text, settings, wallet, vault_index, vault_pubkey, policy_account, subscription_authority, recurring_delegation FROM loyal_yield.balance_sweep_targets WHERE cluster=$1 AND chain_status<>'closed'`, scanAutodepositTarget},
+		{"loyal_yield.balance_sweep_targets", `
+			SELECT $1::text, target.settings, target.wallet, target.vault_index,
+			       target.vault_pubkey, target.policy_account,
+			       target.subscription_authority, target.recurring_delegation
+			FROM loyal_yield.balance_sweep_targets AS target
+			WHERE target.cluster = $1
+			  AND target.chain_status <> 'closed'`, scanAutodepositTarget},
 		{"loyal_yield.multiply_route_states", `
 			SELECT $1::text, route.settings, route.vault_index, route.vault,
 			       ARRAY(

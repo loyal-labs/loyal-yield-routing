@@ -45,11 +45,28 @@ func TestFromEnvRejectsInvalidOperationalIntervals(t *testing.T) {
 func TestFromEnvBuildsStrictProductionConfig(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("PORT", "9999")
+	t.Setenv("SOLANA_CLUSTER", "")
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddress != ":9999" || cfg.ReplayOverlapSlots != 32 || cfg.ReconciliationWorkers != 4 {
+	if cfg.HTTPAddress != ":9999" || cfg.ReplayOverlapSlots != 32 || cfg.ReconciliationWorkers != 4 || cfg.Cluster != "mainnet-beta" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+}
+
+func TestFromEnvNormalizesProductionClusterAliases(t *testing.T) {
+	for _, alias := range []string{"mainnet", "mainnet-beta", "mainnet_beta", "mainnetbeta", " MAINNET "} {
+		t.Run(alias, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("SOLANA_CLUSTER", alias)
+			cfg, err := FromEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Cluster != "mainnet-beta" {
+				t.Fatalf("cluster = %q, want mainnet-beta", cfg.Cluster)
+			}
+		})
 	}
 }

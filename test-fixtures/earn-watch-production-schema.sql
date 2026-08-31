@@ -55,14 +55,19 @@ CREATE TABLE loyal_yield.cross_mint_swap_policies (
     active BOOLEAN NOT NULL
 );
 CREATE TABLE loyal_yield.balance_sweep_targets (
+    id BIGINT PRIMARY KEY,
     cluster TEXT NOT NULL,
     settings TEXT NOT NULL,
     wallet TEXT NOT NULL,
+    wallet_token_ata TEXT NOT NULL,
     vault_index SMALLINT NOT NULL,
     vault_pubkey TEXT NOT NULL,
+    vault_token_ata TEXT NOT NULL,
+    token_mint TEXT NOT NULL,
     policy_account TEXT NOT NULL,
     subscription_authority TEXT,
     recurring_delegation TEXT,
+    desired_active BOOLEAN NOT NULL,
     chain_status TEXT NOT NULL
 );
 CREATE TABLE loyal_yield.multiply_route_states (
@@ -83,13 +88,13 @@ CREATE TABLE loyal_yield.earn_max_policy_sets (
 INSERT INTO app_users (id, subject_address)
 VALUES (1, 'wallet-a');
 INSERT INTO app_user_smart_accounts (user_id, solana_env, settings_pda, state)
-VALUES (1, 'mainnet', 'settings-a', 'ready');
+VALUES (1, 'mainnet-beta', 'settings-a', 'ready');
 
 INSERT INTO loyal_yield.cross_mint_swap_policies
     (cluster, authority, settings, vault_index, vault_pubkey, policy_account, source_shard, active)
 VALUES
-    ('mainnet', 'wallet-a', 'settings-a', 1, 'vault-a', 'cross-policy-a', 'classic', TRUE),
-    ('mainnet', 'wallet-b', 'settings-b', 1, 'vault-b', 'cross-policy-b', 'classic', TRUE);
+    ('mainnet-beta', 'wallet-a', 'settings-a', 1, 'vault-a', 'cross-policy-a', 'classic', TRUE),
+    ('mainnet-beta', 'wallet-b', 'settings-b', 1, 'vault-b', 'cross-policy-b', 'classic', TRUE);
 
 INSERT INTO loyal_yield.multiply_route_states (settings, vault_index, vault, state)
 VALUES

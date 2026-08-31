@@ -24,6 +24,17 @@ func TestNewBindingStartIgnoresRetainedOldHistory(t *testing.T) {
 	}
 }
 
+func TestColdStartReplayIncludesEarnObservationAnchor(t *testing.T) {
+	observationStart := uint64(250)
+	got, err := selectReplayStart(100_000, 99_000, 98_000, 97_000, 32, &observationStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != observationStart {
+		t.Fatalf("cold-start replay = %d, want observation anchor %d", got, observationStart)
+	}
+}
+
 func TestSubtractNeverRequestsGenesis(t *testing.T) {
 	if got := subtract(10, 32); got != 1 {
 		t.Fatalf("saturated replay start = %d, want 1", got)

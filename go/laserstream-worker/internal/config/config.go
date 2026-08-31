@@ -50,7 +50,7 @@ func FromEnv() (Config, error) {
 		NeonDatabaseURL:       strings.TrimSpace(os.Getenv("NEON_DATABASE_URL")),
 		TimescaleDatabaseURL:  strings.TrimSpace(os.Getenv("TIMESCALEDB_URL")),
 		KaminoAPIBase:         envOr("KAMINO_API_BASE", "https://api.kamino.finance"),
-		Cluster:               envOr("SOLANA_CLUSTER", "mainnet"),
+		Cluster:               normalizeSolanaCluster(envOr("SOLANA_CLUSTER", "mainnet-beta")),
 		ATAStream:             strings.ToLower(envOr("BALANCE_SWEEP_ATA_STREAM", "production")),
 		HTTPAddress:           envOr("PORT", "10000"),
 		ReplayOverlapSlots:    uintEnv("LASERSTREAM_REPLAY_OVERLAP_SLOTS", 32),
@@ -112,6 +112,16 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func normalizeSolanaCluster(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "mainnet", "mainnet_beta", "mainnetbeta", "mainnet-beta":
+		return "mainnet-beta"
+	default:
+		return normalized
+	}
 }
 
 func uintEnv(name string, fallback uint64) uint64 {

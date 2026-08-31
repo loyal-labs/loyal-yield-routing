@@ -21,7 +21,7 @@ async fn production_schema_combination_filters_app_settings_in_sql() {
 
     let store = NeonSqlClient::from_pool(pool);
     let targets = store
-        .load_earn_subscription_targets("mainnet")
+        .load_earn_subscription_targets("mainnet-beta")
         .await
         .expect("load Earn subscription targets");
     assert_eq!(

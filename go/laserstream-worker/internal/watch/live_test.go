@@ -21,7 +21,7 @@ func TestLiveLoyalSchemasBuildCombinedWatchSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	set, err := NewLoader(pool, "mainnet").Load(ctx)
+	set, err := NewLoader(pool, "mainnet-beta").Load(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -96,7 +96,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	fromSlot, err := r.replayStart(ctx, seedSlot)
+	fromSlot, err := r.replayStart(ctx, seedSlot, currentWatch.ObservationStartSlot)
 	if err != nil {
 		return err
 	}
@@ -288,27 +288,34 @@ func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target,
 	}
 	return set, targets, kaminoSlot, nil
 }
-func (r *Runtime) replayStart(ctx context.Context, seed uint64) (uint64, error) {
+func (r *Runtime) replayStart(ctx context.Context, seed uint64, observationStart *uint64) (uint64, error) {
 	current, err := r.rpc.Slot(ctx, "confirmed")
 	if err != nil {
 		return 0, err
 	}
-	starts := []uint64{subtract(seed, r.cfg.ReplayOverlapSlots)}
 	earnCursor, err := r.earnStore.ReplayCursor(ctx, r.earn.ConsumerName())
 	if err != nil {
 		return 0, err
-	}
-	if earnCursor > 0 {
-		starts = append(starts, subtract(earnCursor, r.cfg.ReplayOverlapSlots))
 	}
 	policyCursor, err := r.earnStore.ProjectionCursor(ctx, earn.PolicyProjectionConsumer)
 	if err != nil {
 		return 0, err
 	}
+	return selectReplayStart(current, seed, earnCursor, policyCursor, r.cfg.ReplayOverlapSlots, observationStart)
+}
+
+func selectReplayStart(current, seed, earnCursor, policyCursor, overlap uint64, observationStart *uint64) (uint64, error) {
+	starts := []uint64{subtract(seed, overlap)}
+	if earnCursor > 0 {
+		starts = append(starts, subtract(earnCursor, overlap))
+	}
 	if policyCursor > 0 {
-		starts = append(starts, subtract(policyCursor, r.cfg.ReplayOverlapSlots))
+		starts = append(starts, subtract(policyCursor, overlap))
 	} else {
-		starts = append(starts, subtract(current, max(r.cfg.ReplayOverlapSlots, 10_000)))
+		starts = append(starts, subtract(current, max(overlap, 10_000)))
+	}
+	if observationStart != nil {
+		starts = append(starts, *observationStart)
 	}
 	result := current
 	for _, start := range starts {
