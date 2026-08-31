@@ -196,6 +196,18 @@ type earnTarget struct {
 	ObservationStartSlot                         *uint64
 }
 
+func appSettingsFilter(enabled bool, qualifiedColumn string) string {
+	if !enabled {
+		return ""
+	}
+	return fmt.Sprintf(`
+			  AND %s IN (
+			      SELECT app_smart.settings_pda
+			      FROM app_user_smart_accounts AS app_smart
+			      WHERE app_smart.solana_env = $1
+			  )`, qualifiedColumn)
+}
+
 func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 	type watchQuery struct {
 		sql  string
@@ -209,19 +221,69 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 	if appReady {
 		queries = append(queries, watchQuery{`SELECT smart.solana_env, smart.settings_pda, app.subject_address FROM app_user_smart_accounts smart JOIN app_users app ON app.id=smart.user_id WHERE smart.solana_env=$1 AND smart.state='ready'`, scanAppTarget})
 	}
-	appFilter := ""
-	if appReady {
-		appFilter = " AND settings IN (SELECT settings_pda FROM app_user_smart_accounts WHERE solana_env=$1)"
-	}
+	onboardingFilter := appSettingsFilter(appReady, "onboarding.settings")
+	positionFilter := appSettingsFilter(appReady, "position.settings")
+	crossMintFilter := appSettingsFilter(appReady, "cross_mint_swap_policies.settings")
+	earnMaxFilter := appSettingsFilter(appReady, "route.settings")
 	optional := []struct {
 		relation, sql string
 		scan          func(rowScanner) (earnTarget, error)
 	}{
-		{"loyal_yield.earn_deposit_onboarding_attempts", `SELECT $1::text, wallet_address, settings, vault_index, vault_pubkey, policy_account, setup_policy_account, market FROM loyal_yield.earn_deposit_onboarding_attempts WHERE status<>'complete'` + appFilter, scanOnboardingTarget},
-		{"loyal_yield.user_yield_positions", `SELECT $1::text, position.wallet_address, position.settings, position.vault_index, position.vault_pubkey, position.policy_account, position.current_market, active_policy.policy_account, setup_policy.policy_account FROM loyal_yield.user_yield_positions position LEFT JOIN loyal_yield.managed_vaults vault ON vault.settings=position.settings AND vault.vault_index=position.vault_index AND vault.vault_pubkey=position.vault_pubkey LEFT JOIN loyal_yield.route_policies active_policy ON active_policy.id=vault.active_policy_id LEFT JOIN loyal_yield.route_policies setup_policy ON setup_policy.id=vault.setup_policy_id WHERE position.status='active'` + strings.ReplaceAll(appFilter, "settings IN", "position.settings IN"), scanPositionTarget},
-		{"loyal_yield.cross_mint_swap_policies", `SELECT $1::text, authority, settings, vault_index, vault_pubkey, array_agg(DISTINCT policy_account ORDER BY policy_account) FROM loyal_yield.cross_mint_swap_policies WHERE cluster=$1 AND active AND source_shard IN ('classic','token_2022') GROUP BY authority,settings,vault_index,vault_pubkey`, scanCrossMintTarget},
+		{"loyal_yield.earn_deposit_onboarding_attempts", `
+			SELECT $1::text, onboarding.wallet_address, onboarding.settings,
+			       onboarding.vault_index, onboarding.vault_pubkey,
+			       onboarding.policy_account, onboarding.setup_policy_account,
+			       onboarding.market
+			FROM loyal_yield.earn_deposit_onboarding_attempts AS onboarding
+			WHERE onboarding.status <> 'complete'` + onboardingFilter, scanOnboardingTarget},
+		{"loyal_yield.user_yield_positions", `
+			SELECT $1::text, position.wallet_address, position.settings,
+			       position.vault_index, position.vault_pubkey,
+			       position.policy_account, position.current_market,
+			       active_policy.policy_account, setup_policy.policy_account
+			FROM loyal_yield.user_yield_positions AS position
+			LEFT JOIN loyal_yield.managed_vaults AS vault
+			  ON vault.settings = position.settings
+			 AND vault.vault_index = position.vault_index
+			 AND vault.vault_pubkey = position.vault_pubkey
+			LEFT JOIN loyal_yield.route_policies AS active_policy
+			  ON active_policy.id = vault.active_policy_id
+			LEFT JOIN loyal_yield.route_policies AS setup_policy
+			  ON setup_policy.id = vault.setup_policy_id
+			WHERE position.status = 'active'` + positionFilter, scanPositionTarget},
+		{"loyal_yield.cross_mint_swap_policies", `
+			SELECT $1::text, cross_mint_swap_policies.authority,
+			       cross_mint_swap_policies.settings,
+			       cross_mint_swap_policies.vault_index,
+			       cross_mint_swap_policies.vault_pubkey,
+			       array_agg(DISTINCT cross_mint_swap_policies.policy_account
+			                 ORDER BY cross_mint_swap_policies.policy_account)
+			FROM loyal_yield.cross_mint_swap_policies AS cross_mint_swap_policies
+			WHERE cross_mint_swap_policies.cluster = $1
+			  AND cross_mint_swap_policies.active
+			  AND cross_mint_swap_policies.source_shard IN ('classic', 'token_2022')` + crossMintFilter + `
+			GROUP BY cross_mint_swap_policies.authority,
+			         cross_mint_swap_policies.settings,
+			         cross_mint_swap_policies.vault_index,
+			         cross_mint_swap_policies.vault_pubkey`, scanCrossMintTarget},
 		{"loyal_yield.balance_sweep_targets", `SELECT $1::text, settings, wallet, vault_index, vault_pubkey, policy_account, subscription_authority, recurring_delegation FROM loyal_yield.balance_sweep_targets WHERE cluster=$1 AND chain_status<>'closed'`, scanAutodepositTarget},
-		{"loyal_yield.multiply_route_states", `SELECT $1::text, route.settings, route.vault_index, route.vault, ARRAY(SELECT item->>'account' FROM jsonb_array_elements(policy.policy_accounts) item WHERE item->>'account' IS NOT NULL ORDER BY (item->>'seed')::bigint), (route.state->>'observedSlot')::bigint FROM loyal_yield.multiply_route_states route JOIN loyal_yield.earn_max_policy_sets policy ON policy.settings=route.settings AND policy.vault_index=route.vault_index AND policy.vault=route.vault WHERE route.state->>'engineVersion'='earn_max_v2' AND policy.manifest_version='earn-max-v2' AND policy.status='ready'`, scanEarnMaxTarget},
+		{"loyal_yield.multiply_route_states", `
+			SELECT $1::text, route.settings, route.vault_index, route.vault,
+			       ARRAY(
+			           SELECT item ->> 'account'
+			           FROM jsonb_array_elements(policy.policy_accounts) AS item
+			           WHERE item ->> 'account' IS NOT NULL
+			           ORDER BY (item ->> 'seed')::bigint
+			       ),
+			       (route.state ->> 'observedSlot')::bigint
+			FROM loyal_yield.multiply_route_states AS route
+			JOIN loyal_yield.earn_max_policy_sets AS policy
+			  ON policy.settings = route.settings
+			 AND policy.vault_index = route.vault_index
+			 AND policy.vault = route.vault
+			WHERE route.state ->> 'engineVersion' = 'earn_max_v2'
+			  AND policy.manifest_version = 'earn-max-v2'
+			  AND policy.status = 'ready'` + earnMaxFilter, scanEarnMaxTarget},
 	}
 	for _, item := range optional {
 		exists, err := l.relationsExist(ctx, item.relation)

@@ -1245,6 +1245,7 @@ impl NeonSqlClient {
                 }
             }
         }
+        let environment_settings = environment_settings.into_iter().collect::<Vec<_>>();
 
         let managed_vaults_exist: bool =
             sqlx::query_scalar("SELECT to_regclass('loyal_yield.managed_vaults') IS NOT NULL")
@@ -1317,20 +1318,24 @@ impl NeonSqlClient {
         if onboarding_exists {
             let rows = sqlx::query(
                 r#"
-                SELECT wallet_address AS wallet, settings, vault_index,
-                       vault_pubkey, policy_account, setup_policy_account,
-                       market
-                FROM loyal_yield.earn_deposit_onboarding_attempts
-                WHERE status <> 'complete'
+                SELECT onboarding.wallet_address AS wallet,
+                       onboarding.settings,
+                       onboarding.vault_index,
+                       onboarding.vault_pubkey,
+                       onboarding.policy_account,
+                       onboarding.setup_policy_account,
+                       onboarding.market
+                FROM loyal_yield.earn_deposit_onboarding_attempts AS onboarding
+                WHERE onboarding.status <> 'complete'
+                  AND (NOT $1 OR onboarding.settings = ANY($2))
                 "#,
             )
+            .bind(app_accounts_exist)
+            .bind(&environment_settings)
             .fetch_all(&self.pool)
             .await?;
             for row in rows {
                 let settings: String = row.get("settings");
-                if app_accounts_exist && !environment_settings.contains(&settings) {
-                    continue;
-                }
                 targets.push(EarnSubscriptionTarget {
                     environment: environment.to_owned(),
                     settings,
@@ -1371,25 +1376,25 @@ impl NeonSqlClient {
                        position.current_market AS market,
                        active_policy.policy_account AS active_policy_account,
                        setup_policy.policy_account AS setup_policy_account
-                FROM loyal_yield.user_yield_positions position
-                LEFT JOIN loyal_yield.managed_vaults vault
+                FROM loyal_yield.user_yield_positions AS position
+                LEFT JOIN loyal_yield.managed_vaults AS vault
                   ON vault.settings = position.settings
                  AND vault.vault_index = position.vault_index
                  AND vault.vault_pubkey = position.vault_pubkey
-                LEFT JOIN loyal_yield.route_policies active_policy
+                LEFT JOIN loyal_yield.route_policies AS active_policy
                   ON active_policy.id = vault.active_policy_id
-                LEFT JOIN loyal_yield.route_policies setup_policy
+                LEFT JOIN loyal_yield.route_policies AS setup_policy
                   ON setup_policy.id = vault.setup_policy_id
                 WHERE position.status = 'active'
+                  AND (NOT $1 OR position.settings = ANY($2))
                 "#,
             )
+            .bind(app_accounts_exist)
+            .bind(&environment_settings)
             .fetch_all(&self.pool)
             .await?;
             for row in rows {
                 let settings: String = row.get("settings");
-                if app_accounts_exist && !environment_settings.contains(&settings) {
-                    continue;
-                }
                 targets.push(EarnSubscriptionTarget {
                     environment: environment.to_owned(),
                     settings,
@@ -1423,24 +1428,32 @@ impl NeonSqlClient {
         if cross_mint_policies_exist {
             let rows = sqlx::query(
                 r#"
-                SELECT authority AS wallet, settings, vault_index, vault_pubkey,
-                       array_agg(DISTINCT policy_account ORDER BY policy_account)
-                           AS policy_accounts
-                FROM loyal_yield.cross_mint_swap_policies
-                WHERE cluster = $1
-                  AND active
-                  AND source_shard IN ('classic', 'token_2022')
-                GROUP BY authority, settings, vault_index, vault_pubkey
+                SELECT cross_mint_swap_policies.authority AS wallet,
+                       cross_mint_swap_policies.settings,
+                       cross_mint_swap_policies.vault_index,
+                       cross_mint_swap_policies.vault_pubkey,
+                       array_agg(
+                           DISTINCT cross_mint_swap_policies.policy_account
+                           ORDER BY cross_mint_swap_policies.policy_account
+                       ) AS policy_accounts
+                FROM loyal_yield.cross_mint_swap_policies AS cross_mint_swap_policies
+                WHERE cross_mint_swap_policies.cluster = $1
+                  AND cross_mint_swap_policies.active
+                  AND cross_mint_swap_policies.source_shard IN ('classic', 'token_2022')
+                  AND (NOT $2 OR cross_mint_swap_policies.settings = ANY($3))
+                GROUP BY cross_mint_swap_policies.authority,
+                         cross_mint_swap_policies.settings,
+                         cross_mint_swap_policies.vault_index,
+                         cross_mint_swap_policies.vault_pubkey
                 "#,
             )
             .bind(environment)
+            .bind(app_accounts_exist)
+            .bind(&environment_settings)
             .fetch_all(&self.pool)
             .await?;
             for row in rows {
                 let settings: String = row.get("settings");
-                if app_accounts_exist && !environment_settings.contains(&settings) {
-                    continue;
-                }
                 targets.push(EarnSubscriptionTarget {
                     environment: environment.to_owned(),
                     settings,
@@ -1521,8 +1534,11 @@ impl NeonSqlClient {
                 WHERE route.state ->> 'engineVersion' = 'earn_max_v2'
                   AND policy.manifest_version = 'earn-max-v2'
                   AND policy.status = 'ready'
+                  AND (NOT $1 OR route.settings = ANY($2))
                 "#,
             )
+            .bind(app_accounts_exist)
+            .bind(&environment_settings)
             .fetch_all(&self.pool)
             .await?;
             for row in rows {

@@ -63,7 +63,9 @@ trap cleanup EXIT
   -o "-h 127.0.0.1 -p $port -k $scratch_dir -F" -w start >/dev/null
 postgres_started=1
 "$postgres_bin/createdb" -h 127.0.0.1 -p "$port" -U postgres laserstream_handoff_e2e
+"$postgres_bin/createdb" -h 127.0.0.1 -p "$port" -U postgres earn_watch_e2e
 database_url="postgresql://postgres@127.0.0.1:$port/laserstream_handoff_e2e?sslmode=disable"
+watch_database_url="postgresql://postgres@127.0.0.1:$port/earn_watch_e2e?sslmode=disable"
 
 timescale_url="${TEST_TIMESCALE_DATABASE_URL:-}"
 if [[ -z "$timescale_url" ]]; then
@@ -96,8 +98,13 @@ done
 
 cd "$module_root"
 TEST_DATABASE_URL="$database_url" TEST_TIMESCALE_DATABASE_URL="$timescale_url" \
+  TEST_WATCH_DATABASE_URL="$watch_database_url" \
   "$go_bin" test -race ./... -count=1
 TEST_DATABASE_URL="$database_url" \
   "$go_bin" test ./internal/stream -run 'E2E$' -count=1 -v
+cd "$repo_root"
+EARN_WATCH_TEST_DATABASE_URL="$watch_database_url" \
+  cargo test --locked -p loyal-yield-store --test earn_subscription_targets_db \
+    -- --ignored --nocapture
 
 echo "PASS: combined Go LaserStream handoff and real-schema persistence are gap-free and idempotent"
