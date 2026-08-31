@@ -9,6 +9,10 @@
       "vault_index": 1,
       "accounts": [
         {
+          "pubkey": "Vote111111111111111111111111111111111111111",
+          "role": "smart_account"
+        },
+        {
           "pubkey": "Config1111111111111111111111111111111111111",
           "role": "vault"
         },

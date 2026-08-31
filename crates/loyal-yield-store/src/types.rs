@@ -461,6 +461,17 @@ pub struct EarnReconciliationHealthSnapshot {
     pub oldest_pending_age_seconds: u64,
 }
 
+/// Existing durable coverage for one chain signature and Earn vault.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EarnReconciliationSignatureCoverage {
+    pub signature: String,
+    pub settings: String,
+    pub vault_index: u8,
+    pub vault_pubkey: String,
+    pub completed: bool,
+    pub pending: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EarnReconciliationJob {
     pub id: i64,

@@ -58,7 +58,10 @@ cd "$repo_root"
 NEON_DATABASE_URL="$database_url" NO_DNA=1 \
   cargo run --quiet -p loyal-yield-orchestrator --bin yield-migrations -- --apply
 
-first_report="$scratch_dir/first.json"
+audit_output="$scratch_dir/audit-output.json"
+audit_report="$scratch_dir/audit-report.json"
+execute_output="$scratch_dir/execute-output.json"
+execute_report="$scratch_dir/execute-report.json"
 second_report="$scratch_dir/second.json"
 request_output="$scratch_dir/request.json"
 
@@ -68,16 +71,20 @@ scripts/reconcile-earn-laserstream-gap.sh \
   --watch-set "$fixture_root/watch-set.json" \
   --history-fixture "$fixture_root/history.json" \
   --from-slot 100 \
-  --to-slot 150 >"$first_report"
+  --to-slot 150 \
+  --report-file "$audit_report" >"$audit_output"
 
 jq -e '
-  .accountsScanned == 2 and
-  .successfulSignaturesInRange == 3 and
-  .plannedUpdates == 3 and
-  .insertedJobs == 3 and
-  .existingJobs == 0 and
-  .dryRun == false
-' "$first_report" >/dev/null || fail "first gap scan report was not complete"
+  .accountsScanned == 3 and
+  .successfulSignaturesInRange == 4 and
+  .plannedUpdates == 4 and
+  .candidateJobs == 2 and
+  .missingJobs == 2 and
+  .insertedJobs == 0 and
+  .executionRequested == false
+' "$audit_report" >/dev/null || fail "read-only gap audit report was not complete"
+[[ "$(psql_verify -A -t --command="SELECT COUNT(*) FROM loyal_yield.earn_reconciliation_jobs" | tr -d '[:space:]')" == "0" ]] ||
+  fail "read-only gap audit mutated reconciliation jobs"
 
 scripts/reconcile-earn-laserstream-gap.sh \
   --postgres-url "$database_url" \
@@ -85,12 +92,43 @@ scripts/reconcile-earn-laserstream-gap.sh \
   --watch-set "$fixture_root/watch-set.json" \
   --history-fixture "$fixture_root/history.json" \
   --from-slot 100 \
-  --to-slot 150 >"$second_report"
+  --to-slot 150 \
+  --execute \
+  --report-file "$execute_report" >"$execute_output"
 
 jq -e '
-  .plannedUpdates == 3 and
-  .insertedJobs == 0 and
-  .existingJobs == 3
+  .missingJobs == 2 and
+  .insertedJobs == 2 and
+  .executionRequested == true
+' "$execute_report" >/dev/null || {
+  cat "$execute_report" >&2
+  fail "explicit gap reconciliation was not complete"
+}
+
+policy_discovery_jobs="$(psql_verify -A -t --command="
+  SELECT COUNT(*)
+  FROM loyal_yield.earn_reconciliation_jobs
+  WHERE consumer_name = 'earn-gap-e2e'
+    AND event_payload->'filters' ? 'earn_smart_accounts'
+" | tr -d '[:space:]')"
+[[ "$policy_discovery_jobs" == "0" ]] ||
+  fail "gap execution selected a policy-discovery frame instead of a cash-flow frame"
+
+scripts/reconcile-earn-laserstream-gap.sh \
+  --postgres-url "$database_url" \
+  --consumer-name earn-gap-e2e \
+  --watch-set "$fixture_root/watch-set.json" \
+  --history-fixture "$fixture_root/history.json" \
+  --from-slot 100 \
+  --to-slot 150 \
+  --execute \
+  --report-file "$second_report" >/dev/null
+
+jq -e '
+  .plannedUpdates == 4 and
+  .pendingJobs == 2 and
+  .missingJobs == 0 and
+  .insertedJobs == 0
 ' "$second_report" >/dev/null || fail "rerun was not idempotent"
 
 cargo run --quiet -p balance-sweep-ata-monitor \
@@ -109,7 +147,7 @@ job_state="$(psql_verify -A -t --command="
   FROM loyal_yield.earn_reconciliation_jobs
   WHERE consumer_name = 'earn-gap-e2e'
 " | tr -d '[:space:]')"
-[[ "$job_state" == "3:3:0" ]] || fail "expected 3 completed jobs, got $job_state"
+[[ "$job_state" == "2:2:0" ]] || fail "expected 2 completed jobs, got $job_state"
 
 cursor_slot="$(psql_verify -A -t --command="
   SELECT durable_slot
@@ -159,14 +197,27 @@ INSERT INTO loyal_yield.user_yield_positions (
   wallet_address, settings, vault_index, vault_pubkey,
   policy_account, current_market, status
 ) VALUES
-  ('C1tmvPwE96hxVmnrx6Q4sfHiYvTpdDH1XwMPzm91NeJw', '63HpDumPa3HiR2JD4DsvH3hzNAhSoU6YRhZA7fpPB2Bg', 1, 'GfF666CzUDE1s4A3FqbJoP6iWVWvLB3ShXUiXpxjX771', NULL, NULL, 'closed'),
   ('Stake11111111111111111111111111111111111111', '122nN975TU6UkDWoeeTc8pK4FbmGka6X9y2ggi7eZhXv', 1, 'HzNg46dNAFj2Bfcrs8U4oLPvAZtBr2B9jB2LLUXeVLMd', NULL, NULL, 'closed');
 INSERT INTO loyal_yield.earn_deposit_onboarding_attempts (
   wallet_address, settings, vault_index, vault_pubkey,
   policy_account, setup_policy_account, market, status
 ) VALUES
-  ('C1tmvPwE96hxVmnrx6Q4sfHiYvTpdDH1XwMPzm91NeJw', '63HpDumPa3HiR2JD4DsvH3hzNAhSoU6YRhZA7fpPB2Bg', 1, 'GfF666CzUDE1s4A3FqbJoP6iWVWvLB3ShXUiXpxjX771', NULL, NULL, NULL, 'complete'),
   ('Stake11111111111111111111111111111111111111', '122nN975TU6UkDWoeeTc8pK4FbmGka6X9y2ggi7eZhXv', 1, 'HzNg46dNAFj2Bfcrs8U4oLPvAZtBr2B9jB2LLUXeVLMd', NULL, NULL, NULL, 'complete');
+
+WITH policy AS (
+  INSERT INTO loyal_yield.route_policies (
+    settings, authority, policy_seed, policy_account, vault_index,
+    vault_pubkey, threshold, last_seen_slot, last_seen_signature
+  ) VALUES
+    ('63HpDumPa3HiR2JD4DsvH3hzNAhSoU6YRhZA7fpPB2Bg', 'C1tmvPwE96hxVmnrx6Q4sfHiYvTpdDH1XwMPzm91NeJw', 1, 'SysvarRent111111111111111111111111111111111', 1, 'GfF666CzUDE1s4A3FqbJoP6iWVWvLB3ShXUiXpxjX771', 1, 125, 'policy-a'),
+    ('122nN975TU6UkDWoeeTc8pK4FbmGka6X9y2ggi7eZhXv', 'Stake11111111111111111111111111111111111111', 1, 'SysvarC1ock11111111111111111111111111111111', 1, 'HzNg46dNAFj2Bfcrs8U4oLPvAZtBr2B9jB2LLUXeVLMd', 1, 125, 'policy-b')
+  RETURNING id, settings, vault_index, vault_pubkey
+)
+INSERT INTO loyal_yield.managed_vaults (
+  settings, vault_index, vault_pubkey, active_policy_id, active
+)
+SELECT settings, vault_index, vault_pubkey, id, TRUE
+FROM policy;
 SQL
 
 environment_report="$scratch_dir/environment.json"
@@ -174,14 +225,18 @@ scripts/reconcile-earn-laserstream-gap.sh \
   --postgres-url "$database_url" \
   --environment verification-a \
   --consumer-name earn-gap-environment-e2e \
+  --live-targets-only \
   --history-fixture "$fixture_root/environment-history.json" \
   --from-slot 100 \
-  --to-slot 150 >"$environment_report"
+  --to-slot 150 \
+  --execute \
+  --report-file "$environment_report" >/dev/null
 
 jq -e '
   .selectedVaults == 1 and
   .plannedUpdates == 1 and
   .candidateJobs == 1 and
+  .missingJobs == 1 and
   .insertedJobs == 1
 ' "$environment_report" >/dev/null || fail "historical target scan crossed environment boundary"
 

@@ -60,8 +60,17 @@ struct Args {
     #[arg(long)]
     watch_set: Option<PathBuf>,
 
+    /// Audit only identities currently returned to the live monitor.
     #[arg(long)]
-    dry_run: bool,
+    live_targets_only: bool,
+
+    /// Enqueue only candidates that the audit found missing. Omit for read-only audit mode.
+    #[arg(long)]
+    execute: bool,
+
+    /// Save the complete audit report as JSON for operator review.
+    #[arg(long, default_value = "earn-laserstream-gap-report.json")]
+    report_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -98,6 +107,29 @@ struct PlannedUpdate {
     update: NormalizedEarnUpdate,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum CandidateCoverageStatus {
+    Completed,
+    Missing,
+    Pending,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CandidateJobReport {
+    accounts: Vec<String>,
+    filters: Vec<String>,
+    signature: String,
+    slot: u64,
+    environment: String,
+    wallet: String,
+    settings: String,
+    vault_index: u8,
+    vault_pubkey: String,
+    status: CandidateCoverageStatus,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ReconciliationReport {
@@ -112,10 +144,13 @@ struct ReconciliationReport {
     candidate_jobs: usize,
     first_planned_slot: Option<u64>,
     last_planned_slot: Option<u64>,
+    completed_jobs: usize,
+    pending_jobs: usize,
+    missing_jobs: usize,
     inserted_jobs: usize,
-    existing_jobs: usize,
     coalesced_autodeposit_requests: usize,
-    dry_run: bool,
+    execution_requested: bool,
+    candidates: Vec<CandidateJobReport>,
 }
 
 #[tokio::main]
@@ -211,39 +246,101 @@ async fn main() -> Result<()> {
     let consumer_name = args
         .consumer_name
         .unwrap_or_else(|| format!("earn-smart-account:{}", args.environment));
-    let mut inserted_jobs = 0_usize;
-    let mut coalesced_autodeposit_requests = 0_usize;
-    if !args.dry_run {
-        for planned_update in &planned {
-            let outcome = enqueue_normalized_earn_update(
-                &store,
-                &consumer_name,
-                &planned_update.update,
-                &watch_set,
+    let existing_coverage = store
+        .load_earn_reconciliation_signature_coverage(&consumer_name, args.from_slot, to_slot)
+        .await?;
+    let coverage_by_key = existing_coverage
+        .into_iter()
+        .map(|coverage| {
+            (
+                (
+                    coverage.signature,
+                    coverage.settings,
+                    coverage.vault_index,
+                    coverage.vault_pubkey,
+                ),
+                (coverage.completed, coverage.pending),
             )
-            .await?;
-            inserted_jobs = inserted_jobs.saturating_add(outcome.inserted_jobs);
-            coalesced_autodeposit_requests = coalesced_autodeposit_requests
-                .saturating_add(outcome.coalesced_autodeposit_requests);
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut candidates_by_key = BTreeMap::new();
+    let mut missing_keys = BTreeSet::new();
+    for planned_update in &planned {
+        let signature = planned_update
+            .update
+            .signature
+            .as_deref()
+            .context("planned gap update is missing its signature")?;
+        let account = planned_update
+            .update
+            .account_pubkey
+            .as_deref()
+            .context("planned gap update is missing its account")?;
+        for vault in watch_set.affected_vaults(Some(account)) {
+            let key = (
+                signature.to_owned(),
+                vault.settings.clone(),
+                vault.vault_index,
+                vault.vault.clone(),
+            );
+            let status = match coverage_by_key.get(&key) {
+                Some((true, _)) => CandidateCoverageStatus::Completed,
+                Some((false, true)) => CandidateCoverageStatus::Pending,
+                _ => {
+                    missing_keys.insert(key.clone());
+                    CandidateCoverageStatus::Missing
+                }
+            };
+            candidates_by_key
+                .entry(key)
+                .and_modify(|candidate: &mut CandidateJobReport| {
+                    candidate.accounts.push(account.to_owned());
+                    candidate.accounts.sort();
+                    candidate.accounts.dedup();
+                    candidate
+                        .filters
+                        .extend(planned_update.update.filters.clone());
+                    candidate.filters.sort();
+                    candidate.filters.dedup();
+                })
+                .or_insert_with(|| CandidateJobReport {
+                    accounts: vec![account.to_owned()],
+                    filters: planned_update.update.filters.clone(),
+                    signature: signature.to_owned(),
+                    slot: planned_update.update.slot,
+                    environment: vault.environment.clone(),
+                    wallet: vault.wallet.clone(),
+                    settings: vault.settings.clone(),
+                    vault_index: vault.vault_index,
+                    vault_pubkey: vault.vault.clone(),
+                    status,
+                });
         }
     }
-    let affected_jobs = planned
+    let mut candidates = candidates_by_key.into_values().collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        (left.slot, &left.signature, &left.vault_pubkey).cmp(&(
+            right.slot,
+            &right.signature,
+            &right.vault_pubkey,
+        ))
+    });
+    let completed_jobs = candidates
         .iter()
-        .map(|planned_update| {
-            watch_set
-                .affected_vaults(
-                    planned_update
-                        .update
-                        .account_pubkey
-                        .iter()
-                        .map(String::as_str),
-                )
-                .len()
-        })
-        .sum::<usize>();
+        .filter(|candidate| candidate.status == CandidateCoverageStatus::Completed)
+        .count();
+    let pending_jobs = candidates
+        .iter()
+        .filter(|candidate| candidate.status == CandidateCoverageStatus::Pending)
+        .count();
+    let missing_jobs = candidates
+        .iter()
+        .filter(|candidate| candidate.status == CandidateCoverageStatus::Missing)
+        .count();
 
-    let report = ReconciliationReport {
-        consumer_name,
+    let mut report = ReconciliationReport {
+        consumer_name: consumer_name.clone(),
         from_slot: args.from_slot,
         to_slot,
         selected_vaults: watch_set.earn_vaults.len(),
@@ -251,20 +348,93 @@ async fn main() -> Result<()> {
         signatures_examined,
         successful_signatures_in_range,
         planned_updates: planned.len(),
-        candidate_jobs: affected_jobs,
+        candidate_jobs: candidates.len(),
         first_planned_slot: planned.first().map(|planned| planned.update.slot),
         last_planned_slot: planned.last().map(|planned| planned.update.slot),
-        inserted_jobs,
-        existing_jobs: if args.dry_run {
-            0
-        } else {
-            affected_jobs.saturating_sub(inserted_jobs)
-        },
-        coalesced_autodeposit_requests,
-        dry_run: args.dry_run,
+        completed_jobs,
+        pending_jobs,
+        missing_jobs,
+        inserted_jobs: 0,
+        coalesced_autodeposit_requests: 0,
+        execution_requested: args.execute,
+        candidates,
     };
+    write_report(&args.report_file, &report)?;
+
+    if args.execute {
+        let mut remaining_missing_keys = missing_keys;
+        let mut execution_plans = planned.iter().collect::<Vec<_>>();
+        execution_plans.sort_by_key(|planned_update| {
+            (
+                is_policy_discovery_update(&planned_update.update),
+                planned_update.update.slot,
+                planned_update.update.account_pubkey.clone(),
+            )
+        });
+        for planned_update in execution_plans {
+            let signature = planned_update
+                .update
+                .signature
+                .as_deref()
+                .context("planned gap update is missing its signature")?;
+            let mut missing_watch_set = watch_set.clone();
+            missing_watch_set.earn_vaults.retain(|vault| {
+                remaining_missing_keys.contains(&(
+                    signature.to_owned(),
+                    vault.settings.clone(),
+                    vault.vault_index,
+                    vault.vault.clone(),
+                ))
+            });
+            if missing_watch_set.earn_vaults.is_empty() {
+                continue;
+            }
+            let enqueued_keys = missing_watch_set
+                .earn_vaults
+                .iter()
+                .map(|vault| {
+                    (
+                        signature.to_owned(),
+                        vault.settings.clone(),
+                        vault.vault_index,
+                        vault.vault.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let outcome = enqueue_normalized_earn_update(
+                &store,
+                &consumer_name,
+                &planned_update.update,
+                &missing_watch_set,
+            )
+            .await?;
+            report.inserted_jobs = report.inserted_jobs.saturating_add(outcome.inserted_jobs);
+            report.coalesced_autodeposit_requests = report
+                .coalesced_autodeposit_requests
+                .saturating_add(outcome.coalesced_autodeposit_requests);
+            for key in enqueued_keys {
+                remaining_missing_keys.remove(&key);
+            }
+        }
+        write_report(&args.report_file, &report)?;
+    }
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
+}
+
+fn write_report(path: &Path, report: &ReconciliationReport) -> Result<()> {
+    let mut json = serde_json::to_vec_pretty(report)?;
+    json.push(b'\n');
+    fs::write(path, json).with_context(|| format!("write audit report {}", path.display()))
+}
+
+fn is_policy_discovery_update(update: &NormalizedEarnUpdate) -> bool {
+    update.filters.iter().any(|filter| {
+        matches!(
+            filter.as_str(),
+            "earn_smart_accounts" | "earn_policy_accounts" | "earn_wallets"
+        )
+    })
 }
 
 async fn load_watch_set(args: &Args, store: &OrchestratorStore) -> Result<SubscriptionWatchSet> {
@@ -277,11 +447,16 @@ async fn load_watch_set(args: &Args, store: &OrchestratorStore) -> Result<Subscr
     let mut targets = store
         .load_earn_subscription_targets(&args.environment)
         .await?;
-    targets.extend(
-        store
-            .load_earn_historical_reconciliation_targets(&args.environment, args.wallet.as_deref())
-            .await?,
-    );
+    if !args.live_targets_only {
+        targets.extend(
+            store
+                .load_earn_historical_reconciliation_targets(
+                    &args.environment,
+                    args.wallet.as_deref(),
+                )
+                .await?,
+        );
+    }
     SubscriptionWatchSet::from_targets(Vec::new(), targets)
 }
 
