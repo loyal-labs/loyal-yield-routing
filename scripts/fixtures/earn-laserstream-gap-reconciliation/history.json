@@ -1,6 +1,9 @@
 {
   "finalized_slot": 150,
   "accounts": {
+    "Vote111111111111111111111111111111111111111": [
+      { "signature": "sig-shared", "slot": 120 }
+    ],
     "Config1111111111111111111111111111111111111": [
       { "signature": "sig-after-window", "slot": 151 },
       { "signature": "sig-failed", "slot": 125, "failed": true },

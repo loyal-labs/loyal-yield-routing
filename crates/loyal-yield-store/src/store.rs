@@ -1134,7 +1134,69 @@ impl NeonSqlClient {
         })
     }
 
-    /// Load only identity and already-recorded policy/market metadata. Address
+    /// Read durable reconciliation coverage without changing jobs or cursors.
+    pub async fn load_earn_reconciliation_signature_coverage(
+        &self,
+        consumer_name: &str,
+        from_slot: u64,
+        to_slot: u64,
+    ) -> Result<Vec<EarnReconciliationSignatureCoverage>, OrchestratorError> {
+        let rows = sqlx::query(
+            r#"
+            WITH coverage AS (
+                SELECT job.event_payload->>'signature' AS signature,
+                       job.settings,
+                       job.vault_index,
+                       job.vault_pubkey,
+                       FALSE AS completed,
+                       TRUE AS pending
+                FROM loyal_yield.earn_reconciliation_jobs job
+                WHERE job.consumer_name = $1
+                  AND job.durable_slot BETWEEN $2 AND $3
+                  AND job.event_payload->>'signature' IS NOT NULL
+                  AND job.completed_at IS NULL
+                UNION ALL
+                SELECT mutation.chain_signature AS signature,
+                       mutation.settings,
+                       mutation.vault_index,
+                       mutation.vault_pubkey,
+                       TRUE AS completed,
+                       FALSE AS pending
+                FROM loyal_yield.earn_chain_mutations mutation
+                WHERE mutation.confirmed_slot BETWEEN $2 AND $3
+            )
+            SELECT signature, settings, vault_index, vault_pubkey,
+                   BOOL_OR(completed) AS completed,
+                   BOOL_OR(pending) AS pending
+            FROM coverage
+            GROUP BY signature, settings, vault_index, vault_pubkey
+            "#,
+        )
+        .bind(consumer_name)
+        .bind(to_i64_slot(from_slot)?)
+        .bind(to_i64_slot(to_slot)?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(EarnReconciliationSignatureCoverage {
+                    signature: row.get("signature"),
+                    settings: row.get("settings"),
+                    vault_index: u8::try_from(row.get::<i16, _>("vault_index")).map_err(|_| {
+                        OrchestratorError::StoreInvariant(
+                            "Earn reconciliation coverage vault index is invalid".to_owned(),
+                        )
+                    })?,
+                    vault_pubkey: row.get("vault_pubkey"),
+                    completed: row.get("completed"),
+                    pending: row.get("pending"),
+                })
+            })
+            .collect()
+    }
+
+    /// Load identity and already-recorded policy/market metadata for every
+    /// vault that can still receive client-originated Earn transactions. Address
     /// derivation is deliberately performed by the monitor from this compact
     /// snapshot rather than persisted in a second catalog.
     pub async fn load_earn_subscription_targets(
@@ -1181,6 +1243,69 @@ impl NeonSqlClient {
                         observation_start_slot: None,
                     });
                 }
+            }
+        }
+
+        let managed_vaults_exist: bool =
+            sqlx::query_scalar("SELECT to_regclass('loyal_yield.managed_vaults') IS NOT NULL")
+                .fetch_one(&self.pool)
+                .await?;
+        if managed_vaults_exist {
+            let rows = sqlx::query(
+                r#"
+                SELECT active_policy.authority AS wallet,
+                       vault.settings,
+                       vault.vault_index,
+                       vault.vault_pubkey,
+                       active_policy.policy_account,
+                       setup_policy.policy_account AS setup_policy_account,
+                       active_policy.kamino_markets,
+                       LEAST(
+                           active_policy.last_seen_slot,
+                           setup_policy.last_seen_slot
+                       ) AS observation_start_slot
+                FROM loyal_yield.managed_vaults vault
+                JOIN loyal_yield.route_policies active_policy
+                  ON active_policy.id = vault.active_policy_id
+                LEFT JOIN loyal_yield.route_policies setup_policy
+                  ON setup_policy.id = vault.setup_policy_id
+                WHERE vault.active AND active_policy.active
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                let settings: String = row.get("settings");
+                if app_accounts_exist && !environment_settings.contains(&settings) {
+                    continue;
+                }
+                let observation_start_slot = row
+                    .try_get::<Option<i64>, _>("observation_start_slot")?
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(|_| {
+                        OrchestratorError::StoreInvariant(
+                            "Earn observation start slot is negative".to_owned(),
+                        )
+                    })?;
+                targets.push(EarnSubscriptionTarget {
+                    environment: environment.to_owned(),
+                    settings,
+                    wallet: row.get("wallet"),
+                    earn_max: false,
+                    vault_index: row.get("vault_index"),
+                    vault_pubkey: Some(row.get("vault_pubkey")),
+                    policy_accounts: [
+                        row.try_get::<Option<String>, _>("policy_account")?,
+                        row.try_get::<Option<String>, _>("setup_policy_account")?,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+                    markets: row.get("kamino_markets"),
+                    autodeposit_accounts: Vec::new(),
+                    observation_start_slot,
+                });
             }
         }
 
@@ -5958,6 +6083,9 @@ async fn apply_earn_deposit(
         return Ok(());
     };
 
+    // The position identity is unique across repeated Earn lifecycles. Include a
+    // closed row here so a later confirmed deposit reactivates it instead of
+    // colliding with user_yield_positions_initial_uidx.
     let existing_position = sqlx::query_as::<_, ExistingEarnPositionProjectionRow>(
         r#"
             SELECT id, current_reserve, current_market, current_liquidity_mint,
@@ -5965,7 +6093,6 @@ async fn apply_earn_deposit(
             FROM loyal_yield.user_yield_positions
             WHERE settings = $1 AND vault_index = $2
               AND wallet_address = $3 AND vault_pubkey = $4
-              AND status = 'active'::loyal_yield.yield_position_status
             ORDER BY updated_at DESC, id DESC
             LIMIT 1
             FOR UPDATE
