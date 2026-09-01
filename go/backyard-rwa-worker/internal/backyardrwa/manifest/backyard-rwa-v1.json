@@ -1,0 +1,71 @@
+{
+  "schema": "loyal-backyard-rwa-manifest/v1",
+  "status": "incomplete",
+  "cluster": "mainnet-beta",
+  "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "commitment": "confirmed",
+  "mvpRoute": "PRIME/USDC",
+  "targetLtvBps": 5000,
+  "hardLtvRule": "min(6000, liquidationThresholdBps - 1500)",
+  "withdrawalWaitSeconds": 600,
+  "navMaxAgeSeconds": 60,
+  "vaultCapRaw": "1000000000000",
+  "identities": {
+    "voltrProgram": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+    "voltrVault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+    "adaptorProgram": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+    "currentV1StrategyConfig": "ABYbbc7ms3FdB9BDe8HPYMKvuU9iEj8a55rVuyuZeNSs",
+    "v2StrategyConfig": "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj",
+    "squadsProgram": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+    "squadsSettings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+    "squadsVaultIndex": 0,
+    "squadsVault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+    "delegatedExecutor": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+    "squadsUsdcAta": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+    "kaminoProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+    "kaminoFarmsProgram": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+    "jupiterProgram": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+    "usdcMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "classicTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "token2022Program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+  },
+  "supportedLanes": [
+    "OnRe/ONyc/USDC",
+    "OnRe/ONyc/USDG",
+    "OnRe/ONyc/USDS",
+    "Prime/PRIME/USDC",
+    "Prime/PRIME/PYUSD",
+    "Prime/PRIME/USDS",
+    "Maple/syrupUSDC/USDC",
+    "Maple/syrupUSDC/USDG",
+    "Maple/syrupUSDC/PYUSD",
+    "AUTO/AUTO/PYUSD",
+    "Ethena/USDe/PYUSD"
+  ],
+  "policyCatalog": {
+    "schema": "loyal-backyard-rwa-policy-catalog/v1",
+    "sha256": null,
+    "addressesResolved": false,
+    "packingRung": null,
+    "policyAccounts": []
+  },
+  "deployment": {
+    "sourceCommit": null,
+    "imageDigest": null,
+    "singleWriterService": null
+  },
+  "unresolved": [
+    {
+      "code": "UNRESOLVED_ADAPTOR_V2_CONFIG",
+      "resumeCondition": "Deploy adaptor v2, initialize the derived 9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj config, and confirm its immutable bytes."
+    },
+    {
+      "code": "UNRESOLVED_CURRENT_POLICY_GRAPH",
+      "resumeCondition": "Resolve every current confirmed market and reserve graph, including Maple/USDG, then compile and measure the first safe policy packing rung."
+    },
+    {
+      "code": "UNRESOLVED_DEPLOYMENT_IDENTITY",
+      "resumeCondition": "Publish and deploy one immutable Go worker image after explicit deployment approval."
+    }
+  ]
+}

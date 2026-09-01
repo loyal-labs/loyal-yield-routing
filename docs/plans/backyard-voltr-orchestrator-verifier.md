@@ -1,120 +1,86 @@
-# Backyard Voltr orchestrator verifier
+# Backyard Voltr + Squads RWA worker: verifier-first delivery plan
 
-Status: approved target contract v3. This is the sole definition of done for
-integrating the Backyard Voltr vault into Loyal's production Earn orchestrator.
-The executable verifier still implements the earlier contract and must be
-updated to this v3 contract before it can return a production PASS. This plan
-supersedes the production-orchestration portions of the earlier four-market POC
-verifier; that verifier remains historical proof of the on-chain Voltr/Kamino
-graph and must not become a production runtime protocol.
+Status: proposed implementation contract v4.
 
-The last v2 verifier baseline had infrastructure checks 1-5 passing and remained
-`BLOCKED` at production activation. Under this changed v3 contract the current
-route is `FAIL`: the live vault still has POC configuration and policies, the
-TypeScript interval is stale, and the executable verifier does not yet bind the
-new cap and fee fields. Historical Voltr-specific bridge/outbox code may remain
-only when it is unreachable from the deployed production lane.
+This file is the sole definition of done for the first Backyard Finance RWA
+vault. It replaces the earlier Rust fleet/four-market orchestration plan.
 
-## Contract
+The current implementation must report FAIL against this contract. The custom
+adaptor does not yet authenticate a Squads-PDA-signed NAV report, the complete
+eleven-lane policy catalog is not installed, the production lifecycle is not a
+Go worker, and no real end-to-end Backyard lifecycle has been reconciled.
+Historical proofs are useful evidence but cannot make this verifier pass.
 
-**Objective:** At confirmed commitment on mainnet-beta, one Backyard Voltr USDC
-route uses Loyal's existing fleet planner, opportunity lease/conflict fence,
-`signed_route_submissions`, confirmer, and reconciler plus one in-process Rust
-Voltr route adapter to:
+## 1. Outcome
 
-1. allocate confirmed Voltr idle deposits into exactly Main, OnRe, Prime, or
-   Maple;
-2. restore aggregate pending-withdrawal demand before the fixed 600-second claim
-   deadline;
-3. evaluate ordinary allocation at least hourly and move only when the existing
-   capacity-adjusted economics permit it; and
-4. persist, submit, confirm, and reconcile at most one manager leg per vault at
-   a time through the exact approved Squads policy, with the production policy
-   ceiling `0 < amountRaw <= 200_000_000_000`; and
-5. keep ordinary hourly optimization principal at or below
-   `100_000_000_000` raw even though urgent restoration may use the full policy
-   ceiling.
+At confirmed commitment on Solana mainnet-beta, one Backyard Voltr USDC vault
+must:
 
-**Scope:** Production orchestration runtime, deployment, vault configuration,
-Squads policy activation, and bounded confirmed-mainnet canary behavior. No new
-Solana program and no Backyard frontend. The fixed activation target is a
-`1_000_000_000_000` raw-USDC vault cap, a combined 500-bps performance fee,
-600-second withdrawal wait, and 3,600-second normal optimization interval.
-LP-token branding metadata is explicitly deferred and is not a readiness gate
-for Backyard's first integration. Historical TypeScript POC code may remain
-only when no deployed runtime invokes it. The activation wave updates
-Voltr/policies, enables the exact route bundle, and runs the canaries.
+1. receive a user deposit into Voltr idle;
+2. allocate it through the vault's bound Loyal adaptor into one exact Squads
+   smart-account USDC account;
+3. let one serialized Go worker put eligible idle capital into the fixed
+   PRIME/USDC Kamino Multiply route;
+4. observe a withdrawal request immediately, stop increasing risk, unwind the
+   required amount, return it through Squads and the adaptor to Voltr idle
+   before the 600-second waiting period ends;
+5. let the user claim after the waiting period;
+6. submit NAV reports through the adaptor only when the exact configured Squads
+   vault PDA has authorized the call; and
+7. leave one durable, independently reconcilable decision and transaction trail
+   in the existing database.
 
-**Verifier:** One read-only command and one structured verdict:
+The smart account must also have a compact, exact policy catalog capable of all
+eleven requested RWA Multiply lanes and the required swaps. The MVP worker will
+not optimize among them. Broad future execution freedom and simple initial
+decision-making are intentionally separate.
 
-```sh
+PASS means this whole outcome has happened once with real internal Backyard
+capital and all current deployed identities still agree. Source, simulation, or
+deployment alone is never PASS.
+
+## 2. Non-goals and accepted tradeoffs
+
+- No consumer Earn Max behavior in this milestone.
+- No APY optimizer or route switching. The only entry route is PRIME/USDC.
+- No Rust or TypeScript money-moving worker or runtime sidecar.
+- No multi-leg precomputed saga, cancellation graph, event bus, or new queue.
+- No SVM or LiteSVM readiness gate.
+- No separate low-value canary and no live test of every lane. The live test is
+  one real internal Backyard lifecycle; policy simulations are batched.
+- Confirmed commitment is sufficient. Finalized is not a readiness gate.
+- Voltr allowAnyAdaptor remains enabled by explicit business decision.
+- Go computes and reports NAV for the MVP. Fully onchain economic NAV is a
+  later hardening project, not hidden inside this milestone.
+- No complicated admin console. The first page is a read-only operating view.
+
+These tradeoffs reduce delivery time. They do not relax signer, account,
+reserve, replay, conservation, or reconciliation checks.
+
+## 3. One verifier and one verdict
+
+Reuse and upgrade the existing command:
+
+~~~sh
 op run --env-file=.env.1password -- \
-  cargo run -q -p loyal-yield-orchestrator \
-  --bin fleet-orchestration-verifier -- \
-  --backyard-voltr-end-state --json
-```
+  bun run --cwd tools/backyard-voltr verify:rwa-multiply-custom-lifecycle
+~~~
 
-The implementation adds the `--backyard-voltr-end-state` scope to the existing
-fleet verifier. It discovers the sole compiled `voltr_kamino` route bundle and
-its deployed binding; PASS mode accepts no caller-selected route or evidence
-manifest. It may read repository/build identity, Render deployment metadata,
-Neon state, and Solana RPC. It must not read a guardian key or invoke a sender.
-Before the deferred Voltr activation, checks 1-5 are the infrastructure-ready
-checkpoint and the overall verdict remains `BLOCKED` with resume condition
-`install/approve the production bundle, enable the binding, and authorize the
-smallest confirmed canaries`. This is a checkpoint in the same verifier, not a
-second definition of done.
+The command is read-only and has broadcast=false in every RPC path. It must not
+load a signing key, construct an approval transaction, mutate the database, or
+accept caller-authored evidence as truth.
 
-**External gates:** Voltr/admin and Squads-policy update approval, deployment
-approval, an immutable worker image, funded production fee payer, and separately
-authorized low-value manager plus user deposit/request/claim canaries. The
-fixed fee split is `adminPerformanceFeeBps = 500` and
-`managerPerformanceFeeBps = 0`; management, issuance, and redemption fees remain
-zero. This routes the initial fee entitlement to the temporary manual admin
-instead of requiring an additional Squads LP-fee transfer policy. The verifier
-never grants transaction authority.
+The output schema is loyal-backyard-rwa-go-lifecycle/v2:
 
-### Fixed activation configuration
-
-| Setting | Exact value |
-| --- | ---: |
-| Vault cap | `1_000_000_000_000` raw USDC (1,000,000 USDC) |
-| Squads policy amount ceiling | `200_000_000_000` raw USDC (200,000 USDC) |
-| Ordinary hourly optimization principal ceiling | `100_000_000_000` raw USDC (100,000 USDC) |
-| Withdrawal waiting period | `600` seconds |
-| Normal optimization interval | `3_600` seconds |
-| Locked-profit degradation duration | `86_400` seconds |
-| Admin performance fee | `500` bps |
-| Manager performance fee | `0` bps |
-| Management, issuance, redemption fees | `0` bps |
-| Base idle floor | `0` raw; active receipt demand is reserved dynamically |
-| LP branding metadata | deferred; not a current readiness gate |
-
-The 200k policy ceiling is deliberately larger than the 100k ordinary
-optimization ceiling. The policy permits a fully invested 1M vault to restore
-in at most five serialized legs. The controller still limits routine hourly
-principal movement to 10% of the vault. Both directions remain pinned to the
-same four approved Kamino graphs; a withdrawal can only return funds to the
-vault's own idle account.
-
-**Verdict:** `PASS` only when every required check below passes against current
-authoritative evidence. `FAIL` identifies a false invariant. `BLOCKED`
-identifies an unavailable external dependency and the exact resume condition.
-Any `FAIL` wins over a `BLOCKED` result.
-
-## Output and exit contract
-
-```json
+~~~json
 {
-  "schemaVersion": 1,
-  "verifier": "backyard-voltr-orchestrator-end-state",
+  "schema": "loyal-backyard-rwa-go-lifecycle/v2",
   "verdict": "PASS | FAIL | BLOCKED",
   "commitment": "confirmed",
-  "routeId": "...",
-  "routeBundleSha256": "...",
   "sourceCommit": "...",
   "deployedImageDigest": "...",
-  "observedAt": "...",
+  "manifestSha256": "...",
+  "policyCatalogSha256": "...",
   "checks": [
     {
       "id": "...",
@@ -127,715 +93,666 @@ Any `FAIL` wins over a `BLOCKED` result.
   "firstFailure": null,
   "blocker": null
 }
-```
-
-- Exit `0`: `PASS`.
-- Exit `1`: `FAIL`.
-- Exit `2`: `BLOCKED`.
-- Secrets, RPC URLs, database URLs, and environment values are never emitted.
-- Caller-authored verdict fields, lifecycle manifests, and POC evidence JSON do
-  not count as proof.
-
-## Required checks in fail-fast order
-
-### 1. `single_runtime_lane`
-
-Prove that production uses one existing fleet lifecycle:
-
-```text
-opportunity -> lease/fence -> signed_route_submissions
-            -> confirmer -> confirmed reconciliation
-```
-
-- The deployed execution target is Rust and has route kind `voltr_kamino`.
-- Every active Voltr leg has one fleet opportunity/decision and exactly one
-  `signed_route_submissions` generation. A later leg requires confirmed
-  reconciliation plus a fresh observation; there is no durable sibling graph.
-- The mandatory conflict key is `voltr:vault:<vault-address>`; at most one
-  nonterminal submission exists for the vault.
-- No deployed service invokes `tools/backyard-voltr`,
-  `backyard-voltr-restoration-bridge`,
-  `backyard-voltr-restoration-readback`, Phase-A/Phase-B files,
-  `--enqueue-voltr-restoration-json`, or a Voltr-specific mutable outbox state
-  machine.
-- The existing fleet-worker binary may dispatch `voltr_kamino` to the new route
-  adapter, but its direct-Kamino `same_mint` and `idle_vault_deposit` branches
-  must reject Voltr opportunities. No child process or TypeScript handoff is
-  permitted.
-- Local source binding, immutable image digest, enabled route binding, and route
-  bundle digest agree.
-
-Historical files may remain in the tree, but reachable production wiring or a
-second durable execution lifecycle is `FAIL`.
-
-### 2. `one_leg_replan`
-
-Invoke the real planner/domain API with independent deterministic oracles.
-The small oracle preserves one-leg/replan semantics:
-
-```text
-restoration policy cap: 200,000 USDC
-withdrawal demand: 120,000 USDC
-idle: 0
-Main available: 80,000 USDC
-Prime available: 80,000 USDC
-```
-
-The only accepted sequence is:
-
-```text
-withdraw 80k
--> confirm and re-read
--> withdraw 40k
--> confirm and re-read
--> no withdrawal
-```
-
-The production-cap oracle starts with zero idle, 1,000,000 USDC of aggregate
-pending demand, and enough safely redeemable liquidity across the four approved
-strategies. It must produce exactly five independently confirmed and replanned
-withdrawals of at most 200,000 USDC, followed by `NOOP`. It must not emit a
-precomputed five-leg saga.
-
-- Each planning cycle emits zero or one leg, never a sibling array or
-  cancellation graph.
-- The durable opportunity has an explicit closed operation class:
-  `withdrawal_restoration`, `idle_allocation`, or `yield_optimization`.
-  Restoration is admitted without fake APY, edge, annual-gain, or net-gain
-  values; the existing table constraint and claim ordering are made conditional
-  on that class.
-- Multiple active receipts are aggregated before computing demand.
-- While shortfall is positive, no deposit-allocation or normal-optimization
-  task may be created or submitted.
-- Duplicate observations cannot create a second active leg for the same vault
-  generation.
-- A new receipt scan supersedes an unsigned normal opportunity for the vault.
-  A persisted or possibly broadcast signed submission is never cancelled or
-  rebuilt; it is recovered first, then the vault is replanned.
-- A completed leg marks the vault dirty; the next decision uses a confirmed
-  observation slot at or after the previous transaction slot.
-
-This check must falsify the historical `idleBefore + currentLegAmount`
-shortfall calculation.
-
-### 3. `route_and_packet_exactness`
-
-Load one immutable production route bundle, generated at build time from the
-pinned Voltr SDK and independently decoded by Rust.
-
-- It contains exactly four strategies and eight `(strategy, operation)`
-  templates for Main, OnRe, Prime, and Maple deposit/withdrawal.
-- The bundle binds cluster, vault, LP mint, idle account, Squads
-  settings/manager/guardian, eight policy PDAs, reserve/market/farm graphs,
-  programs, deployment identities, 600-second withdrawal period, 3,600-second
-  normal interval, configured idle safety buffer, exact
-  `1_000_000_000_000` raw vault cap, exact 500-bps admin performance fee with
-  every other owner fee zero, `200_000_000_000` raw policy ceiling,
-  `100_000_000_000` raw normal-optimization ceiling, and its own digest. The
-  adapter reads limits from the bundle; it does not hard-code POC limits.
-- For every template, only the positive little-endian `u64` at bytes `8..16`
-  may vary at runtime.
-- Independently reconstruct and decode the complete v0 packet. Other than
-  approved compute-budget instructions, the only top-level capital instruction
-  is the exact Squads ProgramInteraction wrapper. Direct top-level K-Lend or
-  Voltr manager execution is `FAIL`.
-- Exact guardian, manager, policy, adaptor, vault, reserve, market, farm,
-  account order/roles, instruction data, ALT, packet-size, compute, and heap
-  bounds must match.
-- Zero amount, `policyCap + 1`, a normal optimization above its lower software
-  ceiling, wrong guardian/manager/policy/strategy/graph/program,
-  extra instruction, and extra writable mutations must fail before signing.
-- Current mainnet Settings, all eight policy account bytes, and program
-  deployments match the bundle; no active policy in the manager namespace is
-  unclassified.
-
-### 4. `projection_and_priority`
-
-At one confirmed observation using `minContextSlot`:
-
-- Direct RPC idle equals `vault_idle_token_balances_current`.
-- The four decoded strategy positions equal
-  `vault_reserve_positions_current`; no fifth strategy exists.
-- A direct scan of active Voltr withdrawal receipts equals the planner's sorted
-  receipt-set fingerprint and aggregate demand.
-- Every raw fixed-point receipt quote is conservatively rounded upward before
-  aggregation.
-- The maintained accounting identity holds:
-
-  ```text
-  totalValue = idle + Main + OnRe + Prime + Maple
-  ```
-
-- Projection freshness is at most 30 seconds.
-- Log/websocket delivery is optional acceleration. With wakeups disabled, the
-  periodic confirmed scan still discovers a request within 30 seconds.
-
-Planner decisions must obey:
-
-```text
-requiredIdle = configuredSafetyBuffer + sum(active withdrawal upper bounds)
-shortfall = max(0, requiredIdle - confirmedIdle)
-investableIdle = max(0, confirmedIdle - requiredIdle)
-```
-
-Positive shortfall produces one liquidity-critical withdrawal. Zero shortfall
-plus investable idle may produce one deposit. Only zero demand plus an elapsed
-hourly cooldown may produce a normal optimization withdrawal.
-
-The four-market allocation target comes from the existing capacity-adjusted
-net-APY curves, not a new Backyard scorer. The controller fills the best
-marginal capacity first and may split capital across Main, OnRe, Prime, and
-Maple. Each cycle moves only one bounded surplus/deficit leg. Restoration first
-prefers a source that can fill the current capped leg, minimizing transaction
-count under the deadline; ties then use lowest net yield, lowest unwind cost,
-and stable strategy id. A smaller source remains eligible for the final leg.
-
-### 5. `durable_one_send`
-
-Use the existing generic signed-submission recovery surface, not a
-Voltr-specific implementation.
-
-- Exact signed bytes, transaction/message hashes, expected signature,
-  blockhash lifetime, fence, writable keys, and semantic generation are
-  persisted before the network send permit.
-- A disposable-store controlled-RPC probe injects failure:
-  1. before persistence;
-  2. after persistence and before send;
-  3. after an ambiguous send response;
-  4. after confirmation and before reconciliation; and
-  5. after reconciliation and before the dirty wakeup.
-- Actual observed network send count is at most one per signed generation.
-- Restart looks up the exact expected signature and reuses persisted bytes; it
-  never rebuilds or resigns an ambiguous submission.
-- A stale fence loses. An ambiguous live signature freezes. A proved-expired,
-  never-submitted wire becomes terminal before a new generation is allowed.
-
-The verifier must exercise observable calls/state transitions; a source field
-named `oneSendOnly` is not evidence.
-
-### 6. `confirmed_effects`
-
-Discover fresh production-path canaries through planner decisions and signed
-submissions in Neon, then independently fetch their transactions and accounts
-from RPC. A manually executed CLI transaction cannot satisfy this check.
-
-For every sampled manager deposit/withdrawal:
-
-- Persisted bytes, expected signature, and confirmed chain transaction match.
-- The readback context slot is at or after the transaction slot.
-- Deposit decreases idle and increases only the selected strategy position.
-- Withdrawal increases idle and decreases only the selected strategy position.
-- LP supply is unchanged by manager operations.
-- Token and lamport deltas form the exact allowed closed set.
-- Requested amount and actual protocol redemption are tracked separately.
-  Conservation uses actual idle movement and position-value movement, allowing
-  only the maintained explicit protocol rounding rule.
-- The submission reaches generic `reconciled` state and marks the vault dirty.
-
-### 7. `deposit_withdrawal_and_hourly_end_state`
-
-Require one fresh coherent production-path trace from the deployed build and
-route bundle:
-
-**Deposit allocation**
-
-- A confirmed user deposit increases Voltr idle.
-- Projection observes it within 30 seconds without waiting for the hourly tick.
-- Sequential, independently replanned manager deposits allocate investable idle
-  within five minutes.
-- Every allocation leg is `<=200k`, uses an approved strategy/policy, and has exactly one
-  reconciled generic signed submission.
-- Re-observation creates no duplicate effect.
-
-**Withdrawal restoration**
-
-- A confirmed request produces positive initial shortfall and an exact decoded
-  receipt/user/LP/deadline identity.
-- Projection observes it within 30 seconds.
-- Until shortfall is zero, no ordinary deposit or optimization submission
-  exists.
-- Every restoration leg is one independently replanned `<=200k` withdrawal from
-  fresh confirmed state.
-- Aggregate idle covers aggregate active demand within 300 seconds of request
-  confirmation and no later than 60 seconds before the 600-second deadline.
-- A separately authorized user claim succeeds at or after the deadline, closes
-  the receipt, and preserves vault accounting.
-
-**Hourly optimization**
-
-- At least one fresh hourly evaluation exists; an economically correct `NOOP`
-  is acceptable.
-- No normal optimization decisions begin less than 3,600 seconds apart.
-- One hourly optimization starts with at most one 100k principal slice. Its
-  source withdrawal and later destination deposit are each capped at 100k; the
-  two transactions are not misreported as 200k of independently optimized
-  principal.
-- Strategy-to-strategy movement is a confirmed withdrawal, fresh replan, then a
-  later confirmed deposit through idle; it is never an atomic or preplanned
-  two-leg saga.
-
-**Cap-to-throughput**
-
-- The configured user-accessible vault cap is exactly 1M USDC.
-- A coherent same-build, same-route, zero-idle 1M-USDC restoration trace reaches
-  idle coverage in at most five independently replanned 200k legs within 300
-  seconds.
-- The trace includes at least one injected transient failure or worker restart,
-  still covers demand at least 60 seconds before the claim deadline, and fails
-  if fragmented safely redeemable liquidity would require more than five legs.
-
-## Runtime model
-
-There is one controller and one durable transition path:
-
-```text
-confirmed Voltr snapshot
-    -> next_voltr_leg(snapshot, shared market curves, last normal start)
-    -> one rebalance_opportunity
-    -> existing lease + conflict fence
-    -> one exact Rust Voltr manager packet
-    -> signed_route_submissions
-    -> existing sender/confirmer
-    -> Voltr effect reconciliation
-    -> mark the vault dirty
-    -> confirmed snapshot and replan
-```
-
-The confirmed snapshot is a value, not a second state machine. It contains:
-
-```text
-route bundle digest and observation context slot
-vault total value and LP supply
-idle USDC
-Main/OnRe/Prime/Maple position value and safely redeemable amount
-sorted active receipt generation identities and conservative quotes
-aggregate required idle, shortfall, and investable idle
-shared capacity-adjusted market curves and their freshness evidence
-```
-
-The only production-specific addition to the existing lifecycle is a closed
-Voltr route adapter. Do not add a receipt table, restoration saga table,
-Backyard scheduler, mutable file handoff, or second signed-transaction queue.
-Receipts remain on-chain truth and are rescanned after restart. The opportunity
-persists the exact receipt-set fingerprint and observation slot that justified
-its one leg.
-
-### Explicit opportunity semantics
-
-The current `rebalance_opportunities` value constraint assumes every row is a
-positive-APY economic rebalance. Withdrawal restoration is not one. Add one
-narrow migration to the existing table and Rust types:
-
-```text
-operation_class:
-  yield_optimization
-  idle_allocation
-  withdrawal_restoration
-
-service_deadline_at:
-  required only for withdrawal_restoration
-```
-
-- `yield_optimization` retains every existing positive edge/gain/economic
-  invariant.
-- `idle_allocation` prices idle at zero yield and retains the economic and
-  capacity gates, but bypasses the one-hour start cooldown so a new user
-  deposit is not stranded.
-- `withdrawal_restoration` requires zero economic-gain fields, positive bounded
-  principal, a receipt-set fingerprint, a deadline, and an exact
-  strategy-to-idle route. It is ordered before unsigned allocation and
-  optimization work without manufacturing a fake APY.
-- Recovery of an already signed or ambiguous submission precedes all three
-  classes. The new class never bypasses the existing lease, conflict, fee,
-  signer, persistence, or one-send requirements.
-
-One opportunity represents one manager transaction. A strategy rotation is
-not a persisted two-leg saga: after the source withdrawal reconciles, idle is a
-safe custody state and the next snapshot independently chooses the destination
-deposit. The normal-start cooldown prevents a second optimization withdrawal;
-it does not delay completing the idle deposit.
-
-## Implementation plan
-
-Work in this order. The first three chunks attack the packet, schema, and
-state-model risks before deployment or live writes.
-
-### Chunk 0 — exact Rust packet parity, no writes
-
-This is the hardest dependency and the first stop condition.
-
-1. Define one versioned, canonical route-bundle schema containing the eight
-   manager instruction templates and all identities/limits in check 3.
-2. Generate the bundle at build time from the pinned Voltr SDK. The generator
-   may live under `tools/backyard-voltr`, but the deployed worker embeds only
-   immutable bytes and never launches Bun or a TypeScript child process.
-3. Add an independent Rust decoder and builder in `loyal-actions`. Runtime input
-   is only `(operation, strategyId, amountRaw)`; callers cannot provide account
-   metas, programs, policies, reserves, or opaque instruction bytes.
-4. Reconstruct the complete Squads wrapper and v0 packet. Prove byte-for-byte
-   parity with each known-good SDK template after normalizing blockhash and the
-   single amount field.
-5. Run read-only confirmed account/deployment checks and fresh mainnet
-   simulations for the current small-cap bundle. Also compile the production
-   1M-vault/200k-policy/100k-normal configuration offline, but do not claim it
-   is on-chain-authorized before the Voltr/policy update.
-
-Exit: all eight templates fit and simulate under the installed small-cap graph,
-or stop with the first exact packet/policy/ALT/compute incompatibility. Do not
-build queue or monitoring work around a TypeScript handoff if this fails.
-
-Primary ownership:
-
-- `crates/loyal-actions/src/autonomous_vaults/voltr_kamino.rs`: canonical Rust
-  route/bundle types and exact manager builder;
-- `tools/backyard-voltr`: offline/build-time bundle generation and historical
-  mainnet diagnostics only.
-
-### Chunk 1 — make the existing queue honest
-
-1. Add `operation_class` and `service_deadline_at` to
-   `rebalance_opportunities`; change its value constraint conditionally instead
-   of inserting fake edge/yield/gain values.
-2. Extend `RebalanceOpportunityInput/Record`, validation, idempotency, claim
-   ordering, production evidence, and migrations in place. Add no workflow
-   table.
-3. Keep the existing one-active-opportunity slot per vault. An authoritative
-   receipt scan may supersede an unsigned normal row atomically. It may not
-   supersede a signed, submitted, confirmed, reconciliation-pending, or
-   ambiguous generation.
-4. Define the Voltr semantic conflict set as the exact vault key plus the
-   bounded shared reserve lane selected by the packet. Persist the complete
-   physical writable set separately, as the existing submission contract
-   already requires.
-5. Make the deterministic 120k-demand oracle produce only
-   `80k -> re-read -> 40k -> re-read -> NOOP`, and make the production-cap
-   oracle produce exactly five independently replanned 200k legs for a zero-idle
-   1M demand.
-
-Exit: a disposable Postgres run proves priority, duplicate suppression,
-fencing, conditional economics, and fresh one-leg replanning using the generic
-tables only.
-
-Primary ownership:
-
-- `crates/loyal-yield-store/migrations/`: one additive/conditional migration;
-- `crates/loyal-yield-store/src/fleet_orchestration/queue.rs`: generic durable
-  contract, with no Voltr-specific outbox SQL;
-- `crates/loyal-yield-orchestrator/src/fleet_orchestration/planner.rs`: pure
-  priority and deterministic oracle.
-
-### Chunk 2 — one confirmed Voltr observation path
-
-1. Add a small Rust Voltr observer called by the existing fleet opportunity
-   planner for the single compiled route. It reads confirmed RPC with
-   `minContextSlot`, decodes idle, vault totals, four positions, and every active
-   receipt, and rejects a mixed/stale context.
-2. Reuse the existing shared Kamino observation and capacity curves for APY and
-   liquidity. Do not implement an APY client in the Backyard tool.
-3. Project idle and the four positions through the existing current-state
-   surfaces so their normal dirty-vault wakeups continue to work. Keep the
-   receipt set in the authoritative scan/controller input; do not create a
-   mutable receipt mirror table.
-4. Poll the single route every ten seconds with a hard 30-second discovery SLO.
-   A log, webhook, websocket, or LaserStream event may wake an immediate scan,
-   but never supplies demand itself.
-5. Add the read-only RPC dependency and disabled Voltr binding to the existing
-   planner service. Do not deploy another monitor service for one vault.
-
-Exit: independent RPC readback and planner input agree on the route bundle,
-slot, idle, all four positions, receipt fingerprint, rounded-up demand, and
-accounting identity.
-
-Primary ownership:
-
-- new `fleet_orchestration/voltr_observation.rs` owned by the orchestrator
-  feature;
-- `fleet-opportunity-planner.rs` only wires polling and publication;
-- existing idle/position current-state tables remain projections, not truth.
-
-### Chunk 3 — pure one-leg controller and capital splitting
-
-Implement one pure function with no RPC, database, signer, or scheduler calls:
-
-```text
-next_voltr_leg(snapshot, market_curves, last_normal_start) ->
-    RecoverExisting | WithdrawOne | DepositOne | Noop
-```
-
-It applies this fixed order:
-
-1. recover any existing nonterminal signed generation;
-2. restore positive withdrawal shortfall from the deterministic funded source;
-3. deposit positive investable idle into the largest/highest-value target
-   deficit;
-4. after 3,600 seconds, withdraw one bounded surplus slice when the existing
-   net-gain, cost, hysteresis, capacity, and risk gates approve it;
-5. otherwise do nothing.
-
-Target allocations are computed by greedily filling the existing marginal
-capacity-adjusted net-APY curves. This lets the vault split capital across the
-four markets instead of sending everything to whichever headline APY is
-highest. The controller clips restoration and idle-allocation output by the
-200k policy ceiling, normal optimization output by the lower 100k ceiling, and
-all output by safely redeemable source amount, destination capacity, investable
-idle, and the remaining vault cap.
-
-Use state-derived idempotency:
-
-```text
-sha256(route bundle + vault + operation class + operation + strategy
-       + amount + confirmed context slot + receipt-set fingerprint)
-```
-
-Exit: deterministic fixtures prove deposit detection, four-market splitting,
-hourly cooldown, zero/over-cap rejection, duplicate scans, stale slots,
-receipt aggregation, cancellation, and withdrawal priority without generating
-transaction bytes.
-
-### Chunk 4 — route dispatch through the existing worker
-
-1. Add `voltr_kamino` dispatch inside `loyal-fleet-worker` before the existing
-   direct-Kamino request path. The same deployed binary and worker services may
-   execute it; the old `same_mint` and `idle_vault_deposit` builders must reject
-   it.
-2. Re-read the opportunity, fence, bundle digest, current Settings/policy bytes,
-   route-owned prestate, 200k policy ceiling, and operation-class ceiling before
-   signer use.
-3. Build and simulate the exact packet in Rust, enforce packet/compute/heap/fee
-   ceilings, acquire the generic semantic conflict lease, sign once, and
-   atomically persist the existing decision plus `signed_route_submissions`
-   row before publication to the sender.
-4. Reuse the existing sender and `fleet-route-confirmer`. The adapter neither
-   calls `sendTransaction` directly nor implements transport retry logic.
-5. Local secret-dependent commands use only the mounted environment through
-   `op run --env-file=.env.1password`; no 1Password app automation, plaintext
-   env file, command argument, or logged key material is permitted.
-
-Exit: a disposable-store/controlled-RPC probe reaches the generic signed state
-for one deposit and one withdrawal, with exact bytes and zero network sends.
-
-Primary ownership:
-
-- new `crates/loyal-fleet-worker/src/voltr.rs`: thin packet/preflight/effect
-  adapter;
-- `crates/loyal-fleet-worker/src/lib.rs`: route dispatch only;
-- no new worker binary or Render service.
-
-### Chunk 5 — confirmed reconciliation and one-send recovery
-
-1. Add `voltr_kamino` reconciliation behind the existing reconciler dispatch.
-   Require successful transaction metadata plus a confirmed account read at or
-   after the transaction slot.
-2. Reconcile requested and actual raw amounts separately: exact idle delta,
-   selected strategy value/redeemable delta, unchanged LP supply, unchanged
-   other three strategies, bounded fee debit, and a closed token/lamport row
-   set.
-3. Re-scan receipts in the same post-effect observation. Mark the generic
-   submission reconciled and the vault dirty in one fenced transition. Never
-   acknowledge work from a caller-supplied readback JSON.
-4. Inject crashes before persistence, after persistence, after ambiguous send,
-   after confirmation, and after reconciliation. The expected signature and
-   exact persisted bytes are the only recovery identity; observed send count
-   remains at most one.
-
-Exit: checks `durable_one_send` and the offline/disposable portion of
-`confirmed_effects` pass without a Voltr configuration change or production
-broadcast.
-
-### Chunk 6 — remove the parallel production lane
-
-After chunks 0-5 work through the generic lifecycle:
-
-1. remove `--enqueue-voltr-restoration-json` from the fleet planner;
-2. remove `voltr_restoration` production exports and its cross-lane SQL checks;
-3. remove the restoration bridge/readback binaries from Cargo and worker-image
-   build inputs;
-4. leave `tools/backyard-voltr` available only for bundle generation, offline
-   diagnostics, historical evidence, and user transaction builders;
-5. make source/deployment verification fail if a Render command or production
-   call graph can reach Phase A, Phase B, the Voltr outbox event kind, or a Bun
-   manager sender.
-
-Do not delete historical evidence. Delete or disconnect only the mutable
-production path that duplicates the generic fleet lane.
-
-Exit: `single_runtime_lane` passes and there is one database lifecycle for all
-manager transactions.
-
-### Chunk 7 — deploy dark and close the infrastructure checkpoint
-
-1. Extend the existing light-worker image; do not introduce a Backyard image.
-2. Deploy the planner/worker/confirmer/reconciler build with the Voltr route
-   binding disabled. The observer may run read-only shadow comparison, but it
-   cannot publish executable Voltr opportunities or load the guardian.
-3. Run the cheap checks before any network probe:
-
-   ```sh
-   cargo check -p loyal-actions -p loyal-yield-store \
-     -p loyal-yield-orchestrator -p loyal-fleet-worker
-   ```
-
-4. Run the sole verifier through the mounted CLI environment:
-
-   ```sh
-   op run --env-file=.env.1password -- \
-     cargo run -q -p loyal-yield-orchestrator \
-     --bin fleet-orchestration-verifier -- \
-     --backyard-voltr-end-state --json
-   ```
-
-At this checkpoint checks 1-5 must pass against the deployed dark build. The
-overall result is intentionally `BLOCKED`, not falsely `PASS`, only because the
-Voltr/policy update, enabled binding, and live canaries are deferred. Run no
-broad mock-heavy suite; use the existing proof surface only for external byte,
-policy, database, and recovery contracts that could compile while broken.
-
-### Chunk 8 — Voltr activation at the fixed production cap
-
-This chunk begins only when the separate on-chain update is approved.
-
-1. Update the canonical TypeScript RouteSpec and maintained verifiers first:
-   vault cap `1_000_000_000_000`, admin performance fee `500`, manager
-   performance fee `0`, all other owner fees `0`, normal interval `3_600`, and
-   policy ceiling `200_000_000_000`. Keep withdrawal wait `600` and locked-profit
-   degradation `86_400`; do not change metadata in this wave.
-2. Re-read the confirmed Squads Settings immediately before policy compilation.
-   The last observed seed was 42, so the next eight seeds are 43-50 only if the
-   live seed is still 42. Any drift requires regeneration rather than skipping
-   or guessing a seed.
-3. Freeze the production bundle with the unchanged 600-second withdrawal wait,
-   exactly four approved strategies/eight policies, 3,600-second normal
-   interval, zero base idle floor, `1_000_000_000_000` raw vault cap,
-   `200_000_000_000` raw policy ceiling, and `100_000_000_000` raw normal
-   optimization ceiling. Set `adminPerformanceFeeBps = 500`, every other owner
-   fee to zero, and rebuild the immutable worker image around that exact digest.
-4. Before any signature or send, independently decode and compare every proposed
-   vault-config and policy instruction against the frozen bundle, simulate it at
-   confirmed commitment, and bind the exact packet/artifact hashes into the
-   one-time authorization. A source artifact cannot authorize a caller-selected
-   policy payload.
-5. With the route binding still disabled, update and independently read back the
-   Voltr configuration. After setting the 500-bps admin performance fee and
-   before public deposits, calibrate and verify the high-water mark so historical
-   POC state cannot be charged as new performance.
-6. Install the eight newly generated policy accounts sequentially and verify
-   their full confirmed bytes after each creation. Keep the old 1-USDC policies
-   until all replacements pass; then remove the old catalog so the guardian has
-   one classified four-market policy surface. Regenerate the catalog,
-   authorization, effective route digest, and embedded Rust bundle whenever any
-   live seed, account, program, ALT, cap, or source hash differs.
-7. Enable exactly one matching database/deployment binding and run one tiny
-   generic-lane Main withdrawal and deposit first. Then prove each
-   remaining strategy direction with bounded amounts; all use confirmed
-   commitment and generic reconciliation.
-8. Run a real underfunded request/restoration/claim canary. Idle must cover the
-   aggregate active demand within 300 seconds and at least 60 seconds before the
-   600-second claim time.
-9. Prove the fixed 1M accessible cap with a controlled zero-idle restoration
-   stress trace: at most five independently replanned 200k legs, including one
-   injected transient failure or worker restart. If current strategy liquidity
-   fragmentation cannot satisfy that bound, activation remains `BLOCKED`; do
-   not silently increase concurrency or weaken one-leg reconciliation.
-10. Run the same verifier to full `PASS`; no separate lifecycle manifest or
-   operator-authored success JSON may substitute for deployed state and chain
-   evidence.
-
-### Chunk 9 — Backyard handoff
-
-There are two explicit handoff states:
-
-1. **Stable-address integration handoff:** after the vault configuration,
-   high-water mark, and policy accounts are confirmed and independently read
-   back, give Backyard the public vault and LP mint so frontend integration can
-   begin. Label this `integration-only; public deposits not yet enabled` while
-   canaries or deployment activation remain blocked.
-2. **Production-ready handoff:** only after full verifier PASS, add the USDC mint
-   and decimals, pinned user deposit/request/claim builders, 600-second claim
-   semantics, 1M cap, 5% performance fee, status/quote contract, and verifier
-   result, and explicitly authorize public deposits.
-
-LP branding metadata is not required for either initial address handoff; the
-packet labels it deferred so Backyard does not assume wallet branding is
-already complete. Backyard never receives a guardian key, policy selector,
-reserve graph, or manager instruction builder. The route remains disabled if
-the bundle, policy catalog, deployment, or verifier digest drifts.
-
-#### Testing-handoff verifier
-
-The narrower stable-address handoff has one read-only command and one verdict:
-
-```sh
-op run --env-file=.env.1password -- sh -c \
-  'cd tools/backyard-voltr && bun run verify:testing-handoff'
-```
-
-### Confirmed testing handoff (2026-08-21)
-
-- Authoritative verdict: `PASS` at confirmed context slot `440856493` with
-  `failedGateCount=0`, `broadcast=false`, and `signerLoaded=false`.
-- Stable vault: `AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK`.
-- Stable LP mint: `dbQkLsUYE7ADHHv8XEottANAa773K4xM4nyPjVdutka`.
-- Vault activation signature:
-  `45LNWnuXQ3QTEiV21X13smnbJ1M3bGmYeU18MASQmivZFbEdpHxHzEj3GzTbvA6KDGgzvLATAwehXhz5PodYdNM1`.
-- Current 200,000-USDC policy generation is seeds `43..50`; every creation
-  confirmed with exact semantic readback. The immutable seed `17..24` POC
-  generation remains separately classified by exact artifact hash and creation
-  signatures because Squads exposes no policy-close instruction.
-- This verdict authorizes sharing the vault and LP mint with Backyard for
-  integration testing. It is not the later production-readiness or deployed
-  hourly-orchestration verdict.
-
-`PASS` means only that Backyard may begin mainnet integration testing against
-the published vault and LP mint. It requires confirmed readback of the exact
-1M cap, five-percent admin performance fee, calibrated high-water mark, stable
-admin/manager and token identities, all four initialized strategies, eight
-current 200k policy accounts with exact creation origins, policy namespace
-isolation, and approved executable deployments. The command loads no signer and
-cannot broadcast. Missing RPC is `BLOCKED`; any checked-in or live-state mismatch
-is `FAIL` with the first false gate. Metadata, deployed hourly orchestration,
-the 1M restoration stress trace, and public-deposit activation are deliberately
-outside this narrower verdict and remain governed by the full production
-verifier above.
-
-## Verdict classification
-
-- Missing verifier scope/binary, route kind, Rust executor, generic submission
-  integration, or a false domain invariant: `FAIL`.
-- Unreachable RPC/Neon/Render/1Password environment: `BLOCKED`, with the exact
-  command or access restoration needed to resume.
-- Source complete but production image not yet approved/deployed: `BLOCKED`.
-- Checks 1-5 passing on the deployed dark build while the explicitly deferred
-  Voltr/policy update, route enablement, or canary authority is absent:
-  `BLOCKED`, naming that exact activation gate. It is not a runtime failure.
-- Required canary absent because its transaction was not separately authorized
-  or funded: `BLOCKED`, naming the smallest required canary.
-- Deployed schema, route, signer identity, policy, projection, transaction,
-  accounting, priority, recovery, cadence, or SLO mismatch: `FAIL`.
-- Simulation, compilation, unit tests, an RPC-returned signature, or historical
-  POC evidence alone: insufficient; never `PASS`.
-
-## Baseline and stopping rule
-
-Run cheap local checks first and stop before network while
-`single_runtime_lane`, `one_leg_replan`, or `route_and_packet_exactness` is
-`FAIL`. Once they pass, run external preflight, live read-only state, disposable
-recovery probes, and deploy dark. The next implementation wave first updates
-the executable verifier, RouteSpec, bundle schema, and canonical policy/config
-artifacts to v3. Chunk 8 then proceeds only with exact on-chain and canary
-authority; a verifier result never grants that authority itself.
-
-The first v3 result must be classified as:
-
-```json
-{
-  "verdict": "FAIL",
-  "firstFailure": "route_and_packet_exactness",
-  "evidence": "current RouteSpec/on-chain config/policies and executable verifier do not encode the fixed v3 cap, fee, interval, and policy ceilings"
+~~~
+
+- Exit 0 is PASS.
+- Exit 1 is FAIL.
+- Exit 2 is BLOCKED.
+- Any FAIL wins over BLOCKED.
+- BLOCKED is reserved for a genuinely unavailable external prerequisite and
+  must state the exact resume condition. Missing code, a mismatched deployment,
+  or a false invariant is FAIL.
+- Output separates static, simulation, submission, confirmation, deployment,
+  reconciliation, and live-lifecycle evidence.
+- RPC URLs, database URLs, secret names, key material, and environment values
+  are never emitted.
+
+The verifier itself may remain a small TypeScript read-only wrapper. The rule
+that runtime services are Go applies to observation, decision-making,
+transaction construction, submission, confirmation, and reconciliation.
+
+## 4. Frozen deployment manifest
+
+Create one checked-in, generated manifest consumed independently by the Go
+worker, policy compiler, admin read model, and verifier. The manifest contains
+no secret and binds:
+
+- cluster and confirmed commitment;
+- Voltr program, vault, LP mint, idle USDC account, adaptor program, strategy,
+  strategy authority, vault cap, fees, and 600-second wait;
+- Squads program, Settings account, vault index, derived vault PDA, delegated
+  executor, exact USDC ATA, and policy account set;
+- USDC and every supported collateral/debt mint and token program;
+- all Kamino market, reserve, liquidity-supply, collateral-supply, fee/farm,
+  obligation, and authority accounts used by the eleven lanes;
+- every swap program and exact allowed mint edge;
+- adaptor report schema and config address;
+- policy catalog hash and worker decision-schema version;
+- fixed MVP route and risk parameters; and
+- source commit and immutable deployed image digest.
+
+Discovery-time addresses are provisional until the manifest generator derives
+and independently reads them from confirmed mainnet:
+
+| Identity | Discovery value |
+| --- | --- |
+| Voltr vault | HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA |
+| Loyal adaptor program | FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW |
+| Existing strategy config | ABYbbc7ms3FdB9BDe8HPYMKvuU9iEj8a55rVuyuZeNSs |
+| Squads Settings | 5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6 |
+| Squads vault index | 0 |
+| Squads vault PDA | ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh |
+| Delegated executor | 62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5 |
+| Squads USDC ATA | EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe |
+| Voltr program | vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 |
+
+The generator must resolve Maple/USDG and every other current reserve address
+from current mainnet state. A stale or guessed address is FAIL. If the existing
+v1 adaptor config cannot be upgraded with a one-use, fully authenticated
+migration, create a fresh v2 strategy config under the same adaptor program and
+prove that the old strategy has zero receipt supply and is unreachable. Do not
+add a generic mutable rebind instruction.
+
+## 5. Minimal adaptor v2
+
+### 5.1 What “signed by the Squads smart account” means
+
+A Squads vault is a PDA and has no private key. The only accepted proof is that
+the Squads program granted signer privilege to the exact derived vault PDA with
+invoke_signed and that privilege reached the adaptor through the authorized CPI
+chain.
+
+Every deposit, withdrawal, and NAV-report path must require all of:
+
+1. squads_vault.key equals the immutable configured vault PDA;
+2. squads_vault.is_signer is true;
+3. the PDA re-derives from the configured Squads program, Settings account, and
+   vault index;
+4. the Settings account is owned by the configured Squads program and decodes
+   to the expected authority graph;
+5. voltr_strategy_authority.key equals the exact PDA derived from the configured
+   Voltr program, vault, and strategy;
+6. voltr_strategy_authority.is_signer is true;
+7. every vault, mint, token program, ATA, config, and writable account equals
+   the immutable config; and
+8. the outer transaction executor is the exact delegated signer authorized by
+   the exact Squads ProgramInteraction policy.
+
+Checks 1-7 belong in the adaptor. Check 8 belongs in the Squads policy and is
+independently decoded by the verifier. An address match without signer
+privilege is FAIL.
+
+No Instructions-sysvar caller inspection is required in v2: exact dual PDA
+signer proof plus immutable PDA derivations is the smaller and stronger useful
+boundary. If a canonical signed-unsent mainnet transaction proves that Voltr
+does not forward Squads signer privilege to the adaptor, stop with
+BLOCKED_VOLTR_SIGNER_FORWARDING. The only acceptable fallback is an atomic
+Squads payload that first writes a one-use authenticated report ticket and then
+has Voltr consume it. Never fall back to address-only authorization.
+
+### 5.2 Immutable config and compact report
+
+The config freezes:
+
+- schema version;
+- Voltr program, vault, strategy, strategy config, and strategy authority;
+- Squads program, Settings, vault index, and derived vault PDA;
+- asset mint, token program, and exact Squads asset ATA;
+- maximum reportable NAV and maximum report age; and
+- last accepted sequence, slot, NAV, and snapshot digest.
+
+The report payload is fixed-length and rejects trailing data:
+
+~~~text
+ReportV1 {
+  version: u8,
+  sequence: u64,
+  observed_slot: u64,
+  nav_after_raw: u64,
+  snapshot_digest: [u8; 32]
 }
-```
+~~~
 
-Implementation is complete only when the single command returns exit `0` and
-`PASS` for every required check against the current deployed build, route,
-database, and confirmed mainnet state. Do not weaken this verifier to match
-partial implementation; change it only if the user changes the product outcome
-or current evidence proves that the contract itself is wrong.
+Acceptance rules:
+
+- sequence is exactly last_sequence + 1;
+- observed_slot never regresses, is not from the future, and is not stale;
+- nav_after_raw is at or below the configured cap; zero is valid;
+- the digest is nonzero and binds the complete Go NAV component snapshot,
+  receipt fingerprint, and policy catalog hash;
+- a replay, skipped sequence, stale slot, wrong signer, wrong strategy,
+  duplicate mutable account, or extra bytes fail before state changes; and
+- the accepted report fields are stored before NAV is returned to Voltr.
+
+This proves report origin and freshness, not the economic truth of the number.
+The sole verifier independently recomputes the same NAV from RPC and fails on a
+mismatch. That is the deliberate MVP trust boundary.
+
+### 5.3 Capital paths
+
+- Deposit with amount greater than zero transfers exactly that USDC amount from
+  the exact Voltr strategy token account to the exact Squads USDC ATA, accepts
+  the report, and returns the reported NAV.
+- Deposit with amount zero moves no tokens but may accept a fresh report.
+- Before withdrawal, the Go worker stages the exact requested USDC amount from
+  Squads into the exact Voltr strategy token account through an approved Squads
+  payload. The adaptor validates the already-staged balance, accepts the
+  post-withdraw report, and returns NAV. Voltr then restores its own idle
+  balance.
+- The adaptor does not pull through a delegate, choose a protocol, calculate
+  APY, enumerate Kamino accounts, maintain an offchain queue, or contain a route
+  optimizer.
+
+The onchain program remains a narrow authenticated bridge and NAV-report
+boundary.
+
+## 6. Exact Squads policy catalog
+
+### 6.1 Authorized lanes
+
+The semantic catalog contains exactly these eleven tuples:
+
+| Market | Collateral | Allowed debt |
+| --- | --- | --- |
+| OnRe | ONyc | USDC, USDG, USDS |
+| Prime | PRIME | USDC, PYUSD, USDS |
+| Maple | syrupUSDC | USDC, USDG, PYUSD |
+| AUTO | AUTO | PYUSD |
+| Ethena | USDe | PYUSD |
+
+Each tuple authorizes exactly Deposit, Withdraw, Borrow, and Repay against its
+own current reserve graph: 44 semantic Kamino permissions. Every permission
+pins the exact market, collateral reserve, debt reserve, liquidity/collateral
+supplies, obligation identity, authority graph, programs, account order, roles,
+instruction tag, and data constraints.
+
+The existing global debt-market/custody cartesian form is not acceptable. For
+each lane, a wrong reserve with the same mint and a cross-lane obligation must
+be rejected by Squads before K-Lend executes.
+
+### 6.2 Swap graph
+
+The catalog permits:
+
+- each of four stablecoins to each of five RWA tokens: 20 directed edges;
+- each RWA token back to each stablecoin: 20 directed edges; and
+- each stablecoin to every other stablecoin: 12 directed edges.
+
+That is exactly 52 directed edges. It permits no RWA-to-RWA edge and no self
+edge. Program, authority, source/destination mint, source/destination custody,
+token program, slippage-bound fields, writable roles, and account count are
+constrained. Token-2022 and classic SPL identities are explicit and never
+inferred from a token symbol.
+
+### 6.3 Packing ladder
+
+Optimize rent by market without weakening an invariant. Build complete signed
+policy-create/update transactions and enforce the 1,232-byte packet limit.
+Select the first safe rung that fits:
+
+1. five market policies, one swap policy, and two Voltr bridge policies;
+2. split only an overflowing market into risk-increasing and risk-reducing
+   operations;
+3. split an overflowing market by collateral/debt lifecycle;
+4. use exact per-lane policies only for a group that still cannot fit; and
+5. split swap inbound/outbound/stable or bridge stage/return only when its own
+   packet overflows.
+
+Best case is eight policies, but eight is not a correctness requirement until
+the real packets are measured. The chosen first-fitting layout, packet sizes,
+policy PDAs, semantic expansion, total rent, and catalog hash are frozen before
+installation. Never drop a reserve, signer, program, writable-role, or data
+constraint to save rent.
+
+The two bridge policy families cover:
+
+- authenticated Voltr allocation and NAV reporting; and
+- exact Squads-to-Voltr staging and withdrawal restoration.
+
+With allowAnyAdaptor enabled, the verifier must scan every policy usable by the
+runtime delegate. Any stale, temporary, duplicate, fallback, or broader policy
+that could move this vault's Voltr, Kamino, SPL, or Token-2022 capital is FAIL.
+Unrelated policies for a different delegate are reported but do not fail this
+route.
+
+## 7. One Go worker
+
+### 7.1 Shape
+
+Implement one module and one process:
+
+~~~text
+go/backyard-rwa-worker/
+  go.mod
+  cmd/backyard-rwa-worker/main.go
+  internal/backyardrwa/
+    config.go
+    state.go
+    observe.go
+    decide.go
+    build.go
+    execute.go
+    reconcile.go
+    store.go
+    nav.go
+~~~
+
+Keep packages concrete. Do not introduce interface layers for a single RPC,
+database, signer, or route. The process performs a five-second confirmed
+RPC/database loop. A future LaserStream wake-up may reduce latency but is not a
+dependency or a second execution path.
+
+All production observation, decision, transaction construction, simulation,
+submission, confirmation, reconciliation, and NAV calculation for this vault
+run in Go. Rust remains valid for the onchain adaptor and policy/action
+libraries; TypeScript remains valid for build-time catalog generation and the
+read-only verifier.
+
+### 7.2 Serialized lifecycle
+
+Every iteration does:
+
+~~~text
+recover ambiguous work
+-> read one coherent confirmed snapshot
+-> choose zero or one literal action
+-> persist the decision
+-> build and simulate
+-> persist signed bytes and signature
+-> persist broadcast intent
+-> send once
+-> confirm
+-> reconcile exact effects
+-> re-observe before choosing again
+~~~
+
+Never send first and journal later. Never rebuild or resend an ambiguous
+signature. Recover it from chain, then reconcile or hold for manual review.
+There is at most one nonterminal operation for this vault.
+
+### 7.3 Closed action set and decision order
+
+The MVP action enum is:
+
+- HOLD
+- RECOVER_TRANSACTION
+- VOLTR_ALLOCATE_TO_SQUADS
+- OPEN_PRIME_USDC_STEP
+- DELEVER_PRIME_USDC_STEP
+- STAGE_SQUADS_TO_VOLTR
+- VOLTR_RESTORE_IDLE
+- REPORT_NAV
+
+The decision function is pure over a persisted snapshot and applies this exact
+precedence:
+
+1. recover or reconcile a nonterminal transaction;
+2. HOLD_MANUAL_RECOVERY on identity, policy, custody, snapshot, conservation,
+   unknown-token, or multiple-obligation ambiguity;
+3. deleverage immediately when the hard LTV bound is reached;
+4. when any active Voltr withdrawal receipt exists, prohibit new risk and
+   advance exactly one unwind, stage, restore, or NAV step;
+5. if Squads idle already covers aggregate receipt demand, stage the exact
+   conservatively rounded shortfall to Voltr;
+6. report NAV after each confirmed capital mutation or when the last accepted
+   report is older than 60 seconds;
+7. with no receipt, allocate eligible Voltr idle to Squads;
+8. advance one PRIME/USDC entry step toward the fixed target; otherwise
+9. HOLD with an explicit reason.
+
+After every confirmed action, discard the remainder of the old plan and
+recompute from a fresh slot. There is no durable multi-transaction plan.
+
+### 7.4 Fixed initial route and risk rule
+
+Use PRIME collateral with USDC debt because it keeps the base asset in USDC,
+uses classic SPL debt, and avoids a Token-2022 or cross-stable dependency in the
+first live path.
+
+- target LTV: 5,000 bps;
+- hard LTV: min(6,000 bps, current liquidation-threshold bps minus 1,500 bps);
+- if hard LTV is not strictly above target LTV, do not enter;
+- do not enter unless observed net APY is positive after current borrow cost
+  and explicit protocol fees;
+- require fresh reserve state, sufficient capacity, a complete policy hash,
+  and a buildable exit packet; and
+- if any gate is false, HOLD. Never silently choose a second route.
+
+Opening size is the minimum of eligible idle capital, remaining policy limit,
+reserve capacity, and the amount that keeps post-action LTV at or below target.
+Withdrawal sizing is the exact aggregate receipt shortfall plus conservative
+rounding needed to leave the requested raw USDC in Voltr idle before the
+deadline. Safety deleverage and withdrawal restoration outrank earning yield.
+
+The policy catalog makes the other ten routes possible later; changing the
+worker's fixed route or target requires a reviewed manifest version, not a
+hidden environment flag.
+
+## 8. Database reuse and decision trail
+
+Reuse multiply_route_states, multiply_operations, and
+multiply_position_snapshots/current projections. Add only a narrow migration
+for route kind backyard_rwa_v1, the closed action enum, and JSON/schema
+constraints. Do not add a second decision table, outbox, receipt table, or
+signed-submission table.
+
+One multiply_operations row is both the durable decision and execution journal.
+It contains or binds:
+
+- route ID, operation ID, generation, action, and reason code;
+- amount raw, source, destination, and receipt-demand raw;
+- observation slot, snapshot hash, policy catalog hash, and manifest hash;
+- precondition accounts and raw balances;
+- unsigned message hash, signed transaction bytes/signature, and simulation
+  result;
+- broadcast intent, confirmation slot/status, exact reconciled deltas, and
+  terminal state; and
+- timestamps and a sanitized error/recovery reason.
+
+The database may project state, but chain receipts and token balances remain
+truth. The route state stores the sorted active-receipt fingerprint, aggregate
+amount, and earliest deadline. Duplicate observations produce the same
+decision identity and cannot create a second active operation.
+
+Allowed transitions are:
+
+~~~text
+decided -> built -> simulated -> signed -> broadcast_intent
+        -> submitted -> confirmed -> reconciled
+
+any pre-broadcast state -> failed
+ambiguous submitted state -> reconciling -> reconciled | manual_recovery
+~~~
+
+No transition from failed or ambiguous to a fresh send is allowed without a
+new observation and new operation identity.
+
+## 9. NAV calculation and report
+
+From one coherent confirmed minContextSlot snapshot, Go computes:
+
+~~~text
+Voltr strategy USDC
++ Squads idle USDC and approved idle stablecoins
++ current value of approved RWA collateral and active Kamino deposits
+- current value of active Kamino borrows
+= reported NAV raw
+~~~
+
+Implementation rules:
+
+- decode classic SPL and Token-2022 accounts with explicit owners;
+- value each custody once even when aliases appear in multiple instruction
+  graphs;
+- permit exactly zero or one recognized active Kamino obligation in the MVP;
+- reject unknown token balances, multiple nonzero obligations, stale reserve or
+  oracle state, negative arithmetic, overflow, and snapshot-slot mixing;
+- use conservative deterministic rounding and persist every component;
+- bind sorted component account hashes, raw values, slot, receipt fingerprint,
+  manifest hash, and policy catalog hash into snapshot_digest; and
+- increment the adaptor report sequence only after the previous report outcome
+  is reconciled.
+
+The verifier recomputes NAV through independent RPC decoding. It must not call
+the Go worker's NAV function or trust the stored aggregate. Equality is in raw
+USDC units; an unexplained one-unit difference is FAIL.
+
+## 10. Thin Vault integrations page
+
+Add one read-only page under Vault integrations in the existing Loyal Apps
+admin surface. It uses the existing database projections and direct read-only
+RPC where already available. It shows:
+
+- current AUM/NAV, report slot/time, and freshness;
+- current APY or an explicit unavailable state;
+- Voltr idle, Squads idle, PRIME collateral, USDC debt, LTV, and route status;
+- vault/adaptor/Squads identities, cap, fees, admins, and withdrawal wait;
+- recent decisions and money movements with signature and terminal status; and
+- deposit, withdrawal-request, Voltr-restoration, and claim history.
+
+No charts, optimizer controls, mutation buttons, new analytics store, or custom
+indexer are required. A wrong or stale number must be labeled; it must not be
+silently replaced with zero.
+
+## 11. Required verifier checks
+
+Run these in fail-fast order.
+
+### V01 contract_and_forbidden_surface
+
+PASS when the v4 manifest and v2 output schema are exact, the fixed route is
+PRIME/USDC, and repository/deployment search proves no reachable Rust or
+TypeScript money-moving worker for this vault. Fail on a second writer,
+optimizer, saga, caller-selected manifest, or broadcast-capable verifier.
+
+Evidence: source AST/build graph, service commands, environment-key names
+without values, and deployed image metadata.
+
+### V02 adaptor_identity_and_signer
+
+PASS when independent decoding proves immutable bindings and the adaptor
+requires both the exact Squads vault PDA signer and exact Voltr strategy
+authority PDA signer on every capital/NAV path.
+
+The canonical signed-unsent transaction must simulate successfully through
+Squads -> Voltr -> adaptor. Mutations for a nonsigner Squads account, wrong
+Settings/index, address-only lookalike, wrong Voltr authority, replayed/skipped
+sequence, stale/future slot, oversized NAV, trailing bytes, or wrong ATA must
+all fail before mutation.
+
+Evidence: program ELF hash and authority, config bytes, PDA derivations,
+independent instruction decoding, simulation logs, pre/post account diffs, and
+the exact signer/writable metas observed at the adaptor.
+
+### V03 catalog_semantics_and_packing
+
+PASS when the frozen policy catalog expands to exactly 44 Kamino permissions
+and 52 directed swap edges, every lane pins its exact debt reserve, the chosen
+packing rung is the first one whose full signed create/update transactions fit
+1,232 bytes, and total rent is reported.
+
+Batch signed-unsent simulations by structural group: three-lane market
+policies, singleton market policies, swap graph, and bridge lifecycle. Do not
+send one live transaction per lane. Negative cases must prove same-mint
+wrong-reserve, cross-lane obligation, unapproved edge, extra instruction,
+amount-cap breach, signer substitution, and writable-role substitution fail in
+Squads before the downstream protocol.
+
+Evidence: canonical semantic JSON, packet bytes/sizes, catalog hash, policy
+account bytes/owners/activation, simulation logs, and runtime-delegate policy
+scan.
+
+### V04 go_state_machine_and_store
+
+PASS when the Go module builds and focused deterministic tests prove:
+
+- decision precedence and zero-or-one action;
+- withdrawal preemption at every open-loop state;
+- target/hard-LTV behavior and positive-APY hold;
+- duplicate observation idempotency;
+- persist-before-send ordering;
+- exact signed-byte recovery without blind resend;
+- re-observation after every confirmed mutation;
+- transition constraints and one nonterminal operation; and
+- independent NAV fixtures for classic SPL, Token-2022, rounding, unknown
+  custody, and mixed-slot rejection.
+
+These are small Go/domain and database-contract tests. They are not an SVM
+suite.
+
+Evidence: Go version, test results, migration checksum, schema introspection,
+and fixture hashes.
+
+### V05 deployed_single_writer
+
+PASS when exactly one active Go service owns this route, its immutable GHCR
+image digest maps to the source commit and manifest, its command invokes the Go
+binary directly, and no active Rust/TypeScript worker can claim the vault's
+route ID, delegated signer, or advisory lock.
+
+Evidence: deployment/service metadata, image digest, startup identity log,
+database lease owner, and absence of competing recent writes.
+
+### V06 live_internal_lifecycle
+
+PASS only after one real internal Backyard lifecycle at an explicitly approved
+operational amount proves:
+
+1. user deposit confirmed into Voltr idle;
+2. adaptor allocation confirmed into the exact Squads ATA;
+3. worker decision persisted before send;
+4. one PRIME/USDC position opened and reconciled with positive observed net
+   APY and LTV at or below target;
+5. authenticated NAV sequence accepted and independently recomputed;
+6. withdrawal receipt confirmed and no later risk-increasing action emitted;
+7. enough position unwound and exact requested raw USDC restored to Voltr idle
+   before the 600-second deadline;
+8. pre-deadline claim rejected by Voltr;
+9. post-deadline user claim confirmed; and
+10. final Voltr, Squads, Kamino, adaptor NAV, receipt, database, and user
+    balance deltas conserve value within explicit protocol fees.
+
+This is the first live use, not a separate canary. Confirmed signatures and
+post-transaction account reconciliation are sufficient; finalized polling is
+not required.
+
+Evidence: signatures, slots/block times, independently decoded instructions
+and receipts, raw pre/post balances, fees, operation rows, report sequence and
+digest, and conservation equation.
+
+### V07 admin_macroview_truth
+
+PASS when the deployed Vault integrations page names the same vault/manifest
+and its AUM, component balances, route/LTV, settings, receipt history, movement
+history, and signature statuses equal independent RPC/database reads at the
+displayed freshness boundary.
+
+Visual polish is not a readiness gate. A missing deployment or materially
+incorrect/stale unlabeled value is FAIL.
+
+## 12. Delivery order
+
+### Phase 0: freeze truth before implementation
+
+1. Upgrade the sole verifier to emit the v2 schema and FAIL baseline.
+2. Generate the current-mainnet manifest and resolve every lane, especially
+   Maple/USDG.
+3. Freeze the adaptor v2 ABI, Go action enum, database transition diagram, and
+   policy semantic JSON.
+4. Build the canonical signed-unsent Squads -> Voltr -> adaptor packet first.
+
+Exit: V01 has a truthful result and the signer-forwarding topology either
+simulates or returns the precise external BLOCKED result. No downstream work
+may compensate for failed signer propagation.
+
+### Phase 1: implement in parallel
+
+Adaptor track:
+
+- implement config/report v2, dual-PDA signer checks, exact transfers, replay
+  rules, and independent ABI fixtures;
+- deploy the smallest upgrade and freeze its ELF/program-data authority hash.
+
+Policy track:
+
+- correct exact debt-reserve binding;
+- add all eleven lanes and 52 swap edges;
+- measure the packing ladder, generate create/replace/close instructions, and
+  freeze the first-fitting catalog.
+
+Go track:
+
+- add the one worker module, focused decision/NAV/build/reconcile logic, and the
+  narrow database migration;
+- support only the closed action set and fixed PRIME/USDC route.
+
+Admin track:
+
+- define the read model against the frozen fields and build the thin page after
+  the migration shape is fixed.
+
+Exit: V02-V04 pass locally/read-only against current mainnet and focused tests.
+
+### Phase 2: deploy one writer, then install policies
+
+1. Publish one immutable Go image.
+2. Deploy it disabled/read-only and prove V05 single-writer identity.
+3. Create or replace the packed policies in batches, close superseded policies,
+   and re-scan the runtime delegate.
+4. Bind/upgrade the exact Voltr strategy config and adaptor config.
+5. Enable the Go writer only after all identity/catalog hashes match.
+
+Each state-changing transaction requires explicit operational approval,
+simulation, confirmed signature, and immediate reconciliation. This plan does
+not grant that authority.
+
+Exit: V02, V03, and V05 pass against deployed current state. No old writer can
+resume.
+
+### Phase 3: real lifecycle and macroview
+
+1. Run the one real internal deposit -> allocate -> open -> report NAV ->
+   request -> unwind -> restore -> claim lifecycle.
+2. Reconcile after every confirmed mutation; stop on the first ambiguity.
+3. Deploy the thin Vault integrations page from the reconciled read model.
+4. Run the sole verifier without overrides.
+
+Exit: all V01-V07 pass and the command exits 0.
+
+## 13. What may be batched and what may not
+
+Batch for speed:
+
+- policy creation/removal by measured packet fit;
+- signed-unsent simulations by structural policy group;
+- read-only account fetches with one minContextSlot;
+- Go domain cases in table-driven tests; and
+- admin-history reads.
+
+Never batch across a correctness boundary:
+
+- do not combine ambiguous and new transaction submission;
+- do not open the next leverage step before confirming/reobserving the prior
+  one;
+- do not claim a NAV sequence before the previous report reconciles;
+- do not install a policy packet whose fully signed bytes were not measured;
+- do not enable the Go writer while any old writer can claim the route; and
+- do not treat gross token outflow as withdrawal restoration or user claim
+  proof.
+
+## 14. Completion ledger
+
+The final handoff records each layer separately:
+
+| Layer | Required terminal evidence |
+| --- | --- |
+| Static | source/ABI/catalog/manifest hashes and forbidden-writer scan |
+| Simulation | grouped canonical packets and required negative failures |
+| Submission | explicitly approved signatures, one generation each |
+| Confirmation | confirmed slots and decoded instructions |
+| Deployment | immutable Go image and sole active writer |
+| Reconciliation | exact account/database effects and conservation |
+| Live | one complete internal Backyard deposit-to-claim lifecycle |
+| Observation | deployed macroview equals independent reads |
+
+Implemented, merged, deployed, confirmed, reconciled, and PASS are different
+states. Only the final row-complete ledger permits PASS.
+
+## 15. Simplicity audit
+
+Before merge, delete or reject any component that introduces:
+
+- a second decision/execution journal;
+- a Rust/TypeScript runtime bridge;
+- a generic adaptor router;
+- mutable route selection;
+- a multi-transaction plan object;
+- a second transaction sender;
+- a second NAV aggregate trusted by the verifier;
+- a per-lane live-test harness; or
+- an abstraction with only one implementation and no external contract.
+
+The intended system is one thin onchain adaptor, one exact policy catalog, one
+serialized Go process, the existing database, one small admin page, and one
+verifier. Anything else needs a concrete invariant that these pieces cannot
+protect.

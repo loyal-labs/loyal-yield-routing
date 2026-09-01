@@ -1,0 +1,58 @@
+{
+  "schema": "loyal-backyard-rwa-policy-structural-packing/v1",
+  "verdict": "BLOCKED",
+  "measurementScope": "Structural compact-ProgramInteraction policy-create packet sizing only. Each message is a locally signed legacy transaction using deterministic non-installable keys and a synthetic blockhash. The measurement preserves the complete 11-lane equality topology and exact four-operation Voltr bridge templates, but does not establish current Kamino account identities, instruction layouts, live simulation, or policy-install readiness.",
+  "packetLimitBytes": 1232,
+  "rungs": [
+    {
+      "rung": "market",
+      "packets": [
+        {"policy": "OnRe/all", "bytes": 2163},
+        {"policy": "Prime/all", "bytes": 2163},
+        {"policy": "Maple/all", "bytes": 2163},
+        {"policy": "AUTO/all", "bytes": 1059},
+        {"policy": "Ethena/all", "bytes": 1059}
+      ],
+      "fits": false
+    },
+    {
+      "rung": "risk-direction",
+      "packets": [
+        {"policy": "OnRe/increase", "bytes": 1719},
+        {"policy": "OnRe/reduce", "bytes": 1719},
+        {"policy": "Prime/increase", "bytes": 1719},
+        {"policy": "Prime/reduce", "bytes": 1719},
+        {"policy": "Maple/increase", "bytes": 1719},
+        {"policy": "Maple/reduce", "bytes": 1719},
+        {"policy": "AUTO/all", "bytes": 1059},
+        {"policy": "Ethena/all", "bytes": 1059}
+      ],
+      "fits": false
+    },
+    {
+      "rung": "lifecycle",
+      "packets": [
+        {"policy": "three-lane/one-operation", "bytes": 1497, "count": 12}
+      ],
+      "fits": false
+    },
+    {
+      "rung": "lane-and-split-swap",
+      "packets": [
+        {"policy": "eleven/lane", "bytes": 1059, "count": 11},
+        {"policy": "swap/stable-to-rwa", "bytes": 1116},
+        {"policy": "swap/rwa-to-stable", "bytes": 1116},
+        {"policy": "swap/stable-to-stable", "bytes": 951},
+        {"policy": "bridge/allocation", "bytes": 1146},
+        {"policy": "bridge/nav-refresh", "bytes": 1128},
+        {"policy": "bridge/stage-withdrawal", "bytes": 606},
+        {"policy": "bridge/withdraw", "bytes": 1146}
+      ],
+      "fits": true,
+      "selectedPhysicalPolicyCount": 18
+    }
+  ],
+  "fullSwapGraph": {"edges": 52, "bytes": 1401, "fits": false},
+  "resumeCondition": "Decode the current eleven-lane position graph and exact Kamino instruction layouts, compile current signed create/update messages with the real authority/settings, then attach fresh signed-unsent grouped simulations before selecting or installing the measured 18-policy layout.",
+  "broadcast": false
+}

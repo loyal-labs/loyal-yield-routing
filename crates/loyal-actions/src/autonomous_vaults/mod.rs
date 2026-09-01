@@ -7,6 +7,7 @@
 mod kamino;
 mod meteora;
 mod returns;
+mod voltr_custom;
 mod voltr_kamino;
 
 pub use kamino::{
@@ -26,6 +27,12 @@ pub use returns::{
     AutonomousTreasuryReturnPolicies, TreasuryReturnKind, TreasuryReturnPolicyError,
     TreasuryReturnPolicyPlan, LOYAL_RETURN_POLICY_SEED, MOTHER_TREASURY_VAULT,
     USDC_RETURN_POLICY_SEED,
+};
+pub use voltr_custom::{
+    create_voltr_custom_policies, VoltrCustomPolicies, VoltrCustomPolicyError,
+    VoltrCustomPolicyIdentity, VoltrCustomPolicyPlan, VoltrCustomPolicySeeds,
+    VoltrCustomPolicyTemplates, CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR,
+    CUSTOM_ADAPTOR_WITHDRAW_DISCRIMINATOR,
 };
 pub use voltr_kamino::{
     create_backyard_voltr_runtime_policy_catalog, create_voltr_kamino_policies,

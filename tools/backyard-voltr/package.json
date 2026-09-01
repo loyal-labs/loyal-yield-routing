@@ -13,7 +13,14 @@
     "verify:current": "bun src/cli.ts verify current --route main-usdc",
     "verify:testing-handoff": "bun src/cli.ts verify testing-handoff --commitment confirmed",
     "verify:lifecycle": "bun src/cli.ts verify lifecycle --route main-usdc",
-    "verify:four-market": "bun src/cli.ts verify four-market --commitment confirmed --evidence ../../docs/evidence/backyard-voltr-four-market/confirmed-lifecycle-v1.json"
+    "verify:four-market": "bun src/cli.ts verify four-market --commitment confirmed --evidence ../../docs/evidence/backyard-voltr-four-market/confirmed-lifecycle-v1.json",
+    "verify:rwa-multiply-custom-vault": "bun src/verify/rwa-multiply-new-vault.ts",
+    "verify:rwa-multiply-custom-lifecycle": "bun src/verify/rwa-multiply-custom-lifecycle.ts",
+    "activate:rwa-multiply-squads-prerequisites": "bun src/activation/rwa-multiply-squads-prerequisites.ts",
+    "activate:rwa-multiply-custom-policies": "bun src/activation/rwa-multiply-custom-policies.ts",
+    "activate:rwa-multiply-custom-add-adaptor": "bun src/activation/rwa-multiply-custom-add-adaptor.ts",
+    "activate:rwa-multiply-custom-pre-admission": "bun src/activation/rwa-multiply-voltr-pre-admission.ts",
+    "activate:rwa-multiply-custom-post-admission": "bun src/activation/rwa-multiply-voltr-post-admission.ts"
   },
   "dependencies": {
     "@kamino-finance/farms-sdk": "3.2.14",

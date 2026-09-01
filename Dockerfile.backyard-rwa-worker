@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1.7
+
+FROM golang:1.25.1-bookworm AS build
+
+WORKDIR /src/go/backyard-rwa-worker
+
+COPY go/backyard-rwa-worker/go.mod go/backyard-rwa-worker/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY go/backyard-rwa-worker/ ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags="-s -w" \
+    -o /out/backyard-rwa-worker ./cmd/backyard-rwa-worker
+
+FROM debian:bookworm-slim AS runtime
+
+ARG LOYAL_IMAGE_VERSION
+ENV LOYAL_IMAGE_VERSION=${LOYAL_IMAGE_VERSION}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 --user-group loyal
+
+COPY --from=build --chmod=0755 /out/backyard-rwa-worker /usr/local/bin/backyard-rwa-worker
+
+USER 10001:10001
+WORKDIR /home/loyal
+
+CMD ["/usr/local/bin/backyard-rwa-worker"]

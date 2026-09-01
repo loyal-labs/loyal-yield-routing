@@ -423,14 +423,35 @@ pub fn create_semantic_program_interaction_policy_instruction(
     specs: Vec<SemanticProgramInteractionConstraint>,
 ) -> Result<Instruction> {
     let constraints = semantic_program_interaction_constraints(specs)?;
-    create_program_interaction_action_instruction(
-        settings,
-        authority,
-        delegated_signer,
-        policy_seed,
-        account_index,
-        constraints,
-    )
+    let (policy, _) = derive_action_account(&settings, policy_seed);
+    let action = SquadsSettingsAction::PolicyCreate {
+        seed: policy_seed,
+        policy_creation_payload: SquadsPolicyCreationPayload::ProgramInteraction(
+            compile_compact_program_interaction_payload(account_index, constraints, Vec::new())?,
+        ),
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        start_timestamp: None,
+        expiration_args: None,
+    };
+    Ok(Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_settings_actions(vec![action]),
+    })
 }
 
 fn semantic_program_interaction_constraints(

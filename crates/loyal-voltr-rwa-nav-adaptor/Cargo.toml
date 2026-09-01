@@ -1,0 +1,17 @@
+[package]
+name = "loyal-voltr-rwa-nav-adaptor"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal Voltr adaptor for a Squads-owned Kamino RWA Multiply position"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = []
+no-entrypoint = []
+
+[dependencies]
+solana-program.workspace = true
+solana-system-interface.workspace = true
+spl-token = { workspace = true, features = ["no-entrypoint"] }
