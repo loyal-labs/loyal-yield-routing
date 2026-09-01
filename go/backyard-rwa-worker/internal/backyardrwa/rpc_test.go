@@ -60,6 +60,57 @@ func TestConfirmedRPCRejectsAbsentAccount(t *testing.T) {
 	}
 }
 
+func TestReadOnlyRPCRetriesButSendRemainsSingleAttempt(t *testing.T) {
+	client, _ := NewRPCClient("https://rpc.invalid")
+	client.retryBackoff = 0
+	readAttempts := 0
+	client.client.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		readAttempts++
+		if readAttempts < readOnlyRPCAttempts {
+			return response(`{"jsonrpc":"2.0","id":1,"error":{"code":-32004,"message":"minimum context slot has not been reached"}}`), nil
+		}
+		return response(`{"jsonrpc":"2.0","id":1,"result":42}`), nil
+	})
+	if slot, err := client.ConfirmedSlot(context.Background()); err != nil || slot != 42 || readAttempts != readOnlyRPCAttempts {
+		t.Fatalf("slot=%d attempts=%d err=%v", slot, readAttempts, err)
+	}
+
+	sendAttempts := 0
+	client.client.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		sendAttempts++
+		return response(`{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"temporarily unavailable"}}`), nil
+	})
+	if _, err := client.SendSignedTransactionOnce(context.Background(), []byte{1}, "expected"); err == nil {
+		t.Fatal("failed send unexpectedly succeeded")
+	}
+	if sendAttempts != 1 {
+		t.Fatalf("sendTransaction was attempted %d times", sendAttempts)
+	}
+}
+
+func TestReadOnlyRPCRetryPublishesOnlyACompleteFreshDecode(t *testing.T) {
+	client, _ := NewRPCClient("https://rpc.invalid")
+	client.retryBackoff = 0
+	attempts := 0
+	client.client.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return response(`{"jsonrpc":"2.0","id":1,"result":{"optional":"poison","required":"invalid"}}`), nil
+		}
+		return response(`{"jsonrpc":"2.0","id":1,"result":{"required":42}}`), nil
+	})
+	output := struct {
+		Optional *string `json:"optional"`
+		Required int     `json:"required"`
+	}{}
+	if err := client.call(context.Background(), "getReadOnlyFixture", nil, &output); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 || output.Optional != nil || output.Required != 42 {
+		t.Fatalf("attempts=%d output=%+v", attempts, output)
+	}
+}
+
 func TestConcreteTransactionRPCUsesConfirmedAndNoRetries(t *testing.T) {
 	client, _ := NewRPCClient("https://rpc.invalid")
 	client.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {

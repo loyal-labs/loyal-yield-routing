@@ -7,14 +7,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"time"
 )
 
 type RPCClient struct {
-	url    string
-	client *http.Client
+	url          string
+	client       *http.Client
+	retryBackoff time.Duration
 }
+
+const readOnlyRPCAttempts = 3
 
 type ConfirmedAccount struct {
 	Address    string
@@ -52,16 +56,50 @@ func NewRPCClient(rpcURL string) (*RPCClient, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	return &RPCClient{url: rpcURL, client: &http.Client{Timeout: 15 * time.Second}}, nil
+	return &RPCClient{url: rpcURL, client: &http.Client{Timeout: 15 * time.Second}, retryBackoff: 200 * time.Millisecond}, nil
 }
 
 func (c *RPCClient) call(ctx context.Context, method string, params []any, output any) error {
+	outputValue := reflect.ValueOf(output)
+	if outputValue.Kind() != reflect.Pointer || outputValue.IsNil() {
+		return fmt.Errorf("RPC output must be a non-nil pointer")
+	}
 	payload, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": method, "params": params,
 	})
 	if err != nil {
 		return err
 	}
+	attempts := readOnlyRPCAttempts
+	if method == "sendTransaction" {
+		attempts = 1
+	}
+	for attempt := 0; attempt < attempts; attempt++ {
+		freshOutput := reflect.New(outputValue.Elem().Type())
+		err = c.callOnce(ctx, method, payload, freshOutput.Interface())
+		if err == nil {
+			outputValue.Elem().Set(freshOutput.Elem())
+			return nil
+		}
+		if attempt+1 == attempts {
+			break
+		}
+		backoff := c.retryBackoff * time.Duration(attempt+1)
+		if backoff <= 0 {
+			continue
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
+}
+
+func (c *RPCClient) callOnce(ctx context.Context, method string, payload []byte, output any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(payload))
 	if err != nil {
 		return err
