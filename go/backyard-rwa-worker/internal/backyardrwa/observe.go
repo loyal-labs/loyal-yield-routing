@@ -93,7 +93,7 @@ func ObserveConfirmedBridgeSnapshot(ctx context.Context, rpc *RPCClient) (Observ
 			LiquidationThresholdBPS: 0,
 		}}, nil
 	}
-	return Observation{}, fmt.Errorf("confirmed receipt and custody reads did not align after %d attempts", maxConfirmedObservationAttempts)
+	return Observation{}, confirmedObservationUnavailable(fmt.Errorf("confirmed receipt and custody reads did not align after %d attempts", maxConfirmedObservationAttempts))
 }
 
 func accountAt(accounts []ConfirmedAccount, address string) ConfirmedAccount {

@@ -229,10 +229,10 @@ func (c *RPCClient) getVoltrWithdrawalReceiptAccounts(ctx context.Context, voltr
 		},
 	}}, &result)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, confirmedObservationUnavailable(err)
 	}
 	if result.Context.Slot < minContextSlot {
-		return 0, nil, fmt.Errorf("incoherent confirmed receipt response")
+		return 0, nil, confirmedObservationUnavailable(fmt.Errorf("incoherent confirmed receipt response"))
 	}
 	seen := make(map[string]struct{}, len(result.Value))
 	accounts := make([]programAccount, 0, len(result.Value))

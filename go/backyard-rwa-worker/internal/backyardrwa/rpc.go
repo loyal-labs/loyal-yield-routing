@@ -132,10 +132,10 @@ func (c *RPCClient) callOnce(ctx context.Context, method string, payload []byte,
 func (c *RPCClient) ConfirmedSlot(ctx context.Context) (int64, error) {
 	var slot int64
 	if err := c.call(ctx, "getSlot", []any{map[string]string{"commitment": "confirmed"}}, &slot); err != nil {
-		return 0, err
+		return 0, confirmedObservationUnavailable(err)
 	}
 	if slot <= 0 {
-		return 0, fmt.Errorf("confirmed slot unavailable")
+		return 0, confirmedObservationUnavailable(fmt.Errorf("confirmed slot unavailable"))
 	}
 	return slot, nil
 }
@@ -165,10 +165,10 @@ func (c *RPCClient) GetMultipleAccounts(
 		"commitment": "confirmed", "encoding": "base64", "minContextSlot": minContextSlot,
 	}}, &result)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, confirmedObservationUnavailable(err)
 	}
 	if result.Context.Slot < minContextSlot || len(result.Value) != len(addresses) {
-		return 0, nil, fmt.Errorf("incoherent confirmed account response")
+		return 0, nil, confirmedObservationUnavailable(fmt.Errorf("incoherent confirmed account response"))
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for index, value := range result.Value {
@@ -177,11 +177,11 @@ func (c *RPCClient) GetMultipleAccounts(
 		}
 		var encoded []string
 		if err := json.Unmarshal(value.Data, &encoded); err != nil || len(encoded) != 2 || encoded[1] != "base64" {
-			return 0, nil, fmt.Errorf("account %s has invalid encoding", addresses[index])
+			return 0, nil, confirmedObservationUnavailable(fmt.Errorf("account %s has invalid encoding", addresses[index]))
 		}
 		data, err := base64.StdEncoding.DecodeString(encoded[0])
 		if err != nil {
-			return 0, nil, fmt.Errorf("decode account %s: %w", addresses[index], err)
+			return 0, nil, confirmedObservationUnavailable(fmt.Errorf("decode account %s: %w", addresses[index], err))
 		}
 		accounts[index] = ConfirmedAccount{
 			Address: addresses[index], Owner: value.Owner, Lamports: value.Lamports,
@@ -202,10 +202,10 @@ func (c *RPCClient) LatestBlockhash(ctx context.Context) (LatestBlockhash, error
 		} `json:"value"`
 	}
 	if err := c.call(ctx, "getLatestBlockhash", []any{map[string]string{"commitment": "confirmed"}}, &result); err != nil {
-		return LatestBlockhash{}, err
+		return LatestBlockhash{}, confirmedObservationUnavailable(err)
 	}
 	if result.Context.Slot <= 0 || result.Value.Blockhash == "" || result.Value.LastValidBlockHeight <= 0 {
-		return LatestBlockhash{}, fmt.Errorf("invalid confirmed blockhash response")
+		return LatestBlockhash{}, confirmedObservationUnavailable(fmt.Errorf("invalid confirmed blockhash response"))
 	}
 	return LatestBlockhash{Blockhash: result.Value.Blockhash, LastValidBlockHeight: result.Value.LastValidBlockHeight}, nil
 }

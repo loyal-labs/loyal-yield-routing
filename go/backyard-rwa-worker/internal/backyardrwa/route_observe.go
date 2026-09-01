@@ -123,7 +123,7 @@ func observeConfirmedRouteSnapshot(ctx context.Context, manifest RouteManifest, 
 		base.ObservedAt = observedAt
 		return base, nil
 	}
-	return Observation{}, fmt.Errorf("confirmed bridge, Kamino, and policy reads did not align")
+	return Observation{}, confirmedObservationUnavailable(fmt.Errorf("confirmed bridge, Kamino, and policy reads did not align"))
 }
 
 // routeEconomicObservationID deliberately excludes Slot, the stateless adaptor
