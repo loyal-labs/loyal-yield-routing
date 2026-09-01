@@ -351,19 +351,26 @@ func (p KaminoPosition) targetLTVBorrowRaw() (uint64, error) {
 }
 
 func validateKaminoRefresh(o decodedKaminoObligation, reserves ...decodedKaminoReserve) error {
-	var reserveSlot int64
 	for _, r := range reserves {
-		if r.refreshedSlot <= 0 || r.stale != 0 || r.priceStatus&kaminoRequiredPriceStatus != kaminoRequiredPriceStatus ||
-			(reserveSlot != 0 && r.refreshedSlot != reserveSlot) {
+		if r.refreshedSlot <= 0 || r.stale != 0 {
 			return fmt.Errorf("Kamino reserve valuation is stale, invalid, or incoherent")
 		}
-		reserveSlot = r.refreshedSlot
 	}
-	// A newly initialized, flat Multiply obligation has no valuation to make
-	// stale. The transaction refreshes it before deposit. Once either side is
-	// populated, require the obligation and reserves to share the exact slot.
-	if o.hasPosition && (o.stale != 0 || o.priceStatus&kaminoRequiredPriceStatus != kaminoRequiredPriceStatus || o.refreshedSlot != reserveSlot) {
-		return fmt.Errorf("Kamino obligation valuation is stale, invalid, or incoherent")
+	// Reserves are refreshed independently on mainnet, so their LastUpdate
+	// slots are not expected to match and price_status is not a validity mask
+	// (the USDC reserve legitimately reports zero). This mirrors the existing
+	// Rust Multiply observer: for a populated obligation, both reserve views
+	// must be at least as new as the obligation. A flat obligation has no
+	// position valuation to fence and is refreshed by the entry transaction.
+	if o.hasPosition {
+		if o.refreshedSlot <= 0 || o.stale != 0 {
+			return fmt.Errorf("Kamino obligation valuation is stale, invalid, or incoherent")
+		}
+		for _, r := range reserves {
+			if r.refreshedSlot < o.refreshedSlot {
+				return fmt.Errorf("Kamino reserve valuation predates the obligation")
+			}
+		}
 	}
 	return nil
 }
