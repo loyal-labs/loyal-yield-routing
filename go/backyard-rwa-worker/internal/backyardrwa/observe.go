@@ -62,6 +62,9 @@ func ObserveConfirmedBridgeSnapshot(ctx context.Context, rpc *RPCClient) (Observ
 		if err != nil {
 			return Observation{}, fmt.Errorf("decode Squads USDC custody: %w", err)
 		}
+		if idle.Raw > uint64(^uint64(0)>>1) || strategy.Raw > uint64(^uint64(0)>>1) || squads.Raw > uint64(^uint64(0)>>1) {
+			return Observation{}, fmt.Errorf("bridge custody exceeds signed decision range")
+		}
 		demand, receiptFingerprint, err := decodeConfirmedWithdrawalDemand(rawReceipts)
 		if err != nil {
 			return Observation{}, err
@@ -81,7 +84,6 @@ func ObserveConfirmedBridgeSnapshot(ctx context.Context, rpc *RPCClient) (Observ
 			SquadsIdleRaw:        int64(squads.Raw),
 			// No complete, current Kamino graph is checked into this repository.
 			// Leaving these gates false prevents an unsupported OPEN decision.
-			NetAPYBPS:               0,
 			CapacityRaw:             0,
 			PolicyLimitRaw:          0,
 			MaxTargetLTVEntryRaw:    0,

@@ -9,6 +9,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import {
+  buildRwaMultiplyArmReportInstruction,
   buildRwaMultiplyManagerInstructions,
   buildRwaMultiplyWithdrawalStagingInstruction,
   deriveRwaMultiplyVoltrAccounts,
@@ -57,9 +58,31 @@ export type CustomPolicyArtifact = Readonly<{
     seed: string;
     policy: string;
     constraintIndex: 0;
+    constraintIndices: readonly number[];
     createInstruction: WireInstruction;
+    updateInstruction: WireInstruction;
   }>[];
 }>;
+
+export type CustomPolicyVerificationRow = Readonly<{
+  operation: CustomPolicyArtifact["policies"][number]["operation"];
+  seed: string;
+  policy: string;
+  pass: boolean;
+  updateEligible: boolean;
+  reason?: string;
+  dataSha256?: string;
+}>;
+
+export type CustomPolicyMutation = Readonly<
+  | { kind: "noop" }
+  | {
+    kind: "create" | "update";
+    target: CustomPolicyArtifact["policies"][number];
+    row: CustomPolicyVerificationRow;
+    instruction: WireInstruction;
+  }
+>;
 
 function invariant(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -158,6 +181,24 @@ function expectedData(operation: CustomPolicyArtifact["policies"][number]["opera
   ];
 }
 
+function expectedArmData(operation: CustomPolicyArtifact["policies"][number]["operation"]) {
+  const operationTag = operation === "withdraw" ? "01" : "00";
+  const cap = RWA_MULTIPLY_ROUTE.vault.capRaw.toString();
+  const constraints = [
+    { offset: "0", operator: "Equals", kind: "U8Slice", value: `a4aff629b28c2303${operationTag}` },
+  ];
+  if (operation === "nav-refresh") {
+    constraints.push({ offset: "9", operator: "Equals", kind: "U64Le", value: "0" });
+  } else {
+    constraints.push(
+      { offset: "9", operator: "GreaterThan", kind: "U64Le", value: "0" },
+      { offset: "9", operator: "LessThanOrEqualTo", kind: "U64Le", value: cap },
+    );
+  }
+  constraints.push({ offset: "17", operator: "Equals", kind: "U8Slice", value: "013900000001" });
+  return constraints;
+}
+
 function parseArtifact(value: unknown, expectedSeeds: readonly bigint[]): CustomPolicyArtifact {
   invariant(value && typeof value === "object", "custom policy compiler returned a non-object");
   const artifact = value as Partial<CustomPolicyArtifact>;
@@ -170,16 +211,21 @@ function parseArtifact(value: unknown, expectedSeeds: readonly bigint[]): Custom
     && artifact.policies.length === 4,
   "custom policy compiler escaped its artifact contract");
   const operations = ["allocation", "nav-refresh", "stage-withdrawal", "withdraw"];
-  const indexes = [0, 0, 0, 0] as const;
+  const indexes = [[0, 1], [0, 1], [0], [0, 1]] as const;
   artifact.policies.forEach((policy, index) => {
     const seed = expectedSeeds[index]!;
     invariant(policy.operation === operations[index]
       && policy.seed === seed.toString()
       && policy.policy === policyAddress(seed)
-      && policy.constraintIndex === indexes[index]
+      && policy.constraintIndex === 0
+      && JSON.stringify(policy.constraintIndices) === JSON.stringify(indexes[index])
       && policy.createInstruction?.programId === RWA_MULTIPLY_ROUTE.squads.program
       && policy.createInstruction.accounts.length === 6
-      && policy.createInstruction.dataBase64.length > 0,
+      && policy.createInstruction.dataBase64.length > 0
+      && policy.updateInstruction?.programId === RWA_MULTIPLY_ROUTE.squads.program
+      && policy.updateInstruction.accounts.length === 6
+      && policy.updateInstruction.accounts[5]?.address === policy.policy
+      && policy.updateInstruction.dataBase64.length > 0,
     `custom ${operations[index]} policy artifact drifted`);
   });
   return artifact as CustomPolicyArtifact;
@@ -196,10 +242,13 @@ export async function compileCustomPolicyArtifact(policySeedBefore: bigint): Pro
     navAfterRaw: 0n,
     snapshotDigest: new Uint8Array(32).fill(1),
   } as const;
-  const [positive, zero, stage] = await Promise.all([
+  const [positive, zero, stage, allocationArm, navRefreshArm, withdrawArm] = await Promise.all([
     buildRwaMultiplyManagerInstructions(manager, route.vault.proofAmountRaw, report, route),
     buildRwaMultiplyManagerInstructions(manager, 0n, report, route),
     buildRwaMultiplyWithdrawalStagingInstruction(manager, route.vault.proofAmountRaw, route),
+    buildRwaMultiplyArmReportInstruction(manager, "deposit", route.vault.proofAmountRaw, report, route),
+    buildRwaMultiplyArmReportInstruction(manager, "deposit", 0n, report, route),
+    buildRwaMultiplyArmReportInstruction(manager, "withdraw", route.vault.proofAmountRaw, report, route),
   ]);
   const accounts = await deriveRwaMultiplyVoltrAccounts(route);
   const seeds = [policySeedBefore + 1n, policySeedBefore + 2n,
@@ -210,6 +259,7 @@ export async function compileCustomPolicyArtifact(policySeedBefore: bigint): Pro
       authority: route.setupAdmin,
       delegatedSigner: route.squads.delegatedExecutor,
       manager: route.squads.vault,
+      squadsProgram: route.squads.program,
       vaultIndex: route.squads.vaultIndex,
       vault: route.vault.address,
       strategy: route.customAdaptor.strategyConfig,
@@ -219,6 +269,7 @@ export async function compileCustomPolicyArtifact(policySeedBefore: bigint): Pro
       assetMint: route.assets.assetMint,
       squadsAssetAta: route.squads.assetAta,
       strategyAssetAta: accounts.strategyAssetAta,
+      reportTicket: accounts.reportTicket,
       maxAmountRaw: route.vault.capRaw.toString(),
       assetDecimals: route.assets.decimals,
       seeds: {
@@ -229,9 +280,12 @@ export async function compileCustomPolicyArtifact(policySeedBefore: bigint): Pro
       },
     },
     instructions: {
+      allocationArm: wire(allocationArm),
       allocation: wire(positive.deposit),
+      navRefreshArm: wire(navRefreshArm),
       navRefresh: wire(zero.deposit),
       stageWithdrawal: wire(stage),
+      withdrawArm: wire(withdrawArm),
       withdraw: wire(positive.withdraw),
     },
   };
@@ -288,17 +342,37 @@ export async function verifyInstalledCustomPolicies(connection: Connection) {
     navAfterRaw: 0n,
     snapshotDigest: new Uint8Array(32).fill(1),
   } as const;
-  const [positive, zero, stage] = await Promise.all([
+  const [positive, zero, stage, allocationArm, navRefreshArm, withdrawArm] = await Promise.all([
     buildRwaMultiplyManagerInstructions(manager, route.vault.proofAmountRaw, report, route),
     buildRwaMultiplyManagerInstructions(manager, 0n, report, route),
     buildRwaMultiplyWithdrawalStagingInstruction(manager, route.vault.proofAmountRaw, route),
+    buildRwaMultiplyArmReportInstruction(manager, "deposit", route.vault.proofAmountRaw, report, route),
+    buildRwaMultiplyArmReportInstruction(manager, "deposit", 0n, report, route),
+    buildRwaMultiplyArmReportInstruction(manager, "withdraw", route.vault.proofAmountRaw, report, route),
   ]);
-  const templates = [positive.deposit, zero.deposit, stage, positive.withdraw];
+  const templates = [
+    [allocationArm, positive.deposit],
+    [navRefreshArm, zero.deposit],
+    [stage],
+    [withdrawArm, positive.withdraw],
+  ] as const;
   const selectedIndexes = [
-    Array.from({ length: 17 }, (_, index) => index),
-    Array.from({ length: 17 }, (_, index) => index),
-    [0, 1, 2, 3],
-    Array.from({ length: 17 }, (_, index) => index),
+    [[0, 1], [0, 2, 3, 8, 11, 12, 13, 14, 15, 16, 17]],
+    [[0, 1], [0, 2, 3, 8, 11, 12, 13, 14, 15, 16, 17]],
+    [[0, 1, 2, 3]],
+    [[0, 1], [0, 2, 5, 6, 9, 12, 13, 14, 15, 16, 17]],
+  ] as const;
+  const expectedPrograms = [
+    [route.customAdaptor.program, route.programs.voltr],
+    [route.customAdaptor.program, route.programs.voltr],
+    [route.assets.tokenProgram],
+    [route.customAdaptor.program, route.programs.voltr],
+  ] as const;
+  const expectedDataSets = [
+    [expectedArmData("allocation"), expectedData("allocation")],
+    [expectedArmData("nav-refresh"), expectedData("nav-refresh")],
+    [expectedData("stage-withdrawal")],
+    [expectedArmData("withdraw"), expectedData("withdraw")],
   ] as const;
   const response = await connection.getMultipleAccountsInfoAndContext(
     compiled.artifact.policies.map(({ policy }) => new PublicKey(policy)),
@@ -306,11 +380,39 @@ export async function verifyInstalledCustomPolicies(connection: Connection) {
   );
   const rows = compiled.artifact.policies.map((expected, index) => {
     const info = response.value[index];
-    if (!info) return { operation: expected.operation, seed: expected.seed, policy: expected.policy, pass: false, reason: "absent" };
+    if (!info) return {
+      operation: expected.operation,
+      seed: expected.seed,
+      policy: expected.policy,
+      pass: false,
+      updateEligible: false,
+      reason: "absent",
+    } satisfies CustomPolicyVerificationRow;
     if (!info.owner.equals(new PublicKey(route.squads.program))) {
-      return { operation: expected.operation, seed: expected.seed, policy: expected.policy, pass: false, reason: "wrong owner" };
+      return {
+        operation: expected.operation,
+        seed: expected.seed,
+        policy: expected.policy,
+        pass: false,
+        updateEligible: false,
+        reason: "wrong owner",
+        dataSha256: createHash("sha256").update(info.data).digest("hex"),
+      } satisfies CustomPolicyVerificationRow;
     }
-    const [policy] = Policy.fromAccountInfo(info);
+    let policy: PolicyState;
+    try {
+      [policy] = Policy.fromAccountInfo(info);
+    } catch {
+      return {
+        operation: expected.operation,
+        seed: expected.seed,
+        policy: expected.policy,
+        pass: false,
+        updateEligible: false,
+        reason: "undecodable policy account",
+        dataSha256: createHash("sha256").update(info.data).digest("hex"),
+      } satisfies CustomPolicyVerificationRow;
+    }
     const body = policy.policyState.fields?.[0] as {
       accountIndex?: number;
       preHook?: unknown;
@@ -322,42 +424,51 @@ export async function verifyInstalledCustomPolicies(connection: Connection) {
         dataConstraints?: readonly unknown[];
       }>[];
     } | undefined;
-    const constraint = body?.instructionsConstraints?.[expected.constraintIndex];
-    const template = templates[index]!;
-    const expectedAccounts = selectedIndexes[index]!.map((accountIndex) => ({
-      index: accountIndex,
-      kind: "Pubkey",
-      keys: [template.accounts?.[accountIndex]?.address ?? ""],
-    }));
-    const observedAccounts = constraint?.accountConstraints?.map(decodedConstraint) ?? [];
-    const observedData = constraint?.dataConstraints?.map(decodedConstraint) ?? [];
-    const expectedProgram = index === 2 ? route.assets.tokenProgram : route.programs.voltr;
-    const pass = policy.settings.equals(new PublicKey(route.squads.settings))
+    const observedConstraints = expected.constraintIndices.map((constraintIndex, innerIndex) => {
+      const constraint = body?.instructionsConstraints?.[constraintIndex];
+      const template = templates[index]![innerIndex]!;
+      const expectedAccounts = selectedIndexes[index]![innerIndex]!.map((accountIndex) => ({
+        index: accountIndex,
+        kind: "Pubkey",
+        keys: [template.accounts?.[accountIndex]?.address ?? ""],
+      }));
+      const observedAccounts = constraint?.accountConstraints?.map(decodedConstraint) ?? [];
+      const observedData = constraint?.dataConstraints?.map(decodedConstraint) ?? [];
+      return {
+        pass: Boolean(constraint?.programId.equals(new PublicKey(expectedPrograms[index]![innerIndex]!))
+          && JSON.stringify(observedAccounts) === JSON.stringify(expectedAccounts)
+          && JSON.stringify(observedData) === JSON.stringify(expectedDataSets[index]![innerIndex])),
+        program: constraint?.programId.toBase58() ?? null,
+        accountConstraints: observedAccounts,
+        dataConstraints: observedData,
+      };
+    });
+    const updateEligible = Boolean(policy.settings.equals(new PublicKey(route.squads.settings))
       && policy.seed.toString() === expected.seed
       && policy.threshold === 1
       && policy.timeLock === 0
       && policy.signers.length === 1
       && policy.signers[0]?.key.equals(new PublicKey(route.squads.delegatedExecutor))
-      && policy.signers[0]?.permissions.mask === 7
+      && policy.signers[0]?.permissions.mask === 7);
+    const pass = Boolean(updateEligible
       && policy.policyState.__kind === "ProgramInteraction"
       && body?.accountIndex === route.squads.vaultIndex
       && body.preHook == null
       && body.postHook == null
       && (body.spendingLimits?.length ?? 0) === 0
-      && body.instructionsConstraints?.length === 1
-      && constraint?.programId.equals(new PublicKey(expectedProgram))
-      && JSON.stringify(observedAccounts) === JSON.stringify(expectedAccounts)
-      && JSON.stringify(observedData) === JSON.stringify(expectedData(expected.operation));
+      && body.instructionsConstraints?.length === expected.constraintIndices.length
+      && observedConstraints.every(({ pass }) => pass));
     return {
       operation: expected.operation,
       seed: expected.seed,
       policy: expected.policy,
       pass,
+      updateEligible,
+      ...(pass ? {} : { reason: updateEligible ? "inexact policy payload" : "authority boundary mismatch" }),
+      dataSha256: createHash("sha256").update(info.data).digest("hex"),
       owner: info.owner.toBase58(),
       accountIndex: body?.accountIndex ?? null,
-      program: constraint?.programId.toBase58() ?? null,
-      accountConstraints: observedAccounts,
-      dataConstraints: observedData,
+      constraints: observedConstraints,
     };
   });
   return {
@@ -368,4 +479,27 @@ export async function verifyInstalledCustomPolicies(connection: Connection) {
     rows,
     artifact: compiled.artifact,
   };
+}
+
+export function selectCustomPolicyMutation(input: Readonly<{
+  policySeedBefore: bigint;
+  rows: readonly CustomPolicyVerificationRow[];
+  artifact: CustomPolicyArtifact;
+}>): CustomPolicyMutation {
+  invariant(input.rows.length === input.artifact.policies.length,
+    "custom policy inspection row count drifted");
+  const index = input.rows.findIndex(({ pass }) => !pass);
+  if (index < 0) return { kind: "noop" };
+  const row = input.rows[index]!;
+  const target = input.artifact.policies[index]!;
+  invariant(row.operation === target.operation && row.seed === target.seed && row.policy === target.policy,
+    "custom policy inspection identity drifted");
+  if (row.reason === "absent") {
+    invariant(BigInt(target.seed) === input.policySeedBefore + 1n,
+      `absent custom policy seed ${target.seed} is not the next finalized Settings seed`);
+    return { kind: "create", target, row, instruction: target.createInstruction };
+  }
+  invariant(row.updateEligible,
+    `existing custom ${target.operation} policy failed its owner/settings/seed/authority boundary`);
+  return { kind: "update", target, row, instruction: target.updateInstruction };
 }

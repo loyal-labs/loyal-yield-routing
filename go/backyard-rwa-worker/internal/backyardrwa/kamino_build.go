@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
+	"sort"
 )
 
 // KaminoPrimeUSDCAccounts is the exact account list produced by the checked
@@ -48,17 +50,41 @@ type SignedKaminoTransaction struct {
 const (
 	kaminoPrimeUSDCProgram        = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 	kaminoPrimeMarket             = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
+	kaminoPrimeMarketAuthority    = "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM"
 	kaminoPrimeReserve            = "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh"
 	kaminoUSDCReserve             = "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu"
 	kaminoPrimeUSDCCollateralMint = "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
+	kaminoPrimeLiquiditySupply    = "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352"
+	kaminoPrimeReceiptMint        = "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW"
+	kaminoPrimeReceiptSupply      = "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN"
+	kaminoUSDCLiquiditySupply     = "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC"
+	kaminoUSDCFeeVault            = "BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6"
+	kaminoPrimeCustody            = "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"
+	kaminoScopePrices             = "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH"
+	kaminoFarmsProgram            = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
 	kaminoInstructions            = "Sysvar1nstructions1111111111111111111111111"
+	solanaPacketBytes             = 1232
 )
 
 var (
-	kaminoDepositCollateral  = []byte{129, 199, 4, 2, 222, 39, 26, 46}
-	kaminoBorrowUSDC         = []byte{121, 127, 18, 204, 73, 245, 225, 65}
-	kaminoRepayUSDC          = []byte{145, 178, 13, 225, 76, 240, 147, 72}
-	kaminoWithdrawCollateral = []byte{75, 93, 93, 220, 34, 150, 218, 196}
+	// @kamino-finance/klend-sdk 7.3.9 generated v2 discriminators. Keep these
+	// paired with the exact account vectors below; the old non-v2 tags have a
+	// different farm/account boundary and must never be accepted here.
+	kaminoDepositCollateral  = []byte{216, 224, 191, 27, 204, 151, 102, 175}
+	kaminoBorrowUSDC         = []byte{161, 128, 143, 245, 171, 199, 194, 6}
+	kaminoRepayUSDC          = []byte{116, 174, 213, 76, 180, 53, 210, 144}
+	kaminoWithdrawCollateral = []byte{235, 52, 119, 152, 149, 197, 20, 7}
+	kaminoRefreshReserve     = []byte{2, 218, 138, 235, 79, 201, 25, 102}
+	kaminoRefreshObligation  = []byte{33, 132, 147, 228, 151, 192, 72, 89}
+)
+
+type kaminoPrimeUSDCLeg byte
+
+const (
+	kaminoLegDeposit kaminoPrimeUSDCLeg = iota + 1
+	kaminoLegBorrow
+	kaminoLegRepay
+	kaminoLegWithdraw
 )
 
 // BuildAndSignKaminoPrimeUSDCTransaction creates the legacy Solana wire for
@@ -80,7 +106,7 @@ func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRe
 	if err != nil {
 		return SignedKaminoTransaction{}, fmt.Errorf("invalid confirmed blockhash: %w", err)
 	}
-	inner, err := kaminoPrimeUSDCInstruction(request)
+	inner, leg, err := kaminoPrimeUSDCInstruction(request)
 	if err != nil {
 		return SignedKaminoTransaction{}, err
 	}
@@ -92,13 +118,18 @@ func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRe
 	if err != nil {
 		return SignedKaminoTransaction{}, err
 	}
-	message, err := compileLegacyMessage(feePayer, blockhash, []compiledInstruction{outer})
+	preInstructions := kaminoPrimeUSDCRefreshInstructions(leg)
+	instructions := append(preInstructions, outer)
+	message, err := compileKaminoLegacyMessage(feePayer, blockhash, instructions)
 	if err != nil {
 		return SignedKaminoTransaction{}, err
 	}
 	signature := ed25519.Sign(executor, message)
 	wire := append(encodeShortVec(1), signature...)
 	wire = append(wire, message...)
+	if len(wire) > solanaPacketBytes {
+		return SignedKaminoTransaction{}, fmt.Errorf("Kamino PRIME/USDC packet is %d bytes, exceeds %d", len(wire), solanaPacketBytes)
+	}
 	messageDigest := sha256.Sum256(message)
 	wireDigest := sha256.Sum256(wire)
 	return SignedKaminoTransaction{
@@ -109,43 +140,228 @@ func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRe
 	}, nil
 }
 
-func kaminoPrimeUSDCInstruction(request KaminoPrimeUSDCRequest) (compiledInstruction, error) {
+// compileKaminoLegacyMessage is intentionally separate from the one-inner-
+// instruction bridge compiler. It accepts exactly the reviewed KLend prefix
+// (two reserve refreshes and one obligation refresh) followed by one Squads
+// policy execution; no general multi-instruction transaction API is exposed.
+func compileKaminoLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
+	if len(instructions) != 4 || instructions[0].program != mustKey(kaminoPrimeUSDCProgram) ||
+		instructions[1].program != mustKey(kaminoPrimeUSDCProgram) || instructions[2].program != mustKey(kaminoPrimeUSDCProgram) ||
+		instructions[3].program != mustKey(bridgeSquadsProgram) || !bytesEqual(instructions[0].data, kaminoRefreshReserve) ||
+		!bytesEqual(instructions[1].data, kaminoRefreshReserve) || !bytesEqual(instructions[2].data, kaminoRefreshObligation) {
+		return nil, fmt.Errorf("Kamino transaction is not the exact refresh-plus-policy sequence")
+	}
+	accounts := []accountMeta{{key: feePayer, signer: true, writable: true}}
+	for _, instruction := range instructions {
+		for _, account := range instruction.accounts {
+			pushOrMergeMeta(&accounts, account)
+		}
+		pushOrMergeMeta(&accounts, accountMeta{key: instruction.program})
+	}
+	sort.SliceStable(accounts[1:], func(i, j int) bool { return accountRank(accounts[i+1]) < accountRank(accounts[j+1]) })
+	if len(accounts) > math.MaxUint8 {
+		return nil, fmt.Errorf("Kamino legacy transaction has too many accounts")
+	}
+	index := make(map[publicKey]byte, len(accounts))
+	var required, readonlySigned, readonlyUnsigned byte
+	for i, account := range accounts {
+		index[account.key] = byte(i)
+		if account.signer {
+			required++
+			if !account.writable {
+				readonlySigned++
+			}
+		} else if !account.writable {
+			readonlyUnsigned++
+		}
+	}
+	message := []byte{required, readonlySigned, readonlyUnsigned}
+	message = append(message, encodeShortVec(len(accounts))...)
+	for _, account := range accounts {
+		message = append(message, account.key[:]...)
+	}
+	message = append(message, blockhash[:]...)
+	message = append(message, encodeShortVec(len(instructions))...)
+	for _, instruction := range instructions {
+		program, ok := index[instruction.program]
+		if !ok || len(instruction.accounts) > math.MaxUint8 {
+			return nil, fmt.Errorf("invalid Kamino compiled instruction")
+		}
+		message = append(message, program, byte(len(instruction.accounts)))
+		for _, account := range instruction.accounts {
+			accountIndex, ok := index[account.key]
+			if !ok {
+				return nil, fmt.Errorf("missing Kamino instruction account")
+			}
+			message = append(message, accountIndex)
+		}
+		message = append(message, encodeShortVec(len(instruction.data))...)
+		message = append(message, instruction.data...)
+	}
+	return message, nil
+}
+
+func bytesEqual(left, right []byte) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func kaminoPrimeUSDCInstruction(request KaminoPrimeUSDCRequest) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
 	if request.AmountRaw == 0 || len(request.Accounts) == 0 || len(request.Data) != 16 {
-		return compiledInstruction{}, fmt.Errorf("incomplete exact Kamino PRIME/USDC packet")
+		return compiledInstruction{}, 0, fmt.Errorf("incomplete exact Kamino PRIME/USDC packet")
 	}
 	if got := readU64(request.Data[8:]); got != request.AmountRaw {
-		return compiledInstruction{}, fmt.Errorf("Kamino packet amount does not match decision")
+		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet amount does not match decision")
 	}
 	accounts := make([]accountMeta, len(request.Accounts))
 	for i, input := range request.Accounts {
 		key, err := decodeKey(input.Address)
 		if err != nil {
-			return compiledInstruction{}, fmt.Errorf("invalid Kamino account %d", i)
+			return compiledInstruction{}, 0, fmt.Errorf("invalid Kamino account %d", i)
 		}
 		accounts[i] = accountMeta{key: key, signer: input.Signer, writable: input.Writable}
 	}
-	if len(accounts) < 7 || accounts[0].key != mustKey(bridgeVault) || !accounts[0].signer || accounts[1].key == (publicKey{}) || accounts[2].key != mustKey(kaminoPrimeMarket) {
-		return compiledInstruction{}, fmt.Errorf("Kamino packet is not owned by the fixed Squads PRIME route")
+	leg, ok := matchesKaminoStep(request.Action, request.Data[:8], accounts)
+	if !ok {
+		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet is not an approved PRIME/USDC lifecycle step")
 	}
-	if !matchesKaminoStep(request.Action, request.Data[:8], accounts) {
-		return compiledInstruction{}, fmt.Errorf("Kamino packet is not an approved PRIME/USDC lifecycle step")
+	if request.PolicyConstraintIndex != kaminoConstraintIndex(leg) {
+		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet uses the wrong fixed lane constraint index")
 	}
-	return compiledInstruction{program: mustKey(kaminoPrimeUSDCProgram), accounts: accounts, data: append([]byte(nil), request.Data...)}, nil
+	return compiledInstruction{program: mustKey(kaminoPrimeUSDCProgram), accounts: accounts, data: append([]byte(nil), request.Data...)}, leg, nil
 }
 
-func matchesKaminoStep(action Action, discriminator []byte, accounts []accountMeta) bool {
-	match := func(expected []byte, reserveIndex int, reserve string, minAccounts int) bool {
-		return len(accounts) >= minAccounts && string(discriminator) == string(expected) && accounts[reserveIndex].key == mustKey(reserve)
+func kaminoConstraintIndex(leg kaminoPrimeUSDCLeg) byte {
+	switch leg {
+	case kaminoLegDeposit, kaminoLegWithdraw, kaminoLegBorrow, kaminoLegRepay:
+		// Phase 1 installs one physical policy per Kamino mutation. Every one of
+		// those split policies contains exactly one constraint at index zero.
+		return 0
+	default:
+		return math.MaxUint8
 	}
+}
+
+func matchesKaminoStep(action Action, discriminator []byte, accounts []accountMeta) (kaminoPrimeUSDCLeg, bool) {
 	switch action {
 	case OpenPrimeUSDCStep:
-		// depositReserveLiquidityAndObligationCollateral or borrowObligationLiquidity
-		return match(kaminoDepositCollateral, 4, kaminoPrimeReserve, 14) || match(kaminoBorrowUSDC, 4, kaminoUSDCReserve, 12)
+		if string(discriminator) == string(kaminoDepositCollateral) && exactKaminoMetas(accounts, kaminoDepositMetas()) {
+			return kaminoLegDeposit, true
+		}
+		if string(discriminator) == string(kaminoBorrowUSDC) && exactKaminoMetas(accounts, kaminoBorrowMetas()) {
+			return kaminoLegBorrow, true
+		}
 	case DeleverPrimeUSDCStep:
-		// repayObligationLiquidity or withdrawObligationCollateralAndRedeemReserveCollateral
-		return match(kaminoRepayUSDC, 3, kaminoUSDCReserve, 9) || match(kaminoWithdrawCollateral, 4, kaminoPrimeReserve, 14)
-	default:
+		if string(discriminator) == string(kaminoRepayUSDC) && exactKaminoMetas(accounts, kaminoRepayMetas()) {
+			return kaminoLegRepay, true
+		}
+		if string(discriminator) == string(kaminoWithdrawCollateral) && exactKaminoMetas(accounts, kaminoWithdrawMetas()) {
+			return kaminoLegWithdraw, true
+		}
+	}
+	return 0, false
+}
+
+func kaminoMeta(address string, signer, writable bool) accountMeta {
+	return accountMeta{key: mustKey(address), signer: signer, writable: writable}
+}
+
+func exactKaminoMetas(got, want []accountMeta) bool {
+	if len(got) != len(want) {
 		return false
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func kaminoDepositMetas() []accountMeta {
+	return []accountMeta{
+		kaminoMeta(bridgeVault, true, true), kaminoMeta(kaminoPrimeUSDCObligation, false, true),
+		kaminoMeta(kaminoPrimeMarket, false, false), kaminoMeta(kaminoPrimeMarketAuthority, false, false),
+		kaminoMeta(kaminoPrimeReserve, false, true), kaminoMeta(kaminoPrimeUSDCCollateralMint, false, false),
+		kaminoMeta(kaminoPrimeLiquiditySupply, false, true), kaminoMeta(kaminoPrimeReceiptMint, false, true),
+		kaminoMeta(kaminoPrimeReceiptSupply, false, true), kaminoMeta(kaminoPrimeCustody, false, true),
+		kaminoMeta(kaminoPrimeUSDCProgram, false, false), kaminoMeta(bridgeTokenProgram, false, false),
+		kaminoMeta(bridgeTokenProgram, false, false), kaminoMeta(kaminoInstructions, false, false),
+		kaminoMeta(kaminoPrimeUSDCProgram, false, false), kaminoMeta(kaminoPrimeUSDCProgram, false, false),
+		kaminoMeta(kaminoFarmsProgram, false, false),
+	}
+}
+
+func kaminoBorrowMetas() []accountMeta {
+	return []accountMeta{
+		kaminoMeta(bridgeVault, true, false), kaminoMeta(kaminoPrimeUSDCObligation, false, true),
+		kaminoMeta(kaminoPrimeMarket, false, false), kaminoMeta(kaminoPrimeMarketAuthority, false, false),
+		kaminoMeta(kaminoUSDCReserve, false, true), kaminoMeta(bridgeUSDC, false, false),
+		kaminoMeta(kaminoUSDCLiquiditySupply, false, true), kaminoMeta(kaminoUSDCFeeVault, false, true),
+		kaminoMeta(bridgeSquadsATA, false, true), kaminoMeta(kaminoPrimeUSDCProgram, false, false),
+		kaminoMeta(bridgeTokenProgram, false, false), kaminoMeta(kaminoInstructions, false, false),
+		kaminoMeta(kaminoPrimeUSDCProgram, false, false), kaminoMeta(kaminoPrimeUSDCProgram, false, false),
+		kaminoMeta(kaminoFarmsProgram, false, false),
+	}
+}
+
+func kaminoRepayMetas() []accountMeta {
+	return []accountMeta{
+		kaminoMeta(bridgeVault, true, false), kaminoMeta(kaminoPrimeUSDCObligation, false, true),
+		kaminoMeta(kaminoPrimeMarket, false, false), kaminoMeta(kaminoUSDCReserve, false, true),
+		kaminoMeta(bridgeUSDC, false, false), kaminoMeta(kaminoUSDCLiquiditySupply, false, true),
+		kaminoMeta(bridgeSquadsATA, false, true), kaminoMeta(bridgeTokenProgram, false, false),
+		kaminoMeta(kaminoInstructions, false, false), kaminoMeta(kaminoPrimeUSDCProgram, false, false),
+		kaminoMeta(kaminoPrimeUSDCProgram, false, false), kaminoMeta(kaminoPrimeMarketAuthority, false, false),
+		kaminoMeta(kaminoFarmsProgram, false, false),
+	}
+}
+
+func kaminoWithdrawMetas() []accountMeta {
+	return []accountMeta{
+		kaminoMeta(bridgeVault, true, true), kaminoMeta(kaminoPrimeUSDCObligation, false, true),
+		kaminoMeta(kaminoPrimeMarket, false, false), kaminoMeta(kaminoPrimeMarketAuthority, false, false),
+		kaminoMeta(kaminoPrimeReserve, false, true), kaminoMeta(kaminoPrimeUSDCCollateralMint, false, false),
+		kaminoMeta(kaminoPrimeReceiptSupply, false, true), kaminoMeta(kaminoPrimeReceiptMint, false, true),
+		kaminoMeta(kaminoPrimeLiquiditySupply, false, true), kaminoMeta(kaminoPrimeCustody, false, true),
+		kaminoMeta(kaminoPrimeUSDCProgram, false, false), kaminoMeta(bridgeTokenProgram, false, false),
+		kaminoMeta(bridgeTokenProgram, false, false), kaminoMeta(kaminoInstructions, false, false),
+		kaminoMeta(kaminoPrimeUSDCProgram, false, false), kaminoMeta(kaminoPrimeUSDCProgram, false, false),
+		kaminoMeta(kaminoFarmsProgram, false, false),
+	}
+}
+
+func kaminoPrimeUSDCRefreshInstructions(leg kaminoPrimeUSDCLeg) []compiledInstruction {
+	refreshReserve := func(reserve string) compiledInstruction {
+		return compiledInstruction{program: mustKey(kaminoPrimeUSDCProgram), accounts: []accountMeta{
+			kaminoMeta(reserve, false, true), kaminoMeta(kaminoPrimeMarket, false, false),
+			kaminoMeta(kaminoPrimeUSDCProgram, false, false), kaminoMeta(kaminoPrimeUSDCProgram, false, false),
+			kaminoMeta(kaminoPrimeUSDCProgram, false, false), kaminoMeta(kaminoScopePrices, false, false),
+		}, data: append([]byte(nil), kaminoRefreshReserve...)}
+	}
+	remaining := []string{}
+	switch leg {
+	case kaminoLegBorrow:
+		remaining = []string{kaminoPrimeReserve}
+	case kaminoLegRepay:
+		remaining = []string{kaminoPrimeReserve, kaminoUSDCReserve}
+	case kaminoLegWithdraw:
+		remaining = []string{kaminoPrimeReserve}
+	}
+	obligationAccounts := []accountMeta{kaminoMeta(kaminoPrimeMarket, false, false), kaminoMeta(kaminoPrimeUSDCObligation, false, true)}
+	for _, reserve := range remaining {
+		obligationAccounts = append(obligationAccounts, kaminoMeta(reserve, false, true))
+	}
+	return []compiledInstruction{
+		refreshReserve(kaminoPrimeReserve), refreshReserve(kaminoUSDCReserve),
+		{program: mustKey(kaminoPrimeUSDCProgram), accounts: obligationAccounts, data: append([]byte(nil), kaminoRefreshObligation...)},
 	}
 }
 
@@ -196,7 +412,7 @@ func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc 
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("Kamino runtime dependencies are required")
 	}
-	if _, err := kaminoPrimeUSDCInstruction(evidence.Request); err != nil {
+	if _, _, err := kaminoPrimeUSDCInstruction(evidence.Request); err != nil {
 		return err
 	}
 	effects, err := jsonMarshalExpectedEffects(evidence.ExpectedEffects)

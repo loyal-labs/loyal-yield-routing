@@ -11,6 +11,8 @@ const (
 	Hold                  Action = "HOLD"
 	RecoverTransaction    Action = "RECOVER_TRANSACTION"
 	VoltrAllocateToSquads Action = "VOLTR_ALLOCATE_TO_SQUADS"
+	SwapUSDCToPrimeStep   Action = "SWAP_USDC_TO_PRIME_STEP"
+	SwapPrimeToUSDCStep   Action = "SWAP_PRIME_TO_USDC_STEP"
 	OpenPrimeUSDCStep     Action = "OPEN_PRIME_USDC_STEP"
 	DeleverPrimeUSDCStep  Action = "DELEVER_PRIME_USDC_STEP"
 	StageSquadsToVoltr    Action = "STAGE_SQUADS_TO_VOLTR"
@@ -37,28 +39,34 @@ const (
 )
 
 type Snapshot struct {
-	ObservationID           string
-	Slot                    int64
-	RouteKind               string
-	ManualReason            string
-	Nonterminal             OperationStatus
-	HasAmbiguousSubmission  bool
-	WithdrawalDemandRaw     int64
-	SquadsIdleRaw           int64
-	VoltrStrategyIdleRaw    int64
-	VoltrIdleRaw            int64
-	HasPosition             bool
-	LTVBPS                  int64
-	LiquidationThresholdBPS int64
-	NetAPYBPS               int64
-	Fresh                   bool
-	CapacityRaw             int64
-	PolicyLimitRaw          int64
-	MaxTargetLTVEntryRaw    int64
-	PolicyReady             bool
-	ExitBuildable           bool
-	CapitalMutated          bool
-	LastReportAgeSeconds    int64
+	ObservationID              string
+	Slot                       int64
+	RouteKind                  string
+	ManualReason               string
+	Nonterminal                OperationStatus
+	HasAmbiguousSubmission     bool
+	WithdrawalDemandRaw        int64
+	SquadsIdleRaw              int64
+	PrimeIdleRaw               int64
+	VoltrStrategyIdleRaw       int64
+	VoltrIdleRaw               int64
+	HasPosition                bool
+	PositionCollateralRaw      int64
+	PositionDebtRaw            int64
+	PositionCollateralValueRaw int64
+	PositionDebtValueRaw       int64
+	StrategyNAVRaw             int64
+	LTVBPS                     int64
+	LiquidationThresholdBPS    int64
+	Fresh                      bool
+	CapacityRaw                int64
+	PolicyLimitRaw             int64
+	MaxTargetLTVEntryRaw       int64
+	PolicyReady                bool
+	ExitBuildable              bool
+	CapitalMutated             bool
+	PostMutationNAVRequired    bool
+	LastReportAgeSeconds       int64
 }
 
 type Decision struct {
@@ -73,7 +81,8 @@ func (d Decision) Validate() error {
 		return fmt.Errorf("incomplete decision")
 	}
 	switch d.Action {
-	case Hold, RecoverTransaction, VoltrAllocateToSquads, OpenPrimeUSDCStep,
+	case Hold, RecoverTransaction, VoltrAllocateToSquads, SwapUSDCToPrimeStep,
+		SwapPrimeToUSDCStep, OpenPrimeUSDCStep,
 		DeleverPrimeUSDCStep, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV,
 		HoldManualRecovery:
 		return nil

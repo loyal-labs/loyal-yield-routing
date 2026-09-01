@@ -1,15 +1,16 @@
 # Backyard Voltr + Squads RWA worker: verifier-first delivery plan
 
-Status: proposed implementation contract v4.
+Status: approved implementation contract v9.
 
 This file is the sole definition of done for the first Backyard Finance RWA
 vault. It replaces the earlier Rust fleet/four-market orchestration plan.
 
-The current implementation must report FAIL against this contract. The custom
-adaptor does not yet authenticate a Squads-PDA-signed NAV report, the complete
-eleven-lane policy catalog is not installed, the production lifecycle is not a
-Go worker, and no real end-to-end Backyard lifecycle has been reconciled.
-Historical proofs are useful evidence but cannot make this verifier pass.
+The current implementation must report FAIL against the Phase 1 contract until
+the custom adaptor authenticates a Squads-PDA-signed NAV report, the exact
+bridge and PRIME/USDC policies are live, one Go worker owns the route, and one
+real end-to-end Backyard lifecycle is independently reconciled. The complete
+eleven-lane policy catalog is a separately reported Phase 2 expansion. Its
+absence must not be hidden, but it does not block the first fixed-route release.
 
 ## 1. Outcome
 
@@ -25,19 +26,21 @@ must:
    required amount, return it through Squads and the adaptor to Voltr idle
    before the 600-second waiting period ends;
 5. let the user claim after the waiting period;
-6. submit NAV reports through the adaptor only when the exact configured Squads
-   vault PDA has authorized the call; and
+6. submit NAV reports through the adaptor only through one atomic Squads payload
+   whose first instruction arms the exact one-use report ticket and whose second
+   instruction invokes Voltr to consume it; and
 7. leave one durable, independently reconcilable decision and transaction trail
    in the existing database.
 
-The smart account must also have a compact, exact policy catalog capable of all
-eleven requested RWA Multiply lanes and the required swaps. The MVP worker will
-not optimize among them. Broad future execution freedom and simple initial
-decision-making are intentionally separate.
+Phase 2 gives the smart account a compact, exact policy catalog capable of all
+eleven requested RWA Multiply lanes and the required swaps. The Phase 1 worker
+uses only the bridge/NAV policies and fixed PRIME/USDC lifecycle policies.
 
-PASS means this whole outcome has happened once with real internal Backyard
-capital and all current deployed identities still agree. Source, simulation, or
-deployment alone is never PASS.
+Phase 1 PASS means this fixed PRIME/USDC outcome has happened once with real
+internal Backyard capital, one deployed Go writer owns it, and all current
+deployed identities still agree. Source, simulation, or deployment alone is
+never PASS. Phase 2 has its own PASS/FAIL/BLOCKED result for the 11-lane,
+44-operation, 52-edge catalog.
 
 ## 2. Non-goals and accepted tradeoffs
 
@@ -49,13 +52,15 @@ deployment alone is never PASS.
 - No separate low-value canary and no live test of every lane. The live test is
   one real internal Backyard lifecycle; policy simulations are batched.
 - Confirmed commitment is sufficient. Finalized is not a readiness gate.
-- Voltr allowAnyAdaptor remains enabled by explicit business decision.
+- Reuse the existing Voltr-approved vault and preserve allowAnyAdaptor enabled.
+  Voltr InitializeStrategy still requires the exact initialized adaptor receipt,
+  so Phase 1 creates that minimal receipt without a governance mutation.
 - Go computes and reports NAV for the MVP. Fully onchain economic NAV is a
   later hardening project, not hidden inside this milestone.
 - No complicated admin console. The first page is a read-only operating view.
 
 These tradeoffs reduce delivery time. They do not relax signer, account,
-reserve, replay, conservation, or reconciliation checks.
+reserve, signed-wire uniqueness, conservation, or reconciliation checks.
 
 ## 3. One verifier and one verdict
 
@@ -70,17 +75,23 @@ The command is read-only and has broadcast=false in every RPC path. It must not
 load a signing key, construct an approval transaction, mutate the database, or
 accept caller-authored evidence as truth.
 
-The output schema is loyal-backyard-rwa-go-lifecycle/v2:
+The output schema is loyal-backyard-rwa-go-lifecycle/v3. The top-level verdict
+and process exit code are the Phase 1 release verdict; Phase 2 and the admin
+macroview remain explicit independent results:
 
 ~~~json
 {
-  "schema": "loyal-backyard-rwa-go-lifecycle/v2",
+  "schema": "loyal-backyard-rwa-go-lifecycle/v3",
   "verdict": "PASS | FAIL | BLOCKED",
+  "releasePhase": "phase1",
   "commitment": "confirmed",
   "sourceCommit": "...",
   "deployedImageDigest": "...",
   "manifestSha256": "...",
   "policyCatalogSha256": "...",
+  "phase1": { "verdict": "PASS | FAIL | BLOCKED", "checkIds": [] },
+  "phase2": { "verdict": "PASS | FAIL | BLOCKED", "checkIds": [] },
+  "supplemental": { "adminMacroview": "PASS | FAIL | BLOCKED" },
   "checks": [
     {
       "id": "...",
@@ -126,7 +137,7 @@ no secret and binds:
 - all Kamino market, reserve, liquidity-supply, collateral-supply, fee/farm,
   obligation, and authority accounts used by the eleven lanes;
 - every swap program and exact allowed mint edge;
-- adaptor report schema and config address;
+- adaptor report schema, config address, and derived report-ticket PDA;
 - policy catalog hash and worker decision-schema version;
 - fixed MVP route and risk parameters; and
 - source commit and immutable deployed image digest.
@@ -138,7 +149,8 @@ and independently reads them from confirmed mainnet:
 | --- | --- |
 | Voltr vault | HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA |
 | Loyal adaptor program | FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW |
-| Existing strategy config | ABYbbc7ms3FdB9BDe8HPYMKvuU9iEj8a55rVuyuZeNSs |
+| Active strategy config | 9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj |
+| Derived report ticket PDA | C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5 |
 | Squads Settings | 5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6 |
 | Squads vault index | 0 |
 | Squads vault PDA | ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh |
@@ -162,10 +174,13 @@ the Squads program granted signer privilege to the exact derived vault PDA with
 invoke_signed and that privilege reached the adaptor through the authorized CPI
 chain.
 
-Every deposit, withdrawal, and NAV-report path must require all of:
+Voltr does not forward Squads signer privilege through its adaptor CPI. The
+approved Phase 1 topology therefore proves Squads origin through one reusable
+adaptor-owned report ticket. Every deposit, withdrawal, and NAV-report path must
+require all of:
 
 1. squads_vault.key equals the immutable configured vault PDA;
-2. squads_vault.is_signer is true;
+2. squads_vault.is_signer is true at the adaptor's direct ArmReport instruction;
 3. the PDA re-derives from the configured Squads program, Settings account, and
    vault index;
 4. the Settings account is owned by the configured Squads program and decodes
@@ -176,30 +191,75 @@ Every deposit, withdrawal, and NAV-report path must require all of:
 7. every vault, mint, token program, ATA, config, and writable account equals
    the immutable config; and
 8. the outer transaction executor is the exact delegated signer authorized by
-   the exact Squads ProgramInteraction policy.
+   the exact Squads ProgramInteraction policy; and
+9. the single Squads sync payload contains exactly two ordered inner
+   instructions: direct adaptor ArmReport, then the exact Voltr capital call
+   whose adaptor CPI consumes that ticket.
 
-Checks 1-7 belong in the adaptor. Check 8 belongs in the Squads policy and is
-independently decoded by the verifier. An address match without signer
-privilege is FAIL.
+Checks 1-7 belong in the adaptor. Checks 8-9 belong in the exact Squads policy
+and canonical builder and are independently decoded by the verifier. An address
+match without signer privilege at ArmReport is FAIL. Direct address-only Voltr
+authorization is forbidden.
 
-No Instructions-sysvar caller inspection is required in v2: exact dual PDA
-signer proof plus immutable PDA derivations is the smaller and stronger useful
-boundary. If a canonical signed-unsent mainnet transaction proves that Voltr
-does not forward Squads signer privilege to the adaptor, stop with
-BLOCKED_VOLTR_SIGNER_FORWARDING. The only acceptable fallback is an atomic
-Squads payload that first writes a one-use authenticated report ticket and then
-has Voltr consume it. Never fall back to address-only authorization.
+The ticket PDA is derived under the adaptor program from
+`[b"report_ticket", strategy_config]`. It is initialized once, is exactly 96
+bytes, and has this frozen v1 layout:
+
+~~~text
+discriminator[8] | version:u8 | bump:u8 | armed:u8 | reserved[5]
+strategy_config:Pubkey | last_consumed_sequence:u64
+active_sequence:u64 | active_wire_sha256:[u8;32]
+~~~
+
+The discriminator is `f568b6c53ae774ed`; version is 1; reserved bytes are
+zero. InitializeReportTicket has discriminator `7c29df0da5f6463e`, no data,
+and exact accounts payer signer/writable, config read-only, ticket writable,
+system program read-only.
+
+ArmReport has discriminator `a4aff629b28c2303`, exactly 79 bytes, and exact
+data `discriminator | operation:u8 | VoltrTail[70]`. Operation is 0 for deposit
+or 1 for withdraw. VoltrTail is the exact amount u64 plus the Some tag, 57-byte
+length, and ReportV1. Its accounts are config read-only, ticket writable,
+Settings read-only, exact Squads vault signer/read-only, and exact executable
+Squads program read-only.
+
+ArmReport requires ticket.armed=false, sequence=observed_slot,
+sequence>last_consumed_sequence, a nonfuture/fresh observed slot, the exact
+configured Squads signer/Settings graph, and an exact hash of the complete Voltr
+tail. It writes armed=true, active_sequence, and active_wire_sha256. The
+following Voltr instruction forwards the same ticket as remaining account index
+17; the adaptor receives it as account index 8, writable. The capital path
+requires the exact Voltr strategy-authority signer and exact config/accounts,
+matches the complete wire hash and sequence, performs the transfer/return-data
+work, then consumes the ticket and advances last_consumed_sequence. Config is
+read-only throughout. Successful consume retains only last_consumed_sequence;
+it clears armed, active_sequence, and active_wire_sha256 to zero. The exact
+current PDA is C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5 with bump 254.
+
+The Squads policy must accept exactly this two-instruction order. Arm-only,
+Voltr-before-Arm, an extra instruction, a three-instruction setup/arm/consume
+fallback, or a different second instruction is FAIL. If Voltr cannot forward
+the ticket writable at those exact indexes, stop with
+BLOCKED_VOLTR_TICKET_FORWARDING; do not broaden the topology automatically.
+
+The frozen ProgramInteraction constraints use indexes `[0,1]` for ArmReport
+and Voltr. ArmReport pins adaptor program/data plus accounts 0=config and
+1=ticket; the adaptor revalidates Settings, vault signer, and Squads program.
+Allocation/NAV pins Voltr account indexes `[0,2,3,8,11,12,13,14,15,16,17]`;
+withdraw pins `[0,2,5,6,9,12,13,14,15,16,17]`. The unrelated staging transfer
+remains a single instruction with constraint index `[0]` and cannot arm a
+ticket.
 
 ### 5.2 Immutable config and compact report
 
-The config freezes:
+The config is initialized once and remains read-only on every capital and NAV
+path. It freezes:
 
 - schema version;
 - Voltr program, vault, strategy, strategy config, and strategy authority;
 - Squads program, Settings, vault index, and derived vault PDA;
 - asset mint, token program, and exact Squads asset ATA;
-- maximum reportable NAV and maximum report age; and
-- last accepted sequence, slot, NAV, and snapshot digest.
+- maximum reportable NAV and maximum report age.
 
 The report payload is fixed-length and rejects trailing data:
 
@@ -215,14 +275,22 @@ ReportV1 {
 
 Acceptance rules:
 
-- sequence is exactly last_sequence + 1;
-- observed_slot never regresses, is not from the future, and is not stale;
+- sequence is nonzero and exactly equals observed_slot;
+- observed_slot is not from the future and is not stale;
 - nav_after_raw is at or below the configured cap; zero is valid;
 - the digest is nonzero and binds the complete Go NAV component snapshot,
   receipt fingerprint, and policy catalog hash;
-- a replay, skipped sequence, stale slot, wrong signer, wrong strategy,
+- a sequence/slot mismatch, stale slot, wrong signer, wrong strategy,
   duplicate mutable account, or extra bytes fail before state changes; and
-- the accepted report fields are stored before NAV is returned to Voltr.
+- the config is never mutated and the exact NAV is returned to Voltr through
+  Solana return data.
+
+The strategy config remains immutable and read-only. The report ticket is the
+only writable authentication/replay cell. Its monotonic last-consumed sequence
+and armed-to-consumed transition are the onchain one-use boundary; the pinned
+delegate, serialized Go lease, persist-before-send journal, and signed-wire
+uniqueness remain defense in depth. Reconciliation must complete before a new
+report wire is built.
 
 This proves report origin and freshness, not the economic truth of the number.
 The sole verifier independently recomputes the same NAV from RPC and fails on a
@@ -280,9 +348,12 @@ The catalog permits:
 
 That is exactly 52 directed edges. It permits no RWA-to-RWA edge and no self
 edge. Program, authority, source/destination mint, source/destination custody,
-token program, slippage-bound fields, writable roles, and account count are
-constrained. Token-2022 and classic SPL identities are explicit and never
-inferred from a token symbol.
+token program, slippage-bound fields, and account count are constrained by
+Squads. ProgramInteraction policy bytes do not encode signer/writable roles;
+the canonical Go builder therefore owns the exact role vector and rejects any
+role drift before signing, while signed simulation proves that the accepted
+wire produces only the expected downstream mutation. Token-2022 and classic
+SPL identities are explicit and never inferred from a token symbol.
 
 ### 6.3 Packing ladder
 
@@ -301,19 +372,22 @@ Select the first safe rung that fits:
 Best case is eight policies, but eight is not a correctness requirement until
 the real packets are measured. The chosen first-fitting layout, packet sizes,
 policy PDAs, semantic expansion, total rent, and catalog hash are frozen before
-installation. Never drop a reserve, signer, program, writable-role, or data
-constraint to save rent.
+installation. Never drop a reserve, signer identity, program, account-role
+check, or data constraint to save rent. Account roles remain a mandatory
+builder invariant even though they are not representable in Squads policy
+account bytes.
 
 The two bridge policy families cover:
 
 - authenticated Voltr allocation and NAV reporting; and
 - exact Squads-to-Voltr staging and withdrawal restoration.
 
-With allowAnyAdaptor enabled, the verifier must scan every policy usable by the
-runtime delegate. Any stale, temporary, duplicate, fallback, or broader policy
-that could move this vault's Voltr, Kamino, SPL, or Token-2022 capital is FAIL.
-Unrelated policies for a different delegate are reported but do not fail this
-route.
+The verifier must prove allowAnyAdaptor is enabled on this exact vault and the
+strategy receipt resolves to the exact deployed adaptor program. It must also
+scan every policy usable by the runtime delegate. Any stale, temporary,
+duplicate, fallback, or broader policy that could move this vault's Voltr,
+Kamino, SPL, or Token-2022 capital is FAIL. Unrelated policies for a different
+delegate are reported but do not fail this route.
 
 ## 7. One Go worker
 
@@ -490,8 +564,9 @@ Implementation rules:
 - use conservative deterministic rounding and persist every component;
 - bind sorted component account hashes, raw values, slot, receipt fingerprint,
   manifest hash, and policy catalog hash into snapshot_digest; and
-- increment the adaptor report sequence only after the previous report outcome
-  is reconciled.
+- derive sequence=observed_slot from the one coherent confirmed snapshot, and
+  build no later report wire until the previous report outcome is reconciled by
+  the serialized delegate/database journal.
 
 The verifier recomputes NAV through independent RPC decoding. It must not call
 the Go worker's NAV function or trust the stored aggregate. Equality is in raw
@@ -520,7 +595,7 @@ Run these in fail-fast order.
 
 ### V01 contract_and_forbidden_surface
 
-PASS when the v4 manifest and v2 output schema are exact, the fixed route is
+PASS when the v9 Phase 1 contract and v3 output schema are exact, the fixed route is
 PRIME/USDC, and repository/deployment search proves no reachable Rust or
 TypeScript money-moving worker for this vault. Fail on a second writer,
 optimizer, saga, caller-selected manifest, or broadcast-capable verifier.
@@ -530,23 +605,36 @@ without values, and deployed image metadata.
 
 ### V02 adaptor_identity_and_signer
 
-PASS when independent decoding proves immutable bindings and the adaptor
-requires both the exact Squads vault PDA signer and exact Voltr strategy
-authority PDA signer on every capital/NAV path.
+PASS when independent decoding proves immutable config bindings, the one exact
+adaptor-owned report-ticket PDA/layout, exact Squads-vault PDA signer at
+ArmReport, and exact Voltr strategy-authority PDA signer at ticket consumption.
 
-The canonical signed-unsent transaction must simulate successfully through
-Squads -> Voltr -> adaptor. Mutations for a nonsigner Squads account, wrong
-Settings/index, address-only lookalike, wrong Voltr authority, replayed/skipped
-sequence, stale/future slot, oversized NAV, trailing bytes, or wrong ATA must
-all fail before mutation.
+The canonical signed-unsent transaction must simulate successfully as one
+Squads sync payload with exactly two ordered inner instructions:
+`ArmReport -> Voltr capital/adaptor consume`. The config remains read-only; the
+ticket is writable at Voltr remaining account index 17 and adaptor account index
+8; the final ticket is inactive with a strictly advanced last-consumed sequence;
+and exact NAV is returned through Solana return data.
 
-Evidence: program ELF hash and authority, config bytes, PDA derivations,
-independent instruction decoding, simulation logs, pre/post account diffs, and
-the exact signer/writable metas observed at the adaptor.
+The required exact negative matrix is: direct Voltr without a ticket,
+consume-before-arm, arm-only payload, reversed order, extra/third instruction,
+different second instruction, second consume, same/lower sequence re-arm, arm
+while active, nonsigner/wrong Squads vault, wrong Settings owner/index/address
+lookalike, wrong delegated executor/policy, nonsigner/wrong Voltr authority,
+wrong ticket PDA/owner/config/index/writability, wrong operation/amount/wire
+hash, zero or mismatched sequence/observed-slot, stale/future slot, oversized
+amount/NAV, trailing bytes, wrong vault/strategy/mint/token program/ATA, and
+duplicate/aliased writable accounts. A valid ArmReport followed by a deliberately
+failing Voltr leg must roll the ticket, config, and capital fully back.
 
-### V03 catalog_semantics_and_packing
+Evidence: program ELF hash and authority, immutable config bytes, ticket bytes
+before/after, PDA derivations, exact Squads policy and two-instruction decoding,
+signed simulation logs, pre/post account diffs, rollback proof, exact account
+indexes/roles, and signer metas observed separately at ArmReport and consume.
 
-PASS when the frozen policy catalog expands to exactly 44 Kamino permissions
+### P2 catalog_semantics_and_packing
+
+Phase 2 PASS when the frozen policy catalog expands to exactly 44 Kamino permissions
 and 52 directed swap edges, every lane pins its exact debt reserve, the chosen
 packing rung is the first one whose full signed create/update transactions fit
 1,232 bytes, and total rent is reported.
@@ -555,12 +643,14 @@ Batch signed-unsent simulations by structural group: three-lane market
 policies, singleton market policies, swap graph, and bridge lifecycle. Do not
 send one live transaction per lane. Negative cases must prove same-mint
 wrong-reserve, cross-lane obligation, unapproved edge, extra instruction,
-amount-cap breach, signer substitution, and writable-role substitution fail in
-Squads before the downstream protocol.
+amount-cap breach, and signer substitution fail in Squads before the downstream
+protocol. Writable-role substitution must be rejected by the canonical Go
+builder before signing; an independently constructed mutated wire must also
+simulate without downstream state mutation.
 
 Evidence: canonical semantic JSON, packet bytes/sizes, catalog hash, policy
 account bytes/owners/activation, simulation logs, and runtime-delegate policy
-scan.
+scan. This result is always emitted, but it is not a Phase 1 release gate.
 
 ### V04 go_state_machine_and_store
 
@@ -590,20 +680,30 @@ image digest maps to the source commit and manifest, its command invokes the Go
 binary directly, and no active Rust/TypeScript worker can claim the vault's
 route ID, delegated signer, or advisory lock.
 
+The production service has exactly one instance. Its active route lease owner
+is exactly `render:<service-id>:sha-<40-hex-source-commit>` and its expiry is in
+the future, binding database authority to the independently read live service
+and immutable image rather than to an arbitrary nonempty owner string.
+
 Evidence: deployment/service metadata, image digest, startup identity log,
 database lease owner, and absence of competing recent writes.
 
 ### V06 live_internal_lifecycle
 
+The lifecycle evidence schema is `loyal-backyard-rwa-live-lifecycle/v2`; v1
+evidence predating the ticket topology is declaration-only and cannot pass.
 PASS only after one real internal Backyard lifecycle at an explicitly approved
 operational amount proves:
 
 1. user deposit confirmed into Voltr idle;
 2. adaptor allocation confirmed into the exact Squads ATA;
 3. worker decision persisted before send;
-4. one PRIME/USDC position opened and reconciled with positive observed net
-   APY and LTV at or below target;
-5. authenticated NAV sequence accepted and independently recomputed;
+4. one PRIME/USDC position opened and reconciled with LTV at or below target,
+   plus a contemporaneous hash-bound external/manual attestation that total
+   fixed-route yield is positive;
+5. authenticated sequence=observed_slot NAV returned by the adaptor and
+   independently recomputed, with the exact atomic ArmReport -> Voltr consume
+   ticket transition;
 6. withdrawal receipt confirmed and no later risk-increasing action emitted;
 7. enough position unwound and exact requested raw USDC restored to Voltr idle
    before the 600-second deadline;
@@ -618,7 +718,12 @@ not required.
 
 Evidence: signatures, slots/block times, independently decoded instructions
 and receipts, raw pre/post balances, fees, operation rows, report sequence and
-digest, and conservation equation.
+digest, ticket PDA bytes/sequence/wire hash before and after every bridge/NAV
+transaction, immutable config hash, and conservation equation. Across the live
+lifecycle every bridge/NAV signature must contain exactly one ArmReport followed
+by its matching Voltr consume, ticket sequences must increase strictly, no
+ticket may remain armed, and the database journal must bind the same signed wire,
+ticket sequence, and wire hash before send.
 
 ### V07 admin_macroview_truth
 
@@ -634,31 +739,32 @@ incorrect/stale unlabeled value is FAIL.
 
 ### Phase 0: freeze truth before implementation
 
-1. Upgrade the sole verifier to emit the v2 schema and FAIL baseline.
+1. Upgrade the sole verifier to emit the v3 phase-separated schema and a truthful baseline.
 2. Generate the current-mainnet manifest and resolve every lane, especially
    Maple/USDG.
 3. Freeze the adaptor v2 ABI, Go action enum, database transition diagram, and
    policy semantic JSON.
 4. Build the canonical signed-unsent Squads -> Voltr -> adaptor packet first.
 
-Exit: V01 has a truthful result and the signer-forwarding topology either
-simulates or returns the precise external BLOCKED result. No downstream work
-may compensate for failed signer propagation.
+Exit: V01 has a truthful result and the exact two-instruction ticket-forwarding
+topology either simulates or returns BLOCKED_VOLTR_TICKET_FORWARDING. No
+downstream work may compensate for failed signer or writable-ticket propagation.
 
-### Phase 1: implement in parallel
+### Phase 1: fixed PRIME/USDC release
 
 Adaptor track:
 
-- implement config/report v2, dual-PDA signer checks, exact transfers, replay
-  rules, and independent ABI fixtures;
+- implement immutable read-only config/report v2, the one reusable ticket PDA,
+  Squads-signed ArmReport, Voltr-signed consume, monotonic sequence, exact
+  two-instruction topology, exact transfers/return data, and independent ABI
+  fixtures;
 - deploy the smallest upgrade and freeze its ELF/program-data authority hash.
 
-Policy track:
+Fixed-policy track:
 
 - correct exact debt-reserve binding;
-- add all eleven lanes and 52 swap edges;
-- measure the packing ladder, generate create/replace/close instructions, and
-  freeze the first-fitting catalog.
+- install and pin the four bridge/NAV policies and the complete PRIME/USDC
+  deposit, borrow, repay, and withdraw policy/account vectors.
 
 Go track:
 
@@ -671,33 +777,40 @@ Admin track:
 - define the read model against the frozen fields and build the thin page after
   the migration shape is fixed.
 
-Exit: V02-V04 pass locally/read-only against current mainnet and focused tests.
+Release sequence:
 
-### Phase 2: deploy one writer, then install policies
-
-1. Publish one immutable Go image.
-2. Deploy it disabled/read-only and prove V05 single-writer identity.
-3. Create or replace the packed policies in batches, close superseded policies,
-   and re-scan the runtime delegate.
-4. Bind/upgrade the exact Voltr strategy config and adaptor config.
-5. Enable the Go writer only after all identity/catalog hashes match.
+1. Bind/upgrade the exact Voltr strategy config and adaptor config, including
+   the required minimal adaptor receipt while preserving allowAnyAdaptor.
+2. Publish one immutable Go image and deploy exactly one active writer.
+3. Prove V05 from live Render metadata, startup identity logs, and the active
+   database lease; checked-in JSON is not deployment truth.
+4. Run one real internal deposit -> allocate -> open PRIME/USDC -> report NAV ->
+   request -> unwind -> restore -> claim lifecycle and independently reconcile
+   V06.
+5. Evaluate V07 against loyal-apps origin/main, the production Vercel commit,
+   an authenticated page response, and the same read-only database snapshot.
 
 Each state-changing transaction requires explicit operational approval,
 simulation, confirmed signature, and immediate reconciliation. This plan does
 not grant that authority.
 
-Exit: V02, V03, and V05 pass against deployed current state. No old writer can
-resume.
+Exit: V01, V02, V04, V05, and V06 pass and the command exits 0. V07 is reported
+independently as supplemental operating-surface truth and must not be
+misrepresented as deployed when credentials or the production commit are
+unavailable.
 
-### Phase 3: real lifecycle and macroview
+### Phase 2: expand the policy catalog
 
-1. Run the one real internal deposit -> allocate -> open -> report NAV ->
-   request -> unwind -> restore -> claim lifecycle.
-2. Reconcile after every confirmed mutation; stop on the first ambiguity.
-3. Deploy the thin Vault integrations page from the reconciled read model.
-4. Run the sole verifier without overrides.
+1. Resolve all current market/reserve/custody identities for the eleven lanes.
+2. Add all 44 Kamino permissions and 52 swap edges.
+3. Measure the packing ladder, install the first-fitting policy groups in
+   batches, close superseded policies, and re-scan the runtime delegate.
+4. Run the grouped signed-unsent and negative simulations; do not live-test
+   every lane one by one.
 
-Exit: all V01-V07 pass and the command exits 0.
+Exit: P2 catalog_semantics_and_packing passes independently. A Phase 2 failure
+is visible in the sole verifier but does not retroactively falsify a healthy
+fixed PRIME/USDC Phase 1 lifecycle.
 
 ## 13. What may be batched and what may not
 
@@ -714,7 +827,8 @@ Never batch across a correctness boundary:
 - do not combine ambiguous and new transaction submission;
 - do not open the next leverage step before confirming/reobserving the prior
   one;
-- do not claim a NAV sequence before the previous report reconciles;
+- do not build a later NAV signed wire before the previous report reconciles in
+  the serialized delegate/database journal;
 - do not install a policy packet whose fully signed bytes were not measured;
 - do not enable the Go writer while any old writer can claim the route; and
 - do not treat gross token outflow as withdrawal restoration or user claim

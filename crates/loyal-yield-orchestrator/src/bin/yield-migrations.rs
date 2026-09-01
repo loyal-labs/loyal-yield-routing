@@ -423,6 +423,18 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0069_autodeposit_event_id_ranges.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 70,
+        name: "backyard_rwa_worker",
+        sql: include_str!("../../../loyal-yield-store/migrations/0070_backyard_rwa_worker.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 71,
+        name: "backyard_rwa_phase1_activation",
+        sql: include_str!("../../../loyal-yield-store/migrations/0071_backyard_rwa_phase1_activation.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

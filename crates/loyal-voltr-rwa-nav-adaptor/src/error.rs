@@ -16,6 +16,12 @@ pub enum AdaptorError {
     ReportCap = 10,
     DuplicateMutableAccount = 11,
     InsufficientBridgeLiquidity = 12,
+    InvalidTicket = 13,
+    InvalidTicketWritable = 14,
+    TicketAlreadyArmed = 15,
+    TicketNotArmed = 16,
+    TicketMismatch = 17,
+    TicketReplay = 18,
 }
 
 impl From<AdaptorError> for ProgramError {

@@ -30,4 +30,5 @@ COPY --from=build --chmod=0755 /out/backyard-rwa-worker /usr/local/bin/backyard-
 USER 10001:10001
 WORKDIR /home/loyal
 
+STOPSIGNAL SIGTERM
 CMD ["/usr/local/bin/backyard-rwa-worker"]

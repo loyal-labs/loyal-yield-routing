@@ -2,6 +2,7 @@ package backyardrwa
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,12 +21,23 @@ type ExpectedAccountEffect struct {
 	Authority string `json:"authority"`
 	BeforeRaw uint64 `json:"beforeRaw"`
 	AfterRaw  uint64 `json:"afterRaw"`
+	// MinimumAfterRaw is used only for the destination of an exact-input
+	// cross-mint swap. Jupiter may deliver more than its slippage threshold, so
+	// demanding equality would turn price improvement into manual recovery.
+	MinimumAfterRaw *uint64 `json:"minimumAfterRaw,omitempty"`
 }
 
 type ExpectedEffects struct {
-	Schema    string                  `json:"schema"`
-	Conserved bool                    `json:"conserved"`
-	Accounts  []ExpectedAccountEffect `json:"accounts"`
+	Schema     string                  `json:"schema"`
+	Kind       string                  `json:"kind,omitempty"`
+	Conserved  bool                    `json:"conserved"`
+	Accounts   []ExpectedAccountEffect `json:"accounts"`
+	ReturnData *ExpectedReturnData     `json:"returnData,omitempty"`
+}
+
+type ExpectedReturnData struct {
+	ProgramID  string `json:"programId"`
+	DataBase64 string `json:"dataBase64"`
 }
 
 func (r Reconciliation) Validate() error {
@@ -53,8 +65,11 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 	if err := json.Unmarshal(data, &expected); err != nil {
 		return ExpectedEffects{}, fmt.Errorf("decode expected effects: %w", err)
 	}
-	if expected.Schema != "loyal-backyard-rwa-expected-effects/v1" || !expected.Conserved || len(expected.Accounts) == 0 {
+	if expected.Schema != "loyal-backyard-rwa-expected-effects/v1" || len(expected.Accounts) == 0 {
 		return ExpectedEffects{}, fmt.Errorf("incomplete expected effects")
+	}
+	if !expected.Conserved && (expected.Kind != "cross-mint-swap" || len(expected.Accounts) != 2) {
+		return ExpectedEffects{}, fmt.Errorf("unsupported non-conserved expected effects")
 	}
 	seen := make(map[string]struct{}, len(expected.Accounts))
 	for _, account := range expected.Accounts {
@@ -73,61 +88,102 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 		}
 		seen[account.Address] = struct{}{}
 	}
+	if expected.Kind == "cross-mint-swap" {
+		if expected.Accounts[0].Mint == expected.Accounts[1].Mint || expected.Accounts[0].MinimumAfterRaw != nil ||
+			expected.Accounts[1].MinimumAfterRaw == nil || *expected.Accounts[1].MinimumAfterRaw != expected.Accounts[1].AfterRaw {
+			return ExpectedEffects{}, fmt.Errorf("invalid cross-mint swap postconditions")
+		}
+	}
+	if expected.ReturnData != nil {
+		data, err := base64.StdEncoding.DecodeString(expected.ReturnData.DataBase64)
+		if expected.Kind != "bridge" || expected.ReturnData.ProgramID != bridgeAdaptorProgram || err != nil || len(data) != 8 {
+			return ExpectedEffects{}, fmt.Errorf("invalid expected adaptor return data")
+		}
+	}
 	return expected, nil
 }
 
-func ReconcileTokenAccounts(slot int64, expected ExpectedEffects, accounts []ConfirmedAccount) (Reconciliation, []byte, error) {
-	if slot <= 0 || len(accounts) != len(expected.Accounts) {
-		return Reconciliation{}, nil, fmt.Errorf("incoherent reconciliation account set")
+// ReconcileConfirmedTransaction verifies effects against the immutable receipt
+// for the exact persisted signature. A later account read is intentionally not
+// accepted: unrelated deposits and claims can mutate the same custodies after
+// this transaction confirms.
+func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
+	if receipt.Signature == "" || receipt.Slot <= 0 {
+		return Reconciliation{}, nil, fmt.Errorf("confirmed transaction identity is incomplete")
 	}
-	byAddress := make(map[string]ConfirmedAccount, len(accounts))
-	for _, account := range accounts {
-		if _, duplicate := byAddress[account.Address]; duplicate {
-			return Reconciliation{}, nil, fmt.Errorf("duplicate observed custody")
-		}
-		byAddress[account.Address] = account
+	preByAddress, err := transactionBalancesByAddress(receipt.PreTokenBalances)
+	if err != nil {
+		return Reconciliation{}, nil, err
+	}
+	postByAddress, err := transactionBalancesByAddress(receipt.PostTokenBalances)
+	if err != nil {
+		return Reconciliation{}, nil, err
 	}
 	canonical := make([]string, 0, len(expected.Accounts))
 	beforeByMint := make(map[string]uint64, len(expected.Accounts))
 	afterByMint := make(map[string]uint64, len(expected.Accounts))
 	for _, effect := range expected.Accounts {
-		account, ok := byAddress[effect.Address]
-		if !ok || account.Owner != effect.Owner || account.Executable || account.Lamports == 0 {
-			return Reconciliation{}, nil, fmt.Errorf("custody identity mismatch: %s", effect.Address)
+		pre, preOK := preByAddress[effect.Address]
+		post, postOK := postByAddress[effect.Address]
+		if !preOK || !postOK || pre.OwnerProgram != effect.Owner || post.OwnerProgram != effect.Owner ||
+			pre.Mint != effect.Mint || post.Mint != effect.Mint ||
+			pre.Authority != effect.Authority || post.Authority != effect.Authority || pre.Raw != effect.BeforeRaw {
+			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
 		}
-		mint, err := decodeBase58PublicKey(effect.Mint)
-		if err != nil {
-			return Reconciliation{}, nil, fmt.Errorf("invalid expected mint")
+		if effect.MinimumAfterRaw != nil {
+			if post.Raw < *effect.MinimumAfterRaw {
+				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody minimum postcondition mismatch: %s", effect.Address)
+			}
+		} else if post.Raw != effect.AfterRaw {
+			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody postcondition mismatch: %s", effect.Address)
 		}
-		authority, err := decodeBase58PublicKey(effect.Authority)
-		if err != nil {
-			return Reconciliation{}, nil, fmt.Errorf("invalid expected authority")
+		if ^uint64(0)-beforeByMint[effect.Mint] < pre.Raw || ^uint64(0)-afterByMint[effect.Mint] < post.Raw {
+			return Reconciliation{}, nil, fmt.Errorf("transaction reconciliation conservation overflow")
 		}
-		decoded, err := DecodeTokenCustody(account.Owner, account.Data, mint, authority)
-		if err != nil {
-			return Reconciliation{}, nil, fmt.Errorf("decode reconciled custody %s: %w", effect.Address, err)
-		}
-		observedRaw := decoded.Raw
-		if observedRaw != effect.AfterRaw {
-			return Reconciliation{}, nil, fmt.Errorf("custody postcondition mismatch: %s", effect.Address)
-		}
-		if ^uint64(0)-beforeByMint[effect.Mint] < effect.BeforeRaw || ^uint64(0)-afterByMint[effect.Mint] < observedRaw {
-			return Reconciliation{}, nil, fmt.Errorf("reconciliation conservation overflow")
-		}
-		beforeByMint[effect.Mint] += effect.BeforeRaw
-		afterByMint[effect.Mint] += observedRaw
-		canonical = append(canonical, fmt.Sprintf("%s:%s:%s:%s:%d:%d", effect.Address, effect.Owner, effect.Mint, effect.Authority, effect.BeforeRaw, observedRaw))
+		beforeByMint[effect.Mint] += pre.Raw
+		afterByMint[effect.Mint] += post.Raw
+		canonical = append(canonical, fmt.Sprintf("%s:%s:%s:%s:%d:%d", effect.Address, effect.Owner, effect.Mint, effect.Authority, pre.Raw, post.Raw))
 	}
-	for mint, before := range beforeByMint {
-		if afterByMint[mint] != before {
-			return Reconciliation{}, nil, fmt.Errorf("token conservation mismatch for expected mint")
+	if expected.Conserved {
+		for mint, before := range beforeByMint {
+			if afterByMint[mint] != before {
+				return Reconciliation{}, nil, fmt.Errorf("transaction token conservation mismatch for expected mint")
+			}
+		}
+	}
+	if expected.ReturnData != nil {
+		if receipt.ReturnData == nil || receipt.ReturnData.ProgramID != expected.ReturnData.ProgramID ||
+			receipt.ReturnData.DataBase64 != expected.ReturnData.DataBase64 {
+			return Reconciliation{}, nil, fmt.Errorf("adaptor return data mismatch")
 		}
 	}
 	sort.Strings(canonical)
-	evidence, err := json.Marshal(map[string]any{"schema": "loyal-backyard-rwa-reconciled-effects/v1", "slot": slot, "accounts": canonical})
+	evidenceBody := map[string]any{
+		"schema": "loyal-backyard-rwa-reconciled-effects/v1", "source": "confirmed-transaction-meta",
+		"signature": receipt.Signature, "slot": receipt.Slot, "accounts": canonical,
+	}
+	if expected.ReturnData != nil {
+		evidenceBody["returnData"] = expected.ReturnData
+	}
+	evidence, err := json.Marshal(evidenceBody)
 	if err != nil {
 		return Reconciliation{}, nil, err
 	}
 	hash := sha256.Sum256(evidence)
-	return Reconciliation{ConfirmedSlot: slot, EffectsSHA256: hex.EncodeToString(hash[:]), Conserved: expected.Conserved}, evidence, nil
+	return Reconciliation{ConfirmedSlot: receipt.Slot, EffectsSHA256: hex.EncodeToString(hash[:]), Conserved: true}, evidence, nil
+}
+
+func transactionBalancesByAddress(balances []TransactionTokenBalance) (map[string]TransactionTokenBalance, error) {
+	byAddress := make(map[string]TransactionTokenBalance, len(balances))
+	for _, balance := range balances {
+		if balance.Address == "" || (balance.OwnerProgram != classicTokenProgram && balance.OwnerProgram != token2022Program) ||
+			balance.Mint == "" || balance.Authority == "" {
+			return nil, fmt.Errorf("transaction token-balance identity is incomplete")
+		}
+		if _, duplicate := byAddress[balance.Address]; duplicate {
+			return nil, fmt.Errorf("transaction token-balance address is duplicated")
+		}
+		byAddress[balance.Address] = balance
+	}
+	return byAddress, nil
 }

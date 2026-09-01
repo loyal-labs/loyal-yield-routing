@@ -3,19 +3,34 @@ package backyardrwa
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/binary"
 	"encoding/hex"
 	"strings"
 	"testing"
 )
 
+// forwardedAdaptorWire models the pinned Voltr CPI framing evidenced by its
+// SDK args: the selected instructionDiscriminator Vec is unwrapped, while
+// amount and the Borsh Option<Vec<u8>> additionalArgs envelope are forwarded.
+// It is intentionally test-only; production constructs the Voltr outer wire.
+func forwardedAdaptorWire(t *testing.T, outer []byte) []byte {
+	t.Helper()
+	if len(outer) != 91 || outer[16] != 1 || binary.LittleEndian.Uint32(outer[17:21]) != 8 ||
+		outer[29] != 1 || binary.LittleEndian.Uint32(outer[30:34]) != 57 {
+		t.Fatal("outer Voltr option envelope drifted")
+	}
+	inner := append([]byte(nil), outer[21:29]...)
+	inner = append(inner, outer[8:16]...)
+	return append(inner, outer[29:]...)
+}
+
 func bridgeTestRequest(action Action, amount uint64) BridgeBuildRequest {
 	return BridgeBuildRequest{
 		Action: action, AmountRaw: amount,
-		Report:               BridgeReport{Sequence: 1, ObservedSlot: 1, NAVAfterRaw: 0, SnapshotDigest: hex.EncodeToString(bytes.Repeat([]byte{1}, 32))},
-		AdaptorConfig:        bridgeStrategy,
-		Settings:             bridgeSettings,
-		LastAcceptedSequence: 0,
-		RecentBlockhash:      bridgeVault, LastValidBlockHeight: 99,
+		Report:          BridgeReport{Sequence: 1, ObservedSlot: 1, NAVAfterRaw: 0, SnapshotDigest: hex.EncodeToString(bytes.Repeat([]byte{1}, 32))},
+		AdaptorConfig:   bridgeStrategy,
+		Settings:        bridgeSettings,
+		RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 	}
 }
 
@@ -34,8 +49,14 @@ func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 	if got := hex.EncodeToString(inner.data); got != want {
 		t.Fatalf("allocation envelope drifted\n got %s\nwant %s", got, want)
 	}
-	if !inner.accounts[0].signer || inner.accounts[0].key != mustKey(bridgeVault) || !inner.accounts[16].writable {
+	if !inner.accounts[0].signer || inner.accounts[0].key != mustKey(bridgeVault) || inner.accounts[3].writable || !inner.accounts[16].writable {
 		t.Fatalf("allocation inner signer/custody roles drifted")
+	}
+	forwarded := forwardedAdaptorWire(t, inner.data)
+	if len(forwarded) != 78 || !bytes.Equal(forwarded[:8], adaptorDepositDiscriminator) ||
+		binary.LittleEndian.Uint64(forwarded[8:16]) != 1_000_000 || forwarded[16] != 1 ||
+		binary.LittleEndian.Uint32(forwarded[17:21]) != 57 || forwarded[21] != 1 {
+		t.Fatalf("allocation adaptor CPI wire drifted: %s", hex.EncodeToString(forwarded))
 	}
 
 	stage, stagePolicy, stageConstraint, err := bridgeInstruction(bridgeTestRequest(StageSquadsToVoltr, 1_000_000))
@@ -52,9 +73,24 @@ func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 	if withdrawPolicy != mustKey(bridgeWithdrawPolicy) || withdrawConstraint != 0 || hex.EncodeToString(withdraw.data[:8]) != "1f2da205c1d986bc" || len(withdraw.accounts) != 17 {
 		t.Fatalf("restore template drifted")
 	}
+	if withdraw.accounts[5].writable {
+		t.Fatal("immutable adaptor config was forwarded writable on restore")
+	}
+	forwardedWithdraw := forwardedAdaptorWire(t, withdraw.data)
+	if len(forwardedWithdraw) != 78 || !bytes.Equal(forwardedWithdraw[:8], adaptorWithdrawDiscriminator) ||
+		binary.LittleEndian.Uint64(forwardedWithdraw[8:16]) != 1_000_000 || forwardedWithdraw[16] != 1 ||
+		binary.LittleEndian.Uint32(forwardedWithdraw[17:21]) != 57 || forwardedWithdraw[21] != 1 {
+		t.Fatalf("withdraw adaptor CPI wire drifted: %s", hex.EncodeToString(forwardedWithdraw))
+	}
 	nav, navPolicy, navConstraint, err := bridgeInstruction(bridgeTestRequest(ReportNAV, 0))
 	if err != nil || navPolicy != mustKey(bridgeNAVPolicy) || navConstraint != 0 || !bytes.Equal(nav.data[:8], voltrDepositDiscriminator) {
 		t.Fatalf("NAV refresh must select its dedicated policy's only constraint: %v", err)
+	}
+	forwardedNAV := forwardedAdaptorWire(t, nav.data)
+	if len(forwardedNAV) != 78 || !bytes.Equal(forwardedNAV[:8], adaptorDepositDiscriminator) ||
+		binary.LittleEndian.Uint64(forwardedNAV[8:16]) != 0 || forwardedNAV[16] != 1 ||
+		binary.LittleEndian.Uint32(forwardedNAV[17:21]) != 57 || forwardedNAV[21] != 1 {
+		t.Fatalf("NAV adaptor CPI wire drifted: %s", hex.EncodeToString(forwardedNAV))
 	}
 }
 
@@ -68,21 +104,25 @@ func TestBridgeTransactionSignsExactLegacyWireAndPersistsOnlyAfterSimulation(t *
 	if len(signed.signedWire) <= ed25519.SignatureSize || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:1+ed25519.SignatureSize]) {
 		t.Fatal("legacy wire did not contain a valid signature over its exact message")
 	}
+	if len(signed.signedWire) != 1027 || signed.messageSHA256 != "b1fab85e66e93f55de050ab60e8b9538c3917c405aec153b445d561724e551b6" ||
+		signed.signedWireSHA256 != "8e2cb8723d1687b8de060977dfeaba94ea1d781e89021a06cc1afb49987c4aa9" {
+		t.Fatalf("ticketed NAV packet fingerprint drifted: bytes=%d message=%s wire=%s", len(signed.signedWire), signed.messageSHA256, signed.signedWireSHA256)
+	}
 	if signed.transactionSignature != encodeBase58(signed.signedWire[1:1+ed25519.SignatureSize]) || len(signed.messageSHA256) != 64 || len(signed.signedWireSHA256) != 64 {
 		t.Fatal("transaction evidence was not bound to exact signed bytes")
 	}
 	// The exact ProgramInteraction Borsh envelope carries the dedicated NAV
 	// policy's only constraint.
-	inner, policy, constraint, err := bridgeInstruction(bridgeTestRequest(ReportNAV, 0))
+	inner, policy, constraints, err := ticketedBridgeInstructions(bridgeTestRequest(ReportNAV, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer, err := wrapSquadsPolicyForDelegate(policy, delegate, delegate, constraint, inner)
+	outer, err := wrapSquadsPolicyForDelegate(policy, delegate, delegate, constraints, inner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(outer.data) < 18 || outer.data[17] != 0 {
-		t.Fatalf("wrong split policy constraint index: %d", outer.data[17])
+	if len(outer.data) < 19 || !bytes.Equal(outer.data[17:19], []byte{0, 1}) {
+		t.Fatalf("wrong ticketed policy constraint indexes: %v", outer.data[17:19])
 	}
 	if _, err := signed.BuildResult(0); err == nil {
 		t.Fatal("unsigned simulation slot was accepted")
@@ -125,9 +165,9 @@ func TestBridgeBuilderRejectsCapitalAndReportMutations(t *testing.T) {
 		t.Fatal("zero report sequence accepted")
 	}
 	bad = bridgeTestRequest(VoltrAllocateToSquads, 1)
-	bad.LastAcceptedSequence = 1
+	bad.Report.Sequence = bad.Report.ObservedSlot + 1
 	if _, err := buildAndSignBridgeTransactionForDelegate(bad, ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize)), publicKeyFromBytes(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize)).Public().(ed25519.PublicKey))); err == nil {
-		t.Fatal("unbound report sequence accepted")
+		t.Fatal("report sequence not bound to observed slot was accepted")
 	}
 	bad = bridgeTestRequest(VoltrRestoreIdle, 1)
 	bad.Report.SnapshotDigest = "00" + bad.Report.SnapshotDigest[2:]

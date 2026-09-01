@@ -53,7 +53,6 @@ type BridgeBuildRequest struct {
 	// a stale observation cannot be silently paired with the hard-coded wire.
 	AdaptorConfig        string
 	Settings             string
-	LastAcceptedSequence uint64
 	RecentBlockhash      string
 	LastValidBlockHeight int64
 }
@@ -96,6 +95,7 @@ func (s SignedBridgeTransaction) BuildResult(simulationSlot int64) (BuildResult,
 const (
 	bridgeSquadsProgram    = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
 	bridgeSettings         = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
+	bridgeSettingsSigner   = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
 	bridgeVault            = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
 	bridgeDelegate         = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
 	bridgeAllocationPolicy = "3pUxmFm7cExQRSwHeuycemsa2rf3zsSXLLXoGp5uYYYz"
@@ -133,9 +133,9 @@ const (
 )
 
 // BuildAndSignBridgeTransaction builds exactly one policy-wrapped bridge
-// operation.  The only top-level signer is the pinned delegated executor; the
-// Squads vault signer is deliberately only an inner CPI meta, which is how the
-// Squads program proves PDA authority to Voltr and the adaptor.
+// operation. Capital/NAV payloads contain the atomic ArmReport -> Voltr pair;
+// staging remains one SPL instruction. The only top-level signer is the pinned
+// delegated executor and the Squads vault is signer only for inner execution.
 func BuildAndSignBridgeTransaction(request BridgeBuildRequest, executor ed25519.PrivateKey) (SignedBridgeTransaction, error) {
 	return buildAndSignBridgeTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
 }
@@ -149,7 +149,7 @@ func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, execut
 		return SignedBridgeTransaction{}, fmt.Errorf("invalid bridge signing material")
 	}
 	if request.AdaptorConfig != bridgeStrategy || request.Settings != bridgeSettings ||
-		request.LastAcceptedSequence == ^uint64(0) || request.Report.Sequence != request.LastAcceptedSequence+1 {
+		request.Report.Sequence != request.Report.ObservedSlot {
 		return SignedBridgeTransaction{}, fmt.Errorf("bridge config or report sequence is not bound to the confirmed snapshot")
 	}
 	feePayer := publicKeyFromBytes(executor.Public().(ed25519.PublicKey))
@@ -160,11 +160,11 @@ func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, execut
 	if err != nil {
 		return SignedBridgeTransaction{}, fmt.Errorf("invalid confirmed blockhash: %w", err)
 	}
-	inner, policy, constraintIndex, err := bridgeInstruction(request)
+	inner, policy, constraintIndexes, err := ticketedBridgeInstructions(request)
 	if err != nil {
 		return SignedBridgeTransaction{}, err
 	}
-	outer, err := wrapSquadsPolicyForDelegate(policy, feePayer, expectedDelegate, constraintIndex, inner)
+	outer, err := wrapSquadsPolicyForDelegate(policy, feePayer, expectedDelegate, constraintIndexes, inner)
 	if err != nil {
 		return SignedBridgeTransaction{}, err
 	}
@@ -175,6 +175,9 @@ func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, execut
 	signature := ed25519.Sign(executor, message)
 	wire := append(encodeShortVec(1), signature...)
 	wire = append(wire, message...)
+	if len(wire) > solanaPacketBytes {
+		return SignedBridgeTransaction{}, fmt.Errorf("bridge packet is %d bytes, exceeds %d", len(wire), solanaPacketBytes)
+	}
 	messageDigest := sha256.Sum256(message)
 	wireDigest := sha256.Sum256(wire)
 	return SignedBridgeTransaction{
@@ -246,7 +249,7 @@ func voltrStrategyData(voltrDiscriminator, adaptorDiscriminator []byte, amount u
 }
 
 func encodeBridgeReport(report BridgeReport) ([]byte, error) {
-	if report.Sequence == 0 || report.ObservedSlot == 0 || report.NAVAfterRaw > bridgeMaxNAV {
+	if report.Sequence == 0 || report.Sequence != report.ObservedSlot || report.NAVAfterRaw > bridgeMaxNAV {
 		return nil, fmt.Errorf("invalid adaptor report fields")
 	}
 	digest, err := hex.DecodeString(report.SnapshotDigest)
@@ -262,7 +265,7 @@ func encodeBridgeReport(report BridgeReport) ([]byte, error) {
 
 func voltrDepositInstruction(data []byte) compiledInstruction {
 	return compiledInstruction{program: mustKey(bridgeVoltrProgram), data: data, accounts: metas(
-		meta(bridgeVault, true, false), meta(bridgeProtocol, false, false), meta(bridgeVoltrVault, false, true), meta(bridgeStrategy, false, true),
+		meta(bridgeVault, true, false), meta(bridgeProtocol, false, false), meta(bridgeVoltrVault, false, true), meta(bridgeStrategy, false, false),
 		meta(bridgeAdaptorReceipt, false, false), meta(bridgeStrategyReceipt, false, true), meta(bridgeIdleAuthority, false, true), meta(bridgeStrategyAuth, false, true),
 		meta(bridgeUSDC, false, true), meta(bridgeLPMint, false, false), meta(bridgeIdleATA, false, true), meta(bridgeStrategyATA, false, true),
 		meta(bridgeTokenProgram, false, false), meta(bridgeAdaptorProgram, false, false), meta(bridgeSettings, false, false), meta(bridgeVault, true, false), meta(bridgeSquadsATA, false, true),
@@ -272,7 +275,7 @@ func voltrDepositInstruction(data []byte) compiledInstruction {
 func voltrWithdrawInstruction(data []byte) compiledInstruction {
 	return compiledInstruction{program: mustKey(bridgeVoltrProgram), data: data, accounts: metas(
 		meta(bridgeVault, true, false), meta(bridgeProtocol, false, false), meta(bridgeVoltrVault, false, true), meta(bridgeAdaptorReceipt, false, false),
-		meta(bridgeStrategyReceipt, false, true), meta(bridgeStrategy, false, true), meta(bridgeAdaptorProgram, false, false), meta(bridgeIdleAuthority, false, true),
+		meta(bridgeStrategyReceipt, false, true), meta(bridgeStrategy, false, false), meta(bridgeAdaptorProgram, false, false), meta(bridgeIdleAuthority, false, true),
 		meta(bridgeStrategyAuth, false, true), meta(bridgeUSDC, false, true), meta(bridgeLPMint, false, false), meta(bridgeIdleATA, false, true), meta(bridgeStrategyATA, false, true),
 		meta(bridgeTokenProgram, false, false), meta(bridgeSettings, false, false), meta(bridgeVault, true, false), meta(bridgeSquadsATA, false, true),
 	)}
@@ -287,37 +290,46 @@ func stageInstruction(amount uint64) compiledInstruction {
 	)}
 }
 
-func wrapSquadsPolicy(policy, executor publicKey, constraintIndex byte, inner compiledInstruction) (compiledInstruction, error) {
-	return wrapSquadsPolicyForDelegate(policy, executor, mustKey(bridgeDelegate), constraintIndex, inner)
+func wrapSquadsPolicy(policy, executor publicKey, constraintIndexes []byte, inner []compiledInstruction) (compiledInstruction, error) {
+	return wrapSquadsPolicyForDelegate(policy, executor, mustKey(bridgeDelegate), constraintIndexes, inner)
 }
 
-func wrapSquadsPolicyForDelegate(policy, executor, expectedDelegate publicKey, constraintIndex byte, inner compiledInstruction) (compiledInstruction, error) {
-	if !isBridgePolicy(policy) || executor != expectedDelegate {
+func wrapSquadsPolicyForDelegate(policy, executor, expectedDelegate publicKey, constraintIndexes []byte, inner []compiledInstruction) (compiledInstruction, error) {
+	if !isBridgePolicy(policy) || executor != expectedDelegate || len(inner) == 0 || len(inner) != len(constraintIndexes) || len(inner) > math.MaxUint8 {
 		return compiledInstruction{}, fmt.Errorf("unrecognized Squads bridge policy or delegate")
 	}
-	transactionAccounts := make([]accountMeta, 0, len(inner.accounts)+1)
-	indexes := make([]byte, 0, len(inner.accounts))
-	for _, account := range inner.accounts {
-		indexes = append(indexes, pushOrMergeMeta(&transactionAccounts, account))
+	transactionAccounts := make([]accountMeta, 0, 24)
+	accountIndexes := make([][]byte, len(inner))
+	for instructionIndex, instruction := range inner {
+		indexes := make([]byte, 0, len(instruction.accounts))
+		for _, account := range instruction.accounts {
+			indexes = append(indexes, pushOrMergeMeta(&transactionAccounts, account))
+		}
+		accountIndexes[instructionIndex] = indexes
+		pushOrMergeMeta(&transactionAccounts, accountMeta{key: instruction.program})
 	}
-	programIndex := pushOrMergeMeta(&transactionAccounts, accountMeta{key: inner.program})
 	for index := range transactionAccounts {
 		transactionAccounts[index].signer = false
 	}
-	compiled := []byte{1, programIndex, byte(len(indexes))}
-	compiled = append(compiled, indexes...)
-	if len(inner.data) > math.MaxUint16 {
-		return compiledInstruction{}, fmt.Errorf("bridge instruction data overflows Squads compact payload")
+	compiled := []byte{byte(len(inner))}
+	for instructionIndex, instruction := range inner {
+		programIndex := pushOrMergeMeta(&transactionAccounts, accountMeta{key: instruction.program})
+		indexes := accountIndexes[instructionIndex]
+		compiled = append(compiled, programIndex, byte(len(indexes)))
+		compiled = append(compiled, indexes...)
+		if len(instruction.data) > math.MaxUint16 {
+			return compiledInstruction{}, fmt.Errorf("bridge instruction data overflows Squads compact payload")
+		}
+		compiled = appendU16(compiled, uint16(len(instruction.data)))
+		compiled = append(compiled, instruction.data...)
 	}
-	compiled = appendU16(compiled, uint16(len(inner.data)))
-	compiled = append(compiled, inner.data...)
 	// Exact borsh layout of Squads execute_transaction_sync_v2,
 	// SyncPayload::Policy::ProgramInteraction::SyncTransaction.
 	data := append([]byte(nil), squadsExecuteSyncDiscriminator...)
 	data = append(data, 0, 1, 1, 1, 1) // vault, signer count, policy, program-interaction, Some(indexes)
-	data = appendU32(data, 1)
-	data = append(data, constraintIndex) // one exact constraint from the split policy
-	data = append(data, 1, 0)            // SyncTransaction, inner vault index
+	data = appendU32(data, uint32(len(constraintIndexes)))
+	data = append(data, constraintIndexes...)
+	data = append(data, 1, 0) // SyncTransaction, inner vault index
 	data = appendU32(data, uint32(len(compiled)))
 	data = append(data, compiled...)
 	accounts := []accountMeta{{key: policy, writable: true}, {key: mustKey(bridgeSquadsProgram)}, {key: executor, signer: true}}

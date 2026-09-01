@@ -6,9 +6,8 @@ import (
 )
 
 // BridgeExecutionEvidence is the complete confirmed input to the exact bridge
-// build boundary. The missing adaptor-v2 account decoder is deliberately not
-// replaced with environment values; until it can produce this evidence, Tick
-// returns ErrBridgePrerequisitesUnavailable before a decision is persisted.
+// build boundary. ObserveConfirmedBridgeExecutionEvidence produces it only
+// from the pinned adaptor config, policy bytes, obligation, and custody set.
 type BridgeExecutionEvidence struct {
 	Request         BridgeBuildRequest
 	ExpectedEffects ExpectedEffects
@@ -28,7 +27,7 @@ func BuildSimulateAndPersistBridge(
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("bridge runtime dependencies are required")
 	}
-	if _, _, _, err := bridgeInstruction(evidence.Request); err != nil {
+	if _, _, _, err := ticketedBridgeInstructions(evidence.Request); err != nil {
 		return err
 	}
 	encodedEffects, err := jsonMarshalExpectedEffects(evidence.ExpectedEffects)

@@ -15,7 +15,13 @@ import {
 } from "@kamino-finance/klend-sdk";
 import { generated as squadsGenerated } from "@loyal-labs/loyal-smart-accounts-core";
 import { executeTransactionSyncV2 } from "@loyal-labs/loyal-smart-accounts-core/internal";
-import { AccountLayout, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import {
+  AccountLayout,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddressSync,
+  TOKEN_PROGRAM_ID,
+} from "@solana/spl-token";
 import {
   AccountRole,
   address,
@@ -37,7 +43,6 @@ import {
 import bs58 from "bs58";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
-import { deriveTrustfulBridgeAccounts } from "../integrations/rwa-multiply-trustful-bridge.js";
 
 type Json = Record<string, unknown>;
 type SettingsState = Readonly<{
@@ -180,7 +185,9 @@ async function readState(connection: Connection, metadata: PublicKey, minContext
   invariant(settings.threshold === 1 && settings.timeLock === 0, "Squads Settings threshold or time lock drifted");
   invariant(settings.signers.length === 1 && settings.signers[0]!.key.toBase58() === route.setupAdmin && settings.signers[0]!.permissions.mask === 7, "Squads Settings admin boundary drifted");
   const asset = tokenState(assetInfo ?? null, route.assets.assetMint);
-  const collateral = tokenState(collateralInfo ?? null, route.assets.collateralMint);
+  const collateral = collateralInfo
+    ? tokenState(collateralInfo, route.assets.collateralMint)
+    : null;
   return {
     slot: response.context.slot,
     vaultLamports: vaultInfo.lamports,
@@ -214,16 +221,32 @@ async function main() {
   const admin = loadAdmin();
   const [metadataAddress] = await userMetadataPda(address(RWA_MULTIPLY_ROUTE.squads.vault), address(RWA_MULTIPLY_ROUTE.kamino.program));
   const metadata = new PublicKey(metadataAddress);
-  const accounts = await deriveTrustfulBridgeAccounts();
-  const adaptorReceiptInfo = await connection.getAccountInfo(
-    new PublicKey(accounts.adaptorAddReceipt),
-    "finalized",
+  const collateralAta = getAssociatedTokenAddressSync(
+    new PublicKey(RWA_MULTIPLY_ROUTE.assets.collateralMint),
+    new PublicKey(RWA_MULTIPLY_ROUTE.squads.vault),
+    true,
+    TOKEN_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
   );
-  invariant(adaptorReceiptInfo?.owner.toBase58() === RWA_MULTIPLY_ROUTE.programs.voltr,
-    "official Trustful adaptor is not admitted; refusing partial Squads prerequisite activation");
+  invariant(collateralAta.toBase58() === RWA_MULTIPLY_ROUTE.squads.collateralAta,
+    "derived PRIME ATA does not match the fixed route");
+  const [obligation] = PublicKey.findProgramAddressSync([
+    Buffer.from([1]),
+    Buffer.from([0]),
+    new PublicKey(RWA_MULTIPLY_ROUTE.squads.vault).toBuffer(),
+    new PublicKey(RWA_MULTIPLY_ROUTE.kamino.market).toBuffer(),
+    new PublicKey(RWA_MULTIPLY_ROUTE.assets.collateralMint).toBuffer(),
+    new PublicKey(RWA_MULTIPLY_ROUTE.assets.assetMint).toBuffer(),
+  ], new PublicKey(RWA_MULTIPLY_ROUTE.kamino.program));
+  invariant(obligation.toBase58() === RWA_MULTIPLY_ROUTE.kamino.obligation,
+    "derived PRIME/USDC Multiply obligation does not match the fixed route");
   const before = await readState(connection, metadata);
   if (reconcile) {
-    invariant(before.obligation !== null && before.asset.delegate === null,
+    invariant(before.obligation !== null
+      && before.asset.delegate === null
+      && before.asset.delegatedAmountRaw === "0"
+      && before.collateral?.delegate === null
+      && before.collateral.delegatedAmountRaw === "0",
       "pending prerequisite wire is not reflected in finalized state");
     const pending = JSON.parse(readFileSync(`${journal}.pending`, "utf8")) as {
       transaction?: { expectedSignature?: unknown };
@@ -245,7 +268,11 @@ async function main() {
     console.log(JSON.stringify({ verdict: "FINALIZED_RECONCILED", signature, finalizedSlot: landed.slot, journal }, null, 2));
     return;
   }
-  if (before.obligation && before.asset.delegate === null) {
+  if (before.obligation
+    && before.asset.delegate === null
+    && before.asset.delegatedAmountRaw === "0"
+    && before.collateral?.delegate === null
+    && before.collateral.delegatedAmountRaw === "0") {
     console.log(JSON.stringify({ verdict: "PASS_ALREADY_FINALIZED", broadcast: false, before }, null, 2));
     return;
   }
@@ -271,23 +298,32 @@ async function main() {
       owner: vaultSigner,
     }, { programAddress: RWA_MULTIPLY_ROUTE.assets.tokenProgram })));
   }
-  const compiled = compileSquadsInner(inner);
-  const executeSquads = executeTransactionSyncV2({
-    feePayer: admin.publicKey,
-    settingsPda: new PublicKey(RWA_MULTIPLY_ROUTE.squads.settings),
-    accountIndex: RWA_MULTIPLY_ROUTE.squads.vaultIndex,
-    numSigners: 1,
-    instructions: compiled.instructions,
-    instruction_accounts: [
-      { pubkey: admin.publicKey, isSigner: true, isWritable: false },
-      ...compiled.accounts,
-    ],
-  });
+  if (before.collateral?.delegate) {
+    inner.push(kitToWeb3(getRevokeInstruction({
+      source: RWA_MULTIPLY_ROUTE.squads.collateralAta,
+      owner: vaultSigner,
+    }, { programAddress: RWA_MULTIPLY_ROUTE.assets.tokenProgram })));
+  }
+  let executeSquads: TransactionInstruction | null = null;
+  if (inner.length > 0) {
+    const compiled = compileSquadsInner(inner);
+    executeSquads = executeTransactionSyncV2({
+      feePayer: admin.publicKey,
+      settingsPda: new PublicKey(RWA_MULTIPLY_ROUTE.squads.settings),
+      accountIndex: RWA_MULTIPLY_ROUTE.squads.vaultIndex,
+      numSigners: 1,
+      instructions: compiled.instructions,
+      instruction_accounts: [
+        { pubkey: admin.publicKey, isSigner: true, isWritable: false },
+        ...compiled.accounts,
+      ],
+    });
+  }
   const obligationRent = before.obligation
     ? 0
     : await connection.getMinimumBalanceForRentExemption(OBLIGATION_BYTES, "finalized");
   const fundingLamports = Math.max(0, obligationRent - before.vaultLamports);
-  const outer = [
+  const outer: TransactionInstruction[] = [
     ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }),
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
     ...(fundingLamports > 0 ? [SystemProgram.transfer({
@@ -295,7 +331,15 @@ async function main() {
       toPubkey: new PublicKey(RWA_MULTIPLY_ROUTE.squads.vault),
       lamports: fundingLamports,
     })] : []),
-    executeSquads,
+    ...(before.collateral === null ? [createAssociatedTokenAccountIdempotentInstruction(
+      admin.publicKey,
+      collateralAta,
+      new PublicKey(RWA_MULTIPLY_ROUTE.squads.vault),
+      new PublicKey(RWA_MULTIPLY_ROUTE.assets.collateralMint),
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID,
+    )] : []),
+    ...(executeSquads ? [executeSquads] : []),
   ];
   const latest = await connection.getLatestBlockhashAndContext({ commitment: "confirmed", minContextSlot: before.slot });
   const message = new TransactionMessage({
@@ -315,21 +359,29 @@ async function main() {
     minContextSlot: before.slot,
     accounts: {
       encoding: "base64",
-      addresses: [RWA_MULTIPLY_ROUTE.kamino.obligation, RWA_MULTIPLY_ROUTE.squads.assetAta],
+      addresses: [
+        RWA_MULTIPLY_ROUTE.kamino.obligation,
+        RWA_MULTIPLY_ROUTE.squads.assetAta,
+        RWA_MULTIPLY_ROUTE.squads.collateralAta,
+      ],
     },
   });
   invariant(simulation.value.err === null, `signed prerequisite simulation failed: ${JSON.stringify(simulation.value.err)}`);
   const plan = {
-    schema: "loyal-rwa-multiply-squads-prerequisites/v2",
+    schema: "loyal-rwa-multiply-squads-prerequisites/v3",
     verdict: execute ? "SIGNED_SIMULATION_PASS_PENDING_SEND" : "SIGNED_UNSENT_PASS",
     broadcast: execute,
     identities: {
       settings: RWA_MULTIPLY_ROUTE.squads.settings,
       vault: RWA_MULTIPLY_ROUTE.squads.vault,
+      market: RWA_MULTIPLY_ROUTE.kamino.market,
       obligation: RWA_MULTIPLY_ROUTE.kamino.obligation,
       assetAta: RWA_MULTIPLY_ROUTE.squads.assetAta,
-      withdrawalHoldingAuth: accounts.withdrawalHoldingAuth,
-      withdrawalHoldingAta: accounts.withdrawalHoldingAta,
+      collateralAta: RWA_MULTIPLY_ROUTE.squads.collateralAta,
+      collateralReserve: RWA_MULTIPLY_ROUTE.kamino.collateralReserve,
+      debtReserve: RWA_MULTIPLY_ROUTE.kamino.debtReserve,
+      assetMint: RWA_MULTIPLY_ROUTE.assets.assetMint,
+      collateralMint: RWA_MULTIPLY_ROUTE.assets.collateralMint,
     },
     before,
     transaction: {
@@ -359,8 +411,24 @@ async function main() {
   invariant(confirmation.value.err === null, `prerequisite transaction finalized with an error: ${JSON.stringify(confirmation.value.err)}`);
   const after = await readState(connection, metadata, confirmation.context.slot);
   invariant(after.obligation !== null, "fixed obligation is absent after finalization");
+  invariant(after.collateral !== null, "fixed PRIME ATA is absent after finalization");
+  invariant(after.collateral.delegate === null
+    && after.collateral.delegatedAmountRaw === "0",
+  "PRIME ATA delegate was not removed exactly");
+  if (before.collateral === null) {
+    invariant(after.collateral.amountRaw === "0", "new PRIME ATA is not empty");
+  } else {
+    invariant(after.collateral.amountRaw === before.collateral.amountRaw,
+      "existing PRIME ATA balance changed during prerequisite activation");
+    if (before.collateral.delegate === null) {
+      invariant(after.collateral.dataSha256 === before.collateral.dataSha256,
+        "authority-clean PRIME ATA changed during prerequisite activation");
+    }
+  }
   invariant(after.asset.delegate === null && after.asset.delegatedAmountRaw === "0",
     "Squads USDC delegate was not removed exactly");
+  invariant(after.asset.amountRaw === before.asset.amountRaw,
+    "Squads USDC balance changed during prerequisite activation");
   writePrivate(journal, {
     ...plan,
     verdict: "FINALIZED_RECONCILED",
@@ -375,8 +443,11 @@ async function main() {
     finalizedContextSlot: confirmation.context.slot,
     journal,
     obligation: after.obligation,
-    delegate: { address: after.asset.delegate, allowanceRaw: after.asset.delegatedAmountRaw },
-    withdrawalHoldingAta: accounts.withdrawalHoldingAta,
+    delegates: {
+      asset: { address: after.asset.delegate, allowanceRaw: after.asset.delegatedAmountRaw },
+      collateral: { address: after.collateral.delegate, allowanceRaw: after.collateral.delegatedAmountRaw },
+    },
+    collateralAta: RWA_MULTIPLY_ROUTE.squads.collateralAta,
   }, null, 2));
 }
 

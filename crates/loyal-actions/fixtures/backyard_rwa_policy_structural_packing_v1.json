@@ -1,7 +1,7 @@
 {
   "schema": "loyal-backyard-rwa-policy-structural-packing/v1",
   "verdict": "BLOCKED",
-  "measurementScope": "Structural compact-ProgramInteraction policy-create packet sizing only. Each message is a locally signed legacy transaction using deterministic non-installable keys and a synthetic blockhash. The measurement preserves the complete 11-lane equality topology and exact four-operation Voltr bridge templates, but does not establish current Kamino account identities, instruction layouts, live simulation, or policy-install readiness.",
+  "measurementScope": "Structural compact-ProgramInteraction policy-create and bridge-policy-update packet sizing only. Each message is a locally signed legacy transaction using deterministic non-installable keys and a synthetic blockhash. The measurement preserves the complete 11-lane equality topology and exact four-operation Voltr bridge templates, but does not establish current Kamino account identities, instruction layouts, live simulation, or policy-install readiness.",
   "packetLimitBytes": 1232,
   "rungs": [
     {
@@ -43,10 +43,10 @@
         {"policy": "swap/stable-to-rwa", "bytes": 1116},
         {"policy": "swap/rwa-to-stable", "bytes": 1116},
         {"policy": "swap/stable-to-stable", "bytes": 951},
-        {"policy": "bridge/allocation", "bytes": 1146},
-        {"policy": "bridge/nav-refresh", "bytes": 1128},
-        {"policy": "bridge/stage-withdrawal", "bytes": 606},
-        {"policy": "bridge/withdraw", "bytes": 1146}
+        {"policy": "bridge/allocation", "bytes": 1146, "updateBytes": 1093},
+        {"policy": "bridge/nav-refresh", "bytes": 1128, "updateBytes": 1075},
+        {"policy": "bridge/stage-withdrawal", "bytes": 606, "updateBytes": 611},
+        {"policy": "bridge/withdraw", "bytes": 1146, "updateBytes": 1093}
       ],
       "fits": true,
       "selectedPhysicalPolicyCount": 18

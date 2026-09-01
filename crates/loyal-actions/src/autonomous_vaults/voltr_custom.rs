@@ -1,5 +1,6 @@
 use crate::squads::{
-    create_program_interaction_action_instruction, SquadsAccountConstraint,
+    create_program_interaction_action_instruction,
+    update_deployed_program_interaction_action_instruction, SquadsAccountConstraint,
     SquadsAccountConstraintType, SquadsDataConstraint, SquadsDataOperator, SquadsDataValue,
     SquadsInstructionConstraint,
 };
@@ -11,7 +12,10 @@ const VOLTR_DEPOSIT: [u8; 8] = [246, 82, 57, 226, 131, 222, 253, 249];
 const VOLTR_WITHDRAW: [u8; 8] = [31, 45, 162, 5, 193, 217, 134, 188];
 pub const CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR: [u8; 8] = [242, 35, 198, 137, 82, 225, 242, 182];
 pub const CUSTOM_ADAPTOR_WITHDRAW_DISCRIMINATOR: [u8; 8] = [183, 18, 70, 156, 148, 109, 161, 34];
+pub const CUSTOM_ADAPTOR_ARM_REPORT_DISCRIMINATOR: [u8; 8] = [164, 175, 246, 41, 178, 140, 35, 3];
 const SPL_TRANSFER_CHECKED: u8 = 12;
+const DEPOSIT_BOUND_ACCOUNT_INDEXES: &[usize] = &[0, 2, 3, 8, 11, 12, 13, 14, 15, 16, 17];
+const WITHDRAW_BOUND_ACCOUNT_INDEXES: &[usize] = &[0, 2, 5, 6, 9, 12, 13, 14, 15, 16, 17];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoltrCustomPolicySeeds {
@@ -27,6 +31,7 @@ pub struct VoltrCustomPolicyIdentity {
     pub authority: Pubkey,
     pub delegated_signer: Pubkey,
     pub manager: Pubkey,
+    pub squads_program: Pubkey,
     pub vault_index: u8,
     pub vault: Pubkey,
     pub strategy: Pubkey,
@@ -36,6 +41,7 @@ pub struct VoltrCustomPolicyIdentity {
     pub asset_mint: Pubkey,
     pub squads_asset_ata: Pubkey,
     pub strategy_asset_ata: Pubkey,
+    pub report_ticket: Pubkey,
     pub max_amount_raw: u64,
     pub asset_decimals: u8,
     pub seeds: VoltrCustomPolicySeeds,
@@ -43,9 +49,12 @@ pub struct VoltrCustomPolicyIdentity {
 
 #[derive(Clone, Debug)]
 pub struct VoltrCustomPolicyTemplates {
+    pub allocation_arm: Instruction,
     pub allocation: Instruction,
+    pub nav_refresh_arm: Instruction,
     pub nav_refresh: Instruction,
     pub stage_withdrawal: Instruction,
+    pub withdraw_arm: Instruction,
     pub withdraw: Instruction,
 }
 
@@ -54,7 +63,9 @@ pub struct VoltrCustomPolicyPlan {
     pub policy: Pubkey,
     pub seed: u64,
     pub create_instruction: Instruction,
+    pub update_instruction: Instruction,
     pub constraint_index: u8,
+    pub constraint_indices: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -259,15 +270,109 @@ fn voltr_constraint(
     }
 }
 
+fn validate_arm(
+    operation: &'static str,
+    instruction: &Instruction,
+    capital: &Instruction,
+    identity: &VoltrCustomPolicyIdentity,
+    operation_tag: u8,
+) -> Result<(), VoltrCustomPolicyError> {
+    if instruction.program_id != identity.adaptor_program
+        || instruction.accounts.len() != 5
+        || instruction.data.len() != 79
+        || instruction.data[..8] != CUSTOM_ADAPTOR_ARM_REPORT_DISCRIMINATOR
+        || instruction.data[8] != operation_tag
+        || instruction.data[9..17] != capital.data[8..16]
+        || instruction.data[17..] != capital.data[29..]
+    {
+        return Err(invalid(operation, "ArmReport wire"));
+    }
+    validate_key(
+        operation,
+        instruction,
+        0,
+        identity.strategy,
+        "ArmReport config",
+    )?;
+    validate_key(
+        operation,
+        instruction,
+        1,
+        identity.report_ticket,
+        "ArmReport ticket",
+    )?;
+    validate_key(
+        operation,
+        instruction,
+        2,
+        identity.settings,
+        "ArmReport Settings",
+    )?;
+    validate_key(
+        operation,
+        instruction,
+        3,
+        identity.manager,
+        "ArmReport vault",
+    )?;
+    validate_key(
+        operation,
+        instruction,
+        4,
+        identity.squads_program,
+        "ArmReport Squads program",
+    )?;
+    validate_signer(operation, instruction, 3, identity.manager)?;
+    if instruction.accounts[0].is_writable
+        || !instruction.accounts[1].is_writable
+        || instruction.accounts[2].is_writable
+        || instruction.accounts[3].is_writable
+        || instruction.accounts[4].is_writable
+    {
+        return Err(invalid(operation, "ArmReport account roles"));
+    }
+    Ok(())
+}
+
+fn arm_constraint(
+    instruction: &Instruction,
+    amount_constraints: Vec<SquadsDataConstraint>,
+) -> SquadsInstructionConstraint {
+    let mut discriminator_and_operation = CUSTOM_ADAPTOR_ARM_REPORT_DISCRIMINATOR.to_vec();
+    discriminator_and_operation.push(instruction.data[8]);
+    let mut data_constraints = vec![SquadsDataConstraint {
+        data_offset: 0,
+        data_value: SquadsDataValue::U8Slice(discriminator_and_operation),
+        operator: SquadsDataOperator::Equals,
+    }];
+    data_constraints.extend(amount_constraints);
+    data_constraints.push(SquadsDataConstraint {
+        data_offset: 17,
+        data_value: SquadsDataValue::U8Slice(vec![1, 57, 0, 0, 0, 1]),
+        operator: SquadsDataOperator::Equals,
+    });
+    SquadsInstructionConstraint {
+        program_id: instruction.program_id,
+        // The adaptor itself rederives and authenticates Settings/vault/program.
+        // The policy only needs to pin the immutable config and its one-use PDA.
+        account_constraints: selected_account_constraints(instruction, &[0, 1]),
+        data_constraints,
+    }
+}
+
 fn bounded_positive(max: u64) -> Vec<SquadsDataConstraint> {
+    bounded_positive_at(8, max)
+}
+
+fn bounded_positive_at(offset: u64, max: u64) -> Vec<SquadsDataConstraint> {
     vec![
         SquadsDataConstraint {
-            data_offset: 8,
+            data_offset: offset,
             data_value: SquadsDataValue::U64Le(0),
             operator: SquadsDataOperator::GreaterThan,
         },
         SquadsDataConstraint {
-            data_offset: 8,
+            data_offset: offset,
             data_value: SquadsDataValue::U64Le(max),
             operator: SquadsDataOperator::LessThanOrEqualTo,
         },
@@ -281,18 +386,31 @@ fn policy_plan(
     constraint_index: u8,
 ) -> Result<VoltrCustomPolicyPlan, VoltrCustomPolicyError> {
     let (policy, _) = derive_action_account(&identity.settings, seed);
+    let constraint_indices =
+        (0..u8::try_from(constraints.len()).expect("constraint count fits u8")).collect();
+    let create_instruction = create_program_interaction_action_instruction(
+        identity.settings,
+        identity.authority,
+        identity.delegated_signer,
+        seed,
+        identity.vault_index,
+        constraints.clone(),
+    )?;
+    let update_instruction = update_deployed_program_interaction_action_instruction(
+        identity.settings,
+        identity.authority,
+        policy,
+        identity.delegated_signer,
+        identity.vault_index,
+        constraints,
+    )?;
     Ok(VoltrCustomPolicyPlan {
         policy,
         seed,
-        create_instruction: create_program_interaction_action_instruction(
-            identity.settings,
-            identity.authority,
-            identity.delegated_signer,
-            seed,
-            identity.vault_index,
-            constraints,
-        )?,
+        create_instruction,
+        update_instruction,
         constraint_index,
+        constraint_indices,
     })
 }
 
@@ -320,7 +438,7 @@ pub fn create_voltr_custom_policies(
     }
 
     let allocation = &templates.allocation;
-    if allocation.program_id != identity.voltr_program || allocation.accounts.len() != 17 {
+    if allocation.program_id != identity.voltr_program || allocation.accounts.len() != 18 {
         return Err(invalid("allocation", "program or account count"));
     }
     validate_envelope(
@@ -371,12 +489,29 @@ pub fn create_voltr_custom_policies(
         identity.squads_asset_ata,
         "Squads asset ATA",
     )?;
-    if !allocation.accounts[3].is_writable || !allocation.accounts[16].is_writable {
-        return Err(invalid("allocation", "writable bridge accounts"));
+    validate_key(
+        "allocation",
+        allocation,
+        17,
+        identity.report_ticket,
+        "report ticket",
+    )?;
+    if allocation.accounts[3].is_writable
+        || !allocation.accounts[16].is_writable
+        || !allocation.accounts[17].is_writable
+    {
+        return Err(invalid("allocation", "bridge account roles"));
     }
+    validate_arm(
+        "allocation",
+        &templates.allocation_arm,
+        allocation,
+        identity,
+        0,
+    )?;
 
     let refresh = &templates.nav_refresh;
-    if refresh.program_id != identity.voltr_program || refresh.accounts.len() != 17 {
+    if refresh.program_id != identity.voltr_program || refresh.accounts.len() != 18 {
         return Err(invalid("NAV refresh", "program or account count"));
     }
     validate_envelope(
@@ -413,9 +548,26 @@ pub fn create_voltr_custom_policies(
         identity.squads_asset_ata,
         "Squads asset ATA",
     )?;
-    if !refresh.accounts[3].is_writable || !refresh.accounts[16].is_writable {
-        return Err(invalid("NAV refresh", "writable bridge accounts"));
+    validate_key(
+        "NAV refresh",
+        refresh,
+        17,
+        identity.report_ticket,
+        "report ticket",
+    )?;
+    if refresh.accounts[3].is_writable
+        || !refresh.accounts[16].is_writable
+        || !refresh.accounts[17].is_writable
+    {
+        return Err(invalid("NAV refresh", "bridge account roles"));
     }
+    validate_arm(
+        "NAV refresh",
+        &templates.nav_refresh_arm,
+        refresh,
+        identity,
+        0,
+    )?;
 
     let stage = &templates.stage_withdrawal;
     if stage.program_id != identity.token_program
@@ -451,7 +603,7 @@ pub fn create_voltr_custom_policies(
     validate_signer("withdrawal staging", stage, 3, identity.manager)?;
 
     let withdraw = &templates.withdraw;
-    if withdraw.program_id != identity.voltr_program || withdraw.accounts.len() != 17 {
+    if withdraw.program_id != identity.voltr_program || withdraw.accounts.len() != 18 {
         return Err(invalid("withdraw", "program or account count"));
     }
     validate_envelope(
@@ -491,9 +643,20 @@ pub fn create_voltr_custom_policies(
         identity.squads_asset_ata,
         "Squads asset ATA",
     )?;
-    if !withdraw.accounts[5].is_writable || !withdraw.accounts[16].is_writable {
-        return Err(invalid("withdraw", "writable bridge accounts"));
+    validate_key(
+        "withdraw",
+        withdraw,
+        17,
+        identity.report_ticket,
+        "report ticket",
+    )?;
+    if withdraw.accounts[5].is_writable
+        || !withdraw.accounts[16].is_writable
+        || !withdraw.accounts[17].is_writable
+    {
+        return Err(invalid("withdraw", "bridge account roles"));
     }
+    validate_arm("withdraw", &templates.withdraw_arm, withdraw, identity, 1)?;
 
     // Voltr validates the receipt/authority PDAs and the adaptor validates every
     // remaining account against its immutable config. The policy pins the
@@ -503,7 +666,7 @@ pub fn create_voltr_custom_policies(
         VOLTR_DEPOSIT,
         CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR,
         bounded_positive(identity.max_amount_raw),
-        &(0..17).collect::<Vec<_>>(),
+        DEPOSIT_BOUND_ACCOUNT_INDEXES,
     );
     let refresh_constraint = voltr_constraint(
         refresh,
@@ -514,7 +677,7 @@ pub fn create_voltr_custom_policies(
             data_value: SquadsDataValue::U64Le(0),
             operator: SquadsDataOperator::Equals,
         }],
-        &(0..17).collect::<Vec<_>>(),
+        DEPOSIT_BOUND_ACCOUNT_INDEXES,
     );
     let stage_constraint = SquadsInstructionConstraint {
         program_id: stage.program_id,
@@ -547,20 +710,36 @@ pub fn create_voltr_custom_policies(
         VOLTR_WITHDRAW,
         CUSTOM_ADAPTOR_WITHDRAW_DISCRIMINATOR,
         bounded_positive(identity.max_amount_raw),
-        &(0..17).collect::<Vec<_>>(),
+        WITHDRAW_BOUND_ACCOUNT_INDEXES,
     );
 
     Ok(VoltrCustomPolicies {
         allocation: policy_plan(
             identity,
             identity.seeds.allocation,
-            vec![allocation_constraint],
+            vec![
+                arm_constraint(
+                    &templates.allocation_arm,
+                    bounded_positive_at(9, identity.max_amount_raw),
+                ),
+                allocation_constraint,
+            ],
             0,
         )?,
         nav_refresh: policy_plan(
             identity,
             identity.seeds.nav_refresh,
-            vec![refresh_constraint],
+            vec![
+                arm_constraint(
+                    &templates.nav_refresh_arm,
+                    vec![SquadsDataConstraint {
+                        data_offset: 9,
+                        data_value: SquadsDataValue::U64Le(0),
+                        operator: SquadsDataOperator::Equals,
+                    }],
+                ),
+                refresh_constraint,
+            ],
             0,
         )?,
         stage_withdrawal: policy_plan(
@@ -572,7 +751,13 @@ pub fn create_voltr_custom_policies(
         withdraw: policy_plan(
             identity,
             identity.seeds.withdraw,
-            vec![withdraw_constraint],
+            vec![
+                arm_constraint(
+                    &templates.withdraw_arm,
+                    bounded_positive_at(9, identity.max_amount_raw),
+                ),
+                withdraw_constraint,
+            ],
             0,
         )?,
     })
@@ -598,6 +783,7 @@ mod tests {
             authority: key(2),
             delegated_signer: key(3),
             manager: key(4),
+            squads_program: key(13),
             vault_index: 0,
             vault: key(5),
             strategy: key(6),
@@ -607,6 +793,7 @@ mod tests {
             asset_mint: key(10),
             squads_asset_ata: key(11),
             strategy_asset_ata: key(12),
+            report_ticket: key(14),
             max_amount_raw: 1_000_000,
             asset_decimals: 6,
             seeds: VoltrCustomPolicySeeds {
@@ -632,12 +819,12 @@ mod tests {
     }
 
     fn templates(identity: &VoltrCustomPolicyIdentity) -> VoltrCustomPolicyTemplates {
-        let mut deposit_accounts = (0..17)
+        let mut deposit_accounts = (0..18)
             .map(|index| AccountMeta::new_readonly(key(100 + index), false))
             .collect::<Vec<_>>();
         deposit_accounts[0] = AccountMeta::new_readonly(identity.manager, true);
         deposit_accounts[2].pubkey = identity.vault;
-        deposit_accounts[3] = AccountMeta::new(identity.strategy, false);
+        deposit_accounts[3] = AccountMeta::new_readonly(identity.strategy, false);
         deposit_accounts[7].pubkey = key(20);
         deposit_accounts[8].pubkey = identity.asset_mint;
         deposit_accounts[11].pubkey = identity.strategy_asset_ata;
@@ -646,6 +833,7 @@ mod tests {
         deposit_accounts[14].pubkey = identity.settings;
         deposit_accounts[15] = AccountMeta::new_readonly(identity.manager, true);
         deposit_accounts[16] = AccountMeta::new(identity.squads_asset_ata, false);
+        deposit_accounts[17] = AccountMeta::new(identity.report_ticket, false);
         let allocation = Instruction {
             program_id: identity.voltr_program,
             accounts: deposit_accounts.clone(),
@@ -657,12 +845,12 @@ mod tests {
             data: data(VOLTR_DEPOSIT, 0, CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR),
         };
 
-        let mut withdraw_accounts = (0..17)
+        let mut withdraw_accounts = (0..18)
             .map(|index| AccountMeta::new_readonly(key(140 + index), false))
             .collect::<Vec<_>>();
         withdraw_accounts[0] = AccountMeta::new_readonly(identity.manager, true);
         withdraw_accounts[2].pubkey = identity.vault;
-        withdraw_accounts[5] = AccountMeta::new(identity.strategy, false);
+        withdraw_accounts[5] = AccountMeta::new_readonly(identity.strategy, false);
         withdraw_accounts[6].pubkey = identity.adaptor_program;
         withdraw_accounts[8].pubkey = key(20);
         withdraw_accounts[9].pubkey = identity.asset_mint;
@@ -671,6 +859,7 @@ mod tests {
         withdraw_accounts[14].pubkey = identity.settings;
         withdraw_accounts[15] = AccountMeta::new_readonly(identity.manager, true);
         withdraw_accounts[16] = AccountMeta::new(identity.squads_asset_ata, false);
+        withdraw_accounts[17] = AccountMeta::new(identity.report_ticket, false);
         let withdraw = Instruction {
             program_id: identity.voltr_program,
             accounts: withdraw_accounts,
@@ -690,7 +879,27 @@ mod tests {
             ],
             data: stage_data,
         };
+        let arm = |capital: &Instruction, operation: u8| {
+            let mut arm_data = CUSTOM_ADAPTOR_ARM_REPORT_DISCRIMINATOR.to_vec();
+            arm_data.push(operation);
+            arm_data.extend_from_slice(&capital.data[8..16]);
+            arm_data.extend_from_slice(&capital.data[29..]);
+            Instruction {
+                program_id: identity.adaptor_program,
+                accounts: vec![
+                    AccountMeta::new_readonly(identity.strategy, false),
+                    AccountMeta::new(identity.report_ticket, false),
+                    AccountMeta::new_readonly(identity.settings, false),
+                    AccountMeta::new_readonly(identity.manager, true),
+                    AccountMeta::new_readonly(identity.squads_program, false),
+                ],
+                data: arm_data,
+            }
+        };
         VoltrCustomPolicyTemplates {
+            allocation_arm: arm(&allocation, 0),
+            nav_refresh_arm: arm(&nav_refresh, 0),
+            withdraw_arm: arm(&withdraw, 1),
             allocation,
             nav_refresh,
             stage_withdrawal,
@@ -720,32 +929,81 @@ mod tests {
             ],
             [0, 0, 0, 0]
         );
+        assert_eq!(policies.allocation.constraint_indices, [0, 1]);
+        assert_eq!(policies.nav_refresh.constraint_indices, [0, 1]);
+        assert_eq!(policies.stage_withdrawal.constraint_indices, [0]);
+        assert_eq!(policies.withdraw.constraint_indices, [0, 1]);
         assert_ne!(policies.allocation.policy, policies.nav_refresh.policy);
         assert_ne!(policies.stage_withdrawal.policy, policies.withdraw.policy);
+        for policy in [
+            &policies.allocation,
+            &policies.nav_refresh,
+            &policies.stage_withdrawal,
+            &policies.withdraw,
+        ] {
+            assert_eq!(
+                policy.update_instruction.program_id,
+                policy.create_instruction.program_id
+            );
+            assert_eq!(policy.update_instruction.accounts.len(), 6);
+            assert_eq!(policy.update_instruction.accounts[5].pubkey, policy.policy);
+            assert_ne!(
+                policy.update_instruction.data, policy.create_instruction.data,
+                "PolicyUpdate must not reuse PolicyCreate wire bytes"
+            );
+        }
     }
 
     #[test]
-    fn four_split_bridge_policy_create_packets_fit() {
+    fn four_split_bridge_policy_create_and_update_packets_fit() {
         let authority = Keypair::new();
         let mut identity = identity();
         identity.authority = authority.pubkey();
         let policies = create_voltr_custom_policies(&identity, &templates(&identity)).unwrap();
         let packets = [
-            ("allocation", &policies.allocation.create_instruction),
-            ("nav", &policies.nav_refresh.create_instruction),
-            ("stage", &policies.stage_withdrawal.create_instruction),
-            ("withdraw", &policies.withdraw.create_instruction),
+            (
+                "allocation",
+                &policies.allocation.create_instruction,
+                &policies.allocation.update_instruction,
+            ),
+            (
+                "nav",
+                &policies.nav_refresh.create_instruction,
+                &policies.nav_refresh.update_instruction,
+            ),
+            (
+                "stage",
+                &policies.stage_withdrawal.create_instruction,
+                &policies.stage_withdrawal.update_instruction,
+            ),
+            (
+                "withdraw",
+                &policies.withdraw.create_instruction,
+                &policies.withdraw.update_instruction,
+            ),
         ]
-        .map(|(name, instruction)| {
+        .map(|(name, create_instruction, update_instruction)| {
             (
                 name,
-                signed_policy_create_packet_bytes(instruction, &authority, Hash::new_unique()),
+                signed_policy_create_packet_bytes(
+                    create_instruction,
+                    &authority,
+                    Hash::new_unique(),
+                ),
+                signed_policy_create_packet_bytes(
+                    update_instruction,
+                    &authority,
+                    Hash::new_unique(),
+                ),
             )
         });
         println!("backyard_bridge_policy_packets {packets:?} limit={SOLANA_PACKET_BYTES}");
         assert!(packets
             .iter()
-            .all(|(_, bytes)| *bytes <= SOLANA_PACKET_BYTES));
+            .all(
+                |(_, create_bytes, update_bytes)| *create_bytes <= SOLANA_PACKET_BYTES
+                    && *update_bytes <= SOLANA_PACKET_BYTES
+            ));
     }
 
     #[test]
@@ -777,15 +1035,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_v2_bridge_writable_or_signer_mutation() {
+    fn rejects_v2_bridge_config_writable_or_signer_mutation() {
         let identity = identity();
         let mut invalid_templates = templates(&identity);
-        invalid_templates.allocation.accounts[3].is_writable = false;
+        invalid_templates.allocation.accounts[3].is_writable = true;
         assert!(matches!(
             create_voltr_custom_policies(&identity, &invalid_templates),
             Err(VoltrCustomPolicyError::InvalidInstruction {
                 operation: "allocation",
-                field: "writable bridge accounts"
+                field: "bridge account roles"
             })
         ));
 
@@ -808,7 +1066,7 @@ mod tests {
 
         let mut widened = canonical.clone();
         widened.accounts[4].is_writable = true;
-        let indexes = (0..17).collect::<Vec<_>>();
+        let indexes = (0..18).collect::<Vec<_>>();
         let canonical_constraint = voltr_constraint(
             &canonical,
             VOLTR_DEPOSIT,

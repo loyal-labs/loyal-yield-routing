@@ -17,17 +17,18 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 	}
 	switch operation.Status {
 	case Decided, Built, Simulated:
-		if operation.Decision.Action == OpenPrimeUSDCStep {
-			return database.MarkManualRecovery(ctx, operation.ID, operation.Status, "fresh_onchain_withdrawal_fence_required")
+		reason, err := preBroadcastRecoveryReason(ctx, rpc, operation)
+		if err != nil {
+			return err
 		}
-		return ErrTransactionConstructionUnavailable
+		return database.MarkPreBroadcastFailed(ctx, operation.ID, operation.Status, reason)
 	case Signed:
-		if operation.Decision.Action == OpenPrimeUSDCStep || operation.Decision.Action == VoltrAllocateToSquads {
+		if WithdrawalPreemptsOpenLoop(operation.Decision.Action, Signed, 1) {
 			observation, err := ObserveConfirmedBridgeSnapshot(ctx, rpc)
 			if err != nil {
 				return err
 			}
-			if observation.Snapshot.WithdrawalDemandRaw > 0 {
+			if WithdrawalPreemptsOpenLoop(operation.Decision.Action, Signed, observation.Snapshot.WithdrawalDemandRaw) {
 				return database.MarkManualRecovery(ctx, operation.ID, Signed, "fresh_onchain_withdrawal_fence_required")
 			}
 		}
@@ -79,15 +80,14 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 		if err != nil {
 			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "invalid_expected_effects")
 		}
-		addresses := make([]string, len(expected.Accounts))
-		for index, effect := range expected.Accounts {
-			addresses[index] = effect.Address
-		}
-		slot, accounts, err := rpc.GetMultipleAccounts(ctx, addresses, operation.ConfirmedSlot)
+		receipt, err := rpc.ConfirmedTransaction(ctx, operation.TransactionSignature)
 		if err != nil {
 			return err
 		}
-		reconciliation, effects, err := ReconcileTokenAccounts(slot, expected, accounts)
+		if receipt.Slot != operation.ConfirmedSlot {
+			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "confirmed_transaction_slot_mismatch")
+		}
+		reconciliation, effects, err := ReconcileConfirmedTransaction(expected, receipt)
 		if err != nil {
 			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "exact_effect_reconciliation_failed")
 		}
@@ -95,6 +95,23 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 	default:
 		return fmt.Errorf("unsupported nonterminal status: %s", operation.Status)
 	}
+}
+
+func preBroadcastRecoveryReason(ctx context.Context, rpc *RPCClient, operation PersistedOperation) (string, error) {
+	if operation.Status != Decided && operation.Status != Built && operation.Status != Simulated {
+		return "", fmt.Errorf("operation is not pre-broadcast")
+	}
+	if !WithdrawalPreemptsOpenLoop(operation.Decision.Action, operation.Status, 1) {
+		return "prebroadcast_restart_reobserve_required", nil
+	}
+	observation, err := ObserveConfirmedBridgeSnapshot(ctx, rpc)
+	if err != nil {
+		return "", err
+	}
+	if WithdrawalPreemptsOpenLoop(operation.Decision.Action, operation.Status, observation.Snapshot.WithdrawalDemandRaw) {
+		return "prebroadcast_withdrawal_preempted", nil
+	}
+	return "prebroadcast_restart_reobserve_required", nil
 }
 
 func sha256Bytes(data []byte) string {

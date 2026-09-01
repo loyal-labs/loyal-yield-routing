@@ -18,17 +18,11 @@ func (b *RuntimeBlocker) Error() string {
 }
 
 var (
-	// The checked-in manifest declares the v2 strategy config and policy graph
-	// unresolved. Do not turn a discovery address into an executable route.
+	// Never turn a discovery address into an executable route. Phase 1 needs
+	// only the authenticated bridge plus the exact PRIME/USDC entry and exit
+	// policies; the broader catalog is a separate, nonblocking release.
 	ErrBridgePrerequisitesUnavailable = &RuntimeBlocker{
 		Code:            "BLOCKED_BRIDGE_PREREQUISITES",
-		ResumeCondition: "confirm the immutable adaptor v2 config, complete policy catalog, and accepted report sequence from mainnet",
-	}
-	// There is no local, independently checked Kamino Multiply packet builder or
-	// current reserve fixture. Constructing an approximation would turn a risk
-	// decision into a money-moving guess.
-	ErrKaminoTransactionConstructionUnavailable = &RuntimeBlocker{
-		Code:            "BLOCKED_KAMINO_TRANSACTION_CONSTRUCTION",
-		ResumeCondition: "provide a confirmed PRIME/USDC Kamino account graph and exact signed-simulation fixture for every Multiply instruction",
+		ResumeCondition: "confirm the immutable adaptor v2 config and exact Phase 1 bridge and PRIME/USDC policy bindings on mainnet",
 	}
 )

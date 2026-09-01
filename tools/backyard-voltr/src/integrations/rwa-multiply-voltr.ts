@@ -1,13 +1,16 @@
 import {
   AccountRole,
+  address,
   createNoopSigner,
   getAddressEncoder,
   type Address,
   type Instruction,
   type TransactionSigner,
 } from "@solana/kit";
+import { PublicKey } from "@solana/web3.js";
 import {
   findAssociatedTokenPda,
+  getCreateAssociatedTokenIdempotentInstructionAsync,
   getApproveCheckedInstruction,
   getTransferCheckedInstruction,
 } from "@solana-program/token";
@@ -37,6 +40,8 @@ const ADDRESS_ENCODER = getAddressEncoder();
 
 export const RWA_ADAPTOR_DISCRIMINATORS = {
   initializeConfig: Uint8Array.from([208, 127, 21, 1, 194, 190, 196, 70]),
+  initializeReportTicket: Uint8Array.from([124, 41, 223, 13, 165, 246, 70, 62]),
+  armReport: Uint8Array.from([164, 175, 246, 41, 178, 140, 35, 3]),
   initialize: Uint8Array.from([175, 175, 109, 31, 13, 152, 155, 237]),
   deposit: Uint8Array.from([242, 35, 198, 137, 82, 225, 242, 182]),
   withdraw: Uint8Array.from([183, 18, 70, 156, 148, 109, 161, 34]),
@@ -52,6 +57,7 @@ export type RwaMultiplyVoltrAccounts = Readonly<{
   strategyInitReceipt: Address;
   strategyAuth: Address;
   strategyAssetAta: Address;
+  reportTicket: Address;
 }>;
 
 function appendAccounts(
@@ -124,6 +130,10 @@ export async function deriveRwaMultiplyVoltrAccounts(
     mint: route.assets.assetMint,
     tokenProgram: route.assets.tokenProgram,
   }, { programAddress: route.assets.associatedTokenProgram });
+  const [reportTicket] = PublicKey.findProgramAddressSync([
+    Buffer.from("report_ticket"),
+    new PublicKey(route.customAdaptor.strategyConfig).toBuffer(),
+  ], new PublicKey(route.customAdaptor.program));
   return {
     protocol,
     idleAuth,
@@ -134,6 +144,25 @@ export async function deriveRwaMultiplyVoltrAccounts(
     strategyInitReceipt,
     strategyAuth,
     strategyAssetAta,
+    reportTicket: address(reportTicket.toBase58()),
+  };
+}
+
+export async function initializeRwaAdaptorReportTicketInstruction(
+  payer: TransactionSigner,
+  route: RwaMultiplyRouteSpec = RWA_MULTIPLY_ROUTE,
+): Promise<Instruction> {
+  requireSigner(payer, route.setupAdmin, "ticket setup payer");
+  const accounts = await deriveRwaMultiplyVoltrAccounts(route);
+  return {
+    programAddress: route.customAdaptor.program,
+    accounts: [
+      { address: payer.address, role: AccountRole.WRITABLE_SIGNER },
+      readonly(route.customAdaptor.strategyConfig),
+      writable(accounts.reportTicket),
+      readonly(route.programs.system),
+    ],
+    data: RWA_ADAPTOR_DISCRIMINATORS.initializeReportTicket,
   };
 }
 
@@ -184,6 +213,12 @@ function u64Le(value: bigint): Uint8Array {
   return out;
 }
 
+function u32Le(value: number): Uint8Array {
+  const output = new Uint8Array(4);
+  new DataView(output.buffer).setUint32(0, value, true);
+  return output;
+}
+
 export type RwaReportV1 = Readonly<{
   sequence: bigint;
   observedSlot: bigint;
@@ -204,14 +239,6 @@ export function encodeRwaReportV1(report: RwaReportV1): Uint8Array {
   ]);
 }
 
-function writableStrategy(instruction: Instruction, index: number): Instruction {
-  const accounts = [...(instruction.accounts ?? [])];
-  const account = accounts[index];
-  if (!account) throw new Error(`missing Voltr strategy account ${index}`);
-  accounts[index] = { address: account.address, role: AccountRole.WRITABLE };
-  return { ...instruction, accounts };
-}
-
 function initializeRemainingAccounts(route: RwaMultiplyRouteSpec) {
   return [
     readonly(route.squads.settings),
@@ -223,12 +250,50 @@ function initializeRemainingAccounts(route: RwaMultiplyRouteSpec) {
   ] as const;
 }
 
-function positionRemainingAccounts(route: RwaMultiplyRouteSpec) {
+function positionRemainingAccounts(
+  route: RwaMultiplyRouteSpec,
+  accounts: RwaMultiplyVoltrAccounts,
+) {
   return [
     readonly(route.squads.settings),
     readonlySigner(route.squads.vault),
     writable(route.squads.assetAta),
+    writable(accounts.reportTicket),
   ] as const;
+}
+
+
+export async function buildRwaMultiplyArmReportInstruction(
+  manager: TransactionSigner,
+  operation: "deposit" | "withdraw",
+  amountRaw: bigint,
+  report: RwaReportV1,
+  route: RwaMultiplyRouteSpec = RWA_MULTIPLY_ROUTE,
+): Promise<Instruction> {
+  requireSigner(manager, route.squads.vault, "Squads manager");
+  if (amountRaw < 0n || amountRaw > route.vault.capRaw) {
+    throw new Error(`amount must be in 0..${route.vault.capRaw}`);
+  }
+  const accounts = await deriveRwaMultiplyVoltrAccounts(route);
+  const encodedReport = encodeRwaReportV1(report);
+  return {
+    programAddress: route.customAdaptor.program,
+    accounts: [
+      readonly(route.customAdaptor.strategyConfig),
+      writable(accounts.reportTicket),
+      readonly(route.squads.settings),
+      readonlySigner(route.squads.vault),
+      readonly(route.squads.program),
+    ],
+    data: Uint8Array.from([
+      ...RWA_ADAPTOR_DISCRIMINATORS.armReport,
+      operation === "deposit" ? 0 : 1,
+      ...u64Le(amountRaw),
+      1,
+      ...u32Le(encodedReport.length),
+      ...encodedReport,
+    ]),
+  };
 }
 
 export async function buildRwaMultiplyVoltrSetup(
@@ -277,6 +342,10 @@ export async function buildRwaMultiplyVoltrSetup(
     accounts,
     route,
   );
+  const initializeReportTicket = await initializeRwaAdaptorReportTicketInstruction(
+    signers.admin,
+    route,
+  );
   const initializeStrategyBase = await getInitializeStrategyInstructionAsync({
     payer: signers.admin,
     manager: signers.admin,
@@ -293,6 +362,14 @@ export async function buildRwaMultiplyVoltrSetup(
     initializeStrategyBase,
     initializeRemainingAccounts(route),
   );
+  const createStrategyAssetAta = await getCreateAssociatedTokenIdempotentInstructionAsync({
+    payer: signers.admin,
+    ata: accounts.strategyAssetAta,
+    owner: accounts.strategyAuth,
+    mint: route.assets.assetMint,
+    systemProgram: route.programs.system,
+    tokenProgram: route.assets.tokenProgram,
+  }, { programAddress: route.assets.associatedTokenProgram });
   const handoffManager = await getUpdateVaultConfigInstructionAsync({
     admin: signers.admin,
     vault: route.vault.address,
@@ -305,6 +382,8 @@ export async function buildRwaMultiplyVoltrSetup(
       initializeVault,
       addAdaptor,
       initializeConfig,
+      initializeReportTicket,
+      createStrategyAssetAta,
       initializeStrategy,
       handoffManager,
     },
@@ -339,18 +418,18 @@ export async function buildRwaMultiplyManagerInstructions(
     amount: amountRaw,
     additionalArgs: encodeRwaReportV1(report),
   } as const;
-  const depositBase = writableStrategy(await getDepositStrategyInstructionAsync({
+  const depositBase = await getDepositStrategyInstructionAsync({
     ...common,
     instructionDiscriminator: RWA_ADAPTOR_DISCRIMINATORS.deposit,
-  }, { programAddress: route.programs.voltr }), 3);
-  const withdrawBase = writableStrategy(await getWithdrawStrategyInstructionAsync({
+  }, { programAddress: route.programs.voltr });
+  const withdrawBase = await getWithdrawStrategyInstructionAsync({
     ...common,
     instructionDiscriminator: RWA_ADAPTOR_DISCRIMINATORS.withdraw,
-  }, { programAddress: route.programs.voltr }), 5);
+  }, { programAddress: route.programs.voltr });
   return {
     accounts,
-    deposit: appendAccounts(depositBase, positionRemainingAccounts(route)),
-    withdraw: appendAccounts(withdrawBase, positionRemainingAccounts(route)),
+    deposit: appendAccounts(depositBase, positionRemainingAccounts(route, accounts)),
+    withdraw: appendAccounts(withdrawBase, positionRemainingAccounts(route, accounts)),
   } as const;
 }
 

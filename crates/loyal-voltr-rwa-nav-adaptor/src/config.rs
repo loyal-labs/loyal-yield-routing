@@ -6,6 +6,9 @@ pub const CONFIG_DISCRIMINATOR: [u8; 8] = [46, 154, 12, 115, 203, 165, 199, 235]
 const PUBKEY_COUNT: usize = 12;
 pub const CONFIG_LEN: usize = 16 + PUBKEY_COUNT * 32 + 8 * 5 + 32;
 pub const REPORT_V1_LEN: usize = 1 + 8 + 8 + 8 + 32;
+pub const REPORT_TICKET_VERSION: u8 = 1;
+pub const REPORT_TICKET_DISCRIMINATOR: [u8; 8] = [245, 104, 182, 197, 58, 231, 116, 237];
+pub const REPORT_TICKET_LEN: usize = 96;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReportV1 {
@@ -38,6 +41,67 @@ impl ReportV1 {
             snapshot_digest: input[25..57]
                 .try_into()
                 .map_err(|_| AdaptorError::InvalidReport)?,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReportTicket {
+    pub bump: u8,
+    pub armed: bool,
+    pub config: Pubkey,
+    pub last_consumed_sequence: u64,
+    pub active_sequence: u64,
+    pub active_wire_sha256: [u8; 32],
+}
+
+impl ReportTicket {
+    pub fn encode(&self, output: &mut [u8]) -> AdaptorResult<()> {
+        if output.len() != REPORT_TICKET_LEN {
+            return Err(AdaptorError::InvalidTicket);
+        }
+        output.fill(0);
+        output[..8].copy_from_slice(&REPORT_TICKET_DISCRIMINATOR);
+        output[8] = REPORT_TICKET_VERSION;
+        output[9] = self.bump;
+        output[10] = u8::from(self.armed);
+        output[16..48].copy_from_slice(self.config.as_ref());
+        output[48..56].copy_from_slice(&self.last_consumed_sequence.to_le_bytes());
+        output[56..64].copy_from_slice(&self.active_sequence.to_le_bytes());
+        output[64..96].copy_from_slice(&self.active_wire_sha256);
+        Ok(())
+    }
+
+    pub fn decode(input: &[u8]) -> AdaptorResult<Self> {
+        if input.len() != REPORT_TICKET_LEN
+            || input[..8] != REPORT_TICKET_DISCRIMINATOR
+            || input[8] != REPORT_TICKET_VERSION
+            || input[10] > 1
+            || input[11..16] != [0; 5]
+        {
+            return Err(AdaptorError::InvalidTicket);
+        }
+        Ok(Self {
+            bump: input[9],
+            armed: input[10] == 1,
+            config: Pubkey::new_from_array(
+                input[16..48]
+                    .try_into()
+                    .map_err(|_| AdaptorError::InvalidTicket)?,
+            ),
+            last_consumed_sequence: u64::from_le_bytes(
+                input[48..56]
+                    .try_into()
+                    .map_err(|_| AdaptorError::InvalidTicket)?,
+            ),
+            active_sequence: u64::from_le_bytes(
+                input[56..64]
+                    .try_into()
+                    .map_err(|_| AdaptorError::InvalidTicket)?,
+            ),
+            active_wire_sha256: input[64..96]
+                .try_into()
+                .map_err(|_| AdaptorError::InvalidTicket)?,
         })
     }
 }
@@ -168,12 +232,6 @@ impl StrategyConfig {
                 .map_err(|_| AdaptorError::InvalidConfig)?,
         })
     }
-    pub fn accept_report(&mut self, report: ReportV1) {
-        self.last_sequence = report.sequence;
-        self.last_observed_slot = report.observed_slot;
-        self.last_nav_raw = report.nav_after_raw;
-        self.last_snapshot_digest = report.snapshot_digest;
-    }
 }
 
 #[cfg(test)]
@@ -189,5 +247,25 @@ mod tests {
         let mut report = vec![1; REPORT_V1_LEN + 1];
         report[0] = 1;
         assert_eq!(ReportV1::decode(&report), Err(AdaptorError::InvalidReport));
+    }
+
+    #[test]
+    fn report_ticket_codec_is_exact_and_reserved_bytes_stay_zero() {
+        let expected = ReportTicket {
+            bump: 254,
+            armed: true,
+            config: Pubkey::new_unique(),
+            last_consumed_sequence: 10,
+            active_sequence: 11,
+            active_wire_sha256: [7; 32],
+        };
+        let mut bytes = [0; REPORT_TICKET_LEN];
+        expected.encode(&mut bytes).unwrap();
+        assert_eq!(ReportTicket::decode(&bytes), Ok(expected));
+        bytes[11] = 1;
+        assert_eq!(
+            ReportTicket::decode(&bytes),
+            Err(AdaptorError::InvalidTicket)
+        );
     }
 }

@@ -186,6 +186,26 @@ projects:
                 value: warn,loyal_yield_realtime=info
 
           - type: worker
+            name: loyal-backyard-rwa-worker
+            runtime: image
+            region: oregon
+            plan: starter
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-74e84ee127bcdb4f88b03d2701df05afad14b6af
+            dockerCommand: /usr/local/bin/backyard-rwa-worker
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: POLICY_KEYPAIR
+                sync: false
+              - key: BACKYARD_RWA_ROUTE_KEY
+                value: rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh
+
+          - type: worker
             name: loyal-balance-sweep-ata-projector
             runtime: image
             region: oregon

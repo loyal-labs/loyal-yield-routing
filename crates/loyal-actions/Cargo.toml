@@ -17,8 +17,16 @@ name = "compile-voltr-custom-policy"
 path = "src/bin/compile_voltr_custom_policy.rs"
 
 [[bin]]
+name = "compile-voltr-custom-execution"
+path = "src/bin/compile_voltr_custom_execution.rs"
+
+[[bin]]
 name = "compile-backyard-rwa-policy-catalog"
 path = "src/bin/compile_backyard_rwa_policy_catalog.rs"
+
+[[bin]]
+name = "compile-backyard-rwa-resolved-policies"
+path = "src/bin/compile_backyard_rwa_resolved_policies.rs"
 
 [dependencies]
 base64.workspace = true

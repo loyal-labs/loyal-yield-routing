@@ -363,8 +363,8 @@ fn read_u64(data: &[u8], offset: usize) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::{
-        create_semantic_program_interaction_policy_instruction, derive_associated_token_account,
-        derive_kamino_obligation, derive_squads_vault,
+        create_deployed_semantic_program_interaction_policy_instruction,
+        derive_associated_token_account, derive_kamino_obligation, derive_squads_vault,
     };
     use sha2::{Digest, Sha256};
     use solana_sdk::instruction::{AccountMeta, Instruction};
@@ -512,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn three_policy_wire_contract_matches_the_typescript_sdk() {
+    fn three_policy_wire_contract_matches_the_deployed_squads_abi() {
         let settings = key("11111111111111111111111111111112");
         let authority = key("11111111111111111111111111111113");
         let delegate = key("11111111111111111111111111111114");
@@ -523,7 +523,7 @@ mod tests {
             (EarnMaxPolicyFamily::Swap, 236),
         ]
         .map(|(family, seed)| {
-            let instruction = create_semantic_program_interaction_policy_instruction(
+            let instruction = create_deployed_semantic_program_interaction_policy_instruction(
                 settings,
                 authority,
                 delegate,

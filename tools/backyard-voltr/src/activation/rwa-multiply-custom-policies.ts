@@ -8,7 +8,11 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import { prepareSignedV0Transaction } from "../integrations/solana-compat.js";
 import { signingMaterialFromEnvironment } from "../integrations/signer.js";
-import { verifyInstalledCustomPolicies, type CustomPolicyArtifact } from "../policies/rwa-multiply-custom.js";
+import {
+  selectCustomPolicyMutation,
+  verifyInstalledCustomPolicies,
+  type CustomPolicyArtifact,
+} from "../policies/rwa-multiply-custom.js";
 
 const PACKET_LIMIT = 1_232;
 const MAX_POLICY_COST_LAMPORTS = 20_000_000;
@@ -67,12 +71,19 @@ async function main() {
   if (reconcile) {
     const pending = JSON.parse(readFileSync(`${journal}.pending`, "utf8")) as {
       operation?: unknown;
+      mutation?: unknown;
       seed?: unknown;
       policy?: unknown;
-      transaction?: { expectedSignature?: unknown; projectedPolicyDataSha256?: unknown; protectedPreviousVaultSha256?: unknown };
+      transaction?: {
+        expectedSignature?: unknown;
+        projectedPolicyDataSha256?: unknown;
+        protectedPreviousVaultSha256?: unknown;
+      };
     };
     const signature = String(pending.transaction?.expectedSignature ?? "");
     const policyAddress = String(pending.policy ?? "");
+    invariant(pending.mutation === "create" || pending.mutation === "update",
+      "pending journal lacks a valid policy mutation kind");
     invariant(signature.length > 0 && policyAddress.length > 0, "pending journal lacks signature or policy identity");
     const status = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
     const landed = status.value[0];
@@ -86,12 +97,13 @@ async function main() {
     ], "finalized");
     invariant(policyInfo != null, "finalized policy account is absent");
     const finalizedPolicyDataSha256 = sha256(policyInfo.data);
+    invariant(finalizedPolicyDataSha256 === pending.transaction?.projectedPolicyDataSha256,
+      "finalized policy bytes differ from the signed simulation projection");
     invariant(protectedPrevious && sha256(protectedPrevious.data) === pending.transaction?.protectedPreviousVaultSha256,
       "protected Backyard vault changed across policy activation");
     writePrivate(journal, { ...pending, verdict: "FINALIZED_RECONCILED", signature,
       finalizedSlot: landed.slot, finalizedContextSlot: status.context.slot,
       finalizedPolicyDataSha256,
-      note: "Squads policy account bytes include bank-dependent fields; exact decoded semantics and the signed wire are authoritative.",
       installed }, "wx");
     renameSync(`${journal}.pending`, `${journal}.sent-wire`);
     console.log(JSON.stringify({ verdict: "FINALIZED_RECONCILED", signature,
@@ -99,38 +111,52 @@ async function main() {
       finalizedPolicyDataSha256, installed, journal }, null, 2));
     return;
   }
-  const badExisting = before.rows.find((row) => row.reason !== "absent" && !row.pass);
-  invariant(!badExisting, `existing custom policy ${badExisting?.operation ?? "unknown"} is inexact`);
-  const firstAbsent = before.rows.findIndex((row) => !row.pass);
-  if (firstAbsent < 0) {
+  const mutation = selectCustomPolicyMutation(before);
+  if (mutation.kind === "noop") {
     console.log(JSON.stringify({ verdict: "PASS_ALREADY_FINALIZED", broadcast: false, policies: before.rows }, null, 2));
     return;
   }
-  invariant(before.rows.slice(0, firstAbsent).every(({ pass }) => pass), "custom policy prefix is not exact");
-  invariant(before.rows.slice(firstAbsent).every(({ reason }) => reason === "absent"), "custom policy installation has a gap");
-  const target = before.artifact.policies[firstAbsent]!;
-  invariant(BigInt(target.seed) === before.policySeedBefore + 1n,
-    `next custom policy seed ${target.seed} does not follow finalized Settings seed ${before.policySeedBefore}`);
+  const target = mutation.target;
+  const targetIndex = before.artifact.policies.findIndex(({ policy }) => policy === target.policy);
+  invariant(targetIndex >= 0, "selected custom policy is absent from the compiled artifact");
   const protectedPrevious = await connection.getAccountInfo(new PublicKey(route.previousBackyardVault), "finalized");
   invariant(protectedPrevious?.owner.toBase58() === route.programs.voltr, "protected Backyard vault is absent or inexact");
   const protectedPreviousSha256 = sha256(protectedPrevious.data);
+  const targetBeforeResponse = await connection.getAccountInfoAndContext(new PublicKey(target.policy), {
+    commitment: "finalized",
+    minContextSlot: before.contextSlot,
+  });
+  const targetBefore = targetBeforeResponse.value;
+  if (mutation.kind === "create") {
+    invariant(targetBefore === null, "custom policy appeared after finalized absence inspection");
+  } else {
+    invariant(targetBefore?.owner.toBase58() === route.squads.program,
+      "custom policy disappeared or changed owner before update simulation");
+    invariant(sha256(targetBefore.data) === mutation.row.dataSha256,
+      "custom policy bytes changed after finalized update inspection");
+  }
   const prepared = await prepareSignedV0Transaction({
     rpcUrl,
     feePayer: admin,
     commitment: "finalized",
     minimumContextSlot: before.contextSlot,
-    instructions: [instruction(target.createInstruction)],
+    instructions: [instruction(mutation.instruction)],
     inspectedAddresses: [target.policy, route.squads.settings, route.previousBackyardVault, route.setupAdmin],
   });
-  invariant(prepared.packetBytes <= PACKET_LIMIT, `custom ${target.operation} policy packet exceeds ${PACKET_LIMIT} bytes`);
+  invariant(prepared.packetBytes <= PACKET_LIMIT,
+    `custom ${target.operation} policy ${mutation.kind} packet exceeds ${PACKET_LIMIT} bytes`);
   invariant(prepared.simulation.err === null,
-    `custom ${target.operation} policy simulation failed: ${JSON.stringify(prepared.simulation.err)}`);
+    `custom ${target.operation} policy simulation failed: ${JSON.stringify({
+      err: prepared.simulation.err,
+      logs: prepared.simulation.logs,
+    })}`);
   const [postPolicy, postSettings, postPrevious, postAdmin] = prepared.simulation.postAccounts;
-  invariant(postPolicy?.owner === route.squads.program, "simulation did not create the exact policy account");
+  invariant(postPolicy?.owner === route.squads.program, "simulation did not project the exact policy owner");
   invariant(postSettings?.owner === route.squads.program, "simulation changed Settings ownership");
   invariant(postPrevious !== null && postPrevious !== undefined, "simulation omitted the protected Backyard vault");
   invariant(postAdmin !== null && postAdmin !== undefined, "simulation omitted the setup admin");
-  const projectedCostLamports = postPolicy.lamports + prepared.feeLamports;
+  const projectedRentDeltaLamports = Math.max(0, postPolicy.lamports - (targetBefore?.lamports ?? 0));
+  const projectedCostLamports = projectedRentDeltaLamports + prepared.feeLamports;
   invariant(projectedCostLamports >= 0 && projectedCostLamports <= MAX_POLICY_COST_LAMPORTS,
     `projected custom policy cost ${projectedCostLamports} exceeds bound`);
   invariant(sha256(postPrevious.data) === protectedPreviousSha256,
@@ -141,6 +167,7 @@ async function main() {
     broadcast: execute,
     routeSpecSha256: (await import("../domain/rwa-multiply-route-spec.js")).rwaMultiplyRouteSpecSha256(),
     sourceSha256: before.sourceSha256,
+    mutation: mutation.kind,
     operation: target.operation,
     seed: target.seed,
     policy: target.policy,
@@ -149,9 +176,11 @@ async function main() {
       unitsConsumed: prepared.simulation.unitsConsumed,
       feeLamports: prepared.feeLamports,
       projectedCostLamports,
+      projectedRentDeltaLamports,
       expectedSignature: prepared.expectedSignature,
       wireSha256: sha256(prepared.serializedTransaction),
       projectedPolicyDataSha256: sha256(postPolicy.data),
+      previousPolicyDataSha256: targetBefore ? sha256(targetBefore.data) : null,
       protectedPreviousVaultSha256: protectedPreviousSha256,
     },
   };
@@ -173,10 +202,14 @@ async function main() {
   const confirmation = await connection.confirmTransaction({ signature: returned, ...prepared.latestBlockhash }, "finalized");
   invariant(confirmation.value.err === null, `policy transaction finalized with ${JSON.stringify(confirmation.value.err)}`);
   const after = await verifyInstalledCustomPolicies(connection);
-  const installed = after.rows[firstAbsent];
+  const installed = after.rows[targetIndex];
   invariant(installed?.pass === true, `finalized custom ${target.operation} policy did not reconcile exactly`);
+  const finalizedPolicy = await connection.getAccountInfo(new PublicKey(target.policy), "finalized");
+  invariant(finalizedPolicy != null && sha256(finalizedPolicy.data) === plan.transaction.projectedPolicyDataSha256,
+    "finalized policy bytes differ from the signed simulation projection");
   writePrivate(journal, { ...plan, verdict: "FINALIZED_RECONCILED", signature: returned,
-    finalizedContextSlot: confirmation.context.slot, installed }, "wx");
+    finalizedContextSlot: confirmation.context.slot,
+    finalizedPolicyDataSha256: sha256(finalizedPolicy.data), installed }, "wx");
   renameSync(`${journal}.pending`, `${journal}.sent-wire`);
   console.log(JSON.stringify({ verdict: "FINALIZED_RECONCILED", signature: returned,
     finalizedContextSlot: confirmation.context.slot, installed, journal }, null, 2));

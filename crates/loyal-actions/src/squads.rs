@@ -389,6 +389,7 @@ pub enum SemanticProgramInteractionDataConstraint {
     U16Equals { offset: u64, value: u16 },
     U16LessThanOrEqual { offset: u64, value: u16 },
     U32Equals { offset: u64, value: u32 },
+    U64LessThanOrEqual { offset: u64, value: u64 },
 }
 
 /// Update a long-lived hookless policy from a small semantic contract. This is
@@ -428,6 +429,49 @@ pub fn create_semantic_program_interaction_policy_instruction(
         seed: policy_seed,
         policy_creation_payload: SquadsPolicyCreationPayload::ProgramInteraction(
             compile_compact_program_interaction_payload(account_index, constraints, Vec::new())?,
+        ),
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        start_timestamp: None,
+        expiration_args: None,
+    };
+    Ok(Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_settings_actions(vec![action]),
+    })
+}
+
+/// Create a hookless semantic ProgramInteraction policy through the deployed
+/// SettingsAction ABI (LegacyProgramInteraction, enum index 3). The compact
+/// variant above is retained only for structural packing experiments.
+pub fn create_deployed_semantic_program_interaction_policy_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    specs: Vec<SemanticProgramInteractionConstraint>,
+) -> Result<Instruction> {
+    let constraints = semantic_program_interaction_constraints(specs)?;
+    let (policy, _) = derive_action_account(&settings, policy_seed);
+    let action = SquadsSettingsAction::PolicyCreate {
+        seed: policy_seed,
+        policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
+            compile_program_interaction_payload(account_index, constraints, Vec::new())?,
         ),
         signers: vec![SquadsSmartAccountSigner {
             key: delegated_signer,
@@ -544,6 +588,15 @@ fn semantic_data_constraints(
                     data_offset: offset,
                     data_value: SquadsDataValue::U32Le(value),
                     operator: SquadsDataOperator::Equals,
+                })
+            }
+            SemanticProgramInteractionDataConstraint::U64LessThanOrEqual { offset, value }
+                if value > 0 =>
+            {
+                Ok(SquadsDataConstraint {
+                    data_offset: offset,
+                    data_value: SquadsDataValue::U64Le(value),
+                    operator: SquadsDataOperator::LessThanOrEqualTo,
                 })
             }
             _ => Err(LoyalActionError::InvalidPolicyConstraint),
@@ -980,6 +1033,29 @@ pub(crate) fn update_program_interaction_action_instruction(
     )
 }
 
+/// Update a hookless ProgramInteraction policy through the deployed Settings
+/// ABI. Keep this explicit so callers that still depend on the compact update
+/// encoding cannot change wire format as a side effect of Backyard work.
+pub(crate) fn update_deployed_program_interaction_action_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    policy: Pubkey,
+    delegated_signer: Pubkey,
+    account_index: u8,
+    constraints: Vec<SquadsInstructionConstraint>,
+) -> Result<Instruction> {
+    let payload = SquadsPolicyCreationPayload::LegacyProgramInteraction(
+        compile_program_interaction_payload(account_index, constraints, Vec::new())?,
+    );
+    Ok(program_interaction_policy_update_instruction(
+        settings,
+        authority,
+        policy,
+        delegated_signer,
+        payload,
+    ))
+}
+
 fn update_program_interaction_action_instruction_with_spending_limits(
     settings: Pubkey,
     authority: Pubkey,
@@ -989,15 +1065,28 @@ fn update_program_interaction_action_instruction_with_spending_limits(
     constraints: Vec<SquadsInstructionConstraint>,
     spending_limits: Vec<SquadsLimitedSpendingLimit>,
 ) -> Result<Instruction> {
+    let payload = SquadsPolicyCreationPayload::ProgramInteraction(
+        compile_compact_program_interaction_payload(account_index, constraints, spending_limits)?,
+    );
+    Ok(program_interaction_policy_update_instruction(
+        settings,
+        authority,
+        policy,
+        delegated_signer,
+        payload,
+    ))
+}
+
+fn program_interaction_policy_update_instruction(
+    settings: Pubkey,
+    authority: Pubkey,
+    policy: Pubkey,
+    delegated_signer: Pubkey,
+    policy_update_payload: SquadsPolicyCreationPayload,
+) -> Instruction {
     let action = SquadsSettingsAction::PolicyUpdate {
         policy,
-        policy_update_payload: SquadsPolicyCreationPayload::ProgramInteraction(
-            compile_compact_program_interaction_payload(
-                account_index,
-                constraints,
-                spending_limits,
-            )?,
-        ),
+        policy_update_payload,
         signers: vec![SquadsSmartAccountSigner {
             key: delegated_signer,
             permissions: SquadsPermissions {
@@ -1009,7 +1098,7 @@ fn update_program_interaction_action_instruction_with_spending_limits(
         expiration_args: None,
     };
 
-    Ok(Instruction {
+    Instruction {
         program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
         accounts: vec![
             AccountMeta::new(settings, false),
@@ -1020,7 +1109,7 @@ fn update_program_interaction_action_instruction_with_spending_limits(
             AccountMeta::new(policy, false),
         ],
         data: serialize_settings_actions(vec![action]),
-    })
+    }
 }
 
 fn compile_program_interaction_payload(
@@ -1278,12 +1367,10 @@ enum SquadsPolicyCreationPayload {
     InternalFundTransfer(Vec<u8>),
     SpendingLimit(SquadsSpendingLimitPolicyCreationPayload),
     SettingsChange(Vec<u8>),
-    /// The pinned Squads SBF retains the embedded-pubkey creation variant at
-    /// index 3 for compatibility. PolicyUpdate deliberately rejects it.
+    /// Deployed ProgramInteraction payload selected only by explicitly named
+    /// deployed-ABI helpers.
     LegacyProgramInteraction(SquadsProgramInteractionPolicyCreationPayload),
-    /// Compact indexed payload at enum index 4. Squads requires this variant
-    /// when updating a ProgramInteraction policy created through the legacy
-    /// compatibility path.
+    /// Compact compatibility payload retained for existing consumer callers.
     ProgramInteraction(SquadsCompactProgramInteractionPolicyCreationPayload),
 }
 
@@ -1706,5 +1793,49 @@ mod tests {
         assert_eq!(instruction.data[20], 1);
         assert_eq!(&instruction.data[21..25], &[8, 0, 0, 0]);
         assert_eq!(&instruction.data[25..], &[1, 0, 1, 1, 2, 0, 9, 8]);
+    }
+
+    #[test]
+    fn deployed_policy_update_is_explicit_and_preserves_compact_consumer_wire() {
+        let settings = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let policy = Pubkey::new_unique();
+        let delegated_signer = Pubkey::new_unique();
+        let constraint = SquadsInstructionConstraint {
+            program_id: Pubkey::new_unique(),
+            account_constraints: Vec::new(),
+            data_constraints: vec![SquadsDataConstraint {
+                data_offset: 0,
+                data_value: SquadsDataValue::U8(7),
+                operator: SquadsDataOperator::Equals,
+            }],
+        };
+
+        let compact = update_program_interaction_action_instruction(
+            settings,
+            authority,
+            policy,
+            delegated_signer,
+            0,
+            vec![constraint.clone()],
+        )
+        .expect("compact update");
+        let deployed = update_deployed_program_interaction_action_instruction(
+            settings,
+            authority,
+            policy,
+            delegated_signer,
+            0,
+            vec![constraint],
+        )
+        .expect("deployed update");
+
+        // Anchor discriminator + signer count + action vector + PolicyUpdate
+        // tag + policy + signer vector/entry + threshold + timelock.
+        const POLICY_UPDATE_PAYLOAD_TAG_OFFSET: usize = 8 + 1 + 4 + 1 + 32 + 4 + 32 + 1 + 2 + 4;
+        assert_eq!(compact.data[POLICY_UPDATE_PAYLOAD_TAG_OFFSET], 4);
+        assert_eq!(deployed.data[POLICY_UPDATE_PAYLOAD_TAG_OFFSET], 3);
+        assert_ne!(compact.data, deployed.data);
+        assert_eq!(compact.accounts, deployed.accounts);
     }
 }

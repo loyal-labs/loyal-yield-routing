@@ -6,7 +6,7 @@ import { PARTNER_ROUTE } from "./route-spec.js";
 
 export type RwaMultiplyRouteSpec = Readonly<{
   schemaVersion: 1;
-  id: "loyal-voltr-rwa-multiply-usdc-v1";
+  id: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh";
   cluster: "mainnet-beta";
   genesisHash: string;
   previousBackyardVault: Address;
@@ -87,7 +87,7 @@ export type RwaMultiplyRouteSpec = Readonly<{
 
 export const RWA_MULTIPLY_ROUTE = {
   schemaVersion: 1,
-  id: "loyal-voltr-rwa-multiply-usdc-v1",
+  id: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
   cluster: "mainnet-beta",
   genesisHash: "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
   previousBackyardVault: PARTNER_ROUTE.vault,
@@ -111,7 +111,7 @@ export const RWA_MULTIPLY_ROUTE = {
     vault: address("ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"),
     delegatedExecutor: address("62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"),
     assetAta: address("EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"),
-    collateralAta: address("CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"),
+    collateralAta: address("DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"),
     customPolicySeeds: {
       allocation: 53n,
       navRefresh: 54n,
@@ -156,14 +156,14 @@ export const RWA_MULTIPLY_ROUTE = {
   kamino: {
     program: address("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"),
     farmsProgram: address("FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"),
-    market: address("6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"),
-    obligation: address("Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT"),
-    collateralReserve: address("AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY"),
-    debtReserve: address("Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo"),
+    market: address("CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"),
+    obligation: address("9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv"),
+    collateralReserve: address("BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh"),
+    debtReserve: address("9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu"),
   },
   assets: {
     assetMint: address("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
-    collateralMint: address("AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj"),
+    collateralMint: address("3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"),
     tokenProgram: address("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
     associatedTokenProgram: address("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"),
     decimals: 6,

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -26,6 +27,24 @@ type ConfirmedAccount struct {
 type LatestBlockhash struct {
 	Blockhash            string
 	LastValidBlockHeight int64
+}
+
+type TransactionTokenBalance struct {
+	Address, OwnerProgram, Mint, Authority string
+	Raw                                    uint64
+}
+
+type ProgramReturnData struct {
+	ProgramID  string
+	DataBase64 string
+}
+
+type ConfirmedTransactionEvidence struct {
+	Signature         string
+	Slot              int64
+	PreTokenBalances  []TransactionTokenBalance
+	PostTokenBalances []TransactionTokenBalance
+	ReturnData        *ProgramReturnData
 }
 
 func NewRPCClient(rpcURL string) (*RPCClient, error) {
@@ -224,6 +243,104 @@ func (c *RPCClient) SignatureStatus(ctx context.Context, signature string) (Sign
 	failed := len(status.Err) > 0 && string(status.Err) != "null"
 	confirmed := !failed && status.Slot > 0 && (status.ConfirmationStatus == "confirmed" || status.ConfirmationStatus == "finalized")
 	return SignatureObservation{Found: true, Confirmed: confirmed, ConfirmationSlot: status.Slot, Failed: failed}, nil
+}
+
+// ConfirmedTransaction reads the immutable receipt for the exact persisted
+// signature. Reconciliation must use these transaction-scoped pre/post token
+// balances rather than a later account read that can include unrelated user
+// deposits or claims.
+func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) (ConfirmedTransactionEvidence, error) {
+	if signature == "" {
+		return ConfirmedTransactionEvidence{}, fmt.Errorf("transaction signature is required")
+	}
+	type tokenBalance struct {
+		AccountIndex uint16 `json:"accountIndex"`
+		Mint         string `json:"mint"`
+		Owner        string `json:"owner"`
+		ProgramID    string `json:"programId"`
+		Amount       struct {
+			Amount string `json:"amount"`
+		} `json:"uiTokenAmount"`
+	}
+	var result struct {
+		Slot int64 `json:"slot"`
+		Meta struct {
+			Err               json.RawMessage `json:"err"`
+			PreTokenBalances  []tokenBalance  `json:"preTokenBalances"`
+			PostTokenBalances []tokenBalance  `json:"postTokenBalances"`
+			LoadedAddresses   struct {
+				Writable []string `json:"writable"`
+				Readonly []string `json:"readonly"`
+			} `json:"loadedAddresses"`
+			ReturnData *struct {
+				ProgramID string   `json:"programId"`
+				Data      []string `json:"data"`
+			} `json:"returnData"`
+		} `json:"meta"`
+		Transaction struct {
+			Message struct {
+				AccountKeys []string `json:"accountKeys"`
+			} `json:"message"`
+		} `json:"transaction"`
+	}
+	if err := c.call(ctx, "getTransaction", []any{signature, map[string]any{
+		"commitment": "confirmed", "encoding": "json", "maxSupportedTransactionVersion": 0,
+	}}, &result); err != nil {
+		return ConfirmedTransactionEvidence{}, err
+	}
+	if result.Slot <= 0 || (len(result.Meta.Err) > 0 && string(result.Meta.Err) != "null") || len(result.Transaction.Message.AccountKeys) == 0 {
+		return ConfirmedTransactionEvidence{}, fmt.Errorf("confirmed transaction receipt is invalid")
+	}
+	accountKeys := append([]string(nil), result.Transaction.Message.AccountKeys...)
+	accountKeys = append(accountKeys, result.Meta.LoadedAddresses.Writable...)
+	accountKeys = append(accountKeys, result.Meta.LoadedAddresses.Readonly...)
+	decodeBalances := func(rows []tokenBalance) ([]TransactionTokenBalance, error) {
+		balances := make([]TransactionTokenBalance, len(rows))
+		seen := make(map[string]struct{}, len(rows))
+		for index, row := range rows {
+			if int(row.AccountIndex) >= len(accountKeys) || row.Mint == "" || row.Owner == "" ||
+				(row.ProgramID != classicTokenProgram && row.ProgramID != token2022Program) {
+				return nil, fmt.Errorf("transaction token-balance identity is incomplete")
+			}
+			address := accountKeys[row.AccountIndex]
+			if _, duplicate := seen[address]; duplicate {
+				return nil, fmt.Errorf("transaction token-balance address is duplicated")
+			}
+			seen[address] = struct{}{}
+			raw, err := strconv.ParseUint(row.Amount.Amount, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("transaction token amount is invalid")
+			}
+			balances[index] = TransactionTokenBalance{
+				Address: address, OwnerProgram: row.ProgramID, Mint: row.Mint, Authority: row.Owner, Raw: raw,
+			}
+		}
+		return balances, nil
+	}
+	pre, err := decodeBalances(result.Meta.PreTokenBalances)
+	if err != nil {
+		return ConfirmedTransactionEvidence{}, err
+	}
+	post, err := decodeBalances(result.Meta.PostTokenBalances)
+	if err != nil {
+		return ConfirmedTransactionEvidence{}, err
+	}
+	evidence := ConfirmedTransactionEvidence{
+		Signature: signature, Slot: result.Slot, PreTokenBalances: pre, PostTokenBalances: post,
+	}
+	if result.Meta.ReturnData != nil {
+		if result.Meta.ReturnData.ProgramID == "" || len(result.Meta.ReturnData.Data) != 2 ||
+			result.Meta.ReturnData.Data[1] != "base64" {
+			return ConfirmedTransactionEvidence{}, fmt.Errorf("transaction return data is invalid")
+		}
+		if _, err := base64.StdEncoding.DecodeString(result.Meta.ReturnData.Data[0]); err != nil {
+			return ConfirmedTransactionEvidence{}, fmt.Errorf("transaction return data is invalid")
+		}
+		evidence.ReturnData = &ProgramReturnData{
+			ProgramID: result.Meta.ReturnData.ProgramID, DataBase64: result.Meta.ReturnData.Data[0],
+		}
+	}
+	return evidence, nil
 }
 
 func (c *RPCClient) ConfirmedBlockHeight(ctx context.Context) (int64, error) {

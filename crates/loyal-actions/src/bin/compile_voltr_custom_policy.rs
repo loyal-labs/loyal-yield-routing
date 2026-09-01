@@ -25,6 +25,7 @@ struct Identity {
     authority: String,
     delegated_signer: String,
     manager: String,
+    squads_program: String,
     vault_index: u8,
     vault: String,
     strategy: String,
@@ -34,6 +35,7 @@ struct Identity {
     asset_mint: String,
     squads_asset_ata: String,
     strategy_asset_ata: String,
+    report_ticket: String,
     max_amount_raw: String,
     asset_decimals: u8,
     seeds: Seeds,
@@ -51,9 +53,12 @@ struct Seeds {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Templates {
+    allocation_arm: WireInstruction,
     allocation: WireInstruction,
+    nav_refresh_arm: WireInstruction,
     nav_refresh: WireInstruction,
     stage_withdrawal: WireInstruction,
+    withdraw_arm: WireInstruction,
     withdraw: WireInstruction,
 }
 
@@ -80,7 +85,9 @@ struct OutputPolicy {
     seed: String,
     policy: String,
     constraint_index: u8,
+    constraint_indices: Vec<u8>,
     create_instruction: WireInstruction,
+    update_instruction: WireInstruction,
 }
 
 #[derive(Serialize)]
@@ -155,6 +162,7 @@ fn run() -> Result<(), String> {
         authority: pubkey(&input.identity.authority, "authority")?,
         delegated_signer: pubkey(&input.identity.delegated_signer, "delegated signer")?,
         manager: pubkey(&input.identity.manager, "manager")?,
+        squads_program: pubkey(&input.identity.squads_program, "Squads program")?,
         vault_index: input.identity.vault_index,
         vault: pubkey(&input.identity.vault, "Voltr vault")?,
         strategy: pubkey(&input.identity.strategy, "strategy")?,
@@ -164,6 +172,7 @@ fn run() -> Result<(), String> {
         asset_mint: pubkey(&input.identity.asset_mint, "asset mint")?,
         squads_asset_ata: pubkey(&input.identity.squads_asset_ata, "Squads asset ATA")?,
         strategy_asset_ata: pubkey(&input.identity.strategy_asset_ata, "strategy asset ATA")?,
+        report_ticket: pubkey(&input.identity.report_ticket, "report ticket")?,
         max_amount_raw: u64_value(&input.identity.max_amount_raw, "maximum amount")?,
         asset_decimals: input.identity.asset_decimals,
         seeds: VoltrCustomPolicySeeds {
@@ -177,9 +186,12 @@ fn run() -> Result<(), String> {
         },
     };
     let templates = VoltrCustomPolicyTemplates {
+        allocation_arm: instruction(input.instructions.allocation_arm)?,
         allocation: instruction(input.instructions.allocation)?,
+        nav_refresh_arm: instruction(input.instructions.nav_refresh_arm)?,
         nav_refresh: instruction(input.instructions.nav_refresh)?,
         stage_withdrawal: instruction(input.instructions.stage_withdrawal)?,
+        withdraw_arm: instruction(input.instructions.withdraw_arm)?,
         withdraw: instruction(input.instructions.withdraw)?,
     };
     let policies =
@@ -196,7 +208,9 @@ fn run() -> Result<(), String> {
         seed: policy.seed.to_string(),
         policy: policy.policy.to_string(),
         constraint_index: policy.constraint_index,
+        constraint_indices: policy.constraint_indices,
         create_instruction: wire(policy.create_instruction),
+        update_instruction: wire(policy.update_instruction),
     })
     .collect();
     println!(
