@@ -3,6 +3,7 @@ package backyardrwa
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -287,6 +288,58 @@ func TestLeasedWorkerAcquiresBeforeTickAndReleasesOnCleanShutdown(t *testing.T) 
 	events := leasing.snapshotEvents()
 	if len(events) != 3 || !strings.HasPrefix(events[0], "acquire:") || events[1] != "tick" || events[2] != "release" {
 		t.Fatalf("wrong lease lifecycle order: %v", events)
+	}
+}
+
+func TestLeasedWorkerRetriesObservationWithoutDroppingTheFence(t *testing.T) {
+	manifest := readyWorkerManifest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	leasing := &fakeRouteLeaseRuntime{}
+	observations := 0
+	worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, manifest: manifest, runtime: tickRuntime{
+		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
+		observe: func(context.Context) (Observation, error) {
+			observations++
+			if observations == 1 {
+				return Observation{}, fmt.Errorf("%w: minimum context slot has not been reached", errConfirmedObservationUnavailable)
+			}
+			return tickObservation(Snapshot{ObservationID: "retry-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
+		},
+		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+			cancel()
+			return DecisionRecord{Status: Held}, nil
+		},
+	}}
+	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
+	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("e", 40), config)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected clean cancellation, got %v", err)
+	}
+	if observations != 2 {
+		t.Fatalf("observation attempts=%d", observations)
+	}
+	events := leasing.snapshotEvents()
+	if len(events) != 2 || !strings.HasPrefix(events[0], "acquire:") || events[1] != "release" {
+		t.Fatalf("observation retry dropped or reacquired the route fence: %v", events)
+	}
+}
+
+func TestLeasedWorkerDoesNotRetryDatabaseObservationFailure(t *testing.T) {
+	databaseErr := errors.New("position snapshot constraint failed")
+	leasing := &fakeRouteLeaseRuntime{}
+	worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, runtime: tickRuntime{
+		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
+		observe:         func(context.Context) (Observation, error) { return Observation{}, databaseErr },
+	}}
+	err := worker.Run(context.Background(), leasing, "render:srv-test:sha-"+strings.Repeat("9", 40), Config{
+		PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond,
+	})
+	if !errors.Is(err, databaseErr) {
+		t.Fatalf("database observation failure was hidden: %v", err)
+	}
+	events := leasing.snapshotEvents()
+	if len(events) != 2 || !strings.HasPrefix(events[0], "acquire:") || events[1] != "release" {
+		t.Fatalf("database failure did not terminate the leased worker: %v", events)
 	}
 }
 

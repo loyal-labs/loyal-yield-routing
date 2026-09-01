@@ -13,6 +13,7 @@ const productionRouteKey = "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj
 
 var immutableImageVersionPattern = regexp.MustCompile(`^sha-[0-9a-f]{40}$`)
 var immutableRenderLeaseOwnerPattern = regexp.MustCompile(`^render:srv-[a-z0-9]+:sha-[0-9a-f]{40}$`)
+var errConfirmedObservationUnavailable = errors.New("confirmed route observation is temporarily unavailable")
 
 type Worker struct {
 	routeKey string
@@ -43,7 +44,7 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		observe: func(ctx context.Context) (Observation, error) {
 			observation, err := ObserveConfirmedRouteSnapshot(ctx, rpc, manifest)
 			if err != nil {
-				return Observation{}, err
+				return Observation{}, fmt.Errorf("%w: %v", errConfirmedObservationUnavailable, err)
 			}
 			required, err := database.PostMutationNAVRequired(ctx, productionRouteKey)
 			if err != nil {
@@ -195,7 +196,9 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error) error {
 				return leaseErr
 			default:
 			}
-			return err
+			if !errors.Is(err, errConfirmedObservationUnavailable) {
+				return err
+			}
 		}
 		timer := time.NewTimer(w.interval)
 		select {
