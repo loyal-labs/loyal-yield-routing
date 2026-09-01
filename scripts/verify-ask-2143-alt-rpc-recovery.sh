@@ -17,6 +17,7 @@ test_list="$({
 
 required_tests=(
   alt_provisioner_read_only_rpc_retries_http_500_then_recovers
+  alt_provisioner_read_only_rpc_retries_request_transport_then_recovers
   alt_provisioner_read_only_rpc_does_not_retry_http_400
   alt_provisioner_read_only_rpc_backoff_is_capped
 )
