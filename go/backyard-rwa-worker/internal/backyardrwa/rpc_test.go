@@ -187,16 +187,16 @@ func TestConfirmedTransactionParsesStaticAndLoadedTokenBalances(t *testing.T) {
 			t.Fatalf("unsafe transaction receipt request: %s", body)
 		}
 		returnData := base64.StdEncoding.EncodeToString(make([]byte, 8))
-		return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"slot":91,"meta":{"err":null,"preTokenBalances":[{"accountIndex":0,"mint":"%s","owner":"%s","programId":"%s","uiTokenAmount":{"amount":"10"}},{"accountIndex":1,"mint":"%s","owner":"%s","programId":"%s","uiTokenAmount":{"amount":"1"}}],"postTokenBalances":[{"accountIndex":0,"mint":"%s","owner":"%s","programId":"%s","uiTokenAmount":{"amount":"7"}},{"accountIndex":1,"mint":"%s","owner":"%s","programId":"%s","uiTokenAmount":{"amount":"4"}}],"loadedAddresses":{"writable":["%s"],"readonly":[]},"returnData":{"programId":"%s","data":["%s","base64"]}},"transaction":{"message":{"accountKeys":["%s"]}}}}`,
+		return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"slot":91,"meta":{"err":null,"preTokenBalances":[{"accountIndex":0,"mint":"%s","owner":"%s","programId":"%s","uiTokenAmount":{"amount":"10"}},{"accountIndex":1,"mint":"%s","owner":"%s","programId":"%s","uiTokenAmount":{"amount":"1"}}],"postTokenBalances":[{"accountIndex":0,"mint":"%s","owner":"%s","programId":"%s","uiTokenAmount":{"amount":"7"}},{"accountIndex":1,"mint":"%s","owner":"%s","programId":"%s","uiTokenAmount":{"amount":"4"}}],"loadedAddresses":{"writable":["%s"],"readonly":[]},"returnData":{"programId":"%s","data":["%s","base64"]},"logMessages":["Program return: %s %s"]},"transaction":{"message":{"accountKeys":["%s"]}}}}`,
 			mint, authority, classicTokenProgram, mint, authority, token2022Program,
 			mint, authority, classicTokenProgram, mint, authority, token2022Program,
-			loaded, bridgeAdaptorProgram, returnData, static)), nil
+			loaded, bridgeAdaptorProgram, returnData, bridgeAdaptorProgram, returnData, static)), nil
 	})
 	receipt, err := client.ConfirmedTransaction(context.Background(), "signature")
 	if err != nil || receipt.Slot != 91 || receipt.Signature != "signature" ||
 		len(receipt.PreTokenBalances) != 2 || receipt.PreTokenBalances[0].Address != static ||
 		receipt.PreTokenBalances[1].Address != loaded || receipt.PostTokenBalances[1].Raw != 4 ||
-		receipt.ReturnData == nil || receipt.ReturnData.ProgramID != bridgeAdaptorProgram {
+		receipt.ReturnData == nil || receipt.ReturnData.ProgramID != bridgeAdaptorProgram || len(receipt.Logs) != 1 {
 		t.Fatalf("receipt=%+v err=%v", receipt, err)
 	}
 }

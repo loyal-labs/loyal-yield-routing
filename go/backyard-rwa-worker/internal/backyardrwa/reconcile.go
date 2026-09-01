@@ -152,8 +152,20 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 		}
 	}
 	if expected.ReturnData != nil {
-		if receipt.ReturnData == nil || receipt.ReturnData.ProgramID != expected.ReturnData.ProgramID ||
-			receipt.ReturnData.DataBase64 != expected.ReturnData.DataBase64 {
+		returnMatches := false
+		if receipt.ReturnData != nil {
+			returnMatches = receipt.ReturnData.ProgramID == expected.ReturnData.ProgramID &&
+				receipt.ReturnData.DataBase64 == expected.ReturnData.DataBase64
+		} else {
+			wantLog := fmt.Sprintf("Program return: %s %s", expected.ReturnData.ProgramID, expected.ReturnData.DataBase64)
+			for _, line := range receipt.Logs {
+				if line == wantLog {
+					returnMatches = true
+					break
+				}
+			}
+		}
+		if !returnMatches {
 			return Reconciliation{}, nil, fmt.Errorf("adaptor return data mismatch")
 		}
 	}

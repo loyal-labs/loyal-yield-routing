@@ -49,6 +49,7 @@ type ConfirmedTransactionEvidence struct {
 	PreTokenBalances  []TransactionTokenBalance
 	PostTokenBalances []TransactionTokenBalance
 	ReturnData        *ProgramReturnData
+	Logs              []string
 }
 
 func NewRPCClient(rpcURL string) (*RPCClient, error) {
@@ -306,6 +307,7 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 			Err               json.RawMessage `json:"err"`
 			PreTokenBalances  []tokenBalance  `json:"preTokenBalances"`
 			PostTokenBalances []tokenBalance  `json:"postTokenBalances"`
+			LogMessages       []string        `json:"logMessages"`
 			LoadedAddresses   struct {
 				Writable []string `json:"writable"`
 				Readonly []string `json:"readonly"`
@@ -365,6 +367,7 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 	}
 	evidence := ConfirmedTransactionEvidence{
 		Signature: signature, Slot: result.Slot, PreTokenBalances: pre, PostTokenBalances: post,
+		Logs: append([]string(nil), result.Meta.LogMessages...),
 	}
 	if result.Meta.ReturnData != nil {
 		if result.Meta.ReturnData.ProgramID == "" || len(result.Meta.ReturnData.Data) != 2 ||

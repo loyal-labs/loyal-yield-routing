@@ -66,6 +66,34 @@ func TestConfirmedTransactionReconciliationRejectsReturnDataDrift(t *testing.T) 
 	}
 }
 
+func TestConfirmedTransactionReconciliationAcceptsExactRuntimeReturnLog(t *testing.T) {
+	mint, authority, address := testPublicKey(11), testPublicKey(44), testPublicKey(77)
+	encoded := base64.StdEncoding.EncodeToString(make([]byte, 8))
+	expected := ExpectedEffects{
+		Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "bridge", Conserved: true,
+		Accounts:   []ExpectedAccountEffect{{Address: address, Owner: classicTokenProgram, Mint: mint, Authority: authority, BeforeRaw: 1, AfterRaw: 1}},
+		ReturnData: &ExpectedReturnData{ProgramID: bridgeAdaptorProgram, DataBase64: encoded},
+	}
+	receipt := ConfirmedTransactionEvidence{
+		Signature: "signature", Slot: 1,
+		PreTokenBalances:  []TransactionTokenBalance{{Address: address, OwnerProgram: classicTokenProgram, Mint: mint, Authority: authority, Raw: 1}},
+		PostTokenBalances: []TransactionTokenBalance{{Address: address, OwnerProgram: classicTokenProgram, Mint: mint, Authority: authority, Raw: 1}},
+		Logs:              []string{"Program return: " + bridgeAdaptorProgram + " " + encoded},
+	}
+	if _, _, err := ReconcileConfirmedTransaction(expected, receipt); err != nil {
+		t.Fatal(err)
+	}
+	receipt.ReturnData = &ProgramReturnData{ProgramID: bridgeAdaptorProgram, DataBase64: base64.StdEncoding.EncodeToString([]byte("different"))}
+	if _, _, err := ReconcileConfirmedTransaction(expected, receipt); err == nil {
+		t.Fatal("matching runtime log overrode contradictory metadata return data")
+	}
+	receipt.ReturnData = nil
+	receipt.Logs[0] = "Program log: Program return: " + bridgeAdaptorProgram + " " + encoded
+	if _, _, err := ReconcileConfirmedTransaction(expected, receipt); err == nil {
+		t.Fatal("spoofable program log was accepted as runtime return data")
+	}
+}
+
 func TestDecodeExpectedEffectsFromOperationEnvelope(t *testing.T) {
 	mint, authority, address := testPublicKey(11), testPublicKey(44), testPublicKey(77)
 	expected := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{{Address: address, Owner: classicTokenProgram, Mint: mint, Authority: authority}}}

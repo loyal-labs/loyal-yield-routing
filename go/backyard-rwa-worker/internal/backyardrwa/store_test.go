@@ -252,12 +252,16 @@ func TestActionableIdempotencyUsesDurableTerminalEpoch(t *testing.T) {
 		"operation_id",
 		"route_key = $1",
 		"status IN ('reconciled','failed')",
+		"status = 'manual_recovery' AND action = 'REPORT_NAV'",
 		"ORDER BY updated_at DESC, operation_id DESC LIMIT 1",
 		"'genesis'",
 	} {
 		if !strings.Contains(query, required) {
 			t.Fatalf("durable operation epoch query is missing %q", required)
 		}
+	}
+	if strings.Contains(query, "status = 'manual_recovery')") {
+		t.Fatal("capital-moving manual recovery was made retryable")
 	}
 	actionable := Decision{Action: VoltrAllocateToSquads, IdempotencyKey: "economic-state"}
 	first, err := durableDecisionIdempotencyKey("route", "reconciled-a", actionable)
@@ -289,6 +293,27 @@ func TestActionableIdempotencyUsesDurableTerminalEpoch(t *testing.T) {
 	}
 	if holdA != holdB {
 		t.Fatal("unchanged HOLD stopped deduping across lifecycle epochs")
+	}
+}
+
+func TestCapitalManualRecoveryBlocksEveryNewExecutableDecision(t *testing.T) {
+	query := normalizeSQL(UnresolvedCapitalRecoverySQL)
+	for _, required := range []string{
+		"status = 'manual_recovery'",
+		"'VOLTR_ALLOCATE_TO_SQUADS'",
+		"'STAGE_SQUADS_TO_VOLTR'",
+		"'VOLTR_RESTORE_IDLE'",
+		"'SWAP_USDC_TO_PRIME_STEP'",
+		"'SWAP_PRIME_TO_USDC_STEP'",
+		"'OPEN_PRIME_USDC_STEP'",
+		"'DELEVER_PRIME_USDC_STEP'",
+	} {
+		if !strings.Contains(query, required) {
+			t.Fatalf("manual-recovery fence is missing %q", required)
+		}
+	}
+	if strings.Contains(query, "'REPORT_NAV'") {
+		t.Fatal("report-only manual recovery was made a capital execution blocker")
 	}
 }
 

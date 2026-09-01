@@ -34,10 +34,14 @@ const OperationRouteForLeaseSQL = `SELECT operation.route_key FROM loyal_yield.m
 const PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP') FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
 
 // LatestDecisionEpochSQL advances after a fully reconciled mutation or an
-// explicitly terminal pre-broadcast failure. Including failed operations makes
-// the next reobserved build distinct without using slot/randomness, while a
-// crash before terminalization still deduplicates to the original operation.
-const LatestDecisionEpochSQL = `SELECT COALESCE((SELECT operation_id FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status IN ('reconciled','failed') ORDER BY updated_at DESC, operation_id DESC LIMIT 1), 'genesis')`
+// explicitly terminal pre-broadcast failure. A confirmed report-only operation
+// that reached manual recovery is also safe to supersede: its immutable wire
+// cannot move capital, while capital-moving manual recovery remains a hard
+// automatic stop. This lets a corrected reconciler publish a fresh NAV report
+// without making ambiguous money movement retryable.
+const LatestDecisionEpochSQL = `SELECT COALESCE((SELECT operation_id FROM loyal_yield.multiply_operations WHERE route_key = $1 AND (status IN ('reconciled','failed') OR (status = 'manual_recovery' AND action = 'REPORT_NAV')) ORDER BY updated_at DESC, operation_id DESC LIMIT 1), 'genesis')`
+
+const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP'))`
 
 const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7, updated_at = now() WHERE operation_id = $1 AND status = 'simulated'`
 
@@ -324,6 +328,13 @@ func (d *Database) RecordDecision(
 	}
 	operationEpoch := ""
 	if decision.Action != Hold && decision.Action != HoldManualRecovery {
+		var unresolvedCapitalRecovery bool
+		if err := tx.QueryRow(ctx, UnresolvedCapitalRecoverySQL, routeKey).Scan(&unresolvedCapitalRecovery); err != nil {
+			return DecisionRecord{}, fmt.Errorf("read unresolved capital recovery: %w", err)
+		}
+		if unresolvedCapitalRecovery {
+			return DecisionRecord{}, fmt.Errorf("unresolved capital-moving manual recovery blocks execution")
+		}
 		// Economic observations intentionally exclude slot. Namespace executable
 		// decisions by the last completed lifecycle mutation so retries before
 		// reconciliation dedupe, while a genuinely later cycle can execute the
