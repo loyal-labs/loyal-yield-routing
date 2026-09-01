@@ -1,6 +1,6 @@
 use crate::squads::{
     create_program_interaction_action_instruction,
-    update_deployed_program_interaction_action_instruction, SquadsAccountConstraint,
+    replace_deployed_program_interaction_action_instruction, SquadsAccountConstraint,
     SquadsAccountConstraintType, SquadsDataConstraint, SquadsDataOperator, SquadsDataValue,
     SquadsInstructionConstraint,
 };
@@ -63,7 +63,7 @@ pub struct VoltrCustomPolicyPlan {
     pub policy: Pubkey,
     pub seed: u64,
     pub create_instruction: Instruction,
-    pub update_instruction: Instruction,
+    pub replace_instruction: Instruction,
     pub constraint_index: u8,
     pub constraint_indices: Vec<u8>,
 }
@@ -396,11 +396,11 @@ fn policy_plan(
         identity.vault_index,
         constraints.clone(),
     )?;
-    let update_instruction = update_deployed_program_interaction_action_instruction(
+    let replace_instruction = replace_deployed_program_interaction_action_instruction(
         identity.settings,
         identity.authority,
-        policy,
         identity.delegated_signer,
+        seed,
         identity.vault_index,
         constraints,
     )?;
@@ -408,7 +408,7 @@ fn policy_plan(
         policy,
         seed,
         create_instruction,
-        update_instruction,
+        replace_instruction,
         constraint_index,
         constraint_indices,
     })
@@ -942,20 +942,20 @@ mod tests {
             &policies.withdraw,
         ] {
             assert_eq!(
-                policy.update_instruction.program_id,
+                policy.replace_instruction.program_id,
                 policy.create_instruction.program_id
             );
-            assert_eq!(policy.update_instruction.accounts.len(), 6);
-            assert_eq!(policy.update_instruction.accounts[5].pubkey, policy.policy);
+            assert_eq!(policy.replace_instruction.accounts.len(), 6);
+            assert_eq!(policy.replace_instruction.accounts[5].pubkey, policy.policy);
             assert_ne!(
-                policy.update_instruction.data, policy.create_instruction.data,
-                "PolicyUpdate must not reuse PolicyCreate wire bytes"
+                policy.replace_instruction.data, policy.create_instruction.data,
+                "replace must prepend PolicyRemove to the PolicyCreate wire"
             );
         }
     }
 
     #[test]
-    fn four_split_bridge_policy_create_and_update_packets_fit() {
+    fn four_split_bridge_policy_create_and_replace_packets_fit() {
         let authority = Keypair::new();
         let mut identity = identity();
         identity.authority = authority.pubkey();
@@ -964,25 +964,25 @@ mod tests {
             (
                 "allocation",
                 &policies.allocation.create_instruction,
-                &policies.allocation.update_instruction,
+                &policies.allocation.replace_instruction,
             ),
             (
                 "nav",
                 &policies.nav_refresh.create_instruction,
-                &policies.nav_refresh.update_instruction,
+                &policies.nav_refresh.replace_instruction,
             ),
             (
                 "stage",
                 &policies.stage_withdrawal.create_instruction,
-                &policies.stage_withdrawal.update_instruction,
+                &policies.stage_withdrawal.replace_instruction,
             ),
             (
                 "withdraw",
                 &policies.withdraw.create_instruction,
-                &policies.withdraw.update_instruction,
+                &policies.withdraw.replace_instruction,
             ),
         ]
-        .map(|(name, create_instruction, update_instruction)| {
+        .map(|(name, create_instruction, replace_instruction)| {
             (
                 name,
                 signed_policy_create_packet_bytes(
@@ -991,7 +991,7 @@ mod tests {
                     Hash::new_unique(),
                 ),
                 signed_policy_create_packet_bytes(
-                    update_instruction,
+                    replace_instruction,
                     &authority,
                     Hash::new_unique(),
                 ),
@@ -1001,8 +1001,8 @@ mod tests {
         assert!(packets
             .iter()
             .all(
-                |(_, create_bytes, update_bytes)| *create_bytes <= SOLANA_PACKET_BYTES
-                    && *update_bytes <= SOLANA_PACKET_BYTES
+                |(_, create_bytes, replace_bytes)| *create_bytes <= SOLANA_PACKET_BYTES
+                    && *replace_bytes <= SOLANA_PACKET_BYTES
             ));
     }
 

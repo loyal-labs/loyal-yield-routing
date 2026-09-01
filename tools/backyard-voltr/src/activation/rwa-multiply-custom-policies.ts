@@ -3,7 +3,7 @@ import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, resolve } from "node:path";
 
 import { AccountRole, address, type Instruction } from "@solana/kit";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey, SystemProgram } from "@solana/web3.js";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import { prepareSignedV0Transaction } from "../integrations/solana-compat.js";
@@ -36,6 +36,32 @@ function instruction(value: CustomPolicyArtifact["policies"][number]["createInst
     })),
     data: Buffer.from(value.dataBase64, "base64"),
   };
+}
+
+function assertAtomicReplacementInstruction(value: Instruction, target: CustomPolicyArtifact["policies"][number]) {
+  const data = Buffer.from(value.data ?? []);
+  const accounts = value.accounts ?? [];
+  invariant(value.programAddress === RWA_MULTIPLY_ROUTE.squads.program
+    && accounts.length === 6
+    && accounts[0]?.address === RWA_MULTIPLY_ROUTE.squads.settings
+    && accounts[0]?.role === AccountRole.WRITABLE
+    && accounts[1]?.address === RWA_MULTIPLY_ROUTE.setupAdmin
+    && accounts[1]?.role === AccountRole.WRITABLE_SIGNER
+    && accounts[2]?.address === SystemProgram.programId.toBase58()
+    && accounts[2]?.role === AccountRole.READONLY
+    && accounts[3]?.address === RWA_MULTIPLY_ROUTE.squads.program
+    && accounts[3]?.role === AccountRole.READONLY
+    && accounts[4]?.address === RWA_MULTIPLY_ROUTE.setupAdmin
+    && accounts[4]?.role === AccountRole.READONLY_SIGNER
+    && accounts[5]?.address === target.policy
+    && accounts[5]?.role === AccountRole.WRITABLE,
+  "replacement escaped the exact Settings/policy authority boundary");
+  invariant(data.length > 55 && data[8] === 1 && data.readUInt32LE(9) === 2
+    && data[13] === 9
+    && new PublicKey(data.subarray(14, 46)).toBase58() === target.policy
+    && data[46] === 7
+    && data.readBigUInt64LE(47) === BigInt(target.seed),
+  "replacement is not exactly PolicyRemove then same-seed PolicyCreate");
 }
 
 function writePrivate(path: string, value: Record<string, unknown>, flag: "w" | "wx") {
@@ -77,12 +103,14 @@ async function main() {
       transaction?: {
         expectedSignature?: unknown;
         projectedPolicyDataSha256?: unknown;
+        projectedSettingsDataSha256?: unknown;
         protectedPreviousVaultSha256?: unknown;
+        protectedVoltrVaultSha256?: unknown;
       };
     };
     const signature = String(pending.transaction?.expectedSignature ?? "");
     const policyAddress = String(pending.policy ?? "");
-    invariant(pending.mutation === "create" || pending.mutation === "update",
+    invariant(pending.mutation === "create" || pending.mutation === "replace",
       "pending journal lacks a valid policy mutation kind");
     invariant(signature.length > 0 && policyAddress.length > 0, "pending journal lacks signature or policy identity");
     const status = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
@@ -91,9 +119,11 @@ async function main() {
     const installed = before.rows.find((row) => row.policy === policyAddress);
     invariant(installed?.pass === true && installed.operation === pending.operation && installed.seed === String(pending.seed),
       "pending policy does not decode to the exact finalized contract");
-    const [policyInfo, protectedPrevious] = await connection.getMultipleAccountsInfo([
+    const [policyInfo, settingsInfo, protectedPrevious, protectedVoltr] = await connection.getMultipleAccountsInfo([
       new PublicKey(policyAddress),
+      new PublicKey(route.squads.settings),
       new PublicKey(route.previousBackyardVault),
+      new PublicKey(route.vault.address),
     ], "finalized");
     invariant(policyInfo != null, "finalized policy account is absent");
     const finalizedPolicyDataSha256 = sha256(policyInfo.data);
@@ -101,6 +131,10 @@ async function main() {
       "finalized policy bytes differ from the signed simulation projection");
     invariant(protectedPrevious && sha256(protectedPrevious.data) === pending.transaction?.protectedPreviousVaultSha256,
       "protected Backyard vault changed across policy activation");
+    invariant(protectedVoltr && sha256(protectedVoltr.data) === pending.transaction?.protectedVoltrVaultSha256,
+      "active Voltr vault changed across policy activation");
+    invariant(settingsInfo && sha256(settingsInfo.data) === pending.transaction?.projectedSettingsDataSha256,
+      "finalized Settings bytes differ from the signed simulation projection");
     writePrivate(journal, { ...pending, verdict: "FINALIZED_RECONCILED", signature,
       finalizedSlot: landed.slot, finalizedContextSlot: status.context.slot,
       finalizedPolicyDataSha256,
@@ -119,9 +153,17 @@ async function main() {
   const target = mutation.target;
   const targetIndex = before.artifact.policies.findIndex(({ policy }) => policy === target.policy);
   invariant(targetIndex >= 0, "selected custom policy is absent from the compiled artifact");
-  const protectedPrevious = await connection.getAccountInfo(new PublicKey(route.previousBackyardVault), "finalized");
+  const [settingsBefore, protectedPrevious, protectedVoltr] = await connection.getMultipleAccountsInfo([
+    new PublicKey(route.squads.settings),
+    new PublicKey(route.previousBackyardVault),
+    new PublicKey(route.vault.address),
+  ], "finalized");
+  invariant(settingsBefore?.owner.toBase58() === route.squads.program, "Squads Settings is absent or inexact");
   invariant(protectedPrevious?.owner.toBase58() === route.programs.voltr, "protected Backyard vault is absent or inexact");
+  invariant(protectedVoltr?.owner.toBase58() === route.programs.voltr, "active Voltr vault is absent or inexact");
+  const settingsBeforeSha256 = sha256(settingsBefore.data);
   const protectedPreviousSha256 = sha256(protectedPrevious.data);
+  const protectedVoltrSha256 = sha256(protectedVoltr.data);
   const targetBeforeResponse = await connection.getAccountInfoAndContext(new PublicKey(target.policy), {
     commitment: "finalized",
     minContextSlot: before.contextSlot,
@@ -131,17 +173,20 @@ async function main() {
     invariant(targetBefore === null, "custom policy appeared after finalized absence inspection");
   } else {
     invariant(targetBefore?.owner.toBase58() === route.squads.program,
-      "custom policy disappeared or changed owner before update simulation");
+      "custom policy disappeared or changed owner before replacement simulation");
     invariant(sha256(targetBefore.data) === mutation.row.dataSha256,
-      "custom policy bytes changed after finalized update inspection");
+      "custom policy bytes changed after finalized replacement inspection");
   }
+  const selectedInstruction = instruction(mutation.instruction);
+  if (mutation.kind === "replace") assertAtomicReplacementInstruction(selectedInstruction, target);
   const prepared = await prepareSignedV0Transaction({
     rpcUrl,
     feePayer: admin,
     commitment: "finalized",
     minimumContextSlot: before.contextSlot,
-    instructions: [instruction(mutation.instruction)],
-    inspectedAddresses: [target.policy, route.squads.settings, route.previousBackyardVault, route.setupAdmin],
+    instructions: [selectedInstruction],
+    inspectedAddresses: [target.policy, route.squads.settings, route.previousBackyardVault,
+      route.vault.address, route.setupAdmin],
   });
   invariant(prepared.packetBytes <= PACKET_LIMIT,
     `custom ${target.operation} policy ${mutation.kind} packet exceeds ${PACKET_LIMIT} bytes`);
@@ -150,10 +195,15 @@ async function main() {
       err: prepared.simulation.err,
       logs: prepared.simulation.logs,
     })}`);
-  const [postPolicy, postSettings, postPrevious, postAdmin] = prepared.simulation.postAccounts;
+  const [postPolicy, postSettings, postPrevious, postVoltr, postAdmin] = prepared.simulation.postAccounts;
   invariant(postPolicy?.owner === route.squads.program, "simulation did not project the exact policy owner");
   invariant(postSettings?.owner === route.squads.program, "simulation changed Settings ownership");
+  if (mutation.kind === "replace") {
+    invariant(sha256(postSettings.data) === settingsBeforeSha256,
+      "same-seed atomic replacement changed Settings bytes");
+  }
   invariant(postPrevious !== null && postPrevious !== undefined, "simulation omitted the protected Backyard vault");
+  invariant(postVoltr !== null && postVoltr !== undefined, "simulation omitted the active Voltr vault");
   invariant(postAdmin !== null && postAdmin !== undefined, "simulation omitted the setup admin");
   const projectedRentDeltaLamports = Math.max(0, postPolicy.lamports - (targetBefore?.lamports ?? 0));
   const projectedCostLamports = projectedRentDeltaLamports + prepared.feeLamports;
@@ -161,8 +211,10 @@ async function main() {
     `projected custom policy cost ${projectedCostLamports} exceeds bound`);
   invariant(sha256(postPrevious.data) === protectedPreviousSha256,
     "simulation changed the protected Backyard vault");
+  invariant(sha256(postVoltr.data) === protectedVoltrSha256,
+    "simulation changed the active Voltr vault");
   const plan = {
-    schema: "loyal-rwa-multiply-custom-policy-activation/v1",
+    schema: "loyal-rwa-multiply-custom-policy-activation/v2",
     verdict: execute ? "SIGNED_SIMULATION_PASS_PENDING_SEND" : "SIGNED_UNSENT_PASS",
     broadcast: execute,
     routeSpecSha256: (await import("../domain/rwa-multiply-route-spec.js")).rwaMultiplyRouteSpecSha256(),
@@ -180,8 +232,11 @@ async function main() {
       expectedSignature: prepared.expectedSignature,
       wireSha256: sha256(prepared.serializedTransaction),
       projectedPolicyDataSha256: sha256(postPolicy.data),
+      projectedSettingsDataSha256: sha256(postSettings.data),
       previousPolicyDataSha256: targetBefore ? sha256(targetBefore.data) : null,
+      previousSettingsDataSha256: settingsBeforeSha256,
       protectedPreviousVaultSha256: protectedPreviousSha256,
+      protectedVoltrVaultSha256: protectedVoltrSha256,
     },
   };
   if (!execute) {
@@ -204,9 +259,24 @@ async function main() {
   const after = await verifyInstalledCustomPolicies(connection);
   const installed = after.rows[targetIndex];
   invariant(installed?.pass === true, `finalized custom ${target.operation} policy did not reconcile exactly`);
-  const finalizedPolicy = await connection.getAccountInfo(new PublicKey(target.policy), "finalized");
+  const [finalizedPolicy, finalizedSettings, finalizedPrevious, finalizedVoltr] =
+    await connection.getMultipleAccountsInfo([
+      new PublicKey(target.policy),
+      new PublicKey(route.squads.settings),
+      new PublicKey(route.previousBackyardVault),
+      new PublicKey(route.vault.address),
+    ], "finalized");
   invariant(finalizedPolicy != null && sha256(finalizedPolicy.data) === plan.transaction.projectedPolicyDataSha256,
     "finalized policy bytes differ from the signed simulation projection");
+  invariant(finalizedSettings != null
+    && sha256(finalizedSettings.data) === plan.transaction.projectedSettingsDataSha256,
+  "finalized Settings bytes differ from the signed simulation projection");
+  invariant(finalizedPrevious != null
+    && sha256(finalizedPrevious.data) === plan.transaction.protectedPreviousVaultSha256,
+  "protected Backyard vault changed across direct policy activation");
+  invariant(finalizedVoltr != null
+    && sha256(finalizedVoltr.data) === plan.transaction.protectedVoltrVaultSha256,
+  "active Voltr vault changed across direct policy activation");
   writePrivate(journal, { ...plan, verdict: "FINALIZED_RECONCILED", signature: returned,
     finalizedContextSlot: confirmation.context.slot,
     finalizedPolicyDataSha256: sha256(finalizedPolicy.data), installed }, "wx");
