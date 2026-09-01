@@ -62,7 +62,7 @@ func ObserveConfirmedBridgeExecutionEvidence(
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		observation, err := ObserveConfirmedRouteSnapshot(ctx, rpc, manifest)
+		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccounts(ctx, rpc, manifest)
 		if err != nil {
 			return Observation{}, BridgeExecutionEvidence{}, err
 		}
@@ -70,18 +70,7 @@ func ObserveConfirmedBridgeExecutionEvidence(
 		if Decide(observation.Snapshot) != decision {
 			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("actionable decision changed before construction")
 		}
-		addresses := append(pinnedRouteNAVAddresses(), policy)
 		ticketRequired := decision.Action != StageSquadsToVoltr
-		if ticketRequired {
-			addresses = append(addresses, reportTicketPDA)
-		}
-		slot, accounts, err := rpc.GetMultipleAccounts(ctx, addresses, observation.Snapshot.Slot)
-		if err != nil {
-			return Observation{}, BridgeExecutionEvidence{}, err
-		}
-		if slot != observation.Snapshot.Slot {
-			continue
-		}
 		policyAccount := accountAt(accounts, policy)
 		if policyAccount.Owner != bridgeSquadsProgram || policyAccount.Executable ||
 			policyAccount.Lamports == 0 || sha256Bytes(policyAccount.Data) != policyHash {
@@ -123,7 +112,7 @@ func ObserveConfirmedBridgeExecutionEvidence(
 		if err != nil {
 			return Observation{}, BridgeExecutionEvidence{}, err
 		}
-		nav, err := ComputeRouteNAV(slot, navAccounts, manifest, &postCustodies)
+		nav, err := ComputeRouteNAV(observation.Snapshot.Slot, navAccounts, manifest, &postCustodies)
 		if err != nil {
 			return Observation{}, BridgeExecutionEvidence{}, err
 		}
@@ -205,16 +194,13 @@ func ObserveConfirmedKaminoExecutionEvidence(
 		return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("invalid Kamino evidence request")
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		observation, err := ObserveConfirmedRouteSnapshot(ctx, rpc, manifest)
+		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccounts(ctx, rpc, manifest)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
-		position, err := rpc.ObserveKaminoPrimeUSDC(ctx)
+		position, err := observePrimeUSDCFromFixedAccounts(ctx, rpc.GetMultipleAccounts, observation.Snapshot.Slot, accounts)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
-		}
-		if position.Slot != observation.Snapshot.Slot {
-			continue
 		}
 		leg, wireAmount, effectAmount, err := selectKaminoLeg(decision, position)
 		if err != nil {
@@ -229,13 +215,6 @@ func ObserveConfirmedKaminoExecutionEvidence(
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
 		source, destination := kaminoLegCustodies(leg)
-		slot, accounts, err := rpc.GetMultipleAccounts(ctx, []string{request.Policy, source.Address, destination.Address}, position.Slot)
-		if err != nil {
-			return Observation{}, KaminoExecutionEvidence{}, err
-		}
-		if slot != position.Slot {
-			continue
-		}
 		policy := accountAt(accounts, request.Policy)
 		if policy.Owner != bridgeSquadsProgram || policy.Executable || policy.Lamports == 0 ||
 			sha256Bytes(policy.Data) != request.PolicyAccountDataSHA256 {

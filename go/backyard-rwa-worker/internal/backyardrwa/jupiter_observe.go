@@ -15,7 +15,7 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 		return Observation{}, JupiterExecutionEvidence{}, err
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		observation, err := ObserveConfirmedRouteSnapshot(ctx, rpc, manifest)
+		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccounts(ctx, rpc, manifest)
 		if err != nil {
 			return Observation{}, JupiterExecutionEvidence{}, err
 		}
@@ -23,13 +23,6 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("actionable decision changed before Jupiter construction")
 		}
 		sourceMint, destinationMint, sourceATA, destinationATA, _ := jupiterEdge(decision.Action)
-		slot, accounts, err := rpc.GetMultipleAccounts(ctx, []string{binding.Policy, sourceATA, destinationATA}, observation.Snapshot.Slot)
-		if err != nil {
-			return Observation{}, JupiterExecutionEvidence{}, err
-		}
-		if slot != observation.Snapshot.Slot {
-			continue
-		}
 		policy := accountAt(accounts, binding.Policy)
 		if policy.Owner != bridgeSquadsProgram || policy.Executable || policy.Lamports == 0 || sha256Bytes(policy.Data) != binding.PolicyAccountDataSHA256 {
 			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("Jupiter policy bytes or owner drifted")
