@@ -324,6 +324,51 @@ func TestLeasedWorkerRetriesObservationWithoutDroppingTheFence(t *testing.T) {
 	}
 }
 
+func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
+	manifest := readyWorkerManifest(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	leasing := &fakeRouteLeaseRuntime{}
+	observations, preparations, records, builds := 0, 0, 0, 0
+	actionable := base()
+	actionable.ObservationID = "retry-preparation"
+	actionable.VoltrIdleRaw = 10
+	worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, manifest: manifest, runtime: tickRuntime{
+		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
+		observe: func(context.Context) (Observation, error) {
+			observations++
+			return tickObservation(actionable), nil
+		},
+		prepareBridge: func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error) {
+			preparations++
+			if preparations == 1 {
+				return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(errors.New("confirmed reads advanced"))
+			}
+			return tickObservation(actionable), BridgeExecutionEvidence{}, nil
+		},
+		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+			records++
+			return DecisionRecord{Status: Decided, OperationID: "operation"}, nil
+		},
+		buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
+			builds++
+			cancel()
+			return nil
+		},
+	}}
+	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
+	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("f", 40), config)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected clean cancellation, got %v", err)
+	}
+	if observations != 2 || preparations != 2 || records != 1 || builds != 1 {
+		t.Fatalf("observations=%d preparations=%d records=%d builds=%d", observations, preparations, records, builds)
+	}
+	events := leasing.snapshotEvents()
+	if len(events) != 2 || !strings.HasPrefix(events[0], "acquire:") || events[1] != "release" {
+		t.Fatalf("preparation retry dropped or reacquired the route fence: %v", events)
+	}
+}
+
 func TestLeasedWorkerDoesNotRetryDatabaseObservationFailure(t *testing.T) {
 	databaseErr := errors.New("position snapshot constraint failed")
 	leasing := &fakeRouteLeaseRuntime{}

@@ -3,6 +3,7 @@ package backyardrwa
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -57,6 +58,20 @@ func TestConfirmedRPCRejectsAbsentAccount(t *testing.T) {
 	})
 	if _, _, err := client.GetMultipleAccounts(context.Background(), []string{"missing"}, 42); err == nil {
 		t.Fatal("missing account accepted")
+	} else if errors.Is(err, errConfirmedObservationUnavailable) {
+		t.Fatal("missing required account was misclassified as transient")
+	}
+}
+
+func TestConfirmedRPCClassifiesExhaustedReadFailureAsTransient(t *testing.T) {
+	client, _ := NewRPCClient("https://rpc.invalid")
+	client.retryBackoff = 0
+	client.client.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return response(`{"jsonrpc":"2.0","id":1,"error":{"code":-32004,"message":"minimum context slot has not been reached"}}`), nil
+	})
+	_, err := client.ConfirmedSlot(context.Background())
+	if !errors.Is(err, errConfirmedObservationUnavailable) {
+		t.Fatalf("exhausted confirmed read was not classified as transient: %v", err)
 	}
 }
 

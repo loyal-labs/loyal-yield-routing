@@ -134,7 +134,7 @@ func (c *RPCClient) observeKaminoPrimeUSDC(ctx context.Context, config KaminoObs
 			EntryCapacityRaw:        entryCapacityRaw,
 		}, nil
 	}
-	return KaminoPosition{}, fmt.Errorf("confirmed Kamino reserve and oracle reads did not align after %d attempts", maxConfirmedObservationAttempts)
+	return KaminoPosition{}, confirmedObservationUnavailable(fmt.Errorf("confirmed Kamino reserve and oracle reads did not align after %d attempts", maxConfirmedObservationAttempts))
 }
 
 type decodedKaminoObligation struct {

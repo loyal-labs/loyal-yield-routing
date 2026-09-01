@@ -146,7 +146,7 @@ func ObserveConfirmedBridgeExecutionEvidence(
 			ExpectedEffects: effects,
 		}, nil
 	}
-	return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("confirmed bridge execution inputs did not align")
+	return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("confirmed bridge execution inputs did not align"))
 }
 
 func expectedAdaptorReturnData(navAfterRaw uint64) *ExpectedReturnData {
@@ -248,7 +248,7 @@ func ObserveConfirmedKaminoExecutionEvidence(
 		observation.Snapshot.HasPosition = position.HasPosition
 		return observation, KaminoExecutionEvidence{Request: request, ExpectedEffects: effects}, nil
 	}
-	return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("confirmed bridge and Kamino construction reads did not align")
+	return Observation{}, KaminoExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("confirmed bridge and Kamino construction reads did not align"))
 }
 
 func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSDCLeg, uint64, uint64, error) {

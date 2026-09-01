@@ -44,7 +44,7 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		observe: func(ctx context.Context) (Observation, error) {
 			observation, err := ObserveConfirmedRouteSnapshot(ctx, rpc, manifest)
 			if err != nil {
-				return Observation{}, fmt.Errorf("%w: %v", errConfirmedObservationUnavailable, err)
+				return Observation{}, err
 			}
 			required, err := database.PostMutationNAVRequired(ctx, productionRouteKey)
 			if err != nil {
@@ -80,6 +80,13 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			return BuildSimulateAndPersistJupiter(ctx, database, rpc, operationID, evidence)
 		},
 	}
+}
+
+func confirmedObservationUnavailable(err error) error {
+	if err == nil || errors.Is(err, errConfirmedObservationUnavailable) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 }
 
 func NewWorker(database *Database, rpc *RPCClient, routeKey string, config Config) (*Worker, error) {

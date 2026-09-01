@@ -83,5 +83,5 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 			}},
 		}, nil
 	}
-	return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("confirmed Jupiter construction reads did not align")
+	return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("confirmed Jupiter construction reads did not align"))
 }
