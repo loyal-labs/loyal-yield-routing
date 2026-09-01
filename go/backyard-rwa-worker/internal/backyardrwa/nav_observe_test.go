@@ -150,13 +150,20 @@ func TestComputeRouteNAVPoststateOverridesOnlyCustody(t *testing.T) {
 	}
 }
 
-func TestComputeRouteNAVRejectsStalePricesUnknownCustodyAndUnsupportedPosition(t *testing.T) {
+func TestComputeRouteNAVAcceptsRefreshMarkerAndRejectsInvalidInputs(t *testing.T) {
 	manifest := readyWorkerManifest(t)
-	t.Run("stale reserve", func(t *testing.T) {
+	t.Run("refresh marker", func(t *testing.T) {
 		accounts := routeNAVFixture(t, 77)
 		accountAt(accounts, kaminoCollateralReserve).Data[24] = 1
-		if _, err := ComputeRouteNAV(77, accounts, manifest, nil); err == nil || !strings.Contains(err.Error(), "stale") {
-			t.Fatalf("stale reserve accepted: %v", err)
+		if _, err := ComputeRouteNAV(77, accounts, manifest, nil); err != nil {
+			t.Fatalf("transaction refresh marker rejected: %v", err)
+		}
+	})
+	t.Run("zero refresh slot", func(t *testing.T) {
+		accounts := routeNAVFixture(t, 77)
+		binary.LittleEndian.PutUint64(accountAt(accounts, kaminoCollateralReserve).Data[16:24], 0)
+		if _, err := ComputeRouteNAV(77, accounts, manifest, nil); err == nil || !strings.Contains(err.Error(), "reserve") {
+			t.Fatalf("zero reserve refresh slot accepted: %v", err)
 		}
 	})
 	t.Run("invalid zero price", func(t *testing.T) {
