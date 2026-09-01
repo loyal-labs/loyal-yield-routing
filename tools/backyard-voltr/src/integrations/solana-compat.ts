@@ -70,6 +70,7 @@ export type PreparedTransaction = Readonly<{
     err: unknown;
     unitsConsumed: number | null;
     logs: readonly string[];
+    returnData: Readonly<{ programId: string; dataBase64: string }> | null;
     postAccounts: readonly (AccountSnapshot | null)[];
   }>;
 }>;
@@ -692,6 +693,12 @@ export async function prepareSignedV0Transaction(input: Readonly<{
   if ((simulation.value.accounts?.length ?? -1) !== input.inspectedAddresses.length) {
     throw new Error("simulation omitted an inspected post-account image");
   }
+  const rawReturnData = simulation.value.returnData;
+  if (rawReturnData !== null && rawReturnData !== undefined
+    && (rawReturnData.data[1] !== "base64"
+      || Buffer.from(rawReturnData.data[0], "base64").toString("base64") !== rawReturnData.data[0])) {
+    throw new Error("simulation returned malformed program return data");
+  }
   return {
     cluster: "mainnet-beta",
     genesisHash,
@@ -708,6 +715,10 @@ export async function prepareSignedV0Transaction(input: Readonly<{
       err: simulation.value.err,
       unitsConsumed: simulation.value.unitsConsumed ?? null,
       logs: simulation.value.logs ?? [],
+      returnData: rawReturnData === null || rawReturnData === undefined ? null : {
+        programId: rawReturnData.programId,
+        dataBase64: rawReturnData.data[0],
+      },
       postAccounts: input.inspectedAddresses.map((account, index) =>
         snapshot(account, simulation.value.accounts?.[index] as Parameters<typeof snapshot>[1] ?? null)),
     },

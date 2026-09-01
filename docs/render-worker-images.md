@@ -8,6 +8,7 @@ projects/environments:
 | LaserStream-heavy monitors | `loyal-yield-laserstream-workers` / `production` | `loyal-kamino-reserve-monitor`, `loyal-balance-sweep-ata-monitor` | `ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-<commit>` |
 | LaserStream-heavy staging monitor | `loyal-yield-laserstream-workers` / `staging` | `loyal-balance-sweep-ata-monitor-staging` | `ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-<commit>` |
 | Lightweight SQL/background workers and realtime web service | `loyal-yield-light-workers` / `production` | `loyal-yield-realtime`, `loyal-balance-sweep-ata-projector`, `loyal-balance-sweep-autodeposit-trigger`, `loyal-same-mint-yield-monitor` | `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` |
+| Backyard RWA Go orchestrator | `loyal-yield-light-workers` / `production` | `loyal-backyard-rwa-worker` | `ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-<commit>` |
 | Lightweight staging workers | `loyal-yield-light-workers` / `staging` | `loyal-balance-sweep-ata-projector-staging`, `loyal-balance-sweep-autodeposit-trigger-staging`, `loyal-same-mint-yield-monitor-staging` | `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` |
 
 Current live pre-split Render state, observed with `render services -o json` on 2026-06-10:
@@ -35,6 +36,7 @@ Target split IDs, once created/imported in Render, must be recorded here before 
 | Light `loyal-balance-sweep-autodeposit-trigger` service | `srv-d8lplql7vvec73f1it6g` |
 | Light `loyal-same-mint-yield-monitor` service | `srv-d8n7gqbbc2fs73emk610` |
 | Light `loyal-route-lookup-table-provisioner` service | pending creation and production readback |
+| Light `loyal-backyard-rwa-worker` service | pending creation and production readback |
 | Heavy staging environment | `evm-d8plqfrtqb8s738actsg` |
 | Heavy `loyal-balance-sweep-ata-monitor-staging` service | `srv-d8plrh9194ac739eulrg` |
 | Light staging environment | `evm-d8plqhgjs32c738s1n70` |
@@ -154,6 +156,35 @@ Publishing these images does not deploy them.
 Deployment selects an already-published immutable SHA tag or digest; it never rebuilds Rust.
 Render services should use those immutable references and must not use `latest`
 as their only image reference.
+
+The Go orchestrator is built separately by
+`.github/workflows/backyard-rwa-worker-image.yml`. Pull requests run its Go and
+container probes without publishing; a trusted `main` push that changes the Go
+worker, its Dockerfile, or its workflow publishes
+`backyard-rwa-worker:sha-${GITHUB_SHA}`. The bootstrap Blueprint pin records the
+current worker-foundation source commit
+`sha-74e84ee127bcdb4f88b03d2701df05afad14b6af` so the file never contains a
+mutable tag. It is not the deployment target: after these lifecycle changes
+land and the workflow publishes their trusted `main` commit, update the
+Blueprint pin to that published SHA before creating the service. Read back the
+image revision label and runtime command before starting it.
+
+`loyal-backyard-rwa-worker` is a Render background worker, so it has no HTTP
+health path. Readiness is the process remaining alive after it validates the
+database, confirmed RPC, fixed route manifest, and route identity, followed by
+the startup line containing the route key, `LOYAL_IMAGE_VERSION`, and manifest
+SHA-256. Render sends `SIGTERM`; the Go entrypoint cancels the active context and
+the service has 60 seconds to drain before Render may send `SIGKILL`.
+
+The service has exactly four runtime bindings: secret
+`NEON_DATABASE_URL`, secret `SOLANA_RPC_URL`, secret `POLICY_KEYPAIR`, and fixed
+`BACKYARD_RWA_ROUTE_KEY=rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh`. Its small Go image
+does not contain `yield-migrations`, so migration
+`0070_backyard_rwa_worker.sql` must be applied and read back through the
+operator migration path before the service is started. The private image must
+use Render registry credential `loyal-ghcr`; the credential remains an
+out-of-Blueprint Dashboard/API binding because Render's Blueprint validator
+does not accept it on `runtime: image` services.
 
 Operator-only binaries are deliberately excluded from the production images.
 `Dockerfile.operator-tools` is packaged from the same shared artifact and its

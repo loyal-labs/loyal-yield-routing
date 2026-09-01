@@ -5,6 +5,7 @@
 
 mod actions;
 pub mod autonomous_vaults;
+pub mod backyard_policy_catalog;
 mod detection;
 mod earn_max;
 mod ids;
@@ -70,7 +71,9 @@ pub use protocols::{
     LoyalHubRebalanceBuilder, LoyalHubRebalanceTransfer, LoyalHubSwapExactIn,
 };
 pub use squads::{
-    compile_squads_inner_instruction, create_exact_program_interaction_policy_instruction,
+    compile_squads_inner_instruction,
+    create_deployed_semantic_program_interaction_policy_instruction,
+    create_exact_program_interaction_policy_instruction,
     create_semantic_program_interaction_policy_instruction,
     create_unlimited_spl_spending_limit_policy_instruction,
     decode_settings_signer_handoff_instruction, derive_action_account,

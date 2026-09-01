@@ -3721,6 +3721,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "loyal-multiply-guard-deployer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "loyal-solana-env",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "solana-client",
+ "solana-loader-v3-interface 3.0.0",
+ "solana-sdk",
+ "solana-transaction-status-client-types 2.3.13",
+]
+
+[[package]]
 name = "loyal-observability"
 version = "0.1.0"
 dependencies = [
@@ -3793,6 +3809,15 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "tokio",
+]
+
+[[package]]
+name = "loyal-voltr-rwa-nav-adaptor"
+version = "0.1.0"
+dependencies = [
+ "solana-program",
+ "solana-system-interface 1.0.0",
+ "spl-token 8.0.0",
 ]
 
 [[package]]

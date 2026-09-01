@@ -57,3 +57,8 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 opt-level = 1
+
+[profile.release.package.loyal-voltr-rwa-nav-adaptor]
+codegen-units = 1
+opt-level = "z"
+strip = true

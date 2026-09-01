@@ -8,6 +8,10 @@ import {
 import bs58 from "bs58";
 
 import type { PartnerRouteSpec } from "../domain/route-spec.js";
+import {
+  RWA_MULTIPLY_ROUTE,
+  type RwaMultiplyRouteSpec,
+} from "../domain/rwa-multiply-route-spec.js";
 
 export type SigningMaterial = Readonly<{
   signer: KeyPairSigner;
@@ -59,4 +63,42 @@ export async function derivePartnerVaultSigningMaterial(
     throw new Error(`derived partner vault ${signer.address} does not match RouteSpec ${route.vault}`);
   }
   return { signer, privateSeed, secretKey: privateSeed };
+}
+
+async function deriveDomainSigningMaterial(
+  admin: SigningMaterial,
+  domain: string,
+  expectedAddress: string,
+  label: string,
+): Promise<SigningMaterial> {
+  const privateSeed = createHmac("sha256", admin.privateSeed).update(domain).digest();
+  const signer = await createKeyPairSignerFromPrivateKeyBytes(privateSeed);
+  if (signer.address !== expectedAddress) {
+    throw new Error(`derived ${label} ${signer.address} does not match RouteSpec ${expectedAddress}`);
+  }
+  return { signer, privateSeed, secretKey: privateSeed };
+}
+
+export async function deriveRwaMultiplyVaultSigningMaterial(
+  admin: SigningMaterial,
+  route: RwaMultiplyRouteSpec = RWA_MULTIPLY_ROUTE,
+): Promise<SigningMaterial> {
+  return deriveDomainSigningMaterial(
+    admin,
+    route.vault.derivationDomain,
+    route.vault.address,
+    "RWA Multiply vault",
+  );
+}
+
+export async function deriveRwaMultiplyStrategySigningMaterial(
+  admin: SigningMaterial,
+  route: RwaMultiplyRouteSpec = RWA_MULTIPLY_ROUTE,
+): Promise<SigningMaterial> {
+  return deriveDomainSigningMaterial(
+    admin,
+    route.customAdaptor.strategyDerivationDomain,
+    route.customAdaptor.strategyConfig,
+    "RWA Multiply strategy config",
+  );
 }
