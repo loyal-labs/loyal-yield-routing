@@ -86,6 +86,166 @@ async fn newer_policy_atomically_replaces_pending_target() {
 
 #[tokio::test]
 #[ignore = "requires ASK_2211_VERIFY_DATABASE_URL pointing at a throwaway database"]
+async fn closed_delegation_replay_does_not_overwrite_the_current_target() {
+    let database_url = std::env::var(DATABASE_URL_ENV).expect("throwaway database URL");
+    let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url))
+        .await
+        .expect("connect to throwaway database");
+
+    let historical_target_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO loyal_yield.balance_sweep_targets
+            (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+             wallet, wallet_usdc_ata, vault_usdc_ata, token_mint, wallet_token_ata,
+             vault_token_ata, delegated_signers, threshold, max_amount_per_period,
+             desired_active, chain_status, chain_observation_slot, subscription_authority,
+             recurring_delegation, recurring_delegation_nonce, wallet_balance_floor_raw,
+             last_seen_slot, last_seen_signature, cluster, closed_at)
+        VALUES
+            ('settings-closed-replay', 'wallet-closed-replay', 2, 'policy-closed-replay',
+             1, 'vault-closed-replay', 'wallet-closed-replay', 'wallet-ata-closed-replay',
+             'vault-ata-closed-replay', 'mint-closed-replay', 'wallet-ata-closed-replay',
+             'vault-ata-closed-replay', ARRAY['signer-closed-replay'], 1, 10000000,
+             FALSE, 'closed', 105, 'authority-closed-replay', 'delegation-closed-replay',
+             11, 0, 105, 'close-signature-closed-replay', 'mainnet-beta', now())
+        RETURNING id
+        "#,
+    )
+    .fetch_one(client.pool())
+    .await
+    .expect("insert closed historical target");
+
+    let current_target_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO loyal_yield.balance_sweep_targets
+            (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
+             wallet, wallet_usdc_ata, vault_usdc_ata, token_mint, wallet_token_ata,
+             vault_token_ata, delegated_signers, threshold, max_amount_per_period,
+             desired_active, chain_status, chain_observation_slot, subscription_authority,
+             recurring_delegation, recurring_delegation_nonce,
+             recurring_delegation_signature, recurring_delegation_confirmed_slot,
+             wallet_balance_floor_raw, last_seen_slot, last_seen_signature, cluster)
+        VALUES
+            ('settings-closed-replay', 'wallet-closed-replay', 1, 'policy-current-replay',
+             1, 'vault-closed-replay', 'wallet-closed-replay', 'wallet-ata-closed-replay',
+             'vault-ata-closed-replay', 'mint-closed-replay', 'wallet-ata-closed-replay',
+             'vault-ata-closed-replay', ARRAY['signer-closed-replay'], 1, 10000000,
+             TRUE, 'inconsistent', 110, 'authority-closed-replay',
+             'delegation-current-replay', 10, 'delegation-signature-current-replay', 90,
+             0, 110, 'snapshot-signature-current-replay', 'mainnet-beta')
+        RETURNING id
+        "#,
+    )
+    .fetch_one(client.pool())
+    .await
+    .expect("insert current target");
+
+    let returned = client
+        .record_autodeposit_recurring_delegation(AutodepositRecurringDelegationObserved {
+            wallet: "wallet-closed-replay".to_owned(),
+            vault_pubkey: "vault-closed-replay".to_owned(),
+            subscription_authority: "authority-closed-replay".to_owned(),
+            recurring_delegation: "delegation-closed-replay".to_owned(),
+            nonce: 11,
+            amount_per_period: 10_000_000,
+            period_length_seconds: 2_592_000,
+            start_timestamp: 1,
+            expiry_timestamp: 0,
+            signature: "delegation-signature-closed-replay".to_owned(),
+            slot: 101,
+        })
+        .await
+        .expect("treat the closed delegation observation as historical replay");
+    assert_eq!(returned.as_i64(), historical_target_id);
+
+    let historical: (String, String, Option<String>, Option<i64>, i64, String) = sqlx::query_as(
+        r#"
+            SELECT chain_status, recurring_delegation, recurring_delegation_signature,
+                   recurring_delegation_confirmed_slot, chain_observation_slot,
+                   last_seen_signature
+            FROM loyal_yield.balance_sweep_targets
+            WHERE id = $1
+            "#,
+    )
+    .bind(historical_target_id)
+    .fetch_one(client.pool())
+    .await
+    .expect("load historical target after replay");
+    assert_eq!(historical.0, "closed");
+    assert_eq!(historical.1, "delegation-closed-replay");
+    assert_eq!(
+        historical.2.as_deref(),
+        Some("delegation-signature-closed-replay")
+    );
+    assert_eq!(historical.3, Some(101));
+    assert_eq!(historical.4, 105);
+    assert_eq!(historical.5, "close-signature-closed-replay");
+
+    let current: (String, String, Option<String>, Option<i64>, i64) = sqlx::query_as(
+        r#"
+        SELECT chain_status, recurring_delegation, recurring_delegation_signature,
+               recurring_delegation_confirmed_slot, setup_generation
+        FROM loyal_yield.balance_sweep_targets
+        WHERE id = $1
+        "#,
+    )
+    .bind(current_target_id)
+    .fetch_one(client.pool())
+    .await
+    .expect("load current target after historical replay");
+    assert_eq!(
+        current,
+        (
+            "inconsistent".to_owned(),
+            "delegation-current-replay".to_owned(),
+            Some("delegation-signature-current-replay".to_owned()),
+            Some(90),
+            1,
+        )
+    );
+
+    let stale_owner = client
+        .record_autodeposit_recurring_delegation(AutodepositRecurringDelegationObserved {
+            wallet: "wallet-closed-replay".to_owned(),
+            vault_pubkey: "vault-closed-replay".to_owned(),
+            subscription_authority: "authority-closed-replay".to_owned(),
+            recurring_delegation: "delegation-unowned-stale-replay".to_owned(),
+            nonce: 9,
+            amount_per_period: 10_000_000,
+            period_length_seconds: 2_592_000,
+            start_timestamp: 1,
+            expiry_timestamp: 0,
+            signature: "delegation-signature-unowned-stale-replay".to_owned(),
+            slot: 89,
+        })
+        .await
+        .expect("ignore an unowned delegation older than the current setup");
+    assert_eq!(stale_owner.as_i64(), current_target_id);
+    let current_identity: (String, Option<i64>) = sqlx::query_as(
+        "SELECT recurring_delegation, recurring_delegation_confirmed_slot FROM loyal_yield.balance_sweep_targets WHERE id = $1",
+    )
+    .bind(current_target_id)
+    .fetch_one(client.pool())
+    .await
+    .expect("load current identity after stale unowned replay");
+    assert_eq!(
+        current_identity,
+        ("delegation-current-replay".to_owned(), Some(90))
+    );
+
+    let replay_reconciliation_requests: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM loyal_yield.autodeposit_reconciliation_requests WHERE target_id IN ($1, $2)",
+    )
+    .bind(historical_target_id)
+    .bind(current_target_id)
+    .fetch_one(client.pool())
+    .await
+    .expect("count replay reconciliation requests");
+    assert_eq!(replay_reconciliation_requests, 0);
+}
+
+#[tokio::test]
+#[ignore = "requires ASK_2211_VERIFY_DATABASE_URL pointing at a throwaway database"]
 async fn single_target_preserves_intent_and_owns_chain_lifecycle() {
     let database_url = std::env::var(DATABASE_URL_ENV).expect("throwaway database URL");
     let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url))
@@ -144,6 +304,32 @@ async fn single_target_preserves_intent_and_owns_chain_lifecycle() {
         .expect("activate finalized chain state");
     assert_eq!(active.chain_status, "active");
     assert_eq!(active.bootstrap_generation, None);
+
+    let replay_target_id = client
+        .record_autodeposit_recurring_delegation(AutodepositRecurringDelegationObserved {
+            wallet: "wallet-ask-2211".to_owned(),
+            vault_pubkey: "vault-ask-2211".to_owned(),
+            subscription_authority: "authority-ask-2211".to_owned(),
+            recurring_delegation: "delegation-ask-2211".to_owned(),
+            nonce: 11,
+            amount_per_period: 10_000_000,
+            period_length_seconds: 2_592_000,
+            start_timestamp: 1,
+            expiry_timestamp: 0,
+            signature: "delegation-signature-ask-2211".to_owned(),
+            slot: 101,
+        })
+        .await
+        .expect("replay delegation after a newer chain observation");
+    assert_eq!(replay_target_id, target_id);
+    let replayed_state: (String, i64, i64) = sqlx::query_as(
+        "SELECT chain_status, chain_observation_slot, setup_generation FROM loyal_yield.balance_sweep_targets WHERE id = $1",
+    )
+    .bind(target_id.as_i64())
+    .fetch_one(client.pool())
+    .await
+    .expect("load target after delegation replay");
+    assert_eq!(replayed_state, ("active".to_owned(), 102, 1));
 
     let bootstrap_lots: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM loyal_yield.balance_sweep_surplus_lots WHERE target_id = $1",
