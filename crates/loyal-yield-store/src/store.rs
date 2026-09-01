@@ -1754,7 +1754,117 @@ impl NeonSqlClient {
         let amount = to_i64_amount(input.amount_per_period)?;
         let period = to_i64_amount(input.period_length_seconds)?;
         let mut tx = self.pool.begin().await?;
-        let row = sqlx::query(
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0::bigint))")
+            .bind(format!(
+                "autodeposit-recurring-delegation:{}",
+                input.recurring_delegation
+            ))
+            .execute(&mut *tx)
+            .await?;
+
+        // A finalized delegation can be replayed after a newer target generation is
+        // current. Resolve the globally unique chain identity before wallet/vault
+        // state so the replay remains attached to its historical owner.
+        let existing_owner = sqlx::query(
+            r#"
+            SELECT id, wallet, vault_pubkey, subscription_authority,
+                   recurring_delegation_confirmed_slot
+            FROM loyal_yield.balance_sweep_targets
+            WHERE recurring_delegation = $1
+            FOR UPDATE
+            "#,
+        )
+        .bind(&input.recurring_delegation)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(owner) = existing_owner {
+            let owner_wallet: String = owner.get("wallet");
+            let owner_vault: String = owner.get("vault_pubkey");
+            let owner_authority: Option<String> = owner.get("subscription_authority");
+            if owner_wallet != input.wallet
+                || owner_vault != input.vault_pubkey
+                || owner_authority
+                    .as_deref()
+                    .is_some_and(|authority| authority != input.subscription_authority)
+            {
+                return Err(OrchestratorError::StoreInvariant(
+                    "recurring delegation is already owned by a different Autodeposit target"
+                        .to_owned(),
+                ));
+            }
+
+            let target_id = BalanceSweepTargetId(owner.get("id"));
+            let confirmed_slot: Option<i64> = owner.get("recurring_delegation_confirmed_slot");
+            if confirmed_slot.is_none_or(|confirmed_slot| slot > confirmed_slot) {
+                sqlx::query(
+                    r#"
+                    UPDATE loyal_yield.balance_sweep_targets
+                    SET subscription_authority = $1,
+                        recurring_delegation_nonce = $2,
+                        max_amount_per_period = $3,
+                        period_length_seconds = $4,
+                        start_timestamp = $5,
+                        recurring_delegation_expiry_timestamp = $6,
+                        recurring_delegation_signature = $7,
+                        recurring_delegation_confirmed_slot = $8,
+                        chain_observation_slot = GREATEST(chain_observation_slot, $8),
+                        last_seen_at = now(),
+                        last_seen_slot = GREATEST(last_seen_slot, $8),
+                        last_seen_signature = CASE
+                            WHEN $8 >= last_seen_slot THEN $7
+                            ELSE last_seen_signature
+                        END
+                    WHERE id = $9
+                    "#,
+                )
+                .bind(&input.subscription_authority)
+                .bind(nonce)
+                .bind(amount)
+                .bind(period)
+                .bind(input.start_timestamp)
+                .bind(input.expiry_timestamp)
+                .bind(&input.signature)
+                .bind(slot)
+                .bind(target_id.as_i64())
+                .execute(&mut *tx)
+                .await?;
+                upsert_autodeposit_reconciliation_request(&mut tx, target_id, slot).await?;
+            }
+            tx.commit().await?;
+            return Ok(target_id);
+        }
+
+        let current = sqlx::query(
+            r#"
+            SELECT id, recurring_delegation, recurring_delegation_confirmed_slot
+            FROM loyal_yield.balance_sweep_targets
+            WHERE wallet = $1
+              AND vault_pubkey = $2
+              AND chain_status <> 'closed'
+            FOR UPDATE
+            "#,
+        )
+        .bind(&input.wallet)
+        .bind(&input.vault_pubkey)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            OrchestratorError::StoreInvariant(
+                "Autodeposit policy target is not indexed yet; retry the durable event".to_owned(),
+            )
+        })?;
+        let target_id = BalanceSweepTargetId(current.get("id"));
+        let current_confirmed_slot: Option<i64> =
+            current.get("recurring_delegation_confirmed_slot");
+        // An unseen observation older than the current delegation is superseded.
+        // Equal-slot observations still advance in stream order because the event
+        // payload does not contain a transaction index.
+        if current_confirmed_slot.is_some_and(|confirmed_slot| slot < confirmed_slot) {
+            tx.commit().await?;
+            return Ok(target_id);
+        }
+
+        sqlx::query(
             r#"
             UPDATE loyal_yield.balance_sweep_targets
             SET setup_generation = CASE
@@ -1772,15 +1882,12 @@ impl NeonSqlClient {
                 recurring_delegation_expiry_timestamp = $7,
                 recurring_delegation_signature = $8,
                 recurring_delegation_confirmed_slot = $9,
-                chain_status = CASE WHEN chain_status = 'closed' THEN chain_status ELSE 'pending' END,
+                chain_status = 'pending',
                 chain_observation_slot = GREATEST(chain_observation_slot, $9),
                 last_seen_at = now(),
                 last_seen_slot = GREATEST(last_seen_slot, $9),
                 last_seen_signature = CASE WHEN $9 >= last_seen_slot THEN $8 ELSE last_seen_signature END
-            WHERE wallet = $10
-              AND vault_pubkey = $11
-              AND chain_status <> 'closed'
-            RETURNING id
+            WHERE id = $10
             "#,
         )
         .bind(&input.subscription_authority)
@@ -1792,16 +1899,9 @@ impl NeonSqlClient {
         .bind(input.expiry_timestamp)
         .bind(&input.signature)
         .bind(slot)
-        .bind(&input.wallet)
-        .bind(&input.vault_pubkey)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| {
-            OrchestratorError::StoreInvariant(
-                "Autodeposit policy target is not indexed yet; retry the durable event".to_owned(),
-            )
-        })?;
-        let target_id = BalanceSweepTargetId(row.get("id"));
+        .bind(target_id.as_i64())
+        .execute(&mut *tx)
+        .await?;
         upsert_autodeposit_reconciliation_request(&mut tx, target_id, slot).await?;
         tx.commit().await?;
         Ok(target_id)

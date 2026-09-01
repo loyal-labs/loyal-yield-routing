@@ -86,6 +86,195 @@ async fn newer_policy_atomically_replaces_pending_target() {
 
 #[tokio::test]
 #[ignore = "requires ASK_2211_VERIFY_DATABASE_URL pointing at a throwaway database"]
+async fn recurring_delegation_replay_stays_with_its_closed_generation() {
+    let database_url = std::env::var(DATABASE_URL_ENV).expect("throwaway database URL");
+    let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url))
+        .await
+        .expect("connect to throwaway database");
+
+    let historical = client
+        .record_balance_sweep_policy_match(BalanceSweepPolicyMatchInput {
+            signature: "policy-signature-replay-1".to_owned(),
+            slot: 200,
+            cluster: "mainnet-beta".to_owned(),
+            settings: "settings-replay".to_owned(),
+            authority: "wallet-replay".to_owned(),
+            policy_seed: 1,
+            policy_account: "policy-replay-1".to_owned(),
+            vault_index: 1,
+            vault_pubkey: "vault-replay".to_owned(),
+            wallet: "wallet-replay".to_owned(),
+            wallet_usdc_ata: "wallet-ata-replay".to_owned(),
+            vault_usdc_ata: "vault-ata-replay".to_owned(),
+            token_mint: "mint-replay".to_owned(),
+            wallet_token_ata: "wallet-ata-replay".to_owned(),
+            vault_token_ata: "vault-ata-replay".to_owned(),
+            delegated_signers: vec!["signer-replay".to_owned()],
+            threshold: 1,
+            max_amount_per_period: 10_000_000,
+        })
+        .await
+        .expect("record historical policy");
+    let historical_delegation = AutodepositRecurringDelegationObserved {
+        wallet: "wallet-replay".to_owned(),
+        vault_pubkey: "vault-replay".to_owned(),
+        subscription_authority: "authority-replay-1".to_owned(),
+        recurring_delegation: "delegation-replay-1".to_owned(),
+        nonce: 21,
+        amount_per_period: 10_000_000,
+        period_length_seconds: 2_592_000,
+        start_timestamp: 1,
+        expiry_timestamp: 0,
+        signature: "delegation-signature-replay-1".to_owned(),
+        slot: 201,
+    };
+    client
+        .record_autodeposit_recurring_delegation(historical_delegation.clone())
+        .await
+        .expect("record historical delegation");
+    client
+        .reconcile_autodeposit_chain_observation(AutodepositChainObservation {
+            target_id: historical.id,
+            observation_slot: 202,
+            observation_complete: true,
+            policy_valid: false,
+            subscription_authority_valid: false,
+            recurring_delegation_valid: false,
+            token_delegate_valid: false,
+            wallet_balance_raw: 0,
+        })
+        .await
+        .expect("close historical target");
+
+    let current = client
+        .record_balance_sweep_policy_match(BalanceSweepPolicyMatchInput {
+            signature: "policy-signature-replay-2".to_owned(),
+            slot: 203,
+            cluster: "mainnet-beta".to_owned(),
+            settings: "settings-replay".to_owned(),
+            authority: "wallet-replay".to_owned(),
+            policy_seed: 2,
+            policy_account: "policy-replay-2".to_owned(),
+            vault_index: 1,
+            vault_pubkey: "vault-replay".to_owned(),
+            wallet: "wallet-replay".to_owned(),
+            wallet_usdc_ata: "wallet-ata-replay".to_owned(),
+            vault_usdc_ata: "vault-ata-replay".to_owned(),
+            token_mint: "mint-replay".to_owned(),
+            wallet_token_ata: "wallet-ata-replay".to_owned(),
+            vault_token_ata: "vault-ata-replay".to_owned(),
+            delegated_signers: vec!["signer-replay".to_owned()],
+            threshold: 1,
+            max_amount_per_period: 10_000_000,
+        })
+        .await
+        .expect("record current policy");
+
+    let replay_owner = client
+        .record_autodeposit_recurring_delegation(historical_delegation)
+        .await
+        .expect("replay historical delegation idempotently");
+    assert_eq!(replay_owner, historical.id);
+
+    let generations: Vec<(i64, String, Option<String>, Option<i64>)> = sqlx::query_as(
+        r#"
+        SELECT id, chain_status, recurring_delegation, recurring_delegation_confirmed_slot
+        FROM loyal_yield.balance_sweep_targets
+        WHERE settings = 'settings-replay'
+        ORDER BY policy_seed
+        "#,
+    )
+    .fetch_all(client.pool())
+    .await
+    .expect("load replay target generations");
+    assert_eq!(
+        generations,
+        vec![
+            (
+                historical.id.as_i64(),
+                "closed".to_owned(),
+                Some("delegation-replay-1".to_owned()),
+                Some(201),
+            ),
+            (current.id.as_i64(), "pending".to_owned(), None, None),
+        ]
+    );
+
+    let current_delegation = AutodepositRecurringDelegationObserved {
+        wallet: "wallet-replay".to_owned(),
+        vault_pubkey: "vault-replay".to_owned(),
+        subscription_authority: "authority-replay-2".to_owned(),
+        recurring_delegation: "delegation-replay-2".to_owned(),
+        nonce: 22,
+        amount_per_period: 10_000_000,
+        period_length_seconds: 2_592_000,
+        start_timestamp: 2,
+        expiry_timestamp: 0,
+        signature: "delegation-signature-replay-2".to_owned(),
+        slot: 204,
+    };
+    let current_owner = client
+        .record_autodeposit_recurring_delegation(current_delegation.clone())
+        .await
+        .expect("record current delegation");
+    assert_eq!(current_owner, current.id);
+
+    let mut stale_unowned = current_delegation.clone();
+    stale_unowned.recurring_delegation = "delegation-replay-stale".to_owned();
+    stale_unowned.nonce = 20;
+    stale_unowned.signature = "delegation-signature-replay-stale".to_owned();
+    stale_unowned.slot = 199;
+    let stale_owner = client
+        .record_autodeposit_recurring_delegation(stale_unowned)
+        .await
+        .expect("ignore an unowned delegation older than current state");
+    assert_eq!(stale_owner, current.id);
+
+    let current_identity: (Option<String>, Option<i64>) = sqlx::query_as(
+        r#"
+        SELECT recurring_delegation, recurring_delegation_confirmed_slot
+        FROM loyal_yield.balance_sweep_targets
+        WHERE id = $1
+        "#,
+    )
+    .bind(current.id.as_i64())
+    .fetch_one(client.pool())
+    .await
+    .expect("load current delegation after stale replay");
+    assert_eq!(
+        current_identity,
+        (Some("delegation-replay-2".to_owned()), Some(204))
+    );
+
+    let mut same_slot_successor = current_delegation;
+    same_slot_successor.recurring_delegation = "delegation-replay-3".to_owned();
+    same_slot_successor.nonce = 23;
+    same_slot_successor.signature = "delegation-signature-replay-3".to_owned();
+    let same_slot_owner = client
+        .record_autodeposit_recurring_delegation(same_slot_successor)
+        .await
+        .expect("advance a same-slot observation in stream order");
+    assert_eq!(same_slot_owner, current.id);
+
+    let same_slot_identity: (Option<String>, Option<i64>) = sqlx::query_as(
+        r#"
+        SELECT recurring_delegation, recurring_delegation_confirmed_slot
+        FROM loyal_yield.balance_sweep_targets
+        WHERE id = $1
+        "#,
+    )
+    .bind(current.id.as_i64())
+    .fetch_one(client.pool())
+    .await
+    .expect("load current delegation after same-slot successor");
+    assert_eq!(
+        same_slot_identity,
+        (Some("delegation-replay-3".to_owned()), Some(204))
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires ASK_2211_VERIFY_DATABASE_URL pointing at a throwaway database"]
 async fn single_target_preserves_intent_and_owns_chain_lifecycle() {
     let database_url = std::env::var(DATABASE_URL_ENV).expect("throwaway database URL");
     let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url))
