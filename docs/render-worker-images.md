@@ -161,13 +161,11 @@ The Go orchestrator is built separately by
 `.github/workflows/backyard-rwa-worker-image.yml`. Pull requests run its Go and
 container probes without publishing; a trusted `main` push that changes the Go
 worker, its Dockerfile, or its workflow publishes
-`backyard-rwa-worker:sha-${GITHUB_SHA}`. The bootstrap Blueprint pin records the
-current worker-foundation source commit
-`sha-74e84ee127bcdb4f88b03d2701df05afad14b6af` so the file never contains a
-mutable tag. It is not the deployment target: after these lifecycle changes
-land and the workflow publishes their trusted `main` commit, update the
-Blueprint pin to that published SHA before creating the service. Read back the
-image revision label and runtime command before starting it.
+`backyard-rwa-worker:sha-${GITHUB_SHA}`. Phase 1 is published from trusted
+`main` commit `bdb387daf5472af26508fc2c8d159348e234a5c5` with OCI index digest
+`sha256:83bffd71fab1f61f81ae2b41e10dc8c2746e4f6aa9b40e6f955b73cab233b51a`.
+The Blueprint pins that immutable SHA tag. Read back the resolved digest,
+image revision label, and runtime command before starting the service.
 
 `loyal-backyard-rwa-worker` is a Render background worker, so it has no HTTP
 health path. Readiness is the process remaining alive after it validates the
@@ -180,8 +178,10 @@ The service has exactly four runtime bindings: secret
 `NEON_DATABASE_URL`, secret `SOLANA_RPC_URL`, secret `POLICY_KEYPAIR`, and fixed
 `BACKYARD_RWA_ROUTE_KEY=rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh`. Its small Go image
 does not contain `yield-migrations`, so migration
-`0070_backyard_rwa_worker.sql` must be applied and read back through the
-operator migration path before the service is started. The private image must
+`0070_backyard_rwa_worker.sql` must already be applied. Guarded activation
+migration `0071_backyard_rwa_phase1_activation.sql` must be applied and read
+back through the operator migration path only after adaptor/policy verifier V02
+passes and before the service is enabled. The private image must
 use Render registry credential `loyal-ghcr`; the credential remains an
 out-of-Blueprint Dashboard/API binding because Render's Blueprint validator
 does not accept it on `runtime: image` services.
