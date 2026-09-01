@@ -16,85 +16,114 @@ import (
 // manifest entry alone never makes a route ready: every referenced policy is
 // read at the same confirmed slot and matched by owner and data hash.
 func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *RPCClient, manifest RouteManifest) (Observation, error) {
+	observation, _, err := observeConfirmedRouteSnapshotWithRPCAccounts(ctx, rpc, manifest)
+	return observation, err
+}
+
+func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *RPCClient, manifest RouteManifest) (Observation, []ConfirmedAccount, error) {
 	if rpc == nil {
-		return Observation{}, fmt.Errorf("RPC client is required")
+		return Observation{}, nil, fmt.Errorf("RPC client is required")
 	}
-	return observeConfirmedRouteSnapshot(ctx, manifest, routeObservationRuntime{
-		bridge:   func(ctx context.Context) (Observation, error) { return ObserveConfirmedBridgeSnapshot(ctx, rpc) },
-		kamino:   rpc.ObserveKaminoPrimeUSDC,
+	return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
+		confirmedSlot: rpc.ConfirmedSlot,
+		receipts: func(ctx context.Context, minSlot int64) (int64, []programAccount, error) {
+			return rpc.getVoltrWithdrawalReceiptAccounts(ctx, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
+		},
 		accounts: rpc.GetMultipleAccounts,
 		now:      func() time.Time { return time.Now().UTC() },
 	})
 }
 
 type routeObservationRuntime struct {
-	bridge   func(context.Context) (Observation, error)
-	kamino   func(context.Context) (KaminoPosition, error)
-	accounts func(context.Context, []string, int64) (int64, []ConfirmedAccount, error)
-	now      func() time.Time
+	confirmedSlot func(context.Context) (int64, error)
+	receipts      func(context.Context, int64) (int64, []programAccount, error)
+	accounts      func(context.Context, []string, int64) (int64, []ConfirmedAccount, error)
+	now           func() time.Time
 }
 
 func observeConfirmedRouteSnapshot(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, error) {
-	if runtime.bridge == nil || runtime.kamino == nil || runtime.accounts == nil || runtime.now == nil {
-		return Observation{}, fmt.Errorf("route observation runtime is incomplete")
+	observation, _, err := observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, runtime)
+	return observation, err
+}
+
+func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {
+	if runtime.confirmedSlot == nil || runtime.receipts == nil || runtime.accounts == nil || runtime.now == nil {
+		return Observation{}, nil, fmt.Errorf("route observation runtime is incomplete")
 	}
+	minimumSlot, err := runtime.confirmedSlot(ctx)
+	if err != nil {
+		return Observation{}, nil, err
+	}
+	addresses := routeFixedAddresses(manifest)
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		base, err := runtime.bridge(ctx)
+		beforeSlot, beforeReceipts, err := runtime.receipts(ctx, minimumSlot)
 		if err != nil {
-			return Observation{}, err
+			return Observation{}, nil, err
 		}
-		position, err := runtime.kamino(ctx)
+		beforeDemand, beforeFingerprint, err := decodeConfirmedWithdrawalDemand(beforeReceipts)
 		if err != nil {
-			return Observation{}, err
+			return Observation{}, nil, err
 		}
-		if position.Slot != base.Snapshot.Slot {
-			continue
-		}
-		addressSet := map[string]struct{}{}
-		for _, address := range pinnedRouteNAVAddresses() {
-			addressSet[address] = struct{}{}
-		}
-		for address := range manifest.requiredPrimeUSDCPolicyHashes() {
-			addressSet[address] = struct{}{}
-		}
-		addresses := make([]string, 0, len(addressSet))
-		for address := range addressSet {
-			addresses = append(addresses, address)
-		}
-		sort.Strings(addresses)
-		slot, accounts, err := runtime.accounts(ctx, addresses, position.Slot)
+		slot, accounts, err := runtime.accounts(ctx, addresses, beforeSlot)
 		if err != nil {
-			return Observation{}, err
+			return Observation{}, nil, err
 		}
-		if slot != position.Slot {
+		position, err := observePrimeUSDCFromFixedAccounts(ctx, runtime.accounts, slot, accounts)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		afterSlot, afterReceipts, err := runtime.receipts(ctx, slot)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		afterDemand, afterFingerprint, err := decodeConfirmedWithdrawalDemand(afterReceipts)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		if !stableReceiptFence(beforeSlot, slot, afterSlot, beforeDemand, afterDemand, beforeFingerprint, afterFingerprint) {
+			minimumSlot = maxSlot(beforeSlot, maxSlot(slot, afterSlot))
 			continue
 		}
 		navAccounts, err := selectRouteNAVAccounts(accounts)
 		if err != nil {
-			return Observation{}, err
+			return Observation{}, nil, err
 		}
 		nav, err := ComputeRouteNAV(slot, navAccounts, manifest, nil)
 		if err != nil {
-			return Observation{}, err
+			return Observation{}, nil, err
 		}
 		prime, err := decodePinnedPrime(accountAt(accounts, kaminoPrimeCustody))
 		if err != nil {
-			return Observation{}, err
+			return Observation{}, nil, err
 		}
 		if prime.Raw > math.MaxInt64 || position.CollateralDepositedRaw > math.MaxInt64 || position.DebtRaw > math.MaxInt64 {
-			return Observation{}, fmt.Errorf("PRIME/USDC state exceeds signed decision range")
+			return Observation{}, nil, fmt.Errorf("PRIME/USDC state exceeds signed decision range")
 		}
-		if nav.Custodies.VoltrIdleRaw != uint64(base.Snapshot.VoltrIdleRaw) ||
-			nav.Custodies.StrategyUSDCraw != uint64(base.Snapshot.VoltrStrategyIdleRaw) ||
-			nav.Custodies.SquadsUSDCraw != uint64(base.Snapshot.SquadsIdleRaw) ||
-			nav.Custodies.SquadsPRIMEraw != prime.Raw {
-			return Observation{}, fmt.Errorf("route NAV custody differs inside one confirmed bank snapshot")
+		idle, err := decodePinnedUSDC(accountAt(accounts, bridgeIdleATA), bridgeIdleAuthority)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		strategy, err := decodePinnedUSDC(accountAt(accounts, bridgeStrategyATA), bridgeStrategyAuth)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		squads, err := decodePinnedUSDC(accountAt(accounts, bridgeSquadsATA), bridgeVault)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		if nav.Custodies.VoltrIdleRaw != idle.Raw || nav.Custodies.StrategyUSDCraw != strategy.Raw || nav.Custodies.SquadsUSDCraw != squads.Raw || nav.Custodies.SquadsPRIMEraw != prime.Raw {
+			return Observation{}, nil, fmt.Errorf("route NAV custody differs inside fixed confirmed account batch")
+		}
+		if idle.Raw > math.MaxInt64 || strategy.Raw > math.MaxInt64 || squads.Raw > math.MaxInt64 {
+			return Observation{}, nil, fmt.Errorf("bridge custody exceeds signed decision range")
 		}
 		ready, exit := manifest.livePrimeUSDCPolicyReadiness(accounts)
 		ltv, err := observedLTVBPS(position)
 		if err != nil {
-			return Observation{}, err
+			return Observation{}, nil, err
 		}
+		stateHash := sha256.Sum256([]byte(fmt.Sprintf("%s|voltr-idle:%d|strategy-idle:%d|squads-idle:%d", beforeFingerprint, idle.Raw, strategy.Raw, squads.Raw)))
+		base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: beforeDemand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw)}}
 		base.Snapshot.PrimeIdleRaw = int64(prime.Raw)
 		base.Snapshot.HasPosition = position.HasPosition
 		base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
@@ -105,7 +134,7 @@ func observeConfirmedRouteSnapshot(ctx context.Context, manifest RouteManifest, 
 		base.Snapshot.LTVBPS = ltv
 		base.Snapshot.LiquidationThresholdBPS = position.LiquidationThresholdBPS
 		if position.EntryCapacityRaw > math.MaxInt64 {
-			return Observation{}, fmt.Errorf("PRIME/USDC entry capacity exceeds signed decision range")
+			return Observation{}, nil, fmt.Errorf("PRIME/USDC entry capacity exceeds signed decision range")
 		}
 		base.Snapshot.CapacityRaw = int64(position.EntryCapacityRaw)
 		base.Snapshot.MaxTargetLTVEntryRaw = int64(position.EntryCapacityRaw)
@@ -114,16 +143,83 @@ func observeConfirmedRouteSnapshot(ctx context.Context, manifest RouteManifest, 
 		base.Snapshot.ExitBuildable = exit
 		observedAt := runtime.now()
 		if err := applyRouteNAVSnapshot(&base.Snapshot, nav, observedAt); err != nil {
-			return Observation{}, err
+			return Observation{}, nil, err
 		}
 		base.Snapshot.ObservationID = routeEconomicObservationID(
 			base.Snapshot.ObservationID, prime.Raw, position.CollateralDepositedRaw, position.DebtRaw,
 			ready, exit, nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, position.EntryCapacityRaw,
 		)
 		base.ObservedAt = observedAt
-		return base, nil
+		return base, accounts, nil
 	}
-	return Observation{}, confirmedObservationUnavailable(fmt.Errorf("confirmed bridge, Kamino, and policy reads did not align"))
+	return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("confirmed receipt fence did not stabilize around fixed account batch"))
+}
+
+func stableReceiptFence(beforeSlot, fixedSlot, afterSlot, beforeDemand, afterDemand int64, beforeFingerprint, afterFingerprint string) bool {
+	return beforeSlot > 0 && beforeSlot <= fixedSlot && fixedSlot <= afterSlot && beforeDemand == afterDemand && beforeFingerprint != "" && beforeFingerprint == afterFingerprint
+}
+
+func routeFixedAddresses(manifest RouteManifest) []string {
+	addressSet := map[string]struct{}{reportTicketPDA: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}}
+	for _, address := range pinnedRouteNAVAddresses() {
+		addressSet[address] = struct{}{}
+	}
+	for address := range manifest.requiredPrimeUSDCPolicyHashes() {
+		addressSet[address] = struct{}{}
+	}
+	addresses := make([]string, 0, len(addressSet))
+	for address := range addressSet {
+		addresses = append(addresses, address)
+	}
+	sort.Strings(addresses)
+	return addresses
+}
+
+func observePrimeUSDCFromFixedAccounts(ctx context.Context, accountsReader func(context.Context, []string, int64) (int64, []ConfirmedAccount, error), slot int64, accounts []ConfirmedAccount) (KaminoPosition, error) {
+	config, err := pinnedKaminoObservationConfig()
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	obligation, err := decodeKaminoObligation(accountAt(accounts, config.Obligation), config)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	collateral, err := decodeKaminoReserve(accountAt(accounts, config.CollateralReserve), config.CollateralMint, config)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	debt, err := decodeKaminoReserve(accountAt(accounts, config.DebtReserve), config.DebtMint, config)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	if err := validateKaminoRefresh(obligation, collateral, debt); err != nil {
+		return KaminoPosition{}, err
+	}
+	oracles := uniqueNonzero(append(collateral.oracles, debt.oracles...))
+	if len(oracles) == 0 {
+		return KaminoPosition{}, fmt.Errorf("Kamino reserve has no configured oracle")
+	}
+	oracleSlot, oracleAccounts, err := accountsReader(ctx, oracles, slot)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	if oracleSlot < slot {
+		return KaminoPosition{}, fmt.Errorf("oracle validation predates fixed account batch")
+	}
+	for _, oracle := range oracleAccounts {
+		if oracle.Executable || oracle.Lamports == 0 || len(oracle.Data) == 0 {
+			return KaminoPosition{}, fmt.Errorf("invalid configured oracle %s", oracle.Address)
+		}
+	}
+	redeemable, err := collateral.redeemLiquidityRaw(obligation.collateralDepositedRaw)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	capacity, err := entryCapacityDebtRaw(collateral, debt)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: obligation.debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity}, nil
 }
 
 // routeEconomicObservationID deliberately excludes Slot, the stateless adaptor

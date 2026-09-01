@@ -1,8 +1,6 @@
 package backyardrwa
 
 import (
-	"context"
-	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -115,48 +113,36 @@ func TestRouteNAVCadenceRejectsMixedSlotsAndBoundsFutureClockSkew(t *testing.T) 
 	}
 }
 
-func TestRouteObservationRetriesMixedNAVSlotBeforeMerging(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0).UTC()
-	manifest := readyWorkerManifest(t)
-	accountCalls := 0
-	accounts := routeNAVFixture(t, 10)
-	one := new(big.Int).Lsh(big.NewInt(1), 60)
-	oneAndHalf := new(big.Int).Mul(big.NewInt(3), new(big.Int).Lsh(big.NewInt(1), 59))
-	var primePrice, debtPrice [16]byte
-	putScaledFraction(primePrice[:], oneAndHalf)
-	putScaledFraction(debtPrice[:], one)
-	runtime := routeObservationRuntime{
-		bridge: func(context.Context) (Observation, error) {
-			snapshot := base()
-			snapshot.Slot = 10
-			snapshot.VoltrIdleRaw, snapshot.VoltrStrategyIdleRaw, snapshot.SquadsIdleRaw = 11, 5, 6
-			return Observation{Snapshot: snapshot, ObservedAt: now}, nil
-		},
-		kamino: func(context.Context) (KaminoPosition, error) {
-			return KaminoPosition{
-				Slot: 10, RefreshedSlot: 10, HasPosition: true, CollateralDepositedRaw: 10,
-				DebtRaw: 7, RedeemablePrimeRaw: 20, CollateralPriceSF: primePrice,
-				DebtPriceSF: debtPrice, LiquidationThresholdBPS: 8000,
-			}, nil
-		},
-		accounts: func(_ context.Context, _ []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
-			if minimumSlot != 10 {
-				t.Fatalf("policy read used wrong minimum slot: %d", minimumSlot)
-			}
-			accountCalls++
-			slot := int64(10)
-			if accountCalls == 1 {
-				slot = 11
-			}
-			return slot, accounts, nil
-		},
-		now: func() time.Time { return now },
+func TestRouteFixedAddressesIncludeEveryMutableConstructionInput(t *testing.T) {
+	addresses := routeFixedAddresses(readyWorkerManifest(t))
+	wanted := map[string]bool{bridgeIdleATA: false, bridgeStrategyATA: false, bridgeSquadsATA: false, kaminoPrimeCustody: false, kaminoPrimeUSDCObligation: false, kaminoCollateralReserve: false, kaminoDebtReserve: false, kaminoPrimeLiquiditySupply: false, kaminoUSDCLiquiditySupply: false, reportTicketPDA: false}
+	for _, address := range addresses {
+		if _, ok := wanted[address]; ok {
+			wanted[address] = true
+		}
 	}
-	observation, err := observeConfirmedRouteSnapshot(context.Background(), manifest, runtime)
-	if err != nil {
-		t.Fatal(err)
+	for address, present := range wanted {
+		if !present {
+			t.Fatalf("fixed account batch omitted %s", address)
+		}
 	}
-	if accountCalls != 2 || observation.Snapshot.Slot != 10 || observation.Snapshot.LastReportAgeSeconds != 0 {
-		t.Fatalf("mixed account slot was not retried coherently: calls=%d observation=%+v", accountCalls, observation)
+}
+
+func TestReceiptFenceRequiresOrderedIdenticalDemand(t *testing.T) {
+	if !stableReceiptFence(10, 11, 12, 7, 7, "fingerprint", "fingerprint") {
+		t.Fatal("ordered identical receipt fence was rejected")
+	}
+	for _, test := range []struct {
+		before, fixed, after, left, right int64
+		leftFP, rightFP                   string
+	}{
+		{11, 10, 12, 7, 7, "f", "f"},
+		{10, 12, 11, 7, 7, "f", "f"},
+		{10, 11, 12, 7, 8, "f", "f"},
+		{10, 11, 12, 7, 7, "f", "changed"},
+	} {
+		if stableReceiptFence(test.before, test.fixed, test.after, test.left, test.right, test.leftFP, test.rightFP) {
+			t.Fatalf("unstable receipt fence accepted: %+v", test)
+		}
 	}
 }
