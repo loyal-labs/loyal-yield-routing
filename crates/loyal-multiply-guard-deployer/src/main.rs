@@ -39,6 +39,8 @@ const MAINNET_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d
 const UPGRADEABLE_LOADER_ID: &str = "BPFLoaderUpgradeab1e11111111111111111111111";
 const EXPECTED_UPGRADE_AUTHORITY: &str = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ";
 const PACKET_SAFETY_MARGIN: usize = 32;
+const DEFAULT_LOADER_WRITE_WINDOW: usize = 8;
+const MAX_LOADER_WRITE_WINDOW: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Target {
@@ -78,8 +80,8 @@ const ADAPTOR_SPEC: ProgramSpec = ProgramSpec {
     program_id: "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
     artifact_filename: "loyal_voltr_rwa_nav_adaptor.so",
     keypair_filename: "loyal_voltr_rwa_nav_adaptor-keypair.json",
-    elf_sha256: "1a233e7b7bf7fd922b1cbc2ad1c48acf5cdce64aa1dee14441f51871d7731f9c",
-    elf_len: 102_376,
+    elf_sha256: "64c6cd5ef418ca0ffde9e4fd74b3fbe9e096a68a7aca186cd64ea08b12c910f2",
+    elf_len: 102_448,
     max_data_len: 115_384,
 };
 
@@ -97,6 +99,7 @@ struct BufferReport {
     data_bytes: usize,
     rent_lamports: u64,
     write_chunk_bytes: usize,
+    write_in_flight_window: usize,
     total_write_transactions: usize,
     pending_write_transactions_before: usize,
     submitted_write_transactions: usize,
@@ -153,7 +156,8 @@ struct StageReceiptReport {
     message_sha256: String,
     barrier_path: String,
     simulation_context_slot: u64,
-    finalized_slot: u64,
+    receipt_slot: u64,
+    receipt_commitment: String,
     reconciled_from_barrier: bool,
 }
 
@@ -189,6 +193,7 @@ struct Args {
     execute: bool,
     barrier_dir: Option<PathBuf>,
     target: Target,
+    write_window: usize,
 }
 
 fn main() {
@@ -298,6 +303,7 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
                 data_bytes: artifact.len(),
                 rent_lamports: buffer_rent,
                 write_chunk_bytes,
+                write_in_flight_window: args.write_window,
                 total_write_transactions,
                 pending_write_transactions_before: 0,
                 submitted_write_transactions: 0,
@@ -348,6 +354,7 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
                 data_bytes: artifact.len(),
                 rent_lamports: buffer_rent,
                 write_chunk_bytes,
+                write_in_flight_window: args.write_window,
                 total_write_transactions,
                 pending_write_transactions_before: total_write_transactions,
                 submitted_write_transactions: 0,
@@ -452,7 +459,7 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
             &[&payer, &buffer_keypair],
             minimum_context_slot,
         )?;
-        minimum_context_slot = receipt.finalized_slot;
+        minimum_context_slot = receipt.receipt_slot;
         create_buffer_signature = Some(receipt.signature.clone());
         transactions.push(receipt);
         wait_for_finalized_buffer(
@@ -479,46 +486,24 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
         write_chunk_bytes,
     )?;
     let submitted_write_transactions = pending.len();
-    for (position, pending_write) in pending.iter().enumerate() {
-        let stage = format!(
-            "write_{:06}_{}",
-            pending_write.offset,
-            pending_write.bytes.len()
-        );
-        let receipt = execute_exact_stage(
-            &rpc,
-            barrier_dir,
-            &spec,
-            &stage,
-            std::slice::from_ref(&pending_write.instruction),
-            &payer.pubkey(),
-            &[&payer],
-            minimum_context_slot,
-        )?;
-        minimum_context_slot = receipt.finalized_slot;
-        let finalized_buffer = wait_for_finalized_buffer_chunk(
-            &rpc,
-            &buffer_address,
-            &payer.pubkey(),
-            pending_write.offset,
-            &pending_write.bytes,
-            Duration::from_secs(60),
-        )?
-        .ok_or_else(|| anyhow!("finalized buffer CAS failed after {stage}"))?;
-        let _ = finalized_buffer;
-        transactions.push(receipt);
-        eprintln!(
-            "guard buffer write {}/{} finalized",
-            position + 1,
-            pending.len()
-        );
-    }
+    let (write_receipts, write_receipt_slot) = execute_loader_write_batches(
+        &rpc,
+        barrier_dir,
+        &spec,
+        &payer,
+        &buffer_address,
+        &pending,
+        args.write_window,
+        minimum_context_slot,
+    )?;
+    minimum_context_slot = write_receipt_slot;
+    transactions.extend(write_receipts);
 
     let complete_buffer = read_buffer(
         &rpc,
         &buffer_address,
         &payer.pubkey(),
-        CommitmentConfig::finalized(),
+        CommitmentConfig::confirmed(),
     )?
     .ok_or_else(|| anyhow!("buffer disappeared before deployment"))?;
     let metadata_len = UpgradeableLoaderState::size_of_buffer_metadata();
@@ -588,6 +573,7 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
                 data_bytes: artifact.len(),
                 rent_lamports: buffer_rent,
                 write_chunk_bytes,
+                write_in_flight_window: args.write_window,
                 total_write_transactions,
                 pending_write_transactions_before: pending_before,
                 submitted_write_transactions,
@@ -673,6 +659,7 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
             data_bytes: artifact.len(),
             rent_lamports: buffer_rent,
             write_chunk_bytes,
+            write_in_flight_window: args.write_window,
             total_write_transactions,
             pending_write_transactions_before: pending_before,
             submitted_write_transactions,
@@ -695,6 +682,12 @@ fn parse_args() -> Result<Args> {
     let mut execute = false;
     let mut barrier_dir = None;
     let mut target = None;
+    let mut write_window = env::var("LOYAL_LOADER_WRITE_WINDOW")
+        .ok()
+        .map(|value| parse_write_window(&value))
+        .transpose()?
+        .unwrap_or(DEFAULT_LOADER_WRITE_WINDOW);
+    let mut write_window_from_cli = false;
     let mut arguments = env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -716,15 +709,26 @@ fn parse_args() -> Result<Args> {
                     None => bail!("--target requires guard or voltr-rwa-nav-adaptor"),
                 });
             }
+            "--write-window" if !write_window_from_cli => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| anyhow!("--write-window requires an integer"))?;
+                if value.starts_with("--") {
+                    bail!("--write-window requires an integer");
+                }
+                write_window = parse_write_window(&value)?;
+                write_window_from_cli = true;
+            }
             "--help" | "-h" => {
                 println!(
-                    "Usage: loyal-multiply-guard-deployer --target guard|voltr-rwa-nav-adaptor [--execute --barrier-dir ABSOLUTE_PATH]\n\nDry-run is the default and does not load signer material. --execute additionally requires CONFIRM_MAINNET=1 and persists one-send barriers before any broadcast."
+                    "Usage: loyal-multiply-guard-deployer --target guard|voltr-rwa-nav-adaptor [--execute --barrier-dir ABSOLUTE_PATH] [--write-window 1..={MAX_LOADER_WRITE_WINDOW}]\n\nDry-run is the default and does not load signer material. --execute additionally requires CONFIRM_MAINNET=1 and persists one-send barriers before any broadcast. Loader writes are sent in bounded batches (default {DEFAULT_LOADER_WRITE_WINDOW}; LOYAL_LOADER_WRITE_WINDOW may override it)."
                 );
                 process::exit(0);
             }
             "--execute" => bail!("--execute may only be provided once"),
             "--barrier-dir" => bail!("--barrier-dir may only be provided once"),
             "--target" => bail!("--target may only be provided once"),
+            "--write-window" => bail!("--write-window may only be provided once"),
             _ => bail!("unknown argument: {argument}"),
         }
     }
@@ -735,7 +739,18 @@ fn parse_args() -> Result<Args> {
         execute,
         barrier_dir,
         target: target.ok_or_else(|| anyhow!("--target is required"))?,
+        write_window,
     })
+}
+
+fn parse_write_window(value: &str) -> Result<usize> {
+    let window = value
+        .parse::<usize>()
+        .with_context(|| "loader write window must be an integer")?;
+    if !(1..=MAX_LOADER_WRITE_WINDOW).contains(&window) {
+        bail!("loader write window must be between 1 and {MAX_LOADER_WRITE_WINDOW}, got {window}");
+    }
+    Ok(window)
 }
 
 fn artifact_path(spec: &ProgramSpec) -> PathBuf {
@@ -932,7 +947,7 @@ fn wait_for_finalized_buffer(
     }
 }
 
-fn wait_for_finalized_buffer_chunk(
+fn wait_for_confirmed_buffer_chunk(
     rpc: &RpcClient,
     buffer: &Pubkey,
     authority: &Pubkey,
@@ -945,7 +960,7 @@ fn wait_for_finalized_buffer_chunk(
     let end = start + expected.len();
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(account) = read_buffer(rpc, buffer, authority, CommitmentConfig::finalized())? {
+        if let Some(account) = read_buffer(rpc, buffer, authority, CommitmentConfig::confirmed())? {
             if account.data.get(start..end) == Some(expected) {
                 return Ok(Some(account));
             }
@@ -953,7 +968,7 @@ fn wait_for_finalized_buffer_chunk(
         if Instant::now() >= deadline {
             return Ok(None);
         }
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(250));
     }
 }
 
@@ -987,45 +1002,149 @@ fn decode_hex(value: &str) -> Result<Vec<u8>> {
         .collect()
 }
 
-fn transaction_from_finalized(
+fn transaction_from_commitment(
     rpc: &RpcClient,
     signature: &Signature,
     expected_wire: &[u8],
     stage: &str,
+    commitment: CommitmentConfig,
 ) -> Result<u64> {
-    let finalized = rpc
+    let receipt = rpc
         .get_transaction_with_config(
             signature,
             RpcTransactionConfig {
                 encoding: Some(UiTransactionEncoding::Base64),
-                commitment: Some(CommitmentConfig::finalized()),
+                commitment: Some(commitment),
                 max_supported_transaction_version: Some(0),
             },
         )
-        .with_context(|| format!("read finalized {stage} transaction"))?;
-    let decoded = finalized
-        .transaction
-        .transaction
-        .decode()
-        .ok_or_else(|| anyhow!("finalized {stage} transaction bytes did not decode"))?;
+        .with_context(|| format!("read {} {stage} transaction", commitment_label(commitment)))?;
+    let decoded = receipt.transaction.transaction.decode().ok_or_else(|| {
+        anyhow!(
+            "{} {stage} transaction bytes did not decode",
+            commitment_label(commitment)
+        )
+    })?;
     if bincode::serialize(&decoded)? != expected_wire {
-        bail!("finalized {stage} transaction differs from the persisted signed wire");
+        bail!(
+            "{} {stage} transaction differs from the persisted signed wire",
+            commitment_label(commitment)
+        );
     }
     if decoded.signatures.first() != Some(signature) {
-        bail!("finalized {stage} signature differs from persisted identity");
+        bail!(
+            "{} {stage} signature differs from persisted identity",
+            commitment_label(commitment)
+        );
     }
-    let meta = finalized
-        .transaction
-        .meta
-        .as_ref()
-        .ok_or_else(|| anyhow!("finalized {stage} transaction omitted metadata"))?;
+    let meta = receipt.transaction.meta.as_ref().ok_or_else(|| {
+        anyhow!(
+            "{} {stage} transaction omitted metadata",
+            commitment_label(commitment)
+        )
+    })?;
     if let Some(error) = &meta.err {
-        bail!("{stage} finalized with error: {error:?}");
+        bail!(
+            "{stage} {} with error: {error:?}",
+            commitment_label(commitment)
+        );
     }
-    Ok(finalized.slot)
+    Ok(receipt.slot)
 }
 
-fn execute_exact_stage(
+fn commitment_label(commitment: CommitmentConfig) -> &'static str {
+    if commitment == CommitmentConfig::finalized() {
+        "finalized"
+    } else if commitment == CommitmentConfig::confirmed() {
+        "confirmed"
+    } else {
+        "requested-commitment"
+    }
+}
+
+fn latest_barrier_path(barrier_dir: &Path, stage: &str) -> Result<Option<PathBuf>> {
+    let prefix = format!("{stage}.attempt_");
+    let mut primary = None;
+    let mut newest_attempt = None;
+    for path in fs::read_dir(barrier_dir)
+        .context("list deployment barriers")?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+    {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name == format!("{stage}.json") {
+            primary = Some(path);
+            continue;
+        }
+        let Some(number) = name
+            .strip_prefix(&prefix)
+            .and_then(|value| value.strip_suffix(".json"))
+            .and_then(|value| value.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        if !matches!(newest_attempt.as_ref(), Some((existing, _)) if number <= *existing) {
+            newest_attempt = Some((number, path));
+        }
+    }
+    Ok(newest_attempt.map(|(_, path)| path).or(primary))
+}
+
+fn next_attempt_barrier_path(barrier_dir: &Path, stage: &str) -> Result<PathBuf> {
+    let prefix = format!("{stage}.attempt_");
+    let mut highest = 0usize;
+    for path in fs::read_dir(barrier_dir)
+        .context("list deployment barriers")?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+    {
+        let Some(number) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(&prefix))
+            .and_then(|value| value.strip_suffix(".json"))
+            .and_then(|value| value.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        highest = highest.max(number);
+    }
+    for attempt in highest.saturating_add(1)..=9_999usize {
+        let path = barrier_dir.join(format!("{stage}.attempt_{attempt:04}.json"));
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+    bail!("too many preserved expired barriers for {stage}")
+}
+
+fn classify_absent_signature(last_valid_block_height: u64, current_block_height: u64) -> bool {
+    current_block_height > last_valid_block_height
+}
+
+enum PreparedExactStage {
+    Reconciled(StageReceiptReport),
+    Ready {
+        barrier: StageBarrier,
+        barrier_path: String,
+        transaction: Transaction,
+        wire: Vec<u8>,
+        signature: Signature,
+        blockhash: solana_sdk::hash::Hash,
+    },
+}
+
+struct SubmittedExactStage {
+    barrier: StageBarrier,
+    barrier_path: String,
+    wire: Vec<u8>,
+    signature: Signature,
+    blockhash: solana_sdk::hash::Hash,
+}
+
+fn prepare_exact_stage(
     rpc: &RpcClient,
     barrier_dir: &Path,
     spec: &ProgramSpec,
@@ -1034,7 +1153,8 @@ fn execute_exact_stage(
     payer: &Pubkey,
     signers: &[&Keypair],
     minimum_context_slot: u64,
-) -> Result<StageReceiptReport> {
+    required_commitment: CommitmentConfig,
+) -> Result<PreparedExactStage> {
     if stage.is_empty()
         || !stage
             .bytes()
@@ -1050,7 +1170,8 @@ fn execute_exact_stage(
         payer,
         instructions,
     ))?);
-    let barrier_path = barrier_dir.join(format!("{stage}.json"));
+    let mut barrier_path = latest_barrier_path(barrier_dir, stage)?
+        .unwrap_or_else(|| barrier_dir.join(format!("{stage}.json")));
     if barrier_path.exists() {
         let bytes = fs::read(&barrier_path).context("read existing deployment barrier")?;
         let barrier: StageBarrier =
@@ -1077,22 +1198,75 @@ fn execute_exact_stage(
         {
             bail!("existing {stage} barrier message or signature drifted");
         }
-        let finalized_slot = transaction_from_finalized(rpc, &signature, &wire, stage)
-            .with_context(|| {
-                format!(
-                    "{stage} barrier exists but is not a finalized success; blind resend forbidden"
+        let persisted_blockhash = solana_sdk::hash::Hash::from_str(&barrier.recent_blockhash)
+            .context("decode persisted deployment blockhash")?;
+        if transaction.message.recent_blockhash != persisted_blockhash {
+            bail!("existing {stage} barrier blockhash does not match its signed wire");
+        }
+        let status = rpc
+            .get_signature_statuses_with_history(&[signature])
+            .context("read persisted deployment signature status")?
+            .value
+            .into_iter()
+            .next()
+            .flatten();
+        if let Some(status) = status {
+            if let Some(error) = status.err {
+                bail!("existing {stage} barrier has a failed on-chain signature: {error:?}");
+            }
+            if !status.satisfies_commitment(required_commitment) {
+                bail!(
+                    "existing {stage} barrier has a non-{} on-chain status; blind resend forbidden",
+                    commitment_label(required_commitment)
+                );
+            }
+            let receipt_slot =
+                transaction_from_commitment(rpc, &signature, &wire, stage, required_commitment)?;
+            return Ok(PreparedExactStage::Reconciled(StageReceiptReport {
+                stage: stage.to_owned(),
+                signature: signature.to_string(),
+                transaction_sha256: barrier.transaction_sha256,
+                message_sha256: barrier.message_sha256,
+                barrier_path: barrier_path.display().to_string(),
+                simulation_context_slot: barrier.simulation_context_slot,
+                receipt_slot,
+                receipt_commitment: commitment_label(required_commitment).to_owned(),
+                reconciled_from_barrier: true,
+            }));
+        }
+
+        let current_block_height = rpc
+            .get_block_height()
+            .context("read block height for persisted deployment barrier")?;
+        if !classify_absent_signature(barrier.last_valid_block_height, current_block_height) {
+            let simulation = rpc
+                .simulate_transaction_with_config(
+                    &transaction,
+                    RpcSimulateTransactionConfig {
+                        sig_verify: true,
+                        replace_recent_blockhash: false,
+                        commitment: Some(CommitmentConfig::confirmed()),
+                        min_context_slot: Some(minimum_context_slot),
+                        ..RpcSimulateTransactionConfig::default()
+                    },
                 )
-            })?;
-        return Ok(StageReceiptReport {
-            stage: stage.to_owned(),
-            signature: signature.to_string(),
-            transaction_sha256: barrier.transaction_sha256,
-            message_sha256: barrier.message_sha256,
-            barrier_path: barrier_path.display().to_string(),
-            simulation_context_slot: barrier.simulation_context_slot,
-            finalized_slot,
-            reconciled_from_barrier: true,
-        });
+                .with_context(|| format!("re-simulate persisted {stage} transaction"))?;
+            if let Some(error) = simulation.value.err {
+                bail!("persisted {stage} simulation failed: {error:?}");
+            }
+            return Ok(PreparedExactStage::Ready {
+                barrier,
+                barrier_path: barrier_path.display().to_string(),
+                transaction,
+                wire,
+                signature,
+                blockhash: persisted_blockhash,
+            });
+        }
+
+        // The signature is absent from history and its blockhash has expired. Keep this
+        // immutable barrier for audit/recovery, then create a distinct signed attempt below.
+        barrier_path = next_attempt_barrier_path(barrier_dir, stage)?;
     }
 
     let (blockhash, last_valid_block_height) = rpc
@@ -1157,6 +1331,32 @@ fn execute_exact_stage(
     file.write_all(b"\n")?;
     file.sync_all().context("sync deployment barrier")?;
 
+    Ok(PreparedExactStage::Ready {
+        barrier,
+        barrier_path: barrier_path.display().to_string(),
+        transaction,
+        wire,
+        signature,
+        blockhash,
+    })
+}
+
+fn broadcast_prepared_exact_stage(
+    rpc: &RpcClient,
+    stage: &str,
+    prepared: PreparedExactStage,
+) -> Result<SubmittedExactStage> {
+    let PreparedExactStage::Ready {
+        barrier,
+        barrier_path,
+        transaction,
+        wire,
+        signature,
+        blockhash,
+    } = prepared
+    else {
+        unreachable!("reconciled stages must not be submitted");
+    };
     let returned = rpc
         .send_transaction_with_config(
             &transaction,
@@ -1164,7 +1364,7 @@ fn execute_exact_stage(
                 skip_preflight: true,
                 preflight_commitment: Some(CommitmentLevel::Confirmed),
                 max_retries: Some(0),
-                min_context_slot: Some(simulation.context.slot),
+                min_context_slot: Some(barrier.simulation_context_slot),
                 ..RpcSendTransactionConfig::default()
             },
         )
@@ -1174,19 +1374,222 @@ fn execute_exact_stage(
     if returned != signature {
         bail!("RPC returned a different {stage} signature; barrier retained and blind resend forbidden");
     }
-    rpc.confirm_transaction_with_spinner(&signature, &blockhash, CommitmentConfig::finalized())
-        .with_context(|| format!("confirm finalized {stage} transaction"))?;
-    let finalized_slot = transaction_from_finalized(rpc, &signature, &wire, stage)?;
+    Ok(SubmittedExactStage {
+        barrier,
+        barrier_path,
+        wire,
+        signature,
+        blockhash,
+    })
+}
+
+fn reconcile_submitted_exact_stage(
+    rpc: &RpcClient,
+    stage: &str,
+    submitted: SubmittedExactStage,
+    required_commitment: CommitmentConfig,
+) -> Result<StageReceiptReport> {
+    let SubmittedExactStage {
+        barrier,
+        barrier_path,
+        wire,
+        signature,
+        blockhash,
+    } = submitted;
+    rpc.confirm_transaction_with_spinner(&signature, &blockhash, required_commitment)
+        .with_context(|| {
+            format!(
+                "confirm {} {stage} transaction",
+                commitment_label(required_commitment)
+            )
+        })?;
+    let receipt_slot =
+        transaction_from_commitment(rpc, &signature, &wire, stage, required_commitment)?;
     Ok(StageReceiptReport {
         stage: stage.to_owned(),
         signature: signature.to_string(),
         transaction_sha256: barrier.transaction_sha256,
         message_sha256: barrier.message_sha256,
-        barrier_path: barrier_path.display().to_string(),
+        barrier_path,
         simulation_context_slot: barrier.simulation_context_slot,
-        finalized_slot,
+        receipt_slot,
+        receipt_commitment: commitment_label(required_commitment).to_owned(),
         reconciled_from_barrier: false,
     })
+}
+
+fn submit_prepared_exact_stage(
+    rpc: &RpcClient,
+    stage: &str,
+    prepared: PreparedExactStage,
+    required_commitment: CommitmentConfig,
+) -> Result<StageReceiptReport> {
+    let submitted = broadcast_prepared_exact_stage(rpc, stage, prepared)?;
+    reconcile_submitted_exact_stage(rpc, stage, submitted, required_commitment)
+}
+
+fn execute_exact_stage(
+    rpc: &RpcClient,
+    barrier_dir: &Path,
+    spec: &ProgramSpec,
+    stage: &str,
+    instructions: &[Instruction],
+    payer: &Pubkey,
+    signers: &[&Keypair],
+    minimum_context_slot: u64,
+) -> Result<StageReceiptReport> {
+    match prepare_exact_stage(
+        rpc,
+        barrier_dir,
+        spec,
+        stage,
+        instructions,
+        payer,
+        signers,
+        minimum_context_slot,
+        CommitmentConfig::finalized(),
+    )? {
+        PreparedExactStage::Reconciled(receipt) => Ok(receipt),
+        prepared => {
+            submit_prepared_exact_stage(rpc, stage, prepared, CommitmentConfig::finalized())
+        }
+    }
+}
+
+fn execute_loader_write_batches(
+    rpc: &RpcClient,
+    barrier_dir: &Path,
+    spec: &ProgramSpec,
+    payer: &Keypair,
+    buffer: &Pubkey,
+    pending: &[PendingWrite],
+    write_window: usize,
+    mut minimum_context_slot: u64,
+) -> Result<(Vec<StageReceiptReport>, u64)> {
+    if !(1..=MAX_LOADER_WRITE_WINDOW).contains(&write_window) {
+        bail!("loader write window is outside its bounded range");
+    }
+    let mut receipts = Vec::with_capacity(pending.len());
+    for (batch_index, batch) in pending.chunks(write_window).enumerate() {
+        // Persist and simulate every signed wire before broadcasting any wire in this batch.
+        // Existing barriers are reconciled, or exact signed wires are re-simulated and
+        // idempotently re-sent only while their persisted blockhash remains valid.
+        let mut reconciled = Vec::new();
+        let mut ready = Vec::new();
+        let mut errors = Vec::new();
+        for pending_write in batch {
+            let stage = format!(
+                "write_{:06}_{}",
+                pending_write.offset,
+                pending_write.bytes.len()
+            );
+            match prepare_exact_stage(
+                rpc,
+                barrier_dir,
+                spec,
+                &stage,
+                std::slice::from_ref(&pending_write.instruction),
+                &payer.pubkey(),
+                &[payer],
+                minimum_context_slot,
+                CommitmentConfig::confirmed(),
+            ) {
+                Err(error) => errors.push(format!("{stage} prepare: {error:#}")),
+                Ok(PreparedExactStage::Reconciled(receipt)) => {
+                    // A mixed resume must prove the old signed write reached both a confirmed
+                    // receipt and the exact loader bytes before any fresh write is broadcast.
+                    match wait_for_confirmed_buffer_chunk(
+                        rpc,
+                        buffer,
+                        &payer.pubkey(),
+                        pending_write.offset,
+                        &pending_write.bytes,
+                        Duration::from_secs(60),
+                    ) {
+                        Ok(Some(_)) => {
+                            minimum_context_slot = minimum_context_slot.max(receipt.receipt_slot);
+                            reconciled.push((pending_write, receipt));
+                        }
+                        Ok(None) => errors.push(format!(
+                            "{} confirmed buffer CAS failed while reconciling existing barrier",
+                            receipt.stage
+                        )),
+                        Err(error) => errors.push(format!(
+                            "{} existing barrier CAS read: {error:#}",
+                            receipt.stage
+                        )),
+                    }
+                }
+                Ok(prepared) => ready.push((stage, pending_write, prepared)),
+            }
+        }
+        if !errors.is_empty() {
+            bail!(
+                "loader write batch {} preparation had {} error(s): {}",
+                batch_index + 1,
+                errors.len(),
+                errors.join(" | ")
+            );
+        }
+
+        // Send the bounded window first; confirmation happens only after no more than the
+        // configured number of unique, barrier-backed signatures are in flight.
+        let mut submitted = Vec::with_capacity(ready.len());
+        for (stage, pending_write, prepared) in ready {
+            match broadcast_prepared_exact_stage(rpc, &stage, prepared) {
+                Ok(sent) => submitted.push((stage, pending_write, sent)),
+                Err(error) => errors.push(format!("{stage} broadcast: {error:#}")),
+            }
+        }
+        for (stage, pending_write, sent) in submitted {
+            match reconcile_submitted_exact_stage(rpc, &stage, sent, CommitmentConfig::confirmed())
+            {
+                Ok(receipt) => reconciled.push((pending_write, receipt)),
+                Err(error) => errors.push(format!("{stage} confirmed receipt: {error:#}")),
+            }
+        }
+
+        // Do not advance to another batch (or ultimately Upgrade) until every signature and
+        // every exact chunk in the just-reconciled batch is visible at confirmed commitment.
+        for (pending_write, receipt) in reconciled {
+            match wait_for_confirmed_buffer_chunk(
+                rpc,
+                buffer,
+                &payer.pubkey(),
+                pending_write.offset,
+                &pending_write.bytes,
+                Duration::from_secs(60),
+            ) {
+                Ok(Some(_)) => {
+                    minimum_context_slot = minimum_context_slot.max(receipt.receipt_slot);
+                    receipts.push(receipt);
+                }
+                Ok(None) => errors.push(format!(
+                    "confirmed buffer CAS failed after {}",
+                    receipt.stage
+                )),
+                Err(error) => errors.push(format!(
+                    "{} confirmed buffer CAS read: {error:#}",
+                    receipt.stage
+                )),
+            }
+        }
+        if !errors.is_empty() {
+            bail!(
+                "loader write batch {} had {} error(s): {}",
+                batch_index + 1,
+                errors.len(),
+                errors.join(" | ")
+            );
+        }
+        eprintln!(
+            "loader write batch {}/{} confirmed ({} unique stages)",
+            batch_index + 1,
+            pending.len().div_ceil(write_window),
+            batch.len()
+        );
+    }
+    Ok((receipts, minimum_context_slot))
 }
 
 fn inspect_deployed_program(
@@ -1275,4 +1678,61 @@ fn hex_sha256(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{
+        classify_absent_signature, latest_barrier_path, parse_write_window,
+        DEFAULT_LOADER_WRITE_WINDOW, MAX_LOADER_WRITE_WINDOW,
+    };
+
+    #[test]
+    fn loader_write_window_is_bounded() {
+        assert_eq!(parse_write_window("1").unwrap(), 1);
+        assert_eq!(
+            parse_write_window(&MAX_LOADER_WRITE_WINDOW.to_string()).unwrap(),
+            MAX_LOADER_WRITE_WINDOW
+        );
+        assert_eq!(DEFAULT_LOADER_WRITE_WINDOW, 8);
+        assert!(parse_write_window("0").is_err());
+        assert!(parse_write_window(&(MAX_LOADER_WRITE_WINDOW + 1).to_string()).is_err());
+        assert!(parse_write_window("eight").is_err());
+    }
+
+    #[test]
+    fn absent_signature_is_expired_only_after_its_last_valid_height() {
+        assert!(!classify_absent_signature(42, 42));
+        assert!(classify_absent_signature(42, 43));
+    }
+
+    #[test]
+    fn latest_barrier_prefers_highest_numeric_attempt_over_primary() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "loyal-multiply-guard-deployer-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("write_000000_1.json"), b"old").unwrap();
+        fs::write(directory.join("write_000000_1.attempt_0002.json"), b"two").unwrap();
+        fs::write(
+            directory.join("write_000000_1.attempt_0011.json"),
+            b"eleven",
+        )
+        .unwrap();
+        let selected = latest_barrier_path(&directory, "write_000000_1")
+            .unwrap()
+            .unwrap();
+        assert!(selected.ends_with("write_000000_1.attempt_0011.json"));
+        fs::remove_dir_all(&directory).unwrap();
+    }
 }

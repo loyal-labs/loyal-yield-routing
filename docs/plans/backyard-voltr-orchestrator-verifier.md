@@ -1,6 +1,6 @@
 # Backyard Voltr + Squads RWA worker: verifier-first delivery plan
 
-Status: approved implementation contract v9.
+Status: approved implementation contract v10.
 
 This file is the sole definition of done for the first Backyard Finance RWA
 vault. It replaces the earlier Rust fleet/four-market orchestration plan.
@@ -192,9 +192,9 @@ require all of:
    the immutable config; and
 8. the outer transaction executor is the exact delegated signer authorized by
    the exact Squads ProgramInteraction policy; and
-9. the single Squads sync payload contains exactly two ordered inner
-   instructions: direct adaptor ArmReport, then the exact Voltr capital call
-   whose adaptor CPI consumes that ticket.
+9. the canonical runtime emits one Squads sync payload containing exactly two
+   ordered inner instructions: direct adaptor ArmReport, then the exact Voltr
+   capital call whose adaptor CPI consumes that ticket.
 
 Checks 1-7 belong in the adaptor. Checks 8-9 belong in the exact Squads policy
 and canonical builder and are independently decoded by the verifier. An address
@@ -223,32 +223,40 @@ length, and ReportV1. Its accounts are config read-only, ticket writable,
 Settings read-only, exact Squads vault signer/read-only, and exact executable
 Squads program read-only.
 
-ArmReport requires ticket.armed=false, sequence=observed_slot,
-sequence>last_consumed_sequence, a nonfuture/fresh observed slot, the exact
-configured Squads signer/Settings graph, and an exact hash of the complete Voltr
-tail. It writes armed=true, active_sequence, and active_wire_sha256. The
-following Voltr instruction forwards the same ticket as remaining account index
-17; the adaptor receives it as account index 8, writable. The capital path
-requires the exact Voltr strategy-authority signer and exact config/accounts,
-matches the complete wire hash and sequence, performs the transfer/return-data
-work, then consumes the ticket and advances last_consumed_sequence. Config is
-read-only throughout. Successful consume retains only last_consumed_sequence;
-it clears armed, active_sequence, and active_wire_sha256 to zero. The exact
-current PDA is C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5 with bump 254.
+ArmReport requires sequence=observed_slot, sequence>last_consumed_sequence, a
+nonfuture/fresh observed slot, the exact configured Squads signer/Settings
+graph, and an exact hash of the complete Voltr tail. A fresh active ticket
+rejects overwrite. An active ticket whose active_sequence is older than the
+configured max report age may be replaced by a newer otherwise-valid report;
+this is the bounded recovery path for an ArmReport transaction that landed
+without its consume. ArmReport writes armed=true, active_sequence, and
+active_wire_sha256. The following Voltr instruction forwards the same ticket as
+remaining account index 17; the adaptor receives it as account index 8,
+writable. The capital path requires the exact Voltr strategy-authority signer
+and exact config/accounts, matches the complete wire hash and sequence,
+performs the transfer/return-data work, then consumes the ticket and advances
+last_consumed_sequence. Config is read-only throughout. Successful consume
+retains only last_consumed_sequence; it clears armed, active_sequence, and
+active_wire_sha256 to zero. The exact current PDA is
+C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5 with bump 254.
 
-The Squads policy must accept exactly this two-instruction order. Arm-only,
-Voltr-before-Arm, an extra instruction, a three-instruction setup/arm/consume
-fallback, or a different second instruction is FAIL. If Voltr cannot forward
-the ticket writable at those exact indexes, stop with
-BLOCKED_VOLTR_TICKET_FORWARDING; do not broaden the topology automatically.
+The canonical runtime always emits exactly the two-instruction ArmReport then
+Voltr order. Deployed Squads ProgramInteraction validates each supplied
+constraint but does not enforce that every policy constraint is covered, so an
+Arm-only payload is a bounded expected-success case, not a negative-matrix
+rejection. Its signed-unsent proof must show only the ticket simulation image
+changes, with exact canonical active_sequence/wire hash and unchanged
+last_consumed_sequence; independent confirmed readback remains unchanged and
+the signed wire has no onchain status. This subset behavior is never used by the
+runtime.
 
 The frozen ProgramInteraction constraints use indexes `[0,1]` for ArmReport
 and Voltr. ArmReport pins adaptor program/data plus accounts 0=config and
 1=ticket; the adaptor revalidates Settings, vault signer, and Squads program.
 Allocation/NAV pins Voltr account indexes `[0,2,3,8,11,12,13,14,15,16,17]`;
-withdraw pins `[0,2,5,6,9,12,13,14,15,16,17]`. The unrelated staging transfer
-remains a single instruction with constraint index `[0]` and cannot arm a
-ticket.
+withdraw pins `[0,2,5,6,9,12,13,14,15,16,17]`. The unrelated policy-64 staging
+transfer remains a single instruction with constraint index `[0]` and cannot
+arm a ticket.
 
 ### 5.2 Immutable config and compact report
 
@@ -286,11 +294,11 @@ Acceptance rules:
   Solana return data.
 
 The strategy config remains immutable and read-only. The report ticket is the
-only writable authentication/replay cell. Its monotonic last-consumed sequence
-and armed-to-consumed transition are the onchain one-use boundary; the pinned
-delegate, serialized Go lease, persist-before-send journal, and signed-wire
-uniqueness remain defense in depth. Reconciliation must complete before a new
-report wire is built.
+only writable authentication/replay cell. Its monotonic last-consumed sequence,
+fresh-active overwrite rejection, stale-active recovery, and consumed-state
+transition are the onchain one-use boundary; the pinned delegate, serialized Go
+lease, persist-before-send journal, and signed-wire uniqueness remain defense
+in depth. Reconciliation must complete before a new report wire is built.
 
 This proves report origin and freshness, not the economic truth of the number.
 The sole verifier independently recomputes the same NAV from RPC and fails on a
@@ -595,7 +603,7 @@ Run these in fail-fast order.
 
 ### V01 contract_and_forbidden_surface
 
-PASS when the v9 Phase 1 contract and v3 output schema are exact, the fixed route is
+PASS when the v10 Phase 1 contract and v3 output schema are exact, the fixed route is
 PRIME/USDC, and repository/deployment search proves no reachable Rust or
 TypeScript money-moving worker for this vault. Fail on a second writer,
 optimizer, saga, caller-selected manifest, or broadcast-capable verifier.
@@ -616,21 +624,26 @@ ticket is writable at Voltr remaining account index 17 and adaptor account index
 8; the final ticket is inactive with a strictly advanced last-consumed sequence;
 and exact NAV is returned through Solana return data.
 
-The required exact negative matrix is: direct Voltr without a ticket,
-consume-before-arm, arm-only payload, reversed order, extra/third instruction,
-different second instruction, second consume, same/lower sequence re-arm, arm
-while active, nonsigner/wrong Squads vault, wrong Settings owner/index/address
+The exact v10 matrix contains 38 rejections plus one bounded expected-success
+Arm-only proof. Rejections cover: direct Voltr without a ticket,
+consume-before-arm, reversed order, extra/third instruction, different second
+instruction, second consume, same/lower sequence re-arm, fresh arm while
+active, nonsigner/wrong Squads vault, wrong Settings owner/index/address
 lookalike, wrong delegated executor/policy, nonsigner/wrong Voltr authority,
 wrong ticket PDA/owner/config/index/writability, wrong operation/amount/wire
 hash, zero or mismatched sequence/observed-slot, stale/future slot, oversized
 amount/NAV, trailing bytes, wrong vault/strategy/mint/token program/ATA, and
-duplicate/aliased writable accounts. A valid ArmReport followed by a deliberately
-failing Voltr leg must roll the ticket, config, and capital fully back.
+duplicate/aliased writable accounts. The Arm-only proof must show the exact
+ticket-only armed overlay described above. A valid ArmReport followed by a
+deliberately failing Voltr leg must roll the ticket, config, and capital fully
+back.
 
 Evidence: program ELF hash and authority, immutable config bytes, ticket bytes
 before/after, PDA derivations, exact Squads policy and two-instruction decoding,
 signed simulation logs, pre/post account diffs, rollback proof, exact account
 indexes/roles, and signer metas observed separately at ArmReport and consume.
+Every signed-unsent row also proves its signature absent on chain and an
+independent confirmed readback at or after the simulation context.
 
 ### P2 catalog_semantics_and_packing
 
@@ -747,17 +760,17 @@ incorrect/stale unlabeled value is FAIL.
 4. Build the canonical signed-unsent Squads -> Voltr -> adaptor packet first.
 
 Exit: V01 has a truthful result and the exact two-instruction ticket-forwarding
-topology either simulates or returns BLOCKED_VOLTR_TICKET_FORWARDING. No
-downstream work may compensate for failed signer or writable-ticket propagation.
+topology simulates. No downstream work may compensate for failed signer or
+writable-ticket propagation.
 
 ### Phase 1: fixed PRIME/USDC release
 
 Adaptor track:
 
 - implement immutable read-only config/report v2, the one reusable ticket PDA,
-  Squads-signed ArmReport, Voltr-signed consume, monotonic sequence, exact
-  two-instruction topology, exact transfers/return data, and independent ABI
-  fixtures;
+  Squads-signed ArmReport, Voltr-signed consume, stale-active recovery, exact
+  two-instruction runtime topology, exact transfers/return data, and independent
+  ABI fixtures;
 - deploy the smallest upgrade and freeze its ELF/program-data authority hash.
 
 Fixed-policy track:

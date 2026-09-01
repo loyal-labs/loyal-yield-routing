@@ -4,10 +4,11 @@ import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { Connection, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 
-import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import { RWA_MULTIPLY_ROUTE, rwaMultiplyRouteSpecSha256 } from "../domain/rwa-multiply-route-spec.js";
+import { verifyInstalledCustomPolicies } from "../policies/rwa-multiply-custom.js";
 import {
   validateV06Lifecycle,
   type V06ChainRead,
@@ -23,7 +24,7 @@ const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta
 const APPS_ROOT = resolve(REPOSITORY_ROOT, "../loyal-apps");
 const SCHEMA = "loyal-backyard-rwa-go-lifecycle/v3";
 const PLAN_PATH = "docs/plans/backyard-voltr-orchestrator-verifier.md";
-const PLAN_SHA256 = "fc2e07ec4420dc205297e933cd9505dafad09e40eb14494dab68f1e3743639b3";
+const PLAN_SHA256 = "5665423e9b9003bc34e4d6f8389eeb8fabf5ec140596271a787abc2e00486b0c";
 const MANIFEST_PATH = "docs/manifests/backyard-rwa-v1.json";
 const POLICY_CATALOG_PATH = "crates/loyal-actions/fixtures/backyard_rwa_policy_catalog_v1.json";
 const ADAPTOR_MANIFEST = "crates/loyal-voltr-rwa-nav-adaptor/Cargo.toml";
@@ -35,6 +36,22 @@ const LIFECYCLE_EVIDENCE = "docs/evidence/backyard-rwa-go/lifecycle-v1.json";
 const ADAPTOR_SIMULATION_EVIDENCE = "docs/evidence/backyard-rwa-go/adaptor-v2-ticket-simulation-v2.json";
 const POLICY_SIMULATION_EVIDENCE = "docs/evidence/backyard-rwa-go/policy-catalog-simulation-v1.json";
 const SOLE_COMMAND = "bun run --cwd tools/backyard-voltr verify:rwa-multiply-custom-lifecycle";
+const BRIDGE_POLICY_ROUTE_SPEC_SHA256 = "6482b284172cd2b2da0317f9b33db737688d60cfe61f6b28c68da5ddbfc19550";
+const BRIDGE_POLICY_ROLLOVER = [
+  { action: "VOLTR_ALLOCATE_TO_SQUADS", operation: "allocation", seed: 62n,
+    account: "HoDV7mtsb2u1VARZLYuGByW7cCsGWL9NFxHZs7WHjdzz",
+    dataSha256: "bda72932f474064fa3cd60ce91633acba35b2730e86b82f4352aa96a6738e2f4" },
+  { action: "REPORT_NAV", operation: "nav-refresh", seed: 63n,
+    account: "41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP",
+    dataSha256: "bf34a3e9c9c635c79a0d30e096b639a86d52e300ad113c81161e3486832d97ca" },
+  { action: "STAGE_SQUADS_TO_VOLTR", operation: "stage-withdrawal", seed: 64n,
+    account: "ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY",
+    dataSha256: "ef8c231497fb2620b5930cfe5d329c871f103db6512781eb5487534db8b1291b" },
+  { action: "VOLTR_RESTORE_IDLE", operation: "withdraw", seed: 65n,
+    account: "DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t",
+    dataSha256: "84e8f6f881758cff1714ef743603c016024104f9834392c6fba693c3651b719c" },
+] as const;
+const RETIRED_BRIDGE_POLICY_SEEDS = [53n, 54n, 55n, 56n] as const;
 
 type Verdict = "PASS" | "FAIL" | "BLOCKED";
 type JsonRecord = Record<string, unknown>;
@@ -387,7 +404,26 @@ function base64MatchesSha256(value: unknown, expectedSha256: unknown): boolean {
   return decoded !== null && sha256Hex(expectedSha256) && sha256(decoded) === expectedSha256;
 }
 
-type SimulationExpectation = "success" | "failure";
+function signedTransactionSignature(value: unknown): string | null {
+  const wire = canonicalBase64(value);
+  if (wire === null) return null;
+  try {
+    const signature = VersionedTransaction.deserialize(wire).signatures[0];
+    return signature && signature.some((byte) => byte !== 0) ? bs58.encode(signature) : null;
+  } catch {
+    return null;
+  }
+}
+
+type SimulationExpectation = "success" | "failure" | "arm-only-success";
+
+type ExpectedArmOnlyTransition = Readonly<{
+  ticketAddress: string;
+  configAddress: string;
+  lastConsumedSequence: string;
+  activeSequence: string;
+  activeWireSha256: string;
+}>;
 
 type SignedSimulationRow = Readonly<{
   name: string;
@@ -396,6 +432,7 @@ type SignedSimulationRow = Readonly<{
   transactionSha256: unknown;
   inspectedAddresses: unknown;
   logsSha256: unknown;
+  expectedArmOnlyTransition?: ExpectedArmOnlyTransition | undefined;
 }>;
 
 type IndependentSimulationResult = Readonly<{
@@ -407,6 +444,14 @@ type IndependentSimulationResult = Readonly<{
   errIsNull: boolean | null;
   logsSha256: string | null;
   logsMatchEvidence: boolean;
+  simulationPostAccountsAvailable: boolean | null;
+  simulationNullAddresses: readonly string[];
+  simulationChangedAddresses: readonly string[];
+  simulationStateUnchanged: boolean | null;
+  armOnlyTicketTransitionExact: boolean | null;
+  chainReadbackContextSlot: number | null;
+  chainReadbackStateSha256: string | null;
+  signatureStatusIsNull: boolean | null;
   stateUnchanged: boolean | null;
   passed: boolean;
 }>;
@@ -455,6 +500,37 @@ function accountSetSha256(value: unknown): string | null {
   return sha256(JSON.stringify(accounts));
 }
 
+function exactNormalizedAccount(left: unknown, right: unknown): boolean {
+  const leftAccount = left === null ? null : normalizedAccount(left);
+  const rightAccount = right === null ? null : normalizedAccount(right);
+  return leftAccount !== null || left === null
+    ? JSON.stringify(leftAccount) === JSON.stringify(rightAccount)
+    : false;
+}
+
+function reportTicketState(value: unknown, expectedConfig: string): Readonly<{
+  armed: boolean;
+  lastConsumedSequence: string;
+  activeSequence: string;
+  activeWireSha256: string;
+}> | null {
+  const account = normalizedAccount(value);
+  const dataField = account?.data;
+  if (!Array.isArray(dataField) || dataField.length !== 2 || dataField[1] !== "base64") return null;
+  const data = canonicalBase64(dataField[0]);
+  if (data === null || data.length !== 96
+    || !data.subarray(0, 8).equals(Buffer.from("f568b6c53ae774ed", "hex"))
+    || data[8] !== 1 || data[9] !== 254 || !data.subarray(11, 16).every((byte) => byte === 0)
+    || new PublicKey(data.subarray(16, 48)).toBase58() !== expectedConfig
+    || (data[10] !== 0 && data[10] !== 1)) return null;
+  return {
+    armed: data[10] === 1,
+    lastConsumedSequence: data.readBigUInt64LE(48).toString(),
+    activeSequence: data.readBigUInt64LE(56).toString(),
+    activeWireSha256: data.subarray(64, 96).toString("hex"),
+  };
+}
+
 async function independentSignedSimulations(
   rows: readonly SignedSimulationRow[],
 ): Promise<IndependentSimulationEvidence> {
@@ -496,10 +572,15 @@ async function independentSignedSimulations(
       const wire = canonicalBase64(row.transactionBase64);
       const addresses = simulationAddresses(row.inspectedAddresses);
       const transactionSha256 = sha256Hex(row.transactionSha256) ? row.transactionSha256 : null;
+      const armOnlyExpected = row.expectation !== "arm-only-success"
+        || (row.expectedArmOnlyTransition !== undefined
+          && addresses?.includes(row.expectedArmOnlyTransition.ticketAddress) === true
+          && sha256Hex(row.expectedArmOnlyTransition.activeWireSha256));
       const validInput = wire !== null
         && transactionSha256 !== null
         && sha256(wire) === transactionSha256
         && addresses !== null
+        && armOnlyExpected
         && sha256Hex(row.logsSha256);
       if (!validInput || wire === null || addresses === null) {
         results.push({
@@ -511,6 +592,14 @@ async function independentSignedSimulations(
           errIsNull: null,
           logsSha256: null,
           logsMatchEvidence: false,
+          simulationPostAccountsAvailable: null,
+          simulationNullAddresses: [],
+          simulationChangedAddresses: [],
+          simulationStateUnchanged: null,
+          armOnlyTicketTransitionExact: null,
+          chainReadbackContextSlot: null,
+          chainReadbackStateSha256: null,
+          signatureStatusIsNull: null,
           stateUnchanged: null,
           passed: false,
         });
@@ -526,6 +615,8 @@ async function independentSignedSimulations(
       const preContext = record(preResult?.context);
       const preSlot = nonnegativeInteger(preContext?.slot) ? preContext.slot : null;
       const preStateSha256 = accountSetSha256(preResult?.value);
+      const preAccounts = Array.isArray(preResult?.value)
+        && preResult.value.length === addresses.length ? preResult.value : null;
       const simulatedResponse = await rpc("simulateTransaction", [row.transactionBase64, {
         accounts: { addresses, encoding: "base64" },
         commitment: "confirmed",
@@ -543,16 +634,75 @@ async function independentSignedSimulations(
         : null;
       const observedLogsSha256 = logs === null ? null : sha256(logs.join("\n"));
       const errIsNull = value === null ? null : value.err === null;
-      const postStateSha256 = accountSetSha256(value?.accounts);
-      const stateUnchanged = preStateSha256 !== null && postStateSha256 !== null
-        ? preStateSha256 === postStateSha256
+      const simulationAccounts = Array.isArray(value?.accounts)
+        && value.accounts.length === addresses.length ? value.accounts : null;
+      const simulationNullAddresses = simulationAccounts === null ? [] : addresses.filter(
+        (_, index) => simulationAccounts[index] === null,
+      );
+      const simulationPostAccountsAvailable = simulationAccounts === null ? null
+        : simulationNullAddresses.length === 0;
+      const simulationAccountShapeExact = simulationAccounts !== null
+        && (simulationPostAccountsAvailable === true || simulationNullAddresses.length === addresses.length);
+      const simulationPostStateSha256 = simulationAccounts === null ? null : accountSetSha256(simulationAccounts);
+      const simulationStateUnchanged = simulationPostAccountsAvailable === true
+        && preStateSha256 !== null && simulationPostStateSha256 !== null
+        ? preStateSha256 === simulationPostStateSha256
         : null;
+      const simulationChangedAddresses = preAccounts === null || simulationAccounts === null
+        ? [] : addresses.filter((_, index) => !exactNormalizedAccount(
+          preAccounts[index], simulationAccounts[index],
+        ));
+      let armOnlyTicketTransitionExact: boolean | null = null;
+      if (row.expectation === "arm-only-success" && row.expectedArmOnlyTransition !== undefined
+        && simulationPostAccountsAvailable === true) {
+        const ticketIndex = addresses.indexOf(row.expectedArmOnlyTransition.ticketAddress);
+        const ticketState = ticketIndex < 0 ? null : reportTicketState(
+          simulationAccounts?.[ticketIndex], row.expectedArmOnlyTransition.configAddress,
+        );
+        armOnlyTicketTransitionExact = simulationChangedAddresses.length === 1
+          && simulationChangedAddresses[0] === row.expectedArmOnlyTransition.ticketAddress
+          && ticketState?.armed === true
+          && ticketState.lastConsumedSequence === row.expectedArmOnlyTransition.lastConsumedSequence
+          && ticketState.activeSequence === row.expectedArmOnlyTransition.activeSequence
+          && ticketState.activeWireSha256 === row.expectedArmOnlyTransition.activeWireSha256;
+      }
+      const chainReadbackResponse = await rpc("getMultipleAccounts", [addresses, {
+        commitment: "confirmed",
+        encoding: "base64",
+        minContextSlot: contextSlot ?? preSlot ?? currentSlot,
+      }]);
+      const chainReadbackResult = record(chainReadbackResponse.result);
+      const chainReadbackContext = record(chainReadbackResult?.context);
+      const chainReadbackContextSlot = nonnegativeInteger(chainReadbackContext?.slot)
+        ? chainReadbackContext.slot : null;
+      const chainReadbackStateSha256 = accountSetSha256(chainReadbackResult?.value);
+      const stateUnchanged = preStateSha256 !== null && chainReadbackStateSha256 !== null
+        ? preStateSha256 === chainReadbackStateSha256 : null;
+      const signature = signedTransactionSignature(row.transactionBase64);
+      const signatureStatusResponse = signature === null ? null : await rpc("getSignatureStatuses", [
+        [signature], { searchTransactionHistory: true },
+      ]);
+      const signatureStatusResult = record(signatureStatusResponse?.result);
+      const signatureStatuses = Array.isArray(signatureStatusResult?.value) ? signatureStatusResult.value : null;
+      const signatureStatusIsNull = signatureStatuses?.length === 1
+        ? signatureStatuses[0] === null : null;
       const logsMatchEvidence = observedLogsSha256 !== null && observedLogsSha256 === row.logsSha256;
       const passed = contextSlot !== null
         && logsMatchEvidence
+        && chainReadbackContextSlot !== null
+        && stateUnchanged === true
+        && signatureStatusIsNull === true
         && (row.expectation === "success"
-          ? errIsNull === true
-          : errIsNull === false && stateUnchanged === true);
+          ? errIsNull === true && simulationPostAccountsAvailable === true
+          : row.expectation === "arm-only-success"
+            ? errIsNull === true
+              && simulationPostAccountsAvailable === true
+              && armOnlyTicketTransitionExact === true
+            : errIsNull === false
+            && simulationAccountShapeExact
+            && (simulationPostAccountsAvailable === false || simulationStateUnchanged === true)
+            && (row.name !== "voltr_failure_rolls_back_ticket_and_capital"
+              || simulationPostAccountsAvailable === true));
       results.push({
         name: row.name,
         expectation: row.expectation,
@@ -562,6 +712,14 @@ async function independentSignedSimulations(
         errIsNull,
         logsSha256: observedLogsSha256,
         logsMatchEvidence,
+        simulationPostAccountsAvailable,
+        simulationNullAddresses,
+        simulationChangedAddresses,
+        simulationStateUnchanged,
+        armOnlyTicketTransitionExact,
+        chainReadbackContextSlot,
+        chainReadbackStateSha256,
+        signatureStatusIsNull,
         stateUnchanged,
         passed,
       });
@@ -611,6 +769,17 @@ function derivedSquadsVault(program: unknown, settings: unknown, vaultIndex: unk
   }
 }
 
+function derivedSquadsPolicy(seed: bigint): string | null {
+  const seedBytes = Buffer.alloc(8);
+  seedBytes.writeBigUInt64LE(seed);
+  return derivedPda(RWA_MULTIPLY_ROUTE.squads.program.toString(), [
+    Buffer.from("smart_account"),
+    Buffer.from("policy"),
+    new PublicKey(RWA_MULTIPLY_ROUTE.squads.settings.toString()).toBuffer(),
+    seedBytes,
+  ]);
+}
+
 function localContractCheck(): Check {
   const planHash = sha256File(PLAN_PATH);
   const manifest = parseJson(MANIFEST_PATH);
@@ -635,8 +804,17 @@ function localContractCheck(): Check {
     ? manifestRuntimeBindings.bridgePolicies.map(record).filter((value): value is JsonRecord => value !== null)
     : [];
   const manifestPrimeUsdc = record(manifestRuntimeBindings?.primeUsdc);
+  const manifestBridgeRollover = manifestBridgePolicies.map((binding) => ({
+    action: binding.action,
+    account: binding.account,
+    dataSha256: binding.dataSha256,
+  }));
+  const expectedBridgeRollover = BRIDGE_POLICY_ROLLOVER.map(({ action, account, dataSha256 }) => ({
+    action, account, dataSha256,
+  }));
   const checks = {
     planHashExact: planHash === PLAN_SHA256,
+    bridgePolicyRouteSpecExact: rwaMultiplyRouteSpecSha256() === BRIDGE_POLICY_ROUTE_SPEC_SHA256,
     manifestPresentAndV1: manifest?.schema === "loyal-backyard-rwa-manifest/v1",
     manifestPhaseOneBindingsDeclared: typeof manifestIdentities?.v2StrategyConfig === "string"
       && manifestBridgePolicies.length === 4
@@ -650,6 +828,8 @@ function localContractCheck(): Check {
       && typeof manifestPrimeUsdc?.debtReserve === "string"
       && Array.isArray(manifestPrimeUsdc?.packets)
       && manifestPrimeUsdc.packets.length >= 4,
+    manifestBridgePolicyRolloverExact: JSON.stringify(manifestBridgeRollover) === JSON.stringify(expectedBridgeRollover)
+      && BRIDGE_POLICY_ROLLOVER.every(({ seed, account }) => derivedSquadsPolicy(seed) === account),
     verifierSchemaExact: verifierSource.includes(SCHEMA),
     verifierBroadcastFalse: verifierSource.includes("broadcast: false"),
     goWorkerSourcePresent: goFiles.length > 0,
@@ -668,8 +848,8 @@ function localContractCheck(): Check {
     deployedLegacyWriterMatches: oldWriterCommands,
   };
   return Object.values(checks).every(Boolean)
-    ? pass("V01_contract_and_forbidden_surface", "Frozen v9 Phase 1 contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence)
-    : fail("V01_contract_and_forbidden_surface", "Frozen v9 Phase 1 contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence,
+    ? pass("V01_contract_and_forbidden_surface", "Frozen v10 Phase 1 contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence)
+    : fail("V01_contract_and_forbidden_surface", "Frozen v10 Phase 1 contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence,
       "Add/fix the checked-in v1 manifest and Go worker source without changing the frozen plan; remove any legacy deployed writer wiring.");
 }
 
@@ -736,6 +916,76 @@ async function adaptorCheck(): Promise<Check> {
   const expectedTicket = typeof identities?.adaptorProgram === "string" && typeof v2StrategyConfig === "string"
     ? derivePda(identities.adaptorProgram, [Buffer.from("report_ticket"), new PublicKey(v2StrategyConfig).toBuffer()])
     : null;
+  const manifestRuntimeBindings = record(manifest?.runtimeBindings);
+  const manifestBridgePolicies = Array.isArray(manifestRuntimeBindings?.bridgePolicies)
+    ? manifestRuntimeBindings.bridgePolicies.map(record).filter((value): value is JsonRecord => value !== null)
+    : [];
+  let bridgePolicyReadback: Readonly<{
+    attempted: boolean;
+    error: string | null;
+    contextSlot: number | null;
+    current: readonly JsonRecord[];
+    retired: readonly Readonly<{ seed: string; account: string | null; exists: boolean | null }>[];
+  }> = { attempted: false, error: "SOLANA_RPC_URL unavailable", contextSlot: null, current: [], retired: [] };
+  const rpcUrl = process.env.SOLANA_RPC_URL?.trim();
+  if (rpcUrl) {
+    try {
+      const connection = new Connection(rpcUrl, "finalized");
+      const installed = await verifyInstalledCustomPolicies(connection);
+      const retiredAddresses = RETIRED_BRIDGE_POLICY_SEEDS.map(derivedSquadsPolicy);
+      if (retiredAddresses.some((account) => account === null)) throw new Error("retired bridge policy PDA derivation failed");
+      const coherentAddresses = [
+        ...BRIDGE_POLICY_ROLLOVER.map(({ account }) => account),
+        ...retiredAddresses.map((account) => account!),
+      ];
+      const coherentResponse = await connection.getMultipleAccountsInfoAndContext(
+        coherentAddresses.map((account) => new PublicKey(account)),
+        { commitment: "finalized", minContextSlot: installed.contextSlot },
+      );
+      const coherentCurrent = coherentResponse.value.slice(0, BRIDGE_POLICY_ROLLOVER.length);
+      const coherentRetired = coherentResponse.value.slice(BRIDGE_POLICY_ROLLOVER.length);
+      bridgePolicyReadback = {
+        attempted: true,
+        error: null,
+        contextSlot: coherentResponse.context.slot,
+        current: installed.rows.map((row, index) => ({
+          ...row,
+          coherentOwner: coherentCurrent[index]?.owner.toBase58() ?? null,
+          coherentDataSha256: coherentCurrent[index] == null ? null : sha256(coherentCurrent[index]!.data),
+        })),
+        retired: RETIRED_BRIDGE_POLICY_SEEDS.map((seed, index) => ({
+          seed: seed.toString(),
+          account: retiredAddresses[index]!,
+          exists: coherentRetired[index] !== null,
+        })),
+      };
+    } catch (error) {
+      bridgePolicyReadback = {
+        attempted: true,
+        error: error instanceof Error ? error.message.replace(/https?:\/\/\S+/g, "<redacted>") : "bridge policy readback failed",
+        contextSlot: null,
+        current: [],
+        retired: [],
+      };
+    }
+  }
+  const currentBridgePoliciesExact = bridgePolicyReadback.current.length === BRIDGE_POLICY_ROLLOVER.length
+    && BRIDGE_POLICY_ROLLOVER.every((expected, index) => {
+      const current = bridgePolicyReadback.current[index];
+      const manifestBinding = manifestBridgePolicies[index];
+      return current?.operation === expected.operation
+        && current.seed === expected.seed.toString()
+        && current.policy === expected.account
+        && current.pass === true
+        && current.dataSha256 === expected.dataSha256
+        && current.coherentOwner === RWA_MULTIPLY_ROUTE.squads.program.toString()
+        && current.coherentDataSha256 === expected.dataSha256
+        && manifestBinding?.action === expected.action
+        && manifestBinding.account === expected.account
+        && manifestBinding.dataSha256 === expected.dataSha256;
+    });
+  const retiredBridgePoliciesAbsent = bridgePolicyReadback.retired.length === RETIRED_BRIDGE_POLICY_SEEDS.length
+    && bridgePolicyReadback.retired.every(({ exists }) => exists === false);
   const armSignerMetas = Array.isArray(simulation?.armSignerMetas)
     ? simulation.armSignerMetas.map(record).filter((row): row is JsonRecord => row !== null)
     : [];
@@ -750,19 +1000,67 @@ async function adaptorCheck(): Promise<Check> {
     && mutationRows.every((value) => {
       const row = record(value);
       const rpc = record(row?.simulation);
+      const inspectedAddresses = simulationAddresses(row?.inspectedAddresses);
+      const simulationNullAddresses = Array.isArray(row?.simulationNullAddresses)
+        && row.simulationNullAddresses.every((entry) => typeof entry === "string")
+        ? row.simulationNullAddresses as string[] : null;
+      const simulationPostAccountsAvailable = row?.simulationPostAccountsAvailable;
+      const simulationChangedAddresses = Array.isArray(row?.simulationChangedAddresses)
+        && row.simulationChangedAddresses.every((entry) => typeof entry === "string")
+        ? row.simulationChangedAddresses as string[] : null;
+      const armOnlyTicketTransition = record(row?.armOnlyTicketTransition);
+      const isArmOnly = row?.name === "arm_only_payload";
+      const outcomeExact = isArmOnly
+        ? row?.expectation === "arm-only-success"
+          && simulationPostAccountsAvailable === true
+          && simulationNullAddresses?.length === 0
+          && simulationChangedAddresses !== null
+          && ticket?.address !== undefined
+          && exactStringSet(simulationChangedAddresses, [String(ticket.address)])
+          && armOnlyTicketTransition?.armed === true
+          && bigintOrNull(armOnlyTicketTransition.lastConsumedSequence)
+            === bigintOrNull(ticketBefore?.lastConsumedSequence)
+          && bigintOrNull(armOnlyTicketTransition.activeSequence)
+            === bigintOrNull(canonicalReport?.sequence)
+          && armOnlyTicketTransition.activeWireSha256 === topology?.capitalWireSha256
+          && row?.error === null
+          && row?.rejectedBeforeMutation === false
+        : row?.expectation === "rejection"
+          && (simulationPostAccountsAvailable === true
+            ? simulationNullAddresses?.length === 0
+              && simulationChangedAddresses?.length === 0
+            : simulationPostAccountsAvailable === false
+              && inspectedAddresses !== null
+              && simulationNullAddresses !== null
+              && exactStringSet(simulationNullAddresses, inspectedAddresses)
+            )
+          && typeof row?.error === "string"
+          && row.error.length > 0
+          && row.rejectedBeforeMutation === true;
       return row !== null
         && requiredMutations.includes(String(row.name))
         && base64MatchesSha256(row.transactionBase64, row.transactionSha256)
+        && signedTransactionSignature(row.transactionBase64) !== null
         && sha256Hex(row.logsSha256)
+        && sha256Hex(row.simulationStateSha256)
         && sha256Hex(row.preStateSha256)
         && row.preStateSha256 === row.postStateSha256
-        && typeof row.error === "string"
-        && row.error.length > 0
-        && row.rejectedBeforeMutation === true
+        && row.preStateSha256 === row.chainReadbackStateSha256
+        && inspectedAddresses !== null
+        && simulationNullAddresses !== null
+        && simulationChangedAddresses !== null
+        && outcomeExact
+        && (row.name !== "voltr_failure_rolls_back_ticket_and_capital"
+          || simulationPostAccountsAvailable === true)
+        && nonnegativeInteger(row.chainReadbackContextSlot)
+        && nonnegativeInteger(rpc?.contextSlot)
+        && row.chainReadbackContextSlot >= rpc.contextSlot
+        && row.signatureStatus === null
         && rpc?.sigVerify === true
-        && rpc?.replaceRecentBlockhash === false
-        && nonnegativeInteger(rpc?.contextSlot);
+        && rpc?.replaceRecentBlockhash === false;
     })
+    && mutationRows.filter((value) => record(value)?.expectation === "rejection").length === 38
+    && mutationRows.filter((value) => record(value)?.expectation === "arm-only-success").length === 1
     && new Set(mutationTransactionHashes).size === mutationTransactionHashes.length;
   const independentSimulation = await independentSignedSimulations([
     {
@@ -777,11 +1075,24 @@ async function adaptorCheck(): Promise<Check> {
       const row = record(value);
       return {
         name: String(row?.name ?? ""),
-        expectation: "failure",
+        expectation: row?.name === "arm_only_payload" ? "arm-only-success" : "failure",
         transactionBase64: row?.transactionBase64,
         transactionSha256: row?.transactionSha256,
         inspectedAddresses: row?.inspectedAddresses,
         logsSha256: row?.logsSha256,
+        expectedArmOnlyTransition: row?.name === "arm_only_payload"
+          && typeof ticket?.address === "string"
+          && typeof ticket?.config === "string"
+          && typeof ticketBefore?.lastConsumedSequence === "string"
+          && typeof canonicalReport?.sequence === "string"
+          && typeof topology?.capitalWireSha256 === "string"
+          ? {
+            ticketAddress: ticket.address,
+            configAddress: ticket.config,
+            lastConsumedSequence: ticketBefore.lastConsumedSequence,
+            activeSequence: canonicalReport.sequence,
+            activeWireSha256: topology.capitalWireSha256,
+          } : undefined,
       };
     }),
   ]);
@@ -829,6 +1140,9 @@ async function adaptorCheck(): Promise<Check> {
     observedSlotFreshness: source.includes("Clock::get()")
       && source.includes("checked_sub(report.observed_slot)")
       && source.includes("max_report_age_slots"),
+    staleActiveTicketRecovery: source.includes("age > max_report_age_slots")
+      && source.includes("report.sequence <= ticket.active_sequence")
+      && source.includes("AdaptorError::TicketAlreadyArmed"),
     hasNavAfterRaw: source.includes("nav_after_raw"),
     hasSnapshotDigest: source.includes("snapshot_digest"),
     returnsExactNAV: source.includes("set_return_data(&report.nav_after_raw.to_le_bytes())"),
@@ -905,7 +1219,9 @@ async function adaptorCheck(): Promise<Check> {
       && consumeSignerMetas.length === 1
       && consumeSignerMetas[0]?.address === expectedStrategyAuthority
       && consumeSignerMetas[0]?.isSigner === true,
-    allNegativeMutations: exactStringSet(mutationNames, requiredMutations)
+    finalizedBridgePoliciesExact: currentBridgePoliciesExact,
+    retiredBridgePoliciesAbsent,
+    exactV10Matrix: exactStringSet(mutationNames, requiredMutations)
       && mutationProofsExact,
     independentCurrentSimulation: independentSimulationExact,
     cargoCheck: cargo?.exitCode === 0,
@@ -921,17 +1237,18 @@ async function adaptorCheck(): Promise<Check> {
     signerTopologySimulationPath: ADAPTOR_SIMULATION_EVIDENCE,
     signerTopologySimulationSha256: sha256File(ADAPTOR_SIMULATION_EVIDENCE),
     independentSimulation,
+    bridgePolicyReadback,
   };
-  const condition = "Adaptor v2 uses immutable config plus one exact reusable ticket: atomic ArmReport then Voltr consume, separated Squads/Voltr signer proofs, monotonic one-use sequence, rollback, and exact return-data NAV.";
+  const condition = "Adaptor v2 uses one exact reusable ticket and finalized bridge policies are exactly seeds 62-65 while retired seeds 53-56 are closed.";
   if (Object.values(checks).every(Boolean)) return pass("V02_adaptor_identity_and_signer", condition, evidence);
   const checksWithoutIndependentRpc = Object.entries(checks)
-    .filter(([name]) => name !== "independentCurrentSimulation")
+    .filter(([name]) => !["independentCurrentSimulation", "finalizedBridgePoliciesExact", "retiredBridgePoliciesAbsent"].includes(name))
     .every(([, value]) => value);
-  return checksWithoutIndependentRpc && !independentSimulation.attempted
+  return checksWithoutIndependentRpc && !independentSimulation.attempted && !bridgePolicyReadback.attempted
     ? blocked("V02_adaptor_identity_and_signer", condition, evidence,
-      "Provide SOLANA_RPC_URL and rerun while the checked-in signed-unsent ticket transactions are fresh; the verifier will not replace their blockhash or skip signature verification.")
+      "Provide SOLANA_RPC_URL and rerun while the checked-in signed-unsent ticket transactions are fresh; the verifier will also prove exact policies 62-65 and absence of retired policies 53-56.")
     : fail("V02_adaptor_identity_and_signer", condition, evidence,
-      "Implement the approved ticket v9 contract, pass cargo check, then attach the canonical atomic two-instruction signed-unsent wire and exact negative matrix, including rollback and second-consume rejection.");
+      "Repair the first adaptor, signed-unsent simulation, current policy 62-65, or retired policy 53-56 mismatch; never weaken the exact policy boundary.");
 }
 
 async function policyCatalogCheck(): Promise<Check> {

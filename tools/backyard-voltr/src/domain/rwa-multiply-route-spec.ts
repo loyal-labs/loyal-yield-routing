@@ -30,10 +30,10 @@ export type RwaMultiplyRouteSpec = Readonly<{
     assetAta: Address;
     collateralAta: Address;
     customPolicySeeds: Readonly<{
-      allocation: 53n;
-      navRefresh: 54n;
-      stageWithdrawal: 55n;
-      withdraw: 56n;
+      allocation: 62n;
+      navRefresh: 63n;
+      stageWithdrawal: 64n;
+      withdraw: 65n;
     }>;
   }>;
   /** Inactive fallback retained for forensic comparison only. */
@@ -113,10 +113,10 @@ export const RWA_MULTIPLY_ROUTE = {
     assetAta: address("EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"),
     collateralAta: address("DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"),
     customPolicySeeds: {
-      allocation: 53n,
-      navRefresh: 54n,
-      stageWithdrawal: 55n,
-      withdraw: 56n,
+      allocation: 62n,
+      navRefresh: 63n,
+      stageWithdrawal: 64n,
+      withdraw: 65n,
     },
   },
   // Voltr's deployed generic bridge. The strategy PDA is derived from the

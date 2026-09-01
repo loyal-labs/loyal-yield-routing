@@ -950,52 +950,6 @@ pub(crate) fn create_program_interaction_action_instruction(
     )
 }
 
-/// Atomically replaces one deployed hookless ProgramInteraction policy using
-/// the Settings ABI that is live on mainnet. The PDA is removed and recreated
-/// from the identical seed in one Settings transaction; no PolicyUpdate wire
-/// is involved.
-pub(crate) fn replace_deployed_program_interaction_action_instruction(
-    settings: Pubkey,
-    authority: Pubkey,
-    delegated_signer: Pubkey,
-    action_seed: u64,
-    account_index: u8,
-    constraints: Vec<SquadsInstructionConstraint>,
-) -> Result<Instruction> {
-    let (policy, _) = derive_action_account(&settings, action_seed);
-    let create = SquadsSettingsAction::PolicyCreate {
-        seed: action_seed,
-        policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
-            compile_program_interaction_payload(account_index, constraints, Vec::new())?,
-        ),
-        signers: vec![SquadsSmartAccountSigner {
-            key: delegated_signer,
-            permissions: SquadsPermissions {
-                mask: SQUADS_FULL_PERMISSIONS_MASK,
-            },
-        }],
-        threshold: 1,
-        time_lock: 0,
-        start_timestamp: None,
-        expiration_args: None,
-    };
-    Ok(Instruction {
-        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
-        accounts: vec![
-            AccountMeta::new(settings, false),
-            AccountMeta::new(authority, true),
-            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
-            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
-            AccountMeta::new_readonly(authority, true),
-            AccountMeta::new(policy, false),
-        ],
-        data: serialize_settings_actions(vec![
-            SquadsSettingsAction::PolicyRemove { policy },
-            create,
-        ]),
-    })
-}
-
 pub(crate) fn create_program_interaction_action_instruction_with_daily_spending_limits(
     settings: Pubkey,
     authority: Pubkey,
@@ -1816,39 +1770,5 @@ mod tests {
         assert_eq!(instruction.data[20], 1);
         assert_eq!(&instruction.data[21..25], &[8, 0, 0, 0]);
         assert_eq!(&instruction.data[25..], &[1, 0, 1, 1, 2, 0, 9, 8]);
-    }
-
-    #[test]
-    fn deployed_policy_replace_is_one_remove_then_create_settings_transaction() {
-        let settings = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-        let delegated_signer = Pubkey::new_unique();
-        let seed = 53;
-        let (policy, _) = derive_action_account(&settings, seed);
-        let instruction = replace_deployed_program_interaction_action_instruction(
-            settings,
-            authority,
-            delegated_signer,
-            seed,
-            0,
-            vec![SquadsInstructionConstraint {
-                program_id: Pubkey::new_unique(),
-                account_constraints: Vec::new(),
-                data_constraints: Vec::new(),
-            }],
-        )
-        .expect("atomic replace");
-
-        assert_eq!(instruction.program_id, SQUADS_SMART_ACCOUNT_PROGRAM_ID);
-        assert_eq!(instruction.accounts.len(), 6);
-        assert_eq!(instruction.accounts[0], AccountMeta::new(settings, false));
-        assert_eq!(instruction.accounts[1], AccountMeta::new(authority, true));
-        assert_eq!(instruction.accounts[5], AccountMeta::new(policy, false));
-        assert_eq!(instruction.data[8], 1, "one Settings signer");
-        assert_eq!(&instruction.data[9..13], &2u32.to_le_bytes());
-        assert_eq!(instruction.data[13], 9, "PolicyRemove is first");
-        assert_eq!(&instruction.data[14..46], policy.as_ref());
-        assert_eq!(instruction.data[46], 7, "PolicyCreate is second");
-        assert_eq!(&instruction.data[47..55], &seed.to_le_bytes());
     }
 }

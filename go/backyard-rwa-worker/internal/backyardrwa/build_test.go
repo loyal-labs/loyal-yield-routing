@@ -104,8 +104,8 @@ func TestBridgeTransactionSignsExactLegacyWireAndPersistsOnlyAfterSimulation(t *
 	if len(signed.signedWire) <= ed25519.SignatureSize || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:1+ed25519.SignatureSize]) {
 		t.Fatal("legacy wire did not contain a valid signature over its exact message")
 	}
-	if len(signed.signedWire) != 1027 || signed.messageSHA256 != "b1fab85e66e93f55de050ab60e8b9538c3917c405aec153b445d561724e551b6" ||
-		signed.signedWireSHA256 != "8e2cb8723d1687b8de060977dfeaba94ea1d781e89021a06cc1afb49987c4aa9" {
+	if len(signed.signedWire) != 1027 || signed.messageSHA256 != "df2641eb59c1a40d9b1894fb2ba9945d458eb9fdf6270f4827d51a98b6f54910" ||
+		signed.signedWireSHA256 != "d4312ecebf4125d77e9f76d4686cf70ce3957bc9df1b8ea9d43d684cc950566f" {
 		t.Fatalf("ticketed NAV packet fingerprint drifted: bytes=%d message=%s wire=%s", len(signed.signedWire), signed.messageSHA256, signed.signedWireSHA256)
 	}
 	if signed.transactionSignature != encodeBase58(signed.signedWire[1:1+ed25519.SignatureSize]) || len(signed.messageSHA256) != 64 || len(signed.signedWireSHA256) != 64 {

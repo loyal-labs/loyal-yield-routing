@@ -162,7 +162,7 @@ fn process_arm_report(
     let clock = Clock::get().map_err(|_| AdaptorError::InvalidReport)?;
     validate_capital_fields(&config, amount, report, clock.slot)?;
     let mut ticket = load_ticket(program_id, &accounts[0], &accounts[1])?;
-    validate_ticket_can_arm(&ticket, report)?;
+    validate_ticket_can_arm(&ticket, report, clock.slot, config.max_report_age_slots)?;
     ticket.armed = true;
     ticket.active_sequence = report.sequence;
     ticket.active_wire_sha256 = capital_wire_hash(discriminator, &data[1..]);
@@ -315,28 +315,7 @@ fn capital_path(
     data: &[u8],
     is_deposit: bool,
 ) -> AdaptorResult<()> {
-    if accounts.len() != 9 {
-        return Err(AdaptorError::InvalidInstruction);
-    }
-    if accounts[1].is_signer || accounts[1].is_writable {
-        return Err(AdaptorError::InvalidConfig);
-    }
-    if accounts[2].is_signer
-        || accounts[2].is_writable
-        || !accounts[3].is_writable
-        || accounts[3].is_signer
-        || accounts[4].is_signer
-        || accounts[4].is_writable
-        || accounts[5].is_signer
-        || accounts[5].is_writable
-        || accounts[6].is_signer
-        || accounts[6].is_writable
-        || !accounts[7].is_writable
-        || accounts[7].is_signer
-        || accounts[8].is_signer
-    {
-        return Err(AdaptorError::InvalidAccount);
-    }
+    validate_capital_account_privileges(accounts)?;
     reject_duplicate_mutables(accounts)?;
     let (amount, report) = parse_capital_wire(data)?;
     let config = load_config(program_id, &accounts[1])?;
@@ -350,9 +329,6 @@ fn capital_path(
         &accounts[4],
         &accounts[7],
     )?;
-    if !accounts[8].is_writable {
-        return Err(AdaptorError::InvalidTicketWritable);
-    }
     let clock = Clock::get().map_err(|_| AdaptorError::InvalidReport)?;
     validate_capital_fields(&config, amount, report, clock.slot)?;
     let discriminator = if is_deposit {
@@ -424,6 +400,34 @@ fn capital_path(
     Ok(())
 }
 
+fn validate_capital_account_privileges(accounts: &[AccountInfo]) -> AdaptorResult<()> {
+    if accounts.len() != 9 {
+        return Err(AdaptorError::InvalidInstruction);
+    }
+    if accounts[1].is_signer || accounts[1].is_writable {
+        return Err(AdaptorError::InvalidConfig);
+    }
+    if accounts[2].is_signer
+        || !accounts[3].is_writable
+        || accounts[3].is_signer
+        || accounts[4].is_signer
+        || accounts[4].is_writable
+        || accounts[5].is_signer
+        || accounts[5].is_writable
+        || accounts[6].is_signer
+        || accounts[6].is_writable
+        || !accounts[7].is_writable
+        || accounts[7].is_signer
+        || accounts[8].is_signer
+    {
+        return Err(AdaptorError::InvalidAccount);
+    }
+    if !accounts[8].is_writable {
+        return Err(AdaptorError::InvalidTicketWritable);
+    }
+    Ok(())
+}
+
 /// Voltr must forward its exact strategy authority as a signer. Squads
 /// authorization is carried by the separately armed one-use ticket because
 /// Voltr intentionally strips the Squads vault signer privilege from CPI.
@@ -486,12 +490,25 @@ fn validate_ticket_for_capital(
     Ok(())
 }
 
-fn validate_ticket_can_arm(ticket: &ReportTicket, report: ReportV1) -> AdaptorResult<()> {
-    if ticket.armed {
-        return Err(AdaptorError::TicketAlreadyArmed);
-    }
+fn validate_ticket_can_arm(
+    ticket: &ReportTicket,
+    report: ReportV1,
+    current_slot: u64,
+    max_report_age_slots: u64,
+) -> AdaptorResult<()> {
     if report.sequence <= ticket.last_consumed_sequence {
         return Err(AdaptorError::TicketReplay);
+    }
+    if ticket.armed {
+        let active_expired = current_slot
+            .checked_sub(ticket.active_sequence)
+            .is_some_and(|age| age > max_report_age_slots);
+        if !active_expired {
+            return Err(AdaptorError::TicketAlreadyArmed);
+        }
+        if report.sequence <= ticket.active_sequence {
+            return Err(AdaptorError::TicketReplay);
+        }
     }
     Ok(())
 }
@@ -803,6 +820,69 @@ mod tests {
         }
     }
 
+    fn test_account(is_signer: bool, is_writable: bool) -> AccountInfo<'static> {
+        AccountInfo::new(
+            Box::leak(Box::new(Pubkey::new_unique())),
+            is_signer,
+            is_writable,
+            Box::leak(Box::new(0)),
+            Box::leak(Vec::new().into_boxed_slice()),
+            Box::leak(Box::new(Pubkey::new_unique())),
+            false,
+            0,
+        )
+    }
+
+    fn canonical_capital_accounts() -> Vec<AccountInfo<'static>> {
+        vec![
+            test_account(true, true),   // Voltr strategy authority
+            test_account(false, false), // adaptor config
+            test_account(false, true),  // Voltr requires vault asset mint writable
+            test_account(false, true),  // strategy asset ATA
+            test_account(false, false), // asset token program
+            test_account(false, false), // Squads Settings
+            test_account(false, false), // Squads vault
+            test_account(false, true),  // Squads asset ATA
+            test_account(false, true),  // report ticket
+        ]
+    }
+
+    #[test]
+    fn capital_privileges_accept_voltr_writable_mint_without_widening_other_roles() {
+        assert_eq!(
+            validate_capital_account_privileges(&canonical_capital_accounts()),
+            Ok(())
+        );
+
+        let mut mint_signer = canonical_capital_accounts();
+        mint_signer[2].is_signer = true;
+        assert_eq!(
+            validate_capital_account_privileges(&mint_signer),
+            Err(AdaptorError::InvalidAccount)
+        );
+
+        let mut writable_config = canonical_capital_accounts();
+        writable_config[1].is_writable = true;
+        assert_eq!(
+            validate_capital_account_privileges(&writable_config),
+            Err(AdaptorError::InvalidConfig)
+        );
+
+        let mut writable_token_program = canonical_capital_accounts();
+        writable_token_program[4].is_writable = true;
+        assert_eq!(
+            validate_capital_account_privileges(&writable_token_program),
+            Err(AdaptorError::InvalidAccount)
+        );
+
+        let mut readonly_ticket = canonical_capital_accounts();
+        readonly_ticket[8].is_writable = false;
+        assert_eq!(
+            validate_capital_account_privileges(&readonly_ticket),
+            Err(AdaptorError::InvalidTicketWritable)
+        );
+    }
+
     fn settings(expected_signer: Pubkey) -> Vec<u8> {
         let mut data = vec![0; 168];
         data[..8].copy_from_slice(&SQUADS_SETTINGS_DISCRIMINATOR);
@@ -1037,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn active_arm_cannot_be_overwritten_even_after_its_report_expires() {
+    fn fresh_active_arm_cannot_be_overwritten() {
         let next = ReportV1 {
             sequence: 200,
             observed_slot: 200,
@@ -1052,8 +1132,39 @@ mod tests {
             active_wire_sha256: [9; 32],
         };
         assert_eq!(
-            validate_ticket_can_arm(&ticket, next),
+            validate_ticket_can_arm(&ticket, next, 194, 5),
             Err(AdaptorError::TicketAlreadyArmed)
+        );
+    }
+
+    #[test]
+    fn expired_active_arm_can_be_replaced_by_a_newer_valid_report() {
+        let next = ReportV1 {
+            sequence: 200,
+            observed_slot: 200,
+            ..report()
+        };
+        let ticket = ReportTicket {
+            bump: 254,
+            armed: true,
+            config: Pubkey::new_unique(),
+            last_consumed_sequence: 100,
+            active_sequence: 190,
+            active_wire_sha256: [9; 32],
+        };
+        assert_eq!(validate_ticket_can_arm(&ticket, next, 200, 5), Ok(()));
+        assert_eq!(
+            validate_ticket_can_arm(
+                &ticket,
+                ReportV1 {
+                    sequence: 190,
+                    observed_slot: 190,
+                    ..next
+                },
+                200,
+                5
+            ),
+            Err(AdaptorError::TicketReplay)
         );
     }
 

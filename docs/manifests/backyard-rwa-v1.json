@@ -56,23 +56,23 @@
     "bridgePolicies": [
       {
         "action": "VOLTR_ALLOCATE_TO_SQUADS",
-        "account": "3pUxmFm7cExQRSwHeuycemsa2rf3zsSXLLXoGp5uYYYz",
-        "dataSha256": "273996c2fc10054fea2f4f3ec0cc58792d0a6020fbee81ec61e52cf08d994eca"
+        "account": "HoDV7mtsb2u1VARZLYuGByW7cCsGWL9NFxHZs7WHjdzz",
+        "dataSha256": "bda72932f474064fa3cd60ce91633acba35b2730e86b82f4352aa96a6738e2f4"
       },
       {
         "action": "REPORT_NAV",
-        "account": "AfQM1WgcujthouQDhcMZxXmCzG4EUW1qZPnRodioNXmJ",
-        "dataSha256": "f5491d82f96a920dcd7db233cece5b45b7e808ce9d97c20aa0c286d8c5af20d9"
+        "account": "41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP",
+        "dataSha256": "bf34a3e9c9c635c79a0d30e096b639a86d52e300ad113c81161e3486832d97ca"
       },
       {
         "action": "STAGE_SQUADS_TO_VOLTR",
-        "account": "8Y6YHNFLjcRr4XtP9boU8jXGvA1kv8nonWhBWtM91eoq",
-        "dataSha256": "a6f8fd75878c9f8b14da86d9bd57e40e441cc63ea7ef8c918d834517cd08ac44"
+        "account": "ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY",
+        "dataSha256": "ef8c231497fb2620b5930cfe5d329c871f103db6512781eb5487534db8b1291b"
       },
       {
         "action": "VOLTR_RESTORE_IDLE",
-        "account": "6hTaRm3B3M1RBmYxzy2utm4PxjCMsptEZjYcKSHi1xya",
-        "dataSha256": "af14e7d00fb1bae520a0f642c04b52a5e88c01ab1d211d9a8a1ac4a2abb8201e"
+        "account": "DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t",
+        "dataSha256": "84e8f6f881758cff1714ef743603c016024104f9834392c6fba693c3651b719c"
       }
     ],
     "primeUsdc": {

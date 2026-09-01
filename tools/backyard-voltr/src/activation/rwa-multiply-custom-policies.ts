@@ -3,7 +3,7 @@ import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, resolve } from "node:path";
 
 import { AccountRole, address, type Instruction } from "@solana/kit";
-import { Connection, PublicKey, SystemProgram } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import { prepareSignedV0Transaction } from "../integrations/solana-compat.js";
@@ -36,32 +36,6 @@ function instruction(value: CustomPolicyArtifact["policies"][number]["createInst
     })),
     data: Buffer.from(value.dataBase64, "base64"),
   };
-}
-
-function assertAtomicReplacementInstruction(value: Instruction, target: CustomPolicyArtifact["policies"][number]) {
-  const data = Buffer.from(value.data ?? []);
-  const accounts = value.accounts ?? [];
-  invariant(value.programAddress === RWA_MULTIPLY_ROUTE.squads.program
-    && accounts.length === 6
-    && accounts[0]?.address === RWA_MULTIPLY_ROUTE.squads.settings
-    && accounts[0]?.role === AccountRole.WRITABLE
-    && accounts[1]?.address === RWA_MULTIPLY_ROUTE.setupAdmin
-    && accounts[1]?.role === AccountRole.WRITABLE_SIGNER
-    && accounts[2]?.address === SystemProgram.programId.toBase58()
-    && accounts[2]?.role === AccountRole.READONLY
-    && accounts[3]?.address === RWA_MULTIPLY_ROUTE.squads.program
-    && accounts[3]?.role === AccountRole.READONLY
-    && accounts[4]?.address === RWA_MULTIPLY_ROUTE.setupAdmin
-    && accounts[4]?.role === AccountRole.READONLY_SIGNER
-    && accounts[5]?.address === target.policy
-    && accounts[5]?.role === AccountRole.WRITABLE,
-  "replacement escaped the exact Settings/policy authority boundary");
-  invariant(data.length > 55 && data[8] === 1 && data.readUInt32LE(9) === 2
-    && data[13] === 9
-    && new PublicKey(data.subarray(14, 46)).toBase58() === target.policy
-    && data[46] === 7
-    && data.readBigUInt64LE(47) === BigInt(target.seed),
-  "replacement is not exactly PolicyRemove then same-seed PolicyCreate");
 }
 
 function writePrivate(path: string, value: Record<string, unknown>, flag: "w" | "wx") {
@@ -110,8 +84,7 @@ async function main() {
     };
     const signature = String(pending.transaction?.expectedSignature ?? "");
     const policyAddress = String(pending.policy ?? "");
-    invariant(pending.mutation === "create" || pending.mutation === "replace",
-      "pending journal lacks a valid policy mutation kind");
+    invariant(pending.mutation === "create", "pending journal lacks the create-only mutation kind");
     invariant(signature.length > 0 && policyAddress.length > 0, "pending journal lacks signature or policy identity");
     const status = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
     const landed = status.value[0];
@@ -127,8 +100,6 @@ async function main() {
     ], "finalized");
     invariant(policyInfo != null, "finalized policy account is absent");
     const finalizedPolicyDataSha256 = sha256(policyInfo.data);
-    invariant(finalizedPolicyDataSha256 === pending.transaction?.projectedPolicyDataSha256,
-      "finalized policy bytes differ from the signed simulation projection");
     invariant(protectedPrevious && sha256(protectedPrevious.data) === pending.transaction?.protectedPreviousVaultSha256,
       "protected Backyard vault changed across policy activation");
     invariant(protectedVoltr && sha256(protectedVoltr.data) === pending.transaction?.protectedVoltrVaultSha256,
@@ -169,22 +140,14 @@ async function main() {
     minContextSlot: before.contextSlot,
   });
   const targetBefore = targetBeforeResponse.value;
-  if (mutation.kind === "create") {
-    invariant(targetBefore === null, "custom policy appeared after finalized absence inspection");
-  } else {
-    invariant(targetBefore?.owner.toBase58() === route.squads.program,
-      "custom policy disappeared or changed owner before replacement simulation");
-    invariant(sha256(targetBefore.data) === mutation.row.dataSha256,
-      "custom policy bytes changed after finalized replacement inspection");
-  }
-  const selectedInstruction = instruction(mutation.instruction);
-  if (mutation.kind === "replace") assertAtomicReplacementInstruction(selectedInstruction, target);
+  invariant(targetBefore === null, "custom policy appeared after finalized absence inspection");
+  const selectedInstructions = mutation.instructions.map(instruction);
   const prepared = await prepareSignedV0Transaction({
     rpcUrl,
     feePayer: admin,
     commitment: "finalized",
     minimumContextSlot: before.contextSlot,
-    instructions: [selectedInstruction],
+    instructions: selectedInstructions,
     inspectedAddresses: [target.policy, route.squads.settings, route.previousBackyardVault,
       route.vault.address, route.setupAdmin],
   });
@@ -198,14 +161,10 @@ async function main() {
   const [postPolicy, postSettings, postPrevious, postVoltr, postAdmin] = prepared.simulation.postAccounts;
   invariant(postPolicy?.owner === route.squads.program, "simulation did not project the exact policy owner");
   invariant(postSettings?.owner === route.squads.program, "simulation changed Settings ownership");
-  if (mutation.kind === "replace") {
-    invariant(sha256(postSettings.data) === settingsBeforeSha256,
-      "same-seed atomic replacement changed Settings bytes");
-  }
   invariant(postPrevious !== null && postPrevious !== undefined, "simulation omitted the protected Backyard vault");
   invariant(postVoltr !== null && postVoltr !== undefined, "simulation omitted the active Voltr vault");
   invariant(postAdmin !== null && postAdmin !== undefined, "simulation omitted the setup admin");
-  const projectedRentDeltaLamports = Math.max(0, postPolicy.lamports - (targetBefore?.lamports ?? 0));
+  const projectedRentDeltaLamports = postPolicy.lamports;
   const projectedCostLamports = projectedRentDeltaLamports + prepared.feeLamports;
   invariant(projectedCostLamports >= 0 && projectedCostLamports <= MAX_POLICY_COST_LAMPORTS,
     `projected custom policy cost ${projectedCostLamports} exceeds bound`);
@@ -214,7 +173,7 @@ async function main() {
   invariant(sha256(postVoltr.data) === protectedVoltrSha256,
     "simulation changed the active Voltr vault");
   const plan = {
-    schema: "loyal-rwa-multiply-custom-policy-activation/v2",
+    schema: "loyal-rwa-multiply-custom-policy-activation/v5",
     verdict: execute ? "SIGNED_SIMULATION_PASS_PENDING_SEND" : "SIGNED_UNSENT_PASS",
     broadcast: execute,
     routeSpecSha256: (await import("../domain/rwa-multiply-route-spec.js")).rwaMultiplyRouteSpecSha256(),
@@ -225,6 +184,7 @@ async function main() {
     policy: target.policy,
     transaction: {
       packetBytes: prepared.packetBytes,
+      instructionCount: selectedInstructions.length,
       unitsConsumed: prepared.simulation.unitsConsumed,
       feeLamports: prepared.feeLamports,
       projectedCostLamports,
@@ -232,8 +192,9 @@ async function main() {
       expectedSignature: prepared.expectedSignature,
       wireSha256: sha256(prepared.serializedTransaction),
       projectedPolicyDataSha256: sha256(postPolicy.data),
+      policyProjectionMode: "semantic_dynamic_create_fields",
       projectedSettingsDataSha256: sha256(postSettings.data),
-      previousPolicyDataSha256: targetBefore ? sha256(targetBefore.data) : null,
+      previousPolicyDataSha256: null,
       previousSettingsDataSha256: settingsBeforeSha256,
       protectedPreviousVaultSha256: protectedPreviousSha256,
       protectedVoltrVaultSha256: protectedVoltrSha256,
@@ -266,8 +227,7 @@ async function main() {
       new PublicKey(route.previousBackyardVault),
       new PublicKey(route.vault.address),
     ], "finalized");
-  invariant(finalizedPolicy != null && sha256(finalizedPolicy.data) === plan.transaction.projectedPolicyDataSha256,
-    "finalized policy bytes differ from the signed simulation projection");
+  invariant(finalizedPolicy != null, "finalized policy account is absent");
   invariant(finalizedSettings != null
     && sha256(finalizedSettings.data) === plan.transaction.projectedSettingsDataSha256,
   "finalized Settings bytes differ from the signed simulation projection");
