@@ -1,10 +1,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    fs,
-    path::PathBuf,
     process::{Command, ExitStatus},
     str::FromStr,
-    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -41,9 +38,6 @@ const REQUESTED_SLOT_TIMEOUT_ERROR: &str = "Autodeposit request timed out before
 const MAX_DEBOUNCED_WAKEUPS: u64 = 1000;
 const DEFAULT_REALTIME_HINT_QUEUE_CAPACITY: usize = 1024;
 const DEFAULT_AUTODEPOSIT_WAKE_CHANNEL: &str = "loyal_yield_autodeposit_wakeup";
-const AUTODEPOSIT_EXECUTOR_STAGE_FILE_ENV: &str = "AUTODEPOSIT_EXECUTOR_STAGE_FILE";
-const UNKNOWN_EXECUTOR_STAGE: &str = "unknown";
-static EXECUTOR_STAGE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const CLAIM_HOLDING_PULL_ATTEMPT_STATES: &[&str] =
     &["prepared", "submitted", "confirmed", "unknown", "ambiguous"];
 const AUTOMATIC_PULL_RECOVERY_STATES: &[&str] = &["prepared", "submitted", "confirmed", "unknown"];
@@ -157,48 +151,6 @@ fn record_unsuccessful_executor_exit(
         outcome.executions_not_actionable += 1;
     }
     alert
-}
-
-#[derive(Debug)]
-struct ExecutorStageFile {
-    directory: PathBuf,
-    path: PathBuf,
-}
-
-impl ExecutorStageFile {
-    fn create() -> std::io::Result<Self> {
-        let sequence = EXECUTOR_STAGE_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let directory = std::env::temp_dir().join(format!(
-            "loyal-autodeposit-executor-stage-{}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&directory)?;
-        let path = directory.join("stage");
-        fs::write(&path, "startup")?;
-        Ok(Self { directory, path })
-    }
-
-    fn stage(&self) -> String {
-        let Ok(raw) = fs::read_to_string(&self.path) else {
-            return UNKNOWN_EXECUTOR_STAGE.to_owned();
-        };
-        let stage = raw.trim();
-        if stage.is_empty()
-            || stage.len() > 64
-            || !stage
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
-        {
-            return UNKNOWN_EXECUTOR_STAGE.to_owned();
-        }
-        stage.to_owned()
-    }
-}
-
-impl Drop for ExecutorStageFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.directory);
-    }
 }
 
 #[cfg(unix)]
@@ -612,9 +564,7 @@ async fn execute_eligible_targets_once(
                     .unwrap_or_else(|| Utc::now().timestamp_micros())
             )
         });
-        let stage_file = ExecutorStageFile::create().ok();
-        let mut executor = Command::new("sh");
-        executor
+        let status = Command::new("sh")
             .arg("-c")
             .arg(build_executor_shell_command(
                 executor_command,
@@ -653,11 +603,7 @@ async fn execute_eligible_targets_once(
             .env(
                 AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE_ENV,
                 AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE.to_string(),
-            );
-        if let Some(stage_file) = stage_file.as_ref() {
-            executor.env(AUTODEPOSIT_EXECUTOR_STAGE_FILE_ENV, &stage_file.path);
-        }
-        let status = executor
+            )
             .status()
             .with_context(|| format!("spawn autodeposit executor for target {}", target.target_id))
             .inspect_err(|_| {
@@ -670,10 +616,6 @@ async fn execute_eligible_targets_once(
                 .recovery_required(true)
                 .emit();
             })?;
-        let executor_stage = stage_file
-            .as_ref()
-            .map(ExecutorStageFile::stage)
-            .unwrap_or_else(|| UNKNOWN_EXECUTOR_STAGE.to_owned());
         let executor_exit_code = status.code();
         let executor_signal = executor_termination_signal(&status);
         if status.success() {
@@ -684,7 +626,6 @@ async fn execute_eligible_targets_once(
             tracing::warn!(
                 executor_exit_code,
                 executor_signal,
-                executor_stage,
                 executor_failure_code = alert.code,
                 "autodeposit executor exited unsuccessfully"
             );
@@ -699,7 +640,6 @@ async fn execute_eligible_targets_once(
             tracing::info!(
                 executor_exit_code,
                 executor_signal,
-                executor_stage,
                 "autodeposit target is not actionable and was backed off without alerting"
             );
         }
@@ -2119,16 +2059,6 @@ mod tests {
         .expect("global poll fallback must stay live without notifications");
 
         assert!(hints.drain(1).is_empty());
-    }
-
-    #[test]
-    fn executor_stage_file_accepts_only_safe_stage_names() {
-        let stage_file = ExecutorStageFile::create().expect("create stage file");
-        fs::write(&stage_file.path, "read_wallet_balance").expect("write safe stage");
-        assert_eq!(stage_file.stage(), "read_wallet_balance");
-
-        fs::write(&stage_file.path, "wallet=secret-value").expect("write unsafe stage");
-        assert_eq!(stage_file.stage(), UNKNOWN_EXECUTOR_STAGE);
     }
 
     #[cfg(unix)]

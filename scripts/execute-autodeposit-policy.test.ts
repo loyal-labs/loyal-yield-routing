@@ -885,7 +885,6 @@ describe("autodepositFailureDisposition", () => {
   test("assigns the dependency exit code for a pre-claim RPC failure", async () => {
     let assignedExitCode: number | undefined;
     let failureRecord: Record<string, unknown> | undefined;
-    const persistedStages: string[] = [];
 
     await runAutodepositExecutorWithFailureBoundary(
       async (recordStage) => {
@@ -900,7 +899,6 @@ describe("autodepositFailureDisposition", () => {
         setExitCode: (exitCode) => {
           assignedExitCode = exitCode;
         },
-        persistStage: (stage) => persistedStages.push(stage),
         reportFailure: (record) => {
           failureRecord = record;
         },
@@ -915,7 +913,6 @@ describe("autodepositFailureDisposition", () => {
       exitCode: 27,
       errorKind: "retryable_http_server_error",
     });
-    expect(persistedStages).toEqual(["startup", "read_wallet_balance"]);
   });
 
   test("preserves the generic fallback for an unknown pre-claim failure", async () => {
@@ -938,27 +935,6 @@ describe("autodepositFailureDisposition", () => {
     expect(assignedExitCode).toBe(1);
   });
 
-  test("keeps the last operation when the executor returns a failure code", async () => {
-    let assignedExitCode: number | undefined;
-    const persistedStages: string[] = [];
-
-    await runAutodepositExecutorWithFailureBoundary(
-      async (recordStage) => {
-        recordStage("submit_pull");
-        assignedExitCode = 25;
-      },
-      {
-        getExitCode: () => assignedExitCode,
-        setExitCode: (exitCode) => {
-          assignedExitCode = exitCode;
-        },
-        persistStage: (stage) => persistedStages.push(stage),
-        reportFailure: () => {},
-      }
-    );
-
-    expect(persistedStages).toEqual(["startup", "submit_pull"]);
-  });
 });
 
 describe("parseKeypairSecret", () => {

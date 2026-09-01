@@ -16,7 +16,7 @@ import {
 } from "@solana/spl-token";
 import bs58 from "bs58";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 
 import {
   attemptAllowsSafeRequeue,
@@ -1635,9 +1635,6 @@ export type AutodepositFailureDisposition = {
   retryDelaySeconds: number;
 };
 
-export const AUTODEPOSIT_EXECUTOR_STAGE_FILE_ENV =
-  "AUTODEPOSIT_EXECUTOR_STAGE_FILE";
-
 export type AutodepositExecutorStage =
   | "startup"
   | "load_runtime_dependencies"
@@ -1665,7 +1662,6 @@ type AutodepositExecutorFailureBoundaryOptions = {
   environment?: Record<string, string | undefined>;
   getExitCode?: () => number | undefined;
   setExitCode?: (exitCode: number) => void;
-  persistStage?: (stage: AutodepositExecutorStage) => void;
   reportFailure?: (record: AutodepositExecutorFailureRecord) => void;
 };
 
@@ -1755,7 +1751,6 @@ export async function runAutodepositExecutorWithFailureBoundary(
   let stage: AutodepositExecutorStage = "startup";
   const recordStage = (nextStage: AutodepositExecutorStage) => {
     stage = nextStage;
-    options.persistStage?.(nextStage);
   };
 
   recordStage(stage);
@@ -1789,22 +1784,6 @@ export async function runAutodepositExecutorWithFailureBoundary(
             ? error.name
             : typeof error,
     });
-  }
-}
-
-function persistAutodepositExecutorStage(
-  stage: AutodepositExecutorStage,
-  environment: Record<string, string | undefined> = process.env
-): void {
-  const stageFile = environment[AUTODEPOSIT_EXECUTOR_STAGE_FILE_ENV];
-  if (!stageFile) {
-    return;
-  }
-  try {
-    writeFileSync(stageFile, stage, { encoding: "utf8" });
-  } catch {
-    // Stage telemetry must never prevent execution or alter claim ownership.
-    console.warn("autodeposit executor stage telemetry could not be persisted");
   }
 }
 
@@ -5656,7 +5635,5 @@ async function main(
 }
 
 if (import.meta.main) {
-  await runAutodepositExecutorWithFailureBoundary(main, {
-    persistStage: persistAutodepositExecutorStage,
-  });
+  await runAutodepositExecutorWithFailureBoundary(main);
 }
