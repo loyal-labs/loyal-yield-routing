@@ -95,14 +95,22 @@ func TestKaminoEntryCapacityBoundsOneRedepositAndBorrowHeadroom(t *testing.T) {
 	}
 }
 
-func TestKaminoRefreshFailsClosedOnSlotOrPriceDrift(t *testing.T) {
-	o := decodedKaminoObligation{refreshedSlot: 10, priceStatus: kaminoRequiredPriceStatus, hasPosition: true}
-	r := decodedKaminoReserve{refreshedSlot: 11, priceStatus: kaminoRequiredPriceStatus}
-	if err := validateKaminoRefresh(o, r); err == nil || !strings.Contains(err.Error(), "incoherent") {
-		t.Fatalf("refresh drift accepted: %v", err)
+func TestKaminoRefreshAcceptsIndependentCurrentReservesAndRejectsOlderOrStaleState(t *testing.T) {
+	o := decodedKaminoObligation{refreshedSlot: 10, hasPosition: true}
+	if err := validateKaminoRefresh(o,
+		decodedKaminoReserve{refreshedSlot: 11, priceStatus: kaminoRequiredPriceStatus},
+		decodedKaminoReserve{refreshedSlot: 12, priceStatus: 0},
+	); err != nil {
+		t.Fatalf("independently refreshed reserves rejected: %v", err)
 	}
-	if err := validateKaminoRefresh(decodedKaminoObligation{refreshedSlot: 10, priceStatus: 1, hasPosition: true}, decodedKaminoReserve{refreshedSlot: 10, priceStatus: kaminoRequiredPriceStatus}); err == nil {
-		t.Fatal("invalid price status accepted")
+	if err := validateKaminoRefresh(o, decodedKaminoReserve{refreshedSlot: 9}); err == nil || !strings.Contains(err.Error(), "predates") {
+		t.Fatalf("reserve older than obligation accepted: %v", err)
+	}
+	if err := validateKaminoRefresh(o, decodedKaminoReserve{refreshedSlot: 11, stale: 1}); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("stale reserve accepted: %v", err)
+	}
+	if err := validateKaminoRefresh(decodedKaminoObligation{refreshedSlot: 10, stale: 1, hasPosition: true}, decodedKaminoReserve{refreshedSlot: 11}); err == nil || !strings.Contains(err.Error(), "obligation") {
+		t.Fatalf("stale obligation accepted: %v", err)
 	}
 }
 
