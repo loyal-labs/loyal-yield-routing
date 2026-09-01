@@ -83,6 +83,11 @@ func TestConfirmedTransactionReconciliationAcceptsExactRuntimeReturnLog(t *testi
 	if _, _, err := ReconcileConfirmedTransaction(expected, receipt); err != nil {
 		t.Fatal(err)
 	}
+	receipt.ReturnData = &ProgramReturnData{ProgramID: bridgeAdaptorProgram, DataBase64: base64.StdEncoding.EncodeToString([]byte("different"))}
+	if _, _, err := ReconcileConfirmedTransaction(expected, receipt); err == nil {
+		t.Fatal("matching runtime log overrode contradictory metadata return data")
+	}
+	receipt.ReturnData = nil
 	receipt.Logs[0] = "Program log: Program return: " + bridgeAdaptorProgram + " " + encoded
 	if _, _, err := ReconcileConfirmedTransaction(expected, receipt); err == nil {
 		t.Fatal("spoofable program log was accepted as runtime return data")
