@@ -78,8 +78,8 @@ const ADAPTOR_SPEC: ProgramSpec = ProgramSpec {
     program_id: "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
     artifact_filename: "loyal_voltr_rwa_nav_adaptor.so",
     keypair_filename: "loyal_voltr_rwa_nav_adaptor-keypair.json",
-    elf_sha256: "59d4d883324712c1dd849787f9475bba1431c2940e82bb6e37d3fd41471140d4",
-    elf_len: 93_480,
+    elf_sha256: "1a233e7b7bf7fd922b1cbc2ad1c48acf5cdce64aa1dee14441f51871d7731f9c",
+    elf_len: 102_376,
     max_data_len: 115_384,
 };
 
