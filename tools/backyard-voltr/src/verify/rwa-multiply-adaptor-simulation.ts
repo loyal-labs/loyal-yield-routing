@@ -16,6 +16,11 @@ import {
   deriveRwaMultiplyVoltrAccounts,
   type RwaReportV1,
 } from "../integrations/rwa-multiply-voltr.js";
+import {
+  DOWNSTREAM_ROLLBACK_MUTATION,
+  downstreamRollbackLogProof,
+  failedSimulationOverlayAccepted,
+} from "./rwa-multiply-rollback-log-proof.js";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const MANIFEST_PATH = resolve(REPOSITORY_ROOT, "docs/manifests/backyard-rwa-v1.json");
@@ -506,8 +511,13 @@ async function main() {
     const simulationAccountDifferences = snapshotDifferences(
       inspectedAddresses, preInfosResponse.value, prepared.simulation.postAccounts,
     );
-    const simulationChangedAddresses = simulationAccountDifferences.map(({ account }) => account);
+    // A null RPC overlay is unavailable evidence, not evidence that every
+    // protected account changed. Only enumerate diffs from concrete images.
+    const simulationChangedAddresses = simulationPostAccountsAvailable
+      ? simulationAccountDifferences.map(({ account }) => account)
+      : [];
     let armOnlyTicketTransition = null;
+    let downstreamRollbackProof = null;
     if (armOnlyExpectedSuccess) {
       invariant(simulationPostAccountsAvailable
         && simulationChangedAddresses.length === 1
@@ -528,12 +538,37 @@ async function main() {
         activeSequence: armedTicket.activeSequence.toString(),
         activeWireSha256: armedTicket.activeWireSha256,
       };
-    } else {
-      invariant(!simulationPostAccountsAvailable || simulationAccountDifferences.length === 0,
-        `${spec.name} simulation returned changed protected account images: ${JSON.stringify(simulationAccountDifferences)}`);
     }
-    invariant(spec.name !== "voltr_failure_rolls_back_ticket_and_capital" || simulationPostAccountsAvailable,
-      "Voltr post-arm failure did not return account images needed to prove in-transaction rollback");
+    if (spec.name === DOWNSTREAM_ROLLBACK_MUTATION) {
+      invariant(built.inner.length === 2
+        && JSON.stringify(wire(built.inner[0]!)) === JSON.stringify(canonicalArmWire),
+      "dedicated downstream failure did not preserve the exact canonical ArmReport wire");
+      const logProof = downstreamRollbackLogProof(
+        prepared.simulation.logs,
+        RWA_MULTIPLY_ROUTE.customAdaptor.program,
+        RWA_MULTIPLY_ROUTE.programs.voltr,
+      );
+      invariant(logProof !== null,
+        "dedicated downstream failure did not prove ArmReport success before Voltr failure");
+      downstreamRollbackProof = {
+        mode: simulationPostAccountsAvailable
+          ? "simulation-poststate"
+          : "all-null-overlay-confirmed-readback",
+        canonicalArmWireExact: true,
+        atomicTransactionFailed: true,
+        ...logProof,
+      };
+    }
+    if (!armOnlyExpectedSuccess) {
+      invariant(failedSimulationOverlayAccepted({
+        mutationName: spec.name,
+        inspectedAddresses,
+        postAccountsAvailable: simulationPostAccountsAvailable,
+        nullAddresses: simulationNullAddresses,
+        changedAddresses: simulationChangedAddresses,
+        downstreamRollbackProven: downstreamRollbackProof !== null,
+      }), `${spec.name} lacks the required concrete unchanged simulation poststate`);
+    }
     const chainReadback = await confirmedAccountsAtOrAfter(
       connection, inspectedAddresses, prepared.simulationSlot,
     );
@@ -572,11 +607,12 @@ async function main() {
       simulationChangedAddresses,
       simulationStateSha256: accountSetSha256(prepared.simulation.postAccounts),
       armOnlyTicketTransition,
+      downstreamRollbackProof,
       chainReadbackContextSlot: chainReadback.context.slot,
       chainReadbackStateSha256,
       signatureStatus: null,
       error: prepared.simulation.err === null ? null : JSON.stringify(prepared.simulation.err),
-      rejectedBeforeMutation: !armOnlyExpectedSuccess,
+      rejectedBeforeMutation: !armOnlyExpectedSuccess && spec.name !== DOWNSTREAM_ROLLBACK_MUTATION,
       simulation: { sigVerify: true, replaceRecentBlockhash: false,
         commitment: "confirmed", contextSlot: prepared.simulationSlot },
     });

@@ -638,6 +638,21 @@ ticket-only armed overlay described above. A valid ArmReport followed by a
 deliberately failing Voltr leg must roll the ticket, config, and capital fully
 back.
 
+Some Solana RPC implementations return all requested post-account images as
+null for a failed simulation even though the transaction executed far enough to
+exercise rollback. V02 may accept that unavailable overlay only for the
+dedicated post-Arm Voltr-failure proof, and only when all of the following hold:
+the separately signed canonical atomic wire succeeds; the dedicated signed wire
+preserves the exact canonical ArmReport instruction; ordered logs prove that
+ArmReport succeeded before Voltr later failed; the simulation returns a nonnull
+atomic transaction error; an independent confirmed read at or after the
+simulation context matches the complete protected prestate; and the recomputed
+signed-wire signature has no onchain status. Partial post-account images, a
+missing Arm success, a non-Voltr downstream failure, state drift, or a present
+signature is FAIL. The verifier must never synthesize the missing overlay.
+All 37 ordinary rejection rows require complete, concrete, unchanged
+post-account images; they may not use this fallback.
+
 Evidence: program ELF hash and authority, immutable config bytes, ticket bytes
 before/after, PDA derivations, exact Squads policy and two-instruction decoding,
 signed simulation logs, pre/post account diffs, rollback proof, exact account
