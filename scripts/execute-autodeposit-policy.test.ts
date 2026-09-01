@@ -15,6 +15,7 @@ import {
   observeDurableAutodepositAttempt,
   releaseAutodepositLotClaim,
   runAfterFeePayerSolSafety,
+  runAutodepositExecutorWithFailureBoundary,
   runTopUpWithLookupTableRetry,
   shouldNotifyFailedSweep,
   throwIfAutodepositAttemptRequiresOperator,
@@ -879,6 +880,84 @@ describe("autodepositFailureDisposition", () => {
       autodepositFailureDisposition(new Error("invalid route account"))
         .failureCode
     ).toBeNull();
+  });
+
+  test("assigns the dependency exit code for a pre-claim RPC failure", async () => {
+    let assignedExitCode: number | undefined;
+    let failureRecord: Record<string, unknown> | undefined;
+    const persistedStages: string[] = [];
+
+    await runAutodepositExecutorWithFailureBoundary(
+      async (recordStage) => {
+        recordStage("read_wallet_balance");
+        throw new Error("500 Internal Server Error: Internal server error");
+      },
+      {
+        environment: {
+          AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE: "27",
+        },
+        getExitCode: () => assignedExitCode,
+        setExitCode: (exitCode) => {
+          assignedExitCode = exitCode;
+        },
+        persistStage: (stage) => persistedStages.push(stage),
+        reportFailure: (record) => {
+          failureRecord = record;
+        },
+      }
+    );
+
+    expect(assignedExitCode).toBe(27);
+    expect(failureRecord).toEqual({
+      status: "error",
+      executorStage: "read_wallet_balance",
+      failureCode: "dependency_unavailable",
+      exitCode: 27,
+      errorKind: "retryable_http_server_error",
+    });
+    expect(persistedStages).toEqual(["startup", "read_wallet_balance"]);
+  });
+
+  test("preserves the generic fallback for an unknown pre-claim failure", async () => {
+    let assignedExitCode: number | undefined;
+
+    await runAutodepositExecutorWithFailureBoundary(
+      async (recordStage) => {
+        recordStage("load_target");
+        throw new Error("unexpected executor fault");
+      },
+      {
+        getExitCode: () => assignedExitCode,
+        setExitCode: (exitCode) => {
+          assignedExitCode = exitCode;
+        },
+        reportFailure: () => {},
+      }
+    );
+
+    expect(assignedExitCode).toBe(1);
+  });
+
+  test("keeps the last operation when the executor returns a failure code", async () => {
+    let assignedExitCode: number | undefined;
+    const persistedStages: string[] = [];
+
+    await runAutodepositExecutorWithFailureBoundary(
+      async (recordStage) => {
+        recordStage("submit_pull");
+        assignedExitCode = 25;
+      },
+      {
+        getExitCode: () => assignedExitCode,
+        setExitCode: (exitCode) => {
+          assignedExitCode = exitCode;
+        },
+        persistStage: (stage) => persistedStages.push(stage),
+        reportFailure: () => {},
+      }
+    );
+
+    expect(persistedStages).toEqual(["startup", "submit_pull"]);
   });
 });
 

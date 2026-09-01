@@ -5,22 +5,30 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+type FailureCode =
+  | "kamino_top_up_failed"
+  | "yield_persistence_failed"
+  | "preflight_blocked"
+  | "not_actionable"
+  | "fee_payer_exhausted"
+  | "transaction_effect_ambiguous"
+  | "idle_handoff_failed"
+  | "dependency_unavailable";
+
 type FailureCase = {
-  failureCode:
-    | "kamino_top_up_failed"
-    | "yield_persistence_failed"
-    | "dependency_unavailable";
+  failureCode: FailureCode;
   expectedExitCode: number;
-  expectedAlertCode: string;
-  expectedOperation: string;
-  expectedSummary: string;
+  expectedAlertCode: string | null;
+  expectedOperation: string | null;
+  expectedSummary: string | null;
 };
 
 type ProbeResult = {
-  code: string;
-  operation: string;
+  alerted: boolean;
+  code: string | null;
+  operation: string | null;
   serviceVersion: string | null;
-  summary: string;
+  summary: string | null;
 };
 
 type OtlpRequest = {
@@ -44,6 +52,45 @@ const CASES: FailureCase[] = [
     expectedOperation: "persist_autodeposit_yield_position",
     expectedSummary:
       "autodeposit top-up succeeded but yield persistence failed",
+  },
+  {
+    failureCode: "preflight_blocked",
+    expectedExitCode: 22,
+    expectedAlertCode: "autodeposit_preflight_blocked",
+    expectedOperation: "preflight_autodeposit_route",
+    expectedSummary:
+      "autodeposit route preflight blocked before any funds moved",
+  },
+  {
+    failureCode: "not_actionable",
+    expectedExitCode: 23,
+    expectedAlertCode: null,
+    expectedOperation: null,
+    expectedSummary: null,
+  },
+  {
+    failureCode: "fee_payer_exhausted",
+    expectedExitCode: 24,
+    expectedAlertCode: "autodeposit_fee_payer_exhausted",
+    expectedOperation: "fund_autodeposit_fee_payer",
+    expectedSummary:
+      "autodeposit fee payer is out of SOL; top up the delegated signer",
+  },
+  {
+    failureCode: "transaction_effect_ambiguous",
+    expectedExitCode: 25,
+    expectedAlertCode: "autodeposit_transaction_effect_ambiguous",
+    expectedOperation: "reconcile_autodeposit_transaction",
+    expectedSummary:
+      "autodeposit transaction effect remains ambiguous after blockhash expiry",
+  },
+  {
+    failureCode: "idle_handoff_failed",
+    expectedExitCode: 26,
+    expectedAlertCode: "autodeposit_idle_handoff_failed",
+    expectedOperation: "publish_autodeposit_idle_vault_balance",
+    expectedSummary:
+      "confirmed autodeposit pull could not be published to idle-vault recovery",
   },
   {
     failureCode: "dependency_unavailable",
@@ -79,6 +126,10 @@ async function run(
   return { exitCode, stdout, stderr };
 }
 
+function stripAnsi(output: string): string {
+  return output.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
 function resultFromOutput(output: string): ProbeResult {
   const line = output
     .split("\n")
@@ -102,7 +153,7 @@ function startOtlpServer(requests: OtlpRequest[]) {
       return Bun.serve({
         hostname: "127.0.0.1",
         port,
-        async fetch(request) {
+        async fetch(request: Request) {
           requests.push({
             authorization: request.headers.get("authorization"),
             body: new Uint8Array(await request.arrayBuffer()),
@@ -170,9 +221,7 @@ async function main() {
           pathToFileURL(executorModule).href
         )};`,
         "const failureCode = process.argv[2] as",
-        '  | "kamino_top_up_failed"',
-        '  | "yield_persistence_failed"',
-        '  | "dependency_unavailable";',
+        `  ${CASES.map((failureCase) => `| ${JSON.stringify(failureCase.failureCode)}`).join("\n  ")};`,
         "process.exit(autodepositExecutorFailureExitCode(failureCode));",
         "",
       ].join("\n")
@@ -207,7 +256,11 @@ async function main() {
       "debug/autodeposit-alert-contract-probe"
     );
 
-    const verified: Array<{ failureCode: string; exitCode: number }> = [];
+    const verified: Array<{
+      alerted: boolean;
+      failureCode: string;
+      exitCode: number;
+    }> = [];
     for (const failureCase of CASES) {
       const executor = await run(
         [
@@ -224,6 +277,11 @@ async function main() {
             ...process.env,
             AUTODEPOSIT_KAMINO_TOP_UP_FAILED_EXIT_CODE: "20",
             AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE: "21",
+            AUTODEPOSIT_PREFLIGHT_BLOCKED_EXIT_CODE: "22",
+            AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE: "23",
+            AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE: "24",
+            AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE: "25",
+            AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE: "26",
             AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE: "27",
           },
         }
@@ -252,7 +310,12 @@ async function main() {
         `Rust probe failed for ${failureCase.failureCode}.\nstdout:\n${rust.stdout}\nstderr:\n${rust.stderr}`
       );
       const combinedOutput = `${rust.stdout}\n${rust.stderr}`;
-      const result = resultFromOutput(combinedOutput);
+      const plainOutput = stripAnsi(combinedOutput);
+      const result = resultFromOutput(plainOutput);
+      assert(
+        result.alerted === (failureCase.expectedAlertCode !== null),
+        "Rust alert suppression mismatch"
+      );
       assert(
         result.code === failureCase.expectedAlertCode,
         "Rust error code mismatch"
@@ -269,41 +332,51 @@ async function main() {
         result.serviceVersion === "sha-verifier-image",
         "Embedded image version did not take precedence over RENDER_GIT_COMMIT"
       );
-      assert(
-        combinedOutput.includes(`error_code="${failureCase.expectedAlertCode}"`),
-        `OperationalError omitted error_code for ${failureCase.failureCode}`
-      );
-      assert(
-        combinedOutput.includes(
-          `loyal.error.code="${failureCase.expectedAlertCode}"`
-        ),
-        `OperationalError omitted loyal.error.code for ${failureCase.failureCode}`
-      );
       const logRequest = otlpRequests
         .slice(requestCountBeforeProbe)
         .find((request) => request.path === "/v1/logs");
-      assert(
-        logRequest,
-        `OTLP exporter did not send /v1/logs for ${failureCase.failureCode}`
-      );
-      assert(
-        logRequest.authorization === "verification-only",
-        "OTLP exporter did not send the configured authorization header"
-      );
-      const protobufText = new TextDecoder().decode(logRequest.body);
-      for (const expected of [
-        "error_code",
-        "loyal.error.code",
-        failureCase.failureCode,
-        failureCase.expectedOperation,
-        "sha-verifier-image",
-      ]) {
+      if (failureCase.expectedAlertCode === null) {
         assert(
-          protobufText.includes(expected),
-          `OTLP protobuf payload omitted ${expected}`
+          !logRequest,
+          "Non-actionable executor exit unexpectedly reached OTLP logs"
         );
+      } else {
+        assert(
+          plainOutput.includes(
+            `error_code="${failureCase.expectedAlertCode}"`
+          ),
+          `OperationalError omitted error_code for ${failureCase.failureCode}`
+        );
+        assert(
+          plainOutput.includes(
+            `loyal.error.code="${failureCase.expectedAlertCode}"`
+          ),
+          `OperationalError omitted loyal.error.code for ${failureCase.failureCode}`
+        );
+        assert(
+          logRequest,
+          `OTLP exporter did not send /v1/logs for ${failureCase.failureCode}`
+        );
+        assert(
+          logRequest.authorization === "verification-only",
+          "OTLP exporter did not send the configured authorization header"
+        );
+        const protobufText = new TextDecoder().decode(logRequest.body);
+        for (const expected of [
+          "error_code",
+          "loyal.error.code",
+          failureCase.failureCode,
+          failureCase.expectedOperation!,
+          "sha-verifier-image",
+        ]) {
+          assert(
+            protobufText.includes(expected),
+            `OTLP protobuf payload omitted ${expected}`
+          );
+        }
       }
       verified.push({
+        alerted: result.alerted,
         failureCode: failureCase.failureCode,
         exitCode: executor.exitCode,
       });
