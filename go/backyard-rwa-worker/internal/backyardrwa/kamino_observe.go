@@ -352,18 +352,20 @@ func (p KaminoPosition) targetLTVBorrowRaw() (uint64, error) {
 
 func validateKaminoRefresh(o decodedKaminoObligation, reserves ...decodedKaminoReserve) error {
 	for _, r := range reserves {
-		if r.refreshedSlot <= 0 || r.stale != 0 {
+		if r.refreshedSlot <= 0 {
 			return fmt.Errorf("Kamino reserve valuation is stale, invalid, or incoherent")
 		}
 	}
 	// Reserves are refreshed independently on mainnet, so their LastUpdate
-	// slots are not expected to match and price_status is not a validity mask
-	// (the USDC reserve legitimately reports zero). This mirrors the existing
-	// Rust Multiply observer: for a populated obligation, both reserve views
-	// must be at least as new as the obligation. A flat obligation has no
-	// position valuation to fence and is refreshed by the entry transaction.
+	// slots are not expected to match. LastUpdate.stale means the next
+	// transaction must refresh the account; it does not invalidate a read used
+	// to build that refresh transaction. price_status is likewise not a
+	// universal validity mask (the USDC reserve legitimately reports zero).
+	// This mirrors the existing Rust Multiply observer: for a populated
+	// obligation, both reserve views must be at least as new as the obligation.
+	// Every dispatched Kamino action refreshes and simulates before persistence.
 	if o.hasPosition {
-		if o.refreshedSlot <= 0 || o.stale != 0 {
+		if o.refreshedSlot <= 0 {
 			return fmt.Errorf("Kamino obligation valuation is stale, invalid, or incoherent")
 		}
 		for _, r := range reserves {

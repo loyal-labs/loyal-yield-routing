@@ -95,10 +95,10 @@ func TestKaminoEntryCapacityBoundsOneRedepositAndBorrowHeadroom(t *testing.T) {
 	}
 }
 
-func TestKaminoRefreshAcceptsIndependentCurrentReservesAndRejectsOlderOrStaleState(t *testing.T) {
-	o := decodedKaminoObligation{refreshedSlot: 10, hasPosition: true}
+func TestKaminoRefreshAcceptsIndependentRefreshMarkersAndRejectsOlderState(t *testing.T) {
+	o := decodedKaminoObligation{refreshedSlot: 10, stale: 1, hasPosition: true}
 	if err := validateKaminoRefresh(o,
-		decodedKaminoReserve{refreshedSlot: 11, priceStatus: kaminoRequiredPriceStatus},
+		decodedKaminoReserve{refreshedSlot: 11, stale: 1, priceStatus: kaminoRequiredPriceStatus},
 		decodedKaminoReserve{refreshedSlot: 12, priceStatus: 0},
 	); err != nil {
 		t.Fatalf("independently refreshed reserves rejected: %v", err)
@@ -106,11 +106,11 @@ func TestKaminoRefreshAcceptsIndependentCurrentReservesAndRejectsOlderOrStaleSta
 	if err := validateKaminoRefresh(o, decodedKaminoReserve{refreshedSlot: 9}); err == nil || !strings.Contains(err.Error(), "predates") {
 		t.Fatalf("reserve older than obligation accepted: %v", err)
 	}
-	if err := validateKaminoRefresh(o, decodedKaminoReserve{refreshedSlot: 11, stale: 1}); err == nil || !strings.Contains(err.Error(), "stale") {
-		t.Fatalf("stale reserve accepted: %v", err)
+	if err := validateKaminoRefresh(o, decodedKaminoReserve{}); err == nil || !strings.Contains(err.Error(), "reserve") {
+		t.Fatalf("zero-slot reserve accepted: %v", err)
 	}
-	if err := validateKaminoRefresh(decodedKaminoObligation{refreshedSlot: 10, stale: 1, hasPosition: true}, decodedKaminoReserve{refreshedSlot: 11}); err == nil || !strings.Contains(err.Error(), "obligation") {
-		t.Fatalf("stale obligation accepted: %v", err)
+	if err := validateKaminoRefresh(decodedKaminoObligation{hasPosition: true}, decodedKaminoReserve{refreshedSlot: 11}); err == nil || !strings.Contains(err.Error(), "obligation") {
+		t.Fatalf("zero-slot obligation accepted: %v", err)
 	}
 }
 
