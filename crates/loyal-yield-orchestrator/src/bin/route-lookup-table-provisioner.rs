@@ -208,6 +208,7 @@ fn is_transient_read_only_rpc_error(error: &ClientError) -> bool {
         ClientErrorKind::Reqwest(error) => {
             error.is_timeout()
                 || error.is_connect()
+                || error.is_request()
                 || error.status().is_some_and(|status| {
                     matches!(status.as_u16(), 408 | 429) || status.is_server_error()
                 })
@@ -232,6 +233,7 @@ fn transient_rpc_failure_kind(error: &ClientError) -> &'static str {
     match error.kind() {
         ClientErrorKind::Reqwest(error) if error.is_timeout() => "timeout",
         ClientErrorKind::Reqwest(error) if error.is_connect() => "connect",
+        ClientErrorKind::Reqwest(error) if error.is_request() => "request_transport",
         ClientErrorKind::Reqwest(error) => match error.status().map(|status| status.as_u16()) {
             Some(408) => "http_request_timeout",
             Some(429) => "http_rate_limited",
@@ -4743,8 +4745,13 @@ mod tests {
         }
     }
 
+    enum FakeRpcResponse {
+        Disconnect,
+        Http(u16, &'static str),
+    }
+
     fn spawn_fake_rpc(
-        responses: Vec<(u16, &'static str)>,
+        responses: Vec<FakeRpcResponse>,
     ) -> (
         String,
         Arc<AtomicUsize>,
@@ -4755,7 +4762,7 @@ mod tests {
         let request_count = Arc::new(AtomicUsize::new(0));
         let observed_count = Arc::clone(&request_count);
         let handle = thread::spawn(move || {
-            for (status, body) in responses {
+            for response in responses {
                 let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
@@ -4775,6 +4782,9 @@ mod tests {
                     }
                 }
                 observed_count.fetch_add(1, Ordering::SeqCst);
+                let FakeRpcResponse::Http(status, body) = response else {
+                    continue;
+                };
                 let reason = match status {
                     200 => "OK",
                     400 => "Bad Request",
@@ -4797,8 +4807,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn alt_provisioner_read_only_rpc_retries_http_500_then_recovers() {
         let (url, request_count, server) = spawn_fake_rpc(vec![
-            (500, r#"{"error":"temporary"}"#),
-            (200, r#"{"jsonrpc":"2.0","result":4242,"id":1}"#),
+            FakeRpcResponse::Http(500, r#"{"error":"temporary"}"#),
+            FakeRpcResponse::Http(200, r#"{"jsonrpc":"2.0","result":4242,"id":1}"#),
         ]);
         let rpc = RpcClient::new(url);
 
@@ -4814,9 +4824,43 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn alt_provisioner_read_only_rpc_retries_request_transport_then_recovers() {
+        let (url, request_count, server) = spawn_fake_rpc(vec![
+            FakeRpcResponse::Disconnect,
+            FakeRpcResponse::Http(200, r#"{"jsonrpc":"2.0","result":4242,"id":1}"#),
+        ]);
+        let rpc = RpcClient::new(url);
+        let observed_request_error = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let request_error = Arc::clone(&observed_request_error);
+
+        let slot = retry_read_only_rpc("test_get_slot", test_rpc_retry_policy(), || {
+            rpc.get_slot_with_commitment(CommitmentConfig::finalized())
+                .inspect_err(|error| {
+                    let ClientErrorKind::Reqwest(error) = error.kind() else {
+                        panic!("disconnected HTTP request must produce a Reqwest error")
+                    };
+                    assert!(error.is_request());
+                    assert!(!error.is_timeout());
+                    assert!(!error.is_connect());
+                    assert_eq!(error.status(), None);
+                    request_error.store(true, Ordering::SeqCst);
+                })
+        })
+        .await
+        .expect("request transport failure should be retried");
+
+        assert_eq!(slot, 4242);
+        assert!(observed_request_error.load(Ordering::SeqCst));
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        server.join().expect("join fake RPC").expect("fake RPC");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn alt_provisioner_read_only_rpc_does_not_retry_http_400() {
-        let (url, request_count, server) =
-            spawn_fake_rpc(vec![(400, r#"{"error":"bad request"}"#)]);
+        let (url, request_count, server) = spawn_fake_rpc(vec![FakeRpcResponse::Http(
+            400,
+            r#"{"error":"bad request"}"#,
+        )]);
         let rpc = RpcClient::new(url);
 
         let error = retry_read_only_rpc("test_get_slot", test_rpc_retry_policy(), || {
