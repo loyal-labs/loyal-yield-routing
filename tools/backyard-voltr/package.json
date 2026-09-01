@@ -18,6 +18,7 @@
     "verify:rwa-multiply-adaptor-simulation": "bun src/verify/rwa-multiply-adaptor-simulation.ts",
     "activate:rwa-multiply-squads-prerequisites": "bun src/activation/rwa-multiply-squads-prerequisites.ts",
     "activate:rwa-multiply-custom-policies": "bun src/activation/rwa-multiply-custom-policies.ts",
+    "activate:rwa-multiply-retire-legacy-policies": "bun src/activation/rwa-multiply-retire-legacy-policies.ts",
     "resolve:rwa-multiply-phase1-policies": "bun src/activation/rwa-multiply-phase1-policies.ts",
     "activate:rwa-multiply-custom-add-adaptor": "bun src/activation/rwa-multiply-custom-add-adaptor.ts",
     "activate:rwa-multiply-custom-pre-admission": "bun src/activation/rwa-multiply-voltr-pre-admission.ts",

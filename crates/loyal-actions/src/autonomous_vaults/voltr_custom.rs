@@ -1,6 +1,5 @@
 use crate::squads::{
-    create_program_interaction_action_instruction,
-    replace_deployed_program_interaction_action_instruction, SquadsAccountConstraint,
+    create_program_interaction_action_instruction, SquadsAccountConstraint,
     SquadsAccountConstraintType, SquadsDataConstraint, SquadsDataOperator, SquadsDataValue,
     SquadsInstructionConstraint,
 };
@@ -63,7 +62,6 @@ pub struct VoltrCustomPolicyPlan {
     pub policy: Pubkey,
     pub seed: u64,
     pub create_instruction: Instruction,
-    pub replace_instruction: Instruction,
     pub constraint_index: u8,
     pub constraint_indices: Vec<u8>,
 }
@@ -394,21 +392,12 @@ fn policy_plan(
         identity.delegated_signer,
         seed,
         identity.vault_index,
-        constraints.clone(),
-    )?;
-    let replace_instruction = replace_deployed_program_interaction_action_instruction(
-        identity.settings,
-        identity.authority,
-        identity.delegated_signer,
-        seed,
-        identity.vault_index,
         constraints,
     )?;
     Ok(VoltrCustomPolicyPlan {
         policy,
         seed,
         create_instruction,
-        replace_instruction,
         constraint_index,
         constraint_indices,
     })
@@ -935,63 +924,25 @@ mod tests {
         assert_eq!(policies.withdraw.constraint_indices, [0, 1]);
         assert_ne!(policies.allocation.policy, policies.nav_refresh.policy);
         assert_ne!(policies.stage_withdrawal.policy, policies.withdraw.policy);
-        for policy in [
-            &policies.allocation,
-            &policies.nav_refresh,
-            &policies.stage_withdrawal,
-            &policies.withdraw,
-        ] {
-            assert_eq!(
-                policy.replace_instruction.program_id,
-                policy.create_instruction.program_id
-            );
-            assert_eq!(policy.replace_instruction.accounts.len(), 6);
-            assert_eq!(policy.replace_instruction.accounts[5].pubkey, policy.policy);
-            assert_ne!(
-                policy.replace_instruction.data, policy.create_instruction.data,
-                "replace must prepend PolicyRemove to the PolicyCreate wire"
-            );
-        }
     }
 
     #[test]
-    fn four_split_bridge_policy_create_and_replace_packets_fit() {
+    fn four_split_bridge_policy_create_packets_fit() {
         let authority = Keypair::new();
         let mut identity = identity();
         identity.authority = authority.pubkey();
         let policies = create_voltr_custom_policies(&identity, &templates(&identity)).unwrap();
         let packets = [
-            (
-                "allocation",
-                &policies.allocation.create_instruction,
-                &policies.allocation.replace_instruction,
-            ),
-            (
-                "nav",
-                &policies.nav_refresh.create_instruction,
-                &policies.nav_refresh.replace_instruction,
-            ),
-            (
-                "stage",
-                &policies.stage_withdrawal.create_instruction,
-                &policies.stage_withdrawal.replace_instruction,
-            ),
-            (
-                "withdraw",
-                &policies.withdraw.create_instruction,
-                &policies.withdraw.replace_instruction,
-            ),
+            ("allocation", &policies.allocation.create_instruction),
+            ("nav", &policies.nav_refresh.create_instruction),
+            ("stage", &policies.stage_withdrawal.create_instruction),
+            ("withdraw", &policies.withdraw.create_instruction),
         ]
-        .map(|(name, create_instruction, replace_instruction)| {
+        .map(|(name, create_instruction)| {
             (
                 name,
                 signed_policy_create_packet_bytes(
                     create_instruction,
-                    &authority,
-                    Hash::new_unique(),
-                ),
-                signed_policy_create_packet_bytes(
-                    replace_instruction,
                     &authority,
                     Hash::new_unique(),
                 ),
@@ -1000,10 +951,7 @@ mod tests {
         println!("backyard_bridge_policy_packets {packets:?} limit={SOLANA_PACKET_BYTES}");
         assert!(packets
             .iter()
-            .all(
-                |(_, create_bytes, replace_bytes)| *create_bytes <= SOLANA_PACKET_BYTES
-                    && *replace_bytes <= SOLANA_PACKET_BYTES
-            ));
+            .all(|(_, create_bytes)| *create_bytes <= SOLANA_PACKET_BYTES));
     }
 
     #[test]

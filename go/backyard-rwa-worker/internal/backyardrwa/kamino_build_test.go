@@ -51,10 +51,10 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 		wireSHA256    string
 		packetBytes   int
 	}{
-		{"deposit", OpenPrimeUSDCStep, kaminoLegDeposit, 17, "8e46df1a45b3fbd9b01b64b3c93a62d333f919b256d977a3a8ec04fa74e6cfa7", "dabd065420a8b37f1fae9ac6a61eac8abea3a45a5f8440c1d5de95e12b1a613a", 839},
-		{"borrow", OpenPrimeUSDCStep, kaminoLegBorrow, 15, "44eabb6ba27542bb25d49fdb513bafa8cc921cd983a0b8e14048fc065010bc0d", "d6cd4445c732dea1b9936cee33220ff5a8333a377fe2bf6e386d9082aafca0a6", 805},
-		{"repay", DeleverPrimeUSDCStep, kaminoLegRepay, 13, "14629c60baefa79a743e9f3b8b1fed6a9b1717049668c196a2c41b1e8fe9c7f9", "cdf7a5c3e138644b10959d401ce917a3b801d87cd98a3405c0c0f45a38291c00", 771},
-		{"withdraw", DeleverPrimeUSDCStep, kaminoLegWithdraw, 17, "6f70c3d20ee0bd9e7aca20b514229ec957e3b3037f6059b4c406d55af32b654b", "7cb7a6f6f7231c1eda85606ec7b3c94c3e03ba55307637af3004a6871eb28697", 840},
+		{"deposit", OpenPrimeUSDCStep, kaminoLegDeposit, 17, "30e7488b04dfbbaee06c04eaf847763e8c8cd63df6c5625581014f3c4b423e14", "646fa285176a4c0a84679bf382eee6060e345294dd76deca4147279ea88ceb09", 839},
+		{"borrow", OpenPrimeUSDCStep, kaminoLegBorrow, 15, "fd18dd1a112f3d58a5ca97cd9916a3d5526ea8cb1a8aab13b235ca78e53dd7b9", "6fc1b3d770f26be60dea2dca64c0d7c77cdf7c73e505fc4876f95da36cd6b615", 805},
+		{"repay", DeleverPrimeUSDCStep, kaminoLegRepay, 13, "0c66ccfa074661083ea5e0bc00900d7b01d326c850ff9e49de758b62c02eb4dd", "d8ffa509898674be1d3da091ba46dfcabaf62cba1e8e9d4e3bd0aa2fb93d6309", 771},
+		{"withdraw", DeleverPrimeUSDCStep, kaminoLegWithdraw, 17, "a6c9fdfd7cb0c65bc1fd7e6e3d7969624e0d7d4acd981189a92b76f14db18dc2", "2e38a54a73fcd925e8746c2a3c2374de34bccf144c824b1734241fb6efa8689c", 840},
 	}
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))

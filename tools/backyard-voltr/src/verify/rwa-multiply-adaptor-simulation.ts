@@ -20,12 +20,34 @@ import {
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const MANIFEST_PATH = resolve(REPOSITORY_ROOT, "docs/manifests/backyard-rwa-v1.json");
 const COMPILER = "compile-voltr-custom-execution";
-const NAV_POLICY = "AfQM1WgcujthouQDhcMZxXmCzG4EUW1qZPnRodioNXmJ";
-const ALLOCATION_POLICY = "3pUxmFm7cExQRSwHeuycemsa2rf3zsSXLLXoGp5uYYYz";
+const NAV_POLICY = "41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP";
+const ALLOCATION_POLICY = "HoDV7mtsb2u1VARZLYuGByW7cCsGWL9NFxHZs7WHjdzz";
 const CONFIG_LEN = 472;
 const TICKET_LEN = 96;
 const ZERO_HASH = "0".repeat(64);
 const BPF_LOADER_UPGRADEABLE_PROGRAM_ID = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
+
+async function confirmedAccountsAtOrAfter(
+  connection: Connection,
+  addresses: readonly string[],
+  minimumContextSlot: number,
+) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    try {
+      return await connection.getMultipleAccountsInfoAndContext(
+        addresses.map((value) => new PublicKey(value)),
+        { commitment: "confirmed", minContextSlot: minimumContextSlot },
+      );
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("Minimum context slot has not been reached") || attempt === 23) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  throw new Error("confirmed readback bank did not reach the simulation slot", { cause: lastError });
+}
 
 type WireInstruction = Readonly<{
   programId: string;
@@ -222,6 +244,40 @@ function sameSnapshot(info: AccountInfo<Buffer> | null, post: AccountSnapshot | 
     && info.lamports === post.lamports
     && info.executable === post.executable
     && Buffer.from(info.data).equals(Buffer.from(post.data));
+}
+
+function snapshotDifferences(
+  addresses: readonly string[],
+  before: readonly (AccountInfo<Buffer> | null)[],
+  after: readonly (AccountSnapshot | null)[],
+) {
+  return addresses.flatMap((account, index) => {
+    const left = before[index] ?? null;
+    const right = after[index] ?? null;
+    if (sameSnapshot(left, right)) return [];
+    const leftData = left ? Buffer.from(left.data) : null;
+    const rightData = right ? Buffer.from(right.data) : null;
+    const changedByteOffsets = leftData && rightData
+      ? Array.from({ length: Math.min(leftData.length, rightData.length) }, (_, offset) => offset)
+        .filter((offset) => leftData[offset] !== rightData[offset])
+      : [];
+    return [{
+      account,
+      before: left === null ? null : {
+        owner: left.owner.toBase58(), lamports: left.lamports, executable: left.executable,
+        dataLength: leftData!.length, dataSha256: sha256(leftData!),
+      },
+      after: right === null ? null : {
+        owner: right.owner, lamports: right.lamports, executable: right.executable,
+        dataLength: rightData!.length, dataSha256: sha256(rightData!),
+      },
+      changedBytes: changedByteOffsets.slice(0, 64).map((offset) => ({
+        offset, before: leftData![offset], after: rightData![offset],
+      })),
+      changedByteCount: changedByteOffsets.length
+        + Math.abs((leftData?.length ?? 0) - (rightData?.length ?? 0)),
+    }];
+  });
 }
 
 function mutateAccount(inner: Instruction, index: number, addressValue: string, role?: AccountRole): Instruction {
@@ -429,18 +485,81 @@ async function main() {
         policy: ALLOCATION_POLICY, constraintIndices: [0, 1] }; } },
   ];
 
+  const capitalWireSha256 = sha256(Buffer.concat([
+    Buffer.from([242, 35, 198, 137, 82, 225, 242, 182]), armBytes.subarray(9),
+  ]));
   const mutations = [];
   for (const spec of mutationSpecs) {
     const built = await spec.build();
     const prepared = await prepare(compileWrapper(built));
-    invariant(prepared.simulation.err !== null, `${spec.name} unexpectedly simulated successfully`);
-    invariant(prepared.simulation.postAccounts.every((post, index) => sameSnapshot(preInfosResponse.value[index] ?? null, post)),
-      `${spec.name} simulation returned a changed protected account image`);
+    const armOnlyExpectedSuccess = spec.name === "arm_only_payload";
+    invariant(armOnlyExpectedSuccess
+      ? prepared.simulation.err === null
+      : prepared.simulation.err !== null,
+    `${spec.name} simulation outcome escaped the v10 contract`);
+    const simulationNullAddresses = inspectedAddresses.filter(
+      (_, index) => prepared.simulation.postAccounts[index] === null,
+    );
+    const simulationPostAccountsAvailable = simulationNullAddresses.length === 0;
+    invariant(simulationPostAccountsAvailable || simulationNullAddresses.length === inspectedAddresses.length,
+      `${spec.name} simulation returned only a partial protected account image: ${JSON.stringify(simulationNullAddresses)}`);
+    const simulationAccountDifferences = snapshotDifferences(
+      inspectedAddresses, preInfosResponse.value, prepared.simulation.postAccounts,
+    );
+    const simulationChangedAddresses = simulationAccountDifferences.map(({ account }) => account);
+    let armOnlyTicketTransition = null;
+    if (armOnlyExpectedSuccess) {
+      invariant(simulationPostAccountsAvailable
+        && simulationChangedAddresses.length === 1
+        && simulationChangedAddresses[0] === accounts.reportTicket,
+      `arm_only_payload did not change exactly the report ticket: ${JSON.stringify(simulationAccountDifferences)}`);
+      const ticketSnapshot = prepared.simulation.postAccounts[inspectedAddresses.indexOf(accounts.reportTicket)];
+      invariant(ticketSnapshot !== null && ticketSnapshot !== undefined,
+        "arm_only_payload omitted the report ticket poststate");
+      const armedTicket = decodeTicket(Buffer.from(ticketSnapshot.data), configAddress);
+      invariant(armedTicket.armed
+        && armedTicket.lastConsumedSequence === ticketBefore.lastConsumedSequence
+        && armedTicket.activeSequence === canonicalReport.sequence
+        && armedTicket.activeWireSha256 === capitalWireSha256,
+      "arm_only_payload ticket overlay is not the exact canonical armed state");
+      armOnlyTicketTransition = {
+        armed: true,
+        lastConsumedSequence: armedTicket.lastConsumedSequence.toString(),
+        activeSequence: armedTicket.activeSequence.toString(),
+        activeWireSha256: armedTicket.activeWireSha256,
+      };
+    } else {
+      invariant(!simulationPostAccountsAvailable || simulationAccountDifferences.length === 0,
+        `${spec.name} simulation returned changed protected account images: ${JSON.stringify(simulationAccountDifferences)}`);
+    }
+    invariant(spec.name !== "voltr_failure_rolls_back_ticket_and_capital" || simulationPostAccountsAvailable,
+      "Voltr post-arm failure did not return account images needed to prove in-transaction rollback");
+    const chainReadback = await confirmedAccountsAtOrAfter(
+      connection, inspectedAddresses, prepared.simulationSlot,
+    );
+    invariant(chainReadback.value.every((value, index) => sameSnapshot(
+      preInfosResponse.value[index] ?? null,
+      value === null ? null : {
+        address: inspectedAddresses[index]!,
+        owner: value.owner.toBase58(),
+        executable: value.executable,
+        lamports: value.lamports,
+        data: value.data,
+      },
+    )), `${spec.name} independent confirmed readback detected protected state drift`);
+    const signatureStatuses = await connection.getSignatureStatuses(
+      [prepared.expectedSignature], { searchTransactionHistory: true },
+    );
+    invariant(signatureStatuses.value.length === 1 && signatureStatuses.value[0] === null,
+      `${spec.name} signed-unsent wire unexpectedly has an on-chain signature status`);
     const logsSha256 = sha256(prepared.simulation.logs.join("\n"));
-    const postStateSha256 = accountSetSha256(prepared.simulation.postAccounts);
-    invariant(postStateSha256 === preStateSha256, `${spec.name} did not atomically roll back protected state`);
+    const chainReadbackStateSha256 = accountSetSha256(chainReadback.value);
+    const postStateSha256 = chainReadbackStateSha256;
+    invariant(postStateSha256 === preStateSha256,
+      `${spec.name} independent chain readback detected signed-unsent state drift`);
     mutations.push({
       name: spec.name,
+      expectation: armOnlyExpectedSuccess ? "arm-only-success" : "rejection",
       transactionBase64: Buffer.from(prepared.serializedTransaction).toString("base64"),
       transactionSha256: sha256(prepared.serializedTransaction),
       messageSha256: sha256(prepared.serializedMessage),
@@ -448,8 +567,16 @@ async function main() {
       logsSha256,
       preStateSha256,
       postStateSha256,
-      error: JSON.stringify(prepared.simulation.err),
-      rejectedBeforeMutation: true,
+      simulationPostAccountsAvailable,
+      simulationNullAddresses,
+      simulationChangedAddresses,
+      simulationStateSha256: accountSetSha256(prepared.simulation.postAccounts),
+      armOnlyTicketTransition,
+      chainReadbackContextSlot: chainReadback.context.slot,
+      chainReadbackStateSha256,
+      signatureStatus: null,
+      error: prepared.simulation.err === null ? null : JSON.stringify(prepared.simulation.err),
+      rejectedBeforeMutation: !armOnlyExpectedSuccess,
       simulation: { sigVerify: true, replaceRecentBlockhash: false,
         commitment: "confirmed", contextSlot: prepared.simulationSlot },
     });
@@ -457,11 +584,10 @@ async function main() {
   invariant(new Set(mutations.map(({ name }) => name)).size === REQUIRED_MUTATION_NAMES.length
     && [...mutations.map(({ name }) => name)].sort().join("|")
       === [...REQUIRED_MUTATION_NAMES].sort().join("|"),
-  "exact v9 negative matrix names drifted");
-
-  const capitalWireSha256 = sha256(Buffer.concat([
-    Buffer.from([242, 35, 198, 137, 82, 225, 242, 182]), armBytes.subarray(9),
-  ]));
+  "exact v10 matrix names drifted");
+  invariant(mutations.filter(({ expectation }) => expectation === "rejection").length === 38
+    && mutations.filter(({ expectation }) => expectation === "arm-only-success").length === 1,
+  "exact v10 rejection/expected-success cardinality drifted");
   const artifact = {
     schema: "loyal-backyard-rwa-adaptor-simulation/v2",
     broadcast: false,

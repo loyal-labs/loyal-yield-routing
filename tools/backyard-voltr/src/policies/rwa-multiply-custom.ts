@@ -48,7 +48,7 @@ type WireInstruction = Readonly<{
 }>;
 
 export type CustomPolicyArtifact = Readonly<{
-  schema: "loyal-voltr-custom-policy-artifact/v3";
+  schema: "loyal-voltr-custom-policy-artifact/v5";
   verdict: "VOLTR_CUSTOM_POLICY_ARTIFACT_COMPILED_NOT_DEPLOYED";
   physicalPolicyCount: 4;
   deploymentReady: false;
@@ -60,7 +60,6 @@ export type CustomPolicyArtifact = Readonly<{
     constraintIndex: 0;
     constraintIndices: readonly number[];
     createInstruction: WireInstruction;
-    replaceInstruction: WireInstruction;
   }>[];
 }>;
 
@@ -69,7 +68,6 @@ export type CustomPolicyVerificationRow = Readonly<{
   seed: string;
   policy: string;
   pass: boolean;
-  replaceEligible: boolean;
   reason?: string;
   dataSha256?: string;
 }>;
@@ -77,10 +75,10 @@ export type CustomPolicyVerificationRow = Readonly<{
 export type CustomPolicyMutation = Readonly<
   | { kind: "noop" }
   | {
-    kind: "create" | "replace";
+    kind: "create";
     target: CustomPolicyArtifact["policies"][number];
     row: CustomPolicyVerificationRow;
-    instruction: WireInstruction;
+    instructions: readonly [WireInstruction];
   }
 >;
 
@@ -202,7 +200,7 @@ function expectedArmData(operation: CustomPolicyArtifact["policies"][number]["op
 function parseArtifact(value: unknown, expectedSeeds: readonly bigint[]): CustomPolicyArtifact {
   invariant(value && typeof value === "object", "custom policy compiler returned a non-object");
   const artifact = value as Partial<CustomPolicyArtifact>;
-  invariant(artifact.schema === "loyal-voltr-custom-policy-artifact/v3"
+  invariant(artifact.schema === "loyal-voltr-custom-policy-artifact/v5"
     && artifact.verdict === "VOLTR_CUSTOM_POLICY_ARTIFACT_COMPILED_NOT_DEPLOYED"
     && artifact.physicalPolicyCount === 4
     && artifact.deploymentReady === false
@@ -221,11 +219,7 @@ function parseArtifact(value: unknown, expectedSeeds: readonly bigint[]): Custom
       && JSON.stringify(policy.constraintIndices) === JSON.stringify(indexes[index])
       && policy.createInstruction?.programId === RWA_MULTIPLY_ROUTE.squads.program
       && policy.createInstruction.accounts.length === 6
-      && policy.createInstruction.dataBase64.length > 0
-      && policy.replaceInstruction?.programId === RWA_MULTIPLY_ROUTE.squads.program
-      && policy.replaceInstruction.accounts.length === 6
-      && policy.replaceInstruction.accounts[5]?.address === policy.policy
-      && policy.replaceInstruction.dataBase64.length > 0,
+      && policy.createInstruction.dataBase64.length > 0,
     `custom ${operations[index]} policy artifact drifted`);
   });
   return artifact as CustomPolicyArtifact;
@@ -385,7 +379,6 @@ export async function verifyInstalledCustomPolicies(connection: Connection) {
       seed: expected.seed,
       policy: expected.policy,
       pass: false,
-      replaceEligible: false,
       reason: "absent",
     } satisfies CustomPolicyVerificationRow;
     if (!info.owner.equals(new PublicKey(route.squads.program))) {
@@ -394,7 +387,6 @@ export async function verifyInstalledCustomPolicies(connection: Connection) {
         seed: expected.seed,
         policy: expected.policy,
         pass: false,
-        replaceEligible: false,
         reason: "wrong owner",
         dataSha256: createHash("sha256").update(info.data).digest("hex"),
       } satisfies CustomPolicyVerificationRow;
@@ -408,7 +400,6 @@ export async function verifyInstalledCustomPolicies(connection: Connection) {
         seed: expected.seed,
         policy: expected.policy,
         pass: false,
-        replaceEligible: false,
         reason: "undecodable policy account",
         dataSha256: createHash("sha256").update(info.data).digest("hex"),
       } satisfies CustomPolicyVerificationRow;
@@ -443,14 +434,14 @@ export async function verifyInstalledCustomPolicies(connection: Connection) {
         dataConstraints: observedData,
       };
     });
-    const replaceEligible = Boolean(policy.settings.equals(new PublicKey(route.squads.settings))
+    const authorityBoundaryPass = Boolean(policy.settings.equals(new PublicKey(route.squads.settings))
       && policy.seed.toString() === expected.seed
       && policy.threshold === 1
       && policy.timeLock === 0
       && policy.signers.length === 1
       && policy.signers[0]?.key.equals(new PublicKey(route.squads.delegatedExecutor))
       && policy.signers[0]?.permissions.mask === 7);
-    const pass = Boolean(replaceEligible
+    const pass = Boolean(authorityBoundaryPass
       && policy.policyState.__kind === "ProgramInteraction"
       && body?.accountIndex === route.squads.vaultIndex
       && body.preHook == null
@@ -463,8 +454,7 @@ export async function verifyInstalledCustomPolicies(connection: Connection) {
       seed: expected.seed,
       policy: expected.policy,
       pass,
-      replaceEligible,
-      ...(pass ? {} : { reason: replaceEligible ? "inexact policy payload" : "authority boundary mismatch" }),
+      ...(pass ? {} : { reason: authorityBoundaryPass ? "inexact policy payload" : "authority boundary mismatch" }),
       dataSha256: createHash("sha256").update(info.data).digest("hex"),
       owner: info.owner.toBase58(),
       accountIndex: body?.accountIndex ?? null,
@@ -497,9 +487,9 @@ export function selectCustomPolicyMutation(input: Readonly<{
   if (row.reason === "absent") {
     invariant(BigInt(target.seed) === input.policySeedBefore + 1n,
       `absent custom policy seed ${target.seed} is not the next finalized Settings seed`);
-    return { kind: "create", target, row, instruction: target.createInstruction };
+    return { kind: "create", target, row, instructions: [target.createInstruction] };
   }
-  invariant(row.replaceEligible,
-    `existing custom ${target.operation} policy failed its owner/settings/seed/authority boundary`);
-  return { kind: "replace", target, row, instruction: target.replaceInstruction };
+  throw new Error(
+    `existing custom ${target.operation} policy is inexact; policy seeds are monotonic and require a fresh-seed rollover`,
+  );
 }

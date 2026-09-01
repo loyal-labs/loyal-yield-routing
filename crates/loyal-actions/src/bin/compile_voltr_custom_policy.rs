@@ -87,7 +87,6 @@ struct OutputPolicy {
     constraint_index: u8,
     constraint_indices: Vec<u8>,
     create_instruction: WireInstruction,
-    replace_instruction: WireInstruction,
 }
 
 #[derive(Serialize)]
@@ -210,13 +209,12 @@ fn run() -> Result<(), String> {
         constraint_index: policy.constraint_index,
         constraint_indices: policy.constraint_indices,
         create_instruction: wire(policy.create_instruction),
-        replace_instruction: wire(policy.replace_instruction),
     })
     .collect();
     println!(
         "{}",
         serde_json::to_string(&Output {
-            schema: "loyal-voltr-custom-policy-artifact/v3",
+            schema: "loyal-voltr-custom-policy-artifact/v5",
             verdict: "VOLTR_CUSTOM_POLICY_ARTIFACT_COMPILED_NOT_DEPLOYED",
             source_sha256,
             physical_policy_count: 4,

@@ -650,13 +650,32 @@ export async function prepareSignedV0Transaction(input: Readonly<{
     throw new Error(`transaction packet is ${serializedTransaction.length} bytes; Solana limit is 1232`);
   }
   const prestateAddresses = input.prestateAddresses ?? input.inspectedAddresses;
-  const prestate = await connection.getMultipleAccountsInfoAndContext(
-    prestateAddresses.map((value) => new PublicKey(value)),
-    {
-      commitment,
-      ...(input.minimumContextSlot === undefined ? {} : { minContextSlot: input.minimumContextSlot }),
-    },
-  );
+  let prestate: Awaited<ReturnType<Connection["getMultipleAccountsInfoAndContext"]>> | null = null;
+  let lastPrestateError: unknown = null;
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    try {
+      prestate = await connection.getMultipleAccountsInfoAndContext(
+        prestateAddresses.map((value) => new PublicKey(value)),
+        {
+          commitment,
+          ...(input.minimumContextSlot === undefined ? {} : { minContextSlot: input.minimumContextSlot }),
+        },
+      );
+      break;
+    } catch (error) {
+      lastPrestateError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("Minimum context slot has not been reached") || attempt === 23) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  if (!prestate) {
+    throw new Error(`${commitment} prestate bank did not reach the requested minimum slot`, {
+      cause: lastPrestateError,
+    });
+  }
   const fee = await connection.getFeeForMessage(message, commitment);
   let simulation: Awaited<ReturnType<Connection["simulateTransaction"]>> | null = null;
   let lastSimulationError: unknown = null;
