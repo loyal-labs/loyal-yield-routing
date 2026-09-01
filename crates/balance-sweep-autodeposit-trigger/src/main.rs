@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    process::Command,
+    process::{Command, ExitStatus},
     str::FromStr,
     time::Duration,
 };
@@ -151,6 +151,17 @@ fn record_unsuccessful_executor_exit(
         outcome.executions_not_actionable += 1;
     }
     alert
+}
+
+#[cfg(unix)]
+fn executor_termination_signal(status: &ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn executor_termination_signal(_status: &ExitStatus) -> Option<i32> {
+    None
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -605,34 +616,32 @@ async fn execute_eligible_targets_once(
                 .recovery_required(true)
                 .emit();
             })?;
+        let executor_exit_code = status.code();
+        let executor_signal = executor_termination_signal(&status);
         if status.success() {
             outcome.executions_succeeded += 1;
+        } else if let Some(alert) =
+            record_unsuccessful_executor_exit(&mut outcome, executor_exit_code)
+        {
+            tracing::warn!(
+                executor_exit_code,
+                executor_signal,
+                executor_failure_code = alert.code,
+                "autodeposit executor exited unsuccessfully"
+            );
+            OperationalError::new(alert.code, alert.operation, alert.summary)
+                .retryable(alert.retryable)
+                .recovery_required(true)
+                .emit();
         } else {
-            if let Some(alert) = record_unsuccessful_executor_exit(&mut outcome, status.code()) {
-                tracing::warn!(
-                    target_id = target.target_id,
-                    scheduled_slot_id = target.scheduled_slot_id,
-                    claim_token,
-                    status = ?status,
-                    executor_failure_code = alert.code,
-                    "autodeposit executor exited unsuccessfully"
-                );
-                OperationalError::new(alert.code, alert.operation, alert.summary)
-                    .retryable(alert.retryable)
-                    .recovery_required(true)
-                    .emit();
-            } else {
-                // Counted apart from failures: the executor decided correctly that this
-                // target has nothing to deposit into, so folding it into the failure count
-                // would keep an operator hunting for a fault that does not exist.
-                tracing::info!(
-                    target_id = target.target_id,
-                    scheduled_slot_id = target.scheduled_slot_id,
-                    claim_token,
-                    status = ?status,
-                    "autodeposit target is not actionable and was backed off without alerting"
-                );
-            }
+            // Counted apart from failures: the executor decided correctly that this
+            // target has nothing to deposit into, so folding it into the failure count
+            // would keep an operator hunting for a fault that does not exist.
+            tracing::info!(
+                executor_exit_code,
+                executor_signal,
+                "autodeposit target is not actionable and was backed off without alerting"
+            );
         }
     }
     Ok(outcome)
@@ -2050,6 +2059,22 @@ mod tests {
         .expect("global poll fallback must stay live without notifications");
 
         assert!(hints.drain(1).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signal_terminated_executor_keeps_generic_alert_and_reports_signal() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let status = ExitStatus::from_raw(9);
+        assert_eq!(status.code(), None);
+        assert_eq!(executor_termination_signal(&status), Some(9));
+        assert_eq!(
+            executor_failure_alert(status.code())
+                .expect("signal termination must alert")
+                .code,
+            "autodeposit_executor_failed"
+        );
     }
 
     #[test]

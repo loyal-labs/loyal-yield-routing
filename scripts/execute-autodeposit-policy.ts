@@ -1635,6 +1635,36 @@ export type AutodepositFailureDisposition = {
   retryDelaySeconds: number;
 };
 
+export type AutodepositExecutorStage =
+  | "startup"
+  | "load_runtime_dependencies"
+  | "load_recovery_context"
+  | "recover_claim"
+  | "load_target"
+  | "read_wallet_balance"
+  | "read_vault_balance"
+  | "read_delegation_allowance"
+  | "claim_lots"
+  | "prepare_route"
+  | "submit_pull"
+  | "deposit_to_kamino"
+  | "completed";
+
+type AutodepositExecutorFailureRecord = {
+  status: "error";
+  executorStage: AutodepositExecutorStage;
+  failureCode: AutodepositExecutorFailureCode | "unknown";
+  exitCode: number;
+  errorKind: string;
+};
+
+type AutodepositExecutorFailureBoundaryOptions = {
+  environment?: Record<string, string | undefined>;
+  getExitCode?: () => number | undefined;
+  setExitCode?: (exitCode: number) => void;
+  reportFailure?: (record: AutodepositExecutorFailureRecord) => void;
+};
+
 /**
  * Maps a pre-send failure to how loudly it should exit and how soon it should be retried.
  *
@@ -1681,6 +1711,80 @@ export function autodepositFailureDisposition(
     failureCode: null,
     retryDelaySeconds: PRE_SEND_FAILURE_RETRY_DELAY_SECONDS,
   };
+}
+
+/**
+ * Keeps every executor stage, including pre-claim dependency reads, behind the
+ * same stable exit-code contract. The injected hooks make the real process
+ * boundary testable without loading production credentials or contacting RPC.
+ */
+export async function runAutodepositExecutorWithFailureBoundary(
+  run: (
+    recordStage: (stage: AutodepositExecutorStage) => void
+  ) => Promise<void>,
+  options: AutodepositExecutorFailureBoundaryOptions = {}
+): Promise<void> {
+  const environment = options.environment ?? process.env;
+  const getExitCode =
+    options.getExitCode ??
+    (() => {
+      const exitCode = process.exitCode;
+      if (typeof exitCode === "number") {
+        return exitCode;
+      }
+      if (typeof exitCode === "string") {
+        const parsed = Number(exitCode);
+        return Number.isInteger(parsed) ? parsed : undefined;
+      }
+      return undefined;
+    });
+  const setExitCode =
+    options.setExitCode ??
+    ((exitCode: number) => {
+      process.exitCode = exitCode;
+    });
+  const reportFailure =
+    options.reportFailure ??
+    ((record: AutodepositExecutorFailureRecord) => {
+      console.error(JSON.stringify(record));
+    });
+  let stage: AutodepositExecutorStage = "startup";
+  const recordStage = (nextStage: AutodepositExecutorStage) => {
+    stage = nextStage;
+  };
+
+  recordStage(stage);
+  try {
+    await run(recordStage);
+    if (!getExitCode()) {
+      recordStage("completed");
+    }
+  } catch (error) {
+    const disposition = autodepositFailureDisposition(error);
+    const exitCode =
+      getExitCode() ||
+      (disposition.failureCode
+        ? autodepositExecutorFailureExitCode(
+            disposition.failureCode,
+            environment
+          )
+        : 1);
+    // Assign the stable code before reporting. Even if logging itself fails,
+    // process termination still crosses the Rust boundary with the known code.
+    setExitCode(exitCode);
+    reportFailure({
+      status: "error",
+      executorStage: stage,
+      failureCode: disposition.failureCode ?? "unknown",
+      exitCode,
+      errorKind:
+        disposition.failureCode === "dependency_unavailable"
+          ? "retryable_http_server_error"
+          : error instanceof Error
+            ? error.name
+            : typeof error,
+    });
+  }
 }
 
 export type LiveVaultPosition = {
@@ -4806,13 +4910,17 @@ function summarizeSimulation(summary: SimulationSummary) {
   };
 }
 
-async function main() {
+async function main(
+  recordStage: (stage: AutodepositExecutorStage) => void
+) {
+  recordStage("load_runtime_dependencies");
   const appModules = await loadAppModules();
   const PublicKeyCtor = appModules.PublicKey;
   const options = parseOptions(Bun.argv.slice(2));
   const databaseUrl = requireEnv("NEON_DATABASE_URL");
   const rpcUrl = requireEnv("SOLANA_RPC_URL");
   const connection = new Connection(rpcUrl, DEFAULT_COMMITMENT);
+  recordStage("load_recovery_context");
   const autodepositRecovery =
     options.execute &&
     options.claimToken !== null &&
@@ -4827,6 +4935,7 @@ async function main() {
         })
       : null;
   if (autodepositRecovery && options.scheduledSlotId !== null) {
+    recordStage("recover_claim");
     await recoverAutodepositClaim({
       context: autodepositRecovery,
       compilePreparedOperation: appModules.compilePreparedOperation,
@@ -4847,6 +4956,7 @@ async function main() {
 
   let target: EligibleTarget | null;
   try {
+    recordStage("load_target");
     target = await loadEligibleTarget(
       appModules.neon,
       databaseUrl,
@@ -4878,7 +4988,7 @@ async function main() {
           2
         )
       );
-      process.exitCode = 1;
+      process.exitCode = autodepositExecutorFailureExitCode("not_actionable");
       return;
     }
     throw error;
@@ -4896,8 +5006,11 @@ async function main() {
 
   const walletUsdcAta = new PublicKeyCtor(target.walletUsdcAta);
   const vaultUsdcAta = new PublicKeyCtor(target.vaultUsdcAta);
+  recordStage("read_wallet_balance");
   const walletBalanceRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
+  recordStage("read_vault_balance");
   const vaultPreBalanceRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
+  recordStage("read_delegation_allowance");
   const allowance = await loadRecurringDelegationAllowance({
     appModules,
     connection,
@@ -4959,6 +5072,7 @@ async function main() {
           "--claim-token is required when executing with lot claims."
         );
       }
+      recordStage("claim_lots");
       lotClaim = await claimAutodepositLots({
         neon: appModules.neon,
         databaseUrl,
@@ -5024,6 +5138,7 @@ async function main() {
     return;
   }
 
+  recordStage("prepare_route");
   let pullSent = false;
   let claimLeaseToken: string | null = null;
   try {
@@ -5231,6 +5346,7 @@ async function main() {
         target: target as EligibleTarget & { managedVaultId: bigint },
       },
     });
+    recordStage("submit_pull");
     const { result: durablePullSend } = await runAfterFeePayerSolSafety({
       connection,
       feePayer: topUpFeePayer,
@@ -5294,6 +5410,7 @@ async function main() {
     const pullSend = durablePullSend;
     pullSent = true;
     try {
+      recordStage("deposit_to_kamino");
       const result = await resumeDirectKaminoDeposit({
         attempt: pullSend.attempt,
         claimToken: durableClaimToken,
@@ -5518,19 +5635,5 @@ async function main() {
 }
 
 if (import.meta.main) {
-  main().catch((error) => {
-    console.error(
-      JSON.stringify(
-        {
-          status: "error",
-          error: error instanceof Error ? error.message : String(error),
-        },
-        null,
-        2
-      )
-    );
-    if (!process.exitCode) {
-      process.exitCode = 1;
-    }
-  });
+  await runAutodepositExecutorWithFailureBoundary(main);
 }
