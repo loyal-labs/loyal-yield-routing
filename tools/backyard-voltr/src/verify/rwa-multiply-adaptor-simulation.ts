@@ -425,6 +425,21 @@ async function main() {
     && ticketAfter.activeSequence === 0n && ticketAfter.activeWireSha256 === ZERO_HASH,
   "canonical simulation did not consume and clear the one-use ticket");
   invariant(sha256(configInfo.data) === sha256(configAfter.data), "canonical simulation mutated immutable config");
+  const canonicalChainReadback = await confirmedAccountsAtOrAfter(
+    connection, inspectedAddresses, canonical.simulationSlot,
+  );
+  invariant(canonicalChainReadback.value.every((info, index) => (
+    JSON.stringify(normalizedAccount(info)) === JSON.stringify(normalizedAccount(preInfosResponse.value[index] ?? null))
+  )), "canonical independent confirmed readback detected protected state drift");
+  const canonicalSignatureStatuses = await connection.getSignatureStatuses(
+    [canonical.expectedSignature], { searchTransactionHistory: true },
+  );
+  invariant(canonicalSignatureStatuses.value.length === 1
+    && canonicalSignatureStatuses.value[0] === null,
+  "canonical signed-unsent wire unexpectedly has an on-chain signature status");
+  const canonicalChainReadbackStateSha256 = accountSetSha256(canonicalChainReadback.value);
+  invariant(canonicalChainReadbackStateSha256 === preStateSha256,
+    "canonical signed-unsent transaction changed chain state");
 
   const wrong = RWA_MULTIPLY_ROUTE.setupAdmin;
   const system = RWA_MULTIPLY_ROUTE.programs.system;
@@ -596,10 +611,10 @@ async function main() {
   invariant(new Set(mutations.map(({ name }) => name)).size === REQUIRED_MUTATION_NAMES.length
     && [...mutations.map(({ name }) => name)].sort().join("|")
       === [...REQUIRED_MUTATION_NAMES].sort().join("|"),
-  "exact v10 matrix names drifted");
+  "exact v11 matrix names drifted");
   invariant(mutations.filter(({ expectation }) => expectation === "rejection").length === 38
     && mutations.filter(({ expectation }) => expectation === "arm-only-success").length === 1,
-  "exact v10 rejection/expected-success cardinality drifted");
+  "exact v11 rejection/expected-success cardinality drifted");
   const artifact = {
     schema: "loyal-backyard-rwa-adaptor-simulation/v2",
     broadcast: false,
@@ -621,6 +636,11 @@ async function main() {
       commitment: "confirmed", contextSlot: canonical.simulationSlot,
       logsSha256: sha256(canonical.simulation.logs.join("\n")),
       returnData: canonical.simulation.returnData,
+      preStateSha256,
+      postStateSha256: canonicalChainReadbackStateSha256,
+      chainReadbackContextSlot: canonicalChainReadback.context.slot,
+      chainReadbackStateSha256: canonicalChainReadbackStateSha256,
+      signatureStatus: null,
       configPreStateSha256: sha256(configInfo.data),
       configPostStateSha256: sha256(configAfter.data) },
     report: {

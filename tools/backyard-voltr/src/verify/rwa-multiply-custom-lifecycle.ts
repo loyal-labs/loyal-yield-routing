@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, verify as verifySignature } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -33,7 +33,8 @@ const ADAPTOR_CONFIG = "crates/loyal-voltr-rwa-nav-adaptor/src/config.rs";
 const GO_ROOT = "go/backyard-rwa-worker";
 const DEPLOYMENT_EVIDENCE = "docs/evidence/backyard-rwa-go/deployment-v1.json";
 const LIFECYCLE_EVIDENCE = "docs/evidence/backyard-rwa-go/lifecycle-v1.json";
-const ADAPTOR_SIMULATION_EVIDENCE = "docs/evidence/backyard-rwa-go/adaptor-v2-ticket-simulation-v3.json";
+const ADAPTOR_SIMULATION_EVIDENCE = "docs/evidence/backyard-rwa-go/adaptor-v2-ticket-simulation-v5.json";
+const ADAPTOR_SIMULATION_EVIDENCE_SHA256 = "83b7c30bba1a46ac7d21c72e3cdf0e9a7e89415d020af3ddf6cd70e16199f4f9";
 const POLICY_SIMULATION_EVIDENCE = "docs/evidence/backyard-rwa-go/policy-catalog-simulation-v1.json";
 const PHASE2_OBLIGATION_EVIDENCE = "docs/evidence/backyard-rwa-go/policy-phase2-obligation-init-v1.json";
 const SOLE_COMMAND = "bun run --cwd tools/backyard-voltr verify:rwa-multiply-custom-lifecycle";
@@ -394,6 +395,21 @@ function nonnegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
+async function retryTransientRpc<T>(operation: () => Promise<T>, attempts = 4): Promise<T> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < attempts) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 250 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError ?? new Error("RPC retry budget exhausted");
+}
+
 function canonicalBase64(value: unknown): Buffer | null {
   if (typeof value !== "string" || value.length === 0) return null;
   const decoded = Buffer.from(value, "base64");
@@ -416,6 +432,43 @@ function signedTransactionSignature(value: unknown): string | null {
   }
 }
 
+function signedTransactionProof(value: unknown): Readonly<{
+  signature: string;
+  messageSha256: string;
+  allRequiredSignaturesValid: boolean;
+}> | null {
+  const wire = canonicalBase64(value);
+  if (wire === null) return null;
+  try {
+    const transaction = VersionedTransaction.deserialize(wire);
+    const message = Buffer.from(transaction.message.serialize());
+    const requiredSignatures = transaction.message.header.numRequiredSignatures;
+    const signerKeys = transaction.message.staticAccountKeys.slice(0, requiredSignatures);
+    if (requiredSignatures === 0
+      || transaction.signatures.length < requiredSignatures
+      || signerKeys.length !== requiredSignatures) return null;
+    const ed25519SpkiPrefix = Buffer.from("302a300506032b6570032100", "hex");
+    const allRequiredSignaturesValid = signerKeys.every((signer, index) => {
+      const signature = transaction.signatures[index];
+      return signature !== undefined
+        && signature.some((byte) => byte !== 0)
+        && verifySignature(null, message, {
+          key: Buffer.concat([ed25519SpkiPrefix, signer.toBuffer()]),
+          format: "der",
+          type: "spki",
+        }, signature);
+    });
+    const firstSignature = transaction.signatures[0];
+    return firstSignature === undefined ? null : {
+      signature: bs58.encode(firstSignature),
+      messageSha256: sha256(message),
+      allRequiredSignaturesValid,
+    };
+  } catch {
+    return null;
+  }
+}
+
 type SimulationExpectation = "success" | "failure" | "arm-only-success";
 
 type ExpectedArmOnlyTransition = Readonly<{
@@ -431,6 +484,7 @@ type SignedSimulationRow = Readonly<{
   expectation: SimulationExpectation;
   transactionBase64: unknown;
   transactionSha256: unknown;
+  messageSha256?: unknown;
   inspectedAddresses: unknown;
   logsSha256: unknown;
   expectedArmOnlyTransition?: ExpectedArmOnlyTransition | undefined;
@@ -464,6 +518,57 @@ type IndependentSimulationEvidence = Readonly<{
   genesisHash: string | null;
   currentSlot: number | null;
   results: readonly IndependentSimulationResult[];
+}>;
+
+type ProgramIdentityExpectation = Readonly<{
+  program: string;
+  programData: string;
+  programDataSha256: string;
+  elfSha256: string;
+  deployedSlot: string;
+  upgradeAuthority: string | null;
+}>;
+
+type AdaptorIdentityExpectation = Readonly<{
+  adaptor: ProgramIdentityExpectation;
+  voltr: ProgramIdentityExpectation;
+  config: string;
+  configDataSha256: string;
+  ticket: string;
+  bindings: Readonly<{
+    voltrProgram: string;
+    voltrVault: string;
+    strategyAuthority: string;
+    squadsProgram: string;
+    squadsSettings: string;
+    squadsSettingsSigner: string;
+    squadsVault: string;
+    assetMint: string;
+    assetTokenProgram: string;
+    squadsAssetAta: string;
+    squadsVaultIndex: number;
+  }>;
+}>;
+
+type SignedUnsentAuditResult = Readonly<{
+  name: string;
+  transactionSha256: string | null;
+  messageSha256: string | null;
+  signature: string | null;
+  validInput: boolean;
+  signaturesValid: boolean;
+  signatureStatusIsNull: boolean | null;
+  passed: boolean;
+}>;
+
+type SignedUnsentAuditEvidence = Readonly<{
+  attempted: boolean;
+  reason: string | null;
+  genesisHash: string | null;
+  currentSlot: number | null;
+  signaturesUnique: boolean;
+  currentIdentity: JsonRecord | null;
+  results: readonly SignedUnsentAuditResult[];
 }>;
 
 function simulationAddresses(value: unknown): string[] | null {
@@ -533,6 +638,276 @@ function reportTicketState(value: unknown, expectedConfig: string): Readonly<{
   };
 }
 
+function currentProgramIdentity(
+  program: { executable: boolean; owner: PublicKey; data: Buffer } | null,
+  programData: { owner: PublicKey; data: Buffer } | null,
+  expected: ProgramIdentityExpectation,
+): JsonRecord {
+  const loader = "BPFLoaderUpgradeab1e11111111111111111111111";
+  const programDataPointer = program !== null && program.data.length === 36
+    && program.data.readUInt32LE(0) === 2
+    ? new PublicKey(program.data.subarray(4, 36)).toBase58()
+    : null;
+  const optionTag = programData !== null && programData.data.length > 13
+    ? programData.data[12] : null;
+  const headerLength = optionTag === 1 ? 45 : optionTag === 0 ? 13 : null;
+  const deployedSlot = programData !== null && headerLength !== null
+    && programData.data.length > headerLength && programData.data.readUInt32LE(0) === 3
+    ? programData.data.readBigUInt64LE(4).toString() : null;
+  const upgradeAuthority = programData !== null && headerLength === 45
+    ? new PublicKey(programData.data.subarray(13, 45)).toBase58()
+    : headerLength === 13 ? null : undefined;
+  const currentProgramDataSha256 = programData === null ? null : sha256(programData.data);
+  const currentElfSha256 = programData === null || headerLength === null
+    || programData.data.length <= headerLength ? null : sha256(programData.data.subarray(headerLength));
+  const exact = program?.executable === true
+    && program.owner.toBase58() === loader
+    && programDataPointer === expected.programData
+    && programData?.owner.toBase58() === loader
+    && currentProgramDataSha256 === expected.programDataSha256
+    && currentElfSha256 === expected.elfSha256
+    && deployedSlot === expected.deployedSlot
+    && upgradeAuthority === expected.upgradeAuthority;
+  return {
+    program: expected.program,
+    programData: programDataPointer,
+    programDataSha256: currentProgramDataSha256,
+    elfSha256: currentElfSha256,
+    deployedSlot,
+    upgradeAuthority: upgradeAuthority ?? null,
+    exact,
+  };
+}
+
+function programIdentityExpectation(value: unknown): ProgramIdentityExpectation | null {
+  const row = record(value);
+  if (row === null
+    || typeof row.program !== "string"
+    || typeof row.programData !== "string"
+    || !sha256Hex(row.programDataSha256)
+    || !sha256Hex(row.elfSha256)
+    || typeof row.deployedSlot !== "string"
+    || bigintOrNull(row.deployedSlot) === null
+    || (typeof row.upgradeAuthority !== "string" && row.upgradeAuthority !== null)) return null;
+  try {
+    return {
+      program: new PublicKey(row.program).toBase58(),
+      programData: new PublicKey(row.programData).toBase58(),
+      programDataSha256: row.programDataSha256,
+      elfSha256: row.elfSha256,
+      deployedSlot: row.deployedSlot,
+      upgradeAuthority: row.upgradeAuthority,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function currentConfigBindings(data: Buffer | null, expected: AdaptorIdentityExpectation): JsonRecord {
+  const envelopeExact = data !== null
+    && data.length === 472
+    && data.subarray(0, 8).equals(Buffer.from([46, 154, 12, 115, 203, 165, 199, 235]))
+    && data[8] === 2
+    && data[9] === expected.bindings.squadsVaultIndex
+    && data.subarray(10, 16).every((value) => value === 0)
+    && data.subarray(368, 400).every((value) => value === 0)
+    && data.readBigUInt64LE(416) === 0n
+    && data.readBigUInt64LE(424) === 0n
+    && data.readBigUInt64LE(432) === 0n
+    && data.subarray(440, 472).every((value) => value === 0);
+  const keyAt = (index: number): string | null => envelopeExact && data !== null
+    ? new PublicKey(data.subarray(16 + index * 32, 48 + index * 32)).toBase58()
+    : null;
+  const observed = {
+    voltrProgram: keyAt(0),
+    voltrVault: keyAt(1),
+    strategy: keyAt(2),
+    strategyAuthority: keyAt(3),
+    squadsProgram: keyAt(4),
+    squadsSettings: keyAt(5),
+    squadsSettingsSigner: keyAt(6),
+    squadsVault: keyAt(7),
+    assetMint: keyAt(8),
+    assetTokenProgram: keyAt(9),
+    squadsAssetAta: keyAt(10),
+  };
+  const bindingsExact = envelopeExact
+    && observed.voltrProgram === expected.bindings.voltrProgram
+    && observed.voltrVault === expected.bindings.voltrVault
+    && observed.strategyAuthority === expected.bindings.strategyAuthority
+    && observed.squadsProgram === expected.bindings.squadsProgram
+    && observed.squadsSettings === expected.bindings.squadsSettings
+    && observed.squadsSettingsSigner === expected.bindings.squadsSettingsSigner
+    && observed.squadsVault === expected.bindings.squadsVault
+    && observed.assetMint === expected.bindings.assetMint
+    && observed.assetTokenProgram === expected.bindings.assetTokenProgram
+    && observed.squadsAssetAta === expected.bindings.squadsAssetAta;
+  return {
+    envelopeExact,
+    bindingsExact,
+    dataSha256: data === null ? null : sha256(data),
+    observed,
+  };
+}
+
+async function independentSignedUnsentAudit(
+  rows: readonly SignedSimulationRow[],
+  expectedIdentity: AdaptorIdentityExpectation | null,
+): Promise<SignedUnsentAuditEvidence> {
+  const rpcUrl = process.env.SOLANA_RPC_URL?.trim();
+  if (!rpcUrl) {
+    return {
+      attempted: false,
+      reason: "SOLANA_RPC_URL unavailable",
+      genesisHash: null,
+      currentSlot: null,
+      signaturesUnique: false,
+      currentIdentity: null,
+      results: [],
+    };
+  }
+
+  const inputs = rows.map((row) => {
+    const wire = canonicalBase64(row.transactionBase64);
+    const transactionSha256 = sha256Hex(row.transactionSha256) ? row.transactionSha256 : null;
+    const messageSha256 = sha256Hex(row.messageSha256) ? row.messageSha256 : null;
+    const addresses = simulationAddresses(row.inspectedAddresses);
+    const proof = signedTransactionProof(row.transactionBase64);
+    const armOnlyExpected = row.expectation !== "arm-only-success"
+      || (row.expectedArmOnlyTransition !== undefined
+        && addresses?.includes(row.expectedArmOnlyTransition.ticketAddress) === true
+        && sha256Hex(row.expectedArmOnlyTransition.activeWireSha256));
+    const validInput = wire !== null
+      && transactionSha256 !== null
+      && sha256(wire) === transactionSha256
+      && messageSha256 !== null
+      && proof?.messageSha256 === messageSha256
+      && proof.allRequiredSignaturesValid
+      && addresses !== null
+      && armOnlyExpected
+      && sha256Hex(row.logsSha256);
+    return {
+      name: row.name,
+      transactionSha256,
+      messageSha256,
+      signature: proof?.signature ?? null,
+      validInput,
+      signaturesValid: proof?.allRequiredSignaturesValid === true,
+    };
+  });
+  const signatures = inputs.flatMap(({ signature }) => signature === null ? [] : [signature]);
+  const signaturesUnique = signatures.length === rows.length
+    && new Set(signatures).size === signatures.length;
+
+  try {
+    const connection = new Connection(rpcUrl, "confirmed");
+    const [genesisHash, startSlot] = await Promise.all([
+      retryTransientRpc(() => connection.getGenesisHash()),
+      retryTransientRpc(() => connection.getSlot("confirmed")),
+    ]);
+    const statuses = signatures.length === rows.length
+      ? await retryTransientRpc(() => connection.getSignatureStatuses(
+        signatures, { searchTransactionHistory: true },
+      ))
+      : null;
+    const statusValues = statuses?.value ?? [];
+    const results = inputs.map((input, index): SignedUnsentAuditResult => {
+      const signatureStatusIsNull = statusValues.length === rows.length
+        ? statusValues[index] === null : null;
+      return {
+        ...input,
+        signatureStatusIsNull,
+        passed: input.validInput && signatureStatusIsNull === true,
+      };
+    });
+
+    let currentIdentity: JsonRecord | null = null;
+    if (expectedIdentity !== null) {
+      const identityAddresses = [
+        expectedIdentity.adaptor.program,
+        expectedIdentity.adaptor.programData,
+        expectedIdentity.voltr.program,
+        expectedIdentity.voltr.programData,
+        expectedIdentity.config,
+        expectedIdentity.ticket,
+      ].map((address) => new PublicKey(address));
+      const minimumContextSlot = Math.max(startSlot, statuses?.context.slot ?? startSlot);
+      const readback = await retryTransientRpc(() => connection.getMultipleAccountsInfoAndContext(identityAddresses, {
+        commitment: "confirmed",
+        minContextSlot: minimumContextSlot,
+      }));
+      const [adaptorProgram, adaptorProgramData, voltrProgram, voltrProgramData, config, ticket] = readback.value;
+      const adaptorIdentity = currentProgramIdentity(adaptorProgram ?? null, adaptorProgramData ?? null, expectedIdentity.adaptor);
+      const voltrIdentity = currentProgramIdentity(voltrProgram ?? null, voltrProgramData ?? null, expectedIdentity.voltr);
+      const configBindings = currentConfigBindings(config?.data ?? null, expectedIdentity);
+      const ticketState = ticket == null ? null : reportTicketState({
+        data: [ticket.data.toString("base64"), "base64"],
+        executable: ticket.executable,
+        lamports: ticket.lamports,
+        owner: ticket.owner.toBase58(),
+        rentEpoch: ticket.rentEpoch,
+        space: ticket.data.length,
+      }, expectedIdentity.config);
+      const ticketInactive = ticketState?.armed === false
+        && ticketState.activeSequence === "0"
+        && ticketState.activeWireSha256 === "0".repeat(64);
+      const exact = readback.value.every((account) => account !== null)
+        && adaptorIdentity.exact === true
+        && voltrIdentity.exact === true
+        && config?.owner.toBase58() === expectedIdentity.adaptor.program
+        && configBindings.dataSha256 === expectedIdentity.configDataSha256
+        && configBindings.envelopeExact === true
+        && configBindings.bindingsExact === true
+        && ticket?.owner.toBase58() === expectedIdentity.adaptor.program
+        && ticketState !== null
+        && ticketInactive;
+      currentIdentity = {
+        contextSlot: readback.context.slot,
+        minimumContextSlot,
+        allAccountsPresent: readback.value.every((account) => account !== null),
+        adaptor: adaptorIdentity,
+        voltr: voltrIdentity,
+        config: {
+          owner: config?.owner.toBase58() ?? null,
+          ...configBindings,
+        },
+        ticket: {
+          owner: ticket?.owner.toBase58() ?? null,
+          state: ticketState,
+          inactive: ticketInactive,
+        },
+        exact,
+      };
+    }
+
+    return {
+      attempted: true,
+      reason: null,
+      genesisHash,
+      currentSlot: statuses?.context.slot ?? startSlot,
+      signaturesUnique,
+      currentIdentity,
+      results,
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      reason: error instanceof Error
+        ? error.message.replace(/https?:\/\/\S+/g, "<redacted>")
+        : "read-only signed-unsent audit failed",
+      genesisHash: null,
+      currentSlot: null,
+      signaturesUnique,
+      currentIdentity: null,
+      results: inputs.map((input) => ({
+        ...input,
+        signatureStatusIsNull: null,
+        passed: false,
+      })),
+    };
+  }
+}
+
 async function independentSignedSimulations(
   rows: readonly SignedSimulationRow[],
 ): Promise<IndependentSimulationEvidence> {
@@ -550,11 +925,11 @@ async function independentSignedSimulations(
   let requestId = 0;
   const rpc = async (method: string, params: readonly unknown[]): Promise<JsonRecord> => {
     for (let attempt = 0; attempt < 24; attempt += 1) {
-      const response = await fetch(rpcUrl, {
+      const response = await retryTransientRpc(() => fetch(rpcUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: ++requestId, method, params }),
-      });
+      }));
       const payload = record(await response.json());
       const error = record(payload?.error);
       const message = typeof error?.message === "string" ? error.message : "";
@@ -935,6 +1310,47 @@ async function adaptorCheck(): Promise<Check> {
   const expectedTicket = typeof identities?.adaptorProgram === "string" && typeof v2StrategyConfig === "string"
     ? derivePda(identities.adaptorProgram, [Buffer.from("report_ticket"), new PublicKey(v2StrategyConfig).toBuffer()])
     : null;
+  const deployedPrograms = record(simulation?.deployedPrograms);
+  const expectedAdaptorProgram = programIdentityExpectation(deployedPrograms?.adaptor);
+  const expectedVoltrProgram = programIdentityExpectation(deployedPrograms?.voltr);
+  const expectedCurrentIdentity: AdaptorIdentityExpectation | null = expectedAdaptorProgram !== null
+    && expectedVoltrProgram !== null
+    && expectedAdaptorProgram.program === identities?.adaptorProgram
+    && expectedVoltrProgram.program === identities?.voltrProgram
+    && typeof v2StrategyConfig === "string"
+    && sha256Hex(simulation?.configDataSha256)
+    && typeof expectedTicket === "string"
+    && typeof identities?.voltrProgram === "string"
+    && typeof identities?.voltrVault === "string"
+    && typeof expectedStrategyAuthority === "string"
+    && typeof identities?.squadsProgram === "string"
+    && typeof identities?.squadsSettings === "string"
+    && typeof RWA_MULTIPLY_ROUTE.customAdaptor.settingsSigner === "string"
+    && typeof expectedSquadsVault === "string"
+    && typeof identities?.usdcMint === "string"
+    && typeof identities?.classicTokenProgram === "string"
+    && typeof identities?.squadsUsdcAta === "string"
+    && nonnegativeInteger(identities?.squadsVaultIndex)
+    ? {
+      adaptor: expectedAdaptorProgram,
+      voltr: expectedVoltrProgram,
+      config: v2StrategyConfig,
+      configDataSha256: simulation.configDataSha256,
+      ticket: expectedTicket,
+      bindings: {
+        voltrProgram: identities.voltrProgram,
+        voltrVault: identities.voltrVault,
+        strategyAuthority: expectedStrategyAuthority,
+        squadsProgram: identities.squadsProgram,
+        squadsSettings: identities.squadsSettings,
+        squadsSettingsSigner: RWA_MULTIPLY_ROUTE.customAdaptor.settingsSigner,
+        squadsVault: expectedSquadsVault,
+        assetMint: identities.usdcMint,
+        assetTokenProgram: identities.classicTokenProgram,
+        squadsAssetAta: identities.squadsUsdcAta,
+        squadsVaultIndex: identities.squadsVaultIndex,
+      },
+    } : null;
   const manifestRuntimeBindings = record(manifest?.runtimeBindings);
   const manifestBridgePolicies = Array.isArray(manifestRuntimeBindings?.bridgePolicies)
     ? manifestRuntimeBindings.bridgePolicies.map(record).filter((value): value is JsonRecord => value !== null)
@@ -950,17 +1366,17 @@ async function adaptorCheck(): Promise<Check> {
   if (rpcUrl) {
     try {
       const connection = new Connection(rpcUrl, "finalized");
-      const installed = await verifyInstalledCustomPolicies(connection);
+      const installed = await retryTransientRpc(() => verifyInstalledCustomPolicies(connection));
       const retiredAddresses = RETIRED_BRIDGE_POLICY_SEEDS.map(derivedSquadsPolicy);
       if (retiredAddresses.some((account) => account === null)) throw new Error("retired bridge policy PDA derivation failed");
       const coherentAddresses = [
         ...BRIDGE_POLICY_ROLLOVER.map(({ account }) => account),
         ...retiredAddresses.map((account) => account!),
       ];
-      const coherentResponse = await connection.getMultipleAccountsInfoAndContext(
+      const coherentResponse = await retryTransientRpc(() => connection.getMultipleAccountsInfoAndContext(
         coherentAddresses.map((account) => new PublicKey(account)),
         { commitment: "finalized", minContextSlot: installed.contextSlot },
-      );
+      ));
       const coherentCurrent = coherentResponse.value.slice(0, BRIDGE_POLICY_ROLLOVER.length);
       const coherentRetired = coherentResponse.value.slice(BRIDGE_POLICY_ROLLOVER.length);
       bridgePolicyReadback = {
@@ -1079,12 +1495,13 @@ async function adaptorCheck(): Promise<Check> {
     && mutationRows.filter((value) => record(value)?.expectation === "rejection").length === 38
     && mutationRows.filter((value) => record(value)?.expectation === "arm-only-success").length === 1
     && new Set(mutationTransactionHashes).size === mutationTransactionHashes.length;
-  const independentSimulation = await independentSignedSimulations([
+  const adaptorSignedRows: SignedSimulationRow[] = [
     {
       name: "canonical",
       expectation: "success",
       transactionBase64: simulation?.transactionBase64,
       transactionSha256: simulation?.transactionSha256,
+      messageSha256: simulation?.messageSha256,
       inspectedAddresses: simulation?.inspectedAddresses,
       logsSha256: canonicalSimulation?.logsSha256,
     },
@@ -1095,6 +1512,7 @@ async function adaptorCheck(): Promise<Check> {
         expectation: row?.name === "arm_only_payload" ? "arm-only-success" : "failure",
         transactionBase64: row?.transactionBase64,
         transactionSha256: row?.transactionSha256,
+        messageSha256: row?.messageSha256,
         inspectedAddresses: row?.inspectedAddresses,
         logsSha256: row?.logsSha256,
         expectedArmOnlyTransition: row?.name === "arm_only_payload"
@@ -1112,12 +1530,20 @@ async function adaptorCheck(): Promise<Check> {
           } : undefined,
       };
     }),
-  ]);
+  ];
+  const independentSimulation = await independentSignedSimulations(adaptorSignedRows);
+  const independentSignedUnsent = await independentSignedUnsentAudit(adaptorSignedRows, expectedCurrentIdentity);
   const expectedIndependentNames = ["canonical", ...requiredMutations];
   const independentSimulationExact = independentSimulation.genesisHash === manifest?.genesisHash
     && exactStringSet(independentSimulation.results.map((result) => result.name), expectedIndependentNames)
     && independentSimulation.results.length === expectedIndependentNames.length
     && independentSimulation.results.every((result) => result.passed);
+  const archivalWireCurrentAbsenceAndReadback = independentSignedUnsent.genesisHash === manifest?.genesisHash
+    && independentSignedUnsent.signaturesUnique
+    && independentSignedUnsent.currentIdentity?.exact === true
+    && exactStringSet(independentSignedUnsent.results.map((result) => result.name), expectedIndependentNames)
+    && independentSignedUnsent.results.length === expectedIndependentNames.length
+    && independentSignedUnsent.results.every((result) => result.passed);
   const forbidden = [
     "refresh_reserve",
     "refresh_obligation",
@@ -1175,6 +1601,7 @@ async function adaptorCheck(): Promise<Check> {
       && bridgeSource.includes("ticketedBridgeInstructions")
       && bridgeSource.includes("len(inner) != len(constraintIndexes)"),
     canonicalSignedUnsentSimulation: simulation?.schema === "loyal-backyard-rwa-adaptor-simulation/v2"
+      && sha256File(ADAPTOR_SIMULATION_EVIDENCE) === ADAPTOR_SIMULATION_EVIDENCE_SHA256
       && simulation?.broadcast === false
       && simulation?.signedUnsent === true
       && simulation?.path === "Squads->[ArmReport,Voltr->adaptor]"
@@ -1191,6 +1618,13 @@ async function adaptorCheck(): Promise<Check> {
       && canonicalSimulation?.sigVerify === true
       && canonicalSimulation?.replaceRecentBlockhash === false
       && canonicalSimulation?.err === null
+      && sha256Hex(canonicalSimulation?.preStateSha256)
+      && canonicalSimulation?.preStateSha256 === canonicalSimulation?.postStateSha256
+      && canonicalSimulation?.preStateSha256 === canonicalSimulation?.chainReadbackStateSha256
+      && nonnegativeInteger(canonicalSimulation?.contextSlot)
+      && nonnegativeInteger(canonicalSimulation?.chainReadbackContextSlot)
+      && canonicalSimulation.chainReadbackContextSlot >= canonicalSimulation.contextSlot
+      && canonicalSimulation?.signatureStatus === null
       && bigintOrNull(canonicalReport?.sequence) !== null
       && bigintOrNull(canonicalReport?.sequence) === bigintOrNull(canonicalReport?.observedSlot)
       && (canonicalReturnData === null
@@ -1198,8 +1632,7 @@ async function adaptorCheck(): Promise<Check> {
         : [identities?.adaptorProgram, identities?.voltrProgram].includes(canonicalReturnData.programId)
           && canonicalReturnBytes !== null
           && canonicalReturnBytes.length === 8
-          && canonicalReturnBytes.readBigUInt64LE(0) === bigintOrNull(canonicalReport?.navAfterRaw))
-      && nonnegativeInteger(canonicalSimulation?.contextSlot),
+          && canonicalReturnBytes.readBigUInt64LE(0) === bigintOrNull(canonicalReport?.navAfterRaw)),
     exactAtomicTicketTopology: topology?.squadsInnerInstructionCount === 2
       && Array.isArray(topology?.orderedInstructions)
       && JSON.stringify(topology.orderedInstructions) === JSON.stringify(["ArmReport", "VoltrCapital"])
@@ -1243,6 +1676,7 @@ async function adaptorCheck(): Promise<Check> {
     retiredBridgePoliciesAbsent,
     exactV10Matrix: exactStringSet(mutationNames, requiredMutations)
       && mutationProofsExact,
+    archivalWireCurrentAbsenceAndReadback,
     independentCurrentSimulation: independentSimulationExact,
     cargoCheck: cargo?.exitCode === 0,
     cargoTest: cargoTest?.exitCode === 0,
@@ -1256,6 +1690,7 @@ async function adaptorCheck(): Promise<Check> {
     cargoTest,
     signerTopologySimulationPath: ADAPTOR_SIMULATION_EVIDENCE,
     signerTopologySimulationSha256: sha256File(ADAPTOR_SIMULATION_EVIDENCE),
+    independentSignedUnsent,
     independentSimulation,
     bridgePolicyReadback,
   };
@@ -2580,17 +3015,36 @@ async function adminRpcRead(state: JsonRecord | null, history: readonly JsonReco
     if (genesis !== "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d") {
       return { attempted: true, available: true, exact: false, reason: "RPC is not mainnet-beta" };
     }
-    const slot = await rpc("getSlot", [{ commitment: "confirmed" }]);
-    if (!nonnegativeInteger(slot)) return { attempted: true, available: true, exact: false, reason: "RPC slot is invalid" };
     const addresses = [
       "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh",
       "FTDWN5Ay8tzYPJBJT4s2oZaHRQ7jKPo8XP2ZRWb5GP3M",
       "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
       "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
     ];
-    const result = record(await rpc("getMultipleAccounts", [addresses, {
-      commitment: "confirmed", encoding: "base64", minContextSlot: slot,
+    const first = record(await rpc("getMultipleAccounts", [addresses, {
+      commitment: "confirmed", encoding: "base64",
     }]));
+    const firstContext = record(first?.context);
+    if (!nonnegativeInteger(firstContext?.slot)) {
+      return { attempted: true, available: true, exact: false, reason: "initial RPC account context is invalid" };
+    }
+    // Helius may route consecutive calls to backends a few slots apart. Fence
+    // the authoritative read to a slot already observed from this exact account
+    // set, then retry that same lower bound briefly instead of accepting a
+    // regressed snapshot or requiring a different backend's newer getSlot tip.
+    let result: JsonRecord | null = null;
+    let lastReadError: unknown = null;
+    for (let attempt = 0; attempt < 4 && result === null; attempt++) {
+      try {
+        result = record(await rpc("getMultipleAccounts", [addresses, {
+          commitment: "confirmed", encoding: "base64", minContextSlot: firstContext.slot,
+        }]));
+      } catch (error) {
+        lastReadError = error;
+        if (attempt < 3) await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+      }
+    }
+    if (result === null) throw lastReadError ?? new Error("fenced RPC account read failed");
     const context = record(result?.context);
     const values = Array.isArray(result?.value) ? result.value : [];
     const voltrIdle = tokenAmountFromRpcAccount(values[0], "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb");
@@ -2618,7 +3072,7 @@ async function adminRpcRead(state: JsonRecord | null, history: readonly JsonReco
     return {
       attempted: true,
       available: true,
-      exact: nonnegativeInteger(context?.slot) && context.slot >= slot
+      exact: nonnegativeInteger(context?.slot) && context.slot >= firstContext.slot
         && balancesExact && signaturesExact && vaultExact,
       contextSlot: context?.slot ?? null,
       balancesExact,
@@ -2655,6 +3109,10 @@ async function adminCheck(): Promise<Check> {
     : [];
   const rpc = await adminRpcRead(state, history);
   const html = typeof page.html === "string" ? page.html : "";
+  // React server rendering can place an empty comment between a dynamic value
+  // and its static unit suffix (for example, `1.79<!-- --> USDC`). Compare the
+  // rendered text boundary, not that serialization artifact.
+  const renderedText = html.replace(/<!--[\s\S]*?-->/g, "");
   const requiredRenderedValues = state && snapshot ? [
     formatAdminUsdMicros(bigintOrNull(nestedProjection(state, ["aumUsdMicros", "aum_usd_micros", "aumRaw"]))),
     formatAdminUsdMicros(bigintOrNull(nestedProjection(state, ["navUsdMicros", "nav_usd_micros", "reportedNavRaw", "navRaw"]))),
@@ -2668,13 +3126,18 @@ async function adminCheck(): Promise<Check> {
     "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
     "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
   ] : [];
+  const renderedValueChecks = requiredRenderedValues.map((value) => ({
+    value,
+    available: value !== "—" && !value.includes("Unavailable"),
+    rendered: renderedText.includes(value),
+  }));
   const renderedHistoryExact = history.slice(0, 20).every((row) =>
     typeof row.status === "string" && html.includes(row.status)
       && (typeof row.transaction_signature !== "string" || html.includes(row.transaction_signature)));
   const pageMatchesDatabase = page.available === true
     && route?.routeKey === "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
     && state !== null && snapshot !== null
-    && requiredRenderedValues.every((value) => value !== "—" && !value.includes("Unavailable") && html.includes(value))
+    && renderedValueChecks.every(({ available, rendered }) => available && rendered)
     && renderedHistoryExact;
   const checks = {
     appsRepositoryPresent: existsSync(APPS_ROOT),
@@ -2709,6 +3172,7 @@ async function adminCheck(): Promise<Check> {
     },
     rpc,
     renderedValueCount: requiredRenderedValues.length,
+    missingRenderedValues: renderedValueChecks.filter(({ available, rendered }) => !available || !rendered),
     renderedHistoryExact,
   };
   const staticChecks = [checks.appsRepositoryPresent, checks.originMainResolved,
