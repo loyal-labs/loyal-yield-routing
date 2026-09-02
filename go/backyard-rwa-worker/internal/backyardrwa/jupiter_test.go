@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -19,10 +20,7 @@ func jupiterTestInstruction(action Action, amount, out uint64, v2 bool) JupiterS
 	for index := range accounts {
 		accounts[index] = JupiterInstructionAccount{Pubkey: bridgeTokenProgram}
 	}
-	dataLength := 41
-	if action == SwapPrimeToUSDCStep {
-		dataLength = 37
-	}
+	dataLength := 37
 	data := make([]byte, dataLength)
 	copy(data, jupiterSharedAccountsRoute)
 	accounts[0] = JupiterInstructionAccount{Pubkey: bridgeTokenProgram}
@@ -59,9 +57,14 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 	for _, test := range []struct {
 		action     Action
 		constraint byte
-	}{{SwapUSDCToPrimeStep, 0}, {SwapPrimeToUSDCStep, 1}} {
+		policy     string
+		hash       string
+	}{
+		{SwapUSDCToPrimeStep, 0, "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG", "fdc11ac8e9226feef4db8d30065035fde00d6f2eb9a7f940f6ebffa869962d72"},
+		{SwapPrimeToUSDCStep, 1, "Fks3YBQWBYA1d6ZZKEAEunjhVMXZA9gY7vfWUWWbQtDx", "6cdf12f0cd4623d60b32dc6d58b655e1fcbddf82ae7f75cd7b12783087b9ecc7"},
+	} {
 		request := JupiterSwapRequest{Action: test.action, AmountRaw: 1_000_000, QuotedOutputRaw: 990_000, MinimumOutputRaw: 985_050,
-			Policy: "Fks3YBQWBYA1d6ZZKEAEunjhVMXZA9gY7vfWUWWbQtDx", PolicyAccountDataSHA256: "6cdf12f0cd4623d60b32dc6d58b655e1fcbddf82ae7f75cd7b12783087b9ecc7", PolicyConstraintIndex: test.constraint,
+			Policy: test.policy, PolicyAccountDataSHA256: test.hash, PolicyConstraintIndex: test.constraint,
 			Instruction: jupiterTestInstruction(test.action, 1_000_000, 990_000, false), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 2}
 		signed, err := buildAndSignJupiterTransactionForDelegate(request, key, delegate)
 		if err != nil {
@@ -73,6 +76,32 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 		if _, err := signed.BuildResult(9); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestForwardJupiterBindingSelectsOnlyTheTwoInstalledRoutePrefixes(t *testing.T) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := manifest.jupiterPolicy(SwapUSDCToPrimeStep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, prefix := range []string{"01010000007400640001", "02010000007400640001"} {
+		instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99, false)
+		data, _ := base64.StdEncoding.DecodeString(instruction.Data)
+		decoded, _ := hex.DecodeString(prefix)
+		copy(data[8:18], decoded)
+		instruction.Data = base64.StdEncoding.EncodeToString(data)
+		selected, err := binding.constraintIndex(instruction)
+		if err != nil || selected != byte(index) {
+			t.Fatalf("prefix %s selected %d: %v", prefix, selected, err)
+		}
+	}
+	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99, false)
+	if _, err := binding.constraintIndex(instruction); err == nil {
+		t.Fatal("accepted an uninstalled forward route-plan prefix")
 	}
 }
 

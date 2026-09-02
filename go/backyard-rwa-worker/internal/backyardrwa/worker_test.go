@@ -40,12 +40,7 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 		Accounts                KaminoPrimeUSDCAccounts `json:"accounts"`
 		DataBase64              string                  `json:"dataBase64"`
 	}, 4)
-	manifest.RuntimeBindings.PrimeUSDC.SwapPolicies = make([]struct {
-		Action                  Action `json:"action"`
-		Policy                  string `json:"policy"`
-		PolicyAccountDataSHA256 string `json:"policyAccountDataSha256"`
-		PolicyConstraintIndex   byte   `json:"policyConstraintIndex"`
-	}, 2)
+	manifest.RuntimeBindings.PrimeUSDC.SwapPolicies = make([]JupiterPolicyBinding, 2)
 	if blocker := manifest.executionBlocker(); blocker != nil {
 		t.Fatalf("ready test manifest remained blocked: %v", blocker)
 	}

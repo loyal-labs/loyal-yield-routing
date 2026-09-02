@@ -169,21 +169,16 @@ func (c *jupiterClient) FreshSwap(ctx context.Context, action Action, amount uin
 	return quote, response.SwapInstruction, nil
 }
 
-// The installed Phase 1 policy was compiled from the two current legacy
-// SharedAccountsRoute headers: amount offsets 22 (USDC->PRIME) and 18
-// (PRIME->USDC), i.e. total data lengths 41 and 37. The generic validator also
-// understands V2 so a future policy update is straightforward, but the live
-// binding must fail closed until that V2 constraint is actually installed.
+// Both installed Phase 1 policies accept only legacy 37-byte
+// SharedAccountsRoute data with the amount at offset 18. The forward policy
+// additionally selects one of its two exact route-plan-prefix constraints from
+// the manifest after the fresh instruction is built.
 func validateInstalledJupiterHeader(action Action, instruction JupiterSwapInstruction) error {
 	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
 	if err != nil || len(data) < 8 || !bytes.Equal(data[:8], jupiterSharedAccountsRoute) {
 		return fmt.Errorf("installed Phase 1 swap policy does not authorize this Jupiter dialect")
 	}
-	expectedLength := 41
-	if action == SwapPrimeToUSDCStep {
-		expectedLength = 37
-	}
-	if len(data) != expectedLength {
+	if action != SwapUSDCToPrimeStep && action != SwapPrimeToUSDCStep || len(data) != 37 {
 		return fmt.Errorf("fresh Jupiter header does not match the installed Phase 1 policy offsets")
 	}
 	return nil

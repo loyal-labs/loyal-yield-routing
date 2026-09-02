@@ -9,6 +9,10 @@ import { catalogCustodies } from "./rwa-multiply-custodies.js";
 
 const LEGACY_SHARED = Buffer.from("c1209b3341d69c81", "hex");
 const SHARED_V2 = Buffer.from([209, 152, 83, 147, 124, 254, 216, 233]);
+export const PHASE_ONE_FORWARD_ROUTE_PREFIX_HEX = [
+  "01010000007400640001",
+  "02010000007400640001",
+] as const;
 
 function invariant(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -122,12 +126,13 @@ export function validateJupiterHeader(input: Readonly<{
   return { dialect: legacy ? "shared-accounts-route" : "shared-accounts-route-v2", accountCount: ix.keys.length } as const;
 }
 
-async function resolveOne(connection: Connection, edge: ReturnType<typeof catalogSwapEdges>[number], decimals: Map<string, number>) {
+async function resolveOne(connection: Connection, edge: ReturnType<typeof catalogSwapEdges>[number],
+  decimals: Map<string, number>, maxAccounts = "64") {
   const amountRaw = 10n ** BigInt(decimals.get(edge.source.mint) ?? 0);
   const params = new URLSearchParams({
     inputMint: edge.source.mint, outputMint: edge.destination.mint,
     amount: amountRaw.toString(), slippageBps: String(RWA_MULTIPLY_ROUTE.assets.maxSlippageBps),
-    swapMode: "ExactIn", maxAccounts: "64",
+    swapMode: "ExactIn", maxAccounts,
   });
   const quoteResponse = await fetch(`https://lite-api.jup.ag/swap/v1/quote?${params}`, {
     signal: AbortSignal.timeout(20_000),
@@ -236,4 +241,58 @@ export async function resolveCurrentPhaseOnePrimeUsdcJupiterHeaders(connection: 
     resumeCondition: passCount === 2 ? null
       : "Resolve both current PRIME/USDC Jupiter route/header blockers, then recompile Phase 1 from fresh quotes.",
   } as const;
+}
+
+export async function resolveCurrentPhaseOneForwardJupiterHeader(connection: Connection) {
+  invariant(await connection.getGenesisHash() === RWA_MULTIPLY_ROUTE.genesisHash, "RPC is not mainnet-beta");
+  const edge = phaseOnePrimeUsdcSwapEdges().find(({ key }) => key === "USDC->PRIME");
+  invariant(edge !== undefined, "Phase 1 forward Jupiter edge is absent");
+  const decimals = new Map<string, number>();
+  await boundedMap([edge.source, edge.destination], 2, async ({ mint, tokenProgram }) => {
+    const state = await getMint(connection, new PublicKey(mint), "confirmed", new PublicKey(tokenProgram));
+    decimals.set(mint, state.decimals);
+  });
+  const observations = [];
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const row = await resolveOne(connection, edge, decimals, "32");
+    const data = Buffer.from(row.instruction.dataBase64, "base64");
+    const uniqueAccounts = new Set(row.instruction.accounts.map(({ pubkey }) => pubkey));
+    const observed = {
+      dataLength: data.length,
+      discriminatorHex: data.subarray(0, 8).toString("hex"),
+      routePlanPrefixHex: data.subarray(8, Math.min(18, data.length)).toString("hex"),
+      amountOffset: data.length - 19,
+      slippageOffset: data.length - 3,
+      platformFeeOffset: data.length - 1,
+      accountCount: row.instruction.accounts.length,
+      uniqueAccountCount: uniqueAccounts.size,
+    };
+    observations.push(observed);
+    const approved = row.header.dialect === "shared-accounts-route"
+      && data.length === 37
+      && data.subarray(0, 8).equals(LEGACY_SHARED)
+      && PHASE_ONE_FORWARD_ROUTE_PREFIX_HEX.includes(
+        data.subarray(8, 18).toString("hex") as typeof PHASE_ONE_FORWARD_ROUTE_PREFIX_HEX[number])
+      && data.readBigUInt64LE(18) === BigInt(row.quote.inAmountRaw)
+      && data.readBigUInt64LE(26) === BigInt(String(row.quote.outAmountRaw))
+      && data.readUInt16LE(34) <= RWA_MULTIPLY_ROUTE.assets.maxSlippageBps
+      && data[36] === 0
+      && row.instruction.accounts.length === 28
+      && uniqueAccounts.size === 18;
+    if (approved) return {
+      schema: "loyal-backyard-rwa-phase1-forward-jupiter-header-evidence/v1",
+      verdict: "PASS_FORWARD_HEADER_RESOLVED",
+      broadcast: false,
+      observationAttempt: attempt + 1,
+      amountOffset: 18,
+      outAmountOffset: 26,
+      slippageOffset: 34,
+      platformFeeOffset: 36,
+      instructionDataLength: 37,
+      accountCount: 28,
+      uniqueAccountCount: 18,
+      row,
+    } as const;
+  }
+  throw new Error(`current USDC->PRIME Jupiter header did not enter the approved legacy len37 allowlist in five bounded observations: ${JSON.stringify(observations)}`);
 }

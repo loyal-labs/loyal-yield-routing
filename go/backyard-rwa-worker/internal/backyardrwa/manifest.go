@@ -75,12 +75,7 @@ type RouteManifest struct {
 				Accounts                KaminoPrimeUSDCAccounts `json:"accounts"`
 				DataBase64              string                  `json:"dataBase64"`
 			} `json:"packets"`
-			SwapPolicies []struct {
-				Action                  Action `json:"action"`
-				Policy                  string `json:"policy"`
-				PolicyAccountDataSHA256 string `json:"policyAccountDataSha256"`
-				PolicyConstraintIndex   byte   `json:"policyConstraintIndex"`
-			} `json:"swapPolicies"`
+			SwapPolicies []JupiterPolicyBinding `json:"swapPolicies"`
 		} `json:"primeUsdc"`
 	} `json:"runtimeBindings"`
 	Deployment struct {
@@ -96,10 +91,18 @@ type RouteManifest struct {
 }
 
 type JupiterPolicyBinding struct {
-	Action                  Action
-	Policy                  string
-	PolicyAccountDataSHA256 string
-	PolicyConstraintIndex   byte
+	Action                  Action                     `json:"action"`
+	Policy                  string                     `json:"policy"`
+	PolicyAccountDataSHA256 string                     `json:"policyAccountDataSha256"`
+	PolicyConstraintIndex   byte                       `json:"policyConstraintIndex"`
+	InstructionDataLength   int                        `json:"instructionDataLength"`
+	AmountOffset            int                        `json:"amountOffset"`
+	ConstraintBindings      []JupiterConstraintBinding `json:"constraintBindings"`
+}
+
+type JupiterConstraintBinding struct {
+	RoutePlanPrefixHex    string `json:"routePlanPrefixHex"`
+	PolicyConstraintIndex byte   `json:"policyConstraintIndex"`
 }
 
 func (m RouteManifest) jupiterPolicy(action Action) (JupiterPolicyBinding, error) {
@@ -110,12 +113,44 @@ func (m RouteManifest) jupiterPolicy(action Action) (JupiterPolicyBinding, error
 		if binding.Action != action {
 			continue
 		}
-		if _, err := decodeKey(binding.Policy); err != nil || !validSHA256(binding.PolicyAccountDataSHA256) {
+		if _, err := decodeKey(binding.Policy); err != nil || !validSHA256(binding.PolicyAccountDataSHA256) ||
+			binding.InstructionDataLength != 37 || binding.AmountOffset != 18 {
 			return JupiterPolicyBinding{}, ErrBridgePrerequisitesUnavailable
 		}
-		return JupiterPolicyBinding(binding), nil
+		if action == SwapUSDCToPrimeStep {
+			if binding.PolicyConstraintIndex != 0 || len(binding.ConstraintBindings) != 2 ||
+				binding.ConstraintBindings[0].RoutePlanPrefixHex != "01010000007400640001" ||
+				binding.ConstraintBindings[0].PolicyConstraintIndex != 0 ||
+				binding.ConstraintBindings[1].RoutePlanPrefixHex != "02010000007400640001" ||
+				binding.ConstraintBindings[1].PolicyConstraintIndex != 1 {
+				return JupiterPolicyBinding{}, ErrBridgePrerequisitesUnavailable
+			}
+		} else if binding.PolicyConstraintIndex != 1 || len(binding.ConstraintBindings) != 0 {
+			return JupiterPolicyBinding{}, ErrBridgePrerequisitesUnavailable
+		}
+		return binding, nil
 	}
 	return JupiterPolicyBinding{}, ErrBridgePrerequisitesUnavailable
+}
+
+func (b JupiterPolicyBinding) constraintIndex(instruction JupiterSwapInstruction) (byte, error) {
+	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
+	if err != nil || len(data) != b.InstructionDataLength || b.AmountOffset != len(data)-19 {
+		return 0, fmt.Errorf("fresh Jupiter header does not match the manifest binding")
+	}
+	if b.Action == SwapPrimeToUSDCStep {
+		return b.PolicyConstraintIndex, nil
+	}
+	if b.Action != SwapUSDCToPrimeStep || len(data) < 18 {
+		return 0, fmt.Errorf("fresh Jupiter action does not match the manifest binding")
+	}
+	prefix := hex.EncodeToString(data[8:18])
+	for _, candidate := range b.ConstraintBindings {
+		if candidate.RoutePlanPrefixHex == prefix {
+			return candidate.PolicyConstraintIndex, nil
+		}
+	}
+	return 0, fmt.Errorf("fresh Jupiter route-plan prefix is not installed")
 }
 
 func loadEmbeddedRouteManifest() (RouteManifest, error) {
