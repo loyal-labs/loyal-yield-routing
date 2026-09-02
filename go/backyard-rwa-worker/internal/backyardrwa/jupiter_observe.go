@@ -59,6 +59,10 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 		if err != nil {
 			return Observation{}, JupiterExecutionEvidence{}, err
 		}
+		constraintIndex, err := binding.constraintIndex(instruction)
+		if err != nil {
+			return Observation{}, JupiterExecutionEvidence{}, err
+		}
 		out, minimum, err := validateJupiterQuote(quote, decision.Action, amount)
 		if err != nil || destinationRaw > math.MaxUint64-minimum {
 			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("Jupiter destination threshold overflows")
@@ -69,7 +73,7 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 			return Observation{}, JupiterExecutionEvidence{}, err
 		}
 		return observation, JupiterExecutionEvidence{
-			Request: JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: binding.Policy, PolicyAccountDataSHA256: binding.PolicyAccountDataSHA256, PolicyConstraintIndex: binding.PolicyConstraintIndex, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight},
+			Request: JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: binding.Policy, PolicyAccountDataSHA256: binding.PolicyAccountDataSHA256, PolicyConstraintIndex: constraintIndex, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight},
 			ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Conserved: false, Accounts: []ExpectedAccountEffect{
 				{Address: sourceATA, Owner: bridgeTokenProgram, Mint: sourceMint, Authority: bridgeVault, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
 				{Address: destinationATA, Owner: bridgeTokenProgram, Mint: destinationMint, Authority: bridgeVault, BeforeRaw: destinationRaw, AfterRaw: minimumAfter, MinimumAfterRaw: &minimumAfter},

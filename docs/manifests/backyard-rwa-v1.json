@@ -434,15 +434,30 @@
       "swapPolicies": [
         {
           "action": "SWAP_USDC_TO_PRIME_STEP",
-          "policy": "Fks3YBQWBYA1d6ZZKEAEunjhVMXZA9gY7vfWUWWbQtDx",
-          "policyAccountDataSha256": "6cdf12f0cd4623d60b32dc6d58b655e1fcbddf82ae7f75cd7b12783087b9ecc7",
-          "policyConstraintIndex": 0
+          "policy": "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG",
+          "policyAccountDataSha256": "fdc11ac8e9226feef4db8d30065035fde00d6f2eb9a7f940f6ebffa869962d72",
+          "policyConstraintIndex": 0,
+          "instructionDataLength": 37,
+          "amountOffset": 18,
+          "constraintBindings": [
+            {
+              "routePlanPrefixHex": "01010000007400640001",
+              "policyConstraintIndex": 0
+            },
+            {
+              "routePlanPrefixHex": "02010000007400640001",
+              "policyConstraintIndex": 1
+            }
+          ]
         },
         {
           "action": "SWAP_PRIME_TO_USDC_STEP",
           "policy": "Fks3YBQWBYA1d6ZZKEAEunjhVMXZA9gY7vfWUWWbQtDx",
           "policyAccountDataSha256": "6cdf12f0cd4623d60b32dc6d58b655e1fcbddf82ae7f75cd7b12783087b9ecc7",
-          "policyConstraintIndex": 1
+          "policyConstraintIndex": 1,
+          "instructionDataLength": 37,
+          "amountOffset": 18,
+          "constraintBindings": []
         }
       ]
     }

@@ -46,10 +46,13 @@ const PHASE_ONE_NAMES: [&str; 5] = [
     "lane/Prime/PRIME/USDC/withdraw",
     "swap/Prime/PRIME/USDC",
 ];
+const PHASE_ONE_FORWARD_ROLLOVER_NAMES: [&str; 1] = ["swap/Prime/USDC/PRIME/forward-rollover"];
+const PHASE_ONE_FORWARD_ROLLOVER_SEED_BEFORE: u64 = 65;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CompileMode {
     PhaseOne,
+    PhaseOneForwardRollover,
     PhaseTwo,
 }
 
@@ -283,6 +286,10 @@ fn packet_bytes(instruction: &Instruction, fee_payer: Pubkey) -> Result<usize, S
 fn compile(input: Input, source_sha256: String, mode: CompileMode) -> Result<Output, String> {
     let (phase, expected_names): (&str, &[&str]) = match mode {
         CompileMode::PhaseOne => ("phase1", &PHASE_ONE_NAMES),
+        CompileMode::PhaseOneForwardRollover => (
+            "phase1-forward-jupiter-rollover",
+            &PHASE_ONE_FORWARD_ROLLOVER_NAMES,
+        ),
         CompileMode::PhaseTwo => ("phase2", &EXPECTED_NAMES),
     };
     let policy_seed_before = input
@@ -299,6 +306,8 @@ fn compile(input: Input, source_sha256: String, mode: CompileMode) -> Result<Out
         || input.delegated_signer != DELEGATED_SIGNER
         || input.account_index != 0
         || (mode == CompileMode::PhaseTwo && policy_seed_before != POLICY_SEED_BEFORE)
+        || (mode == CompileMode::PhaseOneForwardRollover
+            && policy_seed_before != PHASE_ONE_FORWARD_ROLLOVER_SEED_BEFORE)
         || input.policies.len() != expected_names.len()
     {
         return Err(
@@ -323,6 +332,11 @@ fn compile(input: Input, source_sha256: String, mode: CompileMode) -> Result<Out
                 4 => policy_input.constraints.len() == 2 && policy_input.semantic_edge_count == 2,
                 _ => false,
             },
+            CompileMode::PhaseOneForwardRollover => {
+                index == 0
+                    && policy_input.constraints.len() == 2
+                    && policy_input.semantic_edge_count == 2
+            }
             CompileMode::PhaseTwo => {
                 let is_lane = index < 11;
                 (is_lane
@@ -408,7 +422,13 @@ fn main() -> Result<(), String> {
     let mode = match args.as_slice() {
         [] => CompileMode::PhaseTwo,
         [flag] if flag == "--phase1" => CompileMode::PhaseOne,
-        _ => return Err("usage: compile-backyard-rwa-resolved-policies [--phase1]".to_owned()),
+        [flag] if flag == "--phase1-forward-jupiter-rollover" => {
+            CompileMode::PhaseOneForwardRollover
+        }
+        _ => return Err(
+            "usage: compile-backyard-rwa-resolved-policies [--phase1|--phase1-forward-jupiter-rollover]"
+                .to_owned(),
+        ),
     };
     let mut source = Vec::new();
     std::io::stdin()
@@ -517,5 +537,24 @@ mod tests {
         assert_eq!(output.policies.len(), 5);
         assert_eq!(output.policies[0].seed, "73");
         assert_eq!(output.policies[4].seed, "77");
+    }
+
+    #[test]
+    fn phase_one_forward_rollover_compiles_exactly_one_next_seed_policy() {
+        let mut value = input(true);
+        value.policy_seed_before = PHASE_ONE_FORWARD_ROLLOVER_SEED_BEFORE.to_string();
+        value.policies = vec![PolicyInput {
+            name: PHASE_ONE_FORWARD_ROLLOVER_NAMES[0].to_owned(),
+            semantic_edge_count: 2,
+            constraints: vec![constraint(1), constraint(2)],
+        }];
+        let output = compile(value, "55".repeat(32), CompileMode::PhaseOneForwardRollover)
+            .expect("forward rollover compiles");
+        assert_eq!(output.phase, "phase1-forward-jupiter-rollover");
+        assert_eq!(output.policies.len(), 1);
+        assert_eq!(output.policies[0].seed, "66");
+        assert_eq!(output.policies[0].semantic_edge_count, 2);
+        assert_eq!(output.policies[0].constraint_count, 2);
+        assert!(output.policies[0].create_packet_bytes <= PACKET_LIMIT);
     }
 }
