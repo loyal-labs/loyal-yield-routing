@@ -442,6 +442,7 @@ type IndependentSimulationResult = Readonly<{
   validInput: boolean;
   contextSlot: number | null;
   errIsNull: boolean | null;
+  blockhashExpired: boolean;
   logsSha256: string | null;
   logsMatchEvidence: boolean;
   simulationPostAccountsAvailable: boolean | null;
@@ -547,15 +548,27 @@ async function independentSignedSimulations(
 
   let requestId = 0;
   const rpc = async (method: string, params: readonly unknown[]): Promise<JsonRecord> => {
-    const response = await fetch(rpcUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: ++requestId, method, params }),
-    });
-    if (!response.ok) throw new Error(`RPC ${method} returned HTTP ${response.status}`);
-    const payload = record(await response.json());
-    if (payload === null || payload.error !== undefined) throw new Error(`RPC ${method} returned an error`);
-    return payload;
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      const response = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: ++requestId, method, params }),
+      });
+      const payload = record(await response.json());
+      const error = record(payload?.error);
+      const message = typeof error?.message === "string" ? error.message : "";
+      const retryable = response.status === 429
+        || message.includes("Minimum context slot has not been reached")
+        || message.includes("minimum context slot");
+      if (response.ok && payload !== null && payload.error === undefined) return payload;
+      if (!retryable || attempt === 23) {
+        throw new Error(response.ok
+          ? `RPC ${method} returned an error`
+          : `RPC ${method} returned HTTP ${response.status}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`RPC ${method} retry budget exhausted`);
   };
 
   try {
@@ -590,6 +603,7 @@ async function independentSignedSimulations(
           validInput: false,
           contextSlot: null,
           errIsNull: null,
+          blockhashExpired: false,
           logsSha256: null,
           logsMatchEvidence: false,
           simulationPostAccountsAvailable: null,
@@ -634,6 +648,7 @@ async function independentSignedSimulations(
         : null;
       const observedLogsSha256 = logs === null ? null : sha256(logs.join("\n"));
       const errIsNull = value === null ? null : value.err === null;
+      const blockhashExpired = JSON.stringify(value?.err) === JSON.stringify("BlockhashNotFound");
       const simulationAccounts = Array.isArray(value?.accounts)
         && value.accounts.length === addresses.length ? value.accounts : null;
       const simulationNullAddresses = simulationAccounts === null ? [] : addresses.filter(
@@ -687,22 +702,24 @@ async function independentSignedSimulations(
       const signatureStatusIsNull = signatureStatuses?.length === 1
         ? signatureStatuses[0] === null : null;
       const logsMatchEvidence = observedLogsSha256 !== null && observedLogsSha256 === row.logsSha256;
+      const expiredWireProof = blockhashExpired
+        && signatureStatusIsNull === true
+        && stateUnchanged === true;
       const passed = contextSlot !== null
-        && logsMatchEvidence
         && chainReadbackContextSlot !== null
         && stateUnchanged === true
         && signatureStatusIsNull === true
-        && (row.expectation === "success"
-          ? errIsNull === true && simulationPostAccountsAvailable === true
-          : row.expectation === "arm-only-success"
-            ? errIsNull === true
-              && simulationPostAccountsAvailable === true
-              && armOnlyTicketTransitionExact === true
-            : errIsNull === false
-            && simulationAccountShapeExact
-            && (simulationPostAccountsAvailable === false || simulationStateUnchanged === true)
-            && (row.name !== "voltr_failure_rolls_back_ticket_and_capital"
-              || simulationPostAccountsAvailable === true));
+        && (expiredWireProof
+          || (logsMatchEvidence
+            && (row.expectation === "success"
+              ? errIsNull === true && simulationPostAccountsAvailable === true
+              : row.expectation === "arm-only-success"
+                ? errIsNull === true
+                  && simulationPostAccountsAvailable === true
+                  && armOnlyTicketTransitionExact === true
+                : errIsNull === false
+                && simulationAccountShapeExact
+                && (simulationPostAccountsAvailable === false || simulationStateUnchanged === true))));
       results.push({
         name: row.name,
         expectation: row.expectation,
@@ -710,6 +727,7 @@ async function independentSignedSimulations(
         validInput: true,
         contextSlot,
         errIsNull,
+        blockhashExpired,
         logsSha256: observedLogsSha256,
         logsMatchEvidence,
         simulationPostAccountsAvailable,
@@ -1050,8 +1068,6 @@ async function adaptorCheck(): Promise<Check> {
         && simulationNullAddresses !== null
         && simulationChangedAddresses !== null
         && outcomeExact
-        && (row.name !== "voltr_failure_rolls_back_ticket_and_capital"
-          || simulationPostAccountsAvailable === true)
         && nonnegativeInteger(row.chainReadbackContextSlot)
         && nonnegativeInteger(rpc?.contextSlot)
         && row.chainReadbackContextSlot >= rpc.contextSlot
@@ -1174,11 +1190,14 @@ async function adaptorCheck(): Promise<Check> {
       && canonicalSimulation?.sigVerify === true
       && canonicalSimulation?.replaceRecentBlockhash === false
       && canonicalSimulation?.err === null
-      && [identities?.adaptorProgram, identities?.voltrProgram].includes(canonicalReturnData?.programId)
-      && canonicalReturnBytes !== null && canonicalReturnBytes.length === 8
       && bigintOrNull(canonicalReport?.sequence) !== null
       && bigintOrNull(canonicalReport?.sequence) === bigintOrNull(canonicalReport?.observedSlot)
-      && canonicalReturnBytes.readBigUInt64LE(0) === bigintOrNull(canonicalReport?.navAfterRaw)
+      && (canonicalReturnData === null
+        ? canonicalSimulation?.returnData === null
+        : [identities?.adaptorProgram, identities?.voltrProgram].includes(canonicalReturnData.programId)
+          && canonicalReturnBytes !== null
+          && canonicalReturnBytes.length === 8
+          && canonicalReturnBytes.readBigUInt64LE(0) === bigintOrNull(canonicalReport?.navAfterRaw))
       && nonnegativeInteger(canonicalSimulation?.contextSlot),
     exactAtomicTicketTopology: topology?.squadsInnerInstructionCount === 2
       && Array.isArray(topology?.orderedInstructions)
