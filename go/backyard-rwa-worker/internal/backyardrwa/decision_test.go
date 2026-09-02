@@ -179,3 +179,17 @@ func TestSingleLoopEntryAndFullWithdrawalPrecedence(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestDebtReserveUtilizationDefersBorrowWithoutBlockingWithdrawal(t *testing.T) {
+	s := base()
+	s.HasPosition = true
+	s.PositionCollateralRaw = 99
+	s.BorrowUtilizationBlocked = true
+	if got := Decide(s); got.Action != Hold || got.Reason != "debt_reserve_utilization_blocks_borrow" {
+		t.Fatalf("blocked debt reserve retried borrow: %+v", got)
+	}
+	s.WithdrawalDemandRaw = 50
+	if got := Decide(s); got.Action != DeleverPrimeUSDCStep || got.Reason != "withdrawal_withdraw_collateral" {
+		t.Fatalf("utilization hold blocked withdrawal unwind: %+v", got)
+	}
+}

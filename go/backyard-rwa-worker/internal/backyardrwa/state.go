@@ -62,6 +62,7 @@ type Snapshot struct {
 	CapacityRaw                int64
 	PolicyLimitRaw             int64
 	MaxTargetLTVEntryRaw       int64
+	BorrowUtilizationBlocked   bool
 	PolicyReady                bool
 	ExitBuildable              bool
 	CapitalMutated             bool

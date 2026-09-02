@@ -126,6 +126,9 @@ func Decide(s Snapshot) Decision {
 	if s.PrimeIdleRaw > 0 && s.PolicyReady && s.ExitBuildable {
 		return decision(OpenPrimeUSDCStep, "prime_collateral_ready", s.PrimeIdleRaw)
 	}
+	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.BorrowUtilizationBlocked {
+		return decision(Hold, "debt_reserve_utilization_blocks_borrow", 0)
+	}
 	// A collateral-only intermediate state needs the borrow leg even though no
 	// idle token amount drives that instruction. The builder computes its exact
 	// amount from the refreshed reserve prices; AmountRaw=1 is only the durable

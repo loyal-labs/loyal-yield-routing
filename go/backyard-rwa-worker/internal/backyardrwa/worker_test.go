@@ -121,6 +121,37 @@ func TestTickPreservesHoldJournalWhileManifestIsBlocked(t *testing.T) {
 	}
 }
 
+func TestTickJournalsUtilizationHoldWithoutPreparingBorrow(t *testing.T) {
+	manifest := readyWorkerManifest(t)
+	observation := tickObservation(Snapshot{
+		ObservationID: "utilization-blocked", Slot: 10, RouteKind: RouteKind, Fresh: true,
+		HasPosition: true, PositionCollateralRaw: 99, BorrowUtilizationBlocked: true,
+		PolicyReady: true, ExitBuildable: true, LiquidationThresholdBPS: 8000,
+	})
+	recorded := false
+	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
+		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
+		observe:         func(context.Context) (Observation, error) { return observation, nil },
+		prepareKamino: func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error) {
+			t.Fatal("utilization-blocked reserve attempted to prepare another borrow")
+			return Observation{}, KaminoExecutionEvidence{}, nil
+		},
+		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _, _ string) (DecisionRecord, error) {
+			recorded = true
+			if decision.Action != Hold || decision.Reason != "debt_reserve_utilization_blocks_borrow" {
+				t.Fatalf("wrong utilization decision: %+v", decision)
+			}
+			return DecisionRecord{Status: Held}, nil
+		},
+	}}
+	if err := worker.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !recorded {
+		t.Fatal("utilization HOLD was not durably journaled")
+	}
+}
+
 func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 	manifest := readyWorkerManifest(t)
 	openObservation := tickObservation(Snapshot{
