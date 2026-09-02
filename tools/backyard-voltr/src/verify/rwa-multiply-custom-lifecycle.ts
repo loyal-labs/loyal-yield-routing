@@ -19,12 +19,17 @@ import {
   type V06RouteBindings,
   type V06TokenBalance,
 } from "./rwa-multiply-custom-lifecycle-v06.js";
+import {
+  DOWNSTREAM_ROLLBACK_MUTATION,
+  downstreamRollbackLogProof,
+  failedSimulationOverlayAccepted,
+} from "./rwa-multiply-rollback-log-proof.js";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const APPS_ROOT = resolve(REPOSITORY_ROOT, "../loyal-apps");
 const SCHEMA = "loyal-backyard-rwa-go-lifecycle/v3";
 const PLAN_PATH = "docs/plans/backyard-voltr-orchestrator-verifier.md";
-const PLAN_SHA256 = "5665423e9b9003bc34e4d6f8389eeb8fabf5ec140596271a787abc2e00486b0c";
+const PLAN_SHA256 = "bb52dbc318e7fd850b322d40a1919e30e86da823d61fc407915cc368db0adb8e";
 const MANIFEST_PATH = "docs/manifests/backyard-rwa-v1.json";
 const POLICY_CATALOG_PATH = "crates/loyal-actions/fixtures/backyard_rwa_policy_catalog_v1.json";
 const ADAPTOR_MANIFEST = "crates/loyal-voltr-rwa-nav-adaptor/Cargo.toml";
@@ -425,6 +430,11 @@ type ExpectedArmOnlyTransition = Readonly<{
   activeWireSha256: string;
 }>;
 
+type ExpectedDownstreamRollback = Readonly<{
+  armProgram: string;
+  downstreamProgram: string;
+}>;
+
 type SignedSimulationRow = Readonly<{
   name: string;
   expectation: SimulationExpectation;
@@ -433,6 +443,7 @@ type SignedSimulationRow = Readonly<{
   inspectedAddresses: unknown;
   logsSha256: unknown;
   expectedArmOnlyTransition?: ExpectedArmOnlyTransition | undefined;
+  expectedDownstreamRollback?: ExpectedDownstreamRollback | undefined;
 }>;
 
 type IndependentSimulationResult = Readonly<{
@@ -449,6 +460,7 @@ type IndependentSimulationResult = Readonly<{
   simulationChangedAddresses: readonly string[];
   simulationStateUnchanged: boolean | null;
   armOnlyTicketTransitionExact: boolean | null;
+  downstreamRollbackLogProof: boolean | null;
   chainReadbackContextSlot: number | null;
   chainReadbackStateSha256: string | null;
   signatureStatusIsNull: boolean | null;
@@ -576,11 +588,16 @@ async function independentSignedSimulations(
         || (row.expectedArmOnlyTransition !== undefined
           && addresses?.includes(row.expectedArmOnlyTransition.ticketAddress) === true
           && sha256Hex(row.expectedArmOnlyTransition.activeWireSha256));
+      const downstreamRollbackExpected = row.name !== DOWNSTREAM_ROLLBACK_MUTATION
+        || (row.expectedDownstreamRollback !== undefined
+          && row.expectedDownstreamRollback.armProgram.length > 0
+          && row.expectedDownstreamRollback.downstreamProgram.length > 0);
       const validInput = wire !== null
         && transactionSha256 !== null
         && sha256(wire) === transactionSha256
         && addresses !== null
         && armOnlyExpected
+        && downstreamRollbackExpected
         && sha256Hex(row.logsSha256);
       if (!validInput || wire === null || addresses === null) {
         results.push({
@@ -597,6 +614,7 @@ async function independentSignedSimulations(
           simulationChangedAddresses: [],
           simulationStateUnchanged: null,
           armOnlyTicketTransitionExact: null,
+          downstreamRollbackLogProof: null,
           chainReadbackContextSlot: null,
           chainReadbackStateSha256: null,
           signatureStatusIsNull: null,
@@ -649,6 +667,7 @@ async function independentSignedSimulations(
         ? preStateSha256 === simulationPostStateSha256
         : null;
       const simulationChangedAddresses = preAccounts === null || simulationAccounts === null
+        || simulationPostAccountsAvailable !== true
         ? [] : addresses.filter((_, index) => !exactNormalizedAccount(
           preAccounts[index], simulationAccounts[index],
         ));
@@ -666,6 +685,15 @@ async function independentSignedSimulations(
           && ticketState.activeSequence === row.expectedArmOnlyTransition.activeSequence
           && ticketState.activeWireSha256 === row.expectedArmOnlyTransition.activeWireSha256;
       }
+      const downstreamRollbackProof = logs !== null
+        && row.name === DOWNSTREAM_ROLLBACK_MUTATION
+        && row.expectedDownstreamRollback !== undefined
+        ? downstreamRollbackLogProof(
+          logs,
+          row.expectedDownstreamRollback.armProgram,
+          row.expectedDownstreamRollback.downstreamProgram,
+        ) !== null
+        : null;
       const chainReadbackResponse = await rpc("getMultipleAccounts", [addresses, {
         commitment: "confirmed",
         encoding: "base64",
@@ -690,6 +718,7 @@ async function independentSignedSimulations(
       const passed = contextSlot !== null
         && logsMatchEvidence
         && chainReadbackContextSlot !== null
+        && chainReadbackContextSlot >= contextSlot
         && stateUnchanged === true
         && signatureStatusIsNull === true
         && (row.expectation === "success"
@@ -700,9 +729,15 @@ async function independentSignedSimulations(
               && armOnlyTicketTransitionExact === true
             : errIsNull === false
             && simulationAccountShapeExact
-            && (simulationPostAccountsAvailable === false || simulationStateUnchanged === true)
-            && (row.name !== "voltr_failure_rolls_back_ticket_and_capital"
-              || simulationPostAccountsAvailable === true));
+            && failedSimulationOverlayAccepted({
+              mutationName: row.name,
+              inspectedAddresses: addresses,
+              postAccountsAvailable: simulationPostAccountsAvailable,
+              nullAddresses: simulationNullAddresses,
+              changedAddresses: simulationChangedAddresses,
+              downstreamRollbackProven: downstreamRollbackProof === true,
+            })
+            && (simulationPostAccountsAvailable === false || simulationStateUnchanged === true));
       results.push({
         name: row.name,
         expectation: row.expectation,
@@ -717,6 +752,7 @@ async function independentSignedSimulations(
         simulationChangedAddresses,
         simulationStateUnchanged,
         armOnlyTicketTransitionExact,
+        downstreamRollbackLogProof: downstreamRollbackProof,
         chainReadbackContextSlot,
         chainReadbackStateSha256,
         signatureStatusIsNull,
@@ -1010,6 +1046,22 @@ async function adaptorCheck(): Promise<Check> {
         ? row.simulationChangedAddresses as string[] : null;
       const armOnlyTicketTransition = record(row?.armOnlyTicketTransition);
       const isArmOnly = row?.name === "arm_only_payload";
+      const isDownstreamRollback = row?.name === DOWNSTREAM_ROLLBACK_MUTATION;
+      const downstreamRollbackProof = record(row?.downstreamRollbackProof);
+      const downstreamRollbackArtifactExact = isDownstreamRollback
+        ? downstreamRollbackProof?.canonicalArmWireExact === true
+          && downstreamRollbackProof.atomicTransactionFailed === true
+          && nonnegativeInteger(downstreamRollbackProof.armInvokeLogIndex)
+          && nonnegativeInteger(downstreamRollbackProof.armSuccessLogIndex)
+          && downstreamRollbackProof.armSuccessLogIndex > downstreamRollbackProof.armInvokeLogIndex
+          && nonnegativeInteger(downstreamRollbackProof.downstreamInvokeLogIndex)
+          && downstreamRollbackProof.downstreamInvokeLogIndex > downstreamRollbackProof.armSuccessLogIndex
+          && nonnegativeInteger(downstreamRollbackProof.downstreamFailureLogIndex)
+          && downstreamRollbackProof.downstreamFailureLogIndex > downstreamRollbackProof.downstreamInvokeLogIndex
+          && downstreamRollbackProof.mode === (simulationPostAccountsAvailable === true
+            ? "simulation-poststate"
+            : "all-null-overlay-confirmed-readback")
+        : downstreamRollbackProof === null;
       const outcomeExact = isArmOnly
         ? row?.expectation === "arm-only-success"
           && simulationPostAccountsAvailable === true
@@ -1026,17 +1078,21 @@ async function adaptorCheck(): Promise<Check> {
           && row?.error === null
           && row?.rejectedBeforeMutation === false
         : row?.expectation === "rejection"
-          && (simulationPostAccountsAvailable === true
-            ? simulationNullAddresses?.length === 0
-              && simulationChangedAddresses?.length === 0
-            : simulationPostAccountsAvailable === false
-              && inspectedAddresses !== null
-              && simulationNullAddresses !== null
-              && exactStringSet(simulationNullAddresses, inspectedAddresses)
-            )
+          && inspectedAddresses !== null
+          && simulationNullAddresses !== null
+          && simulationChangedAddresses !== null
+          && failedSimulationOverlayAccepted({
+            mutationName: String(row.name),
+            inspectedAddresses,
+            postAccountsAvailable: typeof simulationPostAccountsAvailable === "boolean"
+              ? simulationPostAccountsAvailable : null,
+            nullAddresses: simulationNullAddresses,
+            changedAddresses: simulationChangedAddresses,
+            downstreamRollbackProven: downstreamRollbackArtifactExact,
+          })
           && typeof row?.error === "string"
           && row.error.length > 0
-          && row.rejectedBeforeMutation === true;
+          && row.rejectedBeforeMutation === !isDownstreamRollback;
       return row !== null
         && requiredMutations.includes(String(row.name))
         && base64MatchesSha256(row.transactionBase64, row.transactionSha256)
@@ -1050,8 +1106,7 @@ async function adaptorCheck(): Promise<Check> {
         && simulationNullAddresses !== null
         && simulationChangedAddresses !== null
         && outcomeExact
-        && (row.name !== "voltr_failure_rolls_back_ticket_and_capital"
-          || simulationPostAccountsAvailable === true)
+        && downstreamRollbackArtifactExact
         && nonnegativeInteger(row.chainReadbackContextSlot)
         && nonnegativeInteger(rpc?.contextSlot)
         && row.chainReadbackContextSlot >= rpc.contextSlot
@@ -1092,6 +1147,13 @@ async function adaptorCheck(): Promise<Check> {
             lastConsumedSequence: ticketBefore.lastConsumedSequence,
             activeSequence: canonicalReport.sequence,
             activeWireSha256: topology.capitalWireSha256,
+          } : undefined,
+        expectedDownstreamRollback: row?.name === DOWNSTREAM_ROLLBACK_MUTATION
+          && typeof identities?.adaptorProgram === "string"
+          && typeof identities?.voltrProgram === "string"
+          ? {
+            armProgram: identities.adaptorProgram,
+            downstreamProgram: identities.voltrProgram,
           } : undefined,
       };
     }),

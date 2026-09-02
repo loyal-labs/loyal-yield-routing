@@ -45,10 +45,14 @@ test("Phase-1 manifest and verifier pin only the finalized bridge policy rollove
 
 test("failed simulation evidence separates unavailable overlays from confirmed rollback proof", () => {
   const repository = resolve(import.meta.dirname, "../../../..");
+  const plan = readFileSync(resolve(repository,
+    "docs/plans/backyard-voltr-orchestrator-verifier.md"), "utf8");
   const generator = readFileSync(resolve(repository,
     "tools/backyard-voltr/src/verify/rwa-multiply-adaptor-simulation.ts"), "utf8");
   const verifier = readFileSync(resolve(repository,
     "tools/backyard-voltr/src/verify/rwa-multiply-custom-lifecycle.ts"), "utf8");
+  const logProof = readFileSync(resolve(repository,
+    "tools/backyard-voltr/src/verify/rwa-multiply-rollback-log-proof.ts"), "utf8");
 
   for (const field of [
     "simulationPostAccountsAvailable",
@@ -67,7 +71,13 @@ test("failed simulation evidence separates unavailable overlays from confirmed r
   assert.match(verifier, /VersionedTransaction\.deserialize\(wire\)\.signatures\[0\]/);
   assert.match(verifier, /getSignatureStatuses/);
   assert.match(verifier, /row\.signatureStatus === null/);
-  assert.match(verifier, /row\.name !== "voltr_failure_rolls_back_ticket_and_capital"/);
+  assert.match(plan, /V02 may accept that unavailable overlay only for the\s+dedicated post-Arm Voltr-failure proof/);
+  assert.match(generator, /canonicalArmWireExact: true/);
+  assert.match(generator, /all-null-overlay-confirmed-readback/);
+  assert.match(verifier, /downstreamRollbackProof === true/);
+  assert.match(verifier, /downstreamRollbackArtifactExact/);
+  assert.match(logProof, /armSuccessLogIndex > armInvokeLogIndex/);
+  assert.match(logProof, /downstreamFailureLogIndex > downstreamInvokeLogIndex/);
 });
 
 test("v10 treats Arm-only as bounded signed-unsent success and keeps 38 rejections", () => {
