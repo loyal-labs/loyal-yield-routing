@@ -75,11 +75,14 @@ const PAUSED_ENV: &str = "YIELD_ALT_PROVISIONING_PAUSED";
 const MAX_LAMPORTS_ENV: &str = "YIELD_ALT_MAX_LAMPORTS";
 const BUDGET_WINDOW_SECONDS_ENV: &str = "YIELD_ALT_BUDGET_WINDOW_SECONDS";
 const LARGEST_ATOMIC_EXPANSION_ENV: &str = "YIELD_ALT_LARGEST_ATOMIC_EXPANSION";
+const CATALOG_RECONCILE_INTERVAL_SECONDS_ENV: &str = "YIELD_ALT_CATALOG_RECONCILE_INTERVAL_SECONDS";
 const DEFAULT_MAX_OPERATIONS: usize = 8;
 const DEFAULT_ADDRESS_CHUNK: usize = 20;
 const MAX_ADDRESS_CHUNK: usize = 20;
 const DEFAULT_LEASE_SECONDS: u64 = 120;
 const DEFAULT_RATE_LIMIT_MS: u64 = 250;
+const DEFAULT_CATALOG_RECONCILE_INTERVAL_SECONDS: u64 = 60;
+const MAX_CATALOG_RECONCILE_INTERVAL_SECONDS: u64 = 3_600;
 const DEFAULT_CONCURRENCY: usize = 8;
 const MAX_RATE_LIMIT_MS: u64 = 60_000;
 const MAX_OPERATIONS_PER_BATCH: usize = 100;
@@ -324,6 +327,7 @@ struct Options {
     budget_window_seconds: i64,
     lease_seconds: u64,
     rate_limit_ms: u64,
+    catalog_reconcile_interval_seconds: u64,
     concurrency: usize,
     safety_margin: u16,
     largest_atomic_expansion: Option<u16>,
@@ -717,6 +721,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
         limit: options.max_lamports,
         selected: 0,
     };
+    let catalog_reconcile_interval =
+        Duration::from_secs(options.catalog_reconcile_interval_seconds);
+    let mut next_catalog_reconcile_at = Instant::now();
+    let mut force_catalog_reconcile = false;
     loop {
         if let Some(control) = client
             .lookup_table_provisioner_control(&options.cluster)
@@ -758,8 +766,24 @@ async fn run() -> Result<(), Box<dyn Error>> {
         if options.mode.may_sign() && signer.is_none() {
             signer = Some(Arc::new(load_manager_signer()?));
         }
-        let batch =
-            run_operation_batch(&client, &rpc, signer.as_ref(), &options, &mut budget).await?;
+        let now = Instant::now();
+        let reconcile_catalog = force_catalog_reconcile || now >= next_catalog_reconcile_at;
+        let batch = run_operation_batch(
+            &client,
+            &rpc,
+            signer.as_ref(),
+            &options,
+            &mut budget,
+            reconcile_catalog,
+        )
+        .await?;
+        if reconcile_catalog {
+            next_catalog_reconcile_at = Instant::now() + catalog_reconcile_interval;
+        }
+        // Any planned or processed ALT work may have changed the physical
+        // shared bundle. Reconcile it on the next pass instead of waiting for
+        // the periodic safety sweep.
+        force_catalog_reconcile = batch.processed > 0;
         if !should_continue_worker(options.watch, batch) {
             break;
         }
@@ -778,9 +802,10 @@ async fn run_operation_batch(
     signer: Option<&Arc<Keypair>>,
     options: &Options,
     budget: &mut Budget,
+    reconcile_catalog: bool,
 ) -> Result<OperationBatchResult, Box<dyn Error>> {
     let mut processed = 0;
-    if options.mode == RunMode::Execute {
+    if options.mode == RunMode::Execute && reconcile_catalog {
         processed +=
             usize::from(reconcile_shared_market_catalog(client, rpc.as_ref(), options).await?);
     }
@@ -790,11 +815,18 @@ async fn run_operation_batch(
     // old/zero-consumer mutations can prevent a newly valuable request from
     // ever entering the operation priority order at all.
     let mut planning_attempts = 0usize;
-    if options.mode == RunMode::Execute {
+    let mut planning_queue_exhausted = false;
+    if options.mode == RunMode::Execute
+        && has_plannable_provisioning_request(client, &options.cluster).await?
+    {
         planning_attempts += 1;
         if plan_next_provisioning_request(client, rpc.as_ref(), options).await? {
             processed += 1;
+        } else {
+            planning_queue_exhausted = true;
         }
+    } else {
+        planning_queue_exhausted = true;
     }
 
     let mut tasks = JoinSet::<OperationTaskCompletion>::new();
@@ -829,9 +861,14 @@ async fn run_operation_batch(
             // next highest-value provisioning request. Planning is bounded
             // and transactionally serialized; resulting per-table operations
             // are then eligible for the parallel execution lanes above.
-            if options.mode == RunMode::Execute && planning_attempts < options.max_operations {
+            if options.mode == RunMode::Execute
+                && !planning_queue_exhausted
+                && planning_attempts < options.max_operations
+            {
                 planning_attempts += 1;
-                if plan_next_provisioning_request(client, rpc.as_ref(), options).await? {
+                if has_plannable_provisioning_request(client, &options.cluster).await?
+                    && plan_next_provisioning_request(client, rpc.as_ref(), options).await?
+                {
                     processed += 1;
                     continue;
                 }
@@ -890,6 +927,37 @@ async fn run_operation_batch(
         processed,
         budget_exhausted,
     })
+}
+
+async fn has_plannable_provisioning_request(
+    client: &NeonSqlClient,
+    cluster: &str,
+) -> Result<bool, Box<dyn Error>> {
+    Ok(loyal_yield_orchestrator::sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS (
+            SELECT 1
+            FROM loyal_yield.lookup_table_provisioning_requests request
+            WHERE request.cluster = $1
+              AND request.request_status IN ('requested', 'queued', 'failed', 'planning')
+              AND (
+                  (request.request_status = 'failed'
+                   AND request.next_attempt_at IS NOT NULL
+                   AND request.next_attempt_at <= now())
+                  OR
+                  (request.request_status <> 'failed'
+                   AND (request.next_attempt_at IS NULL OR request.next_attempt_at <= now()))
+              )
+              AND (
+                  request.request_status <> 'planning'
+                  OR request.lease_expires_at <= now()
+              )
+        )
+        "#,
+    )
+    .bind(cluster)
+    .fetch_one(client.pool())
+    .await?)
 }
 
 async fn finish_operation_task(
@@ -3308,6 +3376,7 @@ async fn emit_status(client: &NeonSqlClient, options: &Options) -> Result<(), Bo
             "maxLamports": options.max_lamports.to_string(),
             "budgetWindowSeconds": options.budget_window_seconds,
             "rateLimitMs": options.rate_limit_ms,
+            "catalogReconcileIntervalSeconds": options.catalog_reconcile_interval_seconds,
             "concurrency": options.concurrency,
             "safetyMargin": options.safety_margin,
             "largestAtomicExpansion": options.largest_atomic_expansion,
@@ -4301,6 +4370,10 @@ where
         .unwrap_or(DEFAULT_BUDGET_WINDOW_SECONDS);
     let mut lease_seconds = DEFAULT_LEASE_SECONDS;
     let mut rate_limit_ms = DEFAULT_RATE_LIMIT_MS;
+    let mut catalog_reconcile_interval_seconds = read_env(CATALOG_RECONCILE_INTERVAL_SECONDS_ENV)
+        .map(|value| value.parse::<u64>())
+        .transpose()?
+        .unwrap_or(DEFAULT_CATALOG_RECONCILE_INTERVAL_SECONDS);
     let mut concurrency = DEFAULT_CONCURRENCY;
     let mut safety_margin = DEFAULT_SAFETY_MARGIN;
     let mut largest_atomic_expansion = read_env(LARGEST_ATOMIC_EXPANSION_ENV)
@@ -4361,6 +4434,13 @@ where
             }
             "--rate-limit-ms" => {
                 rate_limit_ms = next_value(&mut args, "--rate-limit-ms")?.parse()?
+            }
+            "--catalog-reconcile-interval-seconds" => {
+                catalog_reconcile_interval_seconds = next_value(
+                    &mut args,
+                    "--catalog-reconcile-interval-seconds",
+                )?
+                .parse()?
             }
             "--concurrency" => concurrency = next_value(&mut args, "--concurrency")?.parse()?,
             "--safety-margin" => {
@@ -4551,6 +4631,12 @@ where
     if rate_limit_ms > MAX_RATE_LIMIT_MS {
         return Err(format!("--rate-limit-ms cannot exceed {MAX_RATE_LIMIT_MS}").into());
     }
+    if !(1..=MAX_CATALOG_RECONCILE_INTERVAL_SECONDS).contains(&catalog_reconcile_interval_seconds) {
+        return Err(format!(
+            "--catalog-reconcile-interval-seconds must be between 1 and {MAX_CATALOG_RECONCILE_INTERVAL_SECONDS}"
+        )
+        .into());
+    }
     if max_vault_cohort == 0 {
         return Err("--max-vault-cohort must be positive".into());
     }
@@ -4625,6 +4711,7 @@ where
         budget_window_seconds,
         lease_seconds,
         rate_limit_ms,
+        catalog_reconcile_interval_seconds,
         concurrency,
         safety_margin,
         largest_atomic_expansion,
@@ -4702,7 +4789,7 @@ fn default_worker_id() -> String {
 }
 
 fn usage() -> &'static str {
-    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--provisioner-pause-status|--reconcile-only|--execute|--precutover-probe --probe-vault-id <DB_ID>] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--budget-window-seconds <60..31536000>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--concurrency <1..32>] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. --precutover-probe requires a durable cluster pause, proves the complete exact shared ALT bundle at finalized RPC, executes the real drift/request paths in a rollback-only transaction, and commits only an immutable PASS audit row for that paused control epoch; it cannot be combined with worker/admin modes and never loads POLICY_KEYPAIR or sends. Reconcile-only may update durable reconciliation state but never signs or sends. Execute uses the standard POLICY_KEYPAIR as ALT authority/payer and requires an explicit positive PostgreSQL-backed rolling-window lamport budget that survives worker restarts. Bounded concurrency overlaps only independently fenced physical ALT tables; predecessor operations for one table remain serialized in the database. Every send first commits an exact broadcast permit in a short database transaction; no transaction or advisory lock crosses RPC. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. The local YIELD_ALT_PROVISIONING_PAUSED environment gate remains an emergency process stop. Durable cluster pause controls are --set-provisioner-pause or --clear-provisioner-pause; read them with --provisioner-pause-status. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --set-provisioner-pause, --clear-provisioner-pause, --repair-terminal-operations [--max-operations <1..100>] (requires the durable pause, finalized RPC, and the standard POLICY_KEYPAIR; quarantines only proven phantom tables or inserts an immutable failed-suffix successor and never sends), --activate-reusable-only (requires the paused/drained current exact PASS probe, fresh-verifies every shard in the exact active shared ALT bundle at finalized RPC, then atomically fences that evidence and aligns every rollout override), --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --policy-pubkey <POLICY_PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. Bootstrap rejects any policy identity other than the repo standard authority. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Terminal repair is the only administrative action that loads POLICY_KEYPAIR, solely to prove standard policy identity; it never signs or broadcasts."
+    "Usage: route-lookup-table-provisioner --cluster <CLUSTER> [--status|--provisioner-pause-status|--reconcile-only|--execute|--precutover-probe --probe-vault-id <DB_ID>] [--watch] [--max-operations <N>] [--max-attempts <1..100>] [--address-chunk <1..20>] [--max-lamports <LAMPORTS>] [--budget-window-seconds <60..31536000>] [--lease-seconds <N>] [--rate-limit-ms <N>] [--catalog-reconcile-interval-seconds <1..3600>] [--concurrency <1..32>] [--safety-margin <N>] [--vault-growth-reservation <N>] [--max-vault-cohort <N>] [--worker-id <ID>]\n\nDry-run is the default and never loads a signer or writes. --precutover-probe requires a durable cluster pause, proves the complete exact shared ALT bundle at finalized RPC, executes the real drift/request paths in a rollback-only transaction, and commits only an immutable PASS audit row for that paused control epoch; it cannot be combined with worker/admin modes and never loads POLICY_KEYPAIR or sends. Reconcile-only may update durable reconciliation state but never signs or sends. Execute uses the standard POLICY_KEYPAIR as ALT authority/payer and requires an explicit positive PostgreSQL-backed rolling-window lamport budget that survives worker restarts. Bounded concurrency overlaps only independently fenced physical ALT tables; predecessor operations for one table remain serialized in the database. Every send first commits an exact broadcast permit in a short database transaction; no transaction or advisory lock crosses RPC. The fast watch loop polls only durable queues; the shared finalized catalog is reconciled on the configured interval and immediately after ALT work, while every mutation retains its own fresh finalized proof. Reads NEON_DATABASE_URL, SOLANA_RPC_URL, and explicit YIELD_ALT_CLUSTER; cluster is never inferred from the RPC URL. The local YIELD_ALT_PROVISIONING_PAUSED environment gate remains an emergency process stop. Durable cluster pause controls are --set-provisioner-pause or --clear-provisioner-pause; read them with --provisioner-pause-status. Admin controls require --admin-write --reason <TEXT> --updated-by <ID>: --set-provisioner-pause, --clear-provisioner-pause, --repair-terminal-operations [--max-operations <1..100>] (requires the durable pause, finalized RPC, and the standard POLICY_KEYPAIR; quarantines only proven phantom tables or inserts an immutable failed-suffix successor and never sends), --activate-reusable-only (requires the paused/drained current exact PASS probe, fresh-verifies every shard in the exact active shared ALT bundle at finalized RPC, then atomically fences that evidence and aligns every rollout override), --force-legacy, --clear-force-legacy, --set-rollout-mode <MODE> [--vault-id <DB_ID>], --rollback-family <FAMILY_ID>, --rollback-binding <ACTIVE_BINDING_ID> --observed-slot <SLOT>, --finalize-rollbacks <FAMILY_ID>, --retire-legacy <TABLE> --expected-authority <PUBKEY> --expected-address-hash <HASH> --expected-address-count <N>, or --bootstrap-families --policy-pubkey <POLICY_PUBKEY> --catalog-version <VERSION> --largest-atomic-expansion <MEASURED_COUNT> [--safety-margin <N>] [--shared-family-name <NAME>] [--vault-family-name <NAME>]. Bootstrap rejects any policy identity other than the repo standard authority. The largest atomic expansion is catalog evidence and is independent of the transaction address chunk. Force-legacy remains global. Terminal repair is the only administrative action that loads POLICY_KEYPAIR, solely to prove standard policy identity; it never signs or broadcasts."
 }
 
 #[cfg(test)]
@@ -5092,6 +5179,36 @@ mod tests {
         let rate_error =
             parse_args(["--rate-limit-ms", "60001"], env_map(&base_env())).unwrap_err();
         assert!(rate_error.to_string().contains("cannot exceed"));
+    }
+
+    #[test]
+    fn reusable_alt_catalog_reconciliation_interval_is_bounded_and_configurable() {
+        let defaults = parse_args(Vec::<String>::new(), env_map(&base_env())).unwrap();
+        assert_eq!(
+            defaults.catalog_reconcile_interval_seconds,
+            DEFAULT_CATALOG_RECONCILE_INTERVAL_SECONDS
+        );
+
+        let cli = parse_args(
+            ["--catalog-reconcile-interval-seconds", "300"],
+            env_map(&base_env()),
+        )
+        .unwrap();
+        assert_eq!(cli.catalog_reconcile_interval_seconds, 300);
+
+        let mut values = base_env().to_vec();
+        values.push((CATALOG_RECONCILE_INTERVAL_SECONDS_ENV, "120"));
+        let configured = parse_args(Vec::<String>::new(), env_map(&values)).unwrap();
+        assert_eq!(configured.catalog_reconcile_interval_seconds, 120);
+
+        for invalid in ["0", "3601"] {
+            let error = parse_args(
+                ["--catalog-reconcile-interval-seconds", invalid],
+                env_map(&base_env()),
+            )
+            .expect_err("catalog reconciliation interval must be bounded");
+            assert!(error.to_string().contains("must be between 1 and 3600"));
+        }
     }
 
     #[test]
