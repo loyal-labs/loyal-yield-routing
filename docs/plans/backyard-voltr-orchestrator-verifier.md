@@ -1,6 +1,6 @@
 # Backyard Voltr + Squads RWA worker: verifier-first delivery plan
 
-Status: approved implementation contract v10.
+Status: approved Phase 1 implementation contract v11.
 
 This file is the sole definition of done for the first Backyard Finance RWA
 vault. It replaces the earlier Rust fleet/four-market orchestration plan.
@@ -20,8 +20,9 @@ must:
 1. receive a user deposit into Voltr idle;
 2. allocate it through the vault's bound Loyal adaptor into one exact Squads
    smart-account USDC account;
-3. let one serialized Go worker put eligible idle capital into the fixed
-   PRIME/USDC Kamino Multiply route;
+3. let one serialized Go worker attempt the fixed PRIME/USDC Kamino Multiply
+   entry, reach the collateral-only state, and persist a utilization HOLD
+   before borrowing when the confirmed reserve ceiling blocks that leg;
 4. observe a withdrawal request immediately, stop increasing risk, unwind the
    required amount, return it through Squads and the adaptor to Voltr idle
    before the 600-second waiting period ends;
@@ -603,7 +604,7 @@ Run these in fail-fast order.
 
 ### V01 contract_and_forbidden_surface
 
-PASS when the v10 Phase 1 contract and v3 output schema are exact, the fixed route is
+PASS when the v11 Phase 1 contract and v3 output schema are exact, the fixed route is
 PRIME/USDC, and repository/deployment search proves no reachable Rust or
 TypeScript money-moving worker for this vault. Fail on a second writer,
 optimizer, saga, caller-selected manifest, or broadcast-capable verifier.
@@ -621,10 +622,12 @@ The canonical signed-unsent transaction must simulate successfully as one
 Squads sync payload with exactly two ordered inner instructions:
 `ArmReport -> Voltr capital/adaptor consume`. The config remains read-only; the
 ticket is writable at Voltr remaining account index 17 and adaptor account index
-8; the final ticket is inactive with a strictly advanced last-consumed sequence;
-and exact NAV is returned through Solana return data.
+8; the final ticket is inactive with a monotonic last-consumed sequence; and
+exact adaptor NAV return bytes are independently read from transaction metadata
+or, when Squads CPI wrapping leaves metadata returnData null, the exact immutable
+`Program return:` runtime log.
 
-The exact v10 matrix contains 38 rejections plus one bounded expected-success
+The exact v11 matrix contains 38 rejections plus one bounded expected-success
 Arm-only proof. Rejections cover: direct Voltr without a ticket,
 consume-before-arm, reversed order, extra/third instruction, different second
 instruction, second consume, same/lower sequence re-arm, fresh arm while
@@ -671,7 +674,8 @@ PASS when the Go module builds and focused deterministic tests prove:
 
 - decision precedence and zero-or-one action;
 - withdrawal preemption at every open-loop state;
-- target/hard-LTV behavior and positive-APY hold;
+- exact KLend utilization decoding/math, durable utilization HOLD/no-send,
+  hard-LTV protection, and withdrawal precedence;
 - duplicate observation idempotency;
 - persist-before-send ordering;
 - exact signed-byte recovery without blind resend;
@@ -703,38 +707,46 @@ database lease owner, and absence of competing recent writes.
 
 ### V06 live_internal_lifecycle
 
-The lifecycle evidence schema is `loyal-backyard-rwa-live-lifecycle/v2`; v1
-evidence predating the ticket topology is declaration-only and cannot pass.
+The lifecycle evidence schema is `loyal-backyard-rwa-live-lifecycle/v3`; older
+evidence predating the utilization-HOLD scope decision is declaration-only and
+cannot pass.
 PASS only after one real internal Backyard lifecycle at an explicitly approved
 operational amount proves:
 
 1. user deposit confirmed into Voltr idle;
 2. adaptor allocation confirmed into the exact Squads ATA;
 3. worker decision persisted before send;
-4. one PRIME/USDC position opened and reconciled with LTV at or below target,
-   plus a contemporaneous hash-bound external/manual attestation that total
-   fixed-route yield is positive;
+4. the worker encounters the confirmed Kamino utilization ceiling, persists a
+   durable HOLD, and emits no later risk-increasing action;
 5. authenticated sequence=observed_slot NAV returned by the adaptor and
    independently recomputed, with the exact atomic ArmReport -> Voltr consume
    ticket transition;
 6. withdrawal receipt confirmed and no later risk-increasing action emitted;
 7. enough position unwound and exact requested raw USDC restored to Voltr idle
    before the 600-second deadline;
-8. pre-deadline claim rejected by Voltr;
-9. post-deadline user claim confirmed; and
-10. final Voltr, Squads, Kamino, adaptor NAV, receipt, database, and user
-    balance deltas conserve value within explicit protocol fees.
+8. post-deadline user claim confirmed; and
+9. final Voltr, Squads, Kamino, adaptor NAV, receipt, database, and user
+   balance deltas conserve value within explicit protocol fees.
 
 This is the first live use, not a separate canary. Confirmed signatures and
 post-transaction account reconciliation are sufficient; finalized polling is
 not required.
 
 Evidence: signatures, slots/block times, independently decoded instructions
-and receipts, raw pre/post balances, fees, operation rows, report sequence and
-digest, ticket PDA bytes/sequence/wire hash before and after every bridge/NAV
-transaction, immutable config hash, and conservation equation. Across the live
-lifecycle every bridge/NAV signature must contain exactly one ArmReport followed
-by its matching Voltr consume, ticket sequences must increase strictly, no
+and receipts, raw pre/post balances, operation rows, report sequence and digest,
+ticket PDA bytes/sequence/wire hash for every bridge/NAV transaction, immutable
+config hash, and the observed dust-cycle conservation equation. Across the live
+proof, the verifier derives NAV identity from database observations, signed wire,
+adaptor return data, and current account state; it accepts no operator-entered NAV.
+
+Target-LTV/open-position proof and a positive-yield attestation are not Phase 1
+gates because the confirmed utilization ceiling prevented borrowing and no
+position snapshot exists. Positive-yield monitoring, a fresh leveraged open,
+and deliberate pre-deadline claim rejection are explicit fast follows; their
+absence must be reported and must never be represented as passing evidence.
+Across the lifecycle, every bridge/NAV signature must contain one ArmReport and
+the matching report embedded in the following Voltr consume; ticket sequences
+must increase strictly, no
 ticket may remain armed, and the database journal must bind the same signed wire,
 ticket sequence, and wire hash before send.
 
@@ -797,9 +809,9 @@ Release sequence:
 2. Publish one immutable Go image and deploy exactly one active writer.
 3. Prove V05 from live Render metadata, startup identity logs, and the active
    database lease; checked-in JSON is not deployment truth.
-4. Run one real internal deposit -> allocate -> open PRIME/USDC -> report NAV ->
-   request -> unwind -> restore -> claim lifecycle and independently reconcile
-   V06.
+4. Run one real internal deposit -> allocate -> attempt PRIME/USDC entry ->
+   collateral-only state -> utilization HOLD -> request -> unwind -> restore ->
+   claim lifecycle and independently reconcile V06.
 5. Evaluate V07 against loyal-apps origin/main, the production Vercel commit,
    an authenticated page response, and the same read-only database snapshot.
 

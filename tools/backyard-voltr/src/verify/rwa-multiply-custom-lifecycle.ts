@@ -24,7 +24,7 @@ const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta
 const APPS_ROOT = resolve(REPOSITORY_ROOT, "../loyal-apps");
 const SCHEMA = "loyal-backyard-rwa-go-lifecycle/v3";
 const PLAN_PATH = "docs/plans/backyard-voltr-orchestrator-verifier.md";
-const PLAN_SHA256 = "5665423e9b9003bc34e4d6f8389eeb8fabf5ec140596271a787abc2e00486b0c";
+const PLAN_SHA256 = "38d58cf91354c0c6919b43a0d250373e06c401a3b2d6893990e9fb7bb0c7d2f2";
 const MANIFEST_PATH = "docs/manifests/backyard-rwa-v1.json";
 const POLICY_CATALOG_PATH = "crates/loyal-actions/fixtures/backyard_rwa_policy_catalog_v1.json";
 const ADAPTOR_MANIFEST = "crates/loyal-voltr-rwa-nav-adaptor/Cargo.toml";
@@ -866,8 +866,8 @@ function localContractCheck(): Check {
     deployedLegacyWriterMatches: oldWriterCommands,
   };
   return Object.values(checks).every(Boolean)
-    ? pass("V01_contract_and_forbidden_surface", "Frozen v10 Phase 1 contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence)
-    : fail("V01_contract_and_forbidden_surface", "Frozen v10 Phase 1 contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence,
+    ? pass("V01_contract_and_forbidden_surface", "Frozen v11 Phase 1 contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence)
+    : fail("V01_contract_and_forbidden_surface", "Frozen v11 Phase 1 contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence,
       "Add/fix the checked-in v1 manifest and Go worker source without changing the frozen plan; remove any legacy deployed writer wiring.");
 }
 
@@ -1636,7 +1636,7 @@ function renderDeploymentRead(expectedImage: string): JsonRecord {
     "logs", "--resources", serviceId,
     ...(deployedAt ? ["--start", deployedAt] : ["--start", "24h"]),
     "--text", "backyard-rwa-worker: starting serialized confirmed lifecycle",
-    "--limit", "20", "--output", "json",
+    "--limit", "1", "--output", "json",
   ];
   const logs = runJson("render", logArgs);
   if (logs.exitCode !== 0) {
@@ -1828,6 +1828,8 @@ function v06RouteBindings(): V06RouteBindings {
     withdrawalWaitSeconds: Number(route.vault.withdrawalWaitingPeriodSeconds),
     targetLtvBps: 5_000,
     maxReportAgeSlots: Number(route.customAdaptor.maxReportAgeSlots),
+    manifestSha256: sha256File(MANIFEST_PATH)!,
+    policyCatalogSha256: sha256File(POLICY_CATALOG_PATH)!,
     programs: {
       voltr,
       adaptor: route.customAdaptor.program.toString(),
@@ -2013,6 +2015,10 @@ async function lifecycleChainRead(evidence: JsonRecord | null, route: V06RouteBi
           ? { programId: rawReturnData.programId, dataBase64: returnDataValue[0] }
           : undefined;
       if (returnData === undefined) throw new Error("transaction return data is malformed");
+      const logs = Array.isArray(meta.logMessages) && meta.logMessages.every((line) => typeof line === "string")
+        ? meta.logMessages as string[]
+        : null;
+      if (logs === null) throw new Error("transaction logs are malformed");
       transactions.push({
         signature,
         slot: value.slot,
@@ -2023,6 +2029,7 @@ async function lifecycleChainRead(evidence: JsonRecord | null, route: V06RouteBi
         programIds,
         tokenBalances,
         returnData,
+        logs,
         topLevelInstructions,
         innerInstructions,
       });
@@ -2088,7 +2095,7 @@ async function lifecycleChainRead(evidence: JsonRecord | null, route: V06RouteBi
 
 function lifecycleDatabaseRead(signatures: readonly string[], route: V06RouteBindings, chain: V06ChainRead): V06DatabaseRead {
   if (signatures.length === 0 || chain.transactions.length !== signatures.length) {
-    return { attempted: false, error: "exact confirmed lifecycle signatures unavailable", rows: [], position: null, nonterminalCount: null };
+    return { attempted: false, error: "exact confirmed lifecycle signatures unavailable", rows: [], position: null, nonterminalCount: null, lifecycleNonterminalCount: null, hold: null, riskAfterHoldCount: null };
   }
   const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
   const signatureArray = `ARRAY[${signatures.map(literal).join(",")}]::text[]`;
@@ -2104,7 +2111,7 @@ SELECT json_build_object(
       'transactionSignature', transaction_signature,
       'confirmedSlot', confirmed_slot,
       'confirmationStatus', confirmation_status,
-      'signedWireBase64', encode(signed_wire, 'base64'),
+      'signedWireBase64', replace(encode(signed_wire, 'base64'), E'\n', ''),
       'signedWireSha256', signed_wire_sha256,
       'expectedEffects', expected_effects,
       'reconciledEffects', reconciled_effects,
@@ -2131,7 +2138,29 @@ SELECT json_build_object(
     FROM loyal_yield.multiply_operations
     WHERE route_key = ${literal(route.routeKey)}
       AND status IN ('prepared','signed_persisted','broadcast_intent','confirmed',
-        'reconciliation_pending','decided','built','simulated','signed','submitted','reconciling'))
+        'reconciliation_pending','decided','built','simulated','signed','submitted','reconciling')),
+  'lifecycleNonterminalCount', (SELECT count(*)
+    FROM loyal_yield.multiply_operations
+    WHERE route_key = ${literal(route.routeKey)} AND transaction_signature = ANY(${signatureArray})
+      AND status IN ('prepared','signed_persisted','broadcast_intent','confirmed',
+        'reconciliation_pending','decided','built','simulated','signed','submitted','reconciling')),
+  'hold', (SELECT json_build_object(
+      'action', action, 'status', status, 'cycle', cycle, 'expectedEffects', expected_effects,
+      'transactionSignature', transaction_signature, 'signedWireBase64', CASE WHEN signed_wire IS NULL THEN NULL ELSE replace(encode(signed_wire, 'base64'), E'\n', '') END,
+      'broadcastIntentAt', broadcast_intent_at::text, 'confirmedSlot', confirmed_slot)
+    FROM loyal_yield.multiply_operations
+    WHERE route_key = ${literal(route.routeKey)} AND action = 'HOLD' AND status = 'held'
+      AND expected_effects #>> '{decision,reason}' = 'debt_reserve_utilization_blocks_borrow'
+    ORDER BY created_at DESC LIMIT 1),
+  'riskAfterHoldCount', (SELECT count(*) FROM loyal_yield.multiply_operations risk
+    WHERE risk.route_key = ${literal(route.routeKey)}
+      AND risk.action IN ('SWAP_USDC_TO_PRIME_STEP','OPEN_PRIME_USDC_STEP')
+      AND COALESCE(risk.confirmed_slot, (risk.expected_effects #>> '{decision,observationSlot}')::bigint) > COALESCE((
+        SELECT (hold.expected_effects #>> '{decision,observationSlot}')::bigint
+        FROM loyal_yield.multiply_operations hold
+        WHERE hold.route_key = ${literal(route.routeKey)} AND hold.action = 'HOLD' AND hold.status = 'held'
+          AND hold.expected_effects #>> '{decision,reason}' = 'debt_reserve_utilization_blocks_borrow'
+        ORDER BY hold.created_at DESC LIMIT 1), 0))
 )::text;
 `);
   const value = record(result.value);
@@ -2141,6 +2170,9 @@ SELECT json_build_object(
     rows: Array.isArray(value?.rows) ? value.rows as unknown as V06DatabaseRead["rows"] : [],
     position: record(value?.position) as unknown as V06DatabaseRead["position"],
     nonterminalCount: typeof value?.nonterminalCount === "number" ? value.nonterminalCount : null,
+    lifecycleNonterminalCount: typeof value?.lifecycleNonterminalCount === "number" ? value.lifecycleNonterminalCount : null,
+    hold: record(value?.hold) as unknown as V06DatabaseRead["hold"],
+    riskAfterHoldCount: typeof value?.riskAfterHoldCount === "number" ? value.riskAfterHoldCount : null,
   };
 }
 
@@ -2187,7 +2219,7 @@ async function lifecycleCheck(deploymentPass: boolean): Promise<Check> {
   return validation.pass
     ? pass("V06_live_internal_lifecycle", "One real confirmed internal deposit-to-claim lifecycle is independently reconciled.", row)
     : fail("V06_live_internal_lifecycle", "One real confirmed internal deposit-to-claim lifecycle is independently reconciled.", row,
-      "Run and reconcile the complete approved lifecycle, including a target-LTV onchain position snapshot, a fresh explicit external total-route-yield attestation, and exact NAV report sequence; then regenerate evidence from the real signatures and rerun.");
+      "Reconcile the approved utilization-HOLD lifecycle, exact NAV report sequence, custody topology, timing, and conservation; then regenerate evidence from authoritative mainnet and database reads and rerun.");
 }
 
 function nestedProjection(state: JsonRecord | null, keys: readonly string[]): unknown {

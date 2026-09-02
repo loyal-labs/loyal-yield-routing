@@ -15,6 +15,7 @@
     "verify:lifecycle": "bun src/cli.ts verify lifecycle --route main-usdc",
     "verify:four-market": "bun src/cli.ts verify four-market --commitment confirmed --evidence ../../docs/evidence/backyard-voltr-four-market/confirmed-lifecycle-v1.json",
     "verify:rwa-multiply-custom-lifecycle": "bun src/verify/rwa-multiply-custom-lifecycle.ts",
+    "evidence:rwa-phase1-lifecycle": "bun src/verify/generate-rwa-phase1-lifecycle-evidence.ts",
     "verify:rwa-multiply-adaptor-simulation": "bun src/verify/rwa-multiply-adaptor-simulation.ts",
     "activate:rwa-multiply-squads-prerequisites": "bun src/activation/rwa-multiply-squads-prerequisites.ts",
     "activate:rwa-multiply-custom-policies": "bun src/activation/rwa-multiply-custom-policies.ts",

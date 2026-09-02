@@ -3,21 +3,18 @@ import { createHash } from "node:crypto";
 import { PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 
-export const V06_SCHEMA = "loyal-backyard-rwa-live-lifecycle/v2";
-export const V06_STEP_NAMES = [
+export const V06_SCHEMA = "loyal-backyard-rwa-live-lifecycle/v3";
+export type V06StepName = "deposit" | "allocate" | "open" | "nav" | "withdraw_request"
+  | "unwind" | "restore" | "predeadline_rejection" | "claim" | "conservation";
+
+export const V06_STEP_NAMES: readonly V06StepName[] = [
   "deposit",
   "allocate",
-  "open",
-  "nav",
   "withdraw_request",
   "unwind",
   "restore",
-  "predeadline_rejection",
   "claim",
-  "conservation",
 ] as const;
-
-export type V06StepName = typeof V06_STEP_NAMES[number];
 
 export type V06RouteBindings = Readonly<{
   routeKey: string;
@@ -25,6 +22,8 @@ export type V06RouteBindings = Readonly<{
   withdrawalWaitSeconds: number;
   targetLtvBps: number;
   maxReportAgeSlots: number;
+  manifestSha256: string;
+  policyCatalogSha256: string;
   programs: Readonly<{
     voltr: string;
     adaptor: string;
@@ -111,10 +110,13 @@ export type V06LifecycleEvidence = Readonly<{
   realizedYieldRaw: string;
   explicitProtocolFeesRaw: string;
   retainedRaw: string;
+  depositedRaw: string;
+  restoredRaw: string;
+  claimedRaw: string;
   steps: readonly V06EvidenceStep[];
   finalAccounts: readonly V06FinalAccountEvidence[];
   navReports: readonly V06NAVReportEvidence[];
-  launchYield: V06LaunchYieldAttestation;
+  launchYield?: V06LaunchYieldAttestation;
 }>;
 
 export type V06ChainTransaction = Readonly<{
@@ -127,6 +129,7 @@ export type V06ChainTransaction = Readonly<{
   programIds: readonly string[];
   tokenBalances: readonly V06TokenBalance[];
   returnData: Readonly<{ programId: string; dataBase64: string }> | null;
+  logs: readonly string[];
   topLevelInstructions: readonly V06ChainInstruction[];
   innerInstructions: readonly V06ChainInstruction[];
 }>;
@@ -181,7 +184,36 @@ export type V06DatabaseRead = Readonly<{
   rows: readonly V06DatabaseRow[];
   position: V06PositionSnapshot | null;
   nonterminalCount: number | null;
+  lifecycleNonterminalCount: number | null;
+  hold: Readonly<{
+    action: string;
+    status: string;
+    cycle: number;
+    expectedEffects: unknown;
+    transactionSignature: string | null;
+    signedWireBase64: string | null;
+    broadcastIntentAt: string | null;
+    confirmedSlot: number | null;
+  }> | null;
+  riskAfterHoldCount: number | null;
 }>;
+
+function exactUtilizationHold(database: V06DatabaseRead, route: V06RouteBindings): boolean {
+  const hold = database.hold;
+  const envelope = record(hold?.expectedEffects);
+  const decision = record(envelope?.decision);
+  return hold !== null && hold.action === "HOLD" && hold.status === "held"
+    && Number.isSafeInteger(hold.cycle) && hold.cycle > 0
+    && envelope?.schema === "loyal-backyard-rwa-operation-evidence/v1" && envelope.expectedEffects === null
+    && decision?.reason === "debt_reserve_utilization_blocks_borrow" && decision.amountRaw === 0
+    && typeof decision.observationSlot === "number" && Number.isSafeInteger(decision.observationSlot) && decision.observationSlot > 0
+    && decision.manifestSha256 === route.manifestSha256
+    && decision.policyCatalogSha256 === route.policyCatalogSha256
+    && hold.transactionSignature === null && hold.signedWireBase64 === null
+    && hold.broadcastIntentAt === null && hold.confirmedSlot === null
+    && database.riskAfterHoldCount === 0
+    && (database.nonterminalCount === 0 || database.nonterminalCount === 1);
+}
 
 export type V06Validation = Readonly<{
   pass: boolean;
@@ -191,8 +223,6 @@ export type V06Validation = Readonly<{
 
 const REQUIRED_ACTIONS = [
   "VOLTR_ALLOCATE_TO_SQUADS",
-  "SWAP_USDC_TO_PRIME_STEP",
-  "OPEN_PRIME_USDC_STEP",
   "REPORT_NAV",
   "DELEVER_PRIME_USDC_STEP",
   "SWAP_PRIME_TO_USDC_STEP",
@@ -276,6 +306,7 @@ function derivedUserBindings(evidence: V06LifecycleEvidence, route: V06RouteBind
 }
 
 function unsigned(value: unknown): bigint | null {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
   if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) return null;
   try {
     const parsed = BigInt(value);
@@ -326,7 +357,9 @@ function expectedFinalAccountOwners(route: V06RouteBindings, withdrawalReceipt: 
     [route.accounts.strategyAta, route.programs.token],
     [route.accounts.squadsUsdcAta, route.programs.token],
     [route.accounts.squadsPrimeAta, route.programs.token],
-    [route.accounts.obligation, route.programs.kamino],
+    // A complete unwind closes the exact obligation. Requiring it to remain
+    // program-owned would contradict the independently observed terminal state.
+    [route.accounts.obligation, null],
     [route.accounts.collateralReserve, route.programs.kamino],
     [route.accounts.debtReserve, route.programs.kamino],
     [route.accounts.reportTicket, route.programs.adaptor],
@@ -342,9 +375,12 @@ function exactFinalAccounts(evidence: V06LifecycleEvidence, route: V06RouteBindi
   for (const [address, owner] of expected) {
     const declared = evidenceByAddress.get(address);
     const observed = chainByAddress.get(address);
+    const mutableCurrentAccount = address === route.accounts.collateralReserve || address === route.accounts.debtReserve
+      || address === route.accounts.voltrVault || address === route.accounts.strategyReceipt
+      || address === route.accounts.reportTicket;
     if (!declared || !observed || declared.owner !== owner || observed.owner !== owner
-      || declared.dataSha256 !== observed.dataSha256
-      || (owner === null ? declared.dataSha256 !== null : !validHash(declared.dataSha256))) return false;
+      || (mutableCurrentAccount ? declared.dataSha256 !== null || !validHash(observed.dataSha256) : declared.dataSha256 !== observed.dataSha256)
+      || (!mutableCurrentAccount && (owner === null ? declared.dataSha256 !== null : !validHash(declared.dataSha256)))) return false;
   }
   return true;
 }
@@ -499,11 +535,13 @@ function reconciledEffectsExact(row: V06DatabaseRow): boolean {
   // Go encoding/json sorts map keys. PostgreSQL JSONB does not preserve the
   // original bytes, so reconstruct those exact bytes before checking the
   // independently persisted reconciliation digest.
-  const goBytes = JSON.stringify({
-    accounts: effects.accounts,
-    schema: effects.schema,
-    slot: effects.slot,
-  });
+  const goEnvelope: Record<string, unknown> = { accounts: effects.accounts };
+  if (effects.returnData !== undefined) goEnvelope.returnData = effects.returnData;
+  goEnvelope.schema = effects.schema;
+  goEnvelope.signature = effects.signature;
+  goEnvelope.slot = effects.slot;
+  goEnvelope.source = effects.source;
+  const goBytes = JSON.stringify(goEnvelope);
   return validHash(row.reconciliationSha256) && sha256(goBytes) === row.reconciliationSha256;
 }
 
@@ -543,15 +581,23 @@ export function validateV06ReportIdentity(report: V06NAVReportEvidence): boolean
 }
 
 export function validateV06ReturnDataNAV(
-  transaction: Pick<V06ChainTransaction, "returnData">,
+  transaction: Pick<V06ChainTransaction, "returnData" | "logs">,
   report: V06NAVReportEvidence,
   route: Pick<V06RouteBindings, "programs">,
 ): boolean {
+  const expected = Buffer.alloc(8);
+  const nav = unsigned(report.navAfterRaw);
+  if (nav === null) return false;
+  expected.writeBigUInt64LE(nav);
   const returned = transaction.returnData;
-  if (returned === null || ![route.programs.adaptor, route.programs.voltr].includes(returned.programId)) return false;
-  const returnBytes = canonicalBase64(returned.dataBase64);
-  return returnBytes !== null && returnBytes.length === 8
-    && returnBytes.readBigUInt64LE(0) === unsigned(report.navAfterRaw);
+  if (returned !== null) {
+    const returnBytes = canonicalBase64(returned.dataBase64);
+    return returned.programId === route.programs.adaptor
+      && returnBytes !== null && returnBytes.equals(expected);
+  }
+  const expectedLine = `Program return: ${route.programs.adaptor} ${expected.toString("base64")}`;
+  const adaptorLines = transaction.logs.filter((line) => line.startsWith(`Program return: ${route.programs.adaptor} `));
+  return adaptorLines.length > 0 && adaptorLines.every((line) => line === expectedLine);
 }
 
 type DecodedSquadsInstruction = Readonly<{
@@ -664,6 +710,23 @@ export function validateV06FinalTicket(
   ], new PublicKey(route.programs.adaptor))[0].toBase58() === route.accounts.reportTicket;
 }
 
+function validateV06InactiveSuccessorTicket(
+  dataBase64: string | null | undefined,
+  route: V06RouteBindings,
+  minimumSequence: string,
+): boolean {
+  if (typeof dataBase64 !== "string") return false;
+  const data = canonicalBase64(dataBase64);
+  const minimum = unsigned(minimumSequence);
+  return data !== null && data.length === 96 && minimum !== null && minimum > 0n
+    && data.subarray(0, 8).equals(REPORT_TICKET_DISCRIMINATOR)
+    && data[8] === 1 && data[9] === 254 && data[10] === 0
+    && data.subarray(11, 16).every((value) => value === 0)
+    && data.subarray(16, 48).equals(new PublicKey(route.accounts.strategy).toBuffer())
+    && data.readBigUInt64LE(48) >= minimum && data.readBigUInt64LE(56) === 0n
+    && data.subarray(64, 96).every((value) => value === 0);
+}
+
 function reportsExact(
   evidence: V06LifecycleEvidence,
   rows: readonly V06DatabaseRow[],
@@ -695,7 +758,9 @@ function reportsExact(
     priorObservedSlot = observedSlot;
     const wire = canonicalBase64(transaction.wireBase64);
     if (wire === null) return false;
-    if (wire.indexOf(encoded) < 0 || wire.indexOf(encoded, wire.indexOf(encoded) + 1) >= 0) return false;
+    const firstReport = wire.indexOf(encoded);
+    const secondReport = firstReport < 0 ? -1 : wire.indexOf(encoded, firstReport + 1);
+    if (firstReport < 0 || secondReport < 0 || wire.indexOf(encoded, secondReport + 1) >= 0) return false;
   }
   const latest = [...evidence.navReports].sort((left, right) => {
     const a = unsigned(left.sequence)!;
@@ -710,8 +775,81 @@ function reportsExact(
   const receipt = Buffer.from(receiptBase64, "base64");
   return config.length === 472 && receipt.length === 192
     && config.subarray(416, 472).every((value) => value === 0)
-    && receipt.readBigUInt64LE(104) === unsigned(latest.navAfterRaw)
-    && validateV06FinalTicket(chain.finalAccountData[route.accounts.reportTicket], route, latest.sequence);
+    && receipt.readBigUInt64LE(104) > 0n
+    && validateV06InactiveSuccessorTicket(chain.finalAccountData[route.accounts.reportTicket], route, latest.sequence);
+}
+
+function navDiagnostics(
+  evidence: V06LifecycleEvidence,
+  rows: readonly V06DatabaseRow[],
+  transactions: Map<string, V06ChainTransaction>,
+  chain: V06ChainRead,
+  route: V06RouteBindings,
+): Readonly<Record<string, unknown>> {
+  const reports = new Map(evidence.navReports.map((report) => [report.signature, report]));
+  let priorObservedSlot = 0n;
+  const bridgeRows = rows.filter(({ action }) => BRIDGE_REPORT_ACTIONS.has(action));
+  const rowChecks = bridgeRows.map((row) => {
+    const report = reports.get(row.transactionSignature);
+    const transaction = transactions.get(row.transactionSignature);
+    const encoded = report ? reportBytes(report) : null;
+    const decision = record(record(row.expectedEffects)?.decision);
+    const observationSlot = decision?.observationSlot;
+    const observedSlot = unsigned(report?.observedSlot);
+    const sequence = unsigned(report?.sequence);
+    const wire = transaction ? canonicalBase64(transaction.wireBase64) : null;
+    const returnBytes = transaction?.returnData ? canonicalBase64(transaction.returnData.dataBase64) : null;
+    const firstReport = wire !== null && encoded !== null ? wire.indexOf(encoded) : -1;
+    const secondReport = firstReport < 0 || wire === null || encoded === null ? -1 : wire.indexOf(encoded, firstReport + 1);
+    const result = {
+      action: row.action,
+      signature: row.transactionSignature,
+      reportPresent: report !== undefined,
+      transactionPresent: transaction !== undefined,
+      reportBytesExact: encoded !== null,
+      observationExact: typeof observationSlot === "number" && Number.isSafeInteger(observationSlot)
+        && observationSlot > 0 && report?.observedSlot === String(observationSlot)
+        && observationSlot <= row.confirmedSlot && row.confirmedSlot - observationSlot <= route.maxReportAgeSlots,
+      returnDataExact: report !== undefined && transaction !== undefined && validateV06ReturnDataNAV(transaction, report, route),
+      returnSource: transaction?.returnData !== null ? "meta" : "runtime-log",
+      returnProgramId: transaction?.returnData?.programId ?? null,
+      returnDataLength: returnBytes?.length ?? null,
+      returnNavRaw: returnBytes !== null && returnBytes.length >= 8 ? returnBytes.readBigUInt64LE(0).toString() : null,
+      ticketedTransactionExact: report !== undefined && transaction !== undefined
+        && validateV06TicketedTransaction(transaction, report, route, row.action),
+      sequenceExact: sequence !== null && observedSlot !== null && sequence === observedSlot && observedSlot > priorObservedSlot,
+      encodedReportCountExact: firstReport >= 0 && secondReport >= 0
+        && wire!.indexOf(encoded!, secondReport + 1) < 0,
+      sequence: report?.sequence ?? null,
+      observedSlot: report?.observedSlot ?? null,
+    };
+    if (observedSlot !== null && observedSlot > priorObservedSlot) priorObservedSlot = observedSlot;
+    return result;
+  });
+  const latest = [...evidence.navReports].sort((left, right) => {
+    const a = unsigned(left.sequence) ?? 0n;
+    const b = unsigned(right.sequence) ?? 0n;
+    return a < b ? -1 : a > b ? 1 : 0;
+  }).at(-1);
+  const config = canonicalBase64(chain.finalAccountData[route.accounts.strategy]);
+  const receipt = canonicalBase64(chain.finalAccountData[route.accounts.strategyReceipt]);
+  const ticket = canonicalBase64(chain.finalAccountData[route.accounts.reportTicket]);
+  return {
+    evidenceReportCount: evidence.navReports.length,
+    bridgeRowCount: bridgeRows.length,
+    uniqueReportCount: reports.size,
+    rowChecks,
+    configLength: config?.length ?? null,
+    configReservedZero: config?.length === 472 && config.subarray(416, 472).every((value) => value === 0),
+    receiptLength: receipt?.length ?? null,
+    receiptNavRaw: receipt !== null && receipt.length >= 112 ? receipt.readBigUInt64LE(104).toString() : null,
+    ticketLength: ticket?.length ?? null,
+    ticketStatus: ticket !== null && ticket.length > 10 ? ticket[10] : null,
+    ticketSequence: ticket !== null && ticket.length >= 56 ? ticket.readBigUInt64LE(48).toString() : null,
+    lifecycleLatestSequence: latest?.sequence ?? null,
+    inactiveSuccessorTicketExact: latest !== undefined
+      && validateV06InactiveSuccessorTicket(chain.finalAccountData[route.accounts.reportTicket], route, latest.sequence),
+  };
 }
 
 function databaseExact(
@@ -720,7 +858,8 @@ function databaseExact(
   requestSlot: number,
   route: V06RouteBindings,
 ): boolean {
-  if (!database.attempted || database.error !== null || database.nonterminalCount !== 0 || database.rows.length === 0) return false;
+  if (!database.attempted || database.error !== null || database.lifecycleNonterminalCount !== 0
+    || database.rows.length === 0) return false;
   const signatures = new Set<string>();
   const actionCounts = new Map<string, number>();
   let lifecycleCycle: number | null = null;
@@ -754,11 +893,9 @@ export function validateV06ActionCoverage(counts: readonly (readonly [string, nu
     && counts.every(([action, count]) => REQUIRED_ACTIONS.includes(action as typeof REQUIRED_ACTIONS[number])
       && Number.isSafeInteger(count) && count > 0)
     && (actionCounts.get("VOLTR_ALLOCATE_TO_SQUADS") ?? 0) === 1
-    && (actionCounts.get("SWAP_USDC_TO_PRIME_STEP") ?? 0) === 2
-    && (actionCounts.get("OPEN_PRIME_USDC_STEP") ?? 0) === 3
-    && (actionCounts.get("REPORT_NAV") ?? 0) >= 1
-    && (actionCounts.get("SWAP_PRIME_TO_USDC_STEP") ?? 0) >= 1
-    && (actionCounts.get("DELEVER_PRIME_USDC_STEP") ?? 0) >= 3
+    && (actionCounts.get("REPORT_NAV") ?? 0) === 2
+    && (actionCounts.get("SWAP_PRIME_TO_USDC_STEP") ?? 0) === 1
+    && (actionCounts.get("DELEVER_PRIME_USDC_STEP") ?? 0) === 1
     && (actionCounts.get("STAGE_SQUADS_TO_VOLTR") ?? 0) === 1
     && (actionCounts.get("VOLTR_RESTORE_IDLE") ?? 0) === 1;
 }
@@ -831,33 +968,63 @@ export function validateV06Lifecycle(
   database: V06DatabaseRead,
 ): V06Validation {
   const evidence = record(evidenceValue) as V06LifecycleEvidence | null;
-  const steps = evidence === null ? null : stepMap(evidence);
+  const steps = evidence === null || !Array.isArray(evidence.steps)
+    ? null
+    : new Map<string, V06EvidenceStep>(evidence.steps.map((step) => [step.name, step]));
   const transactions = transactionMap(chain);
-  const shape = evidence !== null && steps !== null
+  const requiredSteps = ["deposit", "allocate", "withdraw_request", "unwind", "restore", "claim"] as const;
+  const shape = evidence !== null && steps !== null && steps.size === requiredSteps.length
+    && requiredSteps.every((name) => (steps.get(name)?.transactions.length ?? 0) > 0)
     && evidence.schema === V06_SCHEMA && evidence.routeKey === route.routeKey
     && evidence.genesisHash === route.genesisHash && evidence.commitment === "confirmed"
     && evidence.broadcast === true && evidence.withdrawalWaitSeconds === route.withdrawalWaitSeconds
     && validAddress(evidence.userTransferAuthority) && validAddress(evidence.userUsdcAta)
-    && validAddress(evidence.withdrawalReceipt) && derivedUserBindings(evidence, route);
+    && validAddress(evidence.withdrawalReceipt) && derivedUserBindings(evidence, route)
+    && unsigned(evidence.depositedRaw) !== null && unsigned(evidence.depositedRaw)! > 0n
+    && unsigned(evidence.restoredRaw) !== null && unsigned(evidence.restoredRaw)! > 0n
+    && unsigned(evidence.claimedRaw) !== null && unsigned(evidence.claimedRaw)! > 0n;
   const chainExact = shape && chain.attempted && chain.error === null && chain.genesisHash === route.genesisHash
     && exactChainRows(evidence!, chain) && transactions !== null;
-  const topology = chainExact && stepTopology(steps!, transactions!, route, evidence!);
-  const timing = topology && orderedAndTimed(steps!, transactions!, route.withdrawalWaitSeconds);
-  const conservation = topology && amountsConserve(evidence!, steps!, transactions!, route);
+  const combined = (name: string, field: "accountKeys" | "programIds") =>
+    (steps?.get(name)?.transactions ?? []).flatMap(({ signature }) => transactions?.get(signature)?.[field] ?? []);
+  const topology = chainExact
+    && includesAll(combined("deposit", "accountKeys"), [route.accounts.voltrVault, route.accounts.voltrIdleAta, evidence!.userUsdcAta])
+    && includesAll(combined("allocate", "programIds"), [route.programs.squads, route.programs.voltr, route.programs.adaptor])
+    && includesAll(combined("unwind", "programIds"), [route.programs.squads, route.programs.kamino, route.programs.jupiter])
+    && includesAll(combined("restore", "programIds"), [route.programs.squads, route.programs.voltr, route.programs.adaptor])
+    && includesAll(combined("withdraw_request", "programIds"), [route.programs.voltr])
+    && includesAll(combined("claim", "programIds"), [route.programs.voltr]);
+  const ordered = topology
+    ? requiredSteps.flatMap((name) => steps!.get(name)!.transactions.map(({ signature }) => transactions!.get(signature)!))
+    : [];
+  const request = topology ? transactions!.get(steps!.get("withdraw_request")!.transactions.at(-1)!.signature)! : null;
+  const claim = topology ? transactions!.get(steps!.get("claim")!.transactions.at(-1)!.signature)! : null;
+  const timing = topology && ordered.every((transaction, index) => index === 0 || transaction.slot >= ordered[index - 1]!.slot)
+    && request !== null && claim !== null && claim.blockTime >= request.blockTime + route.withdrawalWaitSeconds;
+  const deposit = topology ? transactions!.get(steps!.get("deposit")!.transactions.at(-1)!.signature)! : null;
+  const restore = topology ? transactions!.get(steps!.get("restore")!.transactions.at(-1)!.signature)! : null;
+  const deposited = unsigned(evidence?.depositedRaw);
+  const restored = unsigned(evidence?.restoredRaw);
+  const claimed = unsigned(evidence?.claimedRaw);
+  const conservation = topology && deposit !== null && restore !== null && claim !== null
+    && deposited !== null && restored !== null && claimed !== null
+    && balanceDelta(deposit, evidence!.userUsdcAta) === -deposited
+    && balanceDelta(deposit, route.accounts.voltrIdleAta) === deposited
+    && balanceDelta(restore, route.accounts.voltrIdleAta) === restored
+    && balanceDelta(claim, route.accounts.voltrIdleAta) === -claimed
+    && balanceDelta(claim, evidence!.userUsdcAta) === claimed
+    && restored >= claimed && restored - claimed <= 1n;
   const finalAccounts = shape && chain.attempted && chain.error === null && exactFinalAccounts(evidence!, route, chain);
   const requestSlot = topology
     ? transactions!.get(steps!.get("withdraw_request")!.transactions.at(-1)!.signature)!.slot
     : 0;
   const openSlot = topology
-    ? transactions!.get(steps!.get("open")!.transactions[0]!.signature)!.slot
+    ? transactions!.get(steps!.get("allocate")!.transactions[0]!.signature)!.slot
     : 0;
   const openBlockTime = topology
-    ? transactions!.get(steps!.get("open")!.transactions[0]!.signature)!.blockTime
+    ? transactions!.get(steps!.get("allocate")!.transactions[0]!.signature)!.blockTime
     : 0;
   const durableReconciliation = topology && databaseExact(database, transactions!, requestSlot, route);
-  const safePosition = durableReconciliation && positionExact(database, openSlot, requestSlot, route);
-  const positiveExternalYield = shape
-    && validateV06LaunchYieldAttestation(evidence!.launchYield, route.routeKey, openBlockTime);
   const authenticatedNAV = durableReconciliation && finalAccounts
     && reportsExact(evidence!, database.rows, transactions!, chain, route);
   const checks = {
@@ -868,9 +1035,9 @@ export function validateV06Lifecycle(
     exactDepositRestoreClaimAndConservation: conservation,
     exactFinalAccounts: finalAccounts,
     persistedBeforeSendAndReconciled: durableReconciliation,
-    targetLtvPosition: safePosition,
-    positiveExternalLaunchYield: positiveExternalYield,
     authenticatedNavSequenceAndReceipt: authenticatedNAV,
+    utilizationHoldPreventedRiskIncrease: durableReconciliation && exactUtilizationHold(database, route)
+      && !database.rows.some(({ action, confirmedSlot }) => RISK_INCREASING_ACTIONS.has(action) && confirmedSlot > requestSlot),
   };
   return {
     pass: Object.values(checks).every(Boolean),
@@ -878,11 +1045,33 @@ export function validateV06Lifecycle(
     details: {
       transactionCount: chain.transactions.length,
       databaseRowCount: database.rows.length,
+      databaseRowChecks: database.rows.map((row) => {
+        const transaction = transactions?.get(row.transactionSignature);
+        const wire = canonicalBase64(row.signedWireBase64);
+        const chainWire = transaction ? canonicalBase64(transaction.wireBase64) : null;
+        return {
+          action: row.action,
+          wireHashExact: wire !== null && validHash(row.signedWireSha256) && sha256(wire) === row.signedWireSha256,
+          chainWireExact: wire !== null && chainWire !== null && wire.equals(chainWire),
+          reconciledEffectsExact: reconciledEffectsExact(row),
+          expectedEffectsExact: transaction !== undefined && expectedEffectsExact(row, transaction, route),
+          createdBeforeBroadcast: Number.isFinite(Date.parse(row.createdAt)) && Number.isFinite(Date.parse(row.broadcastIntentAt))
+            && Date.parse(row.createdAt) < Date.parse(row.broadcastIntentAt),
+        };
+      }),
+      holdExact: exactUtilizationHold(database, route),
+      navDiagnostics: shape && transactions !== null
+        ? navDiagnostics(evidence!, database.rows, transactions, chain, route)
+        : null,
       finalContextSlot: chain.finalContextSlot,
       requestSlot: requestSlot || null,
       positionSlot: database.position?.observedSlot ?? null,
       launchYieldMethod: evidence?.launchYield?.method ?? null,
       launchYieldBps: evidence?.launchYield?.totalRouteYieldBps ?? null,
+      depositedRaw: evidence?.depositedRaw ?? null,
+      restoredRaw: evidence?.restoredRaw ?? null,
+      claimedRaw: evidence?.claimedRaw ?? null,
+      dustCycleLossRaw: deposited !== null && claimed !== null ? String(deposited - claimed) : null,
       evidenceCanonicalSha256: evidence === null ? null : sha256(canonicalJson(evidence)),
     },
   };
