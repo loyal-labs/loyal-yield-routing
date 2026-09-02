@@ -31,16 +31,20 @@ func TestRouteNAVCadenceDoesNotSpamUnchangedFreshReports(t *testing.T) {
 }
 
 func TestRouteEconomicObservationIdentityExcludesReportSlot(t *testing.T) {
-	first := routeEconomicObservationID("bridge-state", 10, 20, 7, true, true, 42, 41, 100)
+	first := routeEconomicObservationID("bridge-state", 10, 20, 7, true, true, false, 42, 41, 100)
 	// The report slot/sequence is intentionally not an input to this helper. Two
 	// coherent observations with the same economics therefore remain identical.
-	second := routeEconomicObservationID("bridge-state", 10, 20, 7, true, true, 42, 41, 100)
+	second := routeEconomicObservationID("bridge-state", 10, 20, 7, true, true, false, 42, 41, 100)
 	if first != second {
 		t.Fatalf("unchanged economic observation changed identity: %s != %s", first, second)
 	}
-	changed := routeEconomicObservationID("bridge-state", 10, 21, 7, true, true, 42, 41, 100)
+	changed := routeEconomicObservationID("bridge-state", 10, 21, 7, true, true, false, 42, 41, 100)
 	if changed == first {
 		t.Fatal("changed collateral aliased to the prior economic observation")
+	}
+	utilizationBlocked := routeEconomicObservationID("bridge-state", 10, 20, 7, true, true, true, 42, 41, 100)
+	if utilizationBlocked == first {
+		t.Fatal("changed debt-reserve utilization admission aliased to the prior economic observation")
 	}
 	firstSnapshot, laterSnapshot := base(), base()
 	firstSnapshot.ObservationID, laterSnapshot.ObservationID = first, second

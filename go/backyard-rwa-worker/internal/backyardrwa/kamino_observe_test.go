@@ -21,10 +21,11 @@ func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 	putKey(t, reserve[32:64], c.Market)
 	putKey(t, reserve[128:160], c.CollateralMint)
 	binary.LittleEndian.PutUint64(reserve[224:232], 100)
+	reserve[kaminoReserveConfigOffset+645] = 90
 	oracle := bridgeVault
 	putKey(t, reserve[5224:5256], oracle)
 	decoded, err := decodeKaminoReserve(ConfirmedAccount{Address: c.CollateralReserve, Owner: c.Program, Lamports: 1, Data: reserve}, c.CollateralMint, c)
-	if err != nil || len(uniqueNonzero(decoded.oracles)) != 1 || uniqueNonzero(decoded.oracles)[0] != oracle {
+	if err != nil || decoded.utilizationLimitPct != 90 || len(uniqueNonzero(decoded.oracles)) != 1 || uniqueNonzero(decoded.oracles)[0] != oracle {
 		t.Fatalf("decoded=%+v err=%v", decoded, err)
 	}
 	reserve[128] ^= 1
@@ -92,6 +93,42 @@ func TestKaminoEntryCapacityBoundsOneRedepositAndBorrowHeadroom(t *testing.T) {
 	debt.borrowLimitRaw = 60
 	if got, err := entryCapacityDebtRaw(collateral, debt); err != nil || got != 80 {
 		t.Fatalf("debt-limited capacity=%d err=%v", got, err)
+	}
+}
+
+func TestKaminoUtilizationGateCapsEntryAndBlocksBorrowAtBoundary(t *testing.T) {
+	one := new(big.Int).Lsh(big.NewInt(1), 60)
+	total := new(big.Int).Mul(new(big.Int).Set(one), big.NewInt(100))
+	borrowed := new(big.Int).Mul(new(big.Int).Set(one), big.NewInt(9368))
+	borrowed.Quo(borrowed, big.NewInt(100))
+	debt := decodedKaminoReserve{
+		totalLiquiditySF: total, borrowedLiquiditySF: borrowed,
+		borrowedRaw: 94, borrowLimitRaw: 1_000, utilizationLimitPct: 90,
+	}
+	if blocked, err := borrowingBlockedByUtilization(debt); err != nil || !blocked {
+		t.Fatalf("93.68%% utilization was not blocked by the 90%% gate: blocked=%t err=%v", blocked, err)
+	}
+
+	debt.borrowedLiquiditySF = new(big.Int).Mul(new(big.Int).Set(one), big.NewInt(80))
+	debt.borrowedRaw = 80
+	if headroom, err := utilizationBorrowHeadroomRaw(debt); err != nil || headroom != 9 {
+		t.Fatalf("utilization headroom=%d err=%v", headroom, err)
+	}
+	price := [16]byte{}
+	putScaledFraction(price[:], one)
+	collateral := decodedKaminoReserve{
+		totalLiquiditySF: new(big.Int).Mul(new(big.Int).Set(one), big.NewInt(100)),
+		depositLimitRaw:  250, marketPriceSF: price,
+	}
+	debt.marketPriceSF = price
+	if capacity, err := entryCapacityDebtRaw(collateral, debt); err != nil || capacity != 18 {
+		t.Fatalf("entry capacity did not include utilization headroom: capacity=%d err=%v", capacity, err)
+	}
+
+	debt.borrowedLiquiditySF = new(big.Int).Mul(new(big.Int).Set(one), big.NewInt(90))
+	debt.borrowedRaw = 90
+	if blocked, err := borrowingBlockedByUtilization(debt); err != nil || !blocked {
+		t.Fatalf("exact utilization boundary admitted a borrow: blocked=%t err=%v", blocked, err)
 	}
 }
 

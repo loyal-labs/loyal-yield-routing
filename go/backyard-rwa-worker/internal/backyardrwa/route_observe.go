@@ -138,6 +138,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		}
 		base.Snapshot.CapacityRaw = int64(position.EntryCapacityRaw)
 		base.Snapshot.MaxTargetLTVEntryRaw = int64(position.EntryCapacityRaw)
+		base.Snapshot.BorrowUtilizationBlocked = position.BorrowUtilizationBlocked
 		base.Snapshot.PolicyLimitRaw = int64(bridgeCapRaw)
 		base.Snapshot.PolicyReady = ready
 		base.Snapshot.ExitBuildable = exit
@@ -147,7 +148,8 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		}
 		base.Snapshot.ObservationID = routeEconomicObservationID(
 			base.Snapshot.ObservationID, prime.Raw, position.CollateralDepositedRaw, position.DebtRaw,
-			ready, exit, nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, position.EntryCapacityRaw,
+			ready, exit, position.BorrowUtilizationBlocked,
+			nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, position.EntryCapacityRaw,
 		)
 		base.ObservedAt = observedAt
 		return base, accounts, nil
@@ -219,7 +221,11 @@ func observePrimeUSDCFromFixedAccounts(ctx context.Context, accountsReader func(
 	if err != nil {
 		return KaminoPosition{}, err
 	}
-	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: obligation.debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity}, nil
+	borrowUtilizationBlocked, err := borrowingBlockedByUtilization(debt)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: obligation.debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
 }
 
 // routeEconomicObservationID deliberately excludes Slot, the stateless adaptor
@@ -230,13 +236,13 @@ func observePrimeUSDCFromFixedAccounts(ctx context.Context, accountsReader func(
 func routeEconomicObservationID(
 	bridgeObservationID string,
 	primeRaw, collateralRaw, debtRaw uint64,
-	policyReady, exitBuildable bool,
+	policyReady, exitBuildable, borrowUtilizationBlocked bool,
 	strategyNAVRaw, priorReportedNAVRaw, capacityRaw uint64,
 ) string {
 	stateHash := sha256.Sum256([]byte(fmt.Sprintf(
-		"%s|prime:%d|collateral:%d|debt:%d|policy:%t|exit:%t|strategy-nav:%d|reported-nav:%d|capacity:%d",
+		"%s|prime:%d|collateral:%d|debt:%d|policy:%t|exit:%t|borrow-utilization-blocked:%t|strategy-nav:%d|reported-nav:%d|capacity:%d",
 		bridgeObservationID, primeRaw, collateralRaw, debtRaw, policyReady, exitBuildable,
-		strategyNAVRaw, priorReportedNAVRaw, capacityRaw,
+		borrowUtilizationBlocked, strategyNAVRaw, priorReportedNAVRaw, capacityRaw,
 	)))
 	return fmt.Sprintf("%x", stateHash[:])
 }

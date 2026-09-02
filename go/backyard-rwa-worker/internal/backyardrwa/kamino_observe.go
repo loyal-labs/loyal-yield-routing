@@ -47,16 +47,17 @@ func pinnedKaminoObservationConfig() (KaminoObservationConfig, error) {
 }
 
 type KaminoPosition struct {
-	Slot, RefreshedSlot     int64
-	HasPosition             bool
-	CollateralDepositedRaw  uint64
-	DebtRaw                 uint64
-	RedeemablePrimeRaw      uint64
-	CollateralPriceSF       [16]byte
-	DebtPriceSF             [16]byte
-	LiquidationThresholdBPS int64
-	EntryCapacityRaw        uint64
-	Oracles                 []string
+	Slot, RefreshedSlot      int64
+	HasPosition              bool
+	CollateralDepositedRaw   uint64
+	DebtRaw                  uint64
+	RedeemablePrimeRaw       uint64
+	CollateralPriceSF        [16]byte
+	DebtPriceSF              [16]byte
+	LiquidationThresholdBPS  int64
+	EntryCapacityRaw         uint64
+	BorrowUtilizationBlocked bool
+	Oracles                  []string
 }
 
 // ObserveKaminoPrimeUSDC reads the obligation, both reserves, and every
@@ -125,13 +126,18 @@ func (c *RPCClient) observeKaminoPrimeUSDC(ctx context.Context, config KaminoObs
 		if err != nil {
 			return KaminoPosition{}, err
 		}
+		borrowUtilizationBlocked, err := borrowingBlockedByUtilization(debt)
+		if err != nil {
+			return KaminoPosition{}, err
+		}
 		return KaminoPosition{
 			Slot: baseSlot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition,
 			CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: obligation.debtRaw,
 			RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF,
 			DebtPriceSF: debt.marketPriceSF, Oracles: oracles,
-			LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100,
-			EntryCapacityRaw:        entryCapacityRaw,
+			LiquidationThresholdBPS:  int64(collateral.liquidationThresholdPct) * 100,
+			EntryCapacityRaw:         entryCapacityRaw,
+			BorrowUtilizationBlocked: borrowUtilizationBlocked,
 		}, nil
 	}
 	return KaminoPosition{}, confirmedObservationUnavailable(fmt.Errorf("confirmed Kamino reserve and oracle reads did not align after %d attempts", maxConfirmedObservationAttempts))
@@ -155,6 +161,8 @@ type decodedKaminoReserve struct {
 	depositLimitRaw         uint64
 	borrowLimitRaw          uint64
 	borrowedRaw             uint64
+	borrowedLiquiditySF     *big.Int
+	utilizationLimitPct     byte
 }
 
 func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig) (decodedKaminoObligation, error) {
@@ -212,10 +220,12 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 	var price [16]byte
 	copy(price[:], account.Data[248:264])
 	// These offsets are derived from the pinned KLend 8624-byte Reserve layout:
-	// ReserveConfig begins at 4856 and TokenInfo at 5032. Read only the four
-	// configured oracle pubkeys, never curve or padding bytes.
+	// ReserveConfig begins at 4856 and TokenInfo at 5032. Offset 645 is the
+	// reviewed u8 utilization borrowing gate; the oracle keys below are the
+	// only other config fields read. Curve and padding bytes remain ignored.
 	oracles := []string{keyString(account.Data[5112:5144]), keyString(account.Data[5160:5192]), keyString(account.Data[5192:5224]), keyString(account.Data[5224:5256])}
-	totalLiquidity := littleInt(account.Data[232:248])
+	borrowedLiquiditySF := littleInt(account.Data[232:248])
+	totalLiquidity := new(big.Int).Set(borrowedLiquiditySF)
 	totalLiquidity.Add(totalLiquidity, new(big.Int).Lsh(new(big.Int).SetUint64(binary.LittleEndian.Uint64(account.Data[224:232])), 60))
 	for _, offset := range []int{344, 360, 376} {
 		fee := littleInt(account.Data[offset : offset+16])
@@ -236,6 +246,8 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 		depositLimitRaw:         binary.LittleEndian.Uint64(account.Data[kaminoReserveConfigOffset+160 : kaminoReserveConfigOffset+168]),
 		borrowLimitRaw:          binary.LittleEndian.Uint64(account.Data[kaminoReserveConfigOffset+168 : kaminoReserveConfigOffset+176]),
 		borrowedRaw:             borrowedRaw,
+		borrowedLiquiditySF:     borrowedLiquiditySF,
+		utilizationLimitPct:     account.Data[kaminoReserveConfigOffset+645],
 	}, nil
 }
 
@@ -260,6 +272,13 @@ func entryCapacityDebtRaw(collateral, debt decodedKaminoReserve) (uint64, error)
 	byCollateral := new(big.Int).Mul(new(big.Int).SetUint64(remainingCollateralValue), big.NewInt(2))
 	byCollateral.Quo(byCollateral, big.NewInt(3))
 	remainingDebt := debt.borrowLimitRaw - debt.borrowedRaw
+	utilizationHeadroom, err := utilizationBorrowHeadroomRaw(debt)
+	if err != nil {
+		return 0, err
+	}
+	if remainingDebt > utilizationHeadroom {
+		remainingDebt = utilizationHeadroom
+	}
 	byDebt := new(big.Int).Mul(new(big.Int).SetUint64(remainingDebt), big.NewInt(2))
 	if byCollateral.Cmp(byDebt) > 0 {
 		byCollateral.Set(byDebt)
@@ -268,6 +287,44 @@ func entryCapacityDebtRaw(collateral, debt decodedKaminoReserve) (uint64, error)
 		return 0, fmt.Errorf("Kamino entry capacity exceeds u64")
 	}
 	return byCollateral.Uint64(), nil
+}
+
+func borrowingBlockedByUtilization(debt decodedKaminoReserve) (bool, error) {
+	if debt.utilizationLimitPct == 0 {
+		return false, nil
+	}
+	headroom, err := utilizationBorrowHeadroomRaw(debt)
+	return headroom == 0, err
+}
+
+// utilizationBorrowHeadroomRaw mirrors KLend's configured utilization gate:
+// floor(total_supply * pct / 100 - total_borrow - one fixed-point ulp).
+// A zero pct disables this gate. Returning zero deliberately defers every new
+// positive borrow at or beyond the boundary while leaving repayments intact.
+func utilizationBorrowHeadroomRaw(debt decodedKaminoReserve) (uint64, error) {
+	if debt.utilizationLimitPct == 0 {
+		return math.MaxUint64, nil
+	}
+	if debt.utilizationLimitPct > 100 || debt.totalLiquiditySF == nil || debt.borrowedLiquiditySF == nil ||
+		debt.totalLiquiditySF.Sign() < 0 || debt.borrowedLiquiditySF.Sign() < 0 {
+		return 0, fmt.Errorf("invalid Kamino utilization boundary")
+	}
+	limitSF := new(big.Int).Mul(new(big.Int).Set(debt.totalLiquiditySF),
+		new(big.Int).SetUint64(uint64(debt.utilizationLimitPct)))
+	limitSF.Quo(limitSF, big.NewInt(100))
+	if debt.borrowedLiquiditySF.Cmp(limitSF) >= 0 {
+		return 0, nil
+	}
+	headroomSF := new(big.Int).Sub(limitSF, debt.borrowedLiquiditySF)
+	headroomSF.Sub(headroomSF, big.NewInt(1))
+	if headroomSF.Sign() <= 0 {
+		return 0, nil
+	}
+	headroomRaw := headroomSF.Rsh(headroomSF, 60)
+	if !headroomRaw.IsUint64() {
+		return 0, fmt.Errorf("Kamino utilization headroom exceeds u64")
+	}
+	return headroomRaw.Uint64(), nil
 }
 
 func ceilScaledBigFraction(value *big.Int) (uint64, error) {
