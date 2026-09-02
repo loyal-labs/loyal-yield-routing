@@ -1,0 +1,1033 @@
+{
+  "schema": "loyal-backyard-rwa-policy-resolution/v1",
+  "verdict": "PASS_LANE_ACCOUNTS_RESOLVED",
+  "broadcast": false,
+  "cluster": "mainnet-beta",
+  "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "commitment": "confirmed",
+  "contextSlot": 443625534,
+  "catalogSha256": "15abc1c2b9f172f6cfd8af3d77750978f596d8ee858309657117489fe4b3ed7b",
+  "routeSpecSha256": "6482b284172cd2b2da0317f9b33db737688d60cfe61f6b28c68da5ddbfc19550",
+  "policySeedBefore": "66",
+  "laneGraphExact": true,
+  "lanes": [
+    {
+      "key": "OnRe/ONyc/USDC",
+      "candidateIdentity": {
+        "evidence": "docs/evidence/kamino-multiply-v2-evidence.json#conditions.2",
+        "finalizedSlot": 440399487,
+        "market": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+        "collateralReserve": "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+        "collateralMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "debtReserve": "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+        "debtMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "collateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "debtTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      },
+      "resolved": {
+        "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lendingMarket": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+        "lendingMarketAuthority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+        "collateralReserve": {
+          "address": "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+          "lendingMarket": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+          "liquidityMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG",
+          "liquidityFeeReceiver": "6uDJD7iVkf84S1rZsbkPzxgnwgGvFaeMWmykUXEwyELT",
+          "collateralMint": "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd",
+          "collateralSupply": "2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo",
+          "status": 0,
+          "lastUpdateSlot": "443622858",
+          "lastUpdateStale": 0,
+          "dataSha256": "c061989a96606d3e7975f536c47aeeff2607fa7e34bfc5b86781bcbf93529996"
+        },
+        "debtReserve": {
+          "address": "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+          "lendingMarket": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+          "liquidityMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+          "liquidityFeeReceiver": "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+          "collateralMint": "DBieuGmP1xh36oZRwTtw722yJ8pzZ8wycYD9nY2BSxwn",
+          "collateralSupply": "6aTxdy7Hg7MHtE8NDBZWxxw9tnpj56XmdoCpkf8g2hxZ",
+          "status": 0,
+          "lastUpdateSlot": "443625054",
+          "lastUpdateStale": 0,
+          "dataSha256": "d6f53462cce6a1e8208ed8be086a6bbcc906542f32d51eca65e5923d4de43231"
+        },
+        "obligation": "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+        "collateralCustody": {
+          "address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "7f69dd3d0e8834a168fd70316c5d0154d18e139ffbc739a5f618f551d4b322cd"
+        },
+        "debtCustody": {
+          "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "b0815bbd50336545f8cf4e3b10fb4e468ec801e77537302ecaea5f1fb2b4057b"
+        },
+        "instructionSysvar": "Sysvar1nstructions1111111111111111111111111"
+      },
+      "exact": true
+    },
+    {
+      "key": "OnRe/ONyc/USDG",
+      "candidateIdentity": {
+        "evidence": "docs/evidence/kamino-multiply-v2-evidence.json#conditions.2",
+        "finalizedSlot": 440399487,
+        "market": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+        "collateralReserve": "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+        "collateralMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "debtReserve": "JBmLCoKqjdKSStK45onRqe6U6sxVgSpdXoeXe4h7NwJw",
+        "debtMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+        "collateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "debtTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      },
+      "resolved": {
+        "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lendingMarket": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+        "lendingMarketAuthority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+        "collateralReserve": {
+          "address": "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+          "lendingMarket": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+          "liquidityMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG",
+          "liquidityFeeReceiver": "6uDJD7iVkf84S1rZsbkPzxgnwgGvFaeMWmykUXEwyELT",
+          "collateralMint": "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd",
+          "collateralSupply": "2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo",
+          "status": 0,
+          "lastUpdateSlot": "443622858",
+          "lastUpdateStale": 0,
+          "dataSha256": "c061989a96606d3e7975f536c47aeeff2607fa7e34bfc5b86781bcbf93529996"
+        },
+        "debtReserve": {
+          "address": "JBmLCoKqjdKSStK45onRqe6U6sxVgSpdXoeXe4h7NwJw",
+          "lendingMarket": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+          "liquidityMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+          "liquidityTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "liquiditySupply": "3oHtmrDBP3qGb3PNkCg9kW59D3qUeCD96EBugr9zNcpf",
+          "liquidityFeeReceiver": "Fy1rhevyJfAQ3KJhfF783G5kA1tV4N63qDfhN2BurdiW",
+          "collateralMint": "AhQTWDKTg3VTZPZT69pAuUcpdPiK7DJc5EimwFYuQTs7",
+          "collateralSupply": "jkovNSPjRPE53U7TpvbqWYcwUEjy7NWQ2b7q4S4yUv8",
+          "status": 0,
+          "lastUpdateSlot": "443625398",
+          "lastUpdateStale": 0,
+          "dataSha256": "291d3b8243611722f31624f7999de0a8f1c545c8a4d21bd3e97a7b4b4bf50887"
+        },
+        "obligation": "3vajvuKy1nRYSjRAcsJPsh2yPBxRDVjuryqT4V8NcE8k",
+        "collateralCustody": {
+          "address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "7f69dd3d0e8834a168fd70316c5d0154d18e139ffbc739a5f618f551d4b322cd"
+        },
+        "debtCustody": {
+          "address": "2PHU3gdj32bdtuvFqSSzji3G8mV1G2vE1UbXtvvdvqgn",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "mint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "5cd2ab8a383c49e5d74f8bfeb680cfb1a12bcffc7b4341901d4f43f3d9024f48"
+        },
+        "instructionSysvar": "Sysvar1nstructions1111111111111111111111111"
+      },
+      "exact": true
+    },
+    {
+      "key": "OnRe/ONyc/USDS",
+      "candidateIdentity": {
+        "evidence": "docs/evidence/kamino-multiply-v2-evidence.json#conditions.2",
+        "finalizedSlot": 440399487,
+        "market": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+        "collateralReserve": "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+        "collateralMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "debtReserve": "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC",
+        "debtMint": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+        "collateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "debtTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      },
+      "resolved": {
+        "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lendingMarket": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+        "lendingMarketAuthority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+        "collateralReserve": {
+          "address": "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+          "lendingMarket": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+          "liquidityMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG",
+          "liquidityFeeReceiver": "6uDJD7iVkf84S1rZsbkPzxgnwgGvFaeMWmykUXEwyELT",
+          "collateralMint": "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd",
+          "collateralSupply": "2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo",
+          "status": 0,
+          "lastUpdateSlot": "443622858",
+          "lastUpdateStale": 0,
+          "dataSha256": "c061989a96606d3e7975f536c47aeeff2607fa7e34bfc5b86781bcbf93529996"
+        },
+        "debtReserve": {
+          "address": "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC",
+          "lendingMarket": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+          "liquidityMint": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "21Skwocv5cJoftyejSTtXVaHJWTg88xcWGQtnRvUyKLx",
+          "liquidityFeeReceiver": "CmMAn2UtLWHsQhwv31Trz4BZwVravs2jgxZYK2daTHaK",
+          "collateralMint": "FPKrhujvqK79aXJXYLYmChTGQq9rwnfZs68oXXVQ5qmE",
+          "collateralSupply": "HTVP1QpuVT4KuzrmpV8zm21WTRFJu7mVFa7GjXYiP1XP",
+          "status": 0,
+          "lastUpdateSlot": "443624256",
+          "lastUpdateStale": 0,
+          "dataSha256": "4fcd50bd71440d1bc31fa9363239058e8139cf139a9385ba430397a349e7def9"
+        },
+        "obligation": "5Xyh3LiVSNPwBJGherrdCYgz9Dyna7xoRYgMaTu5xBeB",
+        "collateralCustody": {
+          "address": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "7f69dd3d0e8834a168fd70316c5d0154d18e139ffbc739a5f618f551d4b322cd"
+        },
+        "debtCustody": {
+          "address": "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "24a94896a99de510145bb8c806e2b992630e48c3339305c405abf0d8b87cf911"
+        },
+        "instructionSysvar": "Sysvar1nstructions1111111111111111111111111"
+      },
+      "exact": true
+    },
+    {
+      "key": "Prime/PRIME/USDC",
+      "candidateIdentity": {
+        "evidence": "docs/evidence/kamino-multiply-v2-evidence.json#conditions.2",
+        "finalizedSlot": 440399487,
+        "market": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+        "collateralReserve": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+        "collateralMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "debtReserve": "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+        "debtMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "collateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "debtTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      },
+      "resolved": {
+        "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lendingMarket": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+        "lendingMarketAuthority": "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+        "collateralReserve": {
+          "address": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+          "lendingMarket": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+          "liquidityMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352",
+          "liquidityFeeReceiver": "C8zsSvMzpVP4atgHTHQVwmFMer2smzdavQnaK3owTRdB",
+          "collateralMint": "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
+          "collateralSupply": "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN",
+          "status": 0,
+          "lastUpdateSlot": "443620212",
+          "lastUpdateStale": 0,
+          "dataSha256": "a51e859b139f47755a2932033cb562ee72b278aebc92fc8f57333986f77d70a4"
+        },
+        "debtReserve": {
+          "address": "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+          "lendingMarket": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+          "liquidityMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC",
+          "liquidityFeeReceiver": "BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6",
+          "collateralMint": "DKaVQFXD6Qz4USTkRWyPun3oU6r1RfYsWJ8YqLpnSnN5",
+          "collateralSupply": "CtgiQTkAQp8h1ayqdE21Cr56qekdqeQ19da3j1KLgSUn",
+          "status": 0,
+          "lastUpdateSlot": "443625054",
+          "lastUpdateStale": 0,
+          "dataSha256": "3f7301f4dee064f21ae7674c13153c1009648189cd7e7e95db8b1bfd69eb53d3"
+        },
+        "obligation": "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
+        "collateralCustody": {
+          "address": "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "4910bbe1642bc5e7f85378383edf275e1015cbcb94d8a2922d8b45030d8325ca"
+        },
+        "debtCustody": {
+          "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "b0815bbd50336545f8cf4e3b10fb4e468ec801e77537302ecaea5f1fb2b4057b"
+        },
+        "instructionSysvar": "Sysvar1nstructions1111111111111111111111111"
+      },
+      "exact": true
+    },
+    {
+      "key": "Prime/PRIME/PYUSD",
+      "candidateIdentity": {
+        "evidence": "docs/evidence/kamino-multiply-v2-evidence.json#conditions.2",
+        "finalizedSlot": 440399487,
+        "market": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+        "collateralReserve": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+        "collateralMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "debtReserve": "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5",
+        "debtMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "collateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "debtTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      },
+      "resolved": {
+        "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lendingMarket": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+        "lendingMarketAuthority": "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+        "collateralReserve": {
+          "address": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+          "lendingMarket": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+          "liquidityMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352",
+          "liquidityFeeReceiver": "C8zsSvMzpVP4atgHTHQVwmFMer2smzdavQnaK3owTRdB",
+          "collateralMint": "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
+          "collateralSupply": "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN",
+          "status": 0,
+          "lastUpdateSlot": "443620212",
+          "lastUpdateStale": 0,
+          "dataSha256": "a51e859b139f47755a2932033cb562ee72b278aebc92fc8f57333986f77d70a4"
+        },
+        "debtReserve": {
+          "address": "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5",
+          "lendingMarket": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+          "liquidityMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+          "liquidityTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "liquiditySupply": "4LF3i8grZPRbk8d6gXvzRux4rYjGd5AmqrpLLYFpPKKt",
+          "liquidityFeeReceiver": "4b9U55muKtwx9RimJSuztvyZaKWkmaoferVexgvxrYJr",
+          "collateralMint": "2d835sBokkyWMeiZ7SzwFxkGefsSDYi48paVWmYDs4Zo",
+          "collateralSupply": "41cVGqN41zAk4dgC28cHBX5ANkEUr7pxHimHjELcu3Aw",
+          "status": 0,
+          "lastUpdateSlot": "443624484",
+          "lastUpdateStale": 0,
+          "dataSha256": "c2c0e9b8f028273fcba232dfad7db01e9c7aed3a82b885100ce03ad8b28c2b62"
+        },
+        "obligation": "GAnakFSJAhNMrH3B8PRLxHcEtWVL21xyALRiWx3baS5t",
+        "collateralCustody": {
+          "address": "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "4910bbe1642bc5e7f85378383edf275e1015cbcb94d8a2922d8b45030d8325ca"
+        },
+        "debtCustody": {
+          "address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "aa1a14899b12beacd1763f5cebf673933b7f8227d55d79d1a040959e7410e8dd"
+        },
+        "instructionSysvar": "Sysvar1nstructions1111111111111111111111111"
+      },
+      "exact": true
+    },
+    {
+      "key": "Prime/PRIME/USDS",
+      "candidateIdentity": {
+        "evidence": "docs/evidence/kamino-multiply-v2-evidence.json#conditions.2",
+        "finalizedSlot": 440399487,
+        "market": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+        "collateralReserve": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+        "collateralMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "debtReserve": "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4",
+        "debtMint": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+        "collateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "debtTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      },
+      "resolved": {
+        "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lendingMarket": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+        "lendingMarketAuthority": "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+        "collateralReserve": {
+          "address": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+          "lendingMarket": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+          "liquidityMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352",
+          "liquidityFeeReceiver": "C8zsSvMzpVP4atgHTHQVwmFMer2smzdavQnaK3owTRdB",
+          "collateralMint": "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
+          "collateralSupply": "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN",
+          "status": 0,
+          "lastUpdateSlot": "443620212",
+          "lastUpdateStale": 0,
+          "dataSha256": "a51e859b139f47755a2932033cb562ee72b278aebc92fc8f57333986f77d70a4"
+        },
+        "debtReserve": {
+          "address": "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4",
+          "lendingMarket": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+          "liquidityMint": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "5tP1kDJBYnjtrpUaRQhsrU1Y28ahiJVjz8p9mbqJFpz5",
+          "liquidityFeeReceiver": "DjmdtvsvctUXCZ32y6UGdCEvXPTds6Ci7LFnVhw5HaQY",
+          "collateralMint": "66VV9X7UovT9QbbwzQmBCDyC4FDgxfyArVWGXcR9CfLk",
+          "collateralSupply": "CjXKMfFgRnPUmZ3YqFqhLjeCwittrpdsj71jXB7aPerA",
+          "status": 0,
+          "lastUpdateSlot": "443624256",
+          "lastUpdateStale": 0,
+          "dataSha256": "58d30c232be96b191a62f8235419f27ceff4602986ae6b8fa7952697dde9f11a"
+        },
+        "obligation": "6aqRhAxxjxdoAzgsEMrCCKCEEYMoLDLRKTu5t8nRuyYu",
+        "collateralCustody": {
+          "address": "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "4910bbe1642bc5e7f85378383edf275e1015cbcb94d8a2922d8b45030d8325ca"
+        },
+        "debtCustody": {
+          "address": "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "24a94896a99de510145bb8c806e2b992630e48c3339305c405abf0d8b87cf911"
+        },
+        "instructionSysvar": "Sysvar1nstructions1111111111111111111111111"
+      },
+      "exact": true
+    },
+    {
+      "key": "Maple/syrupUSDC/USDC",
+      "candidateIdentity": {
+        "evidence": "docs/evidence/kamino-multiply-v2-evidence.json#conditions.2",
+        "finalizedSlot": 440399487,
+        "market": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+        "collateralReserve": "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+        "collateralMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "debtReserve": "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+        "debtMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "collateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "debtTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+      },
+      "resolved": {
+        "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lendingMarket": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+        "lendingMarketAuthority": "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
+        "collateralReserve": {
+          "address": "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+          "lendingMarket": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+          "liquidityMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i",
+          "liquidityFeeReceiver": "AZM6gEBLxCexre4VQxxRugDhDagu4K6xBvV8wBR86ztD",
+          "collateralMint": "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu",
+          "collateralSupply": "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58",
+          "status": 0,
+          "lastUpdateSlot": "443623447",
+          "lastUpdateStale": 0,
+          "dataSha256": "c0d7aac21faeef6068aa43902315be50220e3bbd7af2c4661d2f1942e3935b69"
+        },
+        "debtReserve": {
+          "address": "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+          "lendingMarket": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+          "liquidityMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "BBcwMNSMyhhBnYE9pevEvkxKHGzTafMP9v3j7Kk7nAWM",
+          "liquidityFeeReceiver": "HH7GLnRcGHJrdkEueVVj7mccNUjnSeWobDmtu9cHLkJV",
+          "collateralMint": "6M89FWrQaqcy3domy85J1a1wVMnviL86WeUqbqTXf1qb",
+          "collateralSupply": "25x4aEFoJE3bk4sdNLgHrrmchyop1JvcmGA4ccA6tWWT",
+          "status": 0,
+          "lastUpdateSlot": "443625054",
+          "lastUpdateStale": 0,
+          "dataSha256": "1dc0aeb274f489bd9b6142191f65c295733732b25ee36e52c5d814882be5b0df"
+        },
+        "obligation": "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT",
+        "collateralCustody": {
+          "address": "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "49fda9cbc2d3983cc12a3cd37f244b49bb1e3c04cf9b94a651821206daa30bef"
+        },
+        "debtCustody": {
+          "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "b0815bbd50336545f8cf4e3b10fb4e468ec801e77537302ecaea5f1fb2b4057b"
+        },
+        "instructionSysvar": "Sysvar1nstructions1111111111111111111111111"
+      },
+      "exact": true
+    },
+    {
+      "key": "Maple/syrupUSDC/USDG",
+      "candidateIdentity": {
+        "evidence": "docs/evidence/kamino-multiply-v2-evidence.json#conditions.2",
+        "finalizedSlot": 440399487,
+        "market": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+        "collateralReserve": "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+        "collateralMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "debtReserve": "HokDw9LaDf9qNzJf4F21RjHU3K4pRBkGQENvWnRGyRbn",
+        "debtMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+        "collateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "debtTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      },
+      "resolved": {
+        "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lendingMarket": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+        "lendingMarketAuthority": "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
+        "collateralReserve": {
+          "address": "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+          "lendingMarket": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+          "liquidityMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i",
+          "liquidityFeeReceiver": "AZM6gEBLxCexre4VQxxRugDhDagu4K6xBvV8wBR86ztD",
+          "collateralMint": "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu",
+          "collateralSupply": "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58",
+          "status": 0,
+          "lastUpdateSlot": "443623447",
+          "lastUpdateStale": 0,
+          "dataSha256": "c0d7aac21faeef6068aa43902315be50220e3bbd7af2c4661d2f1942e3935b69"
+        },
+        "debtReserve": {
+          "address": "HokDw9LaDf9qNzJf4F21RjHU3K4pRBkGQENvWnRGyRbn",
+          "lendingMarket": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+          "liquidityMint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+          "liquidityTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "liquiditySupply": "Go9MPjSG2tL5SjtpM3QCw2rybxJJBMSFZabz9Fn4o2Xs",
+          "liquidityFeeReceiver": "AHLKVRaWPHWw3Jt3phs2peLFxsnYwdh9vJ28GAjqVYSc",
+          "collateralMint": "4AZJjXdX9ZZEmSUpXV9EbgQn8ya4PsHsztdrL1KzhiPq",
+          "collateralSupply": "6YY8W3qGJbF39A2QquK3WzhYZju8MUtL1VCHNxVomRqo",
+          "status": 0,
+          "lastUpdateSlot": "443625398",
+          "lastUpdateStale": 0,
+          "dataSha256": "fa2b39c246a3a3bc2bcf0960b6b24ade270af8acb092666b804850d032f7da9a"
+        },
+        "obligation": "9UxhWRgseo4dbhGxS84AV9fakD92d4GJBJDBJSAZDNB8",
+        "collateralCustody": {
+          "address": "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "49fda9cbc2d3983cc12a3cd37f244b49bb1e3c04cf9b94a651821206daa30bef"
+        },
+        "debtCustody": {
+          "address": "2PHU3gdj32bdtuvFqSSzji3G8mV1G2vE1UbXtvvdvqgn",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "mint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "5cd2ab8a383c49e5d74f8bfeb680cfb1a12bcffc7b4341901d4f43f3d9024f48"
+        },
+        "instructionSysvar": "Sysvar1nstructions1111111111111111111111111"
+      },
+      "exact": true
+    },
+    {
+      "key": "Maple/syrupUSDC/PYUSD",
+      "candidateIdentity": {
+        "evidence": "docs/evidence/kamino-multiply-v2-evidence.json#conditions.2",
+        "finalizedSlot": 440399487,
+        "market": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+        "collateralReserve": "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+        "collateralMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "debtReserve": "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS",
+        "debtMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "collateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "debtTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      },
+      "resolved": {
+        "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lendingMarket": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+        "lendingMarketAuthority": "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
+        "collateralReserve": {
+          "address": "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+          "lendingMarket": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+          "liquidityMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i",
+          "liquidityFeeReceiver": "AZM6gEBLxCexre4VQxxRugDhDagu4K6xBvV8wBR86ztD",
+          "collateralMint": "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu",
+          "collateralSupply": "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58",
+          "status": 0,
+          "lastUpdateSlot": "443623447",
+          "lastUpdateStale": 0,
+          "dataSha256": "c0d7aac21faeef6068aa43902315be50220e3bbd7af2c4661d2f1942e3935b69"
+        },
+        "debtReserve": {
+          "address": "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS",
+          "lendingMarket": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+          "liquidityMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+          "liquidityTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "liquiditySupply": "GUENeLN1ufX4K5622DbyYoQFhaWxMKoCFycvLSEYsykN",
+          "liquidityFeeReceiver": "AwnzukUiajn7b3T9hXcwy19RLPZcHmLANUeqZnzXT6dU",
+          "collateralMint": "EuMh3FEXw5WteSS6mu2ypa2VkFQGjVGJbdJhi9R2o43F",
+          "collateralSupply": "FHZYi5i4uVsnnNGYjTyPJuwbLaufkSRT2wGsB6ZcGGx6",
+          "status": 0,
+          "lastUpdateSlot": "443624484",
+          "lastUpdateStale": 0,
+          "dataSha256": "863bcf715a526169d93afa443e8d78eac202e5ed5e43d8c0ca7829a36b10a40e"
+        },
+        "obligation": "ANhCkVi4siA36zbDKxszh8xKg8totzjwX6GXGzoxbvue",
+        "collateralCustody": {
+          "address": "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "49fda9cbc2d3983cc12a3cd37f244b49bb1e3c04cf9b94a651821206daa30bef"
+        },
+        "debtCustody": {
+          "address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "aa1a14899b12beacd1763f5cebf673933b7f8227d55d79d1a040959e7410e8dd"
+        },
+        "instructionSysvar": "Sysvar1nstructions1111111111111111111111111"
+      },
+      "exact": true
+    },
+    {
+      "key": "AUTO/AUTO/PYUSD",
+      "candidateIdentity": {
+        "evidence": "docs/evidence/kamino-multiply-v2-evidence.json#conditions.2",
+        "finalizedSlot": 440399487,
+        "market": "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk",
+        "collateralReserve": "G85AgoBdW8zSQBq5i4E8aBLCDdRYGgK44CzU1d1NdBzX",
+        "collateralMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+        "debtReserve": "6A8D3ExQ4CdiZTBmij7MScUeKsgs6mSHksYzJbiY61FM",
+        "debtMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "collateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "debtTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      },
+      "resolved": {
+        "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lendingMarket": "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk",
+        "lendingMarketAuthority": "2eyLWowHqsWNuRavNc5g6e8NZiypgJTHEvW2hMum3BNS",
+        "collateralReserve": {
+          "address": "G85AgoBdW8zSQBq5i4E8aBLCDdRYGgK44CzU1d1NdBzX",
+          "lendingMarket": "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk",
+          "liquidityMint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "7W7sahTJjE7D4UPqmp8i4fd6AUm1hFjnUqNSjY78sN5F",
+          "liquidityFeeReceiver": "14fMnBRNiB7w6m3Q6TfcNNvMAxxt6bDakf15aSigfCBo",
+          "collateralMint": "Cjh2wuFnuSiFH6j6Q8f8YvkrHgt3LYhAZhz6JbtN7xfQ",
+          "collateralSupply": "8no8zpNDwCXLjhPr5Gb9UWHfEMUxmNFUHAjbR1WDDdvc",
+          "status": 0,
+          "lastUpdateSlot": "443621851",
+          "lastUpdateStale": 0,
+          "dataSha256": "363c39f78293d09d8974eed2c07fcb9e2b280defe139f9e155c97aba2350f8ca"
+        },
+        "debtReserve": {
+          "address": "6A8D3ExQ4CdiZTBmij7MScUeKsgs6mSHksYzJbiY61FM",
+          "lendingMarket": "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk",
+          "liquidityMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+          "liquidityTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "liquiditySupply": "FZPPq1U7BqpqAnV7naHThsdumZiUWJY4Q4784HQ8a3KM",
+          "liquidityFeeReceiver": "HFYjFt3AYazic97CdXwZctGGeAuarCud6h6baEStg8Nh",
+          "collateralMint": "92zgpHWPcGJNRxjn3iJPnxupiEeesXktdYYrgsdAsPoz",
+          "collateralSupply": "6a4QciTthBmBhFBnZy6omEiK1h3qeKZ8aQmMfZvvqT1U",
+          "status": 0,
+          "lastUpdateSlot": "443624484",
+          "lastUpdateStale": 0,
+          "dataSha256": "0ba3285a4cc8e3a5a5d8d2f27ed6a0f99934629723459ac3be1c1c7dea2f0329"
+        },
+        "obligation": "DJhTPmvAh5xf4X3Cwfchn43psfCgXozRoNXUMJAiDS41",
+        "collateralCustody": {
+          "address": "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "7f860f8409683071206b3cc4e0bc318ab163d62097e196ea7fc6e097f4d60542"
+        },
+        "debtCustody": {
+          "address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "aa1a14899b12beacd1763f5cebf673933b7f8227d55d79d1a040959e7410e8dd"
+        },
+        "instructionSysvar": "Sysvar1nstructions1111111111111111111111111"
+      },
+      "exact": true
+    },
+    {
+      "key": "Ethena/USDe/PYUSD",
+      "candidateIdentity": {
+        "evidence": "docs/evidence/kamino-multiply-rwa-all-pools/mainnet-universe.json",
+        "finalizedSlot": 440430317,
+        "market": "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF",
+        "collateralReserve": "2erD9GTGcaQbLsVSQweg3HvMpfKxScmz95raWv8H4iPN",
+        "collateralMint": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+        "debtReserve": "EDf6dGbVnCCABbNhE3mp5i1jV2JhDAVmTWb1ztij1Yhs",
+        "debtMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+        "collateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "debtTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+      },
+      "resolved": {
+        "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lendingMarket": "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF",
+        "lendingMarketAuthority": "GuWEkEJb5bh8Ai2gaYmZWMTUq8MrFeoaDZ89BrQfB1FZ",
+        "collateralReserve": {
+          "address": "2erD9GTGcaQbLsVSQweg3HvMpfKxScmz95raWv8H4iPN",
+          "lendingMarket": "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF",
+          "liquidityMint": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+          "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "liquiditySupply": "BcqeM19i3njWEVPmQse2NAZGnTsTVdfuNYXWfmujoLff",
+          "liquidityFeeReceiver": "Gg9sSfizvFtuo22NoYQsS1oomSSwFmSRUGqoqmqgqRff",
+          "collateralMint": "8DQhJtZVPLLSqFkaQqZDoRFRPD68xeHQkEQ69Gz7VMaK",
+          "collateralSupply": "2KHE9hunJFBhkjT355cBDfXZmptk1mx2W5NUgc27N68k",
+          "status": 0,
+          "lastUpdateSlot": "443625369",
+          "lastUpdateStale": 0,
+          "dataSha256": "93d71b4d1ef90e820cb8bc550d6f6e69a1720629b4be35a7b1a6b953c0bd7b92"
+        },
+        "debtReserve": {
+          "address": "EDf6dGbVnCCABbNhE3mp5i1jV2JhDAVmTWb1ztij1Yhs",
+          "lendingMarket": "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF",
+          "liquidityMint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+          "liquidityTokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "liquiditySupply": "8Am2NKsHozvH9J1Ub5ntdLhGySUsD5P4yYBkcoPQ6NXQ",
+          "liquidityFeeReceiver": "GtXzva7jBAk2Khs8h6fFXLw6vjb82vQaSZRUz6FWMrUv",
+          "collateralMint": "34nchkRYiZ3FjSAAKT4MZR8Nv2Vrz8ynXrHyp1rbxTJx",
+          "collateralSupply": "ArN9Hw6JVMZx34WCX2Qq7vHGeMTene5MAQ9fUhjmGCTF",
+          "status": 0,
+          "lastUpdateSlot": "443625369",
+          "lastUpdateStale": 0,
+          "dataSha256": "af3cfcf1fdec50585f496af1176220a0eedf60778fb1f4a3ec135ca6ec8be8b8"
+        },
+        "obligation": "5CDZVkkC9wH3FTo4xy679qorb4xMt5cHf2nhsRcTUsQr",
+        "collateralCustody": {
+          "address": "6wSE9RKCReDiDiW4tSRiieFHSaVS2gTMFCVBB8mimtVk",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "mint": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "4eaa703dcd3669cd94795051d9d85756e77d5a7ca830fb23d226e7a3fcd24c6b"
+        },
+        "debtCustody": {
+          "address": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+          "initialized": true,
+          "exact": true,
+          "ownerProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "dataSha256": "aa1a14899b12beacd1763f5cebf673933b7f8227d55d79d1a040959e7410e8dd"
+        },
+        "instructionSysvar": "Sysvar1nstructions1111111111111111111111111"
+      },
+      "exact": true
+    }
+  ],
+  "swap": {
+    "jupiterProgram": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+    "edges": [
+      {
+        "from": "USDC",
+        "to": "ONyc"
+      },
+      {
+        "from": "USDC",
+        "to": "PRIME"
+      },
+      {
+        "from": "USDC",
+        "to": "syrupUSDC"
+      },
+      {
+        "from": "USDC",
+        "to": "AUTO"
+      },
+      {
+        "from": "USDC",
+        "to": "USDe"
+      },
+      {
+        "from": "USDG",
+        "to": "ONyc"
+      },
+      {
+        "from": "USDG",
+        "to": "PRIME"
+      },
+      {
+        "from": "USDG",
+        "to": "syrupUSDC"
+      },
+      {
+        "from": "USDG",
+        "to": "AUTO"
+      },
+      {
+        "from": "USDG",
+        "to": "USDe"
+      },
+      {
+        "from": "USDS",
+        "to": "ONyc"
+      },
+      {
+        "from": "USDS",
+        "to": "PRIME"
+      },
+      {
+        "from": "USDS",
+        "to": "syrupUSDC"
+      },
+      {
+        "from": "USDS",
+        "to": "AUTO"
+      },
+      {
+        "from": "USDS",
+        "to": "USDe"
+      },
+      {
+        "from": "PYUSD",
+        "to": "ONyc"
+      },
+      {
+        "from": "PYUSD",
+        "to": "PRIME"
+      },
+      {
+        "from": "PYUSD",
+        "to": "syrupUSDC"
+      },
+      {
+        "from": "PYUSD",
+        "to": "AUTO"
+      },
+      {
+        "from": "PYUSD",
+        "to": "USDe"
+      },
+      {
+        "from": "ONyc",
+        "to": "USDC"
+      },
+      {
+        "from": "ONyc",
+        "to": "USDG"
+      },
+      {
+        "from": "ONyc",
+        "to": "USDS"
+      },
+      {
+        "from": "ONyc",
+        "to": "PYUSD"
+      },
+      {
+        "from": "PRIME",
+        "to": "USDC"
+      },
+      {
+        "from": "PRIME",
+        "to": "USDG"
+      },
+      {
+        "from": "PRIME",
+        "to": "USDS"
+      },
+      {
+        "from": "PRIME",
+        "to": "PYUSD"
+      },
+      {
+        "from": "syrupUSDC",
+        "to": "USDC"
+      },
+      {
+        "from": "syrupUSDC",
+        "to": "USDG"
+      },
+      {
+        "from": "syrupUSDC",
+        "to": "USDS"
+      },
+      {
+        "from": "syrupUSDC",
+        "to": "PYUSD"
+      },
+      {
+        "from": "AUTO",
+        "to": "USDC"
+      },
+      {
+        "from": "AUTO",
+        "to": "USDG"
+      },
+      {
+        "from": "AUTO",
+        "to": "USDS"
+      },
+      {
+        "from": "AUTO",
+        "to": "PYUSD"
+      },
+      {
+        "from": "USDe",
+        "to": "USDC"
+      },
+      {
+        "from": "USDe",
+        "to": "USDG"
+      },
+      {
+        "from": "USDe",
+        "to": "USDS"
+      },
+      {
+        "from": "USDe",
+        "to": "PYUSD"
+      },
+      {
+        "from": "USDC",
+        "to": "USDG"
+      },
+      {
+        "from": "USDC",
+        "to": "USDS"
+      },
+      {
+        "from": "USDC",
+        "to": "PYUSD"
+      },
+      {
+        "from": "USDG",
+        "to": "USDC"
+      },
+      {
+        "from": "USDG",
+        "to": "USDS"
+      },
+      {
+        "from": "USDG",
+        "to": "PYUSD"
+      },
+      {
+        "from": "USDS",
+        "to": "USDC"
+      },
+      {
+        "from": "USDS",
+        "to": "USDG"
+      },
+      {
+        "from": "USDS",
+        "to": "PYUSD"
+      },
+      {
+        "from": "PYUSD",
+        "to": "USDC"
+      },
+      {
+        "from": "PYUSD",
+        "to": "USDG"
+      },
+      {
+        "from": "PYUSD",
+        "to": "USDS"
+      }
+    ],
+    "custodies": {
+      "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5": {
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "custody": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3"
+      },
+      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": {
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "custody": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"
+      },
+      "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH": {
+        "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+        "custody": "2PHU3gdj32bdtuvFqSSzji3G8mV1G2vE1UbXtvvdvqgn"
+      },
+      "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA": {
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "custody": "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV"
+      },
+      "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7": {
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "custody": "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"
+      },
+      "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": {
+        "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+        "custody": "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+      },
+      "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj": {
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "custody": "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"
+      },
+      "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm": {
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "custody": "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G"
+      },
+      "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT": {
+        "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "custody": "6wSE9RKCReDiDiW4tSRiieFHSaVS2gTMFCVBB8mimtVk"
+      }
+    },
+    "structuralSlices": [
+      "stable-to-rwa",
+      "rwa-to-stable",
+      "stable-to-stable"
+    ],
+    "headerEvidence": "docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json"
+  },
+  "addressesResolved": true,
+  "resumeCondition": null
+}

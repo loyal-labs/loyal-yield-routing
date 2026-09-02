@@ -1,0 +1,757 @@
+{
+  "schema": "loyal-backyard-rwa-policy-signed-unsent/v1",
+  "verdict": "PASS",
+  "broadcast": false,
+  "signedUnsent": true,
+  "cluster": "mainnet-beta",
+  "commitment": "confirmed",
+  "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd",
+  "positiveGroups": [
+    {
+      "name": "three-lane-markets",
+      "broadcast": false,
+      "bundles": [
+        {
+          "name": "OnRe/ONyc/USDC/deposit",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-market-OnRe-ONyc-USDC-v15.json",
+          "sourceSha256": "3911e40aa5708c9c26e3e85e4a38aeb2f63a9c99dcc063342b9604e265051e44",
+          "broadcast": false,
+          "role": "deposit",
+          "signature": "EDcg6a1vYXgyRGQdgxnKEZKrotPEXz7sAyyvwzednRASpE7SNijyWEJEetRKZNYceP3vLEqFRravQawVijvegqT",
+          "packetBytes": 730,
+          "transactionBase64": "AQtl9Rv8TNiiVqXg31h5H2Dn7FAYTs32Whnrh4S2gJS44bSJTlcKYdXC+5DjBVtFlZ1B22A5k5ojE1dWmJmx/g6AAQAIEUqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtA2mU3aJhxlSstwt6UC9z81Ps1IeHrZZVPJvoS9vGRi2AGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+jGkMnwR3RfdugefV93etqk9b9zLLSgKnDckeBDAyMHTUrwNDuQmKyoCfK2araN6GgFvnLJdpssxgcbZ+7UT811/CZ9VgXub5ZOuolyJxDSjkFI2XVe3QWsjuFVtukAcjbDCrVsAGoAjiQmLP6B0glG15xiIVY3awn7yuIGgC3uyF9Zw16N8WYDkRGzdghKxFNPuzKOfEZgSIwAV8hRdRySNB4pgGopNdImz2KBsmfq4ScSZw5XNI8hA6xWCSViIUAZ+nHraWi0mg8kxgywyiNpakUsc8wgWYUL7AQFv9BxBLlb4ogxg6tEWWo2CxVjIe08VmEVMh3ME4viNauMZdZ3dDxsEjdbgNPeUmdrwjbU2KM0FTQ/H0fkEF5I79AjM+kNoFiav6tQ+huksLT4PpjXVaKG96BuJ8Jjaesbl2fGuBLKssRJYzONoLEGLqHL/PfkRAnEvFa8Str5ps0NbAAgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQan1RcYe9FmNdrUBFX9wsDBJMaPIVZ1pdu6y18IAAAA2LAQF2PT5R8SbmFW3oXejGEwWbhEaNDaP+iioiUcxwEDBx9R6D1G97T1mumSNCbptT+xB+kU5FIJKSY2cr52YAEJEQEJAAIDCgsEDAUGBwgNDg8QPlpRu1EnRoBOAAEBAQEBAAAAAAEAJgAAAAEKEQABAgMEBQYHCAkKCwsMCgoNEADY4L8bzJdmr6HVCS8AAAAAAA==",
+          "transactionSha256": "81da208a1c7e1252f8a781a81a8abb720020c058e03dc5fd740a092e5f369295",
+          "simulation": {
+            "err": null,
+            "contextSlot": 443807295
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "d9abbf9bb2c02293bdc63a845c18ce0cdbf51c80b5c6b35c4e0806a6e8cdd39a",
+          "chainPostStateSha256": "d9abbf9bb2c02293bdc63a845c18ce0cdbf51c80b5c6b35c4e0806a6e8cdd39a",
+          "confirmedReadbackSlot": 443807295,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd"
+        },
+        {
+          "name": "Prime/PRIME/USDC/deposit",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-market-Prime-PRIME-USDC-v15.json",
+          "sourceSha256": "11961aad6c8fa5e3b51b84ea8f6635ef1620ec06049e6a0e60fab100b247ddab",
+          "broadcast": false,
+          "role": "deposit",
+          "signature": "Fn67hmiFDpFLfZn6et6DnsjfcA4dN7hx8LpN8ZVr5bpxYcrJCo1PFTMh8L8mjHdkaTxEdWA4zcfBeDEnSgEoHWF",
+          "packetBytes": 730,
+          "transactionBase64": "AQy+Uv9/sf4sMeVRQfs2E5APYbQ4GzWzuHCNTbhZvFHxFw6z/aK4iRWcIgmlQrwdQ6j3CDe1rIfrBRCNCVcdnwCAAQAIEUqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAqYvzFLFYmmOK2hpto8tlAxjxP+P8nW1lhRhgrvPdV10GhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+oPnm+EDW9fs3bGIIAvrqeTajoGAc4O6cEtqVvzAlSbLm51c5Ye85VhsZclpKS3Pqs1IXPFo7cV7KqkoiXo9HH7bJLWOFu1fPGqXU6585/IEIvyVLDZvxVQJezT7qZ5kedU3yNh8fjZF7uo2nz5yCq1Sqapo+mjb4LVKEW8F0LqfyyoIVjgJbzJYPVwH5L+uRMoJQuhnMeMbTbSGtHXZhvG935LsGhNbQJXpcI5O/zeP6AgtSF4FAykNOo2J7hS7xQZ+nHraWi0mg8kxgywyiNpakUsc8wgWYUL7AQFv9BxBr8eDyu+BW7O+zKInm8K4MO0Te2BYkaWh0Q1sOU5siWl9WrQhD+MU+Ceeh2FvV3pYtaNos+hDFKse807gDb7SvCZ1n0YO5fdD7WbSfI8qViO/OdU+1XWVUyBmHm4T4OPaBLKssRJYzONoLEGLqHL/PfkRAnEvFa8Str5ps0NbAAgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQan1RcYe9FmNdrUBFX9wsDBJMaPIVZ1pdu6y18IAAAA2LAQF2PT5R8SbmFW3oXejGEwWbhEaNDaP+iioiUcxwFPlWNmGUTcY8A0lBKxs1Ep33SNEvTkBcAN2EkX+o7V2AEJEQEJAAIDCgsEDAUGBwgNDg8QPlpRu1EnRoBOAAEBAQEBAAAAAAEAJgAAAAEKEQABAgMEBQYHCAkKCwsMCgoNEADY4L8bzJdmrwTtDAAAAAAAAA==",
+          "transactionSha256": "79e2f3e9da5591f1e5df970f55260966ba61206c19eb2c5437db0f568e023c73",
+          "simulation": {
+            "err": null,
+            "contextSlot": 443807300
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "7cfbbd4e50c10bc2e4bef3949feecd2f452a378a7d31202bd0c8e623602a3d85",
+          "chainPostStateSha256": "7cfbbd4e50c10bc2e4bef3949feecd2f452a378a7d31202bd0c8e623602a3d85",
+          "confirmedReadbackSlot": 443807301,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd"
+        },
+        {
+          "name": "Maple/syrupUSDC/USDC/deposit",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-market-Maple-syrupUSDC-USDC-v15.json",
+          "sourceSha256": "97ce8c331f02cdb4323d9e92249cd8bf1624245b4a27cc316b829cfe69d32f6b",
+          "broadcast": false,
+          "role": "deposit",
+          "signature": "4PfQE57Czaadg7SiCXFp6hZodA6x5bwhzXaRW2utaaFJfhgubCKjJroV464hrGBejtt3mE8Nu4vrpmkcYgJmfsBi",
+          "packetBytes": 730,
+          "transactionBase64": "AamYCndUEG13tstw6HMaxL4x75kcvKFZSi8ZNwkVExJDCh4dbO5dI89wNKvGkQEvsb81DmldIKa3kWrLjs/ddgWAAQAIEUqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAQQ+B4NtR9PqOv03gDwAJGXZACh/MPL/zl0whf6g3xqsGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+uwtzWdOY/0YejsQUIWP9rIrtKLL8QJVMQgaxLN81sAYk5wUTZQRVXmQ++jUj3660XemUH3vj3TN4funUlEDcCNuk0BQturJVbQWY4Xn0DGE+vGsdjDYmHcioHrw8o8Ym4D1S93lWY+paz0KkakR4ppEFbfg+yjOAUCiSKJ8rTJYDu0AGeZn9eoUqoA2B49w0YvfO/5JpUuvARplyecZWqernwJxbavjsq5BiWoXo13GiiVeHeqg6m4dmh4uNPiE+wZ+nHraWi0mg8kxgywyiNpakUsc8wgWYUL7AQFv9BxBUcdIXCmleuqByufYGa3LgRahvP+IBRpOwdi2/C1SKMRQVj9USNv6m4QUXkkooERZ37XjrYMmqYRI5iAKc7Pif5Nxxro08DhVGqary8ayNEMFOMzcp6XXKbc8q5IS7H8sBLKssRJYzONoLEGLqHL/PfkRAnEvFa8Str5ps0NbAAgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQan1RcYe9FmNdrUBFX9wsDBJMaPIVZ1pdu6y18IAAAA2LAQF2PT5R8SbmFW3oXejGEwWbhEaNDaP+iioiUcxwEEvyu17mKPsHIiHQMiRADfiHuZyGqbXmpuozy3YkDr2AEJEQEJAAIDCgsEDAUGBwgNDg8QPlpRu1EnRoBOAAEBAQEBAAAAAAEAJgAAAAEKEQABAgMEBQYHCAkKCwsMCgoNEADY4L8bzJdmr5eRCwAAAAAAAA==",
+          "transactionSha256": "f57b6acae7db79b1360caab14b3bbf6caca0b4ec0f300f8536248b704dc14808",
+          "simulation": {
+            "err": null,
+            "contextSlot": 443807305
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "cf5eacc5efbd586bc99aa79360729b15815c6edfc948db8c3e6bc49bf6027b2e",
+          "chainPostStateSha256": "cf5eacc5efbd586bc99aa79360729b15815c6edfc948db8c3e6bc49bf6027b2e",
+          "confirmedReadbackSlot": 443807306,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd"
+        }
+      ]
+    },
+    {
+      "name": "singleton-markets",
+      "broadcast": false,
+      "bundles": [
+        {
+          "name": "AUTO/AUTO/PYUSD/deposit",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-market-AUTO-AUTO-PYUSD-v15.json",
+          "sourceSha256": "a9011c230813f36219a43e23131619a5584d6b1416aeecc88fdcfccd54de0d53",
+          "broadcast": false,
+          "role": "deposit",
+          "signature": "5jPvCDbPw3cxmiiVraMjERaP56CAq8SnLNjwP2Schf7hc979EtLdnendh5TPvSHGaph5FTBhHyJHCJJeZ2rnTqxS",
+          "packetBytes": 730,
+          "transactionBase64": "AeygwI+FB+JuNn4VI+7QRURRFi8ahAfFDasQXC0PR65aRb+DJB8/Fi+o7QWF80meM8Fk1/EXL+w3iH53/JA3rA+AAQAIEUqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAS1GA4be3vQlvdIv99Zx6BBPyqerOPKDYjx0Dz5zPIVQGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+rbU3AqZiSN+okFmeK1R5jVRG9UOcVP/egC3xJDqvASC4K8UycDQwM+3BL4bCHm3gJDm/j1OP29wMmv1Y+k9qmBgm7w9hchUBhR+9V2Pc9v6tnJY33sa8MfEez122VXLqq5gN10I5XeKY2MVTXnJd8zW45gVrnY2xEUWqliKf7+Pc70c9806DJDSCGoz07/vE7EyAbdod/tbasuZcgiDJPWD/He2jYi4iA5Ue6G4b5H7p8qq90K1sVStkCcdTEuNmwZ+nHraWi0mg8kxgywyiNpakUsc8wgWYUL7AQFv9BxBoeBtCpfR96vCdH32j1Lfw5eeMuB1kFgGsS2nvKgdDnMYleBuhDAD73vMcaNKsUsw2iuerm/+G/cq+lNfjqkv0+RPUCNvM2mv6GrJh5j0wmqQYwNxJBfVIB4+iOuKqE3OBLKssRJYzONoLEGLqHL/PfkRAnEvFa8Str5ps0NbAAgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQan1RcYe9FmNdrUBFX9wsDBJMaPIVZ1pdu6y18IAAAA2LAQF2PT5R8SbmFW3oXejGEwWbhEaNDaP+iioiUcxwGX7M7JufozzVokBV8kQM09ULlmieGfokeng3BmfbspLwEJEQEJAAIDCgsEDAUGBwgNDg8QPlpRu1EnRoBOAAEBAQEBAAAAAAEAJgAAAAEKEQABAgMEBQYHCAkKCwsMCgoNEADY4L8bzJdmr/x2DQAAAAAAAA==",
+          "transactionSha256": "ae7fc51a26fea356d918a869d46a84f3bd9cb82f35774f36583b9ea6b181be8b",
+          "simulation": {
+            "err": null,
+            "contextSlot": 443807309
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "55861025acffbaa2aebfe4f0e85df7bcc521fefed711a93dbb9106546525971e",
+          "chainPostStateSha256": "55861025acffbaa2aebfe4f0e85df7bcc521fefed711a93dbb9106546525971e",
+          "confirmedReadbackSlot": 443807309,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd"
+        },
+        {
+          "name": "Ethena/USDe/PYUSD/deposit",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-market-Ethena-USDe-PYUSD-v15.json",
+          "sourceSha256": "e95fbd22b1b536ca0f75832ac24d07691e1eeaa08a222b657743da3009bf38ee",
+          "broadcast": false,
+          "role": "deposit",
+          "signature": "5Ykv9R3XRJ5sWsdFnYuBTssfNstLqBD3krThXBqS8HtXdhCeue7PAzXMptVRRB5A3kczGT7XZf6C1VYnLbnLckdB",
+          "packetBytes": 730,
+          "transactionBase64": "AeN0RQFRp2HzdiWamFVtUu3ULaPISPSglwnLIa2YYZeK19NAtxUUk0gwfWNX8dJJogOCxdSGdgfmgMdYB189xQaAAQAIEUqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAXw1Br9rhhd0Y3qjEOwQmL51d23sFEC7/aQHJnkRTq3UGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+j5OVqszELXlsOU5TaRK46XvQhZPyKsQr/PL638KOFInGI3RbB02U1rbANfeTmJG9NtNKcwDvEi1VNVQLxjBzW2dwzMLHVA8VujsVP205YIAYvSukCSe7X6w5hwRhUjNvmsvkfefmpIZYS3mfEUFkIx4zTTsQEp9HF9nqly54lJ8E4p9Nh1gi+RVCBgAjTDsCzqgi1MrL/Mm0ZiNYGVixf1YPFJ6FXWb1M1rN3eTRI84pbf2QedyexovzGkL+K7lXwZ+nHraWi0mg8kxgywyiNpakUsc8wgWYUL7AQFv9BxBmSNMpjYs6d4Wzppp8g5CzngiLMbA/sxsMkQBIiNKgTjsUpB4SnracDUBPPQXTNeqs0tzmtIg28bRjAqeyKMT3LXSWvgf3UfiP8UcuSnyv/Phv2rWTfd9PlI6IoAj5z5sBLKssRJYzONoLEGLqHL/PfkRAnEvFa8Str5ps0NbAAgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQan1RcYe9FmNdrUBFX9wsDBJMaPIVZ1pdu6y18IAAAA2LAQF2PT5R8SbmFW3oXejGEwWbhEaNDaP+iioiUcxwHtkOwPBRs0McYYF2xgjgpQfKap19ghckxQH11MyyRScwEJEQEJAAIDCgsEDAUGBwgNDg8QPlpRu1EnRoBOAAEBAQEBAAAAAAEAJgAAAAEKEQABAgMEBQYHCAkKCwsMCgoNEADY4L8bzJdmr4ghZDUAAAAAAA==",
+          "transactionSha256": "8175a5769a76f8781d1471cfac64af514b43e5f5a692af5bf567cb17774cc92f",
+          "simulation": {
+            "err": null,
+            "contextSlot": 443807313
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "7c738a05164fa58c508ee4f30f207607a843c6cf39e1e9cad5c46c4923b8818e",
+          "chainPostStateSha256": "7c738a05164fa58c508ee4f30f207607a843c6cf39e1e9cad5c46c4923b8818e",
+          "confirmedReadbackSlot": 443807313,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd"
+        }
+      ]
+    },
+    {
+      "name": "swap-graph",
+      "broadcast": false,
+      "bundles": [
+        {
+          "name": "USDC->PRIME",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-prefix-USDC--PRIME-v2.json",
+          "sourceSha256": "b950c0fc80d8a46d84b7f1de409dc6b2344e915d5cd887da031925c1986b6c8c",
+          "broadcast": false,
+          "transactionBase64": "AS4z8fgfo9yeN0NK0Xm16EymZ0KYQMV1g4XvAPA+rT7RqROSRSeTdVB2whwpqphOKdalhm231ICsCplkWpzfIgqAAQAFDkqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAy4AFqwjBJIOFXQ/9Y9mjUQzDLe2JBkOfMD76ANsGHxLDyLtuCUUGFljtEkHRDzYluBvwr4ofymmQcJ7syf5EBbmFrjy6CB49a7T3SzV9/jKgKMC9Qt5n5ypgWf4B2TlNcBWoIt5wx5yvzRiC+2fNpt5ZDAZZV9yp6E2Gj9ZBQvC935LsGhNbQJXpcI5O/zeP6AgtSF4FAykNOo2J7hS7xfrUpumEer7Fen2eEYY1QaGtS/ognl9fj7327+qiUZUe7hciyNbdA//YH7Lv6u+iY5Uzp5Yk/O6cYVJMzFrXGrkPZVjoOIXB0+oOQwFDZ4uX1a7uMTTH+Pr1Y5fZVdf8jAZ+nHraWi0mg8kxgywyiNpakUsc8wgWYUL7AQFv9BxB4vh36D2uxoiPQ6u1rnsxG7eMNJYIl/zlp7gsFuIP8ZcGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+gR51VvyMcBu7nTFbs5oFQf9sbLeo/SOUQKxzaJWvBOPtD/6J/XX9kp0wJsfKVh53ksJqzbfyd1RSzIap7OM5ei60ixObv+aT0kzNCN8Sebb0vLmpnO7VazYe2cn81v4CQEJIQEJABYKCwIDBAUXHgwNGBkOBg8QGhscHyAREhMUHRUHCHVaUbtRJ0aATgABAQEBAQAAAAEBAF0AAAABCS8AAQIDBAUGBwgJCQoJCwEMDQ4EDxAPEBAAERITCRQBFRYOBRcYGQATGhIIGxwdCSkAwSCbM0HWnIEAAgAAAGgAZAABKGQBAkBCDwAAAAAAKW8OAAAAAAAyAAAC4wJdlpIrFQMDj9ALKH+8+sVo/8cC2Jyb61+M4uzQCJID5dvVCBNX2djX2tYFyZiox5GuBym8MNZnFRjwYRE6INrDCEs7Q/sl4aK/5FoFbY9mZWsDZ4xq",
+          "transactionSha256": "8fa0551c963d5656a0228049340ace64f509c6af9bb57492d8a78278e0a45dd1",
+          "signature": "vaUaGA48sfZHzfQUBocj7UpJrPFDuR97b5pMqtQ4Xi8nCZLiZp2FUhqbWwTUksbjgshc4E97t5vafxRpPEdPD3P",
+          "packetBytes": 792,
+          "simulation": {
+            "err": null,
+            "contextSlot": 443807104
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "7b2b4e277637409e2b4960cf735a42a08c9a90982aca60f0511a4aa98a0c0bb7",
+          "chainPostStateSha256": "7b2b4e277637409e2b4960cf735a42a08c9a90982aca60f0511a4aa98a0c0bb7",
+          "confirmedReadbackSlot": 443807105,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd"
+        },
+        {
+          "name": "PRIME->USDC",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-prefix-PRIME--USDC-v9.json",
+          "sourceSha256": "e636da4c761bec5f3f0f1c25802afacd59270def79760c72d4e75384786fb455",
+          "broadcast": false,
+          "transactionBase64": "AZnGpRc88WsSwuOwKmZxDamGd1Oyq978Qw+rzFvuLqMjzmuOB9fzeNcpx27JxzrJ6XtI89FWSODe/THa8ocTzw2AAQAID0qfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtA6deh3tKk83EVR9sctDL1piIWJbEpcMfNGRUVlDY1eeW935LsGhNbQJXpcI5O/zeP6AgtSF4FAykNOo2J7hS7xep4JTqsin5NzufskvpuRwGH8FOzpOJZSt8X9uNTV2Zo6dRIiwf+OZsakVXlghtpfUMBbAo8Tzu8oq+0HQFjMFfDyLtuCUUGFljtEkHRDzYluBvwr4ofymmQcJ7syf5EBW64xvuwKdftF4QuL4KQjkFmmv/l8r18N7R/cegB4TIYBn6cetpaLSaDyTGDLDKI2lqRSxzzCBZhQvsBAW/0HEGsGuPQh/KSNwYlSPcMTASuwqmVaUmG58u0Z1IGIdOGMAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6BHnVW/IxwG7udMVuzmgVB/2xst6j9I5RArHNola8E4+0P/on9df2SnTAmx8pWHneSwmrNt/J3VFLMhqns4zl6DkwKNOBdm5QDA9CjMUrakh/yRP/xQeTGXj8mgyVrzsSdSpLrNP/nY8F7nJz6RV5aYBqElsdzGpNs1Z3Q1ikdl0Gp9UXGHvRZjXa1ARV/cLAwSTGjyFWdaXbustfCAAAAJp2Zs9rXdrbd1WvQPOAP2OZvDuL7R+AtXkAsaNKLwGfAQcbAQcAFAgJAgMEBRUWCgsXDxgZEBESDAYaEw0OY1pRu1EnRoBOAAEBAQEBAAAAAAEASwAAAAEJIQABAgMEBQYHCAkJCgkLAAAMDQ4PDAEEEBEFEhMUFRYXCSUAwSCbM0HWnIEFAQAAAKIBZAABoLsNAAAAAAABAAAAAAAAADIAAAGi+9yuIUSTd9jbiRpwI2q4ckLX7zH4WnPsJTE0H6jaSQVFTktQTAcJRg1SR0pT",
+          "transactionSha256": "6a80bb1de4208740b237a02f916d740e930a27f874ffd2c85f769aa724598156",
+          "signature": "45KXkhqunwF4xri5dLysxCmLWKbacv9nNuwpMM2QmiuXwytifB5BrDU5rUBacBJ9envN3vBSNwjFSsiXN9zHmot8",
+          "packetBytes": 759,
+          "simulation": {
+            "err": null,
+            "contextSlot": 443807129
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "9b45c9f0415a040820992c28dd9b43bec396e48d632ff6dba7b2309faed9570a",
+          "chainPostStateSha256": "9b45c9f0415a040820992c28dd9b43bec396e48d632ff6dba7b2309faed9570a",
+          "confirmedReadbackSlot": 443807129,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd"
+        },
+        {
+          "name": "USDC->USDG",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-prefix-USDC--USDG-v11.json",
+          "sourceSha256": "523fcd45814280b5f78fb427f3f43d44754827461741212dea5f43c5759ddddd",
+          "broadcast": false,
+          "transactionBase64": "AfPHbJMgQXopYi/sHPauCNy4CyyNf5vQTtv0p7IL/eaNbhjqavPun4/mXHrf22FeUfi64xRK11lbgVJ3k9z6/AWAAQAECUqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAhIEYbMJcRphwWMg5vbuRxtSqoK3zxOnr8/S7fGw5cqIGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+sPIu24JRQYWWO0SQdEPNiW4G/Cvih/KaZBwnuzJ/kQFFJEVT7dNGweKYp0AXs8yOOG1v2zq4z4tTnllhmQtqysGfpx62lotJoPJMYMsMojaWpFLHPMIFmFC+wEBb/QcQQR51VvyMcBu7nTFbs5oFQf9sbLeo/SOUQKxzaJWvBOPtD/6J/XX9kp0wJsfKVh53ksJqzbfyd1RSzIap7OM5egAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAG4Zz/XyeOKj9oeuy5LmBLa44KI+4qHxbmhBokRbGpymAQUTAQUADgIDBAYPBxAJCAoLERIMDVlaUbtRJ0aATgABAQEBAQAAAAABAEEAAAABBBgAAQIDBAUEBgQHAQEICQMCCgsABQwNDg8kAOUXy5d6460qAQAAAHQAZAABQEIPAAAAAACoQA8AAAAAADIAAAE32dQnS2zFLlchy1ks/hE9pmWD17IjlWmWM7Bf6Ogq+QU3Ojs4WAVBQDkNPA==",
+          "transactionSha256": "43e1e0e7fac4590c4f61a7ca5fc71e7df3da3f5ab3b89d0ed1db0904dfa93371",
+          "signature": "5sgssWV4go83SGxRbb5ghCcdgkNuNtrLX1hLXWyviJpvY2auEvLkfTuoMFA3mbrzuiiXhj8eDbarDwsH57vsr2oE",
+          "packetBytes": 547,
+          "simulation": {
+            "err": null,
+            "contextSlot": 443807092
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "06fbedc24d7e03e88acf08e6623488cc1a9d03c76d56480ea3073b857877e128",
+          "chainPostStateSha256": "06fbedc24d7e03e88acf08e6623488cc1a9d03c76d56480ea3073b857877e128",
+          "confirmedReadbackSlot": 443807092,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd"
+        }
+      ]
+    },
+    {
+      "name": "bridge-lifecycle",
+      "broadcast": false,
+      "bundles": [
+        {
+          "name": "allocate",
+          "policyScope": "phase1-external-existing",
+          "externalPolicy": {
+            "seed": "62",
+            "account": "HoDV7mtsb2u1VARZLYuGByW7cCsGWL9NFxHZs7WHjdzz",
+            "dataSha256": "bda72932f474064fa3cd60ce91633acba35b2730e86b82f4352aa96a6738e2f4"
+          },
+          "compiledArtifactSha256": null,
+          "probeAmountRaw": "1",
+          "broadcast": false,
+          "signature": "64UJ6QmNtTsjT37c8SyxmhNh3ouJdcG7iru7PgjAqbNBTywPcSAxTFzsTthhFK7HNVhsXEQSkTJxFzcLGHkypspW",
+          "packetBytes": 1029,
+          "transactionBase64": "Af0T8YlUGhys6/7d1uLzjKdhO97uwvvfrMLP46RDMJLYYBVhCAmC3GpCMpKWFW/SNwaFToqlAhLPopTAK7L+LQOAAQAKFUqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtA+ZHTGgsgcEplHDTfTCv75xB9kF8jWDanOyrdrDyYw2Ok+j2utVjeH3d5Lp5XhEuZJ/QzhV/pj10sW558O46qTvWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XIaGQEWuLFdcrwrXIhK5Xm3MuG3fuzKE1Fer+aMy4LmvNA9n7PDD1Nf7t181z3fvHlP9uIIsG7dGiMYgeBKYinnHT4dsJ3WJCXKgJ3Ow0/ZmwXCzx5e5kFOMOiU3ht6BQxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWFPMyvqd2k0dfEcNss/2naLB0k1uKbwChhEvb/oiAsWLNa629+7JVcgQTQ4xXF1hpYDx9UvnJY6njKfPef3HAC4w8i7bglFBhZY7RJB0Q82Jbgb8K+KH8ppkHCe7Mn+RAUGfpx62lotJoPJMYMsMojaWpFLHPMIFmFC+wEBb/QcQYEqm/2a01agbXAALsk5dG4ONz6WOi9Tj5P2Hm2FQY2aQ3ng4TTb0rgKoqqBmXOUlrQ3lKQc27KiIXQR5tjvyuUGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+taapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHOaIdBdpMAi/qURbP90I5J76pHDSLZQt/siOlhrF0fuGStAvhzc/eQCogBrY4sk6fWbFNe0CylePmHxZA3g4EEFdzl9JjENQYuJiCstVvNdVLim/uzkVcmI+88T52s4uYBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkNtFiMACguOQa8kPeQ1HBoEejMJLKcypkbTXDbOqWNOXfXYcuxP5iG+w8L+GzaQeAA/3WPwx78jM1pTNWh50dsAQsWAQsADAINDgsPEAMRBAUGBxIICRMKFOMBWlG7USdGgE4AAQEBAQIAAAAAAQEAygAAAAIFBQABAgMETwCkr/YpsowjAwABAAAAAAAAAAE5AAAAAUTycxoAAAAARPJzGgAAAAD3WhsAAAAAABj2Rs5kRsQp135m5dR8x0caV6eH1Li+1PNYp1ZpSjr9EhIDBgcACAkKCwwNDg8QBQIDEQFbAPZSOeKD3v35AQAAAAAAAAABCAAAAPIjxolS4fK2ATkAAAABRPJzGgAAAABE8nMaAAAAAPdaGwAAAAAAGPZGzmRGxCnXfmbl1HzHRxpXp4fUuL7U81inVmlKOv0A",
+          "transactionSha256": "2c7f8624be06d43f8eb934435e346d1850853a00845fd2abd188b4345c5a88d2",
+          "simulation": {
+            "method": "simulateBundle",
+            "skipSigVerify": false,
+            "replaceRecentBlockhash": false,
+            "err": null,
+            "contextSlot": 443806293
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "35429c1c4b82380cc15368070f93ab0a77821528926a2ef0d058af089e945a28",
+          "chainPostStateSha256": "35429c1c4b82380cc15368070f93ab0a77821528926a2ef0d058af089e945a28",
+          "confirmedReadbackSlot": 443806294,
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-bridge-lifecycle-v2.json",
+          "sourceSha256": "ed47466bb09886faff8eebf4f7bdfcc74802c7973138a60babc05701b860f8b8"
+        },
+        {
+          "name": "stage-withdrawal",
+          "policyScope": "phase1-external-existing",
+          "externalPolicy": {
+            "seed": "64",
+            "account": "ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY",
+            "dataSha256": "ef8c231497fb2620b5930cfe5d329c871f103db6512781eb5487534db8b1291b"
+          },
+          "compiledArtifactSha256": null,
+          "probeAmountRaw": "1",
+          "broadcast": false,
+          "signature": "7h9i5VXzAeM4QNb6Jtc7fYptoyV3XEokJzBPJFF4uJfhP9G5g7oRhX2mT3YYengbk7oy65p4rcRzQZfNiqLcwXy",
+          "packetBytes": 414,
+          "transactionBase64": "AQXFaTzHrdfkkEn2k9fD1tSF0GNrT3uzdaufsl5/MBvW+4PVrzZV/PQYpbNdWXE23MrNRAAQcbArcv1r10Hh7QSAAQAECEqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAitfBe972RfTX3q5iWxGuHDXoeoYIVgFPGzDz6e4ZE3PDyLtuCUUGFljtEkHRDzYluBvwr4ofymmQcJ7syf5EBda629+7JVcgQTQ4xXF1hpYDx9UvnJY6njKfPef3HAC4Bn6cetpaLSaDyTGDLDKI2lqRSxzzCBZhQvsBAW/0HEHG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6Bt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkhHkalU2pIbU7N25cVGs9MJXmQgQTkhSw9yu+/rjIzzwEECAEEAAIFAwYHK1pRu1EnRoBOAAEBAQEBAAAAAAEAEwAAAAEEBAABAgMKAAwBAAAAAAAAAAYA",
+          "transactionSha256": "6af9c3ebe1f62bed5040210ca98ef0e76602fae43a7f2436687d01ec796cb392",
+          "simulation": {
+            "method": "simulateBundle",
+            "skipSigVerify": false,
+            "replaceRecentBlockhash": false,
+            "err": null,
+            "contextSlot": 443806293
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "35429c1c4b82380cc15368070f93ab0a77821528926a2ef0d058af089e945a28",
+          "chainPostStateSha256": "35429c1c4b82380cc15368070f93ab0a77821528926a2ef0d058af089e945a28",
+          "confirmedReadbackSlot": 443806294,
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-bridge-lifecycle-v2.json",
+          "sourceSha256": "ed47466bb09886faff8eebf4f7bdfcc74802c7973138a60babc05701b860f8b8"
+        },
+        {
+          "name": "restore",
+          "policyScope": "phase1-external-existing",
+          "externalPolicy": {
+            "seed": "65",
+            "account": "DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t",
+            "dataSha256": "84e8f6f881758cff1714ef743603c016024104f9834392c6fba693c3651b719c"
+          },
+          "compiledArtifactSha256": null,
+          "probeAmountRaw": "1",
+          "broadcast": false,
+          "signature": "3qLZaaSMxwBM7bxTUNuDz1m1qmBVWbw6g7XQdhKgoEfwtG8Qj9HhSX1TJS7gycmx1WjryoFYA1s6uAdZgHLf7tYn",
+          "packetBytes": 1029,
+          "transactionBase64": "AY233YuGNSlm7qCrxWOv8QTkn5EHT1yUXS35MI1ZG+18YhI70wm59pXoW3ORVEnWo0eRgxrnaaHbQyZXn4Hfxw+AAQAKFUqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAvTJOzps1k1xN6+wgEIB77V6IF17ORiQhswJ4ZejtXeek+j2utVjeH3d5Lp5XhEuZJ/QzhV/pj10sW558O46qTvWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XIaGQEWuLFdcrwrXIhK5Xm3MuG3fuzKE1Fer+aMy4LmvNA9n7PDD1Nf7t181z3fvHlP9uIIsG7dGiMYgeBKYinnHT4dsJ3WJCXKgJ3Ow0/ZmwXCzx5e5kFOMOiU3ht6BQxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWFPMyvqd2k0dfEcNss/2naLB0k1uKbwChhEvb/oiAsWLNa629+7JVcgQTQ4xXF1hpYDx9UvnJY6njKfPef3HAC4w8i7bglFBhZY7RJB0Q82Jbgb8K+KH8ppkHCe7Mn+RAUGfpx62lotJoPJMYMsMojaWpFLHPMIFmFC+wEBb/QcQYEqm/2a01agbXAALsk5dG4ONz6WOi9Tj5P2Hm2FQY2aQ3ng4TTb0rgKoqqBmXOUlrQ3lKQc27KiIXQR5tjvyuUGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+taapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHOaIdBdpMAi/qURbP90I5J76pHDSLZQt/siOlhrF0fuGStAvhzc/eQCogBrY4sk6fWbFNe0CylePmHxZA3g4EEFdzl9JjENQYuJiCstVvNdVLim/uzkVcmI+88T52s4uYBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkNtFiMACguOQa8kPeQ1HBoEejMJLKcypkbTXDbOqWNOS6KD92AF9buZ8zAGkS8QzpRe5Uutj6brf+yyxpN+Vq8AQsWAQsADAINDgsPEAMRBAUGBxIICRMKFOMBWlG7USdGgE4AAQEBAQIAAAAAAQEAygAAAAIFBQABAgMETwCkr/YpsowjAwEBAAAAAAAAAAE5AAAAAUXycxoAAAAARfJzGgAAAAD3WhsAAAAAAEMTKW91H1v2zi5M2pJdDjaQFTiMf0DxV3zYQHWLedZgEhIDBgcICQAFCgsMDQ4PEAIDEQFbAB8togXB2Ya8AQAAAAAAAAABCAAAALcSRpyUbaEiATkAAAABRfJzGgAAAABF8nMaAAAAAPdaGwAAAAAAQxMpb3UfW/bOLkzakl0ONpAVOIx/QPFXfNhAdYt51mAA",
+          "transactionSha256": "13d6323f12d5a513e48e06ed76e147b290314a9caa2f6c135c101ffa32df1fae",
+          "simulation": {
+            "method": "simulateBundle",
+            "skipSigVerify": false,
+            "replaceRecentBlockhash": false,
+            "err": null,
+            "contextSlot": 443806293
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "35429c1c4b82380cc15368070f93ab0a77821528926a2ef0d058af089e945a28",
+          "chainPostStateSha256": "35429c1c4b82380cc15368070f93ab0a77821528926a2ef0d058af089e945a28",
+          "confirmedReadbackSlot": 443806294,
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-bridge-lifecycle-v2.json",
+          "sourceSha256": "ed47466bb09886faff8eebf4f7bdfcc74802c7973138a60babc05701b860f8b8"
+        },
+        {
+          "name": "nav-refresh",
+          "policyScope": "phase1-external-existing",
+          "externalPolicy": {
+            "seed": "63",
+            "account": "41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP",
+            "dataSha256": "bf34a3e9c9c635c79a0d30e096b639a86d52e300ad113c81161e3486832d97ca"
+          },
+          "compiledArtifactSha256": null,
+          "probeAmountRaw": "0",
+          "broadcast": false,
+          "signature": "43JLy79PMXRbYAAs2ma62dTKVbSS1irUXQUW2J4imoej2dW5um8xM4kNrosnJFMFwPLNCvrb63aZkPMj3CbqkwWZ",
+          "packetBytes": 1029,
+          "transactionBase64": "AZgImfRBvvzx9P9pXwRJSqKgD/3cLn+sqANC+3J3NOY4/8kzDnnnwCpCHEJnVIMuFRulxoyiP6g9ZTJEpQGpvwKAAQAKFUqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtALMcSNprqQWi2AWzPX3vBXOogSqIWMl4Tc9M2r4WHn76k+j2utVjeH3d5Lp5XhEuZJ/QzhV/pj10sW558O46qTvWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XIaGQEWuLFdcrwrXIhK5Xm3MuG3fuzKE1Fer+aMy4LmvNA9n7PDD1Nf7t181z3fvHlP9uIIsG7dGiMYgeBKYinnHT4dsJ3WJCXKgJ3Ow0/ZmwXCzx5e5kFOMOiU3ht6BQxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWFPMyvqd2k0dfEcNss/2naLB0k1uKbwChhEvb/oiAsWLNa629+7JVcgQTQ4xXF1hpYDx9UvnJY6njKfPef3HAC4w8i7bglFBhZY7RJB0Q82Jbgb8K+KH8ppkHCe7Mn+RAUGfpx62lotJoPJMYMsMojaWpFLHPMIFmFC+wEBb/QcQYEqm/2a01agbXAALsk5dG4ONz6WOi9Tj5P2Hm2FQY2aQ3ng4TTb0rgKoqqBmXOUlrQ3lKQc27KiIXQR5tjvyuUGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+taapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHOaIdBdpMAi/qURbP90I5J76pHDSLZQt/siOlhrF0fuGStAvhzc/eQCogBrY4sk6fWbFNe0CylePmHxZA3g4EEFdzl9JjENQYuJiCstVvNdVLim/uzkVcmI+88T52s4uYBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkNtFiMACguOQa8kPeQ1HBoEejMJLKcypkbTXDbOqWNOTpuy7ZOTP1hLoN/qNhm8rGyuQDfhAs06G+VPv2ic9lRAQsWAQsADAINDgsPEAMRBAUGBxIICRMKFOMBWlG7USdGgE4AAQEBAQIAAAAAAQEAygAAAAIFBQABAgMETwCkr/YpsowjAwAAAAAAAAAAAAE5AAAAAUbycxoAAAAARvJzGgAAAAD3WhsAAAAAACJ5EH6DbL29Y4mP8seruIFGBcbiVGM+H+6pkg11C4OlEhIDBgcACAkKCwwNDg8QBQIDEQFbAPZSOeKD3v35AAAAAAAAAAABCAAAAPIjxolS4fK2ATkAAAABRvJzGgAAAABG8nMaAAAAAPdaGwAAAAAAInkQfoNsvb1jiY/yx6u4gUYFxuJUYz4f7qmSDXULg6UA",
+          "transactionSha256": "54f3e406c1a1ebc04703f03aa6d9cd6f5415883c9e6efc0a73827ac0dfd4e225",
+          "simulation": {
+            "method": "simulateBundle",
+            "skipSigVerify": false,
+            "replaceRecentBlockhash": false,
+            "err": null,
+            "contextSlot": 443806293
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "35429c1c4b82380cc15368070f93ab0a77821528926a2ef0d058af089e945a28",
+          "chainPostStateSha256": "35429c1c4b82380cc15368070f93ab0a77821528926a2ef0d058af089e945a28",
+          "confirmedReadbackSlot": 443806294,
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-bridge-lifecycle-v2.json",
+          "sourceSha256": "ed47466bb09886faff8eebf4f7bdfcc74802c7973138a60babc05701b860f8b8"
+        }
+      ]
+    }
+  ],
+  "negativeMutations": [
+    {
+      "mutation": "same-mint-wrong-reserve",
+      "broadcast": false,
+      "accepted": false,
+      "bundles": [
+        {
+          "name": "same-mint-wrong-reserve-exact-mutation",
+          "broadcast": false,
+          "accepted": false,
+          "rejectionLayer": "Squads policy",
+          "role": "same-mint-wrong-reserve-rejection",
+          "signature": "4JjoUweLWGnxQRUJ9Xm3W1vJtpvs3aZehxrJLXSzybtckf4j5oQz35dKFvSjqub5kVBLHbHEfnWUheJStJX5cQW6",
+          "packetBytes": 695,
+          "transactionBase64": "AaVY+AW/T1DIr1ZHv7MNzTygZvSrzsoIkh2kQADS4mNvfloBdQyT2BNDUn/KQuW1cZXo+R+wrWzuyJlg6bGMvguAAQAJEEqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAjC2VkC91aDsS7MG4X9zRVwVvEVykyVOQz2fDHylswcUxpDJ8Ed0X3boHn1fd3rapPW/cyy0oCpw3JHgQwMjB03rIly+RM+o92zkyq/lDSdsA7UyRLxgRv/DOkfIJFu+qasKxs06dlxgF/6C+MvUETU3Q6hlTci/XoVUFw27afF5GBYYFk6MAPVNtQgzxaKExi+JfatnH2omjDrljHn0iNMPIu24JRQYWWO0SQdEPNiW4G/Cvih/KaZBwnuzJ/kQFBn6cetpaLSaDyTGDLDKI2lqRSxzzCBZhQvsBAW/0HEEGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+i5W+KIMYOrRFlqNgsVYyHtPFZhFTIdzBOL4jWrjGXWd3Q8bBI3W4DT3lJna8I21NijNBU0Px9H5BBeSO/QIzPrG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQSyrLESWMzjaCxBi6hy/z35EQJxLxWvEra+abNDWwAIBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkGp9UXGHvRZjXa1ARV/cLAwSTGjyFWdaXbustfCAAAANiwEBdj0+UfEm5hVt6F3oxhMFm4RGjQ2j/ooqIlHMcBqm/dJbuUjVxddJPiMKVJTByXtGTid8+jzFuP27ixmt8BBxABBwAIAgkKAwsEBQYMDQ4PPFpRu1EnRoBOAAEBAQEBAAAAAAEAJAAAAAEJDwABAgMEBQYHCAkKCwkJDBAAoYCP9avHwgZAQg8AAAAAAAA=",
+          "transactionSha256": "8de2af9e0e1da06f7b329a776ef43635f60ebe552f4794fbf84933dd0fc4d489",
+          "simulation": {
+            "method": "simulateBundle",
+            "skipSigVerify": false,
+            "simulationBankCommitment": "confirmed",
+            "replaceRecentBlockhash": false,
+            "contextSlot": 443807346,
+            "err": {
+              "InstructionError": [
+                0,
+                {
+                  "Custom": 6069
+                }
+              ]
+            },
+            "logsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "capturedAddresses": [
+              "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+              "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "ASCPmkHYBh7rRL9gmitkKSe9wGkCbJdYNAbycL5jEB5E",
+              "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+              "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+              "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+              "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+              "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "Sysvar1nstructions1111111111111111111111111",
+              "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+            ],
+            "atomicPreStateSha256": "6d67992f0c2299d96d723b2eb55a915dd02217e8d3d806cb9f54a4b9c8c0a8d7",
+            "atomicPostStateSha256": "6d67992f0c2299d96d723b2eb55a915dd02217e8d3d806cb9f54a4b9c8c0a8d7",
+            "downstreamBoundary": "top-level Squads custom error"
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "chainPostStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "confirmedReadbackSlot": 443807346,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-negative-bundles-v3.json",
+          "sourceSha256": "f4b8a29ae0b9bebdc134ecacec5281b961b1b7c5fb1834142da51c0a6163cf77"
+        }
+      ]
+    },
+    {
+      "mutation": "cross-lane-obligation",
+      "broadcast": false,
+      "accepted": false,
+      "bundles": [
+        {
+          "name": "cross-lane-obligation-exact-mutation",
+          "broadcast": false,
+          "accepted": false,
+          "rejectionLayer": "Squads policy",
+          "role": "cross-lane-obligation-rejection",
+          "signature": "3worxS89H4xYUweN7jsJSKbAcnkm13mjXV1XME6sYauanVfr8LVWxWzmXgM4DqSZAVSe8s2Scupux25uHdovi6kX",
+          "packetBytes": 695,
+          "transactionBase64": "AZNMXRdbxewkSUGkLctq6Aq/CO3g1Z9xzHKNSiAXc1s/pSW+yGwEfRKZ81UIcn8sIXjyWY3XurJArY0pftNc1AiAAQAJEEqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAjC2VkC91aDsS7MG4X9zRVwVvEVykyVOQz2fDHylswcWD55vhA1vX7N2xiCAL66nk2o6BgHODunBLalb8wJUmy42/vFvnB0sNvXNbdBPM+VwD9GcjS2s1gNDr4wKBfSOqasKxs06dlxgF/6C+MvUETU3Q6hlTci/XoVUFw27afF5GBYYFk6MAPVNtQgzxaKExi+JfatnH2omjDrljHn0iNMPIu24JRQYWWO0SQdEPNiW4G/Cvih/KaZBwnuzJ/kQFBn6cetpaLSaDyTGDLDKI2lqRSxzzCBZhQvsBAW/0HEEGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+i5W+KIMYOrRFlqNgsVYyHtPFZhFTIdzBOL4jWrjGXWd3Q8bBI3W4DT3lJna8I21NijNBU0Px9H5BBeSO/QIzPrG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQSyrLESWMzjaCxBi6hy/z35EQJxLxWvEra+abNDWwAIBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkGp9UXGHvRZjXa1ARV/cLAwSTGjyFWdaXbustfCAAAANiwEBdj0+UfEm5hVt6F3oxhMFm4RGjQ2j/ooqIlHMcBqm/dJbuUjVxddJPiMKVJTByXtGTid8+jzFuP27ixmt8BBxABBwAIAgkKAwsEBQYMDQ4PPFpRu1EnRoBOAAEBAQEBAAAAAAEAJAAAAAEJDwABAgMEBQYHCAkKCwkJDBAAoYCP9avHwgZAQg8AAAAAAAA=",
+          "transactionSha256": "4c058f118b59d685685385f56e736ea3d74d9699b1c2650a2af252b876b21cd0",
+          "simulation": {
+            "method": "simulateBundle",
+            "skipSigVerify": false,
+            "simulationBankCommitment": "confirmed",
+            "replaceRecentBlockhash": false,
+            "contextSlot": 443807347,
+            "err": {
+              "InstructionError": [
+                0,
+                {
+                  "Custom": 6069
+                }
+              ]
+            },
+            "logsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "capturedAddresses": [
+              "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+              "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "ASCPmkHYBh7rRL9gmitkKSe9wGkCbJdYNAbycL5jEB5E",
+              "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+              "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+              "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+              "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+              "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "Sysvar1nstructions1111111111111111111111111",
+              "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+            ],
+            "atomicPreStateSha256": "6d67992f0c2299d96d723b2eb55a915dd02217e8d3d806cb9f54a4b9c8c0a8d7",
+            "atomicPostStateSha256": "6d67992f0c2299d96d723b2eb55a915dd02217e8d3d806cb9f54a4b9c8c0a8d7",
+            "downstreamBoundary": "top-level Squads custom error"
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "chainPostStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "confirmedReadbackSlot": 443807348,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-negative-bundles-v3.json",
+          "sourceSha256": "f4b8a29ae0b9bebdc134ecacec5281b961b1b7c5fb1834142da51c0a6163cf77"
+        }
+      ]
+    },
+    {
+      "mutation": "unapproved-edge",
+      "broadcast": false,
+      "accepted": false,
+      "bundles": [
+        {
+          "name": "unapproved-edge-exact-mutation",
+          "broadcast": false,
+          "accepted": false,
+          "rejectionLayer": "Squads policy",
+          "role": "unapproved-edge-rejection",
+          "signature": "4Ni7iEivCnemvhbKSD9pgXWRoSH1d97Dbfb7NjPYaFDUTTNsqstQxNKnHgspEk3LW7cNiP6B3awgQjxMti5ssjqG",
+          "packetBytes": 1097,
+          "transactionBase64": "AajFnH3uuiVAtxNeYIoAFZHxeOGYEOe+RM7MzCtOtA0VYNfX5e2lPPI50JuDCsz7kgEiVnEAr3zCCpuXxU3+hAeAAQAPG0qfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAy4AFqwjBJIOFXQ/9Y9mjUQzDLe2JBkOfMD76ANsGHxK935LsGhNbQJXpcI5O/zeP6AgtSF4FAykNOo2J7hS7xep4JTqsin5NzufskvpuRwGH8FOzpOJZSt8X9uNTV2Zo6dRIiwf+OZsakVXlghtpfUMBbAo8Tzu8oq+0HQFjMFfDyLtuCUUGFljtEkHRDzYluBvwr4ofymmQcJ7syf5EBdTwa6wmsLxRTXAWcxmibiQmJM9ItuD+vt7np9nV/ALbvvZuZy6xwum0chXwmHfOye1+eNU2GgWfgd3ZEWTeI/+Pyh6RGfXNF5Qc53GODJ3ToBJeH3i+JXcGeeSuiKvo0UtB19Spv6WYJAzRJfJCe5yPO3iFpm+3bKsybOj/7zsxbrjG+7Ap1+0XhC4vgpCOQWaa/+XyvXw3tH9x6AHhMhg+EvEqcFKGx/wU713fjvD2lGFEW9q5EIF4tEEHB3SuOgZ+nHraWi0mg8kxgywyiNpakUsc8wgWYUL7AQFv9BxBBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKmsGuPQh/KSNwYlSPcMTASuwqmVaUmG58u0Z1IGIdOGMAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6JnWfRg7l90PtZtJ8jypWI7851T7VdZVTIGYebhPg49rG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQR51VvyMcBu7nTFbs5oFQf9sbLeo/SOUQKxzaJWvBOPtD/6J/XX9kp0wJsfKVh53ksJqzbfyd1RSzIap7OM5ejwF0UfaMcolUrRDEQvwKBKK1bFf+UqlsgiGgxhwOhyfXu+NvX+aPeu9/MlmTDRsMForWAfChYI5zHnHdlmg0QZ8jcepIbqkAWNNPWVN3jFE3dLotpytoHLV2jg6KOcaks5MCjTgXZuUAwPQozFK2pIf8kT/8UHkxl4/JoMla87Egan1RcYx3TJKFZjmGkdXraLXrijm0ttXHNVWyEAAAAAdSpLrNP/nY8F7nJz6RV5aYBqElsdzGpNs1Z3Q1ikdl0Gp9UXGHvRZjXa1ARV/cLAwSTGjyFWdaXbustfCAAAAKpv3SW7lI1cXXST4jClSUwcl7Rk4nfPo8xbj9u4sZrfAQwbAQwADQ4PAgMEBRAREhMUBhUWBwgJFwoYCxkaY1pRu1EnRoBOAAEBAQEBAAAAAAEASwAAAAEJIQABAgMEBQYHCAkJCgkLAAAMDQ4PDAEEEBEFEhMUFRYXCSUAwSCbM0HWnIEFAQAAAKIBZAABQEIPAAAAAAAyIRAAAAAAADIAAAA=",
+          "transactionSha256": "e733badc87a8e6d4a908d09f34dbe572f19697846ab4c26091ee371c93e1f9c3",
+          "simulation": {
+            "method": "simulateBundle",
+            "skipSigVerify": false,
+            "simulationBankCommitment": "confirmed",
+            "replaceRecentBlockhash": false,
+            "contextSlot": 443807349,
+            "err": {
+              "InstructionError": [
+                0,
+                {
+                  "Custom": 6069
+                }
+              ]
+            },
+            "logsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "capturedAddresses": [
+              "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+              "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "GjphbQbppiChCU3AP1oQzby9uSNBUPWY5Gshdbdty8m2",
+              "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+              "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+              "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+              "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+              "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "Sysvar1nstructions1111111111111111111111111",
+              "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "CapuXNQoDviLvU1PxFiizLgPNQCxrsag1uMeyk6zLVps",
+              "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+              "GnGfCCLVEd6q3kUVQ3AGWzXEkH5L4kDeLZfuDhZP6YgF",
+              "Gjmjory7TWKJXD2Jc6hKzAG991wWutFhtbXudzJqgx3p",
+              "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+              "D8cy77BBepLMngZx6ZukaTff5hCt1HrWyKk3Hnd9oitf",
+              "HADRoNbLovyqhCsocfYQYB7QdfCAAinN9HTePvBCVDQ8",
+              "FLE4Yc2etrXRgsmcrZGpgYoq5LxD4h8VA4tArgDEPxAN",
+              "9L3NfzsxFEvqhshfviKwiGPajPHJ9TY7sWRqddqi5zkg",
+              "HJWQqbkLzwPk7nfeyhaBgWhmRYFt4Dv1Nr6fvGLec31U",
+              "DrSQeGtKjRody6zfj5hu4HyRFK1vgCwwcfbznsy9FtU6",
+              "AgJ4G4vcU8pQzNSJhpmBHQ1TvUHmQMbGLa6U63BTMe88",
+              "64mowTtEWdgW3XocqTXjgVvLgXEQHdADmc5EbWuRiSgp",
+              "4rEqDMTvAhHhc8nxbWCxsshP9xMkYCkQrvUaSyNYddkM",
+              "8TDGMW61UKG6c3DRa9xsa21GkyspKnwZSirxQKSVSqJw",
+              "SysvarC1ock11111111111111111111111111111111",
+              "5BK2iwhjtzvfqHA7pqSmnRXsxqBDi1LafCduHsQ4fSCy",
+              "8tN7DEq5TA1T1wapaFWfepLJ5rHiiKvoiZ9oSjMPG4HS"
+            ],
+            "atomicPreStateSha256": "9155b1ec33afe54fd4af0de1ec8b6c80a80f899de94f9f1b1ad1daabab07f83d",
+            "atomicPostStateSha256": "9155b1ec33afe54fd4af0de1ec8b6c80a80f899de94f9f1b1ad1daabab07f83d",
+            "downstreamBoundary": "top-level Squads custom error"
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "0661af34d1585b9c65eadff1ea24d9c0d961dc71c3b3cb982bc0a2b7920eced1",
+          "chainPostStateSha256": "0661af34d1585b9c65eadff1ea24d9c0d961dc71c3b3cb982bc0a2b7920eced1",
+          "confirmedReadbackSlot": 443807350,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-negative-bundles-v3.json",
+          "sourceSha256": "f4b8a29ae0b9bebdc134ecacec5281b961b1b7c5fb1834142da51c0a6163cf77"
+        }
+      ]
+    },
+    {
+      "mutation": "extra-instruction",
+      "broadcast": false,
+      "accepted": false,
+      "bundles": [
+        {
+          "name": "extra-instruction-exact-mutation",
+          "broadcast": false,
+          "accepted": false,
+          "rejectionLayer": "Squads policy",
+          "role": "extra-instruction-rejection",
+          "signature": "2NyobbgxYJ4BGMouNgZorEiDD9FnDURatpZD7mfXAPbWDoLdZhoWyQrLmu1HjJU5kf3kKrKQRxaMLoMRdGPKcgeQ",
+          "packetBytes": 699,
+          "transactionBase64": "AUT4nrVAxNFdqWjKlbH/6nr+JlVRQEgHJFZnK3AvrbmMxNFT4zN5CVSVoE/2LWF0KgIDvuAHW3x+orlMOJ8G6w2AAQAJEEqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAjC2VkC91aDsS7MG4X9zRVwVvEVykyVOQz2fDHylswcUxpDJ8Ed0X3boHn1fd3rapPW/cyy0oCpw3JHgQwMjB042/vFvnB0sNvXNbdBPM+VwD9GcjS2s1gNDr4wKBfSOqasKxs06dlxgF/6C+MvUETU3Q6hlTci/XoVUFw27afF5GBYYFk6MAPVNtQgzxaKExi+JfatnH2omjDrljHn0iNMPIu24JRQYWWO0SQdEPNiW4G/Cvih/KaZBwnuzJ/kQFBn6cetpaLSaDyTGDLDKI2lqRSxzzCBZhQvsBAW/0HEEGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+i5W+KIMYOrRFlqNgsVYyHtPFZhFTIdzBOL4jWrjGXWd3Q8bBI3W4DT3lJna8I21NijNBU0Px9H5BBeSO/QIzPrG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQSyrLESWMzjaCxBi6hy/z35EQJxLxWvEra+abNDWwAIBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkGp9UXGHvRZjXa1ARV/cLAwSTGjyFWdaXbustfCAAAANiwEBdj0+UfEm5hVt6F3oxhMFm4RGjQ2j/ooqIlHMcBqm/dJbuUjVxddJPiMKVJTByXtGTid8+jzFuP27ixmt8BBxABBwAIAgkKAwsEBQYMDQ4PQFpRu1EnRoBOAAEBAQEBAAAAAAEAKAAAAAIJDwABAgMEBQYHCAkKCwkJDBAAoYCP9avHwgZAQg8AAAAAAAkAAAAA",
+          "transactionSha256": "7e33d290ec57b226551375fbf62e4c4fce8ab5f0ac23756dafeabe831854099c",
+          "simulation": {
+            "method": "simulateBundle",
+            "skipSigVerify": false,
+            "simulationBankCommitment": "confirmed",
+            "replaceRecentBlockhash": false,
+            "contextSlot": 443807351,
+            "err": {
+              "InstructionError": [
+                0,
+                {
+                  "Custom": 6071
+                }
+              ]
+            },
+            "logsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "capturedAddresses": [
+              "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+              "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "ASCPmkHYBh7rRL9gmitkKSe9wGkCbJdYNAbycL5jEB5E",
+              "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+              "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+              "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+              "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+              "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "Sysvar1nstructions1111111111111111111111111",
+              "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+            ],
+            "atomicPreStateSha256": "c2792e53653baa7bf868ecc282ae995608e4f2a50054073e9293c24bc6ce5660",
+            "atomicPostStateSha256": "c2792e53653baa7bf868ecc282ae995608e4f2a50054073e9293c24bc6ce5660",
+            "downstreamBoundary": "top-level Squads custom error"
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "chainPostStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "confirmedReadbackSlot": 443807351,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-negative-bundles-v3.json",
+          "sourceSha256": "f4b8a29ae0b9bebdc134ecacec5281b961b1b7c5fb1834142da51c0a6163cf77"
+        }
+      ]
+    },
+    {
+      "mutation": "amount-cap-breach",
+      "broadcast": false,
+      "accepted": false,
+      "bundles": [
+        {
+          "name": "amount-cap-breach-exact-mutation",
+          "broadcast": false,
+          "accepted": false,
+          "rejectionLayer": "Squads policy",
+          "role": "amount-cap-breach-rejection",
+          "signature": "4x6RcbgYJawBNs5Y2ouEpLP7krhnUGWQX6gkZr3g5tEQvkprYAjp9j8szzmHpBsqokdDMPS1M73udcMFv5Fgzbav",
+          "packetBytes": 695,
+          "transactionBase64": "AcWPwk++04NibcQqCWCr3Fo7ho1zWt507/aATBK1xymxSVnMHW9qBHQPTb+2qKjTXJSaxKxLBEKfB05StDjiDQ+AAQAJEEqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAjC2VkC91aDsS7MG4X9zRVwVvEVykyVOQz2fDHylswcUxpDJ8Ed0X3boHn1fd3rapPW/cyy0oCpw3JHgQwMjB042/vFvnB0sNvXNbdBPM+VwD9GcjS2s1gNDr4wKBfSOqasKxs06dlxgF/6C+MvUETU3Q6hlTci/XoVUFw27afF5GBYYFk6MAPVNtQgzxaKExi+JfatnH2omjDrljHn0iNMPIu24JRQYWWO0SQdEPNiW4G/Cvih/KaZBwnuzJ/kQFBn6cetpaLSaDyTGDLDKI2lqRSxzzCBZhQvsBAW/0HEEGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+i5W+KIMYOrRFlqNgsVYyHtPFZhFTIdzBOL4jWrjGXWd3Q8bBI3W4DT3lJna8I21NijNBU0Px9H5BBeSO/QIzPrG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQSyrLESWMzjaCxBi6hy/z35EQJxLxWvEra+abNDWwAIBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkGp9UXGHvRZjXa1ARV/cLAwSTGjyFWdaXbustfCAAAANiwEBdj0+UfEm5hVt6F3oxhMFm4RGjQ2j/ooqIlHMcBqm/dJbuUjVxddJPiMKVJTByXtGTid8+jzFuP27ixmt8BBxABBwAIAgkKAwsEBQYMDQ4PPFpRu1EnRoBOAAEBAQEBAAAAAAEAJAAAAAEJDwABAgMEBQYHCAkKCwkJDBAAoYCP9avHwgYBEKXU6AAAAAA=",
+          "transactionSha256": "2a516f7bf8e49afab55f3fbc5ff47413f7160b46ef98581b8ca1679f71d9eb90",
+          "simulation": {
+            "method": "simulateBundle",
+            "skipSigVerify": false,
+            "simulationBankCommitment": "confirmed",
+            "replaceRecentBlockhash": false,
+            "contextSlot": 443807352,
+            "err": {
+              "InstructionError": [
+                0,
+                {
+                  "Custom": 6064
+                }
+              ]
+            },
+            "logsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "capturedAddresses": [
+              "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+              "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "ASCPmkHYBh7rRL9gmitkKSe9wGkCbJdYNAbycL5jEB5E",
+              "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+              "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+              "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+              "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+              "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "Sysvar1nstructions1111111111111111111111111",
+              "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+            ],
+            "atomicPreStateSha256": "103bfdc282da47b7febfcceeff97b90a5f5180de8576ee0c2778984e9b13f775",
+            "atomicPostStateSha256": "103bfdc282da47b7febfcceeff97b90a5f5180de8576ee0c2778984e9b13f775",
+            "downstreamBoundary": "top-level Squads custom error"
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "chainPostStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "confirmedReadbackSlot": 443807352,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-negative-bundles-v3.json",
+          "sourceSha256": "f4b8a29ae0b9bebdc134ecacec5281b961b1b7c5fb1834142da51c0a6163cf77"
+        }
+      ]
+    },
+    {
+      "mutation": "signer-substitution",
+      "broadcast": false,
+      "accepted": false,
+      "bundles": [
+        {
+          "name": "signer-substitution-exact-mutation",
+          "broadcast": false,
+          "accepted": false,
+          "rejectionLayer": "Squads policy",
+          "role": "signer-substitution-rejection",
+          "signature": "3Jfa8KFZ87GD9ra6J18Abfei37wo3bXyFmPdc3aatCsyySYwM6DrwRMt7UTbewbYx3cwS67BRvp7izFT54KwJUAp",
+          "packetBytes": 695,
+          "transactionBase64": "AXNEhAAyxfw5F3bAS9pXC0aufPdCBt5pu/XBaFiMn1x0fdKNcLFZWlwfZvc+esPAWPen0VuVNxWEW5MYsgXXVw2AAQAJEJcaJGJKF/Wed7NyrW3KxJvGybD8BjcCj1JwIF/Ul3wIjC2VkC91aDsS7MG4X9zRVwVvEVykyVOQz2fDHylswcUxpDJ8Ed0X3boHn1fd3rapPW/cyy0oCpw3JHgQwMjB042/vFvnB0sNvXNbdBPM+VwD9GcjS2s1gNDr4wKBfSOqasKxs06dlxgF/6C+MvUETU3Q6hlTci/XoVUFw27afF5GBYYFk6MAPVNtQgzxaKExi+JfatnH2omjDrljHn0iNMPIu24JRQYWWO0SQdEPNiW4G/Cvih/KaZBwnuzJ/kQFBn6cetpaLSaDyTGDLDKI2lqRSxzzCBZhQvsBAW/0HEEGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+i5W+KIMYOrRFlqNgsVYyHtPFZhFTIdzBOL4jWrjGXWd3Q8bBI3W4DT3lJna8I21NijNBU0Px9H5BBeSO/QIzPrG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQSyrLESWMzjaCxBi6hy/z35EQJxLxWvEra+abNDWwAIBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkGp9UXGHvRZjXa1ARV/cLAwSTGjyFWdaXbustfCAAAANiwEBdj0+UfEm5hVt6F3oxhMFm4RGjQ2j/ooqIlHMcBqm/dJbuUjVxddJPiMKVJTByXtGTid8+jzFuP27ixmt8BBxABBwAIAgkKAwsEBQYMDQ4PPFpRu1EnRoBOAAEBAQEBAAAAAAEAJAAAAAEJDwABAgMEBQYHCAkKCwkJDBAAoYCP9avHwgZAQg8AAAAAAAA=",
+          "transactionSha256": "b83e57094e9dac0eff2a6454aabb6246b1d711fd969754fed82844dd3533ec45",
+          "simulation": {
+            "method": "simulateBundle",
+            "skipSigVerify": false,
+            "simulationBankCommitment": "confirmed",
+            "replaceRecentBlockhash": false,
+            "contextSlot": 443807353,
+            "err": {
+              "InstructionError": [
+                0,
+                {
+                  "Custom": 6006
+                }
+              ]
+            },
+            "logsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "capturedAddresses": [
+              "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+              "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "ASCPmkHYBh7rRL9gmitkKSe9wGkCbJdYNAbycL5jEB5E",
+              "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+              "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+              "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+              "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+              "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "Sysvar1nstructions1111111111111111111111111",
+              "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+            ],
+            "atomicPreStateSha256": "103bfdc282da47b7febfcceeff97b90a5f5180de8576ee0c2778984e9b13f775",
+            "atomicPostStateSha256": "103bfdc282da47b7febfcceeff97b90a5f5180de8576ee0c2778984e9b13f775",
+            "downstreamBoundary": "top-level Squads custom error"
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "chainPostStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "confirmedReadbackSlot": 443807354,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-negative-bundles-v3.json",
+          "sourceSha256": "f4b8a29ae0b9bebdc134ecacec5281b961b1b7c5fb1834142da51c0a6163cf77"
+        }
+      ]
+    },
+    {
+      "mutation": "writable-role-substitution",
+      "broadcast": false,
+      "accepted": false,
+      "bundles": [
+        {
+          "name": "writable-role-substitution-exact-mutation",
+          "broadcast": false,
+          "accepted": false,
+          "rejectionLayer": "canonical-go-builder",
+          "role": "writable-role-substitution-rejection",
+          "signature": "2nxN87JXK6a4Y1KvH5wuM2PGJ4JKMuoVhPeAqFQX42yxsp2ZJD6k2Z3s2ATBCu53yb3C2Z1VQtYcRnYxRBapgimk",
+          "packetBytes": 695,
+          "transactionBase64": "AVmlfoqGMrtQGJLsaFc1XvEZK3R2XaEmiHD6HnU1PRNd8varISm29/6hHDkdSiWvVaCab7mXgYQnF9AZG2c+LA+AAQAKEEqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAjC2VkC91aDsS7MG4X9zRVwVvEVykyVOQz2fDHylswcWNv7xb5wdLDb1zW3QTzPlcA/RnI0trNYDQ6+MCgX0jqmrCsbNOnZcYBf+gvjL1BE1N0OoZU3Iv16FVBcNu2nxeRgWGBZOjAD1TbUIM8WihMYviX2rZx9qJow65Yx59IjTDyLtuCUUGFljtEkHRDzYluBvwr4ofymmQcJ7syf5EBQZ+nHraWi0mg8kxgywyiNpakUsc8wgWYUL7AQFv9BxBBoUTxIzyOBqoO0cYLJhBqR8PM30Dzx+IfBwwjBZTwvoxpDJ8Ed0X3boHn1fd3rapPW/cyy0oCpw3JHgQwMjB0y5W+KIMYOrRFlqNgsVYyHtPFZhFTIdzBOL4jWrjGXWd3Q8bBI3W4DT3lJna8I21NijNBU0Px9H5BBeSO/QIzPrG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQSyrLESWMzjaCxBi6hy/z35EQJxLxWvEra+abNDWwAIBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkGp9UXGHvRZjXa1ARV/cLAwSTGjyFWdaXbustfCAAAANiwEBdj0+UfEm5hVt6F3oxhMFm4RGjQ2j/ooqIlHMcBqm/dJbuUjVxddJPiMKVJTByXtGTid8+jzFuP27ixmt8BBhABBgAHCAkKAgsDBAUMDQ4PPFpRu1EnRoBOAAEBAQEBAAAAAAEAJAAAAAEJDwABAgMEBQYHCAkKCwkJDBAAoYCP9avHwgZAQg8AAAAAAAA=",
+          "transactionSha256": "5020237b6e64b64b2446a31170f73077ef9f8943db77fd35491e51549a5baad0",
+          "simulation": {
+            "method": "simulateBundle",
+            "skipSigVerify": false,
+            "simulationBankCommitment": "confirmed",
+            "replaceRecentBlockhash": false,
+            "contextSlot": 443807355,
+            "err": {
+              "InstructionError": [
+                0,
+                {
+                  "Custom": 2000
+                }
+              ]
+            },
+            "logsSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "capturedAddresses": [
+              "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+              "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "ASCPmkHYBh7rRL9gmitkKSe9wGkCbJdYNAbycL5jEB5E",
+              "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+              "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+              "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+              "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+              "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "Sysvar1nstructions1111111111111111111111111",
+              "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+            ],
+            "atomicPreStateSha256": "103bfdc282da47b7febfcceeff97b90a5f5180de8576ee0c2778984e9b13f775",
+            "atomicPostStateSha256": "103bfdc282da47b7febfcceeff97b90a5f5180de8576ee0c2778984e9b13f775",
+            "downstreamBoundary": "runtime rejected independently signed role mutation"
+          },
+          "signatureAbsentOnChain": true,
+          "chainPreStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "chainPostStateSha256": "3c9aecd8d921c1e01f35cb9f740ded790102f6016f7b09c1cc8bc6d422458c14",
+          "confirmedReadbackSlot": 443807355,
+          "compiledArtifactSha256": "8322303a592ea5441f433edf6e40246ccb8f466fde2a0d9d5544d3e76b6a88bd",
+          "source": "docs/evidence/backyard-rwa-go/policy-helius-negative-bundles-v3.json",
+          "sourceSha256": "f4b8a29ae0b9bebdc134ecacec5281b961b1b7c5fb1834142da51c0a6163cf77"
+        }
+      ]
+    }
+  ]
+}

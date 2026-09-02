@@ -1,0 +1,80 @@
+{
+  "schema": "loyal-backyard-rwa-phase2-obligation-init/v1",
+  "verdict": "CONFIRMED_RECONCILED",
+  "broadcast": true,
+  "commitment": "confirmed",
+  "resolutionSha256": "058cf8fe57850cd82f40653ea84a131f20bfa847495f98cd877650c3e6d5a672",
+  "settings": {
+    "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+    "contextSlot": 443613803,
+    "policySeed": "66"
+  },
+  "operations": [
+    {
+      "lane": "Prime/PRIME/USDC",
+      "action": "init-obligation",
+      "signature": "3o5Rg7MRAogAct4MAiJ967EpmRFH2pc1M48nDJ1sJ7Lfb6ELsuRfRBeQsHUrRWCJEZs7B33RGtWwGTQ1Y9DR9bee",
+      "confirmedSlot": 443613803,
+      "policyChanges": 0,
+      "packetBytes": 594,
+      "fundingLamports": 0,
+      "beforeObligationAbsent": true,
+      "after": {
+        "tag": 1,
+        "owner": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "market": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+        "dataSha256": "5aac5ebf0d40917ec2993afda0301d41b183b9a7420444f7f95ebbe493a4456f"
+      },
+      "recoveredFromPendingJournal": true
+    },
+    {
+      "lane": "Prime/PRIME/USDS",
+      "action": "init-obligation",
+      "signature": "dABnT3AX4LKhNgULB8ofELoH5AKDCMMeWiXb4dgDMAuoTRPBXrw9nQQsLqWAiaGmNvqvRy9sU4XZUsqSwMBvdMD",
+      "confirmedSlot": 443613807,
+      "policyChanges": 0,
+      "packetBytes": 594,
+      "fundingLamports": 0,
+      "beforeObligationAbsent": true,
+      "after": {
+        "tag": 1,
+        "owner": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "market": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+        "dataSha256": "621e4c52a41f3583601bf2025fade2777da39a23a2ea08854ef1f1339d664afe"
+      }
+    },
+    {
+      "lane": "Maple/syrupUSDC/USDG",
+      "action": "init-obligation",
+      "signature": "bwgufZbKB7AGPMCTPyAMAogZQ1imFLSEL6RJGCxByiJomsM9Ux3fcT48M9DQvFnksTPwpTQhkLashzmdajV4CWx",
+      "confirmedSlot": 443613810,
+      "policyChanges": 0,
+      "packetBytes": 611,
+      "fundingLamports": 23274240,
+      "beforeObligationAbsent": true,
+      "after": {
+        "tag": 1,
+        "owner": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "market": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+        "dataSha256": "3730ac5703c70784ac4d57efe85a68c798aa8c73e56ac4012151bdc14cd2ec68"
+      }
+    },
+    {
+      "lane": "Maple/syrupUSDC/PYUSD",
+      "action": "init-obligation",
+      "signature": "4ceXCiqzkoAnavnFpD8ZKQEDW6baR386bRdbG2noexUjbef66nvbgXFTiErQZwAFMsnsmsJULCCAmgt2VKQ1P4wM",
+      "confirmedSlot": 443613813,
+      "policyChanges": 0,
+      "packetBytes": 611,
+      "fundingLamports": 24165120,
+      "beforeObligationAbsent": true,
+      "after": {
+        "tag": 1,
+        "owner": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "market": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+        "dataSha256": "09e7d0bfb2406d6dc467be9a9fc686a95a40e44990cfe4fc7e78672b2971961d"
+      }
+    }
+  ],
+  "unchangedPolicySurface": true
+}

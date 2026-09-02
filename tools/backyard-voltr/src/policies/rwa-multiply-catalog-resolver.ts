@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
 import { LendingMarket, Reserve } from "@kamino-finance/klend-sdk";
+import { generated as squadsGenerated } from "@loyal-labs/loyal-smart-accounts-core";
 import { AccountLayout, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { Connection, PublicKey, type AccountInfo } from "@solana/web3.js";
 
@@ -15,6 +16,14 @@ const CATALOG_PATH = resolve(REPOSITORY_ROOT,
 const INSTRUCTIONS_SYSVAR = "Sysvar1nstructions1111111111111111111111111";
 
 type Json = Record<string, unknown>;
+const Settings = (squadsGenerated as unknown as {
+  Settings: { fromAccountInfo(account: NonNullable<Awaited<ReturnType<Connection["getAccountInfo"]>>>): readonly [{
+    policySeed: { toString(): string } | null;
+    threshold: number;
+    timeLock: number;
+    signers: readonly Readonly<{ key: PublicKey; permissions: Readonly<{ mask: number }> }>[];
+  }, number] };
+}).Settings;
 export type CandidateIdentity = Readonly<{
   evidence: string;
   finalizedSlot: number;
@@ -206,7 +215,7 @@ export async function resolveCurrentRwaMultiplyCatalog(connection: Connection) {
   ]));
   const baseRead = await connection.getMultipleAccountsInfoAndContext(
     baseAddresses.map((value) => publicKey(value, "candidate graph address")),
-    { commitment: "finalized" },
+    { commitment: "confirmed" },
   );
   const byAddress = new Map(baseAddresses.map((value, index) => [value, baseRead.value[index] ?? null]));
   const klend = publicKey(RWA_MULTIPLY_ROUTE.kamino.program, "KLend program");
@@ -230,7 +239,7 @@ export async function resolveCurrentRwaMultiplyCatalog(connection: Connection) {
   ]));
   const custodyRead = await connection.getMultipleAccountsInfoAndContext(
     custodyAddresses.map((value) => new PublicKey(value)),
-    { commitment: "finalized", minContextSlot: baseRead.context.slot },
+    { commitment: "confirmed", minContextSlot: baseRead.context.slot },
   );
   const custodyByAddress = new Map(custodyAddresses.map((value, index) => [value, custodyRead.value[index] ?? null]));
 
@@ -282,22 +291,33 @@ export async function resolveCurrentRwaMultiplyCatalog(connection: Connection) {
     assetPrograms.set(mint, tokenProgram);
   }
   invariant(assetPrograms.size === 9, "resolved swap universe is not exactly four stable and five RWA mints");
+  const settingsRead = await connection.getAccountInfoAndContext(
+    new PublicKey(RWA_MULTIPLY_ROUTE.squads.settings),
+    { commitment: "confirmed", minContextSlot: custodyRead.context.slot },
+  );
+  invariant(settingsRead.value?.owner.toBase58() === RWA_MULTIPLY_ROUTE.squads.program,
+    "Squads Settings is absent or has the wrong owner");
+  const [settings] = Settings.fromAccountInfo(settingsRead.value);
+  invariant(settings.threshold === 1 && settings.timeLock === 0 && settings.signers.length === 1
+    && settings.signers[0]?.key.toBase58() === RWA_MULTIPLY_ROUTE.setupAdmin
+    && settings.signers[0]?.permissions.mask === 7, "Squads Settings authority boundary drifted");
+  const policySeedBefore = BigInt(settings.policySeed?.toString() ?? "0");
+  invariant(policySeedBefore >= 66n, "Squads Settings policy seed predates the installed Phase 1 policies");
   const swapCustodies = Object.fromEntries([...assetPrograms].map(([mint, tokenProgram]) => [mint, {
     tokenProgram,
     custody: rwaMultiplyVaultAta(mint, tokenProgram).toBase58(),
   }]));
   return {
     schema: "loyal-backyard-rwa-policy-resolution/v1",
-    verdict: "BLOCKED_SWAP_HEADERS",
+    verdict: routeAccountsExact ? "PASS_LANE_ACCOUNTS_RESOLVED" : "FAIL_LANE_ACCOUNTS_UNRESOLVED",
     broadcast: false,
     cluster: "mainnet-beta",
     genesisHash: RWA_MULTIPLY_ROUTE.genesisHash,
-    commitment: "finalized",
-    contextSlot: custodyRead.context.slot,
+    commitment: "confirmed",
+    contextSlot: settingsRead.context.slot,
     catalogSha256: sha256(readFileSync(CATALOG_PATH)),
     routeSpecSha256: rwaMultiplyRouteSpecSha256(),
-    policySeedBefore: "56",
-    physicalPolicySeeds: Array.from({ length: 14 }, (_, index) => String(57 + index)),
+    policySeedBefore: policySeedBefore.toString(),
     laneGraphExact: routeAccountsExact,
     lanes,
     swap: {
@@ -305,18 +325,17 @@ export async function resolveCurrentRwaMultiplyCatalog(connection: Connection) {
       edges: catalog.swapEdges,
       custodies: swapCustodies,
       structuralSlices: ["stable-to-rwa", "rwa-to-stable", "stable-to-stable"],
-      headersResolved: false,
-      blocker: "Build fresh SharedAccountsRoute instructions for all 52 edges and prove exact authority, custody, mint, token-program, role, discriminator, slippage, account-count, and no-extra-instruction boundaries before compiling the three swap policies.",
+      headerEvidence: "docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json",
     },
-    addressesResolved: false,
+    addressesResolved: routeAccountsExact,
     resumeCondition: routeAccountsExact
-      ? "Attach the 52 current Jupiter SharedAccountsRoute header observations, compile the first-fitting 14-policy artifact, and run grouped signed-unsent simulations."
-      : "Initialize or repair every derived Squads vault ATA, rerun this finalized resolver, then attach the 52 current Jupiter header observations.",
+      ? null
+      : "Initialize or repair every derived Squads vault ATA and rerun this confirmed resolver.",
   } as const;
 }
 
 export async function resolveCurrentRwaMultiplyCatalogFromEnvironment() {
   const rpcUrl = process.env.SOLANA_RPC_URL?.trim();
   invariant(rpcUrl, "SOLANA_RPC_URL is required for read-only catalog resolution");
-  return resolveCurrentRwaMultiplyCatalog(new Connection(rpcUrl, "finalized"));
+  return resolveCurrentRwaMultiplyCatalog(new Connection(rpcUrl, "confirmed"));
 }
