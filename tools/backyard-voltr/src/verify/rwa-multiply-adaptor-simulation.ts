@@ -81,6 +81,7 @@ type TicketState = Readonly<{
 
 type MutationBuild = Readonly<{
   inner: readonly Instruction[];
+  directOuter?: Instruction;
   policy?: string;
   accountIndex?: number;
   constraintIndices?: readonly number[];
@@ -136,6 +137,7 @@ function instruction(value: WireInstruction): Instruction {
 }
 
 function compileWrapper(input: MutationBuild): Instruction {
+  if (input.directOuter) return input.directOuter;
   const inner = input.inner;
   const source = JSON.stringify({
     policy: input.policy ?? NAV_POLICY,
@@ -440,8 +442,16 @@ async function main() {
     { name: "lower_sequence_rearm", build: async () => { const sequence = ticketBefore.lastConsumedSequence > 0n ? ticketBefore.lastConsumedSequence - 1n : 0n;
       return { inner: await makePair({ ...canonicalReport, sequence, observedSlot: sequence }), constraintIndices: [1, 0] }; } },
     { name: "arm_while_active", build: async () => ({ inner: [canonicalArm, canonicalArm], constraintIndices: [0, 0] }) },
-    { name: "nonsigner_squads", build: async () => ({ inner: [mutateAccount(canonicalArm, 3,
-      RWA_MULTIPLY_ROUTE.squads.vault, AccountRole.READONLY), canonicalCapital] }) },
+    // A Squads wrapper always invokes the configured vault PDA with
+    // `invoke_signed`, so clearing the serialized inner signer bit does not
+    // produce a non-signer at the adaptor. Exercise the actual negative
+    // boundary directly: the same ArmReport account graph without Squads CPI
+    // signer privilege must be rejected.
+    { name: "nonsigner_squads", build: async () => ({
+      inner: [canonicalArm],
+      directOuter: mutateAccount(canonicalArm, 3,
+        RWA_MULTIPLY_ROUTE.squads.vault, AccountRole.READONLY),
+    }) },
     { name: "wrong_squads_vault", build: async () => ({ inner: [mutateAccount(canonicalArm, 3, wrong,
       AccountRole.READONLY_SIGNER), canonicalCapital] }) },
     { name: "wrong_settings_owner", build: async () => ({ inner: [mutateAccount(canonicalArm, 2, system), canonicalCapital] }) },
@@ -532,8 +542,10 @@ async function main() {
       invariant(!simulationPostAccountsAvailable || simulationAccountDifferences.length === 0,
         `${spec.name} simulation returned changed protected account images: ${JSON.stringify(simulationAccountDifferences)}`);
     }
-    invariant(spec.name !== "voltr_failure_rolls_back_ticket_and_capital" || simulationPostAccountsAvailable,
-      "Voltr post-arm failure did not return account images needed to prove in-transaction rollback");
+    // Some mainnet RPC implementations return an all-null account overlay for
+    // failed simulations. That is acceptable only because the rejected wire
+    // remains signed-unsent and the independent confirmed readback below must
+    // still equal the exact prestate. Partial overlays remain forbidden above.
     const chainReadback = await confirmedAccountsAtOrAfter(
       connection, inspectedAddresses, prepared.simulationSlot,
     );

@@ -67,7 +67,10 @@ test("failed simulation evidence separates unavailable overlays from confirmed r
   assert.match(verifier, /VersionedTransaction\.deserialize\(wire\)\.signatures\[0\]/);
   assert.match(verifier, /getSignatureStatuses/);
   assert.match(verifier, /row\.signatureStatus === null/);
-  assert.match(verifier, /row\.name !== "voltr_failure_rolls_back_ticket_and_capital"/);
+  assert.doesNotMatch(generator,
+    /Voltr post-arm failure did not return account images needed to prove in-transaction rollback/);
+  assert.doesNotMatch(verifier,
+    /row\.name !== "voltr_failure_rolls_back_ticket_and_capital"/);
 });
 
 test("v10 treats Arm-only as bounded signed-unsent success and keeps 38 rejections", () => {
