@@ -192,7 +192,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-d87167fbd4bad1217f84a78cc492733cabedc5fa
+              url: ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-44ff72e7d0c722e0c94dd46b6c86b157d2dbcc8f
             dockerCommand: /usr/local/bin/backyard-rwa-worker
             maxShutdownDelaySeconds: 60
             envVars:
