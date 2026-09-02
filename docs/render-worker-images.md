@@ -163,7 +163,7 @@ container probes without publishing; a trusted `main` push that changes the Go
 worker, its Dockerfile, or its workflow publishes
 `backyard-rwa-worker:sha-${GITHUB_SHA}`. The bootstrap Blueprint pin records the
 current worker-foundation source commit
-`sha-74e84ee127bcdb4f88b03d2701df05afad14b6af` so the file never contains a
+`sha-d87167fbd4bad1217f84a78cc492733cabedc5fa` so the file never contains a
 mutable tag. It is not the deployment target: after these lifecycle changes
 land and the workflow publishes their trusted `main` commit, update the
 Blueprint pin to that published SHA before creating the service. Read back the
