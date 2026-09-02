@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestStoreIntegrationDurableHandoffAndLeaseFencing(t *testing.T) {
+func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("FLEET_TEST_DATABASE_URL is not set")
@@ -43,12 +42,12 @@ func TestStoreIntegrationDurableHandoffAndLeaseFencing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lease, err := store.Acquire(ctx, "mainnet-beta", "integration:"+suffix, "owner-a", 30*time.Second)
-	if err != nil {
+	var plannerTableExists bool
+	if err := store.pool.QueryRow(ctx, `SELECT to_regclass('loyal_yield.kamino_fleet_planner_owners') IS NOT NULL`).Scan(&plannerTableExists); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Acquire(ctx, "mainnet-beta", "integration:"+suffix, "owner-b", 30*time.Second); err == nil {
-		t.Fatal("overlapping owner acquired an unexpired lease")
+	if plannerTableExists {
+		t.Fatal("cutover verifier unexpectedly depends on a planner-specific migration")
 	}
 	position, err := store.LoadVaultPosition(ctx, "mainnet-beta", vaultID, source, target)
 	if err != nil {
@@ -62,12 +61,35 @@ func TestStoreIntegrationDurableHandoffAndLeaseFencing(t *testing.T) {
 	if !decision.Eligible {
 		t.Fatalf("decision ineligible: %s", decision.Reason)
 	}
-	published, err := store.Publish(ctx, lease, snapshot, position, decision)
-	if err != nil {
-		t.Fatal(err)
+	// Even though deployment is strictly singleton, the generic queue mutex must
+	// fail safe if two admission calls race during an operational mistake.
+	type publishOutcome struct {
+		result PublishResult
+		err    error
 	}
-	if !published.Inserted || published.OpportunityID <= 0 || published.EpochID <= 0 {
-		t.Fatalf("not published: %+v", published)
+	outcomes := make(chan publishOutcome, 2)
+	for range 2 {
+		go func() {
+			result, publishErr := store.Publish(ctx, "mainnet-beta", snapshot, position, decision)
+			outcomes <- publishOutcome{result: result, err: publishErr}
+		}()
+	}
+	var published PublishResult
+	inserted, duplicates := 0, 0
+	for range 2 {
+		outcome := <-outcomes
+		if outcome.err != nil {
+			t.Fatal(outcome.err)
+		}
+		if outcome.result.Inserted {
+			inserted++
+			published = outcome.result
+		} else if outcome.result.Reason == "economic_duplicate" {
+			duplicates++
+		}
+	}
+	if inserted != 1 || duplicates != 1 || published.OpportunityID <= 0 || published.EpochID <= 0 {
+		t.Fatalf("publication race was not serialized: inserted=%d duplicates=%d published=%+v", inserted, duplicates, published)
 	}
 	var state, owner string
 	var marketSlot int64
@@ -106,28 +128,25 @@ func TestStoreIntegrationDurableHandoffAndLeaseFencing(t *testing.T) {
 		snapshot.Reserves[address] = reserve
 	}
 	decision = Plan(snapshot, position, source.Address, target.Address)
-	duplicate, err := store.Publish(ctx, lease, snapshot, position, decision)
+	duplicate, err := store.Publish(ctx, "mainnet-beta", snapshot, position, decision)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if duplicate.Inserted || duplicate.OpportunityID != published.OpportunityID || duplicate.Reason != "economic_duplicate" {
 		t.Fatalf("economic retry was not idempotent: %+v", duplicate)
 	}
-	if err := store.RecordSnapshot(ctx, lease, snapshot, true); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Release(ctx, lease); err != nil {
-		t.Fatal(err)
-	}
-	next, err := store.Acquire(ctx, "mainnet-beta", "integration:"+suffix, "owner-b", 30*time.Second)
+	// A fresh process recovers from the authoritative queue, not a private
+	// planner watermark. Existing active work must still block replanning.
+	restarted, err := OpenStore(ctx, databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Release(ctx, next)
-	if next.FencingToken <= lease.FencingToken || next.LastConfirmedSlot != 101 || next.LastSnapshotHash != snapshot.Hash {
-		t.Fatalf("recovery watermark/fence was not retained: %+v", next)
+	defer restarted.Close()
+	recovered, err := restarted.LoadVaultPosition(ctx, "mainnet-beta", vaultID, source, target)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := store.Publish(ctx, lease, snapshot, position, decision); err == nil || !strings.Contains(err.Error(), "lease was lost") {
-		t.Fatalf("stale owner was not fenced: %v", err)
+	if recovered.BlockedReason != "active_opportunity" {
+		t.Fatalf("restart did not recover durable active work: %+v", recovered)
 	}
 }

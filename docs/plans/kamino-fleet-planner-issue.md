@@ -13,8 +13,8 @@ Move market-state ownership and the decision loop into one Go process, keep a
 slot-fenced confirmed protocol snapshot in memory, and trigger execution from a
 durably persisted decision without reconstructing the same current market state
 from the database on every update. Keep the database as the durable journal,
-recovery source, audit history, and fencing mechanism rather than as the live
-market-state message bus.
+recovery source, audit history, and downstream execution fencing mechanism
+rather than as the live market-state message bus.
 
 This issue should be described as removing the **standalone planning hop**, not
 as deleting the production `loyal-fleet-route-reconciler`. The latter is a
@@ -53,6 +53,26 @@ must establish a production baseline before setting the final SLO.
 | W1 | `loyal-kamino-reserve-monitor` / `crates/kamino-reserve-monitor` | Consumes LaserStream reserve updates, decodes them, persists Timescale events, independently verifies dirty reserves at confirmed commitment, and advances the verified current-state projection. It already keeps a process-local `HashMap<Pubkey, ReserveSnapshot>`, but that map is currently used by ingestion/diffing and is not the fleet planner's authoritative cache. |
 | W2 | `loyal-fleet-opportunity-planner` / `fleet-opportunity-planner` | Reads the verified Kamino market snapshot from Timescale and source/fleet state from Neon, constructs the immutable market epoch, ranks capacity-aware opportunities, and durably publishes optimizer epochs and rebalance opportunities. This is the middle decision hop crossed out in the doodle. |
 | W3 | The execution side of the fleet, not one process: route revalidator, route executor, route confirmer, route reconciler, and ALT provisioner | Revalidates routes, builds/simulates/signs and durably queues exact wire bytes, broadcasts and confirms them asynchronously, reconciles exact effects, projects positions, and provisions required lookup tables. |
+
+### Cutover scope warning
+
+The two old services cannot both be disabled globally merely because the first
+Go scope is one vault:
+
+- `loyal-kamino-reserve-monitor` still supplies `kamino.reserve_updates` and the
+  supported-reserve catalog used by the production
+  `loyal-balance-sweep-ata-monitor` Earn APY projection. Repository and external
+  Timescale consumers must be migrated before this monitor can be stopped
+  globally. Its two selected reserve outputs may be unused by this Go planner,
+  but the service remains required for other reserves/consumers.
+- `loyal-fleet-opportunity-planner` plans the complete active fleet, including
+  routes outside the one-vault Go scope. It may be stopped globally only if a
+  production inventory proves there are no other active cohorts requiring it.
+  Otherwise the Rust planner needs an explicit migrated-vault exclusion before
+  the Go worker can publish for that vault without overlap.
+
+The retained services are the route revalidator, executor, confirmer,
+reconciler, health projector, and ALT provisioner.
 
 ### Terminology warning
 
@@ -160,9 +180,12 @@ Backyard worker's final state machine:
   and policy hashes, instruction envelopes, transaction size, signed wire
   shape, and expected return/effect evidence. Unknown or changed contracts must
   block the route.
-- **Single-writer fencing.** Use a production owner identity bound to the Render
-  service and immutable image SHA, validate owner/token/expiry on writes, cancel
-  active work on lease loss, and support bounded rolling lease handoff.
+- **Single-writer fencing.** A worker that owns capital-moving lifecycle state
+  or permits rolling overlap must use a production owner identity bound to the
+  Render service and immutable image SHA, validate owner/token/expiry on writes,
+  cancel active work on lease loss, and support bounded rolling lease handoff.
+  The planner-only phase-one exception is valid only with a codified
+  stop-then-start singleton cutover and the existing queue admission fences.
 - **Bounded reads, exactly one send.** Retry only classified transient read and
   snapshot-alignment failures. Persist exact signed bytes before broadcast,
   record broadcast intent first, send with no client retries, and recover
@@ -239,7 +262,7 @@ account-discovery RPCs. Invalidate or refresh the cache when:
 - this worker's confirmed transaction changes the expected state;
 - an account is missing, closed, has an unexpected owner, or fails decoding;
 - simulation/revalidation reports stale evidence; or
-- the worker restarts or loses its lease.
+- the worker restarts.
 
 Do not remove mandatory fresh policy/oracle reads, coherent confirmed
 observation, transaction simulation, ownership checks, or stale-state fences
@@ -296,8 +319,12 @@ needed by the approved first scope.
 - Its lease and durable operation journal are reasons to retain critical DB
   coordination, not reasons to eliminate it.
 
-Use its “single owner plus durable checkpoints” model, not its exact polling or
-single-route topology.
+Use its coherent evidence and durable checkpoint model, not its exact polling
+or schema. A dedicated planner lease is not copied into the initial strictly
+sequential singleton cutover: the planner does not sign/send, existing queue
+admission is serialized per vault, and retained W3 revalidates every handoff.
+Reintroduce durable planner ownership before allowing rolling or overlapping Go
+planner deployment.
 
 ## Safety invariants
 
@@ -328,8 +355,8 @@ The implementation must preserve or strengthen all of the following:
     entire relevant scope.
 11. Lost direct notifications do not lose work; durable catch-up is
     authoritative.
-12. Cache loss, corruption, stale evidence, or lease loss fails closed and
-    rehydrates from confirmed chain/durable evidence.
+12. Cache loss, corruption, or stale evidence fails closed and rehydrates from
+    confirmed chain/durable evidence.
 13. Withdrawal and safety work preempt new optimization wherever pre-broadcast
     cancellation remains safe.
 14. Production health continues to expose stuck planning, signing, confirmation,
@@ -347,8 +374,9 @@ The implementation must preserve or strengthen all of the following:
      policy/manifest identities, decision order, inputs, outputs, and explicit
      unsupported cases.
    - Write an executable verifier that tries to disprove coherent snapshots,
-     economic idempotency, recovery-first ordering, lease fencing, exactly-one
-     send, and exact-effect reconciliation before implementing the cutover.
+     economic idempotency, recovery-first ordering, singleton cutover,
+     exactly-one send, and exact-effect reconciliation before implementing the
+     cutover.
    - Extract a pure deterministic decision function and build fixtures from the
      current Rust planner. Require field-level parity for the selected scope's
      optimizer epoch identity, eligibility, capacity selection, economics, and
@@ -376,19 +404,27 @@ The implementation must preserve or strengthen all of the following:
 
 ## Implemented phase-one slice
 
-The repository now contains `go/kamino-fleet-planner`, migration `0072`, and
+The repository now contains `go/kamino-fleet-planner` and
 `scripts/verify-kamino-fleet-planner-e2e.sh`. This slice is deliberately limited
 to one configured vault and two distinct six-decimal USDC reserves in one
 Kamino market. It polls confirmed RPC directly, owns only coherent two-reserve
 snapshots in memory, plans deterministically, defaults to `shadow`, and in
 explicit `publish` mode writes the existing PostgreSQL `revalidate` queue for
-unchanged Rust W3 consumers. A separate heartbeat renews the fenced owner lease
-even while observation or publication is running.
+unchanged Rust W3 consumers. The cutover contract is strict stop-then-start:
+the Rust planner is fully stopped before exactly one Go planner starts, and
+rolling/overlapping planner deployment is forbidden.
+
+No migration `0072` is needed for that contract. Publication uses the existing
+managed-vault row lock shared with the Rust queue API, economic idempotency
+key, active opportunity slot, and downstream W3 revalidation. Restart recovery reads the
+authoritative active queue and fresh confirmed RPC rather than a private
+planner watermark.
 
 The disposable-PostgreSQL/RPC-stub verifier covers the frozen KLend layout,
-identity and slot drift, capacity/economic no-ops, economic idempotency, lease
-exclusion and stale-token rejection, restart watermarks, and confirmed RPC to
-durable W3 handoff. It does not yet establish Rust/Go field-level parity from
+identity and slot drift, capacity/economic no-ops, economic idempotency,
+active-work exclusion, queue-based restart recovery, and confirmed RPC to
+durable W3 handoff. It explicitly does not build or invoke the replaced Rust
+monitor or planner. It does not yet establish Rust/Go field-level parity from
 production fixtures, consume the existing LaserStream W1 feed, choose a
 production cohort, add Render deployment, measure production latency, or prove
 all broader acceptance criteria below. Existing Rust services therefore remain
@@ -398,9 +434,9 @@ unchanged and deployed until those gates pass.
 
 1. The production topology no longer deploys a standalone
    `loyal-fleet-opportunity-planner` for the migrated route scope.
-2. A single fenced Go owner maintains the current confirmed Kamino decision
-   snapshot in memory and reacts to an accepted update without waiting for the
-   current 5-second Timescale market probe.
+2. A single operationally enforced Go process maintains the current confirmed
+   Kamino decision snapshot in memory and reacts to an accepted update without
+   waiting for the current 5-second Timescale market probe.
 3. The hot path does not query Timescale merely to reconstruct market state that
    the same owner just confirmed. Database reads remain allowed for startup,
    catch-up, fleet state, durable admission, recovery, and auditing.
@@ -415,7 +451,7 @@ unchanged and deployed until those gates pass.
    stream updates; a later slot with unchanged economics; confirmed-verification
    lag; changed decisions after refreshed evidence; unsupported layouts/hashes;
    DB unavailability; process crash before and after decision persistence; lost
-   wakeups; lease loss/handoff; and cache rehydration.
+   wakeups; accidental second-planner startup; and cache rehydration.
 7. The verifier proves recovery-first ordering, exact persisted wire reuse,
    broadcast intent before exactly one send, ambiguous-send recovery,
    asynchronous confirmation, immutable exact-effect reconciliation, withdrawal

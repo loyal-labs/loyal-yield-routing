@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func TestWorkerIntegrationConfirmedRPCToDurableW3Queue(t *testing.T) {
+func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("FLEET_TEST_DATABASE_URL is not set")
@@ -57,16 +57,11 @@ func TestWorkerIntegrationConfirmedRPCToDurableW3Queue(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	config := Config{DatabaseURL: databaseURL, RPCURL: server.URL, Cluster: "mainnet-beta", Cohort: "worker-e2e:" + suffix, Owner: "worker-e2e", Mode: ModePublish, VaultID: vaultID, Source: source, Target: target, PollInterval: time.Second, LeaseTTL: 30 * time.Second, SlotDuration: 400 * time.Millisecond}
+	config := Config{DatabaseURL: databaseURL, RPCURL: server.URL, Cluster: "mainnet-beta", Mode: ModePublish, VaultID: vaultID, Source: source, Target: target, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
 	worker, err := NewWorker(config, store, NewRPCClient(server.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker.lease, err = store.Acquire(ctx, config.Cluster, config.Cohort, config.Owner, config.LeaseTTL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Release(ctx, worker.lease)
 	if err := worker.cycle(ctx); err != nil {
 		t.Fatal(err)
 	}

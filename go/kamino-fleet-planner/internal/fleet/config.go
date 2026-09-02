@@ -21,14 +21,11 @@ type Config struct {
 	DatabaseURL  string
 	RPCURL       string
 	Cluster      string
-	Cohort       string
-	Owner        string
 	Mode         Mode
 	VaultID      int64
 	Source       ReserveIdentity
 	Target       ReserveIdentity
 	PollInterval time.Duration
-	LeaseTTL     time.Duration
 	SlotDuration time.Duration
 }
 
@@ -37,11 +34,8 @@ func ConfigFromEnvironment() (Config, error) {
 		DatabaseURL:  os.Getenv("NEON_DATABASE_URL"),
 		RPCURL:       os.Getenv("SOLANA_RPC_URL"),
 		Cluster:      valueOr(os.Getenv("KAMINO_FLEET_CLUSTER"), "mainnet-beta"),
-		Cohort:       valueOr(os.Getenv("KAMINO_FLEET_COHORT"), "usdc-fixed-route-v1"),
-		Owner:        os.Getenv("KAMINO_FLEET_OWNER"),
 		Mode:         Mode(valueOr(os.Getenv("KAMINO_FLEET_MODE"), string(ModeShadow))),
 		PollInterval: durationOr(os.Getenv("KAMINO_FLEET_POLL_INTERVAL"), time.Second),
-		LeaseTTL:     durationOr(os.Getenv("KAMINO_FLEET_LEASE_TTL"), 30*time.Second),
 		SlotDuration: durationOr(os.Getenv("KAMINO_FLEET_SLOT_DURATION"), 400*time.Millisecond),
 	}
 	var err error
@@ -62,18 +56,18 @@ func ConfigFromEnvironment() (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if c.DatabaseURL == "" || c.Owner == "" || strings.TrimSpace(c.Owner) != c.Owner || c.VaultID <= 0 {
-		return fmt.Errorf("database URL, canonical owner, and positive vault ID are required")
+	if c.DatabaseURL == "" || c.VaultID <= 0 {
+		return fmt.Errorf("database URL and positive vault ID are required")
 	}
 	u, err := url.Parse(c.RPCURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return fmt.Errorf("confirmed Solana RPC URL is required")
 	}
-	if c.Cluster == "" || c.Cohort == "" || c.Mode != ModeShadow && c.Mode != ModePublish {
-		return fmt.Errorf("cluster, cohort, and a shadow or publish mode are required")
+	if c.Cluster == "" || strings.TrimSpace(c.Cluster) != c.Cluster || c.Mode != ModeShadow && c.Mode != ModePublish {
+		return fmt.Errorf("canonical cluster and a shadow or publish mode are required")
 	}
-	if c.PollInterval <= 0 || c.LeaseTTL < 3*c.PollInterval || c.SlotDuration <= 0 {
-		return fmt.Errorf("poll, lease, and slot durations are invalid")
+	if c.PollInterval <= 0 || c.SlotDuration <= 0 {
+		return fmt.Errorf("poll and slot durations are invalid")
 	}
 	if c.Source.Address == "" || c.Target.Address == "" || c.Source.Address == c.Target.Address ||
 		c.Source.Market == "" || c.Source.Market != c.Target.Market ||

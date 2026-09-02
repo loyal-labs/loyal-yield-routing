@@ -14,14 +14,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Lease struct {
-	Cluster, Cohort, Owner string
-	FencingToken           int64
-	ExpiresAt              time.Time
-	LastConfirmedSlot      int64
-	LastSnapshotHash       string
-}
-
 type Store struct{ pool *pgxpool.Pool }
 
 func OpenStore(ctx context.Context, databaseURL string) (*Store, error) {
@@ -39,56 +31,6 @@ func (s *Store) Close() {
 	if s != nil && s.pool != nil {
 		s.pool.Close()
 	}
-}
-
-func (s *Store) Acquire(ctx context.Context, cluster, cohort, owner string, ttl time.Duration) (Lease, error) {
-	if cluster == "" || cohort == "" || owner == "" || ttl <= 0 {
-		return Lease{}, fmt.Errorf("lease identity and TTL are required")
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return Lease{}, err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.kamino_fleet_planner_owners (cluster, cohort) VALUES ($1,$2) ON CONFLICT DO NOTHING`, cluster, cohort); err != nil {
-		return Lease{}, err
-	}
-	lease := Lease{Cluster: cluster, Cohort: cohort, Owner: owner}
-	err = tx.QueryRow(ctx, `UPDATE loyal_yield.kamino_fleet_planner_owners SET lease_owner=$3, lease_expires_at=clock_timestamp()+($4*interval '1 millisecond'), fencing_token=fencing_token+1, updated_at=clock_timestamp() WHERE cluster=$1 AND cohort=$2 AND (lease_owner IS NULL OR lease_expires_at<=clock_timestamp()) RETURNING fencing_token, lease_expires_at, COALESCE(last_confirmed_slot,0), COALESCE(last_snapshot_hash,'')`, cluster, cohort, owner, ttl.Milliseconds()).Scan(&lease.FencingToken, &lease.ExpiresAt, &lease.LastConfirmedSlot, &lease.LastSnapshotHash)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Lease{}, fmt.Errorf("Kamino fleet planner cohort lease is held by another process")
-	}
-	if err != nil {
-		return Lease{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Lease{}, err
-	}
-	return lease, nil
-}
-
-func (s *Store) Refresh(ctx context.Context, lease Lease, ttl time.Duration) (Lease, error) {
-	err := s.pool.QueryRow(ctx, `UPDATE loyal_yield.kamino_fleet_planner_owners SET lease_expires_at=clock_timestamp()+($4*interval '1 millisecond'), updated_at=clock_timestamp() WHERE cluster=$1 AND cohort=$2 AND lease_owner=$3 AND fencing_token=$5 AND lease_expires_at>clock_timestamp() RETURNING lease_expires_at`, lease.Cluster, lease.Cohort, lease.Owner, ttl.Milliseconds(), lease.FencingToken).Scan(&lease.ExpiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Lease{}, fmt.Errorf("Kamino fleet planner cohort lease was lost")
-	}
-	return lease, err
-}
-
-func (s *Store) Release(ctx context.Context, lease Lease) error {
-	_, err := s.pool.Exec(ctx, `UPDATE loyal_yield.kamino_fleet_planner_owners SET lease_owner=NULL, lease_expires_at=NULL, updated_at=clock_timestamp() WHERE cluster=$1 AND cohort=$2 AND lease_owner=$3 AND fencing_token=$4`, lease.Cluster, lease.Cohort, lease.Owner, lease.FencingToken)
-	return err
-}
-
-func (s *Store) RecordSnapshot(ctx context.Context, lease Lease, snapshot MarketSnapshot, decided bool) error {
-	command, err := s.pool.Exec(ctx, `UPDATE loyal_yield.kamino_fleet_planner_owners SET last_confirmed_slot=$5, last_snapshot_hash=$6, last_decision_at=CASE WHEN $7 THEN clock_timestamp() ELSE last_decision_at END, updated_at=clock_timestamp() WHERE cluster=$1 AND cohort=$2 AND lease_owner=$3 AND fencing_token=$4 AND lease_expires_at>clock_timestamp()`, lease.Cluster, lease.Cohort, lease.Owner, lease.FencingToken, snapshot.Slot, snapshot.Hash, decided)
-	if err != nil {
-		return err
-	}
-	if command.RowsAffected() != 1 {
-		return fmt.Errorf("Kamino fleet planner cohort lease was lost")
-	}
-	return nil
 }
 
 func (s *Store) LoadVaultPosition(ctx context.Context, cluster string, vaultID int64, source, target ReserveIdentity) (VaultPosition, error) {
@@ -177,7 +119,10 @@ func jsonInt64(raw json.RawMessage) (int64, error) {
 	return number, parseErr
 }
 
-func (s *Store) Publish(ctx context.Context, lease Lease, snapshot MarketSnapshot, position VaultPosition, decision Decision) (PublishResult, error) {
+func (s *Store) Publish(ctx context.Context, cluster string, snapshot MarketSnapshot, position VaultPosition, decision Decision) (PublishResult, error) {
+	if cluster == "" {
+		return PublishResult{}, fmt.Errorf("cluster is required")
+	}
 	if err := decision.Validate(); err != nil {
 		return PublishResult{}, err
 	}
@@ -225,18 +170,23 @@ func (s *Store) Publish(ctx context.Context, lease Lease, snapshot MarketSnapsho
 	if err != nil {
 		return PublishResult{}, err
 	}
-	key := economicKey(lease.Cluster, position, decision)
+	key := economicKey(cluster, position, decision)
 	epochKey := "kamino-fleet-planner-go-v1:" + fmt.Sprint(snapshot.Slot) + ":" + snapshot.Hash
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return PublishResult{}, err
 	}
 	defer tx.Rollback(ctx)
-	var leaseToken int64
-	if err := tx.QueryRow(ctx, `SELECT fencing_token FROM loyal_yield.kamino_fleet_planner_owners WHERE cluster=$1 AND cohort=$2 AND lease_owner=$3 AND fencing_token=$4 AND lease_expires_at>clock_timestamp() FOR UPDATE`, lease.Cluster, lease.Cohort, lease.Owner, lease.FencingToken).Scan(&leaseToken); err != nil || leaseToken != lease.FencingToken {
-		return PublishResult{}, fmt.Errorf("Kamino fleet planner cohort lease was lost")
+	// This is the same per-vault publication mutex used by the Rust queue API.
+	// The cutover still requires stop-then-start singleton operation, while this
+	// row lock, economic idempotency key, and active-opportunity slot make each
+	// durable admission atomic without planner-specific persistence.
+	var vaultActive bool
+	err = tx.QueryRow(ctx, `SELECT active FROM loyal_yield.managed_vaults WHERE id=$1 FOR UPDATE`, decision.VaultID).Scan(&vaultActive)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && !vaultActive {
+		return PublishResult{}, fmt.Errorf("cannot queue opportunity for missing or inactive vault %d", decision.VaultID)
 	}
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, decision.VaultID); err != nil {
+	if err != nil {
 		return PublishResult{}, err
 	}
 	var existingID int64
@@ -251,7 +201,7 @@ func (s *Store) Publish(ctx context.Context, lease Lease, snapshot MarketSnapsho
 		return PublishResult{}, err
 	}
 	var active bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.rebalance_opportunities WHERE cluster=$1 AND vault_id=$2 AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')) OR EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions WHERE vault_id=$2 AND status::text IN ('planned','simulating','ready','submitted','confirming'))`, lease.Cluster, decision.VaultID).Scan(&active); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.rebalance_opportunities WHERE cluster=$1 AND vault_id=$2 AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')) OR EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions WHERE vault_id=$2 AND status::text IN ('planned','simulating','ready','submitted','confirming'))`, cluster, decision.VaultID).Scan(&active); err != nil {
 		return PublishResult{}, err
 	}
 	if active {
@@ -261,13 +211,13 @@ func (s *Store) Publish(ctx context.Context, lease Lease, snapshot MarketSnapsho
 		return PublishResult{Reason: "active_work"}, nil
 	}
 	var epochID int64
-	if err := tx.QueryRow(ctx, `WITH inserted AS (INSERT INTO loyal_yield.optimizer_epochs (cluster,epoch_key,market_slot,observed_at,expires_at,market_state) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (cluster,epoch_key) DO NOTHING RETURNING id) SELECT id FROM inserted UNION ALL SELECT id FROM loyal_yield.optimizer_epochs WHERE cluster=$1 AND epoch_key=$2 LIMIT 1`, lease.Cluster, epochKey, snapshot.Slot, snapshot.ObservedAt, epochExpires, marketState).Scan(&epochID); err != nil {
+	if err := tx.QueryRow(ctx, `WITH inserted AS (INSERT INTO loyal_yield.optimizer_epochs (cluster,epoch_key,market_slot,observed_at,expires_at,market_state) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (cluster,epoch_key) DO NOTHING RETURNING id) SELECT id FROM inserted UNION ALL SELECT id FROM loyal_yield.optimizer_epochs WHERE cluster=$1 AND epoch_key=$2 LIMIT 1`, cluster, epochKey, snapshot.Slot, snapshot.ObservedAt, epochExpires, marketState).Scan(&epochID); err != nil {
 		return PublishResult{}, err
 	}
 	var opportunityID int64
 	err = tx.QueryRow(ctx, `INSERT INTO loyal_yield.rebalance_opportunities
 (cluster,idempotency_key,rediscovery_key,attempt_generation,vault_id,source_snapshot_id,optimizer_epoch_id,source_reserve,target_reserve,liquidity_mint,source_liquidity_mint,target_liquidity_mint,amount_raw,principal_usd_micros,source_apy_bps,target_apy_bps,estimated_edge_bps,estimated_cost_lamports,annual_yield_gain_usd_micros,expected_net_gain_usd_micros,economic_priority,priority_version,operation_class,opportunity_state,execution_plan,available_at,expires_at)
-VALUES ($1,$2,$2,1,$3,$4,$5,$6,$7,$8,$8,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'lost-yield-service-net-reserve-capacity-v3','yield_optimization','revalidate',$18,clock_timestamp(),$19) RETURNING id`, lease.Cluster, key, decision.VaultID, decision.SourceSnapshotID, epochID, decision.SourceReserve, decision.TargetReserve, decision.Mint, decision.AmountRaw, decision.PrincipalUSDMicros, decision.SourceAPYBPS, decision.TargetAPYBPS, decision.EdgeBPS, decision.EstimatedCostLamports, decision.AnnualYieldGainUSDMicros, decision.ExpectedNetGainUSDMicros, decision.EconomicPriority, planJSON, epochExpires).Scan(&opportunityID)
+VALUES ($1,$2,$2,1,$3,$4,$5,$6,$7,$8,$8,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'lost-yield-service-net-reserve-capacity-v3','yield_optimization','revalidate',$18,clock_timestamp(),$19) RETURNING id`, cluster, key, decision.VaultID, decision.SourceSnapshotID, epochID, decision.SourceReserve, decision.TargetReserve, decision.Mint, decision.AmountRaw, decision.PrincipalUSDMicros, decision.SourceAPYBPS, decision.TargetAPYBPS, decision.EdgeBPS, decision.EstimatedCostLamports, decision.AnnualYieldGainUSDMicros, decision.ExpectedNetGainUSDMicros, decision.EconomicPriority, planJSON, epochExpires).Scan(&opportunityID)
 	if err != nil {
 		return PublishResult{}, err
 	}
