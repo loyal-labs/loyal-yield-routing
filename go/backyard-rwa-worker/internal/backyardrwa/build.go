@@ -492,7 +492,11 @@ func decodeBase58(value string) ([]byte, error) {
 	for zeros < len(value) && value[zeros] == '1' {
 		zeros++
 	}
-	for len(bytes) > 1 && bytes[0] == 0 {
+	// The accumulator starts at zero. Strip that sentinel even when the input
+	// is entirely leading-zero digits (for example Solana's system program,
+	// 11111111111111111111111111111111), then restore exactly the encoded
+	// number of leading zero bytes below.
+	for len(bytes) > 0 && bytes[0] == 0 {
 		bytes = bytes[1:]
 	}
 	return append(make([]byte, zeros), bytes...), nil
