@@ -73,8 +73,12 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 		if len(signed.signedWire) > solanaPacketBytes || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:65]) {
 			t.Fatalf("%s wire is not a signed bounded packet", test.action)
 		}
-		if _, err := signed.BuildResult(9); err != nil {
+		result, err := signed.BuildResult(9)
+		if err != nil {
 			t.Fatal(err)
+		}
+		if err := result.validateForDelegate(delegate); err != nil {
+			t.Fatalf("existing one-instruction Jupiter envelope was rejected: %v", err)
 		}
 	}
 }

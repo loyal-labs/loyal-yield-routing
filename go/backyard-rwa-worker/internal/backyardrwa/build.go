@@ -605,34 +605,189 @@ func decodeExactLegacyWire(wire []byte) ([]byte, []byte, publicKey, publicKey, e
 	copy(recentBlockhash[:], message[messageOffset:messageOffset+32])
 	messageOffset += 32
 	instructionCount, err := decodeShortVec(message, &messageOffset)
-	if err != nil || instructionCount != 1 {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy bridge transaction must contain one instruction")
+	if err != nil || (instructionCount != 1 && instructionCount != 4) {
+		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy transaction has an unsupported instruction count")
 	}
-	if messageOffset+2 > len(message) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("truncated legacy instruction")
+	instructions := make([]decodedLegacyInstruction, instructionCount)
+	for index := range instructions {
+		instruction, nextOffset, err := decodeLegacyInstruction(message, messageOffset, keys)
+		if err != nil {
+			return nil, nil, publicKey{}, publicKey{}, err
+		}
+		instructions[index] = instruction
+		messageOffset = nextOffset
 	}
-	programIndex := int(message[messageOffset])
-	messageOffset++
-	accountIndexCount := int(message[messageOffset])
-	messageOffset++
-	if accountIndexCount == 0 || messageOffset+accountIndexCount > len(message) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("invalid legacy instruction accounts")
+	if messageOffset != len(message) {
+		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("trailing legacy transaction bytes")
 	}
-	accountIndexes := append([]byte(nil), message[messageOffset:messageOffset+accountIndexCount]...)
-	messageOffset += accountIndexCount
-	dataLength, err := decodeShortVec(message, &messageOffset)
-	if err != nil || dataLength < 0 || messageOffset+dataLength != len(message) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("invalid legacy instruction data")
-	}
-	data := message[messageOffset : messageOffset+dataLength]
-	if programIndex >= len(keys) || keys[programIndex] != mustKey(bridgeSquadsProgram) ||
-		len(accountIndexes) < 3 || int(accountIndexes[0]) >= len(keys) || int(accountIndexes[1]) >= len(keys) || int(accountIndexes[2]) >= len(keys) ||
-		keys[accountIndexes[0]] == (publicKey{}) ||
-		keys[accountIndexes[1]] != mustKey(bridgeSquadsProgram) || keys[accountIndexes[2]] != signer ||
-		len(data) < len(squadsExecuteSyncDiscriminator) || !bytes.Equal(data[:len(squadsExecuteSyncDiscriminator)], squadsExecuteSyncDiscriminator) {
+	outer := instructions[len(instructions)-1]
+	if outer.program != mustKey(bridgeSquadsProgram) || len(outer.accountIndexes) < 3 ||
+		keys[outer.accountIndexes[0]] == (publicKey{}) ||
+		keys[outer.accountIndexes[1]] != mustKey(bridgeSquadsProgram) || keys[outer.accountIndexes[2]] != signer ||
+		len(outer.data) < len(squadsExecuteSyncDiscriminator) || !bytes.Equal(outer.data[:len(squadsExecuteSyncDiscriminator)], squadsExecuteSyncDiscriminator) {
 		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy transaction is not an exact Squads policy envelope")
 	}
+	if instructionCount == 4 && !isExactKaminoTransaction(instructions) {
+		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy Kamino transaction has an invalid refresh or embedded leg")
+	}
 	return signature, message, recentBlockhash, signer, nil
+}
+
+type decodedLegacyInstruction struct {
+	program        publicKey
+	accountIndexes []byte
+	accounts       []publicKey
+	data           []byte
+}
+
+func decodeLegacyInstruction(message []byte, offset int, keys []publicKey) (decodedLegacyInstruction, int, error) {
+	if offset+2 > len(message) {
+		return decodedLegacyInstruction{}, offset, fmt.Errorf("truncated legacy instruction")
+	}
+	programIndex := int(message[offset])
+	offset++
+	accountIndexCount := int(message[offset])
+	offset++
+	if programIndex >= len(keys) || accountIndexCount == 0 || offset+accountIndexCount > len(message) {
+		return decodedLegacyInstruction{}, offset, fmt.Errorf("invalid legacy instruction accounts")
+	}
+	accountIndexes := append([]byte(nil), message[offset:offset+accountIndexCount]...)
+	offset += accountIndexCount
+	for _, accountIndex := range accountIndexes {
+		if int(accountIndex) >= len(keys) {
+			return decodedLegacyInstruction{}, offset, fmt.Errorf("invalid legacy instruction account index")
+		}
+	}
+	accounts := make([]publicKey, len(accountIndexes))
+	for index, accountIndex := range accountIndexes {
+		accounts[index] = keys[accountIndex]
+	}
+	dataLength, err := decodeShortVec(message, &offset)
+	if err != nil || dataLength < 0 || offset+dataLength > len(message) {
+		return decodedLegacyInstruction{}, offset, fmt.Errorf("invalid legacy instruction data")
+	}
+	data := append([]byte(nil), message[offset:offset+dataLength]...)
+	offset += dataLength
+	return decodedLegacyInstruction{program: keys[programIndex], accountIndexes: accountIndexes, accounts: accounts, data: data}, offset, nil
+}
+
+func isExactKaminoTransaction(instructions []decodedLegacyInstruction) bool {
+	if len(instructions) != 4 {
+		return false
+	}
+	for _, leg := range []kaminoPrimeUSDCLeg{kaminoLegDeposit, kaminoLegBorrow, kaminoLegRepay, kaminoLegWithdraw} {
+		expected := kaminoPrimeUSDCRefreshInstructions(leg)
+		matches := len(expected) == len(instructions)-1
+		for index := range expected {
+			if !matches || instructions[index].program != expected[index].program ||
+				!bytes.Equal(instructions[index].data, expected[index].data) ||
+				len(instructions[index].accounts) != len(expected[index].accounts) {
+				matches = false
+				break
+			}
+			for accountIndex, account := range instructions[index].accounts {
+				if account != expected[index].accounts[accountIndex].key {
+					matches = false
+					break
+				}
+			}
+		}
+		if matches && isExactKaminoSquadsInner(instructions[3], leg) {
+			return true
+		}
+	}
+	return false
+}
+
+func isExactKaminoSquadsInner(outer decodedLegacyInstruction, leg kaminoPrimeUSDCLeg) bool {
+	// Exact Borsh envelope emitted by wrapSquadsKaminoPolicy:
+	// discriminator | vault | signer count | policy kind | interaction kind |
+	// Some(constraint indexes) | vec len | index | sync tx | inner vault |
+	// compact payload len | compact payload.
+	if len(outer.accounts) < 4 || len(outer.data) < 27 ||
+		!bytes.Equal(outer.data[:8], squadsExecuteSyncDiscriminator) ||
+		!bytes.Equal(outer.data[8:13], []byte{0, 1, 1, 1, 1}) ||
+		readU32LE(outer.data[13:17]) != 1 || outer.data[17] != kaminoConstraintIndex(leg) ||
+		!bytes.Equal(outer.data[18:20], []byte{1, 0}) {
+		return false
+	}
+	compactLength := int(readU32LE(outer.data[20:24]))
+	if compactLength != len(outer.data)-24 {
+		return false
+	}
+	compact := outer.data[24:]
+	if len(compact) < 5 || compact[0] != 1 {
+		return false
+	}
+	transactionAccounts := outer.accounts[3:]
+	programIndex := int(compact[1])
+	accountCount := int(compact[2])
+	if programIndex >= len(transactionAccounts) || transactionAccounts[programIndex] != mustKey(kaminoPrimeUSDCProgram) ||
+		accountCount == 0 || 3+accountCount+2 > len(compact) {
+		return false
+	}
+	wantAccounts := kaminoLegMetas(leg)
+	if len(wantAccounts) != accountCount {
+		return false
+	}
+	expectedTransactionAccounts := make([]accountMeta, 0, len(wantAccounts)+1)
+	for _, account := range wantAccounts {
+		pushOrMergeMeta(&expectedTransactionAccounts, account)
+	}
+	pushOrMergeMeta(&expectedTransactionAccounts, accountMeta{key: mustKey(kaminoPrimeUSDCProgram)})
+	if len(transactionAccounts) != len(expectedTransactionAccounts) {
+		return false
+	}
+	for index, account := range transactionAccounts {
+		if account != expectedTransactionAccounts[index].key {
+			return false
+		}
+	}
+	for index, compactIndex := range compact[3 : 3+accountCount] {
+		if int(compactIndex) >= len(transactionAccounts) || transactionAccounts[compactIndex] != wantAccounts[index].key {
+			return false
+		}
+	}
+	dataLengthOffset := 3 + accountCount
+	dataLength := int(compact[dataLengthOffset]) | int(compact[dataLengthOffset+1])<<8
+	data := compact[dataLengthOffset+2:]
+	return dataLength == len(data) && len(data) == 16 &&
+		bytes.Equal(data[:8], kaminoLegDiscriminator(leg)) &&
+		readU64(data[8:]) > 0 && readU64(data[8:]) <= bridgeCapRaw
+}
+
+func kaminoLegMetas(leg kaminoPrimeUSDCLeg) []accountMeta {
+	switch leg {
+	case kaminoLegDeposit:
+		return kaminoDepositMetas()
+	case kaminoLegBorrow:
+		return kaminoBorrowMetas()
+	case kaminoLegRepay:
+		return kaminoRepayMetas()
+	case kaminoLegWithdraw:
+		return kaminoWithdrawMetas()
+	default:
+		return nil
+	}
+}
+
+func kaminoLegDiscriminator(leg kaminoPrimeUSDCLeg) []byte {
+	switch leg {
+	case kaminoLegDeposit:
+		return kaminoDepositCollateral
+	case kaminoLegBorrow:
+		return kaminoBorrowUSDC
+	case kaminoLegRepay:
+		return kaminoRepayUSDC
+	case kaminoLegWithdraw:
+		return kaminoWithdrawCollateral
+	default:
+		return nil
+	}
+}
+
+func readU32LE(value []byte) uint32 {
+	return uint32(value[0]) | uint32(value[1])<<8 | uint32(value[2])<<16 | uint32(value[3])<<24
 }
 
 func isBridgePolicy(policy publicKey) bool {
