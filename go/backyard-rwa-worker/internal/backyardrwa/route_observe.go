@@ -30,7 +30,12 @@ func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *RPCC
 			return rpc.getVoltrWithdrawalReceiptAccounts(ctx, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
 		},
 		accounts: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
-			return rpc.GetMultipleAccountsWithOptional(ctx, addresses, minSlot, kaminoPrimeUSDCObligation)
+			for _, candidate := range addresses {
+				if candidate == kaminoPrimeUSDCObligation {
+					return rpc.GetMultipleAccountsWithOptional(ctx, addresses, minSlot, kaminoPrimeUSDCObligation)
+				}
+			}
+			return rpc.GetMultipleAccounts(ctx, addresses, minSlot)
 		},
 		now: func() time.Time { return time.Now().UTC() },
 	})
