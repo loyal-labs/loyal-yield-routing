@@ -26,6 +26,31 @@ func TestEveryDecisionHasDurableInitialStatus(t *testing.T) {
 	}
 }
 
+func TestFlatObservationProjectionRetainsConfirmedDashboardTruth(t *testing.T) {
+	observedAt := time.Unix(1_700_000_000, 0).UTC()
+	observation := Observation{ObservedAt: observedAt, Snapshot: Snapshot{
+		ObservationID: "flat", Slot: 123, RouteKind: RouteKind, Fresh: true,
+		VoltrIdleRaw: 3, VoltrStrategyIdleRaw: 4, SquadsIdleRaw: 8,
+		StrategyNAVRaw: 12, TotalVaultNAVRaw: 15, PriorReportedNAVRaw: 12,
+		PriorReportUpdatedUnix: observedAt.Add(-10 * time.Second).Unix(), LastReportAgeSeconds: 10,
+		ReportSequence: 123, ReportSnapshotDigest: strings.Repeat("a", 64),
+	}}
+	projection, err := newRouteObservationProjection(observation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.RouteStatus != "idle" || projection.VoltrIdleRaw != "3" ||
+		projection.VoltrStrategyIdleRaw != "4" || projection.SquadsIdleRaw != "8" ||
+		projection.AUMUSDMicros != "15" || projection.NAVUSDMicros != "12" || !projection.NAVFresh {
+		t.Fatalf("flat projection lost confirmed route truth: %+v", projection)
+	}
+	for _, required := range []string{"jsonb_set", "'{observation}'", "observedSlot", "<= $5", "lease_owner = $2", "fencing_token = $3"} {
+		if !strings.Contains(RouteProjectionUpdate, required) {
+			t.Fatalf("route projection update lacks %q", required)
+		}
+	}
+}
+
 func TestMigrationPreservesOneNonterminalAndTerminalHolds(t *testing.T) {
 	migrationsRoot := filepath.Join("..", "..", "..", "..", "crates", "loyal-yield-store", "migrations")
 	legacyPath := filepath.Join(migrationsRoot, "0055_backyard_rwa_worker.sql")

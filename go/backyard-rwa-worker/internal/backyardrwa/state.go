@@ -56,6 +56,11 @@ type Snapshot struct {
 	PositionCollateralValueRaw int64
 	PositionDebtValueRaw       int64
 	StrategyNAVRaw             int64
+	TotalVaultNAVRaw           int64
+	PriorReportedNAVRaw        int64
+	PriorReportUpdatedUnix     int64
+	ReportSequence             int64
+	ReportSnapshotDigest       string
 	LTVBPS                     int64
 	LiquidationThresholdBPS    int64
 	Fresh                      bool

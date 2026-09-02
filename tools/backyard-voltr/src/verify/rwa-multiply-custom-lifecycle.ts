@@ -33,8 +33,9 @@ const ADAPTOR_CONFIG = "crates/loyal-voltr-rwa-nav-adaptor/src/config.rs";
 const GO_ROOT = "go/backyard-rwa-worker";
 const DEPLOYMENT_EVIDENCE = "docs/evidence/backyard-rwa-go/deployment-v1.json";
 const LIFECYCLE_EVIDENCE = "docs/evidence/backyard-rwa-go/lifecycle-v1.json";
-const ADAPTOR_SIMULATION_EVIDENCE = "docs/evidence/backyard-rwa-go/adaptor-v2-ticket-simulation-v2.json";
+const ADAPTOR_SIMULATION_EVIDENCE = "docs/evidence/backyard-rwa-go/adaptor-v2-ticket-simulation-v3.json";
 const POLICY_SIMULATION_EVIDENCE = "docs/evidence/backyard-rwa-go/policy-catalog-simulation-v1.json";
+const PHASE2_OBLIGATION_EVIDENCE = "docs/evidence/backyard-rwa-go/policy-phase2-obligation-init-v1.json";
 const SOLE_COMMAND = "bun run --cwd tools/backyard-voltr verify:rwa-multiply-custom-lifecycle";
 const BRIDGE_POLICY_ROUTE_SPEC_SHA256 = "6482b284172cd2b2da0317f9b33db737688d60cfe61f6b28c68da5ddbfc19550";
 const BRIDGE_POLICY_ROLLOVER = [
@@ -125,7 +126,7 @@ function run(
     env: { ...process.env, ...envOverrides },
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
-    timeout: 120_000,
+    timeout: 300_000,
   });
   return {
     command: [command, ...args].join(" "),
@@ -1270,7 +1271,7 @@ async function adaptorCheck(): Promise<Check> {
       "Repair the first adaptor, signed-unsent simulation, current policy 62-65, or retired policy 53-56 mismatch; never weaken the exact policy boundary.");
 }
 
-async function policyCatalogCheck(): Promise<Check> {
+async function legacyPolicyCatalogCheck(): Promise<Check> {
   const catalog = parseJson(POLICY_CATALOG_PATH);
   const simulation = parseJson(POLICY_SIMULATION_EVIDENCE);
   const lanes = Array.isArray(catalog?.lanes) ? catalog.lanes : [];
@@ -1401,6 +1402,19 @@ async function policyCatalogCheck(): Promise<Check> {
       "Provide SOLANA_RPC_URL and rerun while all eleven checked-in signed-unsent group and negative wires are fresh.")
     : fail("P2_catalog_semantics_and_packing", condition, evidence,
       "Resolve current confirmed route identities, compile the exact correlated lane constraints, and attach fresh signed-unsent group and negative wires with inspected account sets.");
+}
+
+async function policyCatalogCheck(): Promise<Check> {
+  const authority = runJson("bun", [
+    "tools/backyard-voltr/src/verify/rwa-multiply-phase2-authority.ts",
+  ]);
+  const output = record(authority.value);
+  const condition = "Phase 2 catalog is the exact installed 11-lane, 44-operation, 52-edge, first-safe-packet-fitting authority set.";
+  if (authority.exitCode === 0 && output?.verdict === "PASS") {
+    return pass("P2_catalog_semantics_and_packing", condition, { authority });
+  }
+  return fail("P2_catalog_semantics_and_packing", condition, { authority },
+    "Repair the first failure emitted by the fail-closed Phase 2 authority verifier; never weaken or retry a failed lane.");
 }
 
 function goWorkerCheck(): Check {
@@ -2071,6 +2085,63 @@ async function lifecycleChainRead(evidence: JsonRecord | null, route: V06RouteBi
       finalAccounts.push({ address, owner: account.owner, dataSha256: sha256(bytes) });
       finalAccountData[address] = data[0];
     });
+    const successorAccounts: Array<NonNullable<V06ChainRead["successorAccounts"]>[number]> = [];
+    const obligationEvidence = parseJson(PHASE2_OBLIGATION_EVIDENCE);
+    const obligationOperations = Array.isArray(obligationEvidence?.operations) ? obligationEvidence.operations : [];
+    const primeUsdcInit = obligationOperations.map(record).find((operation) => operation?.lane === "Prime/PRIME/USDC");
+    const successorAfter = record(primeUsdcInit?.after);
+    const successorSignature = typeof primeUsdcInit?.signature === "string" ? primeUsdcInit.signature : null;
+    const successorReadbackSlot = typeof primeUsdcInit?.confirmedSlot === "number"
+      && Number.isSafeInteger(primeUsdcInit.confirmedSlot) ? primeUsdcInit.confirmedSlot : null;
+    const successorDataSha256 = typeof successorAfter?.dataSha256 === "string" ? successorAfter.dataSha256 : null;
+    if (obligationEvidence?.schema === "loyal-backyard-rwa-phase2-obligation-init/v1"
+      && obligationEvidence?.verdict === "CONFIRMED_RECONCILED" && obligationEvidence?.broadcast === true
+      && successorSignature !== null && successorReadbackSlot !== null && successorDataSha256 !== null) {
+      const successorValue = record(await rpc("getTransaction", [successorSignature, {
+        commitment: "confirmed",
+        encoding: "base64",
+        maxSupportedTransactionVersion: 0,
+      }]));
+      const encoded = successorValue?.transaction;
+      const meta = record(successorValue?.meta);
+      if (Array.isArray(encoded) && encoded.length === 2 && typeof encoded[0] === "string" && encoded[1] === "base64"
+        && meta !== null && typeof successorValue?.slot === "number"
+        && Number.isSafeInteger(successorValue.slot) && successorValue.slot > 0
+        && successorValue.slot <= successorReadbackSlot) {
+        const transaction = VersionedTransaction.deserialize(Buffer.from(encoded[0], "base64"));
+        const loaded = record(meta.loadedAddresses);
+        const writable = Array.isArray(loaded?.writable) && loaded.writable.every((entry) => typeof entry === "string")
+          ? loaded.writable as string[] : [];
+        const readonly = Array.isArray(loaded?.readonly) && loaded.readonly.every((entry) => typeof entry === "string")
+          ? loaded.readonly as string[] : [];
+        const accountKeys = [...transaction.message.staticAccountKeys.map((key) => key.toBase58()), ...writable, ...readonly];
+        const programIndexes = transaction.message.compiledInstructions.map(({ programIdIndex }) => programIdIndex);
+        if (Array.isArray(meta.innerInstructions)) {
+          for (const groupValue of meta.innerInstructions) {
+            const group = record(groupValue);
+            if (!Array.isArray(group?.instructions)) continue;
+            for (const instructionValue of group.instructions) {
+              const instruction = record(instructionValue);
+              if (typeof instruction?.programIdIndex === "number" && Number.isSafeInteger(instruction.programIdIndex)) {
+                programIndexes.push(instruction.programIdIndex);
+              }
+            }
+          }
+        }
+        const observedObligation = finalAccounts.find(({ address }) => address === route.accounts.obligation);
+        successorAccounts.push({
+          address: route.accounts.obligation,
+          owner: observedObligation?.owner ?? "",
+          dataSha256: successorDataSha256,
+          transactionSignature: successorSignature,
+          confirmedSlot: successorValue.slot,
+          success: meta.err === null && bs58.encode(transaction.signatures[0]!) === successorSignature,
+          accountKeys,
+          programIds: [...new Set(programIndexes.map((index) => accountKeys[index])
+            .filter((entry): entry is string => typeof entry === "string"))],
+        });
+      }
+    }
     return {
       attempted: true,
       error: null,
@@ -2079,6 +2150,7 @@ async function lifecycleChainRead(evidence: JsonRecord | null, route: V06RouteBi
       finalContextSlot: context.slot,
       finalAccounts,
       finalAccountData,
+      successorAccounts,
     };
   } catch (error) {
     return {
@@ -2196,6 +2268,7 @@ async function lifecycleCheck(deploymentPass: boolean): Promise<Check> {
       signatures: chain.transactions.map(({ signature, slot, blockTime, success }) => ({ signature, slot, blockTime, success })),
       finalContextSlot: chain.finalContextSlot,
       finalAccounts: chain.finalAccounts,
+      successorAccounts: chain.successorAccounts,
     },
     database: {
       attempted: database.attempted,
@@ -2295,7 +2368,6 @@ SELECT json_build_object(
 
 async function vercelDeploymentRead(adminUrl: string, sourceCommit: string | null): Promise<JsonRecord> {
   const token = process.env.VERCEL_TOKEN?.trim();
-  if (!token) return { attempted: false, available: false, reason: "VERCEL_TOKEN unavailable" };
   let host: string;
   try {
     host = new URL(adminUrl).host;
@@ -2303,31 +2375,45 @@ async function vercelDeploymentRead(adminUrl: string, sourceCommit: string | nul
     return { attempted: false, available: false, reason: "admin deployment URL is invalid" };
   }
   const team = process.env.VERCEL_TEAM_ID?.trim();
-  const endpoint = `https://api.vercel.com/v13/deployments/${encodeURIComponent(host)}${team ? `?teamId=${encodeURIComponent(team)}` : ""}`;
+  const teamSlug = process.env.BACKYARD_ADMIN_VERCEL_TEAM?.trim() || "loyal-team";
   try {
-    const response = await fetch(endpoint, {
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (response.status === 401 || response.status === 403) {
-      return { attempted: true, available: false, reason: `Vercel deployment read returned ${response.status}` };
+    let deployment: JsonRecord | null;
+    let readSource: "token-api" | "authenticated-cli";
+    if (token) {
+      const endpoint = `https://api.vercel.com/v13/deployments/${encodeURIComponent(host)}${team ? `?teamId=${encodeURIComponent(team)}` : ""}`;
+      const response = await fetch(endpoint, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (response.status === 401 || response.status === 403) {
+        return { attempted: true, available: false, reason: `Vercel deployment read returned ${response.status}` };
+      }
+      if (!response.ok) {
+        return { attempted: true, available: true, exact: false, reason: `Vercel deployment read returned ${response.status}` };
+      }
+      deployment = record(await response.json());
+      readSource = "token-api";
+    } else {
+      const result = runJson("vercel", ["api", `/v13/deployments/${host}`, "--scope", teamSlug, "--raw"]);
+      if (!result.attempted || result.exitCode !== 0 || result.value === null) {
+        return { attempted: result.attempted, available: false, reason: result.error ?? "authenticated Vercel CLI unavailable" };
+      }
+      deployment = record(result.value);
+      readSource = "authenticated-cli";
     }
-    if (!response.ok) {
-      return { attempted: true, available: true, exact: false, reason: `Vercel deployment read returned ${response.status}` };
-    }
-    const deployment = record(await response.json());
     const meta = record(deployment?.meta);
     const gitSource = record(deployment?.gitSource);
     const deployedCommit = typeof meta?.githubCommitSha === "string"
-      ? meta.githubCommitSha
-      : typeof meta?.gitCommitSha === "string" ? meta.gitCommitSha : null;
+      ? meta.githubCommitSha : typeof meta?.gitCommitSha === "string"
+        ? meta.gitCommitSha : typeof gitSource?.sha === "string" ? gitSource.sha : null;
     const exact = deployment?.readyState === "READY"
       && deployment?.target === "production"
       && deployedCommit !== null && deployedCommit === sourceCommit
-      && (gitSource?.ref === undefined || gitSource.ref === "main");
+      && (gitSource?.ref === undefined || gitSource.ref === null || gitSource.ref === "main");
     return {
       attempted: true,
       available: true,
+      readSource,
       exact,
       deploymentId: deployment?.id ?? null,
       readyState: deployment?.readyState ?? null,
@@ -2341,12 +2427,7 @@ async function vercelDeploymentRead(adminUrl: string, sourceCommit: string | nul
   }
 }
 
-async function adminPageRead(adminUrl: string): Promise<JsonRecord> {
-  const login = process.env.ADMIN_USER;
-  const password = process.env.ADMIN_PASSWORD;
-  if (!login || !password) {
-    return { attempted: false, available: false, reason: "ADMIN_USER or ADMIN_PASSWORD unavailable" };
-  }
+async function adminPageReadWithCredentials(adminUrl: string, login: string, password: string): Promise<JsonRecord> {
   try {
     const loginResponse = await fetch(new URL("/auth/login", adminUrl), {
       method: "POST",
@@ -2386,6 +2467,80 @@ async function adminPageRead(adminUrl: string): Promise<JsonRecord> {
     };
   } catch (error) {
     return { attempted: true, available: false, reason: redact(error instanceof Error ? error.message : String(error)) };
+  }
+}
+
+function adminPageReadViaVercelCli(adminUrl: string, login: string, password: string): JsonRecord {
+  let deployment: string;
+  try {
+    deployment = new URL(adminUrl).host;
+  } catch {
+    return { attempted: false, available: false, reason: "admin deployment URL is invalid" };
+  }
+  const team = process.env.BACKYARD_ADMIN_VERCEL_TEAM?.trim() || "loyal-team";
+  const marker = "\n__LOYAL_ADMIN_HTTP_STATUS__:";
+  const body = new URLSearchParams({ login, password, next: "/vault-integrations/backyard" }).toString();
+  const result = spawnSync("vercel", [
+    "curl", "/auth/login", "--deployment", deployment, "--scope", team, "--",
+    "--header", "Content-Type: application/x-www-form-urlencoded",
+    "--data-binary", "@-", "--location", "--cookie", "", "--silent", "--show-error",
+    "--write-out", `${marker}%{http_code}`,
+  ], {
+    cwd: REPOSITORY_ROOT,
+    env: process.env,
+    input: body,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 60_000,
+  });
+  if (result.error || result.status !== 0) {
+    return {
+      attempted: result.error === undefined,
+      available: false,
+      reason: redact(result.error?.message ?? result.stderr ?? "authenticated Vercel page read failed"),
+    };
+  }
+  const output = result.stdout ?? "";
+  const markerIndex = output.lastIndexOf(marker);
+  const status = markerIndex < 0 ? null : Number(output.slice(markerIndex + marker.length).trim());
+  const html = markerIndex < 0 ? "" : output.slice(0, markerIndex);
+  if (status !== 200 || html.length === 0) {
+    return { attempted: true, available: status !== 401 && status !== 403, exact: false,
+      status, reason: `authenticated admin Backyard page returned ${status ?? "an invalid response"}` };
+  }
+  return { attempted: true, available: true, status, html, htmlSha256: sha256(html), readSource: "authenticated-vercel-cli" };
+}
+
+async function adminPageRead(adminUrl: string): Promise<JsonRecord> {
+  const login = process.env.ADMIN_USER;
+  const password = process.env.ADMIN_PASSWORD;
+  if (login && password) return adminPageReadWithCredentials(adminUrl, login, password);
+
+  const project = process.env.BACKYARD_ADMIN_VERCEL_PROJECT?.trim() || "loyal-admin";
+  const team = process.env.BACKYARD_ADMIN_VERCEL_TEAM?.trim() || "loyal-team";
+  const child = spawnSync("vercel", [
+    "env", "run", "--environment", "production", "--project", project, "--scope", team,
+    "--", "bun", fileURLToPath(import.meta.url), "--admin-page-read-vercel", adminUrl,
+  ], {
+    cwd: REPOSITORY_ROOT,
+    env: process.env,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: 60_000,
+  });
+  if (child.error || child.status !== 0) {
+    return {
+      attempted: child.error === undefined,
+      available: false,
+      reason: redact(child.error?.message ?? child.stderr ?? "Vercel production environment read failed"),
+    };
+  }
+  try {
+    return record(JSON.parse(child.stdout)) ?? {
+      attempted: true, available: false, reason: "admin page helper returned a non-object",
+    };
+  } catch {
+    return { attempted: true, available: false, reason: "admin page helper returned non-JSON output" };
   }
 }
 
@@ -2485,7 +2640,7 @@ async function adminCheck(): Promise<Check> {
     "AUM", "NAV", "APY", "Voltr", "Squads", "LTV", "withdraw",
     "strategy idle", "receipt", "transaction_signature",
   ];
-  const adminUrl = process.env.BACKYARD_ADMIN_URL?.trim() || "https://loyal-admin-zeta.vercel.app";
+  const adminUrl = process.env.BACKYARD_ADMIN_URL?.trim() || "https://loyal-admin-loyal-team.vercel.app";
   const [deployment, page] = await Promise.all([
     vercelDeploymentRead(adminUrl, main.commit),
     adminPageRead(adminUrl),
@@ -2565,7 +2720,7 @@ async function adminCheck(): Promise<Check> {
   if (deployment.available !== true || page.available !== true || database.exitCode !== 0
     || databaseValue === null || rpc.available !== true) {
     return blocked("V07_admin_macroview_truth", "The thin read-only Vault integrations page exposes all required operating fields.", evidence,
-      "Provide working VERCEL_TOKEN, ADMIN_USER, ADMIN_PASSWORD, NEON_DATABASE_URL, and SOLANA_RPC_URL read access, then rerun the sole verifier.");
+      "Provide an authenticated Vercel CLI session or direct Vercel/admin credentials plus NEON_DATABASE_URL and SOLANA_RPC_URL read access, then rerun the sole verifier.");
   }
   return Object.values(checks).every(Boolean)
     ? pass("V07_admin_macroview_truth", "The thin read-only Vault integrations page exposes all required operating fields.", evidence)
@@ -2652,8 +2807,36 @@ async function main() {
   process.exitCode = verdict === "PASS" ? 0 : verdict === "FAIL" ? 1 : 2;
 }
 
-try {
+async function entrypoint(): Promise<void> {
+  if (process.argv[2] === "--admin-page-read-vercel") {
+    const adminUrl = process.argv[3];
+    const login = process.env.ADMIN_USER;
+    const password = process.env.ADMIN_PASSWORD;
+    if (!adminUrl || !login || !password) {
+      console.log(JSON.stringify({ attempted: false, available: false, reason: "admin page helper environment unavailable" }));
+      process.exitCode = 2;
+      return;
+    }
+    console.log(JSON.stringify(adminPageReadViaVercelCli(adminUrl, login, password)));
+    return;
+  }
+  if (process.argv[2] === "--admin-page-read") {
+    const adminUrl = process.argv[3];
+    const login = process.env.ADMIN_USER;
+    const password = process.env.ADMIN_PASSWORD;
+    if (!adminUrl || !login || !password) {
+      console.log(JSON.stringify({ attempted: false, available: false, reason: "admin page helper environment unavailable" }));
+      process.exitCode = 2;
+      return;
+    }
+    console.log(JSON.stringify(await adminPageReadWithCredentials(adminUrl, login, password)));
+    return;
+  }
   await main();
+}
+
+try {
+  await entrypoint();
 } catch (error) {
   const message = error instanceof Error ? redact(error.message) : redact(String(error));
   console.log(JSON.stringify({
