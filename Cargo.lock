@@ -3596,6 +3596,7 @@ dependencies = [
  "bincode",
  "borsh 1.6.1",
  "loyal-hub-abi",
+ "loyal-solana-env",
  "serde",
  "serde_json",
  "sha2 0.10.9",
