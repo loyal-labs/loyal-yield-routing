@@ -435,7 +435,7 @@
         {
           "action": "SWAP_USDC_TO_PRIME_STEP",
           "policy": "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG",
-          "policyAccountDataSha256": "fdc11ac8e9226feef4db8d30065035fde00d6f2eb9a7f940f6ebffa869962d72",
+          "policyAccountDataSha256": "e7ecc7e0150859e8ce22519cd1428a101ac453386e1b4e2324910c076feba1ee",
           "policyConstraintIndex": 0,
           "instructionDataLength": 37,
           "amountOffset": 18,

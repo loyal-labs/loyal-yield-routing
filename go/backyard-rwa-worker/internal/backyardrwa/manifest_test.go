@@ -61,7 +61,7 @@ func TestManifestRollsOnlyForwardJupiterPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	if forward.Policy != "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG" ||
-		forward.PolicyAccountDataSHA256 != "fdc11ac8e9226feef4db8d30065035fde00d6f2eb9a7f940f6ebffa869962d72" ||
+		forward.PolicyAccountDataSHA256 != "e7ecc7e0150859e8ce22519cd1428a101ac453386e1b4e2324910c076feba1ee" ||
 		len(forward.ConstraintBindings) != 2 {
 		t.Fatal("forward Jupiter action is not bound to the exact seed-66 policy")
 	}
