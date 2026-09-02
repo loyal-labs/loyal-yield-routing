@@ -120,7 +120,9 @@ func ObserveConfirmedBridgeExecutionEvidence(
 			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("report ticket sequence is not fresh")
 		}
 		effects.Kind = "bridge"
-		effects.ReturnData = expectedAdaptorReturnData(nav.Report.NAVAfterRaw)
+		if decision.Action != StageSquadsToVoltr {
+			effects.ReturnData = expectedAdaptorReturnData(nav.Report.NAVAfterRaw)
+		}
 		blockhash, err := rpc.LatestBlockhash(ctx)
 		if err != nil {
 			return Observation{}, BridgeExecutionEvidence{}, err
@@ -177,11 +179,18 @@ func bridgeExpectedEffects(decision Decision, idle, strategy, squads uint64) (Ex
 	default:
 		return ExpectedEffects{}, 0, 0, fmt.Errorf("unsupported bridge action")
 	}
-	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{
+	accounts := []ExpectedAccountEffect{
 		{Address: bridgeIdleATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: bridgeIdleAuthority, BeforeRaw: idle, AfterRaw: idleAfter},
 		{Address: bridgeStrategyATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: bridgeStrategyAuth, BeforeRaw: strategy, AfterRaw: strategyAfter},
 		{Address: bridgeSquadsATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: bridgeVault, BeforeRaw: squads, AfterRaw: squadsAfter},
-	}}, strategyAfter, squadsAfter, nil
+	}
+	// Staging is a direct Squads-authorized SPL transfer. It does not invoke the
+	// adaptor and its receipt therefore contains only the strategy and Squads
+	// token accounts, not the unrelated unchanged vault-idle account.
+	if decision.Action == StageSquadsToVoltr {
+		accounts = accounts[1:]
+	}
+	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: accounts}, strategyAfter, squadsAfter, nil
 }
 
 func ObserveConfirmedKaminoExecutionEvidence(

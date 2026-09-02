@@ -6,6 +6,21 @@ import (
 	"testing"
 )
 
+func TestStageExpectedEffectsMatchDirectTransferReceipt(t *testing.T) {
+	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(
+		Decision{Action: StageSquadsToVoltr, AmountRaw: 119}, 0, 0, 1_792_877,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strategyAfter != 119 || squadsAfter != 1_792_758 {
+		t.Fatalf("unexpected poststate: strategy=%d squads=%d", strategyAfter, squadsAfter)
+	}
+	if len(effects.Accounts) != 2 || effects.Accounts[0].Address != bridgeStrategyATA || effects.Accounts[1].Address != bridgeSquadsATA {
+		t.Fatalf("staging receipt contract includes unrelated accounts: %+v", effects.Accounts)
+	}
+}
+
 func exactAdaptorConfigAccount(t *testing.T) ConfirmedAccount {
 	t.Helper()
 	data := make([]byte, adaptorConfigLength)
