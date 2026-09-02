@@ -29,8 +29,10 @@ func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *RPCC
 		receipts: func(ctx context.Context, minSlot int64) (int64, []programAccount, error) {
 			return rpc.getVoltrWithdrawalReceiptAccounts(ctx, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
 		},
-		accounts: rpc.GetMultipleAccounts,
-		now:      func() time.Time { return time.Now().UTC() },
+		accounts: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
+			return rpc.GetMultipleAccountsWithOptional(ctx, addresses, minSlot, kaminoPrimeUSDCObligation)
+		},
+		now: func() time.Time { return time.Now().UTC() },
 	})
 }
 
@@ -182,9 +184,13 @@ func observePrimeUSDCFromFixedAccounts(ctx context.Context, accountsReader func(
 	if err != nil {
 		return KaminoPosition{}, err
 	}
-	obligation, err := decodeKaminoObligation(accountAt(accounts, config.Obligation), config)
-	if err != nil {
-		return KaminoPosition{}, err
+	obligationAccount := accountAt(accounts, config.Obligation)
+	obligation := decodedKaminoObligation{}
+	if obligationAccount.Lamports != 0 {
+		obligation, err = decodeKaminoObligation(obligationAccount, config)
+		if err != nil {
+			return KaminoPosition{}, err
+		}
 	}
 	collateral, err := decodeKaminoReserve(accountAt(accounts, config.CollateralReserve), config.CollateralMint, config)
 	if err != nil {

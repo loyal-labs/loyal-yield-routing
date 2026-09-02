@@ -148,6 +148,33 @@ func (c *RPCClient) GetMultipleAccounts(
 	addresses []string,
 	minContextSlot int64,
 ) (int64, []ConfirmedAccount, error) {
+	return c.getMultipleAccounts(ctx, addresses, minContextSlot, "")
+}
+
+// GetMultipleAccountsWithOptional permits exactly one caller-pinned lifecycle
+// address to be absent. Every other account remains mandatory.
+func (c *RPCClient) GetMultipleAccountsWithOptional(
+	ctx context.Context,
+	addresses []string,
+	minContextSlot int64,
+	optionalAddress string,
+) (int64, []ConfirmedAccount, error) {
+	found := false
+	for _, candidate := range addresses {
+		found = found || candidate == optionalAddress
+	}
+	if optionalAddress == "" || !found {
+		return 0, nil, fmt.Errorf("optional account must be pinned inside the requested address set")
+	}
+	return c.getMultipleAccounts(ctx, addresses, minContextSlot, optionalAddress)
+}
+
+func (c *RPCClient) getMultipleAccounts(
+	ctx context.Context,
+	addresses []string,
+	minContextSlot int64,
+	optionalAddress string,
+) (int64, []ConfirmedAccount, error) {
 	if len(addresses) == 0 || minContextSlot <= 0 {
 		return 0, nil, fmt.Errorf("account addresses and minContextSlot are required")
 	}
@@ -174,6 +201,10 @@ func (c *RPCClient) GetMultipleAccounts(
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for index, value := range result.Value {
 		if value == nil || value.Owner == "" {
+			if addresses[index] == optionalAddress {
+				accounts[index] = ConfirmedAccount{Address: addresses[index]}
+				continue
+			}
 			return 0, nil, fmt.Errorf("required account %s is absent", addresses[index])
 		}
 		var encoded []string
