@@ -204,9 +204,13 @@ func ComputeRouteNAV(slot int64, accounts []ConfirmedAccount, manifest RouteMani
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	obligation, err := decodeKaminoObligation(accountAt(accounts, kaminoConfig.Obligation), kaminoConfig)
-	if err != nil {
-		return RouteNAVSnapshot{}, err
+	obligationAccount := accountAt(accounts, kaminoConfig.Obligation)
+	obligation := decodedKaminoObligation{}
+	if obligationAccount.Lamports != 0 {
+		obligation, err = decodeKaminoObligation(obligationAccount, kaminoConfig)
+		if err != nil {
+			return RouteNAVSnapshot{}, err
+		}
 	}
 	collateralReserve, err := decodeKaminoReserve(accountAt(accounts, kaminoConfig.CollateralReserve), kaminoConfig.CollateralMint, kaminoConfig)
 	if err != nil {
