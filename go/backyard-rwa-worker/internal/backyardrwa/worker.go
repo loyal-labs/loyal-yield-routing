@@ -16,10 +16,16 @@ var immutableRenderLeaseOwnerPattern = regexp.MustCompile(`^render:srv-[a-z0-9]+
 var errConfirmedObservationUnavailable = errors.New("confirmed route observation is temporarily unavailable")
 
 type Worker struct {
-	routeKey string
-	interval time.Duration
-	manifest RouteManifest
-	runtime  tickRuntime
+	routeKey     string
+	interval     time.Duration
+	manifest     RouteManifest
+	runtime      tickRuntime
+	leaseHandoff startupLeaseHandoffRuntime
+}
+
+type startupLeaseHandoffRuntime struct {
+	now  func() time.Time
+	wait func(context.Context, time.Duration) error
 }
 
 type tickRuntime struct {
@@ -195,6 +201,69 @@ type routeLeaser interface {
 	ReleaseRouteLease(context.Context) (bool, error)
 }
 
+func (r startupLeaseHandoffRuntime) acquire(ctx context.Context, leases routeLeaser, routeKey, owner string, ttl time.Duration) error {
+	now := r.now
+	if now == nil {
+		now = time.Now
+	}
+	wait := r.wait
+	if wait == nil {
+		wait = func(ctx context.Context, delay time.Duration) error {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return nil
+			}
+		}
+	}
+	window := 2 * ttl
+	cadence := ttl / 10
+	if cadence < 10*time.Millisecond {
+		cadence = 10 * time.Millisecond
+	}
+	if cadence > time.Second {
+		cadence = time.Second
+	}
+	deadline := now().Add(window)
+	lastUnavailable := ErrRouteLeaseUnavailable
+	for {
+		remaining := deadline.Sub(now())
+		if remaining <= 0 {
+			return lastUnavailable
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, remaining)
+		_, err := leases.AcquireRouteLease(attemptCtx, routeKey, owner, ttl)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return lastUnavailable
+		}
+		if !errors.Is(err, ErrRouteLeaseUnavailable) {
+			return err
+		}
+		lastUnavailable = err
+		remaining = deadline.Sub(now())
+		if remaining <= 0 {
+			return lastUnavailable
+		}
+		delay := cadence
+		if remaining < delay {
+			delay = remaining
+		}
+		if err := wait(ctx, delay); err != nil {
+			return err
+		}
+	}
+}
+
 func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error) error {
 	for {
 		if err := w.Tick(ctx); err != nil {
@@ -228,7 +297,7 @@ func (w *Worker) Run(ctx context.Context, leases routeLeaser, owner string, conf
 	if w == nil || leases == nil || !immutableRenderLeaseOwnerPattern.MatchString(owner) || config.validateLease() != nil {
 		return fmt.Errorf("invalid leased worker runtime")
 	}
-	if _, err := leases.AcquireRouteLease(ctx, w.routeKey, owner, config.LeaseTTL); err != nil {
+	if err := w.leaseHandoff.acquire(ctx, leases, w.routeKey, owner, config.LeaseTTL); err != nil {
 		return err
 	}
 	defer func() {
@@ -271,6 +340,13 @@ func (w *Worker) Run(ctx context.Context, leases routeLeaser, owner string, conf
 	runErr = w.runTicks(runCtx, leaseErrors)
 	cancel()
 	<-refreshStopped
+	select {
+	case leaseErr := <-leaseErrors:
+		if leaseErr != nil {
+			runErr = leaseErr
+		}
+	default:
+	}
 	return runErr
 }
 
