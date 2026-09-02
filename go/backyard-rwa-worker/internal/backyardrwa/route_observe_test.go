@@ -9,7 +9,7 @@ import (
 func cadenceNAV(slot, current, reported uint64, lastUpdated time.Time) RouteNAVSnapshot {
 	digest := strings.Repeat("a", 64)
 	return RouteNAVSnapshot{
-		Slot: int64(slot), StrategyNAVRaw: current, PriorReportedNAVRaw: reported,
+		Slot: int64(slot), StrategyNAVRaw: current, TotalVaultNAVRaw: current, PriorReportedNAVRaw: reported,
 		PriorReportUpdatedTS: uint64(lastUpdated.Unix()), SnapshotDigest: digest,
 		Report: BridgeReport{Sequence: slot, ObservedSlot: slot, NAVAfterRaw: current, SnapshotDigest: digest},
 	}
@@ -24,6 +24,11 @@ func TestRouteNAVCadenceDoesNotSpamUnchangedFreshReports(t *testing.T) {
 	}
 	if snapshot.CapitalMutated || snapshot.LastReportAgeSeconds != 10 {
 		t.Fatalf("unchanged NAV was marked dirty: %+v", snapshot)
+	}
+	if snapshot.TotalVaultNAVRaw != 42 || snapshot.PriorReportedNAVRaw != 42 ||
+		snapshot.PriorReportUpdatedUnix != now.Add(-10*time.Second).Unix() ||
+		snapshot.ReportSequence != snapshot.Slot || snapshot.ReportSnapshotDigest != strings.Repeat("a", 64) {
+		t.Fatalf("persistable NAV/report projection was discarded: %+v", snapshot)
 	}
 	if got := Decide(snapshot); got.Action == ReportNAV {
 		t.Fatalf("unchanged fresh NAV spammed a report: %+v", got)

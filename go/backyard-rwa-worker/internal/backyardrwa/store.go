@@ -47,7 +47,9 @@ const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status =
 
 const PersistBroadcastIntentUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'broadcast_intent', broadcast_intent_at = now(), updated_at = now() WHERE operation_id = $1 AND status = 'signed' AND signed_wire IS NOT NULL`
 
-const PositionSnapshotInsert = `INSERT INTO loyal_yield.multiply_position_snapshots (route_key, generation, observed_slot, observed_at, strategy_key, claim_raw, collateral_raw, debt_raw, equity_usd_micros, collateral_value_usd_micros, debt_value_usd_micros, ltv_bps, valuation_source, valuation_slot, valuation_observed_at) VALUES ($1, $2, $3, $4, 'PRIME/USDC', $5, $6, $7, $8, $9, $10, $11, 'backyard_rwa_v1_onchain_position_only', $3, $4) ON CONFLICT (route_key, observed_slot) DO NOTHING`
+const RouteProjectionUpdate = `UPDATE loyal_yield.multiply_route_states SET state = jsonb_set(state, '{observation}', $4::jsonb, true), updated_at = clock_timestamp() WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() AND (state -> 'observation' ->> 'observedSlot' IS NULL OR (state -> 'observation' ->> 'observedSlot')::bigint <= $5)`
+
+const PositionSnapshotInsert = `INSERT INTO loyal_yield.multiply_position_snapshots (route_key, generation, observed_slot, observed_at, strategy_key, claim_raw, collateral_raw, debt_raw, equity_usd_micros, collateral_value_usd_micros, debt_value_usd_micros, ltv_bps, forecast_apy_bps, valuation_source, valuation_slot, valuation_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'backyard_rwa_v1_onchain_route', $3, $4) ON CONFLICT (route_key, observed_slot) DO NOTHING`
 
 func PersistedForSend(status OperationStatus) bool {
 	return status == BroadcastIntent
@@ -462,22 +464,90 @@ func (d *Database) PostMutationNAVRequired(ctx context.Context, routeKey string)
 	return required, nil
 }
 
-// RecordPositionSnapshot persists every independently decoded complete
-// PRIME/USDC position under the same live lease fence as decisions.
-// Flat/collateral-only states are omitted, but elevated LTV is still recorded:
-// hiding later deterioration could let an older healthy row falsely satisfy
-// the launch verifier. Yield is deliberately not inferred from reserve bytes.
+type routeObservationProjection struct {
+	ObservedSlot         int64  `json:"observedSlot"`
+	ObservedAt           string `json:"observedAt"`
+	RouteStatus          string `json:"routeStatus"`
+	VoltrIdleRaw         string `json:"voltrIdleRaw"`
+	VoltrStrategyIdleRaw string `json:"voltrStrategyIdleRaw"`
+	SquadsIdleRaw        string `json:"squadsIdleRaw"`
+	AUMRaw               string `json:"aumRaw"`
+	AUMUSDMicros         string `json:"aumUsdMicros"`
+	NAVRaw               string `json:"navRaw"`
+	NAVUSDMicros         string `json:"navUsdMicros"`
+	ReportedNAVRaw       string `json:"reportedNavRaw"`
+	ComputedStrategyNAV  string `json:"computedStrategyNavRaw"`
+	ReportSequence       int64  `json:"reportSequence"`
+	ReportSlot           int64  `json:"reportSlot"`
+	ReportObservedAt     string `json:"reportObservedAt"`
+	ReportSnapshotDigest string `json:"reportSnapshotDigest"`
+	NAVFresh             bool   `json:"navFresh"`
+}
+
+func newRouteObservationProjection(observation Observation) (routeObservationProjection, error) {
+	snapshot := observation.Snapshot
+	if snapshot.VoltrIdleRaw < 0 || snapshot.VoltrStrategyIdleRaw < 0 || snapshot.SquadsIdleRaw < 0 ||
+		snapshot.PositionCollateralRaw < 0 || snapshot.PositionDebtRaw < 0 ||
+		snapshot.PositionCollateralValueRaw < 0 || snapshot.PositionDebtValueRaw < 0 ||
+		snapshot.StrategyNAVRaw < 0 || snapshot.TotalVaultNAVRaw < 0 || snapshot.PriorReportedNAVRaw < 0 ||
+		snapshot.LTVBPS < 0 || snapshot.LTVBPS > 10_000 || snapshot.LastReportAgeSeconds < 0 ||
+		snapshot.ReportSequence <= 0 || !sha256Pattern.MatchString(snapshot.ReportSnapshotDigest) {
+		return routeObservationProjection{}, fmt.Errorf("route observation projection is incoherent")
+	}
+	if snapshot.VoltrIdleRaw > math.MaxInt64-snapshot.StrategyNAVRaw ||
+		snapshot.TotalVaultNAVRaw != snapshot.VoltrIdleRaw+snapshot.StrategyNAVRaw {
+		return routeObservationProjection{}, fmt.Errorf("route AUM does not match confirmed custody NAV")
+	}
+	if snapshot.HasPosition {
+		if snapshot.PositionCollateralRaw <= 0 || snapshot.PositionCollateralValueRaw < snapshot.PositionDebtValueRaw ||
+			(snapshot.PositionDebtRaw > 0 && snapshot.PositionDebtValueRaw <= 0) {
+			return routeObservationProjection{}, fmt.Errorf("position projection is incoherent")
+		}
+	} else if snapshot.PositionCollateralRaw != 0 || snapshot.PositionDebtRaw != 0 ||
+		snapshot.PositionCollateralValueRaw != 0 || snapshot.PositionDebtValueRaw != 0 || snapshot.LTVBPS != 0 {
+		return routeObservationProjection{}, fmt.Errorf("flat route contains position values")
+	}
+	reportUpdatedAt := observation.ObservedAt.UTC().Add(-time.Duration(snapshot.LastReportAgeSeconds) * time.Second)
+	if snapshot.PriorReportUpdatedUnix > 0 {
+		reportUpdatedAt = time.Unix(snapshot.PriorReportUpdatedUnix, 0).UTC()
+	}
+	status := "idle"
+	if snapshot.HasPosition {
+		status = "positioned"
+	}
+	if snapshot.WithdrawalDemandRaw > 0 {
+		status = "withdrawal_pending"
+	}
+	return routeObservationProjection{
+		ObservedSlot: snapshot.Slot, ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano), RouteStatus: status,
+		VoltrIdleRaw: fmt.Sprint(snapshot.VoltrIdleRaw), VoltrStrategyIdleRaw: fmt.Sprint(snapshot.VoltrStrategyIdleRaw),
+		SquadsIdleRaw: fmt.Sprint(snapshot.SquadsIdleRaw), AUMRaw: fmt.Sprint(snapshot.TotalVaultNAVRaw),
+		AUMUSDMicros: fmt.Sprint(snapshot.TotalVaultNAVRaw), NAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
+		NAVUSDMicros: fmt.Sprint(snapshot.PriorReportedNAVRaw), ReportedNAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
+		ComputedStrategyNAV: fmt.Sprint(snapshot.StrategyNAVRaw), ReportSequence: snapshot.ReportSequence,
+		ReportSlot: snapshot.ReportSequence, ReportObservedAt: reportUpdatedAt.Format(time.RFC3339),
+		ReportSnapshotDigest: snapshot.ReportSnapshotDigest,
+		NAVFresh:             !snapshot.CapitalMutated && snapshot.LastReportAgeSeconds < 60,
+	}, nil
+}
+
+// RecordPositionSnapshot atomically persists the confirmed route projection and
+// its current position shape under the same live lease fence as decisions. Flat
+// and collateral-only rows are retained so the admin view cannot fall back to a
+// stale leveraged snapshot. APY remains unknown for positions; confirmed idle
+// capital has an exact zero forecast rather than an invented protocol yield.
 func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, observation Observation) error {
 	if d == nil || d.pool == nil || routeKey == "" || observation.Validate() != nil {
 		return fmt.Errorf("position snapshot database or observation is invalid")
 	}
 	snapshot := observation.Snapshot
-	if !snapshot.HasPosition || snapshot.PositionCollateralRaw <= 0 || snapshot.PositionDebtRaw <= 0 {
-		return nil
+	projection, err := newRouteObservationProjection(observation)
+	if err != nil {
+		return err
 	}
-	if snapshot.PositionCollateralValueRaw <= snapshot.PositionDebtValueRaw || snapshot.StrategyNAVRaw < 0 ||
-		snapshot.LTVBPS < 0 || snapshot.LTVBPS > 10_000 {
-		return fmt.Errorf("position snapshot valuation is incoherent")
+	projectionJSON, err := json.Marshal(projection)
+	if err != nil {
+		return fmt.Errorf("encode route observation projection: %w", err)
 	}
 	lease, err := d.currentLease()
 	if err != nil || lease.RouteKey != routeKey {
@@ -501,10 +571,28 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 		return fmt.Errorf("position snapshot idle claim overflows")
 	}
 	claimRaw := snapshot.SquadsIdleRaw + snapshot.VoltrStrategyIdleRaw
+	result, err := tx.Exec(ctx, RouteProjectionUpdate,
+		routeKey, lease.Owner, lease.FencingToken, projectionJSON, snapshot.Slot,
+	)
+	if err != nil {
+		return fmt.Errorf("persist route observation projection: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("route observation projection lost its lease or regressed")
+	}
+	var strategyKey *string
+	var forecastAPYBPS *int64
+	if snapshot.HasPosition {
+		value := "PRIME/USDC"
+		strategyKey = &value
+	} else {
+		zero := int64(0)
+		forecastAPYBPS = &zero
+	}
 	if _, err := tx.Exec(ctx, PositionSnapshotInsert,
-		routeKey, generation, snapshot.Slot, observation.ObservedAt.UTC(), claimRaw,
+		routeKey, generation, snapshot.Slot, observation.ObservedAt.UTC(), strategyKey, claimRaw,
 		snapshot.PositionCollateralRaw, snapshot.PositionDebtRaw, snapshot.StrategyNAVRaw,
-		snapshot.PositionCollateralValueRaw, snapshot.PositionDebtValueRaw, snapshot.LTVBPS,
+		snapshot.PositionCollateralValueRaw, snapshot.PositionDebtValueRaw, snapshot.LTVBPS, forecastAPYBPS,
 	); err != nil {
 		return fmt.Errorf("persist Phase 1 position snapshot: %w", err)
 	}

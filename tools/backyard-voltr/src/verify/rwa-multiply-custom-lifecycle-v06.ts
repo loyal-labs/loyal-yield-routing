@@ -151,6 +151,16 @@ export type V06ChainRead = Readonly<{
   finalContextSlot: number | null;
   finalAccounts: readonly V06FinalAccountEvidence[];
   finalAccountData: Readonly<Record<string, string | null>>;
+  successorAccounts?: readonly Readonly<{
+    address: string;
+    owner: string;
+    dataSha256: string;
+    transactionSignature: string;
+    confirmedSlot: number;
+    success: boolean;
+    accountKeys: readonly string[];
+    programIds: readonly string[];
+  }>[];
 }>;
 
 export type V06DatabaseRow = Readonly<{
@@ -372,13 +382,26 @@ function exactFinalAccounts(evidence: V06LifecycleEvidence, route: V06RouteBindi
   if (evidence.finalAccounts.length !== expected.size || chain.finalAccounts.length !== expected.size) return false;
   const evidenceByAddress = new Map(evidence.finalAccounts.map((row) => [row.address, row]));
   const chainByAddress = new Map(chain.finalAccounts.map((row) => [row.address, row]));
+  const lifecycleTerminalSlot = Math.max(...chain.transactions.map(({ slot }) => slot));
   for (const [address, owner] of expected) {
     const declared = evidenceByAddress.get(address);
     const observed = chainByAddress.get(address);
+    const successor = address === route.accounts.obligation && owner === null
+      ? chain.successorAccounts?.find((row) => row.address === address
+        && row.owner === route.programs.kamino
+        && row.dataSha256 === observed?.dataSha256
+        && row.success && row.confirmedSlot > lifecycleTerminalSlot
+        && row.accountKeys.includes(address)
+        && row.programIds.includes(route.programs.squads)
+        && row.programIds.includes(route.programs.kamino))
+      : undefined;
     const mutableCurrentAccount = address === route.accounts.collateralReserve || address === route.accounts.debtReserve
       || address === route.accounts.voltrVault || address === route.accounts.strategyReceipt
-      || address === route.accounts.reportTicket;
-    if (!declared || !observed || declared.owner !== owner || observed.owner !== owner
+      || address === route.accounts.reportTicket || successor !== undefined;
+    const ownerExact = observed?.owner === owner
+      || (declared?.owner === null && observed?.owner === route.programs.kamino && successor !== undefined);
+    const successorDataExact = successor === undefined || successor.dataSha256 === observed?.dataSha256;
+    if (!declared || !observed || declared.owner !== owner || !ownerExact || !successorDataExact
       || (mutableCurrentAccount ? declared.dataSha256 !== null || !validHash(observed.dataSha256) : declared.dataSha256 !== observed.dataSha256)
       || (!mutableCurrentAccount && (owner === null ? declared.dataSha256 !== null : !validHash(declared.dataSha256)))) return false;
   }

@@ -260,7 +260,8 @@ func routeEconomicObservationID(
 
 func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Time) error {
 	if snapshot == nil || snapshot.Slot <= 0 || nav.Slot != snapshot.Slot || now.IsZero() || now.Unix() < 0 ||
-		nav.StrategyNAVRaw > math.MaxInt64 || nav.PriorReportedNAVRaw > math.MaxInt64 ||
+		nav.StrategyNAVRaw > math.MaxInt64 || nav.TotalVaultNAVRaw > math.MaxInt64 || nav.PriorReportedNAVRaw > math.MaxInt64 ||
+		nav.Report.Sequence > math.MaxInt64 ||
 		nav.PriorReportUpdatedTS > math.MaxInt64 || nav.Report.Sequence != nav.Report.ObservedSlot ||
 		nav.Report.ObservedSlot != uint64(nav.Slot) || nav.Report.NAVAfterRaw != nav.StrategyNAVRaw ||
 		nav.Report.SnapshotDigest != nav.SnapshotDigest || !sha256Pattern.MatchString(nav.SnapshotDigest) {
@@ -276,6 +277,11 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	}
 	snapshot.CapitalMutated = nav.StrategyNAVRaw != nav.PriorReportedNAVRaw
 	snapshot.LastReportAgeSeconds = age
+	snapshot.TotalVaultNAVRaw = int64(nav.TotalVaultNAVRaw)
+	snapshot.PriorReportedNAVRaw = int64(nav.PriorReportedNAVRaw)
+	snapshot.PriorReportUpdatedUnix = lastUpdated
+	snapshot.ReportSequence = int64(nav.Report.Sequence)
+	snapshot.ReportSnapshotDigest = nav.Report.SnapshotDigest
 	return nil
 }
 
