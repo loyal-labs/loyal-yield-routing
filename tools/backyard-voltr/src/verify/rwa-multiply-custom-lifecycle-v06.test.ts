@@ -25,6 +25,8 @@ const route: V06RouteBindings = {
   withdrawalWaitSeconds: 600,
   targetLtvBps: 5_000,
   maxReportAgeSlots: 32,
+  manifestSha256: "11".repeat(32),
+  policyCatalogSha256: "22".repeat(32),
   programs: {
     voltr: address, adaptor: address, squads: address, kamino: address,
     jupiter: address, token: address, associatedToken: address,
@@ -43,30 +45,24 @@ test("V06 never treats declarations as independent lifecycle evidence", () => {
     { schema: "loyal-backyard-rwa-live-lifecycle/v2", broadcast: true },
     route,
     { attempted: false, error: "RPC unavailable", genesisHash: null, transactions: [], finalContextSlot: null, finalAccounts: [], finalAccountData: {} },
-    { attempted: false, error: "database unavailable", rows: [], position: null, nonterminalCount: null },
+    { attempted: false, error: "database unavailable", rows: [], position: null, nonterminalCount: null, lifecycleNonterminalCount: null, hold: null, riskAfterHoldCount: null },
   );
   assert.equal(result.pass, false);
   assert.equal(result.checks.independentConfirmedTransactions, false);
   assert.equal(result.checks.persistedBeforeSendAndReconciled, false);
-  assert.equal(result.checks.targetLtvPosition, false);
-  assert.equal(result.checks.positiveExternalLaunchYield, false);
+  assert.equal(result.checks.utilizationHoldPreventedRiskIncrease, false);
 });
 
-test("V06 requires the exact bounded loop and sequential unwind coverage", () => {
+test("V06 requires the exact reconciled utilization-HOLD unwind coverage", () => {
   const complete: Array<[string, number]> = [
-    ["VOLTR_ALLOCATE_TO_SQUADS", 1], ["SWAP_USDC_TO_PRIME_STEP", 2],
-    ["OPEN_PRIME_USDC_STEP", 3], ["REPORT_NAV", 1],
-    ["DELEVER_PRIME_USDC_STEP", 3], ["SWAP_PRIME_TO_USDC_STEP", 1],
+    ["VOLTR_ALLOCATE_TO_SQUADS", 1], ["REPORT_NAV", 2],
+    ["DELEVER_PRIME_USDC_STEP", 1], ["SWAP_PRIME_TO_USDC_STEP", 1],
     ["STAGE_SQUADS_TO_VOLTR", 1], ["VOLTR_RESTORE_IDLE", 1],
   ];
   assert.equal(validateV06ActionCoverage(complete), true);
   assert.equal(validateV06ActionCoverage(complete.map(([action, count]) =>
-    [action, action === "OPEN_PRIME_USDC_STEP" ? 2 : count])), false);
-  assert.equal(validateV06ActionCoverage(complete.map(([action, count]) =>
-    [action, action === "OPEN_PRIME_USDC_STEP" ? 4 : count])), false);
+    [action, action === "REPORT_NAV" ? 1 : count])), false);
   assert.equal(validateV06ActionCoverage([...complete, ["OPEN_PRIME_USDC_STEP", 1]]), false);
-  assert.equal(validateV06ActionCoverage(complete.map(([action, count]) =>
-    [action, action === "DELEVER_PRIME_USDC_STEP" ? 2 : count])), false);
 });
 
 test("V06 launch snapshot is post-redeposit and within target LTV without inventing APY", () => {
@@ -115,10 +111,21 @@ test("V06 ticket report binds sequence to its observed slot", () => {
   assert.equal(validateV06ReportIdentity({ ...report, observedSlot: "0" }), false);
   const nav = Buffer.alloc(8);
   nav.writeBigUInt64LE(42n);
-  assert.equal(validateV06ReturnDataNAV({ returnData: { programId: route.programs.adaptor, dataBase64: nav.toString("base64") } }, report, route), true);
-  assert.equal(validateV06ReturnDataNAV({ returnData: { programId: "SysvarRent111111111111111111111111111111111", dataBase64: nav.toString("base64") } }, report, route), false);
+  assert.equal(validateV06ReturnDataNAV({ returnData: { programId: route.programs.adaptor, dataBase64: nav.toString("base64") }, logs: [] }, report, route), true);
+  assert.equal(validateV06ReturnDataNAV({ returnData: null, logs: [`Program return: ${route.programs.adaptor} ${nav.toString("base64")}`] }, report, route), true);
+  assert.equal(validateV06ReturnDataNAV({ returnData: null, logs: [`Program log: Program return: ${route.programs.adaptor} ${nav.toString("base64")}`] }, report, route), false);
+  assert.equal(validateV06ReturnDataNAV({ returnData: null, logs: [
+    `Program return: ${route.programs.adaptor} ${nav.toString("base64")}`,
+    `Program return: ${route.programs.adaptor} AAAAAAAAAAA=`,
+  ] }, report, route), false);
+  assert.equal(validateV06ReturnDataNAV({ returnData: null, logs: [`Program return: SysvarRent111111111111111111111111111111111 ${nav.toString("base64")}`] }, report, route), false);
+  assert.equal(validateV06ReturnDataNAV({ returnData: { programId: "SysvarRent111111111111111111111111111111111", dataBase64: nav.toString("base64") }, logs: [] }, report, route), false);
+  assert.equal(validateV06ReturnDataNAV({
+    returnData: { programId: route.programs.adaptor, dataBase64: "AAAAAAAAAAA=" },
+    logs: [`Program return: ${route.programs.adaptor} ${nav.toString("base64")}`],
+  }, report, route), false);
   nav.writeBigUInt64LE(43n);
-  assert.equal(validateV06ReturnDataNAV({ returnData: { programId: route.programs.voltr, dataBase64: nav.toString("base64") } }, report, route), false);
+  assert.equal(validateV06ReturnDataNAV({ returnData: { programId: route.programs.voltr, dataBase64: nav.toString("base64") }, logs: [] }, report, route), false);
 });
 
 test("V06 final report ticket is inactive and retains only the consumed sequence", () => {
