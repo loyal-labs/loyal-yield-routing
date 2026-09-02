@@ -139,3 +139,17 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 		t.Fatal("accepted a setup instruction outside the policy contract")
 	}
 }
+
+func TestJupiterAcceptsCanonicalSystemProgramAccount(t *testing.T) {
+	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 95, false)
+	instruction.Accounts = append(instruction.Accounts, JupiterInstructionAccount{
+		Pubkey: "11111111111111111111111111111111",
+	})
+	if _, err := validateJupiterInstruction(instruction, SwapUSDCToPrimeStep, 100, 95, 94); err != nil {
+		t.Fatal(err)
+	}
+	key, err := decodeKey("11111111111111111111111111111111")
+	if err != nil || key != (publicKey{}) {
+		t.Fatalf("system program decoded incorrectly: key=%x err=%v", key, err)
+	}
+}
