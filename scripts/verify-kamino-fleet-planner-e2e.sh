@@ -21,9 +21,10 @@ for command_name in go cargo initdb pg_ctl createdb psql; do
   command -v "$command_name" >/dev/null || fail "$command_name is required"
 done
 
-echo "== Cutover topology: Go planner only"
-echo "Excluded: kamino-reserve-monitor and fleet-opportunity-planner"
-echo "Retained handoff: existing PostgreSQL optimizer_epochs/rebalance_opportunities schema"
+echo "== Pre-cutover planner slice: Go process only"
+echo "Not invoked by this verifier: kamino-reserve-monitor and fleet-opportunity-planner"
+echo "Boundary under test: existing PostgreSQL optimizer_epochs/rebalance_opportunities schema"
+echo "WARNING: this verifier ends at revalidate and does not prove a Rust-compatible W3 handoff"
 echo "== Go verifier-first checks"
 cd "$root/go/kamino-fleet-planner"
 go test ./...
@@ -69,6 +70,7 @@ FLEET_TEST_DATABASE_URL="$database_url" go test ./internal/fleet \
 [[ "$(psql "$database_url" -X -Atc "SELECT count(*) > 0 AND bool_and(epoch.market_state->>'owner'='kamino_fleet_planner_go_v1') AND bool_and(opportunity.opportunity_state='revalidate') FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=opportunity.optimizer_epoch_id")" == "t" ]] ||
   fail "durable handoff contains a non-Go producer or a non-revalidate row"
 
-echo "PASS: mock confirmed RPC -> Go observation/planning -> existing durable revalidate queue"
-echo "PASS: replaced Rust monitor/planner binaries were not built or invoked"
+echo "PASS: mock confirmed RPC -> Go observation/planning -> durable revalidate row"
+echo "PASS: Rust monitor/planner binaries were not built or invoked by this scoped test"
 echo "PASS: economic idempotency, active-work exclusion, and queue-based restart recovery verified"
+echo "NOT VERIFIED: epoch parser parity, route revalidation, ready/execution, confirmation, or reconciliation"

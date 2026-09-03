@@ -3,9 +3,11 @@ package fleet
 import "time"
 
 const (
-	KaminoProgram = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
-	USDCMint      = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-	reserveLength = 8624
+	KaminoProgram                            = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+	USDCMint                                 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	reserveLength                            = 8624
+	amountSemanticsKaminoCollateralDeposited = "kamino_obligation_collateral_deposited_amount"
+	amountSemanticsRedeemableLiquidity       = "redeemable_liquidity_amount"
 )
 
 var reserveDiscriminator = [8]byte{43, 242, 204, 202, 26, 247, 59, 127}
@@ -20,6 +22,8 @@ type ReserveState struct {
 	ReserveIdentity
 	Slot                   int64  `json:"slot"`
 	LastUpdateSlot         int64  `json:"lastUpdateSlot"`
+	LastUpdateStale        bool   `json:"lastUpdateStale"`
+	EconomicSlotLag        int64  `json:"economicSlotLag"`
 	SupplyAPYBPS           int64  `json:"supplyApyBps"`
 	TotalSupplyUSDMicros   int64  `json:"totalSupplyUsdMicros"`
 	EconomicLifetimeMillis int64  `json:"economicLifetimeMillis"`
@@ -46,6 +50,7 @@ type VaultPosition struct {
 	AmountRaw                       int64
 	SourceCollateralAmountRaw       int64
 	SourceAmountSemantics           string
+	IdleVaultLiquidityAmountRaw     *int64
 	SnapshotID                      int64
 	ObservedSlot                    int64
 	ObservedAt                      time.Time

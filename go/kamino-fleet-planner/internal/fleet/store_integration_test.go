@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,7 +25,7 @@ func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	market := testIdentity(40)
 	source := ReserveIdentity{Address: testIdentity(3), Market: market, Mint: USDCMint}
-	target := ReserveIdentity{Address: testIdentity(80), Market: market, Mint: USDCMint}
+	target := ReserveIdentity{Address: testIdentity(80), Market: testIdentity(81), Mint: USDCMint}
 	var policyID, vaultID, snapshotID int64
 	err = store.pool.QueryRow(ctx, `INSERT INTO loyal_yield.route_policies (settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,delegated_signers,threshold,route_modes,stable_mints,kamino_markets,kamino_liquidity_mints,swap_lanes,active,last_seen_slot,last_seen_signature) VALUES ($1,$2,1,$3,0,$4,ARRAY[$2]::text[],1,ARRAY['same_mint_kamino']::text[],ARRAY[$5]::text[],ARRAY[$6]::text[],ARRAY[$5]::text[],'[]',true,100,$7) RETURNING id`, `settings:`+suffix, `authority:`+suffix, `policy:`+suffix, `vault:`+suffix, USDCMint, market, `signature:`+suffix).Scan(&policyID)
 	if err != nil {
@@ -37,7 +39,7 @@ func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.vault_reserve_positions_current(vault_id,reserve,market,liquidity_mint,amount_raw,has_value,supply_apy_bps,snapshot_id,observed_slot,observed_at,planning_metadata) VALUES($1,$2,$3,$4,9000000000000,true,200,$5,99,clock_timestamp(),'{"amount_semantics":"kamino_collateral_deposited","redeemable_source_liquidity_amount_raw":"10000000000000"}')`, vaultID, source.Address, market, USDCMint, snapshotID)
+	_, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.vault_reserve_positions_current(vault_id,reserve,market,liquidity_mint,amount_raw,has_value,supply_apy_bps,snapshot_id,observed_slot,observed_at,planning_metadata) VALUES($1,$2,$3,$4,900000000000,true,200,$5,99,clock_timestamp(),'{"amount_semantics":"kamino_obligation_collateral_deposited_amount","redeemable_source_liquidity_amount_raw":"1000000000000"}')`, vaultID, source.Address, market, USDCMint, snapshotID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +50,13 @@ func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 	}
 	if plannerTableExists {
 		t.Fatal("cutover verifier unexpectedly depends on a planner-specific migration")
+	}
+	policyBlocked, err := store.LoadVaultPosition(ctx, "mainnet-beta", vaultID, source, target)
+	if err != nil || !strings.Contains(policyBlocked.BlockedReason, "market_not_allowed") {
+		t.Fatalf("target market outside policy was accepted: position=%+v err=%v", policyBlocked, err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.route_policies SET kamino_markets=array_append(kamino_markets,$2) WHERE id=$1`, policyID, target.Market); err != nil {
+		t.Fatal(err)
 	}
 	position, err := store.LoadVaultPosition(ctx, "mainnet-beta", vaultID, source, target)
 	if err != nil {
@@ -105,13 +114,21 @@ func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 	if err := json.Unmarshal(executionPlan, &plan); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"settings", "vault_index", "source_reserve", "target_reserve", "liquidity_mint", "amount_raw", "redeemable_source_liquidity_amount_raw", "optimizer_market_slot", "observed_target_apy_bps", "confidence_ppm", "expected_service_millis", "holding_horizon_seconds", "estimated_execution_cost_usd_micros"} {
+	for _, field := range []string{"settings", "vault_index", "source_reserve", "target_reserve", "liquidity_mint", "amount_raw", "redeemable_source_liquidity_amount_raw", "idle_vault_liquidity_amount_raw", "idle_token_account", "optimizer_market_slot", "observed_target_apy_bps", "confidence_ppm", "expected_service_millis", "holding_horizon_seconds", "estimated_execution_cost_usd_micros", "writable_conflict_keys"} {
 		if _, present := plan[field]; !present {
 			t.Fatalf("Rust W3 required execution_plan.%s is missing", field)
 		}
 	}
-	if plan["route_amount_semantics"] != "redeemable_liquidity_amount" || int64(plan["redeemable_source_liquidity_amount_raw"].(float64)) != decision.AmountRaw {
+	if plan["route_amount_semantics"] != amountSemanticsRedeemableLiquidity ||
+		plan["source_amount_semantics"] != amountSemanticsKaminoCollateralDeposited ||
+		int64(plan["redeemable_source_liquidity_amount_raw"].(float64)) != decision.AmountRaw {
 		t.Fatalf("Rust W3 amount contract drifted: %s", executionPlan)
+	}
+	conflicts, ok := plan["writable_conflict_keys"].([]any)
+	if !ok || len(conflicts) != 4 || conflicts[0] != "vault:"+position.VaultPubkey ||
+		conflicts[1] != "policy:"+strconv.FormatInt(position.PolicyID, 10) ||
+		conflicts[2] != "source-reserve:"+source.Address || conflicts[3] != "target-reserve:"+target.Address {
+		t.Fatalf("Rust W3 conflict keys drifted: %s", executionPlan)
 	}
 	blocked, err := store.LoadVaultPosition(ctx, "mainnet-beta", vaultID, source, target)
 	if err != nil {

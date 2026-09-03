@@ -32,11 +32,11 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	source, sourceOK := snapshot.Reserves[sourceAddress]
 	target, targetOK := snapshot.Reserves[targetAddress]
 	if !sourceOK || !targetOK || source.Address != position.SourceReserve || source.Market != position.Market ||
-		target.Market != position.Market || source.Mint != USDCMint || target.Mint != USDCMint || position.Mint != USDCMint {
+		source.Mint != USDCMint || target.Mint != USDCMint || position.Mint != USDCMint {
 		return ineligible("identity_mismatch")
 	}
 	if position.VaultID <= 0 || position.SnapshotID <= 0 || position.AmountRaw <= 0 || position.SourceCollateralAmountRaw <= 0 ||
-		position.SourceAmountSemantics != "kamino_collateral_deposited" && position.SourceAmountSemantics != "redeemable_liquidity_amount" {
+		position.SourceAmountSemantics != amountSemanticsKaminoCollateralDeposited && position.SourceAmountSemantics != amountSemanticsRedeemableLiquidity {
 		return ineligible("unsupported_source_amount_evidence")
 	}
 	if position.AmountRaw < minimumNotionalUSDMicros {
@@ -45,8 +45,11 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	if source.TotalSupplyUSDMicros < minimumSupplyUSDMicros || target.TotalSupplyUSDMicros < minimumSupplyUSDMicros {
 		return ineligible("below_minimum_reserve_supply")
 	}
-	if source.EconomicLifetimeMillis < minimumPublicationLifetime.Milliseconds() || target.EconomicLifetimeMillis < minimumPublicationLifetime.Milliseconds() {
-		return ineligible("economic_evidence_lifetime_too_short")
+	if target.LastUpdateStale {
+		return ineligible("target_explicitly_stale")
+	}
+	if target.EconomicLifetimeMillis < minimumPublicationLifetime.Milliseconds() {
+		return ineligible("target_economic_evidence_lifetime_too_short")
 	}
 	if source.SupplyAPYBPS < 0 || source.SupplyAPYBPS >= 5_000 || target.SupplyAPYBPS < 0 || target.SupplyAPYBPS >= 5_000 {
 		return ineligible("invalid_apy")
@@ -57,26 +60,24 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 		return ineligible("invalid_capacity_projection")
 	}
 	capacity := target.TotalSupplyUSDMicros / 50
-	if capacity <= 0 || position.TargetCommittedInflowUSDMicros > capacity-position.AmountRaw {
-		return ineligible("target_capacity_exhausted")
-	}
-	targetProjectedSupply, ok := sumInt64(target.TotalSupplyUSDMicros, position.TargetCommittedInflowUSDMicros, position.AmountRaw, -position.TargetCommittedOutflowUSDMicros)
+	targetAPY, hasCapacity, ok := capacityAdjustedTargetAPY(
+		target,
+		position.TargetCommittedInflowUSDMicros,
+		position.TargetCommittedOutflowUSDMicros,
+		position.AmountRaw,
+	)
 	if !ok {
 		return ineligible("capacity_arithmetic_overflow")
+	}
+	if !hasCapacity {
+		return ineligible("target_capacity_exhausted")
 	}
 	sourceProjectedSupply, ok := sumInt64(source.TotalSupplyUSDMicros, position.SourceCommittedInflowUSDMicros, -position.SourceCommittedOutflowUSDMicros)
 	if !ok {
 		return ineligible("capacity_arithmetic_overflow")
 	}
-	if targetProjectedSupply <= 0 || sourceProjectedSupply <= 0 {
+	if sourceProjectedSupply <= 0 {
 		return ineligible("invalid_capacity_projection")
-	}
-	targetAPY, ok := mulDivInt64(target.SupplyAPYBPS, target.TotalSupplyUSDMicros, targetProjectedSupply)
-	if !ok {
-		return ineligible("capacity_arithmetic_overflow")
-	}
-	if targetAPY > target.SupplyAPYBPS {
-		targetAPY = target.SupplyAPYBPS
 	}
 	sourceAPY, ok := mulDivInt64(source.SupplyAPYBPS, source.TotalSupplyUSDMicros, sourceProjectedSupply)
 	if !ok {
@@ -86,11 +87,13 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	if edge < 1 {
 		return ineligible("below_minimum_edge")
 	}
-	annual, ok := mulDivInt64(position.AmountRaw, edge, 10_000)
-	if !ok || annual <= 0 {
-		return ineligible("invalid_annual_gain")
-	}
-	gross, ok := mulDivInt64(annual, holdingHorizonSeconds, secondsPerYear)
+	gross, ok := mulMulDivInt64(
+		position.AmountRaw,
+		edge,
+		holdingHorizonSeconds,
+		10_000,
+		secondsPerYear,
+	)
 	if !ok {
 		return ineligible("economic_arithmetic_overflow")
 	}
@@ -118,6 +121,10 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	if !ok {
 		return ineligible("economic_arithmetic_overflow")
 	}
+	annual, ok := mulDivInt64(lostPerHour, 8_760, 1)
+	if !ok || annual <= 0 {
+		return ineligible("invalid_annual_gain")
+	}
 	priority, ok := mulDivInt64(lostPerHour, confidencePPM*1_000, 1_000_000*expectedServiceMillis)
 	if !ok {
 		return ineligible("economic_arithmetic_overflow")
@@ -131,6 +138,55 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	decision.EconomicPriority, decision.EstimatedCostLamports = priority, feeCap
 	decision.TargetCapacityUSDMicros = capacity
 	return decision
+}
+
+// capacityAdjustedTargetAPY mirrors the Rust planner's four conservative
+// capacity bands. The selected band's ceiling, rather than the candidate's
+// exact amount, prices the marginal target APY for the whole planning wave.
+func capacityAdjustedTargetAPY(target ReserveState, committedInflow, committedOutflow, candidate int64) (int64, bool, bool) {
+	cumulativeInflow, ok := sumInt64(committedInflow, candidate)
+	if !ok {
+		return 0, false, false
+	}
+	ceilings := []int64{
+		minInt64(target.TotalSupplyUSDMicros/1_000, 1_000_000_000_000),
+		minInt64(target.TotalSupplyUSDMicros/200, 2_000_000_000_000),
+		minInt64(target.TotalSupplyUSDMicros/100, 3_000_000_000_000),
+		minInt64(target.TotalSupplyUSDMicros/50, 4_000_000_000_000),
+	}
+	if committedInflow > ceilings[len(ceilings)-1] {
+		ceilings[len(ceilings)-1] = committedInflow
+	}
+	for _, ceiling := range ceilings {
+		if cumulativeInflow > ceiling {
+			continue
+		}
+		bandSupply, ok := sumInt64(target.TotalSupplyUSDMicros, ceiling)
+		if !ok {
+			return 0, false, false
+		}
+		bandAPY, ok := mulDivInt64(target.SupplyAPYBPS, target.TotalSupplyUSDMicros, bandSupply)
+		if !ok {
+			return 0, false, false
+		}
+		projectedBandSupply, ok := sumInt64(bandSupply, -committedOutflow)
+		if !ok || projectedBandSupply <= 0 {
+			return 0, false, ok
+		}
+		projectedAPY, ok := mulDivInt64(bandAPY, bandSupply, projectedBandSupply)
+		if !ok {
+			return 0, false, false
+		}
+		return minInt64(projectedAPY, target.SupplyAPYBPS), true, true
+	}
+	return 0, false, true
+}
+
+func minInt64(left, right int64) int64 {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func sumInt64(values ...int64) (int64, bool) {
@@ -150,6 +206,20 @@ func mulDivInt64(left, right, divisor int64) (int64, bool) {
 	}
 	value := new(big.Int).Mul(big.NewInt(left), big.NewInt(right))
 	value.Quo(value, big.NewInt(divisor))
+	if !value.IsInt64() {
+		return 0, false
+	}
+	return value.Int64(), true
+}
+
+func mulMulDivInt64(left, right, multiplier, divisor, secondDivisor int64) (int64, bool) {
+	if divisor == 0 || secondDivisor == 0 {
+		return 0, false
+	}
+	value := new(big.Int).Mul(big.NewInt(left), big.NewInt(right))
+	value.Mul(value, big.NewInt(multiplier))
+	denominator := new(big.Int).Mul(big.NewInt(divisor), big.NewInt(secondDivisor))
+	value.Quo(value, denominator)
 	if !value.IsInt64() {
 		return 0, false
 	}

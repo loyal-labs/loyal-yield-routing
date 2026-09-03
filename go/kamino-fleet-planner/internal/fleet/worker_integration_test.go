@@ -57,7 +57,7 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	config := Config{DatabaseURL: databaseURL, RPCURL: server.URL, Cluster: "mainnet-beta", Mode: ModePublish, VaultID: vaultID, Source: source, Target: target, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
+	config := Config{DatabaseURL: databaseURL, RPCURL: server.URL, Cluster: "localnet", Mode: ModePublish, VaultID: vaultID, Source: source, Target: target, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
 	worker, err := NewWorker(config, store, NewRPCClient(server.URL))
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func seedWorkerVault(t *testing.T, ctx context.Context, store *Store, suffix, ma
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.vault_reserve_positions_current(vault_id,reserve,market,liquidity_mint,amount_raw,has_value,supply_apy_bps,snapshot_id,observed_slot,observed_at,planning_metadata) VALUES($1,$2,$3,$4,9000000000000,true,100,$5,999,clock_timestamp(),'{"amount_semantics":"kamino_collateral_deposited","redeemable_source_liquidity_amount_raw":"10000000000000"}')`, vaultID, source, market, USDCMint, snapshotID)
+	_, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.vault_reserve_positions_current(vault_id,reserve,market,liquidity_mint,amount_raw,has_value,supply_apy_bps,snapshot_id,observed_slot,observed_at,planning_metadata) VALUES($1,$2,$3,$4,900000000000,true,100,$5,999,clock_timestamp(),'{"amount_semantics":"kamino_obligation_collateral_deposited_amount","redeemable_source_liquidity_amount_raw":"1000000000000"}')`, vaultID, source, market, USDCMint, snapshotID)
 	if err != nil {
 		t.Fatal(err)
 	}

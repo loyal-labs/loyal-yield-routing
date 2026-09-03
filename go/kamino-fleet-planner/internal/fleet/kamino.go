@@ -20,6 +20,17 @@ const (
 type curvePoint struct{ utilization, rate float64 }
 
 func DecodeKaminoReserve(account Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
+	return decodeKaminoReserve(account, identity, contextSlot, slotDuration)
+}
+
+// DecodeKaminoSourceReserve names the source-only call site. Structurally valid
+// stale economics are decoded for both roles; Plan excludes them as targets,
+// while the route revalidator refreshes a stale source before withdraw.
+func DecodeKaminoSourceReserve(account Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
+	return decodeKaminoReserve(account, identity, contextSlot, slotDuration)
+}
+
+func decodeKaminoReserve(account Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
 	if account.Address != identity.Address || account.Owner != KaminoProgram || account.Executable || account.Lamports == 0 ||
 		len(account.Data) != reserveLength || !bytes.Equal(account.Data[:8], reserveDiscriminator[:]) {
 		return ReserveState{}, fmt.Errorf("reserve %s envelope or layout drifted", identity.Address)
@@ -35,17 +46,16 @@ func DecodeKaminoReserve(account Account, identity ReserveIdentity, contextSlot 
 		return ReserveState{}, fmt.Errorf("reserve %s has no bounded last update", identity.Address)
 	}
 	lastUpdateSlot := int64(lastUpdateSlotRaw)
-	if account.Data[24] != 0 {
-		return ReserveState{}, fmt.Errorf("reserve %s last update is explicitly stale", identity.Address)
-	}
+	explicitlyStale := account.Data[24] != 0
 	lag := contextSlot - lastUpdateSlot
-	if lag < 0 || lag > maximumEconomicSlotLag {
-		return ReserveState{}, fmt.Errorf("reserve %s economic slot order or lag is invalid", identity.Address)
+	if lag < 0 {
+		return ReserveState{}, fmt.Errorf("reserve %s economic slot order is invalid", identity.Address)
 	}
-	economicLifetime := time.Duration(maximumEconomicSlotLag-lag) * slotDuration
-	if economicLifetime < minimumPublicationLifetime {
-		return ReserveState{}, fmt.Errorf("reserve %s economic evidence has insufficient publication lifetime", identity.Address)
+	remainingSlots := maximumEconomicSlotLag - lag
+	if remainingSlots < 0 {
+		remainingSlots = 0
 	}
+	economicLifetime := time.Duration(remainingSlots) * slotDuration
 	status := account.Data[reserveConfigOffset]
 	emergency := account.Data[reserveConfigOffset+8]
 	if status != 0 || emergency != 0 {
@@ -98,8 +108,10 @@ func DecodeKaminoReserve(account Account, identity ReserveIdentity, contextSlot 
 	hash := sha256.Sum256(account.Data)
 	return ReserveState{
 		ReserveIdentity: identity, Slot: contextSlot, LastUpdateSlot: lastUpdateSlot,
+		LastUpdateStale:        explicitlyStale,
+		EconomicSlotLag:        lag,
 		SupplyAPYBPS:           int64(math.Round(supplyAPY * 10_000)),
-		TotalSupplyUSDMicros:   int64(math.Floor(totalSupply)),
+		TotalSupplyUSDMicros:   int64(math.Round(totalSupply)),
 		EconomicLifetimeMillis: economicLifetime.Milliseconds(),
 		DataHash:               hex.EncodeToString(hash[:]),
 	}, nil

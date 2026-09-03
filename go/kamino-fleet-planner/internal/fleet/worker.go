@@ -61,7 +61,7 @@ func (w *Worker) cycle(ctx context.Context) error {
 		return fmt.Errorf("observe coherent reserves: %w", err)
 	}
 	states := make([]ReserveState, 2)
-	states[0], err = DecodeKaminoReserve(accounts[0], w.config.Source, slot, w.config.SlotDuration)
+	states[0], err = DecodeKaminoSourceReserve(accounts[0], w.config.Source, slot, w.config.SlotDuration)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,16 @@ func (w *Worker) cycle(ctx context.Context) error {
 		}
 	}
 	w.lastConfirmedSlot = snapshot.Slot
-	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "slot": snapshot.Slot, "snapshotHash": snapshot.Hash, "eligible": decision.Eligible, "reason": decision.Reason, "publishReason": result.Reason, "opportunityId": result.OpportunityID, "sourceApyBps": decision.SourceAPYBPS, "targetApyBps": decision.TargetAPYBPS, "edgeBps": decision.EdgeBPS})
+	logEvent(map[string]any{
+		"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode,
+		"slot": snapshot.Slot, "snapshotHash": snapshot.Hash,
+		"eligible": decision.Eligible, "reason": decision.Reason,
+		"publishReason": result.Reason, "opportunityId": result.OpportunityID,
+		"observedSourceApyBps": snapshot.Reserves[w.config.Source.Address].SupplyAPYBPS,
+		"observedTargetApyBps": snapshot.Reserves[w.config.Target.Address].SupplyAPYBPS,
+		"sourceApyBps":         decision.SourceAPYBPS, "targetApyBps": decision.TargetAPYBPS,
+		"edgeBps": decision.EdgeBPS,
+	})
 	return nil
 }
 

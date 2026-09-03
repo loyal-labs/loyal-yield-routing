@@ -70,8 +70,13 @@ func TestDecodeKaminoReserveRejectsIdentityAndLayoutDrift(t *testing.T) {
 		t.Fatal("market drift was accepted")
 	}
 	account.Data[24] = 1
-	if _, err := DecodeKaminoReserve(account, identity, 1_000, 400*time.Millisecond); err == nil {
-		t.Fatal("explicitly stale reserve was accepted")
+	staleTarget, err := DecodeKaminoReserve(account, identity, 1_000, 400*time.Millisecond)
+	if err != nil || !staleTarget.LastUpdateStale {
+		t.Fatalf("structurally valid stale target evidence was not decoded: state=%+v err=%v", staleTarget, err)
+	}
+	staleSource, err := DecodeKaminoSourceReserve(account, identity, 1_000, 400*time.Millisecond)
+	if err != nil || !staleSource.LastUpdateStale {
+		t.Fatalf("explicitly stale source-only reserve was rejected: state=%+v err=%v", staleSource, err)
 	}
 	account = reserveFixture(identity, 1_000_000, 1_000_000)
 	binary.LittleEndian.PutUint64(account.Data[16:24], 1_001)
@@ -79,8 +84,9 @@ func TestDecodeKaminoReserveRejectsIdentityAndLayoutDrift(t *testing.T) {
 		t.Fatal("future economic evidence was accepted")
 	}
 	binary.LittleEndian.PutUint64(account.Data[16:24], 1)
-	if _, err := DecodeKaminoReserve(account, identity, 1_000, 40*time.Millisecond); err == nil {
-		t.Fatal("insufficient economic lifetime was accepted")
+	expiring, err := DecodeKaminoReserve(account, identity, 2_400, 400*time.Millisecond)
+	if err != nil || expiring.EconomicLifetimeMillis >= minimumPublicationLifetime.Milliseconds() {
+		t.Fatalf("expiring evidence was not preserved for planner exclusion: state=%+v err=%v", expiring, err)
 	}
 	account.Data = account.Data[:100]
 	if _, err := DecodeKaminoReserve(account, identity, 1_000, 400*time.Millisecond); err == nil {

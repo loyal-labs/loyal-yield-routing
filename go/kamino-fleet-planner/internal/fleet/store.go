@@ -47,7 +47,7 @@ SELECT vault.settings, vault.vault_index, vault.vault_pubkey,
          WHEN NOT vault.active OR NOT policy.active THEN 'inactive_vault_or_policy'
          WHEN NOT ('same_mint_kamino'=ANY(policy.route_modes)) THEN 'route_mode_not_allowed'
          WHEN NOT ($4=ANY(policy.stable_mints) AND $4=ANY(policy.kamino_liquidity_mints)) THEN 'mint_not_allowed'
-         WHEN NOT ($3=ANY(policy.kamino_markets)) THEN 'market_not_allowed'
+         WHEN NOT ($3=ANY(policy.kamino_markets) AND $7=ANY(policy.kamino_markets)) THEN 'market_not_allowed'
          WHEN position.observed_at < clock_timestamp()-interval '5 minutes' THEN 'stale_vault_position'
          WHEN EXISTS (SELECT 1 FROM loyal_yield.rebalance_opportunities opportunity WHERE opportunity.cluster=$5 AND opportunity.vault_id=vault.id AND opportunity.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')) THEN 'active_opportunity'
          WHEN EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions decision WHERE decision.vault_id=vault.id AND decision.status::text IN ('planned','simulating','ready','submitted','confirming')) THEN 'active_decision'
@@ -62,7 +62,7 @@ FROM loyal_yield.managed_vaults vault
 JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id
 JOIN loyal_yield.vault_reserve_positions_current position ON position.vault_id=vault.id AND position.reserve=$2
 WHERE vault.id=$6 AND position.has_value AND position.amount_raw>0
-`, target.Address, source.Address, source.Market, source.Mint, cluster, vaultID).Scan(
+`, target.Address, source.Address, source.Market, source.Mint, cluster, vaultID, target.Market).Scan(
 		&position.Settings, &position.VaultIndex, &position.VaultPubkey, &position.PolicyID, &position.PolicyAccount,
 		&position.SourceReserve, &position.Market, &position.Mint, &position.SourceCollateralAmountRaw, &position.SnapshotID,
 		&position.ObservedSlot, &position.ObservedAt, &metadata, &position.BlockedReason,
@@ -76,18 +76,20 @@ WHERE vault.id=$6 AND position.has_value AND position.amount_raw>0
 		Redeemable       json.RawMessage `json:"redeemable_source_liquidity_amount_raw"`
 		RedeemableLegacy json.RawMessage `json:"redeemable_liquidity_amount_raw"`
 		SourceCollateral json.RawMessage `json:"source_collateral_amount_raw"`
+		IdleLiquidity    json.RawMessage `json:"idle_vault_liquidity_amount_raw"`
+		IdleLegacy       json.RawMessage `json:"vault_liquidity_amount_raw"`
 	}
 	if err := json.Unmarshal(metadata, &evidence); err != nil {
 		return VaultPosition{}, fmt.Errorf("decode route amount evidence: %w", err)
 	}
 	position.SourceAmountSemantics = evidence.AmountSemantics
 	switch evidence.AmountSemantics {
-	case "kamino_collateral_deposited":
+	case amountSemanticsKaminoCollateralDeposited:
 		position.AmountRaw, err = jsonInt64(evidence.Redeemable)
 		if err != nil {
 			position.AmountRaw, err = jsonInt64(evidence.RedeemableLegacy)
 		}
-	case "redeemable_liquidity_amount":
+	case amountSemanticsRedeemableLiquidity:
 		position.AmountRaw = position.SourceCollateralAmountRaw
 		if raw, parseErr := jsonInt64(evidence.SourceCollateral); parseErr == nil {
 			position.SourceCollateralAmountRaw = raw
@@ -99,6 +101,13 @@ WHERE vault.id=$6 AND position.has_value AND position.amount_raw>0
 	}
 	if err != nil || position.AmountRaw <= 0 || position.SourceCollateralAmountRaw <= 0 {
 		return VaultPosition{}, fmt.Errorf("fixed cohort requires exact redeemable and collateral amounts")
+	}
+	idleLiquidity, idleErr := jsonInt64(evidence.IdleLiquidity)
+	if idleErr != nil {
+		idleLiquidity, idleErr = jsonInt64(evidence.IdleLegacy)
+	}
+	if idleErr == nil && idleLiquidity >= 0 {
+		position.IdleVaultLiquidityAmountRaw = &idleLiquidity
 	}
 	return position, nil
 }
@@ -126,10 +135,10 @@ func (s *Store) Publish(ctx context.Context, cluster string, snapshot MarketSnap
 	if err := decision.Validate(); err != nil {
 		return PublishResult{}, err
 	}
-	economicLifetime := minimumInt64(
-		snapshot.Reserves[decision.SourceReserve].EconomicLifetimeMillis,
-		snapshot.Reserves[decision.TargetReserve].EconomicLifetimeMillis,
-	)
+	// A stale source remains withdrawable after the route revalidator's refresh
+	// instruction. The eligible target, not stale source economics, bounds this
+	// same-mint route's publication lifetime.
+	economicLifetime := snapshot.Reserves[decision.TargetReserve].EconomicLifetimeMillis
 	epochLifetime := minimumInt64(economicLifetime, int64((90 * time.Second).Milliseconds()))
 	epochExpires := snapshot.ObservedAt.Add(time.Duration(epochLifetime) * time.Millisecond)
 	if time.Until(epochExpires) < minimumPublicationLifetime {
@@ -150,9 +159,10 @@ func (s *Store) Publish(ctx context.Context, cluster string, snapshot MarketSnap
 		"vault_pubkey": position.VaultPubkey, "policy_id": position.PolicyID, "source_kind": "reserve_position",
 		"source_reserve": decision.SourceReserve, "target_reserve": decision.TargetReserve, "liquidity_mint": decision.Mint,
 		"source_liquidity_mint": decision.Mint, "target_liquidity_mint": decision.Mint, "amount_raw": decision.AmountRaw,
-		"route_amount_semantics": "redeemable_liquidity_amount", "source_amount_semantics": position.SourceAmountSemantics,
+		"route_amount_semantics": amountSemanticsRedeemableLiquidity, "source_amount_semantics": position.SourceAmountSemantics,
 		"source_collateral_amount_raw": position.SourceCollateralAmountRaw, "redeemable_source_liquidity_amount_raw": decision.AmountRaw,
-		"source_apy_bps": decision.SourceAPYBPS, "observed_source_apy_bps": decision.SourceAPYBPS,
+		"idle_vault_liquidity_amount_raw": position.IdleVaultLiquidityAmountRaw, "idle_token_account": nil,
+		"source_apy_bps": decision.SourceAPYBPS, "observed_source_apy_bps": snapshot.Reserves[decision.SourceReserve].SupplyAPYBPS,
 		"observed_target_apy_bps": snapshot.Reserves[decision.TargetReserve].SupplyAPYBPS, "target_apy_bps": decision.TargetAPYBPS,
 		"capacity_adjusted_target_apy_bps": decision.TargetAPYBPS, "estimated_edge_bps": decision.EdgeBPS,
 		"confidence_ppm": decision.ConfidencePPM, "expected_service_millis": expectedServiceMillis,
@@ -162,7 +172,12 @@ func (s *Store) Publish(ctx context.Context, cluster string, snapshot MarketSnap
 		"minimum_transaction_fee_lamports": 5_000, "conservative_sol_price_usd_micros": 1_000_000_000,
 		"source_observed_at": position.ObservedAt.UTC(), "source_observed_slot": position.ObservedSlot,
 		"optimizer_market_slot": decision.MarketSlot, "target_observed_at": snapshot.ObservedAt, "target_observed_slot": snapshot.Slot,
-		"writable_conflict_keys": []string{position.VaultPubkey}, "planning_economics_are_executable_quote": false,
+		"writable_conflict_keys": []string{
+			"vault:" + position.VaultPubkey,
+			"policy:" + strconv.FormatInt(position.PolicyID, 10),
+			"source-reserve:" + decision.SourceReserve,
+			"target-reserve:" + decision.TargetReserve,
+		}, "planning_economics_are_executable_quote": false,
 		"fresh_executable_jupiter_minimum_output_required": false, "policy_bindings": nil,
 		"source_recovery_anchor_collateral_raw": nil, "cross_mint_maximum_value_loss_bps": nil,
 	}

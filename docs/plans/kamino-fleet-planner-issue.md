@@ -71,8 +71,12 @@ Go scope is one vault:
   Otherwise the Rust planner needs an explicit migrated-vault exclusion before
   the Go worker can publish for that vault without overlap.
 
-The retained services are the route revalidator, executor, confirmer,
-reconciler, health projector, and ALT provisioner.
+The current Go slice retains the route revalidator, executor, confirmer,
+reconciler, health projector, and ALT provisioner. A complete replacement for
+both the opportunity planner and route revalidator must move the revalidator's
+full route/ALT/packet/simulation/fence behavior into Go before cutover; it does
+not make those checks optional. Executor, confirmer, reconciler, health
+projector, and ALT provisioner remain retained.
 
 ### Terminology warning
 
@@ -406,8 +410,10 @@ The implementation must preserve or strengthen all of the following:
 
 The repository now contains `go/kamino-fleet-planner` and
 `scripts/verify-kamino-fleet-planner-e2e.sh`. This slice is deliberately limited
-to one configured vault and two distinct six-decimal USDC reserves in one
-Kamino market. It polls confirmed RPC directly, owns only coherent two-reserve
+to one configured vault and two distinct six-decimal USDC reserves. Production
+catalog evidence shows that Kamino has at most one reserve for a mint in each
+market, so the configured same-mint pair is normally cross-market. It polls
+confirmed RPC directly, owns only coherent two-reserve
 snapshots in memory, plans deterministically, defaults to `shadow`, and in
 explicit `publish` mode writes the existing PostgreSQL `revalidate` queue for
 unchanged Rust W3 consumers. The cutover contract is strict stop-then-start:
@@ -424,11 +430,12 @@ The disposable-PostgreSQL/RPC-stub verifier covers the frozen KLend layout,
 identity and slot drift, capacity/economic no-ops, economic idempotency,
 active-work exclusion, queue-based restart recovery, and confirmed RPC to
 durable W3 handoff. It explicitly does not build or invoke the replaced Rust
-monitor or planner. It does not yet establish Rust/Go field-level parity from
-production fixtures, consume the existing LaserStream W1 feed, choose a
-production cohort, add Render deployment, measure production latency, or prove
-all broader acceptance criteria below. Existing Rust services therefore remain
-unchanged and deployed until those gates pass.
+monitor or planner. It now pins one production-derived Rust economics fixture,
+but it does not yet establish complete optimizer-epoch, route fingerprint,
+requirements fingerprint, compiled plan, or queue-lifecycle parity; consume the
+existing LaserStream W1 feed; add Render deployment; measure production
+latency; or prove the broader acceptance criteria below. Existing Rust services
+therefore remain unchanged and deployed until those gates pass.
 
 ## Acceptance criteria
 
@@ -498,6 +505,63 @@ unchanged and deployed until those gates pass.
    complexity and must remain subordinate to the durable journal.
 7. Does the existing Rust planner remain as a read-only verifier after cutover,
    and for how long?
+
+## Production parity findings (2026-09-03)
+
+The authorized read-only production probe changed the phase-one assumptions and
+found concrete incompatibilities that block cutover:
+
+- The active Kamino catalog had 12 USDC reserves in 12 distinct markets and no
+  `(market, liquidity_mint)` group with more than one reserve. Requiring two
+  USDC reserves in one market made the original configuration impossible. The
+  Go identity checks now permit the real same-mint, cross-market route shape.
+- Production position metadata uses
+  `kamino_obligation_collateral_deposited_amount`, not the shorter provisional
+  `kamino_collateral_deposited` value. The loader now matches the Rust amount
+  evidence contract and preserves redeemable, collateral, and idle-liquidity
+  values.
+- The reserve monitor obtains the current slot duration from Kamino. A fixed
+  400 ms assumption produced materially wrong live APYs (about 486/489 bps
+  where the production monitor reported about 621/625 bps). With Kamino's then
+  current 314 ms duration, the Go shadow probe and monitor rounded to the same
+  APYs (626/623 bps for the probed accounts at adjacent confirmed reads).
+- The first Go projection priced the exact candidate amount instead of Rust's
+  four conservative capacity bands and published direct annual gain instead of
+  `floor(lost_yield_per_hour) * 8760`. Both calculations now mirror Rust. A
+  production-derived opportunity fixture pins 81/919 bps admitted APYs, an
+  838 bps edge, 6,675,120 annual gain micros, 346,686 expected net gain micros,
+  priority 48, and a 17,334 lamport fee cap.
+- Writable conflict keys and idle-liquidity execution-plan evidence now use the
+  existing Rust field shape.
+- Production had 2,035 active vaults, including 2,032 policies advertising
+  `same_mint_kamino`. A one-vault Go cutover therefore cannot stop the Rust
+  planner globally; it needs an explicit migrated-vault exclusion.
+
+The probe also confirmed that the current Go publication is **not a drop-in W3
+handoff yet**:
+
+1. Go persists a two-reserve object map under `market_state.reserves`, while
+   Rust deserializes a complete camelCase `ImmutableMarketEpoch` with a reserve
+   array, mint coverage, catalog identity, full economic fields, and
+   fingerprints. The retained Rust executor also compares the complete
+   same-mint material frontier; a two-reserve epoch cannot pass that check
+   against the production USDC universe.
+2. Go does not yet claim `revalidate` leases or reproduce route construction,
+   reusable ALT resolution, packet-size checks, simulation, current opportunity
+   fencing, market-epoch checks, route/requirements fingerprints, and atomic
+   `ready`/fused-execution transitions.
+3. Go's custom economic key and direct INSERT do not reproduce
+   `rebalance_opportunity_idempotency_key`, rediscovery attempt generations,
+   source-snapshot ownership validation, terminal no-effect retry behavior, or
+   all queue API supersession/lifetime rules.
+4. The current verifier ends at durable `revalidate`; it does not demonstrate
+   that a Go row can be parsed, revalidated, executed, confirmed, and reconciled
+   by retained production components.
+
+Consequently `KAMINO_FLEET_MODE=publish` must not be enabled in production. The
+next implementation gate is a cross-language fixture/verifier that feeds the
+Go epoch and opportunity through the real Rust parser/revalidator before any
+Go revalidator port or deployment wiring is accepted.
 
 ## Relevant code and deployment references
 
