@@ -2,9 +2,12 @@ package fleet
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -27,7 +30,8 @@ func fixtureProxy(t *testing.T, output string) *KLendProxy {
 	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	proxy, err := NewKLendProxy(path)
+	digest := sha256.Sum256([]byte(script))
+	proxy, err := NewKLendProxy(path, fmt.Sprintf("%x", digest))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +50,16 @@ func TestKLendProxyAcceptsRustReferenceOutput(t *testing.T) {
 		t.Fatal("incomplete route")
 	}
 }
+func TestKLendProxyRejectsUnpinnedBinary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewKLendProxy(path, "00"+strings.Repeat("0", 62)); err == nil {
+		t.Fatal("unpinned proxy binary accepted")
+	}
+}
+
 func TestKLendProxyRejectsMalformedOutput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad.json")
 	if err := os.WriteFile(path, []byte(`{"public":[],"protected":[]}`), 0600); err != nil {

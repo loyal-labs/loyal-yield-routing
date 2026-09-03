@@ -24,7 +24,7 @@ use std::{
 };
 
 #[derive(Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct Position {
     reserve: String,
     market: String,
@@ -47,7 +47,7 @@ struct Position {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Request {
     vault: String,
     source: Position,
@@ -71,10 +71,24 @@ struct OutputInstruction {
     accounts: Vec<Account>,
     data_hex: String,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProxyRequest {
+    schema_version: u8,
+    operation: String,
+    request: Request,
+}
 #[derive(Serialize)]
-struct Output {
+struct RouteOutput {
     public: Vec<OutputInstruction>,
     protected: Vec<OutputInstruction>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProxyOutput {
+    schema_version: u8,
+    operation: &'static str,
+    route: RouteOutput,
 }
 
 fn key(value: &str) -> Result<Pubkey, Box<dyn Error>> {
@@ -216,7 +230,18 @@ fn deposit_ix(vault: Pubkey, p: &Position, amount: u64) -> Result<Instruction, B
 fn run() -> Result<(), Box<dyn Error>> {
     let mut raw = String::new();
     io::stdin().read_to_string(&mut raw)?;
-    let mut r: Request = serde_json::from_str(&raw)?;
+    let input: ProxyRequest = serde_json::from_str(&raw)?;
+    if input.schema_version != 1 || input.operation != "buildSameMintRoute" {
+        return Err("unsupported KLend proxy schema or operation".into());
+    }
+    let mut r = input.request;
+    if r.withdraw_collateral_amount == 0
+        || r.deposit_liquidity_amount == 0
+        || r.source.liquidity_mint != r.target.liquidity_mint
+        || r.source.vault_liquidity_ata != r.target.vault_liquidity_ata
+    {
+        return Err("invalid same-mint route request".into());
+    }
     let vault = key(&r.vault)?;
     bind_pdas(&mut r.source, vault)?;
     bind_pdas(&mut r.target, vault)?;
@@ -248,7 +273,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         "kamino_refresh_obligation",
         refresh_obligation_ix(&r.target, true)?,
     ));
-    println!("{}", serde_json::to_string(&Output { public, protected })?);
+    println!(
+        "{}",
+        serde_json::to_string(&ProxyOutput {
+            schema_version: 1,
+            operation: "buildSameMintRoute",
+            route: RouteOutput { public, protected },
+        })?
+    );
     Ok(())
 }
 fn main() {

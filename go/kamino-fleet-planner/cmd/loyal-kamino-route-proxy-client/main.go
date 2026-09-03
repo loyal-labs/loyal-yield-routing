@@ -26,7 +26,7 @@ func main() {
 	if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
 		fatal(err)
 	}
-	proxy, err := fleet.NewKLendProxy(os.Getenv("KLEND_PROXY_PATH"))
+	proxy, err := fleet.NewKLendProxy(os.Getenv("KLEND_PROXY_PATH"), os.Getenv("KLEND_PROXY_SHA256"))
 	if err != nil {
 		fatal(err)
 	}

@@ -3,11 +3,13 @@ package fleet
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 )
 
@@ -56,17 +58,35 @@ type KaminoSameMintRoute struct {
 	Protected []RouteInstruction `json:"protected"`
 }
 
-type KLendProxy struct{ executable string }
+type KLendProxy struct{ executable, binarySHA256 string }
 
-func NewKLendProxy(executable string) (*KLendProxy, error) {
-	if executable == "" {
-		return nil, fmt.Errorf("KLend proxy executable is required")
+func NewKLendProxy(executable, expectedSHA256 string) (*KLendProxy, error) {
+	if executable == "" || len(expectedSHA256) != 64 || !isHex(expectedSHA256) {
+		return nil, fmt.Errorf("KLend proxy executable and SHA-256 are required")
 	}
 	resolved, err := exec.LookPath(executable)
 	if err != nil {
 		return nil, fmt.Errorf("find KLend proxy: %w", err)
 	}
-	return &KLendProxy{executable: resolved}, nil
+	info, err := os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&0111 == 0 {
+		return nil, fmt.Errorf("KLend proxy is not an executable regular file")
+	}
+	binary, err := os.ReadFile(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("read KLend proxy: %w", err)
+	}
+	actual := fmt.Sprintf("%x", sha256.Sum256(binary))
+	if actual != expectedSHA256 {
+		return nil, fmt.Errorf("KLend proxy binary SHA-256 mismatch")
+	}
+	return &KLendProxy{executable: resolved, binarySHA256: actual}, nil
+}
+func (p *KLendProxy) BinarySHA256() string {
+	if p == nil {
+		return ""
+	}
+	return p.binarySHA256
 }
 
 type proxyInstruction struct {
@@ -75,9 +95,19 @@ type proxyInstruction struct {
 	Accounts []InstructionAccount `json:"accounts"`
 	DataHex  string               `json:"dataHex"`
 }
-type proxyOutput struct {
+type proxyRequest struct {
+	SchemaVersion int                        `json:"schemaVersion"`
+	Operation     string                     `json:"operation"`
+	Request       KaminoSameMintRouteRequest `json:"request"`
+}
+type proxyRoute struct {
 	Public    []proxyInstruction `json:"public"`
 	Protected []proxyInstruction `json:"protected"`
+}
+type proxyOutput struct {
+	SchemaVersion int        `json:"schemaVersion"`
+	Operation     string     `json:"operation"`
+	Route         proxyRoute `json:"route"`
 }
 
 // Build asks the small Rust KLend proxy to invoke the official KLend builders.
@@ -90,11 +120,12 @@ func (p *KLendProxy) Build(ctx context.Context, request KaminoSameMintRouteReque
 	if request.WithdrawCollateralAmount == 0 || request.DepositLiquidityAmount == 0 || request.Source.LiquidityMint == "" || request.Source.LiquidityMint != request.Target.LiquidityMint || request.Source.VaultLiquidityATA != request.Target.VaultLiquidityATA {
 		return KaminoSameMintRoute{}, fmt.Errorf("invalid same-mint route request")
 	}
-	input, err := json.Marshal(request)
+	input, err := json.Marshal(proxyRequest{SchemaVersion: 1, Operation: "buildSameMintRoute", Request: request})
 	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
 	command := exec.CommandContext(ctx, p.executable)
+	command.Env = []string{"LANG=C", "LC_ALL=C"}
 	command.Stdin = bytes.NewReader(input)
 	stdout := &limitedBuffer{limit: 1 << 20}
 	stderr := &limitedBuffer{limit: 64 << 10}
@@ -128,11 +159,14 @@ func (p *KLendProxy) Build(ctx context.Context, request KaminoSameMintRouteReque
 		}
 		return out, nil
 	}
-	public, err := convert(raw.Public)
+	if raw.SchemaVersion != 1 || raw.Operation != "buildSameMintRoute" {
+		return KaminoSameMintRoute{}, fmt.Errorf("KLend proxy response contract drifted")
+	}
+	public, err := convert(raw.Route.Public)
 	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
-	protected, err := convert(raw.Protected)
+	protected, err := convert(raw.Route.Protected)
 	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}

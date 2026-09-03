@@ -62,7 +62,7 @@ The comparator requires exact equality for:
 The Go artifact additionally must prove that exactly one service process owns
 `opportunity_planner` and `route_revalidator` and that neither replaced Rust
 role was started. Planner-to-revalidator evidence remains typed and in-process.
-The only child-process exception is the pure `kamino-route-reference` KLend
+The only child-process exception is the pure `loyal-klend-proxy` KLend
 proxy: typed JSON over stdin/stdout, official KLend builders, a pinned binary
 digest, and no network, database, signer, or broadcast capability.
 

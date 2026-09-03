@@ -87,7 +87,7 @@ with the epoch gate it proves Rust-compatible optimizer-epoch JSON, but it does
 not prove route/requirements fingerprints, ALT/packet/simulation revalidation,
 or the `ready`/execution lifecycle.
 
-Dynamic route construction uses the small Rust `kamino-route-reference` proxy,
+Dynamic route construction uses the small Rust `loyal-klend-proxy` proxy,
 which calls the official KLend builders and returns typed instruction evidence.
 The boundary is checked with:
 

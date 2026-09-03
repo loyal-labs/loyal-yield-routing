@@ -387,7 +387,7 @@ The implementation must preserve or strengthen all of the following:
      execution-plan inputs.
 3. **Introduce the concrete confirmed in-memory state owner in shadow mode**
    - Prefer one Go service with direct `pgx`/RPC integration. The sole approved
-     child-process exception is the deterministic `kamino-route-reference` KLend
+     child-process exception is the deterministic `loyal-klend-proxy` KLend
      proxy: it accepts one typed JSON request on stdin and returns official
      KLend-built instructions on stdout. It has no RPC, database, signer, or
      broadcast capability, and its binary digest is deployment evidence.

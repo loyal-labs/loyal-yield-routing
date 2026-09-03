@@ -14,8 +14,8 @@ name = "kamino-market-epoch-reference"
 path = "src/bin/kamino-market-epoch-reference.rs"
 
 [[bin]]
-name = "kamino-route-reference"
-path = "src/bin/kamino-route-reference.rs"
+name = "loyal-klend-proxy"
+path = "src/bin/loyal-klend-proxy.rs"
 
 [[bin]]
 name = "fleet-health-projector"
