@@ -354,8 +354,8 @@ export const PARTNER_ROUTE = {
     {
       programId: address("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"),
       programDataAddress: address("2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T"),
-      deployedSlot: 383_815_455n,
-      executableSha256: "49cf27024d211ab827eadc11219a935abf9a5138ece1c0b0631c26790fd4f3c0",
+      deployedSlot: 443_245_754n,
+      executableSha256: "1c95bd7be140589d2aec38a85d7ecfe70ec69639277f622c898f821ab1d636fa",
     },
   ],
 } as const satisfies PartnerRouteSpec;
