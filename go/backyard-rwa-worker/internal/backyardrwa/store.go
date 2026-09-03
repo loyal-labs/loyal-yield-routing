@@ -684,6 +684,18 @@ func (d *Database) MarkPreBroadcastFailed(ctx context.Context, operationID strin
 	return d.transition(ctx, operationID, from, Failed, `, recovery_reason = $4`, reason)
 }
 
+// MarkExpiredAbsentFailed releases the one-nonterminal invariant only after
+// lifecycle recovery has independently proved both facts that make a landing
+// impossible: the persisted signature is absent and its blockhash is expired.
+// Found, ambiguous, or failed-on-chain signatures must remain recovery stops.
+func (d *Database) MarkExpiredAbsentFailed(ctx context.Context, operationID string, from OperationStatus) error {
+	if from != BroadcastIntent && from != Submitted {
+		return fmt.Errorf("expired-absent failure requires a submitted source")
+	}
+	return d.transition(ctx, operationID, from, Failed,
+		`, recovery_reason = 'signature_absent_after_blockhash_expiry'`)
+}
+
 func (d *Database) MarkSimulated(ctx context.Context, operationID string, simulation SimulationResult) error {
 	if simulation.Slot <= 0 {
 		return fmt.Errorf("invalid simulation evidence")
