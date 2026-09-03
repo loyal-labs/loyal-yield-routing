@@ -193,6 +193,24 @@ func TestRouteNeutralActionRequiresSelectedStrategy(t *testing.T) {
 	}
 }
 
+func TestPreparedDecisionEqualityUsesRefreshedIdentityButPinsSemantics(t *testing.T) {
+	prepared := Decision{Action: OpenRouteStep, Reason: "prime_collateral_ready", AmountRaw: 1_000_000, IdempotencyKey: "old-observation", StrategyKey: SelectedRouteID}
+	refreshed := prepared
+	refreshed.IdempotencyKey = "new-accrued-observation"
+	if !decisionsEqual(prepared, refreshed) {
+		t.Fatal("unchanged selected-lane execution semantics were rejected after a refreshed observation")
+	}
+	refreshed.StrategyKey = RouteID
+	if decisionsEqual(prepared, refreshed) {
+		t.Fatal("decision equality accepted a different runtime lane")
+	}
+	refreshed = prepared
+	refreshed.AmountRaw--
+	if decisionsEqual(prepared, refreshed) {
+		t.Fatal("decision equality accepted a changed amount")
+	}
+}
+
 func TestPhase2CutoverDrainChunksLegacyCollateral(t *testing.T) {
 	decision := Decide(Snapshot{
 		ObservationID: "cutover", Slot: 1, RouteKind: RouteKind, RouteLane: RouteID,

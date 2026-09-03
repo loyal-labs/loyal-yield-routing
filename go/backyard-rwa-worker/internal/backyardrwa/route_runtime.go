@@ -121,7 +121,11 @@ func fixedRouteAction(action Action, lane string) (Action, error) {
 }
 
 func decisionsEqual(left, right Decision) bool {
-	if left.AmountRaw != right.AmountRaw || left.Reason != right.Reason || left.IdempotencyKey != right.IdempotencyKey {
+	// Preparation re-observes confirmed state and journals that refreshed
+	// observation's idempotency identity. Accruing reserves may change the
+	// identity while leaving the exact executable decision unchanged, so this
+	// guard compares execution semantics rather than the superseded identity.
+	if left.AmountRaw != right.AmountRaw || left.Reason != right.Reason || left.StrategyKey != right.StrategyKey {
 		return false
 	}
 	leftAction, leftErr := fixedRouteAction(left.Action, left.StrategyKey)
