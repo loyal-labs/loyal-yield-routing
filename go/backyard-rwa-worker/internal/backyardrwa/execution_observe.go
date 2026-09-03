@@ -208,7 +208,7 @@ func ObserveConfirmedKaminoExecutionEvidence(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
-		route, err := manifest.activeRuntimeRoute()
+		route, err := runtimeRoute(decision.StrategyKey)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}

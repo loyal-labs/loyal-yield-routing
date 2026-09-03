@@ -29,7 +29,9 @@ func Decide(s Snapshot) Decision {
 			s.WithdrawalDemandRaw = 1
 		}
 	}
-	return decideFixed(s)
+	decision := decideFixed(s)
+	decision.StrategyKey = RouteID
+	return decision
 }
 
 func decideFixed(s Snapshot) Decision {
