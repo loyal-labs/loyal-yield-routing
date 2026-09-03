@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+func TestRestorePersistedDecisionIncludesImmutableAmountAndReason(t *testing.T) {
+	expected := []byte(`{"decision":{"amountRaw":896575,"reason":"withdrawal_repay_debt","strategyKey":"PRIME/USDC"}}`)
+	decision, err := restorePersistedDecision(expected, DeleverPrimeUSDCStep, "durable-key", RouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.AmountRaw != 896575 || decision.Reason != "withdrawal_repay_debt" || decision.StrategyKey != RouteID {
+		t.Fatalf("persisted decision was not restored exactly: %+v", decision)
+	}
+	if _, err := restorePersistedDecision(expected, DeleverPrimeUSDCStep, "durable-key", SelectedRouteID); err == nil {
+		t.Fatal("strategy drift between the envelope and operation row was accepted")
+	}
+}
+
 func TestEveryDecisionHasDurableInitialStatus(t *testing.T) {
 	held, reason := initialDecisionStatus(Decision{Action: Hold, Reason: "no_action"})
 	if held != Held || reason != nil || IsNonterminal(held) {

@@ -262,6 +262,26 @@ type decisionEvidence struct {
 	StrategyKey         string `json:"strategyKey"`
 }
 
+func restorePersistedDecision(expectedEffects []byte, action Action, idempotencyKey, strategyKey string) (Decision, error) {
+	var envelope struct {
+		Decision decisionEvidence `json:"decision"`
+	}
+	if err := json.Unmarshal(expectedEffects, &envelope); err != nil {
+		return Decision{}, fmt.Errorf("decode persisted decision envelope: %w", err)
+	}
+	if envelope.Decision.StrategyKey != strategyKey {
+		return Decision{}, fmt.Errorf("persisted decision strategy does not match operation row")
+	}
+	decision := Decision{
+		Action: action, IdempotencyKey: idempotencyKey, StrategyKey: strategyKey,
+		AmountRaw: envelope.Decision.AmountRaw, Reason: envelope.Decision.Reason,
+	}
+	if err := decision.Validate(); err != nil {
+		return Decision{}, err
+	}
+	return decision, nil
+}
+
 func newDecisionEvidence(observation Observation, decision Decision, manifestSHA256, policyCatalogSHA256 string) decisionEvidence {
 	return decisionEvidence{
 		AmountRaw: decision.AmountRaw, Reason: decision.Reason,
@@ -452,13 +472,12 @@ func (d *Database) LoadNonterminal(ctx context.Context, routeKey string) (*Persi
 		}
 		return nil, fmt.Errorf("load nonterminal operation: %w", err)
 	}
-	operation.Decision.Action = Action(action)
-	operation.Decision.IdempotencyKey = idempotencyKey
 	operation.StrategyKey = strategyKey
-	operation.Decision.StrategyKey = strategyKey
-	if err := operation.Decision.Validate(); err != nil {
-		return nil, fmt.Errorf("loaded nonterminal decision is invalid: %w", err)
+	decision, restoreErr := restorePersistedDecision(operation.ExpectedEffects, Action(action), idempotencyKey, strategyKey)
+	if restoreErr != nil {
+		return nil, fmt.Errorf("loaded nonterminal decision is invalid: %w", restoreErr)
 	}
+	operation.Decision = decision
 	return &operation, nil
 }
 
