@@ -52,6 +52,7 @@
     "verify:cross-mint:jupiter-mainnet": "CROSS_MINT_MAINNET_POLICY_EXECUTE=1 cargo test -p squads-test-harness --test jupiter_mainnet_cross_mint_policy generalized_policy_set_executes_and_reconciles_on_mainnet -- --ignored --nocapture",
     "verify:cross-mint:routes-mainnet": "CROSS_MINT_MAINNET_ROUTES_EXECUTE=1 cargo test -p squads-test-harness --test jupiter_mainnet_cross_mint_policy historical_withdraw_swap_deposit_routes_finalize_on_mainnet -- --ignored --nocapture",
     "verify:earn-max:production": "bun scripts/verify-multiply-production.ts",
+    "verify:multiply-guard-retirement": "bun scripts/verify-multiply-guard-retirement.ts",
     "verify:rwa-observation-v1": "bun scripts/verify-rwa-observation.ts",
     "backfill:rwa-observation-history": "bun scripts/backfill-rwa-observation-history.ts",
     "verify:rwa-observation-backfill-v1": "bun scripts/verify-rwa-observation-backfill.ts",

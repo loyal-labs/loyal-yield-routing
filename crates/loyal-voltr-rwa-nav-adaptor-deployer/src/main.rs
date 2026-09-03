@@ -42,12 +42,6 @@ const PACKET_SAFETY_MARGIN: usize = 32;
 const DEFAULT_LOADER_WRITE_WINDOW: usize = 8;
 const MAX_LOADER_WRITE_WINDOW: usize = 16;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Target {
-    Guard,
-    VoltrRwaNavAdaptor,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct ProgramSpec {
     schema: &'static str,
@@ -60,18 +54,6 @@ struct ProgramSpec {
     elf_len: usize,
     max_data_len: usize,
 }
-
-const GUARD_SPEC: ProgramSpec = ProgramSpec {
-    schema: "loyal-multiply-guard-deployer/v2",
-    barrier_schema: "loyal-multiply-guard-mainnet-barrier/v2",
-    buffer_domain: b"loyal-multiply-guard-upgradeable-buffer-v2\0",
-    program_id: "8moAa3vXstMPop9FtEnhTDRmcyo9HPn1CsywGMZ9K9n8",
-    artifact_filename: "loyal_multiply_guard_program.so",
-    keypair_filename: "loyal_multiply_guard_program-keypair.json",
-    elf_sha256: "60ba04c8ef75a4a67923db99464fdcd409ee9b1b9b0f6424cf67a7647f3a5a75",
-    elf_len: 194_416,
-    max_data_len: 194_416,
-};
 
 const ADAPTOR_SPEC: ProgramSpec = ProgramSpec {
     schema: "loyal-voltr-rwa-nav-adaptor-deployer/v2",
@@ -192,7 +174,6 @@ struct PublicError<'a> {
 struct Args {
     execute: bool,
     barrier_dir: Option<PathBuf>,
-    target: Target,
     write_window: usize,
 }
 
@@ -226,10 +207,7 @@ fn main() {
 
 fn run(rpc_url: &str) -> Result<DeploymentReport> {
     let args = parse_args()?;
-    let spec = match args.target {
-        Target::Guard => GUARD_SPEC,
-        Target::VoltrRwaNavAdaptor => ADAPTOR_SPEC,
-    };
+    let spec = ADAPTOR_SPEC;
     if rpc_url.trim().is_empty() {
         bail!("SOLANA_RPC_URL is required");
     }
@@ -681,7 +659,7 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
 fn parse_args() -> Result<Args> {
     let mut execute = false;
     let mut barrier_dir = None;
-    let mut target = None;
+    let mut target_seen = false;
     let mut write_window = env::var("LOYAL_LOADER_WRITE_WINDOW")
         .ok()
         .map(|value| parse_write_window(&value))
@@ -701,14 +679,13 @@ fn parse_args() -> Result<Args> {
                 }
                 barrier_dir = Some(PathBuf::from(value));
             }
-            "--target" if target.is_none() => {
-                target = Some(match arguments.next().as_deref() {
-                    Some("guard") => Target::Guard,
-                    Some("voltr-rwa-nav-adaptor") => Target::VoltrRwaNavAdaptor,
-                    Some(value) => bail!("unsupported --target {value}"),
-                    None => bail!("--target requires guard or voltr-rwa-nav-adaptor"),
-                });
-            }
+            "--target" if !target_seen => match arguments.next().as_deref() {
+                Some("voltr-rwa-nav-adaptor") => target_seen = true,
+                Some(value) => {
+                    bail!("unsupported --target {value}; only voltr-rwa-nav-adaptor remains")
+                }
+                None => bail!("--target requires voltr-rwa-nav-adaptor"),
+            },
             "--write-window" if !write_window_from_cli => {
                 let value = arguments
                     .next()
@@ -721,7 +698,7 @@ fn parse_args() -> Result<Args> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: loyal-multiply-guard-deployer --target guard|voltr-rwa-nav-adaptor [--execute --barrier-dir ABSOLUTE_PATH] [--write-window 1..={MAX_LOADER_WRITE_WINDOW}]\n\nDry-run is the default and does not load signer material. --execute additionally requires CONFIRM_MAINNET=1 and persists one-send barriers before any broadcast. Loader writes are sent in bounded batches (default {DEFAULT_LOADER_WRITE_WINDOW}; LOYAL_LOADER_WRITE_WINDOW may override it)."
+                    "Usage: loyal-voltr-rwa-nav-adaptor-deployer [--target voltr-rwa-nav-adaptor] [--execute --barrier-dir ABSOLUTE_PATH] [--write-window 1..={MAX_LOADER_WRITE_WINDOW}]\n\nDry-run is the default and does not load signer material. --execute additionally requires CONFIRM_MAINNET=1 and persists one-send barriers before any broadcast. Loader writes are sent in bounded batches (default {DEFAULT_LOADER_WRITE_WINDOW}; LOYAL_LOADER_WRITE_WINDOW may override it)."
                 );
                 process::exit(0);
             }
@@ -738,7 +715,6 @@ fn parse_args() -> Result<Args> {
     Ok(Args {
         execute,
         barrier_dir,
-        target: target.ok_or_else(|| anyhow!("--target is required"))?,
         write_window,
     })
 }
@@ -1718,7 +1694,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "loyal-multiply-guard-deployer-test-{}-{unique}",
+            "loyal-voltr-rwa-nav-adaptor-deployer-test-{}-{unique}",
             std::process::id()
         ));
         fs::create_dir(&directory).unwrap();
