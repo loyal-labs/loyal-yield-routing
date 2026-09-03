@@ -252,6 +252,41 @@ func TestMigration0072ScopesRouteNeutralActionsToSelectedStrategy(t *testing.T) 
 	}
 }
 
+func TestMigration0073PermitsOnlyDefinitivePostIntentFailure(t *testing.T) {
+	repositoryRoot := filepath.Join("..", "..", "..", "..")
+	migrationsRoot := filepath.Join(repositoryRoot, "crates", "loyal-yield-store", "migrations")
+	data, err := os.ReadFile(filepath.Join(migrationsRoot, "0073_backyard_rwa_expired_absent_failure.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := normalizeSQL(string(data))
+	for _, required := range []string{
+		"status = 'failed'", "broadcast_intent_at IS NULL",
+		"recovery_reason = 'signature_absent_after_blockhash_expiry'",
+		"signed_wire_sha256 IS NOT NULL", "transaction_signature IS NOT NULL",
+		"recent_blockhash IS NOT NULL", "last_valid_block_height IS NOT NULL",
+		"simulation_result IS NOT NULL", "broadcast_intent_at IS NOT NULL",
+		"confirmed_slot IS NULL",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("migration 0073 lacks %q", required)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(repositoryRoot, "crates", "loyal-yield-store", "src", "store.rs"),
+		filepath.Join(repositoryRoot, "crates", "loyal-yield-orchestrator", "src", "bin", "yield-migrations.rs"),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := normalizeSQL(string(data))
+		if !strings.Contains(source, "version: 73") || !strings.Contains(source, "0073_backyard_rwa_expired_absent_failure.sql") {
+			t.Fatalf("migration 0073 is not registered in %s", path)
+		}
+	}
+}
+
 func TestRouteLeaseDatabaseContractIsNonReentrantAndFenced(t *testing.T) {
 	acquire := normalizeSQL(AcquireRouteLeaseSQL)
 	for _, required := range []string{
