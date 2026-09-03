@@ -20,7 +20,9 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 			return Observation{}, JupiterExecutionEvidence{}, err
 		}
 		if !decisionsEqual(Decide(observation.Snapshot), decision) {
-			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("actionable decision changed before Jupiter construction")
+			return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(
+				fmt.Errorf("actionable decision changed before Jupiter construction"),
+			)
 		}
 		sourceMint, destinationMint, sourceATA, destinationATA, _ := jupiterEdgeForRoute(decision.Action, decision.StrategyKey)
 		policy := accountAt(accounts, binding.Policy)
