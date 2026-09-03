@@ -66,6 +66,7 @@ type JupiterSwapRequest struct {
 	Instruction             JupiterSwapInstruction
 	RecentBlockhash         string
 	LastValidBlockHeight    int64
+	RouteLane               string
 }
 
 type JupiterExecutionEvidence struct {
@@ -92,6 +93,23 @@ func productionJupiterClient() *jupiterClient {
 }
 
 func jupiterEdge(action Action) (sourceMint, destinationMint, sourceATA, destinationATA string, err error) {
+	return jupiterEdgeForRoute(action, RouteID)
+}
+
+func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMint, sourceATA, destinationATA string, err error) {
+	if lane == "" {
+		lane = RouteID
+	}
+	if lane == SelectedRouteID {
+		switch action {
+		case SwapStableToCollateralStep, SwapUSDCToPrimeStep:
+			return bridgeUSDC, mapleSyrupUSDCUSDC.Kamino.CollateralMint, bridgeSquadsATA, mapleSyrupUSDCUSDC.CollateralCustody, nil
+		case SwapCollateralToStableStep, SwapPrimeToUSDCStep:
+			return mapleSyrupUSDCUSDC.Kamino.CollateralMint, bridgeUSDC, mapleSyrupUSDCUSDC.CollateralCustody, bridgeSquadsATA, nil
+		default:
+			return "", "", "", "", fmt.Errorf("action %s is not an approved Maple Jupiter edge", action)
+		}
+	}
 	switch action {
 	case SwapUSDCToPrimeStep:
 		return bridgeUSDC, kaminoPrimeMint, bridgeSquadsATA, kaminoPrimeCustody, nil
@@ -103,10 +121,14 @@ func jupiterEdge(action Action) (sourceMint, destinationMint, sourceATA, destina
 }
 
 func (c *jupiterClient) FreshSwap(ctx context.Context, action Action, amount uint64) (JupiterQuote, JupiterSwapInstruction, error) {
+	return c.freshSwapForRoute(ctx, RouteID, action, amount)
+}
+
+func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, action Action, amount uint64) (JupiterQuote, JupiterSwapInstruction, error) {
 	if c == nil || amount == 0 {
 		return JupiterQuote{}, JupiterSwapInstruction{}, fmt.Errorf("invalid Jupiter quote request")
 	}
-	sourceMint, destinationMint, _, _, err := jupiterEdge(action)
+	sourceMint, destinationMint, _, _, err := jupiterEdgeForRoute(action, lane)
 	if err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
 	}
@@ -127,7 +149,7 @@ func (c *jupiterClient) FreshSwap(ctx context.Context, action Action, amount uin
 	if err := json.Unmarshal(quoteRaw, &quote); err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, fmt.Errorf("decode Jupiter quote: %w", err)
 	}
-	out, minimum, err := validateJupiterQuote(quote, action, amount)
+	out, minimum, err := validateJupiterQuoteForRoute(quote, action, amount, lane)
 	if err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
 	}
@@ -160,7 +182,7 @@ func (c *jupiterClient) FreshSwap(ctx context.Context, action Action, amount uin
 	if len(response.SetupInstructions) != 0 || len(response.OtherInstructions) != 0 || !jsonNull(response.CleanupInstruction) || !jsonNull(response.TokenLedgerInstruction) {
 		return JupiterQuote{}, JupiterSwapInstruction{}, fmt.Errorf("Jupiter route requires unapproved companion instructions")
 	}
-	if _, err := validateJupiterInstruction(response.SwapInstruction, action, amount, out, minimum); err != nil {
+	if _, err := validateJupiterInstructionForRoute(response.SwapInstruction, action, amount, out, minimum, lane); err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
 	}
 	if err := validateInstalledJupiterHeader(action, response.SwapInstruction); err != nil {
@@ -169,7 +191,7 @@ func (c *jupiterClient) FreshSwap(ctx context.Context, action Action, amount uin
 	return quote, response.SwapInstruction, nil
 }
 
-// Both installed Phase 1 policies accept only legacy 37-byte
+// The installed Phase 1 and selected Phase 2 policies accept only legacy 37-byte
 // SharedAccountsRoute data with the amount at offset 18. The forward policy
 // additionally selects one of its two exact route-plan-prefix constraints from
 // the manifest after the fresh instruction is built.
@@ -178,8 +200,9 @@ func validateInstalledJupiterHeader(action Action, instruction JupiterSwapInstru
 	if err != nil || len(data) < 8 || !bytes.Equal(data[:8], jupiterSharedAccountsRoute) {
 		return fmt.Errorf("installed Phase 1 swap policy does not authorize this Jupiter dialect")
 	}
-	if action != SwapUSDCToPrimeStep && action != SwapPrimeToUSDCStep || len(data) != 37 {
-		return fmt.Errorf("fresh Jupiter header does not match the installed Phase 1 policy offsets")
+	if action != SwapUSDCToPrimeStep && action != SwapPrimeToUSDCStep &&
+		action != SwapStableToCollateralStep && action != SwapCollateralToStableStep || len(data) != 37 {
+		return fmt.Errorf("fresh Jupiter header does not match the installed policy offsets")
 	}
 	return nil
 }
@@ -206,7 +229,11 @@ func jsonNull(value json.RawMessage) bool {
 }
 
 func validateJupiterQuote(quote JupiterQuote, action Action, amount uint64) (uint64, uint64, error) {
-	source, destination, _, _, err := jupiterEdge(action)
+	return validateJupiterQuoteForRoute(quote, action, amount, RouteID)
+}
+
+func validateJupiterQuoteForRoute(quote JupiterQuote, action Action, amount uint64, lane string) (uint64, uint64, error) {
+	source, destination, _, _, err := jupiterEdgeForRoute(action, lane)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -228,7 +255,11 @@ func validateJupiterQuote(quote JupiterQuote, action Action, amount uint64) (uin
 }
 
 func validateJupiterInstruction(value JupiterSwapInstruction, action Action, amount, out, minimum uint64) (compiledInstruction, error) {
-	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdge(action)
+	return validateJupiterInstructionForRoute(value, action, amount, out, minimum, RouteID)
+}
+
+func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Action, amount, out, minimum uint64, lane string) (compiledInstruction, error) {
+	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(action, lane)
 	if err != nil {
 		return compiledInstruction{}, err
 	}
@@ -307,7 +338,7 @@ func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, execu
 	if err != nil {
 		return SignedJupiterTransaction{}, fmt.Errorf("invalid confirmed blockhash")
 	}
-	inner, err := validateJupiterInstruction(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw)
+	inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
 	if err != nil {
 		return SignedJupiterTransaction{}, err
 	}
@@ -375,7 +406,7 @@ func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("Jupiter runtime dependencies are required")
 	}
-	if _, err := validateJupiterInstruction(evidence.Request.Instruction, evidence.Request.Action, evidence.Request.AmountRaw, evidence.Request.QuotedOutputRaw, evidence.Request.MinimumOutputRaw); err != nil {
+	if _, err := validateJupiterInstructionForRoute(evidence.Request.Instruction, evidence.Request.Action, evidence.Request.AmountRaw, evidence.Request.QuotedOutputRaw, evidence.Request.MinimumOutputRaw, evidence.Request.RouteLane); err != nil {
 		return err
 	}
 	effects, err := jsonMarshalExpectedEffects(evidence.ExpectedEffects)

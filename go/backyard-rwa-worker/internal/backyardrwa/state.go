@@ -15,10 +15,17 @@ const (
 	SwapPrimeToUSDCStep   Action = "SWAP_PRIME_TO_USDC_STEP"
 	OpenPrimeUSDCStep     Action = "OPEN_PRIME_USDC_STEP"
 	DeleverPrimeUSDCStep  Action = "DELEVER_PRIME_USDC_STEP"
-	StageSquadsToVoltr    Action = "STAGE_SQUADS_TO_VOLTR"
-	VoltrRestoreIdle      Action = "VOLTR_RESTORE_IDLE"
-	ReportNAV             Action = "REPORT_NAV"
-	HoldManualRecovery    Action = "HOLD_MANUAL_RECOVERY"
+	// The route-neutral actions are used only by the frozen Phase 2
+	// representative. The PRIME names above remain wire-compatible aliases for
+	// the Phase 1 route and are intentionally not removed.
+	SwapStableToCollateralStep Action = "SWAP_STABLE_TO_COLLATERAL_STEP"
+	SwapCollateralToStableStep Action = "SWAP_COLLATERAL_TO_STABLE_STEP"
+	OpenRouteStep              Action = "OPEN_ROUTE_STEP"
+	DeleverRouteStep           Action = "DELEVER_ROUTE_STEP"
+	StageSquadsToVoltr         Action = "STAGE_SQUADS_TO_VOLTR"
+	VoltrRestoreIdle           Action = "VOLTR_RESTORE_IDLE"
+	ReportNAV                  Action = "REPORT_NAV"
+	HoldManualRecovery         Action = "HOLD_MANUAL_RECOVERY"
 )
 
 type OperationStatus string
@@ -39,15 +46,22 @@ const (
 )
 
 type Snapshot struct {
-	ObservationID              string
-	Slot                       int64
-	RouteKind                  string
-	ManualReason               string
-	Nonterminal                OperationStatus
-	HasAmbiguousSubmission     bool
-	WithdrawalDemandRaw        int64
-	SquadsIdleRaw              int64
-	PrimeIdleRaw               int64
+	ObservationID          string
+	Slot                   int64
+	RouteKind              string
+	ManualReason           string
+	Nonterminal            OperationStatus
+	HasAmbiguousSubmission bool
+	WithdrawalDemandRaw    int64
+	SquadsIdleRaw          int64
+	PrimeIdleRaw           int64
+	// CollateralIdleRaw is the selected lane's idle collateral amount. For the
+	// PRIME route it is deliberately left unset and PrimeIdleRaw remains the
+	// compatibility field.
+	CollateralIdleRaw          int64
+	RouteLane                  string
+	StrategyKey                string
+	CutoverDrain               bool
 	VoltrStrategyIdleRaw       int64
 	VoltrIdleRaw               int64
 	HasPosition                bool
@@ -80,16 +94,26 @@ type Decision struct {
 	Reason         string
 	AmountRaw      int64
 	IdempotencyKey string
+	StrategyKey    string
 }
 
 func (d Decision) Validate() error {
 	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 {
 		return fmt.Errorf("incomplete decision")
 	}
+	neutral := d.Action == SwapStableToCollateralStep || d.Action == SwapCollateralToStableStep || d.Action == OpenRouteStep || d.Action == DeleverRouteStep
+	if neutral && d.StrategyKey != SelectedRouteID {
+		return fmt.Errorf("route-neutral action requires the selected Phase 2 strategy")
+	}
+	if d.StrategyKey != "" && d.StrategyKey != RouteID && d.StrategyKey != PhaseOneLaneID && d.StrategyKey != SelectedRouteID && d.Action != HoldManualRecovery {
+		return fmt.Errorf("decision strategy is not installed")
+	}
 	switch d.Action {
 	case Hold, RecoverTransaction, VoltrAllocateToSquads, SwapUSDCToPrimeStep,
 		SwapPrimeToUSDCStep, OpenPrimeUSDCStep,
-		DeleverPrimeUSDCStep, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV,
+		DeleverPrimeUSDCStep, SwapStableToCollateralStep,
+		SwapCollateralToStableStep, OpenRouteStep, DeleverRouteStep,
+		StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV,
 		HoldManualRecovery:
 		return nil
 	default:
@@ -106,10 +130,11 @@ type Observation struct {
 
 // Operation is the durable journal identity created before transaction work.
 type Operation struct {
-	ID       string
-	RouteKey string
-	Cycle    int64
-	Decision Decision
+	ID          string
+	RouteKey    string
+	Cycle       int64
+	StrategyKey string
+	Decision    Decision
 }
 
 // PersistedOperation is the durable execution state loaded before any new

@@ -61,8 +61,13 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if err != nil {
 		return Observation{}, nil, err
 	}
+	selectedRoute, err := manifest.activeRuntimeRoute()
+	if err != nil {
+		return Observation{}, nil, err
+	}
 	addresses := routeFixedAddresses(manifest)
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
+		route := selectedRoute
 		beforeSlot, beforeReceipts, err := runtime.receipts(ctx, minimumSlot)
 		if err != nil {
 			return Observation{}, nil, err
@@ -75,7 +80,25 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if err != nil {
 			return Observation{}, nil, err
 		}
-		position, err := observePrimeUSDCFromFixedAccounts(ctx, runtime.accounts, slot, accounts)
+		cutoverDrain := false
+		if route.Lane == SelectedRouteID {
+			legacyPosition, legacyErr := observePrimeUSDCFromFixedAccounts(ctx, runtime.accounts, slot, accounts)
+			if legacyErr != nil {
+				return Observation{}, nil, fmt.Errorf("verify legacy PRIME cutover state: %w", legacyErr)
+			}
+			legacyCustody, legacyErr := decodePinnedPrime(accountAt(accounts, kaminoPrimeCustody))
+			if legacyErr != nil {
+				return Observation{}, nil, fmt.Errorf("verify legacy PRIME custody: %w", legacyErr)
+			}
+			if legacyPrimeExposure(legacyPosition, legacyCustody.Raw) {
+				route, legacyErr = runtimeRoute(RouteID)
+				if legacyErr != nil {
+					return Observation{}, nil, legacyErr
+				}
+				cutoverDrain = true
+			}
+		}
+		position, err := observeKaminoFromFixedAccounts(ctx, runtime.accounts, slot, accounts, route.Kamino)
 		if err != nil {
 			return Observation{}, nil, err
 		}
@@ -91,15 +114,23 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			minimumSlot = maxSlot(beforeSlot, maxSlot(slot, afterSlot))
 			continue
 		}
-		navAccounts, err := selectRouteNAVAccounts(accounts)
+		navAccounts, err := selectRouteNAVAccountsForRoute(accounts, route)
 		if err != nil {
 			return Observation{}, nil, err
 		}
-		nav, err := ComputeRouteNAV(slot, navAccounts, manifest, nil)
+		nav, err := ComputeRouteNAVForRoute(slot, navAccounts, manifest, nil, route)
 		if err != nil {
 			return Observation{}, nil, err
 		}
-		prime, err := decodePinnedPrime(accountAt(accounts, kaminoPrimeCustody))
+		collateralMint, err := decodeBase58PublicKey(route.Kamino.CollateralMint)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		authority, err := decodeBase58PublicKey(bridgeVault)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		prime, err := DecodeTokenCustody(accountAt(accounts, route.CollateralCustody).Owner, accountAt(accounts, route.CollateralCustody).Data, collateralMint, authority)
 		if err != nil {
 			return Observation{}, nil, err
 		}
@@ -124,7 +155,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if idle.Raw > math.MaxInt64 || strategy.Raw > math.MaxInt64 || squads.Raw > math.MaxInt64 {
 			return Observation{}, nil, fmt.Errorf("bridge custody exceeds signed decision range")
 		}
-		ready, exit := manifest.livePrimeUSDCPolicyReadiness(accounts)
+		ready, exit := liveRuntimePolicyReadiness(manifest, route, accounts)
 		ltv, err := observedLTVBPS(position)
 		if err != nil {
 			return Observation{}, nil, err
@@ -132,6 +163,10 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		stateHash := sha256.Sum256([]byte(fmt.Sprintf("%s|voltr-idle:%d|strategy-idle:%d|squads-idle:%d", beforeFingerprint, idle.Raw, strategy.Raw, squads.Raw)))
 		base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: beforeDemand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw)}}
 		base.Snapshot.PrimeIdleRaw = int64(prime.Raw)
+		base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
+		base.Snapshot.RouteLane = route.Lane
+		base.Snapshot.StrategyKey = route.Lane
+		base.Snapshot.CutoverDrain = cutoverDrain
 		base.Snapshot.HasPosition = position.HasPosition
 		base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
 		base.Snapshot.PositionDebtRaw = int64(position.DebtRaw)
@@ -164,17 +199,37 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("confirmed receipt fence did not stabilize around fixed account batch"))
 }
 
+func legacyPrimeExposure(position KaminoPosition, custodyRaw uint64) bool {
+	return custodyRaw != 0 || position.HasPosition || position.CollateralDepositedRaw != 0 || position.DebtRaw != 0
+}
+
 func stableReceiptFence(beforeSlot, fixedSlot, afterSlot, beforeDemand, afterDemand int64, beforeFingerprint, afterFingerprint string) bool {
 	return beforeSlot > 0 && beforeSlot <= fixedSlot && fixedSlot <= afterSlot && beforeDemand == afterDemand && beforeFingerprint != "" && beforeFingerprint == afterFingerprint
 }
 
 func routeFixedAddresses(manifest RouteManifest) []string {
-	addressSet := map[string]struct{}{reportTicketPDA: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}}
-	for _, address := range pinnedRouteNAVAddresses() {
+	route, err := manifest.activeRuntimeRoute()
+	if err != nil {
+		return nil
+	}
+	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
+	if route.Lane == SelectedRouteID {
+		addressSet[mapleSyrupUSDCUSDC.CollateralLiquiditySupply] = struct{}{}
+		addressSet[mapleSyrupUSDCUSDC.DebtLiquiditySupply] = struct{}{}
+	}
+	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
 		addressSet[address] = struct{}{}
 	}
 	for address := range manifest.requiredPrimeUSDCPolicyHashes() {
 		addressSet[address] = struct{}{}
+	}
+	for _, address := range route.PolicyAccounts {
+		addressSet[address] = struct{}{}
+	}
+	if route.Lane == SelectedRouteID {
+		for _, address := range mapleKaminoPolicyAccounts() {
+			addressSet[address] = struct{}{}
+		}
 	}
 	addresses := make([]string, 0, len(addressSet))
 	for address := range addressSet {
@@ -184,13 +239,38 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	return addresses
 }
 
+func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount) (bool, bool) {
+	if route.Lane == RouteID {
+		return manifest.livePrimeUSDCPolicyReadiness(accounts)
+	}
+	for action, address := range route.PolicyAccounts {
+		account := accountAt(accounts, address)
+		if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != route.PolicyHashes[action] {
+			return false, false
+		}
+	}
+	for address, hash := range mapleKaminoPolicyHashes() {
+		account := accountAt(accounts, address)
+		if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+			return false, false
+		}
+	}
+	complete := len(route.PolicyAccounts) == 4 && len(mapleKaminoPolicyHashes()) == 4
+	return complete, complete
+}
+
 func observePrimeUSDCFromFixedAccounts(ctx context.Context, accountsReader func(context.Context, []string, int64) (int64, []ConfirmedAccount, error), slot int64, accounts []ConfirmedAccount) (KaminoPosition, error) {
 	config, err := pinnedKaminoObservationConfig()
 	if err != nil {
 		return KaminoPosition{}, err
 	}
+	return observeKaminoFromFixedAccounts(ctx, accountsReader, slot, accounts, config)
+}
+
+func observeKaminoFromFixedAccounts(ctx context.Context, accountsReader func(context.Context, []string, int64) (int64, []ConfirmedAccount, error), slot int64, accounts []ConfirmedAccount, config KaminoObservationConfig) (KaminoPosition, error) {
 	obligationAccount := accountAt(accounts, config.Obligation)
 	obligation := decodedKaminoObligation{}
+	var err error
 	if obligationAccount.Lamports != 0 {
 		obligation, err = decodeKaminoObligation(obligationAccount, config)
 		if err != nil {
