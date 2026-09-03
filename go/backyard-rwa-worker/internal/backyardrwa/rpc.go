@@ -267,7 +267,11 @@ func (c *RPCClient) SimulateSignedTransaction(ctx context.Context, signedWire []
 		return SimulationResult{}, err
 	}
 	if result.Context.Slot <= 0 || (len(result.Value.Err) > 0 && string(result.Value.Err) != "null") {
-		return SimulationResult{}, fmt.Errorf("signed transaction simulation failed")
+		lastLog := ""
+		if len(result.Value.Logs) > 0 {
+			lastLog = result.Value.Logs[len(result.Value.Logs)-1]
+		}
+		return SimulationResult{}, fmt.Errorf("signed transaction simulation failed: slot=%d err=%s last_log=%q", result.Context.Slot, string(result.Value.Err), lastLog)
 	}
 	return SimulationResult{Slot: result.Context.Slot, UnitsConsumed: result.Value.UnitsConsumed, Logs: append([]string(nil), result.Value.Logs...)}, nil
 }
