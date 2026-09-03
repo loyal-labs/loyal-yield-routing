@@ -84,6 +84,13 @@ func decideFixed(s Snapshot) Decision {
 	if s.PostMutationNAVRequired {
 		return decision(ReportNAV, "post_mutation_nav_due", 0)
 	}
+	// A legacy position can sit at its maximum reviewed LTV, where withdrawing
+	// collateral first is impossible. During the one-time Phase 2 cutover, use
+	// newly deposited Voltr idle as the repayment buffer before attempting any
+	// collateral release. Normal withdrawals retain their existing ordering.
+	if s.CutoverDrain && s.PositionDebtRaw > 0 && s.SquadsIdleRaw == 0 && s.VoltrIdleRaw > 0 {
+		return decision(VoltrAllocateToSquads, "phase2_cutover_fund_repayment", min(s.PositionDebtRaw, s.VoltrIdleRaw))
+	}
 	if s.WithdrawalDemandRaw > 0 {
 		shortfall := s.WithdrawalDemandRaw - s.VoltrIdleRaw
 		if shortfall <= 0 {

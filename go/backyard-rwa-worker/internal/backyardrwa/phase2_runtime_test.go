@@ -140,3 +140,19 @@ func TestPhase2CutoverDrainChunksLegacyCollateral(t *testing.T) {
 		t.Fatalf("partial legacy withdrawal is wrong: leg=%v receipt=%d collateral=%d err=%v", leg, receiptRaw, collateralRaw, err)
 	}
 }
+
+func TestPhase2CutoverFundsMaxLTVRepaymentBeforeCollateralRelease(t *testing.T) {
+	decision := Decide(Snapshot{
+		ObservationID: "cutover-repayment", Slot: 1, RouteKind: RouteKind, RouteLane: RouteID,
+		Fresh: true, CutoverDrain: true, HasPosition: true,
+		VoltrIdleRaw:            1_000_000,
+		PositionCollateralRaw:   1_695_770,
+		PositionDebtRaw:         896_575,
+		StrategyNAVRaw:          1_793_206,
+		LTVBPS:                  4_999,
+		LiquidationThresholdBPS: 9_000,
+	})
+	if decision.Action != VoltrAllocateToSquads || decision.Reason != "phase2_cutover_fund_repayment" || decision.AmountRaw != 896_575 {
+		t.Fatalf("max-LTV cutover did not fund repayment first: %+v", decision)
+	}
+}
