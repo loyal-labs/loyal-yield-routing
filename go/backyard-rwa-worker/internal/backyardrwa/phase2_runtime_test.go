@@ -1,6 +1,8 @@
 package backyardrwa
 
 import (
+	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"testing"
 )
@@ -88,6 +90,30 @@ func TestPhase2MapleKaminoPacketUsesPinnedGraph(t *testing.T) {
 	}
 	if _, leg, err := kaminoRouteInstruction(request, SelectedRouteID); err != nil || leg != kaminoLegDeposit {
 		t.Fatalf("Maple packet did not validate as deposit: %v, %v", err, leg)
+	}
+}
+
+func TestPhase2MapleSignedKaminoWirePassesPersistenceValidation(t *testing.T) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
+	signed, err := buildAndSignKaminoPrimeUSDCTransactionForDelegate(request, key, delegate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := signed.BuildResult(123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := result.validateForDelegate(delegate); err != nil {
+		t.Fatalf("exact Maple Kamino wire was rejected before persistence: %v", err)
 	}
 }
 
