@@ -1,4 +1,152 @@
-# Backyard Voltr + Squads RWA worker: verifier-first delivery plan
+# Backyard Voltr + Squads RWA worker: close-out contract
+
+Status: approved close-out contract v12.
+
+This path is the single definition of done for closing Backyard Phase 1 and the
+Phase 2 policy-capability installation. It supersedes the historical v11 launch
+contract retained below the `Historical v11 contract` marker. Conditions already
+proven by immutable lifecycle, deployment, or installation evidence are Appendix
+A inputs, not stateful replay gates. Only the conditions in this v12 section are
+active.
+
+## V12 outcome and sole verifier
+
+Close the implementation with one read-only verifier that proves:
+
+1. deployed identities still match the proven Backyard system;
+2. current Squads policies are the set-exact expansion of the approved 11 lanes,
+   44 Kamino operations, and 52 swap edges;
+3. no historical signed transaction is replayed as a current simulation;
+4. the deployed Go worker remains the sole fixed PRIME/USDC writer with no stuck
+   operation; and
+5. contract, manifest, evidence index, and partner handoff accurately describe
+   the deployed system and its exclusions.
+
+The sole verifier remains:
+
+```sh
+op run --env-file=.env.1password -- \
+  bun run --cwd tools/backyard-voltr verify:rwa-multiply-custom-lifecycle
+```
+
+It is read-only and emits one structured `PASS`, `FAIL`, or `BLOCKED`. Run the
+full verifier once at baseline and once at completion; use affected fast checks
+between them.
+
+## V12 standing authorization envelope
+
+Cluster: mainnet-beta. Signer/payer: the existing Backyard operational signer already used in this thread.
+
+Approved surface: the deployed Voltr vault + Loyal adaptor, the bound Squads smart account and its installed policy catalog (all currently installed seeds), the deployed Go worker, Kamino and Jupiter programs on the already-proven routes, and the existing Render services.
+
+Allowed action classes without asking: all read-only and simulation-only operations; signed-unsent simulation batches; policy installs/retires that stay within the approved catalog design by forward rollover; lifecycle transactions (deposit, swap, open/close/unwind, NAV report, withdrawal return) up to 10 USDC per transaction and 100 USDC cumulative; program upgrades of the adaptor and worker to code committed in this repo; deploys via the batched confirmed-commitment uploader.
+
+Expiry: when this goal closes.
+
+Stop and ask ONLY for: a new signer, cluster, program, or destination outside this surface; any authority or upgrade-authority change; raising these caps; a destructive close or rent reclaim of a live account; or any change that weakens the verifier contract. Everything else: act, log the transaction summary, continue.
+
+The envelope authorizes implementation; it does not require a transaction.
+Prefer current readback and retained valid evidence.
+
+## V12 remaining required conditions
+
+### C01 — identity and single-writer reconciliation
+
+At confirmed commitment, independently read the Voltr vault, strategy/adaptor
+binding, adaptor config and report ticket, Squads Settings, and vault PDA. Match
+the canonical manifest and programs. Verify the immutable Go worker image is
+live, owns the active lease, has no competing writer, and has no operation stuck
+beyond the bounded reconciliation window.
+
+### C02 — set-exact current policy catalog
+
+Read finalized Squads Settings once to freeze the seed boundary, then read and
+decode every installed catalog policy. Expand physical constraints into semantic
+entries and deterministically emit expected and actual policy counts/accounts,
+11 lanes, 44 Kamino operations, 52 swap edges, missing/unexpected/duplicate
+entries, unexpected authority reachable by the runtime delegate, and temporary
+or diagnostic accounts. Actual authority must be bijective with the approved
+catalog. The installed generation is 70 policies at forward seeds 67–136 unless
+current authoritative readback proves a later approved rollover. Do not reinstall
+a matching policy merely to prove it.
+
+### C03 — truthful evidence semantics
+
+Historical signed-unsent artifacts are archival evidence. Verify pinned hashes,
+Ed25519 signatures, `broadcast:false`, recorded creation-time results, signature
+absence, and current deployed identities. Never submit an expired historical wire
+to `simulateTransaction` or call `BlockhashNotFound` execution proof.
+
+If an identity changed, build one fresh current-state wire for the invalidated
+equivalence class. At most one representative lane per market family may run
+live; after one member has existing live proof, the remaining class terminates at
+batched signed-unsent simulation with signature verification. No per-lane live
+matrix is a close-out gate.
+
+### C04 — deployed contract and handoff agree
+
+The closed action vocabulary includes deployed bridge, NAV, PRIME/USDC
+entry/exit, and swap-step actions, including `SWAP_USDC_TO_PRIME_STEP` and
+`SWAP_PRIME_TO_USDC_STEP`. The handoff must state that manifest `ready` means
+the fixed Phase 1 executor is enabled; unresolved/empty Phase 2 manifest fields
+must not be presented as evidence of Phase 2 authority. The evidence index must
+not cite obsolete commands or seeds.
+
+One checked-in handoff states the vault, adaptor, strategy, Squads, worker, and
+deployment identities; deposit/allocation/HOLD/withdrawal/600-second claim/NAV
+behavior; fixed PRIME/USDC runtime scope; Phase 2 policy-only capability;
+monitoring and recovery; and explicit exclusions for optimization, route
+switching, consumer Earn Max, and onchain NAV computation.
+
+### C05 — standing regression coverage and retirement
+
+Promote stable source/byte, action-schema, manifest consistency, catalog-set,
+packet-limit, forbidden-runtime, and fail-closed checks into normal CI or repo
+tests. Live RPC/database/Render/lifecycle reconciliation stays out of unit tests.
+At close, record promoted checks, retired historical replay checks, and retained
+evidence pointers. The close-out wrapper may remain only as an explicit
+operational audit, never a hidden permanent CI requirement.
+
+## V12 rules and verdict
+
+- Current authoritative state wins over manifests, saved JSON, SDK decoders, and
+  summaries.
+- Confirmed is the progress gate; finalized is reserved for current Settings/seed
+  and terminal custody reconciliation.
+- Reuse an unchanged canonical trace when program/deployment identity, SDK/source,
+  instruction graph, identities, policy bytes, Settings/seed, and relevant state
+  still match.
+- Any required policy mutation uses forward rollover; never recreate in place or
+  cycle a policy merely for testing.
+- No historical stateful replay, per-lane live matrix, optimizer, new route
+  executor, consumer Earn Max, UI expansion, adaptor redesign, or unrelated infra.
+- Log each consequential in-envelope action with non-secret identity, amount,
+  signature/deploy identity, commitment, and reconciled result.
+- `PASS`: C01–C05 all hold, Appendix A evidence remains identity-valid, and no
+  forbidden work was added.
+- `FAIL`: name the first false condition and authoritative evidence.
+- `BLOCKED`: name the unavailable dependency and exact resume condition.
+
+## Appendix A — already proven; pointers, not replay gates
+
+- Real confirmed Phase 1 lifecycle, conservation, utilization HOLD, and NAV:
+  `docs/evidence/backyard-rwa-go/lifecycle-v1.json`.
+- Adaptor v2 byte proof and creation-time mutation simulations:
+  `docs/evidence/backyard-rwa-go/adaptor-v2-ticket-simulation-v5.json`.
+- Phase 2 resolver/compiler, packet measurements, four grouped positives, seven
+  negatives, and finalized installation: `docs/evidence/backyard-rwa-go/phase2/`.
+- Installed generation: 70 policies, seeds 67–136, semantically 44 Kamino
+  operations and 52 directed swap edges.
+- Go worker image `sha-bdae0957e394727dcdaf449775659bd8e92d3727`, digest
+  `sha256:b93a5e260fa31116d71e487d5f06e72989614a8accd03b018da6a57f34293a99`.
+- Retained read-only Backyard admin macroview V07 evidence.
+
+An Appendix A condition returns to the active set only if an invalidation key in
+the v12 rules changes or cannot be matched to current state.
+
+---
+
+## Historical v11 contract — non-normative record
 
 Status: approved Phase 1 implementation contract v11.
 
