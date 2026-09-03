@@ -1,83 +1,67 @@
 # Multiply Guard Retirement Close-out Contract
 
-Status: active authoritative contract
+Status: approved close-out contract v2
 
-This document is the sole completion contract for retiring the obsolete Multiply guard and registry layer. It supersedes `docs/plans/guard-registry-decommission-plan.md`, which predates the completed Phase 2 policy installation and must not be used as an execution plan.
+This document is the sole completion contract for retiring the obsolete Multiply guard and registry execution layer. It supersedes `docs/plans/guard-registry-decommission-plan.md` and v1 of this contract.
+
+## User-approved scope change
+
+On 2026-09-03 the user explicitly removed refunding and closing every residual guard-owned account from the required outcome. The exact non-runnable loader-v3 shell and four pinned registry/staging accounts are accepted inert residue. Their rent remains stranded but no user assets are at risk.
+
+This scope change removes the loader-v4 activation gate from completion. It does not reinterpret the prior result: v1 was correctly blocked while full recovery was mandatory.
 
 ## Objective
 
-Retire the exact obsolete guard program shell and its four residual registry/staging accounts on mainnet-beta, reconcile every refunded lamport to the existing authority, remove the guard-specific deployment surface from the repository, and revalidate the already-live PRIME/USDC Phase 1 path without replaying identity-valid historical evidence.
+Retire the obsolete guard/registry/hook execution surface while preserving the live NAV adaptor, generic Squads hook ABI, current hookless PRIME/USDC Phase 1 route, and installed Phase 2 policy catalog. Prove the accepted residue is still exactly frozen and cannot execute because its ProgramData account is absent.
 
-The live NAV adaptor is required by Phase 1 and remains deployed and unchanged. Generic Squads `pre_hook` and `post_hook` wire fields also remain because they are part of the upstream ABI; only the retired guard-specific consumers and tooling leave scope.
+## Scope and authority
 
-## Standing authorization envelope
+This close-out is read-only on mainnet-beta. It authorizes no transaction, deployment, policy mutation, account closure, refund, authority change, user-asset movement, or Phase 2 runtime change.
 
-This goal authorizes only the following mainnet-beta state changes:
-
-1. At program id `8moAa3vXstMPop9FtEnhTDRmcyo9HPn1CsywGMZ9K9n8`, migrate the remaining legacy loader-v3 shell to loader-v4, fund/resize it only as required by the loader, deploy the fixed close-only recovery artifact, retract it, and close the program shell.
-2. Through that fixed recovery artifact, close only these exact guard-owned accounts:
-   - `3GZpBrXGjCKELRwoK5VERYZeyKPJn7WiJAoUvkTFibU4`
-   - `J1VEo6YTmMNfRRrZGjpkU8ZF8z2t3x5xHQySqYa2kMN2`
-   - `4bSQzxkXKmezQTUyvNkMMgthsF4Wdc1J7eZr64QbxjAp`
-   - `GdMMMAQCGihyN6tTbJiXjt8zZVmbmhNeS4yCRSXhJsnT`
-3. Send every reclaimed lamport only to `BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ`, which must also match the injected `SOLANA_TESTING_PK` signer.
-
-Expected gross recovery is exactly `136743120` lamports: `135601680` from the four data accounts plus `1141440` from the program shell. Network fees and temporary loader funding must be itemized separately and reconciled from finalized balances. The envelope expires when this goal reaches PASS or is closed.
-
-No user asset, token, deposit, withdrawal, swap, borrow, repay, or other value-bearing lifecycle transaction is authorized by this envelope. The Phase 1 check therefore uses the known-route fast path: current live identities and readbacks, retained finalized lifecycle evidence whose invalidation keys remain unchanged, and the current close-out verifier. A future live replay requires a separately declared per-transaction and cumulative value cap.
+The live NAV adaptor is required by Phase 1 and remains deployed and unchanged. Generic Squads `pre_hook` and `post_hook` fields remain because they are part of the upstream wire ABI; the active route continues to encode both as `None`.
 
 ## Hard constraints
 
-- Network is mainnet-beta, proven by genesis hash before any send.
-- The four targets must match their pinned owners, lengths, lamports, and SHA-256 data hashes before recovery.
-- The already-closed programdata account and hook policies at seeds 15 and 16 must remain absent.
-- No account outside the exact five-address closure set may be closed.
+- RPC must identify Solana mainnet-beta.
+- Guard ProgramData `Hke6Nd6i5PkAEpGZGbjLf7sEc1TM48NGGjTjRQhnqX1G` remains absent.
+- Retired hook policies `633UHSciFmPCr2dysjEEHq1pG1kx1E3Kk6W9d9JQSL5g` and `GUGvmxsqAvneNJoxx1FJJPpou9hckGhkiwSQse7ijqzx` remain absent.
+- The accepted program residue is exactly program id `8moAa3vXstMPop9FtEnhTDRmcyo9HPn1CsywGMZ9K9n8`, owned by loader-v3, executable-flagged but non-runnable without ProgramData, 36 bytes, `1141440` lamports, data SHA-256 `5cbbdaf8e06df9ad669fc80fa2da8f31e1aa61ad0df620a94725cb042b2b5c85`.
+- The four accepted guard-owned accounts retain their pinned owners, lengths, lamports, and SHA-256 data hashes recorded in `docs/evidence/multiply-guard-retirement/blocked-loader-v4-baseline-v1.json`. Any unexplained mutation or additional guard-owned account is outside this acceptance and fails closed.
+- The repository contains no guard program, registry/recovery runtime, retirement sender, or guard deployment target.
+- Preserve the NAV-adaptor deployer and generic Squads hook ABI.
 - Do not alter Squads settings, membership, threshold, timelock, policy seed, installed Phase 1/Phase 2 policies, vault state, NAV adaptor code/config/report ticket, worker deployment, or database state.
-- Do not install, recreate, or renumber policies.
+- Do not install, recreate, close, or renumber policies.
 - Do not implement Phase 2 route selection, switching, or optimization in this goal.
-- Preserve generic Squads hook fields and their `None` values where required by its ABI.
-- Every broadcast stage requires simulation or loader preflight, a durable before-send barrier, one send, confirmed/finalized signature reconciliation, and an after-send barrier. Never blindly resend an ambiguous stage.
-- Never persist a private key or signed wire payload in evidence, logs, or Git.
+- Retained lifecycle and simulation artifacts are evidence, not replay gates.
 
 ## Completion conditions
 
-The sole verifier must report `PASS` only when all conditions hold:
+The sole verifier returns `PASS` only when all conditions hold:
 
-| ID | Remaining condition |
+| ID | Condition |
 | --- | --- |
-| G01 | The guard program id, its programdata account, the four residual guard-owned accounts, and the two retired hook policies are absent at confirmed commitment. |
-| G02 | Finalized evidence proves the exact four-account refund, program-shell refund, all stage signatures/slots/fees, the authority balance equation, and no closure outside the allowlist. |
-| G03 | The repository contains no live guard/registry/recovery runtime or guard-specific deploy target; the NAV-adaptor deploy path and generic Squads hook ABI remain intact. |
-| G04 | The current v12 RWA verifier passes against live state, proving the deployed NAV adaptor, exact hookless Phase 1/Phase 2 policy catalog, PRIME/USDC worker, and retained identity-valid Phase 1 lifecycle evidence. |
-| G05 | Scoped checks pass and the branch contains only the intended retirement/evidence changes. |
+| G01 | Mainnet readback exactly matches the accepted inert residue: pinned shell and four accounts present and unchanged; ProgramData and retired hook policies absent. |
+| G02 | The repository has no guard/registry/recovery execution surface or guard deploy target; the NAV-adaptor deployer and generic Squads hook ABI remain intact. |
+| G03 | The current v12 RWA verifier passes against live state, proving the deployed NAV adaptor, hookless Phase 1 path, exact 70-policy Phase 2 catalog, PRIME/USDC worker, and identity-valid retained lifecycle evidence. |
+| G04 | The v2 contract and sanitized residue baseline are present and exact; the verifier is read-only and reports no broadcast. |
 
-The sole command, run from the repository root with the existing 1Password FIFO mounted, is:
+The sole command from the repository root is:
 
 ```sh
 op run --env-file=.env.1password -- bun run verify:multiply-guard-retirement
 ```
 
-The verifier returns one structured `PASS`, `FAIL`, or `BLOCKED` result. Any failed condition includes a concrete resume condition.
-
-## Current external gate
-
-The authoritative baseline found the exact frozen prestate, but loader-v4 feature account `2aQJYqER2aKyb3cZw22v4SL2xMX7vwXBRWfvS4pTrtED` is absent on mainnet-beta. A signed-unsent migration simulation failed at the loader with `InstructionError(0, InvalidInstructionData)`. No transaction was broadcast.
-
-The sanitized baseline is retained at `docs/evidence/multiply-guard-retirement/blocked-loader-v4-baseline-v1.json`.
-
-Loader-v3 cannot safely recover this state: its close instruction requires the missing ProgramData account, while deploy requires an uninitialized Program account. The remaining shell is already initialized. Therefore G01 and its dependent G02 are externally blocked until loader-v4 activates; the exact account prestate must be revalidated before resuming.
+Verdict semantics are `PASS`, `FAIL` with the first false condition and resume action, or `BLOCKED` only when required read-only evidence is unavailable.
 
 ## Proven evidence appendix
 
-These facts are retained evidence and are not replay gates:
-
-- PR #177 merged at commit `3375d954d76d4214456894494dadb52ec75c60ef` with the v12 RWA close-out verifier passing.
+- The v2 sole verifier passed at confirmed slot `443879573` with `broadcast: false`, exact four-account owner enumeration, and no blocker.
+- The v1 verifier baseline at slot `443879084` returned `BLOCKED` only because total recovery was then mandatory; G03 and G04 passed.
+- PR #178 merged at `cc19ca4d23556423a539cbd6d9595d9ef0c5936e`, removing the guard deploy target and retaining an adaptor-only deployer.
 - Phase 1 completed one finalized and reconciled PRIME/USDC lifecycle with the live NAV adaptor.
-- Phase 2 policy installation completed with 70 exact policies at seeds 67-136, covering 11 market lanes, 44 Kamino operations, and 52 Jupiter edges.
-- The guard programdata account and hook policies at seeds 15 and 16 were already closed before this contract began.
-
-Those proofs remain valid only while their current verifier invalidation keys remain unchanged.
+- Phase 2 has 70 exact policies at seeds 67-136, covering 11 market lanes, 44 Kamino operations, and 52 Jupiter edges.
+- No recovery transaction was broadcast and no user asset moved.
 
 ## Post-PASS next milestone
 
-After PASS and close-out, the next independent Phase 2 goal is one deterministic Go runtime transition from PRIME/USDC to one safe representative alternative, including entry, HOLD, unwind, and return. Route selection and optimization remain later work.
+The next independent Phase 2 goal is one deterministic Go runtime transition from PRIME/USDC to one safe representative alternative, including entry, HOLD, unwind, and return. Route selection and optimization remain later work.
