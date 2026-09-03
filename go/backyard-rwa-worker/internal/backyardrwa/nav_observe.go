@@ -102,7 +102,11 @@ func decodeStrategyReceipt(account ConfirmedAccount) (StrategyReceipt, error) {
 }
 
 func decodeRouteNAVCustodies(accounts []ConfirmedAccount) (RouteNAVCustodies, error) {
-	return decodeRouteNAVCustodiesForRoute(accounts, RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve}, CollateralCustody: kaminoPrimeCustody})
+	route, err := runtimeRoute(RouteID)
+	if err != nil {
+		return RouteNAVCustodies{}, fmt.Errorf("load pinned PRIME route: %w", err)
+	}
+	return decodeRouteNAVCustodiesForRoute(accounts, route)
 }
 
 func decodeRouteNAVCustodiesForRoute(accounts []ConfirmedAccount, route RuntimeRoute) (RouteNAVCustodies, error) {

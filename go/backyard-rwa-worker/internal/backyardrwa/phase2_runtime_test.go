@@ -1,6 +1,8 @@
 package backyardrwa
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 	snapshot := Snapshot{
@@ -20,6 +22,32 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 	decision = Decide(snapshot)
 	if decision.Action != OpenRouteStep || decision.AmountRaw != 25 {
 		t.Fatalf("selected lane did not open from collateral custody: %+v", decision)
+	}
+}
+
+func TestPhase2PinnedRuntimeAddressesAreCanonicalBase58(t *testing.T) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	addresses := routeFixedAddresses(manifest)
+	for _, lane := range []string{RouteID, SelectedRouteID} {
+		route, err := runtimeRoute(lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		addresses = append(addresses,
+			route.Kamino.Program, route.Kamino.Market, route.Kamino.Obligation,
+			route.Kamino.CollateralReserve, route.Kamino.DebtReserve,
+			route.Kamino.Vault, route.Kamino.MarketAuthority,
+			route.Kamino.CollateralMint, route.Kamino.DebtMint,
+			route.CollateralCustody, route.DebtCustody,
+		)
+	}
+	for _, address := range addresses {
+		if _, err := decodeBase58PublicKey(address); err != nil {
+			t.Errorf("non-canonical pinned runtime address %q: %v", address, err)
+		}
 	}
 }
 
