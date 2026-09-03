@@ -50,22 +50,30 @@ type RouteNAVSnapshot struct {
 }
 
 func pinnedRouteNAVAddresses() []string {
+	return pinnedRouteNAVAddressesForRoute(RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve}, CollateralCustody: kaminoPrimeCustody})
+}
+
+func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
 	return []string{
 		bridgeStrategy,
 		bridgeStrategyReceipt,
 		bridgeIdleATA,
 		bridgeStrategyATA,
 		bridgeSquadsATA,
-		kaminoPrimeCustody,
-		kaminoPrimeUSDCObligation,
-		kaminoCollateralReserve,
-		kaminoDebtReserve,
+		route.CollateralCustody,
+		route.Kamino.Obligation,
+		route.Kamino.CollateralReserve,
+		route.Kamino.DebtReserve,
 	}
 }
 
 func selectRouteNAVAccounts(accounts []ConfirmedAccount) ([]ConfirmedAccount, error) {
-	selected := make([]ConfirmedAccount, 0, len(pinnedRouteNAVAddresses()))
-	for _, address := range pinnedRouteNAVAddresses() {
+	return selectRouteNAVAccountsForRoute(accounts, RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve}, CollateralCustody: kaminoPrimeCustody})
+}
+
+func selectRouteNAVAccountsForRoute(accounts []ConfirmedAccount, route RuntimeRoute) ([]ConfirmedAccount, error) {
+	selected := make([]ConfirmedAccount, 0, len(pinnedRouteNAVAddressesForRoute(route)))
+	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
 		account := accountAt(accounts, address)
 		if account.Address == "" {
 			return nil, fmt.Errorf("NAV account %s is absent", address)
@@ -94,6 +102,10 @@ func decodeStrategyReceipt(account ConfirmedAccount) (StrategyReceipt, error) {
 }
 
 func decodeRouteNAVCustodies(accounts []ConfirmedAccount) (RouteNAVCustodies, error) {
+	return decodeRouteNAVCustodiesForRoute(accounts, RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve}, CollateralCustody: kaminoPrimeCustody})
+}
+
+func decodeRouteNAVCustodiesForRoute(accounts []ConfirmedAccount, route RuntimeRoute) (RouteNAVCustodies, error) {
 	idle, err := decodePinnedUSDC(accountAt(accounts, bridgeIdleATA), bridgeIdleAuthority)
 	if err != nil {
 		return RouteNAVCustodies{}, fmt.Errorf("decode Voltr idle custody: %w", err)
@@ -106,9 +118,17 @@ func decodeRouteNAVCustodies(accounts []ConfirmedAccount) (RouteNAVCustodies, er
 	if err != nil {
 		return RouteNAVCustodies{}, fmt.Errorf("decode Squads USDC custody: %w", err)
 	}
-	squadsPRIME, err := decodePinnedPrime(accountAt(accounts, kaminoPrimeCustody))
+	collateralMint, err := decodeBase58PublicKey(route.Kamino.CollateralMint)
 	if err != nil {
-		return RouteNAVCustodies{}, fmt.Errorf("decode Squads PRIME custody: %w", err)
+		return RouteNAVCustodies{}, err
+	}
+	authority, err := decodeBase58PublicKey(bridgeVault)
+	if err != nil {
+		return RouteNAVCustodies{}, err
+	}
+	squadsPRIME, err := DecodeTokenCustody(accountAt(accounts, route.CollateralCustody).Owner, accountAt(accounts, route.CollateralCustody).Data, collateralMint, authority)
+	if err != nil {
+		return RouteNAVCustodies{}, fmt.Errorf("decode route collateral custody: %w", err)
 	}
 	return RouteNAVCustodies{
 		VoltrIdleRaw: idle.Raw, StrategyUSDCraw: strategy.Raw,
@@ -137,10 +157,15 @@ func valueInDebtRaw(raw uint64, tokenPriceSF, debtPriceSF [16]byte, liability bo
 }
 
 func navInputFingerprint(slot int64, accounts []ConfirmedAccount, custodies RouteNAVCustodies) (string, error) {
+	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve}, CollateralCustody: kaminoPrimeCustody}
+	return navInputFingerprintForRoute(slot, accounts, custodies, route)
+}
+
+func navInputFingerprintForRoute(slot int64, accounts []ConfirmedAccount, custodies RouteNAVCustodies, route RuntimeRoute) (string, error) {
 	if slot <= 0 {
 		return "", fmt.Errorf("NAV slot is invalid")
 	}
-	if len(accounts) != len(pinnedRouteNAVAddresses()) {
+	if len(accounts) != len(pinnedRouteNAVAddressesForRoute(route)) {
 		return "", fmt.Errorf("NAV account namespace contains unsupported custody")
 	}
 	byAddress := make(map[string]ConfirmedAccount, len(accounts))
@@ -153,8 +178,8 @@ func navInputFingerprint(slot int64, accounts []ConfirmedAccount, custodies Rout
 		}
 		byAddress[account.Address] = account
 	}
-	parts := make([]string, 0, len(pinnedRouteNAVAddresses())+1)
-	for _, address := range pinnedRouteNAVAddresses() {
+	parts := make([]string, 0, len(pinnedRouteNAVAddressesForRoute(route))+1)
+	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
 		account, ok := byAddress[address]
 		if !ok {
 			return "", fmt.Errorf("NAV account %s is absent", address)
@@ -175,11 +200,20 @@ func navInputFingerprint(slot int64, accounts []ConfirmedAccount, custodies Rout
 // expected poststate; all identity, receipt, reserve, and obligation bytes are
 // still independently decoded from the confirmed batch.
 func ComputeRouteNAV(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies) (RouteNAVSnapshot, error) {
+	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint, Market: kaminoMarket, Program: kaminoProgram, Vault: bridgeVault}, CollateralCustody: kaminoPrimeCustody}
+	return computeRouteNAVForRoute(slot, accounts, manifest, override, route)
+}
+
+func ComputeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, route RuntimeRoute) (RouteNAVSnapshot, error) {
+	return computeRouteNAVForRoute(slot, accounts, manifest, override, route)
+}
+
+func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, route RuntimeRoute) (RouteNAVSnapshot, error) {
 	if slot <= 0 || !sha256Pattern.MatchString(manifest.SHA256) || manifest.PolicyCatalog.SHA256 == nil ||
 		!sha256Pattern.MatchString(*manifest.PolicyCatalog.SHA256) {
 		return RouteNAVSnapshot{}, fmt.Errorf("NAV manifest or slot is invalid")
 	}
-	if len(accounts) != len(pinnedRouteNAVAddresses()) {
+	if len(accounts) != len(pinnedRouteNAVAddressesForRoute(route)) {
 		return RouteNAVSnapshot{}, fmt.Errorf("NAV account namespace contains unsupported custody")
 	}
 	if _, err := decodeObservedAdaptorConfig(accountAt(accounts, bridgeStrategy)); err != nil {
@@ -192,7 +226,7 @@ func ComputeRouteNAV(slot int64, accounts []ConfirmedAccount, manifest RouteMani
 	if receipt.PositionValueRaw > bridgeMaxNAV {
 		return RouteNAVSnapshot{}, fmt.Errorf("prior Voltr NAV state is incoherent")
 	}
-	custodies, err := decodeRouteNAVCustodies(accounts)
+	custodies, err := decodeRouteNAVCustodiesForRoute(accounts, route)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
@@ -200,10 +234,7 @@ func ComputeRouteNAV(slot int64, accounts []ConfirmedAccount, manifest RouteMani
 		custodies = *override
 	}
 
-	kaminoConfig, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return RouteNAVSnapshot{}, err
-	}
+	kaminoConfig := route.Kamino
 	obligationAccount := accountAt(accounts, kaminoConfig.Obligation)
 	obligation := decodedKaminoObligation{}
 	if obligationAccount.Lamports != 0 {
@@ -248,7 +279,7 @@ func ComputeRouteNAV(slot int64, accounts []ConfirmedAccount, manifest RouteMani
 			return RouteNAVSnapshot{}, fmt.Errorf("NAV component exceeds signed range")
 		}
 	}
-	fingerprint, err := navInputFingerprint(slot, accounts, custodies)
+	fingerprint, err := navInputFingerprintForRoute(slot, accounts, custodies, route)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
@@ -258,7 +289,7 @@ func ComputeRouteNAV(slot int64, accounts []ConfirmedAccount, manifest RouteMani
 	}, []NAVComponent{
 		{Account: bridgeStrategyATA, Owner: bridgeStrategyAuth, Raw: int64(custodies.StrategyUSDCraw), Slot: slot, Known: true},
 		{Account: bridgeSquadsATA, Owner: bridgeVault, Raw: int64(custodies.SquadsUSDCraw), Slot: slot, Known: true},
-		{Account: kaminoPrimeCustody, Owner: bridgeVault, Raw: int64(primeIdleValue), Slot: slot, Known: true},
+		{Account: route.CollateralCustody, Owner: bridgeVault, Raw: int64(primeIdleValue), Slot: slot, Known: true},
 		{Account: kaminoConfig.Obligation + ":collateral", Owner: kaminoProgram, Raw: int64(collateralValue), Slot: slot, Known: true},
 		{Account: kaminoConfig.Obligation + ":debt", Owner: kaminoProgram, Raw: int64(debtValue), Slot: slot, Known: true, Liability: true},
 	})
@@ -292,6 +323,10 @@ func ObserveConfirmedRouteNAV(ctx context.Context, reader ConfirmedAccountReader
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
+	// This public Phase 1 helper remains pinned to the legacy PRIME fixture.
+	// The serialized worker uses ObserveConfirmedRouteSnapshot, which resolves
+	// its manifest-frozen lane through the route-aware path.
+	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint, Market: kaminoMarket, Program: kaminoProgram, Vault: bridgeVault}, CollateralCustody: kaminoPrimeCustody}
 	addresses := pinnedRouteNAVAddresses()
 	slot, accounts, err := reader.GetMultipleAccounts(ctx, addresses, minimumSlot)
 	if err != nil {
@@ -300,5 +335,5 @@ func ObserveConfirmedRouteNAV(ctx context.Context, reader ConfirmedAccountReader
 	if slot < minimumSlot {
 		return RouteNAVSnapshot{}, fmt.Errorf("confirmed NAV response regressed below its minimum slot")
 	}
-	return ComputeRouteNAV(slot, accounts, manifest, nil)
+	return ComputeRouteNAVForRoute(slot, accounts, manifest, nil, route)
 }

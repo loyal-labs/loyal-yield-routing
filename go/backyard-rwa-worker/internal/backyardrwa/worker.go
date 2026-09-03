@@ -156,13 +156,19 @@ func (w *Worker) Tick(ctx context.Context) error {
 	var kaminoEvidence KaminoExecutionEvidence
 	var jupiterEvidence JupiterExecutionEvidence
 	preparedDecision := decision
-	switch decision.Action {
+	executionDecision, err := fixedRouteAction(decision.Action, decision.StrategyKey)
+	if err != nil {
+		return err
+	}
+	wireDecision := decision
+	wireDecision.Action = executionDecision
+	switch executionDecision {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		observation, bridgeEvidence, err = w.runtime.prepareBridge(ctx, w.manifest, decision)
+		observation, bridgeEvidence, err = w.runtime.prepareBridge(ctx, w.manifest, wireDecision)
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep:
-		observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, decision)
+		observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, wireDecision)
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep:
-		observation, jupiterEvidence, err = w.runtime.prepareJupiter(ctx, w.manifest, decision)
+		observation, jupiterEvidence, err = w.runtime.prepareJupiter(ctx, w.manifest, wireDecision)
 	default:
 		return fmt.Errorf("action %s is not dispatchable", decision.Action)
 	}
@@ -173,7 +179,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if err := decision.Validate(); err != nil {
 		return err
 	}
-	if decision != preparedDecision {
+	if !decisionsEqual(decision, preparedDecision) || !decisionsEqual(Decide(observation.Snapshot), preparedDecision) {
 		return fmt.Errorf("prepared evidence does not match the refreshed decision")
 	}
 	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash)
@@ -183,7 +189,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if record.Status != Decided || record.OperationID == "" {
 		return fmt.Errorf("actionable decision was not durably recorded as decided")
 	}
-	switch decision.Action {
+	switch executionDecision {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 		return w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep:

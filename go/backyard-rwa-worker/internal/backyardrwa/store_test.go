@@ -205,6 +205,39 @@ func TestMigration0071UpgradesApplied0070ForPhaseOne(t *testing.T) {
 	}
 }
 
+func TestMigration0072ScopesRouteNeutralActionsToSelectedStrategy(t *testing.T) {
+	repositoryRoot := filepath.Join("..", "..", "..", "..")
+	migrationsRoot := filepath.Join(repositoryRoot, "crates", "loyal-yield-store", "migrations")
+	data, err := os.ReadFile(filepath.Join(migrationsRoot, "0072_backyard_rwa_phase2_route_neutral_actions.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := normalizeSQL(string(data))
+	for _, required := range []string{
+		"'SWAP_STABLE_TO_COLLATERAL_STEP'", "'SWAP_COLLATERAL_TO_STABLE_STEP'",
+		"'OPEN_ROUTE_STEP'", "'DELEVER_ROUTE_STEP'",
+		"multiply_operations_backyard_phase2_strategy_scope",
+		"strategy_key = 'Maple/syrupUSDC/USDC'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("migration 0072 lacks %s", required)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(repositoryRoot, "crates", "loyal-yield-store", "src", "store.rs"),
+		filepath.Join(repositoryRoot, "crates", "loyal-yield-orchestrator", "src", "bin", "yield-migrations.rs"),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := normalizeSQL(string(data))
+		if !strings.Contains(source, "version: 72") || !strings.Contains(source, "0072_backyard_rwa_phase2_route_neutral_actions.sql") {
+			t.Fatalf("migration 0072 is not registered in %s", path)
+		}
+	}
+}
+
 func TestRouteLeaseDatabaseContractIsNonReentrantAndFenced(t *testing.T) {
 	acquire := normalizeSQL(AcquireRouteLeaseSQL)
 	for _, required := range []string{

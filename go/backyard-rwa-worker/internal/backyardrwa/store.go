@@ -17,7 +17,7 @@ import (
 
 // OperationInsert is the only execution journal shape. The SQL uses the existing
 // multiply_operations table; callers must insert it before any transaction work.
-const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, status, idempotency_key, expected_effects, recovery_reason) VALUES ($1, $2, $3, 'backyard_rwa_v1', $4, $5, $6, $7, $8)`
+const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, status, idempotency_key, strategy_key, expected_effects, recovery_reason) VALUES ($1, $2, $3, 'backyard_rwa_v1', $4, $5, $6, $7, $8, $9)`
 
 const RouteStateForUpdate = `SELECT state_version, state FROM loyal_yield.multiply_route_states WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() FOR UPDATE`
 
@@ -31,7 +31,7 @@ const AssertRouteLeaseSQL = `SELECT lease_expires_at FROM loyal_yield.multiply_r
 
 const OperationRouteForLeaseSQL = `SELECT operation.route_key FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key = operation.route_key WHERE operation.operation_id = $1 AND route.lease_owner = $2 AND route.fencing_token = $3 AND route.lease_expires_at > clock_timestamp() FOR UPDATE OF route`
 
-const PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP') FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
+const PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
 
 // LatestDecisionEpochSQL advances after a fully reconciled mutation or an
 // explicitly terminal pre-broadcast failure. A confirmed report-only operation
@@ -41,7 +41,7 @@ const PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN ('SWAP_USD
 // without making ambiguous money movement retryable.
 const LatestDecisionEpochSQL = `SELECT COALESCE((SELECT operation_id FROM loyal_yield.multiply_operations WHERE route_key = $1 AND (status IN ('reconciled','failed') OR (status = 'manual_recovery' AND action = 'REPORT_NAV')) ORDER BY updated_at DESC, operation_id DESC LIMIT 1), 'genesis')`
 
-const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP'))`
+const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP'))`
 
 const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7, updated_at = now() WHERE operation_id = $1 AND status = 'simulated'`
 
@@ -259,6 +259,7 @@ type decisionEvidence struct {
 	ObservationSlot     int64  `json:"observationSlot"`
 	ManifestSHA256      string `json:"manifestSha256"`
 	PolicyCatalogSHA256 string `json:"policyCatalogSha256"`
+	StrategyKey         string `json:"strategyKey"`
 }
 
 func newDecisionEvidence(observation Observation, decision Decision, manifestSHA256, policyCatalogSHA256 string) decisionEvidence {
@@ -266,6 +267,7 @@ func newDecisionEvidence(observation Observation, decision Decision, manifestSHA
 		AmountRaw: decision.AmountRaw, Reason: decision.Reason,
 		ObservationID: observation.Snapshot.ObservationID, ObservationSlot: observation.Snapshot.Slot,
 		ManifestSHA256: manifestSHA256, PolicyCatalogSHA256: policyCatalogSHA256,
+		StrategyKey: decision.StrategyKey,
 	}
 }
 
@@ -291,6 +293,9 @@ func (d *Database) RecordDecision(
 	manifestSHA256 string,
 	policyCatalogSHA256 string,
 ) (DecisionRecord, error) {
+	if err := decision.Validate(); err != nil {
+		return DecisionRecord{}, fmt.Errorf("validate decision before persistence: %w", err)
+	}
 	if d == nil || d.pool == nil || routeKey == "" {
 		return DecisionRecord{}, fmt.Errorf("database is not configured")
 	}
@@ -402,7 +407,11 @@ func (d *Database) RecordDecision(
 	idHash := sha256.Sum256([]byte(persistedIdempotencyKey))
 	operationID := hex.EncodeToString(idHash[:])
 	status, recoveryReason := initialDecisionStatus(decision)
-	if _, err := tx.Exec(ctx, OperationInsert, operationID, routeKey, cycle, string(decision.Action), string(status), persistedIdempotencyKey, string(expected), recoveryReason); err != nil {
+	strategyKey := decision.StrategyKey
+	if strategyKey == "" {
+		strategyKey = RouteID
+	}
+	if _, err := tx.Exec(ctx, OperationInsert, operationID, routeKey, cycle, string(decision.Action), string(status), persistedIdempotencyKey, strategyKey, string(expected), recoveryReason); err != nil {
 		return DecisionRecord{}, fmt.Errorf("insert decision: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -420,7 +429,7 @@ func (d *Database) LoadNonterminal(ctx context.Context, routeKey string) (*Persi
 	if err := d.AssertRouteLease(ctx, routeKey); err != nil {
 		return nil, err
 	}
-	row := d.pool.QueryRow(ctx, `SELECT operation_id, route_key, cycle, action, status, idempotency_key,
+	row := d.pool.QueryRow(ctx, `SELECT operation_id, route_key, cycle, action, status, idempotency_key, COALESCE(strategy_key, ''),
 		expected_effects, COALESCE(signed_wire, ''::bytea), COALESCE(signed_wire_sha256, ''), COALESCE(transaction_signature, ''),
 		COALESCE(recent_blockhash, ''), COALESCE(last_valid_block_height, 0),
 		broadcast_intent_at IS NOT NULL, COALESCE(confirmed_slot, 0)
@@ -430,9 +439,10 @@ func (d *Database) LoadNonterminal(ctx context.Context, routeKey string) (*Persi
 	var operation PersistedOperation
 	var action string
 	var idempotencyKey string
+	var strategyKey string
 	if err := row.Scan(
 		&operation.ID, &operation.RouteKey, &operation.Cycle, &action, &operation.Status,
-		&idempotencyKey, &operation.ExpectedEffects, &operation.SignedWire, &operation.SignedWireSHA256,
+		&idempotencyKey, &strategyKey, &operation.ExpectedEffects, &operation.SignedWire, &operation.SignedWireSHA256,
 		&operation.TransactionSignature, &operation.RecentBlockhash,
 		&operation.LastValidBlockHeight, &operation.BroadcastIntentRecorded,
 		&operation.ConfirmedSlot,
@@ -444,6 +454,11 @@ func (d *Database) LoadNonterminal(ctx context.Context, routeKey string) (*Persi
 	}
 	operation.Decision.Action = Action(action)
 	operation.Decision.IdempotencyKey = idempotencyKey
+	operation.StrategyKey = strategyKey
+	operation.Decision.StrategyKey = strategyKey
+	if err := operation.Decision.Validate(); err != nil {
+		return nil, fmt.Errorf("loaded nonterminal decision is invalid: %w", err)
+	}
 	return &operation, nil
 }
 
@@ -583,7 +598,10 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 	var strategyKey *string
 	var forecastAPYBPS *int64
 	if snapshot.HasPosition {
-		value := "PRIME/USDC"
+		value := snapshot.StrategyKey
+		if value == "" {
+			value = RouteID
+		}
 		strategyKey = &value
 	} else {
 		zero := int64(0)
@@ -594,7 +612,7 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 		snapshot.PositionCollateralRaw, snapshot.PositionDebtRaw, snapshot.StrategyNAVRaw,
 		snapshot.PositionCollateralValueRaw, snapshot.PositionDebtValueRaw, snapshot.LTVBPS, forecastAPYBPS,
 	); err != nil {
-		return fmt.Errorf("persist Phase 1 position snapshot: %w", err)
+		return fmt.Errorf("persist route position snapshot: %w", err)
 	}
 	return tx.Commit(ctx)
 }

@@ -35,14 +35,14 @@ var (
 
 type KaminoObservationConfig struct {
 	Program, Market, Obligation, CollateralReserve, DebtReserve string
-	Vault, CollateralMint, DebtMint                             string
+	Vault, MarketAuthority, CollateralMint, DebtMint            string
 }
 
 func pinnedKaminoObservationConfig() (KaminoObservationConfig, error) {
 	return KaminoObservationConfig{
 		Program: kaminoProgram, Market: kaminoMarket, Obligation: kaminoPrimeUSDCObligation,
 		CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve,
-		Vault: bridgeVault, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint,
+		Vault: bridgeVault, MarketAuthority: kaminoPrimeMarketAuthority, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint,
 	}, nil
 }
 

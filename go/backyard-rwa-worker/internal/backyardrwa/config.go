@@ -9,12 +9,21 @@ import (
 )
 
 const (
-	RouteKind               = "backyard_rwa_v1"
-	RouteID                 = "PRIME/USDC"
-	OneNonterminalInvariant = "one_nonterminal_operation_per_route"
-	FixedCollateral         = "PRIME"
-	FixedDebt               = "USDC"
-	TargetLTVBPS            = int64(5000)
+	RouteKind      = "backyard_rwa_v1"
+	RouteID        = "PRIME/USDC"
+	PhaseOneLaneID = "Prime/PRIME/USDC"
+	// Phase 2 freezes one additional installed representative. This is a
+	// compile-time lane, never caller input or runtime route selection.
+	SelectedRouteID   = "Maple/syrupUSDC/USDC"
+	RuntimeRouteCount = 2
+	// The Phase 2 authorization envelope permits at most 1 USDC-equivalent per
+	// money-moving transaction. Selected-lane decisions are clamped before they
+	// are journaled, quoted, signed, or broadcast.
+	Phase2TransactionCapRaw int64 = 1_000_000
+	OneNonterminalInvariant       = "one_nonterminal_operation_per_route"
+	FixedCollateral               = "PRIME"
+	FixedDebt                     = "USDC"
+	TargetLTVBPS                  = int64(5000)
 )
 
 var renderServiceIDPattern = regexp.MustCompile(`^srv-[a-z0-9]+$`)

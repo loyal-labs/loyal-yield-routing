@@ -29,7 +29,7 @@ func IsNonterminal(status OperationStatus) bool {
 // observed receipt cancels an OPEN operation in every state where no send could
 // yet have happened. Submitted/ambiguous work is recovered by signature only.
 func WithdrawalPreemptsOpenLoop(action Action, status OperationStatus, withdrawalDemandRaw int64) bool {
-	if (action != OpenPrimeUSDCStep && action != SwapUSDCToPrimeStep && action != VoltrAllocateToSquads) || withdrawalDemandRaw <= 0 {
+	if (action != OpenPrimeUSDCStep && action != SwapUSDCToPrimeStep && action != OpenRouteStep && action != SwapStableToCollateralStep && action != VoltrAllocateToSquads) || withdrawalDemandRaw <= 0 {
 		return false
 	}
 	switch status {

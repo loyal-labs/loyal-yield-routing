@@ -67,7 +67,7 @@ func ObserveConfirmedBridgeExecutionEvidence(
 			return Observation{}, BridgeExecutionEvidence{}, err
 		}
 		observation.Snapshot.PostMutationNAVRequired = postMutationNAVRequired
-		if Decide(observation.Snapshot) != decision {
+		if !decisionsEqual(Decide(observation.Snapshot), decision) {
 			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("actionable decision changed before construction")
 		}
 		ticketRequired := decision.Action != StageSquadsToVoltr
@@ -199,7 +199,8 @@ func ObserveConfirmedKaminoExecutionEvidence(
 	manifest RouteManifest,
 	decision Decision,
 ) (Observation, KaminoExecutionEvidence, error) {
-	if rpc == nil || (decision.Action != OpenPrimeUSDCStep && decision.Action != DeleverPrimeUSDCStep) {
+	if rpc == nil || (decision.Action != OpenPrimeUSDCStep && decision.Action != DeleverPrimeUSDCStep &&
+		decision.Action != OpenRouteStep && decision.Action != DeleverRouteStep) {
 		return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("invalid Kamino evidence request")
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
@@ -207,7 +208,11 @@ func ObserveConfirmedKaminoExecutionEvidence(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
-		position, err := observePrimeUSDCFromFixedAccounts(ctx, rpc.GetMultipleAccounts, observation.Snapshot.Slot, accounts)
+		route, err := manifest.activeRuntimeRoute()
+		if err != nil {
+			return Observation{}, KaminoExecutionEvidence{}, err
+		}
+		position, err := observeKaminoFromFixedAccounts(ctx, rpc.GetMultipleAccounts, observation.Snapshot.Slot, accounts, route.Kamino)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
@@ -219,11 +224,11 @@ func ObserveConfirmedKaminoExecutionEvidence(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
-		request, err := manifest.primeUSDCPacket(decision.Action, leg, wireAmount, blockhash)
+		request, err := manifest.kaminoPacketForRoute(decision.Action, leg, wireAmount, blockhash, decision.StrategyKey)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
-		source, destination := kaminoLegCustodies(leg)
+		source, destination := kaminoLegCustodiesForRoute(leg, route)
 		policy := accountAt(accounts, request.Policy)
 		if policy.Owner != bridgeSquadsProgram || policy.Executable || policy.Lamports == 0 ||
 			sha256Bytes(policy.Data) != request.PolicyAccountDataSHA256 {
@@ -240,7 +245,14 @@ func ObserveConfirmedKaminoExecutionEvidence(
 }
 
 func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSDCLeg, uint64, uint64, error) {
-	switch decision.Action {
+	action := decision.Action
+	if action == OpenRouteStep {
+		action = OpenPrimeUSDCStep
+	}
+	if action == DeleverRouteStep {
+		action = DeleverPrimeUSDCStep
+	}
+	switch action {
 	case OpenPrimeUSDCStep:
 		if decision.AmountRaw <= 0 {
 			return 0, 0, 0, fmt.Errorf("OPEN requires a positive exact amount")
@@ -274,7 +286,16 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 			return kaminoLegRepay, amount, amount, nil
 		}
 		if position.CollateralDepositedRaw > 0 && position.RedeemablePrimeRaw > 0 {
-			return kaminoLegWithdraw, position.CollateralDepositedRaw, position.RedeemablePrimeRaw, nil
+			receiptRaw := position.CollateralDepositedRaw
+			if decision.Reason == "phase2_cutover_withdraw_collateral" && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < receiptRaw {
+				receiptRaw = uint64(decision.AmountRaw)
+			}
+			primeRaw := new(big.Int).Mul(new(big.Int).SetUint64(receiptRaw), new(big.Int).SetUint64(position.RedeemablePrimeRaw))
+			primeRaw.Quo(primeRaw, new(big.Int).SetUint64(position.CollateralDepositedRaw))
+			if !primeRaw.IsUint64() || primeRaw.Sign() <= 0 {
+				return 0, 0, 0, fmt.Errorf("partial collateral withdrawal rounds to zero")
+			}
+			return kaminoLegWithdraw, receiptRaw, primeRaw.Uint64(), nil
 		}
 	}
 	return 0, 0, 0, fmt.Errorf("PRIME/USDC position is not in a supported next-leg state")
@@ -335,6 +356,28 @@ func kaminoLegCustodies(leg kaminoPrimeUSDCLeg) (kaminoCustodyBoundary, kaminoCu
 		return usdcVault, usdcReserve
 	case kaminoLegWithdraw:
 		return primeReserve, primeVault
+	default:
+		return kaminoCustodyBoundary{}, kaminoCustodyBoundary{}
+	}
+}
+
+func kaminoLegCustodiesForRoute(leg kaminoPrimeUSDCLeg, route RuntimeRoute) (kaminoCustodyBoundary, kaminoCustodyBoundary) {
+	if route.Lane == RouteID || route.Lane == "" {
+		return kaminoLegCustodies(leg)
+	}
+	collateralVault := kaminoCustodyBoundary{route.CollateralCustody, route.Kamino.CollateralMint, route.Kamino.Vault}
+	collateralReserve := kaminoCustodyBoundary{route.CollateralLiquiditySupply, route.Kamino.CollateralMint, route.Kamino.MarketAuthority}
+	stableVault := kaminoCustodyBoundary{route.DebtCustody, route.Kamino.DebtMint, route.Kamino.Vault}
+	stableReserve := kaminoCustodyBoundary{route.DebtLiquiditySupply, route.Kamino.DebtMint, route.Kamino.MarketAuthority}
+	switch leg {
+	case kaminoLegDeposit:
+		return collateralVault, collateralReserve
+	case kaminoLegBorrow:
+		return stableReserve, stableVault
+	case kaminoLegRepay:
+		return stableVault, stableReserve
+	case kaminoLegWithdraw:
+		return collateralReserve, collateralVault
 	default:
 		return kaminoCustodyBoundary{}, kaminoCustodyBoundary{}
 	}

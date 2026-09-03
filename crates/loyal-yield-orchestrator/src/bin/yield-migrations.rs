@@ -435,6 +435,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0071_backyard_rwa_phase1_activation.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 72,
+        name: "backyard_rwa_phase2_route_neutral_actions",
+        sql: include_str!("../../../loyal-yield-store/migrations/0072_backyard_rwa_phase2_route_neutral_actions.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

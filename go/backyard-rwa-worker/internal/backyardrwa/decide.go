@@ -2,7 +2,37 @@ package backyardrwa
 
 import "fmt"
 
+// Decide resolves the already-frozen lane carried by the confirmed
+// observation. It does not choose a lane; observations for any lane outside
+// the two manifest-approved routes fail closed.
 func Decide(s Snapshot) Decision {
+	if s.RouteLane == SelectedRouteID {
+		if s.CollateralIdleRaw >= 0 {
+			s.PrimeIdleRaw = s.CollateralIdleRaw
+		}
+		decision := decideFixed(s)
+		decision = neutralizeRouteAction(decision)
+		if decision.AmountRaw > Phase2TransactionCapRaw {
+			decision.AmountRaw = Phase2TransactionCapRaw
+			decision.IdempotencyKey = fmt.Sprintf("%s:%s:%d:%s", s.ObservationID, decision.Action, decision.AmountRaw, decision.Reason)
+		}
+		decision.StrategyKey = SelectedRouteID
+		return decision
+	}
+	if s.RouteLane != "" && s.RouteLane != RouteID {
+		return Decision{Action: HoldManualRecovery, Reason: "unsupported_runtime_lane", AmountRaw: 0,
+			IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "unsupported_runtime_lane"), StrategyKey: s.RouteLane}
+	}
+	if s.CutoverDrain && s.WithdrawalDemandRaw == 0 {
+		s.WithdrawalDemandRaw = s.StrategyNAVRaw
+		if s.WithdrawalDemandRaw == 0 {
+			s.WithdrawalDemandRaw = 1
+		}
+	}
+	return decideFixed(s)
+}
+
+func decideFixed(s Snapshot) Decision {
 	decision := func(action Action, reason string, amount int64) Decision {
 		return Decision{
 			Action:    action,
@@ -78,7 +108,13 @@ func Decide(s Snapshot) Decision {
 			return decision(DeleverPrimeUSDCStep, "withdrawal_release_repayment_collateral", 1)
 		}
 		if s.PositionCollateralRaw > 0 {
-			return decision(DeleverPrimeUSDCStep, "withdrawal_withdraw_collateral", 0)
+			amount := int64(0)
+			reason := "withdrawal_withdraw_collateral"
+			if s.CutoverDrain {
+				amount = min(s.PositionCollateralRaw, Phase2TransactionCapRaw)
+				reason = "phase2_cutover_withdraw_collateral"
+			}
+			return decision(DeleverPrimeUSDCStep, reason, amount)
 		}
 		if s.PrimeIdleRaw > 0 {
 			return decision(SwapPrimeToUSDCStep, "withdrawal_swap_withdrawn_prime", s.PrimeIdleRaw)
