@@ -4,7 +4,21 @@ This directory holds immutable evidence only after a read or signed simulation
 has actually occurred. Do not hand-edit `addressesResolved`,
 `swapHeadersResolved`, packet sizes, simulation results, or policy hashes.
 
-## Policy resolver
+## Current close-out evidence
+
+The installed catalog is the 70-policy generation at seeds 67–136 recorded in
+`policy-install-readback-v1.json`. It represents exactly 11 lanes, 44 Kamino
+operations, and 52 directed swap edges. The sole operational audit is:
+
+```sh
+op run --env-file=.env.1password -- \
+  bun run --cwd tools/backyard-voltr verify:rwa-multiply-custom-lifecycle
+```
+
+The older discovery and 14-policy compiler notes below are historical design
+records, not current installation instructions.
+
+## Historical policy resolver
 
 Run the finalized read-only resolver with:
 

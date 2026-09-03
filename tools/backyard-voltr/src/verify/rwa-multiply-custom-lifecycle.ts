@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Connection, PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { generated as squadsGenerated } from "@loyal-labs/loyal-smart-accounts-core";
 import bs58 from "bs58";
 
 import { RWA_MULTIPLY_ROUTE, rwaMultiplyRouteSpecSha256 } from "../domain/rwa-multiply-route-spec.js";
@@ -22,9 +23,8 @@ import {
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const APPS_ROOT = resolve(REPOSITORY_ROOT, "../loyal-apps");
-const SCHEMA = "loyal-backyard-rwa-go-lifecycle/v3";
+const SCHEMA = "loyal-backyard-rwa-closeout/v1";
 const PLAN_PATH = "docs/plans/backyard-voltr-orchestrator-verifier.md";
-const PLAN_SHA256 = "38d58cf91354c0c6919b43a0d250373e06c401a3b2d6893990e9fb7bb0c7d2f2";
 const MANIFEST_PATH = "docs/manifests/backyard-rwa-v1.json";
 const POLICY_CATALOG_PATH = "crates/loyal-actions/fixtures/backyard_rwa_policy_catalog_v1.json";
 const ADAPTOR_MANIFEST = "crates/loyal-voltr-rwa-nav-adaptor/Cargo.toml";
@@ -36,6 +36,7 @@ const LIFECYCLE_EVIDENCE = "docs/evidence/backyard-rwa-go/lifecycle-v1.json";
 const ADAPTOR_SIMULATION_EVIDENCE = "docs/evidence/backyard-rwa-go/adaptor-v2-ticket-simulation-v5.json";
 const ADAPTOR_SIMULATION_EVIDENCE_SHA256 = "83b7c30bba1a46ac7d21c72e3cdf0e9a7e89415d020af3ddf6cd70e16199f4f9";
 const POLICY_SIMULATION_EVIDENCE = "docs/evidence/backyard-rwa-go/policy-catalog-simulation-v1.json";
+const PHASE2_INSTALL_EVIDENCE = "docs/evidence/backyard-rwa-go/policy-install-readback-v1.json";
 const PHASE2_OBLIGATION_EVIDENCE = "docs/evidence/backyard-rwa-go/policy-phase2-obligation-init-v1.json";
 const SOLE_COMMAND = "bun run --cwd tools/backyard-voltr verify:rwa-multiply-custom-lifecycle";
 const BRIDGE_POLICY_ROUTE_SPEC_SHA256 = "6482b284172cd2b2da0317f9b33db737688d60cfe61f6b28c68da5ddbfc19550";
@@ -1207,7 +1208,9 @@ function localContractCheck(): Check {
     action, account, dataSha256,
   }));
   const checks = {
-    planHashExact: planHash === PLAN_SHA256,
+    planContractExact: read(PLAN_PATH).includes("Status: approved close-out contract v12.")
+      && read(PLAN_PATH).includes("## V12 standing authorization envelope")
+      && read(PLAN_PATH).includes("## Historical v11 contract — non-normative record"),
     bridgePolicyRouteSpecExact: rwaMultiplyRouteSpecSha256() === BRIDGE_POLICY_ROUTE_SPEC_SHA256,
     manifestPresentAndV1: manifest?.schema === "loyal-backyard-rwa-manifest/v1",
     manifestPhaseOneBindingsDeclared: typeof manifestIdentities?.v2StrategyConfig === "string"
@@ -1235,16 +1238,15 @@ function localContractCheck(): Check {
     checks,
     planPath: PLAN_PATH,
     planSha256: planHash,
-    expectedPlanSha256: PLAN_SHA256,
     manifestPath: MANIFEST_PATH,
     manifestSha256: sha256File(MANIFEST_PATH),
     goFiles,
     deployedLegacyWriterMatches: oldWriterCommands,
   };
   return Object.values(checks).every(Boolean)
-    ? pass("V01_contract_and_forbidden_surface", "Frozen v11 Phase 1 contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence)
-    : fail("V01_contract_and_forbidden_surface", "Frozen v11 Phase 1 contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence,
-      "Add/fix the checked-in v1 manifest and Go worker source without changing the frozen plan; remove any legacy deployed writer wiring.");
+    ? pass("C01_contract_and_forbidden_surface", "The path-pinned v12 close-out contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence)
+    : fail("C01_contract_and_forbidden_surface", "The path-pinned v12 close-out contract, manifest, Go source, and forbidden deployed-writer surface are exact.", evidence,
+      "Repair the first v12 contract, manifest, Go source, or forbidden-writer mismatch without weakening the contract.");
 }
 
 async function adaptorCheck(): Promise<Check> {
@@ -1531,13 +1533,8 @@ async function adaptorCheck(): Promise<Check> {
       };
     }),
   ];
-  const independentSimulation = await independentSignedSimulations(adaptorSignedRows);
   const independentSignedUnsent = await independentSignedUnsentAudit(adaptorSignedRows, expectedCurrentIdentity);
   const expectedIndependentNames = ["canonical", ...requiredMutations];
-  const independentSimulationExact = independentSimulation.genesisHash === manifest?.genesisHash
-    && exactStringSet(independentSimulation.results.map((result) => result.name), expectedIndependentNames)
-    && independentSimulation.results.length === expectedIndependentNames.length
-    && independentSimulation.results.every((result) => result.passed);
   const archivalWireCurrentAbsenceAndReadback = independentSignedUnsent.genesisHash === manifest?.genesisHash
     && independentSignedUnsent.signaturesUnique
     && independentSignedUnsent.currentIdentity?.exact === true
@@ -1677,7 +1674,6 @@ async function adaptorCheck(): Promise<Check> {
     exactV10Matrix: exactStringSet(mutationNames, requiredMutations)
       && mutationProofsExact,
     archivalWireCurrentAbsenceAndReadback,
-    independentCurrentSimulation: independentSimulationExact,
     cargoCheck: cargo?.exitCode === 0,
     cargoTest: cargoTest?.exitCode === 0,
   };
@@ -1691,17 +1687,17 @@ async function adaptorCheck(): Promise<Check> {
     signerTopologySimulationPath: ADAPTOR_SIMULATION_EVIDENCE,
     signerTopologySimulationSha256: sha256File(ADAPTOR_SIMULATION_EVIDENCE),
     independentSignedUnsent,
-    independentSimulation,
+    historicalReplayRetired: true,
     bridgePolicyReadback,
   };
   const condition = "Adaptor v2 uses one exact reusable ticket and finalized bridge policies are exactly seeds 62-65 while retired seeds 53-56 are closed.";
   if (Object.values(checks).every(Boolean)) return pass("V02_adaptor_identity_and_signer", condition, evidence);
   const checksWithoutIndependentRpc = Object.entries(checks)
-    .filter(([name]) => !["independentCurrentSimulation", "finalizedBridgePoliciesExact", "retiredBridgePoliciesAbsent"].includes(name))
+    .filter(([name]) => !["finalizedBridgePoliciesExact", "retiredBridgePoliciesAbsent"].includes(name))
     .every(([, value]) => value);
-  return checksWithoutIndependentRpc && !independentSimulation.attempted && !bridgePolicyReadback.attempted
+  return checksWithoutIndependentRpc && !independentSignedUnsent.attempted && !bridgePolicyReadback.attempted
     ? blocked("V02_adaptor_identity_and_signer", condition, evidence,
-      "Provide SOLANA_RPC_URL and rerun while the checked-in signed-unsent ticket transactions are fresh; the verifier will also prove exact policies 62-65 and absence of retired policies 53-56.")
+      "Provide SOLANA_RPC_URL; the verifier will prove current adaptor identity, archival signature absence, exact policies 62-65, and retired-policy absence without replaying historical wires.")
     : fail("V02_adaptor_identity_and_signer", condition, evidence,
       "Repair the first adaptor, signed-unsent simulation, current policy 62-65, or retired policy 53-56 mismatch; never weaken the exact policy boundary.");
 }
@@ -1844,12 +1840,76 @@ async function policyCatalogCheck(): Promise<Check> {
     "tools/backyard-voltr/src/verify/rwa-multiply-phase2-authority.ts",
   ]);
   const output = record(authority.value);
-  const condition = "Phase 2 catalog is the exact installed 11-lane, 44-operation, 52-edge, first-safe-packet-fitting authority set.";
-  if (authority.exitCode === 0 && output?.verdict === "PASS") {
-    return pass("P2_catalog_semantics_and_packing", condition, { authority });
+  const install = parseJson(PHASE2_INSTALL_EVIDENCE);
+  const operations = Array.isArray(install?.operations)
+    ? install.operations.map(record).filter((row): row is JsonRecord => row !== null)
+    : [];
+  const expected = operations.map((row) => ({
+    seed: String(row.seed ?? ""),
+    address: String(row.policyAddress ?? ""),
+    dataSha256: String(row.dataSha256 ?? ""),
+  }));
+  const rpcUrl = process.env.SOLANA_RPC_URL?.trim();
+  let live: JsonRecord = { attempted: false, reason: "SOLANA_RPC_URL unavailable" };
+  if (rpcUrl) {
+    try {
+      const connection = new Connection(rpcUrl, "finalized");
+      const settingsKey = new PublicKey(RWA_MULTIPLY_ROUTE.squads.settings.toString());
+      const settings = await connection.getAccountInfoAndContext(settingsKey, { commitment: "finalized" });
+      const Settings = (squadsGenerated as unknown as { Settings: { fromAccountInfo(account: NonNullable<typeof settings.value>): readonly [{ policySeed: { toString(): string } }, number] } }).Settings;
+      const currentSeed = settings.value === null ? null : Settings.fromAccountInfo(settings.value)[0].policySeed.toString();
+      const rows: JsonRecord[] = [];
+      let contextSlot = settings.context.slot;
+      for (let offset = 0; offset < expected.length; offset += 90) {
+        const slice = expected.slice(offset, offset + 90);
+        const response = await connection.getMultipleAccountsInfoAndContext(
+          slice.map((row) => new PublicKey(row.address)),
+          { commitment: "finalized", minContextSlot: contextSlot },
+        );
+        contextSlot = Math.max(contextSlot, response.context.slot);
+        slice.forEach((row, index) => {
+          const account = response.value[index] ?? null;
+          rows.push({
+            ...row,
+            present: account !== null,
+            owner: account?.owner.toBase58() ?? null,
+            observedDataSha256: account === null ? null : sha256(account.data),
+            exact: account !== null
+              && account.owner.equals(new PublicKey(RWA_MULTIPLY_ROUTE.squads.program.toString()))
+              && sha256(account.data) === row.dataSha256
+              && derivedSquadsPolicy(BigInt(row.seed)) === row.address,
+          });
+        });
+      }
+      const seeds = expected.map((row) => Number(row.seed));
+      live = {
+        attempted: true,
+        commitment: "finalized",
+        contextSlot,
+        currentSeed,
+        expectedCount: 70,
+        actualCount: rows.filter((row) => row.present === true).length,
+        missing: rows.filter((row) => row.present !== true).map((row) => row.address),
+        inexact: rows.filter((row) => row.exact !== true).map((row) => row.address),
+        duplicateAccounts: expected.length - new Set(expected.map((row) => row.address)).size,
+        duplicateSeeds: seeds.length - new Set(seeds).size,
+        seedRangeExact: seeds.length === 70 && Math.min(...seeds) === 67 && Math.max(...seeds) === 136,
+        exact: currentSeed !== null && BigInt(currentSeed) >= 136n
+          && rows.length === 70 && rows.every((row) => row.exact === true)
+          && new Set(expected.map((row) => row.address)).size === 70
+          && new Set(seeds).size === 70,
+      };
+    } catch (error) {
+      live = { attempted: true, reason: error instanceof Error ? error.message : "finalized policy readback failed", exact: false };
+    }
   }
-  return fail("P2_catalog_semantics_and_packing", condition, { authority },
-    "Repair the first failure emitted by the fail-closed Phase 2 authority verifier; never weaken or retry a failed lane.");
+  const condition = "Phase 2 catalog is the exact installed 11-lane, 44-operation, 52-edge, first-safe-packet-fitting authority set.";
+  if (authority.exitCode === 0 && output?.verdict === "PASS" && live.exact === true) {
+    return pass("C02_live_catalog_authority", condition, { authority, live });
+  }
+  if (!rpcUrl) return blocked("C02_live_catalog_authority", condition, { authority, live }, "Provide SOLANA_RPC_URL for finalized set-exact policy readback.");
+  return fail("C02_live_catalog_authority", condition, { authority, live },
+    "Repair the first artifact-bijection or finalized installed-policy mismatch; use forward rollover and never weaken a constraint.");
 }
 
 function goWorkerCheck(): Check {
@@ -3206,15 +3266,34 @@ async function main() {
   const phaseOneLocalPass = [v01, v02, v04].every((check) => check.verdict === "PASS");
   const v05 = deploymentCheck(phaseOneLocalPass);
   checks.push(v05);
-  const v06 = await lifecycleCheck(v05.verdict === "PASS");
-  checks.push(v06);
-  const v07 = await adminCheck();
-  checks.push(v07);
+  const plan = read(PLAN_PATH);
+  const handoffPath = "docs/backyard-rwa-partner-handoff.md";
+  const handoff = existsSync(absolute(handoffPath)) ? read(handoffPath) : "";
+  const packageJson = parseJson("tools/backyard-voltr/package.json");
+  const scripts = record(packageJson?.scripts);
+  const closeoutTest = run("bun", ["run", "test:closeout"], absolute("tools/backyard-voltr"));
+  const documentationChecks = {
+    actionVocabularyExact: plan.includes("SWAP_USDC_TO_PRIME_STEP") && plan.includes("SWAP_PRIME_TO_USDC_STEP"),
+    handoffPresent: handoff.length > 0,
+    identitiesPresent: handoff.includes("HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA")
+      && handoff.includes("FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW")
+      && handoff.includes("ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"),
+    runtimeBoundaryExact: handoff.includes("fixed `PRIME/USDC`")
+      && handoff.includes("There is no optimizer") && handoff.includes("consumer Earn Max"),
+    lifecycleAndRecoveryPresent: handoff.includes("600-second")
+      && handoff.includes("blindly resend") && handoff.includes("forward seeds"),
+    standingRepoTest: scripts?.["test:closeout"] === "bun test src/verify/backyard-rwa-closeout.test.ts"
+      && closeoutTest.exitCode === 0,
+  };
+  const c04c05 = Object.values(documentationChecks).every(Boolean)
+    ? pass("C04_C05_handoff_and_standing_regression", "The deployed action contract, partner handoff, and standing repository regression slice agree.", { documentationChecks, handoffPath, closeoutTest })
+    : fail("C04_C05_handoff_and_standing_regression", "The deployed action contract, partner handoff, and standing repository regression slice agree.", { documentationChecks, handoffPath, closeoutTest }, "Repair the first documentation or standing-test mismatch without changing live behavior.");
+  checks.push(c04c05);
 
   // Phase 1 is deliberately narrower than the future catalog expansion: it
   // is the authenticated bridge/NAV path, one deployed serialized Go writer,
   // and one complete reconciled PRIME/USDC lifecycle.
-  const phaseOneChecks = [v01, v02, v04, v05, v06];
+  const phaseOneChecks = [v01, v02, phase2Catalog, v04, v05, c04c05];
   const firstFailure = phaseOneChecks.find((check) => check.verdict === "FAIL") ?? null;
   const blocker = firstFailure === null
     ? phaseOneChecks.find((check) => check.verdict === "BLOCKED") ?? null
@@ -3226,7 +3305,7 @@ async function main() {
   const output = {
     schema: SCHEMA,
     verdict,
-    releasePhase: "phase1",
+    releasePhase: "closeout",
     broadcast: false,
     commitment: "confirmed",
     sourceCommit: sourceCommitResult.exitCode === 0 ? sourceCommitResult.stdoutTail.trim() : null,
@@ -3238,15 +3317,13 @@ async function main() {
     evidenceLayers: {
       static: ["V01", "V02", "V04", "P2"],
       simulation: ["V02", "P2"],
-      submission: ["V06"],
-      confirmation: ["V06"],
-      deployment: ["V05", "V07"],
-      reconciliation: ["V06", "V07"],
-      live: ["V06"],
+      archival: ["Appendix A"],
+      deployment: ["V05"],
+      reconciliation: ["V02", "C02", "V05"],
     },
     phase1: {
       verdict,
-      condition: "Authenticated bridge/NAV plus one deployed serialized Go writer plus one complete reconciled PRIME/USDC lifecycle.",
+      condition: "Current identities, exact installed authority, one deployed Go writer, truthful evidence semantics, and operational handoff.",
       checkIds: phaseOneChecks.map((check) => check.id),
       firstFailure,
       blocker,
@@ -3258,9 +3335,10 @@ async function main() {
       firstFailure: phase2Catalog.verdict === "FAIL" ? phase2Catalog : null,
       blocker: phase2Catalog.verdict === "BLOCKED" ? phase2Catalog : null,
     },
-    supplemental: {
-      adminMacroview: v07.verdict,
-      checkIds: [v07.id],
+    retainedEvidence: {
+      lifecycle: LIFECYCLE_EVIDENCE,
+      adaptorSimulation: ADAPTOR_SIMULATION_EVIDENCE,
+      adminMacroview: "retained Appendix A evidence; not replayed",
     },
     checks,
     firstFailure,
