@@ -70,6 +70,10 @@ func ObserveConfirmedBridgeExecutionEvidence(
 		if !decisionsEqual(Decide(observation.Snapshot), decision) {
 			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("actionable decision changed before construction")
 		}
+		route, err := runtimeRoute(decision.StrategyKey)
+		if err != nil {
+			return Observation{}, BridgeExecutionEvidence{}, err
+		}
 		ticketRequired := decision.Action != StageSquadsToVoltr
 		policyAccount := accountAt(accounts, policy)
 		if policyAccount.Owner != bridgeSquadsProgram || policyAccount.Executable ||
@@ -86,7 +90,7 @@ func ObserveConfirmedBridgeExecutionEvidence(
 				return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("report ticket is already armed")
 			}
 		}
-		custodies, err := decodeRouteNAVCustodies(accounts)
+		custodies, err := decodeRouteNAVCustodiesForRoute(accounts, route)
 		if err != nil {
 			return Observation{}, BridgeExecutionEvidence{}, err
 		}
@@ -108,11 +112,11 @@ func ObserveConfirmedBridgeExecutionEvidence(
 		case VoltrRestoreIdle:
 			postCustodies.VoltrIdleRaw += uint64(decision.AmountRaw)
 		}
-		navAccounts, err := selectRouteNAVAccounts(accounts)
+		navAccounts, err := selectRouteNAVAccountsForRoute(accounts, route)
 		if err != nil {
 			return Observation{}, BridgeExecutionEvidence{}, err
 		}
-		nav, err := ComputeRouteNAV(observation.Snapshot.Slot, navAccounts, manifest, &postCustodies)
+		nav, err := ComputeRouteNAVForRoute(observation.Snapshot.Slot, navAccounts, manifest, &postCustodies, route)
 		if err != nil {
 			return Observation{}, BridgeExecutionEvidence{}, err
 		}
