@@ -386,7 +386,11 @@ The implementation must preserve or strengthen all of the following:
      optimizer epoch identity, eligibility, capacity selection, economics, and
      execution-plan inputs.
 3. **Introduce the concrete confirmed in-memory state owner in shadow mode**
-   - Prefer one Go binary and internal package with direct `pgx`/RPC integration;
+   - Prefer one Go service with direct `pgx`/RPC integration. The sole approved
+     child-process exception is the deterministic `kamino-route-reference` KLend
+     proxy: it accepts one typed JSON request on stdin and returns official
+     KLend-built instructions on stdout. It has no RPC, database, signer, or
+     broadcast capability, and its binary digest is deployment evidence.
      do not build a general worker framework as part of this issue.
    - Hydrate from durable state, then catch up from confirmed chain evidence.
    - Consume updates and compute decisions without publishing executable work.
@@ -537,31 +541,47 @@ found concrete incompatibilities that block cutover:
   `same_mint_kamino`. A one-vault Go cutover therefore cannot stop the Rust
   planner globally; it needs an explicit migrated-vault exclusion.
 
-The probe also confirmed that the current Go publication is **not a drop-in W3
-handoff yet**:
+The immutable market-epoch gap is now closed without inventing production
+observation identities. The Go service reads the retained monitor's complete
+active safe USDC catalog and `latest_verified_reserve_updates` in one read-only
+`REPEATABLE READ` Timescale transaction. It retains the real `event_id`, account
+hash, observed/verified coordinates, catalog denominator, mint coverage,
+reserve-local blockers and expiry, canonical raw amounts, deterministic
+fingerprint, and positive epoch ID. Publication additionally requires direct
+RPC account hashes for the selected source and target to equal those durable
+confirmed rows, then replans from that exact typed epoch. Timescale therefore
+remains on the publication-evidence path until a jointly versioned direct-RPC
+identity contract replaces it.
 
-1. Go persists a two-reserve object map under `market_state.reserves`, while
-   Rust deserializes a complete camelCase `ImmutableMarketEpoch` with a reserve
-   array, mint coverage, catalog identity, full economic fields, and
-   fingerprints. The retained Rust executor also compares the complete
-   same-mint material frontier; a two-reserve epoch cannot pass that check
-   against the production USDC universe.
-2. Go does not yet claim `revalidate` leases or reproduce route construction,
+The frozen complete and blocked three-reserve fixtures pass byte-equivalent
+Rust/Go JSON and fingerprint comparison. A read-only production audit also
+passed against the live monitor frontier, including real positive event IDs and
+an `economic_slot_lag_exceeded` source-only blocker. The current Go publication
+is nevertheless **not a drop-in W3 handoff yet**:
+
+1. Go does not yet claim `revalidate` leases or reproduce route construction,
    reusable ALT resolution, packet-size checks, simulation, current opportunity
    fencing, market-epoch checks, route/requirements fingerprints, and atomic
    `ready`/fused-execution transitions.
-3. Go's custom economic key and direct INSERT do not reproduce
+2. Go's custom economic key and direct INSERT do not reproduce
    `rebalance_opportunity_idempotency_key`, rediscovery attempt generations,
    source-snapshot ownership validation, terminal no-effect retry behavior, or
    all queue API supersession/lifetime rules.
-4. The current verifier ends at durable `revalidate`; it does not demonstrate
+3. The current verifier ends at durable `revalidate`; it does not demonstrate
    that a Go row can be parsed, revalidated, executed, confirmed, and reconciled
    by retained production components.
 
-Consequently `KAMINO_FLEET_MODE=publish` must not be enabled in production. The
-next implementation gate is a cross-language fixture/verifier that feeds the
-Go epoch and opportunity through the real Rust parser/revalidator before any
-Go revalidator port or deployment wiring is accepted.
+Consequently `KAMINO_FLEET_MODE=publish` must not be enabled in production.
+The offline acceptance boundary now lives in
+`verification/kamino-fleet-parity/` and
+`scripts/verify-kamino-planner-revalidator-parity.sh`. Its comparator requires
+exact planner, epoch, opportunity-identity, route, ALT, packet, simulation,
+fence, queue-transition, topology, and retained lifecycle evidence. The
+comparator's negative controls are green. The epoch-specific Rust and Go
+producers now pass frozen and read-only production evidence, but
+`--audit-current` must remain red until the opportunity and route-revalidator
+producers—and the underlying Go revalidator behavior—exist. No deployment
+wiring is accepted until that complete audit is green.
 
 ## Relevant code and deployment references
 

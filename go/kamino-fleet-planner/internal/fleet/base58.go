@@ -83,7 +83,13 @@ func encodeBase58(value []byte) string {
 	for zeros < len(value) && value[zeros] == 0 {
 		zeros++
 	}
+	for len(digits) > 0 && digits[0] == 0 {
+		digits = digits[1:]
+	}
 	out := make([]byte, zeros, zeros+len(digits))
+	for index := range out {
+		out[index] = base58Alphabet[0]
+	}
 	for _, digit := range digits {
 		out = append(out, base58Alphabet[digit])
 	}

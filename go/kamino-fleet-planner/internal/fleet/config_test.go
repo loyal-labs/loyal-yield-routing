@@ -10,7 +10,7 @@ import (
 
 func TestConfigBlocksUnverifiedMainnetPublish(t *testing.T) {
 	config := Config{
-		DatabaseURL: "postgres://example", RPCURL: "https://rpc.example", Cluster: "mainnet-beta",
+		DatabaseURL: "postgres://example", TimescaleURL: "postgres://evidence", TimescaleSchema: "kamino", RPCURL: "https://rpc.example", Cluster: "mainnet-beta",
 		Mode: ModePublish, VaultID: 1, PollInterval: time.Second, SlotDuration: 314 * time.Millisecond,
 		Source: ReserveIdentity{Address: testIdentity(1), Market: testIdentity(2), Mint: USDCMint},
 		Target: ReserveIdentity{Address: testIdentity(3), Market: testIdentity(4), Mint: USDCMint},

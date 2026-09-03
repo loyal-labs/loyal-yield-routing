@@ -14,10 +14,17 @@ The worker:
 3. atomically advances a complete, slot-fenced in-memory snapshot;
 4. hydrates only durable vault/policy/inflight state from Neon;
 5. runs a pure, capacity- and cost-aware decision;
-6. in `publish` mode, writes an immutable optimizer epoch and an existing
+6. reads the complete active safe USDC catalog and exact confirmed reserve
+   identities from Timescale in one read-only `REPEATABLE READ` transaction;
+7. requires the direct RPC account hashes to converge with those durable
+   monitor rows, rebuilds the complete Rust-compatible `ImmutableMarketEpoch`,
+   and replans from that exact frontier;
+8. in `publish` mode, writes the typed immutable epoch and an existing
    `rebalance_opportunities` `revalidate` row before notifying downstream work.
 
-Timescale is not on this decision path. PostgreSQL remains authoritative for
+Timescale remains on the publication-evidence path until a jointly versioned
+Rust/Go direct-RPC state-identity contract replaces monitor `state_event_id`.
+The service never synthesizes that identity. PostgreSQL remains authoritative for
 position recovery, per-vault publication serialization, economic idempotency,
 capacity reservations, executable handoff, downstream leases, signed wires,
 and audit. A lost wakeup is safe because downstream workers scan the durable
@@ -32,6 +39,7 @@ not use rolling or overlapping ownership for the same vault.
 ## Required configuration
 
 - `NEON_DATABASE_URL`
+- `TIMESCALE_DATABASE_URL` or the existing `TIMESCALEDB_URL` (read-only access is sufficient)
 - `SOLANA_RPC_URL`
 - `KAMINO_FLEET_VAULT_ID`
 - `KAMINO_FLEET_SOURCE_RESERVE`: JSON `{ "address", "market", "mint" }`
@@ -39,6 +47,7 @@ not use rolling or overlapping ownership for the same vault.
 
 Optional:
 
+- `KAMINO_TIMESCALE_SCHEMA` (default `kamino`)
 - `KAMINO_FLEET_MODE=shadow|publish` (default `shadow`)
 - `KAMINO_FLEET_CLUSTER` (default `mainnet-beta`)
 - `KAMINO_FLEET_POLL_INTERVAL` (default `1s`)
@@ -58,11 +67,44 @@ From the repository root:
 scripts/verify-kamino-fleet-planner-e2e.sh
 ```
 
-The verifier uses a mock confirmed Solana RPC and disposable PostgreSQL. It
-explicitly does not build or invoke the replaced Rust reserve monitor or
-opportunity planner. It proves coherent Go ingestion/planning through the real
-durable W3 queue contract, economic idempotency across slot-only churn,
-active-work exclusion, and queue-based restart recovery without a new
-migration. It does not yet prove Rust-compatible optimizer-epoch JSON,
-route/requirements fingerprints, ALT/packet/simulation revalidation, or the
-`ready`/execution lifecycle.
+The dedicated epoch parity gate is:
+
+```sh
+scripts/verify-kamino-market-epoch-parity.sh
+```
+
+It runs the real Rust builder and Go builder offline on identical frozen
+three-reserve inputs, including exclusion/blocker evidence, and requires equal
+JSON, catalog fingerprint, epoch fingerprint, epoch ID, expiry, mint coverage,
+and monitor state identities.
+
+The planner verifier uses a mock confirmed Solana RPC and disposable PostgreSQL. It
+does not build or invoke the retained Rust reserve monitor or opportunity
+planner. It proves coherent Go ingestion/planning through a durable
+`revalidate` row, economic idempotency across slot-only churn, active-work
+exclusion, and queue-based restart recovery without a new migration. Together
+with the epoch gate it proves Rust-compatible optimizer-epoch JSON, but it does
+not prove route/requirements fingerprints, ALT/packet/simulation revalidation,
+or the `ready`/execution lifecycle.
+
+Dynamic route construction uses the small Rust `kamino-route-reference` proxy,
+which calls the official KLend builders and returns typed instruction evidence.
+The boundary is checked with:
+
+```sh
+scripts/verify-kamino-route-parity.sh
+```
+
+The proxy is the only approved child process and has no network, database,
+signer, or broadcast access. Production wiring will pin its binary digest.
+
+The stricter replacement gate is:
+
+```sh
+scripts/verify-kamino-planner-revalidator-parity.sh --audit-current
+```
+
+That fully local gate requires one Go process to match the Rust planner and
+revalidator evidence and then complete the retained durable lifecycle. It is
+intentionally red while the parity artifact producers and Go revalidator are
+missing; a green planner-only verifier is not cutover approval.

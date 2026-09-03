@@ -64,8 +64,9 @@ func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	snapshot := MarketSnapshot{Slot: 100, ObservedAt: now, Hash: "snapshot-" + suffix, Reserves: map[string]ReserveState{
-		source.Address: {ReserveIdentity: source, Slot: 100, SupplyAPYBPS: 200, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: "a"},
-		target.Address: {ReserveIdentity: target, Slot: 100, SupplyAPYBPS: 700, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: "b"}}}
+		source.Address: {ReserveIdentity: source, Slot: 100, LastUpdateSlot: 100, SupplyAPYBPS: 200, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)},
+		target.Address: {ReserveIdentity: target, Slot: 100, LastUpdateSlot: 100, SupplyAPYBPS: 700, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)}}}
+	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
 	decision := Plan(snapshot, position, source.Address, target.Address)
 	if !decision.Eligible {
 		t.Fatalf("decision ineligible: %s", decision.Reason)
@@ -79,7 +80,7 @@ func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 	outcomes := make(chan publishOutcome, 2)
 	for range 2 {
 		go func() {
-			result, publishErr := store.Publish(ctx, "mainnet-beta", snapshot, position, decision)
+			result, publishErr := store.Publish(ctx, "mainnet-beta", epoch, position, decision)
 			outcomes <- publishOutcome{result: result, err: publishErr}
 		}()
 	}
@@ -100,15 +101,15 @@ func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 	if inserted != 1 || duplicates != 1 || published.OpportunityID <= 0 || published.EpochID <= 0 {
 		t.Fatalf("publication race was not serialized: inserted=%d duplicates=%d published=%+v", inserted, duplicates, published)
 	}
-	var state, owner string
+	var state, epochFingerprint string
 	var marketSlot int64
 	var executionPlan []byte
-	err = store.pool.QueryRow(ctx, `SELECT opportunity.opportunity_state,epoch.market_slot,epoch.market_state->>'owner',opportunity.execution_plan FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=opportunity.optimizer_epoch_id WHERE opportunity.id=$1`, published.OpportunityID).Scan(&state, &marketSlot, &owner, &executionPlan)
+	err = store.pool.QueryRow(ctx, `SELECT opportunity.opportunity_state,epoch.market_slot,epoch.market_state->>'fingerprint',opportunity.execution_plan FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=opportunity.optimizer_epoch_id WHERE opportunity.id=$1`, published.OpportunityID).Scan(&state, &marketSlot, &epochFingerprint, &executionPlan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state != "revalidate" || marketSlot != 100 || owner != "kamino_fleet_planner_go_v1" {
-		t.Fatalf("wrong durable handoff: state=%s slot=%d owner=%s", state, marketSlot, owner)
+	if state != "revalidate" || marketSlot != 100 || epochFingerprint != epoch.Fingerprint {
+		t.Fatalf("wrong durable handoff: state=%s slot=%d fingerprint=%s", state, marketSlot, epochFingerprint)
 	}
 	var plan map[string]any
 	if err := json.Unmarshal(executionPlan, &plan); err != nil {
@@ -145,7 +146,8 @@ func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 		snapshot.Reserves[address] = reserve
 	}
 	decision = Plan(snapshot, position, source.Address, target.Address)
-	duplicate, err := store.Publish(ctx, "mainnet-beta", snapshot, position, decision)
+	epoch = testImmutableMarketEpoch(t, snapshot, source, target)
+	duplicate, err := store.Publish(ctx, "mainnet-beta", epoch, position, decision)
 	if err != nil {
 		t.Fatal(err)
 	}

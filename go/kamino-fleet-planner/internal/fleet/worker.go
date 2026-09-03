@@ -8,10 +8,15 @@ import (
 	"time"
 )
 
+type MarketEpochSource interface {
+	LoadImmutableMarketEpoch(context.Context) (ImmutableMarketEpoch, error)
+}
+
 type Worker struct {
 	config            Config
 	store             *Store
 	rpc               *RPCClient
+	marketEvidence    MarketEpochSource
 	owner             *SnapshotOwner
 	lastConfirmedSlot int64
 }
@@ -28,6 +33,14 @@ func NewWorker(config Config, store *Store, rpc *RPCClient) (*Worker, error) {
 		return nil, err
 	}
 	return &Worker{config: config, store: store, rpc: rpc, owner: owner}, nil
+}
+
+func (w *Worker) SetMarketEvidence(source MarketEpochSource) error {
+	if source == nil {
+		return fmt.Errorf("market evidence source is required")
+	}
+	w.marketEvidence = source
+	return nil
 }
 
 func (w *Worker) Run(ctx context.Context) error {
@@ -79,16 +92,38 @@ func (w *Worker) cycle(ctx context.Context) error {
 	}
 	decision := Plan(snapshot, position, w.config.Source.Address, w.config.Target.Address)
 	result := PublishResult{Reason: "shadow"}
-	if decision.Eligible && w.config.Mode == ModePublish {
-		result, err = w.store.Publish(ctx, w.config.Cluster, snapshot, position, decision)
+	var epoch ImmutableMarketEpoch
+	if decision.Eligible && w.marketEvidence == nil && w.config.Mode == ModePublish {
+		return fmt.Errorf("publish mode requires durable monitor-owned market evidence")
+	}
+	if decision.Eligible && w.marketEvidence != nil {
+		epoch, err = w.marketEvidence.LoadImmutableMarketEpoch(ctx)
 		if err != nil {
-			return fmt.Errorf("publish durable opportunity: %w", err)
+			return err
+		}
+		if err := epoch.VerifyDirectObservation(snapshot, w.config.Source.Address, w.config.Target.Address); err != nil {
+			result.Reason = "durable_market_evidence_not_converged"
+			decision.Eligible = false
+			decision.Reason = result.Reason
+		} else {
+			epochSnapshot, snapshotErr := marketSnapshotFromEpoch(epoch, w.config.Source.Address, w.config.Target.Address)
+			if snapshotErr != nil {
+				return snapshotErr
+			}
+			decision = Plan(epochSnapshot, position, w.config.Source.Address, w.config.Target.Address)
+			if decision.Eligible && w.config.Mode == ModePublish {
+				result, err = w.store.Publish(ctx, w.config.Cluster, epoch, position, decision)
+				if err != nil {
+					return fmt.Errorf("publish durable opportunity: %w", err)
+				}
+			}
 		}
 	}
 	w.lastConfirmedSlot = snapshot.Slot
 	logEvent(map[string]any{
 		"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode,
 		"slot": snapshot.Slot, "snapshotHash": snapshot.Hash,
+		"optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount,
 		"eligible": decision.Eligible, "reason": decision.Reason,
 		"publishReason": result.Reason, "opportunityId": result.OpportunityID,
 		"observedSourceApyBps": snapshot.Reserves[w.config.Source.Address].SupplyAPYBPS,
@@ -97,6 +132,36 @@ func (w *Worker) cycle(ctx context.Context) error {
 		"edgeBps": decision.EdgeBPS,
 	})
 	return nil
+}
+
+func marketSnapshotFromEpoch(epoch ImmutableMarketEpoch, addresses ...string) (MarketSnapshot, error) {
+	if err := epoch.Validate(); err != nil {
+		return MarketSnapshot{}, err
+	}
+	result := MarketSnapshot{Hash: epoch.Fingerprint, ObservedAt: epoch.CapturedAt, Reserves: make(map[string]ReserveState)}
+	if epoch.MaximumMarketSlot != nil {
+		result.Slot = *epoch.MaximumMarketSlot
+	}
+	for _, address := range addresses {
+		reserve, ok := epoch.Reserve(address)
+		if !ok || reserve.Market == nil {
+			return MarketSnapshot{}, fmt.Errorf("required reserve %s is absent from immutable market epoch", address)
+		}
+		lifetime := reserve.EconomicExpiresAt.Sub(epoch.CapturedAt).Milliseconds()
+		if lifetime < 0 {
+			lifetime = 0
+		}
+		result.Reserves[address] = ReserveState{
+			ReserveIdentity: ReserveIdentity{Address: reserve.Reserve, Market: *reserve.Market, Mint: reserve.LiquidityMint},
+			Slot:            reserve.Slot, LastUpdateSlot: reserve.ReserveLastUpdateSlot, LastUpdateStale: reserve.ReserveLastUpdateStale,
+			EconomicSlotLag: reserve.EconomicSlotLag, SupplyAPYBPS: reserve.SupplyAPYBPS,
+			TotalSupplyUSDMicros: reserve.TotalSupplyUSDMicros, EconomicLifetimeMillis: lifetime, DataHash: reserve.AccountDataHash,
+		}
+		if reserve.ObservedAt.After(result.ObservedAt) {
+			result.ObservedAt = reserve.ObservedAt
+		}
+	}
+	return result, nil
 }
 
 func logEvent(event map[string]any) {

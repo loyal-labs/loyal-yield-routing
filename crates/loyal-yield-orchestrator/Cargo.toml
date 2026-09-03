@@ -10,6 +10,14 @@ name = "fleet-opportunity-planner"
 path = "src/bin/fleet-opportunity-planner.rs"
 
 [[bin]]
+name = "kamino-market-epoch-reference"
+path = "src/bin/kamino-market-epoch-reference.rs"
+
+[[bin]]
+name = "kamino-route-reference"
+path = "src/bin/kamino-route-reference.rs"
+
+[[bin]]
 name = "fleet-health-projector"
 path = "src/bin/fleet-health-projector.rs"
 

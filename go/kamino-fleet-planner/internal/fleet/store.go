@@ -128,23 +128,27 @@ func jsonInt64(raw json.RawMessage) (int64, error) {
 	return number, parseErr
 }
 
-func (s *Store) Publish(ctx context.Context, cluster string, snapshot MarketSnapshot, position VaultPosition, decision Decision) (PublishResult, error) {
+func (s *Store) Publish(ctx context.Context, cluster string, epoch ImmutableMarketEpoch, position VaultPosition, decision Decision) (PublishResult, error) {
 	if cluster == "" {
 		return PublishResult{}, fmt.Errorf("cluster is required")
 	}
 	if err := decision.Validate(); err != nil {
 		return PublishResult{}, err
 	}
-	// A stale source remains withdrawable after the route revalidator's refresh
-	// instruction. The eligible target, not stale source economics, bounds this
-	// same-mint route's publication lifetime.
-	economicLifetime := snapshot.Reserves[decision.TargetReserve].EconomicLifetimeMillis
-	epochLifetime := minimumInt64(economicLifetime, int64((90 * time.Second).Milliseconds()))
-	epochExpires := snapshot.ObservedAt.Add(time.Duration(epochLifetime) * time.Millisecond)
-	if time.Until(epochExpires) < minimumPublicationLifetime {
+	if err := epoch.Validate(); err != nil {
+		return PublishResult{}, err
+	}
+	epochExpires, complete := epoch.MintExpiresAt(decision.Mint)
+	if !complete || time.Until(epochExpires) < minimumPublicationLifetime {
 		return PublishResult{Reason: "epoch_lifetime_too_short"}, nil
 	}
-	marketState, err := json.Marshal(map[string]any{"schemaVersion": 1, "owner": "kamino_fleet_planner_go_v1", "snapshotHash": snapshot.Hash, "reserves": snapshot.Reserves})
+	sourceEvidence, sourcePresent := epoch.Reserve(decision.SourceReserve)
+	targetEvidence, targetPresent := epoch.Reserve(decision.TargetReserve)
+	if !sourcePresent || !targetPresent || !targetEvidence.TargetEligible || sourceEvidence.LiquidityMint != decision.Mint || targetEvidence.LiquidityMint != decision.Mint {
+		return PublishResult{}, fmt.Errorf("opportunity reserves are not covered by the complete immutable mint frontier")
+	}
+	durableEpoch := epoch.DurableEvidence()
+	marketState, err := json.Marshal(durableEpoch)
 	if err != nil {
 		return PublishResult{}, err
 	}
@@ -162,8 +166,8 @@ func (s *Store) Publish(ctx context.Context, cluster string, snapshot MarketSnap
 		"route_amount_semantics": amountSemanticsRedeemableLiquidity, "source_amount_semantics": position.SourceAmountSemantics,
 		"source_collateral_amount_raw": position.SourceCollateralAmountRaw, "redeemable_source_liquidity_amount_raw": decision.AmountRaw,
 		"idle_vault_liquidity_amount_raw": position.IdleVaultLiquidityAmountRaw, "idle_token_account": nil,
-		"source_apy_bps": decision.SourceAPYBPS, "observed_source_apy_bps": snapshot.Reserves[decision.SourceReserve].SupplyAPYBPS,
-		"observed_target_apy_bps": snapshot.Reserves[decision.TargetReserve].SupplyAPYBPS, "target_apy_bps": decision.TargetAPYBPS,
+		"source_apy_bps": decision.SourceAPYBPS, "observed_source_apy_bps": sourceEvidence.SupplyAPYBPS,
+		"observed_target_apy_bps": targetEvidence.SupplyAPYBPS, "target_apy_bps": decision.TargetAPYBPS,
 		"capacity_adjusted_target_apy_bps": decision.TargetAPYBPS, "estimated_edge_bps": decision.EdgeBPS,
 		"confidence_ppm": decision.ConfidencePPM, "expected_service_millis": expectedServiceMillis,
 		"holding_horizon_seconds": decision.HoldingHorizonSeconds, "estimated_execution_cost_usd_micros": decision.EstimatedCostUSDMicros,
@@ -171,7 +175,7 @@ func (s *Store) Publish(ctx context.Context, cluster string, snapshot MarketSnap
 		"fee_cap_lamports":          decision.EstimatedCostLamports, "fee_tier": feeTier, "fee_gain_fraction_ppm": 50_000,
 		"minimum_transaction_fee_lamports": 5_000, "conservative_sol_price_usd_micros": 1_000_000_000,
 		"source_observed_at": position.ObservedAt.UTC(), "source_observed_slot": position.ObservedSlot,
-		"optimizer_market_slot": decision.MarketSlot, "target_observed_at": snapshot.ObservedAt, "target_observed_slot": snapshot.Slot,
+		"optimizer_market_slot": decision.MarketSlot, "target_observed_at": targetEvidence.ObservedAt, "target_observed_slot": targetEvidence.Slot,
 		"writable_conflict_keys": []string{
 			"vault:" + position.VaultPubkey,
 			"policy:" + strconv.FormatInt(position.PolicyID, 10),
@@ -186,7 +190,7 @@ func (s *Store) Publish(ctx context.Context, cluster string, snapshot MarketSnap
 		return PublishResult{}, err
 	}
 	key := economicKey(cluster, position, decision)
-	epochKey := "kamino-fleet-planner-go-v1:" + fmt.Sprint(snapshot.Slot) + ":" + snapshot.Hash
+	epochKey := durableEpoch.Fingerprint
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return PublishResult{}, err
@@ -226,8 +230,25 @@ func (s *Store) Publish(ctx context.Context, cluster string, snapshot MarketSnap
 		return PublishResult{Reason: "active_work"}, nil
 	}
 	var epochID int64
-	if err := tx.QueryRow(ctx, `WITH inserted AS (INSERT INTO loyal_yield.optimizer_epochs (cluster,epoch_key,market_slot,observed_at,expires_at,market_state) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (cluster,epoch_key) DO NOTHING RETURNING id) SELECT id FROM inserted UNION ALL SELECT id FROM loyal_yield.optimizer_epochs WHERE cluster=$1 AND epoch_key=$2 LIMIT 1`, cluster, epochKey, snapshot.Slot, snapshot.ObservedAt, epochExpires, marketState).Scan(&epochID); err != nil {
+	var evidenceMatches bool
+	if err := tx.QueryRow(ctx, `
+WITH inserted AS (
+  INSERT INTO loyal_yield.optimizer_epochs (cluster,epoch_key,market_slot,observed_at,expires_at,market_state)
+  VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (cluster,epoch_key) DO NOTHING
+  RETURNING id,market_slot,observed_at,expires_at,market_state
+), candidate AS (
+  SELECT id,market_slot,observed_at,expires_at,market_state FROM inserted
+  UNION ALL
+  SELECT id,market_slot,observed_at,expires_at,market_state
+  FROM loyal_yield.optimizer_epochs
+  WHERE cluster=$1 AND epoch_key=$2 AND NOT EXISTS (SELECT 1 FROM inserted)
+)
+SELECT id, market_slot=$3 AND observed_at=$4 AND expires_at=$5 AND market_state=$6::jsonb
+FROM candidate LIMIT 1`, cluster, epochKey, *durableEpoch.MaximumMarketSlot, durableEpoch.CapturedAt, durableEpoch.OptimizerEnvelopeExpiresAt(), marketState).Scan(&epochID, &evidenceMatches); err != nil {
 		return PublishResult{}, err
+	}
+	if !evidenceMatches {
+		return PublishResult{}, fmt.Errorf("optimizer epoch key is stored under different immutable evidence")
 	}
 	var opportunityID int64
 	err = tx.QueryRow(ctx, `INSERT INTO loyal_yield.rebalance_opportunities
@@ -240,13 +261,6 @@ VALUES ($1,$2,$2,1,$3,$4,$5,$6,$7,$8,$8,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'l
 		return PublishResult{}, err
 	}
 	return PublishResult{Inserted: true, OpportunityID: opportunityID, EpochID: epochID, Reason: "published"}, nil
-}
-
-func minimumInt64(left, right int64) int64 {
-	if left < right {
-		return left
-	}
-	return right
 }
 
 func economicKey(cluster string, position VaultPosition, decision Decision) string {

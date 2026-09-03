@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+type staticMarketEpochSource struct{ epoch ImmutableMarketEpoch }
+
+func (s staticMarketEpochSource) LoadImmutableMarketEpoch(context.Context) (ImmutableMarketEpoch, error) {
+	return s.epoch, nil
+}
+
 func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -57,23 +63,36 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	config := Config{DatabaseURL: databaseURL, RPCURL: server.URL, Cluster: "localnet", Mode: ModePublish, VaultID: vaultID, Source: source, Target: target, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
+	config := Config{DatabaseURL: databaseURL, TimescaleURL: databaseURL, TimescaleSchema: "kamino", RPCURL: server.URL, Cluster: "localnet", Mode: ModePublish, VaultID: vaultID, Source: source, Target: target, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
 	worker, err := NewWorker(config, store, NewRPCClient(server.URL))
 	if err != nil {
+		t.Fatal(err)
+	}
+	sourceState, err := DecodeKaminoSourceReserve(sourceAccount, source, 1_000, config.SlotDuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetState, err := DecodeKaminoReserve(targetAccount, target, 1_000, config.SlotDuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceSnapshot := MarketSnapshot{Slot: 1_000, ObservedAt: time.Now().UTC(), Reserves: map[string]ReserveState{source.Address: sourceState, target.Address: targetState}}
+	epoch := testImmutableMarketEpoch(t, evidenceSnapshot, source, target)
+	if err := worker.SetMarketEvidence(staticMarketEpochSource{epoch: epoch}); err != nil {
 		t.Fatal(err)
 	}
 	if err := worker.cycle(ctx); err != nil {
 		t.Fatal(err)
 	}
 	var count int
-	var state, owner string
+	var state, fingerprint string
 	var slot int64
-	err = store.pool.QueryRow(ctx, `SELECT count(*)::bigint,min(opportunity.opportunity_state),min(epoch.market_state->>'owner'),min(epoch.market_slot) FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=opportunity.optimizer_epoch_id WHERE opportunity.vault_id=$1`, vaultID).Scan(&count, &state, &owner, &slot)
+	err = store.pool.QueryRow(ctx, `SELECT count(*)::bigint,min(opportunity.opportunity_state),min(epoch.market_state->>'fingerprint'),min(epoch.market_slot) FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=opportunity.optimizer_epoch_id WHERE opportunity.vault_id=$1`, vaultID).Scan(&count, &state, &fingerprint, &slot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 || state != "revalidate" || owner != "kamino_fleet_planner_go_v1" || slot != 1_000 {
-		t.Fatalf("confirmed update did not reach durable W3 queue: count=%d state=%s owner=%s slot=%d", count, state, owner, slot)
+	if count != 1 || state != "revalidate" || fingerprint != epoch.Fingerprint || slot != 1_000 {
+		t.Fatalf("confirmed update did not reach durable W3 queue: count=%d state=%s fingerprint=%s slot=%d", count, state, fingerprint, slot)
 	}
 	if err := worker.cycle(ctx); err != nil {
 		t.Fatal(err)

@@ -22,8 +22,16 @@ func main() {
 		log.Fatal(err)
 	}
 	defer store.Close()
+	marketEvidence, err := fleet.OpenMarketEvidenceStore(ctx, config.TimescaleURL, config.TimescaleSchema)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer marketEvidence.Close()
 	worker, err := fleet.NewWorker(config, store, fleet.NewRPCClient(config.RPCURL))
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err := worker.SetMarketEvidence(marketEvidence); err != nil {
 		log.Fatal(err)
 	}
 	if err := worker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {

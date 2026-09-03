@@ -20,24 +20,28 @@ const (
 )
 
 type Config struct {
-	DatabaseURL  string
-	RPCURL       string
-	Cluster      string
-	Mode         Mode
-	VaultID      int64
-	Source       ReserveIdentity
-	Target       ReserveIdentity
-	PollInterval time.Duration
-	SlotDuration time.Duration
+	DatabaseURL     string
+	TimescaleURL    string
+	TimescaleSchema string
+	RPCURL          string
+	Cluster         string
+	Mode            Mode
+	VaultID         int64
+	Source          ReserveIdentity
+	Target          ReserveIdentity
+	PollInterval    time.Duration
+	SlotDuration    time.Duration
 }
 
 func ConfigFromEnvironment() (Config, error) {
 	config := Config{
-		DatabaseURL:  os.Getenv("NEON_DATABASE_URL"),
-		RPCURL:       os.Getenv("SOLANA_RPC_URL"),
-		Cluster:      valueOr(os.Getenv("KAMINO_FLEET_CLUSTER"), "mainnet-beta"),
-		Mode:         Mode(valueOr(os.Getenv("KAMINO_FLEET_MODE"), string(ModeShadow))),
-		PollInterval: durationOr(os.Getenv("KAMINO_FLEET_POLL_INTERVAL"), time.Second),
+		DatabaseURL:     os.Getenv("NEON_DATABASE_URL"),
+		TimescaleURL:    valueOr(os.Getenv("TIMESCALE_DATABASE_URL"), os.Getenv("TIMESCALEDB_URL")),
+		TimescaleSchema: valueOr(os.Getenv("KAMINO_TIMESCALE_SCHEMA"), "kamino"),
+		RPCURL:          os.Getenv("SOLANA_RPC_URL"),
+		Cluster:         valueOr(os.Getenv("KAMINO_FLEET_CLUSTER"), "mainnet-beta"),
+		Mode:            Mode(valueOr(os.Getenv("KAMINO_FLEET_MODE"), string(ModeShadow))),
+		PollInterval:    durationOr(os.Getenv("KAMINO_FLEET_POLL_INTERVAL"), time.Second),
 	}
 	var err error
 	if configured := os.Getenv("KAMINO_FLEET_SLOT_DURATION"); configured != "" {
@@ -69,8 +73,11 @@ func ConfigFromEnvironment() (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if c.DatabaseURL == "" || c.VaultID <= 0 {
-		return fmt.Errorf("database URL and positive vault ID are required")
+	if c.DatabaseURL == "" || c.TimescaleURL == "" || c.VaultID <= 0 {
+		return fmt.Errorf("Neon and Timescale database URLs and positive vault ID are required")
+	}
+	if !validSQLIdentifier(c.TimescaleSchema) {
+		return fmt.Errorf("canonical Timescale schema is required")
 	}
 	u, err := url.Parse(c.RPCURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {

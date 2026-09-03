@@ -1,0 +1,49 @@
+{
+  "vault": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+  "source": {
+    "reserve": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+    "market": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+    "marketAuthority": "",
+    "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+    "collateralMint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+    "liquiditySupply": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+    "collateralSupply": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+    "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "obligation": "",
+    "vaultLiquidityAta": "3VzwJ9ENt2zPAMFn944zmPZE2snSvMQLg6fHA4fAeKwA",
+    "pythOracle": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+    "switchboardPriceOracle": "",
+    "switchboardTwapOracle": "",
+    "scopePrices": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+    "obligationFarmUserState": "",
+    "reserveFarmState": "",
+    "obligationDepositReserves": [
+      "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+    ],
+    "obligationBorrowReserves": []
+  },
+  "target": {
+    "reserve": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+    "market": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+    "marketAuthority": "",
+    "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+    "collateralMint": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+    "liquiditySupply": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+    "collateralSupply": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+    "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "obligation": "",
+    "vaultLiquidityAta": "3VzwJ9ENt2zPAMFn944zmPZE2snSvMQLg6fHA4fAeKwA",
+    "pythOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+    "switchboardPriceOracle": "",
+    "switchboardTwapOracle": "",
+    "scopePrices": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+    "obligationFarmUserState": "",
+    "reserveFarmState": "",
+    "obligationDepositReserves": [
+      "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC"
+    ],
+    "obligationBorrowReserves": []
+  },
+  "withdrawCollateralAmount": 123456789,
+  "depositLiquidityAmount": 120000000
+}
