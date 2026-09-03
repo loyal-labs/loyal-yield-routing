@@ -389,6 +389,31 @@ func TestCapitalManualRecoveryBlocksEveryNewExecutableDecision(t *testing.T) {
 	}
 }
 
+func TestExpiredAbsentFailureIsNarrowAndRetryable(t *testing.T) {
+	data, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	for _, required := range []string{
+		"from != BroadcastIntent && from != Submitted",
+		"signature_absent_after_blockhash_expiry",
+		"d.transition(ctx, operationID, from, Failed",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("expired-absent terminalization lacks %q", required)
+		}
+	}
+	lifecycle, err := os.ReadFile("lifecycle.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(lifecycle), "height > operation.LastValidBlockHeight") ||
+		!strings.Contains(string(lifecycle), "MarkExpiredAbsentFailed") {
+		t.Fatal("lifecycle does not require confirmed expiry before terminal failure")
+	}
+}
+
 func TestExistingRouteStateMigrationProvidesLeaseFence(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "..", "crates", "loyal-yield-store", "migrations", "0051_multiply_route_state.sql")
 	data, err := os.ReadFile(path)

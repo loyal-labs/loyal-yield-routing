@@ -70,7 +70,7 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 			return err
 		}
 		if height > operation.LastValidBlockHeight {
-			return database.MarkManualRecovery(ctx, operation.ID, operation.Status, "signature_absent_after_blockhash_expiry")
+			return database.MarkExpiredAbsentFailed(ctx, operation.ID, operation.Status)
 		}
 		return nil
 	case Confirmed:
