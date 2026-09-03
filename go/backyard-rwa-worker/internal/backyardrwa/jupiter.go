@@ -137,6 +137,12 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 		"amount": {strconv.FormatUint(amount, 10)}, "slippageBps": {strconv.Itoa(int(jupiterMaxSlippageBPS))},
 		"swapMode": {"ExactIn"}, "maxAccounts": {"32"},
 	}
+	if lane == SelectedRouteID {
+		// The selected RWA representative was reviewed against Manifest. Keep
+		// Jupiter's optimizer inside that one venue family instead of accepting
+		// whichever venue happens to quote one raw unit better.
+		query.Set("dexes", "Manifest")
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/quote?"+query.Encode(), nil)
 	if err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
@@ -250,6 +256,18 @@ func validateJupiterQuoteForRoute(quote JupiterQuote, action Action, amount uint
 		quote.SwapMode != "ExactIn" || quote.SlippageBPS > jupiterMaxSlippageBPS || minimum < floor ||
 		len(quote.RoutePlan) == 0 || len(quote.RoutePlan) > jupiterMaxRoutePlanLeg || !jsonNull(quote.PlatformFee) {
 		return 0, 0, fmt.Errorf("Jupiter quote identity or economics drifted")
+	}
+	if lane == SelectedRouteID {
+		for _, raw := range quote.RoutePlan {
+			var step struct {
+				SwapInfo struct {
+					Label string `json:"label"`
+				} `json:"swapInfo"`
+			}
+			if json.Unmarshal(raw, &step) != nil || step.SwapInfo.Label != "Manifest" {
+				return 0, 0, fmt.Errorf("selected Jupiter venue drifted")
+			}
+		}
 	}
 	return out, minimum, nil
 }

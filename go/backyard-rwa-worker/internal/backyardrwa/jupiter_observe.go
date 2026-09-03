@@ -57,11 +57,15 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 		}
 		quote, instruction, err := client.freshSwapForRoute(ctx, decision.StrategyKey, decision.Action, amount)
 		if err != nil {
-			return Observation{}, JupiterExecutionEvidence{}, err
+			// Jupiter may temporarily return a different route dialect or account
+			// shape as liquidity changes. That is a fail-closed observation miss,
+			// not a fatal worker invariant: do not journal or sign it, and let the
+			// serialized loop request a fresh quote on its next bounded tick.
+			return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
 		}
 		constraintIndex, err := binding.constraintIndex(instruction)
 		if err != nil {
-			return Observation{}, JupiterExecutionEvidence{}, err
+			return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
 		}
 		out, minimum, err := validateJupiterQuoteForRoute(quote, decision.Action, amount, decision.StrategyKey)
 		if err != nil || destinationRaw > math.MaxUint64-minimum {

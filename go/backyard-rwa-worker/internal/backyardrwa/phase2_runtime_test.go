@@ -1,6 +1,7 @@
 package backyardrwa
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -126,6 +127,22 @@ func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T
 	if entry.ConstraintBindings[0].RoutePlanPrefixHex != "01010000007400640001" ||
 		exit.ConstraintBindings[0].RoutePlanPrefixHex != "02010000007400640001" {
 		t.Fatalf("unexpected Phase 2 route prefixes: entry=%+v exit=%+v", entry, exit)
+	}
+}
+
+func TestPhase2JupiterQuotePinsManifestVenue(t *testing.T) {
+	quote := JupiterQuote{
+		InputMint: bridgeUSDC, OutputMint: mapleSyrupUSDCUSDC.Kamino.CollateralMint,
+		InAmount: "1000000", OutAmount: "846514", OtherAmountThreshold: "842281",
+		SwapMode: "ExactIn", SlippageBPS: 50, PlatformFee: json.RawMessage("null"),
+		RoutePlan: []json.RawMessage{json.RawMessage(`{"swapInfo":{"label":"Manifest"}}`)},
+	}
+	if _, _, err := validateJupiterQuoteForRoute(quote, SwapUSDCToPrimeStep, 1_000_000, SelectedRouteID); err != nil {
+		t.Fatalf("Manifest quote rejected: %v", err)
+	}
+	quote.RoutePlan = []json.RawMessage{json.RawMessage(`{"swapInfo":{"label":"AlphaQ"}}`)}
+	if _, _, err := validateJupiterQuoteForRoute(quote, SwapUSDCToPrimeStep, 1_000_000, SelectedRouteID); err == nil {
+		t.Fatal("accepted an unreviewed selected-lane venue")
 	}
 }
 
