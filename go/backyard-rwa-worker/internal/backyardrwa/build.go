@@ -675,31 +675,37 @@ func isExactKaminoTransaction(instructions []decodedLegacyInstruction) bool {
 	if len(instructions) != 4 {
 		return false
 	}
-	for _, leg := range []kaminoPrimeUSDCLeg{kaminoLegDeposit, kaminoLegBorrow, kaminoLegRepay, kaminoLegWithdraw} {
-		expected := kaminoPrimeUSDCRefreshInstructions(leg)
-		matches := len(expected) == len(instructions)-1
-		for index := range expected {
-			if !matches || instructions[index].program != expected[index].program ||
-				!bytes.Equal(instructions[index].data, expected[index].data) ||
-				len(instructions[index].accounts) != len(expected[index].accounts) {
-				matches = false
-				break
-			}
-			for accountIndex, account := range instructions[index].accounts {
-				if account != expected[index].accounts[accountIndex].key {
+	for _, lane := range []string{RouteID, SelectedRouteID} {
+		for _, leg := range []kaminoPrimeUSDCLeg{kaminoLegDeposit, kaminoLegBorrow, kaminoLegRepay, kaminoLegWithdraw} {
+			expected := kaminoPrimeUSDCRefreshInstructionsForRoute(leg, lane)
+			matches := len(expected) == len(instructions)-1
+			for index := range expected {
+				if !matches || instructions[index].program != expected[index].program ||
+					!bytes.Equal(instructions[index].data, expected[index].data) ||
+					len(instructions[index].accounts) != len(expected[index].accounts) {
 					matches = false
 					break
 				}
+				for accountIndex, account := range instructions[index].accounts {
+					if account != expected[index].accounts[accountIndex].key {
+						matches = false
+						break
+					}
+				}
 			}
-		}
-		if matches && isExactKaminoSquadsInner(instructions[3], leg) {
-			return true
+			if matches && isExactKaminoSquadsInnerForRoute(instructions[3], leg, lane) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
 func isExactKaminoSquadsInner(outer decodedLegacyInstruction, leg kaminoPrimeUSDCLeg) bool {
+	return isExactKaminoSquadsInnerForRoute(outer, leg, RouteID)
+}
+
+func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kaminoPrimeUSDCLeg, lane string) bool {
 	// Exact Borsh envelope emitted by wrapSquadsKaminoPolicy:
 	// discriminator | vault | signer count | policy kind | interaction kind |
 	// Some(constraint indexes) | vec len | index | sync tx | inner vault |
@@ -726,7 +732,7 @@ func isExactKaminoSquadsInner(outer decodedLegacyInstruction, leg kaminoPrimeUSD
 		accountCount == 0 || 3+accountCount+2 > len(compact) {
 		return false
 	}
-	wantAccounts := kaminoLegMetas(leg)
+	wantAccounts := kaminoLegMetasForRoute(leg, lane)
 	if len(wantAccounts) != accountCount {
 		return false
 	}
@@ -757,6 +763,25 @@ func isExactKaminoSquadsInner(outer decodedLegacyInstruction, leg kaminoPrimeUSD
 }
 
 func kaminoLegMetas(leg kaminoPrimeUSDCLeg) []accountMeta {
+	return kaminoLegMetasForRoute(leg, RouteID)
+}
+
+func kaminoLegMetasForRoute(leg kaminoPrimeUSDCLeg, lane string) []accountMeta {
+	if lane == SelectedRouteID {
+		deposit, borrow, repay, withdraw := mapleKaminoMetas()
+		switch leg {
+		case kaminoLegDeposit:
+			return deposit
+		case kaminoLegBorrow:
+			return borrow
+		case kaminoLegRepay:
+			return repay
+		case kaminoLegWithdraw:
+			return withdraw
+		default:
+			return nil
+		}
+	}
 	switch leg {
 	case kaminoLegDeposit:
 		return kaminoDepositMetas()
