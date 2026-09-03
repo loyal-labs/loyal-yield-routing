@@ -1,11 +1,11 @@
 [package]
-name = "loyal-multiply-guard-deployer"
+name = "loyal-voltr-rwa-nav-adaptor-deployer"
 version = "0.1.0"
 edition = "2021"
-description = "Dry-run-first mainnet deployer for the pinned Loyal Multiply guard"
+description = "Dry-run-first mainnet deployer for the pinned Voltr RWA NAV adaptor"
 
 [[bin]]
-name = "loyal-multiply-guard-deployer"
+name = "loyal-voltr-rwa-nav-adaptor-deployer"
 path = "src/main.rs"
 
 [dependencies]

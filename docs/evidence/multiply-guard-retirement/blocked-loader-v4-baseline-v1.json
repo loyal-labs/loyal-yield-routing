@@ -1,0 +1,79 @@
+{
+  "schema": "loyal.multiply-guard-retirement-blocked-baseline.v1",
+  "verdict": "BLOCKED_LOADER_V4_INACTIVE",
+  "broadcast": false,
+  "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "finalizedContextSlot": 443868278,
+  "authority": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+  "loaderV4Feature": {
+    "address": "2aQJYqER2aKyb3cZw22v4SL2xMX7vwXBRWfvS4pTrtED",
+    "active": false
+  },
+  "signedMigrationSimulation": {
+    "broadcast": false,
+    "result": {
+      "InstructionError": [
+        0,
+        "InvalidInstructionData"
+      ]
+    },
+    "terminalLog": "Program BPFLoaderUpgradeab1e11111111111111111111111 failed: invalid instruction data",
+    "signedWireStored": false,
+    "secretsStored": false
+  },
+  "program": {
+    "address": "8moAa3vXstMPop9FtEnhTDRmcyo9HPn1CsywGMZ9K9n8",
+    "state": "legacy-retired-shell",
+    "owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+    "lamports": 1141440,
+    "dataBytes": 36
+  },
+  "programdata": {
+    "address": "Hke6Nd6i5PkAEpGZGbjLf7sEc1TM48NGGjTjRQhnqX1G",
+    "absent": true
+  },
+  "retiredHookPolicies": [
+    {
+      "address": "633UHSciFmPCr2dysjEEHq1pG1kx1E3Kk6W9d9JQSL5g",
+      "absent": true
+    },
+    {
+      "address": "GUGvmxsqAvneNJoxx1FJJPpou9hckGhkiwSQse7ijqzx",
+      "absent": true
+    }
+  ],
+  "residualAccounts": [
+    {
+      "address": "3GZpBrXGjCKELRwoK5VERYZeyKPJn7WiJAoUvkTFibU4",
+      "owner": "8moAa3vXstMPop9FtEnhTDRmcyo9HPn1CsywGMZ9K9n8",
+      "lamports": 22230240,
+      "dataBytes": 3066,
+      "dataSha256": "3a3dceee31e52abefbf591d220ac5907bd9ad8829a0ce1b9de6c07e1bd52a44f"
+    },
+    {
+      "address": "J1VEo6YTmMNfRRrZGjpkU8ZF8z2t3x5xHQySqYa2kMN2",
+      "owner": "8moAa3vXstMPop9FtEnhTDRmcyo9HPn1CsywGMZ9K9n8",
+      "lamports": 11296080,
+      "dataBytes": 1495,
+      "dataSha256": "a11b4bbbc1b8d83b87995c84875d5699af9fde3499aa617e1acb992d30cf6ef4"
+    },
+    {
+      "address": "4bSQzxkXKmezQTUyvNkMMgthsF4Wdc1J7eZr64QbxjAp",
+      "owner": "8moAa3vXstMPop9FtEnhTDRmcyo9HPn1CsywGMZ9K9n8",
+      "lamports": 90779280,
+      "dataBytes": 12915,
+      "dataSha256": "69364145d54baf5997fd6b0e6444e9cc2b866387acd0a390276b7fdc69f9120c"
+    },
+    {
+      "address": "GdMMMAQCGihyN6tTbJiXjt8zZVmbmhNeS4yCRSXhJsnT",
+      "owner": "8moAa3vXstMPop9FtEnhTDRmcyo9HPn1CsywGMZ9K9n8",
+      "lamports": 11296080,
+      "dataBytes": 1495,
+      "dataSha256": "a11b4bbbc1b8d83b87995c84875d5699af9fde3499aa617e1acb992d30cf6ef4"
+    }
+  ],
+  "expectedTargetRefundLamports": 135601680,
+  "expectedProgramShellRefundLamports": 1141440,
+  "expectedGrossRefundLamports": 136743120,
+  "resumeCondition": "Revalidate this exact prestate and resume the signed recovery ladder only after loader-v4 activates on mainnet-beta."
+}
