@@ -152,7 +152,7 @@ func TestPhase2CutoverFundsMaxLTVRepaymentBeforeCollateralRelease(t *testing.T) 
 		LTVBPS:                  4_999,
 		LiquidationThresholdBPS: 9_000,
 	})
-	if decision.Action != VoltrAllocateToSquads || decision.Reason != "phase2_cutover_fund_repayment" || decision.AmountRaw != 896_575 {
+	if decision.Action != VoltrAllocateToSquads || decision.Reason != "phase2_cutover_fund_repayment" || decision.AmountRaw != 896_575 || decision.StrategyKey != RouteID {
 		t.Fatalf("max-LTV cutover did not fund repayment first: %+v", decision)
 	}
 }
