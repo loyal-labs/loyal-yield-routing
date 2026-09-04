@@ -414,6 +414,10 @@ func TestCapitalManualRecoveryBlocksEveryNewExecutableDecision(t *testing.T) {
 		"'SWAP_PRIME_TO_USDC_STEP'",
 		"'OPEN_PRIME_USDC_STEP'",
 		"'DELEVER_PRIME_USDC_STEP'",
+		"operation_id = 'fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe'",
+		"transaction_signature = '46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz'",
+		"confirmed_slot = 444157954",
+		"recovery_reason = 'finalized_restore_actual_effect_mismatch: requested=1000000 actual=3793417 strategy_swept_to_idle'",
 	} {
 		if !strings.Contains(query, required) {
 			t.Fatalf("manual-recovery fence is missing %q", required)
@@ -421,6 +425,9 @@ func TestCapitalManualRecoveryBlocksEveryNewExecutableDecision(t *testing.T) {
 	}
 	if strings.Contains(query, "'REPORT_NAV'") {
 		t.Fatal("report-only manual recovery was made a capital execution blocker")
+	}
+	if strings.Count(query, "AND NOT (") != 1 {
+		t.Fatal("manual-recovery fence must contain exactly one pinned incident exclusion")
 	}
 }
 
