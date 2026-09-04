@@ -91,6 +91,20 @@ func TestPhase2MapleKaminoPacketUsesPinnedGraph(t *testing.T) {
 	if _, leg, err := kaminoRouteInstruction(request, SelectedRouteID); err != nil || leg != kaminoLegDeposit {
 		t.Fatalf("Maple packet did not validate as deposit: %v, %v", err, leg)
 	}
+	borrow, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if borrow.Policy != "2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV" || borrow.Accounts[12].Address != mapleObligationDebtFarm || borrow.Accounts[13].Address != mapleDebtFarm {
+		t.Fatalf("borrow packet did not pin live farm accounts: %+v", borrow)
+	}
+	repay, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repay.Policy != "AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo" || repay.Accounts[9].Address != mapleObligationDebtFarm || repay.Accounts[10].Address != mapleDebtFarm {
+		t.Fatalf("repay packet did not pin live farm accounts: %+v", repay)
+	}
 }
 
 func TestPhase2MapleSignedKaminoWirePassesPersistenceValidation(t *testing.T) {
