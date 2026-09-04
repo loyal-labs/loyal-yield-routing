@@ -36,7 +36,11 @@ type RevalidationLease struct {
 
 // ClaimRevalidation leases one runnable/recoverable row with SKIP LOCKED. A
 // crashed lease is only reclaimed in the same revalidation lane.
-func (s *Store) ClaimRevalidation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady bool) (*RevalidationLease, error) {
+func (s *Store) ClaimRevalidation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady bool, delegatedSigner ...string) (*RevalidationLease, error) {
+	signer := ""
+	if len(delegatedSigner) > 0 {
+		signer = delegatedSigner[0]
+	}
 	if s == nil || s.pool == nil || cluster == "" || owner == "" || ttl < time.Second {
 		return nil, errors.New("invalid revalidation claim")
 	}
@@ -50,6 +54,19 @@ WITH candidate AS (
  JOIN loyal_yield.managed_vaults candidate_vault ON candidate_vault.id=o.vault_id AND candidate_vault.active
  JOIN loyal_yield.route_policies candidate_policy ON candidate_policy.id=candidate_vault.active_policy_id AND candidate_policy.active
  WHERE o.cluster=$1 AND o.available_at<=clock_timestamp()
+   -- Go owns only mature same-mint Kamino preparation. Cross-mint Jupiter
+   -- rows remain in revalidate for the retained Rust route executor, which
+   -- owns executable quote preparation, signing, submission, and recovery.
+   AND o.execution_plan->>'route_kind'='same_mint'
+   AND o.execution_plan->>'source_kind'='reserve_position'
+   AND 'same_mint_kamino'=ANY(candidate_policy.route_modes)
+   AND ($5='' OR (candidate_policy.cluster=$1
+        AND candidate_policy.source_commitment='finalized'
+        AND candidate_policy.finalized_eligible
+        AND $5=ANY(candidate_policy.delegated_signers)))
+   AND o.source_reserve IS NOT NULL
+   AND o.source_liquidity_mint=o.target_liquidity_mint
+   AND o.liquidity_mint=o.target_liquidity_mint
    AND o.expires_at>clock_timestamp()+interval '60 seconds'
    AND e.expires_at>clock_timestamp()+interval '60 seconds'
    AND (o.opportunity_state IN ('revalidate','waiting_alt')
@@ -73,7 +90,7 @@ SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fen
 FROM claimed
 JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=claimed.optimizer_epoch_id
 JOIN loyal_yield.managed_vaults vault ON vault.id=claimed.vault_id AND vault.active
-JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id AND policy.active`, cluster, owner, ttl.String(), includeReady).Scan(
+JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id AND policy.active`, cluster, owner, ttl.String(), includeReady, signer).Scan(
 		&l.OpportunityID, &l.OptimizerEpochID, &l.IdempotencyKey, &l.FencingToken,
 		&l.ExpiresAt, &l.VaultID, &l.VaultPubkey, &l.VaultIndex, &l.PolicyAccount,
 		&l.DelegatedSigners, &l.SourceReserve, &l.TargetReserve, &l.LiquidityMint,
@@ -146,13 +163,67 @@ ORDER BY route_table.table_address`, cluster, minimumSlot)
 	return result, nil
 }
 
+func (s *Store) RefreshCapacityEpoch(ctx context.Context, cluster string, epoch ImmutableMarketEpoch) error {
+	for _, reserve := range epoch.Reserves {
+		if !reserve.TargetEligible || !isEarnStableMint(reserve.LiquidityMint) {
+			continue
+		}
+		if err := s.RefreshTargetCapacity(ctx, cluster, reserve.Reserve, reserve.LiquidityMint, reserve.TotalSupplyUSDMicros, reserve.Slot); err != nil {
+			return fmt.Errorf("refresh target capacity %s: %w", reserve.Reserve, err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) RefreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64) error {
+	if s == nil || s.pool == nil || cluster == "" || reserve == "" || mint == "" || supply < 0 || slot <= 0 {
+		return errors.New("invalid target capacity observation")
+	}
+	maximum := supply / 50
+	if maximum < 4_000_000 {
+		maximum = 4_000_000
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.target_capacity_frontiers(cluster,target_reserve,liquidity_mint,observed_supply_usd_micros,observed_slot,maximum_inflight_usd_micros) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(cluster,target_reserve,liquidity_mint) DO NOTHING`, cluster, reserve, mint, supply, slot, maximum); err != nil {
+		return err
+	}
+	var durableSupply, durableSlot, durableMaximum int64
+	if err := tx.QueryRow(ctx, `SELECT observed_supply_usd_micros,observed_slot,maximum_inflight_usd_micros FROM loyal_yield.target_capacity_frontiers WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3 FOR UPDATE`, cluster, reserve, mint).Scan(&durableSupply, &durableSlot, &durableMaximum); err != nil {
+		return err
+	}
+	if slot < durableSlot {
+		return errors.New("target capacity observation is older than durable telemetry")
+	}
+	if slot == durableSlot && (supply != durableSupply || maximum != durableMaximum) {
+		return errors.New("target capacity observation conflicts at the same slot")
+	}
+	if slot > durableSlot {
+		if _, err := tx.Exec(ctx, `UPDATE loyal_yield.target_capacity_frontiers SET observed_supply_usd_micros=$4,observed_slot=$5,maximum_inflight_usd_micros=$6,telemetry_version=telemetry_version+1,updated_at=clock_timestamp() WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3`, cluster, reserve, mint, supply, slot, maximum); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.target_capacity_reservations SET reservation_state='released',released_at=clock_timestamp(),release_reason='planner_target_telemetry_reflected_movement',state_version=state_version+1,updated_at=clock_timestamp() WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3 AND reservation_state='awaiting_telemetry' AND movement_slot<$4`, cluster, reserve, mint, slot); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 type RevalidationCommit struct {
-	Disposition              string
-	Preparation              *RoutePreparation
-	MissingAddresses         []string
-	ConflictKeys             []string
-	ExpectedEpochFingerprint string
-	ExpectedOpportunityKey   string
+	Disposition                   string
+	Preparation                   *RoutePreparation
+	MissingAddresses              []string
+	ConflictKeys                  []string
+	ExpectedEpochFingerprint      string
+	ExpectedOpportunityKey        string
+	FreshEconomics                bool
+	ObservedSourceAPYBPS          int64
+	ObservedTargetAPYBPS          int64
+	TargetObservedSupplyUSDMicros int64
+	TargetObservedSlot            int64
 }
 
 // CommitRevalidation performs every mutable fence and the queue transition in
@@ -226,6 +297,44 @@ FROM loyal_yield.rebalance_opportunities o WHERE o.id=$1 FOR UPDATE`, lease.Oppo
 	if input.Disposition == "waiting_alt" {
 		next = "waiting_alt"
 	} else if input.Disposition == "fused_execute" {
+		economicsPlan := lease.ExecutionPlan
+		if input.FreshEconomics {
+			if input.ObservedSourceAPYBPS < 0 || input.ObservedTargetAPYBPS < 0 || input.TargetObservedSupplyUSDMicros != observedSupply || input.TargetObservedSlot != observedSlot {
+				return errors.New("fresh route economics do not match locked capacity telemetry")
+			}
+			var durable map[string]any
+			if json.Unmarshal(economicsPlan, &durable) != nil {
+				return errors.New("durable economics are invalid")
+			}
+			durable["source_apy_bps"] = input.ObservedSourceAPYBPS
+			durable["observed_source_apy_bps"] = input.ObservedSourceAPYBPS
+			durable["observed_target_apy_bps"] = input.ObservedTargetAPYBPS
+			economicsPlan, err = json.Marshal(durable)
+			if err != nil {
+				return err
+			}
+		}
+		economics, err := recomputeReservationEconomics(lease, economicsPlan, observedSupply, committed)
+		if err != nil {
+			return fmt.Errorf("atomic capacity economics: %w", err)
+		}
+		if prep.Transaction.FeeLamports > uint64(economics.FeeCapLamports) {
+			return fmt.Errorf("compiled fee %d exceeds atomically recomputed cap %d", prep.Transaction.FeeLamports, economics.FeeCapLamports)
+		}
+		var preparedPlan map[string]any
+		if json.Unmarshal(prep.ExecutionPlan, &preparedPlan) != nil {
+			return errors.New("prepared execution plan is invalid")
+		}
+		preparedPlan["observed_target_apy_bps"] = economics.ObservedTargetAPYBPS
+		preparedPlan["source_apy_bps"] = economics.SourceAPYBPS
+		preparedPlan["target_apy_bps"] = economics.ProjectedTargetAPYBPS
+		preparedPlan["capacity_adjusted_target_apy_bps"] = economics.ProjectedTargetAPYBPS
+		preparedPlan["estimated_edge_bps"] = economics.EdgeBPS
+		preparedPlan["fee_cap_lamports"] = economics.FeeCapLamports
+		prep.ExecutionPlan, err = json.Marshal(preparedPlan)
+		if err != nil {
+			return err
+		}
 		next = "leased"
 		leaseKind = "execute"
 		leaseOwner = lease.Owner
@@ -234,7 +343,7 @@ FROM loyal_yield.rebalance_opportunities o WHERE o.id=$1 FOR UPDATE`, lease.Oppo
 		if tag, err := tx.Exec(ctx, `UPDATE loyal_yield.target_capacity_frontiers SET reservation_generation=$4,updated_at=clock_timestamp() WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3`, lease.Cluster, lease.TargetReserve, lease.LiquidityMint, reservationGeneration); err != nil || tag.RowsAffected() != 1 {
 			return errors.New("capacity frontier generation fence failed")
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.target_capacity_reservations(cluster,target_reserve,liquidity_mint,opportunity_id,principal_usd_micros,admitted_observed_supply_usd_micros,admitted_observed_slot,admitted_maximum_inflight_usd_micros,admitted_telemetry_version,reservation_generation,admitted_observed_target_apy_bps,admitted_projected_target_apy_bps,admitted_source_apy_bps,admitted_edge_bps,admitted_net_holding_gain_usd_micros,admitted_fee_cap_lamports,reservation_fencing_token) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13,$14,$15,$16)`, lease.Cluster, lease.TargetReserve, lease.LiquidityMint, lease.OpportunityID, lease.PrincipalUSDMicros, observedSupply, observedSlot, max, telemetryVersion, reservationGeneration, lease.TargetAPYBPS, lease.SourceAPYBPS, lease.EdgeBPS, lease.NetGainUSDMicros, lease.FeeCapLamports, token); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.target_capacity_reservations(cluster,target_reserve,liquidity_mint,opportunity_id,principal_usd_micros,admitted_observed_supply_usd_micros,admitted_observed_slot,admitted_maximum_inflight_usd_micros,admitted_telemetry_version,reservation_generation,admitted_observed_target_apy_bps,admitted_projected_target_apy_bps,admitted_source_apy_bps,admitted_edge_bps,admitted_net_holding_gain_usd_micros,admitted_fee_cap_lamports,reservation_fencing_token) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, lease.Cluster, lease.TargetReserve, lease.LiquidityMint, lease.OpportunityID, lease.PrincipalUSDMicros, observedSupply, observedSlot, max, telemetryVersion, reservationGeneration, economics.ObservedTargetAPYBPS, economics.ProjectedTargetAPYBPS, economics.SourceAPYBPS, economics.EdgeBPS, economics.NetGainUSDMicros, economics.FeeCapLamports, token); err != nil {
 			return fmt.Errorf("reserve target capacity: %w", err)
 		}
 		for _, key := range keys {
@@ -250,6 +359,82 @@ FROM loyal_yield.rebalance_opportunities o WHERE o.id=$1 FOR UPDATE`, lease.Oppo
 	}
 	return tx.Commit(ctx)
 }
+
+type reservationEconomics struct {
+	ObservedTargetAPYBPS  int64
+	ProjectedTargetAPYBPS int64
+	SourceAPYBPS          int64
+	EdgeBPS               int64
+	NetGainUSDMicros      int64
+	FeeCapLamports        int64
+}
+
+// recomputeReservationEconomics mirrors the Rust admission transaction. It is
+// deliberately called only after the capacity frontier is locked and all
+// active reservations have been summed by the same serializable transaction.
+func recomputeReservationEconomics(lease RevalidationLease, executionPlan json.RawMessage, observedSupply, committed int64) (reservationEconomics, error) {
+	var plan struct {
+		ObservedTargetAPYBPS            int64 `json:"observed_target_apy_bps"`
+		SourceAPYBPS                    int64 `json:"source_apy_bps"`
+		ConfidencePPM                   int64 `json:"confidence_ppm"`
+		HoldingHorizonSeconds           int64 `json:"holding_horizon_seconds"`
+		EstimatedExecutionCostUSDMicros int64 `json:"estimated_execution_cost_usd_micros"`
+	}
+	if err := json.Unmarshal(executionPlan, &plan); err != nil {
+		return reservationEconomics{}, fmt.Errorf("decode durable economics: %w", err)
+	}
+	if observedSupply < 0 || committed < 0 || lease.PrincipalUSDMicros <= 0 || plan.ObservedTargetAPYBPS < 0 || plan.SourceAPYBPS < 0 || plan.ConfidencePPM <= 0 || plan.ConfidencePPM > 1_000_000 || plan.HoldingHorizonSeconds <= 0 || plan.EstimatedExecutionCostUSDMicros < 0 {
+		return reservationEconomics{}, errors.New("invalid durable economics")
+	}
+	nextCommitted, ok := sumInt64(committed, lease.PrincipalUSDMicros)
+	if !ok {
+		return reservationEconomics{}, errors.New("committed inflow overflow")
+	}
+	projected := plan.ObservedTargetAPYBPS
+	if observedSupply > 0 && nextCommitted > 0 {
+		projectedSupply, sumOK := sumInt64(observedSupply, nextCommitted)
+		if !sumOK || projectedSupply <= 0 {
+			return reservationEconomics{}, errors.New("projected target supply overflow")
+		}
+		projected, ok = mulDivInt64(plan.ObservedTargetAPYBPS, observedSupply, projectedSupply)
+		if !ok {
+			return reservationEconomics{}, errors.New("projected target APY overflow")
+		}
+	}
+	edge := projected - plan.SourceAPYBPS
+	if edge < 1 {
+		return reservationEconomics{}, errors.New("target capacity atomic economics became ineligible")
+	}
+	gross, ok := mulMulDivInt64(lease.PrincipalUSDMicros, edge, plan.HoldingHorizonSeconds, 10_000, secondsPerYear)
+	if !ok {
+		return reservationEconomics{}, errors.New("gross holding gain overflow")
+	}
+	expected, ok := mulDivInt64(gross, plan.ConfidencePPM, 1_000_000)
+	if !ok {
+		return reservationEconomics{}, errors.New("expected holding gain overflow")
+	}
+	guardedVariable, ok := mulDivInt64(plan.EstimatedExecutionCostUSDMicros, 12_500, 10_000)
+	if !ok {
+		return reservationEconomics{}, errors.New("guarded cost overflow")
+	}
+	guardedCost, ok := sumInt64(guardedVariable, 50_000)
+	if !ok {
+		return reservationEconomics{}, errors.New("guarded cost overflow")
+	}
+	net := expected - guardedCost
+	if net < 100_000 {
+		return reservationEconomics{}, errors.New("target capacity atomic net gain became ineligible")
+	}
+	feeCap, ok := mulDivInt64(net, 50_000, 1_000_000)
+	if !ok || feeCap < 5_000 {
+		return reservationEconomics{}, errors.New("target capacity atomic fee budget became ineligible")
+	}
+	if feeCap > 50_000 {
+		feeCap = 50_000
+	}
+	return reservationEconomics{plan.ObservedTargetAPYBPS, projected, plan.SourceAPYBPS, edge, net, feeCap}, nil
+}
+
 func nonemptyPlan(v []byte) string {
 	if len(v) == 0 {
 		return "{}"

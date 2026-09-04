@@ -75,7 +75,7 @@ func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 	now := time.Now().UTC()
 	hash := strings.Repeat("a", 64)
 	accounts := []FreshAccount{{"vault", testVault, SquadsProgram, hash, 100, false, true}, {"reserve", testSource, KLendProgram, hash, 100, false, true}, {"reserve", testTarget, KLendProgram, hash, 100, false, true}, {"obligation", testPolicy, KLendProgram, hash, 100, false, true}, {"obligation", testMarket, KLendProgram, hash, 100, false, true}, {"token_account", testMint, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", hash, 100, false, true}, {"farm", testALT, farmsProgram, hash, 100, false, true}, {"farm", testSource, farmsProgram, hash, 100, false, true}, {"policy", testPolicy, SquadsProgram, hash, 100, false, true}}
-	e := FreshRouteEvidence{now, 100, 1, hash, 2, strings.Repeat("b", 64), accounts, policyBytes}
+	e := FreshRouteEvidence{ObservedAt: now, Slot: 100, OpportunityID: 1, OpportunityKey: hash, EpochID: 2, EpochFingerprint: strings.Repeat("b", 64), Accounts: accounts, PolicyData: policyBytes}
 	decoded, err := ValidateFreshRouteEvidence(e, now, hash, strings.Repeat("b", 64), testVault, route.Protected)
 	if err != nil {
 		t.Fatal(err)
@@ -134,6 +134,33 @@ func TestRustCompatibleComputePadding(t *testing.T) {
 	}
 }
 
+func TestRecomputeReservationEconomicsUsesLockedCommittedInflight(t *testing.T) {
+	plan := json.RawMessage(`{"observed_target_apy_bps":919,"source_apy_bps":81,"confidence_ppm":950000,"holding_horizon_seconds":2592000,"estimated_execution_cost_usd_micros":100000}`)
+	lease := RevalidationLease{PrincipalUSDMicros: 9_000_000_000, ExecutionPlan: plan}
+	withoutCommitted, err := recomputeReservationEconomics(lease, lease.ExecutionPlan, 1_000_000_000_000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCommitted, err := recomputeReservationEconomics(lease, lease.ExecutionPlan, 1_000_000_000_000, 20_000_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withCommitted.ProjectedTargetAPYBPS >= withoutCommitted.ProjectedTargetAPYBPS {
+		t.Fatalf("committed inflight was not priced: without=%+v with=%+v", withoutCommitted, withCommitted)
+	}
+	if withCommitted.ObservedTargetAPYBPS != 919 || withCommitted.ProjectedTargetAPYBPS == withCommitted.ObservedTargetAPYBPS {
+		t.Fatalf("observed/projected APY evidence was not kept distinct: %+v", withCommitted)
+	}
+}
+
+func TestRecomputeReservationEconomicsRejectsEdgeLostUnderLock(t *testing.T) {
+	plan := json.RawMessage(`{"observed_target_apy_bps":100,"source_apy_bps":99,"confidence_ppm":950000,"holding_horizon_seconds":2592000,"estimated_execution_cost_usd_micros":100000}`)
+	_, err := recomputeReservationEconomics(RevalidationLease{PrincipalUSDMicros: 9_000_000_000, ExecutionPlan: plan}, plan, 1_000_000_000, 20_000_000)
+	if err == nil {
+		t.Fatal("economics made ineligible by committed inflight were accepted")
+	}
+}
+
 func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -179,21 +206,22 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if err := preserveCanonicalPlan(lease.ExecutionPlan, prepared, "prepared_transaction"); err != nil {
 		t.Fatal(err)
 	}
-	commit := RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey, "source-reserve:" + source.Address}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: lease.IdempotencyKey}
+	commit := RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey, "source-reserve:" + source.Address}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: 100, ObservedTargetAPYBPS: 900, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000}
 	if err = store.CommitRevalidation(ctx, *lease, commit); err != nil {
 		t.Fatal(err)
 	}
 	var state, kind string
 	var reservations int
+	var observedTargetAPY, projectedTargetAPY, admittedSourceAPY int64
 	var persisted []byte
 	if err = store.pool.QueryRow(ctx, `SELECT opportunity_state,lease_kind,execution_plan FROM loyal_yield.rebalance_opportunities WHERE id=$1`, lease.OpportunityID).Scan(&state, &kind, &persisted); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1 AND reservation_state='active'`, lease.OpportunityID).Scan(&reservations); err != nil {
+	if err = store.pool.QueryRow(ctx, `SELECT count(*),min(admitted_observed_target_apy_bps),min(admitted_projected_target_apy_bps),min(admitted_source_apy_bps) FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1 AND reservation_state='active'`, lease.OpportunityID).Scan(&reservations, &observedTargetAPY, &projectedTargetAPY, &admittedSourceAPY); err != nil {
 		t.Fatal(err)
 	}
-	if state != "leased" || kind != "execute" || reservations != 1 || !bytes.Contains(persisted, []byte("unsigned_wire_base64")) {
-		t.Fatalf("incomplete atomic handoff state=%s kind=%s reservations=%d plan=%s", state, kind, reservations, persisted)
+	if state != "leased" || kind != "execute" || reservations != 1 || observedTargetAPY != 900 || projectedTargetAPY >= observedTargetAPY || admittedSourceAPY != 100 || !bytes.Contains(persisted, []byte("unsigned_wire_base64")) {
+		t.Fatalf("incomplete atomic handoff state=%s kind=%s reservations=%d observed=%d projected=%d source=%d plan=%s", state, kind, reservations, observedTargetAPY, projectedTargetAPY, admittedSourceAPY, persisted)
 	}
 	if err = store.CommitRevalidation(ctx, *lease, commit); err == nil {
 		t.Fatal("lost revalidation lease was accepted after fused handoff")

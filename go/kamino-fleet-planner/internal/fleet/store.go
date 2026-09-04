@@ -110,10 +110,20 @@ WHERE vault.id=$6 AND position.has_value AND position.amount_raw>0
 	return position, nil
 }
 
-// LoadMigratedFleet reads every active same-mint Kamino vault and its current
-// source position in one repeatable-read snapshot. The epoch is the complete
-// reserve denominator; no configured source/target pair can narrow this set.
-func (s *Store) LoadMigratedFleet(ctx context.Context, cluster string, epoch ImmutableMarketEpoch) ([]FleetVault, error) {
+type FleetLoadOptions struct {
+	DelegatedSigner          string
+	EnableCrossMint          bool
+	CrossMintMaxValueLossBPS uint16
+}
+
+// LoadMigratedFleet reads every active Kamino vault and its current source
+// position in one repeatable-read snapshot. Exact finalized Earn and Jupiter
+// policy bindings are loaded in that same snapshot for cross-mint candidates.
+func (s *Store) LoadMigratedFleet(ctx context.Context, cluster string, epoch ImmutableMarketEpoch, optional ...FleetLoadOptions) ([]FleetVault, error) {
+	options := FleetLoadOptions{}
+	if len(optional) > 0 {
+		options = optional[0]
+	}
 	if cluster == "" || len(epoch.Reserves) < 2 {
 		return nil, fmt.Errorf("cluster and complete reserve epoch are required")
 	}
@@ -126,6 +136,40 @@ func (s *Store) LoadMigratedFleet(ctx context.Context, cluster string, epoch Imm
 SELECT DISTINCT ON (vault.id)
        vault.id, vault.settings, vault.vault_index, vault.vault_pubkey,
        policy.id, policy.policy_account, policy.kamino_markets,
+       policy.authority, policy.delegated_signers,
+       COALESCE((SELECT jsonb_agg(jsonb_build_object(
+          'policy_account',ep.policy_account,'observed_slot',ep.last_seen_slot,
+          'observed_signature',ep.last_seen_signature,'source_commitment',ep.source_commitment,
+          'threshold',ep.threshold,'stable_mints',ep.stable_mints,
+          'kamino_markets',ep.kamino_markets,'kamino_liquidity_mints',ep.kamino_liquidity_mints)
+          ORDER BY ep.last_seen_slot DESC,ep.policy_account)
+        FROM loyal_yield.route_policies ep
+        WHERE $3 AND $2<>'' AND ep.active AND ep.finalized_eligible
+          AND ep.source_commitment='finalized' AND ep.cluster=$1
+          AND ep.settings=vault.settings AND ep.authority=policy.authority
+          AND ep.vault_index=vault.vault_index AND ep.vault_pubkey=vault.vault_pubkey
+          AND $2=ANY(ep.delegated_signers) AND 'same_mint_kamino'=ANY(ep.route_modes)), '[]'::jsonb),
+       COALESCE((SELECT jsonb_agg(jsonb_build_object(
+          'policy_account',sp.policy_account,'source_shard',sp.source_shard,
+          'enrollment_generation',oi.generation,'observed_slot',sp.last_seen_slot,
+          'observed_signature',sp.last_seen_signature,'source_commitment',sp.source_commitment,
+          'max_slippage_bps',sp.max_slippage_bps,
+          'daily_source_mint_spending_cap',sp.daily_source_mint_spending_cap,
+          'manifest_fingerprint',sp.manifest_fingerprint)
+          ORDER BY sp.source_shard,sp.last_seen_slot DESC,sp.policy_account)
+        FROM loyal_yield.cross_mint_swap_policies sp
+        JOIN loyal_yield.cross_mint_vault_opt_ins oi ON oi.cluster=sp.cluster
+          AND oi.settings=sp.settings AND oi.vault_index=sp.vault_index
+          AND oi.vault_pubkey=sp.vault_pubkey AND oi.enabled
+        WHERE $3 AND $2<>'' AND sp.active AND sp.start_eligible
+          AND sp.source_commitment='finalized' AND sp.last_mutation IN ('create','update')
+          AND sp.cluster=$1 AND sp.settings=vault.settings AND sp.authority=policy.authority
+          AND sp.vault_index=vault.vault_index AND sp.vault_pubkey=vault.vault_pubkey
+          AND sp.delegated_signer=$2
+          AND sp.max_slippage_bps=oi.max_slippage_bps
+          AND sp.daily_source_mint_spending_cap=oi.daily_source_mint_spending_cap
+          AND ((sp.source_shard='classic' AND sp.policy_account=oi.classic_policy_account AND sp.policy_seed=oi.classic_policy_seed)
+            OR (sp.source_shard='token_2022' AND sp.policy_account=oi.token_2022_policy_account AND sp.policy_seed=oi.token_2022_policy_seed))), '[]'::jsonb),
        position.reserve, position.market, position.liquidity_mint,
        position.amount_raw, position.snapshot_id, position.observed_slot,
        position.observed_at, position.planning_metadata
@@ -133,6 +177,8 @@ FROM loyal_yield.managed_vaults vault
 JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id
 JOIN loyal_yield.vault_reserve_positions_current position ON position.vault_id=vault.id
 WHERE vault.active AND policy.active
+  AND ($2='' OR (policy.cluster=$1 AND policy.source_commitment='finalized'
+       AND policy.finalized_eligible AND $2=ANY(policy.delegated_signers)))
   AND 'same_mint_kamino'=ANY(policy.route_modes)
   AND position.has_value AND position.amount_raw>0
   AND position.liquidity_mint=ANY(policy.stable_mints)
@@ -141,7 +187,7 @@ WHERE vault.active AND policy.active
   AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_opportunities o WHERE o.cluster=$1 AND o.vault_id=vault.id AND o.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created'))
   AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions d WHERE d.vault_id=vault.id AND d.status::text IN ('planned','simulating','ready','submitted','confirming'))
   AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions d WHERE d.vault_id=vault.id AND d.status::text='confirmed' AND d.source_reserve=position.reserve AND d.updated_at>=clock_timestamp()-interval '5 minutes')
-ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster)
+ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options.DelegatedSigner, options.EnableCrossMint)
 	if err != nil {
 		return nil, fmt.Errorf("load migrated fleet: %w", err)
 	}
@@ -149,9 +195,10 @@ ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster)
 	var fleet []FleetVault
 	for rows.Next() {
 		var p VaultPosition
-		var metadata json.RawMessage
-		var markets []string
-		if err := rows.Scan(&p.VaultID, &p.Settings, &p.VaultIndex, &p.VaultPubkey, &p.PolicyID, &p.PolicyAccount, &markets, &p.SourceReserve, &p.Market, &p.Mint, &p.SourceCollateralAmountRaw, &p.SnapshotID, &p.ObservedSlot, &p.ObservedAt, &metadata); err != nil {
+		var metadata, earnPolicyJSON, swapPolicyJSON json.RawMessage
+		var markets, delegatedSigners []string
+		var authority string
+		if err := rows.Scan(&p.VaultID, &p.Settings, &p.VaultIndex, &p.VaultPubkey, &p.PolicyID, &p.PolicyAccount, &markets, &authority, &delegatedSigners, &earnPolicyJSON, &swapPolicyJSON, &p.SourceReserve, &p.Market, &p.Mint, &p.SourceCollateralAmountRaw, &p.SnapshotID, &p.ObservedSlot, &p.ObservedAt, &metadata); err != nil {
 			return nil, err
 		}
 		var evidence struct {
@@ -183,7 +230,11 @@ ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster)
 				allowed = append(allowed, reserve.Reserve)
 			}
 		}
-		fleet = append(fleet, FleetVault{Position: p, AllowedTargets: canonicalStrings(allowed)})
+		crossTargets, err := crossMintTargets(epoch, p, authority, delegatedSigners, options, earnPolicyJSON, swapPolicyJSON)
+		if err != nil {
+			return nil, fmt.Errorf("vault %d cross-mint policy evidence: %w", p.VaultID, err)
+		}
+		fleet = append(fleet, FleetVault{Position: p, AllowedTargets: canonicalStrings(allowed), CrossMintTargets: crossTargets, CrossMintMaxValueLossBPS: options.CrossMintMaxValueLossBPS})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -226,6 +277,103 @@ SELECT reserve,sum(inflow),sum(outflow) FROM (
 		return nil, err
 	}
 	return fleet, nil
+}
+
+type observedEarnPolicy struct {
+	PolicyAccount        string   `json:"policy_account"`
+	ObservedSlot         int64    `json:"observed_slot"`
+	ObservedSignature    string   `json:"observed_signature"`
+	SourceCommitment     string   `json:"source_commitment"`
+	Threshold            int      `json:"threshold"`
+	StableMints          []string `json:"stable_mints"`
+	KaminoMarkets        []string `json:"kamino_markets"`
+	KaminoLiquidityMints []string `json:"kamino_liquidity_mints"`
+}
+
+type observedSwapPolicy struct {
+	PolicyAccount              string `json:"policy_account"`
+	SourceShard                string `json:"source_shard"`
+	EnrollmentGeneration       int64  `json:"enrollment_generation"`
+	ObservedSlot               int64  `json:"observed_slot"`
+	ObservedSignature          string `json:"observed_signature"`
+	SourceCommitment           string `json:"source_commitment"`
+	MaxSlippageBPS             int64  `json:"max_slippage_bps"`
+	DailySourceMintSpendingCap int64  `json:"daily_source_mint_spending_cap"`
+	ManifestFingerprint        string `json:"manifest_fingerprint"`
+}
+
+func crossMintTargets(epoch ImmutableMarketEpoch, position VaultPosition, authority string, delegated []string, options FleetLoadOptions, earnRaw, swapRaw json.RawMessage) (map[string]CrossMintPolicyBindings, error) {
+	result := map[string]CrossMintPolicyBindings{}
+	if !options.EnableCrossMint || options.DelegatedSigner == "" || !contains(delegated, options.DelegatedSigner) {
+		return result, nil
+	}
+	var earn []observedEarnPolicy
+	var swaps []observedSwapPolicy
+	if err := json.Unmarshal(earnRaw, &earn); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(swapRaw, &swaps); err != nil {
+		return nil, err
+	}
+	_ = authority // SQL exact-matches this immutable base-policy field.
+	if len(swaps) != 2 || position.VaultIndex < 0 || position.VaultIndex > 255 {
+		return result, nil
+	}
+	byShard := map[string]observedSwapPolicy{}
+	for _, policy := range swaps {
+		if policy.SourceCommitment != "finalized" || policy.PolicyAccount == "" || policy.ObservedSlot <= 0 || policy.ObservedSignature == "" ||
+			policy.MaxSlippageBPS <= 0 || policy.MaxSlippageBPS > 10_000 || policy.DailySourceMintSpendingCap <= 0 || len(policy.ManifestFingerprint) != 64 ||
+			(policy.SourceShard != "classic" && policy.SourceShard != "token_2022") {
+			return result, nil
+		}
+		if _, duplicate := byShard[policy.SourceShard]; duplicate {
+			return result, nil
+		}
+		byShard[policy.SourceShard] = policy
+	}
+	classic, classicOK := byShard["classic"]
+	token2022, token2022OK := byShard["token_2022"]
+	if !classicOK || !token2022OK || classic.MaxSlippageBPS != token2022.MaxSlippageBPS ||
+		classic.DailySourceMintSpendingCap != token2022.DailySourceMintSpendingCap || classic.EnrollmentGeneration != token2022.EnrollmentGeneration {
+		return result, nil
+	}
+	swap := classic
+	if position.Mint == CashMint || position.Mint == USDGMint || position.Mint == PYUSDMint {
+		swap = token2022
+	}
+	exactEarn := func(mint, market string) (observedEarnPolicy, bool) {
+		for _, policy := range earn {
+			if policy.Threshold == 1 && policy.SourceCommitment == "finalized" && policy.PolicyAccount != "" && policy.ObservedSlot > 0 &&
+				policy.ObservedSignature != "" && contains(policy.StableMints, mint) && contains(policy.KaminoLiquidityMints, mint) && contains(policy.KaminoMarkets, market) {
+				return policy, true
+			}
+		}
+		return observedEarnPolicy{}, false
+	}
+	withdraw, ok := exactEarn(position.Mint, position.Market)
+	if !ok {
+		return result, nil
+	}
+	for _, target := range epoch.Reserves {
+		if !target.TargetEligible || target.Market == nil || target.LiquidityMint == position.Mint || !isEarnStableMint(target.LiquidityMint) {
+			continue
+		}
+		deposit, ok := exactEarn(target.LiquidityMint, *target.Market)
+		if !ok {
+			continue
+		}
+		bindings := CrossMintPolicyBindings{
+			Settings: position.Settings, VaultIndex: uint8(position.VaultIndex), VaultPubkey: position.VaultPubkey, DelegatedSigner: options.DelegatedSigner,
+			Withdraw: CrossMintEarnPolicyBinding{PolicyAccount: withdraw.PolicyAccount, ObservedSlot: uint64(withdraw.ObservedSlot), ObservedSignature: withdraw.ObservedSignature, SourceCommitment: withdraw.SourceCommitment, ConstraintIndex: 0},
+			Swap:     CrossMintSwapPolicyBinding{PolicyAccount: swap.PolicyAccount, SourceShard: swap.SourceShard, EnrollmentGeneration: swap.EnrollmentGeneration, ObservedSlot: uint64(swap.ObservedSlot), ObservedSignature: swap.ObservedSignature, SourceCommitment: swap.SourceCommitment, MaxSlippageBPS: uint16(swap.MaxSlippageBPS), DailySourceMintSpendingCap: uint64(swap.DailySourceMintSpendingCap), ManifestFingerprint: swap.ManifestFingerprint},
+			Deposit:  CrossMintEarnPolicyBinding{PolicyAccount: deposit.PolicyAccount, ObservedSlot: uint64(deposit.ObservedSlot), ObservedSignature: deposit.ObservedSignature, SourceCommitment: deposit.SourceCommitment, ConstraintIndex: 1},
+		}
+		if bindings.Withdraw.PolicyAccount == bindings.Swap.PolicyAccount || bindings.Deposit.PolicyAccount == bindings.Swap.PolicyAccount {
+			continue
+		}
+		result[target.Reserve] = bindings
+	}
+	return result, nil
 }
 
 func jsonInt64(raw json.RawMessage) (int64, error) {
@@ -293,13 +441,25 @@ func (s *Store) Publish(ctx context.Context, cluster string, epoch ImmutableMark
 	if err := epoch.Validate(); err != nil {
 		return PublishResult{}, err
 	}
-	epochExpires, complete := epoch.MintExpiresAt(decision.Mint)
-	if !complete || time.Until(epochExpires) < minimumPublicationLifetime {
+	sourceMint, targetMint := decision.SourceMint, decision.TargetMint
+	if sourceMint == "" {
+		sourceMint = decision.Mint
+	}
+	if targetMint == "" {
+		targetMint = decision.Mint
+	}
+	sourceExpires, sourceComplete := epoch.MintExpiresAt(sourceMint)
+	targetExpires, targetComplete := epoch.MintExpiresAt(targetMint)
+	epochExpires := sourceExpires
+	if targetExpires.Before(epochExpires) {
+		epochExpires = targetExpires
+	}
+	if !sourceComplete || !targetComplete || time.Until(epochExpires) < minimumPublicationLifetime {
 		return PublishResult{Reason: "epoch_lifetime_too_short"}, nil
 	}
 	sourceEvidence, sourcePresent := epoch.Reserve(decision.SourceReserve)
 	targetEvidence, targetPresent := epoch.Reserve(decision.TargetReserve)
-	if !sourcePresent || !targetPresent || !targetEvidence.TargetEligible || sourceEvidence.LiquidityMint != decision.Mint || targetEvidence.LiquidityMint != decision.Mint {
+	if !sourcePresent || !targetPresent || !targetEvidence.TargetEligible || sourceEvidence.LiquidityMint != sourceMint || targetEvidence.LiquidityMint != targetMint {
 		return PublishResult{}, fmt.Errorf("opportunity reserves are not covered by the complete immutable mint frontier")
 	}
 	durableEpoch := epoch.DurableEvidence()
@@ -307,7 +467,12 @@ func (s *Store) Publish(ctx context.Context, cluster string, epoch ImmutableMark
 	if err != nil {
 		return PublishResult{}, err
 	}
-	planJSON, err := canonicalSameMintExecutionPlan(position, decision, sourceEvidence.SupplyAPYBPS, targetEvidence.SupplyAPYBPS, targetEvidence.Slot, targetEvidence.ObservedAt)
+	var planJSON json.RawMessage
+	if decision.RouteKind == "cross_mint_jupiter" {
+		planJSON, err = canonicalCrossMintExecutionPlan(position, decision, sourceEvidence.SupplyAPYBPS, targetEvidence.SupplyAPYBPS, targetEvidence.Slot, targetEvidence.ObservedAt)
+	} else {
+		planJSON, err = canonicalSameMintExecutionPlan(position, decision, sourceEvidence.SupplyAPYBPS, targetEvidence.SupplyAPYBPS, targetEvidence.Slot, targetEvidence.ObservedAt)
+	}
 	if err != nil {
 		return PublishResult{}, err
 	}
@@ -375,7 +540,7 @@ FROM candidate LIMIT 1`, cluster, epochKey, *durableEpoch.MaximumMarketSlot, dur
 	var opportunityID int64
 	err = tx.QueryRow(ctx, `INSERT INTO loyal_yield.rebalance_opportunities
 (cluster,idempotency_key,rediscovery_key,attempt_generation,vault_id,source_snapshot_id,optimizer_epoch_id,source_reserve,target_reserve,liquidity_mint,source_liquidity_mint,target_liquidity_mint,amount_raw,principal_usd_micros,source_apy_bps,target_apy_bps,estimated_edge_bps,estimated_cost_lamports,annual_yield_gain_usd_micros,expected_net_gain_usd_micros,economic_priority,priority_version,operation_class,opportunity_state,execution_plan,available_at,expires_at)
-VALUES ($1,$2,$2,1,$3,$4,$5,$6,$7,$8,$8,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'lost-yield-service-net-reserve-capacity-v3','yield_optimization','revalidate',$18,clock_timestamp(),$19) RETURNING id`, cluster, key, decision.VaultID, decision.SourceSnapshotID, epochID, decision.SourceReserve, decision.TargetReserve, decision.Mint, decision.AmountRaw, decision.PrincipalUSDMicros, decision.SourceAPYBPS, decision.TargetAPYBPS, decision.EdgeBPS, decision.EstimatedCostLamports, decision.AnnualYieldGainUSDMicros, decision.ExpectedNetGainUSDMicros, decision.EconomicPriority, planJSON, epochExpires).Scan(&opportunityID)
+VALUES ($1,$2,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'lost-yield-service-net-reserve-capacity-v3','yield_optimization','revalidate',$20,clock_timestamp(),$21) RETURNING id`, cluster, key, decision.VaultID, decision.SourceSnapshotID, epochID, decision.SourceReserve, decision.TargetReserve, targetMint, sourceMint, targetMint, decision.AmountRaw, decision.PrincipalUSDMicros, decision.SourceAPYBPS, decision.TargetAPYBPS, decision.EdgeBPS, decision.EstimatedCostLamports, decision.AnnualYieldGainUSDMicros, decision.ExpectedNetGainUSDMicros, decision.EconomicPriority, planJSON, epochExpires).Scan(&opportunityID)
 	if err != nil {
 		return PublishResult{}, err
 	}

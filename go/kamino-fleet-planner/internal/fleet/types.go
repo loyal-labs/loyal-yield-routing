@@ -8,6 +8,11 @@ import (
 const (
 	KaminoProgram                            = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 	USDCMint                                 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	CashMint                                 = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"
+	USDGMint                                 = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+	PYUSDMint                                = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+	USDTMint                                 = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+	USDSMint                                 = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
 	reserveLength                            = 8624
 	amountSemanticsKaminoCollateralDeposited = "kamino_obligation_collateral_deposited_amount"
 	amountSemanticsRedeemableLiquidity       = "redeemable_liquidity_amount"
@@ -38,6 +43,7 @@ type MarketSnapshot struct {
 	Cluster          string                  `json:"-"`
 	OptimizerEpochID int64                   `json:"optimizerEpochId"`
 	ExpiresAt        time.Time               `json:"expiresAt"`
+	MintExpiresAt    map[string]time.Time    `json:"-"`
 	Slot             int64                   `json:"slot"`
 	ObservedAt       time.Time               `json:"observedAt"`
 	Hash             string                  `json:"hash"`
@@ -201,6 +207,38 @@ func (e ImmutableMarketEpoch) Reserve(address string) (MarketEpochReserve, bool)
 	return MarketEpochReserve{}, false
 }
 
+var earnStableMints = []string{CashMint, USDGMint, PYUSDMint, USDCMint, USDTMint, USDSMint}
+
+type CrossMintEarnPolicyBinding struct {
+	PolicyAccount     string `json:"policy_account"`
+	ObservedSlot      uint64 `json:"observed_slot"`
+	ObservedSignature string `json:"observed_signature"`
+	SourceCommitment  string `json:"source_commitment"`
+	ConstraintIndex   uint8  `json:"constraint_index"`
+}
+
+type CrossMintSwapPolicyBinding struct {
+	PolicyAccount              string `json:"policy_account"`
+	SourceShard                string `json:"source_shard"`
+	EnrollmentGeneration       int64  `json:"enrollment_generation"`
+	ObservedSlot               uint64 `json:"observed_slot"`
+	ObservedSignature          string `json:"observed_signature"`
+	SourceCommitment           string `json:"source_commitment"`
+	MaxSlippageBPS             uint16 `json:"max_slippage_bps"`
+	DailySourceMintSpendingCap uint64 `json:"daily_source_mint_spending_cap"`
+	ManifestFingerprint        string `json:"manifest_fingerprint"`
+}
+
+type CrossMintPolicyBindings struct {
+	Settings        string                     `json:"settings"`
+	VaultIndex      uint8                      `json:"vault_index"`
+	VaultPubkey     string                     `json:"vault_pubkey"`
+	DelegatedSigner string                     `json:"delegated_signer"`
+	Withdraw        CrossMintEarnPolicyBinding `json:"withdraw"`
+	Swap            CrossMintSwapPolicyBinding `json:"swap"`
+	Deposit         CrossMintEarnPolicyBinding `json:"deposit"`
+}
+
 type VaultPosition struct {
 	VaultID                         int64
 	Settings                        string
@@ -227,6 +265,7 @@ type VaultPosition struct {
 
 type Decision struct {
 	Eligible                 bool
+	RouteKind                string
 	Reason                   string
 	VaultID                  int64
 	SourceSnapshotID         int64
@@ -234,6 +273,10 @@ type Decision struct {
 	SourceReserve            string
 	TargetReserve            string
 	Mint                     string
+	SourceMint               string
+	TargetMint               string
+	PolicyBindings           *CrossMintPolicyBindings
+	CrossMintMaxValueLossBPS uint16
 	AmountRaw                int64
 	PrincipalUSDMicros       int64
 	SourceAPYBPS             int64

@@ -438,6 +438,7 @@ struct FleetWorkerOptions {
     fused_execute_concurrency: usize,
     lease_seconds: i64,
     poll_interval_milliseconds: u64,
+    route_kind: Option<String>,
     once: bool,
 }
 
@@ -2674,6 +2675,15 @@ fn run_startup_probe(args: &[String]) -> Result<bool, Box<dyn Error>> {
         return Ok(true);
     }
     let role_probe = match args {
+        [fleet_worker, lane, route_flag, route_kind, role_probe]
+            if fleet_worker == "--fleet-worker"
+                && lane == "revalidate"
+                && route_flag == "--route-kind"
+                && route_kind == "cross_mint_jupiter"
+                && role_probe == "--role-probe" =>
+        {
+            Some(FleetWorkerRole::Revalidator)
+        }
         [fleet_worker, lane, role_probe]
             if fleet_worker == "--fleet-worker"
                 && lane == "revalidate"
@@ -3193,6 +3203,7 @@ fn parse_fleet_worker_options(
     };
     let mut lease_seconds = DEFAULT_FLEET_WORKER_LEASE_SECONDS;
     let mut poll_interval_milliseconds = DEFAULT_FLEET_WORKER_POLL_MILLISECONDS;
+    let mut route_kind = None;
     let mut once = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -3223,6 +3234,9 @@ fn parse_fleet_worker_options(
                     .ok_or("--poll-interval-milliseconds requires a value")?
                     .parse()?;
             }
+            "--route-kind" => {
+                route_kind = Some(args.next().ok_or("--route-kind requires a value")?);
+            }
             "--once" => once = true,
             other => return Err(format!("unknown fleet-worker argument: {other}").into()),
         }
@@ -3237,6 +3251,15 @@ fn parse_fleet_worker_options(
     }
     if claim_kind == RebalanceOpportunityClaimKind::Execute && fused_execute_concurrency != 0 {
         return Err("the execute lane cannot enable fused revalidate execution".into());
+    }
+    if route_kind
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "same_mint" | "cross_mint_jupiter"))
+    {
+        return Err("--route-kind requires same_mint or cross_mint_jupiter".into());
+    }
+    if claim_kind == RebalanceOpportunityClaimKind::Execute && route_kind.is_some() {
+        return Err("the retained execute lane must remain unfiltered".into());
     }
     if !(30..=900).contains(&lease_seconds) {
         return Err("fleet worker lease seconds must be in 30..=900".into());
@@ -3264,6 +3287,7 @@ fn parse_fleet_worker_options(
         fused_execute_concurrency,
         lease_seconds,
         poll_interval_milliseconds,
+        route_kind,
         once,
     })
 }
@@ -3569,15 +3593,28 @@ async fn run_fleet_worker(
         while tasks.len() < options.concurrency {
             let lease_expires_at = Utc::now() + ChronoDuration::seconds(options.lease_seconds);
             let claim_capacity = i64::try_from(options.concurrency - tasks.len())?;
-            let leases = client
-                .lease_rebalance_opportunity_batch(
-                    &options.cluster,
-                    &options.owner,
-                    options.claim_kind,
-                    claim_capacity,
-                    lease_expires_at,
-                )
-                .await?;
+            let leases = if let Some(route_kind) = options.route_kind.as_deref() {
+                client
+                    .lease_rebalance_opportunity_batch_for_route_kind(
+                        &options.cluster,
+                        &options.owner,
+                        options.claim_kind,
+                        claim_capacity,
+                        lease_expires_at,
+                        route_kind,
+                    )
+                    .await?
+            } else {
+                client
+                    .lease_rebalance_opportunity_batch(
+                        &options.cluster,
+                        &options.owner,
+                        options.claim_kind,
+                        claim_capacity,
+                        lease_expires_at,
+                    )
+                    .await?
+            };
             if leases.is_empty() {
                 break;
             }

@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,79 @@ import (
 	"testing"
 	"time"
 )
+
+func TestLoadMigratedFleetBuildsFinalizedCrossMintPolicyBindings(t *testing.T) {
+	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("FLEET_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := OpenStore(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	cluster, settings, authority := "cross-mint-"+suffix, "settings:"+suffix, "authority:"+suffix
+	market, targetMarket := testIdentity(91), testIdentity(92)
+	source := ReserveIdentity{Address: testIdentity(93), Market: market, Mint: USDCMint}
+	target := ReserveIdentity{Address: testIdentity(94), Market: targetMarket, Mint: PYUSDMint}
+	vaultID := seedWorkerVault(t, ctx, store, suffix, market, source.Address)
+	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.route_policies SET cluster=$2,source_commitment='finalized',finalized_eligible=true,stable_mints=ARRAY[$3,$4]::text[],kamino_markets=ARRAY[$5,$6]::text[],kamino_liquidity_mints=ARRAY[$3,$4]::text[] WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, vaultID, cluster, USDCMint, PYUSDMint, market, targetMarket); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.cross_mint_vault_opt_ins(cluster,settings,vault_index,vault_pubkey,enabled,classic_policy_account,classic_policy_seed,token_2022_policy_account,token_2022_policy_seed,max_slippage_bps,daily_source_mint_spending_cap,generation) VALUES($1,$2,0,$3,true,$4,11,$5,12,50,1000000000000,7)`, cluster, settings, "vault:"+suffix, "classic:"+suffix, "token2022:"+suffix); err != nil {
+		t.Fatal(err)
+	}
+	for _, shard := range []struct {
+		name, account string
+		seed          int64
+	}{{"classic", "classic:" + suffix, 11}, {"token_2022", "token2022:" + suffix, 12}} {
+		if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.cross_mint_swap_policies(cluster,settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,delegated_signer,source_shard,max_slippage_bps,daily_source_mint_spending_cap,manifest_fingerprint,active,start_eligible,last_mutation,source_commitment,last_seen_slot,last_seen_signature) VALUES($1,$2,$3,$4,$5,0,$6,$3,$7,50,1000000000000,$8,true,true,'create','finalized',1000,$9)`, cluster, settings, authority, shard.seed, shard.account, "vault:"+suffix, shard.name, strings.Repeat("a", 64), "swap-signature:"+shard.name+suffix); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	snapshot := MarketSnapshot{Slot: 1000, ObservedAt: now, Reserves: map[string]ReserveState{
+		source.Address: {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)},
+		target.Address: {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)},
+	}}
+	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
+	fleet, err := store.LoadMigratedFleet(ctx, cluster, epoch, FleetLoadOptions{DelegatedSigner: authority, EnableCrossMint: true, CrossMintMaxValueLossBPS: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fleet) != 1 {
+		t.Fatalf("loaded %d vaults, want 1", len(fleet))
+	}
+	binding, ok := fleet[0].CrossMintTargets[target.Address]
+	if !ok || binding.Swap.SourceShard != "classic" || binding.Swap.EnrollmentGeneration != 7 || binding.Withdraw.ConstraintIndex != 0 || binding.Deposit.ConstraintIndex != 1 || binding.Withdraw.SourceCommitment != "finalized" || binding.Deposit.SourceCommitment != "finalized" {
+		t.Fatalf("incomplete cross-mint binding: %+v", binding)
+	}
+	snapshot.Cluster = cluster
+	snapshot.Hash = epoch.Fingerprint
+	snapshot.OptimizerEpochID, err = store.EnsureOptimizerEpoch(ctx, cluster, epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.ExpiresAt = epoch.ExpiresAt
+	snapshot.MintExpiresAt = map[string]time.Time{USDCMint: epoch.OptimizerEnvelopeExpiresAt(), PYUSDMint: epoch.OptimizerEnvelopeExpiresAt()}
+	plan, err := PlanFleet(snapshot, fleet)
+	if err != nil || len(plan.Opportunities) != 1 || !bytes.Contains(plan.Opportunities[0].ExecutionPlan, []byte(`"route_kind":"cross_mint_jupiter"`)) {
+		t.Fatalf("cross-mint plan was not executable: %+v %v", plan, err)
+	}
+	published, err := store.Publish(ctx, cluster, epoch, fleet[0].Position, plan.Opportunities[0].Decision)
+	if err != nil || !published.Inserted {
+		t.Fatalf("cross-mint publish failed: %+v decision=%+v error=%v", published, plan.Opportunities[0].Decision, err)
+	}
+	var queueMint, sourceMint, targetMint, key, routeKind string
+	if err = store.pool.QueryRow(ctx, `SELECT liquidity_mint,source_liquidity_mint,target_liquidity_mint,idempotency_key,execution_plan->>'route_kind' FROM loyal_yield.rebalance_opportunities WHERE id=$1`, published.OpportunityID).Scan(&queueMint, &sourceMint, &targetMint, &key, &routeKind); err != nil {
+		t.Fatal(err)
+	}
+	if queueMint != PYUSDMint || sourceMint != USDCMint || targetMint != PYUSDMint || key != plan.Opportunities[0].IdempotencyKey || routeKind != "cross_mint_jupiter" {
+		t.Fatalf("cross-mint durable handoff drifted: queue=%s source=%s target=%s key=%s route=%s", queueMint, sourceMint, targetMint, key, routeKind)
+	}
+}
 
 func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")

@@ -90,8 +90,9 @@ type MarketEpochFixture struct {
 // verification view as the Rust planner. It is intentionally read-only: direct
 // RPC observations must not invent monitor state_event_id values.
 type MarketEvidenceStore struct {
-	pool   *pgxpool.Pool
-	schema string
+	pool         *pgxpool.Pool
+	schema       string
+	enabledMints []string
 }
 
 func OpenMarketEvidenceStore(ctx context.Context, databaseURL, schema string) (*MarketEvidenceStore, error) {
@@ -111,7 +112,22 @@ func OpenMarketEvidenceStore(ctx context.Context, databaseURL, schema string) (*
 		pool.Close()
 		return nil, fmt.Errorf("ping market evidence database: %w", err)
 	}
-	return &MarketEvidenceStore{pool: pool, schema: schema}, nil
+	return &MarketEvidenceStore{pool: pool, schema: schema, enabledMints: append([]string(nil), earnStableMints...)}, nil
+}
+
+func (s *MarketEvidenceStore) SetEnabledMints(mints []string) error {
+	if len(mints) == 0 {
+		mints = earnStableMints
+	}
+	seen := map[string]bool{}
+	for _, mint := range mints {
+		if !isEarnStableMint(mint) || seen[mint] {
+			return fmt.Errorf("enabled stable mints must be unique members of the Earn registry")
+		}
+		seen[mint] = true
+	}
+	s.enabledMints = append([]string(nil), mints...)
+	return nil
 }
 
 func (s *MarketEvidenceStore) Close() {
@@ -203,11 +219,15 @@ ORDER BY liquidity_mint, market, reserve`, s.schema)
 }
 
 func (s *MarketEvidenceStore) LoadImmutableMarketEpoch(ctx context.Context) (ImmutableMarketEpoch, error) {
-	snapshot, err := s.LoadSnapshot(ctx, []string{USDCMint}, []string{"safe"})
+	// Rust builds one frontier for the complete code-owned Earn stablecoin
+	// registry. Incomplete mints retain blockers while complete mints remain
+	// routable, so the planner can safely cover same- and cross-mint fleets.
+	enabledMints := append([]string(nil), s.enabledMints...)
+	snapshot, err := s.LoadSnapshot(ctx, enabledMints, []string{"safe"})
 	if err != nil {
 		return ImmutableMarketEpoch{}, fmt.Errorf("load durable market evidence: %w", err)
 	}
-	return BuildImmutableMarketEpoch(snapshot, []string{USDCMint})
+	return BuildImmutableMarketEpoch(snapshot, enabledMints)
 }
 
 func BuildImmutableMarketEpoch(snapshot SupportedReserveMarketSnapshot, enabledMints []string) (ImmutableMarketEpoch, error) {
@@ -264,7 +284,7 @@ func BuildImmutableMarketEpoch(snapshot SupportedReserveMarketSnapshot, enabledM
 			mintWideBlocked = true
 			coverage.Blockers = append(coverage.Blockers, blocker("missing_catalog", nil, "active safe catalog has no reserve for enabled mint "+mint))
 		}
-		if mint != USDCMint {
+		if !isEarnStableMint(mint) {
 			mintWideBlocked = true
 			coverage.Blockers = append(coverage.Blockers, blocker("missing_stable_valuation", nil, "enabled mint "+mint+" has no code-owned stable valuation"))
 		}

@@ -27,6 +27,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer marketEvidence.Close()
+	if err := marketEvidence.SetEnabledMints(config.EnabledStableMints); err != nil {
+		log.Fatal(err)
+	}
 	worker, err := fleet.NewWorker(config, store, fleet.NewRPCClient(config.RPCURL))
 	if err != nil {
 		log.Fatal(err)
@@ -39,7 +42,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		revalidator, err := fleet.NewRevalidator(store, fleet.NewRPCClient(config.RPCURL), proxy, fleet.RevalidatorConfig{Owner: config.RevalidationOwner, DelegatedSigner: config.DelegatedSigner, LeaseTTL: config.RevalidationLeaseTTL, ComputeLimit: config.RevalidationComputeLimit, FusedExecute: config.FusedExecute})
+		revalidator, err := fleet.NewRevalidator(store, fleet.NewRPCClient(config.RPCURL), proxy, fleet.RevalidatorConfig{Owner: config.RevalidationOwner, DelegatedSigner: config.DelegatedSigner, LeaseTTL: config.RevalidationLeaseTTL, ComputeLimit: config.RevalidationComputeLimit, SlotDuration: config.SlotDuration, FusedExecute: config.FusedExecute})
 		if err != nil {
 			log.Fatal(err)
 		}

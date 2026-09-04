@@ -24,7 +24,7 @@ scripts/verify-kamino-planner-revalidator-parity.sh --self-test
 scripts/verify-kamino-planner-revalidator-parity.sh \
   --compare /path/to/rust.json /path/to/go.json
 
-# Run the current local candidate and, once implemented, both artifact producers.
+# Run the complete disposable-PostgreSQL lifecycle and both artifact producers.
 scripts/verify-kamino-planner-revalidator-parity.sh --audit-current
 ```
 
@@ -36,8 +36,12 @@ planner/revalidator producers are:
 - `go/kamino-fleet-planner/cmd/loyal-kamino-fleet-parity/main.go`
 
 Both the narrower epoch gate and full `--audit-current` gate are expected to
-pass. The latter prevents planner-only `revalidate` publication evidence from
-being mistaken for complete cutover evidence.
+pass. Before comparing frozen artifacts, `--audit-current` runs
+`scripts/verify-kamino-fleet-planner-e2e.sh`: real Go publication/revalidation
+integration tests plus the retained Rust store lifecycle verifier over fresh
+databases in one disposable PostgreSQL server. It requires signed submission,
+confirmation, reconciliation, and exactly-once completion subchecks to pass.
+The artifact cases are parity fixtures, not substitutes for that lifecycle.
 
 ## Required artifact evidence
 
@@ -55,9 +59,13 @@ The comparator requires exact equality for:
    fingerprints, ALT addresses, compiled packet hash/size, simulation result,
    current opportunity fence, market-epoch fence, and queue transition;
 4. fail-closed outcomes for missing ALT, oversized packet, simulation failure,
-   stale market epoch, changed opportunity fence, and lost lease; and
-5. the durable lifecycle through retained execution, confirmation,
-   reconciliation, and completion without duplicate capital movement.
+   stale market epoch, changed opportunity fence, and lost lease.
+
+Separately, the full local verifier requires the durable lifecycle through
+retained execution, confirmation, reconciliation, and completion without
+duplicate capital movement. It also starts side-effect-free role probes for the
+route-kind-filtered Rust cross-mint revalidator and the unfiltered retained
+executor, confirmer, reconciler, and ALT provisioner.
 
 The Go artifact additionally must prove that exactly one service process owns
 `opportunity_planner` and `route_revalidator` and that neither replaced Rust

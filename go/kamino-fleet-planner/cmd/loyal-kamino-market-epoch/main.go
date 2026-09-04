@@ -29,11 +29,12 @@ func main() {
 		}
 		defer store.Close()
 		if *emitFixture {
-			snapshot, loadErr := store.LoadSnapshot(ctx, []string{fleet.USDCMint}, []string{"safe"})
+			enabledMints := []string{fleet.CashMint, fleet.USDGMint, fleet.PYUSDMint, fleet.USDCMint, fleet.USDTMint, fleet.USDSMint}
+			snapshot, loadErr := store.LoadSnapshot(ctx, enabledMints, []string{"safe"})
 			if loadErr != nil {
 				log.Fatal(loadErr)
 			}
-			fixture := fleet.MarketEpochFixture{SupportedReserveMarketSnapshot: snapshot, EnabledMints: []string{fleet.USDCMint}}
+			fixture := fleet.MarketEpochFixture{SupportedReserveMarketSnapshot: snapshot, EnabledMints: enabledMints}
 			if encodeErr := json.NewEncoder(os.Stdout).Encode(fixture); encodeErr != nil {
 				log.Fatal(encodeErr)
 			}

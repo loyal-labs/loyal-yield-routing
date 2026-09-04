@@ -17,22 +17,34 @@ const (
 )
 
 func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, targetAddress string) Decision {
+	source, sourceOK := snapshot.Reserves[sourceAddress]
+	target, targetOK := snapshot.Reserves[targetAddress]
+	routeKind := "same_mint"
+	targetMint := position.Mint
+	estimatedCost := estimatedCostUSDMicros
+	serviceMillis := expectedServiceMillis
+	if targetOK {
+		targetMint = target.Mint
+		if target.Mint != position.Mint {
+			routeKind = "cross_mint_jupiter"
+			estimatedCost = estimatedCostUSDMicros * 3
+			serviceMillis = expectedServiceMillis * 3
+		}
+	}
 	decision := Decision{
-		Reason: "ineligible", VaultID: position.VaultID, SourceSnapshotID: position.SnapshotID,
+		Reason: "ineligible", RouteKind: routeKind, VaultID: position.VaultID, SourceSnapshotID: position.SnapshotID,
 		MarketSlot: snapshot.Slot, SourceReserve: sourceAddress, TargetReserve: targetAddress,
-		Mint: position.Mint, AmountRaw: position.AmountRaw, PrincipalUSDMicros: position.AmountRaw,
+		Mint: targetMint, SourceMint: position.Mint, TargetMint: targetMint, AmountRaw: position.AmountRaw, PrincipalUSDMicros: position.AmountRaw,
 		SnapshotHash: snapshot.Hash, ObservedAt: snapshot.ObservedAt,
-		EstimatedCostUSDMicros: estimatedCostUSDMicros, HoldingHorizonSeconds: holdingHorizonSeconds,
+		EstimatedCostUSDMicros: estimatedCost, HoldingHorizonSeconds: holdingHorizonSeconds,
 		ConfidencePPM: confidencePPM,
 	}
 	ineligible := func(reason string) Decision { decision.Reason = reason; return decision }
 	if position.BlockedReason != "" {
 		return ineligible(position.BlockedReason)
 	}
-	source, sourceOK := snapshot.Reserves[sourceAddress]
-	target, targetOK := snapshot.Reserves[targetAddress]
 	if !sourceOK || !targetOK || source.Address != position.SourceReserve || source.Market != position.Market ||
-		source.Mint != USDCMint || target.Mint != USDCMint || position.Mint != USDCMint {
+		source.Mint != position.Mint || !isEarnStableMint(source.Mint) || !isEarnStableMint(target.Mint) {
 		return ineligible("identity_mismatch")
 	}
 	if position.VaultID <= 0 || position.SnapshotID <= 0 || position.AmountRaw <= 0 || position.SourceCollateralAmountRaw <= 0 ||
@@ -60,6 +72,9 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 		return ineligible("invalid_capacity_projection")
 	}
 	capacity := target.TotalSupplyUSDMicros / 50
+	if capacity < 4_000_000 {
+		capacity = 4_000_000
+	}
 	targetAPY, hasCapacity, ok := capacityAdjustedTargetAPY(
 		target,
 		position.TargetCommittedInflowUSDMicros,
@@ -101,7 +116,7 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	if !ok {
 		return ineligible("economic_arithmetic_overflow")
 	}
-	guardedCost := estimatedCostUSDMicros*12_500/10_000 + 50_000
+	guardedCost := estimatedCost*12_500/10_000 + 50_000
 	net := expected - guardedCost
 	if net < 100_000 {
 		return ineligible("below_minimum_net_gain")
@@ -125,7 +140,7 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	if !ok || annual <= 0 {
 		return ineligible("invalid_annual_gain")
 	}
-	priority, ok := mulDivInt64(lostPerHour, confidencePPM*1_000, 1_000_000*expectedServiceMillis)
+	priority, ok := mulDivInt64(lostPerHour, confidencePPM*1_000, 1_000_000*serviceMillis)
 	if !ok {
 		return ineligible("economic_arithmetic_overflow")
 	}
@@ -152,7 +167,7 @@ func capacityAdjustedTargetAPY(target ReserveState, committedInflow, committedOu
 		minInt64(target.TotalSupplyUSDMicros/1_000, 1_000_000_000_000),
 		minInt64(target.TotalSupplyUSDMicros/200, 2_000_000_000_000),
 		minInt64(target.TotalSupplyUSDMicros/100, 3_000_000_000_000),
-		minInt64(target.TotalSupplyUSDMicros/50, 4_000_000_000_000),
+		maxInt64(minInt64(target.TotalSupplyUSDMicros/50, 4_000_000_000_000), 4_000_000),
 	}
 	if committedInflow > ceilings[len(ceilings)-1] {
 		ceilings[len(ceilings)-1] = committedInflow
@@ -180,6 +195,22 @@ func capacityAdjustedTargetAPY(target ReserveState, committedInflow, committedOu
 		return minInt64(projectedAPY, target.SupplyAPYBPS), true, true
 	}
 	return 0, false, true
+}
+
+func isEarnStableMint(mint string) bool {
+	for _, supported := range earnStableMints {
+		if mint == supported {
+			return true
+		}
+	}
+	return false
+}
+
+func maxInt64(left, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func minInt64(left, right int64) int64 {
@@ -230,8 +261,15 @@ func (d Decision) Validate() error {
 	if !d.Eligible {
 		return fmt.Errorf("decision is not eligible: %s", d.Reason)
 	}
+	sourceMint, targetMint := d.SourceMint, d.TargetMint
+	if sourceMint == "" {
+		sourceMint = d.Mint
+	}
+	if targetMint == "" {
+		targetMint = d.Mint
+	}
 	if d.VaultID <= 0 || d.SourceSnapshotID <= 0 || d.MarketSlot <= 0 || d.SourceReserve == "" || d.TargetReserve == "" || d.SourceReserve == d.TargetReserve ||
-		d.Mint != USDCMint || d.AmountRaw <= 0 || d.PrincipalUSDMicros <= 0 || d.EdgeBPS <= 0 || d.ExpectedNetGainUSDMicros <= 0 || d.EconomicPriority <= 0 || d.SnapshotHash == "" || d.ObservedAt.IsZero() {
+		!isEarnStableMint(sourceMint) || !isEarnStableMint(targetMint) || d.Mint != targetMint || d.AmountRaw <= 0 || d.PrincipalUSDMicros <= 0 || d.EdgeBPS <= 0 || d.ExpectedNetGainUSDMicros <= 0 || d.EconomicPriority <= 0 || d.SnapshotHash == "" || d.ObservedAt.IsZero() {
 		return fmt.Errorf("eligible decision evidence is incomplete")
 	}
 	if time.Since(d.ObservedAt) > 30*time.Second {

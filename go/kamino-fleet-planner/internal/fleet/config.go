@@ -35,7 +35,12 @@ type Config struct {
 	KLendProxyPath, KLendProxySHA256   string
 	DelegatedSigner, RevalidationOwner string
 	RevalidationLeaseTTL               time.Duration
+	RevalidationPollInterval           time.Duration
+	RevalidationConcurrency            int
 	RevalidationComputeLimit           uint64
+	CrossMintEnabled                   bool
+	CrossMintMaxValueLossBPS           uint16
+	EnabledStableMints                 []string
 	FusedExecute                       bool
 }
 
@@ -53,10 +58,15 @@ func ConfigFromEnvironment() (Config, error) {
 		DelegatedSigner:          os.Getenv("KAMINO_FLEET_DELEGATED_SIGNER"),
 		RevalidationOwner:        valueOr(os.Getenv("KAMINO_FLEET_REVALIDATION_OWNER"), "loyal-kamino-fleet-planner"),
 		RevalidationLeaseTTL:     durationOr(os.Getenv("KAMINO_FLEET_REVALIDATION_LEASE_TTL"), 30*time.Second),
+		RevalidationPollInterval: durationOr(os.Getenv("KAMINO_FLEET_REVALIDATION_POLL_INTERVAL"), 250*time.Millisecond),
+		RevalidationConcurrency:  int(uint64Or(os.Getenv("KAMINO_FLEET_REVALIDATION_CONCURRENCY"), 16)),
 		RevalidationComputeLimit: uint64Or(os.Getenv("KAMINO_FLEET_COMPUTE_LIMIT"), defaultComputeLimit),
-		FusedExecute:             boolOr(os.Getenv("KAMINO_FLEET_FUSED_EXECUTE"), true),
+		CrossMintEnabled:         boolOr(os.Getenv("EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER"), false),
+		CrossMintMaxValueLossBPS: uint16(uint64Or(os.Getenv("EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS"), 50)),
+		EnabledStableMints:       stableMintsOr(os.Getenv("EARN_ROUTER_ENABLED_STABLE_MINTS")),
+		FusedExecute:             boolOr(os.Getenv("KAMINO_FLEET_FUSED_EXECUTE"), false),
 	}
-	for _, name := range []string{"KAMINO_FLEET_REVALIDATOR_ENABLED", "KAMINO_FLEET_FUSED_EXECUTE"} {
+	for _, name := range []string{"KAMINO_FLEET_REVALIDATOR_ENABLED", "KAMINO_FLEET_FUSED_EXECUTE", "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER"} {
 		if value := os.Getenv(name); value != "" {
 			if _, err := strconv.ParseBool(value); err != nil {
 				return Config{}, fmt.Errorf("%s must be a boolean", name)
@@ -116,15 +126,37 @@ func (c Config) Validate() error {
 	if c.Cluster == "" || strings.TrimSpace(c.Cluster) != c.Cluster || c.Mode != ModeShadow && c.Mode != ModePublish {
 		return fmt.Errorf("canonical cluster and a shadow or publish mode are required")
 	}
-	if c.Cluster == "mainnet-beta" && c.Mode == ModePublish {
-		return fmt.Errorf("mainnet publish is blocked until Rust-compatible epoch and revalidation parity is verified")
-	}
 	if c.PollInterval <= 0 || c.SlotDuration <= 0 {
 		return fmt.Errorf("poll and slot durations are invalid")
 	}
+	enabledMintCount := len(c.EnabledStableMints)
+	if enabledMintCount == 0 {
+		enabledMintCount = len(earnStableMints)
+	}
+	seenMints := map[string]bool{}
+	for _, mint := range c.EnabledStableMints {
+		if !isEarnStableMint(mint) || seenMints[mint] {
+			return fmt.Errorf("enabled stable mints must be unique members of the Earn registry")
+		}
+		seenMints[mint] = true
+	}
+	if c.CrossMintEnabled {
+		if enabledMintCount < 2 {
+			return fmt.Errorf("cross-mint planning requires at least two enabled stable mints")
+		}
+		if c.CrossMintMaxValueLossBPS == 0 || c.CrossMintMaxValueLossBPS > 1_000 {
+			return fmt.Errorf("cross-mint maximum value loss must be in 1..=1000 bps")
+		}
+		if c.DelegatedSigner == "" {
+			return fmt.Errorf("cross-mint planning requires the delegated signer identity")
+		}
+		if _, err := decodePublicKey(c.DelegatedSigner); err != nil {
+			return fmt.Errorf("invalid cross-mint delegated signer: %w", err)
+		}
+	}
 	if c.RevalidatorEnabled {
-		if c.KLendProxyPath == "" || len(c.KLendProxySHA256) != 64 || !isHex(c.KLendProxySHA256) || c.DelegatedSigner == "" || c.RevalidationOwner == "" || c.RevalidationLeaseTTL < time.Second || c.RevalidationComputeLimit == 0 || c.RevalidationComputeLimit > defaultComputeLimit {
-			return fmt.Errorf("revalidator requires a digest-pinned KLend proxy, delegated signer, owner, valid lease, and compute limit")
+		if c.KLendProxyPath == "" || len(c.KLendProxySHA256) != 64 || !isHex(c.KLendProxySHA256) || c.DelegatedSigner == "" || c.RevalidationOwner == "" || c.RevalidationLeaseTTL < time.Second || c.RevalidationPollInterval <= 0 || c.RevalidationConcurrency <= 0 || c.RevalidationConcurrency > 256 || c.RevalidationComputeLimit == 0 || c.RevalidationComputeLimit > defaultComputeLimit {
+			return fmt.Errorf("revalidator requires a digest-pinned KLend proxy, delegated signer, owner, valid lease, concurrency, poll interval, and compute limit")
 		}
 		if _, err := decodePublicKey(c.DelegatedSigner); err != nil {
 			return fmt.Errorf("invalid revalidator delegated signer: %w", err)
@@ -192,6 +224,18 @@ func valueOr(value, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func stableMintsOr(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return append([]string(nil), earnStableMints...)
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		result = append(result, strings.TrimSpace(part))
+	}
+	return result
 }
 
 func boolOr(value string, fallback bool) bool {

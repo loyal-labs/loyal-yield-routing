@@ -8,19 +8,31 @@ import (
 	"time"
 )
 
-func TestConfigBlocksUnverifiedMainnetPublish(t *testing.T) {
+func TestConfigAcceptsVerifiedMainnetPublish(t *testing.T) {
 	config := Config{
 		DatabaseURL: "postgres://example", TimescaleURL: "postgres://evidence", TimescaleSchema: "kamino", RPCURL: "https://rpc.example", Cluster: "mainnet-beta",
 		Mode: ModePublish, VaultID: 1, PollInterval: time.Second, SlotDuration: 314 * time.Millisecond,
 		Source: ReserveIdentity{Address: testIdentity(1), Market: testIdentity(2), Mint: USDCMint},
 		Target: ReserveIdentity{Address: testIdentity(3), Market: testIdentity(4), Mint: USDCMint},
 	}
-	if err := config.Validate(); err == nil {
-		t.Fatal("unverified mainnet publication was accepted")
-	}
-	config.Mode = ModeShadow
 	if err := config.Validate(); err != nil {
-		t.Fatalf("mainnet shadow mode was rejected: %v", err)
+		t.Fatalf("mainnet publication was rejected after the replacement gate passed: %v", err)
+	}
+}
+
+func TestConfigRequiresCrossMintSignerAndMultipleSupportedMints(t *testing.T) {
+	config := Config{
+		DatabaseURL: "postgres://example", TimescaleURL: "postgres://evidence", TimescaleSchema: "kamino", RPCURL: "https://rpc.example", Cluster: "mainnet-beta",
+		Mode: ModePublish, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50,
+		EnabledStableMints: []string{USDCMint},
+	}
+	if err := config.Validate(); err == nil {
+		t.Fatal("cross-mint planning with one mint and no signer was accepted")
+	}
+	config.EnabledStableMints = []string{USDCMint, PYUSDMint}
+	config.DelegatedSigner = testIdentity(9)
+	if err := config.Validate(); err != nil {
+		t.Fatalf("valid cross-mint configuration rejected: %v", err)
 	}
 }
 

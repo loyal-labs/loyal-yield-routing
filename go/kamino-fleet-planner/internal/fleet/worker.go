@@ -48,24 +48,70 @@ func (w *Worker) SetMarketEvidence(source MarketEpochSource) error {
 }
 
 func (w *Worker) Run(ctx context.Context) error {
+	// Match the retained Rust route-revalidator service: sixteen independent
+	// claim loops polling every 250ms by default. Planning remains a singleton
+	// one-second loop and can never block recovery of already durable work.
+	if w.revalidator != nil {
+		for i := 0; i < w.config.RevalidationConcurrency; i++ {
+			go w.runRevalidator(ctx, i)
+		}
+	}
 	poll := time.NewTicker(w.config.PollInterval)
 	defer poll.Stop()
-	if err := w.cycle(ctx); err != nil {
-		return err
+	if err := w.planningCycle(ctx); err != nil {
+		logEvent(map[string]any{"event": "kamino_fleet_planner_cycle_failed", "error": err.Error()})
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-poll.C:
-			if err := w.cycle(ctx); err != nil {
-				return err
+			if err := w.planningCycle(ctx); err != nil {
+				logEvent(map[string]any{"event": "kamino_fleet_planner_cycle_failed", "error": err.Error()})
 			}
 		}
 	}
 }
 
+func (w *Worker) runRevalidator(ctx context.Context, index int) {
+	ticker := time.NewTicker(w.config.RevalidationPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		processed, err := w.revalidator.Cycle(ctx, w.config.Cluster)
+		if err != nil {
+			logEvent(map[string]any{"event": "kamino_fleet_revalidation_failed", "workerIndex": index, "error": err.Error()})
+		}
+		if processed {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// cycle is retained as the deterministic single-step integration surface: it
+// plans and then services one durable revalidation item even when no vault is
+// currently plannable.
 func (w *Worker) cycle(ctx context.Context) error {
+	if err := w.planningCycle(ctx); err != nil {
+		return err
+	}
+	if w.revalidator != nil {
+		_, err := w.revalidator.Cycle(ctx, w.config.Cluster)
+		return err
+	}
+	return nil
+}
+
+func (w *Worker) planningCycle(ctx context.Context) error {
 	if w.marketEvidence == nil {
 		return fmt.Errorf("complete durable market evidence is required")
 	}
@@ -115,16 +161,18 @@ func (w *Worker) cycle(ctx context.Context) error {
 		return err
 	}
 	snapshot.Cluster = w.config.Cluster
-	mintExpiresAt, complete := epoch.MintExpiresAt(USDCMint)
-	if !complete {
-		return fmt.Errorf("USDC optimizer epoch frontier is incomplete")
-	}
-	snapshot.ExpiresAt = mintExpiresAt
+	// Each opportunity is fenced by the minimum complete source/target mint
+	// lifetime. An epoch need not contain USDC when the migrated fleet only
+	// uses another supported stablecoin.
+	snapshot.ExpiresAt = epoch.ExpiresAt
 	snapshot.OptimizerEpochID, err = w.store.EnsureOptimizerEpoch(ctx, w.config.Cluster, epoch)
 	if err != nil {
 		return fmt.Errorf("resolve durable optimizer epoch: %w", err)
 	}
-	vaults, err := w.store.LoadMigratedFleet(ctx, w.config.Cluster, epoch)
+	if err := w.store.RefreshCapacityEpoch(ctx, w.config.Cluster, epoch); err != nil {
+		return fmt.Errorf("refresh durable capacity epoch: %w", err)
+	}
+	vaults, err := w.store.LoadMigratedFleet(ctx, w.config.Cluster, epoch, FleetLoadOptions{DelegatedSigner: w.config.DelegatedSigner, EnableCrossMint: w.config.CrossMintEnabled, CrossMintMaxValueLossBPS: w.config.CrossMintMaxValueLossBPS})
 	if err != nil {
 		return err
 	}
@@ -150,15 +198,8 @@ func (w *Worker) cycle(ctx context.Context) error {
 		}
 		logEvent(map[string]any{"event": "kamino_fleet_planner_opportunity", "mode": w.config.Mode, "vaultId": opportunity.Decision.VaultID, "sourceReserve": opportunity.Decision.SourceReserve, "targetReserve": opportunity.Decision.TargetReserve, "idempotencyKey": opportunity.IdempotencyKey, "publishReason": result.Reason, "opportunityId": result.OpportunityID})
 	}
-	revalidated := false
-	if w.revalidator != nil {
-		revalidated, err = w.revalidator.Cycle(ctx, w.config.Cluster)
-		if err != nil {
-			return fmt.Errorf("revalidate fleet opportunity: %w", err)
-		}
-	}
 	w.lastConfirmedSlot = slot
-	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "revalidated": revalidated, "rejections": fleetPlan.Rejections})
+	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "rejections": fleetPlan.Rejections})
 	return nil
 }
 
@@ -166,8 +207,12 @@ func marketSnapshotFromEpoch(epoch ImmutableMarketEpoch, addresses ...string) (M
 	if err := epoch.Validate(); err != nil {
 		return MarketSnapshot{}, err
 	}
-	expiresAt, _ := epoch.MintExpiresAt(USDCMint)
-	result := MarketSnapshot{OptimizerEpochID: epoch.OptimizerEpochID, ExpiresAt: expiresAt, Hash: epoch.Fingerprint, ObservedAt: epoch.CapturedAt, Reserves: make(map[string]ReserveState)}
+	result := MarketSnapshot{OptimizerEpochID: epoch.OptimizerEpochID, ExpiresAt: epoch.ExpiresAt, MintExpiresAt: make(map[string]time.Time), Hash: epoch.Fingerprint, ObservedAt: epoch.CapturedAt, Reserves: make(map[string]ReserveState)}
+	for _, coverage := range epoch.MintCoverage {
+		if coverage.Complete && coverage.ExpiresAt != nil {
+			result.MintExpiresAt[coverage.Mint] = *coverage.ExpiresAt
+		}
+	}
 	if epoch.MaximumMarketSlot != nil {
 		result.Slot = *epoch.MaximumMarketSlot
 	}

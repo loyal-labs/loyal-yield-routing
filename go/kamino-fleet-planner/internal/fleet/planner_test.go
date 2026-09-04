@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -77,6 +78,50 @@ func TestPlanFailsClosed(t *testing.T) {
 				t.Fatalf("got eligible=%v reason=%s", decision.Eligible, decision.Reason)
 			}
 		})
+	}
+}
+
+func TestPlanFleetBuildsCrossMintJupiterWithImmutablePolicies(t *testing.T) {
+	snapshot, position := eligibleFixture()
+	target := snapshot.Reserves["target"]
+	target.Mint = USDTMint
+	snapshot.Reserves["target"] = target
+	binding := CrossMintPolicyBindings{
+		Settings: "settings", VaultPubkey: "vault", DelegatedSigner: "signer",
+		Withdraw: CrossMintEarnPolicyBinding{PolicyAccount: "withdraw", SourceCommitment: "finalized"},
+		Swap:     CrossMintSwapPolicyBinding{PolicyAccount: "swap", SourceShard: "classic", SourceCommitment: "finalized", MaxSlippageBPS: 25, DailySourceMintSpendingCap: 1_000_000, ManifestFingerprint: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+		Deposit:  CrossMintEarnPolicyBinding{PolicyAccount: "deposit", SourceCommitment: "finalized", ConstraintIndex: 1},
+	}
+	plan, err := PlanFleet(snapshot, []FleetVault{{Position: position, CrossMintTargets: map[string]CrossMintPolicyBindings{"target": binding}, CrossMintMaxValueLossBPS: 50}})
+	if err != nil || len(plan.Opportunities) != 1 {
+		t.Fatalf("cross-mint route missing: %+v %v", plan, err)
+	}
+	d := plan.Opportunities[0].Decision
+	if d.RouteKind != "cross_mint_jupiter" || d.SourceMint != USDCMint || d.TargetMint != USDTMint || d.Mint != USDTMint || d.PolicyBindings == nil {
+		t.Fatalf("cross-mint identity/policy drift: %+v", d)
+	}
+	var execution map[string]any
+	if err := json.Unmarshal(plan.Opportunities[0].ExecutionPlan, &execution); err != nil {
+		t.Fatal(err)
+	}
+	if execution["route_kind"] != "cross_mint_jupiter" || execution["fresh_executable_jupiter_minimum_output_required"] != true || execution["cross_mint_maximum_value_loss_bps"] != float64(50) {
+		t.Fatalf("incomplete cross-mint execution contract: %s", plan.Opportunities[0].ExecutionPlan)
+	}
+}
+
+func TestPlanFleetAllowsEmptyPlannableFleet(t *testing.T) {
+	now := time.Now().UTC()
+	snapshot := MarketSnapshot{Reserves: map[string]ReserveState{
+		"source": {ReserveIdentity: ReserveIdentity{Address: "source"}},
+		"target": {ReserveIdentity: ReserveIdentity{Address: "target"}},
+	}}
+	snapshot.ObservedAt = now
+	plan, err := PlanFleet(snapshot, nil)
+	if err != nil {
+		t.Fatalf("empty plannable fleet must not block revalidation: %v", err)
+	}
+	if len(plan.Opportunities) != 0 || len(plan.Rejections) != 0 {
+		t.Fatalf("unexpected empty plan: %+v", plan)
 	}
 }
 

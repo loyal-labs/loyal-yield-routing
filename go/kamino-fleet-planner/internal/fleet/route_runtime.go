@@ -29,6 +29,7 @@ type Revalidator struct {
 	signer       string
 	leaseTTL     time.Duration
 	computeLimit uint64
+	slotDuration time.Duration
 	fusedExecute bool
 }
 
@@ -36,6 +37,7 @@ type RevalidatorConfig struct {
 	Owner, DelegatedSigner string
 	LeaseTTL               time.Duration
 	ComputeLimit           uint64
+	SlotDuration           time.Duration
 	FusedExecute           bool
 }
 
@@ -52,14 +54,17 @@ func NewRevalidator(store *Store, rpc *RPCClient, proxy *KLendProxy, config Reva
 	if config.ComputeLimit > defaultComputeLimit {
 		return nil, errors.New("compute limit exceeds Solana maximum")
 	}
-	return &Revalidator{store: store, rpc: rpc, proxy: proxy, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, fusedExecute: config.FusedExecute}, nil
+	if config.SlotDuration <= 0 {
+		return nil, errors.New("Kamino slot duration is required")
+	}
+	return &Revalidator{store: store, rpc: rpc, proxy: proxy, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute}, nil
 }
 
 // Cycle claims at most one row. Claim, fresh-chain preparation, and commit are
 // deliberately separate transactions; CommitRevalidation rechecks every
 // mutable identity, lease, epoch, conflict, and capacity fence atomically.
 func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
-	lease, err := r.store.ClaimRevalidation(ctx, cluster, r.owner, r.leaseTTL, r.fusedExecute)
+	lease, err := r.store.ClaimRevalidation(ctx, cluster, r.owner, r.leaseTTL, r.fusedExecute, r.signer)
 	if err != nil || lease == nil {
 		return false, err
 	}
@@ -69,6 +74,11 @@ func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
 	input, evidence, err := r.loadFreshRoute(ctx, *lease)
 	if err != nil {
 		return true, err
+	}
+	if r.fusedExecute {
+		if err := r.store.RefreshTargetCapacity(ctx, cluster, lease.TargetReserve, lease.LiquidityMint, evidence.TargetObservedSupplyUSDMicros, evidence.Slot); err != nil {
+			return true, fmt.Errorf("refresh fused target capacity: %w", err)
+		}
 	}
 	if err := r.store.CheckRevalidationLease(ctx, *lease); err != nil {
 		return true, err
@@ -195,7 +205,7 @@ func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
 	if r.fusedExecute {
 		disposition = "fused_execute"
 	}
-	return true, r.store.CommitRevalidation(ctx, *lease, RevalidationCommit{Disposition: disposition, Preparation: &preparation, ConflictKeys: preparation.Transaction.WritableAccounts, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey})
+	return true, r.store.CommitRevalidation(ctx, *lease, RevalidationCommit{Disposition: disposition, Preparation: &preparation, ConflictKeys: preparation.Transaction.WritableAccounts, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: evidence.ObservedSourceAPYBPS, ObservedTargetAPYBPS: evidence.ObservedTargetAPYBPS, TargetObservedSupplyUSDMicros: evidence.TargetObservedSupplyUSDMicros, TargetObservedSlot: evidence.Slot})
 }
 
 func preserveCanonicalPlan(original json.RawMessage, preparation *RoutePreparation, evidenceField string) error {
@@ -339,7 +349,15 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if accounts[6].Address != lease.PolicyAccount || accounts[6].Owner != SquadsProgram {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("fresh policy account identity or owner mismatch")
 	}
-	evidence := FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey, PolicyData: append([]byte(nil), accounts[6].Data...)}
+	sourceEconomics, err := DecodeKaminoReserve(accounts[1], ReserveIdentity{Address: lease.SourceReserve, Market: freshSource.Position.Market, Mint: lease.LiquidityMint}, slot, r.slotDuration)
+	if err != nil {
+		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, fmt.Errorf("decode fresh source economics: %w", err)
+	}
+	targetEconomics, err := DecodeKaminoReserve(accounts[2], ReserveIdentity{Address: lease.TargetReserve, Market: freshTarget.Position.Market, Mint: lease.LiquidityMint}, slot, r.slotDuration)
+	if err != nil {
+		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, fmt.Errorf("decode fresh target economics: %w", err)
+	}
+	evidence := FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, ObservedSourceAPYBPS: sourceEconomics.SupplyAPYBPS, ObservedTargetAPYBPS: targetEconomics.SupplyAPYBPS, TargetObservedSupplyUSDMicros: targetEconomics.TotalSupplyUSDMicros, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey, PolicyData: append([]byte(nil), accounts[6].Data...)}
 	for index, account := range accounts {
 		hash := sha256.Sum256(account.Data)
 		evidence.Accounts = append(evidence.Accounts, FreshAccount{Kind: kinds[index], Address: account.Address, Owner: account.Owner, DataSHA256: hex.EncodeToString(hash[:]), Slot: slot, Executable: account.Executable, Exists: true})

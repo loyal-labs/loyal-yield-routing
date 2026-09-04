@@ -29,10 +29,12 @@ const (
 // FleetVault is one migrated and currently unblocked policy/vault. Callers
 // must load this complete set in one repeatable-read snapshot.
 type FleetVault struct {
-	Position          VaultPosition
-	AllowedTargets    []string
-	CommittedInflows  map[string]int64
-	CommittedOutflows map[string]int64
+	Position                 VaultPosition
+	AllowedTargets           []string
+	CrossMintTargets         map[string]CrossMintPolicyBindings
+	CrossMintMaxValueLossBPS uint16
+	CommittedInflows         map[string]int64
+	CommittedOutflows        map[string]int64
 }
 
 type PlannedOpportunity struct {
@@ -50,8 +52,11 @@ type FleetPlan struct {
 // economic priority tie-breaks, and admits a wave while carrying forward the
 // selected inflow/outflow. No reserve can exceed its 2% frontier.
 func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) {
-	if len(vaults) == 0 || len(snapshot.Reserves) < 2 {
-		return FleetPlan{}, errors.New("complete vault and reserve frontier is required")
+	if len(snapshot.Reserves) < 2 {
+		return FleetPlan{}, errors.New("complete reserve frontier is required")
+	}
+	if len(vaults) == 0 {
+		return FleetPlan{Opportunities: []PlannedOpportunity{}, Rejections: map[int64]string{}}, nil
 	}
 	type candidate struct {
 		vault  FleetVault
@@ -90,6 +95,9 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 		for _, target := range vault.AllowedTargets {
 			allowed[target] = true
 		}
+		for target := range vault.CrossMintTargets {
+			allowed[target] = true
+		}
 		best := candidate{}
 		for _, target := range reserveKeys {
 			if target == vault.Position.SourceReserve || !allowed[target] {
@@ -99,6 +107,17 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 			position.TargetCommittedInflowUSDMicros, position.TargetCommittedOutflowUSDMicros = baseInflow[target], baseOutflow[target]
 			position.SourceCommittedInflowUSDMicros, position.SourceCommittedOutflowUSDMicros = baseInflow[position.SourceReserve], baseOutflow[position.SourceReserve]
 			d := Plan(snapshot, position, position.SourceReserve, target)
+			if binding, cross := vault.CrossMintTargets[target]; cross {
+				d.RouteKind = "cross_mint_jupiter"
+				d.SourceMint = position.Mint
+				d.TargetMint = snapshot.Reserves[target].Mint
+				d.Mint = d.TargetMint
+				d.PolicyBindings = &binding
+				d.CrossMintMaxValueLossBPS = vault.CrossMintMaxValueLossBPS
+				if d.Eligible && d.EstimatedCostLamports < 15_000 {
+					d.Eligible, d.Reason = false, "cross_mint_fee_envelope_not_covered"
+				}
+			}
 			if d.Eligible && (!best.d.Eligible || betterDecision(d, best.d)) {
 				best = candidate{vault, target, d}
 			}
@@ -139,6 +158,17 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 			return FleetPlan{}, errors.New("wave capacity overflow")
 		}
 		d := Plan(snapshot, position, position.SourceReserve, c.target)
+		if binding, cross := c.vault.CrossMintTargets[c.target]; cross {
+			d.RouteKind = "cross_mint_jupiter"
+			d.SourceMint = position.Mint
+			d.TargetMint = snapshot.Reserves[c.target].Mint
+			d.Mint = d.TargetMint
+			d.PolicyBindings = &binding
+			d.CrossMintMaxValueLossBPS = c.vault.CrossMintMaxValueLossBPS
+			if d.Eligible && d.EstimatedCostLamports < 15_000 {
+				d.Eligible, d.Reason = false, "cross_mint_fee_envelope_not_covered"
+			}
+		}
 		if !d.Eligible {
 			out.Rejections[position.VaultID] = d.Reason
 			continue
@@ -151,11 +181,17 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 		if !ok {
 			return FleetPlan{}, errors.New("wave outflow overflow")
 		}
-		plan, err := canonicalSameMintPlan(snapshot, c.vault, d)
+		plan, err := canonicalExecutionPlan(snapshot, c.vault, d)
 		if err != nil {
 			return FleetPlan{}, err
 		}
 		expires := snapshot.ExpiresAt
+		if mintExpiry, ok := snapshot.MintExpiresAt[d.SourceMint]; ok {
+			expires = mintExpiry
+		}
+		if mintExpiry, ok := snapshot.MintExpiresAt[d.TargetMint]; ok && (expires.IsZero() || mintExpiry.Before(expires)) {
+			expires = mintExpiry
+		}
 		if expires.IsZero() {
 			expires = snapshot.ObservedAt.Add(5 * time.Minute)
 		}
@@ -182,12 +218,15 @@ func betterDecision(a, b Decision) bool {
 	return a.TargetReserve < b.TargetReserve
 }
 
-func canonicalSameMintPlan(snapshot MarketSnapshot, v FleetVault, d Decision) (json.RawMessage, error) {
+func canonicalExecutionPlan(snapshot MarketSnapshot, v FleetVault, d Decision) (json.RawMessage, error) {
 	source := snapshot.Reserves[d.SourceReserve]
 	target := snapshot.Reserves[d.TargetReserve]
 	targetObservedAt := target.ObservedAt
 	if targetObservedAt.IsZero() {
 		targetObservedAt = snapshot.ObservedAt
+	}
+	if d.RouteKind == "cross_mint_jupiter" {
+		return canonicalCrossMintExecutionPlan(v.Position, d, source.SupplyAPYBPS, target.SupplyAPYBPS, target.Slot, targetObservedAt)
 	}
 	return canonicalSameMintExecutionPlan(v.Position, d, source.SupplyAPYBPS, target.SupplyAPYBPS, target.Slot, targetObservedAt)
 }
@@ -225,6 +264,46 @@ func canonicalSameMintExecutionPlan(position VaultPosition, decision Decision, o
 	}
 	return json.Marshal(plan)
 }
+func canonicalCrossMintExecutionPlan(position VaultPosition, decision Decision, observedSourceAPY, observedTargetAPY, targetSlot int64, targetObservedAt time.Time) (json.RawMessage, error) {
+	if decision.PolicyBindings == nil || decision.SourceMint == decision.TargetMint || !isEarnStableMint(decision.SourceMint) || !isEarnStableMint(decision.TargetMint) {
+		return nil, errors.New("cross-mint route requires distinct supported mints and exact policy bindings")
+	}
+	feeTier := "base"
+	if decision.EstimatedCostLamports >= 50_000 {
+		feeTier = "high_value"
+	} else if decision.EstimatedCostLamports >= 15_000 {
+		feeTier = "standard"
+	}
+	bindings := decision.PolicyBindings
+	conflicts := []string{"vault:" + position.VaultPubkey, "policy:" + fmt.Sprint(position.PolicyID), "source-reserve:" + decision.SourceReserve, "target-reserve:" + decision.TargetReserve, "swap-policy:" + bindings.Swap.PolicyAccount, "earn-policy:" + bindings.Withdraw.PolicyAccount}
+	if bindings.Deposit.PolicyAccount != bindings.Withdraw.PolicyAccount {
+		conflicts = append(conflicts, "earn-policy:"+bindings.Deposit.PolicyAccount)
+	}
+	plan := map[string]any{
+		"kind": "cross_mint_jupiter", "route_kind": "cross_mint_jupiter", "settings": position.Settings, "vault_index": position.VaultIndex,
+		"vault_pubkey": position.VaultPubkey, "policy_id": position.PolicyID, "source_kind": "reserve_position",
+		"source_reserve": decision.SourceReserve, "target_reserve": decision.TargetReserve, "liquidity_mint": decision.SourceMint,
+		"source_liquidity_mint": decision.SourceMint, "target_liquidity_mint": decision.TargetMint, "amount_raw": decision.AmountRaw,
+		"route_amount_semantics": amountSemanticsRedeemableLiquidity, "source_amount_semantics": position.SourceAmountSemantics,
+		"source_collateral_amount_raw": position.SourceCollateralAmountRaw, "redeemable_source_liquidity_amount_raw": decision.AmountRaw,
+		"idle_vault_liquidity_amount_raw": position.IdleVaultLiquidityAmountRaw, "idle_token_account": nil,
+		"source_apy_bps": decision.SourceAPYBPS, "observed_source_apy_bps": observedSourceAPY,
+		"observed_target_apy_bps": observedTargetAPY, "target_apy_bps": decision.TargetAPYBPS,
+		"capacity_adjusted_target_apy_bps": decision.TargetAPYBPS, "estimated_edge_bps": decision.EdgeBPS,
+		"confidence_ppm": decision.ConfidencePPM, "expected_service_millis": expectedServiceMillis * 3,
+		"holding_horizon_seconds": decision.HoldingHorizonSeconds, "estimated_execution_cost_usd_micros": decision.EstimatedCostUSDMicros,
+		"estimated_execution_costs": map[string]any{"kind": "cross_mint_jupiter", "withdraw_usd_micros": estimatedCostUSDMicros, "jupiter_swap_usd_micros": estimatedCostUSDMicros, "deposit_usd_micros": estimatedCostUSDMicros},
+		"fee_cap_lamports":          decision.EstimatedCostLamports, "fee_tier": feeTier, "fee_gain_fraction_ppm": 50_000,
+		"minimum_transaction_fee_lamports": 5_000, "conservative_sol_price_usd_micros": 1_000_000_000,
+		"source_observed_at": position.ObservedAt.UTC(), "source_observed_slot": position.ObservedSlot,
+		"optimizer_market_slot": decision.MarketSlot, "target_observed_at": targetObservedAt.UTC(), "target_observed_slot": targetSlot,
+		"writable_conflict_keys": orderedUniqueStrings(conflicts), "planning_economics_are_executable_quote": false,
+		"fresh_executable_jupiter_minimum_output_required": true, "policy_bindings": bindings,
+		"source_recovery_anchor_collateral_raw": int64(1), "cross_mint_maximum_value_loss_bps": decision.CrossMintMaxValueLossBPS,
+	}
+	return json.Marshal(plan)
+}
+
 func opportunityIdentity(cluster string, optimizerEpochID int64, d Decision, plan []byte, expires time.Time) string {
 	values := []string{"loyal-rebalance-opportunity-v1", cluster, fmt.Sprint(d.VaultID), fmt.Sprint(d.SourceSnapshotID), fmt.Sprint(optimizerEpochID), "", "", d.SourceReserve, d.TargetReserve, d.Mint, fmt.Sprint(d.AmountRaw), fmt.Sprint(d.PrincipalUSDMicros), fmt.Sprint(d.SourceAPYBPS), fmt.Sprint(d.TargetAPYBPS), fmt.Sprint(d.EdgeBPS), fmt.Sprint(d.EstimatedCostLamports), fmt.Sprint(d.AnnualYieldGainUSDMicros), fmt.Sprint(d.ExpectedNetGainUSDMicros), fmt.Sprint(d.EconomicPriority), "lost-yield-service-net-reserve-capacity-v3", "yield_optimization", "", string(plan), rustRFC3339(expires), ""}
 	h := sha256.New()
@@ -247,6 +326,18 @@ func rustRFC3339(value time.Time) string {
 	return base + "+00:00"
 }
 
+func orderedUniqueStrings(values []string) []string {
+	set := map[string]bool{}
+	out := []string{}
+	for _, value := range values {
+		if value != "" && !set[value] {
+			set[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 func canonicalStrings(values []string) []string {
 	set := map[string]bool{}
 	out := []string{}
@@ -267,14 +358,17 @@ type FreshAccount struct {
 	Exists                           bool
 }
 type FreshRouteEvidence struct {
-	ObservedAt       time.Time
-	Slot             int64
-	OpportunityID    int64
-	OpportunityKey   string
-	EpochID          int64
-	EpochFingerprint string
-	Accounts         []FreshAccount
-	PolicyData       []byte
+	ObservedAt                    time.Time
+	Slot                          int64
+	ObservedSourceAPYBPS          int64
+	ObservedTargetAPYBPS          int64
+	TargetObservedSupplyUSDMicros int64
+	OpportunityID                 int64
+	OpportunityKey                string
+	EpochID                       int64
+	EpochFingerprint              string
+	Accounts                      []FreshAccount
+	PolicyData                    []byte
 }
 type DecodedSquadsPolicy struct {
 	AccountIndex        uint8

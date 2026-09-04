@@ -36,9 +36,15 @@ func testImmutableMarketEpoch(t *testing.T, snapshot MarketSnapshot, identities 
 			MarketPriceUSD: 1, SupplyAPY: float64(state.SupplyAPYBPS) / 10_000,
 		})
 	}
+	supportedMints := make([]string, 0, len(identities))
+	for _, identity := range identities {
+		if !contains(supportedMints, identity.Mint) {
+			supportedMints = append(supportedMints, identity.Mint)
+		}
+	}
 	epoch, err := BuildImmutableMarketEpoch(SupportedReserveMarketSnapshot{
 		CapturedAt: snapshot.ObservedAt, Catalog: catalog, VerifiedReserves: verified,
-	}, []string{USDCMint})
+	}, supportedMints)
 	if err != nil {
 		t.Fatal(err)
 	}
