@@ -18,6 +18,13 @@ func Decide(s Snapshot) Decision {
 			if s.StrategyNAVRaw > s.WithdrawalDemandRaw {
 				s.WithdrawalDemandRaw = s.StrategyNAVRaw
 			}
+			// The custom adaptor withdraw consumes the complete strategy custody,
+			// even when Voltr's outer instruction carries a smaller amount. Never
+			// execute it with more than one transaction cap staged.
+			if s.VoltrStrategyIdleRaw > Phase2TransactionCapRaw {
+				return Decision{Action: HoldManualRecovery, Reason: "voltr_restore_actual_effect_exceeds_cap", AmountRaw: 0,
+					IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "voltr_restore_actual_effect_exceeds_cap"), StrategyKey: SelectedRouteID}
+			}
 		}
 		decision := decideFixed(s)
 		decision = neutralizeRouteAction(decision)
@@ -110,8 +117,8 @@ func decideFixed(s Snapshot) Decision {
 			}
 			return decision(Hold, "withdrawal_covered", 0)
 		}
-		if s.VoltrStrategyIdleRaw >= shortfall {
-			return decision(VoltrRestoreIdle, "withdrawal_staged", shortfall)
+		if s.VoltrStrategyIdleRaw > 0 {
+			return decision(VoltrRestoreIdle, "withdrawal_staged", min(s.VoltrStrategyIdleRaw, shortfall))
 		}
 		remaining := shortfall - s.VoltrStrategyIdleRaw
 		// Fully flatten Kamino before any Squads USDC is staged to Voltr. The

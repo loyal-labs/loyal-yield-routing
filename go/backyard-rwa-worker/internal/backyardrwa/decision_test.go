@@ -51,13 +51,25 @@ func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 	s.VoltrStrategyIdleRaw = 2
 	s.SquadsIdleRaw = 3
 	s.HasPosition = true
-	if got := Decide(s); got.Action != DeleverPrimeUSDCStep || got.AmountRaw != 3 {
+	if got := Decide(s); got.Action != VoltrRestoreIdle || got.AmountRaw != 2 {
 		t.Fatal(got)
 	}
 	s = base()
 	s.WithdrawalDemandRaw = 8
 	s.VoltrIdleRaw = 8
 	if got := Decide(s); got.Action != Hold || got.Reason != "withdrawal_covered" {
+		t.Fatal(got)
+	}
+}
+
+func TestSelectedRouteNeverRestoresMoreThanActualEffectCap(t *testing.T) {
+	s := base()
+	s.RouteLane = SelectedRouteID
+	s.WithdrawalDemandRaw = Phase2TransactionCapRaw + 1
+	s.StrategyNAVRaw = Phase2TransactionCapRaw + 1
+	s.VoltrStrategyIdleRaw = Phase2TransactionCapRaw + 1
+	got := Decide(s)
+	if got.Action != HoldManualRecovery || got.Reason != "voltr_restore_actual_effect_exceeds_cap" || got.AmountRaw != 0 {
 		t.Fatal(got)
 	}
 }
