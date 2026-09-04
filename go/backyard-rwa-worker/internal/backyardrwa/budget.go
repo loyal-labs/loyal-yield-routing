@@ -23,12 +23,13 @@ func budgetHold(reason string) error { return &BudgetHold{Reason: reason} }
 // includes every source debit and fee, not merely the planner's requested size.
 // ExitAfterMicros is the complete remaining exit graph after this transaction.
 type BudgetReservation struct {
-	OperationID     string `json:"operationId"`
-	Family          string `json:"family"`
-	IntentSHA256    string `json:"intentSha256"`
-	UpperMicros     int64  `json:"upperMicros"`
-	ExitAfterMicros int64  `json:"exitAfterMicros"`
-	Recovery        bool   `json:"recovery"`
+	OperationID      string `json:"operationId"`
+	Family           string `json:"family"`
+	IntentSHA256     string `json:"intentSha256"`
+	UpperMicros      int64  `json:"upperMicros"`
+	ExitAfterMicros  int64  `json:"exitAfterMicros"`
+	ExitBeforeMicros int64  `json:"exitBeforeMicros"`
+	Recovery         bool   `json:"recovery"`
 }
 
 type FamilyBudget struct {
@@ -73,7 +74,7 @@ func (b Phase3Budget) validate() error {
 	}
 	for id, r := range b.Reservations {
 		if id == "" || r.OperationID != id || !phase3Family(r.Family) || !sha256Pattern.MatchString(r.IntentSHA256) ||
-			r.UpperMicros <= 0 || r.UpperMicros > Phase3TransactionCapMicros || r.ExitAfterMicros < 0 {
+			r.UpperMicros <= 0 || r.UpperMicros > Phase3TransactionCapMicros || r.ExitAfterMicros < 0 || r.ExitBeforeMicros < 0 {
 			return budgetHold("invalid_persisted_reservation")
 		}
 	}
@@ -130,6 +131,8 @@ func (b *Phase3Budget) Admit(r BudgetReservation) error {
 		return budgetHold("transaction_cap_exceeded")
 	}
 	if old, ok := b.Reservations[r.OperationID]; ok {
+		// Prior reserve is captured by admission, never supplied by a retry.
+		old.ExitBeforeMicros = 0
 		if old != r {
 			return budgetHold("reservation_identity_mismatch")
 		}
@@ -139,6 +142,10 @@ func (b *Phase3Budget) Admit(r BudgetReservation) error {
 		return budgetHold("unresolved_submission_reservation")
 	}
 	row := b.Families[r.Family]
+	if r.ExitBeforeMicros != 0 {
+		return budgetHold("caller_supplied_prior_exit_reserve")
+	}
+	r.ExitBeforeMicros = row.ExitMicros
 	// An exit may consume its reserve. An entry may not silently reduce an
 	// existing exit reserve to make headroom appear available.
 	if !r.Recovery && r.ExitAfterMicros < row.ExitMicros {
@@ -202,6 +209,30 @@ func (b *Phase3Budget) Settle(operationID, intentSHA256 string, actualMicros int
 		return err
 	}
 	row.SpentMicros = spent
+	b.Families[r.Family] = row
+	delete(b.Reservations, operationID)
+	return nil
+}
+
+// releaseUnspent restores the pre-transaction exit reserve, not the smaller
+// post-exit estimate. Only the journal's proven-never-submitted or
+// expired-and-absent terminal transition may call it. Ambiguity is not proof.
+func (b *Phase3Budget) releaseUnspent(operationID, intentSHA256 string) error {
+	if b == nil {
+		return budgetHold("missing_goal_budget")
+	}
+	if err := b.validate(); err != nil {
+		return err
+	}
+	r, ok := b.Reservations[operationID]
+	if !ok || r.IntentSHA256 != intentSHA256 {
+		return budgetHold("reservation_identity_mismatch")
+	}
+	row := b.Families[r.Family]
+	if row.ExitMicros != r.ExitAfterMicros {
+		return budgetHold("exit_reserve_state_mismatch")
+	}
+	row.ExitMicros = r.ExitBeforeMicros
 	b.Families[r.Family] = row
 	delete(b.Reservations, operationID)
 	return nil

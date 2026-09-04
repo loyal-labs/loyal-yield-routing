@@ -182,6 +182,7 @@ type SimulationResult struct {
 type SignatureObservation struct {
 	Found            bool
 	Confirmed        bool
+	Finalized        bool
 	ConfirmationSlot int64
 	Failed           bool
 }

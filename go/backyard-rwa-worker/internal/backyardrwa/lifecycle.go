@@ -65,22 +65,42 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 			// expires. Keep observing it; expiry is only decisive when absent.
 			return nil
 		}
-		height, err := rpc.ConfirmedBlockHeight(ctx)
+		height, err := rpc.FinalizedBlockHeight(ctx)
 		if err != nil {
 			return err
 		}
 		if height > operation.LastValidBlockHeight {
+			// Recheck after finalized expiry. The earlier absence observation
+			// may predate a last-valid-block landing. A malformed response or
+			// any found signature retains the reservation and recovery fence.
+			afterExpiry, err := rpc.SignatureStatus(ctx, operation.TransactionSignature)
+			if err != nil {
+				return err
+			}
+			if afterExpiry.Found {
+				return nil
+			}
 			return database.MarkExpiredAbsentFailed(ctx, operation.ID, operation.Status)
 		}
 		return nil
 	case Confirmed:
 		return database.MarkReconciling(ctx, operation.ID)
 	case Reconciling:
+		status, err := rpc.SignatureStatus(ctx, operation.TransactionSignature)
+		if err != nil {
+			return err
+		}
+		if status.Failed {
+			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "finalization_transaction_error")
+		}
+		if !status.Finalized {
+			return nil
+		}
 		expected, err := DecodeExpectedEffects(operation.ExpectedEffects)
 		if err != nil {
 			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "invalid_expected_effects")
 		}
-		receipt, err := rpc.ConfirmedTransaction(ctx, operation.TransactionSignature)
+		receipt, err := rpc.FinalizedTransaction(ctx, operation.TransactionSignature)
 		if err != nil {
 			return err
 		}
@@ -91,7 +111,7 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 		if err != nil {
 			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "exact_effect_reconciliation_failed")
 		}
-		return database.MarkReconciled(ctx, operation.ID, reconciliation, effects)
+		return database.MarkReconciled(ctx, operation.ID, reconciliation, effects, receipt)
 	default:
 		return fmt.Errorf("unsupported nonterminal status: %s", operation.Status)
 	}

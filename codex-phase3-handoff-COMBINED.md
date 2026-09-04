@@ -124,8 +124,14 @@ restart retention, unbound-wire rejection and stale-writer fencing. This is
 not yet the complete R01 witness, migration validation or live proof.
 
 Do not deploy this intermediate implementation: reservation producers, fresh
-cost/fee/exit estimation, typed durable HOLD handling, finalized settlement and
-safe expired-unsent release still need integration. The new gates intentionally
+cost/fee/exit estimation and typed durable HOLD handling still need integration.
+Finalized settlement and expired-unsent release are now integrated with the
+existing journal: settlement rechecks the exact receipt/effects under the lease;
+expiry requires finalized block-height expiry and a subsequent signature-absence
+read. Release restores the captured pre-transaction exit reserve. The database
+test drives these paths and rejects confirmed-only or unrelated receipts. These
+controlled tests do not establish live program or deployment proof.
+The new gates intentionally
 refuse transactions without an initialized durable goal budget and admission.
 No production budget was initialized; no Phase 3 transaction was signed or sent.
 

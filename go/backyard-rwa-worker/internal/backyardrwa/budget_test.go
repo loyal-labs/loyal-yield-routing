@@ -127,3 +127,36 @@ func TestDebitValuationUsesDecimalsAndRoundsUp(t *testing.T) {
 		}
 	}
 }
+
+func TestUnspentUnwindRestoresPriorExitReserveAcrossRestart(t *testing.T) {
+	b := emptyTestBudget()
+	b.Families["OnRe"] = FamilyBudget{SpentMicros: 19_000_000, ExitMicros: 1_000_000}
+	r := testReservation()
+	r.Recovery = true
+	r.UpperMicros = 900_000
+	r.ExitAfterMicros = 100_000
+	if err := b.Admit(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Admit(r); err != nil {
+		t.Fatal("idempotent retry changed captured prior reserve", err)
+	}
+	encoded, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restarted Phase3Budget
+	if err = json.Unmarshal(encoded, &restarted); err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.releaseUnspent(r.OperationID, r.IntentSHA256); err != nil {
+		t.Fatal(err)
+	}
+	row := restarted.Families["OnRe"]
+	if row.SpentMicros != 19_000_000 || row.ExitMicros != 1_000_000 || len(restarted.Reservations) != 0 {
+		t.Fatalf("release lost exit budget or reset spent: %+v", restarted)
+	}
+	if err = restarted.Admit(r); err != nil {
+		t.Fatal("unspent recovery cannot be readmitted", err)
+	}
+}

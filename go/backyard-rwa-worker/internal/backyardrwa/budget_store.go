@@ -9,9 +9,69 @@ import (
 )
 
 type phase3OperationAuthorization struct {
-	GoalID           string `json:"goalId"`
-	IntentSHA256     string `json:"intentSha256"`
-	SignedWireSHA256 string `json:"signedWireSha256,omitempty"`
+	GoalID              string `json:"goalId"`
+	IntentSHA256        string `json:"intentSha256"`
+	SignedWireSHA256    string `json:"signedWireSha256,omitempty"`
+	ReservationReleased bool   `json:"reservationReleased,omitempty"`
+	BookedSpentMicros   int64  `json:"bookedSpentMicros,omitempty"`
+}
+
+// Book the admitted upper bound only after finalized effect reconciliation.
+// This intentionally never refunds quote/fee slack without separate economic
+// proof. Principal returning to custody does not reduce this gross counter.
+func (d *Database) settlePhase3ReservationTx(ctx context.Context, tx pgx.Tx, operationID string) error {
+	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
+	if err != nil {
+		return err
+	}
+	var finalized bool
+	var wire []byte
+	if err = tx.QueryRow(ctx, `SELECT status='reconciled' AND confirmation_status='finalized' AND reconciled_effects IS NOT NULL,signed_wire FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&finalized, &wire); err != nil {
+		return err
+	}
+	if !finalized || auth.GoalID != Phase3GoalID || auth.ReservationReleased || auth.BookedSpentMicros != 0 || len(wire) == 0 || auth.SignedWireSHA256 != sha256Bytes(wire) {
+		return budgetHold("unproven_budget_settlement")
+	}
+	reservation, ok := budget.Reservations[operationID]
+	if !ok {
+		return budgetHold("unreserved_reconciliation")
+	}
+	if err = budget.Settle(operationID, auth.IntentSHA256, reservation.UpperMicros); err != nil {
+		return err
+	}
+	auth.BookedSpentMicros = reservation.UpperMicros
+	return d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth)
+}
+
+// Called inside the same transaction that marks a provably unspent operation
+// failed. Unadmitted operations can fail without an initialized goal budget;
+// a one-sided reservation/authorization is corruption, not permission to reset.
+func (d *Database) releasePhase3UnspentTx(ctx context.Context, tx pgx.Tx, operationID string) error {
+	var hasAuth, hasReservation bool
+	if err := tx.QueryRow(ctx, `SELECT operation.expected_effects ? 'phase3',
+	 COALESCE((route.state->'phase3'->'reservations') ? operation.operation_id,false)
+	 FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key=operation.route_key
+	 WHERE operation.operation_id=$1`, operationID).Scan(&hasAuth, &hasReservation); err != nil {
+		return err
+	}
+	if !hasAuth && !hasReservation {
+		return nil
+	}
+	if !hasAuth || !hasReservation {
+		return budgetHold("incoherent_reservation_release")
+	}
+	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
+	if err != nil {
+		return err
+	}
+	if auth.GoalID != Phase3GoalID || auth.ReservationReleased {
+		return budgetHold("incoherent_reservation_release")
+	}
+	if err = budget.releaseUnspent(operationID, auth.IntentSHA256); err != nil {
+		return err
+	}
+	auth.ReservationReleased = true
+	return d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth)
 }
 
 // Phase3IntentDigest binds the exact production request and expected effects,

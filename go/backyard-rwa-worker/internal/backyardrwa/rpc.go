@@ -45,6 +45,7 @@ type ProgramReturnData struct {
 }
 
 type ConfirmedTransactionEvidence struct {
+	Finalized         bool
 	Signature         string
 	Slot              int64
 	PreTokenBalances  []TransactionTokenBalance
@@ -318,13 +319,16 @@ func (c *RPCClient) SignatureStatus(ctx context.Context, signature string) (Sign
 	if err := c.call(ctx, "getSignatureStatuses", []any{[]string{signature}, map[string]bool{"searchTransactionHistory": true}}, &result); err != nil {
 		return SignatureObservation{}, err
 	}
-	if len(result.Value) != 1 || result.Value[0] == nil {
+	if len(result.Value) != 1 {
+		return SignatureObservation{}, fmt.Errorf("signature status response has wrong cardinality")
+	}
+	if result.Value[0] == nil {
 		return SignatureObservation{Found: false}, nil
 	}
 	status := result.Value[0]
 	failed := len(status.Err) > 0 && string(status.Err) != "null"
 	confirmed := !failed && status.Slot > 0 && (status.ConfirmationStatus == "confirmed" || status.ConfirmationStatus == "finalized")
-	return SignatureObservation{Found: true, Confirmed: confirmed, ConfirmationSlot: status.Slot, Failed: failed}, nil
+	return SignatureObservation{Found: true, Confirmed: confirmed, Finalized: confirmed && status.ConfirmationStatus == "finalized", ConfirmationSlot: status.Slot, Failed: failed}, nil
 }
 
 // ConfirmedTransaction reads the immutable receipt for the exact persisted
@@ -332,6 +336,14 @@ func (c *RPCClient) SignatureStatus(ctx context.Context, signature string) (Sign
 // balances rather than a later account read that can include unrelated user
 // deposits or claims.
 func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) (ConfirmedTransactionEvidence, error) {
+	return c.transactionReceipt(ctx, signature, "confirmed")
+}
+
+func (c *RPCClient) FinalizedTransaction(ctx context.Context, signature string) (ConfirmedTransactionEvidence, error) {
+	return c.transactionReceipt(ctx, signature, "finalized")
+}
+
+func (c *RPCClient) transactionReceipt(ctx context.Context, signature, commitment string) (ConfirmedTransactionEvidence, error) {
 	if signature == "" {
 		return ConfirmedTransactionEvidence{}, fmt.Errorf("transaction signature is required")
 	}
@@ -367,7 +379,7 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 		} `json:"transaction"`
 	}
 	if err := c.call(ctx, "getTransaction", []any{signature, map[string]any{
-		"commitment": "confirmed", "encoding": "json", "maxSupportedTransactionVersion": 0,
+		"commitment": commitment, "encoding": "json", "maxSupportedTransactionVersion": 0,
 	}}, &result); err != nil {
 		return ConfirmedTransactionEvidence{}, err
 	}
@@ -409,6 +421,7 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 		return ConfirmedTransactionEvidence{}, err
 	}
 	evidence := ConfirmedTransactionEvidence{
+		Finalized: commitment == "finalized",
 		Signature: signature, Slot: result.Slot, PreTokenBalances: pre, PostTokenBalances: post,
 		Logs: append([]string(nil), result.Meta.LogMessages...),
 	}
@@ -428,8 +441,16 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 }
 
 func (c *RPCClient) ConfirmedBlockHeight(ctx context.Context) (int64, error) {
+	return c.blockHeight(ctx, "confirmed")
+}
+
+func (c *RPCClient) FinalizedBlockHeight(ctx context.Context) (int64, error) {
+	return c.blockHeight(ctx, "finalized")
+}
+
+func (c *RPCClient) blockHeight(ctx context.Context, commitment string) (int64, error) {
 	var height int64
-	if err := c.call(ctx, "getBlockHeight", []any{map[string]string{"commitment": "confirmed"}}, &height); err != nil {
+	if err := c.call(ctx, "getBlockHeight", []any{map[string]string{"commitment": commitment}}, &height); err != nil {
 		return 0, err
 	}
 	if height <= 0 {

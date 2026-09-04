@@ -661,6 +661,11 @@ func (d *Database) transition(ctx context.Context, operationID string, from, to 
 	if result.RowsAffected() != 1 {
 		return fmt.Errorf("transition %s -> %s lost serialization", from, to)
 	}
+	if to == Failed {
+		if err := d.releasePhase3UnspentTx(ctx, tx, operationID); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }
 
@@ -795,13 +800,49 @@ func (d *Database) MarkReconciling(ctx context.Context, operationID string) erro
 	return d.transition(ctx, operationID, Confirmed, Reconciling, ``)
 }
 
-func (d *Database) MarkReconciled(ctx context.Context, operationID string, reconciliation Reconciliation, effects []byte) error {
-	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) {
+func (d *Database) MarkReconciled(ctx context.Context, operationID string, reconciliation Reconciliation, effects []byte, receipt ConfirmedTransactionEvidence) error {
+	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) || !receipt.Finalized || receipt.Slot != reconciliation.ConfirmedSlot {
 		return fmt.Errorf("invalid reconciliation evidence")
 	}
-	return d.transition(ctx, operationID, Reconciling, Reconciled,
-		`, confirmed_slot = $4, reconciliation_sha256 = $5, reconciled_effects = $6::jsonb`,
-		reconciliation.ConfirmedSlot, reconciliation.EffectsSHA256, string(effects))
+	if _, err := d.currentLease(); err != nil {
+		return err
+	}
+	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = d.lockOperationLease(ctx, tx, operationID); err != nil {
+		return err
+	}
+	var signature string
+	var slot int64
+	var expectedBytes []byte
+	if err = tx.QueryRow(ctx, `SELECT transaction_signature,confirmed_slot,expected_effects FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='reconciling'`, operationID).Scan(&signature, &slot, &expectedBytes); err != nil {
+		return err
+	}
+	if signature != receipt.Signature || slot != receipt.Slot {
+		return fmt.Errorf("finalized receipt does not match journal identity")
+	}
+	expected, err := DecodeExpectedEffects(expectedBytes)
+	if err != nil {
+		return err
+	}
+	checked, checkedEffects, err := ReconcileConfirmedTransaction(expected, receipt)
+	if err != nil || checked != reconciliation || sha256Bytes(checkedEffects) != sha256Bytes(effects) {
+		return fmt.Errorf("finalized effects do not match journal contract")
+	}
+	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status='reconciling'`, operationID, reconciliation.EffectsSHA256, string(effects))
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("finalized reconciliation lost serialization")
+	}
+	if err = d.settlePhase3ReservationTx(ctx, tx, operationID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (d *Database) MarkManualRecovery(ctx context.Context, operationID string, from OperationStatus, reason string) error {

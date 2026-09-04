@@ -25,6 +25,26 @@ func response(body string) *http.Response {
 	}
 }
 
+func TestSignatureAbsenceRequiresExplicitNullEntry(t *testing.T) {
+	for _, value := range []string{`[]`, `[null,null]`, `null`} {
+		client, _ := NewRPCClient("https://rpc.invalid")
+		client.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(`{"jsonrpc":"2.0","id":1,"result":{"value":` + value + `}}`), nil
+		})
+		if _, err := client.SignatureStatus(context.Background(), "signature"); err == nil {
+			t.Fatalf("malformed status %s was accepted as absence", value)
+		}
+	}
+	client, _ := NewRPCClient("https://rpc.invalid")
+	client.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(`{"jsonrpc":"2.0","id":1,"result":{"value":[null]}}`), nil
+	})
+	status, err := client.SignatureStatus(context.Background(), "signature")
+	if err != nil || status.Found {
+		t.Fatalf("explicit absent signature: %+v %v", status, err)
+	}
+}
+
 func TestConfirmedRPCReadsUseOneContextSlot(t *testing.T) {
 	client, err := NewRPCClient("https://rpc.invalid")
 	if err != nil {
