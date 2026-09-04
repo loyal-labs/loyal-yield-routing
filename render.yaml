@@ -367,6 +367,62 @@ projects:
                 value: warn,fleet_opportunity_planner=info
 
           - type: worker
+            name: loyal-kamino-fleet-planner
+            runtime: image
+            region: oregon
+            plan: standard
+            autoDeploy: false
+            image:
+              url: ghcr.io/loyal-labs/loyal-yield-routing/kamino-fleet-planner:sha-88e1be779a016e627fb926d842916cf879ad03c7
+              creds:
+                fromRegistryCreds:
+                  name: loyal-ghcr
+            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            dockerCommand: /usr/local/bin/loyal-kamino-fleet-planner
+            maxShutdownDelaySeconds: 60
+            envVars:
+              - key: NEON_DATABASE_URL
+                sync: false
+              - key: TIMESCALEDB_URL
+                sync: false
+              - key: SOLANA_RPC_URL
+                sync: false
+              - key: KAMINO_FLEET_MODE
+                value: shadow
+              - key: KAMINO_FLEET_CLUSTER
+                value: mainnet-beta
+              - key: KAMINO_FLEET_POLL_INTERVAL
+                value: 1s
+              - key: KAMINO_FLEET_REVALIDATOR_ENABLED
+                value: "true"
+              - key: KAMINO_FLEET_REVALIDATION_OWNER
+                value: loyal-kamino-fleet-planner
+              - key: KAMINO_FLEET_REVALIDATION_LEASE_TTL
+                value: 30s
+              - key: KAMINO_FLEET_REVALIDATION_POLL_INTERVAL
+                value: 250ms
+              - key: KAMINO_FLEET_REVALIDATION_CONCURRENCY
+                value: "16"
+              - key: KAMINO_FLEET_FUSED_EXECUTE
+                value: "false"
+              - key: KAMINO_FLEET_DELEGATED_SIGNER
+                value: 62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5
+              - key: KAMINO_API_BASE
+                value: https://api.kamino.finance
+              - key: EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER
+                value: "false"
+              - key: EARN_ROUTER_ENABLED_STABLE_MINTS
+                value: CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH,2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH,2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB,USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA
+              - key: EARN_ROUTER_CROSS_MINT_MAX_SLIPPAGE_BPS
+                value: "50"
+              - key: EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS
+                value: "50"
+              - key: JUPITER_SWAP_BUILD_URL
+                value: https://api.jup.ag/swap/v2/build
+              - key: JUPITER_API_KEY
+                sync: false
+
+          - type: worker
             name: loyal-fleet-health-projector
             runtime: image
             region: oregon
