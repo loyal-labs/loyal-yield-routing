@@ -63,6 +63,20 @@ func TestConfirmedRPCRejectsAbsentAccount(t *testing.T) {
 	}
 }
 
+func TestConfirmedRPCPermitsMultiplePinnedOptionalAccounts(t *testing.T) {
+	client, _ := NewRPCClient("https://rpc.invalid")
+	client.client.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":43},"value":[null,{"owner":"Tokenkeg","lamports":1,"data":["AQ==","base64"],"executable":false},null]}}`), nil
+	})
+	addresses := []string{"closed-phase-2", "required", "closed-phase-1"}
+	slot, accounts, err := client.GetMultipleAccountsWithOptional(
+		context.Background(), addresses, 42, addresses[0], addresses[2],
+	)
+	if err != nil || slot != 43 || len(accounts) != 3 || len(accounts[1].Data) != 1 {
+		t.Fatalf("slot=%d accounts=%+v err=%v", slot, accounts, err)
+	}
+}
+
 func TestConfirmedRPCClassifiesExhaustedReadFailureAsTransient(t *testing.T) {
 	client, _ := NewRPCClient("https://rpc.invalid")
 	client.retryBackoff = 0

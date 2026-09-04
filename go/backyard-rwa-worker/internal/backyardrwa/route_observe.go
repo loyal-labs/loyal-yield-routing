@@ -30,8 +30,8 @@ func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *RPCC
 			return rpc.getVoltrWithdrawalReceiptAccounts(ctx, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
 		},
 		accounts: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
-			if optional := optionalLifecycleObligation(addresses); optional != "" {
-				return rpc.GetMultipleAccountsWithOptional(ctx, addresses, minSlot, optional)
+			if optional := optionalLifecycleObligations(addresses); len(optional) > 0 {
+				return rpc.GetMultipleAccountsWithOptional(ctx, addresses, minSlot, optional...)
 			}
 			return rpc.GetMultipleAccounts(ctx, addresses, minSlot)
 		},
@@ -43,19 +43,22 @@ func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *RPCC
 // Phase 2 obligation when both route families are observed so terminal custody
 // swaps can continue after the close; retain the Phase 1 fallback for its own
 // zero-position lifecycle.
-func optionalLifecycleObligation(addresses []string) string {
+func optionalLifecycleObligations(addresses []string) []string {
 	selected := mapleSyrupUSDCUSDC.Kamino.Obligation
+	optional := make([]string, 0, 2)
 	for _, candidate := range addresses {
 		if candidate == selected {
-			return selected
+			optional = append(optional, selected)
+			break
 		}
 	}
 	for _, candidate := range addresses {
 		if candidate == kaminoPrimeUSDCObligation {
-			return kaminoPrimeUSDCObligation
+			optional = append(optional, kaminoPrimeUSDCObligation)
+			break
 		}
 	}
-	return ""
+	return optional
 }
 
 type routeObservationRuntime struct {
