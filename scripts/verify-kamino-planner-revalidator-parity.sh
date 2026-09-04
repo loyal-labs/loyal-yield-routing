@@ -114,7 +114,9 @@ createdb -h "$socket" -p "$port" parity
 local_database_url="postgresql://$(id -un)@127.0.0.1:$port/parity"
 contract_sha256="$(shasum -a 256 "$contract" | awk '{print $1}')"
 
-cargo build --offline -p loyal-yield-orchestrator --bin kamino-fleet-parity-reference
+cargo build --offline -p loyal-yield-orchestrator --bin kamino-fleet-parity-reference --bin loyal-klend-proxy
+proxy="$root/target/debug/loyal-klend-proxy"
+proxy_sha256="$(shasum -a 256 "$proxy" | awk '{print $1}')"
 (
   cd "$root/go/kamino-fleet-planner"
   go build -o "$scratch/loyal-kamino-fleet-parity" ./cmd/loyal-kamino-fleet-parity
@@ -127,11 +129,15 @@ KAMINO_PARITY_DATABASE_URL="$local_database_url" \
 KAMINO_PARITY_RPC_URL="http://127.0.0.1:1" \
 KAMINO_PARITY_CLOCK="2026-01-01T00:00:00Z" \
 KAMINO_PARITY_CONTRACT_SHA256="$contract_sha256" \
+KAMINO_PARITY_KLEND_PROXY="$proxy" \
+KAMINO_PARITY_KLEND_PROXY_SHA256="$proxy_sha256" \
   "$root/target/debug/kamino-fleet-parity-reference" "$contract" >"$scratch/rust.json"
 KAMINO_PARITY_DATABASE_URL="$local_database_url" \
 KAMINO_PARITY_RPC_URL="http://127.0.0.1:1" \
 KAMINO_PARITY_CLOCK="2026-01-01T00:00:00Z" \
 KAMINO_PARITY_CONTRACT_SHA256="$contract_sha256" \
+KAMINO_PARITY_KLEND_PROXY="$proxy" \
+KAMINO_PARITY_KLEND_PROXY_SHA256="$proxy_sha256" \
   "$scratch/loyal-kamino-fleet-parity" "$contract" >"$scratch/go.json"
 
 for artifact in "$scratch/rust.json" "$scratch/go.json"; do

@@ -20,29 +20,50 @@ const (
 )
 
 type Config struct {
-	DatabaseURL     string
-	TimescaleURL    string
-	TimescaleSchema string
-	RPCURL          string
-	Cluster         string
-	Mode            Mode
-	VaultID         int64
-	Source          ReserveIdentity
-	Target          ReserveIdentity
-	PollInterval    time.Duration
-	SlotDuration    time.Duration
+	DatabaseURL                        string
+	TimescaleURL                       string
+	TimescaleSchema                    string
+	RPCURL                             string
+	Cluster                            string
+	Mode                               Mode
+	VaultID                            int64
+	Source                             ReserveIdentity
+	Target                             ReserveIdentity
+	PollInterval                       time.Duration
+	SlotDuration                       time.Duration
+	RevalidatorEnabled                 bool
+	KLendProxyPath, KLendProxySHA256   string
+	DelegatedSigner, RevalidationOwner string
+	RevalidationLeaseTTL               time.Duration
+	RevalidationComputeLimit           uint64
+	FusedExecute                       bool
 }
 
 func ConfigFromEnvironment() (Config, error) {
 	config := Config{
-		DatabaseURL:     os.Getenv("NEON_DATABASE_URL"),
-		TimescaleURL:    valueOr(os.Getenv("TIMESCALE_DATABASE_URL"), os.Getenv("TIMESCALEDB_URL")),
-		TimescaleSchema: valueOr(os.Getenv("KAMINO_TIMESCALE_SCHEMA"), "kamino"),
-		RPCURL:          os.Getenv("SOLANA_RPC_URL"),
-		Cluster:         valueOr(os.Getenv("KAMINO_FLEET_CLUSTER"), "mainnet-beta"),
-		Mode:            Mode(valueOr(os.Getenv("KAMINO_FLEET_MODE"), string(ModeShadow))),
-		PollInterval:    durationOr(os.Getenv("KAMINO_FLEET_POLL_INTERVAL"), time.Second),
+		DatabaseURL:              os.Getenv("NEON_DATABASE_URL"),
+		TimescaleURL:             valueOr(os.Getenv("TIMESCALE_DATABASE_URL"), os.Getenv("TIMESCALEDB_URL")),
+		TimescaleSchema:          valueOr(os.Getenv("KAMINO_TIMESCALE_SCHEMA"), "kamino"),
+		RPCURL:                   os.Getenv("SOLANA_RPC_URL"),
+		Cluster:                  valueOr(os.Getenv("KAMINO_FLEET_CLUSTER"), "mainnet-beta"),
+		Mode:                     Mode(valueOr(os.Getenv("KAMINO_FLEET_MODE"), string(ModeShadow))),
+		PollInterval:             durationOr(os.Getenv("KAMINO_FLEET_POLL_INTERVAL"), time.Second),
+		KLendProxyPath:           os.Getenv("KAMINO_KLEND_PROXY_PATH"),
+		KLendProxySHA256:         strings.ToLower(os.Getenv("KAMINO_KLEND_PROXY_SHA256")),
+		DelegatedSigner:          os.Getenv("KAMINO_FLEET_DELEGATED_SIGNER"),
+		RevalidationOwner:        valueOr(os.Getenv("KAMINO_FLEET_REVALIDATION_OWNER"), "loyal-kamino-fleet-planner"),
+		RevalidationLeaseTTL:     durationOr(os.Getenv("KAMINO_FLEET_REVALIDATION_LEASE_TTL"), 30*time.Second),
+		RevalidationComputeLimit: uint64Or(os.Getenv("KAMINO_FLEET_COMPUTE_LIMIT"), defaultComputeLimit),
+		FusedExecute:             boolOr(os.Getenv("KAMINO_FLEET_FUSED_EXECUTE"), true),
 	}
+	for _, name := range []string{"KAMINO_FLEET_REVALIDATOR_ENABLED", "KAMINO_FLEET_FUSED_EXECUTE"} {
+		if value := os.Getenv(name); value != "" {
+			if _, err := strconv.ParseBool(value); err != nil {
+				return Config{}, fmt.Errorf("%s must be a boolean", name)
+			}
+		}
+	}
+	config.RevalidatorEnabled = boolOr(os.Getenv("KAMINO_FLEET_REVALIDATOR_ENABLED"), config.Mode == ModePublish)
 	var err error
 	if configured := os.Getenv("KAMINO_FLEET_SLOT_DURATION"); configured != "" {
 		config.SlotDuration = durationOr(configured, 0)
@@ -56,15 +77,24 @@ func ConfigFromEnvironment() (Config, error) {
 			return Config{}, fmt.Errorf("load Kamino slot duration: %w", err)
 		}
 	}
-	config.VaultID, err = strconv.ParseInt(os.Getenv("KAMINO_FLEET_VAULT_ID"), 10, 64)
-	if err != nil {
-		return Config{}, fmt.Errorf("KAMINO_FLEET_VAULT_ID must be a positive integer")
+	// Legacy single-vault/source/target settings remain parseable for a staged
+	// deployment, but they no longer scope planning. The worker always loads
+	// the complete migrated fleet and immutable reserve catalog.
+	if value := os.Getenv("KAMINO_FLEET_VAULT_ID"); value != "" {
+		config.VaultID, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || config.VaultID <= 0 {
+			return Config{}, fmt.Errorf("KAMINO_FLEET_VAULT_ID must be a positive integer when set")
+		}
 	}
-	if err := json.Unmarshal([]byte(os.Getenv("KAMINO_FLEET_SOURCE_RESERVE")), &config.Source); err != nil {
-		return Config{}, fmt.Errorf("decode KAMINO_FLEET_SOURCE_RESERVE: %w", err)
+	if value := os.Getenv("KAMINO_FLEET_SOURCE_RESERVE"); value != "" {
+		if err := json.Unmarshal([]byte(value), &config.Source); err != nil {
+			return Config{}, fmt.Errorf("decode KAMINO_FLEET_SOURCE_RESERVE: %w", err)
+		}
 	}
-	if err := json.Unmarshal([]byte(os.Getenv("KAMINO_FLEET_TARGET_RESERVE")), &config.Target); err != nil {
-		return Config{}, fmt.Errorf("decode KAMINO_FLEET_TARGET_RESERVE: %w", err)
+	if value := os.Getenv("KAMINO_FLEET_TARGET_RESERVE"); value != "" {
+		if err := json.Unmarshal([]byte(value), &config.Target); err != nil {
+			return Config{}, fmt.Errorf("decode KAMINO_FLEET_TARGET_RESERVE: %w", err)
+		}
 	}
 	if err := config.Validate(); err != nil {
 		return Config{}, err
@@ -73,8 +103,8 @@ func ConfigFromEnvironment() (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if c.DatabaseURL == "" || c.TimescaleURL == "" || c.VaultID <= 0 {
-		return fmt.Errorf("Neon and Timescale database URLs and positive vault ID are required")
+	if c.DatabaseURL == "" || c.TimescaleURL == "" {
+		return fmt.Errorf("Neon and Timescale database URLs are required")
 	}
 	if !validSQLIdentifier(c.TimescaleSchema) {
 		return fmt.Errorf("canonical Timescale schema is required")
@@ -92,14 +122,23 @@ func (c Config) Validate() error {
 	if c.PollInterval <= 0 || c.SlotDuration <= 0 {
 		return fmt.Errorf("poll and slot durations are invalid")
 	}
-	if c.Source.Address == "" || c.Target.Address == "" || c.Source.Address == c.Target.Address ||
-		c.Source.Market == "" || c.Target.Market == "" ||
-		c.Source.Mint != USDCMint || c.Target.Mint != USDCMint {
-		return fmt.Errorf("phase 1 requires two distinct Kamino reserves for the pinned USDC mint")
+	if c.RevalidatorEnabled {
+		if c.KLendProxyPath == "" || len(c.KLendProxySHA256) != 64 || !isHex(c.KLendProxySHA256) || c.DelegatedSigner == "" || c.RevalidationOwner == "" || c.RevalidationLeaseTTL < time.Second || c.RevalidationComputeLimit == 0 || c.RevalidationComputeLimit > defaultComputeLimit {
+			return fmt.Errorf("revalidator requires a digest-pinned KLend proxy, delegated signer, owner, valid lease, and compute limit")
+		}
+		if _, err := decodePublicKey(c.DelegatedSigner); err != nil {
+			return fmt.Errorf("invalid revalidator delegated signer: %w", err)
+		}
 	}
-	for _, value := range []string{c.Source.Address, c.Target.Address, c.Source.Market, c.Target.Market, c.Source.Mint} {
-		if _, err := decodePublicKey(value); err != nil {
-			return fmt.Errorf("invalid Solana identity: %w", err)
+	legacyConfigured := c.Source.Address != "" || c.Target.Address != ""
+	if legacyConfigured {
+		if c.Source.Address == "" || c.Target.Address == "" || c.Source.Address == c.Target.Address || c.Source.Market == "" || c.Target.Market == "" || c.Source.Mint != USDCMint || c.Target.Mint != USDCMint {
+			return fmt.Errorf("legacy reserve scope must be complete when set")
+		}
+		for _, value := range []string{c.Source.Address, c.Target.Address, c.Source.Market, c.Target.Market, c.Source.Mint} {
+			if _, err := decodePublicKey(value); err != nil {
+				return fmt.Errorf("invalid Solana identity: %w", err)
+			}
 		}
 	}
 	return nil
@@ -153,6 +192,28 @@ func valueOr(value, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func boolOr(value string, fallback bool) bool {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false
+	}
+	return parsed
+}
+
+func uint64Or(value string, fallback uint64) uint64 {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
 
 func durationOr(value string, fallback time.Duration) time.Duration {

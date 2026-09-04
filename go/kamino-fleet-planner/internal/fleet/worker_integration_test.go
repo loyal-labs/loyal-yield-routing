@@ -41,7 +41,8 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	setCurveScale(targetAccount.Data, 220)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var call struct {
-			Method string `json:"method"`
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
 		}
 		if err := json.NewDecoder(request.Body).Decode(&call); err != nil {
 			t.Error(err)
@@ -56,7 +57,25 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 			accountValue := func(account Account) map[string]any {
 				return map[string]any{"owner": account.Owner, "lamports": account.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(account.Data), "base64"}}
 			}
-			json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"context": map[string]any{"slot": 1_000}, "value": []any{accountValue(sourceAccount), accountValue(targetAccount)}}})
+			var requested []string
+			if len(call.Params) == 0 || json.Unmarshal(call.Params[0], &requested) != nil {
+				t.Error("missing account request")
+				writer.WriteHeader(400)
+				return
+			}
+			values := make([]any, 0, len(requested))
+			for _, address := range requested {
+				if address == source.Address {
+					values = append(values, accountValue(sourceAccount))
+				} else if address == target.Address {
+					values = append(values, accountValue(targetAccount))
+				} else {
+					t.Errorf("unknown account %s", address)
+					writer.WriteHeader(400)
+					return
+				}
+			}
+			json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"context": map[string]any{"slot": 1_000}, "value": values}})
 		default:
 			t.Errorf("unexpected RPC method %s", call.Method)
 			writer.WriteHeader(400)
@@ -81,18 +100,35 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	if err := worker.SetMarketEvidence(staticMarketEpochSource{epoch: epoch}); err != nil {
 		t.Fatal(err)
 	}
+	expectedSnapshot, err := marketSnapshotFromEpoch(epoch, source.Address, target.Address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedSnapshot.Cluster = config.Cluster
+	expectedSnapshot.OptimizerEpochID, err = store.EnsureOptimizerEpoch(ctx, config.Cluster, epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedFleet, err := store.LoadMigratedFleet(ctx, config.Cluster, epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedPlan, err := PlanFleet(expectedSnapshot, expectedFleet)
+	if err != nil || len(expectedPlan.Opportunities) != 1 {
+		t.Fatalf("expected fleet plan: %#v %v", expectedPlan, err)
+	}
 	if err := worker.cycle(ctx); err != nil {
 		t.Fatal(err)
 	}
 	var count int
-	var state, fingerprint string
+	var state, fingerprint, opportunityKey string
 	var slot int64
-	err = store.pool.QueryRow(ctx, `SELECT count(*)::bigint,min(opportunity.opportunity_state),min(epoch.market_state->>'fingerprint'),min(epoch.market_slot) FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=opportunity.optimizer_epoch_id WHERE opportunity.vault_id=$1`, vaultID).Scan(&count, &state, &fingerprint, &slot)
+	err = store.pool.QueryRow(ctx, `SELECT count(*)::bigint,min(opportunity.opportunity_state),min(epoch.market_state->>'fingerprint'),min(epoch.market_slot),min(opportunity.idempotency_key) FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=opportunity.optimizer_epoch_id WHERE opportunity.vault_id=$1`, vaultID).Scan(&count, &state, &fingerprint, &slot, &opportunityKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 || state != "revalidate" || fingerprint != epoch.Fingerprint || slot != 1_000 {
-		t.Fatalf("confirmed update did not reach durable W3 queue: count=%d state=%s fingerprint=%s slot=%d", count, state, fingerprint, slot)
+	if count != 1 || state != "revalidate" || fingerprint != epoch.Fingerprint || slot != 1_000 || opportunityKey != expectedPlan.Opportunities[0].IdempotencyKey {
+		t.Fatalf("confirmed update did not reach durable W3 queue: count=%d state=%s fingerprint=%s slot=%d key=%s expected=%s", count, state, fingerprint, slot, opportunityKey, expectedPlan.Opportunities[0].IdempotencyKey)
 	}
 	if err := worker.cycle(ctx); err != nil {
 		t.Fatal(err)

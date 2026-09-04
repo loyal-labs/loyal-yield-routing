@@ -17,7 +17,7 @@ type Worker struct {
 	store             *Store
 	rpc               *RPCClient
 	marketEvidence    MarketEpochSource
-	owner             *SnapshotOwner
+	revalidator       *Revalidator
 	lastConfirmedSlot int64
 }
 
@@ -28,11 +28,15 @@ func NewWorker(config Config, store *Store, rpc *RPCClient) (*Worker, error) {
 	if store == nil || rpc == nil {
 		return nil, fmt.Errorf("store and RPC client are required")
 	}
-	owner, err := NewSnapshotOwner(config.Source, config.Target)
-	if err != nil {
-		return nil, err
+	return &Worker{config: config, store: store, rpc: rpc}, nil
+}
+
+func (w *Worker) SetRevalidator(revalidator *Revalidator) error {
+	if revalidator == nil {
+		return fmt.Errorf("revalidator is required")
 	}
-	return &Worker{config: config, store: store, rpc: rpc, owner: owner}, nil
+	w.revalidator = revalidator
+	return nil
 }
 
 func (w *Worker) SetMarketEvidence(source MarketEpochSource) error {
@@ -62,6 +66,28 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) cycle(ctx context.Context) error {
+	if w.marketEvidence == nil {
+		return fmt.Errorf("complete durable market evidence is required")
+	}
+	epoch, err := w.marketEvidence.LoadImmutableMarketEpoch(ctx)
+	if err != nil {
+		return err
+	}
+	if err = epoch.Validate(); err != nil {
+		return err
+	}
+	addresses := make([]string, 0, len(epoch.Reserves))
+	identities := make(map[string]ReserveIdentity, len(epoch.Reserves))
+	for _, r := range epoch.Reserves {
+		if r.Market == nil {
+			return fmt.Errorf("catalog reserve %s has no market", r.Reserve)
+		}
+		addresses = append(addresses, r.Reserve)
+		identities[r.Reserve] = ReserveIdentity{Address: r.Reserve, Market: *r.Market, Mint: r.LiquidityMint}
+	}
+	if len(addresses) != epoch.CatalogReserveCount {
+		return fmt.Errorf("incomplete reserve catalog: loaded %d of %d", len(addresses), epoch.CatalogReserveCount)
+	}
 	minimumSlot, err := w.rpc.ConfirmedSlot(ctx)
 	if err != nil {
 		return fmt.Errorf("observe confirmed slot: %w", err)
@@ -69,68 +95,70 @@ func (w *Worker) cycle(ctx context.Context) error {
 	if w.lastConfirmedSlot > minimumSlot {
 		minimumSlot = w.lastConfirmedSlot
 	}
-	slot, accounts, err := w.rpc.ConfirmedAccounts(ctx, []string{w.config.Source.Address, w.config.Target.Address}, minimumSlot)
+	slot, accounts, err := w.rpc.ConfirmedAccounts(ctx, addresses, minimumSlot)
 	if err != nil {
-		return fmt.Errorf("observe coherent reserves: %w", err)
+		return fmt.Errorf("observe complete coherent reserve catalog: %w", err)
 	}
-	states := make([]ReserveState, 2)
-	states[0], err = DecodeKaminoSourceReserve(accounts[0], w.config.Source, slot, w.config.SlotDuration)
-	if err != nil {
-		return err
+	direct := MarketSnapshot{Slot: slot, ObservedAt: time.Now().UTC(), Reserves: make(map[string]ReserveState, len(accounts))}
+	for i, account := range accounts {
+		state, e := DecodeKaminoSourceReserve(account, identities[addresses[i]], slot, w.config.SlotDuration)
+		if e != nil {
+			return e
+		}
+		direct.Reserves[addresses[i]] = state
 	}
-	states[1], err = DecodeKaminoReserve(accounts[1], w.config.Target, slot, w.config.SlotDuration)
-	if err != nil {
-		return err
+	if err = epoch.VerifyDirectObservation(direct, addresses...); err != nil {
+		return fmt.Errorf("durable market evidence not converged: %w", err)
 	}
-	snapshot, _, err := w.owner.Apply(slot, time.Now().UTC(), states)
-	if err != nil {
-		return err
-	}
-	position, err := w.store.LoadVaultPosition(ctx, w.config.Cluster, w.config.VaultID, w.config.Source, w.config.Target)
+	snapshot, err := marketSnapshotFromEpoch(epoch, addresses...)
 	if err != nil {
 		return err
 	}
-	decision := Plan(snapshot, position, w.config.Source.Address, w.config.Target.Address)
-	result := PublishResult{Reason: "shadow"}
-	var epoch ImmutableMarketEpoch
-	if decision.Eligible && w.marketEvidence == nil && w.config.Mode == ModePublish {
-		return fmt.Errorf("publish mode requires durable monitor-owned market evidence")
+	snapshot.Cluster = w.config.Cluster
+	mintExpiresAt, complete := epoch.MintExpiresAt(USDCMint)
+	if !complete {
+		return fmt.Errorf("USDC optimizer epoch frontier is incomplete")
 	}
-	if decision.Eligible && w.marketEvidence != nil {
-		epoch, err = w.marketEvidence.LoadImmutableMarketEpoch(ctx)
+	snapshot.ExpiresAt = mintExpiresAt
+	snapshot.OptimizerEpochID, err = w.store.EnsureOptimizerEpoch(ctx, w.config.Cluster, epoch)
+	if err != nil {
+		return fmt.Errorf("resolve durable optimizer epoch: %w", err)
+	}
+	vaults, err := w.store.LoadMigratedFleet(ctx, w.config.Cluster, epoch)
+	if err != nil {
+		return err
+	}
+	fleetPlan, err := PlanFleet(snapshot, vaults)
+	if err != nil {
+		return err
+	}
+	positions := make(map[int64]VaultPosition, len(vaults))
+	for _, v := range vaults {
+		positions[v.Position.VaultID] = v.Position
+	}
+	published := 0
+	for _, opportunity := range fleetPlan.Opportunities {
+		result := PublishResult{Reason: "shadow"}
+		if w.config.Mode == ModePublish {
+			result, err = w.store.Publish(ctx, w.config.Cluster, epoch, positions[opportunity.Decision.VaultID], opportunity.Decision)
+			if err != nil {
+				return fmt.Errorf("publish fleet opportunity: %w", err)
+			}
+			if result.Inserted {
+				published++
+			}
+		}
+		logEvent(map[string]any{"event": "kamino_fleet_planner_opportunity", "mode": w.config.Mode, "vaultId": opportunity.Decision.VaultID, "sourceReserve": opportunity.Decision.SourceReserve, "targetReserve": opportunity.Decision.TargetReserve, "idempotencyKey": opportunity.IdempotencyKey, "publishReason": result.Reason, "opportunityId": result.OpportunityID})
+	}
+	revalidated := false
+	if w.revalidator != nil {
+		revalidated, err = w.revalidator.Cycle(ctx, w.config.Cluster)
 		if err != nil {
-			return err
-		}
-		if err := epoch.VerifyDirectObservation(snapshot, w.config.Source.Address, w.config.Target.Address); err != nil {
-			result.Reason = "durable_market_evidence_not_converged"
-			decision.Eligible = false
-			decision.Reason = result.Reason
-		} else {
-			epochSnapshot, snapshotErr := marketSnapshotFromEpoch(epoch, w.config.Source.Address, w.config.Target.Address)
-			if snapshotErr != nil {
-				return snapshotErr
-			}
-			decision = Plan(epochSnapshot, position, w.config.Source.Address, w.config.Target.Address)
-			if decision.Eligible && w.config.Mode == ModePublish {
-				result, err = w.store.Publish(ctx, w.config.Cluster, epoch, position, decision)
-				if err != nil {
-					return fmt.Errorf("publish durable opportunity: %w", err)
-				}
-			}
+			return fmt.Errorf("revalidate fleet opportunity: %w", err)
 		}
 	}
-	w.lastConfirmedSlot = snapshot.Slot
-	logEvent(map[string]any{
-		"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode,
-		"slot": snapshot.Slot, "snapshotHash": snapshot.Hash,
-		"optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount,
-		"eligible": decision.Eligible, "reason": decision.Reason,
-		"publishReason": result.Reason, "opportunityId": result.OpportunityID,
-		"observedSourceApyBps": snapshot.Reserves[w.config.Source.Address].SupplyAPYBPS,
-		"observedTargetApyBps": snapshot.Reserves[w.config.Target.Address].SupplyAPYBPS,
-		"sourceApyBps":         decision.SourceAPYBPS, "targetApyBps": decision.TargetAPYBPS,
-		"edgeBps": decision.EdgeBPS,
-	})
+	w.lastConfirmedSlot = slot
+	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "revalidated": revalidated, "rejections": fleetPlan.Rejections})
 	return nil
 }
 
@@ -138,7 +166,8 @@ func marketSnapshotFromEpoch(epoch ImmutableMarketEpoch, addresses ...string) (M
 	if err := epoch.Validate(); err != nil {
 		return MarketSnapshot{}, err
 	}
-	result := MarketSnapshot{Hash: epoch.Fingerprint, ObservedAt: epoch.CapturedAt, Reserves: make(map[string]ReserveState)}
+	expiresAt, _ := epoch.MintExpiresAt(USDCMint)
+	result := MarketSnapshot{OptimizerEpochID: epoch.OptimizerEpochID, ExpiresAt: expiresAt, Hash: epoch.Fingerprint, ObservedAt: epoch.CapturedAt, Reserves: make(map[string]ReserveState)}
 	if epoch.MaximumMarketSlot != nil {
 		result.Slot = *epoch.MaximumMarketSlot
 	}
@@ -153,7 +182,7 @@ func marketSnapshotFromEpoch(epoch ImmutableMarketEpoch, addresses ...string) (M
 		}
 		result.Reserves[address] = ReserveState{
 			ReserveIdentity: ReserveIdentity{Address: reserve.Reserve, Market: *reserve.Market, Mint: reserve.LiquidityMint},
-			Slot:            reserve.Slot, LastUpdateSlot: reserve.ReserveLastUpdateSlot, LastUpdateStale: reserve.ReserveLastUpdateStale,
+			Slot:            reserve.Slot, ObservedAt: reserve.ObservedAt, LastUpdateSlot: reserve.ReserveLastUpdateSlot, LastUpdateStale: reserve.ReserveLastUpdateStale,
 			EconomicSlotLag: reserve.EconomicSlotLag, SupplyAPYBPS: reserve.SupplyAPYBPS,
 			TotalSupplyUSDMicros: reserve.TotalSupplyUSDMicros, EconomicLifetimeMillis: lifetime, DataHash: reserve.AccountDataHash,
 		}

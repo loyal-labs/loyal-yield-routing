@@ -227,10 +227,8 @@ fn deposit_ix(vault: Pubkey, p: &Position, amount: u64) -> Result<Instruction, B
         amount,
     ))
 }
-fn run() -> Result<(), Box<dyn Error>> {
-    let mut raw = String::new();
-    io::stdin().read_to_string(&mut raw)?;
-    let input: ProxyRequest = serde_json::from_str(&raw)?;
+pub fn build_json(raw: &str) -> Result<String, Box<dyn Error>> {
+    let input: ProxyRequest = serde_json::from_str(raw)?;
     if input.schema_version != 1 || input.operation != "buildSameMintRoute" {
         return Err("unsupported KLend proxy schema or operation".into());
     }
@@ -273,14 +271,16 @@ fn run() -> Result<(), Box<dyn Error>> {
         "kamino_refresh_obligation",
         refresh_obligation_ix(&r.target, true)?,
     ));
-    println!(
-        "{}",
-        serde_json::to_string(&ProxyOutput {
-            schema_version: 1,
-            operation: "buildSameMintRoute",
-            route: RouteOutput { public, protected },
-        })?
-    );
+    Ok(serde_json::to_string(&ProxyOutput {
+        schema_version: 1,
+        operation: "buildSameMintRoute",
+        route: RouteOutput { public, protected },
+    })?)
+}
+fn run() -> Result<(), Box<dyn Error>> {
+    let mut raw = String::new();
+    io::stdin().read_to_string(&mut raw)?;
+    println!("{}", build_json(&raw)?);
     Ok(())
 }
 fn main() {

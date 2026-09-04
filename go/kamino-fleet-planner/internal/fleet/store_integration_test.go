@@ -94,7 +94,7 @@ func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 		if outcome.result.Inserted {
 			inserted++
 			published = outcome.result
-		} else if outcome.result.Reason == "economic_duplicate" {
+		} else if outcome.result.Reason == "rust_identity_duplicate" {
 			duplicates++
 		}
 	}
@@ -151,8 +151,8 @@ func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if duplicate.Inserted || duplicate.OpportunityID != published.OpportunityID || duplicate.Reason != "economic_duplicate" {
-		t.Fatalf("economic retry was not idempotent: %+v", duplicate)
+	if duplicate.Inserted || duplicate.OpportunityID != 0 || duplicate.Reason != "active_work" {
+		t.Fatalf("new epoch was not fenced by existing active work: %+v", duplicate)
 	}
 	// A fresh process recovers from the authoritative queue, not a private
 	// planner watermark. Existing active work must still block replanning.

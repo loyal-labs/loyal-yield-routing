@@ -34,6 +34,19 @@ func main() {
 	if err := worker.SetMarketEvidence(marketEvidence); err != nil {
 		log.Fatal(err)
 	}
+	if config.RevalidatorEnabled {
+		proxy, err := fleet.NewKLendProxy(config.KLendProxyPath, config.KLendProxySHA256)
+		if err != nil {
+			log.Fatal(err)
+		}
+		revalidator, err := fleet.NewRevalidator(store, fleet.NewRPCClient(config.RPCURL), proxy, fleet.RevalidatorConfig{Owner: config.RevalidationOwner, DelegatedSigner: config.DelegatedSigner, LeaseTTL: config.RevalidationLeaseTTL, ComputeLimit: config.RevalidationComputeLimit, FusedExecute: config.FusedExecute})
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := worker.SetRevalidator(revalidator); err != nil {
+			log.Fatal(err)
+		}
+	}
 	if err := worker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}

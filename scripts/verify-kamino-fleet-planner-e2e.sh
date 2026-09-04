@@ -24,7 +24,7 @@ done
 echo "== Pre-cutover planner slice: Go process only"
 echo "Not invoked by this verifier: kamino-reserve-monitor and fleet-opportunity-planner"
 echo "Boundary under test: existing PostgreSQL optimizer_epochs/rebalance_opportunities schema"
-echo "WARNING: this verifier ends at revalidate and does not prove route execution readiness"
+echo "Boundary includes durable revalidate and atomic prepared leased-execute handoff"
 echo "== Rust/Go immutable market epoch parity"
 "$root/scripts/verify-kamino-market-epoch-parity.sh"
 echo "== Go verifier-first checks"
@@ -67,12 +67,13 @@ echo "PASS: existing production queue schema is sufficient; no planner-specific 
 echo "== Confirmed RPC to durable W3 queue"
 cd "$root/go/kamino-fleet-planner"
 FLEET_TEST_DATABASE_URL="$database_url" go test ./internal/fleet \
-  -run 'TestMarketEvidenceStoreLoadsRealMonitorIdentity|TestStoreIntegrationDurableHandoffWithoutPlannerMigration|TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner' -count=1 -v
+  -run 'TestMarketEvidenceStoreLoadsRealMonitorIdentity|TestStoreIntegrationDurableHandoffWithoutPlannerMigration|TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner|TestRevalidationStoreIntegrationFusedExecuteIsAtomic' -count=1 -v
 
-[[ "$(psql "$database_url" -X -Atc "SELECT count(*) > 0 AND bool_and(epoch.market_state->>'fingerprint'=epoch.epoch_key) AND bool_and((epoch.market_state->>'optimizerEpochId')::bigint>0) AND bool_and(jsonb_array_length(epoch.market_state->'reserves')>=2) AND bool_and((epoch.market_state->'mintCoverage'->0->>'complete')::boolean) AND bool_and(opportunity.opportunity_state='revalidate') FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=opportunity.optimizer_epoch_id")" == "t" ]] ||
-  fail "durable handoff lacks a complete typed immutable epoch or a revalidate row"
+[[ "$(psql "$database_url" -X -Atc "SELECT count(*) > 0 AND bool_and(epoch.market_state->>'fingerprint'=epoch.epoch_key) AND bool_and((epoch.market_state->>'optimizerEpochId')::bigint>0) AND bool_and(jsonb_array_length(epoch.market_state->'reserves')>=2) AND bool_and((epoch.market_state->'mintCoverage'->0->>'complete')::boolean) AND count(*) FILTER (WHERE opportunity.opportunity_state='revalidate')>0 AND count(*) FILTER (WHERE opportunity.opportunity_state='leased' AND opportunity.lease_kind='execute' AND opportunity.execution_plan ? 'prepared_transaction')>0 FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=opportunity.optimizer_epoch_id")" == "t" ]] ||
+  fail "durable handoff lacks typed epoch, revalidate work, or atomically prepared execute work"
 
-echo "PASS: mock confirmed RPC -> Go observation/planning -> durable revalidate row"
+echo "PASS: mock confirmed RPC -> Go planning/revalidation -> durable revalidate and leased-execute rows"
 echo "PASS: Rust monitor/planner services were not invoked by this scoped test"
 echo "PASS: economic idempotency, active-work exclusion, and queue-based restart recovery verified"
-echo "NOT VERIFIED: route revalidation, ready/execution, confirmation, or reconciliation"
+echo "PASS: atomic lease, conflict, capacity reservation, prepared-wire persistence, and lost-lease fencing verified"
+echo "NOTE: exact route bytes and retained lifecycle parity are verified by verify-kamino-planner-revalidator-parity.sh"

@@ -124,17 +124,20 @@ func TestPlanMatchesProductionRustEconomicFixture(t *testing.T) {
 	}
 }
 
-func TestEconomicKeyIgnoresSlotButNotEconomics(t *testing.T) {
+func TestRustOpportunityIdentityFencesEpochAndEconomics(t *testing.T) {
 	snapshot, position := eligibleFixture()
-	first := Plan(snapshot, position, "source", "target")
-	snapshot.Slot++
-	snapshot.ObservedAt = snapshot.ObservedAt.Add(time.Second)
-	second := Plan(snapshot, position, "source", "target")
-	if economicKey("mainnet-beta", position, first) != economicKey("mainnet-beta", position, second) {
-		t.Fatal("slot-only churn changed economic identity")
+	decision := Plan(snapshot, position, "source", "target")
+	plan, err := canonicalSameMintExecutionPlan(position, decision, decision.SourceAPYBPS, decision.TargetAPYBPS, snapshot.Slot, snapshot.ObservedAt)
+	if err != nil {
+		t.Fatal(err)
 	}
-	second.TargetAPYBPS++
-	if economicKey("mainnet-beta", position, first) == economicKey("mainnet-beta", position, second) {
-		t.Fatal("material economics did not change identity")
+	expires := snapshot.ObservedAt.Add(time.Minute)
+	first := opportunityIdentity("mainnet-beta", 10, decision, plan, expires)
+	if first == opportunityIdentity("mainnet-beta", 11, decision, plan, expires) {
+		t.Fatal("optimizer epoch did not fence Rust identity")
+	}
+	decision.TargetAPYBPS++
+	if first == opportunityIdentity("mainnet-beta", 10, decision, plan, expires) {
+		t.Fatal("material economics did not change Rust identity")
 	}
 }

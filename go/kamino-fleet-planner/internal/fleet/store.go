@@ -2,8 +2,6 @@ package fleet
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -112,6 +110,124 @@ WHERE vault.id=$6 AND position.has_value AND position.amount_raw>0
 	return position, nil
 }
 
+// LoadMigratedFleet reads every active same-mint Kamino vault and its current
+// source position in one repeatable-read snapshot. The epoch is the complete
+// reserve denominator; no configured source/target pair can narrow this set.
+func (s *Store) LoadMigratedFleet(ctx context.Context, cluster string, epoch ImmutableMarketEpoch) ([]FleetVault, error) {
+	if cluster == "" || len(epoch.Reserves) < 2 {
+		return nil, fmt.Errorf("cluster and complete reserve epoch are required")
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `
+SELECT DISTINCT ON (vault.id)
+       vault.id, vault.settings, vault.vault_index, vault.vault_pubkey,
+       policy.id, policy.policy_account, policy.kamino_markets,
+       position.reserve, position.market, position.liquidity_mint,
+       position.amount_raw, position.snapshot_id, position.observed_slot,
+       position.observed_at, position.planning_metadata
+FROM loyal_yield.managed_vaults vault
+JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id
+JOIN loyal_yield.vault_reserve_positions_current position ON position.vault_id=vault.id
+WHERE vault.active AND policy.active
+  AND 'same_mint_kamino'=ANY(policy.route_modes)
+  AND position.has_value AND position.amount_raw>0
+  AND position.liquidity_mint=ANY(policy.stable_mints)
+  AND position.liquidity_mint=ANY(policy.kamino_liquidity_mints)
+  AND position.market=ANY(policy.kamino_markets)
+  AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_opportunities o WHERE o.cluster=$1 AND o.vault_id=vault.id AND o.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created'))
+  AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions d WHERE d.vault_id=vault.id AND d.status::text IN ('planned','simulating','ready','submitted','confirming'))
+  AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions d WHERE d.vault_id=vault.id AND d.status::text='confirmed' AND d.source_reserve=position.reserve AND d.updated_at>=clock_timestamp()-interval '5 minutes')
+ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster)
+	if err != nil {
+		return nil, fmt.Errorf("load migrated fleet: %w", err)
+	}
+	defer rows.Close()
+	var fleet []FleetVault
+	for rows.Next() {
+		var p VaultPosition
+		var metadata json.RawMessage
+		var markets []string
+		if err := rows.Scan(&p.VaultID, &p.Settings, &p.VaultIndex, &p.VaultPubkey, &p.PolicyID, &p.PolicyAccount, &markets, &p.SourceReserve, &p.Market, &p.Mint, &p.SourceCollateralAmountRaw, &p.SnapshotID, &p.ObservedSlot, &p.ObservedAt, &metadata); err != nil {
+			return nil, err
+		}
+		var evidence struct {
+			AmountSemantics  string          `json:"amount_semantics"`
+			Redeemable       json.RawMessage `json:"redeemable_source_liquidity_amount_raw"`
+			RedeemableLegacy json.RawMessage `json:"redeemable_liquidity_amount_raw"`
+			SourceCollateral json.RawMessage `json:"source_collateral_amount_raw"`
+			Idle             json.RawMessage `json:"idle_vault_liquidity_amount_raw"`
+		}
+		if json.Unmarshal(metadata, &evidence) != nil {
+			return nil, fmt.Errorf("vault %d has invalid planning metadata", p.VaultID)
+		}
+		p.SourceAmountSemantics = evidence.AmountSemantics
+		if p.AmountRaw, err = jsonInt64(evidence.Redeemable); err != nil {
+			p.AmountRaw, err = jsonInt64(evidence.RedeemableLegacy)
+		}
+		if raw, e := jsonInt64(evidence.SourceCollateral); e == nil {
+			p.SourceCollateralAmountRaw = raw
+		}
+		if idle, e := jsonInt64(evidence.Idle); e == nil {
+			p.IdleVaultLiquidityAmountRaw = &idle
+		}
+		if err != nil || p.AmountRaw <= 0 || p.SourceCollateralAmountRaw <= 0 {
+			return nil, fmt.Errorf("vault %d lacks executable amount evidence", p.VaultID)
+		}
+		allowed := []string{}
+		for _, reserve := range epoch.Reserves {
+			if reserve.LiquidityMint == p.Mint && reserve.Market != nil && contains(markets, *reserve.Market) && reserve.TargetEligible {
+				allowed = append(allowed, reserve.Reserve)
+			}
+		}
+		fleet = append(fleet, FleetVault{Position: p, AllowedTargets: canonicalStrings(allowed)})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	committedInflow, committedOutflow := map[string]int64{}, map[string]int64{}
+	commitRows, err := tx.Query(ctx, `
+SELECT reserve,sum(inflow),sum(outflow) FROM (
+ SELECT target_reserve AS reserve,principal_usd_micros AS inflow,0::bigint AS outflow
+ FROM loyal_yield.rebalance_opportunities WHERE cluster=$1 AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
+ UNION ALL
+ SELECT source_reserve AS reserve,0::bigint,principal_usd_micros
+ FROM loyal_yield.rebalance_opportunities WHERE cluster=$1 AND source_reserve IS NOT NULL AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
+) committed GROUP BY reserve`, cluster)
+	if err != nil {
+		return nil, fmt.Errorf("load committed reserve frontier: %w", err)
+	}
+	for commitRows.Next() {
+		var reserve string
+		var inflow, outflow int64
+		if err := commitRows.Scan(&reserve, &inflow, &outflow); err != nil {
+			commitRows.Close()
+			return nil, err
+		}
+		if inflow < 0 || outflow < 0 {
+			commitRows.Close()
+			return nil, errors.New("negative committed reserve frontier")
+		}
+		committedInflow[reserve], committedOutflow[reserve] = inflow, outflow
+	}
+	if err := commitRows.Err(); err != nil {
+		commitRows.Close()
+		return nil, err
+	}
+	commitRows.Close()
+	for i := range fleet {
+		fleet[i].CommittedInflows, fleet[i].CommittedOutflows = committedInflow, committedOutflow
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return fleet, nil
+}
+
 func jsonInt64(raw json.RawMessage) (int64, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return 0, fmt.Errorf("amount is absent")
@@ -126,6 +242,45 @@ func jsonInt64(raw json.RawMessage) (int64, error) {
 	}
 	number, parseErr := strconv.ParseInt(text, 10, 64)
 	return number, parseErr
+}
+
+// EnsureOptimizerEpoch resolves the database-assigned epoch identity before
+// planning. Rust includes this ID in the opportunity key, so publication plans
+// must not use a synthetic fingerprint-derived ID.
+func (s *Store) EnsureOptimizerEpoch(ctx context.Context, cluster string, epoch ImmutableMarketEpoch) (int64, error) {
+	if cluster == "" {
+		return 0, fmt.Errorf("cluster is required")
+	}
+	if err := epoch.Validate(); err != nil {
+		return 0, err
+	}
+	durable := epoch.DurableEvidence()
+	marketState, err := json.Marshal(durable)
+	if err != nil {
+		return 0, err
+	}
+	var epochID int64
+	var evidenceMatches bool
+	err = s.pool.QueryRow(ctx, `
+WITH inserted AS (
+  INSERT INTO loyal_yield.optimizer_epochs (cluster,epoch_key,market_slot,observed_at,expires_at,market_state)
+  VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (cluster,epoch_key) DO NOTHING
+  RETURNING id,market_slot,observed_at,expires_at,market_state
+), candidate AS (
+  SELECT id,market_slot,observed_at,expires_at,market_state FROM inserted
+  UNION ALL
+  SELECT id,market_slot,observed_at,expires_at,market_state FROM loyal_yield.optimizer_epochs
+  WHERE cluster=$1 AND epoch_key=$2 AND NOT EXISTS (SELECT 1 FROM inserted)
+)
+SELECT id, market_slot=$3 AND observed_at=$4 AND expires_at=$5 AND market_state=$6::jsonb
+FROM candidate LIMIT 1`, cluster, durable.Fingerprint, *durable.MaximumMarketSlot, durable.CapturedAt, durable.OptimizerEnvelopeExpiresAt(), marketState).Scan(&epochID, &evidenceMatches)
+	if err != nil {
+		return 0, err
+	}
+	if !evidenceMatches {
+		return 0, fmt.Errorf("optimizer epoch key is stored under different immutable evidence")
+	}
+	return epochID, nil
 }
 
 func (s *Store) Publish(ctx context.Context, cluster string, epoch ImmutableMarketEpoch, position VaultPosition, decision Decision) (PublishResult, error) {
@@ -152,44 +307,10 @@ func (s *Store) Publish(ctx context.Context, cluster string, epoch ImmutableMark
 	if err != nil {
 		return PublishResult{}, err
 	}
-	feeTier := "base"
-	if decision.EstimatedCostLamports >= 50_000 {
-		feeTier = "high_value"
-	} else if decision.EstimatedCostLamports >= 15_000 {
-		feeTier = "standard"
-	}
-	plan := map[string]any{
-		"kind": "same_mint", "route_kind": "same_mint", "settings": position.Settings, "vault_index": position.VaultIndex,
-		"vault_pubkey": position.VaultPubkey, "policy_id": position.PolicyID, "source_kind": "reserve_position",
-		"source_reserve": decision.SourceReserve, "target_reserve": decision.TargetReserve, "liquidity_mint": decision.Mint,
-		"source_liquidity_mint": decision.Mint, "target_liquidity_mint": decision.Mint, "amount_raw": decision.AmountRaw,
-		"route_amount_semantics": amountSemanticsRedeemableLiquidity, "source_amount_semantics": position.SourceAmountSemantics,
-		"source_collateral_amount_raw": position.SourceCollateralAmountRaw, "redeemable_source_liquidity_amount_raw": decision.AmountRaw,
-		"idle_vault_liquidity_amount_raw": position.IdleVaultLiquidityAmountRaw, "idle_token_account": nil,
-		"source_apy_bps": decision.SourceAPYBPS, "observed_source_apy_bps": sourceEvidence.SupplyAPYBPS,
-		"observed_target_apy_bps": targetEvidence.SupplyAPYBPS, "target_apy_bps": decision.TargetAPYBPS,
-		"capacity_adjusted_target_apy_bps": decision.TargetAPYBPS, "estimated_edge_bps": decision.EdgeBPS,
-		"confidence_ppm": decision.ConfidencePPM, "expected_service_millis": expectedServiceMillis,
-		"holding_horizon_seconds": decision.HoldingHorizonSeconds, "estimated_execution_cost_usd_micros": decision.EstimatedCostUSDMicros,
-		"estimated_execution_costs": map[string]any{"kind": "same_mint", "route_usd_micros": decision.EstimatedCostUSDMicros},
-		"fee_cap_lamports":          decision.EstimatedCostLamports, "fee_tier": feeTier, "fee_gain_fraction_ppm": 50_000,
-		"minimum_transaction_fee_lamports": 5_000, "conservative_sol_price_usd_micros": 1_000_000_000,
-		"source_observed_at": position.ObservedAt.UTC(), "source_observed_slot": position.ObservedSlot,
-		"optimizer_market_slot": decision.MarketSlot, "target_observed_at": targetEvidence.ObservedAt, "target_observed_slot": targetEvidence.Slot,
-		"writable_conflict_keys": []string{
-			"vault:" + position.VaultPubkey,
-			"policy:" + strconv.FormatInt(position.PolicyID, 10),
-			"source-reserve:" + decision.SourceReserve,
-			"target-reserve:" + decision.TargetReserve,
-		}, "planning_economics_are_executable_quote": false,
-		"fresh_executable_jupiter_minimum_output_required": false, "policy_bindings": nil,
-		"source_recovery_anchor_collateral_raw": nil, "cross_mint_maximum_value_loss_bps": nil,
-	}
-	planJSON, err := json.Marshal(plan)
+	planJSON, err := canonicalSameMintExecutionPlan(position, decision, sourceEvidence.SupplyAPYBPS, targetEvidence.SupplyAPYBPS, targetEvidence.Slot, targetEvidence.ObservedAt)
 	if err != nil {
 		return PublishResult{}, err
 	}
-	key := economicKey(cluster, position, decision)
 	epochKey := durableEpoch.Fingerprint
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -207,27 +328,6 @@ func (s *Store) Publish(ctx context.Context, cluster string, epoch ImmutableMark
 	}
 	if err != nil {
 		return PublishResult{}, err
-	}
-	var existingID int64
-	err = tx.QueryRow(ctx, `SELECT id FROM loyal_yield.rebalance_opportunities WHERE idempotency_key=$1`, key).Scan(&existingID)
-	if err == nil {
-		if err := tx.Commit(ctx); err != nil {
-			return PublishResult{}, err
-		}
-		return PublishResult{OpportunityID: existingID, Reason: "economic_duplicate"}, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return PublishResult{}, err
-	}
-	var active bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.rebalance_opportunities WHERE cluster=$1 AND vault_id=$2 AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')) OR EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions WHERE vault_id=$2 AND status::text IN ('planned','simulating','ready','submitted','confirming'))`, cluster, decision.VaultID).Scan(&active); err != nil {
-		return PublishResult{}, err
-	}
-	if active {
-		if err := tx.Commit(ctx); err != nil {
-			return PublishResult{}, err
-		}
-		return PublishResult{Reason: "active_work"}, nil
 	}
 	var epochID int64
 	var evidenceMatches bool
@@ -250,6 +350,28 @@ FROM candidate LIMIT 1`, cluster, epochKey, *durableEpoch.MaximumMarketSlot, dur
 	if !evidenceMatches {
 		return PublishResult{}, fmt.Errorf("optimizer epoch key is stored under different immutable evidence")
 	}
+	key := opportunityIdentity(cluster, epochID, decision, planJSON, epochExpires)
+	var existingID int64
+	err = tx.QueryRow(ctx, `SELECT id FROM loyal_yield.rebalance_opportunities WHERE idempotency_key=$1`, key).Scan(&existingID)
+	if err == nil {
+		if err := tx.Commit(ctx); err != nil {
+			return PublishResult{}, err
+		}
+		return PublishResult{OpportunityID: existingID, EpochID: epochID, Reason: "rust_identity_duplicate"}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return PublishResult{}, err
+	}
+	var active bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.rebalance_opportunities WHERE cluster=$1 AND vault_id=$2 AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')) OR EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions WHERE vault_id=$2 AND status::text IN ('planned','simulating','ready','submitted','confirming'))`, cluster, decision.VaultID).Scan(&active); err != nil {
+		return PublishResult{}, err
+	}
+	if active {
+		if err := tx.Commit(ctx); err != nil {
+			return PublishResult{}, err
+		}
+		return PublishResult{EpochID: epochID, Reason: "active_work"}, nil
+	}
 	var opportunityID int64
 	err = tx.QueryRow(ctx, `INSERT INTO loyal_yield.rebalance_opportunities
 (cluster,idempotency_key,rediscovery_key,attempt_generation,vault_id,source_snapshot_id,optimizer_epoch_id,source_reserve,target_reserve,liquidity_mint,source_liquidity_mint,target_liquidity_mint,amount_raw,principal_usd_micros,source_apy_bps,target_apy_bps,estimated_edge_bps,estimated_cost_lamports,annual_yield_gain_usd_micros,expected_net_gain_usd_micros,economic_priority,priority_version,operation_class,opportunity_state,execution_plan,available_at,expires_at)
@@ -261,11 +383,4 @@ VALUES ($1,$2,$2,1,$3,$4,$5,$6,$7,$8,$8,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'l
 		return PublishResult{}, err
 	}
 	return PublishResult{Inserted: true, OpportunityID: opportunityID, EpochID: epochID, Reason: "published"}, nil
-}
-
-func economicKey(cluster string, position VaultPosition, decision Decision) string {
-	values := []any{"kamino-fleet-planner-economic-v1", cluster, decision.VaultID, position.PolicyID, position.Settings, position.VaultIndex, decision.SourceSnapshotID, decision.SourceReserve, decision.TargetReserve, decision.Mint, decision.AmountRaw, decision.SourceAPYBPS, decision.TargetAPYBPS, decision.EdgeBPS}
-	encoded, _ := json.Marshal(values)
-	digest := sha256.Sum256(encoded)
-	return hex.EncodeToString(digest[:])
 }

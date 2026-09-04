@@ -23,21 +23,25 @@ type ReserveIdentity struct {
 
 type ReserveState struct {
 	ReserveIdentity
-	Slot                   int64  `json:"slot"`
-	LastUpdateSlot         int64  `json:"lastUpdateSlot"`
-	LastUpdateStale        bool   `json:"lastUpdateStale"`
-	EconomicSlotLag        int64  `json:"economicSlotLag"`
-	SupplyAPYBPS           int64  `json:"supplyApyBps"`
-	TotalSupplyUSDMicros   int64  `json:"totalSupplyUsdMicros"`
-	EconomicLifetimeMillis int64  `json:"economicLifetimeMillis"`
-	DataHash               string `json:"dataHash"`
+	Slot                   int64     `json:"slot"`
+	ObservedAt             time.Time `json:"observedAt"`
+	LastUpdateSlot         int64     `json:"lastUpdateSlot"`
+	LastUpdateStale        bool      `json:"lastUpdateStale"`
+	EconomicSlotLag        int64     `json:"economicSlotLag"`
+	SupplyAPYBPS           int64     `json:"supplyApyBps"`
+	TotalSupplyUSDMicros   int64     `json:"totalSupplyUsdMicros"`
+	EconomicLifetimeMillis int64     `json:"economicLifetimeMillis"`
+	DataHash               string    `json:"dataHash"`
 }
 
 type MarketSnapshot struct {
-	Slot       int64                   `json:"slot"`
-	ObservedAt time.Time               `json:"observedAt"`
-	Hash       string                  `json:"hash"`
-	Reserves   map[string]ReserveState `json:"reserves"`
+	Cluster          string                  `json:"-"`
+	OptimizerEpochID int64                   `json:"optimizerEpochId"`
+	ExpiresAt        time.Time               `json:"expiresAt"`
+	Slot             int64                   `json:"slot"`
+	ObservedAt       time.Time               `json:"observedAt"`
+	Hash             string                  `json:"hash"`
+	Reserves         map[string]ReserveState `json:"reserves"`
 }
 
 // MarketEpochReserve is byte-for-byte JSON compatible with the Rust

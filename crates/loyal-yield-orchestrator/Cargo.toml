@@ -18,6 +18,10 @@ name = "loyal-klend-proxy"
 path = "src/bin/loyal-klend-proxy.rs"
 
 [[bin]]
+name = "kamino-fleet-parity-reference"
+path = "src/bin/kamino-fleet-parity-reference.rs"
+
+[[bin]]
 name = "fleet-health-projector"
 path = "src/bin/fleet-health-projector.rs"
 

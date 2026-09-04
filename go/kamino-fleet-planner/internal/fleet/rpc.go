@@ -3,10 +3,13 @@ package fleet
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -70,6 +73,89 @@ func (c *RPCClient) call(ctx context.Context, method string, params []any, outpu
 		}
 	}
 	return last
+}
+
+func (c *RPCClient) LatestBlockhash(ctx context.Context, minimumSlot int64) (string, int64, error) {
+	var result struct {
+		Context struct {
+			Slot int64 `json:"slot"`
+		} `json:"context"`
+		Value struct {
+			Blockhash            string `json:"blockhash"`
+			LastValidBlockHeight int64  `json:"lastValidBlockHeight"`
+		} `json:"value"`
+	}
+	if err := c.call(ctx, "getLatestBlockhash", []any{map[string]any{"commitment": "confirmed", "minContextSlot": minimumSlot}}, &result); err != nil {
+		return "", 0, err
+	}
+	if result.Context.Slot < minimumSlot || result.Value.Blockhash == "" || result.Value.LastValidBlockHeight <= 0 {
+		return "", 0, fmt.Errorf("incoherent confirmed blockhash response")
+	}
+	return result.Value.Blockhash, result.Value.LastValidBlockHeight, nil
+}
+
+func (c *RPCClient) RecentPriorityFee(ctx context.Context, writable []string) (uint64, error) {
+	if len(writable) > 128 {
+		writable = writable[:128]
+	}
+	var result []struct {
+		PrioritizationFee uint64 `json:"prioritizationFee"`
+	}
+	if err := c.call(ctx, "getRecentPrioritizationFees", []any{writable}, &result); err != nil {
+		return 0, err
+	}
+	fees := make([]uint64, len(result))
+	for i := range result {
+		fees[i] = result[i].PrioritizationFee
+	}
+	sort.Slice(fees, func(i, j int) bool { return fees[i] < fees[j] })
+	if len(fees) == 0 {
+		return 0, nil
+	}
+	index := (len(fees)*75+99)/100 - 1
+	return fees[index], nil
+}
+
+func (c *RPCClient) FeeForMessage(ctx context.Context, message []byte, minimumSlot int64) (uint64, error) {
+	var result struct {
+		Context struct {
+			Slot int64 `json:"slot"`
+		} `json:"context"`
+		Value *uint64 `json:"value"`
+	}
+	if err := c.call(ctx, "getFeeForMessage", []any{base64.StdEncoding.EncodeToString(message), map[string]any{"commitment": "confirmed", "minContextSlot": minimumSlot}}, &result); err != nil {
+		return 0, err
+	}
+	if result.Context.Slot < minimumSlot || result.Value == nil || *result.Value == 0 {
+		return 0, fmt.Errorf("confirmed transaction fee is unavailable")
+	}
+	return *result.Value, nil
+}
+
+func (c *RPCClient) SimulateExactTransaction(ctx context.Context, wire []byte, minimumSlot int64) (SimulationEvidence, error) {
+	wireHash := sha256.Sum256(wire)
+	var result struct {
+		Context struct {
+			Slot int64 `json:"slot"`
+		} `json:"context"`
+		Value struct {
+			Err           json.RawMessage `json:"err"`
+			UnitsConsumed *uint64         `json:"unitsConsumed"`
+		} `json:"value"`
+	}
+	if err := c.call(ctx, "simulateTransaction", []any{base64.StdEncoding.EncodeToString(wire), map[string]any{"commitment": "confirmed", "encoding": "base64", "sigVerify": false, "replaceRecentBlockhash": false, "minContextSlot": minimumSlot}}, &result); err != nil {
+		return SimulationEvidence{}, err
+	}
+	simulation := SimulationEvidence{Slot: result.Context.Slot, WireSHA256: hex.EncodeToString(wireHash[:])}
+	if result.Context.Slot < minimumSlot || result.Value.UnitsConsumed == nil {
+		return simulation, fmt.Errorf("incoherent exact simulation response")
+	}
+	simulation.UnitsConsumed = *result.Value.UnitsConsumed
+	simulation.Succeeded = len(result.Value.Err) == 0 || string(result.Value.Err) == "null"
+	if !simulation.Succeeded {
+		simulation.Error = string(result.Value.Err)
+	}
+	return simulation, nil
 }
 
 func (c *RPCClient) ConfirmedSlot(ctx context.Context) (int64, error) {
