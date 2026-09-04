@@ -63,6 +63,7 @@ describe("Backyard RWA Phase 2 runtime activation", () => {
     expect(restoreIncident.requestedAmountRaw).toBe("1000000");
     expect(restoreIncident.actualAmountRaw).toBe("3793417");
     expect(restoreIncident.durableStatus).toBe("manual_recovery");
+    expect(restoreIncident.recoveryReason).toBe("exact_effect_reconciliation_failed");
     expect(restoreIncident.conservation).toEqual({
       usdcDeltaRaw: "0",
       capitalLost: false,

@@ -47,7 +47,7 @@
     "destinationChanged": false
   },
   "cause": "The existing adaptor validated the requested liquidity, but Voltr swept the complete strategy USDC custody after the adaptor CPI. The outer requested amount was not an actual-transfer bound.",
-  "recoveryReason": "finalized_restore_actual_effect_mismatch: requested=1000000 actual=3793417 strategy_swept_to_idle",
+  "recoveryReason": "exact_effect_reconciliation_failed",
   "durableStatus": "manual_recovery",
   "operatorAuthorization": {
     "authorized": true,

@@ -417,7 +417,7 @@ func TestCapitalManualRecoveryBlocksEveryNewExecutableDecision(t *testing.T) {
 		"operation_id = 'fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe'",
 		"transaction_signature = '46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz'",
 		"confirmed_slot = 444157954",
-		"recovery_reason = 'finalized_restore_actual_effect_mismatch: requested=1000000 actual=3793417 strategy_swept_to_idle'",
+		"recovery_reason = 'exact_effect_reconciliation_failed'",
 	} {
 		if !strings.Contains(query, required) {
 			t.Fatalf("manual-recovery fence is missing %q", required)

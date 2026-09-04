@@ -226,6 +226,7 @@ function main() {
     restoreIncident?.transactionSignature === "46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz" &&
     restoreIncident?.finalizedSlot === 444157954 && restoreIncident?.requestedAmountRaw === "1000000" &&
     restoreIncident?.actualAmountRaw === "3793417" && restoreIncident?.durableStatus === "manual_recovery" &&
+    restoreIncident?.recoveryReason === "exact_effect_reconciliation_failed" &&
     incidentAuthorization?.authorized === true && incidentScope?.ordinaryCapsRemainUnchanged === true &&
     incidentScope?.additionalExceptionsAuthorized === false && incidentScope?.qualifiesAsReconciledLifecycleOperation === false &&
     incidentScope?.satisfiesTerminalRestoration === true &&
