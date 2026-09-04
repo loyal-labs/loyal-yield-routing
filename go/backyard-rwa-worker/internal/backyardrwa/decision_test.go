@@ -73,6 +73,18 @@ func TestSelectedRouteNeverRestoresMoreThanActualEffectCap(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestSelectedRouteRestoreModelsFullWithinCapSweep(t *testing.T) {
+	s := base()
+	s.RouteLane = SelectedRouteID
+	s.WithdrawalDemandRaw = 500_000
+	s.StrategyNAVRaw = 900_000
+	s.VoltrStrategyIdleRaw = 900_000
+	got := Decide(s)
+	if got.Action != VoltrRestoreIdle || got.AmountRaw != 900_000 || got.Reason != "withdrawal_staged" {
+		t.Fatal(got)
+	}
+}
 func TestDuplicateObservationIsIdempotent(t *testing.T) {
 	a, b := Decide(base()), Decide(base())
 	if a.IdempotencyKey != b.IdempotencyKey || a.Action != b.Action {
