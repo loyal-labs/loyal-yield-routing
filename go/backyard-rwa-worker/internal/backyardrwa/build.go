@@ -208,7 +208,11 @@ func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, publicK
 		// A terminal zero-NAV correction must use Voltr's withdrawal accounting
 		// path. Its zero-amount deposit path overflows while realizing a loss,
 		// whereas this path consumes the same report ticket without moving funds.
-		data, err := voltrStrategyData(voltrWithdrawDiscriminator, adaptorWithdrawDiscriminator, 0, request.Report)
+		// The installed withdrawal constraint has a lower bound of one raw unit.
+		// Request that minimum while terminal strategy custody is zero; the
+		// adaptor returns an actual amount of zero, so REPORT_NAV remains an
+		// economically zero operation with unchanged token effects.
+		data, err := voltrStrategyData(voltrWithdrawDiscriminator, adaptorWithdrawDiscriminator, 1, request.Report)
 		if err != nil {
 			return compiledInstruction{}, publicKey{}, 0, err
 		}

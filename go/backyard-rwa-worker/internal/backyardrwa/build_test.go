@@ -88,7 +88,7 @@ func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 	}
 	forwardedNAV := forwardedAdaptorWire(t, nav.data)
 	if len(forwardedNAV) != 78 || !bytes.Equal(forwardedNAV[:8], adaptorWithdrawDiscriminator) ||
-		binary.LittleEndian.Uint64(forwardedNAV[8:16]) != 0 || forwardedNAV[16] != 1 ||
+		binary.LittleEndian.Uint64(forwardedNAV[8:16]) != 1 || forwardedNAV[16] != 1 ||
 		binary.LittleEndian.Uint32(forwardedNAV[17:21]) != 57 || forwardedNAV[21] != 1 {
 		t.Fatalf("NAV adaptor CPI wire drifted: %s", hex.EncodeToString(forwardedNAV))
 	}
@@ -104,8 +104,8 @@ func TestBridgeTransactionSignsExactLegacyWireAndPersistsOnlyAfterSimulation(t *
 	if len(signed.signedWire) <= ed25519.SignatureSize || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:1+ed25519.SignatureSize]) {
 		t.Fatal("legacy wire did not contain a valid signature over its exact message")
 	}
-	if len(signed.signedWire) != 1027 || signed.messageSHA256 != "5af2fbd3d2d15cb0cb8803a7dbc1b6469219acccbb6a3ac250a9ad4f9d8bca53" ||
-		signed.signedWireSHA256 != "e94102d36cd58d40184ea4526dc21b438a2f7806727d3567887556cedda4ecd5" {
+	if len(signed.signedWire) != 1027 || signed.messageSHA256 != "d2775d72a1773f29b4239e8b94e004c2cbd57aa9dc75a24b40e63c2fb78bbe2f" ||
+		signed.signedWireSHA256 != "92f5203af8c036d20aa24944cf93a00f79bbe85d8d84fc601a8b896a53772176" {
 		t.Fatalf("ticketed NAV packet fingerprint drifted: bytes=%d message=%s wire=%s", len(signed.signedWire), signed.messageSHA256, signed.signedWireSHA256)
 	}
 	if signed.transactionSignature != encodeBase58(signed.signedWire[1:1+ed25519.SignatureSize]) || len(signed.messageSHA256) != 64 || len(signed.signedWireSHA256) != 64 {
