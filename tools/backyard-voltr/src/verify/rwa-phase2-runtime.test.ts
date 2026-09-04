@@ -15,6 +15,7 @@ describe("Backyard RWA Phase 2 runtime activation", () => {
   const compiled = readJson("docs/evidence/backyard-rwa-go/policy-compiled-v1.json");
   const rollovers = readJson("docs/evidence/backyard-rwa-go/phase2-runtime/current-policy-rollovers-v1.json");
   const restoreIncident = readJson("docs/evidence/backyard-rwa-go/phase2-runtime/voltr-restore-incident-v1.json");
+  const signedUnsent = readJson("docs/evidence/backyard-rwa-go/phase2-runtime/signed-unsent-v1.json");
 
   test("freezes exactly PRIME plus the selected Maple representative", () => {
     const activation = manifest.runtimeActivation;
@@ -74,5 +75,21 @@ describe("Backyard RWA Phase 2 runtime activation", () => {
       qualifiesAsReconciledLifecycleOperation: false,
       satisfiesTerminalRestoration: true,
     });
+  });
+
+  test("keeps the R03 lifecycle signed-unsent and removes every broadcast surface", () => {
+    const producer = readFileSync(resolve(ROOT, "tools/backyard-voltr/src/verify/generate-rwa-phase2-r03-plan.ts"), "utf8");
+    expect(producer).not.toMatch(/\.send(?:Raw)?Transaction\s*\(/);
+    expect(producer).toContain("this producer has no broadcast mode");
+    expect(signedUnsent).toMatchObject({
+      verdict: "PASS",
+      broadcast: false,
+      signedUnsent: true,
+      selectedLane: "Maple/syrupUSDC/USDC",
+      signatureAbsentOnChain: true,
+    });
+    expect(signedUnsent.chainPreStateSha256).toBe(signedUnsent.chainPostStateSha256);
+    expect(signedUnsent.transactions).toHaveLength(9);
+    expect(signedUnsent.transactions.every((row: any) => row.simulationPassed === true && row.packetBytes <= 1232)).toBe(true);
   });
 });

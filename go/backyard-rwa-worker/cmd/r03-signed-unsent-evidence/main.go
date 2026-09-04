@@ -1,5 +1,5 @@
 // Command r03-signed-unsent-evidence is read/simulate-only.  It consumes a
-// plan emitted by the canonical Go lifecycle builders and calls exactly one
+// plan emitted by the reviewed lifecycle verification builders and calls exactly one
 // Helius simulateBundle request.  There is intentionally no execute flag and
 // no sendTransaction call in this command.
 package main
