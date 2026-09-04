@@ -573,7 +573,7 @@ is nevertheless **not a drop-in W3 handoff yet**:
 
 Consequently `KAMINO_FLEET_MODE=publish` must not be enabled in production.
 The offline acceptance boundary now lives in
-`verification/kamino-fleet-parity/` and
+`docs/verifiers/kamino-fleet-parity/` and
 `scripts/verify-kamino-planner-revalidator-parity.sh`. Its comparator requires
 exact planner, epoch, opportunity-identity, route, ALT, packet, simulation,
 fence, queue-transition, topology, and retained lifecycle evidence. The

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FIXTURE="$ROOT/verification/kamino-fleet-parity/kamino-route-v1.json"
+FIXTURE="$ROOT/docs/verifiers/kamino-fleet-parity/kamino-route-v1.json"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 python3 - "$FIXTURE" "$TMP/proxy-input.json" <<'PY'
 import json,pathlib,sys

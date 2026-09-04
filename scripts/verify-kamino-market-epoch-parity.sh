@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FIXTURE="$ROOT/verification/kamino-fleet-parity/market-epoch-v1.json"
+FIXTURE="$ROOT/docs/verifiers/kamino-fleet-parity/market-epoch-v1.json"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

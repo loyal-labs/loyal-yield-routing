@@ -13,7 +13,7 @@ import (
 
 func routeFixture(t *testing.T) KaminoSameMintRouteRequest {
 	t.Helper()
-	raw, err := os.ReadFile("../../../../verification/kamino-fleet-parity/kamino-route-v1.json")
+	raw, err := os.ReadFile("../../../../docs/verifiers/kamino-fleet-parity/kamino-route-v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func fixtureProxy(t *testing.T, output string) *KLendProxy {
 	return proxy
 }
 func TestKLendProxyAcceptsRustReferenceOutput(t *testing.T) {
-	output, err := filepath.Abs("../../../../verification/kamino-fleet-parity/kamino-route-v1-output.json")
+	output, err := filepath.Abs("../../../../docs/verifiers/kamino-fleet-parity/kamino-route-v1-output.json")
 	if err != nil {
 		t.Fatal(err)
 	}

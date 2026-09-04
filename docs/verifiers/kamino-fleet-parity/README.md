@@ -29,15 +29,15 @@ scripts/verify-kamino-planner-revalidator-parity.sh --audit-current
 ```
 
 The epoch-specific producers are implemented as
-`kamino-market-epoch-reference` and `loyal-kamino-market-epoch`; their narrower
-gate is green. Full `--audit-current` remains intentionally red until these
-planner/revalidator producers exist and implement the rest of the contract:
+`kamino-market-epoch-reference` and `loyal-kamino-market-epoch`. The complete
+planner/revalidator producers are:
 
 - `crates/loyal-yield-orchestrator/src/bin/kamino-fleet-parity-reference.rs`
 - `go/kamino-fleet-planner/cmd/loyal-kamino-fleet-parity/main.go`
 
-The red result prevents the existing planner-only `revalidate` publication test
-from being mistaken for cutover evidence.
+Both the narrower epoch gate and full `--audit-current` gate are expected to
+pass. The latter prevents planner-only `revalidate` publication evidence from
+being mistaken for complete cutover evidence.
 
 ## Required artifact evidence
 

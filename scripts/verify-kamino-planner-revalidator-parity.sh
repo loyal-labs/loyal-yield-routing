@@ -3,7 +3,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 comparator="$root/scripts/verify-kamino-planner-revalidator-parity.py"
-contract="$root/verification/kamino-fleet-parity/contract-v1.json"
+contract="$root/docs/verifiers/kamino-fleet-parity/contract-v1.json"
 reference_source="$root/crates/loyal-yield-orchestrator/src/bin/kamino-fleet-parity-reference.rs"
 candidate_source="$root/go/kamino-fleet-planner/cmd/loyal-kamino-fleet-parity/main.go"
 
