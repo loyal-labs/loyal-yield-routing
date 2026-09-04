@@ -72,6 +72,7 @@ describe("Backyard RWA Phase 2 runtime activation", () => {
       ordinaryCapsRemainUnchanged: true,
       additionalExceptionsAuthorized: false,
       qualifiesAsReconciledLifecycleOperation: false,
+      satisfiesTerminalRestoration: true,
     });
   });
 });

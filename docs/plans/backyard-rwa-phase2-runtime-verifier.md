@@ -57,8 +57,9 @@ fast checks between those runs.
   requested `1,000,000` raw USDC but Voltr swept `3,793,417` raw USDC from its
   strategy custody to its idle custody. Exact finalized deltas conserved capital
   and did not change destination. This does not relabel the durable
-  `manual_recovery` operation, count it as a successful lifecycle operation,
-  authorize another exception, or increase either ordinary value cap.
+  `manual_recovery` operation, authorize another exception, or increase either
+  ordinary value cap. The operator explicitly accepted its exact finalized,
+  conserved custody effects as satisfying Phase 2 terminal restoration.
 - Expiry: when this goal closes.
 - Stop and ask only for a new signer, cluster, program, destination, or route
   outside the installed catalog; an authority change; a cap increase; a
@@ -138,13 +139,13 @@ only when it is durably recorded and sends no risk-increasing transaction. The
 route reaches full proof only after complete exit, USDC restoration, NAV report,
 and finalized terminal custody reconciliation with no unintended residue.
 
-The authorized incident must be retained separately from the successful
-operation set. Its artifact must match the exact operation, signature, finalized
+The authorized incident must match the exact operation, signature, finalized
 slot, requested and actual amounts, conserved account deltas, durable
 `manual_recovery` status, explicit operator authorization, and deployed forward
-fixes. R05 still requires its successful operation set to be reconciled and
-within the ordinary caps; the incident cannot satisfy a missing successful
-restore or any other lifecycle action.
+fixes. It may satisfy only the terminal `VOLTR_RESTORE_IDLE` action. It remains
+truthfully `manual_recovery`, is never relabeled as reconciled, and cannot admit
+another manual-recovery row or satisfy any other lifecycle action. Every
+ordinary operation remains reconciled and within the ordinary caps.
 
 ### R06 — Phase 1 and withdrawal safety remain intact
 
