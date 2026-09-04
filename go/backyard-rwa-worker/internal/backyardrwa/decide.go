@@ -10,6 +10,15 @@ func Decide(s Snapshot) Decision {
 		if s.CollateralIdleRaw >= 0 {
 			s.PrimeIdleRaw = s.CollateralIdleRaw
 		}
+		// Any genuine Voltr withdrawal receipt drains the entire Phase 2 lane.
+		// Keeping the receipt demand live until the selected position is flat
+		// prevents new risk and gives terminal reconciliation one stable state.
+		if s.WithdrawalDemandRaw > 0 {
+			s.CutoverDrain = true
+			if s.StrategyNAVRaw > s.WithdrawalDemandRaw {
+				s.WithdrawalDemandRaw = s.StrategyNAVRaw
+			}
+		}
 		decision := decideFixed(s)
 		decision = neutralizeRouteAction(decision)
 		if decision.AmountRaw > Phase2TransactionCapRaw {

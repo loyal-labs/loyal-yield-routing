@@ -28,6 +28,41 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 	}
 }
 
+func TestPhase2WithdrawalDemandDrainsEntireSelectedLane(t *testing.T) {
+	snapshot := Snapshot{
+		ObservationID: "maple-withdrawal", Slot: 42, RouteKind: RouteKind,
+		RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, Fresh: true,
+		WithdrawalDemandRaw: 1, StrategyNAVRaw: 2_793_180,
+		HasPosition: true, PositionCollateralRaw: 3_000_000,
+		PositionDebtRaw: 590_717, CollateralIdleRaw: 250_000,
+		LiquidationThresholdBPS: 8_000, LTVBPS: 2_000,
+		PolicyReady: true, ExitBuildable: true,
+	}
+
+	decision := Decide(snapshot)
+	if decision.Action != SwapCollateralToStableStep || decision.Reason != "withdrawal_swap_repayment_buffer" || decision.AmountRaw != 250_000 {
+		t.Fatalf("selected-lane withdrawal did not begin full conservative drain: %+v", decision)
+	}
+	if decision.StrategyKey != SelectedRouteID {
+		t.Fatalf("selected-lane withdrawal lost strategy binding: %+v", decision)
+	}
+}
+
+func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
+	snapshot := Snapshot{
+		ObservationID: "maple-terminal", Slot: 43, RouteKind: RouteKind,
+		RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, Fresh: true,
+		WithdrawalDemandRaw: 1, StrategyNAVRaw: 2_793_180,
+		VoltrIdleRaw: 2_793_180, CollateralIdleRaw: 0,
+		LiquidationThresholdBPS: 8_000, PolicyReady: true, ExitBuildable: true,
+	}
+
+	decision := Decide(snapshot)
+	if decision.Action != Hold || decision.Reason != "withdrawal_covered" || decision.AmountRaw != 0 {
+		t.Fatalf("selected-lane terminal withdrawal state is not stable: %+v", decision)
+	}
+}
+
 func TestPhase2PinnedRuntimeAddressesAreCanonicalBase58(t *testing.T) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
