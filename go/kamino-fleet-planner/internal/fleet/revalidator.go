@@ -246,7 +246,7 @@ func canonicalSameMintExecutionPlan(position VaultPosition, decision Decision, o
 		"source_reserve": decision.SourceReserve, "target_reserve": decision.TargetReserve, "liquidity_mint": decision.Mint,
 		"source_liquidity_mint": decision.Mint, "target_liquidity_mint": decision.Mint, "amount_raw": decision.AmountRaw,
 		"route_amount_semantics": amountSemanticsRedeemableLiquidity, "source_amount_semantics": position.SourceAmountSemantics,
-		"source_collateral_amount_raw": position.SourceCollateralAmountRaw, "redeemable_source_liquidity_amount_raw": decision.AmountRaw,
+		"source_collateral_amount_raw": optionalPositiveInt64(position.SourceCollateralAmountRaw), "redeemable_source_liquidity_amount_raw": decision.AmountRaw,
 		"idle_vault_liquidity_amount_raw": position.IdleVaultLiquidityAmountRaw, "idle_token_account": nil,
 		"source_apy_bps": decision.SourceAPYBPS, "observed_source_apy_bps": observedSourceAPY,
 		"observed_target_apy_bps": observedTargetAPY, "target_apy_bps": decision.TargetAPYBPS,
@@ -285,7 +285,7 @@ func canonicalCrossMintExecutionPlan(position VaultPosition, decision Decision, 
 		"source_reserve": decision.SourceReserve, "target_reserve": decision.TargetReserve, "liquidity_mint": decision.SourceMint,
 		"source_liquidity_mint": decision.SourceMint, "target_liquidity_mint": decision.TargetMint, "amount_raw": decision.AmountRaw,
 		"route_amount_semantics": amountSemanticsRedeemableLiquidity, "source_amount_semantics": position.SourceAmountSemantics,
-		"source_collateral_amount_raw": position.SourceCollateralAmountRaw, "redeemable_source_liquidity_amount_raw": decision.AmountRaw,
+		"source_collateral_amount_raw": optionalPositiveInt64(position.SourceCollateralAmountRaw), "redeemable_source_liquidity_amount_raw": decision.AmountRaw,
 		"idle_vault_liquidity_amount_raw": position.IdleVaultLiquidityAmountRaw, "idle_token_account": nil,
 		"source_apy_bps": decision.SourceAPYBPS, "observed_source_apy_bps": observedSourceAPY,
 		"observed_target_apy_bps": observedTargetAPY, "target_apy_bps": decision.TargetAPYBPS,
@@ -302,6 +302,13 @@ func canonicalCrossMintExecutionPlan(position VaultPosition, decision Decision, 
 		"source_recovery_anchor_collateral_raw": int64(1), "cross_mint_maximum_value_loss_bps": decision.CrossMintMaxValueLossBPS,
 	}
 	return json.Marshal(plan)
+}
+
+func optionalPositiveInt64(value int64) any {
+	if value <= 0 {
+		return nil
+	}
+	return value
 }
 
 func opportunityIdentity(cluster string, optimizerEpochID int64, d Decision, plan []byte, expires time.Time) string {

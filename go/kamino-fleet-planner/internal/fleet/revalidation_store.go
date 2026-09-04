@@ -2,6 +2,9 @@ package fleet
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,7 +86,7 @@ SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fen
        claimed.lease_expires_at,claimed.vault_id,vault.vault_pubkey,vault.vault_index,
        policy.policy_account,policy.delegated_signers,claimed.source_reserve,
        claimed.target_reserve,claimed.liquidity_mint,claimed.amount_raw,
-       (claimed.execution_plan->>'source_collateral_amount_raw')::bigint,
+       COALESCE((claimed.execution_plan->>'source_collateral_amount_raw')::bigint,0),
        claimed.principal_usd_micros,claimed.source_apy_bps,claimed.target_apy_bps,
        claimed.estimated_edge_bps,claimed.expected_net_gain_usd_micros,
        claimed.estimated_cost_lamports,epoch.epoch_key,claimed.execution_plan
@@ -286,8 +289,18 @@ FROM loyal_yield.rebalance_opportunities o WHERE o.id=$1 FOR UPDATE`, lease.Oppo
 		return errors.New("route preparation evidence is incomplete")
 	}
 	if input.Disposition != "waiting_alt" {
+		if len(input.MissingAddresses) != 0 {
+			return errors.New("only waiting_alt may persist missing ALT addresses")
+		}
 		if len(prep.Transaction.Message) == 0 || len(prep.Transaction.UnsignedWire) == 0 || prep.Transaction.PacketBytes > SolanaPacketLimit || prep.Transaction.FeeLamports > uint64(lease.FeeCapLamports) || prep.Transaction.ComputeLimit == 0 || prep.Transaction.ComputeLimit > defaultComputeLimit || !prep.Simulation.Succeeded || prep.Simulation.WireSHA256 != prep.Transaction.WireSHA256 {
 			return errors.New("executable route bytes or simulation evidence is incomplete")
+		}
+	}
+	var provisioningRequestID int64
+	if input.Disposition == "waiting_alt" {
+		provisioningRequestID, err = upsertWaitingALTRequest(ctx, tx, lease, prep, input.MissingAddresses)
+		if err != nil {
+			return err
 		}
 	}
 	next := "ready"
@@ -353,11 +366,133 @@ FROM loyal_yield.rebalance_opportunities o WHERE o.id=$1 FOR UPDATE`, lease.Oppo
 			}
 		}
 	}
+	if provisioningRequestID > 0 {
+		if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_provisioning_request_consumers(opportunity_id,provisioning_request_id) VALUES($1,$2) ON CONFLICT(opportunity_id) DO UPDATE SET provisioning_request_id=EXCLUDED.provisioning_request_id`, lease.OpportunityID, provisioningRequestID); err != nil {
+			return fmt.Errorf("attach ALT provisioning request: %w", err)
+		}
+	}
 	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state=$5,lease_kind=$6,lease_owner=$7,lease_expires_at=$8,route_fingerprint=$9,requirements_fingerprint=$10,execution_plan=$11::jsonb,updated_at=clock_timestamp() WHERE id=$1 AND opportunity_state='leased' AND lease_kind='revalidate' AND lease_owner=$2 AND fencing_token=$3 AND optimizer_epoch_id=$4 AND lease_expires_at>clock_timestamp() AND expires_at>clock_timestamp()`, lease.OpportunityID, lease.Owner, token, epochID, next, leaseKind, leaseOwner, leaseExpiry, prep.RouteFingerprint, prep.RequirementsFingerprint, nonemptyPlan(prep.ExecutionPlan))
 	if err != nil || tag.RowsAffected() != 1 {
 		return errors.New("revalidation transition was fenced")
 	}
 	return tx.Commit(ctx)
+}
+
+type provisioningAddress struct {
+	Address       string
+	SemanticClass string
+	Ordinal       int32
+	AccountRole   string
+	Writable      bool
+}
+
+// upsertWaitingALTRequest mirrors the retained Rust handoff: the immutable
+// address demand is inserted, sealed, and linked to its opportunity in the
+// same transaction that makes waiting_alt visible.
+func upsertWaitingALTRequest(ctx context.Context, tx pgx.Tx, lease RevalidationLease, prep RoutePreparation, missing []string) (int64, error) {
+	missing = canonicalStrings(missing)
+	if len(missing) == 0 {
+		return 0, errors.New("waiting_alt requires missing ALT addresses")
+	}
+	addresses := make([]provisioningAddress, len(missing))
+	for i, address := range missing {
+		if address == "" {
+			return 0, errors.New("waiting_alt contains an empty ALT address")
+		}
+		addresses[i] = provisioningAddress{Address: address, SemanticClass: "vault", Ordinal: int32(i), AccountRole: "route", Writable: false}
+	}
+	emptyHash := provisioningAddressesHash(nil)
+	vaultHash := provisioningAddressesHash(addresses)
+	var requestID int64
+	err := tx.QueryRow(ctx, `
+INSERT INTO loyal_yield.lookup_table_provisioning_requests(
+ cluster,vault_id,route_fingerprint,requirements_fingerprint,
+ desired_shared_hash,desired_vault_hash,desired_shared_address_count,
+ desired_vault_address_count,request_status)
+VALUES($1,$2,$3,$4,$5,$6,0,$7,'requested')
+ON CONFLICT(cluster,vault_id,requirements_fingerprint) DO NOTHING
+RETURNING id`, lease.Cluster, lease.VaultID, prep.RouteFingerprint, prep.RequirementsFingerprint, emptyHash, vaultHash, len(addresses)).Scan(&requestID)
+	if err == nil {
+		for _, address := range addresses {
+			if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_provisioning_request_addresses(request_id,address,semantic_class,ordinal,account_role,is_writable) VALUES($1,$2,$3,$4,$5,$6)`, requestID, address.Address, address.SemanticClass, address.Ordinal, address.AccountRole, address.Writable); err != nil {
+				return 0, fmt.Errorf("insert ALT provisioning address: %w", err)
+			}
+		}
+		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioning_requests SET sealed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1 AND sealed_at IS NULL`, requestID)
+		if err != nil || tag.RowsAffected() != 1 {
+			return 0, errors.New("seal ALT provisioning request failed")
+		}
+		return requestID, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("create ALT provisioning request: %w", err)
+	}
+	var existingSharedHash, existingVaultHash, status, errorCode string
+	var sharedCount, vaultCount int
+	var sealed bool
+	if err := tx.QueryRow(ctx, `
+SELECT id,COALESCE(desired_shared_hash,''),COALESCE(desired_vault_hash,''),
+ desired_shared_address_count,desired_vault_address_count,sealed_at IS NOT NULL,
+ request_status,COALESCE(error_code,'')
+FROM loyal_yield.lookup_table_provisioning_requests
+WHERE cluster=$1 AND vault_id=$2 AND requirements_fingerprint=$3
+FOR UPDATE`, lease.Cluster, lease.VaultID, prep.RequirementsFingerprint).Scan(&requestID, &existingSharedHash, &existingVaultHash, &sharedCount, &vaultCount, &sealed, &status, &errorCode); err != nil {
+		return 0, fmt.Errorf("load existing ALT provisioning request: %w", err)
+	}
+	if !sealed || existingSharedHash != emptyHash || existingVaultHash != vaultHash || sharedCount != 0 || vaultCount != len(addresses) {
+		return 0, errors.New("sealed ALT provisioning request idempotency collision")
+	}
+	rows, err := tx.Query(ctx, `SELECT address,semantic_class,ordinal,account_role,is_writable FROM loyal_yield.lookup_table_provisioning_request_addresses WHERE request_id=$1 ORDER BY semantic_class,ordinal`, requestID)
+	if err != nil {
+		return 0, err
+	}
+	var persisted []provisioningAddress
+	for rows.Next() {
+		var address provisioningAddress
+		if err := rows.Scan(&address.Address, &address.SemanticClass, &address.Ordinal, &address.AccountRole, &address.Writable); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		persisted = append(persisted, address)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	if provisioningAddressesHash(persisted) != vaultHash {
+		return 0, errors.New("sealed ALT provisioning request address collision")
+	}
+	if status == "failed" && errorCode == "terminal_lookup_table_operation" {
+		return 0, errors.New("ALT provisioning request has a terminal operation failure")
+	}
+	if status == "failed" || status == "cancelled" || status == "satisfied" {
+		if _, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioning_requests SET request_status='requested',requested_at=clock_timestamp(),lease_owner=NULL,lease_expires_at=NULL,next_attempt_at=NULL,error_code=NULL,error_detail=NULL,satisfied_at=NULL,updated_at=clock_timestamp() WHERE id=$1`, requestID); err != nil {
+			return 0, fmt.Errorf("reactivate ALT provisioning request: %w", err)
+		}
+	}
+	return requestID, nil
+}
+
+func provisioningAddressesHash(addresses []provisioningAddress) string {
+	hasher := sha256.New()
+	var length [8]byte
+	var ordinal [4]byte
+	for _, address := range addresses {
+		for _, value := range []string{address.Address, address.SemanticClass, address.AccountRole} {
+			binary.LittleEndian.PutUint64(length[:], uint64(len(value)))
+			hasher.Write(length[:])
+			hasher.Write([]byte(value))
+		}
+		binary.LittleEndian.PutUint32(ordinal[:], uint32(address.Ordinal))
+		hasher.Write(ordinal[:])
+		if address.Writable {
+			hasher.Write([]byte{1})
+		} else {
+			hasher.Write([]byte{0})
+		}
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 type reservationEconomics struct {

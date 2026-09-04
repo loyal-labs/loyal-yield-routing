@@ -112,6 +112,11 @@ func (w *Worker) cycle(ctx context.Context) error {
 }
 
 func (w *Worker) planningCycle(ctx context.Context) error {
+	// Register before reading evidence so even a failed planning pass refreshes
+	// the durable liveness signal used by fleet health and source fan-out.
+	if err := w.store.RegisterFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
+		return err
+	}
 	if w.marketEvidence == nil {
 		return fmt.Errorf("complete durable market evidence is required")
 	}

@@ -29,6 +29,11 @@ func TestLoadMigratedFleetBuildsFinalizedCrossMintPolicyBindings(t *testing.T) {
 	source := ReserveIdentity{Address: testIdentity(93), Market: market, Mint: USDCMint}
 	target := ReserveIdentity{Address: testIdentity(94), Market: targetMarket, Mint: PYUSDMint}
 	vaultID := seedWorkerVault(t, ctx, store, suffix, market, source.Address)
+	// Under explicit redeemable-liquidity semantics the projection amount is
+	// authoritative; optional amount aliases must not be required.
+	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.vault_reserve_positions_current SET amount_raw=777000000000,planning_metadata='{"amount_semantics":"redeemable_liquidity_amount"}'::jsonb WHERE vault_id=$1`, vaultID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.route_policies SET cluster=$2,source_commitment='finalized',finalized_eligible=true,stable_mints=ARRAY[$3,$4]::text[],kamino_markets=ARRAY[$5,$6]::text[],kamino_liquidity_mints=ARRAY[$3,$4]::text[] WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, vaultID, cluster, USDCMint, PYUSDMint, market, targetMarket); err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +60,9 @@ func TestLoadMigratedFleetBuildsFinalizedCrossMintPolicyBindings(t *testing.T) {
 	}
 	if len(fleet) != 1 {
 		t.Fatalf("loaded %d vaults, want 1", len(fleet))
+	}
+	if fleet[0].Position.AmountRaw != 777_000_000_000 || fleet[0].Position.SourceCollateralAmountRaw != 0 {
+		t.Fatalf("redeemable projection amount was not authoritative: %+v", fleet[0].Position)
 	}
 	binding, ok := fleet[0].CrossMintTargets[target.Address]
 	if !ok || binding.Swap.SourceShard != "classic" || binding.Swap.EnrollmentGeneration != 7 || binding.Withdraw.ConstraintIndex != 0 || binding.Deposit.ConstraintIndex != 1 || binding.Withdraw.SourceCommitment != "finalized" || binding.Deposit.SourceCommitment != "finalized" {

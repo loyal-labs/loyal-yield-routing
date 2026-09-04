@@ -337,7 +337,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
 	}
-	if sourceCollateral != lease.SourceCollateralRaw {
+	if lease.SourceCollateralRaw > 0 && sourceCollateral != lease.SourceCollateralRaw {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("fresh source collateral amount differs from opportunity")
 	}
 	if _, err := decodeObligation(accounts[4], freshTarget.Position.Market, lease.VaultPubkey, "", &freshTarget.Position); err != nil {
@@ -362,7 +362,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 		hash := sha256.Sum256(account.Data)
 		evidence.Accounts = append(evidence.Accounts, FreshAccount{Kind: kinds[index], Address: account.Address, Owner: account.Owner, DataSHA256: hex.EncodeToString(hash[:]), Slot: slot, Executable: account.Executable, Exists: true})
 	}
-	return KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: freshSource.Position, Target: freshTarget.Position, WithdrawCollateralAmount: lease.SourceCollateralRaw, DepositLiquidityAmount: lease.LiquidityAmountRaw}, evidence, nil
+	return KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: freshSource.Position, Target: freshTarget.Position, WithdrawCollateralAmount: sourceCollateral, DepositLiquidityAmount: lease.LiquidityAmountRaw}, evidence, nil
 }
 
 func decodeRouteReserve(account Account, vault string) (decodedRoutePosition, error) {

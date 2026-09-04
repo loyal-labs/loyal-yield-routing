@@ -241,11 +241,13 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if err := preserveCanonicalPlan(waitingLease.ExecutionPlan, &waiting, "alt_readiness"); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.CommitRevalidation(ctx, *waitingLease, RevalidationCommit{Disposition: "waiting_alt", Preparation: &waiting, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: waitingLease.IdempotencyKey}); err != nil {
+	if err = store.CommitRevalidation(ctx, *waitingLease, RevalidationCommit{Disposition: "waiting_alt", Preparation: &waiting, MissingAddresses: []string{testTarget}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: waitingLease.IdempotencyKey}); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.pool.QueryRow(ctx, `SELECT opportunity_state FROM loyal_yield.rebalance_opportunities WHERE id=$1`, lease.OpportunityID).Scan(&state); err != nil || state != "waiting_alt" {
-		t.Fatalf("waiting_alt transition: %s %v", state, err)
+	var requestStatus, requestAddress string
+	var requestSealed bool
+	if err = store.pool.QueryRow(ctx, `SELECT opportunity.opportunity_state,request.request_status,request.sealed_at IS NOT NULL,address.address FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.lookup_table_provisioning_request_consumers consumer ON consumer.opportunity_id=opportunity.id JOIN loyal_yield.lookup_table_provisioning_requests request ON request.id=consumer.provisioning_request_id JOIN loyal_yield.lookup_table_provisioning_request_addresses address ON address.request_id=request.id WHERE opportunity.id=$1`, lease.OpportunityID).Scan(&state, &requestStatus, &requestSealed, &requestAddress); err != nil || state != "waiting_alt" || requestStatus != "requested" || !requestSealed || requestAddress != testTarget {
+		t.Fatalf("waiting_alt durable request: state=%s status=%s sealed=%t address=%s err=%v", state, requestStatus, requestSealed, requestAddress, err)
 	}
 	readyLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true)
 	if err != nil || readyLease == nil {

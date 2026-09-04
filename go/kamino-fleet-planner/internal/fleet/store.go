@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,10 +32,31 @@ func (s *Store) Close() {
 	}
 }
 
+// RegisterFleetPlanningCluster is both first-cycle registration and the
+// durable per-cycle heartbeat. Source projection fan-out and fleet health use
+// this row rather than process-local liveness.
+func (s *Store) RegisterFleetPlanningCluster(ctx context.Context, cluster string) error {
+	if s == nil || s.pool == nil || cluster == "" || cluster != strings.TrimSpace(cluster) {
+		return errors.New("fleet planning cluster requires a canonical cluster")
+	}
+	tag, err := s.pool.Exec(ctx, `
+INSERT INTO loyal_yield.fleet_planning_clusters(cluster)
+VALUES($1)
+ON CONFLICT(cluster) DO UPDATE SET last_seen_at=clock_timestamp()`, cluster)
+	if err != nil {
+		return fmt.Errorf("register fleet planning cluster: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("fleet planning cluster heartbeat changed no rows")
+	}
+	return nil
+}
+
 func (s *Store) LoadVaultPosition(ctx context.Context, cluster string, vaultID int64, source, target ReserveIdentity) (VaultPosition, error) {
 	var position VaultPosition
 	position.VaultID = vaultID
 	var metadata json.RawMessage
+	var projectedAmountRaw int64
 	err := s.pool.QueryRow(ctx, `
 SELECT vault.settings, vault.vault_index, vault.vault_pubkey,
        policy.id, policy.policy_account,
@@ -62,7 +84,7 @@ JOIN loyal_yield.vault_reserve_positions_current position ON position.vault_id=v
 WHERE vault.id=$6 AND position.has_value AND position.amount_raw>0
 `, target.Address, source.Address, source.Market, source.Mint, cluster, vaultID, target.Market).Scan(
 		&position.Settings, &position.VaultIndex, &position.VaultPubkey, &position.PolicyID, &position.PolicyAccount,
-		&position.SourceReserve, &position.Market, &position.Mint, &position.SourceCollateralAmountRaw, &position.SnapshotID,
+		&position.SourceReserve, &position.Market, &position.Mint, &projectedAmountRaw, &position.SnapshotID,
 		&position.ObservedSlot, &position.ObservedAt, &metadata, &position.BlockedReason,
 		&position.SourceCommittedInflowUSDMicros, &position.SourceCommittedOutflowUSDMicros,
 		&position.TargetCommittedInflowUSDMicros, &position.TargetCommittedOutflowUSDMicros)
@@ -83,22 +105,25 @@ WHERE vault.id=$6 AND position.has_value AND position.amount_raw>0
 	position.SourceAmountSemantics = evidence.AmountSemantics
 	switch evidence.AmountSemantics {
 	case amountSemanticsKaminoCollateralDeposited:
+		position.SourceCollateralAmountRaw = projectedAmountRaw
 		position.AmountRaw, err = jsonInt64(evidence.Redeemable)
 		if err != nil {
 			position.AmountRaw, err = jsonInt64(evidence.RedeemableLegacy)
 		}
 	case amountSemanticsRedeemableLiquidity:
-		position.AmountRaw = position.SourceCollateralAmountRaw
+		// The projection's amount_raw is authoritative for this semantic. The
+		// collateral alias is optional planning evidence and is re-observed from
+		// the obligation before route construction.
+		position.AmountRaw = projectedAmountRaw
+		position.SourceCollateralAmountRaw = 0
 		if raw, parseErr := jsonInt64(evidence.SourceCollateral); parseErr == nil {
 			position.SourceCollateralAmountRaw = raw
-		} else {
-			err = parseErr
 		}
 	default:
 		err = fmt.Errorf("unsupported amount semantics")
 	}
-	if err != nil || position.AmountRaw <= 0 || position.SourceCollateralAmountRaw <= 0 {
-		return VaultPosition{}, fmt.Errorf("fixed cohort requires exact redeemable and collateral amounts")
+	if err != nil || position.AmountRaw <= 0 || (position.SourceAmountSemantics == amountSemanticsKaminoCollateralDeposited && position.SourceCollateralAmountRaw <= 0) {
+		return VaultPosition{}, fmt.Errorf("fixed cohort requires executable route amount evidence")
 	}
 	idleLiquidity, idleErr := jsonInt64(evidence.IdleLiquidity)
 	if idleErr != nil {
@@ -195,10 +220,11 @@ ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options
 	var fleet []FleetVault
 	for rows.Next() {
 		var p VaultPosition
+		var projectedAmountRaw int64
 		var metadata, earnPolicyJSON, swapPolicyJSON json.RawMessage
 		var markets, delegatedSigners []string
 		var authority string
-		if err := rows.Scan(&p.VaultID, &p.Settings, &p.VaultIndex, &p.VaultPubkey, &p.PolicyID, &p.PolicyAccount, &markets, &authority, &delegatedSigners, &earnPolicyJSON, &swapPolicyJSON, &p.SourceReserve, &p.Market, &p.Mint, &p.SourceCollateralAmountRaw, &p.SnapshotID, &p.ObservedSlot, &p.ObservedAt, &metadata); err != nil {
+		if err := rows.Scan(&p.VaultID, &p.Settings, &p.VaultIndex, &p.VaultPubkey, &p.PolicyID, &p.PolicyAccount, &markets, &authority, &delegatedSigners, &earnPolicyJSON, &swapPolicyJSON, &p.SourceReserve, &p.Market, &p.Mint, &projectedAmountRaw, &p.SnapshotID, &p.ObservedSlot, &p.ObservedAt, &metadata); err != nil {
 			return nil, err
 		}
 		var evidence struct {
@@ -212,16 +238,27 @@ ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options
 			return nil, fmt.Errorf("vault %d has invalid planning metadata", p.VaultID)
 		}
 		p.SourceAmountSemantics = evidence.AmountSemantics
-		if p.AmountRaw, err = jsonInt64(evidence.Redeemable); err != nil {
-			p.AmountRaw, err = jsonInt64(evidence.RedeemableLegacy)
-		}
-		if raw, e := jsonInt64(evidence.SourceCollateral); e == nil {
-			p.SourceCollateralAmountRaw = raw
+		switch evidence.AmountSemantics {
+		case amountSemanticsKaminoCollateralDeposited:
+			p.SourceCollateralAmountRaw = projectedAmountRaw
+			if p.AmountRaw, err = jsonInt64(evidence.Redeemable); err != nil {
+				p.AmountRaw, err = jsonInt64(evidence.RedeemableLegacy)
+			}
+		case amountSemanticsRedeemableLiquidity:
+			// Keep the projected position amount as the redeemable route amount.
+			// Metadata aliases are optional under this explicit semantic.
+			p.AmountRaw = projectedAmountRaw
+			p.SourceCollateralAmountRaw = 0
+			if raw, e := jsonInt64(evidence.SourceCollateral); e == nil {
+				p.SourceCollateralAmountRaw = raw
+			}
+		default:
+			err = fmt.Errorf("unsupported amount semantics")
 		}
 		if idle, e := jsonInt64(evidence.Idle); e == nil {
 			p.IdleVaultLiquidityAmountRaw = &idle
 		}
-		if err != nil || p.AmountRaw <= 0 || p.SourceCollateralAmountRaw <= 0 {
+		if err != nil || p.AmountRaw <= 0 || (p.SourceAmountSemantics == amountSemanticsKaminoCollateralDeposited && p.SourceCollateralAmountRaw <= 0) {
 			return nil, fmt.Errorf("vault %d lacks executable amount evidence", p.VaultID)
 		}
 		allowed := []string{}

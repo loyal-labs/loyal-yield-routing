@@ -47,7 +47,8 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 		source.Mint != position.Mint || !isEarnStableMint(source.Mint) || !isEarnStableMint(target.Mint) {
 		return ineligible("identity_mismatch")
 	}
-	if position.VaultID <= 0 || position.SnapshotID <= 0 || position.AmountRaw <= 0 || position.SourceCollateralAmountRaw <= 0 ||
+	if position.VaultID <= 0 || position.SnapshotID <= 0 || position.AmountRaw <= 0 ||
+		(position.SourceAmountSemantics == amountSemanticsKaminoCollateralDeposited && position.SourceCollateralAmountRaw <= 0) ||
 		position.SourceAmountSemantics != amountSemanticsKaminoCollateralDeposited && position.SourceAmountSemantics != amountSemanticsRedeemableLiquidity {
 		return ineligible("unsupported_source_amount_evidence")
 	}

@@ -130,8 +130,19 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	if count != 1 || state != "revalidate" || fingerprint != epoch.Fingerprint || slot != 1_000 || opportunityKey != expectedPlan.Opportunities[0].IdempotencyKey {
 		t.Fatalf("confirmed update did not reach durable W3 queue: count=%d state=%s fingerprint=%s slot=%d key=%s expected=%s", count, state, fingerprint, slot, opportunityKey, expectedPlan.Opportunities[0].IdempotencyKey)
 	}
+	var registeredAt, lastSeenAt time.Time
+	if err := store.pool.QueryRow(ctx, `SELECT registered_at,last_seen_at FROM loyal_yield.fleet_planning_clusters WHERE cluster=$1`, config.Cluster).Scan(&registeredAt, &lastSeenAt); err != nil || registeredAt.IsZero() || lastSeenAt.IsZero() {
+		t.Fatalf("initial planner registration missing: registered=%s seen=%s err=%v", registeredAt, lastSeenAt, err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.fleet_planning_clusters SET last_seen_at=clock_timestamp()-interval '1 hour' WHERE cluster=$1`, config.Cluster); err != nil {
+		t.Fatal(err)
+	}
 	if err := worker.cycle(ctx); err != nil {
 		t.Fatal(err)
+	}
+	var heartbeatFresh bool
+	if err := store.pool.QueryRow(ctx, `SELECT last_seen_at>clock_timestamp()-interval '1 minute' FROM loyal_yield.fleet_planning_clusters WHERE cluster=$1`, config.Cluster).Scan(&heartbeatFresh); err != nil || !heartbeatFresh {
+		t.Fatalf("planner heartbeat was not refreshed: fresh=%t err=%v", heartbeatFresh, err)
 	}
 	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.rebalance_opportunities WHERE vault_id=$1`, vaultID).Scan(&count); err != nil {
 		t.Fatal(err)
