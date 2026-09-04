@@ -32,22 +32,39 @@ func (s *Store) Close() {
 	}
 }
 
-// RegisterFleetPlanningCluster is both first-cycle registration and the
-// durable per-cycle heartbeat. Source projection fan-out and fleet health use
-// this row rather than process-local liveness.
+// RegisterFleetPlanningCluster ensures source-projection fan-out knows this
+// cluster without refreshing planner health. A new registration receives the
+// schema's normal startup grace period; only a complete planning pass advances
+// last_seen_at after that.
 func (s *Store) RegisterFleetPlanningCluster(ctx context.Context, cluster string) error {
 	if s == nil || s.pool == nil || cluster == "" || cluster != strings.TrimSpace(cluster) {
 		return errors.New("fleet planning cluster requires a canonical cluster")
 	}
-	tag, err := s.pool.Exec(ctx, `
+	if _, err := s.pool.Exec(ctx, `
 INSERT INTO loyal_yield.fleet_planning_clusters(cluster)
 VALUES($1)
-ON CONFLICT(cluster) DO UPDATE SET last_seen_at=clock_timestamp()`, cluster)
-	if err != nil {
+ON CONFLICT(cluster) DO NOTHING`, cluster); err != nil {
 		return fmt.Errorf("register fleet planning cluster: %w", err)
 	}
+	return nil
+}
+
+// HeartbeatFleetPlanningCluster records successful-cycle health. It never
+// creates a registration so a caller cannot accidentally hide a startup or
+// registration failure behind a fresh liveness timestamp.
+func (s *Store) HeartbeatFleetPlanningCluster(ctx context.Context, cluster string) error {
+	if s == nil || s.pool == nil || cluster == "" || cluster != strings.TrimSpace(cluster) {
+		return errors.New("fleet planning heartbeat requires a canonical cluster")
+	}
+	tag, err := s.pool.Exec(ctx, `
+UPDATE loyal_yield.fleet_planning_clusters
+SET last_seen_at=clock_timestamp()
+WHERE cluster=$1`, cluster)
+	if err != nil {
+		return fmt.Errorf("heartbeat fleet planning cluster: %w", err)
+	}
 	if tag.RowsAffected() != 1 {
-		return errors.New("fleet planning cluster heartbeat changed no rows")
+		return errors.New("fleet planning heartbeat has no registered cluster")
 	}
 	return nil
 }
@@ -298,34 +315,50 @@ ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options
 	rows.Close()
 	committedInflow, committedOutflow := map[string]int64{}, map[string]int64{}
 	commitRows, err := tx.Query(ctx, `
+WITH active_opportunities AS (
+ SELECT opportunity.id,opportunity.source_reserve,opportunity.target_reserve,
+        opportunity.principal_usd_micros
+ FROM loyal_yield.rebalance_opportunities opportunity
+ WHERE opportunity.cluster=$1
+   AND opportunity.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
+   AND NOT (opportunity.opportunity_state='waiting_alt' AND opportunity.optimizer_epoch_id=$2 AND EXISTS (
+     SELECT 1
+     FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
+     JOIN loyal_yield.lookup_table_provisioning_requests request
+       ON request.id=consumer.provisioning_request_id
+     WHERE consumer.opportunity_id=opportunity.id
+       AND request.cluster=opportunity.cluster
+       AND request.request_status='satisfied'
+       AND request.sealed_at IS NOT NULL
+       AND request.requirements_fingerprint=opportunity.requirements_fingerprint))
+), live_capacity_reservations AS (
+ -- A reservation remains authoritative after its queue row becomes terminal
+ -- until strictly newer telemetry proves that the landed movement is visible.
+ SELECT reservation.opportunity_id,opportunity.source_reserve,
+        reservation.target_reserve,reservation.principal_usd_micros
+ FROM loyal_yield.target_capacity_reservations reservation
+ JOIN loyal_yield.rebalance_opportunities opportunity
+   ON opportunity.id=reservation.opportunity_id
+ WHERE reservation.cluster=$1 AND reservation.reservation_state<>'released'
+), committed_route_flows AS (
+ SELECT source_reserve,target_reserve,principal_usd_micros
+ FROM live_capacity_reservations
+ UNION ALL
+ -- Pre-admission intent consumes planner headroom only when no live
+ -- reservation already represents that exact opportunity.
+ SELECT opportunity.source_reserve,opportunity.target_reserve,
+        opportunity.principal_usd_micros
+ FROM active_opportunities opportunity
+ LEFT JOIN live_capacity_reservations reservation
+   ON reservation.opportunity_id=opportunity.id
+ WHERE reservation.opportunity_id IS NULL
+)
 SELECT reserve,sum(inflow),sum(outflow) FROM (
  SELECT target_reserve AS reserve,principal_usd_micros AS inflow,0::bigint AS outflow
- FROM loyal_yield.rebalance_opportunities opportunity
- WHERE cluster=$1 AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
-   AND NOT (opportunity_state='waiting_alt' AND optimizer_epoch_id=$2 AND EXISTS (
-     SELECT 1
-     FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
-     JOIN loyal_yield.lookup_table_provisioning_requests request
-       ON request.id=consumer.provisioning_request_id
-     WHERE consumer.opportunity_id=opportunity.id
-       AND request.cluster=opportunity.cluster
-       AND request.request_status='satisfied'
-       AND request.sealed_at IS NOT NULL
-       AND request.requirements_fingerprint=opportunity.requirements_fingerprint))
+ FROM committed_route_flows
  UNION ALL
  SELECT source_reserve AS reserve,0::bigint,principal_usd_micros
- FROM loyal_yield.rebalance_opportunities opportunity
- WHERE cluster=$1 AND source_reserve IS NOT NULL AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
-   AND NOT (opportunity_state='waiting_alt' AND optimizer_epoch_id=$2 AND EXISTS (
-     SELECT 1
-     FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
-     JOIN loyal_yield.lookup_table_provisioning_requests request
-       ON request.id=consumer.provisioning_request_id
-     WHERE consumer.opportunity_id=opportunity.id
-       AND request.cluster=opportunity.cluster
-       AND request.request_status='satisfied'
-       AND request.sealed_at IS NOT NULL
-       AND request.requirements_fingerprint=opportunity.requirements_fingerprint))
+ FROM committed_route_flows WHERE source_reserve IS NOT NULL
 ) committed GROUP BY reserve`, cluster, options.OptimizerEpochID)
 	if err != nil {
 		return nil, fmt.Errorf("load committed reserve frontier: %w", err)

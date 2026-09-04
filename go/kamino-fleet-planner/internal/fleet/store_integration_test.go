@@ -37,6 +37,12 @@ func TestLoadMigratedFleetBuildsFinalizedCrossMintPolicyBindings(t *testing.T) {
 	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.route_policies SET cluster=$2,source_commitment='finalized',finalized_eligible=true,stable_mints=ARRAY[$3,$4]::text[],kamino_markets=ARRAY[$5,$6]::text[],kamino_liquidity_mints=ARRAY[$3,$4]::text[] WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, vaultID, cluster, USDCMint, PYUSDMint, market, targetMarket); err != nil {
 		t.Fatal(err)
 	}
+	// The finalized source Earn policy is intentionally not the vault's active
+	// base policy. Planning may bind this newer exact policy for withdrawal.
+	withdrawPolicyAccount := "withdraw:" + suffix
+	if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.route_policies(cluster,settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,delegated_signers,threshold,route_modes,stable_mints,kamino_markets,kamino_liquidity_mints,swap_lanes,active,source_commitment,finalized_eligible,last_seen_slot,last_seen_signature) VALUES($1,$2,$3,2,$4,0,$5,ARRAY[$3]::text[],1,ARRAY['same_mint_kamino']::text[],ARRAY[$6]::text[],ARRAY[$7]::text[],ARRAY[$6]::text[],'[]',true,'finalized',true,1001,$8)`, cluster, settings, authority, withdrawPolicyAccount, "vault:"+suffix, USDCMint, market, "withdraw-signature:"+suffix); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.cross_mint_vault_opt_ins(cluster,settings,vault_index,vault_pubkey,enabled,classic_policy_account,classic_policy_seed,token_2022_policy_account,token_2022_policy_seed,max_slippage_bps,daily_source_mint_spending_cap,generation) VALUES($1,$2,0,$3,true,$4,11,$5,12,50,1000000000000,7)`, cluster, settings, "vault:"+suffix, "classic:"+suffix, "token2022:"+suffix); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +71,7 @@ func TestLoadMigratedFleetBuildsFinalizedCrossMintPolicyBindings(t *testing.T) {
 		t.Fatalf("redeemable projection amount was not authoritative: %+v", fleet[0].Position)
 	}
 	binding, ok := fleet[0].CrossMintTargets[target.Address]
-	if !ok || binding.Swap.SourceShard != "classic" || binding.Swap.EnrollmentGeneration != 7 || binding.Withdraw.ConstraintIndex != 0 || binding.Deposit.ConstraintIndex != 1 || binding.Withdraw.SourceCommitment != "finalized" || binding.Deposit.SourceCommitment != "finalized" {
+	if !ok || binding.Withdraw.PolicyAccount != withdrawPolicyAccount || binding.Swap.SourceShard != "classic" || binding.Swap.EnrollmentGeneration != 7 || binding.Withdraw.ConstraintIndex != 0 || binding.Deposit.ConstraintIndex != 1 || binding.Withdraw.SourceCommitment != "finalized" || binding.Deposit.SourceCommitment != "finalized" {
 		t.Fatalf("incomplete cross-mint binding: %+v", binding)
 	}
 	snapshot.Cluster = cluster
@@ -90,6 +96,13 @@ func TestLoadMigratedFleetBuildsFinalizedCrossMintPolicyBindings(t *testing.T) {
 	}
 	if queueMint != PYUSDMint || sourceMint != USDCMint || targetMint != PYUSDMint || key != plan.Opportunities[0].IdempotencyKey || routeKind != "cross_mint_jupiter" {
 		t.Fatalf("cross-mint durable handoff drifted: queue=%s source=%s target=%s key=%s route=%s", queueMint, sourceMint, targetMint, key, routeKind)
+	}
+	lease, err := store.ClaimRevalidation(ctx, cluster, "bound-policy-revalidator", time.Minute, false, true, authority)
+	if err != nil || lease == nil {
+		t.Fatalf("claim cross-mint opportunity with distinct withdraw policy: %+v %v", lease, err)
+	}
+	if lease.PolicyAccount != withdrawPolicyAccount || !contains(lease.DelegatedSigners, authority) {
+		t.Fatalf("claim used active base policy instead of bound withdraw policy: %+v", lease)
 	}
 }
 

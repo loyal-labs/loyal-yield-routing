@@ -30,8 +30,8 @@ echo "== Rust/Go immutable market epoch parity"
 echo "== Go verifier-first checks"
 cd "$root/go/kamino-fleet-planner"
 go test ./...
-go test -race ./internal/fleet -run 'Test(Decode|Plan|EconomicKey|Snapshot|ValidateJupiter|CrossMint|JupiterFetch|Token2022)'
-echo "PASS: deterministic planner, frozen KLend decoder, and adversarial slot fences"
+go test -race ./internal/fleet -run 'Test(Decode|Plan|EconomicKey|Snapshot|ImmutableMarketEpoch|ValidateJupiter|CrossMint|JupiterFetch|Token2022)'
+echo "PASS: deterministic planner, per-mint epoch isolation, frozen KLend decoder, and adversarial slot fences"
 
 echo "== Disposable PostgreSQL"
 mkdir -p "$socket"
@@ -128,6 +128,9 @@ for role_command in \
 done
 
 echo "PASS: confirmed RPC -> Go planning/revalidation -> durable revalidate and leased-execute rows"
+echo "PASS: cross-mint claims use the immutable bound withdraw policy when it differs from the active base policy"
+echo "PASS: blocked mint coverage does not stop healthy-mint planning and failed passes do not refresh planner health"
+echo "PASS: live capacity reservations survive terminal queue state and are counted exactly once"
 echo "PASS: retained executor/confirmer/reconciler lifecycle reached completed without production access"
 echo "PASS: replaced Rust planner/revalidator roles were not started; retained executor, confirmer, reconciler, and ALT roles loaded without side effects"
 echo "PASS: economic idempotency, active-work exclusion, restart recovery, and atomic capacity/economics fences verified"

@@ -793,12 +793,72 @@ func (e ImmutableMarketEpoch) DurableEvidence() ImmutableMarketEpoch {
 	return result
 }
 
+// RoutableReserveAddresses validates the epoch's per-mint admission boundary.
+// Complete mint coverages contribute their admissible reserve subset; blocked
+// mints remain fingerprinted evidence but must contribute no RPC/planning
+// addresses. The global catalog count intentionally includes both classes.
+func (e ImmutableMarketEpoch) RoutableReserveAddresses() ([]string, error) {
+	coverages := make(map[string]MarketMintCoverage, len(e.MintCoverage))
+	catalogCount := 0
+	for _, coverage := range e.MintCoverage {
+		if coverage.Mint == "" || coverage.CatalogReserveCount < 0 || coverage.VerifiedReserveCount < 0 || coverage.EligibleTargetReserveCount < 0 {
+			return nil, fmt.Errorf("immutable market epoch has invalid mint coverage")
+		}
+		if _, duplicate := coverages[coverage.Mint]; duplicate {
+			return nil, fmt.Errorf("immutable market epoch has duplicate coverage for mint %s", coverage.Mint)
+		}
+		coverages[coverage.Mint] = coverage
+		catalogCount += coverage.CatalogReserveCount
+	}
+	if catalogCount != e.CatalogReserveCount {
+		return nil, fmt.Errorf("immutable market epoch catalog count disagrees with per-mint coverage")
+	}
+	addresses := make([]string, 0, len(e.Reserves))
+	reserveCounts := make(map[string]int, len(coverages))
+	eligibleCounts := make(map[string]int, len(coverages))
+	seenAddresses := make(map[string]bool, len(e.Reserves))
+	for _, reserve := range e.Reserves {
+		coverage, exists := coverages[reserve.LiquidityMint]
+		if !exists || !coverage.Complete {
+			return nil, fmt.Errorf("reserve %s belongs to blocked or unknown mint %s", reserve.Reserve, reserve.LiquidityMint)
+		}
+		if reserve.Reserve == "" || seenAddresses[reserve.Reserve] {
+			return nil, fmt.Errorf("immutable market epoch has empty or duplicate reserve identity")
+		}
+		seenAddresses[reserve.Reserve] = true
+		reserveCounts[reserve.LiquidityMint]++
+		if reserve.TargetEligible {
+			eligibleCounts[reserve.LiquidityMint]++
+		}
+		addresses = append(addresses, reserve.Reserve)
+	}
+	for _, coverage := range e.MintCoverage {
+		count := reserveCounts[coverage.Mint]
+		if !coverage.Complete {
+			if count != 0 {
+				return nil, fmt.Errorf("blocked mint %s contributed routable reserves", coverage.Mint)
+			}
+			continue
+		}
+		if coverage.CatalogReserveCount == 0 || coverage.ExpiresAt == nil || count == 0 || count > coverage.VerifiedReserveCount || coverage.VerifiedReserveCount > coverage.CatalogReserveCount {
+			return nil, fmt.Errorf("complete mint %s has inconsistent reserve coverage", coverage.Mint)
+		}
+		if eligibleCounts[coverage.Mint] != coverage.EligibleTargetReserveCount || coverage.EligibleTargetReserveCount == 0 {
+			return nil, fmt.Errorf("complete mint %s has inconsistent target coverage", coverage.Mint)
+		}
+	}
+	return addresses, nil
+}
+
 func (e ImmutableMarketEpoch) Validate() error {
 	if e.Fingerprint == "" || e.CatalogFingerprint == "" || e.OptimizerEpochID != positiveEpochID(e.Fingerprint) || len(e.Reserves) == 0 || len(e.MintCoverage) == 0 {
 		return fmt.Errorf("immutable market epoch identity or frontier is incomplete")
 	}
 	if epochFingerprint(e.Reserves, sortedUnique(coverageMints(e.MintCoverage)), e.CatalogFingerprint, e.MintCoverage) != e.Fingerprint {
 		return fmt.Errorf("immutable market epoch fingerprint disagrees with typed evidence")
+	}
+	if _, err := e.RoutableReserveAddresses(); err != nil {
+		return err
 	}
 	if !e.OptimizerEnvelopeExpiresAt().After(e.CapturedAt) || e.MaximumMarketSlot == nil || *e.MaximumMarketSlot < 0 {
 		return fmt.Errorf("immutable market epoch has no usable slot or lifetime")

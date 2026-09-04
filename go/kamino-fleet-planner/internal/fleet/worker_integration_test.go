@@ -19,6 +19,12 @@ func (s staticMarketEpochSource) LoadImmutableMarketEpoch(context.Context) (Immu
 	return s.epoch, nil
 }
 
+type failedMarketEpochSource struct{ err error }
+
+func (s failedMarketEpochSource) LoadImmutableMarketEpoch(context.Context) (ImmutableMarketEpoch, error) {
+	return ImmutableMarketEpoch{}, s.err
+}
+
 func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -97,6 +103,17 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	}
 	evidenceSnapshot := MarketSnapshot{Slot: 1_000, ObservedAt: time.Now().UTC(), Reserves: map[string]ReserveState{source.Address: sourceState, target.Address: targetState}}
 	epoch := testImmutableMarketEpoch(t, evidenceSnapshot, source, target)
+	// A blocked mint remains part of the catalog/epoch identity but contributes
+	// no routable reserves. Healthy USDC planning must continue independently.
+	epoch.CatalogReserveCount++
+	epoch.MintCoverage = append(epoch.MintCoverage, MarketMintCoverage{
+		Mint: USDTMint, CatalogReserveCount: 1, Blockers: []MarketMintBlocker{{Code: "missing_verified_reserve", Detail: "test blocked mint"}},
+	})
+	epoch.Fingerprint = epochFingerprint(epoch.Reserves, sortedUnique(coverageMints(epoch.MintCoverage)), epoch.CatalogFingerprint, epoch.MintCoverage)
+	epoch.OptimizerEpochID = positiveEpochID(epoch.Fingerprint)
+	if err := epoch.Validate(); err != nil {
+		t.Fatalf("healthy plus blocked mint epoch was invalid: %v", err)
+	}
 	if err := worker.SetMarketEvidence(staticMarketEpochSource{epoch: epoch}); err != nil {
 		t.Fatal(err)
 	}
@@ -137,10 +154,22 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.fleet_planning_clusters SET last_seen_at=clock_timestamp()-interval '1 hour' WHERE cluster=$1`, config.Cluster); err != nil {
 		t.Fatal(err)
 	}
+	if err := worker.SetMarketEvidence(failedMarketEpochSource{err: fmt.Errorf("persistent Timescale failure")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.planningCycle(ctx); err == nil {
+		t.Fatal("failed planning pass unexpectedly succeeded")
+	}
+	var heartbeatFresh bool
+	if err := store.pool.QueryRow(ctx, `SELECT last_seen_at>clock_timestamp()-interval '1 minute' FROM loyal_yield.fleet_planning_clusters WHERE cluster=$1`, config.Cluster).Scan(&heartbeatFresh); err != nil || heartbeatFresh {
+		t.Fatalf("failed planning pass refreshed successful-cycle health: fresh=%t err=%v", heartbeatFresh, err)
+	}
+	if err := worker.SetMarketEvidence(staticMarketEpochSource{epoch: epoch}); err != nil {
+		t.Fatal(err)
+	}
 	if err := worker.cycle(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var heartbeatFresh bool
 	if err := store.pool.QueryRow(ctx, `SELECT last_seen_at>clock_timestamp()-interval '1 minute' FROM loyal_yield.fleet_planning_clusters WHERE cluster=$1`, config.Cluster).Scan(&heartbeatFresh); err != nil || !heartbeatFresh {
 		t.Fatalf("planner heartbeat was not refreshed: fresh=%t err=%v", heartbeatFresh, err)
 	}

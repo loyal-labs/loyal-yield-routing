@@ -91,6 +91,52 @@ func TestImmutableMarketEpochUsesDurableStateIdentityAndCanonicalFingerprint(t *
 	}
 }
 
+func TestImmutableMarketEpochKeepsHealthyMintRoutableWhenAnotherMintIsBlocked(t *testing.T) {
+	now := time.Now().UTC()
+	healthySource := ReserveIdentity{Address: testIdentity(21), Market: testIdentity(22), Mint: USDCMint}
+	healthyTarget := ReserveIdentity{Address: testIdentity(23), Market: testIdentity(24), Mint: USDCMint}
+	blocked := ReserveIdentity{Address: testIdentity(25), Market: testIdentity(26), Mint: USDTMint}
+	catalog := []SupportedReserveCatalogRow{
+		{Market: healthySource.Market, LiquidityMint: healthySource.Mint, Reserve: healthySource.Address, Source: "kamino-api", FetchedAt: now},
+		{Market: healthyTarget.Market, LiquidityMint: healthyTarget.Mint, Reserve: healthyTarget.Address, Source: "kamino-api", FetchedAt: now},
+		{Market: blocked.Market, LiquidityMint: blocked.Mint, Reserve: blocked.Address, Source: "kamino-api", FetchedAt: now},
+	}
+	verified := make([]VerifiedSupportedReserveRow, 0, 2)
+	for index, identity := range []ReserveIdentity{healthySource, healthyTarget} {
+		market := identity.Market
+		verified = append(verified, VerifiedSupportedReserveRow{
+			StateEventID: int64(index + 1), AccountDataHash: strings.Repeat(fmt.Sprint(index+1), 64),
+			StateObservedAt: now, StateSlot: 1_000, VerifiedAt: now, VerifiedSlot: 1_000,
+			VerificationCommitment: "confirmed", VerificationSource: "http_confirmed_refresh",
+			Reserve: identity.Address, Market: &market, LiquidityMint: identity.Mint, MintDecimals: 6,
+			ReserveLastUpdateSlot: 999, TotalSupplyAmount: 2_000_000_000_000,
+			AvailableAmount: 2_000_000_000_000, MarketPriceUSD: 1, SupplyAPY: .08,
+		})
+	}
+	epoch, err := BuildImmutableMarketEpoch(SupportedReserveMarketSnapshot{CapturedAt: now, Catalog: catalog, VerifiedReserves: verified}, []string{USDCMint, USDTMint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := epoch.Validate(); err != nil {
+		t.Fatalf("blocked mint invalidated healthy coverage: %v", err)
+	}
+	addresses, err := epoch.RoutableReserveAddresses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if epoch.CatalogReserveCount != 3 || len(addresses) != 2 || !contains(addresses, healthySource.Address) || !contains(addresses, healthyTarget.Address) || contains(addresses, blocked.Address) {
+		t.Fatalf("wrong per-mint routable frontier: catalog=%d addresses=%v", epoch.CatalogReserveCount, addresses)
+	}
+	for _, coverage := range epoch.MintCoverage {
+		if coverage.Mint == USDTMint && coverage.Complete {
+			t.Fatal("mint with missing verified reserve was marked complete")
+		}
+		if coverage.Mint == USDCMint && !coverage.Complete {
+			t.Fatal("healthy mint was blocked by unrelated mint coverage")
+		}
+	}
+}
+
 func TestMarketEvidenceStoreLoadsRealMonitorIdentity(t *testing.T) {
 	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
 	if databaseURL == "" {

@@ -59,17 +59,30 @@ WITH candidate AS (
  JOIN loyal_yield.optimizer_epochs e ON e.id=o.optimizer_epoch_id AND e.cluster=o.cluster
  JOIN loyal_yield.managed_vaults candidate_vault ON candidate_vault.id=o.vault_id AND candidate_vault.active
  JOIN loyal_yield.route_policies candidate_policy ON candidate_policy.id=candidate_vault.active_policy_id AND candidate_policy.active
+ LEFT JOIN loyal_yield.route_policies bound_withdraw_policy
+   ON o.execution_plan->>'route_kind'='cross_mint_jupiter'
+  AND bound_withdraw_policy.policy_account=o.execution_plan#>>'{policy_bindings,withdraw,policy_account}'
+  AND bound_withdraw_policy.active
+  AND bound_withdraw_policy.cluster=$1
+  AND bound_withdraw_policy.source_commitment='finalized'
+  AND bound_withdraw_policy.finalized_eligible
+  AND bound_withdraw_policy.settings=candidate_vault.settings
+  AND bound_withdraw_policy.vault_index=candidate_vault.vault_index
+  AND bound_withdraw_policy.vault_pubkey=candidate_vault.vault_pubkey
+  AND 'same_mint_kamino'=ANY(bound_withdraw_policy.route_modes)
+  AND ($5='' OR $5=ANY(bound_withdraw_policy.delegated_signers))
  WHERE o.cluster=$1 AND o.available_at<=clock_timestamp()
    AND o.execution_plan->>'route_kind' IN ('same_mint','cross_mint_jupiter')
    AND o.execution_plan->>'source_kind'='reserve_position'
    AND (($6 AND o.execution_plan->>'route_kind'='cross_mint_jupiter'
-         AND 'cross_mint_jupiter'=ANY(candidate_policy.route_modes))
+         AND bound_withdraw_policy.id IS NOT NULL
+         AND ($5='' OR o.execution_plan#>>'{policy_bindings,delegated_signer}'=$5))
      OR (o.execution_plan->>'route_kind'='same_mint'
-         AND 'same_mint_kamino'=ANY(candidate_policy.route_modes)))
-   AND ($5='' OR (candidate_policy.cluster=$1
-        AND candidate_policy.source_commitment='finalized'
-        AND candidate_policy.finalized_eligible
-        AND $5=ANY(candidate_policy.delegated_signers)))
+         AND 'same_mint_kamino'=ANY(candidate_policy.route_modes)
+         AND ($5='' OR (candidate_policy.cluster=$1
+              AND candidate_policy.source_commitment='finalized'
+              AND candidate_policy.finalized_eligible
+              AND $5=ANY(candidate_policy.delegated_signers)))))
    AND o.source_reserve IS NOT NULL
    AND o.liquidity_mint=o.target_liquidity_mint
    AND ((o.execution_plan->>'route_kind'='same_mint'
@@ -90,7 +103,11 @@ WITH candidate AS (
  FROM candidate WHERE o.id=candidate.id RETURNING o.*)
 SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fencing_token,
        claimed.lease_expires_at,claimed.vault_id,vault.vault_pubkey,vault.vault_index,
-       policy.policy_account,policy.delegated_signers,claimed.source_reserve,
+       CASE WHEN claimed.execution_plan->>'route_kind'='cross_mint_jupiter'
+            THEN withdraw_policy.policy_account ELSE policy.policy_account END,
+       CASE WHEN claimed.execution_plan->>'route_kind'='cross_mint_jupiter'
+            THEN withdraw_policy.delegated_signers ELSE policy.delegated_signers END,
+       claimed.source_reserve,
        claimed.target_reserve,claimed.liquidity_mint,
        claimed.source_liquidity_mint,claimed.target_liquidity_mint,
        claimed.execution_plan->>'route_kind',claimed.amount_raw,
@@ -101,7 +118,16 @@ SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fen
 FROM claimed
 JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=claimed.optimizer_epoch_id
 JOIN loyal_yield.managed_vaults vault ON vault.id=claimed.vault_id AND vault.active
-JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id AND policy.active`, cluster, owner, ttl.String(), includeReady, signer, crossMintEnabled).Scan(
+JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id AND policy.active
+LEFT JOIN loyal_yield.route_policies withdraw_policy
+  ON claimed.execution_plan->>'route_kind'='cross_mint_jupiter'
+ AND withdraw_policy.policy_account=claimed.execution_plan#>>'{policy_bindings,withdraw,policy_account}'
+ AND withdraw_policy.active AND withdraw_policy.cluster=claimed.cluster
+ AND withdraw_policy.source_commitment='finalized' AND withdraw_policy.finalized_eligible
+ AND withdraw_policy.settings=vault.settings AND withdraw_policy.vault_index=vault.vault_index
+ AND withdraw_policy.vault_pubkey=vault.vault_pubkey
+ AND 'same_mint_kamino'=ANY(withdraw_policy.route_modes)
+ AND ($5='' OR $5=ANY(withdraw_policy.delegated_signers))`, cluster, owner, ttl.String(), includeReady, signer, crossMintEnabled).Scan(
 		&l.OpportunityID, &l.OptimizerEpochID, &l.IdempotencyKey, &l.FencingToken,
 		&l.ExpiresAt, &l.VaultID, &l.VaultPubkey, &l.VaultIndex, &l.PolicyAccount,
 		&l.DelegatedSigners, &l.SourceReserve, &l.TargetReserve, &l.LiquidityMint,

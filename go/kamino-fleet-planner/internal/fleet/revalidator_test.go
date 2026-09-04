@@ -332,6 +332,27 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if err = store.CommitRevalidation(ctx, *lease, commit); err == nil {
 		t.Fatal("lost revalidation lease was accepted after fused handoff")
 	}
+	// A live reservation remains the authoritative source/target commitment
+	// after its opportunity leaves the active queue. Another vault must see it
+	// exactly once rather than omitting it or double-counting queue intent.
+	otherVaultID := seedWorkerVault(t, ctx, store, suffix+"-reservation-frontier", market, source.Address)
+	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='stale',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,terminal_reason='test_terminal_with_live_reservation' WHERE id=$1`, lease.OpportunityID); err != nil {
+		t.Fatal(err)
+	}
+	frontierFleet, err := store.LoadMigratedFleet(ctx, cluster, epoch, FleetLoadOptions{OptimizerEpochID: lease.OptimizerEpochID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frontierVault *FleetVault
+	for index := range frontierFleet {
+		if frontierFleet[index].Position.VaultID == otherVaultID {
+			frontierVault = &frontierFleet[index]
+			break
+		}
+	}
+	if frontierVault == nil || frontierVault.CommittedInflows[target.Address] != lease.PrincipalUSDMicros || frontierVault.CommittedOutflows[source.Address] != lease.PrincipalUSDMicros {
+		t.Fatalf("live reservation was not counted exactly once after terminal queue state: vault=%+v principal=%d", frontierVault, lease.PrincipalUSDMicros)
+	}
 	// Exercise restart-safe waiting_alt -> leased/revalidate -> ready using the
 	// same durable opportunity after clearing the synthetic execute handoff.
 	for _, statement := range []string{`DELETE FROM loyal_yield.route_account_conflict_leases WHERE opportunity_id=$1`, `DELETE FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1`, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='revalidate',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL WHERE id=$1`} {
@@ -408,8 +429,8 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	}{
 		{`DELETE FROM loyal_yield.route_account_conflict_leases WHERE opportunity_id=$1`, []any{lease.OpportunityID}},
 		{`DELETE FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1`, []any{lease.OpportunityID}},
-		{`UPDATE loyal_yield.route_policies SET route_modes=array_append(route_modes,'cross_mint_jupiter') WHERE id=$1 AND NOT ('cross_mint_jupiter'=ANY(route_modes))`, []any{position.PolicyID}},
-		{`UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='revalidate',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,source_liquidity_mint=$2,target_liquidity_mint=$3,liquidity_mint=$3,execution_plan=jsonb_set(jsonb_set(execution_plan,'{kind}',to_jsonb('cross_mint_jupiter'::text)),'{route_kind}',to_jsonb('cross_mint_jupiter'::text)) WHERE id=$1`, []any{lease.OpportunityID, USDCMint, USDTMint}},
+		{`UPDATE loyal_yield.route_policies SET route_modes=array_append(route_modes,'cross_mint_jupiter'),cluster=$2,source_commitment='finalized',finalized_eligible=true WHERE id=$1 AND NOT ('cross_mint_jupiter'=ANY(route_modes))`, []any{position.PolicyID, cluster}},
+		{`UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='revalidate',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,source_liquidity_mint=$2,target_liquidity_mint=$3,liquidity_mint=$3,execution_plan=jsonb_set(jsonb_set(jsonb_set(execution_plan,'{kind}',to_jsonb('cross_mint_jupiter'::text)),'{route_kind}',to_jsonb('cross_mint_jupiter'::text)),'{policy_bindings}',jsonb_build_object('delegated_signer','test-signer','withdraw',jsonb_build_object('policy_account',$4::text))) WHERE id=$1`, []any{lease.OpportunityID, USDCMint, USDTMint, position.PolicyAccount}},
 	} {
 		if _, err = store.pool.Exec(ctx, statement.sql, statement.args...); err != nil {
 			t.Fatal(err)

@@ -112,8 +112,8 @@ func (w *Worker) cycle(ctx context.Context) error {
 }
 
 func (w *Worker) planningCycle(ctx context.Context) error {
-	// Register before reading evidence so even a failed planning pass refreshes
-	// the durable liveness signal used by fleet health and source fan-out.
+	// Register before reading evidence so source fan-out knows the explicit
+	// cluster. Registration does not refresh successful-cycle health.
 	if err := w.store.RegisterFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
 		return err
 	}
@@ -127,17 +127,16 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	if err = epoch.Validate(); err != nil {
 		return err
 	}
-	addresses := make([]string, 0, len(epoch.Reserves))
+	addresses, err := epoch.RoutableReserveAddresses()
+	if err != nil {
+		return err
+	}
 	identities := make(map[string]ReserveIdentity, len(epoch.Reserves))
 	for _, r := range epoch.Reserves {
 		if r.Market == nil {
 			return fmt.Errorf("catalog reserve %s has no market", r.Reserve)
 		}
-		addresses = append(addresses, r.Reserve)
 		identities[r.Reserve] = ReserveIdentity{Address: r.Reserve, Market: *r.Market, Mint: r.LiquidityMint}
-	}
-	if len(addresses) != epoch.CatalogReserveCount {
-		return fmt.Errorf("incomplete reserve catalog: loaded %d of %d", len(addresses), epoch.CatalogReserveCount)
 	}
 	minimumSlot, err := w.rpc.ConfirmedSlot(ctx)
 	if err != nil {
@@ -203,8 +202,13 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		}
 		logEvent(map[string]any{"event": "kamino_fleet_planner_opportunity", "mode": w.config.Mode, "vaultId": opportunity.Decision.VaultID, "sourceReserve": opportunity.Decision.SourceReserve, "targetReserve": opportunity.Decision.TargetReserve, "idempotencyKey": opportunity.IdempotencyKey, "publishReason": result.Reason, "opportunityId": result.OpportunityID})
 	}
+	// Advance durable health only after evidence loading, coherent RPC
+	// verification, planning, and all requested publications have succeeded.
+	if err := w.store.HeartbeatFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
+		return err
+	}
 	w.lastConfirmedSlot = slot
-	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "rejections": fleetPlan.Rejections})
+	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "rejections": fleetPlan.Rejections})
 	return nil
 }
 

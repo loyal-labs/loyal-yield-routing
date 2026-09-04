@@ -8,12 +8,14 @@ provisioner.
 The planner:
 
 1. loads the complete active supported-reserve catalog as one typed immutable
-   market epoch;
-2. reads every confirmed reserve account in one coherent RPC observation and
-   requires its identities, slots, and hashes to converge with retained monitor
-   evidence;
+   market epoch, retaining blocked mint coverage without letting one incomplete
+   mint stop otherwise healthy mint lanes;
+2. reads every reserve in the epoch's complete per-mint routable subset in one
+   coherent confirmed RPC observation and requires its identities, slots, and
+   hashes to converge with retained monitor evidence;
 3. loads every active migrated vault in a read-only `REPEATABLE READ`
-   transaction, including policy target restrictions and active-work fences;
+   transaction, including policy target restrictions, active-work fences, and
+   non-released durable capacity reservations counted exactly once;
 4. evaluates every same-mint target and, when explicitly enabled, the same six
    stablecoins and immutable Earn/Jupiter policy bindings as the retained Rust
    cross-mint service; deterministically selects a multi-vault wave while
@@ -51,8 +53,11 @@ cutover, stop the Rust opportunity planner and route revalidator. The retained
 Rust executor remains unfiltered and unchanged as the signer/submission owner.
 
 Timescale monitor identity remains on the publication-evidence path; the worker
-never invents a production `state_event_id`. The default mode is `shadow`;
-`publish` is an explicit deployment choice and is valid on mainnet.
+never invents a production `state_event_id`. Planner registration supports
+source fan-out, while `last_seen_at` advances only after a complete successful
+planning pass so persistent Timescale, RPC, or planning failures become stale
+health signals. The default mode is `shadow`; `publish` is an explicit
+deployment choice and is valid on mainnet.
 
 ## Required configuration
 
