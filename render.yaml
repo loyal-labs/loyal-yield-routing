@@ -10,7 +10,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-0e119f301d633f4c849d7bec15a17ba818f00dcf
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-88e794f30cb42ebb3c810c65912c7d5cb8ea9d3c
             preDeployCommand: /usr/local/bin/kamino-monitor-predeploy
             dockerCommand: /usr/local/bin/kamino-reserve-monitor
             maxShutdownDelaySeconds: 60
@@ -45,7 +45,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-065f9408a4230f90ea4e48f6128235ca5e79fe5a
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-f6256a5c7fff047656e4189322f6abe6774f7a46
             preDeployCommand: /bin/sh -lc /usr/local/bin/loyal-timescale-migrations${IFS}--apply&&/usr/local/bin/yield-migrations${IFS}--apply
             dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
             maxShutdownDelaySeconds: 60
@@ -92,7 +92,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-6b2e99eb5bccf0bab8738cdbae97c574c3feaf2f
+              url: ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers:sha-4807dfef76f23b432696fc0335414a713c109b41
             preDeployCommand: /bin/sh -lc '/usr/local/bin/loyal-timescale-migrations --apply && /usr/local/bin/yield-migrations --apply'
             dockerCommand: /usr/local/bin/balance-sweep-ata-monitor
             maxShutdownDelaySeconds: 60
@@ -141,7 +141,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-4807dfef76f23b432696fc0335414a713c109b41
             dockerCommand: /usr/local/bin/loyal-yield-realtime
             healthCheckPath: /healthz
             maxShutdownDelaySeconds: 60
@@ -192,7 +192,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-bdae0957e394727dcdaf449775659bd8e92d3727
+              url: ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b
             dockerCommand: /usr/local/bin/backyard-rwa-worker
             maxShutdownDelaySeconds: 60
             envVars:
@@ -212,7 +212,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-bb3b9280862b94baa1d026d50c6b1f304bb72c75
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-ata-projector
             maxShutdownDelaySeconds: 60
@@ -241,7 +241,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-eab868904c5f626cf03993d4b7f6b187fb585639
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger --execute-eligible
             maxShutdownDelaySeconds: 60
@@ -317,7 +317,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-0614fe5e697137a003aea6ad90811b92f70cff49
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/loyal-squads-policy-monitor --cluster mainnet --commitment finalized
             maxShutdownDelaySeconds: 60
@@ -338,7 +338,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-dc34bba0a420fe08052ca125bb1982ae20daf999
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-opportunity-planner --json --poll-interval-seconds 1 --full-sweep-interval-seconds 30 --dirty-batch-size 256 --max-opportunities-per-wave 128
             maxShutdownDelaySeconds: 60
@@ -429,7 +429,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-45fb34a562e5f94992fa27b7dddf036d8ff744f7
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-health-projector --cluster mainnet-beta --refresh-interval-seconds 5
             maxShutdownDelaySeconds: 30
@@ -454,7 +454,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-93bb73986a9a30e767f58219186e7fe82992d8f7
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker revalidate --concurrency 16 --fused-execute-concurrency 8 --poll-interval-milliseconds 250
             maxShutdownDelaySeconds: 60
@@ -499,7 +499,7 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-93bb73986a9a30e767f58219186e7fe82992d8f7
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-worker execute --concurrency 4 --poll-interval-milliseconds 250
             maxShutdownDelaySeconds: 60
@@ -544,7 +544,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-c6295c5df0bf142af30c0768ab650d6793b8bfa9
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/fleet-route-confirmer --execute --batch-size 128 --broadcast-concurrency 16 --poll-interval-milliseconds 1000
             maxShutdownDelaySeconds: 60
@@ -573,7 +573,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3967556486019b52267dfb5f62ec36e6188d33df
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-c6295c5df0bf142af30c0768ab650d6793b8bfa9
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-reserve-swap --fleet-reconciler --concurrency 64 --batch-size 32 --poll-interval-milliseconds 250 --position-sweep-interval-seconds 300
             maxShutdownDelaySeconds: 60
@@ -639,7 +639,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-3668df10c02c23e3aff5a7be70c34500db6bdd96
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-ata-projector
             maxShutdownDelaySeconds: 60
@@ -668,7 +668,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-e6e5b0acfae91d640343f19d14eb70a4157b0450
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/balance-sweep-autodeposit-trigger
             maxShutdownDelaySeconds: 60
@@ -695,7 +695,7 @@ projects:
             plan: starter
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-f9ce2c99aa035b99601e6b792989a39c5b69618e
+              url: ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-8a930e16482378ab11c9ff94ab3677a50b028b35
             preDeployCommand: /usr/local/bin/yield-migrations --apply
             dockerCommand: /usr/local/bin/same-mint-yield-monitor --all-active-vaults --poll-interval-seconds 300 --rebalance-cooldown-seconds 300
             maxShutdownDelaySeconds: 60
