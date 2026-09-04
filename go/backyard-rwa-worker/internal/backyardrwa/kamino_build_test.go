@@ -95,6 +95,26 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) {
+	request := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
+	request.RouteLane = SelectedRouteID
+	route, err := runtimeRoute(SelectedRouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+	refresh := kaminoPrimeUSDCRefreshInstructionsForRequest(kaminoLegDeposit, request)
+	if len(refresh) != 3 || len(refresh[2].accounts) != 4 ||
+		encodeBase58(refresh[2].accounts[2].key[:]) != route.Kamino.CollateralReserve ||
+		encodeBase58(refresh[2].accounts[3].key[:]) != route.Kamino.DebtReserve {
+		t.Fatal("re-deposit refresh did not carry the confirmed collateral/debt reserve topology")
+	}
+	request.ObligationReserves = []string{route.Kamino.DebtReserve}
+	if got := kaminoPrimeUSDCRefreshInstructionsForRequest(kaminoLegDeposit, request); got != nil {
+		t.Fatal("non-canonical obligation reserve order was accepted")
+	}
+}
+
 type kaminoInstructionLayout struct {
 	start, end, program, accounts, data int
 }
