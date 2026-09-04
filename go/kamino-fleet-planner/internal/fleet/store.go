@@ -139,6 +139,7 @@ type FleetLoadOptions struct {
 	DelegatedSigner          string
 	EnableCrossMint          bool
 	CrossMintMaxValueLossBPS uint16
+	OptimizerEpochID         int64
 }
 
 // LoadMigratedFleet reads every active Kamino vault and its current source
@@ -209,10 +210,28 @@ WHERE vault.active AND policy.active
   AND position.liquidity_mint=ANY(policy.stable_mints)
   AND position.liquidity_mint=ANY(policy.kamino_liquidity_mints)
   AND position.market=ANY(policy.kamino_markets)
-  AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_opportunities o WHERE o.cluster=$1 AND o.vault_id=vault.id AND o.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created'))
+  AND NOT EXISTS (
+    SELECT 1 FROM loyal_yield.rebalance_opportunities o
+    WHERE o.cluster=$1 AND o.vault_id=vault.id
+      AND o.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
+      AND NOT (
+        o.opportunity_state='waiting_alt' AND o.optimizer_epoch_id=$4
+        AND EXISTS (
+          SELECT 1
+          FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
+          JOIN loyal_yield.lookup_table_provisioning_requests request
+            ON request.id=consumer.provisioning_request_id
+          WHERE consumer.opportunity_id=o.id
+            AND request.cluster=o.cluster
+            AND request.request_status='satisfied'
+            AND request.sealed_at IS NOT NULL
+            AND request.requirements_fingerprint=o.requirements_fingerprint
+        )
+      )
+  )
   AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions d WHERE d.vault_id=vault.id AND d.status::text IN ('planned','simulating','ready','submitted','confirming'))
   AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions d WHERE d.vault_id=vault.id AND d.status::text='confirmed' AND d.source_reserve=position.reserve AND d.updated_at>=clock_timestamp()-interval '5 minutes')
-ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options.DelegatedSigner, options.EnableCrossMint)
+ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options.DelegatedSigner, options.EnableCrossMint, options.OptimizerEpochID)
 	if err != nil {
 		return nil, fmt.Errorf("load migrated fleet: %w", err)
 	}
@@ -281,11 +300,33 @@ ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options
 	commitRows, err := tx.Query(ctx, `
 SELECT reserve,sum(inflow),sum(outflow) FROM (
  SELECT target_reserve AS reserve,principal_usd_micros AS inflow,0::bigint AS outflow
- FROM loyal_yield.rebalance_opportunities WHERE cluster=$1 AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
+ FROM loyal_yield.rebalance_opportunities opportunity
+ WHERE cluster=$1 AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
+   AND NOT (opportunity_state='waiting_alt' AND optimizer_epoch_id=$2 AND EXISTS (
+     SELECT 1
+     FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
+     JOIN loyal_yield.lookup_table_provisioning_requests request
+       ON request.id=consumer.provisioning_request_id
+     WHERE consumer.opportunity_id=opportunity.id
+       AND request.cluster=opportunity.cluster
+       AND request.request_status='satisfied'
+       AND request.sealed_at IS NOT NULL
+       AND request.requirements_fingerprint=opportunity.requirements_fingerprint))
  UNION ALL
  SELECT source_reserve AS reserve,0::bigint,principal_usd_micros
- FROM loyal_yield.rebalance_opportunities WHERE cluster=$1 AND source_reserve IS NOT NULL AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
-) committed GROUP BY reserve`, cluster)
+ FROM loyal_yield.rebalance_opportunities opportunity
+ WHERE cluster=$1 AND source_reserve IS NOT NULL AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
+   AND NOT (opportunity_state='waiting_alt' AND optimizer_epoch_id=$2 AND EXISTS (
+     SELECT 1
+     FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
+     JOIN loyal_yield.lookup_table_provisioning_requests request
+       ON request.id=consumer.provisioning_request_id
+     WHERE consumer.opportunity_id=opportunity.id
+       AND request.cluster=opportunity.cluster
+       AND request.request_status='satisfied'
+       AND request.sealed_at IS NOT NULL
+       AND request.requirements_fingerprint=opportunity.requirements_fingerprint))
+) committed GROUP BY reserve`, cluster, options.OptimizerEpochID)
 	if err != nil {
 		return nil, fmt.Errorf("load committed reserve frontier: %w", err)
 	}
@@ -554,12 +595,47 @@ FROM candidate LIMIT 1`, cluster, epochKey, *durableEpoch.MaximumMarketSlot, dur
 	}
 	key := opportunityIdentity(cluster, epochID, decision, planJSON, epochExpires)
 	var existingID int64
-	err = tx.QueryRow(ctx, `SELECT id FROM loyal_yield.rebalance_opportunities WHERE idempotency_key=$1`, key).Scan(&existingID)
+	var existingState string
+	var altSatisfied bool
+	err = tx.QueryRow(ctx, `
+SELECT opportunity.id,opportunity.opportunity_state,
+       EXISTS (
+         SELECT 1
+         FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
+         JOIN loyal_yield.lookup_table_provisioning_requests request
+           ON request.id=consumer.provisioning_request_id
+         WHERE consumer.opportunity_id=opportunity.id
+           AND request.cluster=opportunity.cluster
+           AND request.request_status='satisfied'
+           AND request.sealed_at IS NOT NULL
+           AND request.requirements_fingerprint=opportunity.requirements_fingerprint
+       )
+FROM loyal_yield.rebalance_opportunities opportunity
+WHERE opportunity.idempotency_key=$1
+FOR UPDATE`, key).Scan(&existingID, &existingState, &altSatisfied)
 	if err == nil {
+		reason := "rust_identity_duplicate"
+		// ALT completion is only a wakeup. This exact planner wave must select the
+		// same immutable opportunity identity before it becomes claimable again.
+		if existingState == "waiting_alt" && altSatisfied {
+			command, updateErr := tx.Exec(ctx, `
+UPDATE loyal_yield.rebalance_opportunities
+SET opportunity_state='revalidate',available_at=clock_timestamp(),
+    lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,terminal_reason=NULL,
+    updated_at=clock_timestamp()
+WHERE id=$1 AND opportunity_state='waiting_alt' AND optimizer_epoch_id=$2
+  AND expires_at>=clock_timestamp()+interval '60 seconds'`, existingID, epochID)
+			if updateErr != nil {
+				return PublishResult{}, updateErr
+			}
+			if command.RowsAffected() == 1 {
+				reason = "alt_readmitted"
+			}
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return PublishResult{}, err
 		}
-		return PublishResult{OpportunityID: existingID, EpochID: epochID, Reason: "rust_identity_duplicate"}, nil
+		return PublishResult{OpportunityID: existingID, EpochID: epochID, Reason: reason}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return PublishResult{}, err

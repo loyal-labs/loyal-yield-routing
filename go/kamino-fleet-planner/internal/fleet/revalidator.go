@@ -378,12 +378,19 @@ type FreshRouteEvidence struct {
 	PolicyData                    []byte
 }
 type DecodedSquadsPolicy struct {
-	AccountIndex        uint8
-	DelegatedSigners    []string
-	InstructionPrograms []string
-	InstructionData     [][]byte
-	AllowedIndexes      []uint8
-	Constraints         []policyInstructionConstraint
+	Settings              string
+	PolicySeed            uint64
+	Bump                  uint8
+	TransactionIndex      uint64
+	StaleTransactionIndex uint64
+	TimeLock              uint32
+	AccountIndex          uint8
+	DelegatedSigners      []string
+	SignerPermissions     []uint8
+	InstructionPrograms   []string
+	InstructionData       [][]byte
+	AllowedIndexes        []uint8
+	Constraints           []policyInstructionConstraint
 }
 
 type policyInstructionConstraint struct {
@@ -444,8 +451,8 @@ func ValidateFreshRouteEvidence(e FreshRouteEvidence, now time.Time, expectedOpp
 	if err != nil {
 		return p, err
 	}
-	if !contains(p.DelegatedSigners, delegatedSigner) {
-		return p, errors.New("policy does not delegate to signer")
+	if len(p.DelegatedSigners) != 1 || p.DelegatedSigners[0] != delegatedSigner || len(p.SignerPermissions) != 1 || p.SignerPermissions[0] != 7 || p.TimeLock != 0 || p.StaleTransactionIndex > p.TransactionIndex {
+		return p, errors.New("policy does not exclusively delegate full permissions to signer")
 	}
 	used := make(map[int]bool)
 	for _, ix := range protected {
@@ -483,18 +490,19 @@ func DecodeSquadsPolicy(data []byte) (DecodedSquadsPolicy, error) {
 	if !bytes.Equal(c.take(8), []byte{222, 135, 7, 163, 235, 177, 33, 68}) {
 		return DecodedSquadsPolicy{}, errors.New("not a Squads policy account")
 	}
-	c.skip(32 + 8 + 1 + 8 + 8)
+	p := DecodedSquadsPolicy{Settings: encodeBase58(c.take(32)), PolicySeed: c.u64(), Bump: c.u8()}
+	p.TransactionIndex = c.u64()
+	p.StaleTransactionIndex = c.u64()
 	n := c.u32()
 	if c.err != nil || n == 0 || n > 32 {
 		return DecodedSquadsPolicy{}, errors.New("invalid policy signer count")
 	}
-	p := DecodedSquadsPolicy{}
 	for i := uint32(0); i < n; i++ {
 		p.DelegatedSigners = append(p.DelegatedSigners, encodeBase58(c.take(32)))
-		c.skip(1)
+		p.SignerPermissions = append(p.SignerPermissions, c.u8())
 	}
 	threshold := c.u16()
-	c.skip(4)
+	p.TimeLock = c.u32()
 	if threshold != 1 || c.u8() != 3 {
 		return p, errors.New("policy is not threshold-one ProgramInteraction")
 	}
@@ -781,7 +789,7 @@ func BuildExactPolicyFixture(settings, signer string, accountIndex uint8, instru
 	b = append(b, make([]byte, 8+1+8+8)...)
 	b = appendU32x(b, 1)
 	b = append(b, sg[:]...)
-	b = append(b, 0xff)
+	b = append(b, 7)
 	b = appendU16x(b, 1)
 	b = appendU32x(b, 0)
 	b = append(b, 3, accountIndex)

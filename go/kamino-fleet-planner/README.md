@@ -1,7 +1,7 @@
 # Loyal Kamino fleet planner and route revalidator
 
-This Go module owns the migrated Kamino same-mint opportunity-planning and
-route-revalidation boundary. It keeps PostgreSQL as the authoritative handoff
+This Go module owns migrated Kamino same-mint and cross-mint Jupiter
+opportunity planning and route revalidation. It keeps PostgreSQL as the authoritative handoff
 to the retained Rust executor, confirmer, reconciler, health projector, and ALT
 provisioner.
 
@@ -34,16 +34,21 @@ The revalidation package:
   database, signer, or broadcast capability;
 - wraps protected KLend instructions with Squads, selects active reusable ALTs,
   compiles exact Solana v0 message/unsigned-wire bytes, enforces packet, fee,
-  and compute limits, and verifies simulation against those exact bytes; and
+  and compute limits, and verifies simulation against those exact bytes;
+- for `cross_mint_jupiter`, re-reads withdraw/swap/deposit policies and custody
+  accounts at finalized commitment, validates the narrow ExactIn one/two-hop
+  AlphaQ contract, independently verifies Jupiter and Loyal ALTs, and simulates
+  the exact atomic withdraw-plus-swap preflight without signing or broadcasting;
+  and
 - commits `waiting_alt`, `ready`, or fused `leased/execute` atomically after
   rechecking lease, conflict, capacity, opportunity, and optimizer-epoch
   fences. Under the locked frontier, fused execution recomputes projected APY,
   edge, gain, and fee cap, persists distinct observed/projected APYs, reserves
   capacity, and saves exact transaction/simulation evidence before visibility.
 
-Go claims only mature `same_mint` Kamino work. At cutover, the retained Rust
-revalidator must use `--route-kind cross_mint_jupiter`; the retained Rust
-executor must remain unfiltered and unchanged as the signer/submission owner.
+Go claims both mature `same_mint` and enabled `cross_mint_jupiter` work. At
+cutover, stop the Rust opportunity planner and route revalidator. The retained
+Rust executor remains unfiltered and unchanged as the signer/submission owner.
 
 Timescale monitor identity remains on the publication-evidence path; the worker
 never invents a production `state_event_id`. The default mode is `shadow`;
@@ -66,6 +71,9 @@ Optional:
 - `KAMINO_FLEET_FUSED_EXECUTE` (default `false`)
 - `EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER` (default `false`)
 - `EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS` (default `50`)
+- `EARN_ROUTER_CROSS_MINT_MAX_SLIPPAGE_BPS` (default `50`)
+- `JUPITER_SWAP_BUILD_URL` (default `https://api.jup.ag/swap/v2/build`)
+- `JUPITER_API_KEY` (optional; sent only as `x-api-key`)
 - `KAMINO_API_BASE` (default `https://api.kamino.finance`)
 - `KAMINO_FLEET_SLOT_DURATION` (otherwise fetched from Kamino's
   `/slots/duration` endpoint)
@@ -81,10 +89,9 @@ configuration. No production credentials are accepted by the parity harness.
 The `worker-images` workflow builds the Go planner, `loyal-klend-proxy`, and
 `yield-migrations` into `kamino-fleet-planner:sha-<merge-commit>`. After the
 main build publishes that immutable tag, update the Render planner service to
-that exact digest tag and update the retained Rust revalidator—also using the
-new immutable `light-workers` tag—to add `--route-kind cross_mint_jupiter` and
-set fused-execute concurrency to zero. Never point Render at a mutable `main`
-tag. Keep `loyal-fleet-route-executor` on its unfiltered execute command.
+that exact digest tag, verify its durable heartbeat, and stop the replaced Rust
+planner and revalidator. Never point Render at a mutable `main` tag. Keep
+`loyal-fleet-route-executor` on its unfiltered execute command.
 
 ## Verification
 

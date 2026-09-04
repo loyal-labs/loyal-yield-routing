@@ -177,7 +177,7 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	if err := w.store.RefreshCapacityEpoch(ctx, w.config.Cluster, epoch); err != nil {
 		return fmt.Errorf("refresh durable capacity epoch: %w", err)
 	}
-	vaults, err := w.store.LoadMigratedFleet(ctx, w.config.Cluster, epoch, FleetLoadOptions{DelegatedSigner: w.config.DelegatedSigner, EnableCrossMint: w.config.CrossMintEnabled, CrossMintMaxValueLossBPS: w.config.CrossMintMaxValueLossBPS})
+	vaults, err := w.store.LoadMigratedFleet(ctx, w.config.Cluster, epoch, FleetLoadOptions{DelegatedSigner: w.config.DelegatedSigner, EnableCrossMint: w.config.CrossMintEnabled, CrossMintMaxValueLossBPS: w.config.CrossMintMaxValueLossBPS, OptimizerEpochID: snapshot.OptimizerEpochID})
 	if err != nil {
 		return err
 	}

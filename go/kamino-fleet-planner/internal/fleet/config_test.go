@@ -23,7 +23,7 @@ func TestConfigAcceptsVerifiedMainnetPublish(t *testing.T) {
 func TestConfigRequiresCrossMintSignerAndMultipleSupportedMints(t *testing.T) {
 	config := Config{
 		DatabaseURL: "postgres://example", TimescaleURL: "postgres://evidence", TimescaleSchema: "kamino", RPCURL: "https://rpc.example", Cluster: "mainnet-beta",
-		Mode: ModePublish, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50,
+		Mode: ModePublish, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50,
 		EnabledStableMints: []string{USDCMint},
 	}
 	if err := config.Validate(); err == nil {

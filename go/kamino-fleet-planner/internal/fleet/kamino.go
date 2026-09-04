@@ -63,7 +63,7 @@ func decodeKaminoReserve(account Account, identity ReserveIdentity, contextSlot 
 	}
 	decimals := binary.LittleEndian.Uint64(account.Data[272:280])
 	if decimals != 6 {
-		return ReserveState{}, fmt.Errorf("phase 1 reserve %s is not six-decimal USDC", identity.Address)
+		return ReserveState{}, fmt.Errorf("reserve %s is not a supported six-decimal stablecoin", identity.Address)
 	}
 
 	available := float64(binary.LittleEndian.Uint64(account.Data[224:232]))

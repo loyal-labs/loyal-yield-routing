@@ -30,7 +30,7 @@ echo "== Rust/Go immutable market epoch parity"
 echo "== Go verifier-first checks"
 cd "$root/go/kamino-fleet-planner"
 go test ./...
-go test -race ./internal/fleet -run 'Test(Decode|Plan|EconomicKey|Snapshot)'
+go test -race ./internal/fleet -run 'Test(Decode|Plan|EconomicKey|Snapshot|ValidateJupiter|CrossMint|JupiterFetch|Token2022)'
 echo "PASS: deterministic planner, frozen KLend decoder, and adversarial slot fences"
 
 echo "== Disposable PostgreSQL"
@@ -118,7 +118,6 @@ jq -e '
 ' "$lifecycle_artifact" >/dev/null
 
 for role_command in \
-  "target/debug/same-mint-reserve-swap --fleet-worker revalidate --route-kind cross_mint_jupiter --role-probe" \
   "target/debug/same-mint-reserve-swap --fleet-worker execute --role-probe" \
   "target/debug/fleet-route-confirmer --role-probe" \
   "target/debug/same-mint-reserve-swap --fleet-reconciler --role-probe" \
@@ -130,6 +129,6 @@ done
 
 echo "PASS: confirmed RPC -> Go planning/revalidation -> durable revalidate and leased-execute rows"
 echo "PASS: retained executor/confirmer/reconciler lifecycle reached completed without production access"
-echo "PASS: retained cross-mint revalidator, executor, confirmer, reconciler, and ALT roles loaded without side effects"
+echo "PASS: replaced Rust planner/revalidator roles were not started; retained executor, confirmer, reconciler, and ALT roles loaded without side effects"
 echo "PASS: economic idempotency, active-work exclusion, restart recovery, and atomic capacity/economics fences verified"
 echo "NOTE: exact route bytes and independent Rust/Go artifact parity are verified by verify-kamino-planner-revalidator-parity.sh"

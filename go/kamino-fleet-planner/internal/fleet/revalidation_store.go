@@ -27,6 +27,9 @@ type RevalidationLease struct {
 	SourceReserve                   string
 	TargetReserve                   string
 	LiquidityMint                   string
+	SourceLiquidityMint             string
+	TargetLiquidityMint             string
+	RouteKind                       string
 	LiquidityAmountRaw              uint64
 	SourceCollateralRaw             uint64
 	PrincipalUSDMicros              int64
@@ -39,7 +42,7 @@ type RevalidationLease struct {
 
 // ClaimRevalidation leases one runnable/recoverable row with SKIP LOCKED. A
 // crashed lease is only reclaimed in the same revalidation lane.
-func (s *Store) ClaimRevalidation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady bool, delegatedSigner ...string) (*RevalidationLease, error) {
+func (s *Store) ClaimRevalidation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady, crossMintEnabled bool, delegatedSigner ...string) (*RevalidationLease, error) {
 	signer := ""
 	if len(delegatedSigner) > 0 {
 		signer = delegatedSigner[0]
@@ -57,23 +60,26 @@ WITH candidate AS (
  JOIN loyal_yield.managed_vaults candidate_vault ON candidate_vault.id=o.vault_id AND candidate_vault.active
  JOIN loyal_yield.route_policies candidate_policy ON candidate_policy.id=candidate_vault.active_policy_id AND candidate_policy.active
  WHERE o.cluster=$1 AND o.available_at<=clock_timestamp()
-   -- Go owns only mature same-mint Kamino preparation. Cross-mint Jupiter
-   -- rows remain in revalidate for the retained Rust route executor, which
-   -- owns executable quote preparation, signing, submission, and recovery.
-   AND o.execution_plan->>'route_kind'='same_mint'
+   AND o.execution_plan->>'route_kind' IN ('same_mint','cross_mint_jupiter')
    AND o.execution_plan->>'source_kind'='reserve_position'
-   AND 'same_mint_kamino'=ANY(candidate_policy.route_modes)
+   AND (($6 AND o.execution_plan->>'route_kind'='cross_mint_jupiter'
+         AND 'cross_mint_jupiter'=ANY(candidate_policy.route_modes))
+     OR (o.execution_plan->>'route_kind'='same_mint'
+         AND 'same_mint_kamino'=ANY(candidate_policy.route_modes)))
    AND ($5='' OR (candidate_policy.cluster=$1
         AND candidate_policy.source_commitment='finalized'
         AND candidate_policy.finalized_eligible
         AND $5=ANY(candidate_policy.delegated_signers)))
    AND o.source_reserve IS NOT NULL
-   AND o.source_liquidity_mint=o.target_liquidity_mint
    AND o.liquidity_mint=o.target_liquidity_mint
+   AND ((o.execution_plan->>'route_kind'='same_mint'
+         AND o.source_liquidity_mint=o.target_liquidity_mint)
+     OR (o.execution_plan->>'route_kind'='cross_mint_jupiter'
+         AND o.source_liquidity_mint<>o.target_liquidity_mint))
    AND o.expires_at>clock_timestamp()+interval '60 seconds'
    AND e.expires_at>clock_timestamp()+interval '60 seconds'
-   AND (o.opportunity_state IN ('revalidate','waiting_alt')
-        OR ($4 AND o.opportunity_state='ready')
+   AND (o.opportunity_state='revalidate'
+        OR ($4 AND o.execution_plan->>'route_kind'='same_mint' AND o.opportunity_state='ready')
         OR (o.opportunity_state='leased' AND o.lease_kind='revalidate' AND o.lease_expires_at<=clock_timestamp()))
    AND (o.lease_expires_at IS NULL OR o.lease_expires_at<=clock_timestamp())
  ORDER BY o.scheduler_priority_anchor DESC,o.economic_priority DESC,o.created_at,o.id
@@ -85,7 +91,9 @@ WITH candidate AS (
 SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fencing_token,
        claimed.lease_expires_at,claimed.vault_id,vault.vault_pubkey,vault.vault_index,
        policy.policy_account,policy.delegated_signers,claimed.source_reserve,
-       claimed.target_reserve,claimed.liquidity_mint,claimed.amount_raw,
+       claimed.target_reserve,claimed.liquidity_mint,
+       claimed.source_liquidity_mint,claimed.target_liquidity_mint,
+       claimed.execution_plan->>'route_kind',claimed.amount_raw,
        COALESCE((claimed.execution_plan->>'source_collateral_amount_raw')::bigint,0),
        claimed.principal_usd_micros,claimed.source_apy_bps,claimed.target_apy_bps,
        claimed.estimated_edge_bps,claimed.expected_net_gain_usd_micros,
@@ -93,10 +101,11 @@ SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fen
 FROM claimed
 JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=claimed.optimizer_epoch_id
 JOIN loyal_yield.managed_vaults vault ON vault.id=claimed.vault_id AND vault.active
-JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id AND policy.active`, cluster, owner, ttl.String(), includeReady, signer).Scan(
+JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id AND policy.active`, cluster, owner, ttl.String(), includeReady, signer, crossMintEnabled).Scan(
 		&l.OpportunityID, &l.OptimizerEpochID, &l.IdempotencyKey, &l.FencingToken,
 		&l.ExpiresAt, &l.VaultID, &l.VaultPubkey, &l.VaultIndex, &l.PolicyAccount,
 		&l.DelegatedSigners, &l.SourceReserve, &l.TargetReserve, &l.LiquidityMint,
+		&l.SourceLiquidityMint, &l.TargetLiquidityMint, &l.RouteKind,
 		&l.LiquidityAmountRaw, &l.SourceCollateralRaw, &l.PrincipalUSDMicros,
 		&l.SourceAPYBPS, &l.TargetAPYBPS, &l.EdgeBPS, &l.NetGainUSDMicros,
 		&l.FeeCapLamports, &l.OptimizerEpochKey, &l.ExecutionPlan)
@@ -131,22 +140,42 @@ WHERE opportunity.id=$1 AND opportunity.idempotency_key=$2 AND opportunity.optim
 	return nil
 }
 
-func (s *Store) LoadReusableLookupTables(ctx context.Context, cluster string, minimumSlot int64) ([]LookupTable, error) {
-	if s == nil || s.pool == nil || cluster == "" || minimumSlot <= 0 {
+func (s *Store) LoadReusableLookupTables(ctx context.Context, cluster string, vaultID, minimumSlot int64, requiredAddresses []string) ([]LookupTable, error) {
+	requiredAddresses = canonicalStrings(requiredAddresses)
+	if s == nil || s.pool == nil || cluster == "" || vaultID <= 0 || minimumSlot <= 0 || len(requiredAddresses) == 0 {
 		return nil, errors.New("invalid reusable ALT query")
 	}
+	// Persisted verification establishes the normalized membership baseline; it
+	// need not be from the current evidence slot because the caller reloads and
+	// verifies every scoped candidate from confirmed RPC immediately afterward.
 	rows, err := s.pool.Query(ctx, `
 SELECT route_table.table_address,
        array_agg(address.address ORDER BY address.ordinal),
        min(address.usable_after_slot),min(address.last_verified_slot)
 FROM loyal_yield.route_lookup_tables route_table
+JOIN loyal_yield.lookup_table_families family ON family.id=route_table.family_id
+LEFT JOIN loyal_yield.lookup_table_vault_bindings binding
+  ON binding.route_lookup_table_id=route_table.id
+ AND binding.vault_id=$2 AND binding.lifecycle_state='active'
 JOIN loyal_yield.lookup_table_addresses address ON address.route_lookup_table_id=route_table.id
-WHERE route_table.cluster=$1 AND route_table.durable
+WHERE family.cluster=$1 AND family.desired_state='active'
+  AND route_table.cluster=$1 AND route_table.durable
   AND route_table.status IN ('active','usable')
   AND route_table.deactivated_slot IS NULL
+  AND route_table.generation=family.active_generation
+  AND route_table.desired_state='active'
+  AND ((family.kind='shared_market' AND route_table.allocation_kind='shared_market')
+    OR (family.kind='vault_shards' AND binding.id IS NOT NULL))
+  AND EXISTS (
+    SELECT 1 FROM loyal_yield.lookup_table_addresses relevant
+    WHERE relevant.route_lookup_table_id=route_table.id
+      AND relevant.address=ANY($4) AND relevant.usable_after_slot<=$3)
 GROUP BY route_table.id,route_table.table_address
-HAVING max(address.usable_after_slot)<=$2 AND min(address.last_verified_slot)>=$2
-ORDER BY route_table.table_address`, cluster, minimumSlot)
+HAVING max(address.usable_after_slot)<=$3
+   AND min(address.last_verified_slot) IS NOT NULL
+   AND count(*)=route_table.address_count
+   AND count(*)=route_table.usable_address_count
+ORDER BY route_table.table_address`, cluster, vaultID, minimumSlot, requiredAddresses)
 	if err != nil {
 		return nil, fmt.Errorf("load reusable lookup tables: %w", err)
 	}

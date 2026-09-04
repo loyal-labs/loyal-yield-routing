@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -83,6 +87,13 @@ func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 	if decoded.AccountIndex != 0 || len(decoded.InstructionData) != 2 {
 		t.Fatal("policy decode incomplete")
 	}
+	wrongPermissions := append([]byte(nil), policyBytes...)
+	wrongPermissions[101] = 0xff
+	e.PolicyData = wrongPermissions
+	if _, err = ValidateFreshRouteEvidence(e, now, hash, strings.Repeat("b", 64), testVault, route.Protected); err == nil {
+		t.Fatal("accepted noncanonical policy signer permissions")
+	}
+	e.PolicyData = policyBytes
 	all := []string{testSource, testTarget, testVault, testPolicy, testMarket, testMint}
 	sim := func(w []byte) (SimulationEvidence, error) {
 		h := sha256.Sum256(w)
@@ -122,6 +133,101 @@ func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 	e.EpochFingerprint = "changed"
 	if _, err := ValidateFreshRouteEvidence(e, now, hash, strings.Repeat("b", 64), testVault, route.Protected); err == nil {
 		t.Fatal("changed epoch accepted")
+	}
+}
+
+func TestVerifyLookupTablesChunksFreshRPCAtSolanaLimit(t *testing.T) {
+	const tableCount = 205
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		var addresses []string
+		if body.Method != "getMultipleAccounts" || len(body.Params) < 1 || json.Unmarshal(body.Params[0], &addresses) != nil {
+			t.Errorf("unexpected RPC request: %+v", body)
+			return
+		}
+		calls++
+		if len(addresses) == 0 || len(addresses) > 100 {
+			t.Errorf("getMultipleAccounts batch size=%d", len(addresses))
+			return
+		}
+		values := make([]map[string]any, len(addresses))
+		for index := range addresses {
+			member, err := decodeBase58(testIdentity(byte(index + calls)))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			data := make([]byte, 56+32)
+			binary.LittleEndian.PutUint32(data[:4], 1)
+			binary.LittleEndian.PutUint64(data[4:12], ^uint64(0))
+			copy(data[56:], member)
+			values[index] = map[string]any{"owner": altProgram, "lamports": 1, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(data), "base64"}}
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"context": map[string]any{"slot": 500}, "value": values}})
+	}))
+	defer server.Close()
+
+	tables := make([]LookupTable, tableCount)
+	for index := range tables {
+		call := index/100 + 1
+		member := testIdentity(byte(index%100 + call))
+		tables[index] = LookupTable{Address: testIdentity(byte(index + 1)), Addresses: []string{member}}
+	}
+	revalidator := &Revalidator{rpc: NewRPCClient(server.URL)}
+	verified, err := revalidator.verifyLookupTables(context.Background(), tables, 499)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || len(verified) != tableCount {
+		t.Fatalf("fresh ALT verification calls=%d tables=%d", calls, len(verified))
+	}
+}
+
+func TestLoadReusableLookupTablesScopesStaleCandidatesBeforeRPC(t *testing.T) {
+	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("FLEET_TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	store, err := OpenStore(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cluster := fmt.Sprintf("alt-scope-%d", time.Now().UnixNano())
+	var familyID int64
+	if err = store.pool.QueryRow(ctx, `INSERT INTO loyal_yield.lookup_table_families(cluster,logical_name,kind,planner_version,catalog_version,active_generation,provisioning_authority,payer,hard_capacity,largest_atomic_expansion,safety_margin,allocation_high_water) VALUES($1,'shared','shared_market','test','test',0,$2,$3,256,1,1,254) RETURNING id`, cluster, testPolicy, testVault).Scan(&familyID); err != nil {
+		t.Fatal(err)
+	}
+	const globalTables = 106
+	for index := 0; index < globalTables; index++ {
+		tableAddress := testIdentity(byte(index + 100))
+		member := testIdentity(byte(index + 1))
+		if index == globalTables-1 {
+			member = testTarget
+		}
+		var tableID int64
+		if err = store.pool.QueryRow(ctx, `INSERT INTO loyal_yield.route_lookup_tables(cluster,scope,table_address,authority,payer,status,durable,address_count,address_hash,addresses,last_extended_slot,warmup_slot,family_id,allocation_kind,generation,shard_ordinal,desired_state,accepting_allocations,allocation_high_water,reserved_address_count,usable_address_count,last_verified_slot,last_verified_at,mutation_epoch) VALUES($1,$2,$3,$4,$5,'active',TRUE,1,$6,jsonb_build_array($7),10,11,$8,'shared_market',0,$9,'active',TRUE,254,1,1,10,clock_timestamp(),0) RETURNING id`, cluster, fmt.Sprintf("shared-%d", index), tableAddress, testPolicy, testVault, strings.Repeat("a", 64), member, familyID, index).Scan(&tableID); err != nil {
+			t.Fatalf("seed table %d: %v", index, err)
+		}
+		if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_addresses(route_lookup_table_id,address,ordinal,added_slot,usable_after_slot,last_verified_slot,last_verified_at) VALUES($1,$2,0,9,11,10,clock_timestamp())`, tableID, member); err != nil {
+			t.Fatalf("seed membership %d: %v", index, err)
+		}
+	}
+	tables, err := store.LoadReusableLookupTables(ctx, cluster, 1, 1_000, []string{testTarget})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tables) != 1 || len(tables[0].Addresses) != 1 || tables[0].Addresses[0] != testTarget || tables[0].LastVerifiedSlot != 10 {
+		t.Fatalf("stale relevant ALT was not scoped for fresh verification: %+v", tables)
 	}
 }
 
@@ -197,7 +303,7 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false)
+	lease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false, false)
 	if err != nil || lease == nil {
 		t.Fatalf("claim: %+v %v", lease, err)
 	}
@@ -233,7 +339,7 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	waitingLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false)
+	waitingLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false, false)
 	if err != nil || waitingLease == nil {
 		t.Fatalf("waiting claim: %+v %v", waitingLease, err)
 	}
@@ -249,9 +355,24 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if err = store.pool.QueryRow(ctx, `SELECT opportunity.opportunity_state,request.request_status,request.sealed_at IS NOT NULL,address.address FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.lookup_table_provisioning_request_consumers consumer ON consumer.opportunity_id=opportunity.id JOIN loyal_yield.lookup_table_provisioning_requests request ON request.id=consumer.provisioning_request_id JOIN loyal_yield.lookup_table_provisioning_request_addresses address ON address.request_id=request.id WHERE opportunity.id=$1`, lease.OpportunityID).Scan(&state, &requestStatus, &requestSealed, &requestAddress); err != nil || state != "waiting_alt" || requestStatus != "requested" || !requestSealed || requestAddress != testTarget {
 		t.Fatalf("waiting_alt durable request: state=%s status=%s sealed=%t address=%s err=%v", state, requestStatus, requestSealed, requestAddress, err)
 	}
-	readyLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true)
+	blockedLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true, false)
+	if err != nil || blockedLease != nil {
+		t.Fatalf("waiting_alt was reclaimable before satisfaction: %+v %v", blockedLease, err)
+	}
+	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioning_requests request SET request_status='satisfied',satisfied_at=clock_timestamp(),updated_at=clock_timestamp() FROM loyal_yield.lookup_table_provisioning_request_consumers consumer WHERE consumer.provisioning_request_id=request.id AND consumer.opportunity_id=$1`, lease.OpportunityID); err != nil {
+		t.Fatal(err)
+	}
+	blockedLease, err = store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true, false)
+	if err != nil || blockedLease != nil {
+		t.Fatalf("ALT satisfaction bypassed planner readmission: %+v %v", blockedLease, err)
+	}
+	readmitted, err := store.Publish(ctx, cluster, epoch, position, decision)
+	if err != nil || readmitted.Reason != "alt_readmitted" || readmitted.OpportunityID != lease.OpportunityID {
+		t.Fatalf("planner ALT readmission: %+v %v", readmitted, err)
+	}
+	readyLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true, false)
 	if err != nil || readyLease == nil {
-		t.Fatalf("ready claim: %+v %v", readyLease, err)
+		t.Fatalf("ready claim after planner readmission: %+v %v", readyLease, err)
 	}
 	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.target_capacity_frontiers SET maximum_inflight_usd_micros=$4 WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3`, cluster, target.Address, USDCMint, readyLease.PrincipalUSDMicros-1); err != nil {
 		t.Fatal(err)
@@ -269,14 +390,41 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if err = store.pool.QueryRow(ctx, `SELECT opportunity_state,COALESCE(lease_kind,'') FROM loyal_yield.rebalance_opportunities WHERE id=$1`, lease.OpportunityID).Scan(&state, &kind); err != nil || state != "ready" || kind != "" {
 		t.Fatalf("ready transition: %s/%s %v", state, kind, err)
 	}
-	if nonFusedLease, claimErr := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false); claimErr != nil || nonFusedLease != nil {
+	if nonFusedLease, claimErr := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false, false); claimErr != nil || nonFusedLease != nil {
 		t.Fatalf("non-fused revalidator stole executor-ready work: %+v %v", nonFusedLease, claimErr)
 	}
-	finalLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true)
+	finalLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true, false)
 	if err != nil || finalLease == nil {
 		t.Fatalf("ready recovery claim: %+v %v", finalLease, err)
 	}
 	if err = store.CommitRevalidation(ctx, *finalLease, RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: finalLease.IdempotencyKey}); err != nil {
+		t.Fatal(err)
+	}
+	// Go must claim the cross-mint lane only when explicitly enabled. This is
+	// the durable ownership fence that replaces the Rust route revalidator.
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{`DELETE FROM loyal_yield.route_account_conflict_leases WHERE opportunity_id=$1`, []any{lease.OpportunityID}},
+		{`DELETE FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1`, []any{lease.OpportunityID}},
+		{`UPDATE loyal_yield.route_policies SET route_modes=array_append(route_modes,'cross_mint_jupiter') WHERE id=$1 AND NOT ('cross_mint_jupiter'=ANY(route_modes))`, []any{position.PolicyID}},
+		{`UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='revalidate',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,source_liquidity_mint=$2,target_liquidity_mint=$3,liquidity_mint=$3,execution_plan=jsonb_set(jsonb_set(execution_plan,'{kind}',to_jsonb('cross_mint_jupiter'::text)),'{route_kind}',to_jsonb('cross_mint_jupiter'::text)) WHERE id=$1`, []any{lease.OpportunityID, USDCMint, USDTMint}},
+	} {
+		if _, err = store.pool.Exec(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if disabled, claimErr := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false, false); claimErr != nil || disabled != nil {
+		t.Fatalf("disabled Go revalidator claimed cross-mint work: %+v %v", disabled, claimErr)
+	}
+	crossLease, claimErr := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false, true)
+	if claimErr != nil || crossLease == nil || crossLease.RouteKind != "cross_mint_jupiter" || crossLease.SourceLiquidityMint != USDCMint || crossLease.TargetLiquidityMint != USDTMint {
+		t.Fatalf("enabled Go revalidator did not claim cross-mint work: %+v %v", crossLease, claimErr)
+	}
+	// Preserve the verifier's retained-executor handoff artifact after this
+	// ownership assertion; the cross-mint claim itself was already observed.
+	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='leased',lease_kind='execute' WHERE id=$1`, lease.OpportunityID); err != nil {
 		t.Fatal(err)
 	}
 }

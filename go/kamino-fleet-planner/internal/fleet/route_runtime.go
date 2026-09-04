@@ -22,23 +22,32 @@ const (
 )
 
 type Revalidator struct {
-	store        *Store
-	rpc          *RPCClient
-	proxy        *KLendProxy
-	owner        string
-	signer       string
-	leaseTTL     time.Duration
-	computeLimit uint64
-	slotDuration time.Duration
-	fusedExecute bool
+	store                    *Store
+	rpc                      *RPCClient
+	proxy                    *KLendProxy
+	owner                    string
+	signer                   string
+	leaseTTL                 time.Duration
+	computeLimit             uint64
+	slotDuration             time.Duration
+	fusedExecute             bool
+	crossMintEnabled         bool
+	crossMintMaxValueLossBPS uint16
+	crossMintMaxSlippageBPS  uint16
+	jupiter                  *JupiterBuildClient
 }
 
 type RevalidatorConfig struct {
-	Owner, DelegatedSigner string
-	LeaseTTL               time.Duration
-	ComputeLimit           uint64
-	SlotDuration           time.Duration
-	FusedExecute           bool
+	Owner, DelegatedSigner   string
+	LeaseTTL                 time.Duration
+	ComputeLimit             uint64
+	SlotDuration             time.Duration
+	FusedExecute             bool
+	CrossMintEnabled         bool
+	CrossMintMaxValueLossBPS uint16
+	CrossMintMaxSlippageBPS  uint16
+	JupiterBuildURL          string
+	JupiterAPIKey            string
 }
 
 func NewRevalidator(store *Store, rpc *RPCClient, proxy *KLendProxy, config RevalidatorConfig) (*Revalidator, error) {
@@ -57,19 +66,33 @@ func NewRevalidator(store *Store, rpc *RPCClient, proxy *KLendProxy, config Reva
 	if config.SlotDuration <= 0 {
 		return nil, errors.New("Kamino slot duration is required")
 	}
-	return &Revalidator{store: store, rpc: rpc, proxy: proxy, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute}, nil
+	var jupiter *JupiterBuildClient
+	if config.CrossMintEnabled {
+		if config.CrossMintMaxValueLossBPS == 0 || config.CrossMintMaxValueLossBPS > 1_000 || config.CrossMintMaxSlippageBPS == 0 || config.CrossMintMaxSlippageBPS > 1_000 {
+			return nil, errors.New("cross-mint value-loss or slippage bound is invalid")
+		}
+		var err error
+		jupiter, err = NewJupiterBuildClient(config.JupiterBuildURL, config.JupiterAPIKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &Revalidator{store: store, rpc: rpc, proxy: proxy, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter}, nil
 }
 
 // Cycle claims at most one row. Claim, fresh-chain preparation, and commit are
 // deliberately separate transactions; CommitRevalidation rechecks every
 // mutable identity, lease, epoch, conflict, and capacity fence atomically.
 func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
-	lease, err := r.store.ClaimRevalidation(ctx, cluster, r.owner, r.leaseTTL, r.fusedExecute, r.signer)
+	lease, err := r.store.ClaimRevalidation(ctx, cluster, r.owner, r.leaseTTL, r.fusedExecute, r.crossMintEnabled, r.signer)
 	if err != nil || lease == nil {
 		return false, err
 	}
 	if !contains(lease.DelegatedSigners, r.signer) {
 		return true, errors.New("claimed policy no longer delegates to configured signer")
+	}
+	if lease.RouteKind == "cross_mint_jupiter" {
+		return true, r.cycleCrossMint(ctx, *lease)
 	}
 	input, evidence, err := r.loadFreshRoute(ctx, *lease)
 	if err != nil {
@@ -94,14 +117,6 @@ func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
 	if policy.AccountIndex != lease.VaultIndex {
 		return true, errors.New("fresh policy account index differs from managed vault index")
 	}
-	tables, err := r.store.LoadReusableLookupTables(ctx, cluster, evidence.Slot)
-	if err != nil {
-		return true, err
-	}
-	tables, err = r.verifyLookupTables(ctx, tables, evidence.Slot)
-	if err != nil {
-		return true, err
-	}
 	wrapped := make([]RouteInstruction, len(route.Protected))
 	for i := range route.Protected {
 		wrapped[i], err = wrapSquadsPolicy(lease.PolicyAccount, r.signer, lease.VaultIndex, []uint8{policy.AllowedIndexes[i]}, []RouteInstruction{route.Protected[i]})
@@ -110,6 +125,15 @@ func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
 		}
 	}
 	instructions, err := interleaveMatureSameMintRoute(route.Public, wrapped)
+	if err != nil {
+		return true, err
+	}
+	requiredAddresses := requiredLookupTableAddresses(instructions)
+	tables, err := r.store.LoadReusableLookupTables(ctx, cluster, lease.VaultID, evidence.Slot, requiredAddresses)
+	if err != nil {
+		return true, err
+	}
+	tables, err = r.verifyLookupTables(ctx, tables, evidence.Slot)
 	if err != nil {
 		return true, err
 	}
@@ -210,8 +234,12 @@ func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
 
 func preserveCanonicalPlan(original json.RawMessage, preparation *RoutePreparation, evidenceField string) error {
 	var plan, evidence map[string]any
-	if len(original) == 0 || json.Unmarshal(original, &plan) != nil || plan["kind"] != "same_mint" {
-		return errors.New("canonical same-mint execution plan is invalid")
+	if len(original) == 0 || json.Unmarshal(original, &plan) != nil {
+		return errors.New("canonical execution plan is invalid")
+	}
+	kind, _ := plan["kind"].(string)
+	if kind != "same_mint" && kind != "cross_mint_jupiter" {
+		return errors.New("canonical execution plan kind is invalid")
 	}
 	if json.Unmarshal(preparation.ExecutionPlan, &evidence) != nil {
 		return errors.New("prepared route evidence is invalid")
@@ -461,32 +489,57 @@ func validateVaultTokenAccount(account Account, expectedMint, expectedOwner stri
 	return nil
 }
 
+func requiredLookupTableAddresses(instructions []RouteInstruction) []string {
+	programs := make(map[string]bool, len(instructions))
+	signers := map[string]bool{}
+	for _, instruction := range instructions {
+		programs[instruction.Program] = true
+		for _, account := range instruction.Accounts {
+			signers[account.Address] = signers[account.Address] || account.Signer
+		}
+	}
+	var required []string
+	for _, instruction := range instructions {
+		for _, account := range instruction.Accounts {
+			if !account.Signer && !programs[account.Address] && !signers[account.Address] {
+				required = append(required, account.Address)
+			}
+		}
+	}
+	return canonicalStrings(required)
+}
+
 func (r *Revalidator) verifyLookupTables(ctx context.Context, tables []LookupTable, minimumSlot int64) ([]LookupTable, error) {
-	if len(tables) == 0 {
-		return nil, nil
-	}
-	addresses := make([]string, len(tables))
-	for i := range tables {
-		addresses[i] = tables[i].Address
-	}
-	_, accounts, err := r.rpc.ConfirmedAccounts(ctx, addresses, minimumSlot)
-	if err != nil {
-		return nil, err
-	}
-	for i, account := range accounts {
-		if account.Owner != altProgram || len(account.Data) < 56 || (len(account.Data)-56)%32 != 0 || binary.LittleEndian.Uint32(account.Data[:4]) != 1 || binary.LittleEndian.Uint64(account.Data[4:12]) != ^uint64(0) {
-			return nil, fmt.Errorf("lookup table %s has invalid or deactivated chain data", account.Address)
+	const maximumGetMultipleAccounts = 100
+	for start := 0; start < len(tables); start += maximumGetMultipleAccounts {
+		end := start + maximumGetMultipleAccounts
+		if end > len(tables) {
+			end = len(tables)
 		}
-		chain := make([]string, 0, (len(account.Data)-56)/32)
-		for offset := 56; offset < len(account.Data); offset += 32 {
-			chain = append(chain, encodeBase58(account.Data[offset:offset+32]))
+		addresses := make([]string, end-start)
+		for i := start; i < end; i++ {
+			addresses[i-start] = tables[i].Address
 		}
-		if len(chain) != len(tables[i].Addresses) {
-			return nil, fmt.Errorf("lookup table %s database/chain length mismatch", account.Address)
+		_, accounts, err := r.rpc.ConfirmedAccounts(ctx, addresses, minimumSlot)
+		if err != nil {
+			return nil, err
 		}
-		for j := range chain {
-			if chain[j] != tables[i].Addresses[j] {
-				return nil, fmt.Errorf("lookup table %s database/chain member mismatch", account.Address)
+		for offset, account := range accounts {
+			table := tables[start+offset]
+			if account.Owner != altProgram || len(account.Data) < 56 || (len(account.Data)-56)%32 != 0 || binary.LittleEndian.Uint32(account.Data[:4]) != 1 || binary.LittleEndian.Uint64(account.Data[4:12]) != ^uint64(0) {
+				return nil, fmt.Errorf("lookup table %s has invalid or deactivated chain data", account.Address)
+			}
+			chain := make([]string, 0, (len(account.Data)-56)/32)
+			for offset := 56; offset < len(account.Data); offset += 32 {
+				chain = append(chain, encodeBase58(account.Data[offset:offset+32]))
+			}
+			if len(chain) != len(table.Addresses) {
+				return nil, fmt.Errorf("lookup table %s database/chain length mismatch", account.Address)
+			}
+			for j := range chain {
+				if chain[j] != table.Addresses[j] {
+					return nil, fmt.Errorf("lookup table %s database/chain member mismatch", account.Address)
+				}
 			}
 		}
 	}

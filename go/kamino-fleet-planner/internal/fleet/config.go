@@ -40,6 +40,8 @@ type Config struct {
 	RevalidationComputeLimit           uint64
 	CrossMintEnabled                   bool
 	CrossMintMaxValueLossBPS           uint16
+	CrossMintMaxSlippageBPS            uint16
+	JupiterBuildURL, JupiterAPIKey     string
 	EnabledStableMints                 []string
 	FusedExecute                       bool
 }
@@ -63,6 +65,9 @@ func ConfigFromEnvironment() (Config, error) {
 		RevalidationComputeLimit: uint64Or(os.Getenv("KAMINO_FLEET_COMPUTE_LIMIT"), defaultComputeLimit),
 		CrossMintEnabled:         boolOr(os.Getenv("EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER"), false),
 		CrossMintMaxValueLossBPS: uint16(uint64Or(os.Getenv("EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS"), 50)),
+		CrossMintMaxSlippageBPS:  uint16(uint64Or(os.Getenv("EARN_ROUTER_CROSS_MINT_MAX_SLIPPAGE_BPS"), 50)),
+		JupiterBuildURL:          valueOr(os.Getenv("JUPITER_SWAP_BUILD_URL"), "https://api.jup.ag/swap/v2/build"),
+		JupiterAPIKey:            os.Getenv("JUPITER_API_KEY"),
 		EnabledStableMints:       stableMintsOr(os.Getenv("EARN_ROUTER_ENABLED_STABLE_MINTS")),
 		FusedExecute:             boolOr(os.Getenv("KAMINO_FLEET_FUSED_EXECUTE"), false),
 	}
@@ -71,6 +76,18 @@ func ConfigFromEnvironment() (Config, error) {
 			if _, err := strconv.ParseBool(value); err != nil {
 				return Config{}, fmt.Errorf("%s must be a boolean", name)
 			}
+		}
+	}
+	for _, bound := range []struct {
+		name   string
+		target *uint16
+	}{{"EARN_ROUTER_CROSS_MINT_MAX_VALUE_LOSS_BPS", &config.CrossMintMaxValueLossBPS}, {"EARN_ROUTER_CROSS_MINT_MAX_SLIPPAGE_BPS", &config.CrossMintMaxSlippageBPS}} {
+		if value := os.Getenv(bound.name); value != "" {
+			parsed, parseErr := strconv.ParseUint(value, 10, 16)
+			if parseErr != nil {
+				return Config{}, fmt.Errorf("%s must be an unsigned 16-bit integer", bound.name)
+			}
+			*bound.target = uint16(parsed)
 		}
 	}
 	config.RevalidatorEnabled = boolOr(os.Getenv("KAMINO_FLEET_REVALIDATOR_ENABLED"), config.Mode == ModePublish)
@@ -146,6 +163,17 @@ func (c Config) Validate() error {
 		}
 		if c.CrossMintMaxValueLossBPS == 0 || c.CrossMintMaxValueLossBPS > 1_000 {
 			return fmt.Errorf("cross-mint maximum value loss must be in 1..=1000 bps")
+		}
+		if c.CrossMintMaxSlippageBPS == 0 || c.CrossMintMaxSlippageBPS > 1_000 {
+			return fmt.Errorf("cross-mint maximum slippage must be in 1..=1000 bps")
+		}
+		buildURL := c.JupiterBuildURL
+		if buildURL == "" {
+			buildURL = "https://api.jup.ag/swap/v2/build"
+		}
+		jupiterURL, err := url.Parse(buildURL)
+		if err != nil || jupiterURL.Scheme != "https" || jupiterURL.Host == "" || jupiterURL.User != nil {
+			return fmt.Errorf("JUPITER_SWAP_BUILD_URL must be an absolute HTTPS URL")
 		}
 		if c.DelegatedSigner == "" {
 			return fmt.Errorf("cross-mint planning requires the delegated signer identity")

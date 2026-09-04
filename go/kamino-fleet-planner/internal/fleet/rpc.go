@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -133,6 +134,10 @@ func (c *RPCClient) FeeForMessage(ctx context.Context, message []byte, minimumSl
 }
 
 func (c *RPCClient) SimulateExactTransaction(ctx context.Context, wire []byte, minimumSlot int64) (SimulationEvidence, error) {
+	return c.simulateExactTransaction(ctx, wire, minimumSlot, "confirmed")
+}
+
+func (c *RPCClient) simulateExactTransaction(ctx context.Context, wire []byte, minimumSlot int64, commitment string) (SimulationEvidence, error) {
 	wireHash := sha256.Sum256(wire)
 	var result struct {
 		Context struct {
@@ -143,7 +148,7 @@ func (c *RPCClient) SimulateExactTransaction(ctx context.Context, wire []byte, m
 			UnitsConsumed *uint64         `json:"unitsConsumed"`
 		} `json:"value"`
 	}
-	if err := c.call(ctx, "simulateTransaction", []any{base64.StdEncoding.EncodeToString(wire), map[string]any{"commitment": "confirmed", "encoding": "base64", "sigVerify": false, "replaceRecentBlockhash": false, "minContextSlot": minimumSlot}}, &result); err != nil {
+	if err := c.call(ctx, "simulateTransaction", []any{base64.StdEncoding.EncodeToString(wire), map[string]any{"commitment": commitment, "encoding": "base64", "sigVerify": false, "replaceRecentBlockhash": false, "minContextSlot": minimumSlot}}, &result); err != nil {
 		return SimulationEvidence{}, err
 	}
 	simulation := SimulationEvidence{Slot: result.Context.Slot, WireSHA256: hex.EncodeToString(wireHash[:])}
@@ -158,6 +163,20 @@ func (c *RPCClient) SimulateExactTransaction(ctx context.Context, wire []byte, m
 	return simulation, nil
 }
 
+func (c *RPCClient) BlockHeight(ctx context.Context, commitment string) (int64, error) {
+	var height int64
+	if commitment != "confirmed" && commitment != "finalized" {
+		return 0, errors.New("invalid block-height commitment")
+	}
+	if err := c.call(ctx, "getBlockHeight", []any{map[string]string{"commitment": commitment}}, &height); err != nil {
+		return 0, err
+	}
+	if height <= 0 {
+		return 0, errors.New("block height is unavailable")
+	}
+	return height, nil
+}
+
 func (c *RPCClient) ConfirmedSlot(ctx context.Context) (int64, error) {
 	var slot int64
 	if err := c.call(ctx, "getSlot", []any{map[string]string{"commitment": "confirmed"}}, &slot); err != nil {
@@ -170,6 +189,14 @@ func (c *RPCClient) ConfirmedSlot(ctx context.Context) (int64, error) {
 }
 
 func (c *RPCClient) ConfirmedAccounts(ctx context.Context, addresses []string, minimumSlot int64) (int64, []Account, error) {
+	return c.accounts(ctx, addresses, minimumSlot, "confirmed")
+}
+
+func (c *RPCClient) FinalizedAccounts(ctx context.Context, addresses []string, minimumSlot int64) (int64, []Account, error) {
+	return c.accounts(ctx, addresses, minimumSlot, "finalized")
+}
+
+func (c *RPCClient) accounts(ctx context.Context, addresses []string, minimumSlot int64, commitment string) (int64, []Account, error) {
 	if len(addresses) == 0 || minimumSlot <= 0 {
 		return 0, nil, fmt.Errorf("addresses and minimum slot are required")
 	}
@@ -184,7 +211,7 @@ func (c *RPCClient) ConfirmedAccounts(ctx context.Context, addresses []string, m
 			Data       json.RawMessage `json:"data"`
 		} `json:"value"`
 	}
-	if err := c.call(ctx, "getMultipleAccounts", []any{addresses, map[string]any{"commitment": "confirmed", "encoding": "base64", "minContextSlot": minimumSlot}}, &result); err != nil {
+	if err := c.call(ctx, "getMultipleAccounts", []any{addresses, map[string]any{"commitment": commitment, "encoding": "base64", "minContextSlot": minimumSlot}}, &result); err != nil {
 		return 0, nil, err
 	}
 	if result.Context.Slot < minimumSlot || len(result.Value) != len(addresses) {

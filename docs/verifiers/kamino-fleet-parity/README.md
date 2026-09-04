@@ -3,7 +3,8 @@
 This is the offline acceptance boundary for replacing both Rust services:
 
 - `fleet-opportunity-planner`; and
-- the `same-mint-reserve-swap --fleet-worker revalidate` lane
+- the complete `same-mint-reserve-swap --fleet-worker revalidate` lane,
+  including `same_mint` and `cross_mint_jupiter`
 
 with one Go process. It does not authorize replacing the retained Rust executor,
 confirmer, reconciler, health projector, or ALT provisioner.
@@ -63,9 +64,9 @@ The comparator requires exact equality for:
 
 Separately, the full local verifier requires the durable lifecycle through
 retained execution, confirmation, reconciliation, and completion without
-duplicate capital movement. It also starts side-effect-free role probes for the
-route-kind-filtered Rust cross-mint revalidator and the unfiltered retained
-executor, confirmer, reconciler, and ALT provisioner.
+duplicate capital movement. It also starts side-effect-free role probes for the unfiltered retained
+executor, confirmer, reconciler, and ALT provisioner. It does not start either
+replaced Rust planner/revalidator role.
 
 The Go artifact additionally must prove that exactly one service process owns
 `opportunity_planner` and `route_revalidator` and that neither replaced Rust

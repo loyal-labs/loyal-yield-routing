@@ -42,7 +42,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		revalidator, err := fleet.NewRevalidator(store, fleet.NewRPCClient(config.RPCURL), proxy, fleet.RevalidatorConfig{Owner: config.RevalidationOwner, DelegatedSigner: config.DelegatedSigner, LeaseTTL: config.RevalidationLeaseTTL, ComputeLimit: config.RevalidationComputeLimit, SlotDuration: config.SlotDuration, FusedExecute: config.FusedExecute})
+		revalidator, err := fleet.NewRevalidator(store, fleet.NewRPCClient(config.RPCURL), proxy, fleet.RevalidatorConfig{Owner: config.RevalidationOwner, DelegatedSigner: config.DelegatedSigner, LeaseTTL: config.RevalidationLeaseTTL, ComputeLimit: config.RevalidationComputeLimit, SlotDuration: config.SlotDuration, FusedExecute: config.FusedExecute, CrossMintEnabled: config.CrossMintEnabled, CrossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, JupiterBuildURL: config.JupiterBuildURL, JupiterAPIKey: config.JupiterAPIKey})
 		if err != nil {
 			log.Fatal(err)
 		}
