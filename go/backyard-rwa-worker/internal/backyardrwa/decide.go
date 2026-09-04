@@ -118,7 +118,9 @@ func decideFixed(s Snapshot) Decision {
 			return decision(Hold, "withdrawal_covered", 0)
 		}
 		if s.VoltrStrategyIdleRaw > 0 {
-			return decision(VoltrRestoreIdle, "withdrawal_staged", min(s.VoltrStrategyIdleRaw, shortfall))
+			// Voltr sweeps the strategy custody after the adaptor validates the
+			// requested liquidity. Request and reconcile that full staged balance.
+			return decision(VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw)
 		}
 		remaining := shortfall - s.VoltrStrategyIdleRaw
 		// Fully flatten Kamino before any Squads USDC is staged to Voltr. The
