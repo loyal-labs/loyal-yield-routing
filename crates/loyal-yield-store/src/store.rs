@@ -3233,6 +3233,61 @@ impl NeonSqlClient {
         Ok(event_id)
     }
 
+    pub async fn route_policy_projection_state(
+        &self,
+        cluster: &str,
+        policy_account: &str,
+    ) -> Result<Option<(u64, bool)>, OrchestratorError> {
+        let state = sqlx::query_as::<_, (i64, bool)>(
+            r#"
+            SELECT last_seen_slot, active
+            FROM loyal_yield.route_policies
+            WHERE cluster = $1 AND policy_account = $2
+            "#,
+        )
+        .bind(cluster)
+        .bind(policy_account)
+        .fetch_optional(&self.pool)
+        .await?;
+        state
+            .map(|(slot, active)| {
+                u64::try_from(slot)
+                    .map(|slot| (slot, active))
+                    .map_err(|_| {
+                        OrchestratorError::StoreInvariant(
+                            "route policy projection contains a negative slot".to_owned(),
+                        )
+                    })
+            })
+            .transpose()
+    }
+
+    pub async fn earn_max_policy_set_projection_slot(
+        &self,
+        settings: &str,
+        vault_index: u8,
+    ) -> Result<Option<u64>, OrchestratorError> {
+        let slot = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT observed_slot
+            FROM loyal_yield.earn_max_policy_sets
+            WHERE settings = $1 AND vault_index = $2
+            "#,
+        )
+        .bind(settings)
+        .bind(i16::from(vault_index))
+        .fetch_optional(&self.pool)
+        .await?;
+        slot.map(|slot| {
+            u64::try_from(slot).map_err(|_| {
+                OrchestratorError::StoreInvariant(
+                    "Earn MAX policy projection contains a negative slot".to_owned(),
+                )
+            })
+        })
+        .transpose()
+    }
+
     pub async fn project_earn_max_policy_set(
         &self,
         consumer_name: &str,
