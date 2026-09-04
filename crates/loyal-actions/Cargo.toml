@@ -28,6 +28,10 @@ path = "src/bin/compile_backyard_rwa_policy_catalog.rs"
 name = "compile-backyard-rwa-resolved-policies"
 path = "src/bin/compile_backyard_rwa_resolved_policies.rs"
 
+[[bin]]
+name = "compile-backyard-rwa-maple-exit-policy"
+path = "src/bin/compile_backyard_rwa_maple_exit_policy.rs"
+
 [dependencies]
 base64.workspace = true
 bincode = "1.3"
