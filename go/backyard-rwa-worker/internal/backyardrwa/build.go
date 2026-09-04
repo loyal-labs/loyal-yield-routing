@@ -676,25 +676,40 @@ func isExactKaminoTransaction(instructions []decodedLegacyInstruction) bool {
 		return false
 	}
 	for _, lane := range []string{RouteID, SelectedRouteID} {
+		route, err := runtimeRoute(lane)
+		if err != nil {
+			continue
+		}
 		for _, leg := range []kaminoPrimeUSDCLeg{kaminoLegDeposit, kaminoLegBorrow, kaminoLegRepay, kaminoLegWithdraw} {
-			expected := kaminoPrimeUSDCRefreshInstructionsForRoute(leg, lane)
-			matches := len(expected) == len(instructions)-1
-			for index := range expected {
-				if !matches || instructions[index].program != expected[index].program ||
-					!bytes.Equal(instructions[index].data, expected[index].data) ||
-					len(instructions[index].accounts) != len(expected[index].accounts) {
-					matches = false
-					break
-				}
-				for accountIndex, account := range instructions[index].accounts {
-					if account != expected[index].accounts[accountIndex].key {
+			var topologies [][]string
+			switch leg {
+			case kaminoLegDeposit:
+				topologies = [][]string{{}, {route.Kamino.CollateralReserve, route.Kamino.DebtReserve}}
+			case kaminoLegBorrow, kaminoLegWithdraw:
+				topologies = [][]string{{route.Kamino.CollateralReserve}}
+			case kaminoLegRepay:
+				topologies = [][]string{{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}}
+			}
+			for _, topology := range topologies {
+				expected := kaminoPrimeUSDCRefreshInstructionsForRequest(leg, KaminoPrimeUSDCRequest{RouteLane: lane, ObligationReserves: topology})
+				matches := len(expected) == len(instructions)-1
+				for index := range expected {
+					if !matches || instructions[index].program != expected[index].program ||
+						!bytes.Equal(instructions[index].data, expected[index].data) ||
+						len(instructions[index].accounts) != len(expected[index].accounts) {
 						matches = false
 						break
 					}
+					for accountIndex, account := range instructions[index].accounts {
+						if account != expected[index].accounts[accountIndex].key {
+							matches = false
+							break
+						}
+					}
 				}
-			}
-			if matches && isExactKaminoSquadsInnerForRoute(instructions[3], leg, lane) {
-				return true
+				if matches && isExactKaminoSquadsInnerForRoute(instructions[3], leg, lane) {
+					return true
+				}
 			}
 		}
 	}
