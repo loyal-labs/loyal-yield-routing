@@ -36,6 +36,10 @@ type KaminoPrimeUSDCRequest struct {
 	RecentBlockhash         string
 	LastValidBlockHeight    int64
 	RouteLane               string
+	// ObligationReserves is the exact confirmed deposit-then-borrow reserve
+	// sequence currently present in the obligation. RefreshObligation requires
+	// this live topology; deriving it from the mutation leg breaks re-deposits.
+	ObligationReserves []string
 }
 
 type SignedKaminoTransaction struct {
@@ -121,7 +125,7 @@ func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRe
 	if err != nil {
 		return SignedKaminoTransaction{}, err
 	}
-	preInstructions := kaminoPrimeUSDCRefreshInstructionsForRoute(leg, request.RouteLane)
+	preInstructions := kaminoPrimeUSDCRefreshInstructionsForRequest(leg, request)
 	instructions := append(preInstructions, outer)
 	message, err := compileKaminoLegacyMessage(feePayer, blockhash, instructions)
 	if err != nil {
@@ -374,6 +378,11 @@ func kaminoPrimeUSDCRefreshInstructions(leg kaminoPrimeUSDCLeg) []compiledInstru
 }
 
 func kaminoPrimeUSDCRefreshInstructionsForRoute(leg kaminoPrimeUSDCLeg, lane string) []compiledInstruction {
+	return kaminoPrimeUSDCRefreshInstructionsForRequest(leg, KaminoPrimeUSDCRequest{RouteLane: lane})
+}
+
+func kaminoPrimeUSDCRefreshInstructionsForRequest(leg kaminoPrimeUSDCLeg, request KaminoPrimeUSDCRequest) []compiledInstruction {
+	lane := request.RouteLane
 	if lane == "" {
 		lane = RouteID
 	}
@@ -389,14 +398,36 @@ func kaminoPrimeUSDCRefreshInstructionsForRoute(leg kaminoPrimeUSDCLeg, lane str
 			kaminoMeta(kaminoPrimeUSDCProgram, false, false), kaminoMeta(kaminoScopePrices, false, false),
 		}, data: append([]byte(nil), kaminoRefreshReserve...)}
 	}
-	remaining := []string{}
-	switch leg {
-	case kaminoLegBorrow:
-		remaining = []string{route.Kamino.CollateralReserve}
-	case kaminoLegRepay:
-		remaining = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	case kaminoLegWithdraw:
-		remaining = []string{route.Kamino.CollateralReserve}
+	remaining := request.ObligationReserves
+	if remaining == nil {
+		switch leg {
+		case kaminoLegBorrow:
+			remaining = []string{route.Kamino.CollateralReserve}
+		case kaminoLegRepay:
+			remaining = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+		case kaminoLegWithdraw:
+			remaining = []string{route.Kamino.CollateralReserve}
+		}
+	}
+	allowed := [][]string{{}, {route.Kamino.CollateralReserve}, {route.Kamino.CollateralReserve, route.Kamino.DebtReserve}}
+	valid := false
+	for _, candidate := range allowed {
+		if len(candidate) != len(remaining) {
+			continue
+		}
+		valid = true
+		for i := range candidate {
+			if candidate[i] != remaining[i] {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			break
+		}
+	}
+	if !valid {
+		return nil
 	}
 	obligationAccounts := []accountMeta{kaminoMeta(market, false, false), kaminoMeta(route.Kamino.Obligation, false, true)}
 	for _, reserve := range remaining {

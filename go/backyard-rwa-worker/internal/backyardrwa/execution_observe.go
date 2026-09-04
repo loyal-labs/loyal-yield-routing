@@ -232,6 +232,16 @@ func ObserveConfirmedKaminoExecutionEvidence(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
+		request.ObligationReserves = []string{}
+		if position.CollateralDepositedRaw > 0 {
+			request.ObligationReserves = append(request.ObligationReserves, route.Kamino.CollateralReserve)
+		}
+		if position.DebtRaw > 0 {
+			if position.CollateralDepositedRaw == 0 {
+				return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("Kamino obligation has debt without the pinned collateral reserve")
+			}
+			request.ObligationReserves = append(request.ObligationReserves, route.Kamino.DebtReserve)
+		}
 		source, destination := kaminoLegCustodiesForRoute(leg, route)
 		policy := accountAt(accounts, request.Policy)
 		if policy.Owner != bridgeSquadsProgram || policy.Executable || policy.Lamports == 0 ||
