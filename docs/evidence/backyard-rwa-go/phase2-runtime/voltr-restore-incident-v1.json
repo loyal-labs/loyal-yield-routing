@@ -49,6 +49,21 @@
   "cause": "The existing adaptor validated the requested liquidity, but Voltr swept the complete strategy USDC custody after the adaptor CPI. The outer requested amount was not an actual-transfer bound.",
   "recoveryReason": "finalized_restore_actual_effect_mismatch: requested=1000000 actual=3793417 strategy_swept_to_idle",
   "durableStatus": "manual_recovery",
+  "operatorAuthorization": {
+    "authorized": true,
+    "authorizedAt": "2026-09-03",
+    "source": "explicit 100% authorization in the existing Earn Max Codex thread",
+    "scope": "Publish this finalized incident and retain it as the sole documented Phase 2 cap exception; do not relabel it as reconciled or count it as a successful lifecycle operation."
+  },
+  "exceptionScope": {
+    "operationId": "fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe",
+    "transactionSignature": "46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz",
+    "requestedAmountRaw": "1000000",
+    "actualAmountRaw": "3793417",
+    "ordinaryCapsRemainUnchanged": true,
+    "additionalExceptionsAuthorized": false,
+    "qualifiesAsReconciledLifecycleOperation": false
+  },
   "forwardFixes": [
     {
       "pullRequest": 208,
@@ -65,5 +80,5 @@
       "effect": "Request and reconcile the complete within-cap staged balance that Voltr actually sweeps."
     }
   ],
-  "operatorDecisionRequired": "Do not relabel the original operation as reconciled. Explicit authorization is required either to accept a documented close-out exception or to close this lifecycle as FAIL and start a new bounded proof."
+  "operatorDecision": "The operator authorized publication and retention of this exact finalized incident as the sole documented cap exception. It remains manual_recovery and does not satisfy the successful reconciled-operation set."
 }

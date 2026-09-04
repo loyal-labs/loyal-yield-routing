@@ -51,6 +51,14 @@ fast checks between those runs.
   installed catalog design, deploys of worker/adaptor code committed in this
   repository, and lifecycle transactions up to `1 USDC` per transaction and
   `10 USDC` cumulative.
+- One retrospective incident is authorized for transparent close-out reporting:
+  finalized operation
+  `fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe`
+  requested `1,000,000` raw USDC but Voltr swept `3,793,417` raw USDC from its
+  strategy custody to its idle custody. Exact finalized deltas conserved capital
+  and did not change destination. This does not relabel the durable
+  `manual_recovery` operation, count it as a successful lifecycle operation,
+  authorize another exception, or increase either ordinary value cap.
 - Expiry: when this goal closes.
 - Stop and ask only for a new signer, cluster, program, destination, or route
   outside the installed catalog; an authority change; a cap increase; a
@@ -129,6 +137,14 @@ poststate, and subsequent operation. A typed current-capacity `HOLD` is valid
 only when it is durably recorded and sends no risk-increasing transaction. The
 route reaches full proof only after complete exit, USDC restoration, NAV report,
 and finalized terminal custody reconciliation with no unintended residue.
+
+The authorized incident must be retained separately from the successful
+operation set. Its artifact must match the exact operation, signature, finalized
+slot, requested and actual amounts, conserved account deltas, durable
+`manual_recovery` status, explicit operator authorization, and deployed forward
+fixes. R05 still requires its successful operation set to be reconciled and
+within the ordinary caps; the incident cannot satisfy a missing successful
+restore or any other lifecycle action.
 
 ### R06 — Phase 1 and withdrawal safety remain intact
 
