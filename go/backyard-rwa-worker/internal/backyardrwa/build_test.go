@@ -83,12 +83,12 @@ func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 		t.Fatalf("withdraw adaptor CPI wire drifted: %s", hex.EncodeToString(forwardedWithdraw))
 	}
 	nav, navPolicy, navConstraint, err := bridgeInstruction(bridgeTestRequest(ReportNAV, 0))
-	if err != nil || navPolicy != mustKey(bridgeWithdrawPolicy) || navConstraint != 0 || !bytes.Equal(nav.data[:8], voltrWithdrawDiscriminator) {
-		t.Fatalf("NAV refresh must select the installed zero-value withdrawal constraint: %v", err)
+	if err != nil || navPolicy != mustKey(bridgeNAVPolicy) || navConstraint != 0 || !bytes.Equal(nav.data[:8], voltrDepositDiscriminator) {
+		t.Fatalf("NAV refresh must select its dedicated policy's only constraint: %v", err)
 	}
 	forwardedNAV := forwardedAdaptorWire(t, nav.data)
-	if len(forwardedNAV) != 78 || !bytes.Equal(forwardedNAV[:8], adaptorWithdrawDiscriminator) ||
-		binary.LittleEndian.Uint64(forwardedNAV[8:16]) != 1 || forwardedNAV[16] != 1 ||
+	if len(forwardedNAV) != 78 || !bytes.Equal(forwardedNAV[:8], adaptorDepositDiscriminator) ||
+		binary.LittleEndian.Uint64(forwardedNAV[8:16]) != 0 || forwardedNAV[16] != 1 ||
 		binary.LittleEndian.Uint32(forwardedNAV[17:21]) != 57 || forwardedNAV[21] != 1 {
 		t.Fatalf("NAV adaptor CPI wire drifted: %s", hex.EncodeToString(forwardedNAV))
 	}
@@ -104,15 +104,15 @@ func TestBridgeTransactionSignsExactLegacyWireAndPersistsOnlyAfterSimulation(t *
 	if len(signed.signedWire) <= ed25519.SignatureSize || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:1+ed25519.SignatureSize]) {
 		t.Fatal("legacy wire did not contain a valid signature over its exact message")
 	}
-	if len(signed.signedWire) != 1027 || signed.messageSHA256 != "d2775d72a1773f29b4239e8b94e004c2cbd57aa9dc75a24b40e63c2fb78bbe2f" ||
-		signed.signedWireSHA256 != "92f5203af8c036d20aa24944cf93a00f79bbe85d8d84fc601a8b896a53772176" {
+	if len(signed.signedWire) != 1027 || signed.messageSHA256 != "df2641eb59c1a40d9b1894fb2ba9945d458eb9fdf6270f4827d51a98b6f54910" ||
+		signed.signedWireSHA256 != "d4312ecebf4125d77e9f76d4686cf70ce3957bc9df1b8ea9d43d684cc950566f" {
 		t.Fatalf("ticketed NAV packet fingerprint drifted: bytes=%d message=%s wire=%s", len(signed.signedWire), signed.messageSHA256, signed.signedWireSHA256)
 	}
 	if signed.transactionSignature != encodeBase58(signed.signedWire[1:1+ed25519.SignatureSize]) || len(signed.messageSHA256) != 64 || len(signed.signedWireSHA256) != 64 {
 		t.Fatal("transaction evidence was not bound to exact signed bytes")
 	}
 	// The exact ProgramInteraction Borsh envelope carries the dedicated NAV
-	// withdrawal policy's only constraint.
+	// policy's only constraint.
 	inner, policy, constraints, err := ticketedBridgeInstructions(bridgeTestRequest(ReportNAV, 0))
 	if err != nil {
 		t.Fatal(err)

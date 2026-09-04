@@ -72,9 +72,9 @@ func ticketedBridgeInstructions(request BridgeBuildRequest) ([]compiledInstructi
 func armReportInstruction(action Action, voltrData []byte) (compiledInstruction, error) {
 	operation := byte(0xff)
 	switch action {
-	case VoltrAllocateToSquads:
+	case VoltrAllocateToSquads, ReportNAV:
 		operation = reportTicketDeposit
-	case VoltrRestoreIdle, ReportNAV:
+	case VoltrRestoreIdle:
 		operation = reportTicketWithdraw
 	default:
 		return compiledInstruction{}, fmt.Errorf("action %s cannot arm an adaptor report ticket", action)

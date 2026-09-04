@@ -57,7 +57,7 @@ func TestCapitalAndNAVBuildAtomicArmThenVoltrPayload(t *testing.T) {
 		policy    string
 	}{
 		{VoltrAllocateToSquads, 1_000_000, reportTicketDeposit, bridgeAllocationPolicy},
-		{ReportNAV, 0, reportTicketWithdraw, bridgeWithdrawPolicy},
+		{ReportNAV, 0, reportTicketDeposit, bridgeNAVPolicy},
 		{VoltrRestoreIdle, 1_000_000, reportTicketWithdraw, bridgeWithdrawPolicy},
 	}
 	for _, test := range tests {

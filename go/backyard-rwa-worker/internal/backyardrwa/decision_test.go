@@ -62,6 +62,27 @@ func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 	}
 }
 
+func TestSelectedRouteTerminalNAVMiniCycleUsesOneRawAndDrainsResidue(t *testing.T) {
+	s := base()
+	s.RouteLane = SelectedRouteID
+	s.WithdrawalDemandRaw = 1
+	s.VoltrIdleRaw = 10
+	s.PriorReportedNAVRaw = 9
+	if got := Decide(s); got.Action != VoltrAllocateToSquads || got.AmountRaw != 1 || got.Reason != "terminal_nav_reconciliation_probe" {
+		t.Fatalf("stale terminal NAV did not start the minimum probe: %+v", got)
+	}
+	s.PriorReportedNAVRaw = 0
+	s.SquadsIdleRaw = 1
+	if got := Decide(s); got.Action != StageSquadsToVoltr || got.AmountRaw != 1 || got.Reason != "withdrawal_terminal_residue" {
+		t.Fatalf("terminal probe residue was not staged: %+v", got)
+	}
+	s.SquadsIdleRaw = 0
+	s.VoltrStrategyIdleRaw = 1
+	if got := Decide(s); got.Action != VoltrRestoreIdle || got.AmountRaw != 1 || got.Reason != "withdrawal_staged" {
+		t.Fatalf("terminal probe residue was not restored: %+v", got)
+	}
+}
+
 func TestSelectedRouteNeverRestoresMoreThanActualEffectCap(t *testing.T) {
 	s := base()
 	s.RouteLane = SelectedRouteID
