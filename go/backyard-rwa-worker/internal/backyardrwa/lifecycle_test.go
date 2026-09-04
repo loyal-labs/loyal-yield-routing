@@ -14,7 +14,7 @@ func TestPreBroadcastRecoveryTerminatesWithoutRPCForNonEntryAction(t *testing.T)
 	if err != nil || reason != "prebroadcast_restart_reobserve_required" {
 		t.Fatalf("reason=%q err=%v", reason, err)
 	}
-	if !CanTransition(Built, Failed) || CanTransition(BroadcastIntent, Failed) {
+	if !CanTransition(Built, Failed) || CanTransition(Confirmed, Failed) {
 		t.Fatal("pre-broadcast terminal boundary drifted")
 	}
 }

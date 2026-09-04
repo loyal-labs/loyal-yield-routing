@@ -17,6 +17,15 @@ func TestTransitionsAndRecovery(t *testing.T) {
 	}
 }
 
+func TestExpiredAbsentSubmissionCanTerminateWithoutResend(t *testing.T) {
+	if !CanTransition(BroadcastIntent, Failed) || !CanTransition(Submitted, Failed) {
+		t.Fatal("expired absent submission cannot reach its migration-backed terminal state")
+	}
+	if CanTransition(Confirmed, Failed) || CanTransition(Reconciling, Failed) {
+		t.Fatal("landed operations must not use the expired-absent terminal path")
+	}
+}
+
 func TestNonterminalSetExcludesPersistedHolds(t *testing.T) {
 	for _, status := range []OperationStatus{Decided, Built, Simulated, Signed, BroadcastIntent, Submitted, Confirmed, Reconciling} {
 		if !IsNonterminal(status) {
