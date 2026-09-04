@@ -30,15 +30,32 @@ func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *RPCC
 			return rpc.getVoltrWithdrawalReceiptAccounts(ctx, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
 		},
 		accounts: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
-			for _, candidate := range addresses {
-				if candidate == kaminoPrimeUSDCObligation {
-					return rpc.GetMultipleAccountsWithOptional(ctx, addresses, minSlot, kaminoPrimeUSDCObligation)
-				}
+			if optional := optionalLifecycleObligation(addresses); optional != "" {
+				return rpc.GetMultipleAccountsWithOptional(ctx, addresses, minSlot, optional)
 			}
 			return rpc.GetMultipleAccounts(ctx, addresses, minSlot)
 		},
 		now: func() time.Time { return time.Now().UTC() },
 	})
+}
+
+// A full K-Lend withdrawal closes its obligation account. Prefer the selected
+// Phase 2 obligation when both route families are observed so terminal custody
+// swaps can continue after the close; retain the Phase 1 fallback for its own
+// zero-position lifecycle.
+func optionalLifecycleObligation(addresses []string) string {
+	selected := mapleSyrupUSDCUSDC.Kamino.Obligation
+	for _, candidate := range addresses {
+		if candidate == selected {
+			return selected
+		}
+	}
+	for _, candidate := range addresses {
+		if candidate == kaminoPrimeUSDCObligation {
+			return kaminoPrimeUSDCObligation
+		}
+	}
+	return ""
 }
 
 type routeObservationRuntime struct {
