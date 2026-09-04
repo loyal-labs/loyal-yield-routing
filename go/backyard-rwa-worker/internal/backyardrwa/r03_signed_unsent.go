@@ -1,8 +1,8 @@
 package backyardrwa
 
 // This file is deliberately a lower-level evidence boundary.  It accepts only
-// wires produced by the canonical Go builders; it never builds a caller-
-// supplied instruction and it has no send/broadcast path.
+// wires produced by the reviewed verification builders; it never builds a
+// caller-supplied instruction and it has no send/broadcast path.
 
 import (
 	"context"
@@ -59,16 +59,18 @@ type R03BundleResult struct {
 }
 
 type r03HeliusResult struct {
-	Kind               string `json:"kind"`
-	Summary            string `json:"summary"`
-	ContextSlot        int64  `json:"contextSlot"`
-	TransactionResults []struct {
-		Err                         any    `json:"err"`
-		CapturedPre                 bool   `json:"capturedPre"`
-		CapturedPost                bool   `json:"capturedPost"`
-		PreExecutionAccountsSha256  string `json:"preExecutionAccountsSha256"`
-		PostExecutionAccountsSha256 string `json:"postExecutionAccountsSha256"`
-	} `json:"transactionResults"`
+	Kind               string                 `json:"kind"`
+	Summary            string                 `json:"summary"`
+	ContextSlot        int64                  `json:"contextSlot"`
+	TransactionResults []r03TransactionResult `json:"transactionResults"`
+}
+
+type r03TransactionResult struct {
+	Err                         any    `json:"err"`
+	CapturedPre                 bool   `json:"capturedPre"`
+	CapturedPost                bool   `json:"capturedPost"`
+	PreExecutionAccountsSha256  string `json:"preExecutionAccountsSha256"`
+	PostExecutionAccountsSha256 string `json:"postExecutionAccountsSha256"`
 }
 
 func (p R03LifecyclePlan) validate() error {
@@ -275,9 +277,31 @@ func (c *RPCClient) simulateR03Bundle(ctx context.Context, wires [][]byte, addre
 		"skipSigVerify": false, "simulationBank": map[string]any{"commitment": map[string]string{"commitment": "confirmed"}},
 		"transactionEncoding": "base64", "replaceRecentBlockhash": false,
 	}}
-	var provider r03HeliusResult
-	if err := c.call(ctx, "simulateBundle", params, &provider); err != nil {
+	var response struct {
+		Context struct {
+			Slot int64 `json:"slot"`
+		} `json:"context"`
+		Value struct {
+			Summary            any `json:"summary"`
+			TransactionResults []struct {
+				Err                   any             `json:"err"`
+				PreExecutionAccounts  json.RawMessage `json:"preExecutionAccounts"`
+				PostExecutionAccounts json.RawMessage `json:"postExecutionAccounts"`
+			} `json:"transactionResults"`
+		} `json:"value"`
+	}
+	if err := c.call(ctx, "simulateBundle", params, &response); err != nil {
 		return r03HeliusResult{}, err
+	}
+	provider := r03HeliusResult{Kind: "result", Summary: fmt.Sprint(response.Value.Summary), ContextSlot: response.Context.Slot}
+	for _, row := range response.Value.TransactionResults {
+		preDigest := sha256.Sum256(row.PreExecutionAccounts)
+		postDigest := sha256.Sum256(row.PostExecutionAccounts)
+		provider.TransactionResults = append(provider.TransactionResults, r03TransactionResult{
+			Err: row.Err, CapturedPre: len(row.PreExecutionAccounts) > 0 && string(row.PreExecutionAccounts) != "null",
+			CapturedPost:               len(row.PostExecutionAccounts) > 0 && string(row.PostExecutionAccounts) != "null",
+			PreExecutionAccountsSha256: hex.EncodeToString(preDigest[:]), PostExecutionAccountsSha256: hex.EncodeToString(postDigest[:]),
+		})
 	}
 	if provider.Kind != "result" || provider.Summary != "succeeded" || len(provider.TransactionResults) != len(wires) {
 		return provider, fmt.Errorf("Helius rejected the exact R03 signed-unsent bundle: summary=%q transactions=%d", provider.Summary, len(provider.TransactionResults))
