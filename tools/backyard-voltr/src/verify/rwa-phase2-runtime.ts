@@ -11,6 +11,7 @@ const LIFECYCLE = "docs/evidence/backyard-rwa-go/phase2-runtime/lifecycle-v1.jso
 const SIGNED_UNSENT = "docs/evidence/backyard-rwa-go/phase2-runtime/signed-unsent-v1.json";
 const SELECTION = "docs/evidence/backyard-rwa-go/phase2-runtime/selection-v1.json";
 const CURRENT_ROLLOVERS = "docs/evidence/backyard-rwa-go/phase2-runtime/current-policy-rollovers-v1.json";
+const RESTORE_INCIDENT = "docs/evidence/backyard-rwa-go/phase2-runtime/voltr-restore-incident-v1.json";
 const COMPILED = "docs/evidence/backyard-rwa-go/policy-compiled-v1.json";
 const COMMAND = "bun run --cwd tools/backyard-voltr verify:rwa-phase2-runtime";
 
@@ -209,10 +210,33 @@ function main() {
       typeof row.packetBytes === "number" && row.packetBytes <= 1232 && row.simulationPassed === true);
 
   const lifecycle = json(LIFECYCLE);
+  const restoreIncident = json(RESTORE_INCIDENT);
   const deployment = lifecycle?.deployment !== null && typeof lifecycle?.deployment === "object" && !Array.isArray(lifecycle?.deployment) ? lifecycle.deployment as Json : null;
   const terminal = lifecycle?.terminal !== null && typeof lifecycle?.terminal === "object" && !Array.isArray(lifecycle?.terminal) ? lifecycle.terminal as Json : null;
   const operations = arrayOfObjects(lifecycle?.operations);
   const moneyActions = new Set(["VOLTR_ALLOCATE_TO_SQUADS", "SWAP_STABLE_TO_COLLATERAL_STEP", "OPEN_ROUTE_STEP", "DELEVER_ROUTE_STEP", "SWAP_COLLATERAL_TO_STABLE_STEP", "STAGE_SQUADS_TO_VOLTR", "VOLTR_RESTORE_IDLE"]);
+  const incidentEffects = arrayOfObjects(restoreIncident?.effects);
+  const incidentAuthorization = restoreIncident?.operatorAuthorization !== null && typeof restoreIncident?.operatorAuthorization === "object" && !Array.isArray(restoreIncident?.operatorAuthorization)
+    ? restoreIncident.operatorAuthorization as Json : null;
+  const incidentScope = restoreIncident?.exceptionScope !== null && typeof restoreIncident?.exceptionScope === "object" && !Array.isArray(restoreIncident?.exceptionScope)
+    ? restoreIncident.exceptionScope as Json : null;
+  const incidentExact = restoreIncident?.schema === "loyal-backyard-rwa-phase2-voltr-restore-incident/v1" &&
+    restoreIncident?.verdict === "MANUAL_RECOVERY_REQUIRED" && restoreIncident?.commitment === "finalized" &&
+    restoreIncident?.operationId === "fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe" &&
+    restoreIncident?.transactionSignature === "46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz" &&
+    restoreIncident?.finalizedSlot === 444157954 && restoreIncident?.requestedAmountRaw === "1000000" &&
+    restoreIncident?.actualAmountRaw === "3793417" && restoreIncident?.durableStatus === "manual_recovery" &&
+    incidentAuthorization?.authorized === true && incidentScope?.ordinaryCapsRemainUnchanged === true &&
+    incidentScope?.additionalExceptionsAuthorized === false && incidentScope?.qualifiesAsReconciledLifecycleOperation === false &&
+    incidentEffects.length === 3 &&
+    incidentEffects.some((effect) => effect.role === "voltr-idle-usdc" && effect.deltaRaw === "3793417") &&
+    incidentEffects.some((effect) => effect.role === "voltr-strategy-usdc" && effect.deltaRaw === "-3793417") &&
+    incidentEffects.some((effect) => effect.role === "squads-usdc" && effect.deltaRaw === "0") &&
+    (restoreIncident?.conservation as Json | undefined)?.usdcDeltaRaw === "0" &&
+    (restoreIncident?.conservation as Json | undefined)?.capitalLost === false &&
+    (restoreIncident?.conservation as Json | undefined)?.destinationChanged === false &&
+    arrayOfObjects(restoreIncident?.forwardFixes).some((fix) => fix.pullRequest === 208 && fix.mergeCommit === "cbab052f62b89996f68e69dec0a0c6624fa40dce") &&
+    arrayOfObjects(restoreIncident?.forwardFixes).some((fix) => fix.pullRequest === 209 && fix.mergeCommit === "4b86f605964fac400c1b75ba01020aa62c1a6ccc");
   const requiredActions = ["VOLTR_ALLOCATE_TO_SQUADS", "SWAP_STABLE_TO_COLLATERAL_STEP", "OPEN_ROUTE_STEP", "DELEVER_ROUTE_STEP", "SWAP_COLLATERAL_TO_STABLE_STEP", "STAGE_SQUADS_TO_VOLTR", "VOLTR_RESTORE_IDLE", "REPORT_NAV"];
   const operationRowsExact = operations.length >= requiredActions.length && requiredActions.every((action) => operations.some((row) => row.action === action)) &&
     operations.every((row) => typeof row.operationId === "string" && row.strategyKey === selectedLane && row.status === "reconciled" &&
@@ -235,7 +259,7 @@ function main() {
     lifecycle?.terminalReconciliation === "finalized" && lifecycle?.selectedLane === selectedLane && lifecycle?.goOriginated === true &&
     lifecycle?.withdrawalPreemptedNewRisk === true && lifecycle?.cumulativeAuthorizedUSDCraw !== undefined &&
     /^\d+$/.test(String(lifecycle.cumulativeAuthorizedUSDCraw)) && BigInt(String(lifecycle.cumulativeAuthorizedUSDCraw)) <= 10_000_000n &&
-    deploymentExact && operationRowsExact && monotonic && terminalExact;
+    deploymentExact && operationRowsExact && monotonic && terminalExact && incidentExact;
 
   const checks: Check[] = [
     check(
@@ -278,7 +302,7 @@ function main() {
       "R05_live_lifecycle",
       "One bounded Go-originated selected-lane lifecycle is durably reconciled through finalized terminal custody.",
       liveComplete,
-      { path: LIFECYCLE, sha256: sha256(LIFECYCLE), selectedLane, operationCount: operations.length, terminal },
+      { path: LIFECYCLE, sha256: sha256(LIFECYCLE), restoreIncident: RESTORE_INCIDENT, restoreIncidentSha256: sha256(RESTORE_INCIDENT), selectedLane, operationCount: operations.length, terminal },
       "Complete the bounded deployed-worker lifecycle and independently retain its finalized operation and custody reconciliation.",
     ),
     check(

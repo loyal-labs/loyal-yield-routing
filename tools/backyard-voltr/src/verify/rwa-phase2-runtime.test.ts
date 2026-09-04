@@ -14,6 +14,7 @@ describe("Backyard RWA Phase 2 runtime activation", () => {
   const selection = readJson("docs/evidence/backyard-rwa-go/phase2-runtime/selection-v1.json");
   const compiled = readJson("docs/evidence/backyard-rwa-go/policy-compiled-v1.json");
   const rollovers = readJson("docs/evidence/backyard-rwa-go/phase2-runtime/current-policy-rollovers-v1.json");
+  const restoreIncident = readJson("docs/evidence/backyard-rwa-go/phase2-runtime/voltr-restore-incident-v1.json");
 
   test("freezes exactly PRIME plus the selected Maple representative", () => {
     const activation = manifest.runtimeActivation;
@@ -53,5 +54,24 @@ describe("Backyard RWA Phase 2 runtime activation", () => {
     }
     expect(rollovers.settings.policySeed).toBe("139");
     expect(rollovers.commitment).toBe("finalized");
+  });
+
+  test("keeps the sole restore exception exact and outside reconciled lifecycle operations", () => {
+    expect(restoreIncident.operationId).toBe("fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe");
+    expect(restoreIncident.transactionSignature).toBe("46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz");
+    expect(restoreIncident.requestedAmountRaw).toBe("1000000");
+    expect(restoreIncident.actualAmountRaw).toBe("3793417");
+    expect(restoreIncident.durableStatus).toBe("manual_recovery");
+    expect(restoreIncident.conservation).toEqual({
+      usdcDeltaRaw: "0",
+      capitalLost: false,
+      destinationChanged: false,
+    });
+    expect(restoreIncident.operatorAuthorization.authorized).toBe(true);
+    expect(restoreIncident.exceptionScope).toMatchObject({
+      ordinaryCapsRemainUnchanged: true,
+      additionalExceptionsAuthorized: false,
+      qualifiesAsReconciledLifecycleOperation: false,
+    });
   });
 });
