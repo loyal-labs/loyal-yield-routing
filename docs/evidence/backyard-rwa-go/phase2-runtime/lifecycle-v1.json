@@ -1,0 +1,43 @@
+{
+  "schema": "loyal-backyard-rwa-phase2-runtime-lifecycle/v1",
+  "verdict": "INCOMPLETE",
+  "cluster": "mainnet-beta",
+  "broadcast": true,
+  "selectedLane": "Maple/syrupUSDC/USDC",
+  "goOriginated": true,
+  "deployment": {
+    "serviceId": "srv-dabkt0ojo6nc7381o9fg",
+    "deployId": "dep-dad73rrncjis7388r9sg",
+    "sourceCommit": "4f5445ee068f577b4eec0cf8b931ac421db60c2b",
+    "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b",
+    "imageDigest": "sha256:ef1fa68f816dca6793ab4b09e399e2e55c3a72bd1e5a644922c3b7098e5079b3",
+    "status": "live",
+    "oneWriter": true,
+    "priorLeaseExpired": true,
+    "leaseOwner": "render:srv-dabkt0ojo6nc7381o9fg:sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b",
+    "fencingToken": 15069,
+    "observedAt": "2026-09-04T07:24:04Z"
+  },
+  "operations": [],
+  "terminalReconciliation": null,
+  "terminal": null,
+  "phaseOneRegressionPassed": null,
+  "withdrawalPreemptedNewRisk": true,
+  "cumulativeAuthorizedUSDCraw": null,
+  "promotedChecks": [],
+  "firstIncompleteCondition": "Retain the exact selected-lane lifecycle operation set with truthful per-operation deployment and lease provenance, then calculate its ordinary cumulative authorized value before terminal finalization.",
+  "operationalReadback": {
+    "commitment": "confirmed",
+    "observedAt": "2026-09-04T07:24:04Z",
+    "orphanedPrebroadcastOperationStatus": "failed",
+    "terminalHoldOperationId": "5d334a51099e8d0cb3e160ff140a4a8830cae6e5227b631863fac461742c26ac",
+    "terminalHoldStatus": "held",
+    "terminalHoldReason": "withdrawal_covered_terminal_restore_accepted",
+    "squadsUSDCraw": "0",
+    "voltrStrategyUSDCraw": "0",
+    "voltrIdleUSDCraw": "3793417",
+    "computedStrategyNavRaw": "0",
+    "reportedNavRaw": "2793417",
+    "navFresh": false
+  }
+}
