@@ -144,3 +144,16 @@ func TestUnwindWithdrawsOnlyConservativeCollateralExcess(t *testing.T) {
 		t.Fatalf("leg=%d wire=%d effect=%d err=%v", leg, wire, effect, err)
 	}
 }
+
+func TestSelectedUnwindCapsActualCollateralEffect(t *testing.T) {
+	position := KaminoPosition{CollateralDepositedRaw: 3_710_573, RedeemablePrimeRaw: 3_710_573, DebtRaw: 590_720}
+	binary.LittleEndian.PutUint64(position.CollateralPriceSF[:8], uint64(1)<<60)
+	binary.LittleEndian.PutUint64(position.DebtPriceSF[:8], uint64(1)<<60)
+	leg, receipt, collateral, err := selectKaminoLeg(
+		Decision{Action: DeleverRouteStep, Reason: "withdrawal_release_repayment_collateral", AmountRaw: 1, StrategyKey: SelectedRouteID},
+		position,
+	)
+	if err != nil || leg != kaminoLegWithdraw || receipt != 1_000_000 || collateral != 1_000_000 {
+		t.Fatalf("selected withdrawal was not capped by its actual collateral effect: leg=%d receipt=%d collateral=%d err=%v", leg, receipt, collateral, err)
+	}
+}
