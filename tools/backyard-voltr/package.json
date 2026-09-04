@@ -19,6 +19,7 @@
     "verify:rwa-multiply-custom-lifecycle": "bun src/verify/rwa-multiply-custom-lifecycle.ts",
     "verify:rwa-phase2-runtime": "bun src/verify/rwa-phase2-runtime.ts",
     "select:rwa-phase2-runtime": "bun src/verify/select-rwa-phase2-runtime.ts",
+    "evidence:rwa-phase2-current-rollovers": "bun src/verify/generate-rwa-phase2-current-rollovers.ts",
     "evidence:rwa-phase1-lifecycle": "bun src/verify/generate-rwa-phase1-lifecycle-evidence.ts",
     "verify:rwa-multiply-adaptor-simulation": "bun src/verify/rwa-multiply-adaptor-simulation.ts",
     "activate:rwa-multiply-squads-prerequisites": "bun src/activation/rwa-multiply-squads-prerequisites.ts",
