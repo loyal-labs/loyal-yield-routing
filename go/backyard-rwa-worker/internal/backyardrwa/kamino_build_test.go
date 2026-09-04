@@ -96,8 +96,14 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 }
 
 func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) {
-	request := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
-	request.RouteLane = SelectedRouteID
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	route, err := runtimeRoute(SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
@@ -108,6 +114,19 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 		encodeBase58(refresh[2].accounts[2].key[:]) != route.Kamino.CollateralReserve ||
 		encodeBase58(refresh[2].accounts[3].key[:]) != route.Kamino.DebtReserve {
 		t.Fatal("re-deposit refresh did not carry the confirmed collateral/debt reserve topology")
+	}
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
+	signed, err := buildAndSignKaminoPrimeUSDCTransactionForDelegate(request, key, delegate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := signed.BuildResult(123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := result.validateForDelegate(delegate); err != nil {
+		t.Fatalf("confirmed-topology re-deposit wire was rejected: %v", err)
 	}
 	request.ObligationReserves = []string{route.Kamino.DebtReserve}
 	if got := kaminoPrimeUSDCRefreshInstructionsForRequest(kaminoLegDeposit, request); got != nil {
