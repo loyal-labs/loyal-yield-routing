@@ -723,6 +723,9 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, build 
 	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
 		return err
 	}
+	if err := d.bindPhase3WireTx(ctx, tx, operationID, build.SignedWireSHA256); err != nil {
+		return err
+	}
 	result, err := tx.Exec(ctx, PersistSignedUpdate, operationID, build.MessageSHA256, build.SignedWire,
 		build.SignedWireSHA256, build.TransactionSignature, build.RecentBlockhash, build.LastValidBlockHeight)
 	if err != nil {
@@ -741,6 +744,9 @@ func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
+		return err
+	}
+	if err := d.authorizePhase3SendTx(ctx, tx, operationID); err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx, PersistBroadcastIntentUpdate, operationID)

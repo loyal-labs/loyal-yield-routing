@@ -18,6 +18,7 @@
     "verify:four-market": "bun src/cli.ts verify four-market --commitment confirmed --evidence ../../docs/evidence/backyard-voltr-four-market/confirmed-lifecycle-v1.json",
     "verify:rwa-multiply-custom-lifecycle": "bun src/verify/rwa-multiply-custom-lifecycle.ts",
     "verify:rwa-phase2-runtime": "bun src/verify/rwa-phase2-runtime.ts",
+    "verify:rwa-phase3-family-activation": "bun src/verify/rwa-phase3-family-activation.ts",
     "select:rwa-phase2-runtime": "bun src/verify/select-rwa-phase2-runtime.ts",
     "evidence:rwa-phase2-current-rollovers": "bun src/verify/generate-rwa-phase2-current-rollovers.ts",
     "evidence:rwa-phase2-lifecycle-closeout": "bun src/verify/generate-rwa-phase2-lifecycle-closeout.ts",

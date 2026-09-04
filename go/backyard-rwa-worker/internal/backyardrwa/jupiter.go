@@ -434,6 +434,9 @@ func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc
 	if _, err := DecodeExpectedEffects(effects); err != nil {
 		return err
 	}
+	if err := database.AuthorizePhase3Build(ctx, operationID, evidence.Request, effects); err != nil {
+		return err
+	}
 	signer, err := loadPinnedPolicySigner()
 	if err != nil {
 		return err

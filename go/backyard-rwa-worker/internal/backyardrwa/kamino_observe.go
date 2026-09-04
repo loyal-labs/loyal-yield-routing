@@ -54,6 +54,8 @@ type KaminoPosition struct {
 	RedeemablePrimeRaw       uint64
 	CollateralPriceSF        [16]byte
 	DebtPriceSF              [16]byte
+	CollateralDecimals       uint8
+	DebtDecimals             uint8
 	LiquidationThresholdBPS  int64
 	EntryCapacityRaw         uint64
 	BorrowUtilizationBlocked bool
@@ -135,6 +137,7 @@ func (c *RPCClient) observeKaminoPrimeUSDC(ctx context.Context, config KaminoObs
 			CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: obligation.debtRaw,
 			RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF,
 			DebtPriceSF: debt.marketPriceSF, Oracles: oracles,
+			CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals,
 			LiquidationThresholdBPS:  int64(collateral.liquidationThresholdPct) * 100,
 			EntryCapacityRaw:         entryCapacityRaw,
 			BorrowUtilizationBlocked: borrowUtilizationBlocked,
@@ -154,6 +157,7 @@ type decodedKaminoReserve struct {
 	refreshedSlot           int64
 	stale, priceStatus      byte
 	marketPriceSF           [16]byte
+	mintDecimals            uint8
 	oracles                 []string
 	totalLiquiditySF        *big.Int
 	collateralMintSupply    uint64
@@ -219,6 +223,11 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 	}
 	var price [16]byte
 	copy(price[:], account.Data[248:264])
+	// ReserveLiquidity.mintDecimals is a u64 after marketPriceLastUpdatedTs.
+	decimals := binary.LittleEndian.Uint64(account.Data[272:280])
+	if decimals > 18 {
+		return decodedKaminoReserve{}, fmt.Errorf("Kamino mint decimals exceed supported scale")
+	}
 	// These offsets are derived from the pinned KLend 8624-byte Reserve layout:
 	// ReserveConfig begins at 4856 and TokenInfo at 5032. Offset 645 is the
 	// reviewed u8 utilization borrowing gate; the oracle keys below are the
@@ -241,6 +250,7 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 	return decodedKaminoReserve{
 		refreshedSlot: int64(binary.LittleEndian.Uint64(account.Data[16:24])), stale: account.Data[24],
 		priceStatus: account.Data[25], marketPriceSF: price, oracles: oracles,
+		mintDecimals:     uint8(decimals),
 		totalLiquiditySF: totalLiquidity, collateralMintSupply: binary.LittleEndian.Uint64(account.Data[2592:2600]),
 		liquidationThresholdPct: account.Data[kaminoReserveConfigOffset+17],
 		depositLimitRaw:         binary.LittleEndian.Uint64(account.Data[kaminoReserveConfigOffset+160 : kaminoReserveConfigOffset+168]),
@@ -263,7 +273,7 @@ func entryCapacityDebtRaw(collateral, debt decodedKaminoReserve) (uint64, error)
 		return 0, nil
 	}
 	remainingCollateral := collateral.depositLimitRaw - depositedRaw
-	remainingCollateralValue, err := valueInDebtRaw(remainingCollateral, collateral.marketPriceSF, debt.marketPriceSF, false)
+	remainingCollateralValue, err := valueBetweenTokenRaw(remainingCollateral, collateral.mintDecimals, debt.mintDecimals, collateral.marketPriceSF, debt.marketPriceSF, false)
 	if err != nil {
 		return 0, err
 	}
@@ -392,15 +402,17 @@ func (p KaminoPosition) targetLTVBorrowRaw() (uint64, error) {
 	if collateralPrice.Sign() <= 0 || debtPrice.Sign() <= 0 {
 		return 0, fmt.Errorf("Kamino market price is zero")
 	}
-	// Both fixed route mints have six decimals. Values remain in KLend's
-	// 60-bit scaled-fraction domain until the final division, matching the
-	// existing Rust fleet worker's target-LTV calculation.
+	if p.CollateralDecimals > 18 || p.DebtDecimals > 18 {
+		return 0, fmt.Errorf("Kamino mint decimals exceed supported scale")
+	}
+	// Preserve the existing conservative KLend scaled-fraction rounding at
+	// each step, replacing only the former implicit six-decimal scales.
 	valueSF := new(big.Int).Mul(new(big.Int).SetUint64(p.RedeemablePrimeRaw), collateralPrice)
-	valueSF.Div(valueSF, big.NewInt(1_000_000))
+	valueSF.Div(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(p.CollateralDecimals)), nil))
 	valueSF.Mul(valueSF, big.NewInt(TargetLTVBPS))
 	valueSF.Div(valueSF, big.NewInt(10_000))
-	raw := valueSF.Mul(valueSF, big.NewInt(1_000_000))
-	raw.Div(raw, debtPrice)
+	valueSF.Mul(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(p.DebtDecimals)), nil))
+	raw := valueSF.Div(valueSF, debtPrice)
 	if !raw.IsUint64() || raw.Sign() <= 0 {
 		return 0, fmt.Errorf("Kamino target-LTV borrow is outside u64")
 	}

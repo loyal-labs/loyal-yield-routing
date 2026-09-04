@@ -9,6 +9,30 @@ import (
 	"testing"
 )
 
+func TestCrossDecimalValuationUsesPricesAndConservativeRounding(t *testing.T) {
+	var one, two [16]byte
+	binary.LittleEndian.PutUint64(one[:8], uint64(1)<<60)
+	binary.LittleEndian.PutUint64(two[:8], uint64(2)<<60)
+	for _, tc := range []struct {
+		raw          uint64
+		from, to     uint8
+		price, quote [16]byte
+		liability    bool
+		want         uint64
+	}{
+		{1_000_000_000, 9, 6, one, one, false, 1_000_000},
+		{1_000_000, 6, 9, one, one, false, 1_000_000_000},
+		{1_000_000_000, 9, 6, one, two, false, 500_000},
+		{1, 9, 6, one, one, false, 0},
+		{1, 9, 6, one, one, true, 1},
+	} {
+		got, err := valueBetweenTokenRaw(tc.raw, tc.from, tc.to, tc.price, tc.quote, tc.liability)
+		if err != nil || got != tc.want {
+			t.Fatalf("cross-decimal value: got %d, want %d, err %v", got, tc.want, err)
+		}
+	}
+}
+
 func tokenAccountFixture(t *testing.T, address, mint, authority string, raw uint64) ConfirmedAccount {
 	t.Helper()
 	mintKey, err := decodeBase58PublicKey(mint)

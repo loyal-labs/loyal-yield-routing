@@ -1,0 +1,184 @@
+package backyardrwa
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+)
+
+type phase3OperationAuthorization struct {
+	GoalID           string `json:"goalId"`
+	IntentSHA256     string `json:"intentSha256"`
+	SignedWireSHA256 string `json:"signedWireSha256,omitempty"`
+}
+
+// Phase3IntentDigest binds the exact production request and expected effects,
+// including blockhash, maximum amounts, account graph and policy identities.
+// A rebuilt request needs new admission; it cannot inherit another wire's cap.
+func Phase3IntentDigest(request any, effects []byte) (string, error) {
+	if !json.Valid(effects) {
+		return "", budgetHold("invalid_intent_effects")
+	}
+	encoded, err := json.Marshal(struct {
+		Request any             `json:"request"`
+		Effects json.RawMessage `json:"effects"`
+	}{request, json.RawMessage(effects)})
+	if err != nil {
+		return "", fmt.Errorf("encode budget intent: %w", err)
+	}
+	return sha256Bytes(encoded), nil
+}
+
+// The route lock is the same lock used by RecordDecision, not a second lease
+// or table. Callers must hold it until their authorization/write commits.
+func (d *Database) readPhase3BudgetTx(ctx context.Context, tx pgx.Tx, operationID string) (Phase3Budget, phase3OperationAuthorization, error) {
+	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
+		return Phase3Budget{}, phase3OperationAuthorization{}, err
+	}
+	var budgetBytes, authBytes []byte
+	err := tx.QueryRow(ctx, `SELECT COALESCE(route.state->'phase3','null'::jsonb), COALESCE(operation.expected_effects->'phase3','null'::jsonb)
+		FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key=operation.route_key
+		WHERE operation.operation_id=$1`, operationID).Scan(&budgetBytes, &authBytes)
+	if err != nil {
+		return Phase3Budget{}, phase3OperationAuthorization{}, err
+	}
+	var budget Phase3Budget
+	var auth phase3OperationAuthorization
+	if json.Unmarshal(budgetBytes, &budget) != nil || json.Unmarshal(authBytes, &auth) != nil {
+		return budget, auth, budgetHold("invalid_durable_budget")
+	}
+	if err := budget.validate(); err != nil {
+		return budget, auth, err
+	}
+	return budget, auth, nil
+}
+
+func (d *Database) writePhase3BudgetTx(ctx context.Context, tx pgx.Tx, operationID string, budget Phase3Budget, auth phase3OperationAuthorization) error {
+	budgetBytes, err := json.Marshal(budget)
+	if err != nil {
+		return err
+	}
+	authBytes, err := json.Marshal(auth)
+	if err != nil {
+		return err
+	}
+	lease, err := d.currentLease()
+	if err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(jsonb_set(state,'{phase3}',$4::jsonb,true),'{generation}',to_jsonb(state_version+1),true),state_version=state_version+1,updated_at=clock_timestamp()
+		WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`, lease.RouteKey, lease.Owner, lease.FencingToken, string(budgetBytes))
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrRouteLeaseLost
+	}
+	result, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=jsonb_set(expected_effects,'{phase3}',$2::jsonb,true),updated_at=clock_timestamp() WHERE operation_id=$1`, operationID, string(authBytes))
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("budget operation disappeared")
+	}
+	return nil
+}
+
+// ReservePhase3 persists both sides of admission atomically. A producer must
+// derive r from fresh, checked executable debits/fees and the complete exit
+// graph. Missing persisted goal state is a HOLD, never an implicit reset.
+func (d *Database) ReservePhase3(ctx context.Context, r BudgetReservation) error {
+	if _, err := d.currentLease(); err != nil {
+		return err
+	}
+	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, r.OperationID)
+	if err != nil {
+		return err
+	}
+	var status string
+	if err = tx.QueryRow(ctx, `SELECT status FROM loyal_yield.multiply_operations WHERE operation_id=$1`, r.OperationID).Scan(&status); err != nil {
+		return err
+	}
+	if status != string(Decided) {
+		return budgetHold("admission_after_construction")
+	}
+	if auth.GoalID != "" && (auth.GoalID != Phase3GoalID || auth.IntentSHA256 != r.IntentSHA256) {
+		return budgetHold("reservation_identity_mismatch")
+	}
+	if err = budget.Admit(r); err != nil {
+		return err
+	}
+	auth = phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: r.IntentSHA256}
+	if err = d.writePhase3BudgetTx(ctx, tx, r.OperationID, budget, auth); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// AuthorizePhase3Build runs before loading the operational signer. Every
+// production bridge/Kamino/Jupiter builder uses this gate, including reports.
+func (d *Database) AuthorizePhase3Build(ctx context.Context, operationID string, request any, effects []byte) error {
+	intent, err := Phase3IntentDigest(request, effects)
+	if err != nil {
+		return err
+	}
+	if _, err = d.currentLease(); err != nil {
+		return err
+	}
+	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
+	if err != nil {
+		return err
+	}
+	if auth.GoalID != Phase3GoalID || auth.IntentSHA256 != intent {
+		return budgetHold("unreserved_build_intent")
+	}
+	if err = budget.AuthorizeIntent(operationID, intent); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (d *Database) bindPhase3WireTx(ctx context.Context, tx pgx.Tx, operationID, wireSHA256 string) error {
+	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
+	if err != nil {
+		return err
+	}
+	if auth.GoalID != Phase3GoalID || !sha256Pattern.MatchString(wireSHA256) {
+		return budgetHold("unreserved_signed_wire")
+	}
+	if err = budget.AuthorizeIntent(operationID, auth.IntentSHA256); err != nil {
+		return err
+	}
+	if auth.SignedWireSHA256 != "" && auth.SignedWireSHA256 != wireSHA256 {
+		return budgetHold("signed_wire_reservation_mismatch")
+	}
+	auth.SignedWireSHA256 = wireSHA256
+	return d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth)
+}
+
+func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operationID string) error {
+	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
+	if err != nil {
+		return err
+	}
+	var wire []byte
+	if err = tx.QueryRow(ctx, `SELECT signed_wire FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='signed'`, operationID).Scan(&wire); err != nil {
+		return err
+	}
+	if auth.GoalID != Phase3GoalID || len(wire) == 0 || auth.SignedWireSHA256 != sha256Bytes(wire) {
+		return budgetHold("signed_wire_reservation_mismatch")
+	}
+	return budget.AuthorizeIntent(operationID, auth.IntentSHA256)
+}

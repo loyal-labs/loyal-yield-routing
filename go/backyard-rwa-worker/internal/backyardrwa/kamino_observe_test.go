@@ -7,6 +7,20 @@ import (
 	"testing"
 )
 
+func TestTargetBorrowRespectsNineDecimalCollateral(t *testing.T) {
+	p := KaminoPosition{CollateralDepositedRaw: 1_000_000_000, RedeemablePrimeRaw: 1_000_000_000, CollateralDecimals: 9, DebtDecimals: 6}
+	binary.LittleEndian.PutUint64(p.CollateralPriceSF[:8], uint64(1)<<60)
+	binary.LittleEndian.PutUint64(p.DebtPriceSF[:8], uint64(1)<<60)
+	got, err := p.targetLTVBorrowRaw()
+	if err != nil || got != 500_000 {
+		t.Fatalf("nine-decimal collateral allowed debt=%d err=%v", got, err)
+	}
+	p.CollateralDecimals = 19
+	if _, err = p.targetLTVBorrowRaw(); err == nil {
+		t.Fatal("unsupported decimal scale accepted")
+	}
+}
+
 func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 	c := KaminoObservationConfig{
 		Program: kaminoProgram, Market: kaminoMarket, Obligation: bridgeSettings,
@@ -21,11 +35,12 @@ func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 	putKey(t, reserve[32:64], c.Market)
 	putKey(t, reserve[128:160], c.CollateralMint)
 	binary.LittleEndian.PutUint64(reserve[224:232], 100)
+	binary.LittleEndian.PutUint64(reserve[272:280], 9)
 	reserve[kaminoReserveConfigOffset+645] = 90
 	oracle := bridgeVault
 	putKey(t, reserve[5224:5256], oracle)
 	decoded, err := decodeKaminoReserve(ConfirmedAccount{Address: c.CollateralReserve, Owner: c.Program, Lamports: 1, Data: reserve}, c.CollateralMint, c)
-	if err != nil || decoded.utilizationLimitPct != 90 || len(uniqueNonzero(decoded.oracles)) != 1 || uniqueNonzero(decoded.oracles)[0] != oracle {
+	if err != nil || decoded.mintDecimals != 9 || decoded.utilizationLimitPct != 90 || len(uniqueNonzero(decoded.oracles)) != 1 || uniqueNonzero(decoded.oracles)[0] != oracle {
 		t.Fatalf("decoded=%+v err=%v", decoded, err)
 	}
 	reserve[128] ^= 1

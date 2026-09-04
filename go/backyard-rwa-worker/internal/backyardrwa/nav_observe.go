@@ -144,13 +144,25 @@ func decodeRouteNAVCustodiesForRoute(accounts []ConfirmedAccount, route RuntimeR
 // debt-token raw units. Assets floor; liabilities ceil. big.Int keeps hostile
 // reserve prices and balances from wrapping intermediate arithmetic.
 func valueInDebtRaw(raw uint64, tokenPriceSF, debtPriceSF [16]byte, liability bool) (uint64, error) {
+	return valueBetweenTokenRaw(raw, 0, 0, tokenPriceSF, debtPriceSF, liability)
+}
+
+// valueBetweenTokenRaw converts raw units between assets without assuming
+// matching decimals or a stablecoin peg. The two reserve prices use the same
+// scaled-fraction quote denomination, which cancels exactly in their ratio.
+func valueBetweenTokenRaw(raw uint64, tokenDecimals, debtDecimals uint8, tokenPriceSF, debtPriceSF [16]byte, liability bool) (uint64, error) {
+	if tokenDecimals > 18 || debtDecimals > 18 {
+		return 0, fmt.Errorf("unsupported token decimal scale")
+	}
 	tokenPrice, debtPrice := littleInt(tokenPriceSF[:]), littleInt(debtPriceSF[:])
 	if tokenPrice.Sign() <= 0 || debtPrice.Sign() <= 0 {
 		return 0, fmt.Errorf("Kamino reserve market price is zero")
 	}
 	numerator := new(big.Int).Mul(new(big.Int).SetUint64(raw), tokenPrice)
+	numerator.Mul(numerator, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(debtDecimals)), nil))
+	denominator := new(big.Int).Mul(debtPrice, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(tokenDecimals)), nil))
 	quotient, remainder := new(big.Int), new(big.Int)
-	quotient.QuoRem(numerator, debtPrice, remainder)
+	quotient.QuoRem(numerator, denominator, remainder)
 	if liability && remainder.Sign() != 0 {
 		quotient.Add(quotient, big.NewInt(1))
 	}
@@ -265,11 +277,11 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	primeIdleValue, err := valueInDebtRaw(custodies.SquadsPRIMEraw, collateralReserve.marketPriceSF, debtReserve.marketPriceSF, false)
+	primeIdleValue, err := valueBetweenTokenRaw(custodies.SquadsPRIMEraw, collateralReserve.mintDecimals, debtReserve.mintDecimals, collateralReserve.marketPriceSF, debtReserve.marketPriceSF, false)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	collateralValue, err := valueInDebtRaw(redeemablePRIME, collateralReserve.marketPriceSF, debtReserve.marketPriceSF, false)
+	collateralValue, err := valueBetweenTokenRaw(redeemablePRIME, collateralReserve.mintDecimals, debtReserve.mintDecimals, collateralReserve.marketPriceSF, debtReserve.marketPriceSF, false)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
