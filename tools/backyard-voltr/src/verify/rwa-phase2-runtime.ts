@@ -10,6 +10,7 @@ const MANIFEST = "docs/manifests/backyard-rwa-v1.json";
 const LIFECYCLE = "docs/evidence/backyard-rwa-go/phase2-runtime/lifecycle-v1.json";
 const SIGNED_UNSENT = "docs/evidence/backyard-rwa-go/phase2-runtime/signed-unsent-v1.json";
 const SELECTION = "docs/evidence/backyard-rwa-go/phase2-runtime/selection-v1.json";
+const CURRENT_ROLLOVERS = "docs/evidence/backyard-rwa-go/phase2-runtime/current-policy-rollovers-v1.json";
 const COMPILED = "docs/evidence/backyard-rwa-go/policy-compiled-v1.json";
 const COMMAND = "bun run --cwd tools/backyard-voltr verify:rwa-phase2-runtime";
 
@@ -79,6 +80,9 @@ function check(
 function main() {
   const contract = existsSync(path(CONTRACT)) ? read(CONTRACT) : "";
   const manifest = json(MANIFEST);
+  const squadsProgram = manifest?.identities !== null && typeof manifest?.identities === "object" && !Array.isArray(manifest?.identities)
+    ? (manifest.identities as Json).squadsProgram
+    : null;
   const activation = manifest?.runtimeActivation;
   const activationRecord = activation !== null && typeof activation === "object" && !Array.isArray(activation)
     ? activation as Json
@@ -99,6 +103,12 @@ function main() {
   const selectedCandidate = arrayOfObjects(selection?.candidates).find((candidate) => candidate.lane === selectedLane) ?? null;
   const compiled = json(COMPILED);
   const compiledPolicies = arrayOfObjects(compiled?.policies);
+  const rollovers = json(CURRENT_ROLLOVERS);
+  const rolloverPolicies = arrayOfObjects(rollovers?.policies);
+  const rolloverSetExact = rollovers?.schema === "loyal-backyard-rwa-phase2-current-policy-rollovers/v1" &&
+    rollovers?.verdict === "PASS" && rollovers?.broadcast === false && rollovers?.commitment === "finalized" &&
+    rollovers?.selectedLane === selectedLane && (rollovers?.settings as Json | undefined)?.policySeed === "139" &&
+    rolloverPolicies.length === 3;
   const selectionEvidenceHash = typeof activationRecord?.selectionEvidence === "object" && activationRecord.selectionEvidence !== null
     ? (activationRecord.selectionEvidence as Json).sha256
     : null;
@@ -123,10 +133,14 @@ function main() {
     const constraint = arrayOfObjects(compiledPolicy?.constraints)[0];
     const accountPubkeys = arrayOfObjects(constraint?.accountPubkeys).flatMap((entry) => Array.isArray(entry.pubkeys) ? entry.pubkeys : []);
     const live = selectedPolicyBindings.find((value) => value.seed === manifestPolicy?.seed && value.policy === manifestPolicy?.policy);
-    return manifestPolicy !== undefined && compiledPolicy !== undefined && constraint !== undefined &&
+    const historicalExact = manifestPolicy !== undefined && compiledPolicy !== undefined && constraint !== undefined &&
       manifestPolicy.programId === constraint.programId && equalJson(manifestPolicy.accountPubkeys, accountPubkeys) &&
       equalJson(manifestPolicy.data, constraint.data) && manifestPolicy.packetBytes === compiledPolicy.createPacketBytes &&
       manifestPolicy.liveAccountDataSha256 === live?.accountDataSha256;
+    const rollover = rolloverPolicies.find((value) => equalJson(value.binding, manifestPolicy));
+    const rolloverExact = rolloverSetExact && rollover !== undefined && rollover.owner === squadsProgram &&
+      rollover.liveAccountDataSha256 === manifestPolicy?.liveAccountDataSha256;
+    return historicalExact || rolloverExact;
   });
   const jupiterEdges = arrayOfObjects(binding?.jupiterEdges);
   const jupiterEdgeChecks = ["entry", "exit"].map((side) => {
@@ -145,7 +159,7 @@ function main() {
     const quoteValues = quoteRecord?.quote !== null && typeof quoteRecord?.quote === "object" ? quoteRecord.quote as Json : null;
     const instruction = quoteRecord?.instruction !== null && typeof quoteRecord?.instruction === "object" ? quoteRecord.instruction as Json : null;
     const packet = quoteRecord?.packet !== null && typeof quoteRecord?.packet === "object" ? quoteRecord.packet as Json : null;
-    return edge !== undefined && policy !== undefined && edge.policy === policy.policy &&
+    const historicalExact = edge !== undefined && policy !== undefined && edge.policy === policy.policy &&
       edge.seed === policy.seed && edge.liveAccountDataSha256 === policy.accountDataSha256 &&
       edge.sourceMint === source?.mint && edge.destinationMint === destination?.mint &&
       edge.sourceCustody === source?.ata && edge.destinationCustody === destination?.ata &&
@@ -154,6 +168,10 @@ function main() {
       edge.otherAmountThresholdRaw === quoteValues?.otherAmountThresholdRaw &&
       edge.instructionDataSha256 === instruction?.dataSha256 && edge.packetBytes === packet?.packetBytes &&
       edge.packetSha256 === packet?.packetSha256 && Array.isArray(edge.lookupTables) && equalJson(edge.lookupTables, quoteRecord?.lookupTables);
+    const rollover = rolloverPolicies.find((value) => equalJson(value.binding, edge));
+    const rolloverExact = rolloverSetExact && edge !== undefined && rollover !== undefined &&
+      rollover.owner === squadsProgram && rollover.liveAccountDataSha256 === edge.liveAccountDataSha256;
+    return historicalExact || rolloverExact;
   });
   const completeBinding = kaminoPolicies.length === 4 && new Set(kaminoPolicies.map((value) => value.operation)).size === 4 &&
     kaminoPolicyChecks.every(Boolean) && jupiterEdges.length === 2 && new Set(jupiterEdges.map((value) => value.edge)).size === 2 &&
@@ -232,7 +250,7 @@ function main() {
       "R01_selected_route",
       "Fresh authoritative evidence selects and freezes exactly one installed non-PRIME representative.",
       selected && completeBinding,
-      { manifest: MANIFEST, selection: SELECTION, compiled: COMPILED, selectedLane, runtimeRoutes, supportedLaneCount: supportedLanes.length, kaminoPolicyCount: kaminoPolicies.length, jupiterEdgeCount: jupiterEdges.length },
+      { manifest: MANIFEST, selection: SELECTION, compiled: COMPILED, currentRollovers: CURRENT_ROLLOVERS, selectedLane, runtimeRoutes, supportedLaneCount: supportedLanes.length, kaminoPolicyCount: kaminoPolicies.length, jupiterEdgeCount: jupiterEdges.length },
       "Run the read-only current-state candidate comparison, choose one safe installed representative, and freeze exactly PRIME plus that lane in runtimeActivation.",
     ),
     check(

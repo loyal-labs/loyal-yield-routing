@@ -13,6 +13,7 @@ describe("Backyard RWA Phase 2 runtime activation", () => {
   const embedded = readJson("crates/loyal-actions/fixtures/backyard_rwa_policy_catalog_v1.json");
   const selection = readJson("docs/evidence/backyard-rwa-go/phase2-runtime/selection-v1.json");
   const compiled = readJson("docs/evidence/backyard-rwa-go/policy-compiled-v1.json");
+  const rollovers = readJson("docs/evidence/backyard-rwa-go/phase2-runtime/current-policy-rollovers-v1.json");
 
   test("freezes exactly PRIME plus the selected Maple representative", () => {
     const activation = manifest.runtimeActivation;
@@ -37,12 +38,20 @@ describe("Backyard RWA Phase 2 runtime activation", () => {
     for (const policy of activation.selectedLaneBinding.kaminoPolicies) {
       const compiledPolicy = compiled.policies.find((value: any) =>
         value.logicalName === `lane/${activation.selectedLane}` && value.operations.includes(policy.operation));
-      expect(compiledPolicy).toBeDefined();
-      const constraint = compiledPolicy.constraints[0];
-      expect(policy.programId).toBe(constraint.programId);
-      expect(policy.accountPubkeys).toEqual(constraint.accountPubkeys.flatMap((value: any) => value.pubkeys));
-      expect(policy.data).toEqual(constraint.data);
-      expect(policy.packetBytes).toBe(compiledPolicy.createPacketBytes);
+      const rollover = rollovers.policies.find((value: any) => JSON.stringify(value.binding) === JSON.stringify(policy));
+      expect(compiledPolicy !== undefined || rollover !== undefined).toBe(true);
+      if (rollover !== undefined) {
+        expect(rollover.owner).toBe(manifest.identities.squadsProgram);
+        expect(rollover.liveAccountDataSha256).toBe(policy.liveAccountDataSha256);
+      } else {
+        const constraint = compiledPolicy.constraints[0];
+        expect(policy.programId).toBe(constraint.programId);
+        expect(policy.accountPubkeys).toEqual(constraint.accountPubkeys.flatMap((value: any) => value.pubkeys));
+        expect(policy.data).toEqual(constraint.data);
+        expect(policy.packetBytes).toBe(compiledPolicy.createPacketBytes);
+      }
     }
+    expect(rollovers.settings.policySeed).toBe("139");
+    expect(rollovers.commitment).toBe("finalized");
   });
 });

@@ -1,0 +1,145 @@
+{
+  "schema": "loyal-backyard-rwa-phase2-current-policy-rollovers/v1",
+  "verdict": "PASS",
+  "broadcast": false,
+  "cluster": "mainnet-beta",
+  "commitment": "finalized",
+  "selectedLane": "Maple/syrupUSDC/USDC",
+  "selection": {
+    "path": "docs/evidence/backyard-rwa-go/phase2-runtime/selection-v1.json",
+    "sha256": "569ef60f94dbf93535ef96986e7e66add9bdbc7fd1f99243e4aca376078e4959",
+    "role": "identity-valid original selection; not replayed"
+  },
+  "settings": {
+    "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+    "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+    "policySeed": "139"
+  },
+  "readbackSlot": 444161541,
+  "policies": [
+    {
+      "binding": {
+        "operation": "borrow",
+        "seed": "137",
+        "policy": "2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV",
+        "liveAccountDataSha256": "6f97d7928d7927d65b588644d2e0506bc86b2173f2f525edf087474e28631a94",
+        "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "accountPubkeys": [
+          "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT",
+          "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+          "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
+          "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+          "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "BBcwMNSMyhhBnYE9pevEvkxKHGzTafMP9v3j7Kk7nAWM",
+          "HH7GLnRcGHJrdkEueVVj7mccNUjnSeWobDmtu9cHLkJV",
+          "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "Sysvar1nstructions1111111111111111111111111",
+          "CcUorNoacydFVu7SHmhsA1qi9CcEu8K5YFvuS8unAzgr",
+          "87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y",
+          "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+        ],
+        "data": [
+          {
+            "kind": "slice-equals",
+            "offset": 0,
+            "valueHex": "a1808ff5abc7c206"
+          },
+          {
+            "kind": "u64-less-than-or-equal",
+            "offset": 8,
+            "value": 1000000000000
+          }
+        ],
+        "packetBytes": 1017
+      },
+      "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+      "dataLength": 1400,
+      "liveAccountDataSha256": "6f97d7928d7927d65b588644d2e0506bc86b2173f2f525edf087474e28631a94"
+    },
+    {
+      "binding": {
+        "operation": "repay",
+        "seed": "138",
+        "policy": "AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo",
+        "liveAccountDataSha256": "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11",
+        "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+        "accountPubkeys": [
+          "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT",
+          "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+          "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+          "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "BBcwMNSMyhhBnYE9pevEvkxKHGzTafMP9v3j7Kk7nAWM",
+          "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "Sysvar1nstructions1111111111111111111111111",
+          "CcUorNoacydFVu7SHmhsA1qi9CcEu8K5YFvuS8unAzgr",
+          "87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y",
+          "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
+          "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+        ],
+        "data": [
+          {
+            "kind": "slice-equals",
+            "offset": 0,
+            "valueHex": "74aed54cb435d290"
+          },
+          {
+            "kind": "u64-less-than-or-equal",
+            "offset": 8,
+            "value": 1000000000000
+          }
+        ],
+        "packetBytes": 939
+      },
+      "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+      "dataLength": 1250,
+      "liveAccountDataSha256": "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11"
+    },
+    {
+      "binding": {
+        "edge": "syrupUSDC->USDC",
+        "seed": "139",
+        "policy": "FhvEZNhKwF3dPZL36rrcbo5TCvTZTRBadE4YFNWxxwVR",
+        "liveAccountDataSha256": "1f2392e28fb96d92fb1b98a46609b8b7f4f0d38e6ddf943cd2d473a6e799589d",
+        "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+        "sourceMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "destinationMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "sourceCustody": "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN",
+        "destinationCustody": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+        "inAmountRaw": "1000000",
+        "outAmountRaw": "1181301",
+        "otherAmountThresholdRaw": "1175395",
+        "instructionDataSha256": "83ac721648169e864cd27c06efd76337b96946b37f162ecaeff4a6038a50eca2",
+        "packetBytes": 809,
+        "packetSha256": "33478081cdf88d74cd7f05d0bc665523299e6f60efc1b0ee16a06d071d7b55f6",
+        "lookupTables": [
+          "GERDuMq2KXct84sG9JUxuRguqfcPvn71gYXg2p3LLHv4"
+        ]
+      },
+      "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+      "dataLength": 748,
+      "liveAccountDataSha256": "1f2392e28fb96d92fb1b98a46609b8b7f4f0d38e6ddf943cd2d473a6e799589d"
+    }
+  ],
+  "sources": [
+    {
+      "path": "docs/evidence/backyard-rwa-go/phase2-runtime/maple-farm-policy-rollover-2026-09-03.md",
+      "sha256": "40eaf3d5fe7d5cc06689b0bec72285113155f39bce682c17e67498428845e51c",
+      "seeds": [
+        "137",
+        "138"
+      ]
+    },
+    {
+      "path": "crates/loyal-actions/src/bin/compile_backyard_rwa_maple_exit_policy.rs",
+      "sha256": "839a65e9af521f15b12f2724caa6b28d7f61be3e443b11506300f60c8af8e398",
+      "seeds": [
+        "139"
+      ]
+    }
+  ]
+}
