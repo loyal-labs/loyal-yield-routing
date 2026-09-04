@@ -40,13 +40,13 @@ var mapleSyrupUSDCUSDC = RuntimeRoute{
 	DebtFeeReceiver:           "HH7GLnRcGHJrdkEueVVj7mccNUjnSeWobDmtu9cHLkJV",
 	PolicyHashes: map[Action]string{
 		OpenRouteStep:              "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f",
-		DeleverRouteStep:           "da76b5a0e4ca7bbc3e69a978ed34467623854e9c99d7ce6b8b844a80db675e09",
+		DeleverRouteStep:           "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11",
 		SwapStableToCollateralStep: "04b40a67014385131f562116473e41026aa7108fea9081b14e13c1204528ced2",
 		SwapCollateralToStableStep: "7401b4714f788c8f96ca4b7a207ff58e072b7e3261ec12c739ac9697c4409782",
 	},
 	PolicyAccounts: map[Action]string{
 		OpenRouteStep:              "5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c",
-		DeleverRouteStep:           "CNjRx4kgrAvk6nRGN8NbH8uvSTzoC9zBK1vuiAh6DcYZ",
+		DeleverRouteStep:           "AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo",
 		SwapStableToCollateralStep: "DYDidUg6uEX5YK7d5UBXL7v6P5BXkkMZQneATe3mpS3t",
 		SwapCollateralToStableStep: "Esg2ZrtwkkdzTJyiUfPZ3H3HFVq6x8diMGXSypMPXB89",
 	},
@@ -55,8 +55,8 @@ var mapleSyrupUSDCUSDC = RuntimeRoute{
 func mapleKaminoPolicyAccounts() []string {
 	return []string{
 		"5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c",
-		"DTVaAQuhRGLrgbopmutf8ePhQbZgpouYDp2YfW8GBUWf",
-		"CNjRx4kgrAvk6nRGN8NbH8uvSTzoC9zBK1vuiAh6DcYZ",
+		"2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV",
+		"AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo",
 		"4ZRoNsVZCNJXUdNjFL6MvjMhbLFG512hjStfipMftzcY",
 	}
 }
@@ -64,8 +64,8 @@ func mapleKaminoPolicyAccounts() []string {
 func mapleKaminoPolicyHashes() map[string]string {
 	return map[string]string{
 		"5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c": "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f",
-		"DTVaAQuhRGLrgbopmutf8ePhQbZgpouYDp2YfW8GBUWf": "ec28bbdd6239985c3675e730262ce6c8ddab2ac3c47f54a2e1bb651b851f116f",
-		"CNjRx4kgrAvk6nRGN8NbH8uvSTzoC9zBK1vuiAh6DcYZ": "da76b5a0e4ca7bbc3e69a978ed34467623854e9c99d7ce6b8b844a80db675e09",
+		"2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV": "6f97d7928d7927d65b588644d2e0506bc86b2173f2f525edf087474e28631a94",
+		"AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo": "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11",
 		"4ZRoNsVZCNJXUdNjFL6MvjMhbLFG512hjStfipMftzcY": "e994455d6351a4f615ae57dd0b0b65287e8c6af10457e70383307bb43c762a7e",
 	}
 }

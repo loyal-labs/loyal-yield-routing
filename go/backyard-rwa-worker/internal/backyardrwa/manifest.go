@@ -457,8 +457,8 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	}
 	policies := map[kaminoPrimeUSDCLeg]struct{ policy, hash string }{
 		kaminoLegDeposit:  {"5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c", "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f"},
-		kaminoLegBorrow:   {"DTVaAQuhRGLrgbopmutf8ePhQbZgpouYDp2YfW8GBUWf", "ec28bbdd6239985c3675e730262ce6c8ddab2ac3c47f54a2e1bb651b851f116f"},
-		kaminoLegRepay:    {"CNjRx4kgrAvk6nRGN8NbH8uvSTzoC9zBK1vuiAh6DcYZ", "da76b5a0e4ca7bbc3e69a978ed34467623854e9c99d7ce6b8b844a80db675e09"},
+		kaminoLegBorrow:   {"2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV", "6f97d7928d7927d65b588644d2e0506bc86b2173f2f525edf087474e28631a94"},
+		kaminoLegRepay:    {"AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo", "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11"},
 		kaminoLegWithdraw: {"4ZRoNsVZCNJXUdNjFL6MvjMhbLFG512hjStfipMftzcY", "e994455d6351a4f615ae57dd0b0b65287e8c6af10457e70383307bb43c762a7e"},
 	}
 	metaSets := func() []KaminoPrimeUSDCAccounts {
