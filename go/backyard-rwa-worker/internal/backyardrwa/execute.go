@@ -8,7 +8,8 @@ func CanTransition(from, to OperationStatus) bool {
 	}
 	allowed := map[OperationStatus]OperationStatus{Decided: Built, Built: Simulated, Simulated: Signed, Signed: BroadcastIntent, BroadcastIntent: Submitted, Submitted: Confirmed, Confirmed: Reconciling, Reconciling: Reconciled}
 	if to == Failed {
-		return from == Decided || from == Built || from == Simulated || from == Signed
+		return from == Decided || from == Built || from == Simulated || from == Signed ||
+			from == BroadcastIntent || from == Submitted
 	}
 	if to == Reconciling {
 		return from == Confirmed
