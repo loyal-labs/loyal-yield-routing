@@ -53,7 +53,7 @@
     "authorized": true,
     "authorizedAt": "2026-09-03",
     "source": "explicit 100% authorization in the existing Earn Max Codex thread",
-    "scope": "Publish this finalized incident and retain it as the sole documented Phase 2 cap exception; do not relabel it as reconciled or count it as a successful lifecycle operation."
+    "scope": "Publish this finalized incident and retain it as the sole documented Phase 2 cap exception; do not relabel it as reconciled; accept its exact finalized conserved effects as satisfying terminal restoration."
   },
   "exceptionScope": {
     "operationId": "fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe",
@@ -62,7 +62,8 @@
     "actualAmountRaw": "3793417",
     "ordinaryCapsRemainUnchanged": true,
     "additionalExceptionsAuthorized": false,
-    "qualifiesAsReconciledLifecycleOperation": false
+    "qualifiesAsReconciledLifecycleOperation": false,
+    "satisfiesTerminalRestoration": true
   },
   "forwardFixes": [
     {
@@ -80,5 +81,5 @@
       "effect": "Request and reconcile the complete within-cap staged balance that Voltr actually sweeps."
     }
   ],
-  "operatorDecision": "The operator authorized publication and retention of this exact finalized incident as the sole documented cap exception. It remains manual_recovery and does not satisfy the successful reconciled-operation set."
+  "operatorDecision": "The operator explicitly accepted this exact finalized incident as satisfying Phase 2 terminal restoration despite its durable manual_recovery status. It is not relabeled as reconciled and no other exception is authorized."
 }

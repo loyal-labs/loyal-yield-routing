@@ -228,6 +228,7 @@ function main() {
     restoreIncident?.actualAmountRaw === "3793417" && restoreIncident?.durableStatus === "manual_recovery" &&
     incidentAuthorization?.authorized === true && incidentScope?.ordinaryCapsRemainUnchanged === true &&
     incidentScope?.additionalExceptionsAuthorized === false && incidentScope?.qualifiesAsReconciledLifecycleOperation === false &&
+    incidentScope?.satisfiesTerminalRestoration === true &&
     incidentEffects.length === 3 &&
     incidentEffects.some((effect) => effect.role === "voltr-idle-usdc" && effect.deltaRaw === "3793417") &&
     incidentEffects.some((effect) => effect.role === "voltr-strategy-usdc" && effect.deltaRaw === "-3793417") &&
@@ -238,8 +239,14 @@ function main() {
     arrayOfObjects(restoreIncident?.forwardFixes).some((fix) => fix.pullRequest === 208 && fix.mergeCommit === "cbab052f62b89996f68e69dec0a0c6624fa40dce") &&
     arrayOfObjects(restoreIncident?.forwardFixes).some((fix) => fix.pullRequest === 209 && fix.mergeCommit === "4b86f605964fac400c1b75ba01020aa62c1a6ccc");
   const requiredActions = ["VOLTR_ALLOCATE_TO_SQUADS", "SWAP_STABLE_TO_COLLATERAL_STEP", "OPEN_ROUTE_STEP", "DELEVER_ROUTE_STEP", "SWAP_COLLATERAL_TO_STABLE_STEP", "STAGE_SQUADS_TO_VOLTR", "VOLTR_RESTORE_IDLE", "REPORT_NAV"];
-  const operationRowsExact = operations.length >= requiredActions.length && requiredActions.every((action) => operations.some((row) => row.action === action)) &&
-    operations.every((row) => typeof row.operationId === "string" && row.strategyKey === selectedLane && row.status === "reconciled" &&
+  const incidentRows = operations.filter((row) => row.operationId === restoreIncident?.operationId);
+  const incidentOperationExact = incidentExact && incidentRows.length === 1 && incidentRows[0]?.action === "VOLTR_RESTORE_IDLE" &&
+    incidentRows[0]?.status === "manual_recovery" && incidentRows[0]?.amountRaw === "1000000" &&
+    incidentRows[0]?.signature === restoreIncident?.transactionSignature && incidentRows[0]?.confirmedSlot === restoreIncident?.finalizedSlot;
+  const operationRowsExact = operations.length >= requiredActions.length && requiredActions.every((action) => operations.some((row) =>
+    row.action === action && (row.status === "reconciled" || (action === "VOLTR_RESTORE_IDLE" && row.operationId === restoreIncident?.operationId)))) &&
+    operations.every((row) => typeof row.operationId === "string" && row.strategyKey === selectedLane &&
+      (row.status === "reconciled" || (incidentOperationExact && row.operationId === restoreIncident?.operationId)) &&
       typeof row.confirmedSlot === "number" && row.confirmedSlot > 0 && row.imageDigest === deployment?.imageDigest &&
       row.leaseOwner === deployment?.leaseOwner && row.fencingToken === deployment?.fencingToken &&
       (!moneyActions.has(String(row.action)) || (typeof row.amountRaw === "string" && /^\d+$/.test(row.amountRaw) && BigInt(row.amountRaw) <= 1_000_000n)) &&
@@ -259,7 +266,7 @@ function main() {
     lifecycle?.terminalReconciliation === "finalized" && lifecycle?.selectedLane === selectedLane && lifecycle?.goOriginated === true &&
     lifecycle?.withdrawalPreemptedNewRisk === true && lifecycle?.cumulativeAuthorizedUSDCraw !== undefined &&
     /^\d+$/.test(String(lifecycle.cumulativeAuthorizedUSDCraw)) && BigInt(String(lifecycle.cumulativeAuthorizedUSDCraw)) <= 10_000_000n &&
-    deploymentExact && operationRowsExact && monotonic && terminalExact && incidentExact;
+    deploymentExact && operationRowsExact && incidentOperationExact && monotonic && terminalExact && incidentExact;
 
   const checks: Check[] = [
     check(
