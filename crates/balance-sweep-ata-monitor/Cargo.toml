@@ -25,6 +25,7 @@ loyal-yield-store = { path = "../loyal-yield-store" }
 num-bigint = "0.4"
 num-traits = "0.2"
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+prost = "0.14"
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1"
 sha2.workspace = true
@@ -37,7 +38,7 @@ spl-token.workspace = true
 spl-token-2022.workspace = true
 solana-transaction-status-client-types = "2.3"
 sqlx = { workspace = true, default-features = false, features = ["chrono", "json", "postgres", "runtime-tokio-rustls"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]
