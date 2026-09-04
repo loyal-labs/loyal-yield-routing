@@ -50,7 +50,9 @@ fast checks between those runs.
   signed-unsent simulations, forward-only policy rollover within the approved
   installed catalog design, deploys of worker/adaptor code committed in this
   repository, and lifecycle transactions up to `1 USDC` per transaction and
-  `10 USDC` cumulative.
+  `14 USDC` cumulative for the completed lifecycle. The operator explicitly
+  authorized this increase from `10 USDC`; the `1 USDC` per-transaction cap is
+  unchanged.
 - One retrospective incident is authorized for transparent close-out reporting:
   finalized operation
   `fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe`
