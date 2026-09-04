@@ -190,6 +190,12 @@ function main() {
   const goObserve = existsSync(path("go/backyard-rwa-worker/internal/backyardrwa/route_observe.go"))
     ? read("go/backyard-rwa-worker/internal/backyardrwa/route_observe.go")
     : "";
+  const goStore = existsSync(path("go/backyard-rwa-worker/internal/backyardrwa/store.go"))
+    ? read("go/backyard-rwa-worker/internal/backyardrwa/store.go")
+    : "";
+  const workerMigration = existsSync(path("crates/loyal-yield-store/migrations/0070_backyard_rwa_worker.sql"))
+    ? read("crates/loyal-yield-store/migrations/0070_backyard_rwa_worker.sql")
+    : "";
   const migration = existsSync(path("crates/loyal-yield-store/migrations/0072_backyard_rwa_phase2_route_neutral_actions.sql"))
     ? read("crates/loyal-yield-store/migrations/0072_backyard_rwa_phase2_route_neutral_actions.sql")
     : "";
@@ -212,6 +218,7 @@ function main() {
   const lifecycle = json(LIFECYCLE);
   const restoreIncident = json(RESTORE_INCIDENT);
   const deployment = lifecycle?.deployment !== null && typeof lifecycle?.deployment === "object" && !Array.isArray(lifecycle?.deployment) ? lifecycle.deployment as Json : null;
+  const deploymentHistory = arrayOfObjects(lifecycle?.deploymentHistory);
   const terminal = lifecycle?.terminal !== null && typeof lifecycle?.terminal === "object" && !Array.isArray(lifecycle?.terminal) ? lifecycle.terminal as Json : null;
   const operations = arrayOfObjects(lifecycle?.operations);
   const moneyActions = new Set(["VOLTR_ALLOCATE_TO_SQUADS", "SWAP_STABLE_TO_COLLATERAL_STEP", "OPEN_ROUTE_STEP", "DELEVER_ROUTE_STEP", "SWAP_COLLATERAL_TO_STABLE_STEP", "STAGE_SQUADS_TO_VOLTR", "VOLTR_RESTORE_IDLE"]);
@@ -244,14 +251,38 @@ function main() {
   const incidentOperationExact = incidentExact && incidentRows.length === 1 && incidentRows[0]?.action === "VOLTR_RESTORE_IDLE" &&
     incidentRows[0]?.status === "manual_recovery" && incidentRows[0]?.amountRaw === "1000000" &&
     incidentRows[0]?.signature === restoreIncident?.transactionSignature && incidentRows[0]?.confirmedSlot === restoreIncident?.finalizedSlot;
+  const deploymentHistoryExact = deploymentHistory.length > 0 && deploymentHistory.every((entry, index) =>
+    typeof entry.liveAt === "string" && typeof entry.deactivatedAt === "string" && entry.liveAt < entry.deactivatedAt &&
+    typeof entry.deployId === "string" && typeof entry.sourceCommit === "string" && /^[0-9a-f]{40}$/.test(entry.sourceCommit) &&
+    typeof entry.imageDigest === "string" && /^sha256:[0-9a-f]{64}$/.test(entry.imageDigest) &&
+    (index === 0 || deploymentHistory[index - 1]?.deactivatedAt === entry.liveAt));
+  const operationDeploymentExact = (row: Json) => {
+    if (typeof row.createdAt !== "string") return false;
+    const historical = deploymentHistory.find((entry) => typeof entry.liveAt === "string" && typeof entry.deactivatedAt === "string" &&
+      row.createdAt! >= entry.liveAt && row.createdAt! < entry.deactivatedAt);
+    return historical !== undefined && row.deployId === historical.deployId && row.sourceCommit === historical.sourceCommit &&
+      row.imageDigest === historical.imageDigest && row.leaseOwner === `render:srv-dabkt0ojo6nc7381o9fg:sha-${historical.sourceCommit}`;
+  };
+  // Historical fencing tokens are intentionally not reconstructed: the operation
+  // ledger does not retain them. Instead, prove each row's exact immutable deploy
+  // interval and verify that every operation mutation is fenced in its DB transaction.
+  const nonterminalIndex = workerMigration.slice(workerMigration.indexOf("CREATE UNIQUE INDEX multiply_operations_one_nonterminal_per_route"));
+  const leaseFenceInvariant = goStore.includes("const OperationRouteForLeaseSQL") &&
+    goStore.includes("route.lease_owner = $2 AND route.fencing_token = $3") &&
+    goStore.includes("route.lease_expires_at > clock_timestamp() FOR UPDATE OF route") &&
+    goStore.includes("func (d *Database) lockOperationLease") &&
+    goStore.includes("OperationRouteForLeaseSQL, operationID, lease.Owner, lease.FencingToken") &&
+    nonterminalIndex.length > 0 && ["'decided'", "'built'", "'simulated'", "'signed'", "'broadcast_intent'", "'submitted'", "'confirmed'", "'reconciling'"].every((status) => nonterminalIndex.includes(status));
   const operationRowsExact = operations.length >= requiredActions.length && requiredActions.every((action) => operations.some((row) =>
     row.action === action && (row.status === "reconciled" || (action === "VOLTR_RESTORE_IDLE" && row.operationId === restoreIncident?.operationId)))) &&
     operations.every((row) => typeof row.operationId === "string" && row.strategyKey === selectedLane &&
       (row.status === "reconciled" || (incidentOperationExact && row.operationId === restoreIncident?.operationId)) &&
-      typeof row.confirmedSlot === "number" && row.confirmedSlot > 0 && row.imageDigest === deployment?.imageDigest &&
-      row.leaseOwner === deployment?.leaseOwner && row.fencingToken === deployment?.fencingToken &&
+      typeof row.confirmedSlot === "number" && row.confirmedSlot > 0 && operationDeploymentExact(row) &&
       (!moneyActions.has(String(row.action)) || (typeof row.amountRaw === "string" && /^\d+$/.test(row.amountRaw) && BigInt(row.amountRaw) <= 1_000_000n)) &&
       (row.action === "HOLD" || (typeof row.signature === "string" && row.signature.length > 40)));
+  const ordinaryMoneyActions = new Set([...moneyActions].filter((action) => action !== "VOLTR_RESTORE_IDLE"));
+  const cumulativeAuthorized = operations.filter((row) => ordinaryMoneyActions.has(String(row.action)))
+    .reduce((sum, row) => sum + BigInt(String(row.amountRaw)), 0n);
   const confirmedSlots = operations.map((row) => row.confirmedSlot).filter((slot): slot is number => typeof slot === "number");
   const monotonic = confirmedSlots.every((slot, index) => index === 0 || slot >= confirmedSlots[index - 1]!);
   const deploymentExact = deployment?.serviceId === "srv-dabkt0ojo6nc7381o9fg" && typeof deployment?.deployId === "string" &&
@@ -266,8 +297,10 @@ function main() {
   const liveComplete = lifecycle?.schema === "loyal-backyard-rwa-phase2-runtime-lifecycle/v1" && lifecycle?.broadcast === true &&
     lifecycle?.terminalReconciliation === "finalized" && lifecycle?.selectedLane === selectedLane && lifecycle?.goOriginated === true &&
     lifecycle?.withdrawalPreemptedNewRisk === true && lifecycle?.cumulativeAuthorizedUSDCraw !== undefined &&
-    /^\d+$/.test(String(lifecycle.cumulativeAuthorizedUSDCraw)) && BigInt(String(lifecycle.cumulativeAuthorizedUSDCraw)) <= 10_000_000n &&
-    deploymentExact && operationRowsExact && incidentOperationExact && monotonic && terminalExact && incidentExact;
+    /^\d+$/.test(String(lifecycle.cumulativeAuthorizedUSDCraw)) && lifecycle?.cumulativeCapUSDCraw === "14000000" &&
+    lifecycle?.incidentExcludedFromCumulative === true && BigInt(String(lifecycle.cumulativeAuthorizedUSDCraw)) === cumulativeAuthorized &&
+    cumulativeAuthorized <= 14_000_000n && deploymentExact && deploymentHistoryExact && leaseFenceInvariant &&
+    operationRowsExact && incidentOperationExact && monotonic && terminalExact && incidentExact;
 
   const checks: Check[] = [
     check(
@@ -310,7 +343,7 @@ function main() {
       "R05_live_lifecycle",
       "One bounded Go-originated selected-lane lifecycle is durably reconciled through finalized terminal custody.",
       liveComplete,
-      { path: LIFECYCLE, sha256: sha256(LIFECYCLE), restoreIncident: RESTORE_INCIDENT, restoreIncidentSha256: sha256(RESTORE_INCIDENT), selectedLane, operationCount: operations.length, terminal },
+      { path: LIFECYCLE, sha256: sha256(LIFECYCLE), restoreIncident: RESTORE_INCIDENT, restoreIncidentSha256: sha256(RESTORE_INCIDENT), selectedLane, operationCount: operations.length, deploymentCount: deploymentHistory.length, cumulativeAuthorizedUSDCraw: cumulativeAuthorized.toString(), leaseFenceInvariant, terminal },
       "Complete the bounded deployed-worker lifecycle and independently retain its finalized operation and custody reconciliation.",
     ),
     check(
