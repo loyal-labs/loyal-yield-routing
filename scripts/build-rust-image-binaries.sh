@@ -55,6 +55,7 @@ case "$family" in
       fleet-route-confirmer
       kamino-reserve-monitor
       loyal-timescale-migrations
+      loyal-klend-proxy
       loyal-squads-policy-monitor
       loyal-yield-realtime
       multiply-route-worker
@@ -89,6 +90,7 @@ case "$family" in
       fleet-health-projector
       fleet-opportunity-planner
       fleet-route-confirmer
+      loyal-klend-proxy
       loyal-squads-policy-monitor
       loyal-yield-realtime
       multiply-route-worker

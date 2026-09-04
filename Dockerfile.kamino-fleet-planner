@@ -1,0 +1,26 @@
+FROM golang:1.25.1-bookworm AS go-builder
+WORKDIR /src/go/kamino-fleet-planner
+COPY go/kamino-fleet-planner/go.mod go/kamino-fleet-planner/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY go/kamino-fleet-planner/ ./
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags='-s -w' -o /out/loyal-kamino-fleet-planner ./cmd/loyal-kamino-fleet-planner
+
+FROM debian:bookworm-slim
+ARG LOYAL_IMAGE_VERSION=dev
+ENV LOYAL_IMAGE_VERSION=${LOYAL_IMAGE_VERSION} \
+    KAMINO_KLEND_PROXY_PATH=/usr/local/bin/loyal-klend-proxy
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+COPY --from=go-builder /out/loyal-kamino-fleet-planner /usr/local/bin/loyal-kamino-fleet-planner
+COPY --chmod=0755 build-artifacts/rust/loyal-klend-proxy /usr/local/bin/loyal-klend-proxy
+COPY --chmod=0755 build-artifacts/rust/yield-migrations /usr/local/bin/yield-migrations
+COPY scripts/kamino-fleet-planner-entrypoint.sh /usr/local/bin/kamino-fleet-planner-entrypoint
+RUN chmod 0555 /usr/local/bin/loyal-kamino-fleet-planner /usr/local/bin/loyal-klend-proxy /usr/local/bin/yield-migrations /usr/local/bin/kamino-fleet-planner-entrypoint \
+    && sha256sum /usr/local/bin/loyal-klend-proxy | cut -d' ' -f1 >/usr/local/share/loyal-klend-proxy.sha256 \
+    && chmod 0444 /usr/local/share/loyal-klend-proxy.sha256
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/kamino-fleet-planner-entrypoint"]
+CMD ["/usr/local/bin/loyal-kamino-fleet-planner"]

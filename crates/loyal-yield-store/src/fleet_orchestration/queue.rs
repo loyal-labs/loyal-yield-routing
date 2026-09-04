@@ -5302,6 +5302,56 @@ impl NeonSqlClient {
         limit: i64,
         lease_expires_at: DateTime<Utc>,
     ) -> Result<(Vec<RebalanceOpportunityLease>, u64), OrchestratorError> {
+        self.lease_rebalance_opportunity_batch_measured_filtered(
+            cluster,
+            owner,
+            claim_kind,
+            limit,
+            lease_expires_at,
+            None,
+        )
+        .await
+    }
+
+    /// Route-kind ownership is used during the Go planner/revalidator cutover:
+    /// Rust retains cross-mint Jupiter preparation while Go exclusively claims
+    /// mature same-mint rows. The unfiltered executor API remains unchanged.
+    pub async fn lease_rebalance_opportunity_batch_for_route_kind(
+        &self,
+        cluster: &str,
+        owner: &str,
+        claim_kind: RebalanceOpportunityClaimKind,
+        limit: i64,
+        lease_expires_at: DateTime<Utc>,
+        route_kind: &str,
+    ) -> Result<Vec<RebalanceOpportunityLease>, OrchestratorError> {
+        if !matches!(route_kind, "same_mint" | "cross_mint_jupiter") {
+            return Err(OrchestratorError::StoreInvariant(
+                "unsupported rebalance route-kind ownership filter".to_owned(),
+            ));
+        }
+        Ok(self
+            .lease_rebalance_opportunity_batch_measured_filtered(
+                cluster,
+                owner,
+                claim_kind,
+                limit,
+                lease_expires_at,
+                Some(route_kind),
+            )
+            .await?
+            .0)
+    }
+
+    async fn lease_rebalance_opportunity_batch_measured_filtered(
+        &self,
+        cluster: &str,
+        owner: &str,
+        claim_kind: RebalanceOpportunityClaimKind,
+        limit: i64,
+        lease_expires_at: DateTime<Utc>,
+        route_kind: Option<&str>,
+    ) -> Result<(Vec<RebalanceOpportunityLease>, u64), OrchestratorError> {
         if cluster.trim().is_empty()
             || owner.trim().is_empty()
             || !(1..=256).contains(&limit)
@@ -5361,6 +5411,7 @@ impl NeonSqlClient {
                        opportunity.created_at
                 FROM loyal_yield.rebalance_opportunities opportunity
                 WHERE opportunity.cluster = $1
+                  AND ($8::TEXT IS NULL OR opportunity.execution_plan->>'route_kind' = $8)
                   AND ({runnable_state_predicate})
                   AND opportunity.available_at <= now()
                   AND opportunity.expires_at >= clock_timestamp()
@@ -5393,6 +5444,7 @@ impl NeonSqlClient {
                        opportunity.created_at
                 FROM loyal_yield.rebalance_opportunities opportunity
                 WHERE opportunity.cluster = $1
+                  AND ($8::TEXT IS NULL OR opportunity.execution_plan->>'route_kind' = $8)
                   AND opportunity.opportunity_state = 'leased'
                   AND opportunity.lease_kind = $4
                   AND opportunity.lease_expires_at <= now()
@@ -5443,6 +5495,7 @@ impl NeonSqlClient {
                     OFFSET 0
                 ) policy ON TRUE
                 WHERE opportunity.cluster = $1
+                  AND ($8::TEXT IS NULL OR opportunity.execution_plan->>'route_kind' = $8)
                   AND (
                       ({runnable_state_predicate})
                       OR (
@@ -5533,6 +5586,7 @@ impl NeonSqlClient {
             .bind(&active_statuses)
             .bind(limit)
             .bind(minimum_claim_lifetime_seconds)
+            .bind(route_kind)
             .fetch_all(self.pool())
             .await?;
         let server_elapsed_micros = rows

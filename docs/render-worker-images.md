@@ -144,9 +144,12 @@ were empty immediately after creation.
 
 CI builds the images in `.github/workflows/worker-images.yml` and tags them as
 `sha-${GITHUB_SHA}`. Pull requests compile each image-family inventory, then
-package and probe all three compiler-free Dockerfiles without publishing.
+package and probe the three compiler-free Rust-family Dockerfiles and the Go
+Kamino planner Dockerfile without publishing.
 
-A trusted `main` push compiles the three image-family inventories in parallel and publishes all three immutable image families.
+A trusted `main` push compiles the three Rust image-family inventories in
+parallel and publishes all three immutable Rust image families plus the Go
+Kamino planner image.
 The family-scoped Cargo target caches retain compatible fingerprints and record the source revision
 that produced them; CI marks only paths changed since that revision as newer before rebuilding.
 The scheduled cache refresh rolls them forward once per UTC day. Main-branch image publication restores

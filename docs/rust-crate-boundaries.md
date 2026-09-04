@@ -81,9 +81,11 @@ workspace check. Operator-only packages such as `autonomous-vaults`,
 
 The `worker-images` workflow has two automatic paths. Pull requests run the
 three family-scoped Cargo invocations in `scripts/build-rust-image-binaries.sh`
-in parallel, then package and probe all three image families without publishing them.
+in parallel, then package and probe the three Rust image families plus the Go
+Kamino planner image without publishing them.
 
-Main pushes compile the three image-family inventories in parallel and publish immutable SHA tags.
+Main pushes compile the three Rust image-family inventories in parallel and
+publish immutable SHA tags for all three Rust families and the Go planner.
 Each matrix entry stages only the binaries its Dockerfile packages, so the slowest family—not the
 sum of all 22 executable links—sets the build latency.
 Family target snapshots roll forward daily so GitHub's immutable caches do not become permanently stale.

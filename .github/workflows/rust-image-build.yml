@@ -316,3 +316,68 @@ jobs:
             'for binary in $PROBE_BINARIES; do test -x "/usr/local/bin/$binary"; done'
           docker run --rm --network=none --read-only --cap-drop=ALL \
             --security-opt=no-new-privileges "$IMAGE" >/dev/null
+
+  kamino-fleet-planner:
+    name: Test and package Go Kamino fleet planner
+    if: inputs.package-images
+    needs: rust-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.25.1
+          cache-dependency-path: go/kamino-fleet-planner/go.sum
+      - name: Test Go planner with race detector
+        working-directory: go/kamino-fleet-planner
+        run: go test -race ./...
+      - name: Vet Go planner
+        working-directory: go/kamino-fleet-planner
+        run: go vet ./...
+      - name: Download digest-pinned KLend proxy
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-image-binaries-light-workers
+          path: build-artifacts/rust
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        if: inputs.publish
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package planner and KLend proxy image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.kamino-fleet-planner
+          platforms: linux/amd64
+          push: ${{ inputs.publish }}
+          load: ${{ inputs.publish == false }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/kamino-fleet-planner:sha-${{ github.sha }}
+          build-args: LOYAL_IMAGE_VERSION=sha-${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          provenance: ${{ inputs.publish && 'mode=max' || 'false' }}
+          cache-from: type=gha,scope=kamino-fleet-planner-runtime
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,scope=kamino-fleet-planner-runtime,mode=max' || '' }}
+      - name: Pull published image for probe
+        if: inputs.publish
+        run: docker pull --platform linux/amd64 "${REGISTRY}/${IMAGE_NAMESPACE}/kamino-fleet-planner:sha-${GITHUB_SHA}"
+      - name: Probe immutable runtime image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/kamino-fleet-planner:sha-${{ github.sha }}
+        run: |
+          docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE" | grep -Fx 'linux/amd64'
+          docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE" | grep -Fx "$GITHUB_SHA"
+          docker image inspect "$IMAGE" | jq -e --arg version "LOYAL_IMAGE_VERSION=sha-$GITHUB_SHA" \
+            '.[0].Config.Cmd == ["/usr/local/bin/loyal-kamino-fleet-planner"] and (.[0].Config.Env | index($version)) != null' >/dev/null
+          docker run --rm --network=none --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges --entrypoint sh "$IMAGE" -c \
+            'test -x /usr/local/bin/loyal-kamino-fleet-planner
+             test -x /usr/local/bin/loyal-klend-proxy
+             test -x /usr/local/bin/yield-migrations
+             test "$(sha256sum /usr/local/bin/loyal-klend-proxy | cut -d" " -f1)" = "$(cat /usr/local/share/loyal-klend-proxy.sha256)"'

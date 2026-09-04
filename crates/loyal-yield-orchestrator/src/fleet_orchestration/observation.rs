@@ -1179,7 +1179,7 @@ impl ValidatedConfig {
     }
 }
 
-fn build_market_epoch(
+pub fn build_market_epoch(
     snapshot: SupportedReserveMarketSnapshot,
     enabled_mints: &[String],
     config: &FleetObservationConfig,

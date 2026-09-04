@@ -169,12 +169,12 @@ require_text "$workflow" 'uses: actions/upload-artifact@v4' 'Each Rust matrix en
 require_text "$workflow" 'name: rust-image-binaries-${{ matrix.family }}' 'Rust artifacts are isolated by image family'
 require_text "$workflow" 'compression-level: 1' 'Rust artifacts use the measured low-cost compression level'
 forbid_pattern "$workflow" 'if:[[:space:]]*inputs\.images' 'Binary artifact upload is not conditional on an image selection'
-require_fixed_count "$workflow" 'uses: actions/download-artifact@v4' 3 'All three image jobs download their family artifact'
+require_fixed_count "$workflow" 'uses: actions/download-artifact@v4' 4 'All four image jobs download their Rust family artifact'
 require_text "$workflow" 'name: rust-image-binaries-laserstream-workers' 'LaserStream image downloads only its binaries'
-require_text "$workflow" 'name: rust-image-binaries-light-workers' 'Light-worker image downloads only its binaries'
+require_text "$workflow" 'name: rust-image-binaries-light-workers' 'Light-worker and Go planner images download the shared light-worker artifact'
 require_text "$workflow" 'name: rust-image-binaries-operator-tools' 'Operator image downloads only its binaries'
-require_fixed_count "$workflow" 'needs: rust-build' 3 'All three image jobs wait for the parallel Rust matrix'
-require_fixed_count "$workflow" 'if: inputs.package-images' 4 'Artifacts and all runtime images are skipped during cache refresh'
+require_fixed_count "$workflow" 'needs: rust-build' 4 'All four image jobs wait for the parallel Rust matrix'
+require_fixed_count "$workflow" 'if: inputs.package-images' 5 'Artifacts and all runtime images are skipped during cache refresh'
 forbid_pattern "$workflow" 'inputs\.images|^[[:space:]]+images:' 'Reusable workflow has no image-selection control flow'
 
 # Cache contract: Cargo fingerprints come from one dependency-graph snapshot;
@@ -209,10 +209,11 @@ require_text "$workflow" "github.ref == 'refs/heads/main'" 'Dependency-cache wri
 require_text "$workflow" "matrix.family == 'light-workers'" 'Only one matrix entry can save the shared dependency cache'
 
 # Publication contract: every main build produces all immutable image families.
-require_fixed_count "$workflow" 'push: ${{ inputs.publish }}' 3 'Every image family follows the caller publication decision'
+require_fixed_count "$workflow" 'push: ${{ inputs.publish }}' 4 'Every image family follows the caller publication decision'
 require_text "$workflow" '${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/laserstream-workers:sha-${{ github.sha }}' 'LaserStream image uses an immutable commit tag'
 require_text "$workflow" '${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/light-workers:sha-${{ github.sha }}' 'Light-worker image uses an immutable commit tag'
 require_text "$workflow" '${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/operator-tools:sha-${{ github.sha }}' 'Operator image uses an immutable commit tag'
+require_text "$workflow" '${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/kamino-fleet-planner:sha-${{ github.sha }}' 'Go Kamino planner image uses an immutable commit tag'
 forbid_pattern "$workflow" '(^|[^[:alnum:]_-])latest([^[:alnum:]_-]|$)' 'Release workflow never publishes a mutable latest tag'
 forbid_pattern "$worker_entry" 'render[[:space:]]+(deploy|services)' 'Image publication does not mutate Render deployment state'
 forbid_pattern "$workflow" 'render[[:space:]]+(deploy|services)' 'Reusable image build does not mutate Render deployment state'
@@ -243,7 +244,7 @@ require_text "$build_script" 'BASH_SOURCE[0]' 'Build script resolves the checkou
 forbid_pattern "$build_script" 'git rev-parse' 'Container build does not depend on Git checkout ownership'
 
 # Runtime-image inventory remains complete and compiler-free.
-dockerfiles='Dockerfile.laserstream-workers Dockerfile.light-workers Dockerfile.operator-tools'
+dockerfiles='Dockerfile.laserstream-workers Dockerfile.light-workers Dockerfile.operator-tools Dockerfile.kamino-fleet-planner'
 cargo_binaries=$(bash "$build_script" --family all --list-binaries | LC_ALL=C sort -u)
 staged_binaries=$cargo_binaries
 dockerfile_binaries=$(for dockerfile in $dockerfiles; do dockerfile_inventory "$dockerfile"; done | LC_ALL=C sort -u)
@@ -279,24 +280,47 @@ for dockerfile in $dockerfiles; do
     Dockerfile.operator-tools)
       probe_variable=OPERATOR_TOOLS_PROBE_BINARIES
       ;;
+    Dockerfile.kamino-fleet-planner)
+      probe_variable=
+      ;;
     *) fail "Verifier has no binary inventory for $dockerfile"; continue ;;
   esac
   binaries=$(dockerfile_inventory "$dockerfile")
   family=${dockerfile#Dockerfile.}
-  build_binaries=$(bash "$build_script" --family "$family" --list-binaries | LC_ALL=C sort -u)
+  if [[ "$dockerfile" == 'Dockerfile.kamino-fleet-planner' ]]; then
+    build_binaries=$(printf '%s\n' loyal-klend-proxy yield-migrations | LC_ALL=C sort -u)
+    light_build_binaries=$(bash "$build_script" --family light-workers --list-binaries | LC_ALL=C sort -u)
+    while read -r binary; do
+      if printf '%s\n' "$light_build_binaries" | grep -Fxq "$binary"; then
+        pass "$dockerfile receives $binary from the light-worker artifact"
+      else
+        fail "$dockerfile is missing $binary from the light-worker artifact"
+      fi
+    done <<<"$build_binaries"
+  else
+    build_binaries=$(bash "$build_script" --family "$family" --list-binaries | LC_ALL=C sort -u)
+    if [[ "$dockerfile" == 'Dockerfile.light-workers' ]]; then
+      build_binaries=$(printf '%s\n' "$build_binaries" | grep -v '^loyal-klend-proxy$')
+    fi
+  fi
   require_inventory_equal "$binaries" "$build_binaries" "$dockerfile build-family and runtime inventories are exactly equal"
-  probe_binaries=$(workflow_probe_inventory "$probe_variable")
-  require_inventory_equal "$binaries" "$probe_binaries" "$dockerfile runtime and probe inventories are exactly equal"
-  require_fixed_count "$workflow" "PROBE_BINARIES: \${{ env.$probe_variable }}" 1 "$dockerfile probe consumes $probe_variable"
+  if [[ -n "$probe_variable" ]]; then
+    probe_binaries=$(workflow_probe_inventory "$probe_variable")
+    require_inventory_equal "$binaries" "$probe_binaries" "$dockerfile runtime and probe inventories are exactly equal"
+    require_fixed_count "$workflow" "PROBE_BINARIES: \${{ env.$probe_variable }}" 1 "$dockerfile probe consumes $probe_variable"
+  else
+    require_text "$workflow" 'test -x /usr/local/bin/loyal-klend-proxy' "$dockerfile runtime probe checks loyal-klend-proxy"
+    require_text "$workflow" 'test -x /usr/local/bin/yield-migrations' "$dockerfile runtime probe checks yield-migrations"
+  fi
   forbid_pattern "$dockerfile" '^FROM rust:' "$dockerfile has no Rust compiler stage"
   forbid_pattern "$dockerfile" 'cargo (chef|build)' "$dockerfile performs no Rust compilation"
   forbid_pattern "$dockerfile" '/app/target' "$dockerfile does not transport Cargo target state"
 done
 
 # Documentation must describe artifact publication separately from deployment.
-require_text "$crate_boundaries" 'Main pushes compile the three image-family inventories in parallel and publish immutable SHA tags.' 'Crate-boundary docs describe automatic immutable publication'
+require_text "$crate_boundaries" 'publish immutable SHA tags for all three Rust families and the Go planner.' 'Crate-boundary docs describe automatic immutable publication'
 require_text "$crate_boundaries" 'Manual deployment selects an already-published immutable image tag or digest and never rebuilds Rust.' 'Crate-boundary docs separate deployment from compilation'
-require_text "$worker_image_docs" 'A trusted `main` push compiles the three image-family inventories in parallel and publishes all three immutable image families.' 'Worker-image docs describe the parallel family build'
+require_text "$worker_image_docs" 'parallel and publishes all three immutable Rust image families plus the Go' 'Worker-image docs describe the parallel family build'
 require_text "$worker_image_docs" 'Publishing these images does not deploy them.' 'Worker-image docs distinguish publication from deployment'
 require_text "$worker_image_docs" 'Deployment selects an already-published immutable SHA tag or digest; it never rebuilds Rust.' 'Worker-image docs prohibit deployment-time rebuilding'
 
