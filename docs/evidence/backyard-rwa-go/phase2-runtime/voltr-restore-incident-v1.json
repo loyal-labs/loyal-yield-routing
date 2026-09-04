@@ -1,0 +1,69 @@
+{
+  "schema": "loyal-backyard-rwa-phase2-voltr-restore-incident/v1",
+  "verdict": "MANUAL_RECOVERY_REQUIRED",
+  "cluster": "mainnet-beta",
+  "commitment": "finalized",
+  "operationId": "fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe",
+  "action": "VOLTR_RESTORE_IDLE",
+  "requestedAmountRaw": "1000000",
+  "actualAmountRaw": "3793417",
+  "transactionSignature": "46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz",
+  "finalizedSlot": 444157954,
+  "blockTime": "2026-09-04T04:50:14Z",
+  "transactionError": null,
+  "feeLamports": 5000,
+  "effects": [
+    {
+      "address": "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh",
+      "role": "voltr-idle-usdc",
+      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "authority": "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb",
+      "beforeRaw": "0",
+      "afterRaw": "3793417",
+      "deltaRaw": "3793417"
+    },
+    {
+      "address": "FTDWN5Ay8tzYPJBJT4s2oZaHRQ7jKPo8XP2ZRWb5GP3M",
+      "role": "voltr-strategy-usdc",
+      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "authority": "8fLTf2ufePttZW3Es1xVoW3ows3WjXcuHQkkBCVvHsdH",
+      "beforeRaw": "3793417",
+      "afterRaw": "0",
+      "deltaRaw": "-3793417"
+    },
+    {
+      "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+      "role": "squads-usdc",
+      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+      "beforeRaw": "0",
+      "afterRaw": "0",
+      "deltaRaw": "0"
+    }
+  ],
+  "conservation": {
+    "usdcDeltaRaw": "0",
+    "capitalLost": false,
+    "destinationChanged": false
+  },
+  "cause": "The existing adaptor validated the requested liquidity, but Voltr swept the complete strategy USDC custody after the adaptor CPI. The outer requested amount was not an actual-transfer bound.",
+  "recoveryReason": "finalized_restore_actual_effect_mismatch: requested=1000000 actual=3793417 strategy_swept_to_idle",
+  "durableStatus": "manual_recovery",
+  "forwardFixes": [
+    {
+      "pullRequest": 208,
+      "mergeCommit": "cbab052f62b89996f68e69dec0a0c6624fa40dce",
+      "deployId": "dep-dad4vme7bikc739mnn8g",
+      "imageDigest": "sha256:dc0680320df4725100d308f240817b8fafdffc39dc64ce1b67083ee95f88216d",
+      "effect": "Interleave stage and restore, and fail closed when staged strategy custody exceeds the per-transaction cap."
+    },
+    {
+      "pullRequest": 209,
+      "mergeCommit": "4b86f605964fac400c1b75ba01020aa62c1a6ccc",
+      "deployId": "dep-dad53am7bikc739n6jgg",
+      "imageDigest": "sha256:b08f207f73411c17a0364617658d19e447cbd23a6e7da8b08084cd593615d351",
+      "effect": "Request and reconcile the complete within-cap staged balance that Voltr actually sweeps."
+    }
+  ],
+  "operatorDecisionRequired": "Do not relabel the original operation as reconciled. Explicit authorization is required either to accept a documented close-out exception or to close this lifecycle as FAIL and start a new bounded proof."
+}
