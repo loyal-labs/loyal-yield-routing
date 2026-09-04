@@ -181,7 +181,7 @@ func TestSimulationFailureIncludesSanitizedProgramResult(t *testing.T) {
 		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":44},"value":{"err":{"InstructionError":[3,{"Custom":6001}]},"logs":["Program log: policy rejected","Program failed: custom program error: 0x1771"],"unitsConsumed":9}}}`), nil
 	})
 	_, err := client.SimulateSignedTransaction(context.Background(), []byte{1, 2})
-	if err == nil || !strings.Contains(err.Error(), `slot=44 err={"InstructionError":[3,{"Custom":6001}]} last_log="Program failed: custom program error: 0x1771"`) {
+	if err == nil || !strings.Contains(err.Error(), `slot=44 err={"InstructionError":[3,{"Custom":6001}]} log_tail="Program log: policy rejected | Program failed: custom program error: 0x1771"`) {
 		t.Fatalf("simulation failure lost its safe program diagnostics: %v", err)
 	}
 }
