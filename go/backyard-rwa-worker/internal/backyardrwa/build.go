@@ -685,8 +685,13 @@ func isExactKaminoTransaction(instructions []decodedLegacyInstruction) bool {
 			switch leg {
 			case kaminoLegDeposit:
 				topologies = [][]string{{}, {route.Kamino.CollateralReserve, route.Kamino.DebtReserve}}
-			case kaminoLegBorrow, kaminoLegWithdraw:
+			case kaminoLegBorrow:
 				topologies = [][]string{{route.Kamino.CollateralReserve}}
+			case kaminoLegWithdraw:
+				topologies = [][]string{
+					{route.Kamino.CollateralReserve},
+					{route.Kamino.CollateralReserve, route.Kamino.DebtReserve},
+				}
 			case kaminoLegRepay:
 				topologies = [][]string{{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}}
 			}
