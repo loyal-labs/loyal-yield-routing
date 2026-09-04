@@ -379,7 +379,7 @@ export function validateJupiterHeader(input: Readonly<{
 }
 
 async function resolveOne(connection: Connection, edge: ReturnType<typeof catalogSwapEdges>[number],
-  decimals: Map<string, number>, maxAccounts = "64") {
+  decimals: Map<string, number>, maxAccounts = "64", dexes?: string) {
   const apiKey = process.env.JUPITER_API_KEY?.trim();
   const apiBase = apiKey ? "https://api.jup.ag/swap/v1" : "https://lite-api.jup.ag/swap/v1";
   const headers = apiKey ? { "x-api-key": apiKey } : undefined;
@@ -389,6 +389,7 @@ async function resolveOne(connection: Connection, edge: ReturnType<typeof catalo
     amount: amountRaw.toString(), slippageBps: String(RWA_MULTIPLY_ROUTE.assets.maxSlippageBps),
     swapMode: "ExactIn", maxAccounts,
   });
+  if (dexes) params.set("dexes", dexes);
   const quoteResponse = await fetch(`${apiBase}/quote?${params}`, {
     ...(headers ? { headers } : {}),
     signal: AbortSignal.timeout(20_000),
@@ -745,7 +746,7 @@ export async function resolveRepresentativeJupiterFamilies(connection: Connectio
  * The caller must still bind it to the compiler's exact policy constraint;
  * this helper intentionally bypasses the cached 52-edge ledger.
  */
-export async function resolveFreshJupiterEdge(connection: Connection, edgeKey: string) {
+export async function resolveFreshJupiterEdge(connection: Connection, edgeKey: string, maxAccounts = "64", dexes?: string) {
   invariant(await connection.getGenesisHash() === RWA_MULTIPLY_ROUTE.genesisHash, "RPC is not mainnet-beta");
   const edge = catalogSwapEdges().find((candidate) => candidate.key === edgeKey);
   invariant(edge, `fresh Jupiter edge ${edgeKey} is not in the exact catalog`);
@@ -755,7 +756,7 @@ export async function resolveFreshJupiterEdge(connection: Connection, edgeKey: s
     const mint = await getMint(connection, new PublicKey(asset.mint), "confirmed", new PublicKey(asset.tokenProgram));
     decimals.set(asset.mint, mint.decimals);
   }
-  return resolveOne(connection, edge, decimals);
+  return resolveOne(connection, edge, decimals, maxAccounts, dexes);
 }
 
 

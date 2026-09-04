@@ -42,13 +42,13 @@ var mapleSyrupUSDCUSDC = RuntimeRoute{
 		OpenRouteStep:              "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f",
 		DeleverRouteStep:           "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11",
 		SwapStableToCollateralStep: "04b40a67014385131f562116473e41026aa7108fea9081b14e13c1204528ced2",
-		SwapCollateralToStableStep: "7401b4714f788c8f96ca4b7a207ff58e072b7e3261ec12c739ac9697c4409782",
+		SwapCollateralToStableStep: "1f2392e28fb96d92fb1b98a46609b8b7f4f0d38e6ddf943cd2d473a6e799589d",
 	},
 	PolicyAccounts: map[Action]string{
 		OpenRouteStep:              "5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c",
 		DeleverRouteStep:           "AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo",
 		SwapStableToCollateralStep: "DYDidUg6uEX5YK7d5UBXL7v6P5BXkkMZQneATe3mpS3t",
-		SwapCollateralToStableStep: "Esg2ZrtwkkdzTJyiUfPZ3H3HFVq6x8diMGXSypMPXB89",
+		SwapCollateralToStableStep: "FhvEZNhKwF3dPZL36rrcbo5TCvTZTRBadE4YFNWxxwVR",
 	},
 }
 
