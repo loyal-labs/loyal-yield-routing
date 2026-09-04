@@ -25,6 +25,29 @@ func Decide(s Snapshot) Decision {
 				return Decision{Action: HoldManualRecovery, Reason: "voltr_restore_actual_effect_exceeds_cap", AmountRaw: 0,
 					IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "voltr_restore_actual_effect_exceeds_cap"), StrategyKey: SelectedRouteID}
 			}
+			// The finalized restore incident can leave Voltr's reported strategy
+			// NAV stale even though every strategy custody is flat. A one-raw
+			// allocation is the minimum installed-policy operation that consumes a
+			// zero-NAV report; the withdrawal path below immediately stages and
+			// restores that exact residue before declaring terminal custody.
+			if !s.HasPosition && s.StrategyNAVRaw == 0 && s.PriorReportedNAVRaw > 0 &&
+				s.SquadsIdleRaw == 0 && s.VoltrStrategyIdleRaw == 0 && s.VoltrIdleRaw > 0 {
+				return Decision{Action: VoltrAllocateToSquads, Reason: "terminal_nav_reconciliation_probe", AmountRaw: 1,
+					IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "terminal_nav_reconciliation_probe"), StrategyKey: SelectedRouteID}
+			}
+			if s.VoltrStrategyIdleRaw > 0 {
+				return Decision{Action: VoltrRestoreIdle, Reason: "withdrawal_staged", AmountRaw: s.VoltrStrategyIdleRaw,
+					IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "withdrawal_staged", s.VoltrStrategyIdleRaw), StrategyKey: SelectedRouteID}
+			}
+			if s.SquadsIdleRaw > 0 && !s.HasPosition && s.PrimeIdleRaw == 0 {
+				return Decision{Action: StageSquadsToVoltr, Reason: "withdrawal_terminal_residue", AmountRaw: s.SquadsIdleRaw,
+					IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "withdrawal_terminal_residue", s.SquadsIdleRaw), StrategyKey: SelectedRouteID}
+			}
+			if s.WithdrawalDemandRaw <= s.VoltrIdleRaw && s.StrategyNAVRaw == 0 && s.PriorReportedNAVRaw == 0 &&
+				!s.CapitalMutated && !s.PostMutationNAVRequired {
+				return Decision{Action: Hold, Reason: "withdrawal_covered_terminal_nav_current", AmountRaw: 0,
+					IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "withdrawal_covered_terminal_nav_current"), StrategyKey: SelectedRouteID}
+			}
 		}
 		decision := decideFixed(s)
 		decision = neutralizeRouteAction(decision)

@@ -205,18 +205,11 @@ func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, publicK
 		if request.AmountRaw != 0 {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("NAV refresh cannot move capital")
 		}
-		// A terminal zero-NAV correction must use Voltr's withdrawal accounting
-		// path. Its zero-amount deposit path overflows while realizing a loss,
-		// whereas this path consumes the same report ticket without moving funds.
-		// The installed withdrawal constraint has a lower bound of one raw unit.
-		// Request that minimum while terminal strategy custody is zero; the
-		// adaptor returns an actual amount of zero, so REPORT_NAV remains an
-		// economically zero operation with unchanged token effects.
-		data, err := voltrStrategyData(voltrWithdrawDiscriminator, adaptorWithdrawDiscriminator, 1, request.Report)
+		data, err := voltrStrategyData(voltrDepositDiscriminator, adaptorDepositDiscriminator, 0, request.Report)
 		if err != nil {
 			return compiledInstruction{}, publicKey{}, 0, err
 		}
-		return voltrWithdrawInstruction(data), mustKey(bridgeWithdrawPolicy), 0, nil
+		return voltrDepositInstruction(data), mustKey(bridgeNAVPolicy), 0, nil
 	case VoltrRestoreIdle:
 		if request.AmountRaw == 0 || request.AmountRaw > bridgeCapRaw {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid Voltr restore amount")
