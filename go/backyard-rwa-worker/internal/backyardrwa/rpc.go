@@ -149,32 +149,39 @@ func (c *RPCClient) GetMultipleAccounts(
 	addresses []string,
 	minContextSlot int64,
 ) (int64, []ConfirmedAccount, error) {
-	return c.getMultipleAccounts(ctx, addresses, minContextSlot, "")
+	return c.getMultipleAccounts(ctx, addresses, minContextSlot, nil)
 }
 
-// GetMultipleAccountsWithOptional permits exactly one caller-pinned lifecycle
-// address to be absent. Every other account remains mandatory.
+// GetMultipleAccountsWithOptional permits only caller-pinned lifecycle
+// addresses to be absent. Every other account remains mandatory.
 func (c *RPCClient) GetMultipleAccountsWithOptional(
 	ctx context.Context,
 	addresses []string,
 	minContextSlot int64,
-	optionalAddress string,
+	optionalAddresses ...string,
 ) (int64, []ConfirmedAccount, error) {
-	found := false
-	for _, candidate := range addresses {
-		found = found || candidate == optionalAddress
+	optional := make(map[string]struct{}, len(optionalAddresses))
+	for _, address := range optionalAddresses {
+		found := false
+		for _, candidate := range addresses {
+			found = found || candidate == address
+		}
+		if address == "" || !found {
+			return 0, nil, fmt.Errorf("optional account must be pinned inside the requested address set")
+		}
+		optional[address] = struct{}{}
 	}
-	if optionalAddress == "" || !found {
+	if len(optional) == 0 {
 		return 0, nil, fmt.Errorf("optional account must be pinned inside the requested address set")
 	}
-	return c.getMultipleAccounts(ctx, addresses, minContextSlot, optionalAddress)
+	return c.getMultipleAccounts(ctx, addresses, minContextSlot, optional)
 }
 
 func (c *RPCClient) getMultipleAccounts(
 	ctx context.Context,
 	addresses []string,
 	minContextSlot int64,
-	optionalAddress string,
+	optionalAddresses map[string]struct{},
 ) (int64, []ConfirmedAccount, error) {
 	if len(addresses) == 0 || minContextSlot <= 0 {
 		return 0, nil, fmt.Errorf("account addresses and minContextSlot are required")
@@ -202,7 +209,7 @@ func (c *RPCClient) getMultipleAccounts(
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for index, value := range result.Value {
 		if value == nil || value.Owner == "" {
-			if addresses[index] == optionalAddress {
+			if _, optional := optionalAddresses[addresses[index]]; optional {
 				accounts[index] = ConfirmedAccount{Address: addresses[index]}
 				continue
 			}

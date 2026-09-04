@@ -17,14 +17,14 @@ func cadenceNAV(slot, current, reported uint64, lastUpdated time.Time) RouteNAVS
 
 func TestOptionalLifecycleObligationPrefersSelectedPhase2Close(t *testing.T) {
 	selected := mapleSyrupUSDCUSDC.Kamino.Obligation
-	if got := optionalLifecycleObligation([]string{kaminoPrimeUSDCObligation, selected}); got != selected {
-		t.Fatalf("selected Phase 2 obligation must be optional after terminal close: %s", got)
+	if got := optionalLifecycleObligations([]string{kaminoPrimeUSDCObligation, selected}); len(got) != 2 || got[0] != selected || got[1] != kaminoPrimeUSDCObligation {
+		t.Fatalf("both closed lifecycle obligations must be optional: %v", got)
 	}
-	if got := optionalLifecycleObligation([]string{kaminoPrimeUSDCObligation}); got != kaminoPrimeUSDCObligation {
-		t.Fatalf("Phase 1 obligation fallback drifted: %s", got)
+	if got := optionalLifecycleObligations([]string{kaminoPrimeUSDCObligation}); len(got) != 1 || got[0] != kaminoPrimeUSDCObligation {
+		t.Fatalf("Phase 1 obligation fallback drifted: %v", got)
 	}
-	if got := optionalLifecycleObligation([]string{bridgeSquadsATA}); got != "" {
-		t.Fatalf("unrelated account became optional: %s", got)
+	if got := optionalLifecycleObligations([]string{bridgeSquadsATA}); len(got) != 0 {
+		t.Fatalf("unrelated account became optional: %v", got)
 	}
 }
 
