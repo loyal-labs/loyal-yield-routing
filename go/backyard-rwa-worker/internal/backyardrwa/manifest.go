@@ -445,7 +445,7 @@ func (m RouteManifest) primeUSDCPacket(action Action, leg kaminoPrimeUSDCLeg, am
 }
 
 func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash, lane string) (KaminoPrimeUSDCRequest, error) {
-	if lane != SelectedRouteID {
+	if lane == "" || lane == RouteID || lane == PhaseOneLaneID {
 		request, err := m.primeUSDCPacket(action, leg, amount, blockhash)
 		if err == nil {
 			request.RouteLane = lane
@@ -455,14 +455,13 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	if amount == 0 || blockhash.Blockhash == "" || blockhash.LastValidBlockHeight <= 0 {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
-	policies := map[kaminoPrimeUSDCLeg]struct{ policy, hash string }{
-		kaminoLegDeposit:  {"5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c", "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f"},
-		kaminoLegBorrow:   {"2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV", "6f97d7928d7927d65b588644d2e0506bc86b2173f2f525edf087474e28631a94"},
-		kaminoLegRepay:    {"AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo", "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11"},
-		kaminoLegWithdraw: {"4ZRoNsVZCNJXUdNjFL6MvjMhbLFG512hjStfipMftzcY", "e994455d6351a4f615ae57dd0b0b65287e8c6af10457e70383307bb43c762a7e"},
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
+	policies := route.KaminoPolicies
 	metaSets := func() []KaminoPrimeUSDCAccounts {
-		deposit, borrow, repay, withdraw := mapleKaminoMetas()
+		deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 		convert := func(input []accountMeta) KaminoPrimeUSDCAccounts {
 			out := make(KaminoPrimeUSDCAccounts, len(input))
 			for i, item := range input {
@@ -491,7 +490,7 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	for i := 0; i < 8; i++ {
 		data[8+i] = byte(amount >> (8 * i))
 	}
-	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: entry.policy, PolicyAccountDataSHA256: entry.hash, PolicyConstraintIndex: 0, Accounts: sets[index], Data: data, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
+	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: entry.Policy, PolicyAccountDataSHA256: entry.DataSHA256, PolicyConstraintIndex: 0, Accounts: sets[index], Data: data, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
 	if _, observedLeg, err := kaminoRouteInstruction(request, lane); err != nil || observedLeg != leg {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}

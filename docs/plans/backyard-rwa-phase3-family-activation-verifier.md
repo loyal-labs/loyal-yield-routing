@@ -238,6 +238,16 @@ replacement accounts. Document temporary overlap; require one selected runtime
 binding per logical entry and no unexplained executable authority at close.
 An authority gap cannot be disguised as rollover repair.
 
+Measured local construction checkpoint (2026-09-04): the sole verifier now
+compiles the four Kamino legs for AUTO/PYUSD and Ethena/PYUSD against retained
+SDK account vectors and installed-policy hashes, and exercises identity,
+privilege, policy, lane, constraint and amount mutations. It reports this as
+`LOCAL_UNSIGNED_CONSTRUCTION_AND_MUTATIONS_NOT_PROGRAM_EXECUTION` under R03.
+Together with retained Prime/USDC and Maple/USDC, four lanes resolve locally;
+the selection manifest is unchanged. This subclaim does not establish fresh
+oracle/refresh correctness, program execution, complete entry/exit support or
+live activation. R03 and the all-eleven R02/R04 requirements remain unchanged.
+
 ### R04 — batched lane proof with explicit simulation boundaries
 
 For all 11 lanes prove builder bytes, discriminators, accounts/signers,

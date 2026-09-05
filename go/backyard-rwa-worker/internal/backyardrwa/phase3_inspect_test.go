@@ -6,7 +6,7 @@ import (
 )
 
 func TestPhase3InspectionResolvesProductionBindingsWithoutExecution(t *testing.T) {
-	encoded, err := InspectPhase3Runtime([]string{PhaseOneLaneID, SelectedRouteID, "unknown/asset/debt"})
+	encoded, err := InspectPhase3Runtime([]string{PhaseOneLaneID, SelectedRouteID, "AUTO/AUTO/PYUSD", "Ethena/USDe/PYUSD", "unknown/asset/debt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,10 +21,10 @@ func TestPhase3InspectionResolvesProductionBindingsWithoutExecution(t *testing.T
 	if err := json.Unmarshal(encoded, &result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.ReadOnly || len(result.Lanes) != 3 || !result.Lanes[0].Resolved || !result.Lanes[1].Resolved || result.Lanes[2].Resolved {
+	if !result.ReadOnly || len(result.Lanes) != 5 || !result.Lanes[0].Resolved || !result.Lanes[1].Resolved || !result.Lanes[2].Resolved || !result.Lanes[3].Resolved || result.Lanes[4].Resolved {
 		t.Fatalf("inspection did not distinguish production bindings from an unknown lane: %s", encoded)
 	}
-	for _, row := range result.Lanes[:2] {
+	for _, row := range result.Lanes[:4] {
 		bound, err := runtimeRoute(row.Lane)
 		if err != nil || row.Binding.Kamino != bound.Kamino || row.Binding.DebtCustody != bound.DebtCustody {
 			t.Fatalf("inspection diverged from production resolver for %s", row.Lane)

@@ -24,6 +24,7 @@ type RuntimeRoute struct {
 	ObligationCollateralFarm  string
 	DebtFarm                  string
 	ObligationDebtFarm        string
+	KaminoPolicies            map[kaminoPrimeUSDCLeg]kaminoPolicyBinding
 	PolicyHashes              map[Action]string
 	PolicyAccounts            map[Action]string
 }
@@ -48,6 +49,12 @@ var mapleSyrupUSDCUSDC = RuntimeRoute{
 	DebtTokenProgram:          classicTokenProgram,
 	DebtFarm:                  mapleDebtFarm,
 	ObligationDebtFarm:        mapleObligationDebtFarm,
+	KaminoPolicies: map[kaminoPrimeUSDCLeg]kaminoPolicyBinding{
+		kaminoLegDeposit:  {"5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c", "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f"},
+		kaminoLegBorrow:   {"2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV", "6f97d7928d7927d65b588644d2e0506bc86b2173f2f525edf087474e28631a94"},
+		kaminoLegRepay:    {"AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo", "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11"},
+		kaminoLegWithdraw: {"4ZRoNsVZCNJXUdNjFL6MvjMhbLFG512hjStfipMftzcY", "e994455d6351a4f615ae57dd0b0b65287e8c6af10457e70383307bb43c762a7e"},
+	},
 	PolicyHashes: map[Action]string{
 		OpenRouteStep:              "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f",
 		DeleverRouteStep:           "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11",
@@ -94,6 +101,10 @@ func runtimeRoute(lane string) (RuntimeRoute, error) {
 			DebtFeeReceiver: kaminoUSDCFeeVault, CollateralTokenProgram: classicTokenProgram, DebtTokenProgram: classicTokenProgram}, nil
 	case SelectedRouteID:
 		return mapleSyrupUSDCUSDC, nil
+	case "AUTO/AUTO/PYUSD":
+		return autoAUTOPYUSD, nil
+	case "Ethena/USDe/PYUSD":
+		return ethenaUSDePYUSD, nil
 	default:
 		return RuntimeRoute{}, fmt.Errorf("runtime lane %q is not installed", lane)
 	}

@@ -88,6 +88,17 @@ async function localSendJournalObservation(): Promise<Observation> {
   if (result.data) result.data.proofLevel="LOCAL_DATABASE_AND_CONTROLLED_RPC_UNSIGNED_FIXTURE_NO_SIGNER_OR_SEND";
   return result;
 }
+async function localKaminoConstructionObservation(): Promise<Observation> {
+  const result=await localCapObservation(["TestCatalogKaminoConstructionMatchesRetainedAUTOAndEthena"],
+    "AUTO/Ethena unsigned Kamino construction against retained SDK account vectors");
+  if (result.data) {
+    result.data.proofLevel="LOCAL_UNSIGNED_CONSTRUCTION_AND_MUTATIONS_NOT_PROGRAM_EXECUTION";
+    result.data.lanes=["AUTO/AUTO/PYUSD","Ethena/USDe/PYUSD"];
+    result.data.operations=["deposit","borrow","repay","withdraw"];
+    result.data.retainedEvidence="docs/evidence/backyard-rwa-go/phase3/setup-feasibility-2026-09-04.json";
+  }
+  return result;
+}
 async function rpc(method: string, params: unknown[] = []): Promise<any> {
   const endpoint = process.env.SOLANA_RPC_URL;
   if (!endpoint) throw new Error("RPC_CREDENTIAL_MISSING");
@@ -291,6 +302,7 @@ function sourceIdentity() {
   const paths=[...new Set(git(["ls-files","-z","--cached","--others","--exclude-standard","--",
     "go/backyard-rwa-worker","tools/backyard-voltr/src","tools/backyard-voltr/package.json",
     "docs/manifests/backyard-rwa-v1.json","crates/loyal-actions/fixtures/backyard_rwa_policy_catalog_v1.json","bun.lock",
+    "docs/evidence/backyard-rwa-go/phase3/setup-feasibility-2026-09-04.json",
   ]).split("\0").filter(Boolean))].sort();
   const files=paths.map(path=>({path,sha256:sha(read(path))}));
   return {head:git(["rev-parse","HEAD"]).trim(),
@@ -305,7 +317,8 @@ export async function verify() {
   const catalogLanes = catalog.lanes.map((l: Json) => [l.market,l.collateral,l.debt].join("/"));
   const active = manifest.runtimeActivation?.runtimeRoutes ?? [];
   const offline = process.argv.includes("--offline");
-  const [runtime,localCaps,localSendJournal] = await Promise.all([runtimeObservation(),localCapObservation(),localSendJournalObservation()]);
+  const [runtime,localCaps,localSendJournal,localKaminoConstruction] = await Promise.all([
+    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localKaminoConstructionObservation()]);
   const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
   const [chain,database,deployment,setupRent] = offline
     ? ["Solana RPC","Postgres","Render","setup rent feasibility"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
@@ -329,6 +342,7 @@ export async function verify() {
       observedCheck(runtime,"every catalogued lane resolves through production",d => d.lanes.every((row: Json) => row.resolved === true)),
     ],["Durable three-family queue with reviewed identity bindings and in-family-only flat substitution behavior."]),
     measuredCondition("R03","Shared debt/token/valuation/exit runtime and existing policy authority",[
+      observedCheck(localKaminoConstruction,"AUTO/Ethena four-leg unsigned construction matches retained SDK vectors and rejects account/policy substitutions",d=>d.pass===true),
       measured("catalog operation and swap-edge cardinality",catalog.operations.length === 44 && catalog.swapEdges.length === 52,
         {operations:catalog.operations.length,swapEdges:catalog.swapEdges.length}),
       observedCheck(chain,"required observed accounts are present",d => Array.isArray(d.accounts) && d.accounts.length > 0 && d.accounts.every((a: Json) => a.present === true)),
@@ -377,7 +391,7 @@ export async function verify() {
     // Existing policy allocations are a diagnostic sample, not a fabricated
     // pass/fail for the complete proposed setup graph. Retain prices, hashes,
     // rent and the explicit new-allocation proof limitation in the snapshot.
-    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal},
+    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localKaminoConstruction},
     conditions,
   };
 }

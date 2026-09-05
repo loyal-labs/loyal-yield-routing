@@ -5,6 +5,41 @@ That file alone defines acceptance; this handoff supplies implementation order.
 The operator requested the revision to remove late cap/proof blockers and ship
 all catalogued markets through one shared implementation.
 
+## Current checkpoint — AUTO/Ethena construction, 2026-09-04
+
+The goal remains active and all full R01-R08 conditions remain incomplete.
+Local route resolution now covers four of eleven lanes: retained Prime/USDC
+and Maple/USDC plus AUTO/PYUSD and Ethena/PYUSD. This is not four supported or
+live-validated lanes. The production selection manifest is unchanged.
+
+The narrower AUTO/Ethena binding patch was accepted through the same review
+path using retained exact custody/obligation identities and all eight matching
+installed-policy vectors. These two lanes have no farm-account repair. This
+does not authorize bypassing review for the remaining seven missing bindings.
+The shared Kamino packet producer now selects all four per-leg policies from
+each registered route; unknown routes no longer fall back to Prime packets.
+Compilation rejects substituted policies, hashes, identities and privileges.
+
+The verifier measures eight unsigned packet constructions against independent
+retained SDK vectors, plus mutations at every account position and policy,
+lane, constraint and amount boundaries. It fingerprints the retained input too.
+This proves local construction only: refresh-oracle suitability, actual program
+execution, capacity, non-USDC decisions/conversions and complete exits are not
+established by it. Snapshot:
+`docs/evidence/backyard-rwa-go/phase3/catalog-construction-2026-09-04.json`.
+External observations and the disposable-PostgreSQL witness are unavailable in
+this offline snapshot; earlier evidence retains its own observation boundaries.
+
+Next: complete the new-family entry/exit graph and connect its conservative
+costs to actual production reservation admission. Then batch the remaining
+reviewed lane bindings and real-program proof. Reuse the existing journal,
+valuations and final-send gate; do not replace admission work with more negative
+cap checks. Required policy creation remains subject to the unanswered measured
+cap conflict, not an implicit cap raise. No policy install, production database
+mutation, signer access, live activation, deployment or send occurred here.
+
+Historical checkpoints below are chronological, not current readiness claims.
+
 ## Runtime goal text
 
 > Ship deployed support for the exact 11 catalogued Backyard RWA lanes on
@@ -112,8 +147,8 @@ Do not claim the command exists or passes until implemented and executed.
 
 The implementation goal is active in Codex. Baseline and fresh token/capacity
 reads are retained under `docs/evidence/backyard-rwa-go/phase3/`. The sole
-verifier exists but remains a fail-closed measurement scaffold: R01-R08 are
-NOT_IMPLEMENTED, not satisfied by the presence of new source or tests.
+verifier exists but remains incomplete: R01-R08 are not satisfied by the
+presence of new source or tests. Later checkpoints add measured subclaims.
 
 Implemented locally: fixed 1/20/60 budget accounting with exit reservations;
 lease-locked PostgreSQL reservation and wire binding; guards before production

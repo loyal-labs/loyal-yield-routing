@@ -260,6 +260,16 @@ func kaminoRouteInstruction(request KaminoPrimeUSDCRequest, lane string) (compil
 	if request.PolicyConstraintIndex != kaminoConstraintIndex(leg) {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet uses the wrong fixed lane constraint index")
 	}
+	if lane != "" && lane != RouteID && lane != PhaseOneLaneID {
+		route, err := runtimeRoute(lane)
+		if err != nil {
+			return compiledInstruction{}, 0, err
+		}
+		binding, ok := route.KaminoPolicies[leg]
+		if !ok || request.Policy != binding.Policy || request.PolicyAccountDataSHA256 != binding.DataSHA256 {
+			return compiledInstruction{}, 0, fmt.Errorf("Kamino policy does not match the exact route leg binding")
+		}
+	}
 	return compiledInstruction{program: mustKey(kaminoPrimeUSDCProgram), accounts: accounts, data: append([]byte(nil), request.Data...)}, leg, nil
 }
 
