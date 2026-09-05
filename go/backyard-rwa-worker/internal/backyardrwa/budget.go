@@ -14,7 +14,10 @@ const (
 
 // BudgetHold is an admission rejection, never an authorization to sign or
 // retry an unchanged intent. The caller must journal it under the route lease.
-type BudgetHold struct{ Reason string }
+type BudgetHold struct {
+	Reason  string            `json:"reason"`
+	Details map[string]string `json:"details,omitempty"`
+}
 
 func (h *BudgetHold) Error() string  { return "HOLD: " + h.Reason }
 func budgetHold(reason string) error { return &BudgetHold{Reason: reason} }

@@ -140,6 +140,19 @@ charges underlying withdrawal liquidity rather than receipt units. Tests cover
 message/signature equivalence and fee-inclusive transaction-cap rejection.
 These primitives still need fresh valuation and complete exit-graph estimates
 wired into durable admission; their unit success does not satisfy R01.
+USDC-normalized valuation now checks mint/program/decimals, message-bound fees,
+overflow and a maximum 32-slot validity interval. The route-token observer reads
+both reserves/mints and chain Clock coherently, rejects prices older than 60
+seconds, and can obtain refreshed prices through an unsigned permissionless
+reserve-refresh simulation using the existing production prefix. Captured
+simulation state is explicitly labeled, not represented as a landed refresh.
+Non-USDC valuations apply a 1% upward token-price and downward USDC-price margin;
+USDC against itself remains exact. These are conservative estimates, not a
+guarantee against arbitrary subsequent price changes.
+The read-only price preflight passed for the two existing runtime lanes at
+slots 444380781-444380783 and observed a 5,000-lamport unsigned NAV-message fee.
+This is not all-eleven-lane, native-SOL valuation, full lifecycle or R01 proof.
+Native-fee price sourcing and complete exit-cost/admission wiring remain open.
 The new gates intentionally
 refuse transactions without an initialized durable goal budget and admission.
 No production budget was initialized; no Phase 3 transaction was signed or sent.

@@ -361,6 +361,15 @@ func compileLegacyMessage(feePayer, blockhash publicKey, instructions []compiled
 	if len(instructions) != 1 {
 		return nil, fmt.Errorf("bridge transaction must contain exactly one Squads instruction")
 	}
+	return encodeLegacyMessage(feePayer, blockhash, instructions)
+}
+
+// Encoding is separate from each caller's closed instruction-set validation.
+// The bridge/signing boundary above still permits exactly one instruction.
+func encodeLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
+	if len(instructions) == 0 || len(instructions) > 4 {
+		return nil, fmt.Errorf("unsupported legacy instruction count")
+	}
 	accounts := []accountMeta{{key: feePayer, signer: true, writable: true}}
 	for _, instruction := range instructions {
 		for _, account := range instruction.accounts {
