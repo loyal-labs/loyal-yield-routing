@@ -68,39 +68,67 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 		if sourceRaw < amount {
 			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("Jupiter source custody is below exact input")
 		}
-		quote, instruction, err := client.freshSwapForRoute(ctx, decision.StrategyKey, decision.Action, amount)
-		if err != nil {
-			// Jupiter may temporarily return a different route dialect or account
-			// shape as liquidity changes. That is a fail-closed observation miss,
-			// not a fatal worker invariant: do not journal or sign it, and let the
-			// serialized loop request a fresh quote on its next bounded tick.
-			return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
-		}
-		constraintIndex, err := binding.constraintIndex(instruction)
-		if err != nil {
-			return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
-		}
-		out, minimum, err := validateJupiterQuoteForRoute(quote, decision.Action, amount, decision.StrategyKey)
-		if err != nil || destinationRaw > math.MaxUint64-minimum {
-			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("Jupiter destination threshold overflows")
-		}
-		minimumAfter := destinationRaw + minimum
-		blockhash, err := rpc.LatestBlockhash(ctx)
-		if err != nil {
-			return Observation{}, JupiterExecutionEvidence{}, err
-		}
-		request := JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: binding.Policy, PolicyAccountDataSHA256: binding.PolicyAccountDataSHA256, PolicyConstraintIndex: constraintIndex, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: decision.StrategyKey}
-		request, err = prepareJupiterLookupTables(ctx, rpc, request, observation.Snapshot.Slot)
-		if err != nil {
-			return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
-		}
-		return observation, JupiterExecutionEvidence{
-			Request: request,
-			ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Conserved: false, Accounts: []ExpectedAccountEffect{
-				{Address: sourceATA, Owner: sourceProgram, Mint: sourceMint, Authority: bridgeVault, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
-				{Address: destinationATA, Owner: destinationProgram, Mint: destinationMint, Authority: bridgeVault, BeforeRaw: destinationRaw, AfterRaw: minimumAfter, MinimumAfterRaw: &minimumAfter},
-			}},
-		}, nil
+		evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
+		return observation, evidence, err
 	}
 	return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("confirmed Jupiter construction reads did not align"))
+}
+
+// Current execution calls this after checking actual custody/policy accounts.
+// Exit costing may also quote prospective balances, but must never treat that
+// estimate as current-state simulation or promote its wire to execution.
+func prepareJupiterQuoteEvidence(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (JupiterExecutionEvidence, error) {
+	binding, err := manifest.jupiterPolicyForRoute(decision.Action, decision.StrategyKey)
+	if err != nil {
+		return JupiterExecutionEvidence{}, err
+	}
+	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(decision.Action, decision.StrategyKey)
+	if err != nil {
+		return JupiterExecutionEvidence{}, err
+	}
+	sourceProgram, destinationProgram := bridgeTokenProgram, bridgeTokenProgram
+	if catalogJupiterRoute(decision.StrategyKey) {
+		edge, err := catalogJupiterBindingForRoute(decision.Action, decision.StrategyKey)
+		if err != nil {
+			return JupiterExecutionEvidence{}, err
+		}
+		sourceProgram, destinationProgram = edge.SourceTokenProgram, edge.DestinationTokenProgram
+	}
+	if rpc == nil || client == nil || decision.AmountRaw <= 0 || uint64(decision.AmountRaw) > sourceRaw || slot <= 0 {
+		return JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter quote construction inputs")
+	}
+	amount := uint64(decision.AmountRaw)
+	quote, instruction, err := client.freshSwapForRoute(ctx, decision.StrategyKey, decision.Action, amount)
+	if err != nil {
+		// Jupiter may temporarily return a different route dialect or account
+		// shape as liquidity changes. That is a fail-closed observation miss,
+		// not a fatal worker invariant: do not journal or sign it, and let the
+		// serialized loop request a fresh quote on its next bounded tick.
+		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
+	}
+	constraintIndex, err := binding.constraintIndex(instruction)
+	if err != nil {
+		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
+	}
+	out, minimum, err := validateJupiterQuoteForRoute(quote, decision.Action, amount, decision.StrategyKey)
+	if err != nil || destinationRaw > math.MaxUint64-minimum {
+		return JupiterExecutionEvidence{}, fmt.Errorf("Jupiter destination threshold overflows")
+	}
+	minimumAfter := destinationRaw + minimum
+	blockhash, err := rpc.LatestBlockhash(ctx)
+	if err != nil {
+		return JupiterExecutionEvidence{}, err
+	}
+	request := JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: binding.Policy, PolicyAccountDataSHA256: binding.PolicyAccountDataSHA256, PolicyConstraintIndex: constraintIndex, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: decision.StrategyKey}
+	request, err = prepareJupiterLookupTables(ctx, rpc, request, slot)
+	if err != nil {
+		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
+	}
+	return JupiterExecutionEvidence{
+		Request: request,
+		ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Conserved: false, Accounts: []ExpectedAccountEffect{
+			{Address: sourceATA, Owner: sourceProgram, Mint: sourceMint, Authority: bridgeVault, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
+			{Address: destinationATA, Owner: destinationProgram, Mint: destinationMint, Authority: bridgeVault, BeforeRaw: destinationRaw, AfterRaw: minimumAfter, MinimumAfterRaw: &minimumAfter},
+		}},
+	}, nil
 }

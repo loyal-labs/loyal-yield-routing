@@ -14,6 +14,10 @@ import (
 // The transport supplies controlled chain inputs; it rejects every signing,
 // simulation and send RPC. This is a local negative witness, not live proof.
 func budgetBuildRPC(t *testing.T, fee uint64, finalSlot int64) *RPCClient {
+	return budgetBuildRPCWithAccounts(t, fee, finalSlot, nil)
+}
+
+func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra []ConfirmedAccount) *RPCClient {
 	t.Helper()
 	config, err := pinnedKaminoObservationConfig()
 	if err != nil {
@@ -38,6 +42,9 @@ func budgetBuildRPC(t *testing.T, fee uint64, finalSlot int64) *RPCClient {
 	for _, a := range []ConfirmedAccount{usdc, sol, mint(bridgeUSDC, 6), mint(budgetWrappedSOLMint, 9), clock} {
 		accounts[a.Address] = a
 	}
+	for _, a := range extra {
+		accounts[a.Address] = a
+	}
 	rpc, _ := NewRPCClient("https://rpc.invalid")
 	reads := 0
 	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -50,6 +57,8 @@ func budgetBuildRPC(t *testing.T, fee uint64, finalSlot int64) *RPCClient {
 		}
 		var result any
 		switch body.Method {
+		case "getLatestBlockhash":
+			result = map[string]any{"context": map[string]int{"slot": 42}, "value": map[string]any{"blockhash": bridgeVault, "lastValidBlockHeight": 99}}
 		case "getSlot":
 			reads++
 			result = int64(42)

@@ -216,11 +216,32 @@ budget sides atomically under the existing journal lease. Missing goal state
 remains HOLD, not initialization. Existing startup signer validation, per-build
 signer validation, caps, wire binding and final-send checks remain in place.
 
-This covers selected-lane zero-collateral/zero-debt bridge custody only. It is
+This initial slice covers selected-lane zero-collateral/zero-debt bridge custody only. It is
 not position/swap/setup admission, global flat-queue proof, deployed governor
 proof or live recovery. The sole verifier measures these local subclaims without
 promoting R01 to PASS; full position exits, safe one-time budget initialization,
 all-lane proof and deployment/canaries remain required.
+
+#### Local debt-free return-admission checkpoint — 2026-09-04
+
+Admission now also prices a complete debt-free collateral return: full Kamino
+withdrawal, NAV, collateral-to-USDC conversion, NAV, staging, NAV, full restoration
+and terminal NAV. The intermediate NAV and actual swap have their own production
+admission paths; they do not inherit permission from a future cost template.
+Entry, borrowing and debt-bearing repayment/conversion admission are still absent.
+
+The producer verifies exit policy identities and the report ticket, reuses the
+production quote/parser/compiler, retains the prospective unsigned swap input,
+and values all principal transfers and message fees. Its USDC output estimate
+applies the existing two-sided 100-bps valuation margin to the quote. This is a
+conservative reserve estimate, not an enforceable output maximum or guarantee:
+fresh actual poststate must fit the reserved full restoration, otherwise HOLD.
+No new risk ceiling or authority is introduced.
+
+Controlled-RPC tests drive admission through every return step and check durable
+withdrawal reservation in disposable PostgreSQL. They do not prove real program
+execution of the complete return or deployed behavior. R01 and the full goal
+remain incomplete; do not use these checks as authorization to activate early.
 
 ### R02 — exact allowlist and frozen canary queue
 

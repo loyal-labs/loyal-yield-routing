@@ -481,4 +481,5 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 		}
 	})
 	t.Run("production bridge admission", func(t *testing.T) { testProductionBridgeAdmission(t, url) })
+	t.Run("production withdrawal admission", func(t *testing.T) { testProductionWithdrawalAdmission(t, url) })
 }

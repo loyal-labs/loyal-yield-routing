@@ -208,13 +208,25 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 			}
 			return nil
 		},
+		admitKamino: func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error {
+			order = append(order, "admit-kamino")
+			return nil
+		},
 	}}
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "prepare-kamino,record,build-kamino" {
+	if got := strings.Join(order, ","); got != "prepare-kamino,record,admit-kamino,build-kamino" {
 		t.Fatalf("wrong Kamino dispatch order: %s", got)
 	}
+	worker.runtime.admitKamino = func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error {
+		return budgetHold("complete_position_exit_admission_unavailable")
+	}
+	worker.runtime.buildKamino = func(context.Context, string, KaminoExecutionEvidence) error {
+		t.Fatal("rejected position admission reached signing")
+		return nil
+	}
+	assertBudgetHold(t, worker.Tick(context.Background()), "complete_position_exit_admission_unavailable")
 
 	loads := 0
 	reobserved := false

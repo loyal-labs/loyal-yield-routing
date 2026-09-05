@@ -225,10 +225,21 @@ func (d *Database) admitPhase3Bridge(ctx context.Context, rpc *RPCClient, operat
 	if err != nil {
 		return err
 	}
+	return d.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
+}
+
+// Shared durable boundary for measured paths that terminate at bridge idle.
+// The historical JSON field name remains bridgeAdmission; its Input.Kind binds
+// the current action (bridge or Kamino), not the type of the whole return graph.
+func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClient, operationID string, observation Observation, decision Decision, plan phase3BridgeAdmission) error {
 	if d == nil || d.pool == nil {
 		return budgetHold("bridge_admission_database_unavailable")
 	}
-	intent, err := Phase3IntentDigest(evidence.Request, plan.Input.Effects)
+	request, _, _, err := plan.Input.decode()
+	if err != nil {
+		return err
+	}
+	intent, err := Phase3IntentDigest(request, plan.Input.Effects)
 	if err != nil {
 		return err
 	}

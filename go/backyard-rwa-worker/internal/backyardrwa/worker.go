@@ -37,6 +37,8 @@ type tickRuntime struct {
 	prepareJupiter   func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
 	recordDecision   func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
 	admitBridge      func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error
+	admitKamino      func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error
+	admitJupiter     func(context.Context, string, Observation, Decision, JupiterExecutionEvidence) error
 	buildBridge      func(context.Context, string, BridgeExecutionEvidence) error
 	buildKamino      func(context.Context, string, KaminoExecutionEvidence) error
 	buildJupiter     func(context.Context, string, JupiterExecutionEvidence) error
@@ -80,7 +82,16 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		recordDecision:   database.RecordDecision,
 		recordBudgetHold: database.RecordPhase3BudgetHold,
 		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+			if observation.Snapshot.CollateralIdleRaw > 0 {
+				return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+			}
 			return database.admitPhase3Bridge(ctx, rpc, operationID, observation, decision, evidence)
+		},
+		admitKamino: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence KaminoExecutionEvidence) error {
+			return database.admitPhase3Withdrawal(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+		},
+		admitJupiter: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
+			return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
 		},
 		buildBridge: func(ctx context.Context, operationID string, evidence BridgeExecutionEvidence) error {
 			return BuildSimulateAndPersistBridge(ctx, database, rpc, operationID, evidence)
@@ -206,9 +217,23 @@ func (w *Worker) Tick(ctx context.Context) error {
 			}
 		}
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
+		if w.runtime.admitKamino == nil {
+			err = budgetHold("position_admission_unavailable")
+		} else {
+			err = w.runtime.admitKamino(ctx, record.OperationID, observation, decision, kaminoEvidence)
+			if err == nil {
+				err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
+			}
+		}
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
+		if w.runtime.admitJupiter == nil {
+			err = budgetHold("swap_admission_unavailable")
+		} else {
+			err = w.runtime.admitJupiter(ctx, record.OperationID, observation, decision, jupiterEvidence)
+			if err == nil {
+				err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
+			}
+		}
 	default:
 		return fmt.Errorf("prepared evidence no longer matches an actionable decision")
 	}

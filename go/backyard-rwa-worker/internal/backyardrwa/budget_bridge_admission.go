@@ -25,6 +25,14 @@ type phase3BridgeAdmission struct {
 	Exit             []phase3BridgeExitCost `json:"exit"`
 	ExitAfterMicros  int64                  `json:"exitAfterMicros"`
 	ValidThroughSlot int64                  `json:"validThroughSlot"`
+	QuotedExit       *phase3QuotedExit      `json:"quotedExit,omitempty"`
+}
+
+type phase3QuotedExit struct {
+	Input                   *phase3BuildInput `json:"input"`
+	QuotedOutputRaw         uint64            `json:"quotedOutputRaw"`
+	EstimatedUpperOutputRaw uint64            `json:"estimatedUpperOutputRaw"`
+	ProofLevel              string            `json:"proofLevel"`
 }
 
 // This first admission shape is deliberately closed over existing USDC bridge
