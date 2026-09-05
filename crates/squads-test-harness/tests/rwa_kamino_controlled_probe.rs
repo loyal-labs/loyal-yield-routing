@@ -68,7 +68,7 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
             let plan: Value = serde_json::from_slice(&data).unwrap();
             assert_eq!(plan["schema"], "phase3-kamino-release-probe/v1");
             assert_eq!(plan["lane"], "Ethena/USDe/PYUSD");
-            assert_eq!(plan["steps"].as_array().unwrap().len(), 2);
+            assert_eq!(plan["steps"].as_array().unwrap().len(), 3);
             (plan, sha(&data))
         });
     assert_eq!(plan["schema"], "phase3-kamino-controlled-probe/v1");
@@ -234,7 +234,7 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
                     let amount = release["amount"].as_u64().unwrap();
                     let released = token_amount(&probe_svm, collateral_custody) - balances_before.0;
                     assert_eq!(token_amount(&probe_svm, debt_custody), balances_before.1);
-                    if amount == 20_000_000 {
+                    if amount != 1_000_000_000 {
                         assert!(
                             error.is_none(),
                             "safe release failed: {:?} {:?}",
@@ -393,7 +393,7 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
       "overrides":overrides,"negative":negative_evidence,"steps":results,"fourKaminoLegsPassed":pass && results.len()==4,
       "boundedRepaymentProbes":repayment_probes,"boundedRepaymentProofPassed":repayment_probes.len()==3,
       "releasePlanSha256":release_plan.as_ref().map(|(_,hash)|hash),
-      "releaseProbes":release_probes,"releaseProofPassed":release_probes.len()==2});
+      "releaseProbes":release_probes,"releaseProofPassed":release_probes.len()==3});
     let result_name =
         std::env::var("PHASE3_KAMINO_PROBE_RESULT").unwrap_or_else(|_| "result.json".into());
     assert!(!result_name.contains('/') && result_name.ends_with(".json"));

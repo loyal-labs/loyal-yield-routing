@@ -290,13 +290,13 @@ func TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge(t *testing.T)
 }
 
 func testProductionWithdrawalAdmission(t *testing.T, url string) {
-	t.Run("collateral_only", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, false, false, false) })
-	t.Run("collateral_and_debt_residue", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true, false, false) })
-	t.Run("funded_full_payoff", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true, true, false) })
-	t.Run("funding_swap_complete_return", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true, false, true) })
+	for _, variant := range []string{"collateral", "debt_residue", "payoff", "funding", "release"} {
+		t.Run(variant, func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, variant) })
+	}
 }
 
-func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResidue, payoff, funding bool) {
+func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string) {
+	debtResidue, payoff, funding, release := variant != "collateral", variant == "payoff", variant == "funding", variant == "release"
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	db, err := OpenDatabase(ctx, url)
@@ -314,6 +314,9 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResi
 	var fundingEvidence JupiterExecutionEvidence
 	if funding {
 		o, d, fundingEvidence, manifest, rpc, client, _ = fundingAdmissionFixture(t, 20_000)
+	}
+	if release {
+		o, d, evidence, manifest, rpc, client, _ = releaseAdmissionFixture(t, 20_000)
 	}
 	key := fmt.Sprintf("phase3-withdrawal-producer-%d", time.Now().UnixNano())
 	id := key + "-operation"
@@ -375,11 +378,17 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResi
 	if funding {
 		exitCount = 13
 	}
+	if release {
+		exitCount = 15
+	}
 	if debtResidue && (len(auth.BridgeAdmission.AdditionalQuotedExits) != 1 || len(auth.BridgeAdmission.Exit) != exitCount) {
 		t.Fatal("durable reservation dropped debt conversion")
 	}
 	if payoff && (auth.BridgeAdmission.Payoff == nil || auth.BridgeAdmission.Payoff.UpperDebtRaw != 1_001 || auth.BridgeAdmission.PayoffWithdrawal == nil) {
 		t.Fatal("durable funded payoff omitted interest bound or full withdrawal")
+	}
+	if release && (auth.BridgeAdmission.PayoffRepayment == nil || auth.BridgeAdmission.FundingSwap == nil || auth.BridgeAdmission.Payoff.ThroughUnix != 1300) {
+		t.Fatal("durable release omitted full funding/return or interest horizon")
 	}
 	if funding {
 		if auth.BridgeAdmission.PayoffRepayment == nil || auth.BridgeAdmission.FundingSwap == nil || auth.BridgeAdmission.Payoff.ThroughUnix != 1180 {

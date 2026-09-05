@@ -270,6 +270,8 @@ async function localWithdrawalAdmissionObservation(): Promise<Observation> {
     "TestFundingAdmissionReservesPayoffReturnAndBothNAVContinuations",
     "TestFundingAdmissionRejectsUnderfundingAndFinalSendDrift",
     "TestFundingPayoffWindowIncludesInterveningSteps",
+    "TestReleaseAdmissionReservesFundingPayoffAndCompleteReturn",
+    "TestReleaseAdmissionRejectsUnsafeFundingAndChangedSignedState",
     "TestTickDispatchesKaminoAndReobservesAfterReconciliation",
   ],"collateral funding swap and surrounding NAV, full payoff, withdrawal and complete residue return admission through production paths");
   if(result.data)result.data.proofLevel="CONTROLLED_RPC_QUOTE_AND_POSTSTATE_ACCOUNTING_NOT_EXECUTED_RETURN";
@@ -540,10 +542,10 @@ export async function verify() {
       observedCheck(database,"durable budget exists for this goal",d => d.route?.phase3?.goalId === GOAL),
       observedCheck(localCaps,"local production builders reject fresh over-cap costs before signing and reject stale valuation",d=>d.pass===true),
       observedCheck(localBridgeAdmission,"cash-only bridge admission prices staging, full restoration and each required NAV; rejects unsupported exposure and prevents build after HOLD",d=>d.pass===true),
-      observedCheck(localWithdrawalAdmission,"collateral funding and surrounding NAV reserve interest-aware payoff and full residue return; wire-derived funding minimum, custody drift and over-cap exits reject",d=>d.pass===true),
-      observedCheck(localSendJournal,"local journal persists bridge, withdrawal, payoff and funding-swap return costs, preserves concurrency/restart binding, reprices before send, and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
+      observedCheck(localWithdrawalAdmission,"collateral release, funding and surrounding NAV reserve interest-aware payoff and full residue return; unsafe release size, funding minimum, custody drift and over-cap exits reject",d=>d.pass===true),
+      observedCheck(localSendJournal,"local journal persists bridge, withdrawal, payoff, funding and release-return costs, preserves concurrency/restart binding, reprices before send, and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
     ],[
-      "Production admission for entry, borrowing, collateral release before funding, USDC/debt funding, setup and safe one-time budget initialization; collateral/debt funding admission does not cover those shapes.",
+      "Production admission for entry, borrowing, USDC/debt funding, setup and safe one-time budget initialization; the collateral-release/funding return graph does not cover those shapes.",
       "Complete admission/send witnesses beyond local controlled-input build rejection: concurrency, restart, ambiguity, final-send freshness and successful reserved unwind.",
       "Independent reconciliation of deployed spent/reserved accounting, including setup and full-custody restore.",
     ]),
@@ -571,7 +573,7 @@ export async function verify() {
     ]),
     measuredCondition("R04","All-lane positives/negatives and full stateful lifecycle",[
       observedCheck(localCandidateJupiter,"V2 candidates create on cloned Settings and execute two sequential swaps plus fourteen rejecting mutations; current Go matches SDK wires with test-only candidate bindings, not installed authority or a full lifecycle",d=>d.pass===true),
-      observedCheck(localSequentialKamino,"Ethena Go lending legs execute sequentially under deployed programs; finite payoff covers a 60-second/32-slot clock advance and current Go reconciles its actual debit, while dust partial repayment rejects",d=>d.pass===true),
+      observedCheck(localSequentialKamino,"Ethena lending legs and production-sized collateral release execute under deployed programs; Go matches release reserve/custody poststate and finite payoff after a 60-second/32-slot advance, while unsafe withdrawal and dust repayment reject",d=>d.pass===true),
       observedCheck(localSequentialJupiter,"Ethena USDC/collateral and collateral/debt Go swaps execute sequentially against deployed binaries with measured debit/min-output and installed-policy rejection before Jupiter CPI",d=>d.pass===true),
     ],[
       "Complete sequential bridge/swap/Kamino/return/NAV lifecycle with signer proof, fee/exit admission and explicit controlled-capacity overrides where required; the four-leg local Kamino probe is only a subclaim.",

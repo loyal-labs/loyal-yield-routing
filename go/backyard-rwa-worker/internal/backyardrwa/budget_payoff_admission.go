@@ -44,10 +44,10 @@ func observePhase3PayoffAdmission(ctx context.Context, rpc *RPCClient, client *j
 // for the actual NAV following a reconciled payoff. Templates never become the
 // next current instruction: withdrawal is prepared and admitted again later.
 func pricePhase3PositionReturn(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool) (phase3BridgeAdmission, error) {
-	return pricePhase3PositionReturnAfterFunding(ctx, rpc, client, manifest, post, decision, request, effects, afterPayoff, nil)
+	return pricePhase3PositionReturnAfterFunding(ctx, rpc, client, manifest, post, decision, request, effects, afterPayoff, nil, nil)
 }
 
-func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool, funding *JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
+func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool, funding *JupiterExecutionEvidence, release *KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	s := post.Snapshot
 	if rpc == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" ||
 		s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
@@ -65,14 +65,41 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 		return phase3BridgeAdmission{}, err
 	}
 	obligation, err := decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino)
-	if err != nil || obligation.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || (!afterPayoff && obligation.debtRaw != 0) {
+	var releasedReceipt uint64
+	if release != nil {
+		if !afterPayoff || funding == nil || !release.Request.RepaymentRelease {
+			return phase3BridgeAdmission{}, budgetHold("invalid_release_return_projection")
+		}
+		releasedReceipt = release.Request.AmountRaw
+	}
+	if err != nil || obligation.collateralDepositedRaw != uint64(s.PositionCollateralRaw)+releasedReceipt || (!afterPayoff && obligation.debtRaw != 0) {
 		return phase3BridgeAdmission{}, budgetHold("payoff_return_position_changed")
 	}
 	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	amount, err := reserve.redeemLiquidityRaw(obligation.collateralDepositedRaw)
+	if release != nil {
+		debit, err := MeasureExecutableDebit(release.Request, release.ExpectedEffects)
+		if err != nil {
+			return phase3BridgeAdmission{}, err
+		}
+		reserve, err = projectKaminoReleaseReserve(reserve, releasedReceipt, debit.Raw)
+		if err != nil {
+			return phase3BridgeAdmission{}, err
+		}
+		accounts = append([]ConfirmedAccount(nil), accounts...)
+		for i, a := range accounts {
+			if a.Address == route.CollateralLiquiditySupply {
+				if len(a.Data) < 72 || binary.LittleEndian.Uint64(a.Data[64:72]) != release.ExpectedEffects.Accounts[0].BeforeRaw {
+					return phase3BridgeAdmission{}, budgetHold("release_supply_changed")
+				}
+				accounts[i].Data = append([]byte(nil), a.Data...)
+				binary.LittleEndian.PutUint64(accounts[i].Data[64:72], release.ExpectedEffects.Accounts[0].AfterRaw)
+			}
+		}
+	}
+	amount, err := reserve.redeemLiquidityRaw(uint64(s.PositionCollateralRaw))
 	if err != nil || amount == 0 || amount > math.MaxInt64 {
 		return phase3BridgeAdmission{}, budgetHold("payoff_return_withdrawal_amount_unavailable")
 	}
@@ -80,7 +107,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	withdrawal, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, obligation.collateralDepositedRaw, blockhash, s.RouteLane)
+	withdrawal, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, uint64(s.PositionCollateralRaw), blockhash, s.RouteLane)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -106,7 +133,14 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 				mint, _ := decodeBase58PublicKey(route.Kamino.CollateralMint)
 				authority, _ := decodeBase58PublicKey(bridgeVault)
 				custody, err := DecodeTokenCustody(account.Owner, account.Data, mint, authority)
-				if err != nil || custody.Raw != funding.Request.AmountRaw {
+				expectedBefore := funding.Request.AmountRaw
+				if release != nil {
+					expectedBefore = release.ExpectedEffects.Accounts[1].BeforeRaw
+					if release.ExpectedEffects.Accounts[1].AfterRaw != funding.Request.AmountRaw {
+						return phase3BridgeAdmission{}, budgetHold("release_funding_amount_changed")
+					}
+				}
+				if err != nil || custody.Raw != expectedBefore {
 					return phase3BridgeAdmission{}, budgetHold("funding_collateral_custody_changed")
 				}
 				accounts[i].Data = append([]byte(nil), account.Data...)

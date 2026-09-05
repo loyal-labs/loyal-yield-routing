@@ -49,6 +49,13 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 		}
 		slot = max(slot, bound.ObservedSlot)
 	}
+	if r, ok := request.(KaminoPrimeUSDCRequest); ok && r.RepaymentRelease {
+		bound, _, err := validateRepaymentReleaseRequest(ctx, rpc, r, effects, slot)
+		if err != nil {
+			return ValuedTransactionCost{}, err
+		}
+		slot = max(slot, bound.Payoff.ObservedSlot)
+	}
 	if r, ok := request.(JupiterSwapRequest); ok {
 		if r.FullPayoffFunding {
 			bound, _, err := validatePayoffFunding(ctx, rpc, r, effects, slot, 3)

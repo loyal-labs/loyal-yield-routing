@@ -27,14 +27,52 @@ func TestExportPhase3KaminoReleaseProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	route := ethenaUSDePYUSD
+	// Reuse the immutable post-borrow witness for sizing only. The fresh Rust
+	// run recreates that state and Go recomputes sizing from its actual capture.
+	stateData, err := os.ReadFile(filepath.Join(dir, "payoff-window-2026-09-05.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Slot  int64
+		Steps []struct {
+			After []struct {
+				Address, Owner, DataBase64, DataSHA256 string
+				Lamports                               uint64
+				Present                                bool
+			}
+		}
+	}
+	if json.Unmarshal(stateData, &state) != nil || len(state.Steps) != 4 {
+		t.Fatal("missing retained post-borrow sizing state")
+	}
+	var accounts []ConfirmedAccount
+	for _, row := range state.Steps[1].After {
+		if !row.Present {
+			continue
+		}
+		data, err := base64.StdEncoding.Strict().DecodeString(row.DataBase64)
+		if err != nil || sha256Bytes(data) != row.DataSHA256 {
+			t.Fatal("sizing account digest mismatch")
+		}
+		accounts = append(accounts, ConfirmedAccount{Address: row.Address, Owner: row.Owner, Lamports: row.Lamports, Data: data})
+	}
+	bound, err := decodeKaminoRepaymentRelease(accounts, route, state.Slot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rows := []any{}
-	for _, amount := range []uint64{20_000_000, 1_000_000_000} {
+	for i, amount := range []uint64{20_000_000, 1_000_000_000, bound.ReceiptRaw} {
 		request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, amount,
 			LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+		request.RepaymentRelease = i == 2
+		if request.RepaymentRelease {
+			request.ReleaseDebtIdleRaw = binary.LittleEndian.Uint64(accountAt(accounts, route.DebtCustody).Data[64:72])
+		}
 		message, err := CompileKaminoMessage(request)
 		if err != nil {
 			t.Fatal(err)
@@ -83,7 +121,7 @@ func TestPhase3KaminoReleaseProbeMatchesProduction(t *testing.T) {
 		}
 	}
 	data, err := os.ReadFile(filepath.Join(dir, name))
-	if err != nil || json.Unmarshal(data, &report) != nil || !report.ReleaseProofPassed || len(report.ReleaseProbes) != 2 {
+	if err != nil || json.Unmarshal(data, &report) != nil || !report.ReleaseProofPassed || len(report.ReleaseProbes) != 3 {
 		t.Fatal("missing real-program release evidence", err)
 	}
 	decode := func(rows []captured) []ConfirmedAccount {
@@ -103,7 +141,7 @@ func TestPhase3KaminoReleaseProbeMatchesProduction(t *testing.T) {
 	}
 	route := ethenaUSDePYUSD
 	for i, probe := range report.ReleaseProbes {
-		if probe.ReceiptAmountRaw != []uint64{20_000_000, 1_000_000_000}[i] || probe.Request.AmountRaw != probe.ReceiptAmountRaw || probe.Request.RouteLane != route.Lane {
+		if (i < 2 && probe.ReceiptAmountRaw != []uint64{20_000_000, 1_000_000_000}[i]) || probe.Request.AmountRaw != probe.ReceiptAmountRaw || probe.Request.RouteLane != route.Lane {
 			t.Fatal("unexpected release request")
 		}
 		message, err := CompileKaminoMessage(probe.Request)
@@ -112,6 +150,15 @@ func TestPhase3KaminoReleaseProbeMatchesProduction(t *testing.T) {
 			t.Fatal("executed release differs from current compiler", err, decodeErr)
 		}
 		before, after := decode(probe.Before), decode(probe.After)
+		if i == 2 {
+			bound, err := decodeKaminoRepaymentRelease(before, route, report.Slot)
+			if err != nil || !probe.Request.RepaymentRelease || probe.Request.AmountRaw != bound.ReceiptRaw || probe.ActualReleasedRaw != bound.LiquidityRaw || probe.RemainingReceiptRaw != bound.RemainingReceiptRaw {
+				t.Fatal("actual deployed release differs from production sizing", bound, err)
+			}
+			if probe.Request.ReleaseDebtIdleRaw != binary.LittleEndian.Uint64(accountAt(before, route.DebtCustody).Data[64:72]) {
+				t.Fatal("sized release did not retain its funding cash precondition")
+			}
+		}
 		old, err := decodeKaminoObligation(accountAt(before, route.Kamino.Obligation), route.Kamino)
 		if err != nil || old.debtRaw != 1_000 {
 			t.Fatal("release did not start from borrowed position", err)
@@ -133,6 +180,14 @@ func TestPhase3KaminoReleaseProbeMatchesProduction(t *testing.T) {
 		amount, err := reserve.redeemLiquidityRaw(probe.ReceiptAmountRaw)
 		if err != nil || amount != probe.ActualReleasedRaw || probe.Error != nil {
 			t.Fatal("predicted redemption differs from deployed program", amount, probe.ActualReleasedRaw, err)
+		}
+		projected, err := projectKaminoReleaseReserve(reserve, probe.ReceiptAmountRaw, amount)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actualReserve, err := decodeKaminoReserve(accountAt(after, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+		if err != nil || projected.collateralMintSupply != actualReserve.collateralMintSupply || projected.totalLiquiditySF.Cmp(actualReserve.totalLiquiditySF) != 0 {
+			t.Fatal("projected remaining reserve differs from deployed release", err)
 		}
 		source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
 		effects, err := exactKaminoTokenEffects(before, source, destination, amount)

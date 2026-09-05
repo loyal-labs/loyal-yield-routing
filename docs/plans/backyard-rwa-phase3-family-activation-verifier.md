@@ -361,12 +361,45 @@ Disposable PostgreSQL proves the funding producer persists the complete return
 against an existing recovery reservation, rejects unreserved exposure, and keeps
 all wires unsigned/unsent during these tests.
 
-Latest sole-verifier checkpoint:
+Funding-return checkpoint:
 `docs/evidence/backyard-rwa-go/phase3/funding-return-admission-2026-09-05.json.gz`.
 Release-before-funding admission and sequential release/swap/payoff/return
 execution remain incomplete. The USDC-to-debt funding variant, entry/borrowing,
 setup/initialization, all-lane queue and deployed/live proof also remain open.
 No cap, authorization boundary or R01–R08 verdict meaning changes here.
+
+#### Production-sized release and complete return admission — 2026-09-05
+
+The worker now sizes repayment collateral against the five-step interest window
+(release, NAV, funding swap, NAV, payoff) and the existing unwind LTV. It converts
+the liquidity allowance through the reserve's unrounded exchange rate. Build
+and final-send checks reject an unsafe retained amount, changed release effects
+or changed idle debt cash; the funding precondition is part of persisted intent.
+
+The deployed-program probe now executes this production-sized request alongside
+the retained small positive and oversized negative. It releases 90,592,198
+receipt units for exactly 97,775,409 USDe raw units, retaining 2,061,157 receipts
+and open debt in the controlled Ethena fixture. Go independently reproduces the
+amount, token reconciliation and post-release reserve liquidity/receipt supply.
+This proves the cost estimator's immediate reserve projection, not a future
+price guarantee or live withdrawal.
+
+The existing funding-return producer now also admits this current release,
+reserving all 15 remaining steps through full return. It checks that the
+slippage-adjusted funding minimum covers payoff before release can build, and
+prices the remaining collateral using the proven post-release pool transition.
+Projected balances never replace RPC state or the persisted current wire.
+Disposable PostgreSQL exercises this through the existing recovery reservation:
+unreserved exposure rejects; admitted release retains the funding/payoff/return
+templates and remains unsigned/unsent in the test. Current freshness stays at
+32 slots, not the five-step interest horizon.
+
+Latest sole-verifier checkpoint:
+`docs/evidence/backyard-rwa-go/phase3/release-return-admission-2026-09-05.json.gz`.
+Sequential release/funding/payoff/full-return execution is still required.
+USDC-to-debt funding, entry/borrowing and setup/budget initialization remain
+unadmitted, and all-lane queue, deployed/live and final custody proof remain
+unfinished. R01–R08 cannot pass on this local checkpoint alone.
 
 ### R02 — exact allowlist and frozen canary queue
 

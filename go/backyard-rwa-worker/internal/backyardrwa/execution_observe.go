@@ -241,6 +241,14 @@ func ObserveConfirmedKaminoExecutionEvidence(
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
 		fullPayoff := leg == kaminoLegRepay && decision.Action == DeleverRouteStep && decision.AmountRaw > 0 && uint64(decision.AmountRaw) >= position.DebtRaw
+		repaymentRelease := leg == kaminoLegWithdraw && decision.Action == DeleverRouteStep && decision.Reason == "withdrawal_release_repayment_collateral" && catalogJupiterRoute(route.Lane)
+		if repaymentRelease {
+			bound, err := decodeKaminoRepaymentRelease(accounts, route, observation.Snapshot.Slot)
+			if err != nil {
+				return Observation{}, KaminoExecutionEvidence{}, err
+			}
+			wireAmount, effectAmount = bound.ReceiptRaw, bound.LiquidityRaw
+		}
 		if fullPayoff {
 			bound, err := decodeKaminoPayoffBound(accounts, route, observation.Snapshot.Slot)
 			if err != nil {
@@ -261,6 +269,10 @@ func ObserveConfirmedKaminoExecutionEvidence(
 		}
 		request.ObligationReserves = []string{}
 		request.FullPayoff = fullPayoff
+		request.RepaymentRelease = repaymentRelease
+		if repaymentRelease {
+			request.ReleaseDebtIdleRaw = uint64(observation.Snapshot.DebtIdleRaw)
+		}
 		if position.CollateralDepositedRaw > 0 {
 			request.ObligationReserves = append(request.ObligationReserves, route.Kamino.CollateralReserve)
 		}
