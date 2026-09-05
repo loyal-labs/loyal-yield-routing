@@ -376,7 +376,11 @@ func observeKaminoFromFixedAccounts(ctx context.Context, accountsReader func(con
 	if err != nil {
 		return KaminoPosition{}, err
 	}
-	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: obligation.debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
+	debtRaw, err := obligation.debtAtReserveRate(debt)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
 }
 
 // Capacity is originally debt-denominated. The entry planner spends bridge

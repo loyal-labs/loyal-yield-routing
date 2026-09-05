@@ -243,6 +243,17 @@ withdrawal reservation in disposable PostgreSQL. They do not prove real program
 execution of the complete return or deployed behavior. R01 and the full goal
 remain incomplete; do not use these checks as authorization to activate early.
 
+Debt-residue extension: debt-free withdrawal and subsequent NAV/conversion
+admission now include both full collateral-to-USDC and idle-debt-to-USDC swaps,
+a NAV after each, then aggregate staging/restoration. Each quoted exit is retained
+inside the existing operation authorization; none is reused as a later current
+wire. The full restoration is priced against combined conservative outputs, not
+each asset in isolation. Actual debt-residue swaps receive their own admission.
+Outstanding obligation debt still rejects; this does not supply repayment or
+interest-through-execution-horizon admission. Tests cover non-peg PYUSD valuation,
+combined-output cap rejection, changed custody/remaining-debt rejection and
+durable two-quote persistence without signing/sending.
+
 ### R02 — exact allowlist and frozen canary queue
 
 Resolve the exact 11 scope tuples against authoritative identities; reject
@@ -297,6 +308,19 @@ repayment/conversion precedence and a flat terminal drain. Its proof level is
 The disposable journal witness also checks NAV/manual-recovery handling for
 debt conversions. Neither observation establishes Jupiter dispatch, executable
 exit-cost admission, real-program state transitions or deployed support.
+
+Debt-interest measurement repair: stored obligation debt was previously used
+without applying the reserve/obligation cumulative-borrow-rate ratio. The worker
+now uses the unrounded stored Fraction, all four rate limbs, KLend's scaled
+integer division and a final raw-unit ceiling in position observation, LTV,
+repayment selection and NAV. The installed SDK decodes seven stored units at
+rates 1/1.25 as 8.75, hence nine raw units; controlled production-path checks
+now enforce that result and reject missing/regressed/overflowing rates. This
+matches [KLend interest accrual](https://github.com/Kamino-Finance/klend/blob/master/programs/klend/src/state/obligation.rs)
+and the locally installed SDK byte layout. It measures debt at the captured
+reserve refresh, not unaccrued interest after that refresh or a future full-payoff
+guarantee. Those bounds remain required for debt-bearing admission; no contract
+condition, live policy or accounting ceiling changes.
 
 Jupiter integration checkpoint: all ten unique AUTO/Ethena conversion samples
 (twelve lane/edge pairs) now fit the actual Squads packet envelope. The retained

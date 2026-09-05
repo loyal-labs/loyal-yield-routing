@@ -88,6 +88,7 @@ func reserveFixture(t *testing.T, address, mint string, slot int64, priceSF *big
 	binary.LittleEndian.PutUint64(data[224:232], liquidityRaw)
 	putScaledFraction(data[248:264], priceSF)
 	binary.LittleEndian.PutUint64(data[272:280], 6)
+	putScaledFraction(data[296:328], new(big.Int).Lsh(big.NewInt(1), 60))
 	binary.LittleEndian.PutUint64(data[2592:2600], collateralSupply)
 	return ConfirmedAccount{Address: address, Owner: kaminoProgram, Lamports: 1, Data: data}
 }
@@ -110,6 +111,7 @@ func obligationFixture(t *testing.T, slot int64, collateralReceiptRaw, debtRaw u
 	}
 	if debtRaw > 0 {
 		putKey(t, data[1208:1240], config.DebtReserve)
+		putScaledFraction(data[1240:1272], new(big.Int).Lsh(big.NewInt(1), 60))
 		putScaledFraction(data[1296:1312], new(big.Int).Lsh(new(big.Int).SetUint64(debtRaw), 60))
 	}
 	return ConfirmedAccount{Address: config.Obligation, Owner: config.Program, Lamports: 1, Data: data}

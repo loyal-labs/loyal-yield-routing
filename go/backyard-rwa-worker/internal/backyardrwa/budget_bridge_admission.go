@@ -18,14 +18,15 @@ type phase3BridgeExitCost struct {
 }
 
 type phase3BridgeAdmission struct {
-	Snapshot         Snapshot               `json:"snapshot"`
-	Decision         Decision               `json:"decision"`
-	Input            *phase3BuildInput      `json:"input"`
-	CurrentCost      ValuedTransactionCost  `json:"currentCost"`
-	Exit             []phase3BridgeExitCost `json:"exit"`
-	ExitAfterMicros  int64                  `json:"exitAfterMicros"`
-	ValidThroughSlot int64                  `json:"validThroughSlot"`
-	QuotedExit       *phase3QuotedExit      `json:"quotedExit,omitempty"`
+	Snapshot              Snapshot               `json:"snapshot"`
+	Decision              Decision               `json:"decision"`
+	Input                 *phase3BuildInput      `json:"input"`
+	CurrentCost           ValuedTransactionCost  `json:"currentCost"`
+	Exit                  []phase3BridgeExitCost `json:"exit"`
+	ExitAfterMicros       int64                  `json:"exitAfterMicros"`
+	ValidThroughSlot      int64                  `json:"validThroughSlot"`
+	QuotedExit            *phase3QuotedExit      `json:"quotedExit,omitempty"`
+	AdditionalQuotedExits []phase3QuotedExit     `json:"additionalQuotedExits,omitempty"`
 }
 
 type phase3QuotedExit struct {

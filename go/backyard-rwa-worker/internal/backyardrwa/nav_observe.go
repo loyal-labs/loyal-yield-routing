@@ -340,7 +340,11 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	debtValue, err := valueBetweenTokenRaw(obligation.debtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, true)
+	debtRaw, err := obligation.debtAtReserveRate(debtReserve)
+	if err != nil {
+		return RouteNAVSnapshot{}, err
+	}
+	debtValue, err := valueBetweenTokenRaw(debtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, true)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}

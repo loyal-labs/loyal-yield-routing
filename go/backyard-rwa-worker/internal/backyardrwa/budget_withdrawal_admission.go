@@ -24,13 +24,17 @@ func withdrawalUSDCExitEstimate(quoted uint64) (uint64, error) {
 	return n.Uint64(), nil
 }
 
-func observeWithdrawalExitPolicies(ctx context.Context, rpc *RPCClient, manifest RouteManifest, lane string, slot int64) (int64, error) {
-	binding, err := manifest.jupiterPolicyForRoute(SwapCollateralToStableStep, lane)
-	if err != nil {
-		return 0, err
+func observeWithdrawalExitPolicies(ctx context.Context, rpc *RPCClient, manifest RouteManifest, lane string, slot int64, conversions []Action) (int64, error) {
+	hashes := map[string]string{}
+	addresses := []string{reportTicketPDA}
+	for _, action := range conversions {
+		binding, err := manifest.jupiterPolicyForRoute(action, lane)
+		if err != nil {
+			return 0, err
+		}
+		hashes[binding.Policy] = binding.PolicyAccountDataSHA256
+		addresses = append(addresses, binding.Policy)
 	}
-	hashes := map[string]string{binding.Policy: binding.PolicyAccountDataSHA256}
-	addresses := []string{binding.Policy, reportTicketPDA}
 	for _, action := range []Action{StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
 		address, hash, err := manifest.bridgePolicy(action)
 		if err != nil {
@@ -69,7 +73,7 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *RPCClient, clien
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey ||
 		s.RouteLane != decision.StrategyKey || s.RouteLane != r.RouteLane || phase3BudgetFamilyForLane(s.RouteLane) == "" ||
 		decision.Action != DeleverRouteStep || r.Action != decision.Action || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
-		s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleRaw != 0 || s.PrimeIdleRaw != 0 || s.DebtIdleRaw != 0 ||
+		s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleRaw != 0 || s.PrimeIdleRaw != 0 || s.DebtIdleRaw < 0 ||
 		s.VoltrIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || r.AmountRaw != uint64(s.PositionCollateralRaw) {
 		return plan, budgetHold("complete_position_exit_admission_unavailable")
 	}
@@ -104,13 +108,15 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *RPCClient, clien
 }
 
 // Continue the same return after the withdrawal has reconciled. Both the
-// intervening NAV and the full collateral-to-USDC swap use the same estimator.
+// intervening NAV and full collateral/debt-residue-to-USDC swaps use the same
+// estimator. Outstanding position debt still requires separate repayment proof.
 func observePhase3CollateralReturnAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error) {
 	s := observation.Snapshot
 	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
 		phase3BudgetFamilyForLane(s.RouteLane) == "" || s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||
-		s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.DebtIdleRaw != 0 || s.CollateralIdleRaw <= 0 ||
+		s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.DebtIdleRaw < 0 || s.CollateralIdleRaw < 0 ||
+		(s.CollateralIdleRaw == 0 && s.DebtIdleRaw == 0) ||
 		s.PrimeIdleRaw != s.CollateralIdleRaw || s.VoltrStrategyIdleRaw != 0 || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {
 		return phase3BridgeAdmission{}, budgetHold("complete_collateral_return_admission_unavailable")
 	}
@@ -122,8 +128,14 @@ func observePhase3CollateralReturnAdmission(ctx context.Context, rpc *RPCClient,
 			return phase3BridgeAdmission{}, budgetHold("collateral_return_intent_mismatch")
 		}
 	case JupiterSwapRequest:
-		if r.Action != SwapCollateralToStableStep || decision.Action != r.Action || decision.AmountRaw != s.CollateralIdleRaw ||
-			r.RouteLane != s.RouteLane || r.AmountRaw != uint64(s.CollateralIdleRaw) {
+		amount := s.CollateralIdleRaw
+		if r.Action == SwapDebtToUSDCStep && s.CollateralIdleRaw == 0 {
+			amount = s.DebtIdleRaw
+		} else if r.Action != SwapCollateralToStableStep {
+			return phase3BridgeAdmission{}, budgetHold("collateral_return_intent_mismatch")
+		}
+		if amount <= 0 || decision.Action != r.Action || decision.AmountRaw != amount ||
+			r.RouteLane != s.RouteLane || r.AmountRaw != uint64(amount) {
 			return phase3BridgeAdmission{}, budgetHold("collateral_return_intent_mismatch")
 		}
 		source, destination, sourceATA, destinationATA, err := jupiterEdgeForRoute(r.Action, r.RouteLane)
@@ -157,28 +169,54 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *ju
 	if rpc == nil || (client == nil && currentSwap == nil) {
 		return plan, budgetHold("withdrawal_exit_valuation_unavailable")
 	}
-	policySlot, err := observeWithdrawalExitPolicies(ctx, rpc, manifest, s.RouteLane, s.Slot)
+	conversions := []Action{}
+	if collateralRaw > 0 {
+		conversions = append(conversions, SwapCollateralToStableStep)
+	}
+	if s.DebtIdleRaw > 0 {
+		conversions = append(conversions, SwapDebtToUSDCStep)
+	}
+	if len(conversions) == 0 {
+		return plan, budgetHold("empty_custody_return")
+	}
+	policySlot, err := observeWithdrawalExitPolicies(ctx, rpc, manifest, s.RouteLane, s.Slot, conversions)
 	if err != nil {
 		return plan, err
 	}
-	var swap JupiterExecutionEvidence
-	if currentSwap != nil {
-		swap = *currentSwap
-	} else {
-		swapDecision := Decision{Action: SwapCollateralToStableStep, AmountRaw: int64(collateralRaw), StrategyKey: s.RouteLane}
-		swap, err = prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, swapDecision, collateralRaw, uint64(s.SquadsIdleRaw), policySlot)
-		if err != nil {
-			return plan, budgetHold("withdrawal_exit_quote_unavailable")
+	var swaps []JupiterExecutionEvidence
+	var estimates []uint64
+	var upperUSDC uint64
+	for _, action := range conversions {
+		amount := collateralRaw
+		if action == SwapDebtToUSDCStep {
+			amount = uint64(s.DebtIdleRaw)
 		}
-	}
-	upperUSDC, err := withdrawalUSDCExitEstimate(swap.Request.QuotedOutputRaw)
-	if err != nil || upperUSDC > uint64(math.MaxInt64-s.SquadsIdleRaw) {
-		return plan, budgetHold("withdrawal_exit_estimate_overflow")
+		var swap JupiterExecutionEvidence
+		if currentSwap != nil && currentSwap.Request.Action == action {
+			swap = *currentSwap
+		} else {
+			if client == nil {
+				return plan, budgetHold("withdrawal_exit_quote_unavailable")
+			}
+			d := Decision{Action: action, AmountRaw: int64(amount), StrategyKey: s.RouteLane}
+			swap, err = prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, d, amount, uint64(s.SquadsIdleRaw)+upperUSDC, policySlot)
+			if err != nil {
+				return plan, budgetHold("withdrawal_exit_quote_unavailable")
+			}
+		}
+		estimate, err := withdrawalUSDCExitEstimate(swap.Request.QuotedOutputRaw)
+		if err != nil || estimate > uint64(math.MaxInt64-s.SquadsIdleRaw)-upperUSDC {
+			return plan, budgetHold("withdrawal_exit_estimate_overflow")
+		}
+		upperUSDC += estimate
+		swaps = append(swaps, swap)
+		estimates = append(estimates, estimate)
 	}
 	post := observation
 	post.Snapshot.HasPosition = false
 	post.Snapshot.PositionCollateralRaw, post.Snapshot.PositionCollateralValueRaw = 0, 0
 	post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw = 0, 0
+	post.Snapshot.DebtIdleRaw = 0
 	post.Snapshot.CutoverDrain = false // cost-only bridge state, not a queue change
 	post.Snapshot.SquadsIdleRaw += int64(upperUSDC)
 	post.Snapshot.StrategyNAVRaw = post.Snapshot.SquadsIdleRaw
@@ -210,10 +248,6 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *ju
 	if err != nil {
 		return plan, err
 	}
-	swapCost, err := observePhase3KnownBuildCost(ctx, rpc, swap.Request, swap.ExpectedEffects)
-	if err != nil {
-		return plan, err
-	}
 	encoded, err := jsonMarshalExpectedEffects(effects)
 	if err != nil {
 		return plan, err
@@ -223,27 +257,38 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *ju
 		return plan, err
 	}
 	plan.CurrentCost = current
-	swapEffects, err := jsonMarshalExpectedEffects(swap.ExpectedEffects)
-	if err != nil {
-		return plan, err
-	}
-	swapInput, err := encodePhase3BuildInput(swap.Request, swapEffects)
-	if err != nil {
-		return plan, err
-	}
-	plan.QuotedExit = &phase3QuotedExit{Input: swapInput, QuotedOutputRaw: swap.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperUSDC,
-		ProofLevel: "UNSIGNED_PROSPECTIVE_QUOTE_COST_ESTIMATE_NOT_EXECUTION_OR_OUTPUT_GUARANTEE"}
 	// NAV's compiled account graph and fixed-width payload have the same fee
 	// before and after the swap. This is fee equivalence, not a NAV value proof.
 	if reportBeforeSwap {
 		plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: ReportNAV, Cost: tail.CurrentCost})
 	}
-	if currentSwap == nil {
-		plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: SwapCollateralToStableStep, Amount: collateralRaw, Cost: swapCost})
+	plan.ValidThroughSlot = min(tail.ValidThroughSlot, current.ValidThroughSlot)
+	for i, swap := range swaps {
+		swapCost, err := observePhase3KnownBuildCost(ctx, rpc, swap.Request, swap.ExpectedEffects)
+		if err != nil {
+			return plan, err
+		}
+		swapEffects, err := jsonMarshalExpectedEffects(swap.ExpectedEffects)
+		if err != nil {
+			return plan, err
+		}
+		swapInput, err := encodePhase3BuildInput(swap.Request, swapEffects)
+		if err != nil {
+			return plan, err
+		}
+		quoted := phase3QuotedExit{Input: swapInput, QuotedOutputRaw: swap.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: estimates[i], ProofLevel: "UNSIGNED_PROSPECTIVE_QUOTE_COST_ESTIMATE_NOT_EXECUTION_OR_OUTPUT_GUARANTEE"}
+		if i == 0 {
+			plan.QuotedExit = &quoted
+		} else {
+			plan.AdditionalQuotedExits = append(plan.AdditionalQuotedExits, quoted)
+		}
+		if currentSwap == nil || currentSwap.Request.Action != swap.Request.Action {
+			plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: swap.Request.Action, Amount: swap.Request.AmountRaw, Cost: swapCost})
+		}
+		plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: ReportNAV, Cost: tail.CurrentCost})
+		plan.ValidThroughSlot = min(plan.ValidThroughSlot, swapCost.ValidThroughSlot)
 	}
-	plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: ReportNAV, Cost: tail.CurrentCost})
 	plan.Exit = append(plan.Exit, tail.Exit...)
-	plan.ValidThroughSlot = min(tail.ValidThroughSlot, current.ValidThroughSlot, swapCost.ValidThroughSlot)
 	for _, step := range plan.Exit {
 		plan.ExitAfterMicros, err = budgetSum(plan.ExitAfterMicros, step.Cost.TotalMicros)
 		if err != nil {

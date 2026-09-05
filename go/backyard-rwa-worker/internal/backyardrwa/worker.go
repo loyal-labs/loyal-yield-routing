@@ -82,7 +82,7 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		recordDecision:   database.RecordDecision,
 		recordBudgetHold: database.RecordPhase3BudgetHold,
 		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
-			if observation.Snapshot.CollateralIdleRaw > 0 {
+			if observation.Snapshot.CollateralIdleRaw > 0 || observation.Snapshot.DebtIdleRaw > 0 {
 				return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
 			}
 			return database.admitPhase3Bridge(ctx, rpc, operationID, observation, decision, evidence)

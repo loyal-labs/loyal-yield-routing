@@ -17,7 +17,7 @@ import (
 
 // Controlled quote/RPC transport around actual compilers and installed Jupiter
 // bytes. Synthetic reserve prices/bridge-policy bytes do not prove live state.
-func withdrawalAdmissionFixture(t *testing.T, quoted uint64) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient) {
+func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient) {
 	t.Helper()
 	route := ethenaUSDePYUSD
 	manifest, err := loadEmbeddedRouteManifest()
@@ -80,7 +80,7 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64) (Observation, Decis
 	mint := ConfirmedAccount{Address: route.Kamino.CollateralMint, Owner: classicTokenProgram, Lamports: 1, Data: make([]byte, 82)}
 	mint.Data[44], mint.Data[45] = 9, 1
 	extra = append(extra, reserve, mint)
-	rpc := budgetBuildRPCWithAccounts(t, 5_000, 42, extra)
+	rpc := budgetBuildRPCWithAccounts(t, 5_000, 42, append(extra, extraAccounts...))
 	var headers struct {
 		Rows []struct {
 			Key         string
@@ -154,7 +154,7 @@ func TestWithdrawalAdmissionPricesCompleteCrossProtocolReturn(t *testing.T) {
 func TestWithdrawalAdmissionRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 	for _, mutate := range []func(*Observation, *KaminoExecutionEvidence){
 		func(o *Observation, _ *KaminoExecutionEvidence) { o.Snapshot.PositionDebtRaw = 1 },
-		func(o *Observation, _ *KaminoExecutionEvidence) { o.Snapshot.DebtIdleRaw = 1 },
+		func(o *Observation, _ *KaminoExecutionEvidence) { o.Snapshot.DebtIdleRaw = -1 },
 		func(o *Observation, _ *KaminoExecutionEvidence) { o.Snapshot.PositionCollateralRaw++ },
 		func(o *Observation, _ *KaminoExecutionEvidence) { o.Snapshot.CollateralIdleRaw = 1 },
 	} {
@@ -290,6 +290,11 @@ func TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge(t *testing.T)
 }
 
 func testProductionWithdrawalAdmission(t *testing.T, url string) {
+	t.Run("collateral_only", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, false) })
+	t.Run("collateral_and_debt_residue", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true) })
+}
+
+func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResidue bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	db, err := OpenDatabase(ctx, url)
@@ -298,6 +303,9 @@ func testProductionWithdrawalAdmission(t *testing.T, url string) {
 	}
 	defer db.Close()
 	o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
+	if debtResidue {
+		o, d, evidence, manifest, rpc, client = debtResidueAdmissionFixture(t, 20_000)
+	}
 	key := fmt.Sprintf("phase3-withdrawal-producer-%d", time.Now().UnixNano())
 	id := key + "-operation"
 	b := emptyTestBudget()
@@ -341,6 +349,9 @@ func testProductionWithdrawalAdmission(t *testing.T, url string) {
 	if hasWire || hasSend || auth.BuildInput.Kind != "kamino" || auth.BridgeAdmission == nil || auth.BridgeAdmission.QuotedExit == nil ||
 		!r.Recovery || r.ExitBeforeMicros != 1_000_000 || r.ExitAfterMicros != auth.BridgeAdmission.ExitAfterMicros || r.UpperMicros != auth.BridgeAdmission.CurrentCost.TotalMicros {
 		t.Fatal("production withdrawal admission did not bind current and future costs")
+	}
+	if debtResidue && (len(auth.BridgeAdmission.AdditionalQuotedExits) != 1 || len(auth.BridgeAdmission.Exit) != 9) {
+		t.Fatal("durable reservation dropped debt conversion")
 	}
 	if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, evidence.Request, evidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
 		t.Fatal(err)

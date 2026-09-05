@@ -250,8 +250,10 @@ async function localWithdrawalAdmissionObservation(): Promise<Observation> {
     "TestWithdrawalAdmissionPricesCompleteCrossProtocolReturn",
     "TestWithdrawalAdmissionRejectsUnsafeOrIncompleteReturn",
     "TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge",
+    "TestDebtFreeReturnReservesBothCollateralAndDebtResidue",
+    "TestDebtResidueAdmissionContinuesFromNAVThroughActualSwap",
     "TestTickDispatchesKaminoAndReobservesAfterReconciliation",
-  ],"debt-free collateral withdrawal, quote and complete return admission through production paths");
+  ],"debt-free withdrawal, collateral/debt-residue quotes and complete return admission through production paths");
   if(result.data)result.data.proofLevel="CONTROLLED_RPC_QUOTE_AND_POSTSTATE_ACCOUNTING_NOT_EXECUTED_RETURN";
   return result;
 }
@@ -271,6 +273,8 @@ async function localDebtDecisionObservation(): Promise<Observation> {
     "TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate",
     "TestNonUSDCLifecycleSafetyPrecedence",
     "TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity",
+    "TestKaminoAccruedDebtUsesUnroundedFractionAndFullRateLimbs",
+    "TestAccruedDebtFlowsThroughObservationNAVAndRepayment",
   ],"non-USDC lifecycle decisions and fixed-account valuation with controlled inputs");
   if (result.data) result.data.proofLevel="LOCAL_PRODUCTION_DECISIONS_AND_ACCOUNT_DECODING_NOT_EXECUTED_LIFECYCLE";
   return result;
@@ -515,7 +519,7 @@ export async function verify() {
       observedCheck(database,"durable budget exists for this goal",d => d.route?.phase3?.goalId === GOAL),
       observedCheck(localCaps,"local production builders reject fresh over-cap costs before signing and reject stale valuation",d=>d.pass===true),
       observedCheck(localBridgeAdmission,"cash-only bridge admission prices staging, full restoration and each required NAV; rejects unsupported exposure and prevents build after HOLD",d=>d.pass===true),
-      observedCheck(localWithdrawalAdmission,"debt-free withdrawal, intermediate NAV, full collateral/USDC conversion and bridge return each receive measured admission; remaining debt and over-cap full returns reject",d=>d.pass===true),
+      observedCheck(localWithdrawalAdmission,"debt-free withdrawal, intermediate NAV, full collateral/debt-residue conversions and aggregate bridge return receive measured admission; outstanding debt and over-cap full returns reject",d=>d.pass===true),
       observedCheck(localSendJournal,"local journal persists producer-measured bridge and debt-free withdrawal costs, preserves concurrency/restart binding, reprices before send, and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
     ],[
       "Production admission for entry, borrowing, debt-bearing repayment/conversion graphs, setup and safe one-time budget initialization; debt-free return admission does not cover those shapes.",
@@ -530,7 +534,7 @@ export async function verify() {
     measuredCondition("R03","Shared debt/token/valuation/exit runtime and existing policy authority",[
       observedCheck(localJupiterRepair,"V2 candidate compiler rejects economic/custody mutations, preserves all 52 legacy constraints and sibling edges, and full replacement groups create under the deployed Squads binary",d=>d.pass===true),
       observedCheck(localKaminoConstruction,"AUTO/Ethena four-leg unsigned construction matches retained SDK vectors and rejects account/policy substitutions",d=>d.pass===true),
-      observedCheck(localDebtDecisions,"non-USDC planner separates repayment and bridge custody, drains residues, and receives decimal-aware USDC entry capacity",d=>d.pass===true),
+      observedCheck(localDebtDecisions,"non-USDC planner separates repayment and bridge custody, drains residues, and receives decimal-aware capacity plus reserve-rate-adjusted debt for NAV, LTV and repayment",d=>d.pass===true),
       observedCheck(localJupiter,"AUTO/Ethena Jupiter layouts match installed edge constraints and controlled worker dispatch preserves conversion identities",d=>d.pass===true),
       observedCheck(localJupiter,"all AUTO/Ethena retained conversion samples fit the actual Squads packet envelope (legacy or validated v0)",d=>d.pass===true&&d.packets?.allFit===true),
       measured("catalog operation and swap-edge cardinality",catalog.operations.length === 44 && catalog.swapEdges.length === 52,

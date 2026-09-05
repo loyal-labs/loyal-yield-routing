@@ -132,9 +132,13 @@ func (c *RPCClient) observeKaminoPrimeUSDC(ctx context.Context, config KaminoObs
 		if err != nil {
 			return KaminoPosition{}, err
 		}
+		debtRaw, err := obligation.debtAtReserveRate(debt)
+		if err != nil {
+			return KaminoPosition{}, err
+		}
 		return KaminoPosition{
 			Slot: baseSlot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition,
-			CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: obligation.debtRaw,
+			CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw,
 			RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF,
 			DebtPriceSF: debt.marketPriceSF, Oracles: oracles,
 			CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals,
@@ -152,6 +156,8 @@ type decodedKaminoObligation struct {
 	hasPosition            bool
 	collateralDepositedRaw uint64
 	debtRaw                uint64
+	debtAmountSF           [16]byte
+	cumulativeBorrowRate   [32]byte
 }
 type decodedKaminoReserve struct {
 	refreshedSlot           int64
@@ -167,6 +173,7 @@ type decodedKaminoReserve struct {
 	borrowedRaw             uint64
 	borrowedLiquiditySF     *big.Int
 	utilizationLimitPct     byte
+	cumulativeBorrowRate    [32]byte
 }
 
 func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig) (decodedKaminoObligation, error) {
@@ -178,6 +185,8 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 	}
 	deposits, borrows := 0, 0
 	var collateralRaw, debtRaw uint64
+	var debtAmountSF [16]byte
+	var cumulativeBorrowRate [32]byte
 	for i := 0; i < 8; i++ {
 		off := 96 + i*136
 		amount := binary.LittleEndian.Uint64(account.Data[off+32 : off+40])
@@ -196,6 +205,8 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 				return decodedKaminoObligation{}, fmt.Errorf("unsupported Kamino debt reserve")
 			}
 			borrows++
+			copy(debtAmountSF[:], account.Data[off+88:off+104])
+			copy(cumulativeBorrowRate[:], account.Data[off+32:off+64])
 			var err error
 			debtRaw, err = ceilScaledFraction(account.Data[off+88 : off+104])
 			if err != nil {
@@ -211,6 +222,7 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 		refreshedSlot: int64(binary.LittleEndian.Uint64(account.Data[16:24])), stale: account.Data[24],
 		priceStatus: account.Data[25], hasPosition: hasPosition,
 		collateralDepositedRaw: collateralRaw, debtRaw: debtRaw,
+		debtAmountSF: debtAmountSF, cumulativeBorrowRate: cumulativeBorrowRate,
 	}, nil
 }
 
@@ -223,6 +235,10 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 	}
 	var price [16]byte
 	copy(price[:], account.Data[248:264])
+	var cumulativeBorrowRate [32]byte
+	// ReserveLiquidity BigFractionBytes starts at 296; its four u64 value
+	// limbs precede two padding limbs. Never interpret the padding as value.
+	copy(cumulativeBorrowRate[:], account.Data[296:328])
 	// ReserveLiquidity.mintDecimals is a u64 after marketPriceLastUpdatedTs.
 	decimals := binary.LittleEndian.Uint64(account.Data[272:280])
 	if decimals > 18 {
@@ -258,7 +274,36 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 		borrowedRaw:             borrowedRaw,
 		borrowedLiquiditySF:     borrowedLiquiditySF,
 		utilizationLimitPct:     account.Data[kaminoReserveConfigOffset+645],
+		cumulativeBorrowRate:    cumulativeBorrowRate,
 	}, nil
+}
+
+// Match KLend ObligationLiquidity::accrue_interest: multiply the unrounded
+// stored Fraction by the reserve/obligation U256 cumulative-rate ratio, floor
+// at the scaled-fraction boundary, then ceil once into executable raw debt.
+// This is debt at the captured reserve refresh, NOT a future interest bound.
+// Admission must separately reserve interest through its execution horizon.
+func (o decodedKaminoObligation) debtAtReserveRate(r decodedKaminoReserve) (uint64, error) {
+	amount := littleInt(o.debtAmountSF[:])
+	if amount.Sign() == 0 {
+		if o.debtRaw != 0 {
+			return 0, fmt.Errorf("Kamino stored debt fraction is missing")
+		}
+		return 0, nil
+	}
+	former, current := littleInt(o.cumulativeBorrowRate[:]), littleInt(r.cumulativeBorrowRate[:])
+	if former.Sign() <= 0 || current.Cmp(former) < 0 {
+		return 0, fmt.Errorf("Kamino cumulative borrow rate is zero or regressed")
+	}
+	if current.Cmp(former) == 0 {
+		return ceilScaledBigFraction(amount)
+	}
+	product := new(big.Int).Mul(amount, current)
+	if product.BitLen() > 256 {
+		return 0, fmt.Errorf("Kamino interest multiplication exceeds u256")
+	}
+	accrued := product.Quo(product, former)
+	return ceilScaledBigFraction(accrued)
 }
 
 func entryCapacityDebtRaw(collateral, debt decodedKaminoReserve) (uint64, error) {

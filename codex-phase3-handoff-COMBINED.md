@@ -5,11 +5,24 @@ That file alone defines acceptance; this handoff supplies implementation order.
 The operator requested the revision to remove late cap/proof blockers and ship
 all catalogued markets through one shared implementation.
 
-## Current checkpoint — V2 execution and Go parity, 2026-09-04
+## Current checkpoint — accrued debt and complete residue admission, 2026-09-04
 
 The goal remains active; all full R01-R08 conditions remain incomplete. Latest
-verifier output: `docs/evidence/backyard-rwa-go/phase3/jupiter-v2-sequential-2026-09-04.json.gz`.
+verifier output: `docs/evidence/backyard-rwa-go/phase3/debt-residue-admission-2026-09-04.json.gz`.
 Historical checkpoints below are provenance, not the current work queue.
+
+The shared observer now applies the captured reserve/obligation cumulative-rate
+ratio to unrounded debt before raw-unit rounding. NAV, LTV and repayment use the
+same adjusted amount; missing/regressed/overflowing rates fail. SDK byte/arithmetic
+comparison confirms seven stored units at 1/1.25 rates become nine raw units.
+This is not an interest estimate beyond the reserve's last refresh.
+
+Debt-free return admission now reserves collateral and debt-residue conversions,
+NAV after each, and staging/restoration of their combined USDC output. Both quotes
+persist in the existing authorization. The actual debt-residue swap gets fresh
+admission; remaining obligation debt is still not supported by this estimator.
+Next implement interest-through-execution-horizon and complete repayment/release
+admission, join the full lifecycle, then complete entry and all-lane queue/release.
 
 Two exact V2 candidate policies create on cloned finalized Settings and execute
 USDC -> USDe (Manifest), then USDe -> PYUSD (Whirlpool/Token-2022), with actual
@@ -25,7 +38,7 @@ for the distinct verifier observation; candidate proof is not installed-policy
 execution, forward installation/readback or full R04 completion.
 
 Four real sequential Kamino legs are separately proven. Admission covers cash
-bridge and debt-free full collateral return. Next join these mechanics into the
+bridge and debt-free full collateral/debt-residue return. Next join these mechanics into the
 complete lifecycle and finish entry/borrowing/debt-bearing exit admission, then
 setup/budget initialization, seven lane bindings and the serialized family queue.
 Refresh setup costs before any installation; the proposed setup-only cap revision
