@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,12 +57,14 @@ async function chainObservation(catalog: Json, manifest: Json): Promise<Observat
     if (result.value.length !== addresses.length) throw new Error("RPC_ACCOUNT_COUNT");
     const reserveAddresses = catalog.lanes.flatMap((l: Json) => [l.candidateIdentity.collateralReserve,l.candidateIdentity.debtReserve]);
     const accounts = result.value.map((account: Json | null, i: number) => {
+      const address = addresses[i];
+      if (!address) throw new Error("RPC_ACCOUNT_ADDRESS_MISSING");
       if (!account) return {address:addresses[i], present:false};
       const bytes = Buffer.from(account.data[0], "base64");
       let mint: Json = {};
       let reserve: Json = {};
-      if (mintAddresses.includes(addresses[i])) {
-        const decoded = unpackMint(new PublicKey(addresses[i]), {
+      if (mintAddresses.includes(address)) {
+        const decoded = unpackMint(new PublicKey(address), {
           data:bytes,owner:new PublicKey(account.owner),executable:account.executable,lamports:account.lamports,
         },new PublicKey(account.owner));
         const hook = getTransferHook(decoded);
@@ -127,16 +130,26 @@ async function databaseObservation(): Promise<Observation> {
         FROM loyal_yield.multiply_operations WHERE route_key='${ROUTE}'
         ORDER BY created_at DESC LIMIT 1)
     )`;
-    const child = Bun.spawn(["psql","-X","-q","-A","-t","-v","ON_ERROR_STOP=1","-c",sql], {
-      cwd:ROOT, stdout:"pipe", stderr:"pipe",
+    const child = spawn("psql",["-X","-q","-A","-t","-v","ON_ERROR_STOP=1","-c",sql], {
+      cwd:ROOT, stdio:["ignore","pipe","pipe"],
       env:{...process.env,PGHOST:u.hostname,PGPORT:u.port||"5432",PGUSER:decodeURIComponent(u.username),
         PGPASSWORD:decodeURIComponent(u.password),PGDATABASE:u.pathname.slice(1),
         PGSSLMODE:"require",PGCONNECT_TIMEOUT:"10",
         PGOPTIONS:"-c default_transaction_read_only=on -c statement_timeout=30000"},
     });
+    let output = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", chunk => { output += chunk; });
+    // Drain but never expose credential-bearing driver errors.
+    child.stderr.resume();
     const deadline = setTimeout(() => child.kill(), 35_000);
-    const [output, , code] = await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);
-    clearTimeout(deadline);
+    let code: number | null;
+    try {
+      code = await new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      });
+    } finally { clearTimeout(deadline); }
     if (code !== 0) throw new Error("DATABASE_READ_FAILED");
     return {status:"OBSERVED",source:"fresh read-only Postgres snapshot",data:JSON.parse(output)};
   } catch {
@@ -210,7 +223,7 @@ export async function verify() {
     conditions,
   };
 }
-if (import.meta.main) {
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { console.log(JSON.stringify(await verify(),null,2)); process.exitCode=1; }
   catch { console.log(JSON.stringify({verdict:"FAIL",reason:"VERIFIER_INPUT_INVALID",broadcast:false})); process.exitCode=1; }
 }

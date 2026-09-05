@@ -197,3 +197,13 @@ Prime byte fingerprints remain unchanged; unknown lanes and caller token-program
 mutations reject. This is the shared layout groundwork, not installation of the
 other nine routes: fresh exact bindings, policy bytes, oracle refresh graph and
 full program execution proof remain required before they can execute.
+The read-only resolver now exposes reserve decimals, farms, oracle configuration
+and individual observation slots. All 11 reserve/custody identity graphs resolved
+at confirmed slot 444385567 (Settings policy seed 139). This does not prove farm
+user initialization, current policy admission, capacity, or executable readiness.
+The attempted addition of nine runtime bindings was rejected by safety review
+as an unapproved destination expansion and was not applied. Resolve that exact
+authorization boundary before retrying. Phase 3 verifier TypeScript errors were
+repaired without changing its FAIL semantics; the offline diagnostic still
+reports eight incomplete conditions. Package typecheck remains red on six
+pre-existing possibly-undefined errors in generate-rwa-phase2-r03-plan.ts.
