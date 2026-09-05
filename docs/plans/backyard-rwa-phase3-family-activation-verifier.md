@@ -254,6 +254,27 @@ interest-through-execution-horizon admission. Tests cover non-peg PYUSD valuatio
 combined-output cap rejection, changed custody/remaining-debt rejection and
 durable two-quote persistence without signing/sending.
 
+Finite repayment follow-up — 2026-09-05: production construction now retains a
+finite decision limit separately from the currently observed debt floor. The
+repayment-only effects graph reserves the full wire maximum, preserves the actual
+token program (including PYUSD Token-2022), and reconciles equal source debit and
+reserve credit within the bounds using transaction-scoped balances. Neither a
+successful token transfer nor the maximum request asserts zero remaining debt.
+No automatic interest buffer or new spending ceiling is introduced.
+
+The deployed-program witness requests 1010 raw PYUSD against 1000 owed, consumes
+1000 and leaves zero obligation debt. Requesting 999 instead rejects with KLend
+6092 `NetValueRemainingTooSmall` and leaves debt/custody unchanged. The current Go
+compiler reproduces both exact local wires; its reconciliation accepts the clipped
+transfer and rejects the failed partial transfer. This is a controlled-state
+feasibility result, not a live receipt or a guarantee at future execution slots.
+Do not rely on tiny partial repayments or residual-debt retries to finish canaries.
+Interest-through-horizon sizing, a complete funded payoff/release reservation and
+fresh terminal obligation observation remain required before debt-bearing admission.
+The sole verifier retains these subclaims in
+`docs/evidence/backyard-rwa-go/phase3/repayment-bounds-2026-09-05.json.gz`;
+all full R01-R08 conditions remain incomplete.
+
 ### R02 — exact allowlist and frozen canary queue
 
 Resolve the exact 11 scope tuples against authoritative identities; reject

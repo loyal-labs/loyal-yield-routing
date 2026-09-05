@@ -5,11 +5,26 @@ That file alone defines acceptance; this handoff supplies implementation order.
 The operator requested the revision to remove late cap/proof blockers and ship
 all catalogued markets through one shared implementation.
 
-## Current checkpoint — accrued debt and complete residue admission, 2026-09-04
+## Current checkpoint — finite repayment and real-program dust rejection, 2026-09-05
 
 The goal remains active; all full R01-R08 conditions remain incomplete. Latest
-verifier output: `docs/evidence/backyard-rwa-go/phase3/debt-residue-admission-2026-09-04.json.gz`.
+verifier output: `docs/evidence/backyard-rwa-go/phase3/repayment-bounds-2026-09-05.json.gz`.
 Historical checkpoints below are provenance, not the current work queue.
+
+Production repayment now keeps a finite request maximum and a separate observed
+minimum debit. Pricing reserves the maximum; reconciliation accepts only matching
+in-range source debit/reserve credit with unchanged custody identities. The actual
+Token-2022 owner of PYUSD is preserved instead of mislabeled as classic SPL Token.
+This does not supply an automatic interest buffer or debt-bearing admission.
+
+The captured deployed Kamino program accepts 1010 raw requested against 1000 owed,
+debits 1000 and reaches zero debt. A 999 request rejects with KLend 6092
+`NetValueRemainingTooSmall`, leaving debt and economic custody unchanged. Both
+local wires are reproduced by the current Go compiler; captured balances pass
+through production maximum-debit measurement and reconciliation. Do not design
+the canary exit around tiny partial repayments or repeated residual-debt cleanup.
+Next size and reserve a complete payoff over the execution horizon, prove its
+collateral release and full return, then finish entry and the all-lane queue.
 
 The shared observer now applies the captured reserve/obligation cumulative-rate
 ratio to unrounded debt before raw-unit rounding. NAV, LTV and repayment use the
@@ -21,8 +36,8 @@ Debt-free return admission now reserves collateral and debt-residue conversions,
 NAV after each, and staging/restoration of their combined USDC output. Both quotes
 persist in the existing authorization. The actual debt-residue swap gets fresh
 admission; remaining obligation debt is still not supported by this estimator.
-Next implement interest-through-execution-horizon and complete repayment/release
-admission, join the full lifecycle, then complete entry and all-lane queue/release.
+Interest-through-execution-horizon and complete repayment/release admission remain
+the next missing runtime slice, followed by the full lifecycle and entry/queue.
 
 Two exact V2 candidate policies create on cloned finalized Settings and execute
 USDC -> USDe (Manifest), then USDe -> PYUSD (Whirlpool/Token-2022), with actual

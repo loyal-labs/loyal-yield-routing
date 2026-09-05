@@ -25,6 +25,7 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 	var source kaminoCustodyBoundary
 	var exactAmount *uint64
 	var sweep bool
+	var repayment bool
 	switch r := request.(type) {
 	case BridgeBuildRequest:
 		if _, err = CompileBridgeMessage(r); err != nil {
@@ -66,6 +67,16 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 			return ExecutableDebit{}, err
 		}
 		source, _ = kaminoLegCustodiesForRoute(leg, route)
+		if effects.Repayment != nil {
+			_, destination := kaminoLegCustodiesForRoute(leg, route)
+			if leg != kaminoLegRepay || effects.Repayment.MaximumDebitRaw != r.AmountRaw ||
+				effects.Accounts[0].Owner != route.DebtTokenProgram ||
+				effects.Accounts[0].Address != source.Address || effects.Accounts[1].Address != destination.Address ||
+				effects.Accounts[1].Mint != destination.Mint || effects.Accounts[1].Authority != destination.Authority {
+				return ExecutableDebit{}, budgetHold("repayment_request_or_destination_mismatch")
+			}
+			repayment = true
+		}
 		if leg != kaminoLegWithdraw {
 			exactAmount = &r.AmountRaw
 		}
@@ -81,6 +92,9 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 		exactAmount = &r.AmountRaw
 	default:
 		return ExecutableDebit{}, budgetHold("unmapped_economic_action")
+	}
+	if effects.Repayment != nil && !repayment {
+		return ExecutableDebit{}, budgetHold("repayment_bounds_on_non_repayment")
 	}
 	for _, account := range effects.Accounts {
 		if account.Address != source.Address {

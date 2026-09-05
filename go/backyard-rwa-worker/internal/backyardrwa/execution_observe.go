@@ -264,7 +264,12 @@ func ObserveConfirmedKaminoExecutionEvidence(
 			sha256Bytes(policy.Data) != request.PolicyAccountDataSHA256 {
 			return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("PRIME/USDC policy bytes or owner drifted")
 		}
-		effects, err := exactKaminoTokenEffects(accounts, source, destination, effectAmount)
+		var effects ExpectedEffects
+		if leg == kaminoLegRepay {
+			effects, err = boundedKaminoRepaymentEffects(accounts, source, destination, effectAmount, wireAmount)
+		} else {
+			effects, err = exactKaminoTokenEffects(accounts, source, destination, effectAmount)
+		}
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
@@ -314,10 +319,13 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 		}
 		if position.DebtRaw > 0 {
 			amount := position.DebtRaw
-			if decision.AmountRaw > 0 && uint64(decision.AmountRaw) < amount {
+			if decision.AmountRaw > 0 {
 				amount = uint64(decision.AmountRaw)
 			}
-			return kaminoLegRepay, amount, amount, nil
+			// Keep the finite decision limit on the wire. KLend transfers only
+			// min(request, refreshed debt), which may differ from this request.
+			// This is not a forecast of interest or a full-payoff assertion.
+			return kaminoLegRepay, amount, min(amount, position.DebtRaw), nil
 		}
 		if position.CollateralDepositedRaw > 0 && position.RedeemablePrimeRaw > 0 {
 			receiptRaw := position.CollateralDepositedRaw
@@ -472,8 +480,27 @@ func exactKaminoTokenEffects(accounts []ConfirmedAccount, source, destination ka
 	if sourceRaw < amount || destinationRaw > math.MaxUint64-amount {
 		return ExpectedEffects{}, fmt.Errorf("Kamino custody effect overflows or underflows")
 	}
+	// Both accounts were decoded under their actual owner above. Preserve it:
+	// PYUSD uses Token-2022, even when the bridge cash uses classic SPL Token.
+	program := accountAt(accounts, source.Address).Owner
+	if program != accountAt(accounts, destination.Address).Owner || source.Mint != destination.Mint {
+		return ExpectedEffects{}, fmt.Errorf("Kamino transfer custody token programs or mints differ")
+	}
 	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{
-		{Address: source.Address, Owner: bridgeTokenProgram, Mint: source.Mint, Authority: source.Authority, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
-		{Address: destination.Address, Owner: bridgeTokenProgram, Mint: destination.Mint, Authority: destination.Authority, BeforeRaw: destinationRaw, AfterRaw: destinationRaw + amount},
+		{Address: source.Address, Owner: program, Mint: source.Mint, Authority: source.Authority, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
+		{Address: destination.Address, Owner: program, Mint: destination.Mint, Authority: destination.Authority, BeforeRaw: destinationRaw, AfterRaw: destinationRaw + amount},
 	}}, nil
+}
+
+func boundedKaminoRepaymentEffects(accounts []ConfirmedAccount, source, destination kaminoCustodyBoundary, minimum, maximum uint64) (ExpectedEffects, error) {
+	effects, err := exactKaminoTokenEffects(accounts, source, destination, maximum)
+	if err != nil {
+		return ExpectedEffects{}, err
+	}
+	effects.Kind = "kamino-repay"
+	effects.Repayment = &ExpectedRepayment{MinimumDebitRaw: minimum, MaximumDebitRaw: maximum}
+	if err := validateRepaymentEffects(effects); err != nil {
+		return ExpectedEffects{}, err
+	}
+	return effects, nil
 }

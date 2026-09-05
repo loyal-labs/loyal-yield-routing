@@ -3,12 +3,163 @@ package backyardrwa
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
 )
+
+// Feed actual deployed-program token poststates through the production
+// compiler, amount selector, economic debit measurement and reconciliation.
+// These are local SVM transitions, not confirmed RPC receipts or signer proof.
+func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
+	dir, resultName := os.Getenv("PHASE3_KAMINO_PROBE_DIR"), os.Getenv("PHASE3_KAMINO_PROBE_RESULT")
+	if dir == "" || resultName == "" {
+		t.Skip("explicit local probe snapshot and execution result required")
+	}
+	if filepath.Base(resultName) != resultName {
+		t.Fatal("result must be a filename within the probe directory")
+	}
+	read := func(name string, target any) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var plan struct {
+		Lane  string
+		Steps []struct {
+			Leg     string
+			Request KaminoPrimeUSDCRequest
+		}
+	}
+	read("plan.json", &plan)
+	if plan.Lane != ethenaUSDePYUSD.Lane || len(plan.Steps) != 4 || plan.Steps[2].Leg != "repay" {
+		t.Fatal("unexpected repayment plan")
+	}
+	type capturedAccount struct {
+		Address, Owner, DataBase64, DataSHA256 string
+		Lamports                               uint64
+		Present                                bool
+	}
+	var result struct {
+		Slot                        int64
+		BoundedRepaymentProofPassed bool
+		BoundedRepaymentProbes      []struct {
+			MaximumDebitRaw, ActualDebitRaw    uint64
+			WireBase64, WireSHA256, BorrowedSF string
+			Error                              *string
+			ObligationDebtZero                 bool
+			Before, After                      []capturedAccount
+		}
+	}
+	read(resultName, &result)
+	if !result.BoundedRepaymentProofPassed || len(result.BoundedRepaymentProbes) != 2 {
+		t.Fatal("complete real-program repayment witnesses missing")
+	}
+	decodeAccounts := func(captured []capturedAccount) []ConfirmedAccount {
+		t.Helper()
+		accounts := []ConfirmedAccount{}
+		for _, a := range captured {
+			if !a.Present {
+				continue
+			}
+			data, err := base64.StdEncoding.Strict().DecodeString(a.DataBase64)
+			if err != nil || sha256Bytes(data) != a.DataSHA256 {
+				t.Fatal("captured account hash mismatch", a.Address, err)
+			}
+			accounts = append(accounts, ConfirmedAccount{Address: a.Address, Owner: a.Owner, Lamports: a.Lamports, Data: data})
+		}
+		return accounts
+	}
+	route := ethenaUSDePYUSD
+	source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
+	for i, probe := range result.BoundedRepaymentProbes {
+		maximum := []uint64{1_010, 999}[i]
+		actual := uint64(1_000)
+		if maximum == 999 {
+			actual = 0
+			if probe.Error == nil || *probe.Error != "InstructionError(3, Custom(6092))" {
+				t.Fatal("missing real-program residual-debt rejection")
+			}
+		} else if probe.Error != nil {
+			t.Fatal("full repayment failed", *probe.Error)
+		}
+		if probe.MaximumDebitRaw != maximum || probe.ActualDebitRaw != actual || probe.ObligationDebtZero != (maximum >= 1_000) {
+			t.Fatal("unexpected actual repayment or payoff result", maximum)
+		}
+		before, after := decodeAccounts(probe.Before), decodeAccounts(probe.After)
+		beforeObligation, err := decodeKaminoObligation(accountAt(before, route.Kamino.Obligation), route.Kamino)
+		if err != nil || beforeObligation.debtRaw != 1_000 {
+			t.Fatal("witness did not start from the real borrow poststate", beforeObligation.debtRaw, err)
+		}
+		leg, amount, minimum, err := selectKaminoLeg(Decision{Action: DeleverRouteStep, StrategyKey: route.Lane, AmountRaw: int64(maximum)}, KaminoPosition{DebtRaw: beforeObligation.debtRaw})
+		if err != nil || leg != kaminoLegRepay || amount != maximum {
+			t.Fatal("production selected a different repayment", amount, err)
+		}
+		request := plan.Steps[2].Request
+		request.AmountRaw = amount
+		request.Data = append([]byte(nil), request.Data...)
+		binary.LittleEndian.PutUint64(request.Data[8:], amount)
+		message, err := CompileKaminoMessage(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire, err := base64.StdEncoding.Strict().DecodeString(probe.WireBase64)
+		if err != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != probe.WireSHA256 || !bytes.Equal(wire[65:], message) {
+			t.Fatal("executed repayment does not match current production compiler", err)
+		}
+		effects, err := boundedKaminoRepaymentEffects(before, source, destination, minimum, maximum)
+		if err != nil {
+			t.Fatal(err)
+		}
+		debit, err := MeasureExecutableDebit(request, effects)
+		if err != nil || debit.Raw != maximum {
+			t.Fatal("production did not reserve the maximum executable debit", debit, err)
+		}
+		receipt := ConfirmedTransactionEvidence{Signature: "local-svm-not-signed:" + probe.WireSHA256, Slot: result.Slot}
+		for _, boundary := range []kaminoCustodyBoundary{source, destination} {
+			mint, _ := decodeBase58PublicKey(boundary.Mint)
+			authority, _ := decodeBase58PublicKey(boundary.Authority)
+			for j, accounts := range [][]ConfirmedAccount{before, after} {
+				a := accountAt(accounts, boundary.Address)
+				custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, authority)
+				if err != nil {
+					t.Fatal(err)
+				}
+				balance := TransactionTokenBalance{Address: boundary.Address, OwnerProgram: a.Owner, Mint: boundary.Mint, Authority: boundary.Authority, Raw: custody.Raw}
+				if j == 0 {
+					receipt.PreTokenBalances = append(receipt.PreTokenBalances, balance)
+				} else {
+					receipt.PostTokenBalances = append(receipt.PostTokenBalances, balance)
+				}
+			}
+		}
+		if receipt.PreTokenBalances[0].Raw-receipt.PostTokenBalances[0].Raw != probe.ActualDebitRaw {
+			t.Fatal("reported debit differs from captured custody")
+		}
+		if _, _, err := ReconcileConfirmedTransaction(effects, receipt); (err == nil) != (probe.Error == nil) {
+			t.Fatal("clipped repayment rejected or failed partial repayment reconciled", err)
+		}
+		if maximum == 1_010 {
+			exact := effects
+			exact.Kind, exact.Repayment = "", nil
+			if _, _, err := ReconcileConfirmedTransaction(exact, receipt); err == nil {
+				t.Fatal("negative control: exact-request reconciliation should reject debt-clipped debit")
+			}
+		}
+		remaining, err := decodeKaminoObligation(accountAt(after, route.Kamino.Obligation), route.Kamino)
+		if err != nil || (remaining.debtRaw == 0) != probe.ObligationDebtZero {
+			t.Fatal("token transfer was mistaken for an observed full payoff", remaining.debtRaw, err)
+		}
+	}
+}
 
 func TestPhase3KaminoProbeMatchesProduction(t *testing.T) {
 	dir := os.Getenv("PHASE3_KAMINO_PROBE_DIR")

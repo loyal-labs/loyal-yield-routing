@@ -64,11 +64,11 @@ export function localCapTestProof(output: string, exitCode: number | null, expec
       !events.some(e=>e.Action==="fail") && events.some(e=>e.Action==="pass" && e.Test===undefined),
     proofLevel:"LOCAL_PRODUCTION_BUILDERS_CONTROLLED_RPC_INPUTS_NOT_LIVE_ADMISSION"};
 }
-async function localCapObservation(names: string[] = CAP_TESTS, source="local production-builder cap witnesses", packetWitnesses=false): Promise<Observation> {
+async function localCapObservation(names: string[] = CAP_TESTS, source="local production-builder cap witnesses", packetWitnesses=false, extraEnv: Record<string,string> = {}): Promise<Observation> {
   try {
     const child=spawn("go",["test","./internal/backyardrwa","-json","-race","-count=1","-timeout=60s",
       "-run","^("+names.join("|")+")$"],{
-      cwd:resolve(ROOT,"go/backyard-rwa-worker"),stdio:["ignore","pipe","pipe"],
+      cwd:resolve(ROOT,"go/backyard-rwa-worker"),stdio:["ignore","pipe","pipe"],env:{...process.env,...extraEnv},
     });
     let output="";
     child.stdout.setEncoding("utf8"); child.stdout.on("data",chunk=>{output+=chunk;});
@@ -119,9 +119,13 @@ async function localSequentialKaminoObservation(): Promise<Observation> {
     let execution:Json;
     try{execution=JSON.parse(readFileSync(resolve(directory,resultName),"utf8"));}
     catch{return {status:"OBSERVED",source,data:{pass:false,reason:"SVM_EXECUTION_DID_NOT_PRODUCE_EVIDENCE",exitCode}};}
+    const repayment=await localCapObservation(["TestPhase3KaminoRepaymentProbeMatchesProduction"],
+      "executed finite repayment and dust-rejection wires compared with current Go compiler, maximum-debit pricing and reconciliation",false,
+      {PHASE3_KAMINO_PROBE_RESULT:resultName});
     const pass=exitCode===0&&execution.fourKaminoLegsPassed===true&&execution.negative?.rejectedBeforeKaminoCPI===true&&
+      execution.boundedRepaymentProofPassed===true&&repayment.status==="OBSERVED"&&repayment.data?.pass===true&&
       execution.planSha256===sha(readFileSync(resolve(directory,"plan.json")))&&execution.snapshotSha256===sha(readFileSync(resolve(directory,"snapshot.json")));
-    return {status:"OBSERVED",source,data:{pass,slot:execution.slot,proofLevel:"CONTROLLED_FOUR_KAMINO_LEGS_NOT_FULL_LIFECYCLE_OR_SIGNER_PROOF",inputs,execution}};
+    return {status:"OBSERVED",source,data:{pass,slot:execution.slot,proofLevel:"CONTROLLED_FOUR_KAMINO_LEGS_NOT_FULL_LIFECYCLE_OR_SIGNER_PROOF",inputs,execution,repayment}};
   }catch{return {status:"BLOCKED",source,reason:"LOCAL_SEQUENTIAL_KAMINO_PROBE_UNAVAILABLE"};}
 }
 async function localSendJournalObservation(): Promise<Observation> {
@@ -275,6 +279,8 @@ async function localDebtDecisionObservation(): Promise<Observation> {
     "TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity",
     "TestKaminoAccruedDebtUsesUnroundedFractionAndFullRateLimbs",
     "TestAccruedDebtFlowsThroughObservationNAVAndRepayment",
+    "TestBoundedKaminoRepaymentReconcilesActualDebitWithoutClaimingPayoff",
+    "TestBoundedKaminoRepaymentReservesWireMaximumAndRejectsWeakenedEffects",
   ],"non-USDC lifecycle decisions and fixed-account valuation with controlled inputs");
   if (result.data) result.data.proofLevel="LOCAL_PRODUCTION_DECISIONS_AND_ACCOUNT_DECODING_NOT_EXECUTED_LIFECYCLE";
   return result;
@@ -534,7 +540,7 @@ export async function verify() {
     measuredCondition("R03","Shared debt/token/valuation/exit runtime and existing policy authority",[
       observedCheck(localJupiterRepair,"V2 candidate compiler rejects economic/custody mutations, preserves all 52 legacy constraints and sibling edges, and full replacement groups create under the deployed Squads binary",d=>d.pass===true),
       observedCheck(localKaminoConstruction,"AUTO/Ethena four-leg unsigned construction matches retained SDK vectors and rejects account/policy substitutions",d=>d.pass===true),
-      observedCheck(localDebtDecisions,"non-USDC planner separates repayment and bridge custody, drains residues, and receives decimal-aware capacity plus reserve-rate-adjusted debt for NAV, LTV and repayment",d=>d.pass===true),
+      observedCheck(localDebtDecisions,"non-USDC planner separates debt/bridge custody and observes accrued debt; finite repayment bounds preserve custody conservation and charge the wire maximum without claiming payoff",d=>d.pass===true),
       observedCheck(localJupiter,"AUTO/Ethena Jupiter layouts match installed edge constraints and controlled worker dispatch preserves conversion identities",d=>d.pass===true),
       observedCheck(localJupiter,"all AUTO/Ethena retained conversion samples fit the actual Squads packet envelope (legacy or validated v0)",d=>d.pass===true&&d.packets?.allFit===true),
       measured("catalog operation and swap-edge cardinality",catalog.operations.length === 44 && catalog.swapEdges.length === 52,

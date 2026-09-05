@@ -181,6 +181,7 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
     let negative_evidence = json!({"mutation":"deposit amount 100000000 -> 1000000000001; installed maximum 1000000000000",
         "error":format!("{:?}",negative.err),"logs":negative.meta.logs,"rejectedBeforeKaminoCPI":true});
     let mut results: Vec<Value> = vec![];
+    let mut repayment_probes = vec![];
     let mut pass = true;
     let collateral_custody = key(plan["collateralCustody"].as_str().unwrap());
     let debt_custody = key(plan["debtCustody"].as_str().unwrap());
@@ -197,6 +198,78 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
             token_amount(&svm, debt_custody),
         );
         let tx: VersionedTransaction = bincode::deserialize(&bytes(step, "wireBase64")).unwrap();
+        if step["leg"] == "repay" {
+            // Finite funded limits, not u64::MAX. Execute both from the same
+            // real borrow poststate. KLend rejects tiny residual debt on the
+            // partial request: it is not a payoff or viable retry-loop proof.
+            // Go re-compiles these exact wires
+            // and reconciles these captured token transitions in the verifier.
+            for maximum in [1_010u64, 999u64] {
+                let mut probe_svm = svm.clone();
+                let mut probe_tx = tx.clone();
+                let VersionedMessage::Legacy(ref mut message) = probe_tx.message else {
+                    panic!("unexpected probe message version")
+                };
+                assert_eq!(message.instructions.len(), 4);
+                let instruction = &mut message.instructions[3];
+                let offset = instruction.data.len() - 8;
+                assert_eq!(
+                    &instruction.data[offset - 8..offset],
+                    &[116, 174, 213, 76, 180, 53, 210, 144]
+                );
+                assert_eq!(&instruction.data[offset..], &100_000u64.to_le_bytes());
+                instruction.data[offset..].copy_from_slice(&maximum.to_le_bytes());
+                let wire = bincode::serialize(&probe_tx).unwrap();
+                let (error, meta) = match probe_svm.send_transaction(probe_tx) {
+                    Ok(meta) => {
+                        assert_eq!(
+                            maximum, 1_010,
+                            "dust partial repayment unexpectedly succeeded"
+                        );
+                        (None, meta)
+                    }
+                    Err(failure) => {
+                        assert_eq!(maximum, 999, "finite full repayment rejected");
+                        assert_eq!(
+                            format!("{:?}", failure.err),
+                            "InstructionError(3, Custom(6092))"
+                        );
+                        assert!(failure
+                            .meta
+                            .logs
+                            .iter()
+                            .any(|s| s.contains("NetValueRemainingTooSmall")));
+                        (Some(format!("{:?}", failure.err)), failure.meta)
+                    }
+                };
+                let actual_debit = balances_before.1 - token_amount(&probe_svm, debt_custody);
+                let (remaining_collateral, remaining_debt) = position(&probe_svm, obligation);
+                assert_eq!(actual_debit, if maximum == 1_010 { 1_000 } else { 0 });
+                assert!(remaining_collateral > 0);
+                assert_eq!(remaining_debt == 0, maximum >= 1_000);
+                if maximum == 999 {
+                    // Failed transactions may still charge payer fees. Compare
+                    // economic custody and obligation, not payer lamports.
+                    assert_eq!(
+                        probe_svm.get_account(&obligation),
+                        svm.get_account(&obligation)
+                    );
+                    assert_eq!(
+                        probe_svm.get_account(&debt_custody),
+                        svm.get_account(&debt_custody)
+                    );
+                }
+                assert_eq!(
+                    token_amount(&probe_svm, collateral_custody),
+                    balances_before.0
+                );
+                repayment_probes.push(json!({"maximumDebitRaw":maximum,"actualDebitRaw":actual_debit,
+                    "wireBase64":STANDARD.encode(&wire),"wireSha256":sha(&wire),
+                    "before":before,"after":capture(&probe_svm,&protected),"logs":meta.logs,"error":error,
+                    "computeUnits":meta.compute_units_consumed,"borrowedSF":remaining_debt.to_string(),
+                    "obligationDebtZero":remaining_debt==0,"mutation":"finite repayment amount only; recompiled by current Go verifier"}));
+            }
+        }
         let result = svm.send_transaction(tx);
         let (error, meta) = match result {
             Ok(m) => (None, m),
@@ -241,7 +314,8 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
     let report = json!({"schema":"phase3-kamino-controlled-result/v1","broadcast":false,"signatureProof":false,
       "proofLevel":"CONTROLLED_PROGRAM_EXECUTION_NOT_FULL_R04_LIFECYCLE","slot":snapshot["slot"],"clockSlot":svm.get_sysvar::<Clock>().slot,"programs":snapshot["programs"],
       "planSha256":sha(&fs::read(directory.join("plan.json")).unwrap()),"snapshotSha256":sha(&fs::read(directory.join("snapshot.json")).unwrap()),
-      "overrides":overrides,"negative":negative_evidence,"steps":results,"fourKaminoLegsPassed":pass && results.len()==4});
+      "overrides":overrides,"negative":negative_evidence,"steps":results,"fourKaminoLegsPassed":pass && results.len()==4,
+      "boundedRepaymentProbes":repayment_probes,"boundedRepaymentProofPassed":repayment_probes.len()==2});
     let result_name =
         std::env::var("PHASE3_KAMINO_PROBE_RESULT").unwrap_or_else(|_| "result.json".into());
     assert!(!result_name.contains('/') && result_name.ends_with(".json"));
