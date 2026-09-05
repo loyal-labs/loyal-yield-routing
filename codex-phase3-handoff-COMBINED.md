@@ -5,7 +5,36 @@ That file alone defines acceptance; this handoff supplies implementation order.
 The operator requested the revision to remove late cap/proof blockers and ship
 all catalogued markets through one shared implementation.
 
-## Current checkpoint — Jupiter conversion integration, 2026-09-04
+## Current checkpoint — V2 execution and Go parity, 2026-09-04
+
+The goal remains active; all full R01-R08 conditions remain incomplete. Latest
+verifier output: `docs/evidence/backyard-rwa-go/phase3/jupiter-v2-sequential-2026-09-04.json.gz`.
+Historical checkpoints below are provenance, not the current work queue.
+
+Two exact V2 candidate policies create on cloned finalized Settings and execute
+USDC -> USDe (Manifest), then USDe -> PYUSD (Whirlpool/Token-2022), with actual
+poststate carried forward. Packets are 652/627 bytes; compute is 105214/184383.
+Fourteen amount/slippage/fee/custody mutations reject before Jupiter CPI with
+custody unchanged. Public snapshot: finalized slot 444449068, locally retained
+at `/private/tmp/backyard-phase3-jupiter-probe.NjgtvX`.
+
+Go supports the fixed V2 prefix and selects V2 only for an explicit V2 binding.
+Test-only candidate bindings produce both SDK wires byte-for-byte. The installed
+catalog stays unchanged and rejects V2. Use `PHASE3_JUPITER_CANDIDATE_PROBE_DIR`
+for the distinct verifier observation; candidate proof is not installed-policy
+execution, forward installation/readback or full R04 completion.
+
+Four real sequential Kamino legs are separately proven. Admission covers cash
+bridge and debt-free full collateral return. Next join these mechanics into the
+complete lifecycle and finish entry/borrowing/debt-bearing exit admission, then
+setup/budget initialization, seven lane bindings and the serialized family queue.
+Refresh setup costs before any installation; the proposed setup-only cap revision
+remains unapproved. The snapshot contains preexisting custody of 214898 raw PYUSD:
+attribute/reconcile it before funding. A local zero-balance override proves no
+live flatness and grants no authority to drain unrelated assets. No installed
+policy, manifest, deployment, production DB or live transaction changed.
+
+## Prior checkpoint — Jupiter conversion integration, 2026-09-04
 
 AUTO/Ethena's six conversion action types now dispatch through the existing
 worker prepare -> journal -> build path without changing their identities.

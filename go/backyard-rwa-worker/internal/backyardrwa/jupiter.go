@@ -148,6 +148,15 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 		"amount": {strconv.FormatUint(amount, 10)}, "slippageBps": {strconv.Itoa(int(jupiterMaxSlippageBPS))},
 		"swapMode": {"ExactIn"}, "maxAccounts": {"32"},
 	}
+	if catalogJupiterRoute(lane) {
+		binding, err := catalogJupiterBindingForRoute(action, lane)
+		if err != nil {
+			return JupiterQuote{}, JupiterSwapInstruction{}, err
+		}
+		if binding.fixedPrefixV2() {
+			query.Set("instructionVersion", "V2")
+		}
+	}
 	if lane == SelectedRouteID {
 		// The selected RWA representative was reviewed against Manifest. Keep
 		// Jupiter's optimizer inside that one venue family instead of accepting
@@ -176,7 +185,7 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 		if err != nil {
 			return JupiterQuote{}, JupiterSwapInstruction{}, err
 		}
-		useSharedAccounts = binding.DiscriminatorHex == "c1209b3341d69c81"
+		useSharedAccounts = binding.DiscriminatorHex == "c1209b3341d69c81" || binding.fixedPrefixV2()
 	}
 	body, err := json.Marshal(map[string]any{
 		"userPublicKey": bridgeVault, "quoteResponse": json.RawMessage(quoteRaw),
@@ -216,7 +225,7 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 			return JupiterQuote{}, JupiterSwapInstruction{}, err
 		}
 	}
-	if lane == "Ethena/USDe/PYUSD" && action == SwapCollateralToDebtStep {
+	if acceptsJupiterLookupHints(lane, action) {
 		response.SwapInstruction.LookupTableAddresses = response.AddressLookupTableAddresses
 		if err := validateJupiterLookupCandidates(response.AddressLookupTableAddresses); err != nil {
 			return JupiterQuote{}, JupiterSwapInstruction{}, err

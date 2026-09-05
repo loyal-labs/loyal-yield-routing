@@ -582,5 +582,39 @@ in `phase3/jupiter-v2-repair-candidates-2026-09-04.json` and
 `phase3/jupiter-v2-public-quotes-2026-09-04.json` under the evidence directory.
 The sole verifier reruns compiler/negative and real PolicyCreate checks when
 `SQUADS_SMART_ACCOUNT_PROGRAM_SO` names the reviewed binary. The Go manifest
-still selects installed legacy policies; V2 swap execution, current setup cost,
-forward installation/readback, and runtime activation remain unproven.
+still selects installed legacy policies. The subsequent checkpoint below proves
+candidate execution only; current setup cost, forward installation/readback and
+runtime activation remain unproven.
+
+V2 sequential follow-up (same acceptance and authorization): the two candidate
+policies create on cloned finalized Settings at fresh local seeds 140/141.
+USDC -> USDe through Manifest and USDe -> PYUSD through Whirlpool/Token-2022
+execute sequentially against captured deployed binaries at slot 444449068.
+Actual packets are 652/627 bytes and compute is 105214/184383. The first swap
+produces 100010665 raw USDe; the second spends its quoted minimum 99510612,
+produces 99483 raw PYUSD and leaves 500053 raw USDe. This is intentionally
+nonterminal two-swap proof, not flat custody or a complete lending lifecycle.
+Fourteen amount/slippage/fee/destination mutations reject before Jupiter CPI
+and leave source/destination custody unchanged.
+
+The Go client/compiler now supports explicitly bound V2 fixed-prefix layouts,
+preserves all economic fields and exact authority/custody/token roles, and
+validates fresh lookup mappings. Conditional test-only candidate bindings
+produce byte-identical SDK wires; the installed catalog is unchanged and
+rejects these uninstalled V2 instructions. The sole verifier measures this
+distinction rather than inferring it from test names.
+
+Set `PHASE3_JUPITER_CANDIDATE_PROBE_DIR` to the explicit public snapshot directory
+to rerun candidate PolicyCreate, swaps, negatives and current-Go parity. Output
+embeds the plan, account/program identities, all overrides and raw execution
+evidence in `docs/evidence/backyard-rwa-go/phase3/jupiter-v2-sequential-2026-09-04.json.gz`
+(lossless gzip JSON; `gzip -dc` reads it without extracting a second copy).
+The installed-policy witness remains separate; neither can make R04 PASS without
+the complete lifecycle, signer/admission and eleven-lane coverage.
+
+The snapshot records preexisting shared custody of 214898 raw PYUSD (0.214898
+PYUSD), explicitly zeroed only for local isolation. Before any canary, attribute
+and reconcile that balance under the existing flat-transition condition; do not
+call production flat or infer authority to drain it. Continue full-lifecycle
+mechanics and entry/debt-bearing admission; no need to repeat this resolved
+two-swap experiment without a relevant implementation or identity change.

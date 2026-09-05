@@ -4,6 +4,7 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -127,15 +128,36 @@ func catalogJupiterBindingForRoute(action Action, lane string) (catalogJupiterBi
 	return b, nil
 }
 
+func (b catalogJupiterBinding) fixedPrefixV2() bool {
+	return b.DiscriminatorHex == "d19853937cfed8e9"
+}
+
+// V2 places economics before its variable route vector. This only recognizes
+// a reviewed binding; it never upgrades the installed catalog implicitly.
+func (b catalogJupiterBinding) matchesData(data []byte) bool {
+	discriminator, err := hex.DecodeString(b.DiscriminatorHex)
+	if err != nil || len(discriminator) != 8 || len(data) < 8 || !bytes.Equal(data[:8], discriminator) {
+		return false
+	}
+	if b.fixedPrefixV2() {
+		return b.AmountOffset == 9 && b.SlippageOffset == 25 && b.FeeOffset == 27 &&
+			b.AuthorityIndex == 1 && b.SourceIndex == 2 && b.DestinationIndex == 5 &&
+			b.SourceMintIndex == 6 && b.DestinationMintIndex == 7 &&
+			b.SourceTokenProgramIndex == 8 && b.DestinationTokenProgramIndex == 9 &&
+			len(data) >= 40 && len(data) <= 1232 && allZero(data[27:31]) &&
+			binary.LittleEndian.Uint32(data[31:35]) > 0 && binary.LittleEndian.Uint32(data[31:35]) <= jupiterMaxRoutePlanLeg
+	}
+	return b.AmountOffset >= 8 && b.SlippageOffset == b.AmountOffset+16 &&
+		b.FeeOffset == b.SlippageOffset+2 && len(data) == b.FeeOffset+1 && data[b.FeeOffset] == 0
+}
+
 func validateCatalogJupiterInstruction(value JupiterSwapInstruction, action Action, amount, out, minimum uint64, lane string) (compiledInstruction, error) {
 	b, err := catalogJupiterBindingForRoute(action, lane)
 	if err != nil {
 		return compiledInstruction{}, err
 	}
 	data, err := base64.StdEncoding.Strict().DecodeString(value.Data)
-	discriminator, discErr := hex.DecodeString(b.DiscriminatorHex)
-	if err != nil || discErr != nil || len(discriminator) != 8 || len(data) != b.FeeOffset+1 ||
-		!bytes.Equal(data[:8], discriminator) || value.ProgramID != jupiterV6Program || len(value.Accounts) > 64 ||
+	if err != nil || !b.matchesData(data) || value.ProgramID != jupiterV6Program || len(value.Accounts) > 64 ||
 		amount == 0 || amount > b.MaxInputRaw || minimum == 0 || minimum > out ||
 		readU64(data[b.AmountOffset:]) != amount || readU64(data[b.AmountOffset+8:]) != out ||
 		uint16(data[b.SlippageOffset])|uint16(data[b.SlippageOffset+1])<<8 > b.MaxSlippageBPS || data[b.FeeOffset] != 0 {

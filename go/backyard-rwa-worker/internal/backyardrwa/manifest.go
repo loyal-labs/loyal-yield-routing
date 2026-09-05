@@ -196,8 +196,12 @@ func (m RouteManifest) jupiterPolicyForRoute(action Action, lane string) (Jupite
 		if err != nil {
 			return JupiterPolicyBinding{}, err
 		}
+		dataLength := b.FeeOffset + 1
+		if b.fixedPrefixV2() {
+			dataLength = 0
+		} // variable route vector; matchesData validates the fixed prefix
 		return JupiterPolicyBinding{CatalogLane: lane, Action: action, Policy: b.Policy, PolicyAccountDataSHA256: b.PolicySHA256,
-			PolicyConstraintIndex: b.ConstraintIndex, InstructionDataLength: b.FeeOffset + 1, AmountOffset: b.AmountOffset}, nil
+			PolicyConstraintIndex: b.ConstraintIndex, InstructionDataLength: dataLength, AmountOffset: b.AmountOffset}, nil
 	}
 	if lane != "" && lane != RouteID && lane != PhaseOneLaneID && lane != SelectedRouteID {
 		return JupiterPolicyBinding{}, fmt.Errorf("unregistered Jupiter policy lane")
@@ -234,15 +238,18 @@ func (m RouteManifest) jupiterPolicyForRoute(action Action, lane string) (Jupite
 
 func (b JupiterPolicyBinding) constraintIndex(instruction JupiterSwapInstruction) (byte, error) {
 	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil || len(data) != b.InstructionDataLength || b.AmountOffset != len(data)-19 {
+	if err != nil {
 		return 0, fmt.Errorf("fresh Jupiter header does not match the manifest binding")
 	}
 	if b.CatalogLane != "" {
 		bound, err := catalogJupiterBindingForRoute(b.Action, b.CatalogLane)
-		if err != nil || b.Policy != bound.Policy || b.PolicyAccountDataSHA256 != bound.PolicySHA256 || b.PolicyConstraintIndex != bound.ConstraintIndex {
+		if err != nil || b.Policy != bound.Policy || b.PolicyAccountDataSHA256 != bound.PolicySHA256 || b.PolicyConstraintIndex != bound.ConstraintIndex || b.AmountOffset != bound.AmountOffset || !bound.matchesData(data) {
 			return 0, fmt.Errorf("Jupiter catalog policy changed")
 		}
 		return bound.ConstraintIndex, nil
+	}
+	if len(data) != b.InstructionDataLength || b.AmountOffset != len(data)-19 {
+		return 0, fmt.Errorf("fresh Jupiter header does not match the manifest binding")
 	}
 	if b.Action == SwapPrimeToUSDCStep {
 		return b.PolicyConstraintIndex, nil
