@@ -28,6 +28,15 @@ func (c *RPCClient) simulateBudgetReserveRefresh(ctx context.Context, lane strin
 			}
 		}
 	}
+	return c.simulateBudgetRefreshInstructions(ctx, instructions, addresses, minimumSlot)
+}
+
+func (c *RPCClient) simulateBudgetRefreshInstructions(ctx context.Context, instructions []compiledInstruction, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+	for _, instruction := range instructions {
+		if instruction.program != mustKey(kaminoProgram) || !bytesEqual(instruction.data, kaminoRefreshReserve) || len(instruction.accounts) != 6 {
+			return 0, nil, budgetHold("invalid_price_refresh_instruction")
+		}
+	}
 	blockhash, err := c.LatestBlockhash(ctx)
 	if err != nil {
 		return 0, nil, budgetHold("price_refresh_blockhash_unavailable")
@@ -64,7 +73,10 @@ func (c *RPCClient) simulateBudgetReserveRefresh(ctx context.Context, lane strin
 	if err = c.call(ctx, "simulateTransaction", []any{base64.StdEncoding.EncodeToString(wire), map[string]any{"encoding": "base64", "commitment": "confirmed", "sigVerify": false, "minContextSlot": minimumSlot, "accounts": map[string]any{"encoding": "base64", "addresses": addresses}}}, &result); err != nil {
 		return 0, nil, budgetHold("price_refresh_simulation_unavailable")
 	}
-	if (len(result.Value.Err) > 0 && string(result.Value.Err) != "null") || result.Context.Slot < minimumSlot || len(result.Value.Accounts) != len(addresses) {
+	if len(result.Value.Err) > 0 && string(result.Value.Err) != "null" {
+		return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": string(result.Value.Err)}}
+	}
+	if result.Context.Slot < minimumSlot || len(result.Value.Accounts) != len(addresses) {
 		return 0, nil, budgetHold("price_refresh_simulation_failed")
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))

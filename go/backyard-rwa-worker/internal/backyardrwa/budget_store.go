@@ -16,6 +16,29 @@ type phase3OperationAuthorization struct {
 	BookedSpentMicros   int64  `json:"bookedSpentMicros,omitempty"`
 }
 
+// Preserve an admission failure before restart recovery can replace it with a
+// generic reason. Only never-submitted states may release their reservation;
+// the transition's lease and status CAS protect against concurrent progress.
+func (d *Database) RecordPhase3BudgetHold(ctx context.Context, operationID string, hold *BudgetHold) error {
+	if d == nil || d.pool == nil || operationID == "" || hold == nil || hold.Reason == "" {
+		return fmt.Errorf("invalid budget hold journal input")
+	}
+	var status OperationStatus
+	if err := d.pool.QueryRow(ctx, `SELECT status FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&status); err != nil {
+		return err
+	}
+	if status != Decided && status != Built && status != Simulated {
+		return budgetHold("budget_hold_requires_never_submitted_operation")
+	}
+	encoded, err := json.Marshal(hold)
+	if err != nil {
+		return err
+	}
+	return d.transition(ctx, operationID, status, Failed,
+		`, recovery_reason = $4, expected_effects = jsonb_set(expected_effects, '{budgetHold}', $5::jsonb)`,
+		"phase3_budget_hold:"+hold.Reason, string(encoded))
+}
+
 // Book the admitted upper bound only after finalized effect reconciliation.
 // This intentionally never refunds quote/fee slack without separate economic
 // proof. Principal returning to custody does not reduce this gross counter.

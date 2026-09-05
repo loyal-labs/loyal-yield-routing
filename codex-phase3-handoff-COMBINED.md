@@ -152,7 +152,19 @@ guarantee against arbitrary subsequent price changes.
 The read-only price preflight passed for the two existing runtime lanes at
 slots 444380781-444380783 and observed a 5,000-lamport unsigned NAV-message fee.
 This is not all-eleven-lane, native-SOL valuation, full lifecycle or R01 proof.
-Native-fee price sourcing and complete exit-cost/admission wiring remain open.
+Native-fee price sourcing subsequently passed at slot 444382714 using the
+unique wrapped-SOL reserve in Kamino Main as a read-only price reference, not
+an executable lane. Its unsigned refresh uses ABI order Pyth, Switchboard
+price/twap, Scope (different from reserve storage order). The exact unsigned
+NAV message cost 5,000 lamports, conservatively valued at 520 micro-USDC.
+No setup-cost coverage is implied by that fee-only observation. Complete
+exit-cost estimates and admission wiring remain open; this is not R01 PASS.
+The production worker now journals typed build-time budget HOLDs before
+restart recovery can overwrite the cause. Its lease-fenced transition releases
+only never-submitted reservations, restores the prior exit reserve and keeps
+spent counters unchanged. The real disposable PostgreSQL slice verifies this
+and rejects the same release for signed operations. This preserves diagnostics;
+it does not yet implement family queue scheduling or complete admission.
 The new gates intentionally
 refuse transactions without an initialized durable goal budget and admission.
 No production budget was initialized; no Phase 3 transaction was signed or sent.

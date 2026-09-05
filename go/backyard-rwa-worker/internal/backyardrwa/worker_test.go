@@ -93,6 +93,21 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 	if got := strings.Join(order, ","); got != "prepare,record,build" {
 		t.Fatalf("decision was not persisted before build: %s", got)
 	}
+	// The same real dispatch path must preserve a typed admission rejection,
+	// not turn it into generic restart recovery or a successful build.
+	rejected := &BudgetHold{Reason: "transaction_cap_exceeded"}
+	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error { return rejected }
+	journaled := false
+	worker.runtime.recordBudgetHold = func(_ context.Context, id string, hold *BudgetHold) error {
+		if id != "operation" || hold != rejected {
+			t.Fatal("budget HOLD lost its operation or type")
+		}
+		journaled = true
+		return nil
+	}
+	if err := worker.Tick(context.Background()); !errors.Is(err, rejected) || !journaled {
+		t.Fatalf("budget rejection did not remain a journaled stop: %v", err)
+	}
 }
 
 func TestTickPreservesHoldJournalWhileManifestIsBlocked(t *testing.T) {

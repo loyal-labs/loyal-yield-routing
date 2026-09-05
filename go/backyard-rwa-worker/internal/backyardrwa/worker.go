@@ -29,16 +29,17 @@ type startupLeaseHandoffRuntime struct {
 }
 
 type tickRuntime struct {
-	loadNonterminal func(context.Context, string) (*PersistedOperation, error)
-	advance         func(context.Context, PersistedOperation) error
-	observe         func(context.Context) (Observation, error)
-	prepareBridge   func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error)
-	prepareKamino   func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
-	prepareJupiter  func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
-	recordDecision  func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
-	buildBridge     func(context.Context, string, BridgeExecutionEvidence) error
-	buildKamino     func(context.Context, string, KaminoExecutionEvidence) error
-	buildJupiter    func(context.Context, string, JupiterExecutionEvidence) error
+	loadNonterminal  func(context.Context, string) (*PersistedOperation, error)
+	advance          func(context.Context, PersistedOperation) error
+	observe          func(context.Context) (Observation, error)
+	prepareBridge    func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error)
+	prepareKamino    func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
+	prepareJupiter   func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
+	recordDecision   func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
+	buildBridge      func(context.Context, string, BridgeExecutionEvidence) error
+	buildKamino      func(context.Context, string, KaminoExecutionEvidence) error
+	buildJupiter     func(context.Context, string, JupiterExecutionEvidence) error
+	recordBudgetHold func(context.Context, string, *BudgetHold) error
 }
 
 func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteManifest) tickRuntime {
@@ -75,7 +76,8 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		prepareJupiter: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, JupiterExecutionEvidence, error) {
 			return ObserveConfirmedJupiterExecutionEvidence(ctx, rpc, manifest, decision, productionJupiterClient())
 		},
-		recordDecision: database.RecordDecision,
+		recordDecision:   database.RecordDecision,
+		recordBudgetHold: database.RecordPhase3BudgetHold,
 		buildBridge: func(ctx context.Context, operationID string, evidence BridgeExecutionEvidence) error {
 			return BuildSimulateAndPersistBridge(ctx, database, rpc, operationID, evidence)
 		},
@@ -191,14 +193,21 @@ func (w *Worker) Tick(ctx context.Context) error {
 	}
 	switch executionDecision {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		return w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
+		err = w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep:
-		return w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
+		err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep:
-		return w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
+		err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
 	default:
 		return fmt.Errorf("prepared evidence no longer matches an actionable decision")
 	}
+	var hold *BudgetHold
+	if errors.As(err, &hold) && w.runtime.recordBudgetHold != nil {
+		if journalErr := w.runtime.recordBudgetHold(ctx, record.OperationID, hold); journalErr != nil {
+			return errors.Join(err, journalErr)
+		}
+	}
+	return err
 }
 
 type routeLeaser interface {

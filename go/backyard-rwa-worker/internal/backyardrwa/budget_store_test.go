@@ -259,4 +259,40 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	if len(settled.Reservations) != 0 || settled.Families["OnRe"].SpentMicros != 900_000 || settled.Families["OnRe"].ExitMicros != 3_000_000 {
 		t.Fatalf("finalized settlement is not atomic: %+v", settled)
 	}
+	holdID := op + "-hold"
+	if _, err = restarted.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,expected_effects) VALUES($1,$2,'decided','{}')`, holdID, key); err != nil {
+		t.Fatal(err)
+	}
+	holdReservation := r
+	holdReservation.OperationID = holdID
+	holdReservation.ExitAfterMicros = 2_000_000
+	if err = restarted.ReservePhase3(ctx, holdReservation); err != nil {
+		t.Fatal(err)
+	}
+	hold := &BudgetHold{Reason: "transaction_cap_exceeded", Details: map[string]string{"upperMicros": "1000001"}}
+	if _, err = restarted.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed' WHERE operation_id=$1`, holdID); err != nil {
+		t.Fatal(err)
+	}
+	assertBudgetHold(t, restarted.RecordPhase3BudgetHold(ctx, holdID, hold), "budget_hold_requires_never_submitted_operation")
+	if _, err = restarted.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='decided' WHERE operation_id=$1`, holdID); err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.RecordPhase3BudgetHold(ctx, holdID, hold); err != nil {
+		t.Fatal(err)
+	}
+	var status, reason string
+	var holdJSON []byte
+	if err = restarted.pool.QueryRow(ctx, `SELECT status,recovery_reason,expected_effects->'budgetHold' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, holdID).Scan(&status, &reason, &holdJSON); err != nil {
+		t.Fatal(err)
+	}
+	var retainedHold BudgetHold
+	if json.Unmarshal(holdJSON, &retainedHold) != nil || status != "failed" || reason != "phase3_budget_hold:transaction_cap_exceeded" || retainedHold.Details["upperMicros"] != "1000001" {
+		t.Fatalf("typed admission hold was not retained: %s %s %s", status, reason, holdJSON)
+	}
+	if err = restarted.pool.QueryRow(ctx, `SELECT state->'phase3' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if json.Unmarshal(persisted, &settled) != nil || len(settled.Reservations) != 0 || settled.Families["OnRe"].SpentMicros != 900_000 || settled.Families["OnRe"].ExitMicros != 3_000_000 {
+		t.Fatalf("unsent HOLD did not restore prior exit reservation: %s", persisted)
+	}
 }
