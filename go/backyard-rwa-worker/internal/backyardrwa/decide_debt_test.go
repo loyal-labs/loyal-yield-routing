@@ -9,6 +9,41 @@ import (
 )
 
 // Controlled snapshots exercise production decisions, not executed transfers.
+func TestNonUSDCDrainFundsInterestShortfallBeforePayoff(t *testing.T) {
+	_, _, _, _, _, _, accounts := payoffAdmissionFixture(t, 20_000)
+	bound, err := decodeKaminoPayoffBound(accounts, ethenaUSDePYUSD, 42)
+	if err != nil || bound.UpperDebtRaw != 1_001 {
+		t.Fatal(bound, err)
+	}
+	s := base()
+	s.RouteLane, s.CutoverDrain, s.HasPosition = ethenaUSDePYUSD.Lane, true, true
+	s.PositionCollateralRaw, s.PositionDebtRaw = 100_000_000, int64(bound.ObservedDebtRaw)
+	s.PayoffDebtRaw, s.DebtIdleRaw = int64(bound.UpperDebtRaw), 1_000
+	for _, cash := range []int64{1, 999, 1_000} {
+		s.DebtIdleRaw = cash
+		got := Decide(s)
+		if got.Action != DeleverRouteStep || got.Reason != "withdrawal_release_repayment_collateral" {
+			t.Fatal("insufficient buffer selected a repeated/dust repayment", cash, got)
+		}
+	}
+	s.SquadsIdleRaw = 10
+	if got := Decide(s); got.Action != SwapUSDCToDebtStep {
+		t.Fatal("available USDC funding ignored", got)
+	}
+	s.CollateralIdleRaw = 10
+	if got := Decide(s); got.Action != SwapCollateralToDebtStep {
+		t.Fatal("available collateral funding ignored", got)
+	}
+	s.DebtIdleRaw = 1_001
+	if got := Decide(s); got.Action != DeleverRouteStep || got.Reason != "withdrawal_repay_debt" || got.AmountRaw != 1_000 {
+		t.Fatal("funded payoff not selected", got)
+	}
+	s.PayoffDebtRaw = -1
+	if got := Decide(s); got.Action != HoldManualRecovery {
+		t.Fatal("invalid payoff accepted", got)
+	}
+}
+
 func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 	for _, lane := range []string{"AUTO/AUTO/PYUSD", "Ethena/USDe/PYUSD"} {
 		t.Run(lane, func(t *testing.T) {
@@ -42,7 +77,7 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 			s.CutoverDrain, s.WithdrawalDemandRaw, s.VoltrIdleRaw = true, 1, 200
 			check(SwapUSDCToDebtStep, 3)
 			s.SquadsIdleRaw, s.DebtIdleRaw = 0, 2
-			check(DeleverRouteStep, 2)
+			check(DeleverRouteStep, 1)
 			s.DebtIdleRaw, s.PositionDebtRaw = 0, 38
 			check(DeleverRouteStep, 1)
 			s.CollateralIdleRaw = 45

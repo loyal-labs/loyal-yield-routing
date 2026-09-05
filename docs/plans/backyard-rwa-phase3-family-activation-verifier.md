@@ -304,12 +304,37 @@ withdrawal/conversions are rebuilt rather than promoted from cost templates.
 Disposable PostgreSQL proves this binds to the existing recovery reservation,
 persists interest/withdrawal/quote evidence, and does not sign or send on rejection.
 
-Latest sole-verifier evidence:
+Funded-payoff checkpoint evidence:
 `docs/evidence/backyard-rwa-go/phase3/funded-payoff-admission-2026-09-05.json.gz`.
 This is not full-lifecycle, live, deployment or all-lane proof. Collateral
 release/conversion when repayment cash is insufficient, entry/borrowing,
 setup/budget initialization and remaining lane/queue implementation still need
 their complete admission and execution proof. No condition or cap is weakened.
+
+#### Interest-aware drain selection and open-debt release — 2026-09-05
+
+The non-USDC observer now carries the same current interest-window payoff bound
+used by the builder, includes it in economic observation identity, and persists
+it in the route projection. A normal drain with partial cash or principal-only
+cash obtains the missing funding rather than repeatedly choosing a repayment
+that cannot meet the full-payoff check. The existing emergency-LTV repayment
+precedence is unchanged; this does not assert that every partial repayment is
+executable or admit a previously unsupported action.
+
+The sole verifier now compiles an immutable open-debt withdrawal sidecar and
+executes it against the retained deployed Ethena programs and installed policy.
+From the actual post-borrow state, withdrawing 20,000,000 receipt units releases
+21,585,834 USDe raw units while debt remains open. Go reproduces the wire,
+reserve redemption, economic debit and exact custody reconciliation. A full
+withdrawal request from the same state is rejected by KLend `WithdrawTooLarge`
+(6011), with no custody or position change. Neither branch signs or broadcasts.
+
+Latest sole-verifier checkpoint:
+`docs/evidence/backyard-rwa-go/phase3/open-debt-release-2026-09-05.json.gz`.
+This proves the release mechanic only, not the planner-selected release size or
+a sequential release -> funding swap -> payoff -> complete return. That linked
+path and its admission remain the next implementation gap; all R01–R08 retain
+their full acceptance criteria, and local evidence cannot make them PASS.
 
 ### R02 — exact allowlist and frozen canary queue
 

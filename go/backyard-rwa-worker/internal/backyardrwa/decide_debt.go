@@ -20,7 +20,7 @@ func decideNonUSDC(s Snapshot) Decision {
 	if s.ManualReason != "" || s.RouteKind != RouteKind || !s.Fresh || s.ObservationID == "" || s.Slot <= 0 {
 		return d(HoldManualRecovery, "invalid_or_incoherent_snapshot", 0)
 	}
-	for _, value := range []int64{s.WithdrawalDemandRaw, s.SquadsIdleRaw, s.CollateralIdleRaw, s.DebtIdleRaw,
+	for _, value := range []int64{s.WithdrawalDemandRaw, s.SquadsIdleRaw, s.CollateralIdleRaw, s.DebtIdleRaw, s.PayoffDebtRaw,
 		s.VoltrStrategyIdleRaw, s.VoltrIdleRaw, s.PositionCollateralRaw, s.PositionDebtRaw,
 		s.PositionCollateralValueRaw, s.PositionDebtValueRaw, s.StrategyNAVRaw, s.PriorReportedNAVRaw,
 		s.LTVBPS, s.LiquidationThresholdBPS, s.LastReportAgeSeconds, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw} {
@@ -60,8 +60,11 @@ func decideNonUSDC(s Snapshot) Decision {
 			return d(VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw)
 		}
 		if s.PositionDebtRaw > 0 {
-			if s.DebtIdleRaw > 0 {
-				return d(DeleverRouteStep, "withdrawal_repay_debt", min(s.PositionDebtRaw, s.DebtIdleRaw))
+			// A normal drain needs a full payoff. A principal-only or partial
+			// buffer can fail the interest bound or KLend's residual-debt floor;
+			// keep funding instead of repeatedly selecting that rejected repay.
+			if s.DebtIdleRaw >= max(s.PositionDebtRaw, s.PayoffDebtRaw) {
+				return d(DeleverRouteStep, "withdrawal_repay_debt", s.PositionDebtRaw)
 			}
 			if s.CollateralIdleRaw > 0 {
 				return d(SwapCollateralToDebtStep, "withdrawal_swap_repayment_buffer", s.CollateralIdleRaw)

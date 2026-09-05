@@ -65,7 +65,10 @@ type Snapshot struct {
 	CollateralIdleRaw int64
 	// DebtIdleRaw is in the selected debt mint's raw units. SquadsIdleRaw
 	// remains bridge USDC, even when the lane borrows PYUSD/USDG/USDS.
-	DebtIdleRaw                int64
+	DebtIdleRaw int64
+	// PayoffDebtRaw includes the current finite interest window for non-USDC
+	// debt. Observation and final-send validation independently recompute it.
+	PayoffDebtRaw              int64
 	RouteLane                  string
 	StrategyKey                string
 	CutoverDrain               bool

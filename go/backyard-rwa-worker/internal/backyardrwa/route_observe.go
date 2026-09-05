@@ -198,6 +198,13 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base.Snapshot.HasPosition = position.HasPosition
 		base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
 		base.Snapshot.PositionDebtRaw = int64(position.DebtRaw)
+		if route.Kamino.DebtMint != bridgeUSDC && position.DebtRaw > 0 {
+			bound, err := decodeKaminoPayoffBound(accounts, route, slot)
+			if err != nil {
+				return Observation{}, nil, err
+			}
+			base.Snapshot.PayoffDebtRaw = int64(bound.UpperDebtRaw)
+		}
 		base.Snapshot.PositionCollateralValueRaw = int64(nav.PositionCollateralValue)
 		base.Snapshot.PositionDebtValueRaw = int64(nav.PositionDebtValue)
 		base.Snapshot.StrategyNAVRaw = int64(nav.StrategyNAVRaw)
@@ -226,7 +233,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, entryUSDC,
 		)
 		if route.Kamino.DebtMint != bridgeUSDC {
-			digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw)))
+			digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d|payoff-debt:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw, base.Snapshot.PayoffDebtRaw)))
 			base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
 		}
 		base.ObservedAt = observedAt

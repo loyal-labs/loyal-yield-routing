@@ -105,8 +105,9 @@ async function localSequentialKaminoObservation(): Promise<Observation> {
   if(!/^\/private\/tmp\/backyard-phase3-kamino-probe\.[A-Za-z0-9]+$/.test(directory))
     return {status:"BLOCKED",source,reason:"INVALID_PUBLIC_SVM_SNAPSHOT_DIRECTORY"};
   const resultName=`verifier-${randomUUID()}.json`;
+  const releaseName=`release-${randomUUID()}.json`;
   const run=async(command:string,args:string[],cwd:string)=>{
-    const child=spawn(command,args,{cwd,stdio:"ignore",env:{...process.env,PHASE3_KAMINO_PROBE_RESULT:resultName}});
+    const child=spawn(command,args,{cwd,stdio:"ignore",env:{...process.env,PHASE3_KAMINO_PROBE_RESULT:resultName,PHASE3_KAMINO_RELEASE_PLAN:releaseName}});
     const timeout=setTimeout(()=>child.kill("SIGKILL"),120_000);
     try{return await new Promise<number|null>((resolve,reject)=>{child.once("error",reject);child.once("close",resolve);});}
     finally{clearTimeout(timeout);}
@@ -115,6 +116,9 @@ async function localSequentialKaminoObservation(): Promise<Observation> {
     const inputs={plan:JSON.parse(readFileSync(resolve(directory,"plan.json"),"utf8")),snapshot:JSON.parse(readFileSync(resolve(directory,"snapshot.json"),"utf8"))};
     const currentCompiler=await localCapObservation(["TestPhase3KaminoProbeMatchesProduction"],"probe messages compared with the current Go compiler");
     if(currentCompiler.status!=="OBSERVED"||currentCompiler.data?.pass!==true)return {status:"OBSERVED",source,data:{pass:false,reason:"PROBE_DOES_NOT_MATCH_CURRENT_GO_COMPILER"}};
+    const releaseCompiler=await localCapObservation(["TestExportPhase3KaminoReleaseProbe"],"current Go open-debt withdrawal compiler",false,{PHASE3_KAMINO_RELEASE_PLAN:releaseName});
+    if(releaseCompiler.status!=="OBSERVED"||releaseCompiler.data?.pass!==true)return {status:"OBSERVED",source,data:{pass:false,reason:"RELEASE_COMPILER_FAILED"}};
+    const releasePlan=JSON.parse(readFileSync(resolve(directory,releaseName),"utf8"));
     const exitCode=await run("cargo",["test","-p","squads-test-harness","--test","rwa_kamino_controlled_probe","--","--ignored","--nocapture"],ROOT);
     let execution:Json;
     try{execution=JSON.parse(readFileSync(resolve(directory,resultName),"utf8"));}
@@ -122,10 +126,14 @@ async function localSequentialKaminoObservation(): Promise<Observation> {
     const repayment=await localCapObservation(["TestPhase3KaminoRepaymentProbeMatchesProduction"],
       "executed finite repayment and dust-rejection wires compared with current Go compiler, maximum-debit pricing and reconciliation",false,
       {PHASE3_KAMINO_PROBE_RESULT:resultName});
+    const release=await localCapObservation(["TestPhase3KaminoReleaseProbeMatchesProduction"],
+      "open-debt release and unsafe full-withdrawal rejection compared with Go compiler, redemption and reconciliation",false,
+      {PHASE3_KAMINO_PROBE_RESULT:resultName});
     const pass=exitCode===0&&execution.fourKaminoLegsPassed===true&&execution.negative?.rejectedBeforeKaminoCPI===true&&
       execution.boundedRepaymentProofPassed===true&&repayment.status==="OBSERVED"&&repayment.data?.pass===true&&
+      execution.releaseProofPassed===true&&release.status==="OBSERVED"&&release.data?.pass===true&&execution.releasePlanSha256===sha(readFileSync(resolve(directory,releaseName)))&&
       execution.planSha256===sha(readFileSync(resolve(directory,"plan.json")))&&execution.snapshotSha256===sha(readFileSync(resolve(directory,"snapshot.json")));
-    return {status:"OBSERVED",source,data:{pass,slot:execution.slot,proofLevel:"CONTROLLED_FOUR_KAMINO_LEGS_NOT_FULL_LIFECYCLE_OR_SIGNER_PROOF",inputs,execution,repayment}};
+    return {status:"OBSERVED",source,data:{pass,slot:execution.slot,proofLevel:"CONTROLLED_FOUR_KAMINO_LEGS_NOT_FULL_LIFECYCLE_OR_SIGNER_PROOF",inputs:{...inputs,releasePlan},execution,repayment,release}};
   }catch{return {status:"BLOCKED",source,reason:"LOCAL_SEQUENTIAL_KAMINO_PROBE_UNAVAILABLE"};}
 }
 async function localSendJournalObservation(): Promise<Observation> {
@@ -279,6 +287,7 @@ async function localDebtDecisionObservation(): Promise<Observation> {
   const result=await localCapObservation([
     "TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate",
     "TestNonUSDCLifecycleSafetyPrecedence",
+    "TestNonUSDCDrainFundsInterestShortfallBeforePayoff",
     "TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity",
     "TestKaminoAccruedDebtUsesUnroundedFractionAndFullRateLimbs",
     "TestAccruedDebtFlowsThroughObservationNAVAndRepayment",

@@ -60,6 +60,17 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
         serde_json::from_slice(&fs::read(directory.join("plan.json")).unwrap()).unwrap();
     let snapshot: Value =
         serde_json::from_slice(&fs::read(directory.join("snapshot.json")).unwrap()).unwrap();
+    let release_plan = std::env::var("PHASE3_KAMINO_RELEASE_PLAN")
+        .ok()
+        .map(|name| {
+            assert!(!name.contains('/') && name.ends_with(".json"));
+            let data = fs::read(directory.join(name)).unwrap();
+            let plan: Value = serde_json::from_slice(&data).unwrap();
+            assert_eq!(plan["schema"], "phase3-kamino-release-probe/v1");
+            assert_eq!(plan["lane"], "Ethena/USDe/PYUSD");
+            assert_eq!(plan["steps"].as_array().unwrap().len(), 2);
+            (plan, sha(&data))
+        });
     assert_eq!(plan["schema"], "phase3-kamino-controlled-probe/v1");
     assert_eq!(plan["lane"], "Ethena/USDe/PYUSD");
     assert_eq!(
@@ -182,6 +193,7 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
         "error":format!("{:?}",negative.err),"logs":negative.meta.logs,"rejectedBeforeKaminoCPI":true});
     let mut results: Vec<Value> = vec![];
     let mut repayment_probes = vec![];
+    let mut release_probes = vec![];
     let mut pass = true;
     let collateral_custody = key(plan["collateralCustody"].as_str().unwrap());
     let debt_custody = key(plan["debtCustody"].as_str().unwrap());
@@ -199,6 +211,53 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
         );
         let tx: VersionedTransaction = bincode::deserialize(&bytes(step, "wireBase64")).unwrap();
         if step["leg"] == "repay" {
+            if let Some((release_plan, _)) = &release_plan {
+                for release in release_plan["steps"].as_array().unwrap() {
+                    let mut probe_svm = svm.clone();
+                    let wire = bytes(release, "wireBase64");
+                    assert_eq!(sha(&wire), release["wireSha256"]);
+                    assert!(wire.len() <= 1232);
+                    let probe_tx: VersionedTransaction = bincode::deserialize(&wire).unwrap();
+                    for (i, address) in probe_tx.message.static_account_keys().iter().enumerate() {
+                        assert!(
+                            !probe_tx.message.is_maybe_writable(i, None)
+                                || protected.contains(address)
+                        );
+                    }
+                    let probe_before = capture(&probe_svm, &protected);
+                    let position_before = position(&probe_svm, obligation);
+                    let (error, meta) = match probe_svm.send_transaction(probe_tx) {
+                        Ok(meta) => (None, meta),
+                        Err(failure) => (Some(format!("{:?}", failure.err)), failure.meta),
+                    };
+                    let remaining = position(&probe_svm, obligation);
+                    let amount = release["amount"].as_u64().unwrap();
+                    let released = token_amount(&probe_svm, collateral_custody) - balances_before.0;
+                    assert_eq!(token_amount(&probe_svm, debt_custody), balances_before.1);
+                    if amount == 20_000_000 {
+                        assert!(
+                            error.is_none(),
+                            "safe release failed: {:?} {:?}",
+                            error,
+                            meta.logs
+                        );
+                        assert_eq!(position_before.0 - remaining.0, amount);
+                        assert!(released > 0 && remaining.1 > 0);
+                    } else {
+                        assert_eq!(amount, 1_000_000_000);
+                        assert!(
+                            error.is_some(),
+                            "full collateral release with debt accepted"
+                        );
+                        assert_eq!(released, 0);
+                        assert_eq!(remaining, position_before);
+                    }
+                    release_probes.push(json!({"receiptAmountRaw":amount,"actualReleasedRaw":released,
+                        "wireBase64":STANDARD.encode(&wire),"wireSha256":sha(&wire),"request":release["request"],
+                        "before":probe_before,"after":capture(&probe_svm,&protected),"logs":meta.logs,"error":error,
+                        "computeUnits":meta.compute_units_consumed,"remainingReceiptRaw":remaining.0,"borrowedSF":remaining.1.to_string()}));
+                }
+            }
             // Finite funded limits, not u64::MAX. Execute both from the same
             // real borrow poststate. KLend rejects tiny residual debt on the
             // partial request: it is not a payoff or viable retry-loop proof.
@@ -332,7 +391,9 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
       "proofLevel":"CONTROLLED_PROGRAM_EXECUTION_NOT_FULL_R04_LIFECYCLE","slot":snapshot["slot"],"clockSlot":svm.get_sysvar::<Clock>().slot,"programs":snapshot["programs"],
       "planSha256":sha(&fs::read(directory.join("plan.json")).unwrap()),"snapshotSha256":sha(&fs::read(directory.join("snapshot.json")).unwrap()),
       "overrides":overrides,"negative":negative_evidence,"steps":results,"fourKaminoLegsPassed":pass && results.len()==4,
-      "boundedRepaymentProbes":repayment_probes,"boundedRepaymentProofPassed":repayment_probes.len()==3});
+      "boundedRepaymentProbes":repayment_probes,"boundedRepaymentProofPassed":repayment_probes.len()==3,
+      "releasePlanSha256":release_plan.as_ref().map(|(_,hash)|hash),
+      "releaseProbes":release_probes,"releaseProofPassed":release_probes.len()==2});
     let result_name =
         std::env::var("PHASE3_KAMINO_PROBE_RESULT").unwrap_or_else(|_| "result.json".into());
     assert!(!result_name.contains('/') && result_name.ends_with(".json"));

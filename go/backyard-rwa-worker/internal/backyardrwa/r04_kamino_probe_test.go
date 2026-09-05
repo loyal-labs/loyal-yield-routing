@@ -11,6 +11,162 @@ import (
 	"testing"
 )
 
+// A sidecar keeps the original captured four-leg plan immutable. These wires
+// use the production compiler and the open-debt refresh topology, not a byte
+// mutation of the debt-free withdrawal. No signing or broadcast is possible.
+func TestExportPhase3KaminoReleaseProbe(t *testing.T) {
+	dir, name := os.Getenv("PHASE3_KAMINO_PROBE_DIR"), os.Getenv("PHASE3_KAMINO_RELEASE_PLAN")
+	if dir == "" || name == "" {
+		t.Skip("explicit local release probe output required")
+	}
+	if filepath.Base(name) != name {
+		t.Fatal("release plan must be a filename")
+	}
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := ethenaUSDePYUSD
+	rows := []any{}
+	for _, amount := range []uint64{20_000_000, 1_000_000_000} {
+		request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, amount,
+			LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+		message, err := CompileKaminoMessage(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire := append(make([]byte, 65), message...)
+		wire[0] = 1
+		rows = append(rows, map[string]any{"amount": amount, "request": request,
+			"wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)})
+	}
+	data, err := json.MarshalIndent(map[string]any{"schema": "phase3-kamino-release-probe/v1", "lane": route.Lane, "steps": rows}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPhase3KaminoReleaseProbeMatchesProduction(t *testing.T) {
+	dir, name := os.Getenv("PHASE3_KAMINO_PROBE_DIR"), os.Getenv("PHASE3_KAMINO_PROBE_RESULT")
+	if dir == "" || name == "" {
+		t.Skip("explicit executed release witness required")
+	}
+	if filepath.Base(name) != name {
+		t.Fatal("result must be a filename")
+	}
+	type captured struct {
+		Address, Owner, DataBase64, DataSHA256 string
+		Lamports                               uint64
+		Present                                bool
+	}
+	var report struct {
+		Slot               int64
+		ReleaseProofPassed bool
+		ReleaseProbes      []struct {
+			ReceiptAmountRaw, ActualReleasedRaw, RemainingReceiptRaw uint64
+			WireBase64, WireSHA256                                   string
+			Request                                                  KaminoPrimeUSDCRequest
+			Before, After                                            []captured
+			Error                                                    *string
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil || json.Unmarshal(data, &report) != nil || !report.ReleaseProofPassed || len(report.ReleaseProbes) != 2 {
+		t.Fatal("missing real-program release evidence", err)
+	}
+	decode := func(rows []captured) []ConfirmedAccount {
+		t.Helper()
+		var accounts []ConfirmedAccount
+		for _, row := range rows {
+			if !row.Present {
+				continue
+			}
+			data, err := base64.StdEncoding.Strict().DecodeString(row.DataBase64)
+			if err != nil || sha256Bytes(data) != row.DataSHA256 {
+				t.Fatal("release account hash mismatch", err)
+			}
+			accounts = append(accounts, ConfirmedAccount{Address: row.Address, Owner: row.Owner, Lamports: row.Lamports, Data: data})
+		}
+		return accounts
+	}
+	route := ethenaUSDePYUSD
+	for i, probe := range report.ReleaseProbes {
+		if probe.ReceiptAmountRaw != []uint64{20_000_000, 1_000_000_000}[i] || probe.Request.AmountRaw != probe.ReceiptAmountRaw || probe.Request.RouteLane != route.Lane {
+			t.Fatal("unexpected release request")
+		}
+		message, err := CompileKaminoMessage(probe.Request)
+		wire, decodeErr := base64.StdEncoding.Strict().DecodeString(probe.WireBase64)
+		if err != nil || decodeErr != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != probe.WireSHA256 || !bytes.Equal(message, wire[65:]) {
+			t.Fatal("executed release differs from current compiler", err, decodeErr)
+		}
+		before, after := decode(probe.Before), decode(probe.After)
+		old, err := decodeKaminoObligation(accountAt(before, route.Kamino.Obligation), route.Kamino)
+		if err != nil || old.debtRaw != 1_000 {
+			t.Fatal("release did not start from borrowed position", err)
+		}
+		remaining, err := decodeKaminoObligation(accountAt(after, route.Kamino.Obligation), route.Kamino)
+		if err != nil || remaining.debtRaw != old.debtRaw {
+			t.Fatal("release changed debt", err)
+		}
+		if i == 1 {
+			if probe.Error == nil || *probe.Error != "InstructionError(3, Custom(6011))" || probe.ActualReleasedRaw != 0 {
+				t.Fatal("missing unsafe-release rejection")
+			}
+			continue
+		}
+		reserve, err := decodeKaminoReserve(accountAt(before, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+		if err != nil {
+			t.Fatal(err)
+		}
+		amount, err := reserve.redeemLiquidityRaw(probe.ReceiptAmountRaw)
+		if err != nil || amount != probe.ActualReleasedRaw || probe.Error != nil {
+			t.Fatal("predicted redemption differs from deployed program", amount, probe.ActualReleasedRaw, err)
+		}
+		source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
+		effects, err := exactKaminoTokenEffects(before, source, destination, amount)
+		if err != nil {
+			t.Fatal(err)
+		}
+		debit, err := MeasureExecutableDebit(probe.Request, effects)
+		if err != nil || debit.Raw != amount {
+			t.Fatal("release debit pricing differs", debit, err)
+		}
+		receipt := ConfirmedTransactionEvidence{Signature: "local-svm-not-signed:" + probe.WireSHA256, Slot: report.Slot}
+		for _, boundary := range []kaminoCustodyBoundary{source, destination} {
+			mint, _ := decodeBase58PublicKey(boundary.Mint)
+			authority, _ := decodeBase58PublicKey(boundary.Authority)
+			for j, accounts := range [][]ConfirmedAccount{before, after} {
+				a := accountAt(accounts, boundary.Address)
+				custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, authority)
+				if err != nil {
+					t.Fatal(err)
+				}
+				balance := TransactionTokenBalance{Address: boundary.Address, OwnerProgram: a.Owner, Mint: boundary.Mint, Authority: boundary.Authority, Raw: custody.Raw}
+				if j == 0 {
+					receipt.PreTokenBalances = append(receipt.PreTokenBalances, balance)
+				} else {
+					receipt.PostTokenBalances = append(receipt.PostTokenBalances, balance)
+				}
+			}
+		}
+		if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err != nil {
+			t.Fatal("actual release cannot reconcile", err)
+		}
+	}
+}
+
 // Feed actual deployed-program token poststates through the production
 // compiler, amount selector, economic debit measurement and reconciliation.
 // These are local SVM transitions, not confirmed RPC receipts or signer proof.

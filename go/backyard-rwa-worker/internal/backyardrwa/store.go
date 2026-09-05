@@ -509,6 +509,7 @@ type routeObservationProjection struct {
 	VoltrStrategyIdleRaw string `json:"voltrStrategyIdleRaw"`
 	SquadsIdleRaw        string `json:"squadsIdleRaw"`
 	DebtIdleRaw          string `json:"debtIdleRaw"`
+	PayoffDebtRaw        string `json:"payoffDebtRaw"`
 	AUMRaw               string `json:"aumRaw"`
 	AUMUSDMicros         string `json:"aumUsdMicros"`
 	NAVRaw               string `json:"navRaw"`
@@ -524,7 +525,7 @@ type routeObservationProjection struct {
 
 func newRouteObservationProjection(observation Observation) (routeObservationProjection, error) {
 	snapshot := observation.Snapshot
-	if snapshot.VoltrIdleRaw < 0 || snapshot.VoltrStrategyIdleRaw < 0 || snapshot.SquadsIdleRaw < 0 || snapshot.DebtIdleRaw < 0 ||
+	if snapshot.VoltrIdleRaw < 0 || snapshot.VoltrStrategyIdleRaw < 0 || snapshot.SquadsIdleRaw < 0 || snapshot.DebtIdleRaw < 0 || snapshot.PayoffDebtRaw < 0 ||
 		snapshot.PositionCollateralRaw < 0 || snapshot.PositionDebtRaw < 0 ||
 		snapshot.PositionCollateralValueRaw < 0 || snapshot.PositionDebtValueRaw < 0 ||
 		snapshot.StrategyNAVRaw < 0 || snapshot.TotalVaultNAVRaw < 0 || snapshot.PriorReportedNAVRaw < 0 ||
@@ -560,7 +561,8 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 		ObservedSlot: snapshot.Slot, ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano), RouteStatus: status,
 		VoltrIdleRaw: fmt.Sprint(snapshot.VoltrIdleRaw), VoltrStrategyIdleRaw: fmt.Sprint(snapshot.VoltrStrategyIdleRaw),
 		SquadsIdleRaw: fmt.Sprint(snapshot.SquadsIdleRaw), DebtIdleRaw: fmt.Sprint(snapshot.DebtIdleRaw), AUMRaw: fmt.Sprint(snapshot.TotalVaultNAVRaw),
-		AUMUSDMicros: fmt.Sprint(snapshot.TotalVaultNAVRaw), NAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
+		PayoffDebtRaw: fmt.Sprint(snapshot.PayoffDebtRaw),
+		AUMUSDMicros:  fmt.Sprint(snapshot.TotalVaultNAVRaw), NAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
 		NAVUSDMicros: fmt.Sprint(snapshot.PriorReportedNAVRaw), ReportedNAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
 		ComputedStrategyNAV: fmt.Sprint(snapshot.StrategyNAVRaw), ReportSequence: snapshot.ReportSequence,
 		ReportSlot: snapshot.ReportSequence, ReportObservedAt: reportUpdatedAt.Format(time.RFC3339),
