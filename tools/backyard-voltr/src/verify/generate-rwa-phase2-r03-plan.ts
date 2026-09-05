@@ -15,7 +15,7 @@ import { Reserve, initObligation, refreshObligation, refreshReserve, userMetadat
 import { executeTransactionSyncV2 } from "@loyal-labs/loyal-smart-accounts-core/internal";
 import { AccountRole, address, createNoopSigner, none, some, type Address, type Instruction } from "@solana/kit";
 import bs58 from "bs58";
-import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction, type AccountInfo } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import { signingMaterialFromEnvironment } from "../integrations/signer.js";
 import { toWeb3Instruction } from "../integrations/solana-compat.js";
@@ -132,8 +132,10 @@ export async function buildR03Plan(connection: Connection, admin: Keypair, deleg
     protectedBridgeAddresses.map((value) => new PublicKey(value)),
     { commitment: "confirmed", minContextSlot: latest.context.slot },
   );
-  invariant(bridgeState.value.every((value) => value !== null), "bridge state is incomplete");
-  const [config, ticket, receipt] = bridgeState.value as AccountInfo<Buffer>[];
+  invariant(bridgeState.value.length === protectedBridgeAddresses.length
+    && bridgeState.value.every((value) => value !== null), "bridge state is incomplete");
+  const [config, ticket, receipt] = bridgeState.value;
+  invariant(config && ticket && receipt, "bridge report accounts are absent");
   invariant(ticket.data.length === 96 && receipt.data.length >= 112, "bridge report state layout drifted");
   let reportSequence = BigInt(latest.context.slot);
   const manager = createNoopSigner(RWA_MULTIPLY_ROUTE.squads.vault);

@@ -206,4 +206,8 @@ as an unapproved destination expansion and was not applied. Resolve that exact
 authorization boundary before retrying. Phase 3 verifier TypeScript errors were
 repaired without changing its FAIL semantics; the offline diagnostic still
 reports eight incomplete conditions. Package typecheck remains red on six
-pre-existing possibly-undefined errors in generate-rwa-phase2-r03-plan.ts.
+pre-existing possibly-undefined errors in generate-rwa-phase2-r03-plan.ts at
+that checkpoint. The subsequent repair replaces its unchecked array assertion
+with exact RPC cardinality and explicit required-account checks. Package
+`bun run check` and all four `test:phase2-runtime` cases now pass. No runtime
+destination bindings were added while the safety-review approval is outstanding.
