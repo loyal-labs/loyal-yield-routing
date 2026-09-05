@@ -558,10 +558,7 @@ func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc 
 	if _, err := DecodeExpectedEffects(effects); err != nil {
 		return err
 	}
-	if _, err := MeasureExecutableDebit(evidence.Request, evidence.ExpectedEffects); err != nil {
-		return err
-	}
-	if err := database.AuthorizePhase3Build(ctx, operationID, evidence.Request, effects); err != nil {
+	if err := authorizePhase3ProductionBuild(ctx, database, rpc, operationID, evidence.Request, evidence.ExpectedEffects, effects); err != nil {
 		return err
 	}
 	signer, err := loadPinnedPolicySigner()

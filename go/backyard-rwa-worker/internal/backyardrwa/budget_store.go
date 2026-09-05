@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -213,9 +214,9 @@ func (d *Database) ReservePhase3(ctx context.Context, r BudgetReservation) error
 	return tx.Commit(ctx)
 }
 
-// AuthorizePhase3Build runs before loading the operational signer. Every
-// production bridge/Kamino/Jupiter builder uses this gate, including reports.
-func (d *Database) AuthorizePhase3Build(ctx context.Context, operationID string, request any, effects []byte) error {
+// Called only after the production cost observation, before signer access.
+// A fresh known debit cannot inherit a smaller durable reservation.
+func (d *Database) authorizePhase3Build(ctx context.Context, operationID string, request any, effects []byte, knownCost ValuedTransactionCost) error {
 	intent, err := Phase3IntentDigest(request, effects)
 	if err != nil {
 		return err
@@ -237,6 +238,15 @@ func (d *Database) AuthorizePhase3Build(ctx context.Context, operationID string,
 	}
 	if err = budget.AuthorizeIntent(operationID, intent); err != nil {
 		return err
+	}
+	reservation := budget.Reservations[operationID]
+	if knownCost.TotalMicros <= 0 || knownCost.TotalMicros > reservation.UpperMicros {
+		return &BudgetHold{Reason: "fresh_build_cost_exceeds_reservation", Details: map[string]string{
+			"knownCostMicros":     strconv.FormatInt(knownCost.TotalMicros, 10),
+			"reservedUpperMicros": strconv.FormatInt(reservation.UpperMicros, 10),
+			"observationSlot":     strconv.FormatInt(knownCost.ObservationSlot, 10),
+			"messageSha256":       knownCost.MessageSHA256,
+		}}
 	}
 	return tx.Commit(ctx)
 }

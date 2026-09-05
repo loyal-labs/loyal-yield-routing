@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { exactSet, measuredCondition } from "./rwa-phase3-family-activation.js";
+import { exactSet, measuredCondition, localCapTestProof } from "./rwa-phase3-family-activation.js";
 
 describe("Phase 3 measured verifier", () => {
   test("rejects missing, duplicate, extra and substituted lane identities", () => {
@@ -21,5 +21,20 @@ describe("Phase 3 measured verifier", () => {
   test("requires nonempty complete passing measurements", () => {
     expect(measuredCondition("R04","lifecycle",[],[]).verdict).toBe("FAIL");
     expect(measuredCondition("R04","lifecycle",[{claim:"execution",verdict:"PASS",evidence:{}}],[]).verdict).toBe("PASS");
+  });
+  test("local cap evidence requires all named behavioral tests and a successful package result", () => {
+    const names=["TestProductionBridgeRejectsFreshOverCapCostBeforeSignerOrDatabase",
+      "TestProductionKaminoAndJupiterRejectFreshOverCapCostBeforeSigner",
+      "TestKnownBuildCostRejectsStaleObservationAndDoesNotGrantAdmission"];
+    const events=[...names.map(Test=>({Action:"pass",Test})),{Action:"pass"}];
+    const encode=(rows:unknown[])=>rows.map(row=>JSON.stringify(row)).join("\n");
+    expect(localCapTestProof(encode(events),0).pass).toBe(true);
+    expect(localCapTestProof(encode(events),1).pass).toBe(false);
+    expect(localCapTestProof(encode(events.slice(1)),0).pass).toBe(false);
+    expect(localCapTestProof(encode(events.slice(0,-1)),0).pass).toBe(false);
+    expect(localCapTestProof(encode([...events,{Action:"pass",Test:names[0]}]),0).pass).toBe(false);
+    expect(localCapTestProof(encode([{Action:"skip",Test:names[0]},...events.slice(1)]),0).pass).toBe(false);
+    expect(localCapTestProof(encode([...events,{Action:"fail",Test:"nested/negative"}]),0).pass).toBe(false);
+    expect(localCapTestProof("",0).pass).toBe(false);
   });
 });

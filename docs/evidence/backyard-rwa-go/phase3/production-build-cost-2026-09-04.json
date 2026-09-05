@@ -1,0 +1,437 @@
+{
+  "schema": "loyal-backyard-rwa-phase3-family-activation-verifier/v2",
+  "verdict": "FAIL",
+  "implementationStatus": "INCOMPLETE",
+  "broadcast": false,
+  "readOnly": true,
+  "generatedAt": "2026-09-05T02:47:00.960Z",
+  "goalId": "01a06b6c-8023-72b1-ad5d-c97c0662820e",
+  "source": {
+    "head": "4652cb7404e7cc93146c3b6946f32400bf8fcd7f",
+    "dirty": true,
+    "implementationSha256": "c82b9c1bed671d7e41f1673ea8551bd7a389f28fec68f0f517028f22ea152154",
+    "fileCount": 178,
+    "proofLevel": "LOCAL_SOURCE_SNAPSHOT_NOT_DEPLOYMENT"
+  },
+  "contract": {
+    "path": "docs/plans/backyard-rwa-phase3-family-activation-verifier.md",
+    "sha256": "f2a59278b1992eb77f0925841b3defab307e9b95b33d95b8394842950cf2221b"
+  },
+  "preflight": {
+    "chain": {
+      "status": "BLOCKED",
+      "source": "Solana RPC",
+      "reason": "OFFLINE_DIAGNOSTIC"
+    },
+    "database": {
+      "status": "BLOCKED",
+      "source": "Postgres",
+      "reason": "OFFLINE_DIAGNOSTIC"
+    },
+    "deployment": {
+      "status": "BLOCKED",
+      "source": "Render",
+      "reason": "OFFLINE_DIAGNOSTIC"
+    },
+    "runtime": {
+      "status": "OBSERVED",
+      "source": "local compiled production route resolver",
+      "data": {
+        "schema": "loyal-backyard-rwa-phase3-runtime-inspection/v1",
+        "readOnly": true,
+        "proofLevel": "LOCAL_ROUTE_RESOLUTION",
+        "goalId": "01a06b6c-8023-72b1-ad5d-c97c0662820e",
+        "capsMicros": [
+          1000000,
+          20000000,
+          60000000
+        ],
+        "lanes": [
+          {
+            "lane": "AUTO/AUTO/PYUSD",
+            "resolved": false,
+            "reason": "RUNTIME_BINDING_MISSING"
+          },
+          {
+            "lane": "Ethena/USDe/PYUSD",
+            "resolved": false,
+            "reason": "RUNTIME_BINDING_MISSING"
+          },
+          {
+            "lane": "Maple/syrupUSDC/PYUSD",
+            "resolved": false,
+            "reason": "RUNTIME_BINDING_MISSING"
+          },
+          {
+            "lane": "Maple/syrupUSDC/USDC",
+            "resolved": true,
+            "binding": {
+              "Lane": "Maple/syrupUSDC/USDC",
+              "Protocol": "Maple",
+              "CollateralSymbol": "syrupUSDC",
+              "DebtSymbol": "USDC",
+              "Kamino": {
+                "Program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "Market": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+                "Obligation": "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT",
+                "CollateralReserve": "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+                "DebtReserve": "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+                "Vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+                "MarketAuthority": "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
+                "CollateralMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+                "DebtMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+              },
+              "CollateralCustody": "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN",
+              "DebtCustody": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+              "CollateralLiquiditySupply": "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i",
+              "CollateralReceiptMint": "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu",
+              "CollateralReceiptSupply": "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58",
+              "DebtLiquiditySupply": "BBcwMNSMyhhBnYE9pevEvkxKHGzTafMP9v3j7Kk7nAWM",
+              "DebtFeeReceiver": "HH7GLnRcGHJrdkEueVVj7mccNUjnSeWobDmtu9cHLkJV",
+              "CollateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "DebtTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "CollateralFarm": "",
+              "ObligationCollateralFarm": "",
+              "DebtFarm": "87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y",
+              "ObligationDebtFarm": "CcUorNoacydFVu7SHmhsA1qi9CcEu8K5YFvuS8unAzgr",
+              "PolicyHashes": {
+                "DELEVER_ROUTE_STEP": "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11",
+                "OPEN_ROUTE_STEP": "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f",
+                "SWAP_COLLATERAL_TO_STABLE_STEP": "1f2392e28fb96d92fb1b98a46609b8b7f4f0d38e6ddf943cd2d473a6e799589d",
+                "SWAP_STABLE_TO_COLLATERAL_STEP": "04b40a67014385131f562116473e41026aa7108fea9081b14e13c1204528ced2"
+              },
+              "PolicyAccounts": {
+                "DELEVER_ROUTE_STEP": "AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo",
+                "OPEN_ROUTE_STEP": "5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c",
+                "SWAP_COLLATERAL_TO_STABLE_STEP": "FhvEZNhKwF3dPZL36rrcbo5TCvTZTRBadE4YFNWxxwVR",
+                "SWAP_STABLE_TO_COLLATERAL_STEP": "DYDidUg6uEX5YK7d5UBXL7v6P5BXkkMZQneATe3mpS3t"
+              }
+            }
+          },
+          {
+            "lane": "Maple/syrupUSDC/USDG",
+            "resolved": false,
+            "reason": "RUNTIME_BINDING_MISSING"
+          },
+          {
+            "lane": "OnRe/ONyc/USDC",
+            "resolved": false,
+            "reason": "RUNTIME_BINDING_MISSING"
+          },
+          {
+            "lane": "OnRe/ONyc/USDG",
+            "resolved": false,
+            "reason": "RUNTIME_BINDING_MISSING"
+          },
+          {
+            "lane": "OnRe/ONyc/USDS",
+            "resolved": false,
+            "reason": "RUNTIME_BINDING_MISSING"
+          },
+          {
+            "lane": "Prime/PRIME/PYUSD",
+            "resolved": false,
+            "reason": "RUNTIME_BINDING_MISSING"
+          },
+          {
+            "lane": "Prime/PRIME/USDC",
+            "resolved": true,
+            "binding": {
+              "Lane": "PRIME/USDC",
+              "Protocol": "Prime",
+              "CollateralSymbol": "PRIME",
+              "DebtSymbol": "USDC",
+              "Kamino": {
+                "Program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "Market": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+                "Obligation": "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
+                "CollateralReserve": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+                "DebtReserve": "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+                "Vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+                "MarketAuthority": "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+                "CollateralMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+                "DebtMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+              },
+              "CollateralCustody": "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+              "DebtCustody": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+              "CollateralLiquiditySupply": "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352",
+              "CollateralReceiptMint": "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
+              "CollateralReceiptSupply": "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN",
+              "DebtLiquiditySupply": "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC",
+              "DebtFeeReceiver": "BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6",
+              "CollateralTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "DebtTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "CollateralFarm": "",
+              "ObligationCollateralFarm": "",
+              "DebtFarm": "",
+              "ObligationDebtFarm": "",
+              "PolicyHashes": null,
+              "PolicyAccounts": null
+            }
+          },
+          {
+            "lane": "Prime/PRIME/USDS",
+            "resolved": false,
+            "reason": "RUNTIME_BINDING_MISSING"
+          }
+        ]
+      }
+    },
+    "bindings": {
+      "status": "BLOCKED",
+      "source": "binding review",
+      "reason": "OFFLINE_DIAGNOSTIC"
+    },
+    "setupRent": {
+      "status": "BLOCKED",
+      "source": "setup rent feasibility",
+      "reason": "OFFLINE_DIAGNOSTIC"
+    },
+    "localCaps": {
+      "status": "OBSERVED",
+      "source": "local production-builder cap witnesses",
+      "data": {
+        "passedTests": [
+          "TestProductionBridgeRejectsFreshOverCapCostBeforeSignerOrDatabase",
+          "TestKnownBuildCostRejectsStaleObservationAndDoesNotGrantAdmission",
+          "TestProductionKaminoAndJupiterRejectFreshOverCapCostBeforeSigner"
+        ],
+        "expectedTests": [
+          "TestProductionBridgeRejectsFreshOverCapCostBeforeSignerOrDatabase",
+          "TestProductionKaminoAndJupiterRejectFreshOverCapCostBeforeSigner",
+          "TestKnownBuildCostRejectsStaleObservationAndDoesNotGrantAdmission"
+        ],
+        "pass": true,
+        "proofLevel": "LOCAL_PRODUCTION_BUILDERS_CONTROLLED_RPC_INPUTS_NOT_LIVE_ADMISSION"
+      }
+    }
+  },
+  "conditions": [
+    {
+      "id": "R01",
+      "condition": "Production admission/send cap enforcement and reserved exits",
+      "verdict": "FAIL",
+      "measurementStatus": "MEASURED",
+      "measurements": [
+        {
+          "claim": "compiled goal identity and cap constants",
+          "verdict": "PASS",
+          "evidence": {
+            "source": "local compiled production route resolver",
+            "reference": "preflight observation with matching source"
+          }
+        },
+        {
+          "claim": "durable budget exists for this goal",
+          "verdict": "BLOCKED",
+          "evidence": {
+            "source": "Postgres",
+            "reason": "OFFLINE_DIAGNOSTIC"
+          }
+        },
+        {
+          "claim": "local production builders reject fresh over-cap costs before signing and reject stale valuation",
+          "verdict": "PASS",
+          "evidence": {
+            "source": "local production-builder cap witnesses",
+            "reference": "preflight observation with matching source"
+          }
+        }
+      ],
+      "missingProof": [
+        "Production-created admission from exact executable costs and complete exit graph; not direct test-only ReservePhase3 calls.",
+        "Complete admission/send witnesses beyond local controlled-input build rejection: concurrency, restart, ambiguity, final-send freshness and successful reserved unwind.",
+        "Independent reconciliation of deployed spent/reserved accounting, including setup and full-custody restore."
+      ]
+    },
+    {
+      "id": "R02",
+      "condition": "Exact eleven-lane runtime allowlist and frozen three-family queue",
+      "verdict": "FAIL",
+      "measurementStatus": "MEASURED",
+      "measurements": [
+        {
+          "claim": "exact catalog lane set",
+          "verdict": "PASS",
+          "evidence": {
+            "catalogLanes": [
+              "OnRe/ONyc/USDC",
+              "OnRe/ONyc/USDG",
+              "OnRe/ONyc/USDS",
+              "Prime/PRIME/USDC",
+              "Prime/PRIME/PYUSD",
+              "Prime/PRIME/USDS",
+              "Maple/syrupUSDC/USDC",
+              "Maple/syrupUSDC/USDG",
+              "Maple/syrupUSDC/PYUSD",
+              "AUTO/AUTO/PYUSD",
+              "Ethena/USDe/PYUSD"
+            ]
+          }
+        },
+        {
+          "claim": "exact manifest runtime lane set",
+          "verdict": "FAIL",
+          "evidence": {
+            "runtimeRoutes": [
+              "Prime/PRIME/USDC",
+              "Maple/syrupUSDC/USDC"
+            ]
+          }
+        },
+        {
+          "claim": "every catalogued lane resolves through production",
+          "verdict": "FAIL",
+          "evidence": {
+            "source": "local compiled production route resolver",
+            "reference": "preflight observation with matching source"
+          }
+        }
+      ],
+      "missingProof": [
+        "Durable three-family queue with reviewed identity bindings and in-family-only flat substitution behavior."
+      ]
+    },
+    {
+      "id": "R03",
+      "condition": "Shared debt/token/valuation/exit runtime and existing policy authority",
+      "verdict": "FAIL",
+      "measurementStatus": "MEASURED",
+      "measurements": [
+        {
+          "claim": "catalog operation and swap-edge cardinality",
+          "verdict": "PASS",
+          "evidence": {
+            "operations": 44,
+            "swapEdges": 52
+          }
+        },
+        {
+          "claim": "required observed accounts are present",
+          "verdict": "BLOCKED",
+          "evidence": {
+            "source": "Solana RPC",
+            "reason": "OFFLINE_DIAGNOSTIC"
+          }
+        },
+        {
+          "claim": "current Kamino account vectors match retained installed policies",
+          "verdict": "BLOCKED",
+          "evidence": {
+            "source": "binding review",
+            "reason": "OFFLINE_DIAGNOSTIC"
+          }
+        },
+        {
+          "claim": "resolved custody, obligation and farm setup identities are initialized",
+          "verdict": "BLOCKED",
+          "evidence": {
+            "source": "binding review",
+            "reason": "OFFLINE_DIAGNOSTIC"
+          }
+        }
+      ],
+      "missingProof": [
+        "Installed policy bytes and exact account derivation/ownership/setup compared against each proposed binding.",
+        "All-lane production observation, construction, non-USDC valuation, exit and reconciliation behavior; catalog counts alone prove none of these."
+      ]
+    },
+    {
+      "id": "R04",
+      "condition": "All-lane positives/negatives and full stateful lifecycle",
+      "verdict": "FAIL",
+      "measurementStatus": "MISSING_PROOF",
+      "measurements": [],
+      "missingProof": [
+        "Sequential real-program lifecycle capability sample with captured effects and explicit controlled-capacity overrides.",
+        "Batched exact eleven-lane behavioral coverage with identity-bound retained equivalence and dangerous mutations."
+      ]
+    },
+    {
+      "id": "R05",
+      "condition": "Immutable deployment, one fenced writer and flat queue transitions",
+      "verdict": "FAIL",
+      "measurementStatus": "MEASURED",
+      "measurements": [
+        {
+          "claim": "live immutable image tag observed",
+          "verdict": "BLOCKED",
+          "evidence": {
+            "source": "Render",
+            "reason": "OFFLINE_DIAGNOSTIC"
+          }
+        },
+        {
+          "claim": "no unresolved journal operations at snapshot",
+          "verdict": "BLOCKED",
+          "evidence": {
+            "source": "Postgres",
+            "reason": "OFFLINE_DIAGNOSTIC"
+          }
+        }
+      ],
+      "missingProof": [
+        "Image digest/source/service command bound to verified Phase 3 build, not merely any immutable old image.",
+        "Fenced queue advancement with independently flat shared custody and touched obligations; held family cannot stall eligible siblings."
+      ]
+    },
+    {
+      "id": "R06",
+      "condition": "Three Go-originated accepted canary outcomes",
+      "verdict": "FAIL",
+      "measurementStatus": "MEASURED",
+      "measurements": [
+        {
+          "claim": "at least one Phase 3 journal operation exists",
+          "verdict": "BLOCKED",
+          "evidence": {
+            "source": "Postgres",
+            "reason": "OFFLINE_DIAGNOSTIC"
+          }
+        }
+      ],
+      "missingProof": [
+        "OnRe, AUTO and Ethena each have complete LIVE_VALIDATED or R04-backed unfunded CAPACITY_PENDING proof and finalized terminal custody."
+      ]
+    },
+    {
+      "id": "R07",
+      "condition": "Retained prior routes, withdrawal, NAV and recovery",
+      "verdict": "FAIL",
+      "measurementStatus": "MEASURED",
+      "measurements": [
+        {
+          "claim": "retained Phase 2 artifact reports PASS",
+          "verdict": "PASS",
+          "evidence": {
+            "path": "docs/evidence/backyard-rwa-go/phase2-runtime/lifecycle-v1.json",
+            "sha256": "d263d0cc6003dc3c21952e73ce5a7a1e8f55e417539e206ff88e75a84ebfd93d",
+            "verdict": "PASS",
+            "proofLevel": "HISTORICAL_ARTIFACT_ONLY"
+          }
+        }
+      ],
+      "missingProof": [
+        "Match retained dependency identities and execute affected withdrawal/recovery/NAV regressions, including actual reserved-exit admission and execution."
+      ]
+    },
+    {
+      "id": "R08",
+      "condition": "Deployed readiness agrees with operational handoff and standing coverage",
+      "verdict": "FAIL",
+      "measurementStatus": "MEASURED",
+      "measurements": [
+        {
+          "claim": "source and embedded manifest bytes agree",
+          "verdict": "PASS",
+          "evidence": {
+            "proofLevel": "LOCAL_MANIFEST_PARITY"
+          }
+        }
+      ],
+      "missingProof": [
+        "Deployed eleven-lane readiness and existing handoff agree with proven statuses, policy bindings, image, budgets and recovery; promoted CI checks pass."
+      ]
+    }
+  ]
+}

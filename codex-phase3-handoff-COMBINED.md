@@ -334,3 +334,36 @@ complete production cost/exit admission (including separately accounted shared
 setup), deployed-program stateful full-cycle proof, and exact runtime bindings
 through the permitted review path. Nothing here resolves the earlier rejected
 route expansion. No deployment, policy installation or live canary occurred.
+
+### Fresh cost checks on production build paths
+
+The subsequent local slice connects the real bridge, Kamino and Jupiter
+builders to exact unsigned-message fee and fresh principal/native-SOL valuation
+before signer access. Principal plus fees above the unchanged transaction cap
+produce a typed HOLD with measured amounts, slot and message/valuation hashes.
+The durable admission check also rejects a fresh known cost above its existing
+reservation. Missing/stale valuation does not inherit old authorization.
+
+These are rejection/revalidation checks, not a completed admission producer.
+They deliberately do not certify zero setup cost, derive an exit graph, create
+reservations, initialize a budget or revalue at the final send boundary. Those
+remain required work. All production builders use the priced gate; the old
+unpriced authorization wrapper exists only in storage tests, not production.
+
+The verifier runs three named, bounded Go behavioral tests with controlled RPC
+inputs through these actual production paths; it requires each test and package
+to pass, rejecting skipped, absent, duplicated or failing results. It records
+their local proof level explicitly. The offline snapshot
+`docs/evidence/backyard-rwa-go/phase3/production-build-cost-2026-09-04.json`
+records this R01 subclaim passing while every full R-condition remains
+incomplete. External state was not refreshed in that offline snapshot; retain
+the prior live snapshot with its own times and dependencies. The snapshot
+precedes the addition of non-secret measured details to the same HOLD errors.
+
+Validation: full Go race suite passed; the separate real disposable-PostgreSQL
+admission/send-fence test passed, including fresh-cost-over-reservation rejection.
+Nine targeted TypeScript tests and package typecheck passed. No signer access,
+production database changes, route activation, deployment or live send occurred.
+The policy-creation cap revision request remains unanswered and is not assumed
+approved. Continue complete production setup/exit admission and remaining
+runtime/protocol proof without repeating the unchanged rent probe.

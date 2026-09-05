@@ -15,6 +15,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Isolate the storage identity/lease cases below from the RPC valuation tests.
+// There is no unpriced build authorization entrypoint in the production binary.
+func (d *Database) AuthorizePhase3Build(ctx context.Context, operationID string, request any, effects []byte) error {
+	return d.authorizePhase3Build(ctx, operationID, request, effects, ValuedTransactionCost{TotalMicros: 1})
+}
+
 // This is a real PostgreSQL admission/locking/wire-binding slice, not a full
 // migration replay. Only a disposable Unix-socket database can enable it.
 // The final verifier must separately check production schema and deployment.
@@ -118,6 +124,8 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	if err = db.AuthorizePhase3Build(ctx, op, request, effects); err != nil {
 		t.Fatal(err)
 	}
+	assertBudgetHold(t, db.authorizePhase3Build(ctx, op, request, effects, ValuedTransactionCost{TotalMicros: r.UpperMicros + 1}), "fresh_build_cost_exceeds_reservation")
+	assertBudgetHold(t, db.authorizePhase3Build(ctx, op, request, effects, ValuedTransactionCost{}), "fresh_build_cost_exceeds_reservation")
 	// The same identity fence applies again after admission, before signing
 	// and sending; a changed journal lane cannot inherit the old reservation.
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET strategy_key='AUTO/AUTO/PYUSD' WHERE operation_id=$1`, op); err != nil {
