@@ -99,6 +99,24 @@ func validatePolicySetupPlan(plan policySetupObservation) (string, error) {
 // only a pointer to that journal row, not a second setup ledger. No CLI, signer,
 // broadcast or automatic worker invocation is exposed by this bookkeeping API.
 func (d *Database) persistPolicySetupIntent(ctx context.Context, rpc *RPCClient, routeKey string, plan policySetupObservation) (DecisionRecord, error) {
+	if d == nil || d.pool == nil {
+		return DecisionRecord{}, budgetHold("policy_setup_database_missing")
+	}
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return DecisionRecord{}, err
+	}
+	defer tx.Rollback(ctx)
+	record, err := d.persistPolicySetupIntentTx(ctx, tx, rpc, routeKey, plan)
+	if err != nil {
+		return DecisionRecord{}, err
+	}
+	return record, tx.Commit(ctx)
+}
+
+// The caller owns the transaction so unsigned refresh can replace a reservation
+// without exposing an intermediate cancellation to another worker.
+func (d *Database) persistPolicySetupIntentTx(ctx context.Context, tx pgx.Tx, rpc *RPCClient, routeKey string, plan policySetupObservation) (DecisionRecord, error) {
 	digest, err := validatePolicySetupPlan(plan)
 	if err != nil {
 		return DecisionRecord{}, err
@@ -110,11 +128,6 @@ func (d *Database) persistPolicySetupIntent(ctx context.Context, rpc *RPCClient,
 	if rpc == nil {
 		return DecisionRecord{}, budgetHold("policy_setup_rpc_missing")
 	}
-	tx, err := d.pool.Begin(ctx)
-	if err != nil {
-		return DecisionRecord{}, err
-	}
-	defer tx.Rollback(ctx)
 	var version int64
 	var raw []byte
 	if err = tx.QueryRow(ctx, RouteStateForUpdate, routeKey, lease.Owner, lease.FencingToken).Scan(&version, &raw); err != nil {
@@ -156,7 +169,7 @@ func (d *Database) persistPolicySetupIntent(ctx context.Context, rpc *RPCClient,
 		}
 		// An exact retry reads the original intent without refreshing expiry,
 		// replacing its request, writing another row or replenishing headroom.
-		return record, tx.Commit(ctx)
+		return record, nil
 	}
 	if budget.Closed {
 		return DecisionRecord{}, budgetHold("goal_envelope_expired")
@@ -231,7 +244,7 @@ func (d *Database) persistPolicySetupIntent(ctx context.Context, rpc *RPCClient,
 	if result.RowsAffected() != 1 {
 		return DecisionRecord{}, ErrRouteLeaseLost
 	}
-	return DecisionRecord{OperationID: id, Cycle: cycle, Status: Decided}, tx.Commit(ctx)
+	return DecisionRecord{OperationID: id, Cycle: cycle, Status: Decided}, nil
 }
 
 // Only the initial, proven-never-signed intent can be canceled here. A signed,
@@ -246,6 +259,13 @@ func (d *Database) cancelUnsentPolicySetupIntent(ctx context.Context, operationI
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err = d.cancelUnsentPolicySetupIntentTx(ctx, tx, operationID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (d *Database) cancelUnsentPolicySetupIntentTx(ctx context.Context, tx pgx.Tx, operationID string) error {
 	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
 	if err != nil {
 		return err
@@ -254,11 +274,11 @@ func (d *Database) cancelUnsentPolicySetupIntent(ctx context.Context, operationI
 	var action Action
 	var pointer string
 	var neverSigned bool
-	if err = tx.QueryRow(ctx, `SELECT operation.status,operation.action,COALESCE(route.state->>'phase3SetupIntent',''),operation.signed_wire IS NULL AND operation.transaction_signature IS NULL AND operation.broadcast_intent_at IS NULL
+	if err = tx.QueryRow(ctx, `SELECT operation.status,operation.action,COALESCE(route.state->>'phase3SetupIntent',''),operation.signed_wire IS NULL AND operation.signed_wire_sha256 IS NULL AND operation.transaction_signature IS NULL AND operation.broadcast_intent_at IS NULL
 	 FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route USING(route_key) WHERE operation_id=$1`, operationID).Scan(&status, &action, &pointer, &neverSigned); err != nil {
 		return err
 	}
-	if pointer != operationID || !isPolicySetupAction(action) || status != Decided || !neverSigned || auth.PolicySetup == nil || auth.GoalID != Phase3GoalID || auth.SignedWireSHA256 != "" || auth.BookedSpentMicros != 0 || auth.ReservationReleased {
+	if pointer != operationID || !isPolicySetupAction(action) || status != Decided || !neverSigned || auth.PolicySetup == nil || auth.PolicySetupCompletion != nil || auth.GoalID != Phase3GoalID || auth.SignedWireSHA256 != "" || auth.BookedSpentMicros != 0 || auth.ReservationReleased {
 		return budgetHold("policy_setup_not_proven_unsent")
 	}
 	digest, err := validatePolicySetupPlan(*auth.PolicySetup)
@@ -286,5 +306,5 @@ func (d *Database) cancelUnsentPolicySetupIntent(ctx context.Context, operationI
 	if result.RowsAffected() != 1 {
 		return ErrRouteLeaseLost
 	}
-	return tx.Commit(ctx)
+	return nil
 }

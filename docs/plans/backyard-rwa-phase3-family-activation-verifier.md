@@ -39,10 +39,10 @@ serialized family queue; verify all eleven lanes; then deploy immutably and
 prove the three accepted canary outcomes. Setup still HOLDs before signing/send.
 The known rejected historical-return verifier change remains unapplied.
 
-The durable Codex goal still exists but currently reports `blocked` and names the
-missing checkout. The available goal API cannot resume or edit its objective.
-Do not mark this unfinished goal complete to replace it. Resume/update that
-existing goal through Codex, retaining this contract and all acceptance criteria.
+The durable Codex goal was resumed after recovery and now reports `active`.
+Its objective still names the missing temporary checkout; the persistent
+recovery worktree above is its working copy. The goal API cannot edit that
+objective. This location repair changes no scope, caps or acceptance criteria.
 
 ## Contract authority
 
@@ -1530,3 +1530,30 @@ setup signer/build/simulation integration and signed-expiry recovery still need
 completion. `AdvanceNonterminal` continues to HOLD setup at `signed`; no send was
 enabled. Controlled database probes of the lower-level final gate use synthetic
 wires and roll back, and do not claim production signer or broadcast proof.
+
+#### Atomic unsigned setup refresh — 2026-09-05
+
+An initial setup intent can now be replaced with a freshly observed plan in one
+existing PostgreSQL transaction. The replacement pins the same operation, seed,
+policy and Settings identity; reprices rent/fees and reserves the full remaining
+payment without resetting family/goal spend. The old failed row retains its
+plan and a replacement-operation link. Concurrent and restarted retries find
+one replacement instead of allocating new headroom. A failed fresh prestate,
+cap or lease check rolls the entire transition back, leaving the old intent and
+reservation intact. Even a persisted wire hash without its wire blocks refresh.
+
+This path applies only before any signing or prefunding. It does not refresh a
+funded creation continuation, change farm bindings, load a signer or enable a
+broadcast. The setup coordinator still needs build/simulation/sign integration
+and funded/signed expiry handling before production activation. The sole
+verifier now requires the corresponding real-database refresh witness; that
+local proof does not satisfy the remaining R01–R08 requirements.
+
+Recheck `phase3/unsigned-setup-refresh-recheck-2026-09-05.json.gz` (gzip SHA256
+`b9d1d29420411243920d8afe2bca8df29d45866790bca410073042f4ce9de990`)
+passes all seven named journal witnesses, including refresh. Targeted setup and
+journal race tests pass (13.471s); TypeScript checking and 12 verifier tests pass.
+The preceding refresh snapshot retains a failing test-observation decoding case,
+corrected by clearing a reused map before decoding the next database snapshot.
+All eight top-level conditions remain FAIL. No production mutation occurred;
+the full implementation goal remains active.

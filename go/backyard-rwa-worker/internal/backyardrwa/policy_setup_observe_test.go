@@ -85,6 +85,7 @@ func TestPolicySetupSettingsMatchesSDKAndRejectsAuthorityDrift(t *testing.T) {
 type setupRPCScenario struct {
 	rent                uint64
 	drift               string
+	blockhash           string
 	fees, settingsReads int
 }
 
@@ -179,7 +180,9 @@ func setupObservationRPC(t *testing.T, s *setupRPCScenario) *RPCClient {
 			s.fees++
 			handled = false
 		case "getLatestBlockhash":
-			if s.drift == "blockhash" {
+			if s.blockhash != "" {
+				result = map[string]any{"context": map[string]int{"slot": 42}, "value": map[string]any{"blockhash": s.blockhash, "lastValidBlockHeight": 1234}}
+			} else if s.drift == "blockhash" {
 				result = map[string]any{"context": map[string]int{"slot": 42}, "value": map[string]any{"blockhash": "bad", "lastValidBlockHeight": 99}}
 			} else {
 				handled = false

@@ -138,6 +138,9 @@ func testPolicySetupDurability(t *testing.T, url string) {
 		}
 		testPolicySetupPaymentAuthorization(t, ctx, db, r.OperationID)
 	})
+	t.Run("unsigned refresh is atomic and preserves lifetime spend", func(t *testing.T) {
+		testPolicySetupUnsignedRefresh(t, ctx, db, newRoute, plan)
+	})
 	t.Run("finalized prefund advances atomically without duplicate funding", func(t *testing.T) {
 		prepare := func(t *testing.T) PersistedOperation {
 			b := emptyTestBudget()
