@@ -27,6 +27,9 @@ func TestTransactionValuationNormalizesUSDCAndNativeFees(t *testing.T) {
 	if err != nil || cost.PrincipalMicros != 450_000 || cost.NetworkFeeMicros != 250 || cost.SetupLamportsMicros != 50 || cost.TotalMicros != 450_300 {
 		t.Fatalf("wrong USDC-normalized cost: %+v %v", cost, err)
 	}
+	if cost.TokenPrice == nil || *cost.TokenPrice != price || cost.NativePrice != sol || cost.Fee != fee || cost.Debit != debit || cost.SetupLamports != 1000 {
+		t.Fatal("valuation did not retain its reconstructible economic inputs")
+	}
 	// Quoting in USDC is not the same as declaring a one-dollar stable peg.
 	price.USDCLowerSF = price.TokenUpperSF
 	cost, err = ValueTransactionCost(message, debit, fee, 0, price, sol, 42)

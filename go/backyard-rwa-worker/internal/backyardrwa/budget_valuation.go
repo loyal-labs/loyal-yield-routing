@@ -36,12 +36,18 @@ func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (i
 const nativeSOLBudgetAsset = "native:SOL"
 
 type ValuedTransactionCost struct {
-	MessageSHA256       string `json:"messageSha256"`
-	ObservationSlot     int64  `json:"observationSlot"`
-	PrincipalMicros     int64  `json:"principalMicros"`
-	NetworkFeeMicros    int64  `json:"networkFeeMicros"`
-	SetupLamportsMicros int64  `json:"setupLamportsMicros"`
-	TotalMicros         int64  `json:"totalMicros"`
+	Debit               ExecutableDebit       `json:"debit"`
+	Fee                 MessageFeeObservation `json:"fee"`
+	SetupLamports       uint64                `json:"setupLamports"`
+	TokenPrice          *BudgetPrice          `json:"tokenPrice,omitempty"`
+	NativePrice         BudgetPrice           `json:"nativePrice"`
+	MessageSHA256       string                `json:"messageSha256"`
+	ObservationSlot     int64                 `json:"observationSlot"`
+	ValidThroughSlot    int64                 `json:"validThroughSlot"`
+	PrincipalMicros     int64                 `json:"principalMicros"`
+	NetworkFeeMicros    int64                 `json:"networkFeeMicros"`
+	SetupLamportsMicros int64                 `json:"setupLamportsMicros"`
+	TotalMicros         int64                 `json:"totalMicros"`
 }
 
 // ValueTransactionCost counts source principal once and fees once. Mint rent
@@ -50,15 +56,16 @@ type ValuedTransactionCost struct {
 // account-creation/rent debit is possible. No protocol fee may be omitted:
 // fees taken from the token source belong in the measured executable debit.
 func ValueTransactionCost(message []byte, debit ExecutableDebit, fee MessageFeeObservation, setupLamports uint64, tokenPrice, solPrice BudgetPrice, slot int64) (ValuedTransactionCost, error) {
-	result := ValuedTransactionCost{MessageSHA256: sha256Bytes(message), ObservationSlot: slot}
+	result := ValuedTransactionCost{MessageSHA256: sha256Bytes(message), ObservationSlot: slot, Debit: debit, Fee: fee, SetupLamports: setupLamports, NativePrice: solPrice}
 	if _, err := checkedUnsignedMessage(message); err != nil {
 		return result, err
 	}
-	if fee.MessageSHA256 != result.MessageSHA256 || fee.Slot <= 0 || fee.Slot > slot || slot-fee.Slot > budgetMaxObservationLagSlots || fee.Lamports == 0 {
+	if fee.MessageSHA256 != result.MessageSHA256 || fee.Slot <= 0 || fee.Slot > math.MaxInt64-budgetMaxObservationLagSlots || fee.Slot > slot || slot-fee.Slot > budgetMaxObservationLagSlots || fee.Lamports == 0 {
 		return result, budgetHold("fee_message_or_slot_mismatch")
 	}
 	var err error
 	if debit.Raw > 0 {
+		result.TokenPrice = &tokenPrice
 		if debit.Source == "" {
 			return result, budgetHold("economic_source_missing")
 		}
@@ -81,6 +88,11 @@ func ValueTransactionCost(message []byte, debit ExecutableDebit, fee MessageFeeO
 		}
 	}
 	result.TotalMicros, err = budgetSum(result.PrincipalMicros, result.NetworkFeeMicros, result.SetupLamportsMicros)
+	// Validity is bounded by the oldest input, not the final observation.
+	result.ValidThroughSlot = min(fee.Slot+budgetMaxObservationLagSlots, solPrice.ValidThroughSlot)
+	if debit.Raw > 0 {
+		result.ValidThroughSlot = min(result.ValidThroughSlot, tokenPrice.ValidThroughSlot)
+	}
 	return result, err
 }
 

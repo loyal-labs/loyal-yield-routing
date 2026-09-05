@@ -367,3 +367,43 @@ production database changes, route activation, deployment or live send occurred.
 The policy-creation cap revision request remains unanswered and is not assumed
 approved. Continue complete production setup/exit admission and remaining
 runtime/protocol proof without repeating the unchanged rent probe.
+
+### Persisted-input final-send revaluation and signed-HOLD expiry
+
+The production build authorization now persists the typed public request and
+exact expected-effects bytes in the existing operation envelope. Base64 byte
+fields preserve the original intent digest through JSONB normalization. Before
+broadcast intent, recovery decodes those inputs, checks their original intent
+and exact saved message, signature identity, blockhash and expiry metadata, and
+revalues principal/network fees without signing or replacing any wire. It
+rechecks the valuation's oldest-input expiry after taking the journal lock and
+compares the fresh known cost to the durable reservation. The same transaction
+records that cost with its raw debit, fee, valuation inputs and evidence hashes.
+
+A signed valuation HOLD retains both its reason and reservation. Only a wire
+whose persisted identities were verified may use the new expiry recovery path:
+finalized blockhash expiry followed by explicit signature absence releases the
+unspent reservation and restores prior exit headroom. Malformed/unavailable
+absence retains it; a found signature enters existing manual recovery without
+releasing it. No signed-HOLD or ambiguous-submission path resends a transaction.
+
+The full Go race suite, including disposable PostgreSQL, passes. Tests cover
+restart repricing, expensive/stale costs rejecting before broadcast intent,
+tampered message/signature/expiry rejection, durable final-send cost recording,
+and malformed-versus-explicit absence for expired signed HOLDs. The fixture
+signature bytes are deliberately unsigned and never submitted: this establishes
+local journal/coordinator behavior, not signer or live protocol proof. The sole
+verifier reports this separate local subclaim and reports it unavailable when
+the explicitly disposable test database is not configured. Snapshot
+`docs/evidence/backyard-rwa-go/phase3/final-send-valuation-2026-09-04.json`
+records the local witnesses passing while all full R-conditions remain
+incomplete. It precedes the addition of reconstructible economic inputs to the
+cost record and the more explicit unsigned-fixture proof label; subsequent
+regression checks passed. No external state was refreshed by that offline run.
+
+This still measures known principal/network cost, not a certified zero setup
+cost or a complete exit bound. The next required slice is actual production
+reservation admission from the complete setup/exit graph, then remaining
+all-lane runtime and protocol proof. Do not count another rejection-only gate
+as completion of that producer. No route activation, policy change, deployment,
+mainnet signing or send occurred; the $1/$20/$60 envelope is unchanged.

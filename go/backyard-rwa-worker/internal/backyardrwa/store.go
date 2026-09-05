@@ -697,8 +697,8 @@ func (d *Database) MarkPreBroadcastFailed(ctx context.Context, operationID strin
 // impossible: the persisted signature is absent and its blockhash is expired.
 // Found, ambiguous, or failed-on-chain signatures must remain recovery stops.
 func (d *Database) MarkExpiredAbsentFailed(ctx context.Context, operationID string, from OperationStatus) error {
-	if from != BroadcastIntent && from != Submitted {
-		return fmt.Errorf("expired-absent failure requires a submitted source")
+	if from != Signed && from != BroadcastIntent && from != Submitted {
+		return fmt.Errorf("expired-absent failure requires a signed source")
 	}
 	return d.transition(ctx, operationID, from, Failed,
 		`, recovery_reason = 'signature_absent_after_blockhash_expiry'`)
@@ -742,7 +742,7 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, build 
 	return tx.Commit(ctx)
 }
 
-func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) error {
+func (d *Database) markBroadcastIntent(ctx context.Context, operationID string, rpc *RPCClient, intent, wireHash string, cost ValuedTransactionCost) error {
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -751,7 +751,16 @@ func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) 
 	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
 		return err
 	}
-	if err := d.authorizePhase3SendTx(ctx, tx, operationID); err != nil {
+	// Recheck freshness after acquiring the journal lock, not before waiting
+	// for it. A slow lock or RPC never extends an earlier price's validity.
+	slot, err := rpc.ConfirmedSlot(ctx)
+	if err != nil {
+		return budgetHold("send_valuation_slot_unavailable")
+	}
+	if slot < cost.ObservationSlot || slot > cost.ValidThroughSlot {
+		return budgetHold("send_valuation_expired")
+	}
+	if err := d.authorizePhase3SendTx(ctx, tx, operationID, intent, wireHash, cost); err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx, PersistBroadcastIntentUpdate, operationID)

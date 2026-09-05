@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 )
 
@@ -37,7 +38,34 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 			operation.TransactionSignature == "" || operation.RecentBlockhash == "" || operation.LastValidBlockHeight <= 0 {
 			return database.MarkManualRecovery(ctx, operation.ID, Signed, "incomplete_persisted_signed_wire")
 		}
-		if err := database.MarkBroadcastIntent(ctx, operation.ID); err != nil {
+		if err := database.RevalueAndMarkBroadcastIntent(ctx, rpc, operation); err != nil {
+			var hold *BudgetHold
+			if errors.As(err, &hold) {
+				if journalErr := database.RecordPhase3SignedBudgetHold(ctx, operation.ID, hold); journalErr != nil {
+					return errors.Join(err, journalErr)
+				}
+				var validated *validatedSignedBudgetHold
+				if !errors.As(err, &validated) {
+					return err
+				}
+				// A failed fresh valuation must not trap an expired, absent wire
+				// in Signed forever. Release only after finalized expiry and a
+				// subsequent explicit signature-absence observation; never resend.
+				height, heightErr := rpc.FinalizedBlockHeight(ctx)
+				if heightErr != nil {
+					return errors.Join(err, heightErr)
+				}
+				if height > operation.LastValidBlockHeight {
+					status, statusErr := rpc.SignatureStatus(ctx, operation.TransactionSignature)
+					if statusErr != nil {
+						return errors.Join(err, statusErr)
+					}
+					if status.Found {
+						return database.MarkManualRecovery(ctx, operation.ID, Signed, "signed_budget_hold_signature_found")
+					}
+					return database.MarkExpiredAbsentFailed(ctx, operation.ID, Signed)
+				}
+			}
 			return err
 		}
 		if _, err := rpc.SendSignedTransactionOnce(ctx, operation.SignedWire, operation.TransactionSignature); err != nil {

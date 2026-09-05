@@ -10,11 +10,13 @@ import (
 )
 
 type phase3OperationAuthorization struct {
-	GoalID              string `json:"goalId"`
-	IntentSHA256        string `json:"intentSha256"`
-	SignedWireSHA256    string `json:"signedWireSha256,omitempty"`
-	ReservationReleased bool   `json:"reservationReleased,omitempty"`
-	BookedSpentMicros   int64  `json:"bookedSpentMicros,omitempty"`
+	GoalID              string                 `json:"goalId"`
+	IntentSHA256        string                 `json:"intentSha256"`
+	SignedWireSHA256    string                 `json:"signedWireSha256,omitempty"`
+	ReservationReleased bool                   `json:"reservationReleased,omitempty"`
+	BookedSpentMicros   int64                  `json:"bookedSpentMicros,omitempty"`
+	BuildInput          *phase3BuildInput      `json:"buildInput,omitempty"`
+	SendKnownCost       *ValuedTransactionCost `json:"sendKnownCost,omitempty"`
 }
 
 // Preserve an admission failure before restart recovery can replace it with a
@@ -248,6 +250,13 @@ func (d *Database) authorizePhase3Build(ctx context.Context, operationID string,
 			"messageSha256":       knownCost.MessageSHA256,
 		}}
 	}
+	auth.BuildInput, err = encodePhase3BuildInput(request, effects)
+	if err != nil {
+		return err
+	}
+	if err = d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
@@ -269,7 +278,7 @@ func (d *Database) bindPhase3WireTx(ctx context.Context, tx pgx.Tx, operationID,
 	return d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth)
 }
 
-func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operationID string) error {
+func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operationID, intent, wireHash string, cost ValuedTransactionCost) error {
 	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
 	if err != nil {
 		return err
@@ -281,5 +290,15 @@ func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operati
 	if auth.GoalID != Phase3GoalID || len(wire) == 0 || auth.SignedWireSHA256 != sha256Bytes(wire) {
 		return budgetHold("signed_wire_reservation_mismatch")
 	}
-	return budget.AuthorizeIntent(operationID, auth.IntentSHA256)
+	if auth.IntentSHA256 != intent || auth.SignedWireSHA256 != wireHash {
+		return budgetHold("final_send_identity_changed")
+	}
+	if err = budget.AuthorizeIntent(operationID, auth.IntentSHA256); err != nil {
+		return err
+	}
+	if cost.TotalMicros <= 0 || cost.TotalMicros > budget.Reservations[operationID].UpperMicros {
+		return budgetHold("fresh_send_cost_exceeds_reservation")
+	}
+	auth.SendKnownCost = &cost
+	return d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth)
 }

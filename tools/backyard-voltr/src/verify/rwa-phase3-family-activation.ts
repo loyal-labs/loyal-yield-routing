@@ -17,6 +17,8 @@ const CAP_TESTS = [
   "TestProductionBridgeRejectsFreshOverCapCostBeforeSignerOrDatabase",
   "TestProductionKaminoAndJupiterRejectFreshOverCapCostBeforeSigner",
   "TestKnownBuildCostRejectsStaleObservationAndDoesNotGrantAdmission",
+  "TestPersistedSendInputRevaluesWithoutRebuildingWire",
+  "TestPersistedSendInputRejectsIdentityDriftBeforeRPC",
 ];
 export const EXPECTED_LANES = [
   "Prime/PRIME/USDC", "Prime/PRIME/PYUSD", "Prime/PRIME/USDS",
@@ -52,20 +54,19 @@ export function exactSet(actual: unknown, expected: string[]): boolean {
     actual.length === expected.length && new Set(actual).size === actual.length &&
     [...actual].sort().every((x, i) => x === [...expected].sort()[i]);
 }
-export function localCapTestProof(output: string, exitCode: number | null) {
+export function localCapTestProof(output: string, exitCode: number | null, expectedTests: string[] = CAP_TESTS) {
   const events=output.trim().split("\n").filter(Boolean).map(line=>JSON.parse(line) as Json);
-  const terminal=events.filter(e=>CAP_TESTS.includes(e.Test) && ["pass","fail","skip"].includes(e.Action));
+  const terminal=events.filter(e=>expectedTests.includes(e.Test) && ["pass","fail","skip"].includes(e.Action));
   const passed=terminal.filter(e=>e.Action==="pass").map(e=>e.Test);
-  return {passedTests:passed,expectedTests:CAP_TESTS,
-    pass:exitCode===0 && exactSet(passed,CAP_TESTS) && terminal.length===CAP_TESTS.length &&
+  return {passedTests:passed,expectedTests,
+    pass:expectedTests.length>0 && exitCode===0 && exactSet(passed,expectedTests) && terminal.length===expectedTests.length &&
       !events.some(e=>e.Action==="fail") && events.some(e=>e.Action==="pass" && e.Test===undefined),
     proofLevel:"LOCAL_PRODUCTION_BUILDERS_CONTROLLED_RPC_INPUTS_NOT_LIVE_ADMISSION"};
 }
-async function localCapObservation(): Promise<Observation> {
-  const source="local production-builder cap witnesses";
+async function localCapObservation(names: string[] = CAP_TESTS, source="local production-builder cap witnesses"): Promise<Observation> {
   try {
     const child=spawn("go",["test","./internal/backyardrwa","-json","-race","-count=1","-timeout=60s",
-      "-run","^("+CAP_TESTS.join("|")+")$"],{
+      "-run","^("+names.join("|")+")$"],{
       cwd:resolve(ROOT,"go/backyard-rwa-worker"),stdio:["ignore","pipe","pipe"],
     });
     let output="";
@@ -74,9 +75,18 @@ async function localCapObservation(): Promise<Observation> {
     const deadline=setTimeout(()=>child.kill("SIGKILL"),90_000);
     try {
       const code=await new Promise<number|null>((resolve,reject)=>{child.once("error",reject);child.once("close",resolve);});
-      return {status:"OBSERVED",source,data:localCapTestProof(output,code)};
+      return {status:"OBSERVED",source,data:localCapTestProof(output,code,names)};
     } finally {clearTimeout(deadline);}
   } catch {return {status:"BLOCKED",source,reason:"LOCAL_CAP_WITNESSES_UNAVAILABLE"};}
+}
+async function localSendJournalObservation(): Promise<Observation> {
+  const source="disposable PostgreSQL final-send and expiry witnesses";
+  if (!process.env.PHASE3_TEST_DATABASE_URL) return {status:"BLOCKED",source,reason:"DISPOSABLE_TEST_DATABASE_NOT_CONFIGURED"};
+  // The selected test itself rejects any non-disposable connection. Production
+  // DB credentials are never used to initialize or mutate this test fixture.
+  const result=await localCapObservation(["TestPhase3DatabaseAdmissionAndSendFence"],source);
+  if (result.data) result.data.proofLevel="LOCAL_DATABASE_AND_CONTROLLED_RPC_UNSIGNED_FIXTURE_NO_SIGNER_OR_SEND";
+  return result;
 }
 async function rpc(method: string, params: unknown[] = []): Promise<any> {
   const endpoint = process.env.SOLANA_RPC_URL;
@@ -295,7 +305,7 @@ export async function verify() {
   const catalogLanes = catalog.lanes.map((l: Json) => [l.market,l.collateral,l.debt].join("/"));
   const active = manifest.runtimeActivation?.runtimeRoutes ?? [];
   const offline = process.argv.includes("--offline");
-  const [runtime,localCaps] = await Promise.all([runtimeObservation(),localCapObservation()]);
+  const [runtime,localCaps,localSendJournal] = await Promise.all([runtimeObservation(),localCapObservation(),localSendJournalObservation()]);
   const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
   const [chain,database,deployment,setupRent] = offline
     ? ["Solana RPC","Postgres","Render","setup rent feasibility"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
@@ -307,6 +317,7 @@ export async function verify() {
         JSON.stringify(d.capsMicros) === JSON.stringify([1_000_000,20_000_000,60_000_000])),
       observedCheck(database,"durable budget exists for this goal",d => d.route?.phase3?.goalId === GOAL),
       observedCheck(localCaps,"local production builders reject fresh over-cap costs before signing and reject stale valuation",d=>d.pass===true),
+      observedCheck(localSendJournal,"local journal reprices persisted input before broadcast intent and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
     ],[
       "Production-created admission from exact executable costs and complete exit graph; not direct test-only ReservePhase3 calls.",
       "Complete admission/send witnesses beyond local controlled-input build rejection: concurrency, restart, ambiguity, final-send freshness and successful reserved unwind.",
@@ -366,7 +377,7 @@ export async function verify() {
     // Existing policy allocations are a diagnostic sample, not a fabricated
     // pass/fail for the complete proposed setup graph. Retain prices, hashes,
     // rent and the explicit new-allocation proof limitation in the snapshot.
-    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps},
+    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal},
     conditions,
   };
 }

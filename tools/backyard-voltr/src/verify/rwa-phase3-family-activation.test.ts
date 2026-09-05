@@ -25,7 +25,9 @@ describe("Phase 3 measured verifier", () => {
   test("local cap evidence requires all named behavioral tests and a successful package result", () => {
     const names=["TestProductionBridgeRejectsFreshOverCapCostBeforeSignerOrDatabase",
       "TestProductionKaminoAndJupiterRejectFreshOverCapCostBeforeSigner",
-      "TestKnownBuildCostRejectsStaleObservationAndDoesNotGrantAdmission"];
+      "TestKnownBuildCostRejectsStaleObservationAndDoesNotGrantAdmission",
+      "TestPersistedSendInputRevaluesWithoutRebuildingWire",
+      "TestPersistedSendInputRejectsIdentityDriftBeforeRPC"];
     const events=[...names.map(Test=>({Action:"pass",Test})),{Action:"pass"}];
     const encode=(rows:unknown[])=>rows.map(row=>JSON.stringify(row)).join("\n");
     expect(localCapTestProof(encode(events),0).pass).toBe(true);

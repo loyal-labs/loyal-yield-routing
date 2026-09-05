@@ -66,6 +66,8 @@ func budgetBuildRPC(t *testing.T, fee uint64, finalSlot int64) *RPCClient {
 				t.Fatal("fee request must contain unsigned one-signer message")
 			}
 			result = map[string]any{"context": map[string]int{"slot": 42}, "value": fee}
+		case "getBlockHeight":
+			result = 10 // A signed HOLD at this height is not expired in the DB fixture.
 		case "getMultipleAccounts":
 			var addresses []string
 			if err := json.Unmarshal(body.Params[0], &addresses); err != nil {

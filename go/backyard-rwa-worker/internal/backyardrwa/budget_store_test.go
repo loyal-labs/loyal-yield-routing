@@ -21,6 +21,24 @@ func (d *Database) AuthorizePhase3Build(ctx context.Context, operationID string,
 	return d.authorizePhase3Build(ctx, operationID, request, effects, ValuedTransactionCost{TotalMicros: 1})
 }
 
+// Storage-only legacy cases below isolate locking from fresh RPC valuation.
+// Production has no unpriced MarkBroadcastIntent method.
+func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) error {
+	var encoded, wire []byte
+	if err := d.pool.QueryRow(ctx, `SELECT expected_effects->'phase3',signed_wire FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&encoded, &wire); err != nil {
+		return err
+	}
+	var auth phase3OperationAuthorization
+	if err := json.Unmarshal(encoded, &auth); err != nil {
+		return err
+	}
+	rpc, _ := NewRPCClient("https://rpc.invalid")
+	rpc.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(`{"jsonrpc":"2.0","id":1,"result":42}`), nil
+	})
+	return d.markBroadcastIntent(ctx, operationID, rpc, auth.IntentSHA256, sha256Bytes(wire), ValuedTransactionCost{TotalMicros: 1, ObservationSlot: 42, ValidThroughSlot: 74})
+}
+
 // This is a real PostgreSQL admission/locking/wire-binding slice, not a full
 // migration replay. Only a disposable Unix-socket database can enable it.
 // The final verifier must separately check production schema and deployment.
@@ -83,8 +101,16 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	if _, err = db.AcquireRouteLease(ctx, key, "writer-a", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	request := struct{ MaximumDebit uint64 }{900_000}
-	effects := []byte(`{"maximumDebit":900000}`)
+	request := bridgeTestRequest(ReportNAV, 0)
+	request.LastValidBlockHeight = 10
+	buildEffects, _, _, err := bridgeExpectedEffects(Decision{Action: ReportNAV}, 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects, err := jsonMarshalExpectedEffects(buildEffects)
+	if err != nil {
+		t.Fatal(err)
+	}
 	digest, err := Phase3IntentDigest(request, effects)
 	if err != nil {
 		t.Fatal(err)
@@ -136,11 +162,18 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed := request
-	changed.MaximumDebit++
+	changed.Report.NAVAfterRaw++
 	assertBudgetHold(t, db.AuthorizePhase3Build(ctx, op, changed, effects), "unreserved_build_intent")
 	// Inject a simulated persisted wire in the isolated fixture. The real send
 	// transition must reject it until the reservation is bound to those bytes.
-	wire := []byte("controlled unsigned fixture: never sent")
+	message, err := CompileBridgeMessage(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately unsigned signature bytes. The local fixture does not call
+	// PersistSigned or send; cryptographic signer proof is a separate gate.
+	wire := append(make([]byte, 65), message...)
+	wire[0] = 1
 	_, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',signed_wire=$2 WHERE operation_id=$1`, op, wire)
 	if err != nil {
 		t.Fatal(err)
@@ -168,8 +201,29 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	if _, err = restarted.AcquireRouteLease(ctx, key, "writer-b", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err = restarted.MarkBroadcastIntent(ctx, op); err != nil {
+	// Resume from persisted typed build inputs after restart. Expensive/stale
+	// quotes reject without committing broadcast intent or releasing budget.
+	signedOperation := PersistedOperation{Operation: Operation{ID: op, RouteKey: key, Decision: Decision{Action: ReportNAV}}, Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: 10}
+	assertBudgetHold(t, AdvanceNonterminal(ctx, restarted, budgetBuildRPC(t, 20_000_000, 42), signedOperation), "transaction_cap_exceeded")
+	assertBudgetHold(t, AdvanceNonterminal(ctx, restarted, budgetBuildRPC(t, 5_000, 75), signedOperation), "fee_message_or_slot_mismatch")
+	var rejectedStatus string
+	var rejectedIntent bool
+	if err = restarted.pool.QueryRow(ctx, `SELECT status,broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, op).Scan(&rejectedStatus, &rejectedIntent); err != nil {
 		t.Fatal(err)
+	}
+	if rejectedStatus != "signed" || rejectedIntent {
+		t.Fatal("rejected revaluation crossed the broadcast boundary")
+	}
+	if err = restarted.RevalueAndMarkBroadcastIntent(ctx, budgetBuildRPC(t, 5_000, 42), signedOperation); err != nil {
+		t.Fatal(err)
+	}
+	var sendAuthJSON []byte
+	if err = restarted.pool.QueryRow(ctx, `SELECT expected_effects->'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, op).Scan(&sendAuthJSON); err != nil {
+		t.Fatal(err)
+	}
+	var sendAuth phase3OperationAuthorization
+	if json.Unmarshal(sendAuthJSON, &sendAuth) != nil || sendAuth.SendKnownCost == nil || sendAuth.SendKnownCost.MessageSHA256 != sha256Bytes(message) || sendAuth.SendKnownCost.ValidThroughSlot != 74 {
+		t.Fatal("final-send cost was not durably bound to the original message")
 	}
 	var persisted []byte
 	if err = restarted.pool.QueryRow(ctx, `SELECT state->'phase3' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&persisted); err != nil {
@@ -321,5 +375,72 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	}
 	if json.Unmarshal(persisted, &settled) != nil || len(settled.Reservations) != 0 || settled.Families["OnRe"].SpentMicros != 900_000 || settled.Families["OnRe"].ExitMicros != 3_000_000 {
 		t.Fatalf("unsent HOLD did not restore prior exit reservation: %s", persisted)
+	}
+	// A cap-held signed wire must not hold the queue forever after finalized
+	// expiry. Malformed absence evidence retains it; explicit absence releases
+	// only that unspent reservation and restores the original exit reserve.
+	expiredID := op + "-signed-expiry"
+	if _, err = restarted.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,expected_effects,strategy_key) VALUES($1,$2,'decided','{}','OnRe/ONyc/USDC')`, expiredID, key); err != nil {
+		t.Fatal(err)
+	}
+	expiredReservation := holdReservation
+	expiredReservation.OperationID = expiredID
+	if err = restarted.ReservePhase3(ctx, expiredReservation); err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.AuthorizePhase3Build(ctx, expiredID, request, effects); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = restarted.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.bindPhase3WireTx(ctx, tx, expiredID, sha256Bytes(wire)); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = restarted.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',signed_wire=$2 WHERE operation_id=$1`, expiredID, wire); err != nil {
+		t.Fatal(err)
+	}
+	expiredOperation := signedOperation
+	expiredOperation.ID = expiredID
+	expiryRPC := budgetBuildRPC(t, 20_000_000, 42)
+	baseTransport := expiryRPC.client.Transport
+	absenceJSON := "[]"
+	expiryRPC.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(request.Body)
+		request.Body = io.NopCloser(strings.NewReader(string(body)))
+		if strings.Contains(string(body), `"method":"getBlockHeight"`) {
+			if !strings.Contains(string(body), `"commitment":"finalized"`) {
+				t.Fatal("expiry was not finalized")
+			}
+			return response(`{"jsonrpc":"2.0","id":1,"result":11}`), nil
+		}
+		if strings.Contains(string(body), `"method":"getSignatureStatuses"`) {
+			return response(`{"jsonrpc":"2.0","id":1,"result":{"value":` + absenceJSON + `}}`), nil
+		}
+		return baseTransport.RoundTrip(request)
+	})
+	if err = AdvanceNonterminal(ctx, restarted, expiryRPC, expiredOperation); err == nil {
+		t.Fatal("malformed absence released a signed HOLD")
+	}
+	if err = restarted.pool.QueryRow(ctx, `SELECT status,broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, expiredID).Scan(&rejectedStatus, &rejectedIntent); err != nil {
+		t.Fatal(err)
+	}
+	if rejectedStatus != "signed" || rejectedIntent {
+		t.Fatal("malformed absence changed the signed boundary")
+	}
+	absenceJSON = "[null]"
+	if err = AdvanceNonterminal(ctx, restarted, expiryRPC, expiredOperation); err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.pool.QueryRow(ctx, `SELECT state->'phase3' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if json.Unmarshal(persisted, &settled) != nil || len(settled.Reservations) != 0 || settled.Families["OnRe"].SpentMicros != 900_000 || settled.Families["OnRe"].ExitMicros != 3_000_000 {
+		t.Fatal("signed expiry did not preserve gross spend and restore exit headroom")
 	}
 }
