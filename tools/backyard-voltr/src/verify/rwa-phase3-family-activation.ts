@@ -159,6 +159,32 @@ async function localSequentialJupiterObservation(): Promise<Observation> {
     return {status:"OBSERVED",source,data:{pass,proofLevel:"TWO_SWAP_PROGRAM_EXECUTION_NOT_FULL_R04_LIFECYCLE",inputs,execution}};
   } catch {return {status:"BLOCKED",source,reason:"LOCAL_SEQUENTIAL_JUPITER_PROBE_UNAVAILABLE"};}
 }
+
+async function localJupiterRepairObservation(): Promise<Observation> {
+  const source="current TypeScript Jupiter constraint compiler and deployed Squads candidate PolicyCreate";
+  try {
+    const candidates=json("docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json");
+    const quotes=json("docs/evidence/backyard-rwa-go/phase3/jupiter-v2-public-quotes-2026-09-04.json");
+    const run=async(command:string,args:string[],cwd:string)=>{
+      const child=spawn(command,args,{cwd,stdio:["ignore","pipe","pipe"],env:process.env});
+      let output="";
+      for(const stream of [child.stdout,child.stderr]) {stream.setEncoding("utf8");stream.on("data",chunk=>{output+=chunk;});}
+      const deadline=setTimeout(()=>child.kill("SIGKILL"),90_000);
+      try{return {code:await new Promise<number|null>((resolve,reject)=>{child.once("error",reject);child.once("close",resolve);}),output};}
+      finally{clearTimeout(deadline);}
+    };
+    const tests=await run("bun",["test","src/policies/rwa-multiply-jupiter-constraint.test.ts","src/policies/rwa-multiply-custodies.test.ts"],resolve(ROOT,"tools/backyard-voltr"));
+    const compilerPass=tests.code===0&&/\b10 pass\b/.test(tests.output)&&/\b0 fail\b/.test(tests.output);
+    if(!compilerPass)return {status:"OBSERVED",source,data:{pass:false,reason:"JUPITER_V2_COMPILER_REGRESSION",compilerPass}};
+    if(!process.env.SQUADS_SMART_ACCOUNT_PROGRAM_SO)return {status:"OBSERVED",source,data:{pass:false,compilerPass,reason:"DEPLOYED_SQUADS_BINARY_NOT_CONFIGURED",candidates,quotes}};
+    const result=await run("cargo",["test","-p","squads-test-harness","--test","rwa_policy_creation_rent","jupiter_v2_repair_groups","--","--ignored","--nocapture"],ROOT);
+    const line=result.output.split("\n").find(l=>l.startsWith("PHASE3_JUPITER_V2_POLICY "));
+    const execution=line?JSON.parse(line.slice("PHASE3_JUPITER_V2_POLICY ".length)):null;
+    const pass=result.code===0&&execution?.broadcast===false&&execution?.installed===false&&execution?.rows?.length===2&&
+      execution.candidateSha256===sha(read("docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json"));
+    return {status:"OBSERVED",source,data:{pass,compilerPass,candidates,quotes,execution,proofLevel:"LOCAL_CANDIDATE_COMPILATION_AND_CREATION_NOT_SWAP_EXECUTION_INSTALLATION_OR_MAINNET_RENT"}};
+  } catch {return {status:"BLOCKED",source,reason:"JUPITER_V2_REPAIR_PROBE_UNAVAILABLE"};}
+}
 async function localBridgeAdmissionObservation(): Promise<Observation> {
   const result=await localCapObservation([
     "TestBridgeAdmissionMeasuresCompleteCashReturnWithoutSigner",
@@ -406,6 +432,9 @@ function sourceIdentity() {
     "docs/evidence/backyard-rwa-go/policy-compiled-v1.json","docs/evidence/backyard-rwa-go/policy-install-readback-v1.json",
     "docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json",
     "docs/evidence/backyard-rwa-go/phase3/jupiter-lookup-accounts-2026-09-04.json",
+    "docs/evidence/backyard-rwa-go/phase3/jupiter-v2-public-quotes-2026-09-04.json",
+    "docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json",
+    "crates/squads-test-harness/tests/rwa_policy_creation_rent.rs",
     "crates/squads-test-harness/tests/rwa_kamino_controlled_probe.rs","crates/squads-test-harness/tests/rwa_jupiter_controlled_probe.rs","crates/squads-test-harness/Cargo.toml","Cargo.lock",
   ]).split("\0").filter(Boolean))].sort();
   const files=paths.map(path=>({path,sha256:sha(read(path))}));
@@ -421,8 +450,8 @@ export async function verify() {
   const catalogLanes = catalog.lanes.map((l: Json) => [l.market,l.collateral,l.debt].join("/"));
   const active = manifest.runtimeActivation?.runtimeRoutes ?? [];
   const offline = process.argv.includes("--offline");
-  const [runtime,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter] = await Promise.all([
-    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localBridgeAdmissionObservation(),localWithdrawalAdmissionObservation(),localKaminoConstructionObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation(),localSequentialJupiterObservation()]);
+  const [runtime,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair] = await Promise.all([
+    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localBridgeAdmissionObservation(),localWithdrawalAdmissionObservation(),localKaminoConstructionObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation(),localSequentialJupiterObservation(),localJupiterRepairObservation()]);
   const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
   const [chain,database,deployment,setupRent] = offline
     ? ["Solana RPC","Postgres","Render","setup rent feasibility"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
@@ -448,6 +477,7 @@ export async function verify() {
       observedCheck(runtime,"every catalogued lane resolves through production",d => d.lanes.every((row: Json) => row.resolved === true)),
     ],["Durable three-family queue with reviewed identity bindings and in-family-only flat substitution behavior."]),
     measuredCondition("R03","Shared debt/token/valuation/exit runtime and existing policy authority",[
+      observedCheck(localJupiterRepair,"V2 candidate compiler rejects economic/custody mutations, preserves all 52 legacy constraints and sibling edges, and full replacement groups create under the deployed Squads binary",d=>d.pass===true),
       observedCheck(localKaminoConstruction,"AUTO/Ethena four-leg unsigned construction matches retained SDK vectors and rejects account/policy substitutions",d=>d.pass===true),
       observedCheck(localDebtDecisions,"non-USDC planner separates repayment and bridge custody, drains residues, and receives decimal-aware USDC entry capacity",d=>d.pass===true),
       observedCheck(localJupiter,"AUTO/Ethena Jupiter layouts match installed edge constraints and controlled worker dispatch preserves conversion identities",d=>d.pass===true),
@@ -503,7 +533,7 @@ export async function verify() {
     // Existing policy allocations are a diagnostic sample, not a fabricated
     // pass/fail for the complete proposed setup graph. Retain prices, hashes,
     // rent and the explicit new-allocation proof limitation in the snapshot.
-    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter},
+    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair},
     conditions,
   };
 }

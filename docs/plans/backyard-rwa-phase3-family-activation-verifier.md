@@ -562,3 +562,25 @@ constraints; prove the sequential bridge/swap/lending/return mechanics; then
 finish entry/debt-bearing admission and remaining lane/queue implementation.
 Do not poll indefinitely for a favorable quote, treat catalog coverage as
 executable coverage, or raise setup/transaction caps without authorization.
+
+V2 repair follow-up: fresh public quotes at slot 444445591 have 40- and
+42-byte instructions but identical economic offsets (input 9, output 17,
+slippage 25, two zero u16 fee fields at 27 and 29). The shared TypeScript
+header/constraint compiler now handles that fixed prefix instead of reading
+legacy tail offsets; tests preserve all 52 existing legacy constraints and
+reject amount, fee-byte and custody mutations. The API's V2 request and
+positive-slippage feature are documented in the
+[Jupiter guide](https://developers.jup.ag/docs/guides/how-to-build-a-custom-swap-with-metis)
+and [official release notes](https://github.com/jup-ag/jupiter-swap-api/releases).
+
+The two candidate physical replacements retain their unaffected sibling edges.
+Real local PolicyCreate execution under the captured deployed Squads binary
+measured packets of 1,072 / 1,111 bytes and allocations of 1,383 / 1,458 bytes.
+These are ephemeral-Settings local creation measurements, not mainnet rent or
+installation proof. Candidate constraints and public quote bytes are retained
+in `phase3/jupiter-v2-repair-candidates-2026-09-04.json` and
+`phase3/jupiter-v2-public-quotes-2026-09-04.json` under the evidence directory.
+The sole verifier reruns compiler/negative and real PolicyCreate checks when
+`SQUADS_SMART_ACCOUNT_PROGRAM_SO` names the reviewed binary. The Go manifest
+still selects installed legacy policies; V2 swap execution, current setup cost,
+forward installation/readback, and runtime activation remain unproven.

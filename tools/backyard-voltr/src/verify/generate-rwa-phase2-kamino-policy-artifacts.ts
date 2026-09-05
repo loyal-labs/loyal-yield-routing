@@ -17,6 +17,7 @@ import { generated as squadsGenerated } from "@loyal-labs/loyal-smart-accounts-c
 import { Connection, PublicKey, type AccountInfo } from "@solana/web3.js";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import { exactJupiterConstraint } from "../policies/rwa-multiply-jupiter-constraint.js";
 import {
   buildPhaseTwoKaminoLaneOperations,
   resolutionLanes,
@@ -128,77 +129,6 @@ function swapSlice(from: string, to: string): string {
   throw new Error(`unsupported exact Jupiter edge ${from}->${to}`);
 }
 
-function exactJupiterConstraint(row: Json): Readonly<{ constraint: Json; edge: Json }> {
-  const source = row.source as Json;
-  const destination = row.destination as Json;
-  const header = row.header as Json;
-  const indexes = header.indexes as Json;
-  const instruction = row.instruction as Json;
-  const accounts = instruction.accounts;
-  const data = Buffer.from(String(instruction.dataBase64), "base64");
-  invariant(row.pass === true && typeof row.key === "string", "Jupiter edge is not an accepted header");
-  invariant(typeof source?.symbol === "string" && typeof source.mint === "string"
-    && typeof source.tokenProgram === "string" && typeof source.ata === "string"
-    && typeof destination?.symbol === "string" && typeof destination.mint === "string"
-    && typeof destination.tokenProgram === "string" && typeof destination.ata === "string",
-  `${String(row.key)} Jupiter asset boundary is incomplete`);
-  invariant(typeof instruction.programId === "string" && instruction.programId === RWA_MULTIPLY_ROUTE.programs.jupiter
-    && typeof instruction.dataSha256 === "string" && sha256(data) === instruction.dataSha256
-    && Array.isArray(accounts) && data.length >= 28,
-  `${String(row.key)} Jupiter instruction is incomplete`);
-  const index = (name: string) => {
-    const value = indexes?.[name];
-    invariant(typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
-      `${String(row.key)} ${name} index is invalid`);
-    return value;
-  };
-  const positions = [
-    [index("authority"), RWA_MULTIPLY_ROUTE.squads.vault, true, false],
-    [index("source"), source.ata, false, true],
-    [index("destination"), destination.ata, false, true],
-    [index("sourceMint"), source.mint, false, false],
-    [index("destinationMint"), destination.mint, false, false],
-    [index("sourceProgram"), source.tokenProgram, false, false],
-    [index("destinationProgram"), destination.tokenProgram, false, false],
-  ] as const;
-  const constraints = new Map<number, string>();
-  for (const [accountIndex, pubkey, signer, writable] of positions) {
-    const account = accounts[accountIndex] as Json | undefined;
-    invariant(account?.pubkey === pubkey && account.isSigner === signer && account.isWritable === writable,
-      `${String(row.key)} Jupiter account boundary ${accountIndex} drifted`);
-    const previous = constraints.get(accountIndex);
-    invariant(previous === undefined || previous === pubkey,
-      `${String(row.key)} Jupiter account index is assigned conflicting exact keys`);
-    constraints.set(accountIndex, pubkey);
-  }
-  const slippage = index("slippage");
-  const platformFee = index("platformFee");
-  invariant(data.readUInt16LE(slippage) <= RWA_MULTIPLY_ROUTE.assets.maxSlippageBps && data[platformFee] === 0,
-    `${String(row.key)} Jupiter data boundary drifted`);
-  return {
-    constraint: {
-      programId: instruction.programId,
-      accountPubkeys: [...constraints.entries()].sort(([left], [right]) => left - right)
-        .map(([accountIndex, pubkey]) => ({ index: accountIndex, pubkeys: [pubkey] })),
-      data: [
-        { kind: "slice-equals", offset: 0, valueHex: data.subarray(0, 8).toString("hex") },
-        { kind: "u64-less-than-or-equal", offset: data.length - 19, value: MAX_OPERATION_RAW },
-        { kind: "u16-less-than-or-equal", offset: slippage, value: RWA_MULTIPLY_ROUTE.assets.maxSlippageBps },
-        { kind: "u8-equals", offset: platformFee, value: 0 },
-      ],
-    },
-    edge: {
-      from: source.symbol, to: destination.symbol, constraintIndex: 0,
-      authorityIndex: index("authority"), sourceIndex: index("source"), destinationIndex: index("destination"),
-      sourceMintIndex: index("sourceMint"), destinationMintIndex: index("destinationMint"),
-      sourceTokenProgramIndex: index("sourceProgram"), destinationTokenProgramIndex: index("destinationProgram"),
-      authority: RWA_MULTIPLY_ROUTE.squads.vault,
-      sourceCustody: source.ata, destinationCustody: destination.ata,
-      sourceMint: source.mint, destinationMint: destination.mint,
-      sourceTokenProgram: source.tokenProgram, destinationTokenProgram: destination.tokenProgram,
-    },
-  };
-}
 
 async function main() {
   const rpcUrl = process.env.SOLANA_RPC_URL?.trim();
