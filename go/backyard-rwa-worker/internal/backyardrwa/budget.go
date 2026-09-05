@@ -55,6 +55,22 @@ func phase3Family(family string) bool {
 	return family == "OnRe" || family == "AUTO" || family == "Ethena"
 }
 
+// This is the finite canary budget scope, not a runtime route registration.
+// Sibling substitutions share their family account; retained Prime/Maple
+// evidence does not authorize an extra funded historical lifecycle.
+func phase3BudgetFamilyForLane(lane string) string {
+	switch lane {
+	case "OnRe/ONyc/USDC", "OnRe/ONyc/USDG", "OnRe/ONyc/USDS":
+		return "OnRe"
+	case "AUTO/AUTO/PYUSD":
+		return "AUTO"
+	case "Ethena/USDe/PYUSD":
+		return "Ethena"
+	default:
+		return ""
+	}
+}
+
 func budgetSum(values ...int64) (int64, error) {
 	var total int64
 	for _, value := range values {

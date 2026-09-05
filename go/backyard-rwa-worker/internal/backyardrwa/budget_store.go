@@ -121,9 +121,10 @@ func (d *Database) readPhase3BudgetTx(ctx context.Context, tx pgx.Tx, operationI
 		return Phase3Budget{}, phase3OperationAuthorization{}, err
 	}
 	var budgetBytes, authBytes []byte
-	err := tx.QueryRow(ctx, `SELECT COALESCE(route.state->'phase3','null'::jsonb), COALESCE(operation.expected_effects->'phase3','null'::jsonb)
+	var lane string
+	err := tx.QueryRow(ctx, `SELECT COALESCE(route.state->'phase3','null'::jsonb), COALESCE(operation.expected_effects->'phase3','null'::jsonb),COALESCE(operation.strategy_key,'')
 		FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key=operation.route_key
-		WHERE operation.operation_id=$1`, operationID).Scan(&budgetBytes, &authBytes)
+		WHERE operation.operation_id=$1`, operationID).Scan(&budgetBytes, &authBytes, &lane)
 	if err != nil {
 		return Phase3Budget{}, phase3OperationAuthorization{}, err
 	}
@@ -134,6 +135,10 @@ func (d *Database) readPhase3BudgetTx(ctx context.Context, tx pgx.Tx, operationI
 	}
 	if err := budget.validate(); err != nil {
 		return budget, auth, err
+	}
+	if reservation, exists := budget.Reservations[operationID]; exists &&
+		phase3BudgetFamilyForLane(lane) != reservation.Family {
+		return budget, auth, budgetHold("reservation_family_does_not_match_journal_lane")
 	}
 	return budget, auth, nil
 }
@@ -185,12 +190,15 @@ func (d *Database) ReservePhase3(ctx context.Context, r BudgetReservation) error
 	if err != nil {
 		return err
 	}
-	var status string
-	if err = tx.QueryRow(ctx, `SELECT status FROM loyal_yield.multiply_operations WHERE operation_id=$1`, r.OperationID).Scan(&status); err != nil {
+	var status, lane string
+	if err = tx.QueryRow(ctx, `SELECT status,COALESCE(strategy_key,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, r.OperationID).Scan(&status, &lane); err != nil {
 		return err
 	}
 	if status != string(Decided) {
 		return budgetHold("admission_after_construction")
+	}
+	if family := phase3BudgetFamilyForLane(lane); family == "" || family != r.Family {
+		return budgetHold("reservation_family_does_not_match_journal_lane")
 	}
 	if auth.GoalID != "" && (auth.GoalID != Phase3GoalID || auth.IntentSHA256 != r.IntentSHA256) {
 		return budgetHold("reservation_identity_mismatch")

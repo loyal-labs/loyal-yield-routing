@@ -49,6 +49,7 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	 status text NOT NULL,expected_effects jsonb NOT NULL,signed_wire bytea,broadcast_intent_at timestamptz,
 	 updated_at timestamptz NOT NULL DEFAULT now());
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS recovery_reason text;
+	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS strategy_key text;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS transaction_signature text,
 	 ADD COLUMN IF NOT EXISTS confirmed_slot bigint,ADD COLUMN IF NOT EXISTS confirmation_status text,
 	 ADD COLUMN IF NOT EXISTS reconciliation_sha256 text,ADD COLUMN IF NOT EXISTS reconciled_effects jsonb;
@@ -87,6 +88,15 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	r.Recovery = true
 	r.OperationID = op
 	r.IntentSHA256 = digest
+	// A syntactically valid family cannot pay for an unrelated journal lane.
+	assertBudgetHold(t, db.ReservePhase3(ctx, r), "reservation_family_does_not_match_journal_lane")
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET strategy_key='AUTO/AUTO/PYUSD' WHERE operation_id=$1`, op); err != nil {
+		t.Fatal(err)
+	}
+	assertBudgetHold(t, db.ReservePhase3(ctx, r), "reservation_family_does_not_match_journal_lane")
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET strategy_key='OnRe/ONyc/USDC' WHERE operation_id=$1`, op); err != nil {
+		t.Fatal(err)
+	}
 	over := r
 	over.UpperMicros = 1_000_001
 	assertBudgetHold(t, db.ReservePhase3(ctx, over), "transaction_cap_exceeded")
@@ -106,6 +116,15 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 		}
 	}
 	if err = db.AuthorizePhase3Build(ctx, op, request, effects); err != nil {
+		t.Fatal(err)
+	}
+	// The same identity fence applies again after admission, before signing
+	// and sending; a changed journal lane cannot inherit the old reservation.
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET strategy_key='AUTO/AUTO/PYUSD' WHERE operation_id=$1`, op); err != nil {
+		t.Fatal(err)
+	}
+	assertBudgetHold(t, db.AuthorizePhase3Build(ctx, op, request, effects), "reservation_family_does_not_match_journal_lane")
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET strategy_key='OnRe/ONyc/USDC' WHERE operation_id=$1`, op); err != nil {
 		t.Fatal(err)
 	}
 	changed := request
@@ -203,7 +222,7 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = restarted.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,expected_effects) VALUES($1,$2,'decided',$3::jsonb)`, settleID, key, string(expectedJSON))
+	_, err = restarted.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,expected_effects,strategy_key) VALUES($1,$2,'decided',$3::jsonb,'OnRe/ONyc/USDC')`, settleID, key, string(expectedJSON))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +279,7 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 		t.Fatalf("finalized settlement is not atomic: %+v", settled)
 	}
 	holdID := op + "-hold"
-	if _, err = restarted.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,expected_effects) VALUES($1,$2,'decided','{}')`, holdID, key); err != nil {
+	if _, err = restarted.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,expected_effects,strategy_key) VALUES($1,$2,'decided','{}','OnRe/ONyc/USDC')`, holdID, key); err != nil {
 		t.Fatal(err)
 	}
 	holdReservation := r
