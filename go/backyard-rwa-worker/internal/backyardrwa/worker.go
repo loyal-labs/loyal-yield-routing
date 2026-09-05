@@ -94,9 +94,25 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			return database.admitPhase3Bridge(ctx, rpc, operationID, observation, decision, evidence)
 		},
 		admitKamino: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence KaminoExecutionEvidence) error {
+			_, leg, err := kaminoPrimeUSDCInstruction(evidence.Request)
+			if err != nil {
+				return err
+			}
+			if leg == kaminoLegDeposit && evidence.Request.Action == OpenRouteStep {
+				return database.admitPhase3Deposit(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+			}
+			if leg == kaminoLegBorrow && evidence.Request.Action == OpenRouteStep {
+				return database.admitPhase3Borrow(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+			}
 			return database.admitPhase3Withdrawal(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
 		},
 		admitJupiter: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
+			if evidence.Request.Action == SwapDebtToCollateralStep {
+				return database.admitPhase3LeverageSwap(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+			}
+			if evidence.Request.Action == SwapStableToCollateralStep {
+				return database.admitPhase3EntrySwap(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+			}
 			if evidence.Request.FullPayoffFunding {
 				return database.admitPhase3Funding(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
 			}

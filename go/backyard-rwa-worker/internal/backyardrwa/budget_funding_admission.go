@@ -12,8 +12,12 @@ import (
 // Check the enforced quote minimum against debt through swap -> NAV -> payoff,
 // not merely against principal or optimistic quote output. Called again when
 // pricing the persisted actual swap at final send. No future template is signed.
+func isPayoffFundingAction(action Action) bool {
+	return action == SwapCollateralToDebtStep || action == SwapUSDCToDebtStep
+}
+
 func validatePayoffFunding(ctx context.Context, rpc *RPCClient, request JupiterSwapRequest, effects ExpectedEffects, slot, steps int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	if !request.FullPayoffFunding || request.Action != SwapCollateralToDebtStep {
+	if !request.FullPayoffFunding || !isPayoffFundingAction(request.Action) {
 		return KaminoPayoffBound{}, nil, budgetHold("invalid_full_payoff_funding_intent")
 	}
 	if _, err := MeasureExecutableDebit(request, effects); err != nil {
@@ -23,7 +27,11 @@ func validatePayoffFunding(ctx context.Context, rpc *RPCClient, request JupiterS
 	if err != nil {
 		return KaminoPayoffBound{}, nil, err
 	}
-	bound, accounts, err := observeKaminoPayoffWindow(ctx, rpc, route, slot, steps)
+	var additional []string
+	if request.Action == SwapUSDCToDebtStep {
+		additional = []string{bridgeSquadsATA}
+	}
+	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, slot, steps, additional...)
 	if err != nil {
 		return bound, nil, err
 	}
@@ -31,7 +39,7 @@ func validatePayoffFunding(ctx context.Context, rpc *RPCClient, request JupiterS
 }
 
 func validatePayoffFundingAccounts(request JupiterSwapRequest, effects ExpectedEffects, bound KaminoPayoffBound, accounts []ConfirmedAccount, route RuntimeRoute) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	if !request.FullPayoffFunding || request.Action != SwapCollateralToDebtStep || request.RouteLane != route.Lane {
+	if !request.FullPayoffFunding || !isPayoffFundingAction(request.Action) || request.RouteLane != route.Lane {
 		return bound, nil, budgetHold("invalid_full_payoff_funding_intent")
 	}
 	if _, err := MeasureExecutableDebit(request, effects); err != nil {
@@ -40,7 +48,11 @@ func validatePayoffFundingAccounts(request JupiterSwapRequest, effects ExpectedE
 	if len(effects.Accounts) != 2 {
 		return bound, nil, budgetHold("funding_custody_mismatch")
 	}
-	for i, identity := range []struct{ address, mint string }{{route.CollateralCustody, route.Kamino.CollateralMint}, {route.DebtCustody, route.Kamino.DebtMint}} {
+	sourceMint, _, sourceATA, _, err := jupiterEdgeForRoute(request.Action, request.RouteLane)
+	if err != nil {
+		return bound, nil, err
+	}
+	for i, identity := range []struct{ address, mint string }{{sourceATA, sourceMint}, {route.DebtCustody, route.Kamino.DebtMint}} {
 		e := effects.Accounts[i]
 		a := accountAt(accounts, identity.address)
 		mint, _ := decodeBase58PublicKey(identity.mint)
@@ -86,7 +98,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	if !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission ||
 		!s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 ||
 		s.RouteLane != s.StrategyKey || s.RouteLane != decision.StrategyKey || !catalogJupiterRoute(s.RouteLane) ||
-		s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.DebtIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {
+		s.CollateralIdleRaw < 0 || s.CollateralIdleValueRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.DebtIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {
 		return phase3BridgeAdmission{}, budgetHold("complete_funding_return_unavailable")
 	}
 	var funding *JupiterExecutionEvidence
@@ -94,10 +106,11 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	var releaseBound KaminoReleaseBound
 	var releaseAccounts []ConfirmedAccount
 	var currentSwap bool
+	var futureRelease bool
 	steps := int64(2) // current NAV -> payoff
 	switch r := request.(type) {
 	case KaminoPrimeUSDCRequest:
-		if !r.RepaymentRelease || r.Action != DeleverRouteStep || decision.Action != r.Action || decision.Reason != "withdrawal_release_repayment_collateral" || r.RouteLane != s.RouteLane || s.CollateralIdleRaw != 0 || r.AmountRaw >= uint64(s.PositionCollateralRaw) || r.ReleaseDebtIdleRaw != uint64(s.DebtIdleRaw) {
+		if !r.RepaymentRelease || r.Action != DeleverRouteStep || decision.Action != r.Action || decision.Reason != "withdrawal_release_repayment_collateral" || r.RouteLane != s.RouteLane || r.AmountRaw >= uint64(s.PositionCollateralRaw) || r.ReleaseDebtIdleRaw != uint64(s.DebtIdleRaw) {
 			return phase3BridgeAdmission{}, budgetHold("release_return_intent_mismatch")
 		}
 		var err error
@@ -111,23 +124,17 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			return phase3BridgeAdmission{}, budgetHold("release_position_snapshot_changed")
 		}
 		debit, err := MeasureExecutableDebit(r, effects)
-		if err != nil || debit.Raw > math.MaxInt64 || effects.Accounts[1].BeforeRaw != 0 {
+		if err != nil || debit.Raw > uint64(math.MaxInt64-s.CollateralIdleRaw) || effects.Accounts[1].BeforeRaw != uint64(s.CollateralIdleRaw) {
 			return phase3BridgeAdmission{}, budgetHold("release_custody_snapshot_changed")
 		}
 		release = &KaminoExecutionEvidence{r, effects}
-		s.PositionCollateralRaw -= int64(r.AmountRaw)
-		s.CollateralIdleRaw, s.PrimeIdleRaw = int64(debit.Raw), int64(debit.Raw)
-		// This is cost-only position metadata, not a reportable NAV.
-		remainingValue := new(big.Int).Mul(big.NewInt(s.PositionCollateralValueRaw), big.NewInt(s.PositionCollateralRaw))
-		s.PositionCollateralValueRaw = remainingValue.Quo(remainingValue, big.NewInt(original.PositionCollateralRaw)).Int64()
-		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, Decision{Action: SwapCollateralToDebtStep, AmountRaw: s.CollateralIdleRaw, StrategyKey: s.RouteLane}, uint64(s.CollateralIdleRaw), uint64(s.DebtIdleRaw), releaseBound.Payoff.ObservedSlot)
-		if err != nil {
-			return phase3BridgeAdmission{}, err
-		}
-		quote.Request.FullPayoffFunding = true
-		funding, steps = &quote, 5
+		steps = 5
 	case JupiterSwapRequest:
-		if !r.FullPayoffFunding || r.Action != SwapCollateralToDebtStep || decision.Action != r.Action || r.RouteLane != s.RouteLane || decision.AmountRaw != s.CollateralIdleRaw || r.AmountRaw != uint64(s.CollateralIdleRaw) {
+		amount := s.CollateralIdleRaw
+		if r.Action == SwapUSDCToDebtStep {
+			amount = s.SquadsIdleRaw
+		}
+		if !r.FullPayoffFunding || !isPayoffFundingAction(r.Action) || decision.Action != r.Action || r.RouteLane != s.RouteLane || amount <= 0 || decision.AmountRaw != amount || r.AmountRaw != uint64(amount) {
 			return phase3BridgeAdmission{}, budgetHold("funding_return_intent_mismatch")
 		}
 		funding, currentSwap, steps = &JupiterExecutionEvidence{r, effects}, true, 3
@@ -135,8 +142,39 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 		if r.Action != ReportNAV || decision.Action != ReportNAV || r.AmountRaw != 0 || decision.AmountRaw != 0 || r.Report.ObservedSlot != uint64(s.Slot) || r.Report.Sequence != uint64(s.Slot) {
 			return phase3BridgeAdmission{}, budgetHold("funding_nav_intent_mismatch")
 		}
-		if s.CollateralIdleRaw > 0 {
-			quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, Decision{Action: SwapCollateralToDebtStep, AmountRaw: s.CollateralIdleRaw, StrategyKey: s.RouteLane}, uint64(s.CollateralIdleRaw), uint64(s.DebtIdleRaw), s.Slot)
+		route, _ := runtimeRoute(s.RouteLane)
+		future, rows, err := observeKaminoPayoffWindow(ctx, rpc, route, s.Slot, 6)
+		if err != nil {
+			return phase3BridgeAdmission{}, err
+		}
+		action, amount := payoffFundingSource(s, future.UpperDebtRaw)
+		if uint64(s.DebtIdleRaw) < future.UpperDebtRaw && amount == 0 {
+			// NAV -> release -> NAV -> funding -> NAV -> payoff. This is a
+			// future cost template; the release will be rebuilt and admitted
+			// from actual custody after NAV, never signed from this projection.
+			releaseBound, err = decodeKaminoRepaymentReleaseWindow(rows, route, future.ObservedSlot, 6)
+			if err != nil {
+				return phase3BridgeAdmission{}, err
+			}
+			blockhash, err := rpc.LatestBlockhash(ctx)
+			if err != nil {
+				return phase3BridgeAdmission{}, err
+			}
+			req, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, releaseBound.ReceiptRaw, blockhash, s.RouteLane)
+			if err != nil {
+				return phase3BridgeAdmission{}, err
+			}
+			req.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+			req.RepaymentRelease, req.ReleaseDebtIdleRaw = true, uint64(s.DebtIdleRaw)
+			source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
+			e, err := exactKaminoTokenEffects(rows, source, destination, releaseBound.LiquidityRaw)
+			if err != nil {
+				return phase3BridgeAdmission{}, err
+			}
+			release, releaseAccounts, futureRelease, steps = &KaminoExecutionEvidence{req, e}, rows, true, 6
+		}
+		if amount > 0 {
+			quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, Decision{Action: action, AmountRaw: amount, StrategyKey: s.RouteLane}, uint64(amount), uint64(s.DebtIdleRaw), s.Slot)
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}
@@ -145,6 +183,24 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 		}
 	default:
 		return phase3BridgeAdmission{}, budgetHold("funding_return_intent_mismatch")
+	}
+	if release != nil {
+		debit, err := MeasureExecutableDebit(release.Request, release.ExpectedEffects)
+		if err != nil || debit.Raw > uint64(math.MaxInt64-s.CollateralIdleRaw) || release.ExpectedEffects.Accounts[1].BeforeRaw != uint64(s.CollateralIdleRaw) || release.Request.AmountRaw >= uint64(s.PositionCollateralRaw) {
+			return phase3BridgeAdmission{}, budgetHold("release_custody_snapshot_changed")
+		}
+		s.PositionCollateralRaw -= int64(release.Request.AmountRaw)
+		s.CollateralIdleRaw += int64(debit.Raw)
+		s.PrimeIdleRaw = s.CollateralIdleRaw
+		// Cost-only metadata, not a reportable NAV.
+		remainingValue := new(big.Int).Mul(big.NewInt(s.PositionCollateralValueRaw), big.NewInt(s.PositionCollateralRaw))
+		s.PositionCollateralValueRaw = remainingValue.Quo(remainingValue, big.NewInt(original.PositionCollateralRaw)).Int64()
+		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, Decision{Action: SwapCollateralToDebtStep, AmountRaw: s.CollateralIdleRaw, StrategyKey: s.RouteLane}, uint64(s.CollateralIdleRaw), uint64(s.DebtIdleRaw), releaseBound.Payoff.ObservedSlot)
+		if err != nil {
+			return phase3BridgeAdmission{}, err
+		}
+		quote.Request.FullPayoffFunding = true
+		funding = &quote
 	}
 	route, _ := runtimeRoute(s.RouteLane)
 	var bound KaminoPayoffBound
@@ -227,7 +283,14 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	post := observation
 	post.Snapshot = s
 	post.Snapshot.PositionDebtRaw, post.Snapshot.PositionDebtValueRaw, post.Snapshot.PayoffDebtRaw = 0, 0, 0
-	post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw = 0, 0
+	if funding != nil && funding.Request.Action == SwapCollateralToDebtStep {
+		post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw, post.Snapshot.CollateralIdleValueRaw = 0, 0, 0
+	}
+	if funding != nil && funding.Request.Action == SwapUSDCToDebtStep {
+		// Current source custody was checked above. Only the cost-only tail sees
+		// USDC consumed by funding; the original snapshot/current wire stay intact.
+		post.Snapshot.SquadsIdleRaw = 0
+	}
 	post.Snapshot.DebtIdleRaw = int64(upperCash - bound.ObservedDebtRaw)
 	plan, err := pricePhase3PositionReturnAfterFunding(ctx, rpc, client, manifest, post, decision, request, effects, true, funding, release)
 	if err != nil {
@@ -247,10 +310,27 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	}
 	prefix := []phase3BridgeExitCost{}
 	if release != nil {
+		if futureRelease {
+			cost, err := observePhase3KnownBuildCost(ctx, rpc, release.Request, release.ExpectedEffects)
+			if err != nil {
+				return plan, err
+			}
+			encoded, err := jsonMarshalExpectedEffects(release.ExpectedEffects)
+			if err != nil {
+				return plan, err
+			}
+			input, err := encodePhase3BuildInput(release.Request, encoded)
+			if err != nil {
+				return plan, err
+			}
+			plan.FundingRelease = input
+			prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: cost})
+			plan.ValidThroughSlot = min(plan.ValidThroughSlot, cost.ValidThroughSlot)
+		}
 		prefix = append(prefix, phase3BridgeExitCost{Action: ReportNAV, Cost: plan.Exit[0].Cost})
 	}
 	if funding != nil {
-		policySlot, err := observeWithdrawalExitPolicies(ctx, rpc, manifest, s.RouteLane, s.Slot, []Action{SwapCollateralToDebtStep})
+		policySlot, err := observeWithdrawalExitPolicies(ctx, rpc, manifest, s.RouteLane, s.Slot, []Action{funding.Request.Action})
 		if err != nil {
 			return plan, err
 		}
@@ -275,7 +355,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 		}
 		plan.FundingSwap = &phase3QuotedExit{Input: input, QuotedOutputRaw: funding.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperCash - uint64(s.DebtIdleRaw), ProofLevel: "COST_ONLY_FUNDING_AND_RESIDUE_ESTIMATE_NOT_EXECUTION"}
 		if !currentSwap {
-			prefix = append(prefix, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: funding.Request.AmountRaw, Cost: cost})
+			prefix = append(prefix, phase3BridgeExitCost{Action: funding.Request.Action, Amount: funding.Request.AmountRaw, Cost: cost})
 		}
 		prefix = append(prefix, phase3BridgeExitCost{Action: ReportNAV, Cost: plan.Exit[0].Cost})
 		plan.ValidThroughSlot = min(plan.ValidThroughSlot, cost.ValidThroughSlot)

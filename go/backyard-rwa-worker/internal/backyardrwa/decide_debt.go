@@ -1,6 +1,38 @@
 package backyardrwa
 
-import "fmt"
+import (
+	"fmt"
+	"math/big"
+)
+
+// Select without assuming equal token decimals or a stablecoin peg. Values
+// already use the NAV's floor(asset)/ceil(liability) rounding; apply the existing
+// two-sided pricing margin too. This is planning, never quote authorization.
+func payoffFundingSource(s Snapshot, upperDebt uint64) (Action, int64) {
+	if s.DebtIdleRaw < 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 || uint64(s.DebtIdleRaw) >= upperDebt {
+		return "", 0
+	}
+	need := new(big.Int).SetUint64(upperDebt - uint64(s.DebtIdleRaw))
+	need.Mul(need, big.NewInt(s.PositionDebtValueRaw))
+	need.Mul(need, big.NewInt(int64(10_000+budgetPriceMarginBPS)))
+	for _, source := range []struct {
+		action        Action
+		amount, value int64
+	}{
+		{SwapCollateralToDebtStep, s.CollateralIdleRaw, s.CollateralIdleValueRaw},
+		{SwapUSDCToDebtStep, s.SquadsIdleRaw, s.SquadsIdleRaw},
+	} {
+		if source.amount <= 0 || source.value <= 0 {
+			continue
+		}
+		available := new(big.Int).Mul(big.NewInt(source.value), big.NewInt(s.PositionDebtRaw))
+		available.Mul(available, big.NewInt(int64(10_000-budgetPriceMarginBPS)))
+		if available.Cmp(need) >= 0 {
+			return source.action, source.amount
+		}
+	}
+	return "", 0
+}
 
 // The same single-loop lifecycle as the retained routes, with debt custody
 // explicitly distinct from bridge USDC. No raw-unit cap or stablecoin peg is
@@ -20,7 +52,7 @@ func decideNonUSDC(s Snapshot) Decision {
 	if s.ManualReason != "" || s.RouteKind != RouteKind || !s.Fresh || s.ObservationID == "" || s.Slot <= 0 {
 		return d(HoldManualRecovery, "invalid_or_incoherent_snapshot", 0)
 	}
-	for _, value := range []int64{s.WithdrawalDemandRaw, s.SquadsIdleRaw, s.CollateralIdleRaw, s.DebtIdleRaw, s.PayoffDebtRaw,
+	for _, value := range []int64{s.WithdrawalDemandRaw, s.SquadsIdleRaw, s.CollateralIdleRaw, s.CollateralIdleValueRaw, s.MinimumCollateralDepositRaw, s.DebtIdleRaw, s.PayoffDebtRaw,
 		s.VoltrStrategyIdleRaw, s.VoltrIdleRaw, s.PositionCollateralRaw, s.PositionDebtRaw,
 		s.PositionCollateralValueRaw, s.PositionDebtValueRaw, s.StrategyNAVRaw, s.PriorReportedNAVRaw,
 		s.LTVBPS, s.LiquidationThresholdBPS, s.LastReportAgeSeconds, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw} {
@@ -66,11 +98,12 @@ func decideNonUSDC(s Snapshot) Decision {
 			if s.DebtIdleRaw >= max(s.PositionDebtRaw, s.PayoffDebtRaw) {
 				return d(DeleverRouteStep, "withdrawal_repay_debt", s.PositionDebtRaw)
 			}
-			if s.CollateralIdleRaw > 0 {
-				return d(SwapCollateralToDebtStep, "withdrawal_swap_repayment_buffer", s.CollateralIdleRaw)
+			action, amount := payoffFundingSource(s, uint64(max(s.PositionDebtRaw, s.PayoffDebtRaw)))
+			if action == SwapCollateralToDebtStep {
+				return d(action, "withdrawal_swap_repayment_buffer", amount)
 			}
-			if s.SquadsIdleRaw > 0 {
-				return d(SwapUSDCToDebtStep, "withdrawal_usdc_repayment_buffer", s.SquadsIdleRaw)
+			if action == SwapUSDCToDebtStep {
+				return d(action, "withdrawal_usdc_repayment_buffer", amount)
 			}
 			// This is the existing builder's transition marker; it computes a
 			// safe receipt withdrawal from current prices/LTV, not one raw unit.
@@ -108,16 +141,20 @@ func decideNonUSDC(s Snapshot) Decision {
 	if hard <= TargetLTVBPS {
 		return d(HoldManualRecovery, "invalid_entry_ltv", 0)
 	}
+	if s.CollateralIdleRaw > 0 && s.MinimumCollateralDepositRaw == 0 {
+		return d(Hold, "deposit_rounding_window_unavailable", 0)
+	}
+	depositReady := s.CollateralIdleRaw > 0 && s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw
 	if s.PositionDebtRaw > 0 {
 		if s.DebtIdleRaw > 0 {
 			return d(SwapDebtToCollateralStep, "borrowed_debt_requires_collateral_buffer", s.DebtIdleRaw)
 		}
-		if s.CollateralIdleRaw > 0 {
+		if depositReady {
 			return d(OpenRouteStep, "single_loop_redeposit", s.CollateralIdleRaw)
 		}
 		return d(Hold, "single_loop_position_ready", 0)
 	}
-	if s.CollateralIdleRaw > 0 {
+	if depositReady {
 		return d(OpenRouteStep, "collateral_ready", s.CollateralIdleRaw)
 	}
 	if s.PositionCollateralRaw > 0 {
@@ -125,6 +162,9 @@ func decideNonUSDC(s Snapshot) Decision {
 			return d(Hold, "debt_reserve_utilization_blocks_borrow", 0)
 		}
 		return d(OpenRouteStep, "collateral_requires_borrow", 1)
+	}
+	if s.CollateralIdleRaw > 0 {
+		return d(Hold, "collateral_below_deposit_rounding_window", 0)
 	}
 	if s.DebtIdleRaw > 0 {
 		return d(HoldManualRecovery, "unattributed_idle_debt_before_entry", 0)

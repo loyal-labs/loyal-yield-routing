@@ -481,5 +481,7 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 		}
 	})
 	t.Run("production bridge admission", func(t *testing.T) { testProductionBridgeAdmission(t, url) })
+	t.Run("one-time budget initialization", func(t *testing.T) { testPhase3BudgetInitialization(t, url) })
 	t.Run("production withdrawal admission", func(t *testing.T) { testProductionWithdrawalAdmission(t, url) })
+	t.Run("policy setup durable intent", func(t *testing.T) { testPolicySetupDurability(t, url) })
 }

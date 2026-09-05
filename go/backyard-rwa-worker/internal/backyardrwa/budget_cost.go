@@ -15,6 +15,13 @@ type ExecutableDebit struct {
 // A withdrawal's wire amount may be receipt units: charge its underlying
 // liquidity debit from the checked effect graph, not that receipt amount.
 func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDebit, error) {
+	if effects.Kind == "kamino-borrow" {
+		r, ok := request.(KaminoPrimeUSDCRequest)
+		_, leg, err := kaminoPrimeUSDCInstruction(r)
+		if !ok || err != nil || leg != kaminoLegBorrow {
+			return ExecutableDebit{}, budgetHold("borrow_effects_on_non_borrow")
+		}
+	}
 	encoded, err := jsonMarshalExpectedEffects(effects)
 	if err != nil {
 		return ExecutableDebit{}, err
@@ -26,6 +33,7 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 	var exactAmount *uint64
 	var sweep bool
 	var repayment bool
+	var deposit bool
 	switch r := request.(type) {
 	case BridgeBuildRequest:
 		if _, err = CompileBridgeMessage(r); err != nil {
@@ -66,7 +74,18 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 		if err != nil {
 			return ExecutableDebit{}, err
 		}
+		if leg == kaminoLegBorrow && (r.Action == OpenRouteStep || effects.Kind == "kamino-borrow") {
+			return measureBorrowDebit(r, effects, route)
+		}
 		source, _ = kaminoLegCustodiesForRoute(leg, route)
+		if effects.Deposit != nil {
+			_, destination := kaminoLegCustodiesForRoute(leg, route)
+			if leg != kaminoLegDeposit || effects.Deposit.MaximumDebitRaw != r.AmountRaw || effects.Accounts[0].Address != source.Address ||
+				effects.Accounts[0].Owner != route.CollateralTokenProgram || effects.Accounts[1].Address != destination.Address || effects.Accounts[1].Mint != destination.Mint || effects.Accounts[1].Authority != destination.Authority {
+				return ExecutableDebit{}, budgetHold("deposit_request_or_destination_mismatch")
+			}
+			deposit = true
+		}
 		if r.RepaymentRelease && (r.FullPayoff || r.Action != DeleverRouteStep || leg != kaminoLegWithdraw || !catalogJupiterRoute(lane)) {
 			return ExecutableDebit{}, budgetHold("invalid_repayment_release_intent")
 		}
@@ -87,7 +106,13 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 			exactAmount = &r.AmountRaw
 		}
 	case JupiterSwapRequest:
-		if r.FullPayoffFunding && r.Action != SwapCollateralToDebtStep {
+		if r.PositionReturnReserved && (r.Action != SwapDebtToCollateralStep || r.FullPayoffFunding || r.EntryReturnReserved) {
+			return ExecutableDebit{}, budgetHold("invalid_position_return_intent")
+		}
+		if r.EntryReturnReserved && (r.Action != SwapStableToCollateralStep || r.FullPayoffFunding) {
+			return ExecutableDebit{}, budgetHold("invalid_entry_return_intent")
+		}
+		if r.FullPayoffFunding && !isPayoffFundingAction(r.Action) {
 			return ExecutableDebit{}, budgetHold("funding_bounds_on_non_funding_swap")
 		}
 		if _, err = CompileJupiterMessage(r); err != nil {
@@ -104,6 +129,9 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 	}
 	if effects.Repayment != nil && !repayment {
 		return ExecutableDebit{}, budgetHold("repayment_bounds_on_non_repayment")
+	}
+	if effects.Deposit != nil && !deposit {
+		return ExecutableDebit{}, budgetHold("deposit_bounds_on_non_deposit")
 	}
 	for _, account := range effects.Accounts {
 		if account.Address != source.Address {

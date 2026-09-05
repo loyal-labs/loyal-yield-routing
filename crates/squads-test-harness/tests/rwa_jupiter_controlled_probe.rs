@@ -36,20 +36,46 @@ fn capture(svm: &LiteSVM, addresses: &[Pubkey]) -> Value {
     }).collect())
 }
 
+fn lending_position(svm: &LiteSVM, address: Pubkey) -> (u64, u128) {
+    let Some(a) = svm.get_account(&address) else {
+        return (0, 0);
+    };
+    if a.lamports == 0 || a.data.is_empty() {
+        return (0, 0);
+    }
+    // Deployed KLend Obligation layout, shared with the existing controlled probe.
+    assert_eq!(a.data.len(), 3344);
+    let receipts = (0..8)
+        .map(|i| u64::from_le_bytes(a.data[128 + i * 136..136 + i * 136].try_into().unwrap()))
+        .sum();
+    let debt = (0..5)
+        .map(|i| u128::from_le_bytes(a.data[1296 + i * 200..1312 + i * 200].try_into().unwrap()))
+        .sum();
+    (receipts, debt)
+}
+
 #[test]
 #[ignore = "requires explicit public snapshot and zero-signature Go plan"]
 fn ethena_go_swaps_execute_sequentially_under_deployed_policies() {
-    execute_probe(false);
+    execute_probe(false, false);
 }
 
 #[test]
 #[ignore = "requires explicit public candidate snapshot; never installed-Go or mainnet proof"]
 fn ethena_v2_candidate_swaps_execute_sequentially() {
-    execute_probe(true);
+    execute_probe(true, false);
 }
 
-fn execute_probe(candidate: bool) {
-    let directory = std::env::var(if candidate {
+#[test]
+#[ignore = "requires explicit return snapshot; local custody preconditions are not a lending lifecycle"]
+fn ethena_return_conversions_execute_with_exact_mixed_policy_bindings() {
+    execute_probe(true, true);
+}
+
+fn execute_probe(candidate: bool, returning: bool) {
+    let directory = std::env::var(if returning {
+        "PHASE3_JUPITER_RETURN_PROBE_DIR"
+    } else if candidate {
         "PHASE3_JUPITER_CANDIDATE_PROBE_DIR"
     } else {
         "PHASE3_JUPITER_PROBE_DIR"
@@ -61,6 +87,10 @@ fn execute_probe(candidate: bool) {
     let plan: Value = serde_json::from_slice(&plan_bytes).unwrap();
     let snapshot: Value = serde_json::from_slice(&snapshot_bytes).unwrap();
     assert_eq!(plan["schema"], "phase3-jupiter-controlled-probe/v1");
+    assert_eq!(
+        plan["profile"].as_str() == Some("RETURN_CONVERSIONS"),
+        returning
+    );
     assert_eq!(
         !plan["candidate"].is_null(),
         candidate,
@@ -79,8 +109,22 @@ fn execute_probe(candidate: bool) {
     );
     let steps = plan["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 2);
-    assert_eq!(steps[0]["action"], "SWAP_STABLE_TO_COLLATERAL_STEP");
-    assert_eq!(steps[1]["action"], "SWAP_COLLATERAL_TO_DEBT_STEP");
+    assert_eq!(
+        steps[0]["action"],
+        if returning {
+            "SWAP_COLLATERAL_TO_STABLE_STEP"
+        } else {
+            "SWAP_STABLE_TO_COLLATERAL_STEP"
+        }
+    );
+    assert_eq!(
+        steps[1]["action"],
+        if returning {
+            "SWAP_DEBT_TO_USDC_STEP"
+        } else {
+            "SWAP_COLLATERAL_TO_DEBT_STEP"
+        }
+    );
     let mut svm = LiteSVM::new()
         .with_sigverify(false)
         .with_blockhash_check(false)
@@ -128,11 +172,35 @@ fn execute_probe(candidate: bool) {
         ("delegate", 1_000_000_000u64, false),
         (
             "inputCustody",
-            steps[0]["amountRaw"].as_u64().unwrap(),
+            if returning {
+                0
+            } else {
+                steps[0]["amountRaw"].as_u64().unwrap()
+            },
             true,
         ),
-        ("collateralCustody", 0, true),
-        ("debtCustody", 0, true),
+        (
+            "collateralCustody",
+            if !plan["lendingPrelude"].is_null() {
+                100_000_000
+            } else if returning {
+                steps[0]["amountRaw"].as_u64().unwrap()
+            } else {
+                0
+            },
+            true,
+        ),
+        (
+            "debtCustody",
+            if !plan["lendingPrelude"].is_null() {
+                2_000
+            } else if returning {
+                steps[1]["amountRaw"].as_u64().unwrap()
+            } else {
+                0
+            },
+            true,
+        ),
     ] {
         let address = key(plan[field].as_str().unwrap());
         let mut a = svm.get_account(&address).unwrap();
@@ -154,6 +222,17 @@ fn execute_probe(candidate: bool) {
         .unwrap()
         .iter()
         .map(|a| key(a.as_str().unwrap()))
+        // Immutable deployed binaries are loaded and hash-checked above and
+        // retained once in snapshot.programs. Repeating LiteSVM's program
+        // account representation in every transition adds hundreds of MB;
+        // none of these transaction graphs can write an executable account.
+        .filter(|address| {
+            !snapshot["accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["address"] == address.to_string() && a["executable"] == true)
+        })
         .collect();
     let mut creation = vec![];
     if candidate {
@@ -162,7 +241,7 @@ fn execute_probe(candidate: bool) {
         };
         use solana_sdk::{hash::Hash, message::Message, signature::Signature};
         let binding = &plan["candidate"];
-        let artifact_bytes=fs::read("../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json").unwrap();
+        let artifact_bytes=fs::read(if returning { "../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-repair-candidates-2026-09-05.json" } else { "../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json" }).unwrap();
         assert_eq!(sha(&artifact_bytes), binding["artifactSha256"]);
         let artifact: Value = serde_json::from_slice(&artifact_bytes).unwrap();
         let settings = key(binding["settings"].as_str().unwrap());
@@ -183,7 +262,12 @@ fn execute_probe(candidate: bool) {
             .parse::<u64>()
             .unwrap();
         for (i, p) in binding["policies"].as_array().unwrap().iter().enumerate() {
-            let group = &artifact["groups"][i];
+            let group = artifact["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|g| g["edge"] == p["edge"])
+                .unwrap();
             assert_eq!(group["edge"], p["edge"]);
             let seed = p["seed"].as_str().unwrap().parse::<u64>().unwrap();
             assert_eq!(seed, seed_before + i as u64 + 1);
@@ -218,11 +302,164 @@ fn execute_probe(candidate: bool) {
                 .expect("candidate PolicyCreate must execute on cloned real Settings");
             creation.push(json!({"policy":policy.to_string(),"seed":seed,"candidateOnly":true,"packetBytes":wire.len(),"wireSha256":sha(&wire),"before":before,"after":capture(&svm,&[settings,admin,policy]),"logs":meta.logs,"computeUnits":meta.compute_units_consumed}));
         }
-        assert_eq!(creation.len(), 2);
+        assert_eq!(creation.len(), if returning { 1 } else { 2 });
+    }
+    let mut lending_results: Vec<Value> = vec![];
+    let mut deposit_rounding_probes: Vec<Value> = vec![];
+    let mut borrow_fee_probes: Vec<Value> = vec![];
+    let mut redeposit_probe = Value::Null;
+    if !plan["lendingPrelude"].is_null() {
+        assert!(returning);
+        let lending = &plan["lendingPrelude"];
+        assert_eq!(lending["schema"], "phase3-kamino-controlled-probe/v1");
+        assert_eq!(lending["broadcast"], false);
+        assert_eq!(lending["signatureProof"], false);
+        assert_eq!(lending["lane"], plan["lane"]);
+        for field in ["delegate", "collateralCustody", "debtCustody"] {
+            assert_eq!(lending[field], plan[field]);
+        }
+        let obligation = key(lending["obligation"].as_str().unwrap());
+        assert_eq!(
+            lending_position(&svm, obligation),
+            (0, 0),
+            "cannot inherit a live position"
+        );
+        let lending_steps = lending["steps"].as_array().unwrap();
+        assert_eq!(lending_steps.len(), 4);
+        // Real deployed-program falsifiers for the worker's former exact
+        // deposit assumption. Isolated clones never feed the linked lifecycle.
+        for requested in [1_000_000u64, 99_999_999u64] {
+            let mut probe = svm.clone();
+            let mut tx: VersionedTransaction =
+                bincode::deserialize(&bytes(&lending_steps[0], "wireBase64")).unwrap();
+            let VersionedMessage::Legacy(ref mut message) = tx.message else {
+                panic!("unexpected deposit encoding")
+            };
+            assert_eq!(message.instructions.len(), 4);
+            let data = &mut message.instructions[3].data;
+            let offset = data.len() - 8;
+            assert_eq!(&data[offset..], &100_000_000u64.to_le_bytes());
+            data[offset..].copy_from_slice(&requested.to_le_bytes());
+            let wire = bincode::serialize(&tx).unwrap();
+            let before = capture(&probe, &addresses);
+            let source = key(plan["collateralCustody"].as_str().unwrap());
+            let balance = amount(&probe, source);
+            let meta = probe
+                .send_transaction(tx)
+                .expect("rounded deposit probe failed");
+            let debit = balance - amount(&probe, source);
+            let (receipts, debt) = lending_position(&probe, obligation);
+            assert!(debit > 0 && debit <= requested && receipts > 0 && debt == 0);
+            deposit_rounding_probes.push(json!({"requestedRaw":requested,"actualDebitRaw":debit,"receiptRaw":receipts,"wireBase64":STANDARD.encode(&wire),"wireSha256":sha(&wire),"before":before,"after":capture(&probe,&addresses),"logs":meta.logs,"computeUnits":meta.compute_units_consumed}));
+        }
+        for (i, step) in lending_steps.iter().enumerate() {
+            assert_eq!(step["leg"], ["deposit", "borrow", "repay", "withdraw"][i]);
+            if i == 2 {
+                if let Ok(name) = std::env::var("PHASE3_REDEPOSIT_PLAN") {
+                    assert_eq!(
+                        std::path::Path::new(&name).file_name().unwrap(),
+                        name.as_str()
+                    );
+                    let template: Value =
+                        serde_json::from_slice(&std::fs::read(directory.join(name)).unwrap())
+                            .unwrap();
+                    assert_eq!(template["planSha256"], sha(&plan_bytes));
+                    assert_eq!(template["broadcast"], false);
+                    assert_eq!(template["signatureProof"], false);
+                    let mut probe = svm.clone();
+                    let collateral = key(plan["collateralCustody"].as_str().unwrap());
+                    let debt_custody = key(plan["debtCustody"].as_str().unwrap());
+                    let mut overrides = vec![];
+                    for (address, raw) in [(collateral, 1_000_000u64), (debt_custody, 0u64)] {
+                        let prior = amount(&probe, address);
+                        let mut account = probe.get_account(&address).unwrap();
+                        account.data[64..72].copy_from_slice(&raw.to_le_bytes());
+                        probe.set_account(address, account).unwrap();
+                        overrides.push(
+                            json!({"address":address.to_string(),"beforeRaw":prior,"afterRaw":raw}),
+                        );
+                    }
+                    let before = capture(&probe, &addresses);
+                    let (receipt_before, debt_before) = lending_position(&probe, obligation);
+                    let wire = bytes(&template, "wireBase64");
+                    assert!(
+                        wire.len() <= 1232 && wire[0] == 1 && wire[1..65].iter().all(|b| *b == 0)
+                    );
+                    assert_eq!(sha(&wire), template["wireSha256"]);
+                    let tx: VersionedTransaction = bincode::deserialize(&wire).unwrap();
+                    let meta = probe
+                        .send_transaction(tx)
+                        .expect("debt-bearing Go redeposit failed");
+                    let (receipt_after, debt_after) = lending_position(&probe, obligation);
+                    assert!(receipt_after > receipt_before && debt_before > 0);
+                    assert_eq!(debt_after, debt_before);
+                    let debit = 1_000_000 - amount(&probe, collateral);
+                    redeposit_probe = json!({"wireBase64":STANDARD.encode(&wire),"wireSha256":sha(&wire),"overrides":overrides,"before":before,"after":capture(&probe,&addresses),"actualDebitRaw":debit,"receiptBefore":receipt_before,"receiptAfter":receipt_after,"debtBefore":debt_before.to_string(),"debtAfter":debt_after.to_string(),"logs":meta.logs,"computeUnits":meta.compute_units_consumed,"proofLevel":"ISOLATED_DEBT_BEARING_REDEPOSIT_WITH_LOCAL_CUSTODY_OVERRIDES_NOT_LINKED_FUNDING"});
+                }
+            }
+            if i == 1 {
+                // Isolated fee-config mutations answer the deployed-program
+                // accounting question; they never feed the linked lifecycle.
+                let request = &step["request"];
+                let reserve = key(request["Accounts"][4]["Address"].as_str().unwrap());
+                let supply = key(request["Accounts"][6]["Address"].as_str().unwrap());
+                let receiver = key(request["Accounts"][7]["Address"].as_str().unwrap());
+                let custody = key(request["Accounts"][8]["Address"].as_str().unwrap());
+                assert_eq!(request["AmountRaw"], 1000);
+                for (fee_sf, expected_fee) in [(1u64, 1u64), (1u64 << 52, 4u64)] {
+                    let mut probe = svm.clone();
+                    let mut account = probe.get_account(&reserve).unwrap();
+                    // Official Reserve layout: config + ReserveFees.origination_fee_sf.
+                    account.data[4856 + 40..4856 + 48].copy_from_slice(&fee_sf.to_le_bytes());
+                    probe.set_account(reserve, account).unwrap();
+                    let before = capture(&probe, &addresses);
+                    let balances = (
+                        amount(&probe, supply),
+                        amount(&probe, custody),
+                        amount(&probe, receiver),
+                    );
+                    let wire = bytes(step, "wireBase64");
+                    let tx: VersionedTransaction = bincode::deserialize(&wire).unwrap();
+                    let meta = probe.send_transaction(tx).expect("borrow fee probe failed");
+                    let debit = balances.0 - amount(&probe, supply);
+                    let received = amount(&probe, custody) - balances.1;
+                    let fee = amount(&probe, receiver) - balances.2;
+                    let (_, debt) = lending_position(&probe, obligation);
+                    assert_eq!(
+                        (debit, received, fee),
+                        (1000 + expected_fee, 1000, expected_fee)
+                    );
+                    assert_eq!(debt, u128::from(1000 + expected_fee) << 60);
+                    borrow_fee_probes.push(json!({"feeSF":fee_sf.to_string(),"overrideAccount":reserve.to_string(),"overrideOffset":4896,"actualDebitRaw":debit,"receivedRaw":received,"feeRaw":fee,"borrowedSF":debt.to_string(),"wireSha256":sha(&wire),"before":before,"after":capture(&probe,&addresses),"logs":meta.logs,"computeUnits":meta.compute_units_consumed}));
+                }
+            }
+            let wire = bytes(step, "wireBase64");
+            assert!(wire.len() <= 1232 && wire[0] == 1 && wire[1..65].iter().all(|b| *b == 0));
+            assert_eq!(sha(&wire), step["wireSha256"]);
+            let before = capture(&svm, &addresses);
+            if let Some(previous) = lending_results.last() {
+                assert_eq!(previous["after"], before);
+            }
+            let tx: VersionedTransaction = bincode::deserialize(&wire).unwrap();
+            let meta = svm
+                .send_transaction(tx)
+                .expect("linked lending leg failed; no return custody overrides permitted");
+            let (receipts, debt) = lending_position(&svm, obligation);
+            assert_eq!(receipts > 0, i < 3);
+            assert_eq!(debt > 0, i == 1);
+            lending_results.push(json!({"leg":step["leg"],"wireSha256":step["wireSha256"],"before":before,"after":capture(&svm,&addresses),"error":null,"logs":meta.logs,"computeUnits":meta.compute_units_consumed,"depositedReceiptRaw":receipts,"borrowedSF":debt.to_string()}));
+        }
+        // Actual outputs, not fixture resets, must fund the complete returns.
+        for step in steps {
+            assert_eq!(
+                amount(&svm, key(step["source"].as_str().unwrap())),
+                step["amountRaw"].as_u64().unwrap()
+            );
+        }
     }
     let mut results: Vec<Value> = vec![];
     let mut pass = true;
-    for step in steps {
+    for (step_index, step) in steps.iter().enumerate() {
         let wire = bytes(step, "wireBase64");
         assert!(wire.len() <= 1232 && wire[0] == 1 && wire[1..65].iter().all(|b| *b == 0));
         assert_eq!(sha(&wire), step["wireSha256"]);
@@ -230,10 +467,22 @@ fn execute_probe(candidate: bool) {
         let before = capture(&svm, &addresses);
         if let Some(previous) = results.last() {
             assert_eq!(previous["after"], before);
+        } else if let Some(previous) = lending_results.last() {
+            assert_eq!(
+                previous["after"], before,
+                "lending poststate was replaced before return"
+            );
         }
         let source = key(step["source"].as_str().unwrap());
         let destination = key(step["destination"].as_str().unwrap());
         let balances_before = (amount(&svm, source), amount(&svm, destination));
+        if returning {
+            assert_eq!(
+                balances_before.0,
+                step["amountRaw"].as_u64().unwrap(),
+                "return must consume the complete controlled source custody"
+            );
+        }
         let mut negative_svm = svm.clone();
         let mut forbidden = tx.clone();
         let instructions = match &mut forbidden.message {
@@ -270,17 +519,27 @@ fn execute_probe(candidate: bool) {
         );
         let mut additional_negatives = vec![];
         if candidate {
+            let v2 = !returning || step_index == 0;
+            let indexes = &step["headerRow"]["header"]["indexes"];
             let mut mutations: Vec<(&str, usize, Vec<u8>)> = vec![
                 (
                     "slippage_above_50_bps",
-                    matches[0] + 25,
+                    matches[0] + indexes["slippage"].as_u64().unwrap() as usize,
                     51u16.to_le_bytes().to_vec(),
                 ),
-                ("platform_fee_low_byte", matches[0] + 27, vec![1]),
-                ("platform_fee_high_byte", matches[0] + 28, vec![1]),
-                ("positive_slippage_fee_low_byte", matches[0] + 29, vec![1]),
-                ("positive_slippage_fee_high_byte", matches[0] + 30, vec![1]),
+                (
+                    "platform_fee_low_byte",
+                    matches[0] + indexes["platformFee"].as_u64().unwrap() as usize,
+                    vec![1],
+                ),
             ];
+            if v2 {
+                mutations.extend([
+                    ("platform_fee_high_byte", matches[0] + 28, vec![1]),
+                    ("positive_slippage_fee_low_byte", matches[0] + 29, vec![1]),
+                    ("positive_slippage_fee_high_byte", matches[0] + 30, vec![1]),
+                ]);
+            }
             let account_count = step["headerRow"]["instruction"]["accounts"]
                 .as_array()
                 .unwrap()
@@ -294,13 +553,16 @@ fn execute_probe(candidate: bool) {
                 original_ix.data[account_indexes - 1] as usize,
                 account_count
             );
-            // Change only the compiled inner destination reference (V2 slot 5)
-            // to the existing source custody reference (slot 2). No alternate
+            // Change only the compiled inner destination reference to the
+            // existing source custody reference at the verified dialect slots. No alternate
             // program or mutable lookup mapping is needed for this falsifier.
             mutations.push((
                 "destination_replaced_by_source",
-                account_indexes + 5,
-                vec![original_ix.data[account_indexes + 2]],
+                account_indexes + indexes["destination"].as_u64().unwrap() as usize,
+                vec![
+                    original_ix.data
+                        [account_indexes + indexes["source"].as_u64().unwrap() as usize],
+                ],
             ));
             for (label, offset, value) in mutations {
                 let mut bad = tx.clone();
@@ -349,7 +611,22 @@ fn execute_probe(candidate: bool) {
             break;
         }
     }
-    let report = json!({"schema":if candidate {"phase3-jupiter-candidate-controlled-result/v1"} else {"phase3-jupiter-controlled-result/v1"},"broadcast":false,"signatureProof":false,"installedPolicyProof":!candidate,"goCompilerProof":false,"proofLevel":if candidate {"LOCAL_CANDIDATE_TWO_SWAP_EXECUTION_NOT_INSTALLED_GO_OR_FULL_R04"} else {"TWO_SWAP_PROGRAM_EXECUTION_NOT_FULL_R04_LIFECYCLE"},"slot":snapshot["slot"],"programs":snapshot["programs"],"planSha256":sha(&plan_bytes),"snapshotSha256":sha(&snapshot_bytes),"overrides":overrides,"candidateCreation":creation,"steps":results,"twoSwapsPassed":pass&&results.len()==2});
+    let return_custody_cleared = returning
+        && pass
+        && results.len() == 2
+        && amount(&svm, key(plan["collateralCustody"].as_str().unwrap())) == 0
+        && amount(&svm, key(plan["debtCustody"].as_str().unwrap())) == 0;
+    let report = json!({"schema":if returning {"phase3-jupiter-return-controlled-result/v1"} else if candidate {"phase3-jupiter-candidate-controlled-result/v1"} else {"phase3-jupiter-controlled-result/v1"},"broadcast":false,"signatureProof":false,"installedPolicyProof":!candidate,"goCompilerProof":false,"proofLevel":if returning {"LOCAL_MIXED_CANDIDATE_AND_INSTALLED_RETURN_SWAPS_NOT_LENDING_BRIDGE_OR_SIGNATURE_PROOF"} else if candidate {"LOCAL_CANDIDATE_TWO_SWAP_EXECUTION_NOT_INSTALLED_GO_OR_FULL_R04"} else {"TWO_SWAP_PROGRAM_EXECUTION_NOT_FULL_R04_LIFECYCLE"},"slot":snapshot["slot"],"programs":snapshot["programs"],"planSha256":sha(&plan_bytes),"snapshotSha256":sha(&snapshot_bytes),"overrides":overrides,"candidateCreation":creation,"steps":results,"twoSwapsPassed":pass&&results.len()==2,"returnCustodyCleared":return_custody_cleared,"terminalUSDCRaw":amount(&svm,key(plan["inputCustody"].as_str().unwrap()))});
+    let mut report = report;
+    report["stateAddresses"] = json!(addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+    if !lending_results.is_empty() {
+        report["lendingSteps"] = json!(lending_results);
+        report["depositRoundingProbes"] = json!(deposit_rounding_probes);
+        report["borrowFeeProbes"] = json!(borrow_fee_probes);
+        report["redepositProbe"] = redeposit_probe;
+        report["proofLevel"] =
+            json!("LOCAL_LINKED_LENDING_AND_RETURN_NOT_BRIDGE_ENTRY_SIGNER_OR_MAINNET_PROOF");
+    }
     let name =
         std::env::var("PHASE3_JUPITER_PROBE_RESULT").unwrap_or_else(|_| "result.json".into());
     assert!(!name.contains('/') && name.ends_with(".json"));

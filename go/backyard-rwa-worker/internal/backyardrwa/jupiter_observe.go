@@ -69,7 +69,15 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("Jupiter source custody is below exact input")
 		}
 		evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
-		if decision.Reason == "withdrawal_swap_repayment_buffer" && observation.Snapshot.PositionDebtRaw > 0 && catalogJupiterRoute(decision.StrategyKey) {
+		if err == nil && decision.Action == SwapStableToCollateralStep && phase3BudgetFamilyForLane(decision.StrategyKey) != "" {
+			evidence.Request.EntryReturnReserved = true
+		}
+		if err == nil && decision.Action == SwapDebtToCollateralStep && catalogJupiterRoute(decision.StrategyKey) {
+			evidence.Request.PositionReturnReserved = true
+		}
+		funding := (decision.Action == SwapCollateralToDebtStep && decision.Reason == "withdrawal_swap_repayment_buffer") ||
+			(decision.Action == SwapUSDCToDebtStep && decision.Reason == "withdrawal_usdc_repayment_buffer")
+		if err == nil && funding && observation.Snapshot.PositionDebtRaw > 0 && catalogJupiterRoute(decision.StrategyKey) {
 			evidence.Request.FullPayoffFunding = true
 		}
 		return observation, evidence, err

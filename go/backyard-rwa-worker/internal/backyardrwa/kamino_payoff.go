@@ -31,11 +31,17 @@ func observeKaminoPayoffBound(ctx context.Context, rpc *RPCClient, route Runtime
 }
 
 func observeKaminoPayoffWindow(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot, steps int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	return observeKaminoPayoffWindowAccounts(ctx, rpc, route, minimumSlot, steps)
+}
+
+// Funding custody and debt must be captured in the same RPC account batch.
+func observeKaminoPayoffWindowAccounts(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot, steps int64, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	if rpc == nil || minimumSlot <= 0 {
 		return KaminoPayoffBound{}, nil, budgetHold("payoff_observation_unavailable")
 	}
 	addresses := []string{route.Kamino.Obligation, route.Kamino.DebtReserve, route.DebtCustody, route.DebtLiquiditySupply,
 		route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply, budgetClockAddress}
+	addresses = append(addresses, additional...)
 	slot, accounts, err := rpc.GetMultipleAccounts(ctx, addresses, minimumSlot)
 	if err != nil {
 		return KaminoPayoffBound{}, nil, err
@@ -52,7 +58,9 @@ func decodeKaminoPayoffBound(accounts []ConfirmedAccount, route RuntimeRoute, sl
 // This extends the cost estimate only; current-wire freshness remains 32 slots.
 func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64) (KaminoPayoffBound, error) {
 	var bound KaminoPayoffBound
-	if steps < 1 || steps > 5 {
+	// Borrow -> NAV -> release -> NAV -> funding -> NAV -> payoff is the
+	// longest admitted prefix. Current-wire freshness is still only 32 slots.
+	if steps < 1 || steps > 7 {
 		return bound, budgetHold("invalid_payoff_execution_window")
 	}
 	clock := accountAt(accounts, budgetClockAddress)
@@ -87,18 +95,10 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 	if basis > 1 || config[7] != 0 || !allZero(config[920:936]) {
 		return bound, budgetHold("unsupported_payoff_interest_terms")
 	}
-	maximumRate, previousUtil, previousRate := uint64(0), uint32(0), uint32(0)
-	for i := 0; i < 11; i++ {
-		offset := 64 + i*8
-		util, rate := binary.LittleEndian.Uint32(config[offset:]), binary.LittleEndian.Uint32(config[offset+4:])
-		if (i == 0 && util != 0) || (i == 10 && util != 10_000) || util > 10_000 ||
-			(i > 0 && ((previousUtil < 10_000 && util <= previousUtil) || util < previousUtil || rate < previousRate)) {
-			return bound, budgetHold("invalid_payoff_borrow_curve")
-		}
-		maximumRate = max(maximumRate, uint64(rate))
-		previousUtil, previousRate = util, rate
+	maximumRate, err := kaminoMaximumBorrowRate(config)
+	if err != nil {
+		return bound, err
 	}
-	maximumRate += uint64(binary.LittleEndian.Uint16(config[2:4]))
 	updatedUnix := int64(binary.LittleEndian.Uint32(reserveAccount.Data[28:32]))
 	bound = KaminoPayoffBound{ObservedSlot: slot, ChainUnix: now, ThroughSlot: int64(clockSlot) + steps*budgetMaxObservationLagSlots,
 		ThroughUnix: now + steps*kaminoPayoffWindowSeconds, ReserveUpdatedSlot: reserve.refreshedSlot, ReserveUpdatedUnix: updatedUnix,
@@ -117,6 +117,24 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 	debtSF.Add(debtSF, new(big.Int).Sub(former, big.NewInt(1))).Quo(debtSF, former)
 	bound.UpperDebtRaw, err = upperKaminoCompoundedDebtSF(debtSF, maximumRate, uint64(elapsed), unitsPerYear)
 	return bound, err
+}
+
+func kaminoMaximumBorrowRate(config []byte) (uint64, error) {
+	if len(config) < 152 {
+		return 0, budgetHold("invalid_payoff_borrow_curve")
+	}
+	maximumRate, previousUtil, previousRate := uint64(0), uint32(0), uint32(0)
+	for i := 0; i < 11; i++ {
+		offset := 64 + i*8
+		util, rate := binary.LittleEndian.Uint32(config[offset:]), binary.LittleEndian.Uint32(config[offset+4:])
+		if (i == 0 && util != 0) || (i == 10 && util != 10_000) || util > 10_000 ||
+			(i > 0 && ((previousUtil < 10_000 && util <= previousUtil) || util < previousUtil || rate < previousRate)) {
+			return 0, budgetHold("invalid_payoff_borrow_curve")
+		}
+		maximumRate = max(maximumRate, uint64(rate))
+		previousUtil, previousRate = util, rate
+	}
+	return maximumRate + uint64(binary.LittleEndian.Uint16(config[2:4])), nil
 }
 
 // KLend's nonnegative truncated binomial accrual is <= (1+rate/year)^elapsed,

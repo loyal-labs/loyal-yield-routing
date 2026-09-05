@@ -16,6 +16,19 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 	if database == nil || rpc == nil || !IsNonterminal(operation.Status) {
 		return fmt.Errorf("invalid nonterminal recovery input")
 	}
+	// Setup never enters ordinary delegate signing or abandoned-decision
+	// cleanup. A submitted prefund can advance through finalized reconciliation
+	// into one reserved creation intent. Setup signing/sending remains disabled.
+	if isPolicySetupAction(operation.Decision.Action) {
+		if operation.Decision.Action == PolicySetupPrefund && (operation.Status == BroadcastIntent || operation.Status == Submitted || operation.Status == Confirmed || operation.Status == Reconciling) {
+			_, err := database.continuePolicySetupPrefund(ctx, rpc, operation.ID)
+			return err
+		}
+		if operation.Decision.Action == PolicySetupCreate && (operation.Status == BroadcastIntent || operation.Status == Submitted || operation.Status == Confirmed || operation.Status == Reconciling) {
+			return database.reconcilePolicySetupCreation(ctx, rpc, operation.ID)
+		}
+		return budgetHold("policy_setup_execution_not_enabled")
+	}
 	switch operation.Status {
 	case Decided, Built, Simulated:
 		reason, err := preBroadcastRecoveryReason(ctx, rpc, operation)

@@ -215,6 +215,15 @@ func (c *RPCClient) getMultipleAccounts(
 	minContextSlot int64,
 	optionalAddresses map[string]struct{},
 ) (int64, []ConfirmedAccount, error) {
+	return c.getMultipleAccountsAtCommitment(ctx, addresses, minContextSlot, optionalAddresses, "confirmed")
+}
+
+// Finalized setup seed reads share the existing decoder; ordinary worker
+// observations retain their confirmed default.
+func (c *RPCClient) getMultipleAccountsAtCommitment(ctx context.Context, addresses []string, minContextSlot int64, optionalAddresses map[string]struct{}, commitment string) (int64, []ConfirmedAccount, error) {
+	if commitment != "confirmed" && commitment != "finalized" {
+		return 0, nil, fmt.Errorf("unsupported account commitment")
+	}
 	if len(addresses) == 0 || minContextSlot <= 0 {
 		return 0, nil, fmt.Errorf("account addresses and minContextSlot are required")
 	}
@@ -230,7 +239,7 @@ func (c *RPCClient) getMultipleAccounts(
 		} `json:"value"`
 	}
 	err := c.call(ctx, "getMultipleAccounts", []any{addresses, map[string]any{
-		"commitment": "confirmed", "encoding": "base64", "minContextSlot": minContextSlot,
+		"commitment": commitment, "encoding": "base64", "minContextSlot": minContextSlot,
 	}}, &result)
 	if err != nil {
 		return 0, nil, confirmedObservationUnavailable(err)
@@ -240,12 +249,15 @@ func (c *RPCClient) getMultipleAccounts(
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for index, value := range result.Value {
-		if value == nil || value.Owner == "" {
+		if value == nil {
 			if _, optional := optionalAddresses[addresses[index]]; optional {
 				accounts[index] = ConfirmedAccount{Address: addresses[index]}
 				continue
 			}
 			return 0, nil, fmt.Errorf("required account %s is absent", addresses[index])
+		}
+		if value.Owner == "" {
+			return 0, nil, confirmedObservationUnavailable(fmt.Errorf("account %s has no owner", addresses[index]))
 		}
 		var encoded []string
 		if err := json.Unmarshal(value.Data, &encoded); err != nil || len(encoded) != 2 || encoded[1] != "base64" {

@@ -25,7 +25,7 @@ fn jupiter_v2_repair_groups_measure_real_creation_without_dropping_sibling_edges
         "1c95bd7be140589d2aec38a85d7ecfe70ec69639277f622c898f821ab1d636fa"
     );
     let candidate = std::fs::read(
-        "../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json",
+        "../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-repair-candidates-2026-09-05.json",
     )
     .unwrap();
     let artifact: Value = serde_json::from_slice(&candidate).unwrap();
@@ -33,7 +33,14 @@ fn jupiter_v2_repair_groups_measure_real_creation_without_dropping_sibling_edges
     assert_eq!(artifact["broadcast"], false);
     assert_eq!(artifact["installed"], false);
     let groups = artifact["groups"].as_array().unwrap();
-    assert_eq!(groups.len(), 2);
+    assert_eq!(groups.len(), 3);
+    assert_eq!(
+        groups
+            .iter()
+            .map(|g| g["edge"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["USDC->USDe", "USDe->PYUSD", "USDe->USDC"]
+    );
     let mut context = create_funded_squads_test_context()
         .unwrap()
         .expect("deployed SBF required");
@@ -113,6 +120,11 @@ fn legacy_rwa_policy_creation_measures_allocated_bytes_and_payer_debit() {
         (1, 15, 1400, [161, 128, 143, 245, 171, 199, 194, 6]),
         (2, 13, 1250, [116, 174, 213, 76, 180, 53, 210, 144]),
     ] {
+        let settings_before = context
+            .svm
+            .get_account(&context.pool.settings)
+            .unwrap()
+            .data;
         let instruction = create_deployed_semantic_program_interaction_policy_instruction(
             context.pool.settings,
             context.wallet.pubkey(),
@@ -140,6 +152,32 @@ fn legacy_rwa_policy_creation_measures_allocated_bytes_and_payer_debit() {
         .expect("compile deployed policy ABI");
         let policy = derive_action_account(&context.pool.settings, seed).0;
         assert!(context.svm.get_account(&policy).is_none());
+        // Resolve whether rent can be paid in two separately governed debits,
+        // without changing the exact policy or omitting any setup cost. This
+        // cloned path is not live setup authority or production admission.
+        let mut prefunded = context.svm.clone();
+        let rent_target = prefunded.minimum_balance_for_rent_exemption(expected_bytes);
+        let first_funding = rent_target / 2;
+        let prefund_payer_before = prefunded.get_balance(&context.wallet.pubkey()).unwrap();
+        let transfer = solana_system_interface::instruction::transfer(
+            &context.wallet.pubkey(),
+            &policy,
+            first_funding,
+        );
+        try_send_instructions(&mut prefunded, &[transfer], &context.wallet, &[])
+            .expect("local partial rent funding executes");
+        let staged = prefunded.get_account(&policy).unwrap();
+        assert_eq!(staged.owner, solana_sdk::system_program::ID);
+        assert!(staged.data.is_empty());
+        assert_eq!(staged.lamports, first_funding);
+        let prefund_payer_middle = prefunded.get_balance(&context.wallet.pubkey()).unwrap();
+        let prefunded_result = try_send_instructions(
+            &mut prefunded,
+            std::slice::from_ref(&instruction),
+            &context.wallet,
+            &[],
+        );
+        let prefund_payer_after = prefunded.get_balance(&context.wallet.pubkey()).unwrap();
         let payer_before = context.svm.get_balance(&context.wallet.pubkey()).unwrap();
         try_send_instructions(&mut context.svm, &[instruction], &context.wallet, &[])
             .expect("real Squads PolicyCreate executes");
@@ -155,9 +193,57 @@ fn legacy_rwa_policy_creation_measures_allocated_bytes_and_payer_debit() {
         // Fee is separate from account funding. Do not hard-code local rent
         // economics as mainnet rent; the live read-only inspector measures it.
         assert!(payer_before - payer_after > rent);
+        let prefunded_account = prefunded.get_account(&policy).unwrap();
+        let accepted = prefunded_result.is_ok();
+        if accepted {
+            assert_eq!(
+                prefunded_account, created,
+                "prefunding must preserve exact policy bytes and rent"
+            );
+            assert!(prefund_payer_before - prefund_payer_middle > first_funding);
+            assert!(prefund_payer_middle - prefund_payer_after > rent_target - first_funding);
+            assert!(prefund_payer_before - prefund_payer_middle < rent_target);
+            assert!(prefund_payer_middle - prefund_payer_after < rent_target);
+        } else {
+            assert_eq!(
+                prefunded_account, staged,
+                "rejection must not partially allocate or change policy authority"
+            );
+        }
+        eprintln!(
+            "PHASE3_PREFUNDED_POLICY {}",
+            serde_json::json!({
+                "broadcast": false, "installed": false, "accountCount": count,
+                "allocatedBytes": expected_bytes, "accepted": accepted,
+                "firstFundingLamports": first_funding, "localRentLamports": rent_target,
+                "firstPayerDebitLamports": prefund_payer_before - prefund_payer_middle,
+                "secondPayerDebitLamports": prefund_payer_middle - prefund_payer_after,
+                "samePolicyBytesAndBalance": accepted && prefunded_account == created,
+                "error": prefunded_result.err().map(|e| format!("{e:?}")),
+                "proofLevel": "DEPLOYED_PROGRAM_LOCAL_RENT_STAGING_NOT_PRODUCTION_SETUP_ADMISSION_OR_MAINNET"
+            })
+        );
         eprintln!(
             "RWA PolicyCreate: accounts={count} bytes={} local_rent_lamports={rent} local_total_payer_debit={}",
             created.data.len(), payer_before - payer_after
+        );
+        let settings_after = context
+            .svm
+            .get_account(&context.pool.settings)
+            .unwrap()
+            .data;
+        let mut expected_settings = settings_before.clone();
+        assert_eq!(expected_settings.len(), 168);
+        expected_settings[159..167].copy_from_slice(&seed.to_le_bytes());
+        assert_eq!(settings_after, expected_settings, "PolicyCreate may only forward the existing Settings policySeed");
+        eprintln!(
+            "PHASE3_SETTINGS_CREATE_DELTA {}",
+            serde_json::json!({
+                "seed": seed,
+                "beforeBytes": settings_before.len(), "afterBytes": settings_after.len(),
+                "changedOffsets": settings_before.iter().zip(&settings_after).enumerate()
+                    .filter_map(|(i,(a,b))| (a!=b).then_some(i)).collect::<Vec<_>>()
+            })
         );
     }
 }

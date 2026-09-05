@@ -32,8 +32,12 @@ func projectKaminoReleaseReserve(reserve decodedKaminoReserve, receipts, liquidi
 // before payoff. Convert the conservative liquidity allowance back to receipts
 // using the reserve's unrounded exchange rate, not a rounded position ratio.
 func decodeKaminoRepaymentRelease(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (KaminoReleaseBound, error) {
+	return decodeKaminoRepaymentReleaseWindow(accounts, route, slot, 5)
+}
+
+func decodeKaminoRepaymentReleaseWindow(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64) (KaminoReleaseBound, error) {
 	var result KaminoReleaseBound
-	bound, err := decodeKaminoPayoffWindow(accounts, route, slot, 5)
+	bound, err := decodeKaminoPayoffWindow(accounts, route, slot, steps)
 	if err != nil {
 		return result, err
 	}

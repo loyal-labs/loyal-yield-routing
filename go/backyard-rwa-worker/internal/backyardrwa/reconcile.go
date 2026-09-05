@@ -34,6 +34,14 @@ type ExpectedEffects struct {
 	Accounts   []ExpectedAccountEffect `json:"accounts"`
 	ReturnData *ExpectedReturnData     `json:"returnData,omitempty"`
 	Repayment  *ExpectedRepayment      `json:"repayment,omitempty"`
+	Deposit    *ExpectedDeposit        `json:"deposit,omitempty"`
+}
+
+// Deposits round down to whole receipts and may debit less than the requested
+// liquidity. Bounds describe only conserved token movement, not minted receipts.
+type ExpectedDeposit struct {
+	MinimumDebitRaw uint64 `json:"minimumDebitRaw"`
+	MaximumDebitRaw uint64 `json:"maximumDebitRaw"`
 }
 
 // ExpectedRepayment bounds a finite Kamino repayment request, not the debt
@@ -121,6 +129,20 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 }
 
 func validateRepaymentEffects(expected ExpectedEffects) error {
+	if expected.Deposit != nil {
+		if expected.Kind != "kamino-deposit" || expected.Repayment != nil {
+			return fmt.Errorf("deposit bounds require only a Kamino deposit")
+		}
+		// Share conservation/finite-range validation, without changing the
+		// serialized operation kind or treating a deposit as repayment.
+		copy := expected
+		copy.Kind, copy.Deposit = "kamino-repay", nil
+		copy.Repayment = &ExpectedRepayment{expected.Deposit.MinimumDebitRaw, expected.Deposit.MaximumDebitRaw}
+		return validateRepaymentEffects(copy)
+	}
+	if expected.Kind == "kamino-deposit" {
+		return fmt.Errorf("missing finite Kamino deposit bounds")
+	}
 	if expected.Kind != "kamino-repay" {
 		if expected.Repayment != nil {
 			return fmt.Errorf("repayment bounds require a Kamino repayment")
@@ -162,6 +184,10 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 		return Reconciliation{}, nil, err
 	}
 	canonical := make([]string, 0, len(expected.Accounts))
+	bounds := expected.Repayment
+	if expected.Deposit != nil {
+		bounds = &ExpectedRepayment{expected.Deposit.MinimumDebitRaw, expected.Deposit.MaximumDebitRaw}
+	}
 	beforeByMint := make(map[string]uint64, len(expected.Accounts))
 	afterByMint := make(map[string]uint64, len(expected.Accounts))
 	for i, effect := range expected.Accounts {
@@ -172,15 +198,15 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 			pre.Authority != effect.Authority || post.Authority != effect.Authority || pre.Raw != effect.BeforeRaw {
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
 		}
-		if expected.Repayment != nil {
+		if bounds != nil {
 			var moved uint64
 			if i == 0 && post.Raw <= pre.Raw {
 				moved = pre.Raw - post.Raw
 			} else if i == 1 && post.Raw >= pre.Raw {
 				moved = post.Raw - pre.Raw
 			}
-			if moved < expected.Repayment.MinimumDebitRaw || moved > expected.Repayment.MaximumDebitRaw {
-				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped repayment debit or credit outside finite bounds: %s", effect.Address)
+			if moved < bounds.MinimumDebitRaw || moved > bounds.MaximumDebitRaw {
+				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped Kamino transfer outside finite bounds: %s", effect.Address)
 			}
 		} else if effect.MinimumAfterRaw != nil {
 			if post.Raw < *effect.MinimumAfterRaw {

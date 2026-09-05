@@ -105,6 +105,10 @@ func runtimeRoute(lane string) (RuntimeRoute, error) {
 		return autoAUTOPYUSD, nil
 	case "Ethena/USDe/PYUSD":
 		return ethenaUSDePYUSD, nil
+	case "Prime/PRIME/PYUSD":
+		return primePRIMEPYUSD, nil
+	case "Prime/PRIME/USDS":
+		return primePRIMEUSDS, nil
 	default:
 		return RuntimeRoute{}, fmt.Errorf("runtime lane %q is not installed", lane)
 	}

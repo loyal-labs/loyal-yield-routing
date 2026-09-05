@@ -65,3 +65,49 @@ var ethenaUSDePYUSD = RuntimeRoute{
 		kaminoLegWithdraw: {"BntbpNWFsmzTftxjWNcfZgWwyj1KHhW7C1v6mNUXMoUa", "1ec005205eeb5f8b40effa8dc2af6a1a6f2a7c8b5576dd42ca28ecbd545f05a4"},
 	},
 }
+
+// Finalized account review at slot 444525169 matches all four installed
+// policy vectors for each Prime sibling, with no farm substitution. These are
+// existing catalog identities, not new on-chain authority or funded canaries.
+// Selected manifest, three-family budget scope and deployment remain unchanged.
+var primePRIMEPYUSD = RuntimeRoute{
+	Lane: "Prime/PRIME/PYUSD", Protocol: "Prime", CollateralSymbol: "PRIME", DebtSymbol: "PYUSD",
+	Kamino: KaminoObservationConfig{
+		Program: kaminoProgram, Vault: bridgeVault,
+		Market: "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", MarketAuthority: "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+		Obligation:        "GAnakFSJAhNMrH3B8PRLxHcEtWVL21xyALRiWx3baS5t",
+		CollateralReserve: "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", CollateralMint: "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+		DebtReserve: "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5", DebtMint: "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+	},
+	CollateralCustody: "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct", DebtCustody: "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn",
+	CollateralLiquiditySupply: "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352", CollateralReceiptMint: "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
+	CollateralReceiptSupply: "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN", DebtLiquiditySupply: "4LF3i8grZPRbk8d6gXvzRux4rYjGd5AmqrpLLYFpPKKt",
+	DebtFeeReceiver: "4b9U55muKtwx9RimJSuztvyZaKWkmaoferVexgvxrYJr", CollateralTokenProgram: classicTokenProgram, DebtTokenProgram: token2022Program,
+	KaminoPolicies: map[kaminoPrimeUSDCLeg]kaminoPolicyBinding{
+		kaminoLegDeposit:  {"7QDj4Cz1sWv8XvELx3vBokbMaG2mjfy7rri31sJrJzgq", "d3d819f122f5827db26f1804ee3afa56f4ce53081dbdf9918ca574a230f99ddb"},
+		kaminoLegBorrow:   {"5TDCpmUFr2pHrfDQwG5CnGvbEgHQRUjYysCKZTLh55DL", "ee7c4bec16995b4a39329cfc50c2be9a86dfac31142bd16acca33062c25365f8"},
+		kaminoLegRepay:    {"Hy2JX1PKp3DC5Z93b9JDq9t4vjKxoYecPkv3NP1YVhVD", "03286241d8e991efef99e8210c4d056e7a2c0a826ba9638659ad5b599c047c10"},
+		kaminoLegWithdraw: {"xByUVqMPnyFfBDtmNHYeYjNoWabvGPJaudTaCSTNWNg", "00982e4a51ee914e3bc2831a8675df53b0bbde38cedf74a33a86987bb71b76f1"},
+	},
+}
+
+var primePRIMEUSDS = RuntimeRoute{
+	Lane: "Prime/PRIME/USDS", Protocol: "Prime", CollateralSymbol: "PRIME", DebtSymbol: "USDS",
+	Kamino: KaminoObservationConfig{
+		Program: kaminoProgram, Vault: bridgeVault,
+		Market: "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", MarketAuthority: "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+		Obligation:        "6aqRhAxxjxdoAzgsEMrCCKCEEYMoLDLRKTu5t8nRuyYu",
+		CollateralReserve: "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", CollateralMint: "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+		DebtReserve: "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4", DebtMint: "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+	},
+	CollateralCustody: "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct", DebtCustody: "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV",
+	CollateralLiquiditySupply: "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352", CollateralReceiptMint: "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
+	CollateralReceiptSupply: "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN", DebtLiquiditySupply: "5tP1kDJBYnjtrpUaRQhsrU1Y28ahiJVjz8p9mbqJFpz5",
+	DebtFeeReceiver: "DjmdtvsvctUXCZ32y6UGdCEvXPTds6Ci7LFnVhw5HaQY", CollateralTokenProgram: classicTokenProgram, DebtTokenProgram: classicTokenProgram,
+	KaminoPolicies: map[kaminoPrimeUSDCLeg]kaminoPolicyBinding{
+		kaminoLegDeposit:  {"FgT2cdShhQNuk1QiYibeZXCYhm3ZoYVYGcwm2UeQ2PEh", "855886ceb35059b41297727c4b20c39e0fcec8fb03847ea4f4053b86733835e7"},
+		kaminoLegBorrow:   {"GsUJYgJYH5SSAoQC9kUfQV79JnLVjoJgpT89X5fo1KKd", "f455eba9bcd5e78de8264fb11f6d660dc25a47e848e4c221dcd9f4880f843064"},
+		kaminoLegRepay:    {"GG3Sfg69KesDUrRu3P44K66VrUCJr8Dnu2qrBkFqvtJ7", "d3c654b56fb318e8b017bec5035774119c23cd3b8bde40dc10126080491bba27"},
+		kaminoLegWithdraw: {"6axY2HyxjWKXfsaGQq85NLmVv8wggEbTS9wTgFjtMGqX", "fa6f83ae80a2ce6fc6b27bac9e3fc6711beb4ea4b544aa6f048bb7a6464e8549"},
+	},
+}

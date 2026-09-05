@@ -289,7 +289,11 @@ func ObserveConfirmedKaminoExecutionEvidence(
 			return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("PRIME/USDC policy bytes or owner drifted")
 		}
 		var effects ExpectedEffects
-		if leg == kaminoLegRepay {
+		if leg == kaminoLegDeposit {
+			effects, err = boundedKaminoDepositEffects(accounts, route, observation.Snapshot.Slot, wireAmount)
+		} else if leg == kaminoLegBorrow {
+			effects, err = kaminoBorrowEffects(accounts, route, wireAmount)
+		} else if leg == kaminoLegRepay {
 			effects, err = boundedKaminoRepaymentEffects(accounts, source, destination, effectAmount, wireAmount)
 		} else {
 			effects, err = exactKaminoTokenEffects(accounts, source, destination, effectAmount)

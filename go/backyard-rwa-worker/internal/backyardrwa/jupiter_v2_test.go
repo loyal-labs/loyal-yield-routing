@@ -16,8 +16,11 @@ import (
 )
 
 // Test-local bindings only: installed JSON and production activation stay intact.
-func candidateV2Catalog(t *testing.T) {
+func candidateV2Catalog(t *testing.T, edges ...string) {
 	t.Helper()
+	if len(edges) == 0 {
+		edges = []string{"USDC->USDe", "USDe->PYUSD"}
+	}
 	original := catalogJupiterJSON
 	t.Cleanup(func() { catalogJupiterJSON = original })
 	var entries []catalogJupiterBinding
@@ -26,7 +29,11 @@ func candidateV2Catalog(t *testing.T) {
 	}
 	for i := range entries {
 		b := &entries[i]
-		if b.From+"->"+b.To != "USDC->USDe" && b.From+"->"+b.To != "USDe->PYUSD" {
+		selected := false
+		for _, edge := range edges {
+			selected = selected || edge == b.From+"->"+b.To
+		}
+		if !selected {
 			continue
 		}
 		b.DiscriminatorHex = "d19853937cfed8e9"
@@ -148,7 +155,71 @@ func TestCandidateJupiterV2FixedPrefixAndClient(t *testing.T) {
 }
 
 func TestPhase3JupiterCandidateMatchesGo(t *testing.T) {
+	checkPhase3JupiterCandidateMatchesGo(t, false)
+}
+
+func TestPhase3JupiterReturnMatchesGo(t *testing.T) {
+	checkPhase3JupiterCandidateMatchesGo(t, true)
+}
+
+func TestPhase3LinkedLendingMessagesMatchGo(t *testing.T) {
+	dir, name := os.Getenv("PHASE3_JUPITER_RETURN_PROBE_DIR"), os.Getenv("PHASE3_JUPITER_PROBE_RESULT")
+	if dir == "" || name == "" {
+		t.Skip("explicit linked execution required")
+	}
+	var plan struct {
+		LendingPrelude *struct {
+			Schema, Lane              string
+			Broadcast, SignatureProof bool
+			Steps                     []struct {
+				Leg, WireBase64, WireSHA256 string
+				Request                     KaminoPrimeUSDCRequest
+			}
+		}
+	}
+	data, err := os.ReadFile(dir + "/plan.json")
+	if err != nil || json.Unmarshal(data, &plan) != nil {
+		t.Fatal("linked plan unavailable", err)
+	}
+	if plan.LendingPrelude == nil {
+		t.Fatal("linked lending plan required")
+	}
+	var result struct {
+		PlanSHA256   string
+		LendingSteps []struct{ Leg, WireSHA256 string }
+	}
+	resultData, err := os.ReadFile(dir + "/" + name)
+	if err != nil || json.Unmarshal(resultData, &result) != nil || result.PlanSHA256 != sha256Bytes(data) {
+		t.Fatal("linked execution identity mismatch", err)
+	}
+	p := plan.LendingPrelude
+	if p.Schema != "phase3-kamino-controlled-probe/v1" || p.Lane != ethenaUSDePYUSD.Lane || p.Broadcast || p.SignatureProof || len(p.Steps) != 4 || len(result.LendingSteps) != 4 {
+		t.Fatal("linked lending scope mismatch")
+	}
+	for i, step := range p.Steps {
+		if step.Leg != []string{"deposit", "borrow", "repay", "withdraw"}[i] || result.LendingSteps[i].Leg != step.Leg || result.LendingSteps[i].WireSHA256 != step.WireSHA256 {
+			t.Fatal("executed lending order/wire mismatch")
+		}
+		message, err := CompileKaminoMessage(step.Request)
+		wire, decodeErr := base64.StdEncoding.Strict().DecodeString(step.WireBase64)
+		if err != nil || decodeErr != nil || len(wire) <= 65 || len(wire) > 1232 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != step.WireSHA256 || !bytes.Equal(message, wire[65:]) {
+			t.Fatal("executed lending wire differs from production Go compiler", err, decodeErr)
+		}
+	}
+}
+
+func checkPhase3JupiterCandidateMatchesGo(t *testing.T, returning bool) {
+	t.Helper()
 	dir := os.Getenv("PHASE3_JUPITER_CANDIDATE_PROBE_DIR")
+	schema := "phase3-jupiter-candidate-controlled-result/v1"
+	edges := []string{"USDC->USDe", "USDe->PYUSD"}
+	actions := []Action{SwapStableToCollateralStep, SwapCollateralToDebtStep}
+	if returning {
+		dir = os.Getenv("PHASE3_JUPITER_RETURN_PROBE_DIR")
+		schema = "phase3-jupiter-return-controlled-result/v1"
+		edges = []string{"USDe->USDC"}
+		actions = []Action{SwapCollateralToStableStep, SwapDebtToUSDCStep}
+	}
 	if dir == "" {
 		t.Skip("explicit public candidate snapshot required")
 	}
@@ -161,9 +232,9 @@ func TestPhase3JupiterCandidateMatchesGo(t *testing.T) {
 		return b
 	}
 	var plan struct {
-		Compiler, Lane string
-		Broadcast      bool
-		Steps          []struct {
+		Compiler, Lane, Profile string
+		Broadcast               bool
+		Steps                   []struct {
 			Action                      Action
 			AmountRaw, MinimumOutputRaw uint64
 			WireBase64, WireSHA256      string
@@ -195,17 +266,20 @@ func TestPhase3JupiterCandidateMatchesGo(t *testing.T) {
 	name := os.Getenv("PHASE3_JUPITER_PROBE_RESULT")
 	if name == "" {
 		name = "result-negatives.json"
+		if returning {
+			name = "result-return.json"
+		}
 	}
 	read(name, &result)
-	if plan.Compiler != "TYPESCRIPT_CANDIDATE_NOT_INSTALLED_GO" || plan.Broadcast || plan.Lane != ethenaUSDePYUSD.Lane || len(plan.Steps) != 2 || result.Schema != "phase3-jupiter-candidate-controlled-result/v1" || result.Broadcast || result.InstalledPolicyProof || len(result.CandidateCreation) != 2 || result.PlanSHA256 != sha256Bytes(planBytes) || result.SnapshotSHA256 != sha256Bytes(snapshotBytes) {
+	if plan.Compiler != "TYPESCRIPT_CANDIDATE_NOT_INSTALLED_GO" || plan.Broadcast || plan.Lane != ethenaUSDePYUSD.Lane || (plan.Profile == "RETURN_CONVERSIONS") != returning || len(plan.Steps) != 2 || result.Schema != schema || result.Broadcast || result.InstalledPolicyProof || len(result.CandidateCreation) != len(edges) || result.PlanSHA256 != sha256Bytes(planBytes) || result.SnapshotSHA256 != sha256Bytes(snapshotBytes) {
 		t.Fatal("candidate scope/identity mismatch")
 	}
-	candidateV2Catalog(t)
+	candidateV2Catalog(t, edges...)
 	var bindings []catalogJupiterBinding
 	if json.Unmarshal(catalogJupiterJSON, &bindings) != nil {
 		t.Fatal("catalog decode")
 	}
-	for i, edge := range []string{"USDC->USDe", "USDe->PYUSD"} {
+	for i, edge := range edges {
 		creation := result.CandidateCreation[i]
 		hash := ""
 		for _, a := range creation.After {
@@ -228,7 +302,7 @@ func TestPhase3JupiterCandidateMatchesGo(t *testing.T) {
 		}
 	}
 	catalogJupiterJSON, _ = json.Marshal(bindings)
-	for i, action := range []Action{SwapStableToCollateralStep, SwapCollateralToDebtStep} {
+	for i, action := range actions {
 		s := plan.Steps[i]
 		if s.Action != action {
 			t.Fatal("step order drift")
@@ -237,13 +311,35 @@ func TestPhase3JupiterCandidateMatchesGo(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if returning && i == 1 {
+			found := false
+			for _, account := range snapshot.Accounts {
+				if account.Address == b.Policy && account.Present && !account.Executable && account.Owner == bridgeSquadsProgram {
+					data, err := base64.StdEncoding.Strict().DecodeString(account.DataBase64)
+					found = err == nil && sha256Bytes(data) == b.PolicySHA256 && account.DataSHA256 == b.PolicySHA256
+				}
+			}
+			if !found {
+				t.Fatal("return legacy policy does not match installed snapshot")
+			}
+		}
 		out, err := strconv.ParseUint(s.HeaderRow.Quote.OutAmountRaw, 10, 64)
 		if err != nil {
 			t.Fatal(err)
 		}
 		r := JupiterSwapRequest{Action: action, AmountRaw: s.AmountRaw, QuotedOutputRaw: out, MinimumOutputRaw: s.MinimumOutputRaw, Policy: b.Policy, PolicyAccountDataSHA256: b.PolicySHA256, PolicyConstraintIndex: b.ConstraintIndex, Instruction: s.HeaderRow.Instruction, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99, RouteLane: plan.Lane}
-		r.Instruction.LookupTableAddresses = s.HeaderRow.LookupTables
-		for _, address := range s.HeaderRow.LookupTables {
+		wire, err := base64.StdEncoding.Strict().DecodeString(s.WireBase64)
+		if err != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != s.WireSHA256 {
+			t.Fatal("unsigned SDK wire drift")
+		}
+		if acceptsJupiterLookupHints(plan.Lane, action) {
+			r.Instruction.LookupTableAddresses = s.HeaderRow.LookupTables
+		}
+		var lookups []string
+		if wire[65]&0x80 != 0 {
+			lookups = s.HeaderRow.LookupTables
+		}
+		for _, address := range lookups {
 			found := false
 			for _, a := range snapshot.Accounts {
 				if a.Address == address && a.Present {
@@ -258,10 +354,6 @@ func TestPhase3JupiterCandidateMatchesGo(t *testing.T) {
 			if !found {
 				t.Fatal("lookup missing")
 			}
-		}
-		wire, err := base64.StdEncoding.Strict().DecodeString(s.WireBase64)
-		if err != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != s.WireSHA256 {
-			t.Fatal("unsigned SDK wire drift")
 		}
 		message, err := CompileJupiterMessage(r)
 		if err != nil || !bytes.Equal(message, wire[65:]) {

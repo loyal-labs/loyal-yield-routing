@@ -447,6 +447,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0073_backyard_rwa_expired_absent_failure.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 74,
+        name: "backyard_rwa_phase3_journal_actions",
+        sql: include_str!("../../../loyal-yield-store/migrations/0074_backyard_rwa_phase3_journal_actions.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

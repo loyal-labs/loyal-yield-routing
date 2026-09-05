@@ -24,8 +24,9 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 	}
 	var headers struct {
 		Rows []struct {
-			Key         string
-			Instruction struct {
+			Key          string
+			LookupTables []string
+			Instruction  struct {
 				ProgramID, DataBase64 string
 				Accounts              []JupiterInstructionAccount
 			}
@@ -63,7 +64,7 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 		t.Fatal(err)
 	}
 	seen := map[string]bool{}
-	for _, lane := range []string{"AUTO/AUTO/PYUSD", "Ethena/USDe/PYUSD"} {
+	for _, lane := range []string{"AUTO/AUTO/PYUSD", "Ethena/USDe/PYUSD", "Prime/PRIME/PYUSD", "Prime/PRIME/USDS"} {
 		for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
 			b, err := catalogJupiterBindingForRoute(action, lane)
 			if err != nil {
@@ -118,6 +119,9 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 				for _, row := range headers.Rows {
 					if row.Key == key {
 						instruction = JupiterSwapInstruction{ProgramID: row.Instruction.ProgramID, Data: row.Instruction.DataBase64, Accounts: row.Instruction.Accounts}
+						if strings.HasPrefix(lane, "Prime/") {
+							instruction.LookupTableAddresses = row.LookupTables
+						}
 					}
 				}
 				data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
@@ -163,7 +167,7 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 				if err != nil || calls != 2 {
 					t.Fatal("production client failed exact retained layout", err, calls)
 				}
-				if lane == "Ethena/USDe/PYUSD" && action == SwapCollateralToDebtStep {
+				if (lane == "Ethena/USDe/PYUSD" && action == SwapCollateralToDebtStep) || strings.HasPrefix(lane, "Prime/") {
 					if len(returned.LookupTableAddresses) != 1 || returned.LookupTableAddresses[0] != bridgeVault {
 						t.Fatal("fresh lookup hints lost at API boundary")
 					}
@@ -202,11 +206,51 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 						t.Fatal("oversized legacy packet accepted")
 					}
 					request.LookupTables = retainedJupiterLookups(t)
+					if strings.HasPrefix(lane, "Prime/") {
+						request.LookupTables = nil
+						tables := readRetainedJupiterLookups(t, "prime-sibling-lookup-review-2026-09-05.json", 8)
+						for _, address := range instruction.LookupTableAddresses {
+							found := false
+							for _, table := range tables {
+								if table.Address == address {
+									request.LookupTables = append(request.LookupTables, table)
+									found = true
+								}
+							}
+							if !found {
+								t.Fatal("missing independently captured Prime lookup")
+							}
+						}
+					}
 					message, err = CompileJupiterMessage(request)
 					if err != nil || message[0] != 0x80 {
 						t.Fatal("retained exit does not fit with reviewed lookups", err)
 					}
 					assertV0SDKParity(t, mustKey(bridgeDelegate), mustKey(bridgeVault), []compiledInstruction{outer}, request.LookupTables, message)
+					if strings.HasPrefix(lane, "Prime/") {
+						rpc, reads := lookupRPC(t, request.LookupTables, nil, false)
+						unprepared := request
+						unprepared.LookupTables = nil
+						prepared, err := prepareJupiterLookupTables(context.Background(), rpc, unprepared, request.LookupTables[0].ObservedSlot)
+						if err != nil || *reads != 1 {
+							t.Fatal("Prime preparation did not load the hinted chain tables", err)
+						}
+						preparedMessage, err := CompileJupiterMessage(prepared)
+						if err != nil || !bytesEqual(message, preparedMessage) {
+							t.Fatal("fresh preparation changed Prime packet", err)
+						}
+						for _, tc := range []struct {
+							mutate func(*LookupTableSnapshot)
+							reason string
+						}{
+							{func(s *LookupTableSnapshot) { s.Data[56] ^= 1 }, "lookup_mapping_changed"},
+							{func(s *LookupTableSnapshot) { s.Owner = classicTokenProgram }, "lookup_account_invalid"},
+						} {
+							rpc, _ := lookupRPC(t, request.LookupTables, tc.mutate, false)
+							_, err := revalidateJupiterLookupTables(context.Background(), rpc, request, request.LookupTables[0].ObservedSlot)
+							assertBudgetHold(t, err, tc.reason)
+						}
+					}
 				}
 				packetEvidence, _ := json.Marshal(map[string]any{"lane": lane, "edge": key, "packetBytes": len(message) + 65, "legacyPacketBytes": len(raw) + 65, "fits": len(message)+65 <= solanaPacketBytes})
 				t.Logf("PHASE3_JUPITER_PACKET %s", packetEvidence)
@@ -244,7 +288,7 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 			})
 		}
 	}
-	if len(seen) != 10 {
+	if len(seen) != 18 {
 		t.Fatal("missing conversion coverage")
 	}
 	if _, _, _, _, err := jupiterEdgeForRoute(SwapUSDCToPrimeStep, "unknown/asset/debt"); err == nil {
@@ -274,12 +318,13 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 				s.PositionCollateralRaw = 10
 				s.PositionDebtRaw = 5
 				s.CollateralIdleRaw = 5
+				s.PositionDebtValueRaw, s.CollateralIdleValueRaw = 5, 6
 			case SwapUSDCToDebtStep:
 				s.CutoverDrain = true
 				s.HasPosition = true
 				s.PositionCollateralRaw = 10
 				s.PositionDebtRaw = 5
-				s.SquadsIdleRaw = 5
+				s.PositionDebtValueRaw, s.SquadsIdleRaw = 5, 6
 			case SwapDebtToUSDCStep:
 				s.CutoverDrain = true
 				s.DebtIdleRaw = 5

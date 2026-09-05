@@ -316,6 +316,9 @@ func (d *Database) RecordDecision(
 	manifestSHA256 string,
 	policyCatalogSHA256 string,
 ) (DecisionRecord, error) {
+	if isPolicySetupAction(decision.Action) {
+		return DecisionRecord{}, budgetHold("policy_setup_requires_atomic_intent")
+	}
 	if err := decision.Validate(); err != nil {
 		return DecisionRecord{}, fmt.Errorf("validate decision before persistence: %w", err)
 	}
@@ -355,6 +358,13 @@ func (d *Database) RecordDecision(
 	}
 	if stateVersion <= 0 || len(routeState) == 0 {
 		return DecisionRecord{}, fmt.Errorf("invalid locked route state")
+	}
+	var setupState map[string]json.RawMessage
+	if json.Unmarshal(routeState, &setupState) != nil {
+		return DecisionRecord{}, budgetHold("invalid_setup_route_state")
+	}
+	if _, pending := setupState["phase3SetupIntent"]; pending && decision.Action != Hold && decision.Action != HoldManualRecovery {
+		return DecisionRecord{}, budgetHold("policy_setup_in_progress")
 	}
 	operationEpoch := ""
 	if decision.Action != Hold && decision.Action != HoldManualRecovery {
@@ -502,31 +512,33 @@ func (d *Database) PostMutationNAVRequired(ctx context.Context, routeKey string)
 }
 
 type routeObservationProjection struct {
-	ObservedSlot         int64  `json:"observedSlot"`
-	ObservedAt           string `json:"observedAt"`
-	RouteStatus          string `json:"routeStatus"`
-	VoltrIdleRaw         string `json:"voltrIdleRaw"`
-	VoltrStrategyIdleRaw string `json:"voltrStrategyIdleRaw"`
-	SquadsIdleRaw        string `json:"squadsIdleRaw"`
-	DebtIdleRaw          string `json:"debtIdleRaw"`
-	PayoffDebtRaw        string `json:"payoffDebtRaw"`
-	AUMRaw               string `json:"aumRaw"`
-	AUMUSDMicros         string `json:"aumUsdMicros"`
-	NAVRaw               string `json:"navRaw"`
-	NAVUSDMicros         string `json:"navUsdMicros"`
-	ReportedNAVRaw       string `json:"reportedNavRaw"`
-	ComputedStrategyNAV  string `json:"computedStrategyNavRaw"`
-	ReportSequence       int64  `json:"reportSequence"`
-	ReportSlot           int64  `json:"reportSlot"`
-	ReportObservedAt     string `json:"reportObservedAt"`
-	ReportSnapshotDigest string `json:"reportSnapshotDigest"`
-	NAVFresh             bool   `json:"navFresh"`
+	ObservedSlot                int64  `json:"observedSlot"`
+	ObservedAt                  string `json:"observedAt"`
+	RouteStatus                 string `json:"routeStatus"`
+	VoltrIdleRaw                string `json:"voltrIdleRaw"`
+	VoltrStrategyIdleRaw        string `json:"voltrStrategyIdleRaw"`
+	SquadsIdleRaw               string `json:"squadsIdleRaw"`
+	DebtIdleRaw                 string `json:"debtIdleRaw"`
+	PayoffDebtRaw               string `json:"payoffDebtRaw"`
+	CollateralIdleValueRaw      string `json:"collateralIdleValueRaw"`
+	MinimumCollateralDepositRaw string `json:"minimumCollateralDepositRaw"`
+	AUMRaw                      string `json:"aumRaw"`
+	AUMUSDMicros                string `json:"aumUsdMicros"`
+	NAVRaw                      string `json:"navRaw"`
+	NAVUSDMicros                string `json:"navUsdMicros"`
+	ReportedNAVRaw              string `json:"reportedNavRaw"`
+	ComputedStrategyNAV         string `json:"computedStrategyNavRaw"`
+	ReportSequence              int64  `json:"reportSequence"`
+	ReportSlot                  int64  `json:"reportSlot"`
+	ReportObservedAt            string `json:"reportObservedAt"`
+	ReportSnapshotDigest        string `json:"reportSnapshotDigest"`
+	NAVFresh                    bool   `json:"navFresh"`
 }
 
 func newRouteObservationProjection(observation Observation) (routeObservationProjection, error) {
 	snapshot := observation.Snapshot
 	if snapshot.VoltrIdleRaw < 0 || snapshot.VoltrStrategyIdleRaw < 0 || snapshot.SquadsIdleRaw < 0 || snapshot.DebtIdleRaw < 0 || snapshot.PayoffDebtRaw < 0 ||
-		snapshot.PositionCollateralRaw < 0 || snapshot.PositionDebtRaw < 0 ||
+		snapshot.PositionCollateralRaw < 0 || snapshot.PositionDebtRaw < 0 || snapshot.CollateralIdleValueRaw < 0 || snapshot.MinimumCollateralDepositRaw < 0 ||
 		snapshot.PositionCollateralValueRaw < 0 || snapshot.PositionDebtValueRaw < 0 ||
 		snapshot.StrategyNAVRaw < 0 || snapshot.TotalVaultNAVRaw < 0 || snapshot.PriorReportedNAVRaw < 0 ||
 		snapshot.LTVBPS < 0 || snapshot.LTVBPS > 10_000 || snapshot.LastReportAgeSeconds < 0 ||
@@ -561,8 +573,10 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 		ObservedSlot: snapshot.Slot, ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano), RouteStatus: status,
 		VoltrIdleRaw: fmt.Sprint(snapshot.VoltrIdleRaw), VoltrStrategyIdleRaw: fmt.Sprint(snapshot.VoltrStrategyIdleRaw),
 		SquadsIdleRaw: fmt.Sprint(snapshot.SquadsIdleRaw), DebtIdleRaw: fmt.Sprint(snapshot.DebtIdleRaw), AUMRaw: fmt.Sprint(snapshot.TotalVaultNAVRaw),
-		PayoffDebtRaw: fmt.Sprint(snapshot.PayoffDebtRaw),
-		AUMUSDMicros:  fmt.Sprint(snapshot.TotalVaultNAVRaw), NAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
+		PayoffDebtRaw:               fmt.Sprint(snapshot.PayoffDebtRaw),
+		CollateralIdleValueRaw:      fmt.Sprint(snapshot.CollateralIdleValueRaw),
+		MinimumCollateralDepositRaw: fmt.Sprint(snapshot.MinimumCollateralDepositRaw),
+		AUMUSDMicros:                fmt.Sprint(snapshot.TotalVaultNAVRaw), NAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
 		NAVUSDMicros: fmt.Sprint(snapshot.PriorReportedNAVRaw), ReportedNAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
 		ComputedStrategyNAV: fmt.Sprint(snapshot.StrategyNAVRaw), ReportSequence: snapshot.ReportSequence,
 		ReportSlot: snapshot.ReportSequence, ReportObservedAt: reportUpdatedAt.Format(time.RFC3339),

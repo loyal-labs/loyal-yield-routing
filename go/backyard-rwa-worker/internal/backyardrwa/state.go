@@ -30,6 +30,8 @@ const (
 	VoltrRestoreIdle           Action = "VOLTR_RESTORE_IDLE"
 	ReportNAV                  Action = "REPORT_NAV"
 	HoldManualRecovery         Action = "HOLD_MANUAL_RECOVERY"
+	PolicySetupPrefund         Action = "POLICY_SETUP_PREFUND"
+	PolicySetupCreate          Action = "POLICY_SETUP_CREATE"
 )
 
 type OperationStatus string
@@ -63,6 +65,12 @@ type Snapshot struct {
 	// PRIME route it is deliberately left unset and PrimeIdleRaw remains the
 	// compatibility field.
 	CollateralIdleRaw int64
+	// Same-batch, rounded-down bridge-USDC NAV value, used only to select a
+	// plausible funding source. The executable quote minimum remains the gate.
+	CollateralIdleValueRaw int64
+	// Smallest input admitted by the current reserve-derived rounding bound.
+	// Remainders below this stay in custody for exit, not repeated deposits.
+	MinimumCollateralDepositRaw int64
 	// DebtIdleRaw is in the selected debt mint's raw units. SquadsIdleRaw
 	// remains bridge USDC, even when the lane borrows PYUSD/USDG/USDS.
 	DebtIdleRaw int64
@@ -110,6 +118,12 @@ type Decision struct {
 func (d Decision) Validate() error {
 	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 {
 		return fmt.Errorf("incomplete decision")
+	}
+	if isPolicySetupAction(d.Action) {
+		if d.StrategyKey != "OnRe/ONyc/USDC" || d.Reason != "phase3_policy_setup" || d.AmountRaw <= 0 {
+			return fmt.Errorf("invalid policy setup decision")
+		}
+		return nil // Journal identity only; not a runtime lane registration.
 	}
 	neutral := d.Action == SwapStableToCollateralStep || d.Action == SwapCollateralToStableStep || d.Action == OpenRouteStep || d.Action == DeleverRouteStep
 	catalog := false

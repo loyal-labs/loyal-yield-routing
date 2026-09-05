@@ -11,6 +11,20 @@ import (
 // Independent retained SDK/account-vector evidence, not output from this Go
 // compiler. No RPC, signer, simulation or send is used by this witness.
 func TestCatalogKaminoConstructionMatchesRetainedAUTOAndEthena(t *testing.T) {
+	testCatalogKaminoConstruction(t, []string{"AUTO/AUTO/PYUSD", "Ethena/USDe/PYUSD"})
+}
+
+func TestCatalogKaminoConstructionMatchesRetainedPrimeSiblings(t *testing.T) {
+	testCatalogKaminoConstruction(t, []string{"Prime/PRIME/PYUSD", "Prime/PRIME/USDS"})
+	// Catalog support does not expand the three new-family canary budget.
+	for _, lane := range []string{"Prime/PRIME/PYUSD", "Prime/PRIME/USDS"} {
+		if phase3BudgetFamilyForLane(lane) != "" {
+			t.Fatal("sibling construction authorized an extra funded canary")
+		}
+	}
+}
+
+func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 	data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/phase3/setup-feasibility-2026-09-04.json")
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +70,7 @@ func TestCatalogKaminoConstructionMatchesRetainedAUTOAndEthena(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, lane := range retained.Preflight.Bindings.Data.Lanes {
-		if lane.Lane != "AUTO/AUTO/PYUSD" && lane.Lane != "Ethena/USDe/PYUSD" {
+		if lane.Lane != lanes[0] && lane.Lane != lanes[1] {
 			continue
 		}
 		if seen[lane.Lane] {
@@ -148,7 +162,7 @@ func TestCatalogKaminoConstructionMatchesRetainedAUTOAndEthena(t *testing.T) {
 		})
 	}
 	if len(seen) != 2 {
-		t.Fatal("missing retained AUTO/Ethena evidence")
+		t.Fatal("missing retained exact lane evidence")
 	}
 	if _, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 77,
 		LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, "unknown/asset/debt"); err == nil {

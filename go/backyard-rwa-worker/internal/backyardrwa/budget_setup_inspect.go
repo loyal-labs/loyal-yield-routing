@@ -3,13 +3,15 @@ package backyardrwa
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
 // InspectPhase3SetupRent measures existing equivalent policy allocations.
 // It does not claim that a new allocation must use this size: the compiler
 // and real-program creation probe must establish that separately. No signer,
-// database, transaction creation or send path is involved.
+// database or send path is involved. Exact unsigned setup candidate pricing
+// below is independent from these allocation samples and is not admission.
 func InspectPhase3SetupRent(ctx context.Context, endpoint string) ([]byte, error) {
 	rpc, err := NewRPCClient(endpoint)
 	if err != nil {
@@ -65,13 +67,32 @@ func InspectPhase3SetupRent(ctx context.Context, endpoint string) ([]byte, error
 	if endSlot < price.ObservedSlot || endSlot > price.ValidThroughSlot {
 		return nil, budgetHold("setup_rent_valuation_expired")
 	}
+	type candidate struct {
+		Operation   string                 `json:"operation"`
+		Observation policySetupObservation `json:"observation"`
+		Reason      string                 `json:"reason,omitempty"`
+	}
+	var candidates []candidate
+	for _, operation := range []string{"borrow", "repay"} {
+		observed, observeErr := observePolicySetup(ctx, rpc, operation)
+		row := candidate{Operation: operation, Observation: observed}
+		if observeErr != nil {
+			row.Reason = "SETUP_CANDIDATE_OBSERVATION_UNAVAILABLE"
+			var hold *BudgetHold
+			if errors.As(observeErr, &hold) {
+				row.Reason = hold.Reason
+			}
+		}
+		candidates = append(candidates, row)
+	}
 	return json.Marshal(struct {
 		Schema     string      `json:"schema"`
 		ReadOnly   bool        `json:"readOnly"`
 		Slot       int64       `json:"slot"`
 		Price      BudgetPrice `json:"price"`
 		Policies   []row       `json:"policies"`
+		Candidates []candidate `json:"candidates"`
 		Limitation string      `json:"limitation"`
-	}{"loyal-backyard-rwa-phase3-setup-rent-inspection/v1", true, endSlot, price, rows,
-		"Existing allocation samples only; prove required new allocation size with the real-program PolicyCreate path. Network fees are additional."})
+	}{"loyal-backyard-rwa-phase3-setup-rent-inspection/v1", true, endSlot, price, rows, candidates,
+		"Allocation samples exclude fees. Candidates include fees and use independent observation slots; they are alternatives at the currently finalized next seed, not a batch. Refresh after each creation. No durable admission, deployment or repaired-farm validation, signing, installation or broadcast."})
 }

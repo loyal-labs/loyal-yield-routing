@@ -5,6 +5,47 @@ review of v1. This explicitly replaces the five-route restriction, impossible
 capacity-recovery proof and underspecified accounting. The 1/20/60 USDC caps
 and existing authority boundaries remain unchanged.
 
+## Current recovery checkpoint — 2026-09-05
+
+The former `/private/tmp/loyal-backyard-phase3.3EQhbn` checkout and disposable
+probe/database directories are missing. The cause is unverified. The surviving
+branch commit is `e8732c3800034d12b6b6d7b2eb0900a39d28fc58`; subsequent source
+changes were recovered from successful recorded patches into the persistent,
+isolated `/Users/user/loyal/loyal-yield-routing/.phase3-recovery` worktree. The
+dirty shared checkout was not overwritten. Rejected patches were not replayed.
+
+Historical checkpoint statements below describe their original runs. They are
+not evidence that missing artifacts still exist or that interrupted tests passed.
+The interrupted final race/TypeScript run has no recovered completion result.
+The new offline verifier checkpoint `phase3/worktree-recovery-2026-09-05.json.gz`
+reports R01–R08 FAIL; its gzip SHA256 is
+`aaf951ecc48862da5d6250a490771792dbac77a6df4af1ba8969ffd13367b4bb`.
+No production signing, broadcast, migration or deployment occurred in recovery.
+
+Recovered source compiles. Pinned TypeScript checking and the 12 verifier tests
+pass. A fresh disposable-PostgreSQL admission/send/setup journal run passes.
+The targeted setup/payment/catalog/journal race run also passes (15.787s).
+The Prime lookup fixture was refreshed at finalized slot 444643583 with all
+eight lookup tables and seven matching policy hashes; its packet tests pass.
+That fixture explicitly identifies itself as a fresh capture, not the lost one.
+The historical return-quote fixture, V2 return candidates, later generated
+checkpoints and local real-program probe snapshots remain unrecovered; do not
+fabricate them or weaken their checks. The full Go suite is not yet green.
+
+The implementation critical path remains: finish setup build/simulation/send and
+expiry recovery; resolve the five rejected/unbound lane bindings using the
+permitted authority-review path; integrate the complete worker lifecycle and
+serialized family queue; verify all eleven lanes; then deploy immutably and
+prove the three accepted canary outcomes. Setup still HOLDs before signing/send.
+The known rejected historical-return verifier change remains unapplied.
+
+The durable Codex goal still exists but currently reports `blocked` and names the
+missing checkout. The available goal API cannot resume or edit its objective.
+Do not mark this unfinished goal complete to replace it. Resume/update that
+existing goal through Codex, retaining this contract and all acceptance criteria.
+
+## Contract authority
+
 This file alone defines done; the combined handoff is an implementation guide.
 Documents, tests or deployment alone cannot complete the implementation goal.
 Phase 2 evidence reports PASS in PR #223. Separately verify its runtime goal is
@@ -789,3 +830,703 @@ and reconcile that balance under the existing flat-transition condition; do not
 call production flat or infer authority to drain it. Continue full-lifecycle
 mechanics and entry/debt-bearing admission; no need to repeat this resolved
 two-swap experiment without a relevant implementation or identity change.
+
+#### Complete-return policy-layout checkpoint — 2026-09-05
+
+Public unsigned V1 sizing quotes at slots 444478869–444478870 expose a
+previously unproven return boundary. Current production Go validation measures:
+
+| Edge | Installed amount/slippage offsets | Observed offsets | Result |
+| --- | --- | --- | --- |
+| USDe -> PYUSD | 29 / 45 | 19 / 35 | Reject |
+| PYUSD -> USDC | 18 / 34 | 18 / 34 | Accept layout only |
+| USDe -> USDC | 17 / 33 | 18 / 34 | Reject |
+
+All three have the installed discriminator and correct custody roles. A matching
+discriminator is therefore insufficient. Input samples are the retained release
+amount 97,775,409 USDe raw, its new quote minimum 97,257 PYUSD raw minus a
+hypothetical 1,001-raw payoff, and a conservative 2,224,590-raw remaining USDe
+sample. They exclude preexisting debt custody and are not linked executions,
+fresh lending observations, capacity proof or an executable return reservation.
+Raw responses are retained in `phase3/return-quote-feasibility-2026-09-05.json`.
+
+The V2 repair candidate now also covers USDe -> USDC, preserving its packed
+USDe -> USDS sibling exactly. Superset artifacts
+`phase3/jupiter-v2-return-repair-candidates-2026-09-05.json` and
+`phase3/jupiter-v2-return-public-quotes-2026-09-05.json` retain the first two
+candidates/quotes unchanged and add the return sample at slot 444479270.
+They deliberately do not represent a coherent chain snapshot. The original
+two-swap evidence remains valid for its limited claim.
+
+The current TypeScript compiler rejects economic and custody mutations for all
+three samples, preserving all 52 original legacy constraints. Actual local
+PolicyCreate through the captured deployed Squads binary accepts all three
+complete replacement groups: packets 1,072 / 1,111 / 1,072 bytes, allocations
+1,383 / 1,458 / 1,383 bytes. These are ephemeral-Settings local measurements,
+not installation, present mainnet rent feasibility, or third-swap execution.
+No installed binding, authority, cap or live state changed.
+
+The sole verifier now retains exact current-Go compatibility diagnostics and
+checks the three-group compiler/creation proof. Its focused offline checkpoint
+is `phase3/return-policy-compatibility-2026-09-05.json.gz`; unchanged DB and
+sequential execution evidence stays in the earlier checkpoints above rather
+than being relabelled as newly observed.
+
+Outstanding verifier edit: this checkpoint's implementation also contains an
+uncommitted extra R04 acceptance check requiring these dated sizing quotes to
+pass. That check was introduced during this checkpoint, not in the accepted v2
+contract. The attempted correction to leave it diagnostic-only was rejected by
+platform review, including after showing the original Git diff. Do not bypass
+that rejection or treat the accidental check as user-approved contract scope;
+obtain explicit approval for that exact correction. Existing full-lifecycle,
+installed-authority, cap and final-custody requirements remain unchanged.
+
+Next implementation dependency: include the third return repair in the existing
+forward-roll workflow, then prove linked release/funding/payoff/full return
+against a coherent snapshot. Do not try indefinitely to obtain old legacy
+offsets, infer capacity failure from this layout mismatch, or install candidates
+before current authority, setup cost and final-send admission are satisfied.
+
+#### USDC-funded payoff admission — 2026-09-05
+
+The existing funding-return producer now also admits the planner's
+`withdrawal_usdc_repayment_buffer` action. It reads USDC source custody in the
+same batch as debt/reserves/Clock, checks the wire-enforced minimum against the
+interest horizon, and rechecks persisted funding at final send. The current
+swap reserves 13 future steps; a preceding NAV reserves 14. Spent USDC is removed
+only from the cost-only return projection, preventing double-counting during
+full staging/restoration. Original observations and current wires stay intact.
+A funded NAV does not swap remaining USDC again merely because it exists.
+
+The Go race suite passes. Controlled-input tests cover source-custody drift,
+underfunding, over-cap return and complete return accounting; disposable
+PostgreSQL additionally proves the real producer rejects unreserved exposure,
+persists the selected USDC source and full payoff/return reservation, and
+authorizes the matching unsigned build. No signer or broadcast is used.
+
+Current sole-verifier checkpoint:
+`phase3/usdc-funding-return-admission-2026-09-05.json.gz`. This extends R01 local
+admission evidence, not linked execution or deployment proof. Entry/borrowing,
+setup/budget initialization, complete lifecycle, remaining lane/queue and live
+proof are still missing. The platform-blocked verifier correction above remains
+unchanged and still awaits explicit approval; this implementation does not
+bypass it or alter caps, installed bindings or authority.
+
+#### Executed return conversions — 2026-09-05
+
+At finalized snapshot slot 444485232, the captured deployed Squads/Jupiter/
+Manifest/AlphaQ/token programs execute both return conversions sequentially:
+2,224,590 USDe raw -> 2,224 USDC raw, then 96,256 PYUSD raw -> 96,272 USDC raw.
+Both controlled source custodies end at zero and the same destination ends at
+98,496 USDC raw. Compute is 105,699 / 121,463 units. Eleven economic/custody
+mutations reject before Jupiter CPI without changing source/destination funds.
+
+The USDe return uses one V2 candidate created only on cloned Settings; the PYUSD
+return uses its exact installed legacy policy. Go reproduces both executed SDK
+messages with the candidate binding confined to the test. The probe initially
+forced v0 encoding; the production-matching legacy-first messages both fit at
+895 / 860 bytes. No runtime lookup permission was broadened to satisfy parity.
+The original capture was reused immutably for this encoding correction.
+
+Run the sole verifier with `PHASE3_JUPITER_RETURN_PROBE_DIR` pointing to
+`/private/tmp/backyard-phase3-jupiter-probe.xpg0aH`. Retained checkpoint:
+`phase3/return-conversions-execution-2026-09-05.json.gz`. The verifier requires
+exact source sweeps, continuous destination balances, full negative coverage,
+program/policy/plan identities and current-Go parity; a claimed flat flag alone
+cannot pass the subclaim. Existing forward-swap proof is rerun because the same
+local runner/compiler-comparison code changed.
+
+This is still controlled post-payoff sizing input, not proof that lending
+produced those balances. It neither restores Voltr nor proves live/flat global
+custody, installed candidate authority, signatures or cap admission. The real
+214,898-raw PYUSD prebalance is retained explicitly as a local override, not
+drained or attributed. Next connect release, funding, payoff, these conversions
+and bridge/NAV in one coherent execution; do not repeat the resolved isolated
+return experiment without an affected dependency change.
+
+#### Linked lending and both returns — 2026-09-05
+
+The existing local runner now executes four exact Go lending messages followed
+by both return conversions on one finalized 56-account snapshot (slot 444491195)
+and eight captured deployed programs. Deposit creates 92,650,599 receipt units;
+borrow creates 1,000 PYUSD raw debt; repayment clears that debt; withdrawal
+returns 99,999,999 USDe raw and leaves zero obligation receipts/debt. The actual
+withdrawal output converts to 99,984 USDC raw, and the actual remaining 2,000
+PYUSD raw converts to 2,000 USDC raw. Terminal local custody is 101,984 USDC raw,
+zero USDe and zero PYUSD. No account/balance reset occurs between the six legs.
+
+The linked mode reuses `prepare-phase3-jupiter-v2-probe.ts --lending-return`,
+with a current-Go `kamino-plan.json` export in the same directory. It unions
+account addresses before the single finalized capture, not historical snapshots.
+Quoted return amounts remain explicit sizing assumptions: the runner fails if
+actual lending output differs rather than modifying custody or quote economics.
+The verifier compares every before/after account set, checks account digests,
+decodes raw terminal obligation/custody, and checks all six wires against current
+Go compilation. Existing return-policy negative tests also run on this poststate.
+
+Configure `PHASE3_LINKED_LENDING_RETURN_PROBE_DIR` with
+`/private/tmp/backyard-phase3-jupiter-probe.KT0qLr`; the sole-verifier checkpoint
+for this slice is `phase3/linked-lending-return-2026-09-05.json.gz`.
+
+This closes the disconnected-lending/return proof gap for the controlled funded
+round trip only. Initial 100,000,000 USDe raw and 2,000 PYUSD raw are explicit
+local overrides; the unchanged-clock repayment uses the existing four-leg probe,
+not the runtime's accrued-payoff admission path. USDe return still uses a cloned
+candidate; no installed binding changes. Bridge entry/restoration, release and
+funding on this continuous state, runtime admission across entry/borrow/setup,
+all-lane and live proofs remain required. The pending historical-quote verifier
+correction remains untouched; no cap, authority or deployment change occurred.
+
+#### Production initial-swap admission — 2026-09-05
+
+The worker now routes initial USDC/collateral swaps to an entry producer instead
+of the return-only producer. For initialized, position-free custody it reserves
+the immediate complete reverse conversion, each required NAV, staging and full
+Voltr restoration. Spent USDC is removed only from the cost projection; unspent
+USDC remains included. The actual entry wire and observation stay unchanged.
+Prospective output uses the existing two-sided estimate, not an enforceable
+Jupiter maximum; actual poststate still requires fresh admission before the next
+transaction, and excess output never authorizes a partial/truncated exit.
+
+The persisted entry intent carries `entryReturnReserved`. Admission, pre-sign
+valuation and persisted-input final-send valuation check current source,
+collateral/debt custody and the empty obligation in one fresh account batch.
+Changed custody/position or mismatched minimum-output effects produce typed
+HOLD. This flag neither installs authority nor authorizes later deposits/borrows.
+
+The real disposable PostgreSQL producer test proves an entry cannot adopt
+unreserved bridge custody. With an existing reserve, it extends the reserve as
+entry spending within the unchanged caps, rather than misclassifying entry as
+recovery constrained to the cheaper cash-only exit. Existing recovery rules stay
+unchanged. The test persists the exact unsigned current build and all seven
+future return steps, then authorizes that build without signer or send access.
+Controlled tests also cover partial entry, family-cap rejection and changed
+custody at the actual persisted-input final-send gate. The Go race suite passes.
+
+Sole-verifier checkpoint: `phase3/entry-swap-admission-2026-09-05.json.gz`.
+R01 now distinguishes this initial conversion from still-missing collateral
+deposit, borrowing, setup and one-time budget initialization admission. This is
+local production-code/journal proof, not an executed admitted lifecycle or
+deployment. All remaining R01-R08 requirements and pending approval boundaries
+remain unchanged.
+
+#### Deposit rounding falsifier and runtime correction — 2026-09-05
+
+Before adding deposit admission, two cloned-program probes on the existing
+linked snapshot exposed a deterministic reconciliation defect. A deposit request
+of 1,000,000 USDe raw actually transfers 999,999 and mints 926,505 receipt units;
+99,999,999 raw transfers exactly and mints 92,650,598 receipts. The old exact
+transfer expectation rejects the first successful transaction. Separately, the
+100,000,000-raw linked deposit mints 20 fewer receipts than the unrefreshed
+pre-transaction exchange rate predicts. The transaction accrues reserve interest
+before computing receipt issuance; a stale-rate exact projection is invalid.
+
+Production deposit observation now produces explicit finite deposit-transfer
+bounds. Reconciliation checks conserved source/destination movement within those
+bounds; it does not infer receipt issuance, full custody consumption or terminal
+position state. The allowance bounds less-than-one-receipt rounding using the
+entire net reserve compounded at its maximum configured rate through the existing
+60-second/32-slot window (conservative versus interest on only borrowed assets).
+Build and persisted-input final-send valuation refresh the bound and custody;
+changed conditions produce HOLD. Economic cap debit remains the full wire
+request, not the smaller rounded transfer. Repayment semantics remain separate.
+
+The Go comparison reproduces both mutated deposit wires, checks captured token
+debits and minted supply, reconstructs the refreshed exchange-rate equation from
+actual poststate, accepts the genuine rounded transfer and rejects the former
+exact-debit negative control. It also rejects conserved transfers below the
+finite minimum. Controlled tests reject changed custody/rounding window and
+malformed or mixed deposit/repayment effects. The Go race suite passes.
+
+Retained current checkpoint: `phase3/deposit-rounding-compact-2026-09-05.json.gz`,
+using `PHASE3_LINKED_LENDING_RETURN_PROBE_DIR` with the existing
+`/private/tmp/backyard-phase3-jupiter-probe.KT0qLr` snapshot. The extra probes use
+isolated clones; they do not alter the six-leg continuous execution.
+
+The initial `phase3/deposit-rounding-2026-09-05.json.gz` checkpoint records a
+combined Go race-check timeout while parsing duplicated immutable program bytes,
+not a program-execution failure. Transition captures previously repeated the
+LiteSVM executable-account representation, producing 599,811,905 bytes of JSON.
+Those binaries remain independently hash-checked and retained in the snapshot;
+transition captures now include every non-executable account, reducing the same
+execution report to 2,584,227 bytes. The verifier derives the exact state-address
+set from the snapshot and rejects omitted state. No assertion, race check or
+timeout was removed or increased to make the check pass.
+
+This fixes a production reconciliation prerequisite, not deposit admission.
+The deposit return producer must still reserve withdrawal plus any rounded
+collateral residue, conversions and bridge/NAV; borrowing/setup/initialization
+and the other outstanding goal requirements remain unproven. No policy binding,
+cap, authority, live custody or pending verifier-approval boundary changed.
+
+### Initial deposit admission and remainder return (2026-09-05)
+
+The next local runtime slice wires initial deposits into production admission.
+An unsigned simulation of the exact current deposit (no overrides or replacement
+blockhash) supplies refreshed receipt issuance and conserved collateral movement.
+Only exit costing uses that poststate: full withdrawal, existing/rounded collateral
+remainder, conversion, restoration and every intervening NAV. The durable current
+input remains the original deposit. Subsequent NAV and withdrawal reobserve real
+custody; final-send rejects changed source custody, debt cash or initial position.
+Admission requires an existing family exit reserve and extends it within the
+unchanged caps; it cannot adopt unreserved collateral.
+
+Controlled RPC/quote tests cover the full nine-step reserve and failed, stale,
+incomplete or inconsistent projections. The real disposable-Postgres production
+test rejects unreserved deposit custody, persists the complete reserve and exact
+current input without signing, and authorizes the bounded build. These are local
+admission proofs, not deployed-program simulation or live canary proof. The
+retained linked deployed-program rounding witness remains separate.
+
+Next implementation gaps are borrowing/leveraged redeposit admission and
+setup/budget initialization, followed by complete all-lane execution, immutable
+deployment and family canaries. The existing binding-review and verifier-gate
+approval boundaries remain unchanged. The goal is active; R01-R08 are not PASS.
+
+### Borrow origination-fee accounting (2026-09-05)
+
+Borrow admission review found another actual protocol mismatch: KLend's exact
+borrow amount is received liquidity, not gross reserve debit or added debt.
+Isolated clones of the retained deployed-program snapshot prove that a 1,000-raw
+PYUSD receive debits 1,001 or 1,004 raw when the origination-fee configuration is
+changed to exercise minimum-fee and nearest-integer rounding. The existing fee
+receiver gets the difference and obligation debt includes it. Only that fee field
+is overridden locally; these probes do not feed or reset the linked lifecycle.
+
+Production observation now records exact source, vault and fee-receiver effects.
+Cap valuation includes the fee; build and persisted-input final-send revalidate
+the fee configuration, referrer assumption and custody. Receipt reconciliation
+uses the existing three-account conservation checks. Go agrees with actual token
+and raw-debt changes; the prior two-account expectation fails the same receipts.
+A production-builder negative test rejects a receive whose zero-origination-fee
+control passes even with valuation margins and network fee, while its actual
+gross debit crosses the unchanged cap, before database or signer access.
+
+This establishes borrowing economics, not complete borrow admission. Its reserved
+unwind must still fund origination fee and interest, including cases where the
+post-deposit collateral remainder is too small to quote on its own. No installed
+binding, policy, authority or live account changed. Current checkpoint:
+`phase3/borrow-fees-strict-negative-2026-09-05.json.gz` (the earlier
+`phase3/borrow-fees-2026-09-05.json.gz` predates the explicit zero-fee control).
+
+### Initial borrowing return reservation (2026-09-05)
+
+Initial borrowing is now wired to the existing production admission and journal.
+The shared unsigned entry simulation captures the exact borrowing poststate;
+the validator binds token effects, unchanged collateral, refreshed reserves and
+fee-inclusive debt. It accepts the retained deployed-program fee probes. No
+simulation overrides or future instructions become the current persisted input.
+
+For insufficient cash, the cost plan combines a safe collateral release with
+the existing remainder, validates the funding quote's enforceable minimum, then
+reserves full payoff, remaining receipt withdrawal, both residue conversions,
+restoration and NAV. The 17-step future graph needs seven interest windows from
+borrow through payoff; the current wire remains limited to 32 slots and its
+original 60-second entry window. Already-funded borrowing uses an 11-step return
+without unnecessary release/funding. No cap is raised.
+
+Controlled tests reject failed/inconsistent projections, insufficient quote
+funding, changed custody/position, rate increases and expired interest windows.
+Disposable-Postgres tests reject borrowing against an unreserved position and
+persist the full return with the original unsigned borrowing input before build
+authorization. The local race suite passes. These proofs establish admission
+costing, not a sequentially executed return or live canary.
+
+The next required integration is post-borrow NAV and release/funding dispatch:
+the current worker can still select an inadequate dust-only funding conversion.
+That continuation and leveraged redeposit must be completed before claiming
+R01 or executing a new borrowing canary. Setup, binding review, all-lane proof,
+deployment and canaries remain outstanding. Checkpoint:
+`phase3/borrow-admission-2026-09-05.json.gz`.
+
+### Post-borrow funding continuation (2026-09-05)
+
+The dust-only planning/admission gap identified at the preceding checkpoint is
+now addressed locally. The existing same-batch NAV supplies idle collateral's
+rounded-down USDC value; observation identity and persisted projection retain
+that value. Funding selection compares it (or bridge USDC) with the debt
+shortfall using the existing two-sided price margin and wide arithmetic, not
+equal raw units or an assumed stablecoin peg. Missing/zero value never makes
+dust adequate. This estimate selects a path; only the executable quote minimum
+can establish funding sufficiency.
+
+Post-borrow NAV can reserve release, NAV, combined collateral funding, NAV,
+payoff and the complete remaining return: 16 future steps, six interest windows
+from current NAV through payoff. The actual release accepts a nonempty buffer,
+preserves its exact prebalance, and prices conversion of released liquidity plus
+the remainder. Sufficient bridge USDC can fund repayment while retaining the
+collateral remainder for final withdrawal/conversion. Already-funded debt does
+not trigger another swap merely because collateral or USDC remains. No cap,
+installed binding, authority or current-wire freshness limit changes.
+
+The sole verifier now includes controlled production decision/admission tests
+for these paths, underfunded quotes, changed custody and valuation overflow.
+The disposable-Postgres test also persists the NAV's release/funding reservation
+and authorizes only its original current input, with no signed wire or send.
+This is local planning, admission and persistence proof, not linked program
+execution of the continuation. Checkpoint:
+`phase3/funding-continuation-2026-09-05.json.gz`.
+
+Remaining critical path: leveraged swap/redeposit admission, setup and one-time
+budget initialization, exact installed-binding review, complete linked worker
+execution, all-lane evidence, immutable deployment and the required canaries.
+R01–R08 remain unproven overall; a passing local continuation does not authorize
+a borrowing canary. The pending historical-quote gate decision is unchanged.
+
+### Leveraged swap/redeposit admission and rounding progression (2026-09-05)
+
+The worker now routes the borrowed-debt conversion and debt-bearing redeposit
+through production admission, sharing the borrowing exit estimator. Each validates
+its exact unsigned simulation and reserves payoff funding, remaining collateral,
+all residue conversions and bridge/NAV return. Current inputs and original
+snapshots remain separate from projected poststate. Existing-position entry must
+already have an exit reserve; it can extend that reserve only within the existing
+caps. Final-send checks reject changed custody/position and expired debt windows.
+Controlled tests and real disposable-Postgres persistence/build authorization pass.
+
+The planner also uses the builder's same reserve-derived minimum deposit input.
+An initial deposit remainder can no longer prevent borrowing, and a redeposit
+remainder no longer restarts redeposit. These balances remain included in exit
+custody; the rule neither discards dust nor imposes an arbitrary token threshold.
+
+The verifier exports the current Go redeposit wire and executes it on an isolated
+clone of the retained debt-bearing Ethena post-borrow state. Explicit local
+overrides set collateral custody to 1,000,000 raw and debt cash to zero; this is
+not linked borrowed-funds conversion proof. Actual deposit debit is 999,999 raw,
+receipts increase 92,650,599 -> 93,577,104, and debt stays unchanged. The current
+Go validator accepts the captured poststate and rejects a receipt-removal negative
+control. The original six linked lending/return legs remain unchanged and pass.
+Checkpoint: `phase3/leverage-redeposit-2026-09-05.json.gz`.
+
+Still required: complete linked worker execution (including leveraged swap,
+redeposit and return), setup/one-time budget initialization, exact installed-binding
+review, all-lane proof, immutable deployment and required canaries. Local admission
+and the isolated redeposit witness are not R01/R04 completion. Caps, authority,
+hard exclusions and the pending historical-quote gate remain unchanged.
+
+### Explicit one-time budget initialization (2026-09-05)
+
+The production binary now provides `--initialize-phase3-budget`. It uses only
+`NEON_DATABASE_URL` and the exact existing `BACKYARD_RWA_ROUTE_KEY`, acquires the
+existing lease without preemption, and atomically creates fixed zero family
+counters plus an initialization marker in the existing route row. It preserves
+unrelated state and advances the row generation once. No signer, RPC, route
+activation, operation insertion or broadcast is involved; the result explicitly
+says `BOOKKEEPING_NOT_ACTIVATION`. The command has a 15-second operation bound
+and a separate three-second lease-release bound. Ordinary worker startup and
+admission never invoke it implicitly.
+
+An existing valid budget is returned unchanged, including closed status, spent
+amounts, exit reserves and unresolved reservations. Partial/malformed state,
+prior Phase 3 journal authorization, untagged signed/submission history on a
+new-family lane, active journal work or unresolved capital recovery prevents
+first creation. The exact retained Phase 2 recovery exception is not broadened.
+A never-submitted missing-budget HOLD does not prevent first creation. This is
+not protection against an administrator deleting both the state and its journal;
+such deletion remains outside the workflow, not a supported reset operation.
+
+Disposable-Postgres behavioral coverage exercises concurrent creation, restart,
+closed/spent/reserved-state preservation, corrupt or missing halves, historical
+submissions, active legacy/current statuses and lease fencing. The sole verifier
+includes that coverage and the public command's fixed-route/config/error-redaction
+checks. This local proof does not initialize the production database or establish
+R01 completion. Checkpoint: `phase3/budget-initialization-2026-09-05.json.gz`.
+
+Before live activation, still verify Phase 2 goal closure, finalized flat custody,
+actual production budget state, complete setup/admission feasibility, approved
+installed bindings and deployed governor identity. Remaining delivery work is
+complete linked worker execution, all-lane support/proof, setup, immutable
+deployment and required canaries. Accepted caps, pending review decisions and
+R01–R08 acceptance are unchanged.
+
+### Reviewed Prime sibling construction and canonical key encoding (2026-09-05)
+
+Fresh finalized binding review at slot 444525169, Settings seed 139, establishes
+exact custody/obligation ownership and all four installed Kamino account vectors
+for Prime/PRIME/PYUSD and Prime/PRIME/USDS. Neither requires farm substitution.
+The scoped local registration was accepted after that comparison; the other five
+previously rejected bindings remain untouched. These two existing catalog lanes
+now resolve through the shared runtime construction paths. The selected production
+manifest and three-family canary budget have not changed; no extra Prime canary
+is authorized by this support work.
+
+Their eight additional logical swap edges reuse existing installed policy bytes.
+At finalized slot 444526815 all seven involved swap-policy accounts matched the
+retained hashes; eight lookup tables were captured in
+`phase3/prime-sibling-lookup-review-2026-09-05.json`. Prime packets use the existing
+fresh-hint versioned-message path with exact instruction-key matching, table
+ownership/activation validation and preserved-prefix revalidation before send.
+No table creation/extension, policy rollover or signing is involved.
+
+Expanded independent SDK parity exposed a real base58 encoder defect: leading
+zero bytes emitted NUL characters, and an all-zero value acquired an extra digit.
+The shared encoder now emits canonical leading `1` characters. SDK-backed tests
+cover every leading-zero count for 32-byte keys, decode round trips and zero
+signatures. The normal packet suite now covers 16 Kamino operation vectors and
+24 lane-specific swap samples, with account/data mutations and Prime lookup
+preparation/mapping-drift rejection. This is local construction proof, not program
+execution, fresh-quote feasibility, signer proof or live activation.
+
+The refreshed setup sample at slot 444525343 values the deployed 1,400-byte
+borrow-policy allocation at 1.018417 USDC before fees, still above the accepted
+1-USDC transaction cap; the 1,250-byte repay allocation values at 0.918441 USDC.
+The five remaining OnRe/Maple lanes still differ at farm account positions, and
+two farm user accounts remain absent. Do not interpret these setup/authority
+gaps as capacity-pending completion. Full linked worker execution, remaining
+five-lane repair/support, queue, deployment and canaries remain unfinished.
+Checkpoint: `phase3/prime-sibling-construction-2026-09-05.json.gz`.
+
+#### Setup-rent staging feasibility — same checkpoint
+
+A decisive local probe now shows the deployed Squads binary accepts a system-owned,
+zero-data policy PDA that was partially rent-funded in a prior transaction. The
+second transaction creates the exact original policy, topping up only remaining
+rent. Compared with direct creation from the same cloned prestate, final account
+bytes, owner and balance are identical. Both the 1,400-byte borrow and 1,250-byte
+repay shapes pass. No constraints, seeds, destination semantics or total setup
+cost are omitted or weakened.
+
+For the local SVM rent schedule, borrow rent is 10,634,880 lamports: each payment
+debits 5,322,440 lamports including its own fee. Repay rent is 9,590,880: each
+debits 4,800,440. These are local mechanics figures, not mainnet prices. The sole
+verifier retains the two structured witnesses under `localJupiterRepair.setupStaging`
+and rejects absent/duplicate shapes, changed policy bytes or omitted payment fees.
+
+This supplies a potential in-cap setup mechanism; it supersedes the assumption
+that the entire rent must be paid in one transaction. Before production use,
+implement setup admission/persistence, fresh exact-seed/empty-PDA checks, both
+priced debits and fees under the existing transaction/family/goal caps, reservation
+for the complete remaining setup, and interrupted/ambiguous prefunding recovery.
+A prefunded PDA is unfinished setup, not completion or permission to abandon funds.
+The existing lease must serialize this with runtime activity and policy changes.
+No prefunding or installation was broadcast, and no cap increase is assumed.
+
+#### Unsigned setup construction and complete cost measurement — 2026-09-05
+
+`policy_setup.go` now constructs the two exact OnRe/USDC borrow/repay repair
+candidates and their preceding System rent-funding messages. The existing Settings,
+admin, delegate, vault, programs, account vectors and policy amount bound are fixed;
+only the seed, operation, blockhash and measured rent funding vary. The two farm
+placeholder substitutions are the only constraint differences from the retained
+catalog. This is candidate construction, not installed authority or registration
+of the rejected runtime lane.
+
+The independent installed SDK decodes the retained original PolicyCreate payload,
+applies those two substitutions, and checks payload bytes, PDA derivation, instruction
+accounts/privileges, packet fit and message serialization. Eight cases cover both
+operations and seeds 1, 170, 256 and uint64-max. Legacy account ordering within a
+privilege group may differ; resolved instruction semantics and SDK serialization
+round-trip must match, not an arbitrary SDK ordering convention.
+
+The cost measurement values each exact message's fee plus its rent contribution,
+rounds conservatively, rejects a non-rent-exempt initial system account, stale or
+wrong-message fees and per-transaction cap excess, and exposes the entire remaining
+setup cost before prefunding. A pure existing-budget reducer test preserves prior
+spend and the completion reserve across serialization/restart, ambiguous prefunding
+and proven-unsent creation. This does **not** prove durable setup journal integration.
+
+The sole verifier retains these checks as `preflight.localPolicySetup`, explicitly
+with `productionSetupAdmission: false`; they cannot independently satisfy R01.
+The production build-input decoder and queue still reject this setup request.
+Next integration must bind finalized Settings/seed and exact replacement identity,
+serialize with the existing lease, persist the full setup intent before funding,
+and recover/reconcile both payments before exposing live setup. Never substitute a
+setup completion reserve for an existing position exit. Shared-goal setup charging
+for historical-family sibling repairs remains unresolved. No new send command,
+policy installation, cap exception or runtime binding is introduced here.
+
+Prefer a single PolicyCreate when its freshly priced full debit fits; the measured
+two-payment path is a fallback, not a mandatory extra transaction. Checkpoint
+`phase3/unsigned-policy-setup-public-2026-09-05.json.gz` (gzip SHA-256
+`1d6c2393d8727daa4cb1ae5ba7a04275c84fa0cd3a5a1556d540677360a6f36f`)
+records passing local setup, existing PostgreSQL journal and linked lending/return
+checks plus fresh public chain/binding/rent observations. The earlier
+`unsigned-policy-setup-2026-09-05.json.gz` run lacked sandbox access to the local
+database socket and public RPC; it is not a runtime regression. Full Go race tests
+passed (31.449s), TypeScript checking passed, and verifier/binding tests passed
+(12 tests, 95 expectations). All R01–R08 remain FAIL overall; production database
+and deployment observations still lack credentials in this run. Nothing was
+signed, installed, deployed or broadcast. The disposable test database is stopped.
+
+#### Finalized setup prestate and fresh exact-payment pricing — 2026-09-05
+
+The existing `--inspect-phase3-setup-rent` command now also measures exact unsigned
+OnRe/USDC borrow/repay replacement candidates. It reads finalized Settings, validates
+the existing zero external Settings authority, single full-permission admin,
+threshold/time lock and forward seed, derives the replacement PDA, and requires it
+to be absent. Current native valuation, actual message fees and measured allocation
+rent determine direct creation versus the two-payment fallback. A final confirmed
+guard rejects newer Settings changes, occupied targets, stale pricing or insufficient
+admin balance. It does not adopt or abandon a previously prefunded PDA.
+
+Candidates are independent alternatives at the currently finalized next seed,
+**not** a two-policy installation batch. Each creation requires a refreshed seed.
+SDK-backed Settings variants and controlled RPC checks cover authority/permission
+changes, seed overflow/absence, truncation, changed prestate, target occupancy,
+malformed owner responses, underfunding and stale observations. The normal worker's
+account reads retain confirmed commitment; the shared decoder now distinguishes
+a genuinely absent optional account from a malformed present account with no owner.
+
+This closes fresh seed and exact-payment pricing measurement, not durable setup
+admission, interrupted-prefunding recovery, deployment identity/farm validation or
+live installation. The sole verifier records six local setup tests and the fresh
+candidate observations; `productionSetupAdmission` remains false. Production must
+persist the complete setup intent and reserve before funding, recover it under the
+same lease after restart, and never replace an open position's exit reserve.
+
+Checkpoint `phase3/fresh-policy-setup-2026-09-05.json.gz` has gzip SHA-256
+`e1ff4abd1fe6373e42772bd845d15eb55802393fb595ca4f012d38fb37511a65`.
+At confirmed slots 444540205/444540210, both independent candidates use finalized
+next seed 140: borrow payments value at 507,832 micros each (1,015,664 total),
+while direct repay-policy creation values at 915,537 micros, all including fees.
+These are expiring observations, not reserved costs or a live batch authorization.
+All six local setup checks, existing local PostgreSQL journal and linked-return
+checks pass; full Go race tests pass (32.239s), TypeScript checks pass, and verifier
+tests pass (12 tests/95 expectations). All R01–R08 remain FAIL overall. No production
+mutation occurred; the disposable test database is stopped.
+
+#### Durable setup intent and journal schema — 2026-09-05
+
+Setup bookkeeping now atomically persists the complete exact-price candidate,
+initial payment reservation and remaining completion reserve in the existing
+operation journal and goal budget. `state.phase3SetupIntent` is only a pointer to
+that row. Exact retry returns the original intent without updating its expiry,
+identity, costs or reserve; a restarted worker loads the same pending operation.
+Ordinary runtime decisions are fenced while the pointer exists, and setup metadata
+cannot be inserted through the generic decision path. An orphaned pointer prevents
+budget reinitialization. No production caller or setup send command is enabled yet.
+
+Cancellation is limited to an initial `decided` intent with no signed wire,
+signature, broadcast intent or booked spend, and atomically releases only its
+unspent reservation. Signed, potentially submitted and settled intents retain the
+pointer/reserve. Ordinary delegate recovery cannot discard or send a setup action.
+Admin signing, prefunding reconciliation and creation continuation remain required;
+this is durable initial-intent recovery, not full two-payment execution recovery.
+
+Real PostgreSQL checks cover concurrent deduplication, reconnect/lease ownership,
+restart, conflicting work, cancellation, corrupted/changed intents, missing budget,
+cap/exit conflicts, stale observations, and lease expiry during the locked guard.
+The verifier requires that setup subtest as well as the existing journal witnesses.
+
+Inspection also found that migration 0072's vocabulary and Maple-only strategy
+constraint would reject new Phase 3 lifecycle rows despite local builder success.
+Registered migration 0074 adds four debt-conversion actions and two setup actions;
+neutral lifecycle rows are limited to the six currently resolved runtime lanes,
+and setup rows to the two OnRe/USDC candidates. The five pending farm-repair lanes
+remain excluded from lifecycle scope. This is not eleven-lane completion or a
+bypass of their unresolved binding review. The exact SQL is exercised on a
+temporary PostgreSQL table with valid and forbidden engine/action/strategy cases.
+Both migration registries compile. Production migration application is unproven.
+
+For staged setup, the durable completion reserve is the existing 1-USDC allowance
+for the one remaining transaction, not its currently measured quote. The saved
+candidate still retains that exact quote separately. This prevents a small price
+increase after prefunding from causing an unnecessary recovery HOLD within the
+accepted caps. Admission must fit the first payment plus this reserve inside the
+unchanged family/goal limits. A PostgreSQL-backed test reloads the actual reserved
+budget, then exercises the existing reducer: a higher second-payment cost within
+the cap fits, an over-cap payment is rejected, prior spend survives and unused
+headroom is not booked as spend. This is not production continuation execution;
+fresh pricing, signing and finalized reconciliation remain necessary there.
+
+Checkpoint `phase3/durable-policy-setup-headroom-2026-09-05.json.gz` has gzip
+SHA-256 `df565621ac029eb5eb5683ade1dd8ce9b29c2940779f7142e9778c5be18ef415`.
+The verifier observed both required setup journal witnesses, seven local setup
+checks and the linked lending/return check passing. Full Go race tests with the
+disposable PostgreSQL database pass (41.760s); TypeScript checking and verifier
+tests pass (12 tests/95 expectations); migration CLI compilation passed earlier
+in this checkpoint's implementation. R01–R08 still all FAIL overall. Changes are
+local and uncommitted; no production migration, deployment, signing, broadcast
+or policy installation occurred. The disposable database is stopped, with its
+data preserved. The implementation goal remains active; next work is setup
+execution/reconciliation and the unresolved runtime bindings, followed by the
+complete serialized canary sequence and immutable deployment/live verification.
+
+#### Finalized prefund recovery into creation — 2026-09-05
+
+The existing nonterminal recovery entrypoint now handles submitted setup prefunds
+without sending: it matches the exact persisted wire against a finalized receipt,
+checks transaction-scoped payer/PDA/System balances and fees, reloads finalized
+Settings and the exact system-owned prefunded PDA, then prices only the unpaid
+creation with a fresh blockhash. A final confirmed guard rejects changed accounts,
+expired valuation or an underfunded payer. Missing receipt is not absence proof.
+
+One transaction under the existing route lease retains that receipt, marks the
+prefund reconciled, books its reserved upper once, and inserts/reserves one
+creation operation from the original completion headroom. The root setup pointer
+continues fencing ordinary work. Concurrent retries and restart load the same
+child; over-cap costs, bad receipts, changed state or lease expiry roll back without
+losing the original intent/reserve. Neither the settled parent nor its continuation
+can use the initial never-signed cancellation path. Native receipt balances remain
+in the journal for audit. No second ledger or new runtime lane is introduced.
+
+The verifier now requires the actual database recovery witness plus the controlled
+RPC receipt/continuation checks. Synthetic signature fixtures do not prove signer
+possession or chain execution. Setup signing, final-send checks, policy-creation
+terminal reconciliation and production deployment remain unfinished; this change
+does not enable their broadcasts or satisfy top-level R01–R08.
+
+Checkpoint `phase3/finalized-prefund-continuation-2026-09-05.json.gz` has gzip
+SHA-256 `5ee5b9ba7cb2f45d637606fe197f2e12f16a2746686007e1eb0ab2689a8a3f3c`.
+All three required local journal witnesses, eight setup tests and the linked
+lending/return check pass. Full Go race tests with disposable PostgreSQL pass
+(42.301s); TypeScript checking and verifier tests pass (12/95 expectations).
+R01–R08 remain FAIL overall. Changes are local/uncommitted; no production
+mutation, signing or broadcast occurred. Test database stopped with data retained.
+
+#### Finalized policy creation and setup-fence release — 2026-09-05
+
+The worker's setup recovery now reconciles both direct creation and the reserved
+post-prefund creation. It requires the exact finalized wire and all five native
+account balance deltas, then finalized policy/Settings/Clock readback. The policy
+must match SDK encoding derived from retained installed accounts: exact settings,
+seed/bump, unused transaction counters, delegated signer/permissions, threshold,
+time lock, complete constraints, hooks, spending limits, expiration, rent collector
+and zero allocation padding. Its program-assigned start cannot be in the future.
+
+The deployed Squads creation probe confirms that existing Settings changes only
+its policySeed. Readback normalizes that single u64 and compares the frozen
+prestate hash, rejecting unrelated membership, archival-authority or counter drift.
+Receipt/state evidence, finalized journal status, gross settlement and removal of
+the root setup pointer commit atomically under the existing lease. Repeated
+reconciliation does not spend twice. Unfinalized/altered receipts, changed policy
+bytes and expired leases retain the pending operation and reserve.
+
+The sole verifier requires both direct and staged database settlement witnesses
+and ten local setup checks. These use controlled RPC/synthetic wires, not live
+signatures. Setup signing/final-send enforcement, live installation, reviewed
+runtime binding activation and remaining full-lifecycle/deployment proof are still
+unfinished. No top-level condition is satisfied by this local slice alone.
+
+Checkpoint `phase3/finalized-setup-creation-2026-09-05.json.gz` has gzip SHA-256
+`99cb4da7dd6f1bed8e4238010a28be9e5da1d4188c68d4ac0e5b0efc6752b33b`.
+All five required local journal witnesses, ten setup checks, deployed-program
+creation checks and linked lending/return checks pass. Full Go race tests with
+disposable PostgreSQL pass (43.040s); TypeScript checking and verifier tests pass
+(12 tests/95 expectations). R01–R08 remain FAIL overall. All changes remain local
+and uncommitted, with no production migration/deployment, signing or broadcast.
+The disposable database is stopped with its data retained. Goal remains active.
+
+#### Setup payment cost and signed-identity gates — 2026-09-05
+
+Setup payment observation now refreshes finalized Settings/target state, exact
+message fees, native valuation, rent, blockhash lifetime and the confirmed guard
+for direct creation, prefunding and post-prefund creation. Prefunding additionally
+reprices the still-unpaid creation inside its reserved 1-USDC allowance. Changed
+rent or a fee above the frozen receipt bound requires an unsigned-intent refresh;
+no request, seed, blockhash or reservation is replaced by this revaluation method.
+
+The pre-sign cost gate validates the journal action, root pointer, settled parent
+where applicable, complete reservation shape and unchanged 1/20/60 limits under
+the route lease. It records fresh cost evidence without spending or replenishing
+budget. The final-send path recognizes setup inputs separately from delegate
+lifecycle inputs and verifies the exact wire with the pinned admin public key
+before RPC. Its locked budget gate also requires the setup pointer/reservation
+and recorded pre-sign cost check. Synthetic and other-signer signatures reject.
+
+These are real cost/identity/journal boundaries, not an enabled admin signer or
+send coordinator. Repaired-farm/deployment readiness, unsigned-intent refresh,
+setup signer/build/simulation integration and signed-expiry recovery still need
+completion. `AdvanceNonterminal` continues to HOLD setup at `signed`; no send was
+enabled. Controlled database probes of the lower-level final gate use synthetic
+wires and roll back, and do not claim production signer or broadcast proof.

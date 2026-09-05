@@ -30,7 +30,7 @@ type catalogJupiterBinding struct {
 }
 
 func catalogJupiterRoute(lane string) bool {
-	return lane == "AUTO/AUTO/PYUSD" || lane == "Ethena/USDe/PYUSD"
+	return lane == "AUTO/AUTO/PYUSD" || lane == "Ethena/USDe/PYUSD" || lane == "Prime/PRIME/PYUSD" || lane == "Prime/PRIME/USDS"
 }
 
 // Policy availability only. Quotes, packet/compute fit, setup and reserved

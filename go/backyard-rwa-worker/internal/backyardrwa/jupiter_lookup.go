@@ -5,7 +5,8 @@ import (
 	"fmt"
 )
 
-// Installed USDe->PYUSD and explicitly bound V2 conversions support v0 packets.
+// Reviewed Prime sibling swaps, installed USDe->PYUSD and explicitly bound V2
+// conversions support v0 packets.
 // Fresh API table identities are encoding hints, never execution authority:
 // chain-owned table contents are validated and the compiler only looks up exact
 // keys from the policy-validated instruction. No table is created or extended.
@@ -31,7 +32,7 @@ func acceptsJupiterLookupHints(lane string, action Action) bool {
 		return false
 	}
 	b, err := catalogJupiterBindingForRoute(action, lane)
-	return err == nil && b.fixedPrefixV2()
+	return err == nil && (b.fixedPrefixV2() || lane == primePRIMEPYUSD.Lane || lane == primePRIMEUSDS.Lane)
 }
 
 func validateJupiterLookupCandidates(addresses []string) error {

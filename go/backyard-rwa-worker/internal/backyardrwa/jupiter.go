@@ -72,6 +72,8 @@ type JupiterSwapRequest struct {
 	RouteLane               string
 	LookupTables            []LookupTableSnapshot `json:",omitempty"`
 	FullPayoffFunding       bool                  `json:"fullPayoffFunding,omitempty"`
+	EntryReturnReserved     bool                  `json:"entryReturnReserved,omitempty"`
+	PositionReturnReserved  bool                  `json:"positionReturnReserved,omitempty"`
 }
 
 type JupiterExecutionEvidence struct {

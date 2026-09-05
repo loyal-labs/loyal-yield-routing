@@ -52,7 +52,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 	if rpc == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" ||
 		s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
 		!s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0 ||
-		s.CollateralIdleRaw != 0 || s.PrimeIdleRaw != 0 || s.DebtIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 ||
+		s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.DebtIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 ||
 		s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {
 		return phase3BridgeAdmission{}, budgetHold("complete_post_payoff_return_unavailable")
 	}
@@ -122,11 +122,17 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 	}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
 	if funding != nil {
-		// Only this cost template sees post-swap empty collateral. Check the
-		// actual pre-swap custody first; never mutate RPC data or a current wire.
-		if !afterPayoff || funding.Request.Action != SwapCollateralToDebtStep || funding.Request.RouteLane != s.RouteLane {
+		if !afterPayoff || !isPayoffFundingAction(funding.Request.Action) || funding.Request.RouteLane != s.RouteLane ||
+			(funding.Request.Action == SwapUSDCToDebtStep && (release != nil || s.SquadsIdleRaw != 0)) {
 			return phase3BridgeAdmission{}, budgetHold("invalid_funding_return_projection")
 		}
+	}
+	if funding != nil && funding.Request.Action == SwapCollateralToDebtStep {
+		if s.CollateralIdleRaw != 0 {
+			return phase3BridgeAdmission{}, budgetHold("invalid_funding_return_projection")
+		}
+		// Only this cost template sees post-swap empty collateral. Check the
+		// actual pre-swap custody first; never mutate RPC data or a current wire.
 		accounts = append([]ConfirmedAccount(nil), accounts...)
 		for i, account := range accounts {
 			if account.Address == route.CollateralCustody {

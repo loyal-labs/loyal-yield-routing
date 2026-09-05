@@ -25,8 +25,12 @@ test("existing 52 legacy edge constraints remain byte-semantically identical", (
 });
 
 test("fresh V2 bytes compile fixed economic offsets and reject fee, amount and custody mutations", () => {
-  const quotes=read("phase3/jupiter-v2-public-quotes-2026-09-04.json");
-  assert.equal(quotes.rows.length,2);
+  const quotes=read("phase3/jupiter-v2-return-public-quotes-2026-09-05.json");
+  const candidates=read("phase3/jupiter-v2-return-repair-candidates-2026-09-05.json");
+  assert.equal(quotes.rows.length,3);
+  assert.deepEqual(quotes.rows.slice(0,2),read("phase3/jupiter-v2-public-quotes-2026-09-04.json").rows);
+  assert.deepEqual(candidates.groups.slice(0,2),read("phase3/jupiter-v2-repair-candidates-2026-09-04.json").groups);
+  assert.deepEqual(candidates.groups.map((g:any)=>g.edge).sort(),["USDC->USDe","USDe->PYUSD","USDe->USDC"].sort());
   assert.equal(quotes.broadcast,false);
   const lengths=new Set<number>();
   for(const sample of quotes.rows) {
@@ -45,7 +49,7 @@ test("fresh V2 bytes compile fixed economic offsets and reject fee, amount and c
       quote:{inAmountRaw:quote.inAmount,outAmountRaw:quote.outAmount},
       instruction:{...sample.instruction,dataBase64:data.toString("base64"),dataSha256:sha(data)}};
     const {constraint}=exactJupiterConstraint(row);
-    const candidate=read("phase3/jupiter-v2-repair-candidates-2026-09-04.json").groups.find((g:any)=>g.edge===edge.key);
+    const candidate=candidates.groups.find((g:any)=>g.edge===edge.key);
     const original=read("policy-compiled-v1.json").policies.find((p:any)=>p.policy===candidate.originalPolicy);
     const installed=read("policy-install-readback-v1.json").operations.find((p:any)=>p.policyAddress===candidate.originalPolicy);
     assert.equal(installed.active,true);
@@ -73,5 +77,5 @@ test("fresh V2 bytes compile fixed economic offsets and reject fee, amount and c
     const wrongHeader={...row,header:{...header,indexes:{...header.indexes,slippage:data.length-3}}};
     assert.throws(()=>exactJupiterConstraint(wrongHeader),/layout/);
   }
-  assert.equal(lengths.size,2,"exercise two genuinely different public route layouts");
+  assert.ok(lengths.size>=2,"exercise genuinely different public route layouts");
 });

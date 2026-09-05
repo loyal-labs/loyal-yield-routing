@@ -73,7 +73,7 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *RPCClient, clien
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey ||
 		s.RouteLane != decision.StrategyKey || s.RouteLane != r.RouteLane || phase3BudgetFamilyForLane(s.RouteLane) == "" ||
 		decision.Action != DeleverRouteStep || r.Action != decision.Action || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
-		s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleRaw != 0 || s.PrimeIdleRaw != 0 || s.DebtIdleRaw < 0 ||
+		s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.DebtIdleRaw < 0 ||
 		s.VoltrIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || r.AmountRaw != uint64(s.PositionCollateralRaw) {
 		return plan, budgetHold("complete_position_exit_admission_unavailable")
 	}
@@ -89,22 +89,23 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *RPCClient, clien
 	if err != nil {
 		return plan, err
 	}
-	if debit.Raw == 0 || debit.Raw > math.MaxInt64 {
+	if debit.Raw == 0 || debit.Raw > uint64(math.MaxInt64-s.CollateralIdleRaw) {
 		return plan, budgetHold("withdrawal_admission_amount_unavailable")
 	}
-	// Verify the destination effect against observed empty collateral custody;
-	// the quoted return must consume the entire expected withdrawal proceeds.
+	// Include both withdrawal proceeds and collateral already in custody (for
+	// example deposit rounding residue) in the complete conversion and return.
+	returnRaw := uint64(s.CollateralIdleRaw) + debit.Raw
 	var destinationOK bool
 	for _, effect := range evidence.ExpectedEffects.Accounts {
 		if effect.Address == route.CollateralCustody && effect.Authority == bridgeVault && effect.Mint == route.Kamino.CollateralMint &&
-			effect.BeforeRaw == 0 && effect.AfterRaw == debit.Raw && effect.MinimumAfterRaw == nil {
+			effect.BeforeRaw == uint64(s.CollateralIdleRaw) && effect.AfterRaw == returnRaw && effect.MinimumAfterRaw == nil {
 			destinationOK = true
 		}
 	}
 	if !destinationOK {
 		return plan, budgetHold("withdrawal_admission_custody_mismatch")
 	}
-	return pricePhase3CollateralReturn(ctx, rpc, client, manifest, observation, decision, r, evidence.ExpectedEffects, debit.Raw, true, nil)
+	return pricePhase3CollateralReturn(ctx, rpc, client, manifest, observation, decision, r, evidence.ExpectedEffects, returnRaw, true, nil)
 }
 
 // Continue the same return after the withdrawal has reconciled. Both the

@@ -290,13 +290,21 @@ func TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge(t *testing.T)
 }
 
 func testProductionWithdrawalAdmission(t *testing.T, url string) {
-	for _, variant := range []string{"collateral", "debt_residue", "payoff", "funding", "release"} {
+	for _, variant := range []string{"collateral", "debt_residue", "payoff", "funding", "usdc_funding", "release", "entry_swap", "deposit", "borrow", "funding_nav", "leverage", "redeposit"} {
 		t.Run(variant, func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, variant) })
 	}
 }
 
 func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string) {
-	debtResidue, payoff, funding, release := variant != "collateral", variant == "payoff", variant == "funding", variant == "release"
+	debtResidue, payoff, funding, release := variant != "collateral", variant == "payoff", variant == "funding" || variant == "usdc_funding", variant == "release"
+	entry := variant == "entry_swap"
+	deposit := variant == "deposit"
+	borrow := variant == "borrow"
+	fundingNAV := variant == "funding_nav"
+	leverage, redeposit := variant == "leverage", variant == "redeposit"
+	if entry || deposit || borrow || leverage || redeposit {
+		debtResidue = false
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	db, err := OpenDatabase(ctx, url)
@@ -311,12 +319,35 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 	if payoff {
 		o, d, evidence, manifest, rpc, client, _ = payoffAdmissionFixture(t, 20_000)
 	}
+	if deposit {
+		o, d, evidence, manifest, rpc, client, _ = depositAdmissionFixture(t, "")
+	}
+	if borrow {
+		o, d, evidence, manifest, rpc, client, _ = borrowAdmissionFixture(t, 20_000, "")
+	}
 	var fundingEvidence JupiterExecutionEvidence
+	if leverage {
+		o, d, fundingEvidence, manifest, rpc, client, _ = leverageAdmissionFixture(t, 20_000, "")
+	}
+	if redeposit {
+		o, d, evidence, manifest, rpc, client, _ = depositAdmissionFixtureForPosition(t, "", true)
+	}
+	if entry {
+		o, d, fundingEvidence, manifest, rpc, client, _ = entrySwapAdmissionFixture(t)
+	}
 	if funding {
-		o, d, fundingEvidence, manifest, rpc, client, _ = fundingAdmissionFixture(t, 20_000)
+		action := SwapCollateralToDebtStep
+		if variant == "usdc_funding" {
+			action = SwapUSDCToDebtStep
+		}
+		o, d, fundingEvidence, manifest, rpc, client, _ = fundingAdmissionFixtureForSource(t, 20_000, action)
 	}
 	if release {
 		o, d, evidence, manifest, rpc, client, _ = releaseAdmissionFixture(t, 20_000)
+	}
+	var navEvidence BridgeExecutionEvidence
+	if fundingNAV {
+		o, d, navEvidence, manifest, rpc, client, _ = fundingContinuationFixture(t, 20_000)
 	}
 	key := fmt.Sprintf("phase3-withdrawal-producer-%d", time.Now().UnixNano())
 	id := key + "-operation"
@@ -339,15 +370,52 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 		t.Fatal(err)
 	}
 	admit := func() error {
+		if leverage {
+			return db.admitPhase3LeverageSwap(ctx, rpc, client, manifest, id, o, d, fundingEvidence)
+		}
+		if redeposit {
+			return db.admitPhase3Deposit(ctx, rpc, client, manifest, id, o, d, evidence)
+		}
+		if fundingNAV {
+			return db.admitPhase3Funding(ctx, rpc, client, manifest, id, o, d, navEvidence.Request, navEvidence.ExpectedEffects)
+		}
+		if borrow {
+			return db.admitPhase3Borrow(ctx, rpc, client, manifest, id, o, d, evidence)
+		}
+		if deposit {
+			return db.admitPhase3Deposit(ctx, rpc, client, manifest, id, o, d, evidence)
+		}
+		if entry {
+			return db.admitPhase3EntrySwap(ctx, rpc, client, manifest, id, o, d, fundingEvidence)
+		}
 		if funding {
 			return db.admitPhase3Funding(ctx, rpc, client, manifest, id, o, d, fundingEvidence.Request, fundingEvidence.ExpectedEffects)
 		}
 		return db.admitPhase3Withdrawal(ctx, rpc, client, manifest, id, o, d, evidence)
 	}
-	assertBudgetHold(t, admit(), "recovery_exceeds_reserved_exit")
+	beforeReserve, beforeJSON := int64(1_000_000), "1000000"
+	if leverage || redeposit {
+		reason := "leverage_requires_reserved_position"
+		if redeposit {
+			reason = "redeposit_requires_reserved_position"
+		}
+		assertBudgetHold(t, admit(), reason)
+		beforeReserve, beforeJSON = 10_000, "10000"
+	} else if borrow {
+		assertBudgetHold(t, admit(), "borrow_requires_reserved_position")
+		beforeReserve, beforeJSON = 10_000, "10000"
+	} else if deposit {
+		assertBudgetHold(t, admit(), "deposit_requires_reserved_collateral_custody")
+		beforeReserve, beforeJSON = 10_000, "10000"
+	} else if entry {
+		assertBudgetHold(t, admit(), "entry_requires_reserved_bridge_custody")
+		beforeReserve, beforeJSON = 10_000, "10000"
+	} else {
+		assertBudgetHold(t, admit(), "recovery_exceeds_reserved_exit")
+	}
 	// Controlled historical reserve only. The producer derives the current
 	// transaction and remaining exit; it cannot adopt unreserved exposure.
-	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{phase3,families,Ethena,exitMicros}','1000000') WHERE route_key=$1`, key); err != nil {
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{phase3,families,Ethena,exitMicros}',$2::jsonb) WHERE route_key=$1`, key, beforeJSON); err != nil {
 		t.Fatal(err)
 	}
 	if err = admit(); err != nil {
@@ -364,11 +432,14 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 	}
 	r := b.Reservations[id]
 	kind := "kamino"
-	if funding {
+	if fundingNAV {
+		kind = "bridge"
+	}
+	if funding || entry || leverage {
 		kind = "jupiter"
 	}
 	if hasWire || hasSend || auth.BuildInput.Kind != kind || auth.BridgeAdmission == nil || auth.BridgeAdmission.QuotedExit == nil ||
-		!r.Recovery || r.ExitBeforeMicros != 1_000_000 || r.ExitAfterMicros != auth.BridgeAdmission.ExitAfterMicros || r.UpperMicros != auth.BridgeAdmission.CurrentCost.TotalMicros {
+		r.Recovery == (entry || deposit || borrow || leverage || redeposit) || r.ExitBeforeMicros != beforeReserve || r.ExitAfterMicros != auth.BridgeAdmission.ExitAfterMicros || r.UpperMicros != auth.BridgeAdmission.CurrentCost.TotalMicros {
 		t.Fatal("production withdrawal admission did not bind current and future costs")
 	}
 	exitCount := 9
@@ -381,11 +452,59 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 	if release {
 		exitCount = 15
 	}
+	if fundingNAV {
+		exitCount = 16
+	}
+	if leverage || redeposit {
+		if len(auth.BridgeAdmission.Exit) != 17 || auth.BridgeAdmission.Payoff == nil || auth.BridgeAdmission.FundingRelease == nil || auth.BridgeAdmission.PayoffWithdrawal == nil || auth.BridgeAdmission.ExitAfterMicros <= beforeReserve {
+			t.Fatal("durable position entry omitted complete return")
+		}
+		if leverage {
+			if auth.BridgeAdmission.LeverageProjection == nil {
+				t.Fatal("missing swap poststate")
+			}
+			if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, fundingEvidence.Request, fundingEvidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if auth.BridgeAdmission.DepositProjection == nil {
+				t.Fatal("missing redeposit poststate")
+			}
+			if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, evidence.Request, evidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
 	if debtResidue && (len(auth.BridgeAdmission.AdditionalQuotedExits) != 1 || len(auth.BridgeAdmission.Exit) != exitCount) {
 		t.Fatal("durable reservation dropped debt conversion")
 	}
 	if payoff && (auth.BridgeAdmission.Payoff == nil || auth.BridgeAdmission.Payoff.UpperDebtRaw != 1_001 || auth.BridgeAdmission.PayoffWithdrawal == nil) {
 		t.Fatal("durable funded payoff omitted interest bound or full withdrawal")
+	}
+	if deposit && (auth.BridgeAdmission.DepositProjection == nil || auth.BridgeAdmission.PayoffWithdrawal == nil || len(auth.BridgeAdmission.Exit) != 9 || auth.BridgeAdmission.ExitAfterMicros <= beforeReserve) {
+		t.Fatal("durable deposit omitted simulated receipts or full return reserve")
+	}
+	if borrow && (auth.BridgeAdmission.BorrowProjection == nil || auth.BridgeAdmission.Payoff == nil || auth.BridgeAdmission.Payoff.ThroughUnix != 1420 || auth.BridgeAdmission.BorrowRelease == nil || auth.BridgeAdmission.PayoffRepayment == nil || auth.BridgeAdmission.PayoffWithdrawal == nil || len(auth.BridgeAdmission.Exit) != 17 || auth.BridgeAdmission.ExitAfterMicros <= beforeReserve) {
+		t.Fatal("durable borrowing omitted projected state or full fee/interest return")
+	}
+	if entry {
+		if len(auth.BridgeAdmission.Exit) != 7 || auth.BridgeAdmission.ExitAfterMicros <= beforeReserve {
+			t.Fatal("entry did not extend its full return reservation")
+		}
+		if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, fundingEvidence.Request, fundingEvidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if fundingNAV {
+		if auth.BridgeAdmission.FundingRelease == nil || auth.BridgeAdmission.FundingSwap == nil || auth.BridgeAdmission.Payoff == nil || auth.BridgeAdmission.Payoff.ThroughUnix != 1360 {
+			t.Fatal("durable NAV omitted release and combined funding")
+		}
+		if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, navEvidence.Request, navEvidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
+			t.Fatal(err)
+		}
+		return
 	}
 	if release && (auth.BridgeAdmission.PayoffRepayment == nil || auth.BridgeAdmission.FundingSwap == nil || auth.BridgeAdmission.Payoff.ThroughUnix != 1300) {
 		t.Fatal("durable release omitted full funding/return or interest horizon")
@@ -393,6 +512,10 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 	if funding {
 		if auth.BridgeAdmission.PayoffRepayment == nil || auth.BridgeAdmission.FundingSwap == nil || auth.BridgeAdmission.Payoff.ThroughUnix != 1180 {
 			t.Fatal("durable funding omitted full interest horizon or return template")
+		}
+		request, _, _, err := auth.BuildInput.decode()
+		if err != nil || request.(JupiterSwapRequest).Action != d.Action {
+			t.Fatal("durable funding changed the selected source asset", err)
 		}
 		if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, fundingEvidence.Request, fundingEvidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
 			t.Fatal(err)

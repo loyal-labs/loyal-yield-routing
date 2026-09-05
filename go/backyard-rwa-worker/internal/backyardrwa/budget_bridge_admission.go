@@ -18,19 +18,24 @@ type phase3BridgeExitCost struct {
 }
 
 type phase3BridgeAdmission struct {
-	Snapshot              Snapshot               `json:"snapshot"`
-	Decision              Decision               `json:"decision"`
-	Input                 *phase3BuildInput      `json:"input"`
-	CurrentCost           ValuedTransactionCost  `json:"currentCost"`
-	Exit                  []phase3BridgeExitCost `json:"exit"`
-	ExitAfterMicros       int64                  `json:"exitAfterMicros"`
-	ValidThroughSlot      int64                  `json:"validThroughSlot"`
-	QuotedExit            *phase3QuotedExit      `json:"quotedExit,omitempty"`
-	AdditionalQuotedExits []phase3QuotedExit     `json:"additionalQuotedExits,omitempty"`
-	Payoff                *KaminoPayoffBound     `json:"payoff,omitempty"`
-	PayoffWithdrawal      *phase3BuildInput      `json:"payoffWithdrawal,omitempty"`
-	PayoffRepayment       *phase3BuildInput      `json:"payoffRepayment,omitempty"`
-	FundingSwap           *phase3QuotedExit      `json:"fundingSwap,omitempty"`
+	Snapshot              Snapshot                `json:"snapshot"`
+	Decision              Decision                `json:"decision"`
+	Input                 *phase3BuildInput       `json:"input"`
+	CurrentCost           ValuedTransactionCost   `json:"currentCost"`
+	Exit                  []phase3BridgeExitCost  `json:"exit"`
+	ExitAfterMicros       int64                   `json:"exitAfterMicros"`
+	ValidThroughSlot      int64                   `json:"validThroughSlot"`
+	QuotedExit            *phase3QuotedExit       `json:"quotedExit,omitempty"`
+	AdditionalQuotedExits []phase3QuotedExit      `json:"additionalQuotedExits,omitempty"`
+	Payoff                *KaminoPayoffBound      `json:"payoff,omitempty"`
+	PayoffWithdrawal      *phase3BuildInput       `json:"payoffWithdrawal,omitempty"`
+	PayoffRepayment       *phase3BuildInput       `json:"payoffRepayment,omitempty"`
+	FundingSwap           *phase3QuotedExit       `json:"fundingSwap,omitempty"`
+	FundingRelease        *phase3BuildInput       `json:"fundingRelease,omitempty"`
+	DepositProjection     *phase3KaminoProjection `json:"depositProjection,omitempty"`
+	BorrowProjection      *phase3KaminoProjection `json:"borrowProjection,omitempty"`
+	LeverageProjection    *phase3KaminoProjection `json:"leverageProjection,omitempty"`
+	BorrowRelease         *phase3BuildInput       `json:"borrowRelease,omitempty"`
 }
 
 type phase3QuotedExit struct {

@@ -64,7 +64,7 @@ export function localCapTestProof(output: string, exitCode: number | null, expec
       !events.some(e=>e.Action==="fail") && events.some(e=>e.Action==="pass" && e.Test===undefined),
     proofLevel:"LOCAL_PRODUCTION_BUILDERS_CONTROLLED_RPC_INPUTS_NOT_LIVE_ADMISSION"};
 }
-async function localCapObservation(names: string[] = CAP_TESTS, source="local production-builder cap witnesses", packetWitnesses=false, extraEnv: Record<string,string> = {}): Promise<Observation> {
+async function localCapObservation(names: string[] = CAP_TESTS, source="local production-builder cap witnesses", packetWitnesses=false, extraEnv: Record<string,string> = {}, witness?: (output:string, code:number|null)=>Json): Promise<Observation> {
   try {
     const child=spawn("go",["test","./internal/backyardrwa","-json","-race","-count=1","-timeout=60s",
       "-run","^("+names.join("|")+")$"],{
@@ -77,13 +77,37 @@ async function localCapObservation(names: string[] = CAP_TESTS, source="local pr
     try {
       const code=await new Promise<number|null>((resolve,reject)=>{child.once("error",reject);child.once("close",resolve);});
       return {status:"OBSERVED",source,data:{...localCapTestProof(output,code,names),
-        ...(packetWitnesses?{packets:catalogJupiterPacketProof(output)}:{})}};
+        ...(packetWitnesses?{packets:catalogJupiterPacketProof(output)}:{}),
+        ...(witness?{witness:witness(output,code)}:{})}};
     } finally {clearTimeout(deadline);}
   } catch {return {status:"BLOCKED",source,reason:"LOCAL_CAP_WITNESSES_UNAVAILABLE"};}
 }
+export function returnQuoteCompatibilityProof(output:string,exitCode:number|null,artifactSha256:string) {
+  const name="TestPhase3ReturnQuoteCompatibility";
+  const rows=output.trim().split("\n").filter(Boolean).map(line=>JSON.parse(line) as Json)
+    .filter(e=>e.Action==="output"&&e.Test===name&&typeof e.Output==="string"&&e.Output.includes("PHASE3_RETURN_QUOTE "))
+    .map(e=>JSON.parse(e.Output.slice(e.Output.indexOf("PHASE3_RETURN_QUOTE ")+"PHASE3_RETURN_QUOTE ".length).trim()) as Json);
+  const complete=localCapTestProof(output,exitCode,[name]).pass&&
+    exactSet(rows.map(r=>r.edge),["USDe->PYUSD","PYUSD->USDC","USDe->USDC"])&&
+    rows.every(r=>r.artifactSha256===artifactSha256&&typeof r.accepted==="boolean"&&typeof r.reason==="string"&&
+      (r.accepted?r.reason==="":r.reason.length>0));
+  return {complete,allAccepted:complete&&rows.every(r=>r.accepted),rows,
+    proofLevel:"RETAINED_UNSIGNED_SIZING_QUOTES_THROUGH_CURRENT_GO_VALIDATOR_NOT_CURRENT_CHAIN_OR_EXECUTION"};
+}
+async function localReturnQuoteObservation():Promise<Observation> {
+  const source="retained Ethena funding and complete-return quotes checked by current production Go validator";
+  try {
+    const path="docs/evidence/backyard-rwa-go/phase3/return-quote-feasibility-2026-09-05.json";
+    const artifactSha256=sha(read(path));
+    return await localCapObservation(["TestPhase3ReturnQuoteCompatibility"],source,false,{},
+      (output,code)=>returnQuoteCompatibilityProof(output,code,artifactSha256));
+  } catch {return {status:"BLOCKED",source,reason:"RETURN_QUOTE_MEASUREMENT_UNAVAILABLE"};}
+}
 export function catalogJupiterPacketProof(output:string) {
   const expected=[...["USDC->AUTO","AUTO->USDC","PYUSD->AUTO","AUTO->PYUSD","USDC->PYUSD","PYUSD->USDC"].map(e=>"AUTO/AUTO/PYUSD|"+e),
-    ...["USDC->USDe","USDe->USDC","PYUSD->USDe","USDe->PYUSD","USDC->PYUSD","PYUSD->USDC"].map(e=>"Ethena/USDe/PYUSD|"+e)];
+    ...["USDC->USDe","USDe->USDC","PYUSD->USDe","USDe->PYUSD","USDC->PYUSD","PYUSD->USDC"].map(e=>"Ethena/USDe/PYUSD|"+e),
+    ...["USDC->PRIME","PRIME->USDC","PYUSD->PRIME","PRIME->PYUSD","USDC->PYUSD","PYUSD->USDC"].map(e=>"Prime/PRIME/PYUSD|"+e),
+    ...["USDC->PRIME","PRIME->USDC","USDS->PRIME","PRIME->USDS","USDC->USDS","USDS->USDC"].map(e=>"Prime/PRIME/USDS|"+e)];
   const rows=output.trim().split("\n").filter(Boolean).map(line=>JSON.parse(line) as Json)
     .filter(e=>e.Action==="output"&&typeof e.Test==="string"&&e.Test.startsWith("TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations/")&&typeof e.Output==="string"&&e.Output.includes("PHASE3_JUPITER_PACKET "))
     .map(e=>JSON.parse(e.Output.slice(e.Output.indexOf("PHASE3_JUPITER_PACKET ")+"PHASE3_JUPITER_PACKET ".length).trim()) as Json);
@@ -94,7 +118,7 @@ async function localJupiterObservation(): Promise<Observation> {
   const result=await localCapObservation(["TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations","TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity",
     "TestVersionedMessageMatchesSDKAndRejectsInvalidLookupAccounts","TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts",
     "TestFreshJupiterLookupHintsPreservePolicyAndPersistedMapping"],
-    "AUTO/Ethena installed Jupiter layouts, controlled client/dispatch and packet measurements",true);
+    "AUTO/Ethena and Prime sibling installed Jupiter layouts, controlled client/dispatch and packet measurements",true);
   if(result.data)result.data.proofLevel="LOCAL_CONSTRUCTION_CONTROLLED_API_AND_DISPATCH_NOT_PROGRAM_EXECUTION";
   return result;
 }
@@ -137,12 +161,23 @@ async function localSequentialKaminoObservation(): Promise<Observation> {
   }catch{return {status:"BLOCKED",source,reason:"LOCAL_SEQUENTIAL_KAMINO_PROBE_UNAVAILABLE"};}
 }
 async function localSendJournalObservation(): Promise<Observation> {
-  const source="disposable PostgreSQL final-send and expiry witnesses";
+  const source="disposable PostgreSQL initialization, final-send, expiry, setup recovery, finalized prefund/creation settlement, fence release and actual migration constraints";
   if (!process.env.PHASE3_TEST_DATABASE_URL) return {status:"BLOCKED",source,reason:"DISPOSABLE_TEST_DATABASE_NOT_CONFIGURED"};
   // The selected test itself rejects any non-disposable connection. Production
   // DB credentials are never used to initialize or mutate this test fixture.
-  const result=await localCapObservation(["TestPhase3DatabaseAdmissionAndSendFence"],source);
-  if (result.data) result.data.proofLevel="LOCAL_DATABASE_AND_CONTROLLED_RPC_UNSIGNED_FIXTURE_NO_SIGNER_OR_SEND";
+  const result=await localCapObservation(["TestPhase3DatabaseAdmissionAndSendFence","TestPhase3BudgetInitializationConfig"],source,false,{},
+    (output,code)=>localCapTestProof(output,code,[
+      "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent",
+      "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/persisted_completion_headroom_tolerates_repricing_within_existing_cap",
+      "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/finalized_prefund_advances_atomically_without_duplicate_funding",
+      "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/finalized_prefund_advances_atomically_without_duplicate_funding/creation_settles_and_releases_fence",
+      "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/direct_creation_settles_and_releases_fence",
+      "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/payment_authorization_preserves_setup_budget",
+    ]));
+  if (result.data) {
+    result.data.pass=result.data.pass===true&&result.data.witness?.pass===true;
+    result.data.proofLevel="LOCAL_DATABASE_CONTROLLED_RPC_SYNTHETIC_WIRE_NO_SIGNER_OR_SEND";
+  }
   return result;
 }
 
@@ -173,11 +208,27 @@ async function localSequentialJupiterObservation(): Promise<Observation> {
   } catch {return {status:"BLOCKED",source,reason:"LOCAL_SEQUENTIAL_JUPITER_PROBE_UNAVAILABLE"};}
 }
 
+export function prefundedPolicyProof(output:string,exitCode:number|null) {
+  const rows=output.split("\n").filter(l=>l.startsWith("PHASE3_PREFUNDED_POLICY "))
+    .map(l=>JSON.parse(l.slice("PHASE3_PREFUNDED_POLICY ".length)) as Json);
+  const complete=exitCode===0&&exactSet(rows.map(r=>String(r.accountCount)),["15","13"])&&rows.every(r=>
+    r.broadcast===false&&r.installed===false&&typeof r.accepted==="boolean"&&
+    r.allocatedBytes===(r.accountCount===15?1400:1250)&&
+    [r.firstFundingLamports,r.localRentLamports,r.firstPayerDebitLamports,r.secondPayerDebitLamports].every(v=>Number.isSafeInteger(v)&&v>0)&&
+    r.firstFundingLamports<r.localRentLamports&&r.firstPayerDebitLamports>r.firstFundingLamports&&
+    (r.accepted?(r.error===null&&r.samePolicyBytesAndBalance===true&&
+      r.secondPayerDebitLamports>r.localRentLamports-r.firstFundingLamports&&
+      r.firstPayerDebitLamports<r.localRentLamports&&r.secondPayerDebitLamports<r.localRentLamports):
+      typeof r.error==="string"&&r.error.length>0&&r.samePolicyBytesAndBalance===false));
+  return {complete,supported:complete&&rows.every(r=>r.accepted),rows,
+    proofLevel:"LOCAL_EXACT_POLICY_RENT_STAGING_NOT_LIVE_PRICING_OR_PRODUCTION_SETUP_ADMISSION"};
+}
+
 async function localJupiterRepairObservation(): Promise<Observation> {
   const source="current TypeScript Jupiter constraint compiler and deployed Squads candidate PolicyCreate";
   try {
-    const candidates=json("docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json");
-    const quotes=json("docs/evidence/backyard-rwa-go/phase3/jupiter-v2-public-quotes-2026-09-04.json");
+    const candidates=json("docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-repair-candidates-2026-09-05.json");
+    const quotes=json("docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-public-quotes-2026-09-05.json");
     const run=async(command:string,args:string[],cwd:string)=>{
       const child=spawn(command,args,{cwd,stdio:["ignore","pipe","pipe"],env:process.env});
       let output="";
@@ -190,61 +241,126 @@ async function localJupiterRepairObservation(): Promise<Observation> {
     const compilerPass=tests.code===0&&/\b10 pass\b/.test(tests.output)&&/\b0 fail\b/.test(tests.output);
     if(!compilerPass)return {status:"OBSERVED",source,data:{pass:false,reason:"JUPITER_V2_COMPILER_REGRESSION",compilerPass}};
     if(!process.env.SQUADS_SMART_ACCOUNT_PROGRAM_SO)return {status:"OBSERVED",source,data:{pass:false,compilerPass,reason:"DEPLOYED_SQUADS_BINARY_NOT_CONFIGURED",candidates,quotes}};
-    const result=await run("cargo",["test","-p","squads-test-harness","--test","rwa_policy_creation_rent","jupiter_v2_repair_groups","--","--ignored","--nocapture"],ROOT);
+    const result=await run("cargo",["test","-p","squads-test-harness","--test","rwa_policy_creation_rent","--","--ignored","--nocapture"],ROOT);
     const line=result.output.split("\n").find(l=>l.startsWith("PHASE3_JUPITER_V2_POLICY "));
     const execution=line?JSON.parse(line.slice("PHASE3_JUPITER_V2_POLICY ".length)):null;
-    const pass=result.code===0&&execution?.broadcast===false&&execution?.installed===false&&execution?.rows?.length===2&&
-      execution.candidateSha256===sha(read("docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json"));
-    return {status:"OBSERVED",source,data:{pass,compilerPass,candidates,quotes,execution,proofLevel:"LOCAL_CANDIDATE_COMPILATION_AND_CREATION_NOT_SWAP_EXECUTION_INSTALLATION_OR_MAINNET_RENT"}};
+    const pass=result.code===0&&execution?.broadcast===false&&execution?.installed===false&&
+      exactSet(execution?.rows?.map((r:Json)=>r.edge),["USDC->USDe","USDe->PYUSD","USDe->USDC"])&&
+      execution.candidateSha256===sha(read("docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-repair-candidates-2026-09-05.json"));
+    return {status:"OBSERVED",source,data:{pass,compilerPass,candidates,quotes,execution,setupStaging:prefundedPolicyProof(result.output,result.code),proofLevel:"LOCAL_CANDIDATE_COMPILATION_AND_CREATION_NOT_SWAP_EXECUTION_INSTALLATION_OR_MAINNET_RENT"}};
   } catch {return {status:"BLOCKED",source,reason:"JUPITER_V2_REPAIR_PROBE_UNAVAILABLE"};}
 }
 
-export function candidateJupiterExecutionProof(execution:Json,plan:Json,planHash:string,snapshotHash:string,exitCode:number|null):boolean {
+export function candidateJupiterExecutionProof(execution:Json,plan:Json,planHash:string,snapshotHash:string,exitCode:number|null,returning=false):boolean {
   const mutations=["slippage_above_50_bps","platform_fee_low_byte","platform_fee_high_byte",
     "positive_slippage_fee_low_byte","positive_slippage_fee_high_byte","destination_replaced_by_source"];
-  const actions=["SWAP_STABLE_TO_COLLATERAL_STEP","SWAP_COLLATERAL_TO_DEBT_STEP"];
-  return exitCode===0&&execution.schema==="phase3-jupiter-candidate-controlled-result/v1"&&
+  const actions=returning?["SWAP_COLLATERAL_TO_STABLE_STEP","SWAP_DEBT_TO_USDC_STEP"]:["SWAP_STABLE_TO_COLLATERAL_STEP","SWAP_COLLATERAL_TO_DEBT_STEP"];
+  const count=returning?1:2;
+  return exitCode===0&&execution.schema===(returning?"phase3-jupiter-return-controlled-result/v1":"phase3-jupiter-candidate-controlled-result/v1")&&
     execution.broadcast===false&&execution.signatureProof===false&&execution.installedPolicyProof===false&&execution.goCompilerProof===false&&
     plan.compiler==="TYPESCRIPT_CANDIDATE_NOT_INSTALLED_GO"&&plan.broadcast===false&&plan.lane==="Ethena/USDe/PYUSD"&&
+    (plan.profile==="RETURN_CONVERSIONS")===returning&&
     execution.planSha256===planHash&&execution.snapshotSha256===snapshotHash&&execution.twoSwapsPassed===true&&
-    Array.isArray(plan.candidate?.policies)&&plan.candidate.policies.length===2&&
-    Array.isArray(execution.candidateCreation)&&execution.candidateCreation.length===2&&execution.candidateCreation.every((c:Json,i:number)=>
+    Array.isArray(plan.steps)&&plan.steps.length===2&&
+    Array.isArray(plan.candidate?.policies)&&plan.candidate.policies.length===count&&
+    Array.isArray(execution.candidateCreation)&&execution.candidateCreation.length===count&&execution.candidateCreation.every((c:Json,i:number)=>
       c.candidateOnly===true&&c.policy===plan.candidate.policies[i].policy&&c.seed===Number(plan.candidate.policies[i].seed)&&
       Number.isSafeInteger(c.packetBytes)&&c.packetBytes>65&&c.packetBytes<=1232)&&
     Array.isArray(execution.steps)&&execution.steps.length===2&&execution.steps.every((s:Json,i:number)=>
       s.action===actions[i]&&s.economicPass===true&&s.error===null&&s.wireSha256===plan.steps?.[i]?.wireSha256&&
       Number.isSafeInteger(s.computeUnits)&&s.computeUnits>0&&s.computeUnits<=200_000&&
       s.negative?.rejectedBeforeJupiterCPI===true&&s.negative?.custodyUnchanged===true&&Array.isArray(s.additionalNegatives)&&
-      exactSet(s.additionalNegatives.map((n:Json)=>n.mutation),mutations)&&s.additionalNegatives.every((n:Json)=>n.rejectedBeforeJupiterCPI===true&&n.custodyUnchanged===true));
+      exactSet(s.additionalNegatives.map((n:Json)=>n.mutation),returning&&i===1?["slippage_above_50_bps","platform_fee_low_byte","destination_replaced_by_source"]:mutations)&&s.additionalNegatives.every((n:Json)=>n.rejectedBeforeJupiterCPI===true&&n.custodyUnchanged===true))&&
+    (!returning||(execution.returnCustodyCleared===true&&Number.isSafeInteger(execution.terminalUSDCRaw)&&execution.terminalUSDCRaw>0&&
+      plan.candidate.policies[0].edge==="USDe->USDC"&&plan.steps.every((s:Json)=>Number.isSafeInteger(s.amountRaw)&&s.amountRaw>0&&Number.isSafeInteger(s.minimumOutputRaw)&&s.minimumOutputRaw>0)&&
+      execution.steps.every((s:Json,i:number)=>Array.isArray(s.custodyBefore)&&Array.isArray(s.custodyAfter)&&
+        s.custodyBefore.length===2&&s.custodyAfter.length===2&&[...s.custodyBefore,...s.custodyAfter].every(n=>Number.isSafeInteger(n)&&n>=0)&&
+        s.custodyBefore[0]===plan.steps[i].amountRaw&&s.custodyAfter[0]===0&&
+        s.custodyAfter[1]-s.custodyBefore[1]>=plan.steps[i].minimumOutputRaw&&
+        s.custodyBefore[1]===(i===0?0:execution.steps[i-1].custodyAfter[1]))&&
+      execution.terminalUSDCRaw===execution.steps[1].custodyAfter[1]));
 }
 
-async function localCandidateJupiterObservation():Promise<Observation> {
-  const source="local V2 candidate PolicyCreate and sequential swaps, with conditional current-Go wire comparison";
-  const directory=process.env.PHASE3_JUPITER_CANDIDATE_PROBE_DIR;
+export function linkedLendingReturnProof(execution:Json,plan:Json,snapshot:Json):boolean {
+  try {
+    const lending=plan.lendingPrelude;const legs=execution.lendingSteps;
+    if(lending?.schema!=="phase3-kamino-controlled-probe/v1"||lending.broadcast!==false||lending.signatureProof!==false||lending.lane!==plan.lane||
+      !Array.isArray(legs)||legs.length!==4||!Array.isArray(lending.steps)||lending.steps.length!==4||!Array.isArray(execution.steps)||execution.steps.length!==2||
+      !["delegate","collateralCustody","debtCustody"].every(k=>lending[k]===plan[k]))return false;
+    const chain=[...legs,...execution.steps];
+    if(!Array.isArray(snapshot.accounts))return false;
+    const programs=new Set(snapshot.accounts.filter((a:Json)=>a.executable===true).map((a:Json)=>a.address));
+    const stateAddresses=plan.addresses.filter((a:string)=>!programs.has(a));
+    if(!exactSet(execution.stateAddresses,stateAddresses))return false;
+    const account=(rows:Json[],address:string)=>rows.find(a=>a.address===address);
+    const token=(rows:Json[],address:string)=>{
+      const a=account(rows,address);if(a?.present!==true)throw new Error("missing token witness");
+      return Buffer.from(a.dataBase64,"base64").readBigUInt64LE(64);
+    };
+    const position=(rows:Json[])=>{
+      const a=account(rows,lending.obligation);if(!a)throw new Error("missing obligation witness");
+      if(a.present===false||a.lamports===0)return [0n,0n];
+      const b=Buffer.from(a.dataBase64,"base64");if(b.length!==3344)throw new Error("invalid obligation layout");
+      let receipts=0n,debt=0n;
+      for(let i=0;i<8;i++)receipts+=b.readBigUInt64LE(128+i*136);
+      for(let i=0;i<5;i++)debt+=b.readBigUInt64LE(1296+i*200)+(b.readBigUInt64LE(1304+i*200)<<64n);
+      return [receipts,debt];
+    };
+    for(const [i,step] of chain.entries()) {
+      for(const rows of [step.before,step.after]) {
+        if(!Array.isArray(rows)||!exactSet(rows.map((a:Json)=>a.address),stateAddresses)||rows.some((a:Json)=>a.present!==false&&(a.present!==true||sha(Buffer.from(a.dataBase64,"base64"))!==a.dataSha256)))return false;
+      }
+      if(i>0&&JSON.stringify(chain[i-1].after)!==JSON.stringify(step.before))return false;
+      if(step.error!==null)return false;
+      if(i<4) {
+        if(step.leg!==["deposit","borrow","repay","withdraw"][i]||step.wireSha256!==lending.steps[i].wireSha256||step.leg!==lending.steps[i].leg||!Number.isSafeInteger(step.computeUnits)||step.computeUnits<=0)return false;
+        const [receipts,debt]=position(step.after);
+        if((receipts!>0n)!==(i<3)||(debt!>0n)!==(i===1))return false;
+      }
+    }
+    const initial=chain[0].before,terminal=chain[5].after;
+    return position(initial).every(n=>n===0n)&&position(terminal).every(n=>n===0n)&&
+      token(initial,plan.collateralCustody)===100_000_000n&&token(initial,plan.debtCustody)===2_000n&&token(initial,plan.inputCustody)===0n&&
+      token(terminal,plan.collateralCustody)===0n&&token(terminal,plan.debtCustody)===0n&&
+      token(terminal,plan.inputCustody)===BigInt(execution.terminalUSDCRaw)&&execution.terminalUSDCRaw>0&&
+      execution.steps.every((s:Json,i:number)=>token(s.before,plan.steps[i].source)===BigInt(plan.steps[i].amountRaw));
+  } catch {return false;}
+}
+
+async function localCandidateJupiterObservation(returning=false,linked=false):Promise<Observation> {
+  const source=returning?"two return conversions with one local V2 candidate and one installed policy; conditional current-Go wire comparison":"local V2 candidate PolicyCreate and sequential swaps, with conditional current-Go wire comparison";
+  const directory=linked?process.env.PHASE3_LINKED_LENDING_RETURN_PROBE_DIR:returning?process.env.PHASE3_JUPITER_RETURN_PROBE_DIR:process.env.PHASE3_JUPITER_CANDIDATE_PROBE_DIR;
   if(!directory)return {status:"BLOCKED",source,reason:"EXPLICIT_PUBLIC_JUPITER_CANDIDATE_SNAPSHOT_NOT_CONFIGURED"};
   if(!/^\/private\/tmp\/backyard-phase3-jupiter-probe\.[A-Za-z0-9]+$/.test(directory))return {status:"BLOCKED",source,reason:"INVALID_CANDIDATE_SNAPSHOT_DIRECTORY"};
   try {
     const planBytes=readFileSync(resolve(directory,"plan.json"));const snapshotBytes=readFileSync(resolve(directory,"snapshot.json"));
     const inputs={plan:JSON.parse(planBytes.toString()),snapshot:JSON.parse(snapshotBytes.toString())};
     const resultName=`verifier-candidate-${randomUUID()}.json`;
+    const redepositName=`verifier-redeposit-${randomUUID()}.json`;
     const run=async(command:string,args:string[],cwd:string)=>{
-      const child=spawn(command,args,{cwd,stdio:["ignore","pipe","ignore"],env:{...process.env,PHASE3_JUPITER_PROBE_RESULT:resultName}});
+      const child=spawn(command,args,{cwd,stdio:["ignore","pipe","ignore"],env:{...process.env,...(linked?{PHASE3_JUPITER_RETURN_PROBE_DIR:directory,PHASE3_REDEPOSIT_PLAN:redepositName}:{}),PHASE3_JUPITER_PROBE_RESULT:resultName}});
       let output="";child.stdout.setEncoding("utf8");child.stdout.on("data",chunk=>{output+=chunk;});
       const deadline=setTimeout(()=>child.kill("SIGKILL"),120_000);
       try {const code=await new Promise<number|null>((resolve,reject)=>{child.once("error",reject);child.once("close",resolve);});return {code,output};}
       finally {clearTimeout(deadline);}
     };
-    const rust=await run("cargo",["test","-p","squads-test-harness","--test","rwa_jupiter_controlled_probe","ethena_v2_candidate_swaps_execute_sequentially","--","--ignored","--nocapture"],ROOT);
+    if(linked){
+      const exported=await run("go",["test","./internal/backyardrwa","-json","-count=1","-timeout=60s","-run","^TestExportPhase3RedepositProbe$"],resolve(ROOT,"go/backyard-rwa-worker"));
+      if(!localCapTestProof(exported.output,exported.code,["TestExportPhase3RedepositProbe"]).pass)return {status:"OBSERVED",source,data:{pass:false,reason:"REDEPOSIT_CURRENT_GO_EXPORT_FAILED"}};
+    }
+    const rust=await run("cargo",["test","-p","squads-test-harness","--test","rwa_jupiter_controlled_probe",returning?"ethena_return_conversions_execute_with_exact_mixed_policy_bindings":"ethena_v2_candidate_swaps_execute_sequentially","--","--ignored","--nocapture"],ROOT);
     let execution:Json;
     try {execution=JSON.parse(readFileSync(resolve(directory,resultName),"utf8"));}
     catch {return {status:"OBSERVED",source,data:{pass:false,reason:"CANDIDATE_EXECUTION_EVIDENCE_MISSING",exitCode:rust.code}};}
-    const executionPass=candidateJupiterExecutionProof(execution,inputs.plan,sha(planBytes),sha(snapshotBytes),rust.code)&&
-      inputs.plan.candidate.artifactSha256===sha(read("docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json"));
-    const names=["TestCandidateJupiterV2FixedPrefixAndClient","TestPhase3JupiterCandidateMatchesGo"];
+    const executionPass=candidateJupiterExecutionProof(execution,inputs.plan,sha(planBytes),sha(snapshotBytes),rust.code,returning)&&
+      (!linked||linkedLendingReturnProof(execution,inputs.plan,inputs.snapshot))&&
+      inputs.plan.candidate.artifactSha256===sha(read(returning?"docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-repair-candidates-2026-09-05.json":"docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json"));
+    const names=["TestCandidateJupiterV2FixedPrefixAndClient",returning?"TestPhase3JupiterReturnMatchesGo":"TestPhase3JupiterCandidateMatchesGo"];
+    if(linked)names.push("TestPhase3LinkedLendingMessagesMatchGo","TestPhase3DepositRoundingMatchesProduction","TestPhase3BorrowFeesMatchProduction","TestPhase3RedepositMatchesProduction");
     const go=await run("go",["test","./internal/backyardrwa","-json","-race","-count=1","-timeout=60s","-run","^("+names.join("|")+")$"],resolve(ROOT,"go/backyard-rwa-worker"));
     const compiler={...localCapTestProof(go.output,go.code,names),proofLevel:"CURRENT_GO_BYTES_WITH_TEST_ONLY_CANDIDATE_BINDINGS_NOT_INSTALLED_POLICY_PROOF"};
     return {status:"OBSERVED",source,data:{pass:executionPass&&compiler.pass,executionPass,compiler,slot:execution.slot,inputs,execution,
-      proofLevel:"LOCAL_CANDIDATE_TWO_SWAP_EXECUTION_AND_CONDITIONAL_GO_PARITY_NOT_INSTALLED_OR_FULL_R04"}};
+      proofLevel:linked?"LOCAL_SIX_LEG_LINKED_LENDING_RETURN_AND_CONDITIONAL_GO_PARITY_NOT_BRIDGE_SIGNER_OR_MAINNET":returning?"LOCAL_RETURN_CONVERSIONS_AND_CONDITIONAL_GO_PARITY_NOT_LINKED_LENDING_BRIDGE_OR_MAINNET":"LOCAL_CANDIDATE_TWO_SWAP_EXECUTION_AND_CONDITIONAL_GO_PARITY_NOT_INSTALLED_OR_FULL_R04"}};
   } catch {return {status:"BLOCKED",source,reason:"LOCAL_CANDIDATE_JUPITER_PROBE_UNAVAILABLE"};}
 }
 async function localBridgeAdmissionObservation(): Promise<Observation> {
@@ -259,6 +375,23 @@ async function localBridgeAdmissionObservation(): Promise<Observation> {
 }
 async function localWithdrawalAdmissionObservation(): Promise<Observation> {
   const result=await localCapObservation([
+    "TestLeverageSwapAdmissionReservesProjectedCompleteReturn",
+    "TestLeverageSwapAdmissionRejectsUnsafePoststateFundingAndIntent",
+    "TestRedepositAdmissionReservesRefreshedPositionAndCompleteReturn",
+    "TestRedepositAdmissionRejectsChangedDebtReceiptsAndConservation",
+    "TestFundingContinuationReservesNAVReleaseAndCombinedRemainder",
+    "TestFundingContinuationPreservesFundedAndUSDCResiduePaths",
+    "TestFundingContinuationRejectsUnderfundedReleaseAndInvalidValuation",
+    "TestBorrowAdmissionReservesFeeInterestReleaseAndCompleteReturn",
+    "TestBorrowAdmissionRejectsUnsafeProjectionFundingAndPreservesFundedPath",
+    "TestBorrowFeesRevalidateBeforeSendAndRejectWrongGraph",
+    "TestDepositAdmissionReservesWithdrawalResidueAndCompleteBridgeReturn",
+    "TestDepositAdmissionRejectsFailedProjectionAndChangedCustody",
+    "TestDepositRoundingBoundsRevalidateCustodyAndRejectMalformedEffects",
+    "TestEntrySwapAdmissionReservesCompleteReverseAndBridgeReturn",
+    "TestEntrySwapAdmissionRejectsUnaccountedPositionAndFinalSendCustodyDrift",
+    "TestUSDCFundingAdmissionReservesReturnWithoutDoubleCountingSpentCash",
+    "TestUSDCFundingRejectsChangedCashUnderfundingAndUnreservedReturn",
     "TestWithdrawalAdmissionPricesCompleteCrossProtocolReturn",
     "TestWithdrawalAdmissionRejectsUnsafeOrIncompleteReturn",
     "TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge",
@@ -278,18 +411,42 @@ async function localWithdrawalAdmissionObservation(): Promise<Observation> {
   return result;
 }
 async function localKaminoConstructionObservation(): Promise<Observation> {
-  const result=await localCapObservation(["TestCatalogKaminoConstructionMatchesRetainedAUTOAndEthena"],
-    "AUTO/Ethena unsigned Kamino construction against retained SDK account vectors");
+  const result=await localCapObservation(["TestCatalogKaminoConstructionMatchesRetainedAUTOAndEthena","TestCatalogKaminoConstructionMatchesRetainedPrimeSiblings","TestPublicKeyBase58LeadingZerosMatchesSDK"],
+    "AUTO/Ethena and Prime sibling unsigned Kamino construction against retained SDK account vectors and canonical key encoding");
   if (result.data) {
     result.data.proofLevel="LOCAL_UNSIGNED_CONSTRUCTION_AND_MUTATIONS_NOT_PROGRAM_EXECUTION";
-    result.data.lanes=["AUTO/AUTO/PYUSD","Ethena/USDe/PYUSD"];
+    result.data.lanes=["AUTO/AUTO/PYUSD","Ethena/USDe/PYUSD","Prime/PRIME/PYUSD","Prime/PRIME/USDS"];
     result.data.operations=["deposit","borrow","repay","withdraw"];
     result.data.retainedEvidence="docs/evidence/backyard-rwa-go/phase3/setup-feasibility-2026-09-04.json";
   }
   return result;
 }
+async function localPolicySetupObservation(): Promise<Observation> {
+  const result=await localCapObservation([
+    "TestPolicySetupCompilerMatchesInstalledSDKAndRetainedConstraints",
+    "TestPolicySetupCostReservesBothPaymentsWithoutResettingBudget",
+    "TestPolicySetupRejectsInvalidCandidatesCostsAndLiveBuildRegistration",
+    "TestPolicySetupSettingsMatchesSDKAndRejectsAuthorityDrift",
+    "TestPolicySetupObservationPrefersDirectAndPricesStagingFallback",
+    "TestPolicySetupObservationRejectsChangedAuthorityTargetAndFunding",
+    "TestPolicySetupIntentRejectsUnpricedOrChangedPlan",
+    "TestPolicySetupCompletionRequiresExactFinalizedPrefundAndFreshRemainingPayment",
+    "TestPolicySetupCreatedStateMatchesSDKAndRejectsAuthorityDrift",
+    "TestPolicySetupCreationReconcilesDirectAndPrefundedPayments",
+    "TestPolicySetupPaymentRepricesEveryStageAndRejectsUnfitCompletion",
+    "TestPolicySetupSignedIdentityRejectsSyntheticOrDifferentSignersBeforeRPC",
+  ],"OnRe/USDC setup payloads and created state against installed SDK/retained accounts; controlled finalized receipts, remaining-payment pricing and accounting");
+  if(result.data) {
+    result.data.proofLevel="LOCAL_SETUP_BUILDERS_AND_CONTROLLED_RPC_RECOVERY_NOT_LIVE_AUTHORITY";
+    result.data.broadcast=false;
+    result.data.installed=false;
+    result.data.productionSetupAdmission=false;
+  }
+  return result;
+}
 async function localDebtDecisionObservation(): Promise<Observation> {
   const result=await localCapObservation([
+    "TestDepositRemainderDoesNotRestartEntryLoop",
     "TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate",
     "TestNonUSDCLifecycleSafetyPrecedence",
     "TestNonUSDCDrainFundsInterestShortfallBeforePayoff",
@@ -509,11 +666,17 @@ function sourceIdentity() {
     "docs/evidence/backyard-rwa-go/policy-compiled-v1.json","docs/evidence/backyard-rwa-go/policy-install-readback-v1.json",
     "docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json",
     "docs/evidence/backyard-rwa-go/phase3/jupiter-lookup-accounts-2026-09-04.json",
+    "docs/evidence/backyard-rwa-go/phase3/prime-sibling-lookup-review-2026-09-05.json",
     "docs/evidence/backyard-rwa-go/phase3/jupiter-v2-public-quotes-2026-09-04.json",
     "docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json",
+    "docs/evidence/backyard-rwa-go/phase3/return-quote-feasibility-2026-09-05.json",
+    "docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-public-quotes-2026-09-05.json",
+    "docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-repair-candidates-2026-09-05.json",
     "crates/squads-test-harness/tests/rwa_policy_creation_rent.rs",
     "crates/squads-test-harness/tests/support/rwa_jupiter_candidate.rs",
     "crates/squads-test-harness/tests/rwa_kamino_controlled_probe.rs","crates/squads-test-harness/tests/rwa_jupiter_controlled_probe.rs","crates/squads-test-harness/Cargo.toml","Cargo.lock",
+    "crates/loyal-yield-store/migrations/0074_backyard_rwa_phase3_journal_actions.sql",
+    "crates/loyal-yield-store/src/store.rs","crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs",
   ]).split("\0").filter(Boolean))].sort();
   const files=paths.map(path=>({path,sha256:sha(read(path))}));
   return {head:git(["rev-parse","HEAD"]).trim(),
@@ -528,8 +691,8 @@ export async function verify() {
   const catalogLanes = catalog.lanes.map((l: Json) => [l.market,l.collateral,l.debt].join("/"));
   const active = manifest.runtimeActivation?.runtimeRoutes ?? [];
   const offline = process.argv.includes("--offline");
-  const [runtime,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair,localCandidateJupiter] = await Promise.all([
-    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localBridgeAdmissionObservation(),localWithdrawalAdmissionObservation(),localKaminoConstructionObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation(),localSequentialJupiterObservation(),localJupiterRepairObservation(),localCandidateJupiterObservation()]);
+  const [runtime,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localPolicySetup,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair,localCandidateJupiter,localReturnQuotes,localReturnJupiter,localLinkedLendingReturn] = await Promise.all([
+    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localBridgeAdmissionObservation(),localWithdrawalAdmissionObservation(),localKaminoConstructionObservation(),localPolicySetupObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation(),localSequentialJupiterObservation(),localJupiterRepairObservation(),localCandidateJupiterObservation(),localReturnQuoteObservation(),localCandidateJupiterObservation(true),localCandidateJupiterObservation(true,true)]);
   const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
   const [chain,database,deployment,setupRent] = offline
     ? ["Solana RPC","Postgres","Render","setup rent feasibility"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
@@ -542,10 +705,10 @@ export async function verify() {
       observedCheck(database,"durable budget exists for this goal",d => d.route?.phase3?.goalId === GOAL),
       observedCheck(localCaps,"local production builders reject fresh over-cap costs before signing and reject stale valuation",d=>d.pass===true),
       observedCheck(localBridgeAdmission,"cash-only bridge admission prices staging, full restoration and each required NAV; rejects unsupported exposure and prevents build after HOLD",d=>d.pass===true),
-      observedCheck(localWithdrawalAdmission,"collateral release, funding and surrounding NAV reserve interest-aware payoff and full residue return; unsafe release size, funding minimum, custody drift and over-cap exits reject",d=>d.pass===true),
-      observedCheck(localSendJournal,"local journal persists bridge, withdrawal, payoff, funding and release-return costs, preserves concurrency/restart binding, reprices before send, and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
+      observedCheck(localWithdrawalAdmission,"initial swap/deposit/borrow, leveraged swap and debt-bearing redeposit reserve complete returns from validated poststate; funding continuations preserve residue and reject underfunding/custody drift; linked worker execution is separately unproven",d=>d.pass===true),
+      observedCheck(localSendJournal,"explicit one-time budget initialization preserves restart state and rejects prior spending, corruption and lease contention; local journal persists admission, reprices before send and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
     ],[
-      "Production admission for entry, borrowing, USDC/debt funding, setup and safe one-time budget initialization; the collateral-release/funding return graph does not cover those shapes.",
+      "End-to-end worker execution of the leveraged entry and full return, setup and verified production budget initialization; local bookkeeping/admission/continuation checks do not prove activation or the complete deployed lifecycle. All-lane admission remains unproven.",
       "Complete admission/send witnesses beyond local controlled-input build rejection: concurrency, restart, ambiguity, final-send freshness and successful reserved unwind.",
       "Independent reconciliation of deployed spent/reserved accounting, including setup and full-custody restore.",
     ]),
@@ -556,10 +719,10 @@ export async function verify() {
     ],["Durable three-family queue with reviewed identity bindings and in-family-only flat substitution behavior."]),
     measuredCondition("R03","Shared debt/token/valuation/exit runtime and existing policy authority",[
       observedCheck(localJupiterRepair,"V2 candidate compiler rejects economic/custody mutations, preserves all 52 legacy constraints and sibling edges, and full replacement groups create under the deployed Squads binary",d=>d.pass===true),
-      observedCheck(localKaminoConstruction,"AUTO/Ethena four-leg unsigned construction matches retained SDK vectors and rejects account/policy substitutions",d=>d.pass===true),
+      observedCheck(localKaminoConstruction,"AUTO/Ethena and two Prime siblings match four-leg retained SDK vectors, reject account/policy substitutions and encode leading-zero keys canonically",d=>d.pass===true),
       observedCheck(localDebtDecisions,"non-USDC planner separates debt/bridge custody and observes accrued debt; finite repayment bounds preserve custody conservation and charge the wire maximum without claiming payoff",d=>d.pass===true),
-      observedCheck(localJupiter,"AUTO/Ethena Jupiter layouts match installed edge constraints and controlled worker dispatch preserves conversion identities",d=>d.pass===true),
-      observedCheck(localJupiter,"all AUTO/Ethena retained conversion samples fit the actual Squads packet envelope (legacy or validated v0)",d=>d.pass===true&&d.packets?.allFit===true),
+      observedCheck(localJupiter,"AUTO/Ethena and Prime sibling Jupiter layouts match installed edge constraints and controlled worker dispatch preserves conversion identities",d=>d.pass===true),
+      observedCheck(localJupiter,"all 24 retained AUTO/Ethena/Prime-sibling conversion samples fit the actual Squads packet envelope (legacy or validated v0)",d=>d.pass===true&&d.packets?.allFit===true),
       measured("catalog operation and swap-edge cardinality",catalog.operations.length === 44 && catalog.swapEdges.length === 52,
         {operations:catalog.operations.length,swapEdges:catalog.swapEdges.length}),
       observedCheck(chain,"required observed accounts are present",d => Array.isArray(d.accounts) && d.accounts.length > 0 && d.accounts.every((a: Json) => a.present === true)),
@@ -572,6 +735,9 @@ export async function verify() {
       "All-lane production observation, construction, non-USDC valuation, exit and reconciliation behavior; catalog counts alone prove none of these.",
     ]),
     measuredCondition("R04","All-lane positives/negatives and full stateful lifecycle",[
+      observedCheck(localReturnJupiter,"both return conversions clear controlled source custody through exact mixed candidate/installed policies with rejecting mutations and current-Go parity; not linked lending or bridge execution",d=>d.pass===true),
+      observedCheck(localLinkedLendingReturn,"four lending legs and both return swaps remain continuous with raw terminal checks and Go parity; a separate Go redeposit executes on debt-bearing cloned state with explicit custody overrides, not linked funding, bridge entry or mainnet proof",d=>d.pass===true),
+      observedCheck(localReturnQuotes,"retained funding and both return quotes are accepted by current installed-binding Go validation; sizing samples are not execution or fresh-chain proof",d=>d.pass===true&&d.witness?.allAccepted===true),
       observedCheck(localCandidateJupiter,"V2 candidates create on cloned Settings and execute two sequential swaps plus fourteen rejecting mutations; current Go matches SDK wires with test-only candidate bindings, not installed authority or a full lifecycle",d=>d.pass===true),
       observedCheck(localSequentialKamino,"Ethena lending legs and production-sized collateral release execute under deployed programs; Go matches release reserve/custody poststate and finite payoff after a 60-second/32-slot advance, while unsafe withdrawal and dust repayment reject",d=>d.pass===true),
       observedCheck(localSequentialJupiter,"Ethena USDC/collateral and collateral/debt Go swaps execute sequentially against deployed binaries with measured debit/min-output and installed-policy rejection before Jupiter CPI",d=>d.pass===true),
@@ -612,7 +778,7 @@ export async function verify() {
     // Existing policy allocations are a diagnostic sample, not a fabricated
     // pass/fail for the complete proposed setup graph. Retain prices, hashes,
     // rent and the explicit new-allocation proof limitation in the snapshot.
-    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair,localCandidateJupiter},
+    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localPolicySetup,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair,localCandidateJupiter,localReturnQuotes,localReturnJupiter,localLinkedLendingReturn},
     conditions,
   };
 }

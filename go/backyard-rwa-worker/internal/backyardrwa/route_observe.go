@@ -58,7 +58,7 @@ func optionalLifecycleObligations(addresses []string) []string {
 			break
 		}
 	}
-	for _, obligation := range []string{autoAUTOPYUSD.Kamino.Obligation, ethenaUSDePYUSD.Kamino.Obligation} {
+	for _, obligation := range []string{autoAUTOPYUSD.Kamino.Obligation, ethenaUSDePYUSD.Kamino.Obligation, primePRIMEPYUSD.Kamino.Obligation, primePRIMEUSDS.Kamino.Obligation} {
 		for _, candidate := range addresses {
 			if candidate == obligation {
 				optional = append(optional, obligation)
@@ -192,6 +192,13 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: beforeDemand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw)}}
 		base.Snapshot.PrimeIdleRaw = int64(prime.Raw)
 		base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
+		if route.Kamino.DebtMint != bridgeUSDC && prime.Raw > 0 && !cutoverDrain && beforeDemand == 0 {
+			minimum, err := kaminoDepositMinimum(accounts, route, slot, math.MaxInt64)
+			if err != nil {
+				return Observation{}, nil, err
+			}
+			base.Snapshot.MinimumCollateralDepositRaw = math.MaxInt64 - int64(minimum) + 1
+		}
 		base.Snapshot.RouteLane = route.Lane
 		base.Snapshot.StrategyKey = route.Lane
 		base.Snapshot.CutoverDrain = cutoverDrain
@@ -199,7 +206,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
 		base.Snapshot.PositionDebtRaw = int64(position.DebtRaw)
 		if route.Kamino.DebtMint != bridgeUSDC && position.DebtRaw > 0 {
-			bound, err := decodeKaminoPayoffBound(accounts, route, slot)
+			// Include NAV -> release -> NAV -> funding -> NAV -> payoff in
+			// planning. Each actual wire still has its own short freshness gate.
+			bound, err := decodeKaminoPayoffWindow(accounts, route, slot, 6)
 			if err != nil {
 				return Observation{}, nil, err
 			}
@@ -233,7 +242,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, entryUSDC,
 		)
 		if route.Kamino.DebtMint != bridgeUSDC {
-			digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d|payoff-debt:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw, base.Snapshot.PayoffDebtRaw)))
+			digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d|payoff-debt:%d|idle-collateral-value:%d|position-debt-value:%d|minimum-deposit:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw, base.Snapshot.PayoffDebtRaw, base.Snapshot.CollateralIdleValueRaw, base.Snapshot.PositionDebtValueRaw, base.Snapshot.MinimumCollateralDepositRaw)))
 			base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
 		}
 		base.ObservedAt = observedAt
@@ -256,8 +265,11 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 		return nil
 	}
 	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
+	// All deposit rounding bounds use the Clock from the same custody/reserve
+	// batch, including retained PRIME/Maple consumers.
+	addressSet[budgetClockAddress] = struct{}{}
+	addressSet[route.DebtFeeReceiver] = struct{}{}
 	if catalogJupiterRoute(route.Lane) {
-		addressSet[budgetClockAddress] = struct{}{}
 		policies, err := catalogRoutePolicyHashes(route, manifest)
 		if err != nil {
 			return nil
@@ -434,7 +446,7 @@ func routeEconomicObservationID(
 func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Time) error {
 	if snapshot == nil || snapshot.Slot <= 0 || nav.Slot != snapshot.Slot || now.IsZero() || now.Unix() < 0 ||
 		nav.StrategyNAVRaw > math.MaxInt64 || nav.TotalVaultNAVRaw > math.MaxInt64 || nav.PriorReportedNAVRaw > math.MaxInt64 ||
-		nav.Report.Sequence > math.MaxInt64 || nav.Custodies.SquadsDebtRaw > math.MaxInt64 ||
+		nav.Report.Sequence > math.MaxInt64 || nav.Custodies.SquadsDebtRaw > math.MaxInt64 || nav.PrimeIdleValueRaw > math.MaxInt64 ||
 		nav.PriorReportUpdatedTS > math.MaxInt64 || nav.Report.Sequence != nav.Report.ObservedSlot ||
 		nav.Report.ObservedSlot != uint64(nav.Slot) || nav.Report.NAVAfterRaw != nav.StrategyNAVRaw ||
 		nav.Report.SnapshotDigest != nav.SnapshotDigest || !sha256Pattern.MatchString(nav.SnapshotDigest) {
@@ -456,6 +468,7 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	snapshot.ReportSequence = int64(nav.Report.Sequence)
 	snapshot.ReportSnapshotDigest = nav.Report.SnapshotDigest
 	snapshot.DebtIdleRaw = int64(nav.Custodies.SquadsDebtRaw)
+	snapshot.CollateralIdleValueRaw = int64(nav.PrimeIdleValueRaw)
 	return nil
 }
 

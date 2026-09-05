@@ -3,6 +3,7 @@ package backyardrwa
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ func TestNonUSDCDrainFundsInterestShortfallBeforePayoff(t *testing.T) {
 	s := base()
 	s.RouteLane, s.CutoverDrain, s.HasPosition = ethenaUSDePYUSD.Lane, true, true
 	s.PositionCollateralRaw, s.PositionDebtRaw = 100_000_000, int64(bound.ObservedDebtRaw)
+	s.PositionCollateralValueRaw, s.PositionDebtValueRaw = 100_000, 2_000
 	s.PayoffDebtRaw, s.DebtIdleRaw = int64(bound.UpperDebtRaw), 1_000
 	for _, cash := range []int64{1, 999, 1_000} {
 		s.DebtIdleRaw = cash
@@ -31,6 +33,7 @@ func TestNonUSDCDrainFundsInterestShortfallBeforePayoff(t *testing.T) {
 		t.Fatal("available USDC funding ignored", got)
 	}
 	s.CollateralIdleRaw = 10
+	s.CollateralIdleValueRaw = 10
 	if got := Decide(s); got.Action != SwapCollateralToDebtStep {
 		t.Fatal("available collateral funding ignored", got)
 	}
@@ -66,6 +69,7 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 			s.CollateralIdleRaw, s.PositionCollateralRaw, s.HasPosition = 0, 90, true
 			check(OpenRouteStep, 1)
 			s.PositionDebtRaw, s.DebtIdleRaw = 40, 40
+			s.PositionDebtValueRaw = 80
 			// An unrelated USDC residue cannot be treated as borrowed PYUSD.
 			s.SquadsIdleRaw = 3
 			check(SwapDebtToCollateralStep, 40)
@@ -75,12 +79,13 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 			check(Hold, 0)
 			// Even ample Voltr USDC must not short-circuit a canary drain.
 			s.CutoverDrain, s.WithdrawalDemandRaw, s.VoltrIdleRaw = true, 1, 200
-			check(SwapUSDCToDebtStep, 3)
+			check(DeleverRouteStep, 1) // 3 USDC raw cannot fund 40 debt raw at $2
 			s.SquadsIdleRaw, s.DebtIdleRaw = 0, 2
 			check(DeleverRouteStep, 1)
 			s.DebtIdleRaw, s.PositionDebtRaw = 0, 38
 			check(DeleverRouteStep, 1)
 			s.CollateralIdleRaw = 45
+			s.CollateralIdleValueRaw = 100
 			check(SwapCollateralToDebtStep, 45)
 			s.CollateralIdleRaw, s.DebtIdleRaw = 0, 39
 			check(DeleverRouteStep, 38)
@@ -201,7 +206,7 @@ func TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity(t *testing
 	}
 	s := base()
 	s.Slot = 77
-	if err = applyRouteNAVSnapshot(&s, nav, time.Unix(1_700_000_010, 0)); err != nil || s.DebtIdleRaw != 9 {
+	if err = applyRouteNAVSnapshot(&s, nav, time.Unix(1_700_000_010, 0)); err != nil || s.DebtIdleRaw != 9 || s.CollateralIdleValueRaw != int64(nav.PrimeIdleValueRaw) {
 		t.Fatal("debt custody lost before planning", err)
 	}
 	s.StrategyNAVRaw = int64(nav.StrategyNAVRaw)
@@ -209,7 +214,7 @@ func TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity(t *testing
 	s.HasPosition, s.PositionCollateralRaw, s.PositionDebtRaw = true, int64(position.CollateralDepositedRaw), 7
 	s.PositionCollateralValueRaw, s.PositionDebtValueRaw, s.LTVBPS = int64(nav.PositionCollateralValue), int64(nav.PositionDebtValue), ltv
 	projection, err := newRouteObservationProjection(Observation{Snapshot: s, ObservedAt: time.Unix(1_700_000_010, 0)})
-	if err != nil || projection.DebtIdleRaw != "9" {
+	if err != nil || projection.DebtIdleRaw != "9" || projection.CollateralIdleValueRaw != fmt.Sprint(nav.PrimeIdleValueRaw) {
 		t.Fatal("debt custody lost from durable projection", err)
 	}
 	nav.Custodies.SquadsDebtRaw = math.MaxUint64

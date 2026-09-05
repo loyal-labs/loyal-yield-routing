@@ -13,8 +13,12 @@ import (
 )
 
 func retainedJupiterLookups(t *testing.T) []LookupTableSnapshot {
+	return readRetainedJupiterLookups(t, "jupiter-lookup-accounts-2026-09-04.json", 2)
+}
+
+func readRetainedJupiterLookups(t *testing.T, name string, count int) []LookupTableSnapshot {
 	t.Helper()
-	data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/phase3/jupiter-lookup-accounts-2026-09-04.json")
+	data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/phase3/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +34,7 @@ func retainedJupiterLookups(t *testing.T) []LookupTableSnapshot {
 	if err := json.Unmarshal(data, &evidence); err != nil {
 		t.Fatal(err)
 	}
-	if evidence.Genesis != "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d" || len(evidence.Tables) != 2 {
+	if evidence.Genesis != "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d" || len(evidence.Tables) != count {
 		t.Fatal("lookup provenance invalid")
 	}
 	tables := []LookupTableSnapshot{}

@@ -91,6 +91,20 @@ func (e *validatedSignedBudgetHold) Error() string { return e.hold.Error() }
 func (e *validatedSignedBudgetHold) Unwrap() error { return e.hold }
 
 func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3OperationAuthorization, operation PersistedOperation) (ValuedTransactionCost, error) {
+	if auth.PolicySetup != nil {
+		if err := validatePolicySetupSignedPayment(auth, operation); err != nil {
+			return ValuedTransactionCost{}, err
+		}
+		payment, err := observePolicySetupPayment(ctx, rpc, auth, operation.Decision.Action)
+		if err != nil {
+			return ValuedTransactionCost{}, err
+		}
+		cost := payment.Cost
+		if payment.CompletionCost != nil {
+			cost.ValidThroughSlot = min(cost.ValidThroughSlot, payment.CompletionCost.ValidThroughSlot)
+		}
+		return cost, nil
+	}
 	wire := operation.SignedWire
 	if auth.GoalID != Phase3GoalID || len(wire) <= 65 || wire[0] != 1 || auth.SignedWireSHA256 != sha256Bytes(wire) {
 		return ValuedTransactionCost{}, budgetHold("signed_wire_reservation_mismatch")
@@ -117,6 +131,45 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 		return ValuedTransactionCost{}, budgetHold("persisted_signature_or_expiry_mismatch")
 	}
 	cost, err := observePhase3KnownBuildCost(ctx, rpc, request, effects)
+	if err == nil && auth.BridgeAdmission != nil && auth.BridgeAdmission.LeverageProjection != nil {
+		entry, ok := request.(JupiterSwapRequest)
+		if !ok {
+			err = budgetHold("leverage_projection_identity_mismatch")
+		} else {
+			var observed int64
+			observed, err = validateLeverageAdmissionPrestate(ctx, rpc, entry, effects, auth.BridgeAdmission, cost.ObservationSlot)
+			cost.ObservationSlot = max(cost.ObservationSlot, observed)
+		}
+	}
+	if err == nil && auth.BridgeAdmission != nil && auth.BridgeAdmission.BorrowProjection != nil {
+		entry, ok := request.(KaminoPrimeUSDCRequest)
+		if !ok || effects.Kind != "kamino-borrow" {
+			err = budgetHold("borrow_projection_identity_mismatch")
+		} else {
+			var observed int64
+			observed, err = validateBorrowAdmissionPrestate(ctx, rpc, entry, auth.BridgeAdmission, cost.ObservationSlot)
+			cost.ObservationSlot = max(cost.ObservationSlot, observed)
+		}
+	}
+	if err == nil && auth.BridgeAdmission != nil && auth.BridgeAdmission.DepositProjection != nil {
+		entry, ok := request.(KaminoPrimeUSDCRequest)
+		_, leg, entryErr := kaminoPrimeUSDCInstruction(entry)
+		if !ok || entryErr != nil || entry.Action != OpenRouteStep || leg != kaminoLegDeposit || effects.Deposit == nil {
+			err = budgetHold("deposit_projection_identity_mismatch")
+		} else {
+			var route RuntimeRoute
+			route, err = runtimeRoute(entry.RouteLane)
+			if err == nil {
+				var observed int64
+				if auth.BridgeAdmission.Snapshot.PositionDebtRaw > 0 {
+					observed, err = validateRedepositAdmissionPrestate(ctx, rpc, entry, auth.BridgeAdmission, cost.ObservationSlot)
+				} else {
+					observed, err = validateInitialDepositPrestate(ctx, rpc, route, cost.ObservationSlot)
+				}
+				cost.ObservationSlot = max(cost.ObservationSlot, observed)
+			}
+		}
+	}
 	if err == nil && auth.BridgeAdmission != nil {
 		// Fresh principal pricing cannot extend the earlier complete exit
 		// estimate. The locked send fence checks this reduced window again.

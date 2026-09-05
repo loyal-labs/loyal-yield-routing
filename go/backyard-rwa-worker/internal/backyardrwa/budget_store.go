@@ -10,14 +10,18 @@ import (
 )
 
 type phase3OperationAuthorization struct {
-	GoalID              string                 `json:"goalId"`
-	IntentSHA256        string                 `json:"intentSha256"`
-	SignedWireSHA256    string                 `json:"signedWireSha256,omitempty"`
-	ReservationReleased bool                   `json:"reservationReleased,omitempty"`
-	BookedSpentMicros   int64                  `json:"bookedSpentMicros,omitempty"`
-	BuildInput          *phase3BuildInput      `json:"buildInput,omitempty"`
-	SendKnownCost       *ValuedTransactionCost `json:"sendKnownCost,omitempty"`
-	BridgeAdmission     *phase3BridgeAdmission `json:"bridgeAdmission,omitempty"`
+	GoalID                string                  `json:"goalId"`
+	IntentSHA256          string                  `json:"intentSha256"`
+	SignedWireSHA256      string                  `json:"signedWireSha256,omitempty"`
+	ReservationReleased   bool                    `json:"reservationReleased,omitempty"`
+	BookedSpentMicros     int64                   `json:"bookedSpentMicros,omitempty"`
+	BuildInput            *phase3BuildInput       `json:"buildInput,omitempty"`
+	SendKnownCost         *ValuedTransactionCost  `json:"sendKnownCost,omitempty"`
+	BridgeAdmission       *phase3BridgeAdmission  `json:"bridgeAdmission,omitempty"`
+	PolicySetup           *policySetupObservation `json:"policySetup,omitempty"`
+	PolicySetupCompletion *policySetupCompletion  `json:"policySetupCompletion,omitempty"`
+	SetupBuildCost        *ValuedTransactionCost  `json:"setupBuildCost,omitempty"`
+	SetupCompletionCost   *ValuedTransactionCost  `json:"setupCompletionCost,omitempty"`
 }
 
 // Preserve an admission failure before restart recovery can replace it with a
@@ -293,6 +297,47 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 		}
 	}
 	recovery := decision.Action != VoltrAllocateToSquads
+	if decision.Action == SwapDebtToCollateralStep {
+		entry, ok := request.(JupiterSwapRequest)
+		if !ok || !entry.PositionReturnReserved || plan.LeverageProjection == nil || plan.Payoff == nil || budget.Families[family].ExitMicros == 0 {
+			return budgetHold("leverage_requires_reserved_position")
+		}
+		recovery = false
+	}
+	if decision.Action == SwapStableToCollateralStep {
+		entry, ok := request.(JupiterSwapRequest)
+		if !ok || !entry.EntryReturnReserved || budget.Families[family].ExitMicros == 0 {
+			return budgetHold("entry_requires_reserved_bridge_custody")
+		}
+		// Entry extends a pre-existing bridge reserve within family/goal caps;
+		// it is not an unwind that must fit inside the cheaper cash-only exit.
+		// Budget.Admit still forbids consuming the prior reserve for headroom.
+		recovery = false
+	}
+	if decision.Action == OpenRouteStep {
+		entry, ok := request.(KaminoPrimeUSDCRequest)
+		_, leg, entryErr := kaminoPrimeUSDCInstruction(entry)
+		if !ok || entryErr != nil {
+			return budgetHold("invalid_kamino_entry_admission")
+		}
+		switch leg {
+		case kaminoLegDeposit:
+			if plan.Snapshot.PositionDebtRaw > 0 {
+				if plan.DepositProjection == nil || plan.Payoff == nil || !plan.Snapshot.HasPosition || plan.Snapshot.PositionCollateralRaw <= 0 || budget.Families[family].ExitMicros == 0 {
+					return budgetHold("redeposit_requires_reserved_position")
+				}
+			} else if plan.DepositProjection == nil || plan.Snapshot.HasPosition || plan.Snapshot.PositionCollateralRaw != 0 || budget.Families[family].ExitMicros == 0 {
+				return budgetHold("deposit_requires_reserved_collateral_custody")
+			}
+		case kaminoLegBorrow:
+			if plan.BorrowProjection == nil || plan.Payoff == nil || !plan.Snapshot.HasPosition || plan.Snapshot.PositionCollateralRaw <= 0 || plan.Snapshot.PositionDebtRaw != 0 || budget.Families[family].ExitMicros == 0 {
+				return budgetHold("borrow_requires_reserved_position")
+			}
+		default:
+			return budgetHold("invalid_kamino_entry_admission")
+		}
+		recovery = false
+	}
 	// An already-flat maintenance report is fee spend. Staging/restoration
 	// cannot adopt unreserved capital through this exception.
 	if decision.Action == ReportNAV && budget.Families[family].ExitMicros == 0 && len(plan.Exit) == 0 {
@@ -379,6 +424,14 @@ func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operati
 	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
 	if err != nil {
 		return err
+	}
+	if auth.PolicySetup != nil {
+		if _, err := d.validatePolicySetupReservationTx(ctx, tx, operationID, budget, auth, Signed); err != nil {
+			return err
+		}
+		if auth.SetupBuildCost == nil {
+			return budgetHold("setup_payment_not_build_authorized")
+		}
 	}
 	var wire []byte
 	if err = tx.QueryRow(ctx, `SELECT signed_wire FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='signed'`, operationID).Scan(&wire); err != nil {
