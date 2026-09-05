@@ -329,12 +329,44 @@ reserve redemption, economic debit and exact custody reconciliation. A full
 withdrawal request from the same state is rejected by KLend `WithdrawTooLarge`
 (6011), with no custody or position change. Neither branch signs or broadcasts.
 
-Latest sole-verifier checkpoint:
+Open-debt release checkpoint:
 `docs/evidence/backyard-rwa-go/phase3/open-debt-release-2026-09-05.json.gz`.
 This proves the release mechanic only, not the planner-selected release size or
 a sequential release -> funding swap -> payoff -> complete return. That linked
 path and its admission remain the next implementation gap; all R01–R08 retain
 their full acceptance criteria, and local evidence cannot make them PASS.
+
+#### Funding-swap and NAV admission — 2026-09-05
+
+The production worker now admits a full idle-collateral-to-debt funding swap,
+the NAV immediately before it, and the NAV immediately after it. The reservation
+covers the payoff, remaining collateral withdrawal, both residue conversions,
+full bridge return and every intervening NAV. Their respective future-step
+counts are 13, 14 and 12. Future packets remain cost templates; only the actual
+current request is persisted for signing.
+
+Funding must cover debt through all intervening steps: swap/NAV/payoff uses
+three interest windows, NAV/swap/NAV/payoff four, and NAV/payoff two. This does
+not extend current-wire freshness beyond 32 slots. The final-send path refreshes
+actual custody and the funding bound. It derives a conservative minimum from
+the legacy instruction's quoted output and slippage, rejects overstated JSON
+thresholds, and never relies on optimistic output to establish repayment cash.
+[Jupiter's quote documentation](https://developers.jup.ag/docs/swap/v1/get-quote)
+distinguishes quoted output from the slippage-adjusted minimum.
+
+Controlled transport tests exercise the actual compilers, pricing and admission
+functions, including versioned lookup-table messages, insufficient multi-step
+interest coverage, changed signed-input custody and over-cap full returns.
+Disposable PostgreSQL proves the funding producer persists the complete return
+against an existing recovery reservation, rejects unreserved exposure, and keeps
+all wires unsigned/unsent during these tests.
+
+Latest sole-verifier checkpoint:
+`docs/evidence/backyard-rwa-go/phase3/funding-return-admission-2026-09-05.json.gz`.
+Release-before-funding admission and sequential release/swap/payoff/return
+execution remain incomplete. The USDC-to-debt funding variant, entry/borrowing,
+setup/initialization, all-lane queue and deployed/live proof also remain open.
+No cap, authorization boundary or R01–R08 verdict meaning changes here.
 
 ### R02 — exact allowlist and frozen canary queue
 

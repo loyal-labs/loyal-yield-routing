@@ -84,6 +84,9 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 			exactAmount = &r.AmountRaw
 		}
 	case JupiterSwapRequest:
+		if r.FullPayoffFunding && r.Action != SwapCollateralToDebtStep {
+			return ExecutableDebit{}, budgetHold("funding_bounds_on_non_funding_swap")
+		}
 		if _, err = CompileJupiterMessage(r); err != nil {
 			return ExecutableDebit{}, err
 		}

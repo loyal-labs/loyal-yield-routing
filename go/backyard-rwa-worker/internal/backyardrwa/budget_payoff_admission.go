@@ -2,6 +2,7 @@ package backyardrwa
 
 import (
 	"context"
+	"encoding/binary"
 	"math"
 	"time"
 )
@@ -43,6 +44,10 @@ func observePhase3PayoffAdmission(ctx context.Context, rpc *RPCClient, client *j
 // for the actual NAV following a reconciled payoff. Templates never become the
 // next current instruction: withdrawal is prepared and admitted again later.
 func pricePhase3PositionReturn(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool) (phase3BridgeAdmission, error) {
+	return pricePhase3PositionReturnAfterFunding(ctx, rpc, client, manifest, post, decision, request, effects, afterPayoff, nil)
+}
+
+func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool, funding *JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
 	s := post.Snapshot
 	if rpc == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" ||
 		s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
@@ -89,6 +94,26 @@ func pricePhase3PositionReturn(ctx context.Context, rpc *RPCClient, client *jupi
 		return phase3BridgeAdmission{}, budgetHold("payoff_withdrawal_policy_drift")
 	}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
+	if funding != nil {
+		// Only this cost template sees post-swap empty collateral. Check the
+		// actual pre-swap custody first; never mutate RPC data or a current wire.
+		if !afterPayoff || funding.Request.Action != SwapCollateralToDebtStep || funding.Request.RouteLane != s.RouteLane {
+			return phase3BridgeAdmission{}, budgetHold("invalid_funding_return_projection")
+		}
+		accounts = append([]ConfirmedAccount(nil), accounts...)
+		for i, account := range accounts {
+			if account.Address == route.CollateralCustody {
+				mint, _ := decodeBase58PublicKey(route.Kamino.CollateralMint)
+				authority, _ := decodeBase58PublicKey(bridgeVault)
+				custody, err := DecodeTokenCustody(account.Owner, account.Data, mint, authority)
+				if err != nil || custody.Raw != funding.Request.AmountRaw {
+					return phase3BridgeAdmission{}, budgetHold("funding_collateral_custody_changed")
+				}
+				accounts[i].Data = append([]byte(nil), account.Data...)
+				binary.LittleEndian.PutUint64(accounts[i].Data[64:72], 0)
+			}
+		}
+	}
 	withdrawalEffects, err := exactKaminoTokenEffects(accounts, source, destination, amount)
 	if err != nil {
 		return phase3BridgeAdmission{}, err

@@ -267,8 +267,11 @@ async function localWithdrawalAdmissionObservation(): Promise<Observation> {
     "TestFundedPayoffAdmissionReservesCompleteReturnAndPostPayoffNAV",
     "TestFundedPayoffRejectsInsufficientInterestAndChangedStateBeforeSigner",
     "TestPayoffBoundUsesAccrualBasisAndUnroundedDebt",
+    "TestFundingAdmissionReservesPayoffReturnAndBothNAVContinuations",
+    "TestFundingAdmissionRejectsUnderfundingAndFinalSendDrift",
+    "TestFundingPayoffWindowIncludesInterveningSteps",
     "TestTickDispatchesKaminoAndReobservesAfterReconciliation",
-  ],"funded full payoff, post-payoff NAV, debt-free withdrawal and complete residue return admission through production paths");
+  ],"collateral funding swap and surrounding NAV, full payoff, withdrawal and complete residue return admission through production paths");
   if(result.data)result.data.proofLevel="CONTROLLED_RPC_QUOTE_AND_POSTSTATE_ACCOUNTING_NOT_EXECUTED_RETURN";
   return result;
 }
@@ -537,10 +540,10 @@ export async function verify() {
       observedCheck(database,"durable budget exists for this goal",d => d.route?.phase3?.goalId === GOAL),
       observedCheck(localCaps,"local production builders reject fresh over-cap costs before signing and reject stale valuation",d=>d.pass===true),
       observedCheck(localBridgeAdmission,"cash-only bridge admission prices staging, full restoration and each required NAV; rejects unsupported exposure and prevents build after HOLD",d=>d.pass===true),
-      observedCheck(localWithdrawalAdmission,"funded payoff uses actual interest basis and unrounded debt, reserves full withdrawal/residue return and following NAV, and rejects underfunded, changed or over-cap exits",d=>d.pass===true),
-      observedCheck(localSendJournal,"local journal persists bridge, debt-free withdrawal and funded payoff costs, preserves concurrency/restart binding, reprices before send, and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
+      observedCheck(localWithdrawalAdmission,"collateral funding and surrounding NAV reserve interest-aware payoff and full residue return; wire-derived funding minimum, custody drift and over-cap exits reject",d=>d.pass===true),
+      observedCheck(localSendJournal,"local journal persists bridge, withdrawal, payoff and funding-swap return costs, preserves concurrency/restart binding, reprices before send, and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
     ],[
-      "Production admission for entry, borrowing, collateral release/conversion to fund repayment, setup and safe one-time budget initialization; funded full-payoff admission does not cover those shapes.",
+      "Production admission for entry, borrowing, collateral release before funding, USDC/debt funding, setup and safe one-time budget initialization; collateral/debt funding admission does not cover those shapes.",
       "Complete admission/send witnesses beyond local controlled-input build rejection: concurrency, restart, ambiguity, final-send freshness and successful reserved unwind.",
       "Independent reconciliation of deployed spent/reserved accounting, including setup and full-custody restore.",
     ]),

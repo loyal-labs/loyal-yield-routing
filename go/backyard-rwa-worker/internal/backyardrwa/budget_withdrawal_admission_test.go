@@ -290,12 +290,13 @@ func TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge(t *testing.T)
 }
 
 func testProductionWithdrawalAdmission(t *testing.T, url string) {
-	t.Run("collateral_only", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, false, false) })
-	t.Run("collateral_and_debt_residue", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true, false) })
-	t.Run("funded_full_payoff", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true, true) })
+	t.Run("collateral_only", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, false, false, false) })
+	t.Run("collateral_and_debt_residue", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true, false, false) })
+	t.Run("funded_full_payoff", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true, true, false) })
+	t.Run("funding_swap_complete_return", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true, false, true) })
 }
 
-func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResidue, payoff bool) {
+func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResidue, payoff, funding bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	db, err := OpenDatabase(ctx, url)
@@ -309,6 +310,10 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResi
 	}
 	if payoff {
 		o, d, evidence, manifest, rpc, client, _ = payoffAdmissionFixture(t, 20_000)
+	}
+	var fundingEvidence JupiterExecutionEvidence
+	if funding {
+		o, d, fundingEvidence, manifest, rpc, client, _ = fundingAdmissionFixture(t, 20_000)
 	}
 	key := fmt.Sprintf("phase3-withdrawal-producer-%d", time.Now().UnixNano())
 	id := key + "-operation"
@@ -330,7 +335,12 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResi
 	if _, err = db.AcquireRouteLease(ctx, key, "withdrawal-producer", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	admit := func() error { return db.admitPhase3Withdrawal(ctx, rpc, client, manifest, id, o, d, evidence) }
+	admit := func() error {
+		if funding {
+			return db.admitPhase3Funding(ctx, rpc, client, manifest, id, o, d, fundingEvidence.Request, fundingEvidence.ExpectedEffects)
+		}
+		return db.admitPhase3Withdrawal(ctx, rpc, client, manifest, id, o, d, evidence)
+	}
 	assertBudgetHold(t, admit(), "recovery_exceeds_reserved_exit")
 	// Controlled historical reserve only. The producer derives the current
 	// transaction and remaining exit; it cannot adopt unreserved exposure.
@@ -350,7 +360,11 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResi
 		t.Fatal("invalid durable admission")
 	}
 	r := b.Reservations[id]
-	if hasWire || hasSend || auth.BuildInput.Kind != "kamino" || auth.BridgeAdmission == nil || auth.BridgeAdmission.QuotedExit == nil ||
+	kind := "kamino"
+	if funding {
+		kind = "jupiter"
+	}
+	if hasWire || hasSend || auth.BuildInput.Kind != kind || auth.BridgeAdmission == nil || auth.BridgeAdmission.QuotedExit == nil ||
 		!r.Recovery || r.ExitBeforeMicros != 1_000_000 || r.ExitAfterMicros != auth.BridgeAdmission.ExitAfterMicros || r.UpperMicros != auth.BridgeAdmission.CurrentCost.TotalMicros {
 		t.Fatal("production withdrawal admission did not bind current and future costs")
 	}
@@ -358,11 +372,23 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResi
 	if payoff {
 		exitCount = 11
 	}
+	if funding {
+		exitCount = 13
+	}
 	if debtResidue && (len(auth.BridgeAdmission.AdditionalQuotedExits) != 1 || len(auth.BridgeAdmission.Exit) != exitCount) {
 		t.Fatal("durable reservation dropped debt conversion")
 	}
 	if payoff && (auth.BridgeAdmission.Payoff == nil || auth.BridgeAdmission.Payoff.UpperDebtRaw != 1_001 || auth.BridgeAdmission.PayoffWithdrawal == nil) {
 		t.Fatal("durable funded payoff omitted interest bound or full withdrawal")
+	}
+	if funding {
+		if auth.BridgeAdmission.PayoffRepayment == nil || auth.BridgeAdmission.FundingSwap == nil || auth.BridgeAdmission.Payoff.ThroughUnix != 1180 {
+			t.Fatal("durable funding omitted full interest horizon or return template")
+		}
+		if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, fundingEvidence.Request, fundingEvidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
+			t.Fatal(err)
+		}
+		return
 	}
 	if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, evidence.Request, evidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
 		t.Fatal(err)

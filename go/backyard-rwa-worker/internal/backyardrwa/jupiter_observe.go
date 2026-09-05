@@ -69,6 +69,9 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("Jupiter source custody is below exact input")
 		}
 		evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
+		if decision.Reason == "withdrawal_swap_repayment_buffer" && observation.Snapshot.PositionDebtRaw > 0 && catalogJupiterRoute(decision.StrategyKey) {
+			evidence.Request.FullPayoffFunding = true
+		}
 		return observation, evidence, err
 	}
 	return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("confirmed Jupiter construction reads did not align"))

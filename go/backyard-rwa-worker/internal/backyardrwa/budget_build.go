@@ -50,6 +50,13 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 		slot = max(slot, bound.ObservedSlot)
 	}
 	if r, ok := request.(JupiterSwapRequest); ok {
+		if r.FullPayoffFunding {
+			bound, _, err := validatePayoffFunding(ctx, rpc, r, effects, slot, 3)
+			if err != nil {
+				return ValuedTransactionCost{}, err
+			}
+			slot = max(slot, bound.ObservedSlot)
+		}
 		slot, err = revalidateJupiterLookupTables(ctx, rpc, r, slot)
 		if err != nil {
 			return ValuedTransactionCost{}, err

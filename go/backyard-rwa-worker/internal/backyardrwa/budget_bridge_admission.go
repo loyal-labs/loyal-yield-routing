@@ -29,6 +29,8 @@ type phase3BridgeAdmission struct {
 	AdditionalQuotedExits []phase3QuotedExit     `json:"additionalQuotedExits,omitempty"`
 	Payoff                *KaminoPayoffBound     `json:"payoff,omitempty"`
 	PayoffWithdrawal      *phase3BuildInput      `json:"payoffWithdrawal,omitempty"`
+	PayoffRepayment       *phase3BuildInput      `json:"payoffRepayment,omitempty"`
+	FundingSwap           *phase3QuotedExit      `json:"fundingSwap,omitempty"`
 }
 
 type phase3QuotedExit struct {

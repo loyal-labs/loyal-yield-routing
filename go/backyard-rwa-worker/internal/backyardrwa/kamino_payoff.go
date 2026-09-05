@@ -27,6 +27,10 @@ type KaminoPayoffBound struct {
 }
 
 func observeKaminoPayoffBound(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	return observeKaminoPayoffWindow(ctx, rpc, route, minimumSlot, 1)
+}
+
+func observeKaminoPayoffWindow(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot, steps int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	if rpc == nil || minimumSlot <= 0 {
 		return KaminoPayoffBound{}, nil, budgetHold("payoff_observation_unavailable")
 	}
@@ -36,20 +40,29 @@ func observeKaminoPayoffBound(ctx context.Context, rpc *RPCClient, route Runtime
 	if err != nil {
 		return KaminoPayoffBound{}, nil, err
 	}
-	bound, err := decodeKaminoPayoffBound(accounts, route, slot)
+	bound, err := decodeKaminoPayoffWindow(accounts, route, slot, steps)
 	return bound, accounts, err
 }
 
 func decodeKaminoPayoffBound(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (KaminoPayoffBound, error) {
+	return decodeKaminoPayoffWindow(accounts, route, slot, 1)
+}
+
+// Each not-yet-executed funding/NAV/payoff step needs an accrual window.
+// This extends the cost estimate only; current-wire freshness remains 32 slots.
+func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64) (KaminoPayoffBound, error) {
 	var bound KaminoPayoffBound
+	if steps < 1 || steps > 5 {
+		return bound, budgetHold("invalid_payoff_execution_window")
+	}
 	clock := accountAt(accounts, budgetClockAddress)
-	if slot <= 0 || slot > math.MaxInt64-budgetMaxObservationLagSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" ||
+	if slot <= 0 || slot > math.MaxInt64-steps*budgetMaxObservationLagSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" ||
 		clock.Executable || len(clock.Data) != 40 {
 		return bound, budgetHold("invalid_payoff_clock")
 	}
 	clockSlot := binary.LittleEndian.Uint64(clock.Data[:8])
 	now := int64(binary.LittleEndian.Uint64(clock.Data[32:40]))
-	if clockSlot < uint64(slot) || clockSlot > uint64(slot)+1 || now <= 0 || now > math.MaxInt64-kaminoPayoffWindowSeconds {
+	if clockSlot < uint64(slot) || clockSlot > uint64(slot)+1 || now <= 0 || now > math.MaxInt64-steps*kaminoPayoffWindowSeconds {
 		return bound, budgetHold("invalid_payoff_clock")
 	}
 	reserveAccount := accountAt(accounts, route.Kamino.DebtReserve)
@@ -87,8 +100,8 @@ func decodeKaminoPayoffBound(accounts []ConfirmedAccount, route RuntimeRoute, sl
 	}
 	maximumRate += uint64(binary.LittleEndian.Uint16(config[2:4]))
 	updatedUnix := int64(binary.LittleEndian.Uint32(reserveAccount.Data[28:32]))
-	bound = KaminoPayoffBound{ObservedSlot: slot, ChainUnix: now, ThroughSlot: int64(clockSlot) + budgetMaxObservationLagSlots,
-		ThroughUnix: now + kaminoPayoffWindowSeconds, ReserveUpdatedSlot: reserve.refreshedSlot, ReserveUpdatedUnix: updatedUnix,
+	bound = KaminoPayoffBound{ObservedSlot: slot, ChainUnix: now, ThroughSlot: int64(clockSlot) + steps*budgetMaxObservationLagSlots,
+		ThroughUnix: now + steps*kaminoPayoffWindowSeconds, ReserveUpdatedSlot: reserve.refreshedSlot, ReserveUpdatedUnix: updatedUnix,
 		InterestBasis: basis, MaximumRateBPS: maximumRate, ObservedDebtRaw: debt, AccountsSHA256: hashConfirmedAccounts(accounts)}
 	elapsed, unitsPerYear := bound.ThroughSlot-reserve.refreshedSlot, uint64(63_072_000)
 	if basis == 1 {

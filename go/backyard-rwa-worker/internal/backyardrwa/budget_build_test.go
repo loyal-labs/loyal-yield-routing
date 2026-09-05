@@ -71,7 +71,7 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 				t.Fatal(err)
 			}
 			decoded, err := base64.StdEncoding.DecodeString(message)
-			if err != nil || len(decoded) == 0 || decoded[0] != 1 {
+			if err != nil || len(decoded) < 4 || (decoded[0] != 1 && (decoded[0] != 0x80 || decoded[1] != 1)) {
 				t.Fatal("fee request must contain unsigned one-signer message")
 			}
 			result = map[string]any{"context": map[string]int{"slot": 42}, "value": fee}

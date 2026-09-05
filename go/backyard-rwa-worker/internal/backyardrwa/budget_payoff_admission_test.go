@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func payoffAdmissionFixture(t *testing.T, debtOutput uint64) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func payoffAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	route := ethenaUSDePYUSD
 	sf := new(big.Int).Lsh(big.NewInt(1), 60)
@@ -67,6 +67,7 @@ func payoffAdmissionFixture(t *testing.T, debtOutput uint64) (Observation, Decis
 		}
 		accounts = append(accounts, ConfirmedAccount{Address: p.PolicyAddress, Owner: bridgeSquadsProgram, Lamports: 1, Data: data})
 	}
+	accounts = append(accounts, extraAccounts...)
 	o, d, _, manifest, rpc, client := debtResidueAdmissionFixture(t, debtOutput, accounts...)
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.DebtIdleRaw = 1_000, 2_000, 11_000
 	d.AmountRaw, d.Reason = 1_000, "withdrawal_repay_debt"

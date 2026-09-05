@@ -82,6 +82,9 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		recordDecision:   database.RecordDecision,
 		recordBudgetHold: database.RecordPhase3BudgetHold,
 		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionDebtRaw > 0 && catalogJupiterRoute(observation.Snapshot.RouteLane) {
+				return database.admitPhase3Funding(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+			}
 			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionCollateralRaw > 0 && observation.Snapshot.PositionDebtRaw == 0 {
 				return database.admitPhase3PositionReturnNAV(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
 			}
@@ -94,6 +97,9 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			return database.admitPhase3Withdrawal(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
 		},
 		admitJupiter: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
+			if evidence.Request.FullPayoffFunding {
+				return database.admitPhase3Funding(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+			}
 			return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
 		},
 		buildBridge: func(ctx context.Context, operationID string, evidence BridgeExecutionEvidence) error {

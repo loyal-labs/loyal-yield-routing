@@ -71,6 +71,7 @@ type JupiterSwapRequest struct {
 	LastValidBlockHeight    int64
 	RouteLane               string
 	LookupTables            []LookupTableSnapshot `json:",omitempty"`
+	FullPayoffFunding       bool                  `json:"fullPayoffFunding,omitempty"`
 }
 
 type JupiterExecutionEvidence struct {
