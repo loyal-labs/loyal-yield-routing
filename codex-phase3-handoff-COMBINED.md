@@ -183,3 +183,10 @@ rejecting unknown/duplicate/truncated extensions, wrong account types, withheld
 fees and active hook state. This is an account-side compatibility change only:
 fresh mint-level fee schedules/hooks, exact lane binding and non-USDC NAV are
 still required before those lanes can execute or advertise readiness.
+Budget-price observation now validates current mint transfer semantics: both
+older and scheduled Token-2022 transfer-fee rates must be zero, the hook program
+must be disabled, and unsupported/malformed/duplicate extensions fail closed.
+Confidential mint configuration does not authorize confidential custody or
+operations. This validation is wired into the price observer, not yet complete
+production admission; lane-pinned authority identities and send-time freshness
+still need end-to-end proof. Local race tests passed, not live all-lane proof.

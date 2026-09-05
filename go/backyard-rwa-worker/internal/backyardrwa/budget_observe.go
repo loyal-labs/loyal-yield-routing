@@ -98,6 +98,9 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 	if mint.Owner != debit.TokenProgram || (mint.Owner != classicTokenProgram && mint.Owner != token2022Program) || mint.Executable || len(mint.Data) < 82 || mint.Data[45] != 1 || mint.Data[44] != token.mintDecimals {
 		return BudgetPrice{}, budgetHold("valuation_mint_metadata_mismatch")
 	}
+	if err := validateExecutionMint(mint, debit.TokenProgram, token.mintDecimals); err != nil {
+		return BudgetPrice{}, err
+	}
 	if usdcMint.Owner != classicTokenProgram || usdcMint.Executable || len(usdcMint.Data) != 82 || usdcMint.Data[45] != 1 || usdcMint.Data[44] != 6 || usdc.mintDecimals != 6 {
 		return BudgetPrice{}, budgetHold("usdc_reference_metadata_mismatch")
 	}
