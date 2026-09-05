@@ -32,6 +32,8 @@ type StrategyReceipt struct {
 
 type RouteNAVCustodies struct {
 	VoltrIdleRaw, StrategyUSDCraw, SquadsUSDCraw, SquadsPRIMEraw uint64
+	// Separate from USDC; zero on USDC-debt lanes to avoid double counting.
+	SquadsDebtRaw uint64
 }
 
 type RouteNAVSnapshot struct {
@@ -43,6 +45,7 @@ type RouteNAVSnapshot struct {
 	PriorReportedNAVRaw     uint64
 	PriorReportUpdatedTS    uint64
 	PrimeIdleValueRaw       uint64
+	DebtIdleValueRaw        uint64
 	PositionCollateralValue uint64
 	PositionDebtValue       uint64
 	SnapshotDigest          string
@@ -54,7 +57,7 @@ func pinnedRouteNAVAddresses() []string {
 }
 
 func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
-	return []string{
+	addresses := []string{
 		bridgeStrategy,
 		bridgeStrategyReceipt,
 		bridgeIdleATA,
@@ -65,6 +68,10 @@ func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
 		route.Kamino.CollateralReserve,
 		route.Kamino.DebtReserve,
 	}
+	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
+		addresses = append(addresses, route.DebtCustody, kaminoDebtReserve)
+	}
+	return addresses
 }
 
 func selectRouteNAVAccounts(accounts []ConfirmedAccount) ([]ConfirmedAccount, error) {
@@ -134,10 +141,29 @@ func decodeRouteNAVCustodiesForRoute(accounts []ConfirmedAccount, route RuntimeR
 	if err != nil {
 		return RouteNAVCustodies{}, fmt.Errorf("decode route collateral custody: %w", err)
 	}
-	return RouteNAVCustodies{
+	result := RouteNAVCustodies{
 		VoltrIdleRaw: idle.Raw, StrategyUSDCraw: strategy.Raw,
 		SquadsUSDCraw: squadsUSDC.Raw, SquadsPRIMEraw: squadsPRIME.Raw,
-	}, nil
+	}
+	if route.Kamino.DebtMint != bridgeUSDC {
+		if route.DebtCustody == "" || route.DebtCustody == bridgeSquadsATA || route.DebtCustody == route.CollateralCustody {
+			return RouteNAVCustodies{}, fmt.Errorf("non-USDC debt custody is missing or aliased")
+		}
+		mint, err := decodeBase58PublicKey(route.Kamino.DebtMint)
+		if err != nil {
+			return RouteNAVCustodies{}, err
+		}
+		account := accountAt(accounts, route.DebtCustody)
+		if account.Owner != route.DebtTokenProgram || account.Executable || account.Lamports == 0 {
+			return RouteNAVCustodies{}, fmt.Errorf("debt custody token program or account envelope drifted")
+		}
+		debt, err := DecodeTokenCustody(account.Owner, account.Data, mint, authority)
+		if err != nil {
+			return RouteNAVCustodies{}, fmt.Errorf("decode debt custody: %w", err)
+		}
+		result.SquadsDebtRaw = debt.Raw
+	}
+	return result, nil
 }
 
 // valueInDebtRaw conservatively converts equal-decimal token raw units into
@@ -206,6 +232,9 @@ func navInputFingerprintForRoute(slot int64, accounts []ConfirmedAccount, custod
 	// For bridge construction, custody overrides describe the exact expected
 	// poststate while reserve/obligation/config bytes remain the confirmed input.
 	parts = append(parts, fmt.Sprintf("post:%d:%d:%d:%d", custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw, custodies.SquadsPRIMEraw))
+	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
+		parts = append(parts, fmt.Sprintf("post-debt:%d", custodies.SquadsDebtRaw))
+	}
 	sort.Strings(parts)
 	hash := sha256.Sum256([]byte(fmt.Sprintf("%d|%s", slot, strings.Join(parts, "|"))))
 	return hex.EncodeToString(hash[:]), nil
@@ -249,6 +278,9 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if override != nil {
 		custodies = *override
 	}
+	if route.Kamino.DebtMint == bridgeUSDC && custodies.SquadsDebtRaw != 0 {
+		return RouteNAVSnapshot{}, fmt.Errorf("USDC debt custody would be counted twice")
+	}
 
 	kaminoConfig := route.Kamino
 	obligationAccount := accountAt(accounts, kaminoConfig.Obligation)
@@ -273,23 +305,50 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if collateralReserve.refreshedSlot > slot || debtReserve.refreshedSlot > slot || obligation.refreshedSlot > slot {
 		return RouteNAVSnapshot{}, fmt.Errorf("Kamino valuation claims a future refresh slot")
 	}
+	// Voltr reports USDC raw units, never raw units of the selected debt
+	// asset. A separate USDC reference from the same batch is required for
+	// non-USDC lanes; neither a ticker nor equal decimals establishes a peg.
+	usdcReserve := debtReserve
+	if kaminoConfig.DebtMint != bridgeUSDC {
+		reference, err := pinnedKaminoObservationConfig()
+		if err != nil {
+			return RouteNAVSnapshot{}, err
+		}
+		usdcReserve, err = decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
+		if err != nil {
+			return RouteNAVSnapshot{}, fmt.Errorf("decode NAV USDC reference: %w", err)
+		}
+		if err := validateKaminoRefresh(obligation, usdcReserve); err != nil {
+			return RouteNAVSnapshot{}, err
+		}
+		if usdcReserve.refreshedSlot > slot {
+			return RouteNAVSnapshot{}, fmt.Errorf("NAV USDC reference claims a future slot")
+		}
+	}
+	if usdcReserve.mintDecimals != 6 {
+		return RouteNAVSnapshot{}, fmt.Errorf("NAV USDC reference decimals drifted")
+	}
 	redeemablePRIME, err := collateralReserve.redeemLiquidityRaw(obligation.collateralDepositedRaw)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	primeIdleValue, err := valueBetweenTokenRaw(custodies.SquadsPRIMEraw, collateralReserve.mintDecimals, debtReserve.mintDecimals, collateralReserve.marketPriceSF, debtReserve.marketPriceSF, false)
+	primeIdleValue, err := valueBetweenTokenRaw(custodies.SquadsPRIMEraw, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	collateralValue, err := valueBetweenTokenRaw(redeemablePRIME, collateralReserve.mintDecimals, debtReserve.mintDecimals, collateralReserve.marketPriceSF, debtReserve.marketPriceSF, false)
+	collateralValue, err := valueBetweenTokenRaw(redeemablePRIME, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	debtValue, err := valueInDebtRaw(obligation.debtRaw, debtReserve.marketPriceSF, debtReserve.marketPriceSF, true)
+	debtValue, err := valueBetweenTokenRaw(obligation.debtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, true)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	values := []uint64{custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw, primeIdleValue, collateralValue, debtValue}
+	debtIdleValue, err := valueBetweenTokenRaw(custodies.SquadsDebtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
+	if err != nil {
+		return RouteNAVSnapshot{}, err
+	}
+	values := []uint64{custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw, primeIdleValue, collateralValue, debtValue, debtIdleValue}
 	for _, value := range values {
 		if value > math.MaxInt64 {
 			return RouteNAVSnapshot{}, fmt.Errorf("NAV component exceeds signed range")
@@ -299,16 +358,20 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	nav, err := ComputeNAV(NAVSnapshotContext{
-		Slot: slot, ReceiptFingerprint: fingerprint,
-		ManifestSHA256: manifest.SHA256, PolicyCatalogSHA256: *manifest.PolicyCatalog.SHA256,
-	}, []NAVComponent{
+	components := []NAVComponent{
 		{Account: bridgeStrategyATA, Owner: bridgeStrategyAuth, Raw: int64(custodies.StrategyUSDCraw), Slot: slot, Known: true},
 		{Account: bridgeSquadsATA, Owner: bridgeVault, Raw: int64(custodies.SquadsUSDCraw), Slot: slot, Known: true},
 		{Account: route.CollateralCustody, Owner: bridgeVault, Raw: int64(primeIdleValue), Slot: slot, Known: true},
 		{Account: kaminoConfig.Obligation + ":collateral", Owner: kaminoProgram, Raw: int64(collateralValue), Slot: slot, Known: true},
 		{Account: kaminoConfig.Obligation + ":debt", Owner: kaminoProgram, Raw: int64(debtValue), Slot: slot, Known: true, Liability: true},
-	})
+	}
+	if kaminoConfig.DebtMint != bridgeUSDC {
+		components = append(components, NAVComponent{Account: route.DebtCustody, Owner: bridgeVault, Raw: int64(debtIdleValue), Slot: slot, Known: true})
+	}
+	nav, err := ComputeNAV(NAVSnapshotContext{
+		Slot: slot, ReceiptFingerprint: fingerprint,
+		ManifestSHA256: manifest.SHA256, PolicyCatalogSHA256: *manifest.PolicyCatalog.SHA256,
+	}, components)
 	if err != nil || nav.Raw < 0 {
 		return RouteNAVSnapshot{}, fmt.Errorf("compute route NAV: %w", err)
 	}
@@ -323,8 +386,9 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 		TotalVaultNAVRaw: custodies.VoltrIdleRaw + uint64(nav.Raw), PriorReportedNAVRaw: receipt.PositionValueRaw,
 		PriorReportUpdatedTS: receipt.LastUpdatedTS,
 		PrimeIdleValueRaw:    primeIdleValue, PositionCollateralValue: collateralValue, PositionDebtValue: debtValue,
-		SnapshotDigest: nav.SnapshotDigest,
-		Report:         BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
+		DebtIdleValueRaw: debtIdleValue,
+		SnapshotDigest:   nav.SnapshotDigest,
+		Report:           BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
 	}, nil
 }
 
