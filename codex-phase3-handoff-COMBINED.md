@@ -280,3 +280,57 @@ persistence, not Squads/Kamino/Jupiter/Voltr execution, production signer proof,
 controlled capacity or R04 acceptance. The next sample must load exact real
 program/account state and execute the required lifecycle without bypassing
 policy or authority checks. Do not repeat the native-program probe.
+
+### Production budget identity and setup feasibility checkpoint
+
+The durable reservation now binds its family to the operation's journal lane
+at admission and again at later authorization/reconciliation reads. Missing
+lanes, another family's lane and post-admission lane changes reject with
+`reservation_family_does_not_match_journal_lane`. The real disposable-PostgreSQL
+integration test and full Go race suite passed with that test enabled. This
+does not wire the missing production admission producer or shared setup bucket.
+Shared policy setup must not be disguised as an extra funded historical canary.
+
+The sole verifier now includes the read-only compiled worker's setup-rent
+inspection and retains it in
+`docs/evidence/backyard-rwa-go/phase3/setup-feasibility-2026-09-04.json`.
+All R01-R08 remain incomplete. At slot 444404813, borrow-policy rent alone was
+1.006738 USDC under the governor's conservative native-SOL valuation, above
+the existing $1 transaction cap; repay-policy rent was 0.907909 USDC.
+
+A discriminating local test showed the repository Squads fixture is not the
+deployed binary (fixture SHA256
+`83234e417a0819006abdd0b4267e1f2fac697ef6584410f5bacb0c3f03c1dada`):
+it allocated 860 bytes for the borrow policy shape, not the installed 1,400.
+Do not use it to declare the deployed repair affordable. A read-only mainnet
+program snapshot at finalized slot 444405300 fetched program data
+`2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T`, deployment slot 443245754,
+data SHA256 `9dae95130a6f0a36b8ea4a4b16d3d10a526ee830fe30f90f13c47264eafa800b`.
+The padded ELF SHA256 is
+`1c95bd7be140589d2aec38a85d7ecfe70ec69639277f622c898f821ab1d636fa`.
+The explicit deployed-program test passed: borrow/repay allocations are
+1,400/1,250 bytes and the payer pays rent plus a separate fee. Test subjects
+used ephemeral keys and local fake funds only. No mainnet signature or send.
+
+Reproduction (bounded run; the initial clean dependency build took 3m43s,
+subsequent execution takes seconds):
+
+```sh
+SQUADS_SMART_ACCOUNT_PROGRAM_SO=/private/tmp/backyard-phase3-squads-rent.2VG8nM/deployed-squads.so \
+  cargo test -p squads-test-harness --test rwa_policy_creation_rent -- --ignored --nocapture
+```
+
+The test pins that deployed ELF hash and is explicitly ignored in the default
+suite; it must not silently fall back to the different repository fixture.
+The public-program fetch script and identity JSON are in the same temporary
+directory. Local rent is not current mainnet rent: combine allocation proof
+with the verifier's fresh RPC rent/valuation, never the local rent amount.
+
+The observed borrow-repair cost conflict needs either newly measured in-cap
+feasibility or a specific operator-approved envelope revision before that
+setup broadcast. Do not keep polling prices, weaken policies or silently raise
+the cap. Continue unaffected work. The next critical implementation remains
+complete production cost/exit admission (including separately accounted shared
+setup), deployed-program stateful full-cycle proof, and exact runtime bindings
+through the permitted review path. Nothing here resolves the earlier rejected
+route expansion. No deployment, policy installation or live canary occurred.

@@ -195,11 +195,22 @@ async function deploymentObservation(): Promise<Observation> {
   }
 }
 async function runtimeObservation(): Promise<Observation> {
+  return workerInspection(["--inspect-phase3",...EXPECTED_LANES],
+    "loyal-backyard-rwa-phase3-runtime-inspection/v1", "local compiled production route resolver",
+    data => exactSet(data.lanes?.map((row: Json) => row.lane),EXPECTED_LANES));
+}
+async function setupRentObservation(): Promise<Observation> {
+  if (!process.env.SOLANA_RPC_URL) return {status:"BLOCKED",source:"setup rent feasibility",reason:"RPC_CREDENTIAL_MISSING"};
+  return workerInspection(["--inspect-phase3-setup-rent"],
+    "loyal-backyard-rwa-phase3-setup-rent-inspection/v1", "setup rent feasibility",
+    data => Number.isSafeInteger(data.slot) && data.slot > 0 && Array.isArray(data.policies) && data.policies.length === 2);
+}
+async function workerInspection(args: string[], schema: string, source: string, validate: (data: Json) => boolean): Promise<Observation> {
   // Run the same command package as the worker, in an explicitly read-only
   // mode before runtime config/signers are loaded. Do not inspect source text
   // and call the presence of a function proof that production invokes it.
   try {
-    const child = spawn("go",["run","./cmd/backyard-rwa-worker","--inspect-phase3",...EXPECTED_LANES], {
+    const child = spawn("go",["run","./cmd/backyard-rwa-worker",...args], {
       cwd:resolve(ROOT,"go/backyard-rwa-worker"),stdio:["ignore","pipe","pipe"],
     });
     let output = "";
@@ -213,11 +224,10 @@ async function runtimeObservation(): Promise<Observation> {
       });
       if (code !== 0) throw new Error("RUNTIME_INSPECTION_FAILED");
       const data = JSON.parse(output) as Json;
-      if (data.schema !== "loyal-backyard-rwa-phase3-runtime-inspection/v1" || data.readOnly !== true ||
-          !exactSet(data.lanes?.map((row: Json) => row.lane),EXPECTED_LANES)) throw new Error("RUNTIME_INSPECTION_INVALID");
-      return {status:"OBSERVED",source:"local compiled production route resolver",data};
+      if (data.schema !== schema || data.readOnly !== true || !validate(data)) throw new Error("RUNTIME_INSPECTION_INVALID");
+      return {status:"OBSERVED",source,data};
     } finally { clearTimeout(deadline); }
-  } catch { return {status:"BLOCKED",source:"local compiled production route resolver",reason:"RUNTIME_INSPECTION_UNAVAILABLE"}; }
+  } catch { return {status:"BLOCKED",source,reason:"RUNTIME_INSPECTION_UNAVAILABLE"}; }
 }
 async function bindingObservation(): Promise<Observation> {
   if (!process.env.SOLANA_RPC_URL) return {status:"BLOCKED",source:"binding review",reason:"RPC_CREDENTIAL_MISSING"};
@@ -256,9 +266,9 @@ export async function verify() {
   const offline = process.argv.includes("--offline");
   const runtime = await runtimeObservation();
   const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
-  const [chain,database,deployment] = offline
-    ? ["Solana RPC","Postgres","Render"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
-    : await Promise.all([chainObservation(catalog,manifest),databaseObservation(),deploymentObservation()]);
+  const [chain,database,deployment,setupRent] = offline
+    ? ["Solana RPC","Postgres","Render","setup rent feasibility"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
+    : await Promise.all([chainObservation(catalog,manifest),databaseObservation(),deploymentObservation(),setupRentObservation()]);
   const retained = json("docs/evidence/backyard-rwa-go/phase2-runtime/lifecycle-v1.json");
   const conditions = [
     measuredCondition("R01","Production admission/send cap enforcement and reserved exits",[
@@ -321,7 +331,10 @@ export async function verify() {
     generatedAt:new Date().toISOString(),goalId:GOAL,
     source,
     contract:{path:CONTRACT,sha256:sha(read(CONTRACT))},
-    preflight:{chain,database,deployment,runtime,bindings},
+    // Existing policy allocations are a diagnostic sample, not a fabricated
+    // pass/fail for the complete proposed setup graph. Retain prices, hashes,
+    // rent and the explicit new-allocation proof limitation in the snapshot.
+    preflight:{chain,database,deployment,runtime,bindings,setupRent},
     conditions,
   };
 }

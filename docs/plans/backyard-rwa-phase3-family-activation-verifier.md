@@ -118,6 +118,34 @@ omits VOLTR_RESTORE_IDLE and fees and does not normalize each asset to USDC.
 Retain it as historical accounting, not a certified estimate for these caps.
 The Phase 2 restore incident and its exception cannot carry into Phase 3.
 
+### Measured setup feasibility — 2026-09-04
+
+The immutable read-only snapshot
+`docs/evidence/backyard-rwa-go/phase3/setup-feasibility-2026-09-04.json`
+now includes `preflight.setupRent`. At slot 444404813, 1,400-byte policy rent
+was 9,676,824 lamports, conservatively valued at 1.006738 USDC before network
+fees. The existing 1,250-byte repay allocation valued at 0.907909 USDC.
+These are dated observations, not evergreen prices or completed setup admission.
+
+The exact deployed Squads binary (deployment slot 443245754; padded ELF SHA256
+`1c95bd7be140589d2aec38a85d7ecfe70ec69639277f622c898f821ab1d636fa`)
+was read without signing and executed locally: the same legacy, singleton-key
+15-account borrow / 13-account repay policy shapes allocate 1,400 / 1,250 bytes.
+See `crates/squads-test-harness/tests/rwa_policy_creation_rent.rs` and the combined
+handoff for reproduction. Local rent values differ from current mainnet, so use
+the live RPC rent measurement for admission. The checked-in Squads fixture is
+different and allocates only 860 bytes for the borrow shape; it cannot establish
+this deployed setup cost. The explicit program-bound test is not an R04 lifecycle
+PASS or proof that newly compiled replacement policy semantics are correct.
+
+Therefore the measured exact-shape borrow repair cannot pass the existing $1
+transaction cap at that valuation. Shrinking canary principal cannot shrink its
+account allocation. Refresh affected feasibility inputs before any setup attempt;
+if it still cannot fit, a specific operator-approved envelope revision is needed.
+Do not weaken constraints, silently omit setup costs or wait indefinitely for a
+price change. Continue independent implementation and proof. This checkpoint
+changes neither the accepted caps nor R01-R08 acceptance.
+
 ## Required conditions
 
 ### R01 — durable cap governor with reserved exit budget
