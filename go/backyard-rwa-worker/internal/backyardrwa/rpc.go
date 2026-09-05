@@ -34,6 +34,37 @@ type LatestBlockhash struct {
 	LastValidBlockHeight int64
 }
 
+type MessageFeeObservation struct {
+	MessageSHA256 string `json:"messageSha256"`
+	Slot          int64  `json:"slot"`
+	Lamports      uint64 `json:"lamports"`
+}
+
+// ObserveMessageFee asks the chain to price the exact unsigned message,
+// including its compute-budget instructions. Null (expired blockhash) or an
+// incoherent slot is a HOLD, never a zero-fee assumption.
+func (c *RPCClient) ObserveMessageFee(ctx context.Context, message []byte, minimumSlot int64) (MessageFeeObservation, error) {
+	if _, err := checkedUnsignedMessage(message); err != nil {
+		return MessageFeeObservation{}, err
+	}
+	if minimumSlot <= 0 {
+		return MessageFeeObservation{}, budgetHold("invalid_fee_observation_slot")
+	}
+	var result struct {
+		Context struct {
+			Slot int64 `json:"slot"`
+		} `json:"context"`
+		Value *uint64 `json:"value"`
+	}
+	if err := c.call(ctx, "getFeeForMessage", []any{base64.StdEncoding.EncodeToString(message), map[string]any{"commitment": "confirmed", "minContextSlot": minimumSlot}}, &result); err != nil {
+		return MessageFeeObservation{}, budgetHold("network_fee_unavailable")
+	}
+	if result.Value == nil || *result.Value == 0 || result.Context.Slot < minimumSlot {
+		return MessageFeeObservation{}, budgetHold("network_fee_unavailable")
+	}
+	return MessageFeeObservation{MessageSHA256: sha256Bytes(message), Slot: result.Context.Slot, Lamports: *result.Value}, nil
+}
+
 type TransactionTokenBalance struct {
 	Address, OwnerProgram, Mint, Authority string
 	Raw                                    uint64

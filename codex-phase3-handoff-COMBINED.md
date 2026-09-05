@@ -131,6 +131,15 @@ expiry requires finalized block-height expiry and a subsequent signature-absence
 read. Release restores the captured pre-transaction exit reserve. The database
 test drives these paths and rejects confirmed-only or unrelated receipts. These
 controlled tests do not establish live program or deployment proof.
+The production compilers now expose their exact unsigned messages for fee
+measurement before signer loading; the existing signing paths reuse those same
+compilers. Fee reads bind `getFeeForMessage` to message hash and minimum slot,
+rejecting null/zero/stale results. The executable-debit gate shares the actual
+builders and custody graph, rejects partial-sweep restoration contracts, and
+charges underlying withdrawal liquidity rather than receipt units. Tests cover
+message/signature equivalence and fee-inclusive transaction-cap rejection.
+These primitives still need fresh valuation and complete exit-graph estimates
+wired into durable admission; their unit success does not satisfy R01.
 The new gates intentionally
 refuse transactions without an initialized durable goal budget and admission.
 No production budget was initialized; no Phase 3 transaction was signed or sent.

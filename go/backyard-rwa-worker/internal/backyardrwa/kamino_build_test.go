@@ -78,6 +78,10 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			unsigned, err := compileKaminoMessageForDelegate(request, delegate)
+			if err != nil || !bytes.Equal(unsigned, signed.message) {
+				t.Fatalf("unsigned Kamino fee message differs: %v", err)
+			}
 			if len(signed.signedWire) > solanaPacketBytes || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:1+ed25519.SignatureSize]) {
 				t.Fatal("Kamino exact wire signature or packet boundary is invalid")
 			}

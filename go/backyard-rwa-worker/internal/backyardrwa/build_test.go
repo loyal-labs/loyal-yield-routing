@@ -34,6 +34,29 @@ func bridgeTestRequest(action Action, amount uint64) BridgeBuildRequest {
 	}
 }
 
+func TestUnsignedBridgeMessageEqualsSignedMessage(t *testing.T) {
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{37}, ed25519.SeedSize))
+	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
+	for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
+		amount := uint64(100_000)
+		if action == ReportNAV {
+			amount = 0
+		}
+		request := bridgeTestRequest(action, amount)
+		unsigned, err := compileBridgeMessageForDelegate(request, delegate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signed, err := buildAndSignBridgeTransactionForDelegate(request, key, delegate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(unsigned, signed.message) || !ed25519.Verify(key.Public().(ed25519.PublicKey), unsigned, signed.signedWire[1:65]) {
+			t.Fatalf("%s fee message differs from signed bytes", action)
+		}
+	}
+}
+
 func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 	request := bridgeTestRequest(VoltrAllocateToSquads, 1_000_000)
 	inner, policy, constraintIndex, err := bridgeInstruction(request)

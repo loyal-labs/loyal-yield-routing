@@ -344,6 +344,40 @@ func BuildAndSignJupiterTransaction(request JupiterSwapRequest, executor ed25519
 	return buildAndSignJupiterTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
 }
 
+func CompileJupiterMessage(request JupiterSwapRequest) ([]byte, error) {
+	return compileJupiterMessageForDelegate(request, mustKey(bridgeDelegate))
+}
+
+func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publicKey) ([]byte, error) {
+	if request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 || !validSHA256(request.PolicyAccountDataSHA256) {
+		return nil, fmt.Errorf("invalid Jupiter request")
+	}
+	blockhash, err := decodeKey(request.RecentBlockhash)
+	if err != nil {
+		return nil, err
+	}
+	inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
+	if err != nil {
+		return nil, err
+	}
+	if err = validateInstalledJupiterHeader(request.Action, request.Instruction); err != nil {
+		return nil, err
+	}
+	policy, err := decodeKey(request.Policy)
+	if err != nil || policy == (publicKey{}) {
+		return nil, fmt.Errorf("invalid Jupiter policy binding")
+	}
+	outer, err := wrapSquadsJupiterPolicy(policy, delegate, delegate, request.PolicyConstraintIndex, inner)
+	if err != nil {
+		return nil, err
+	}
+	message, err := compileLegacyMessage(delegate, blockhash, []compiledInstruction{outer})
+	if err != nil {
+		return nil, err
+	}
+	return checkedUnsignedMessage(message)
+}
+
 func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedJupiterTransaction, error) {
 	if len(executor) != ed25519.PrivateKeySize || request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 || !validSHA256(request.PolicyAccountDataSHA256) {
 		return SignedJupiterTransaction{}, fmt.Errorf("invalid Jupiter signing material")
@@ -352,26 +386,7 @@ func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, execu
 	if feePayer != expectedDelegate {
 		return SignedJupiterTransaction{}, fmt.Errorf("executor is not the pinned Squads delegate")
 	}
-	blockhash, err := decodeKey(request.RecentBlockhash)
-	if err != nil {
-		return SignedJupiterTransaction{}, fmt.Errorf("invalid confirmed blockhash")
-	}
-	inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
-	if err != nil {
-		return SignedJupiterTransaction{}, err
-	}
-	if err := validateInstalledJupiterHeader(request.Action, request.Instruction); err != nil {
-		return SignedJupiterTransaction{}, err
-	}
-	policy, err := decodeKey(request.Policy)
-	if err != nil || policy == (publicKey{}) {
-		return SignedJupiterTransaction{}, fmt.Errorf("invalid Jupiter policy binding")
-	}
-	outer, err := wrapSquadsJupiterPolicy(policy, feePayer, expectedDelegate, request.PolicyConstraintIndex, inner)
-	if err != nil {
-		return SignedJupiterTransaction{}, err
-	}
-	message, err := compileLegacyMessage(feePayer, blockhash, []compiledInstruction{outer})
+	message, err := compileJupiterMessageForDelegate(request, expectedDelegate)
 	if err != nil {
 		return SignedJupiterTransaction{}, err
 	}
@@ -432,6 +447,9 @@ func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc
 		return err
 	}
 	if _, err := DecodeExpectedEffects(effects); err != nil {
+		return err
+	}
+	if _, err := MeasureExecutableDebit(evidence.Request, evidence.ExpectedEffects); err != nil {
 		return err
 	}
 	if err := database.AuthorizePhase3Build(ctx, operationID, evidence.Request, effects); err != nil {

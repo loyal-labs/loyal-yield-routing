@@ -101,6 +101,38 @@ func BuildAndSignKaminoPrimeUSDCTransaction(request KaminoPrimeUSDCRequest, exec
 	return buildAndSignKaminoPrimeUSDCTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
 }
 
+func CompileKaminoMessage(request KaminoPrimeUSDCRequest) ([]byte, error) {
+	return compileKaminoMessageForDelegate(request, mustKey(bridgeDelegate))
+}
+
+func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
+	if request.LastValidBlockHeight <= 0 {
+		return nil, fmt.Errorf("invalid Kamino blockhash lifetime")
+	}
+	blockhash, err := decodeKey(request.RecentBlockhash)
+	if err != nil {
+		return nil, err
+	}
+	inner, leg, err := kaminoPrimeUSDCInstruction(request)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := decodeKey(request.Policy)
+	if err != nil || policy == (publicKey{}) || !validSHA256(request.PolicyAccountDataSHA256) {
+		return nil, fmt.Errorf("Kamino policy is not bound to confirmed catalog bytes")
+	}
+	outer, err := wrapSquadsKaminoPolicy(policy, delegate, delegate, request.PolicyConstraintIndex, inner)
+	if err != nil {
+		return nil, err
+	}
+	instructions := append(kaminoPrimeUSDCRefreshInstructionsForRequest(leg, request), outer)
+	message, err := compileKaminoLegacyMessage(delegate, blockhash, instructions)
+	if err != nil {
+		return nil, err
+	}
+	return checkedUnsignedMessage(message)
+}
+
 func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedKaminoTransaction, error) {
 	if len(executor) != ed25519.PrivateKeySize || request.LastValidBlockHeight <= 0 {
 		return SignedKaminoTransaction{}, fmt.Errorf("invalid Kamino signing material")
@@ -109,25 +141,7 @@ func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRe
 	if feePayer != expectedDelegate {
 		return SignedKaminoTransaction{}, fmt.Errorf("executor is not the pinned Squads delegate")
 	}
-	blockhash, err := decodeKey(request.RecentBlockhash)
-	if err != nil {
-		return SignedKaminoTransaction{}, fmt.Errorf("invalid confirmed blockhash: %w", err)
-	}
-	inner, leg, err := kaminoPrimeUSDCInstruction(request)
-	if err != nil {
-		return SignedKaminoTransaction{}, err
-	}
-	policy, err := decodeKey(request.Policy)
-	if err != nil || policy == (publicKey{}) || !validSHA256(request.PolicyAccountDataSHA256) {
-		return SignedKaminoTransaction{}, fmt.Errorf("Kamino policy is not bound to confirmed catalog bytes")
-	}
-	outer, err := wrapSquadsKaminoPolicy(policy, feePayer, expectedDelegate, request.PolicyConstraintIndex, inner)
-	if err != nil {
-		return SignedKaminoTransaction{}, err
-	}
-	preInstructions := kaminoPrimeUSDCRefreshInstructionsForRequest(leg, request)
-	instructions := append(preInstructions, outer)
-	message, err := compileKaminoLegacyMessage(feePayer, blockhash, instructions)
+	message, err := compileKaminoMessageForDelegate(request, expectedDelegate)
 	if err != nil {
 		return SignedKaminoTransaction{}, err
 	}
@@ -504,6 +518,9 @@ func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc 
 		return err
 	}
 	if _, err := DecodeExpectedEffects(effects); err != nil {
+		return err
+	}
+	if _, err := MeasureExecutableDebit(evidence.Request, evidence.ExpectedEffects); err != nil {
 		return err
 	}
 	if err := database.AuthorizePhase3Build(ctx, operationID, evidence.Request, effects); err != nil {

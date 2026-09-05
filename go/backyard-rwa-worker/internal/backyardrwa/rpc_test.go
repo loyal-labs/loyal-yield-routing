@@ -45,6 +45,35 @@ func TestSignatureAbsenceRequiresExplicitNullEntry(t *testing.T) {
 	}
 }
 
+func TestNetworkFeeIsBoundToUnsignedMessageAndFreshSlot(t *testing.T) {
+	message, err := CompileBridgeMessage(bridgeTestRequest(ReportNAV, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		value string
+		slot  int
+		pass  bool
+	}{{"5000", 44, true}, {"null", 44, false}, {"0", 44, false}, {"5000", 41, false}} {
+		client, _ := NewRPCClient("https://rpc.invalid")
+		client.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(request.Body)
+			if !strings.Contains(string(body), `"method":"getFeeForMessage"`) || !strings.Contains(string(body), `"minContextSlot":42`) || !strings.Contains(string(body), base64.StdEncoding.EncodeToString(message)) {
+				t.Fatalf("fee not bound to message and slot: %s", body)
+			}
+			return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":%d},"value":%s}}`, tc.slot, tc.value)), nil
+		})
+		fee, err := client.ObserveMessageFee(context.Background(), message, 42)
+		if tc.pass {
+			if err != nil || fee.Lamports != 5000 || fee.MessageSHA256 != sha256Bytes(message) {
+				t.Fatalf("wrong message fee: %+v %v", fee, err)
+			}
+		} else {
+			assertBudgetHold(t, err, "network_fee_unavailable")
+		}
+	}
+}
+
 func TestConfirmedRPCReadsUseOneContextSlot(t *testing.T) {
 	client, err := NewRPCClient("https://rpc.invalid")
 	if err != nil {
