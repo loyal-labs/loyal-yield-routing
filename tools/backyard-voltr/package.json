@@ -8,6 +8,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "test:closeout": "bun test src/verify/backyard-rwa-closeout.test.ts",
     "test:phase2-runtime": "bun test src/verify/rwa-phase2-runtime.test.ts",
+    "test:phase3-runtime": "bun test src/verify/rwa-phase3-family-activation.test.ts src/verify/rwa-phase3-binding-review.test.ts src/policies/rwa-multiply-phase2-kamino.test.ts",
     "policies:compile": "bun src/cli.ts policies compile",
     "policies:verify": "bun src/cli.ts policies verify",
     "verify:structure": "bun src/cli.ts verify structure",

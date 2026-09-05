@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Reserve } from "@kamino-finance/klend-sdk";
 import { ExtensionType, getExtensionTypes, getTransferFeeConfig, getTransferHook, unpackMint } from "@solana/spl-token";
-import { PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { reviewPhase3Bindings } from "./rwa-phase3-binding-review.js";
 
 const ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const CONTRACT = "docs/plans/backyard-rwa-phase3-family-activation-verifier.md";
@@ -20,6 +21,24 @@ export const EXPECTED_LANES = [
 ].sort();
 type Json = Record<string, any>;
 type Observation = { status: "OBSERVED" | "BLOCKED"; source: string; data?: Json; reason?: string };
+export type Measurement = { claim: string; verdict: "PASS" | "FAIL" | "BLOCKED"; evidence: unknown };
+export function measuredCondition(id: string, condition: string, measurements: Measurement[], missingProof: string[]) {
+  // An empty check set is never successful; missing behavior remains visible
+  // even when all available observations pass. No percentage implies readiness.
+  const failed = measurements.some(m => m.verdict === "FAIL");
+  const blocked = measurements.some(m => m.verdict === "BLOCKED");
+  const verdict = failed || missingProof.length > 0 || measurements.length === 0 ? "FAIL" : blocked ? "BLOCKED" : "PASS";
+  return {id, condition, verdict, measurementStatus: measurements.length ? "MEASURED" : "MISSING_PROOF",
+    measurements, missingProof};
+}
+const measured = (claim: string, pass: boolean, evidence: unknown): Measurement =>
+  ({claim, verdict: pass ? "PASS" : "FAIL", evidence});
+function observedCheck(observation: Observation, claim: string, predicate: (data: Json) => boolean): Measurement {
+  if (observation.status !== "OBSERVED" || !observation.data)
+    return {claim, verdict:"BLOCKED", evidence:{source:observation.source,reason:observation.reason}};
+  return measured(claim,predicate(observation.data),{source:observation.source,
+    reference:"preflight observation with matching source",slot:observation.data.slot});
+}
 const read = (p: string) => readFileSync(resolve(ROOT, p), "utf8");
 const json = (p: string): Json => JSON.parse(read(p));
 const sha = (s: string | Uint8Array) => createHash("sha256").update(s).digest("hex");
@@ -175,55 +194,152 @@ async function deploymentObservation(): Promise<Observation> {
     return {status:"BLOCKED",source:"Render",reason:"RENDER_READ_UNAVAILABLE"};
   }
 }
+async function runtimeObservation(): Promise<Observation> {
+  // Run the same command package as the worker, in an explicitly read-only
+  // mode before runtime config/signers are loaded. Do not inspect source text
+  // and call the presence of a function proof that production invokes it.
+  try {
+    const child = spawn("go",["run","./cmd/backyard-rwa-worker","--inspect-phase3",...EXPECTED_LANES], {
+      cwd:resolve(ROOT,"go/backyard-rwa-worker"),stdio:["ignore","pipe","pipe"],
+    });
+    let output = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data",chunk => { output += chunk; });
+    child.stderr.resume();
+    const deadline = setTimeout(() => child.kill("SIGKILL"),180_000);
+    try {
+      const code = await new Promise<number | null>((resolve,reject) => {
+        child.once("error",reject); child.once("close",resolve);
+      });
+      if (code !== 0) throw new Error("RUNTIME_INSPECTION_FAILED");
+      const data = JSON.parse(output) as Json;
+      if (data.schema !== "loyal-backyard-rwa-phase3-runtime-inspection/v1" || data.readOnly !== true ||
+          !exactSet(data.lanes?.map((row: Json) => row.lane),EXPECTED_LANES)) throw new Error("RUNTIME_INSPECTION_INVALID");
+      return {status:"OBSERVED",source:"local compiled production route resolver",data};
+    } finally { clearTimeout(deadline); }
+  } catch { return {status:"BLOCKED",source:"local compiled production route resolver",reason:"RUNTIME_INSPECTION_UNAVAILABLE"}; }
+}
+async function bindingObservation(): Promise<Observation> {
+  if (!process.env.SOLANA_RPC_URL) return {status:"BLOCKED",source:"binding review",reason:"RPC_CREDENTIAL_MISSING"};
+  try {
+    const connection=new Connection(process.env.SOLANA_RPC_URL,{
+      commitment:"finalized",disableRetryOnRateLimit:true,
+      fetch:(input,init)=>fetch(input,{...init,signal:AbortSignal.timeout(30_000)}),
+    });
+    return {status:"OBSERVED",source:"fresh accounts compared with retained installed-policy bindings",data:await reviewPhase3Bindings(connection)};
+  } catch {
+    return {status:"BLOCKED",source:"binding review",reason:"BINDING_REVIEW_UNAVAILABLE_OR_INVALID"};
+  }
+}
+function sourceIdentity() {
+  const git = (args: string[]) => {
+    const result=spawnSync("git",args,{cwd:ROOT,encoding:"utf8",timeout:10_000,maxBuffer:2*1024*1024});
+    if (result.status!==0 || result.error) throw new Error("SOURCE_IDENTITY_UNAVAILABLE");
+    return result.stdout;
+  };
+  const paths=[...new Set(git(["ls-files","-z","--cached","--others","--exclude-standard","--",
+    "go/backyard-rwa-worker","tools/backyard-voltr/src","tools/backyard-voltr/package.json",
+    "docs/manifests/backyard-rwa-v1.json","crates/loyal-actions/fixtures/backyard_rwa_policy_catalog_v1.json","bun.lock",
+  ]).split("\0").filter(Boolean))].sort();
+  const files=paths.map(path=>({path,sha256:sha(read(path))}));
+  return {head:git(["rev-parse","HEAD"]).trim(),
+    dirty:git(["status","--porcelain"]).trim().length>0,
+    implementationSha256:sha(JSON.stringify(files)),fileCount:files.length,
+    proofLevel:"LOCAL_SOURCE_SNAPSHOT_NOT_DEPLOYMENT"};
+}
 export async function verify() {
+  const source=sourceIdentity();
   const manifest = json("docs/manifests/backyard-rwa-v1.json");
   const catalog = json("crates/loyal-actions/fixtures/backyard_rwa_policy_catalog_v1.json");
   const catalogLanes = catalog.lanes.map((l: Json) => [l.market,l.collateral,l.debt].join("/"));
   const active = manifest.runtimeActivation?.runtimeRoutes ?? [];
   const offline = process.argv.includes("--offline");
+  const runtime = await runtimeObservation();
+  const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
   const [chain,database,deployment] = offline
     ? ["Solana RPC","Postgres","Render"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
     : await Promise.all([chainObservation(catalog,manifest),databaseObservation(),deploymentObservation()]);
+  const retained = json("docs/evidence/backyard-rwa-go/phase2-runtime/lifecycle-v1.json");
   const conditions = [
-    ["R01","Production admission/send cap enforcement, durable exit reservations and negative behavior",
-      {governorSource:existsSync(resolve(ROOT,"go/backyard-rwa-worker/internal/backyardrwa/budget.go")),capsMicros:[1000000,20000000,60000000]},
-      "Implement and execute production-path reservation/sign/send/restart/exit witnesses; reconcile live budget state."],
-    ["R02","Exact eleven-lane runtime allowlist and frozen three-family queue",
-      {expectedLanes:EXPECTED_LANES,catalogLanes,runtimeRoutes:active,catalogExact:exactSet(catalogLanes,EXPECTED_LANES),runtimeExact:exactSet(active,EXPECTED_LANES)},
-      "Resolve current bindings, validate compiled runtime capability and persist the approved queue."],
-    ["R03","Shared debt/token/valuation/exit runtime with exact existing policy authority",
-      {operationCount:catalog.operations.length,edgeCount:catalog.swapEdges.length,chain},
-      "Execute each lane through the shared production paths and reconcile installed policy intersections."],
-    ["R04","Batched all-lane positive/negative and full stateful lifecycle evidence",
-      {lanes:EXPECTED_LANES,simulationTimeoutMs:180000},
-      "Run current-chain and explicitly controlled-state production-program evidence with exact per-lane coverage."],
-    ["R05","Immutable deployment, one fenced writer, flat sequential transitions",
-      {deployment,database},
-      "Bind deployed image to verified source and prove durable independent queue advancement under one lease."],
-    ["R06","Three Go-originated LIVE_VALIDATED or proven CAPACITY_PENDING outcomes",
-      {canaries:["OnRe/ONyc/USDC","AUTO/AUTO/PYUSD","Ethena/USDe/PYUSD"],database},
-      "Complete each approved canary proof and independently reconcile finalized terminal custody."],
-    ["R07","Prior-route, withdrawal, NAV and recovery behavior including reserved exits",
-      {retainedPhase2:json("docs/evidence/backyard-rwa-go/phase2-runtime/lifecycle-v1.json").verdict},
-      "Run affected production-path regressions and verify current shared custody/recovery invariants."],
-    ["R08","Deployed eleven-lane readiness agrees with operational handoff and standing coverage",
-      {runtimeRoutes:active},
-      "Reconcile truthful lane statuses and retained/promoted proof with the deployed runtime."],
-  ].map(([id,condition,evidence,resumeCondition]) => ({
-    id,condition,verdict:"FAIL",measurementStatus:"NOT_IMPLEMENTED",evidence,resumeCondition,
-  }));
-  // Bootstrap intentionally cannot PASS: observed infrastructure and static
-  // membership do not substitute for the contract's behavioral measurements.
+    measuredCondition("R01","Production admission/send cap enforcement and reserved exits",[
+      observedCheck(runtime,"compiled goal identity and cap constants",d => d.goalId === GOAL &&
+        JSON.stringify(d.capsMicros) === JSON.stringify([1_000_000,20_000_000,60_000_000])),
+      observedCheck(database,"durable budget exists for this goal",d => d.route?.phase3?.goalId === GOAL),
+    ],[
+      "Production-created admission from exact executable costs and complete exit graph; not direct test-only ReservePhase3 calls.",
+      "Production-path over-cap rejection before signer/send, concurrency, restart, ambiguity and successful reserved unwind witnesses.",
+      "Independent reconciliation of deployed spent/reserved accounting, including setup and full-custody restore.",
+    ]),
+    measuredCondition("R02","Exact eleven-lane runtime allowlist and frozen three-family queue",[
+      measured("exact catalog lane set",exactSet(catalogLanes,EXPECTED_LANES),{catalogLanes}),
+      measured("exact manifest runtime lane set",exactSet(active,EXPECTED_LANES),{runtimeRoutes:active}),
+      observedCheck(runtime,"every catalogued lane resolves through production",d => d.lanes.every((row: Json) => row.resolved === true)),
+    ],["Durable three-family queue with reviewed identity bindings and in-family-only flat substitution behavior."]),
+    measuredCondition("R03","Shared debt/token/valuation/exit runtime and existing policy authority",[
+      measured("catalog operation and swap-edge cardinality",catalog.operations.length === 44 && catalog.swapEdges.length === 52,
+        {operations:catalog.operations.length,swapEdges:catalog.swapEdges.length}),
+      observedCheck(chain,"required observed accounts are present",d => Array.isArray(d.accounts) && d.accounts.length > 0 && d.accounts.every((a: Json) => a.present === true)),
+      observedCheck(bindings,"current Kamino account vectors match retained installed policies",d => d.lanes.every((lane:Json)=>
+        lane.operations.every((op:Json)=>op.accountVectorMatches && op.retainedPolicyBytesMatch))),
+      observedCheck(bindings,"resolved custody, obligation and farm setup identities are initialized",d => d.lanes.every((lane:Json)=>
+        lane.custodiesExact && lane.obligation.exact && lane.farmAccounts.every((farm:Json)=>farm.exact))),
+    ],[
+      "Installed policy bytes and exact account derivation/ownership/setup compared against each proposed binding.",
+      "All-lane production observation, construction, non-USDC valuation, exit and reconciliation behavior; catalog counts alone prove none of these.",
+    ]),
+    measuredCondition("R04","All-lane positives/negatives and full stateful lifecycle",[],[
+      "Sequential real-program lifecycle capability sample with captured effects and explicit controlled-capacity overrides.",
+      "Batched exact eleven-lane behavioral coverage with identity-bound retained equivalence and dangerous mutations.",
+    ]),
+    measuredCondition("R05","Immutable deployment, one fenced writer and flat queue transitions",[
+      observedCheck(deployment,"live immutable image tag observed",d => d.deploys.some((row: Json) =>
+        row.status === "live" && /^ghcr\.io\/loyal-labs\/loyal-yield-routing\/backyard-rwa-worker:sha-[0-9a-f]{40}$/.test(row.image ?? ""))),
+      observedCheck(database,"no unresolved journal operations at snapshot",d => Array.isArray(d.nonterminal) && d.nonterminal.length === 0),
+    ],[
+      "Image digest/source/service command bound to verified Phase 3 build, not merely any immutable old image.",
+      "Fenced queue advancement with independently flat shared custody and touched obligations; held family cannot stall eligible siblings.",
+    ]),
+    measuredCondition("R06","Three Go-originated accepted canary outcomes",[
+      observedCheck(database,"at least one Phase 3 journal operation exists",d => Number.isSafeInteger(d.phase3OperationCount) && d.phase3OperationCount > 0),
+    ],["OnRe, AUTO and Ethena each have complete LIVE_VALIDATED or R04-backed unfunded CAPACITY_PENDING proof and finalized terminal custody."]),
+    measuredCondition("R07","Retained prior routes, withdrawal, NAV and recovery",[
+      measured("retained Phase 2 artifact reports PASS",retained.verdict === "PASS",{
+        path:"docs/evidence/backyard-rwa-go/phase2-runtime/lifecycle-v1.json",
+        sha256:sha(read("docs/evidence/backyard-rwa-go/phase2-runtime/lifecycle-v1.json")),verdict:retained.verdict,
+        proofLevel:"HISTORICAL_ARTIFACT_ONLY"}),
+    ],["Match retained dependency identities and execute affected withdrawal/recovery/NAV regressions, including actual reserved-exit admission and execution."]),
+    measuredCondition("R08","Deployed readiness agrees with operational handoff and standing coverage",[
+      measured("source and embedded manifest bytes agree",read("docs/manifests/backyard-rwa-v1.json") ===
+        read("go/backyard-rwa-worker/internal/backyardrwa/manifest/backyard-rwa-v1.json"),{proofLevel:"LOCAL_MANIFEST_PARITY"}),
+    ],["Deployed eleven-lane readiness and existing handoff agree with proven statuses, policy bindings, image, budgets and recovery; promoted CI checks pass."]),
+  ];
+  const verdict = conditions.some(c => c.verdict === "FAIL") ? "FAIL" : conditions.some(c => c.verdict === "BLOCKED") ? "BLOCKED" : "PASS";
+  if (sourceIdentity().implementationSha256!==source.implementationSha256) throw new Error("SOURCE_CHANGED_DURING_VERIFICATION");
   return {
     schema:"loyal-backyard-rwa-phase3-family-activation-verifier/v2",
-    verdict:"FAIL",implementationStatus:"NOT_IMPLEMENTED",broadcast:false,readOnly:true,
+    verdict,implementationStatus:verdict === "PASS" ? "VERIFIED" : "INCOMPLETE",broadcast:false,readOnly:true,
     generatedAt:new Date().toISOString(),goalId:GOAL,
+    source,
     contract:{path:CONTRACT,sha256:sha(read(CONTRACT))},
-    preflight:{chain,database,deployment},
+    preflight:{chain,database,deployment,runtime,bindings},
     conditions,
   };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { console.log(JSON.stringify(await verify(),null,2)); process.exitCode=1; }
+  try {
+    const result = await verify();
+    const serialized=JSON.stringify(result,null,2)+"\n";
+    const outputIndex=process.argv.indexOf("--output");
+    if (outputIndex!==-1) {
+      const argument=process.argv[outputIndex+1];
+      if (!argument || argument.startsWith("--")) throw new Error("OUTPUT_PATH_MISSING");
+      const output=resolve(ROOT,argument);
+      // Evidence snapshots are immutable. Never replace earlier proof silently.
+      writeFileSync(output,serialized,{flag:"wx",mode:0o600});
+      console.log(JSON.stringify({verdict:result.verdict,output,sha256:sha(serialized),
+        conditions:result.conditions.map(c=>({id:c.id,verdict:c.verdict,measurements:c.measurements.map(m=>({claim:m.claim,verdict:m.verdict})),missingProof:c.missingProof}))},null,2));
+    } else console.log(serialized.trimEnd());
+    process.exitCode=result.verdict === "PASS" ? 0 : 1;
+  }
   catch { console.log(JSON.stringify({verdict:"FAIL",reason:"VERIFIER_INPUT_INVALID",broadcast:false})); process.exitCode=1; }
 }

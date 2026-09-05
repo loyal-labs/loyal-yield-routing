@@ -213,7 +213,7 @@ function decodedReserveBoundary(
   return observed;
 }
 
-export async function resolveCurrentRwaMultiplyCatalog(connection: Connection) {
+export async function resolveCurrentRwaMultiplyCatalog(connection: Connection, commitment: "confirmed" | "finalized" = "confirmed") {
   const catalog = readRwaMultiplyCatalog();
   invariant(await connection.getGenesisHash() === RWA_MULTIPLY_ROUTE.genesisHash,
     "RPC is not mainnet-beta");
@@ -226,7 +226,7 @@ export async function resolveCurrentRwaMultiplyCatalog(connection: Connection) {
   ]));
   const baseRead = await connection.getMultipleAccountsInfoAndContext(
     baseAddresses.map((value) => publicKey(value, "candidate graph address")),
-    { commitment: "confirmed" },
+    { commitment },
   );
   const byAddress = new Map(baseAddresses.map((value, index) => [value, baseRead.value[index] ?? null]));
   const klend = publicKey(RWA_MULTIPLY_ROUTE.kamino.program, "KLend program");
@@ -250,7 +250,7 @@ export async function resolveCurrentRwaMultiplyCatalog(connection: Connection) {
   ]));
   const custodyRead = await connection.getMultipleAccountsInfoAndContext(
     custodyAddresses.map((value) => new PublicKey(value)),
-    { commitment: "confirmed", minContextSlot: baseRead.context.slot },
+    { commitment, minContextSlot: baseRead.context.slot },
   );
   const custodyByAddress = new Map(custodyAddresses.map((value, index) => [value, custodyRead.value[index] ?? null]));
 
@@ -304,7 +304,7 @@ export async function resolveCurrentRwaMultiplyCatalog(connection: Connection) {
   invariant(assetPrograms.size === 9, "resolved swap universe is not exactly four stable and five RWA mints");
   const settingsRead = await connection.getAccountInfoAndContext(
     new PublicKey(RWA_MULTIPLY_ROUTE.squads.settings),
-    { commitment: "confirmed", minContextSlot: custodyRead.context.slot },
+    { commitment, minContextSlot: custodyRead.context.slot },
   );
   invariant(settingsRead.value?.owner.toBase58() === RWA_MULTIPLY_ROUTE.squads.program,
     "Squads Settings is absent or has the wrong owner");
@@ -324,7 +324,7 @@ export async function resolveCurrentRwaMultiplyCatalog(connection: Connection) {
     broadcast: false,
     cluster: "mainnet-beta",
     genesisHash: RWA_MULTIPLY_ROUTE.genesisHash,
-    commitment: "confirmed",
+    commitment,
     contextSlot: settingsRead.context.slot,
     observationSlots: { reservesAndMints: baseRead.context.slot, custodies: custodyRead.context.slot, settings: settingsRead.context.slot },
     catalogSha256: sha256(readFileSync(CATALOG_PATH)),

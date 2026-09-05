@@ -12,6 +12,7 @@ import {
   isSignerRole,
   isWritableRole,
   none,
+  some,
   type Address,
   type Instruction,
 } from "@solana/kit";
@@ -157,10 +158,16 @@ function assertInstruction(
 /**
  * Build the exact four K-Lend V2 operation shapes for a fully decoded lane.
  * This is policy compilation input only: it signs nothing and has no RPC or
- * submission path.  Farms are explicitly absent (K-Lend program placeholders)
- * just as in the live Phase-1 policy builder.
+ * submission path. The default retains the original no-farm compilation;
+ * callers reviewing current lanes can supply explicitly resolved farm PDAs.
+ * Supplied bindings alone establish neither initialization nor authorization.
  */
-export function buildPhaseTwoKaminoLaneOperations(lane: ResolvedLane, amountRaw: bigint = PROBE_AMOUNT_RAW) {
+export type KaminoLaneFarms = Readonly<{
+  collateral?: Readonly<{ farm: string; user: string }>;
+  debt?: Readonly<{ farm: string; user: string }>;
+}>;
+
+export function buildPhaseTwoKaminoLaneOperations(lane: ResolvedLane, amountRaw: bigint = PROBE_AMOUNT_RAW, bindings: KaminoLaneFarms = {}) {
   assertLane(lane);
   const graph = lane.resolved;
   const account = {
@@ -183,10 +190,10 @@ export function buildPhaseTwoKaminoLaneOperations(lane: ResolvedLane, amountRaw:
     klend: publicAddress(graph.klendProgram, `${lane.key} KLend program`),
   };
   const owner = createNoopSigner(RWA_MULTIPLY_ROUTE.squads.vault);
-  const farms = {
-    obligationFarmUserState: none<Address>(),
-    reserveFarmState: none<Address>(),
-  };
+  const farms = (side: "collateral" | "debt") => ({
+    obligationFarmUserState: bindings[side] ? some(publicAddress(bindings[side]!.user, `${lane.key} ${side} farm user`)) : none<Address>(),
+    reserveFarmState: bindings[side] ? some(publicAddress(bindings[side]!.farm, `${lane.key} ${side} farm`)) : none<Address>(),
+  });
   invariant(amountRaw > 0n && amountRaw <= 1_000_000_000_000n, `${lane.key} operation amount is outside the constrained policy cap`);
   const amount = new BN(amountRaw.toString());
   const deposit = depositReserveLiquidityAndObligationCollateralV2({ liquidityAmount: amount }, {
@@ -202,7 +209,7 @@ export function buildPhaseTwoKaminoLaneOperations(lane: ResolvedLane, amountRaw:
       collateralTokenProgram: account.collateralTokenProgram,
       liquidityTokenProgram: account.collateralTokenProgram,
       instructionSysvarAccount: INSTRUCTIONS_SYSVAR,
-    }, farmsAccounts: farms, farmsProgram: RWA_MULTIPLY_ROUTE.kamino.farmsProgram,
+    }, farmsAccounts: farms("collateral"), farmsProgram: RWA_MULTIPLY_ROUTE.kamino.farmsProgram,
   }, [], account.klend);
   const borrow = borrowObligationLiquidityV2({ liquidityAmount: amount }, {
     borrowAccounts: {
@@ -214,7 +221,7 @@ export function buildPhaseTwoKaminoLaneOperations(lane: ResolvedLane, amountRaw:
       userDestinationLiquidity: account.debtCustody, referrerTokenState: none<Address>(),
       tokenProgram: account.debtTokenProgram,
       instructionSysvarAccount: INSTRUCTIONS_SYSVAR,
-    }, farmsAccounts: farms, farmsProgram: RWA_MULTIPLY_ROUTE.kamino.farmsProgram,
+    }, farmsAccounts: farms("debt"), farmsProgram: RWA_MULTIPLY_ROUTE.kamino.farmsProgram,
   }, [], account.klend);
   const repay = repayObligationLiquidityV2({ liquidityAmount: amount }, {
     repayAccounts: {
@@ -223,7 +230,7 @@ export function buildPhaseTwoKaminoLaneOperations(lane: ResolvedLane, amountRaw:
       reserveDestinationLiquidity: account.debtSupply,
       userSourceLiquidity: account.debtCustody, tokenProgram: account.debtTokenProgram,
       instructionSysvarAccount: INSTRUCTIONS_SYSVAR,
-    }, farmsAccounts: farms, lendingMarketAuthority: account.marketAuthority,
+    }, farmsAccounts: farms("debt"), lendingMarketAuthority: account.marketAuthority,
     farmsProgram: RWA_MULTIPLY_ROUTE.kamino.farmsProgram,
   }, [], account.klend);
   const withdraw = withdrawObligationCollateralAndRedeemReserveCollateralV2({ collateralAmount: amount }, {
@@ -239,7 +246,7 @@ export function buildPhaseTwoKaminoLaneOperations(lane: ResolvedLane, amountRaw:
       collateralTokenProgram: account.collateralTokenProgram,
       liquidityTokenProgram: account.collateralTokenProgram,
       instructionSysvarAccount: INSTRUCTIONS_SYSVAR,
-    }, farmsAccounts: farms, farmsProgram: RWA_MULTIPLY_ROUTE.kamino.farmsProgram,
+    }, farmsAccounts: farms("collateral"), farmsProgram: RWA_MULTIPLY_ROUTE.kamino.farmsProgram,
   }, [], account.klend);
   return [
     assertInstruction(lane, "deposit", deposit, 17, true),

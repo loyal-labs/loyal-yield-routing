@@ -41,8 +41,8 @@ capital allocation after the finite goal expires.
 ## Implementation details and order
 
 1. **Baseline and feasibility.** Start from current main, preserving unrelated
-   changes. Bootstrap the sole read-only verifier and capture all baseline
-   conditions before worker edits. Resolve exact identities, custody/exposure,
+   changes. Capture measured baseline subclaims and implement the remaining
+   verifier measurements alongside their runtime slices. Resolve identities, custody/exposure,
    credentials/accounts, simulation and deployment access. Prove a bounded
    controlled-state simulation sample before depending on it. Measure each
    full lifecycle under the new accounting; record finite stage deadlines and
@@ -211,3 +211,58 @@ that checkpoint. The subsequent repair replaces its unchecked array assertion
 with exact RPC cardinality and explicit required-account checks. Package
 `bun run check` and all four `test:phase2-runtime` cases now pass. No runtime
 destination bindings were added while the safety-review approval is outstanding.
+
+## Resumption checkpoint — 2026-09-04, after the skill/workflow review
+
+The previous paragraphs are chronological evidence, not current completeness
+claims. Codex reported no goal on resumption; a fresh Phase 3 goal is now active
+with the same v2 scope and 1/20/60 envelope. Work remains in the existing
+`/private/tmp/loyal-backyard-phase3.3EQhbn` worktree. Do not start another worker.
+
+The verifier now computes per-subclaim verdicts, reports missing behavioral
+proof explicitly and invokes the actual worker's read-only `--inspect-phase3`
+route resolver. It no longer assigns every row a blanket NOT_IMPLEMENTED.
+Compiled route resolution is still only Prime/Maple; it is not full capability
+or deployment proof. `--output <new-path>` retains an immutable full snapshot.
+Source fingerprints distinguish the working tree from deployed source and
+reject source changes during a verification run.
+
+Fresh read-only snapshot `docs/evidence/backyard-rwa-go/phase3/resumption-2026-09-04.json`
+(binding slot 444397851, before the subsequent NAV fix) establishes:
+
+- The old deployed image still holds the sole lease; no nonterminal operation,
+  Phase 3 operation or initialized Phase 3 budget was observed.
+- All 44 Kamino operation account vectors were compared to retained installed
+  bytes plus known Maple rollovers using fresh finalized account identities.
+  Ten vectors differ only at debt-farm positions: borrow/repay on all three
+  OnRe lanes and Maple/USDG and Maple/PYUSD. This is measured repair work, not
+  authority to invent new semantics or claim that the current policies execute.
+- Farm users for OnRe/USDC, OnRe/USDG, Maple/USDC and Maple/PYUSD exist with
+  the expected vault owner, obligation delegatee and farm. OnRe/USDS and
+  Maple/USDG farm users are absent. Resolve setup and its cost before live use.
+- AUTO and Ethena vectors match their current installed policy bytes and their
+  obligations/custodies are present. This narrows the earlier rejected expansion;
+  it does not bypass that review or establish Jupiter/full-lifecycle readiness.
+- Prime/USDC and Maple/USDC obligations are currently absent after prior flat
+  closure. Do not treat absence alone as failed retained lifecycle proof; prove
+  any required reinitialization path separately before a new entry.
+
+Implemented next, locally: route NAV now converts collateral, debt liability
+and non-USDC idle debt custody into USDC using a same-batch USDC reference;
+it no longer mixes debt raw units with USDC or omits idle debt. Tests exercise
+depeg, unequal decimals, conservative rounding, changed poststate and missing/
+mismatched input rejection. Existing USDC-route fingerprint shape is preserved.
+This does not generalize the on-chain NAV adaptor or advertise new route support.
+
+Validation: Go full race suite and 12 targeted Bun tests pass; package typecheck
+passes. PostgreSQL integration is environment-gated and was not enabled in this
+resumption's full Go suite. No policy installs, runtime-binding activation,
+deployment, mainnet budget initialization, signing or sending occurred.
+
+Next discriminating work: demonstrate sequential execution with real programs
+(local `solana-test-validator` 4.2.0 is installed but not yet exercised), then
+finish complete cost/exit admission through production. Continue exact binding
+review and narrow farm-policy repairs without waiting on unrelated work. The
+platform's rejected expansion must be resolved by its permitted review with
+this exact evidence; new authority still requires the operator. Goal remains
+active and R01-R08 remain incomplete, not capacity-pending or completed.

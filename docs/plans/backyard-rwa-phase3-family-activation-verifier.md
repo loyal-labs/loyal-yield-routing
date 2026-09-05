@@ -43,11 +43,13 @@ op run --env-file=.env.1password -- \
   bun run --cwd tools/backyard-voltr verify:rwa-phase3-family-activation
 ```
 
-Implement this read-only command before changing worker behavior. Until it
-exists and evaluates every condition, status is NOT_IMPLEMENTED, never PASS.
-Reuse the appropriate Phase 2 checks. Capture the complete baseline output,
-run affected fast checks between edits, then every condition at completion.
-Missing proof is FAIL or an explicit external gate, never a skipped check.
+Use this read-only command as the implementation feedback loop. Each condition
+reports measured subclaims separately from missing evidence; a static allowlist
+or passing unit test cannot establish deployed behavior. Implement measurements
+alongside the affected runtime slice, rather than requiring a complete verifier
+before any runtime work. Capture the complete baseline, run affected fast checks
+between edits, then every condition at completion. Missing proof is FAIL or an
+explicit external gate, never a skipped check or a hardcoded completion verdict.
 
 Output schema/version, source and deployment identities, goal ID, times/slots,
 R01-R08 results, exact 11-lane matrix, three canary outcomes, spent/reserved
@@ -300,10 +302,15 @@ production governor active.
 
 ## Implementation sequence and rules against stalled loops
 
-1. Bootstrap verifier, capture full baseline and resolve preflight access,
-   simulation/setup and measured cap feasibility before changing worker behavior.
-2. Implement durable governor/reservations and shared debt/token/valuation paths;
-   add reviewed bindings and prove decisive negatives plus controlled lifecycle.
+1. Capture measured verifier baseline and identify the shortest incomplete
+   production path. Resolve access and demonstrate the sequential simulation
+   mechanism early; do not finish unrelated abstractions before this probe.
+2. Complete admission through reservation, construction, send fencing and exit
+   on a representative existing lane, with decisive production-path negatives.
+   In parallel where independent, reconcile each proposed binding against the
+   installed policy/catalog and fresh account derivation, ownership and setup
+   state. A derived address alone does not prove authorization or readiness.
+   Then extend shared debt/token/valuation paths and the reviewed bindings.
 3. Verify all 11 lanes in batches, repair only demonstrated policy defects and
    freeze three canaries with bounded amounts and exit reserves.
 4. Deploy verified image, prove R01 at the send boundary, process the fixed
@@ -323,6 +330,15 @@ External gates pause dependent work only. Complete useful independent local or
 safe other-family work, then report the exact resume condition. Ordinary bugs
 and unfinished implementation are not external gates. Finite timeouts bound
 diagnostics; they do not promise completion in a fixed number of hours.
+
+An action rejected by the platform remains rejected until the permitted review
+resolves it. For an alleged new destination, produce the exact existing-policy
+and account-identity comparison before seeking review; do not retry via another
+mechanism or treat the whole implementation as blocked. Ask the operator only
+if that comparison establishes a genuinely new boundary or cannot resolve it.
+Reuse unaffected Phase 2 and local evidence with explicit dependency identities.
+These sequencing/measurement repairs do not change v2 acceptance, the exact
+11 lanes, three canaries, 1/20/60 gross caps or the standing authority envelope.
 
 ## Verdict and contract changes
 
