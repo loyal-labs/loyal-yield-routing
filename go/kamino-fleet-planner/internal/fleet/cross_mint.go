@@ -1245,7 +1245,7 @@ func (r *Revalidator) cycleCrossMint(ctx context.Context, lease RevalidationLeas
 	if _, err = decodeObligation(obligations[1], target.Position.Market, lease.VaultPubkey, "", &target.Position); err != nil {
 		return err
 	}
-	route, err := r.proxy.Build(ctx, KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: source.Position, Target: target.Position, WithdrawCollateralAmount: collateral, DepositLiquidityAmount: validated.MinimumOutput})
+	route, err := r.proxy.BuildCrossMintLegs(ctx, KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: source.Position, Target: target.Position, WithdrawCollateralAmount: collateral, DepositLiquidityAmount: validated.MinimumOutput})
 	if err != nil {
 		return err
 	}

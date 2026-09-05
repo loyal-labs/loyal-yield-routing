@@ -18,7 +18,8 @@ are exempt). Dependencies must already be cached. It creates disposable
 PostgreSQL databases, runs Go vet and all Go tests with the race detector,
 requires every named integration test to pass, and rejects skipped fleet tests.
 Missing dependencies or failed/skipped checks fail the audit rather than being
-reported as successful verification.
+reported as successful verification. The audit also requires `cargo build-sbf`
+and its cached toolchain to rebuild the mock protocol program used by LiteSVM.
 
 The blank-database migration runner accepts only the existing documented 0071
 production-bound Backyard activation failure; it validates the required fleet
@@ -37,10 +38,22 @@ schema. Production is never migrated by this verifier.
    triggers. These fixtures do not simulate a successful signed handoff.
 3. **Go route negative tests:** execute validation/preparation functions with
    missing ALTs, oversized packets, simulation errors, and changed identities.
-4. **Retained Rust lifecycle:** existing isolated-database verifier exercises
-   durable transition methods. Side-effect-free role probes load retained role
-   boundaries. These are not live on-chain executor/confirmer/reconciler runs.
-5. **Schema-v2 deterministic artifact parity:** independent Rust planner,
+4. **Actual KLend proxy:** Go invokes the compiled, digest-verified Rust binary
+   to build independent withdrawal/deposit legs for all six stable target mints.
+   Both sides reject wrong-lane requests. This exercises the new cross-mint
+   operation at the formerly same-mint-only boundary, not canned proxy output.
+5. **Retained Rust lifecycle:** existing isolated-database verifier exercises
+   durable transition methods. Eleven named cross-mint recovery checks are
+   mandatory, including crash windows, source recovery, target fallback,
+   ambiguous effects, admission, pause/revocation, and manual-closure fencing.
+   All three custody/capacity, policy-catalog, and opt-in store tests also execute
+   against disposable PostgreSQL; missing/skipped results fail the audit.
+   Side-effect-free role probes load retained role boundaries. These are not
+   live on-chain executor/confirmer/reconciler runs.
+6. **Squads/LiteSVM:** rebuild the mock SBF, then run the existing generalized
+   cross-mint policy test that creates policies, reads them back, executes swaps,
+   and rejects adversarial mutations. Require its named non-skipped PASS.
+7. **Schema-v2 deterministic artifact parity:** independent Rust planner,
    official KLend/Squads builders and Solana compiler versus Go planner/proxy
    preparation. Compare actual opportunity plans/keys, route fingerprint, and
    complete unsigned message/wire bytes. No database or RPC is used by these
@@ -67,6 +80,9 @@ Comparator mutation controls test the comparator, not runtime failure recovery.
 The separate test-evidence self-test rejects skipped/missing/failed/incomplete
 test runs. Neither synthetic control is a substitute for the integration suite.
 
+These are separate execution-backed gates, not one connected Go `Cycle` through
+Rust execution/confirmation/reconciliation. That connected local handoff remains
+an evidence gap; do not relabel the component gates as full service E2E.
 Live Jupiter/RPC behavior, cross-mint end-to-end execution, throughput,
 production alert delivery, and safe cutover remain deployment gates. A local
 PASS must not be described as proof that both Rust services can be stopped.

@@ -114,13 +114,26 @@ type proxyOutput struct {
 // The proxy is deterministic: it receives one JSON request and has no RPC,
 // database, signer, or transaction-broadcast capability.
 func (p *KLendProxy) Build(ctx context.Context, request KaminoSameMintRouteRequest) (KaminoSameMintRoute, error) {
+	return p.build(ctx, request, "buildSameMintRoute")
+}
+
+// BuildCrossMintLegs builds the independent KLend withdrawal and deposit legs.
+// It does not combine withdrawal, Jupiter swap, and deposit into a transaction.
+func (p *KLendProxy) BuildCrossMintLegs(ctx context.Context, request KaminoSameMintRouteRequest) (KaminoSameMintRoute, error) {
+	return p.build(ctx, request, "buildCrossMintLegs")
+}
+
+func (p *KLendProxy) build(ctx context.Context, request KaminoSameMintRouteRequest, operation string) (KaminoSameMintRoute, error) {
 	if p == nil || p.executable == "" {
 		return KaminoSameMintRoute{}, fmt.Errorf("KLend proxy is not configured")
 	}
-	if request.WithdrawCollateralAmount == 0 || request.DepositLiquidityAmount == 0 || request.Source.LiquidityMint == "" || request.Source.LiquidityMint != request.Target.LiquidityMint || request.Source.VaultLiquidityATA != request.Target.VaultLiquidityATA {
-		return KaminoSameMintRoute{}, fmt.Errorf("invalid same-mint route request")
+	sameMint := request.Source.LiquidityMint == request.Target.LiquidityMint
+	sameATA := request.Source.VaultLiquidityATA == request.Target.VaultLiquidityATA
+	validLane := operation == "buildSameMintRoute" && sameMint && sameATA || operation == "buildCrossMintLegs" && !sameMint && !sameATA
+	if request.WithdrawCollateralAmount == 0 || request.DepositLiquidityAmount == 0 || request.Source.LiquidityMint == "" || request.Target.LiquidityMint == "" || !validLane {
+		return KaminoSameMintRoute{}, fmt.Errorf("invalid %s request", operation)
 	}
-	input, err := json.Marshal(proxyRequest{SchemaVersion: 1, Operation: "buildSameMintRoute", Request: request})
+	input, err := json.Marshal(proxyRequest{SchemaVersion: 1, Operation: operation, Request: request})
 	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
@@ -159,7 +172,7 @@ func (p *KLendProxy) Build(ctx context.Context, request KaminoSameMintRouteReque
 		}
 		return out, nil
 	}
-	if raw.SchemaVersion != 1 || raw.Operation != "buildSameMintRoute" {
+	if raw.SchemaVersion != 1 || raw.Operation != operation {
 		return KaminoSameMintRoute{}, fmt.Errorf("KLend proxy response contract drifted")
 	}
 	public, err := convert(raw.Route.Public)

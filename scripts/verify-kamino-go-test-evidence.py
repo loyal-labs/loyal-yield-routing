@@ -14,6 +14,7 @@ REQUIRED = {
     "TestExpiryIntegrationRecoveryAndOwnership",
     "TestFreshPolicyWrapALTAndExactV0",
     "TestConfigRejectsShadowRevalidation",
+    "TestRealKLendProxyCrossMintLegs",
 }
 PACKAGE = "github.com/loyal-labs/loyal-yield-routing/go/kamino-fleet-planner/internal/fleet"
 

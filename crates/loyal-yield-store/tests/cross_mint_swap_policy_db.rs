@@ -71,10 +71,8 @@ async fn one_row_policy_catalog_is_finality_and_ambiguity_safe() {
     let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url))
         .await
         .expect("connect to throwaway policy catalog database");
-    client
-        .apply_migrations()
-        .await
-        .expect("apply the undeployed store migrations");
+    // The runner applies schema migrations before invoking this test. Do not
+    // run production-bound data activations, especially before the DB guard.
 
     let database_name: String = sqlx::query_scalar("SELECT current_database()")
         .fetch_one(client.pool())
@@ -84,6 +82,20 @@ async fn one_row_policy_catalog_is_finality_and_ambiguity_safe() {
         database_name.contains("cross_mint_store_test"),
         "refusing to mutate database {database_name:?}"
     );
+
+    let processed = client
+        .record_cross_mint_swap_policy_manifest(manifest(
+            "classic-create",
+            100,
+            "processed",
+            "classic-policy",
+            "classic",
+        ))
+        .await
+        .expect("record a processed observation")
+        .expect("processed manifest has complete policy identity");
+    assert!(!processed.start_eligible);
+    assert_eq!(catalog(&client, 0).await, Vec::<String>::new());
 
     let confirmed = client
         .record_cross_mint_swap_policy_manifest(manifest(
@@ -96,8 +108,10 @@ async fn one_row_policy_catalog_is_finality_and_ambiguity_safe() {
         .await
         .expect("insert one confirmed classic policy row")
         .expect("confirmed manifest has complete policy identity");
-    assert!(!confirmed.start_eligible);
-    assert_eq!(catalog(&client, 0).await, Vec::<String>::new());
+    // The production store admits confirmed or finalized catalog evidence;
+    // execution still performs its own fresh policy/account readback.
+    assert!(confirmed.start_eligible);
+    assert_eq!(catalog(&client, 0).await, vec!["classic-policy"]);
 
     let finalized = client
         .record_cross_mint_swap_policy_manifest(manifest(
@@ -283,10 +297,7 @@ async fn per_vault_opt_in_is_only_intent_and_disable_is_committed() {
     let client = NeonSqlClient::connect(NeonSqlConfig::new(database_url))
         .await
         .expect("connect to throwaway opt-in database");
-    client
-        .apply_migrations()
-        .await
-        .expect("apply the undeployed store migrations");
+    // Schema setup belongs to the disposable-database runner, not this test.
 
     let database_name: String = sqlx::query_scalar("SELECT current_database()")
         .fetch_one(client.pool())
@@ -297,8 +308,14 @@ async fn per_vault_opt_in_is_only_intent_and_disable_is_committed() {
         "refusing to mutate database {database_name:?}"
     );
 
+    // Keep this test's durable rows out of the concurrently running catalog test.
+    let opt_in_manifest = |signature, slot, commitment, policy, shard| {
+        let mut input = manifest(signature, slot, commitment, policy, shard);
+        input.cluster = "cross-mint-opt-in-db-test".to_owned();
+        input
+    };
     let lookup = CrossMintVaultOptInLookup {
-        cluster: CLUSTER.to_owned(),
+        cluster: "cross-mint-opt-in-db-test".to_owned(),
         settings: SETTINGS.to_owned(),
         vault_index: 1,
         vault_pubkey: VAULT.to_owned(),
@@ -322,7 +339,7 @@ async fn per_vault_opt_in_is_only_intent_and_disable_is_committed() {
     assert!(created.enabled);
     assert_eq!(created.generation, 1);
     client
-        .record_cross_mint_swap_policy_manifest(manifest(
+        .record_cross_mint_swap_policy_manifest(opt_in_manifest(
             "opt-in-classic",
             11,
             "finalized",
@@ -332,7 +349,7 @@ async fn per_vault_opt_in_is_only_intent_and_disable_is_committed() {
         .await
         .expect("record classic policy authority");
     client
-        .record_cross_mint_swap_policy_manifest(manifest(
+        .record_cross_mint_swap_policy_manifest(opt_in_manifest(
             "opt-in-token-2022",
             12,
             "finalized",
