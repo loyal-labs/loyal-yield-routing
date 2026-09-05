@@ -42,6 +42,13 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 	if err != nil {
 		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
 	}
+	if r, ok := request.(KaminoPrimeUSDCRequest); ok && r.FullPayoff {
+		bound, err := validateFullPayoffRequest(ctx, rpc, r, effects, slot)
+		if err != nil {
+			return ValuedTransactionCost{}, err
+		}
+		slot = max(slot, bound.ObservedSlot)
+	}
 	if r, ok := request.(JupiterSwapRequest); ok {
 		slot, err = revalidateJupiterLookupTables(ctx, rpc, r, slot)
 		if err != nil {

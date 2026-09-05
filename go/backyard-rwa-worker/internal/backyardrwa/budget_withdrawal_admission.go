@@ -311,7 +311,13 @@ func (d *Database) admitPhase3CollateralReturn(ctx context.Context, rpc *RPCClie
 }
 
 func (d *Database) admitPhase3Withdrawal(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence KaminoExecutionEvidence) error {
-	plan, err := observePhase3WithdrawalAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
+	var plan phase3BridgeAdmission
+	var err error
+	if evidence.Request.FullPayoff {
+		plan, err = observePhase3PayoffAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
+	} else {
+		plan, err = observePhase3WithdrawalAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
+	}
 	if err != nil {
 		return err
 	}

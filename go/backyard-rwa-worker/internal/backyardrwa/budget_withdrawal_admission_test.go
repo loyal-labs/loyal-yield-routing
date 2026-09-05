@@ -290,11 +290,12 @@ func TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge(t *testing.T)
 }
 
 func testProductionWithdrawalAdmission(t *testing.T, url string) {
-	t.Run("collateral_only", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, false) })
-	t.Run("collateral_and_debt_residue", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true) })
+	t.Run("collateral_only", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, false, false) })
+	t.Run("collateral_and_debt_residue", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true, false) })
+	t.Run("funded_full_payoff", func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, true, true) })
 }
 
-func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResidue bool) {
+func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResidue, payoff bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	db, err := OpenDatabase(ctx, url)
@@ -305,6 +306,9 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResi
 	o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
 	if debtResidue {
 		o, d, evidence, manifest, rpc, client = debtResidueAdmissionFixture(t, 20_000)
+	}
+	if payoff {
+		o, d, evidence, manifest, rpc, client, _ = payoffAdmissionFixture(t, 20_000)
 	}
 	key := fmt.Sprintf("phase3-withdrawal-producer-%d", time.Now().UnixNano())
 	id := key + "-operation"
@@ -350,8 +354,15 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url string, debtResi
 		!r.Recovery || r.ExitBeforeMicros != 1_000_000 || r.ExitAfterMicros != auth.BridgeAdmission.ExitAfterMicros || r.UpperMicros != auth.BridgeAdmission.CurrentCost.TotalMicros {
 		t.Fatal("production withdrawal admission did not bind current and future costs")
 	}
-	if debtResidue && (len(auth.BridgeAdmission.AdditionalQuotedExits) != 1 || len(auth.BridgeAdmission.Exit) != 9) {
+	exitCount := 9
+	if payoff {
+		exitCount = 11
+	}
+	if debtResidue && (len(auth.BridgeAdmission.AdditionalQuotedExits) != 1 || len(auth.BridgeAdmission.Exit) != exitCount) {
 		t.Fatal("durable reservation dropped debt conversion")
+	}
+	if payoff && (auth.BridgeAdmission.Payoff == nil || auth.BridgeAdmission.Payoff.UpperDebtRaw != 1_001 || auth.BridgeAdmission.PayoffWithdrawal == nil) {
+		t.Fatal("durable funded payoff omitted interest bound or full withdrawal")
 	}
 	if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, evidence.Request, evidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
 		t.Fatal(err)

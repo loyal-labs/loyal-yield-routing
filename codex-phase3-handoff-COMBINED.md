@@ -5,17 +5,17 @@ That file alone defines acceptance; this handoff supplies implementation order.
 The operator requested the revision to remove late cap/proof blockers and ship
 all catalogued markets through one shared implementation.
 
-## Current checkpoint — finite repayment and real-program dust rejection, 2026-09-05
+## Current checkpoint — funded payoff and complete reserved return, 2026-09-05
 
 The goal remains active; all full R01-R08 conditions remain incomplete. Latest
-verifier output: `docs/evidence/backyard-rwa-go/phase3/repayment-bounds-2026-09-05.json.gz`.
+verifier output: `docs/evidence/backyard-rwa-go/phase3/funded-payoff-admission-2026-09-05.json.gz`.
 Historical checkpoints below are provenance, not the current work queue.
 
 Production repayment now keeps a finite request maximum and a separate observed
 minimum debit. Pricing reserves the maximum; reconciliation accepts only matching
 in-range source debit/reserve credit with unchanged custody identities. The actual
 Token-2022 owner of PYUSD is preserved instead of mislabeled as classic SPL Token.
-This does not supply an automatic interest buffer or debt-bearing admission.
+Funded complete-payoff construction now includes a finite interest-window bound.
 
 The captured deployed Kamino program accepts 1010 raw requested against 1000 owed,
 debits 1000 and reaches zero debt. A 999 request rejects with KLend 6092
@@ -23,8 +23,13 @@ debits 1000 and reaches zero debt. A 999 request rejects with KLend 6092
 local wires are reproduced by the current Go compiler; captured balances pass
 through production maximum-debit measurement and reconciliation. Do not design
 the canary exit around tiny partial repayments or repeated residual-debt cleanup.
-Next size and reserve a complete payoff over the execution horizon, prove its
-collateral release and full return, then finish entry and the all-lane queue.
+An added real-program witness advances Clock by 60 seconds and 32 slots; the
+Go-estimated 1001-unit request consumes 1001 and clears accrued debt. The captured
+reserve uses seconds-based interest, which SDK 7.3.9 does not decode. Production
+uses the actual basis/timestamp/maximum curve plus host rate, preserves unrounded
+debt, and revalidates at build and final send. Term-debt/early-penalty configurations
+need a different model and reject. The 60-second/32-slot estimate is not perpetual
+funding authorization or a guarantee after arbitrary state changes.
 
 The shared observer now applies the captured reserve/obligation cumulative-rate
 ratio to unrounded debt before raw-unit rounding. NAV, LTV and repayment use the
@@ -35,9 +40,11 @@ This is not an interest estimate beyond the reserve's last refresh.
 Debt-free return admission now reserves collateral and debt-residue conversions,
 NAV after each, and staging/restoration of their combined USDC output. Both quotes
 persist in the existing authorization. The actual debt-residue swap gets fresh
-admission; remaining obligation debt is still not supported by this estimator.
-Interest-through-execution-horizon and complete repayment/release admission remain
-the next missing runtime slice, followed by the full lifecycle and entry/queue.
+admission. Funded payoff now prepends repayment/NAV/full withdrawal to this graph,
+reserving the largest possible debt residue rather than assuming the maximum
+request will all be spent. Actual post-payoff NAV has its own full-return admission.
+The existing journal persists the bound and prospective withdrawal/quotes; no
+template becomes a later current wire. Unreserved historical exposure still rejects.
 
 Two exact V2 candidate policies create on cloned finalized Settings and execute
 USDC -> USDe (Manifest), then USDe -> PYUSD (Whirlpool/Token-2022), with actual
@@ -53,8 +60,9 @@ for the distinct verifier observation; candidate proof is not installed-policy
 execution, forward installation/readback or full R04 completion.
 
 Four real sequential Kamino legs are separately proven. Admission covers cash
-bridge and debt-free full collateral/debt-residue return. Next join these mechanics into the
-complete lifecycle and finish entry/borrowing/debt-bearing exit admission, then
+bridge, funded full payoff and debt-free full collateral/debt-residue return.
+Next implement safe collateral release/conversion when repayment cash is insufficient,
+join the complete lifecycle and finish entry/borrowing admission, then
 setup/budget initialization, seven lane bindings and the serialized family queue.
 Refresh setup costs before any installation; the proposed setup-only cap revision
 remains unapproved. The snapshot contains preexisting custody of 214898 raw PYUSD:

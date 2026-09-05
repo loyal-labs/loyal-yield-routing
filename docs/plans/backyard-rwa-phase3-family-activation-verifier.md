@@ -228,7 +228,8 @@ Admission now also prices a complete debt-free collateral return: full Kamino
 withdrawal, NAV, collateral-to-USDC conversion, NAV, staging, NAV, full restoration
 and terminal NAV. The intermediate NAV and actual swap have their own production
 admission paths; they do not inherit permission from a future cost template.
-Entry, borrowing and debt-bearing repayment/conversion admission are still absent.
+At this checkpoint entry, borrowing and debt-bearing admission were absent;
+the funded-payoff extension below supersedes that limitation for its exact shape.
 
 The producer verifies exit policy identities and the report ticket, reuses the
 production quote/parser/compiler, retains the prospective unsigned swap input,
@@ -270,10 +271,45 @@ transfer and rejects the failed partial transfer. This is a controlled-state
 feasibility result, not a live receipt or a guarantee at future execution slots.
 Do not rely on tiny partial repayments or residual-debt retries to finish canaries.
 Interest-through-horizon sizing, a complete funded payoff/release reservation and
-fresh terminal obligation observation remain required before debt-bearing admission.
+fresh terminal obligation observation remain required for debt-bearing admission.
 The sole verifier retains these subclaims in
 `docs/evidence/backyard-rwa-go/phase3/repayment-bounds-2026-09-05.json.gz`;
 all full R01-R08 conditions remain incomplete.
+
+#### Funded-payoff admission — 2026-09-05
+
+The production observer now sizes a complete repayment when the intended full
+payoff is funded. It reads actual reserve accrual basis, timestamp, curve and host
+rate; preserves unrounded debt; and computes an upward-rounded compound upper
+estimate for 60 seconds (seconds-based reserves) or the existing 32-slot window
+(legacy reserves). These are implementation estimation windows, not new money
+limits or an indefinite guarantee. Build and final-send revalidation recompute
+the bound from chain Clock and reject an insufficient persisted wire or changed
+custody. Existing budget/quote freshness and all caps still apply.
+
+The installed SDK 7.3.9 ignores the newer accrual-basis/timestamp fields. The
+[official reserve implementation](https://github.com/Kamino-Finance/klend/blob/master/programs/klend/src/state/reserve.rs)
+and [LastUpdate layout](https://github.com/Kamino-Finance/klend/blob/master/programs/klend/src/state/last_update.rs)
+describe those fields. Captured deployed-program execution independently confirms
+the relevant seconds-based behavior: a 1001-unit repayment consumes 1001 and
+clears debt after a 60-second/32-slot clock advance. Go reproduces the wire and
+checks the estimate against the actual token and obligation poststate.
+
+Funded payoff admission now reserves the maximum repayment and all 11 remaining
+steps: NAV, full collateral withdrawal, NAV, collateral conversion, NAV, maximum
+debt-residue conversion, NAV, staging, NAV, full restoration and NAV. The residue
+estimate uses the minimum possible repayment, avoiding an understated return.
+The actual post-payoff NAV also receives fresh full-return admission; subsequent
+withdrawal/conversions are rebuilt rather than promoted from cost templates.
+Disposable PostgreSQL proves this binds to the existing recovery reservation,
+persists interest/withdrawal/quote evidence, and does not sign or send on rejection.
+
+Latest sole-verifier evidence:
+`docs/evidence/backyard-rwa-go/phase3/funded-payoff-admission-2026-09-05.json.gz`.
+This is not full-lifecycle, live, deployment or all-lane proof. Collateral
+release/conversion when repayment cash is insufficient, entry/borrowing,
+setup/budget initialization and remaining lane/queue implementation still need
+their complete admission and execution proof. No condition or cap is weakened.
 
 ### R02 — exact allowlist and frozen canary queue
 

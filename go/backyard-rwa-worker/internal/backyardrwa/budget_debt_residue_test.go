@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient) {
+func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient) {
 	t.Helper()
 	route := ethenaUSDePYUSD
 	binding, err := catalogJupiterBindingForRoute(SwapDebtToUSDCStep, route.Lane)
@@ -69,7 +69,7 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64) (Observation, 
 	binary.LittleEndian.PutUint64(data[binding.AmountOffset+8:], debtOutput)
 	binary.LittleEndian.PutUint16(data[binding.SlippageOffset:], 50)
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
-	o, d, e, m, rpc, client := withdrawalAdmissionFixture(t, 100_000, extra...)
+	o, d, e, m, rpc, client := withdrawalAdmissionFixture(t, 100_000, append(extra, extraAccounts...)...)
 	o.Snapshot.DebtIdleRaw = 10_000
 	previous := client.http.Transport
 	debtQuote := false

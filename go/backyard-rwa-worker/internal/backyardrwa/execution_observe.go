@@ -240,6 +240,17 @@ func ObserveConfirmedKaminoExecutionEvidence(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
+		fullPayoff := leg == kaminoLegRepay && decision.Action == DeleverRouteStep && decision.AmountRaw > 0 && uint64(decision.AmountRaw) >= position.DebtRaw
+		if fullPayoff {
+			bound, err := decodeKaminoPayoffBound(accounts, route, observation.Snapshot.Slot)
+			if err != nil {
+				return Observation{}, KaminoExecutionEvidence{}, err
+			}
+			wireAmount, effectAmount = bound.UpperDebtRaw, bound.ObservedDebtRaw
+			if observation.Snapshot.DebtIdleRaw < 0 || uint64(observation.Snapshot.DebtIdleRaw) < wireAmount {
+				return Observation{}, KaminoExecutionEvidence{}, budgetHold("full_payoff_cash_insufficient")
+			}
+		}
 		blockhash, err := rpc.LatestBlockhash(ctx)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
@@ -249,6 +260,7 @@ func ObserveConfirmedKaminoExecutionEvidence(
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
 		request.ObligationReserves = []string{}
+		request.FullPayoff = fullPayoff
 		if position.CollateralDepositedRaw > 0 {
 			request.ObligationReserves = append(request.ObligationReserves, route.Kamino.CollateralReserve)
 		}

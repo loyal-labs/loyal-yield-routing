@@ -250,6 +250,7 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	}
 	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
 	if catalogJupiterRoute(route.Lane) {
+		addressSet[budgetClockAddress] = struct{}{}
 		policies, err := catalogRoutePolicyHashes(route, manifest)
 		if err != nil {
 			return nil

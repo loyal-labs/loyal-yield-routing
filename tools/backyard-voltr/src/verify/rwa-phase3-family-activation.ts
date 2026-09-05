@@ -256,8 +256,11 @@ async function localWithdrawalAdmissionObservation(): Promise<Observation> {
     "TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge",
     "TestDebtFreeReturnReservesBothCollateralAndDebtResidue",
     "TestDebtResidueAdmissionContinuesFromNAVThroughActualSwap",
+    "TestFundedPayoffAdmissionReservesCompleteReturnAndPostPayoffNAV",
+    "TestFundedPayoffRejectsInsufficientInterestAndChangedStateBeforeSigner",
+    "TestPayoffBoundUsesAccrualBasisAndUnroundedDebt",
     "TestTickDispatchesKaminoAndReobservesAfterReconciliation",
-  ],"debt-free withdrawal, collateral/debt-residue quotes and complete return admission through production paths");
+  ],"funded full payoff, post-payoff NAV, debt-free withdrawal and complete residue return admission through production paths");
   if(result.data)result.data.proofLevel="CONTROLLED_RPC_QUOTE_AND_POSTSTATE_ACCOUNTING_NOT_EXECUTED_RETURN";
   return result;
 }
@@ -525,10 +528,10 @@ export async function verify() {
       observedCheck(database,"durable budget exists for this goal",d => d.route?.phase3?.goalId === GOAL),
       observedCheck(localCaps,"local production builders reject fresh over-cap costs before signing and reject stale valuation",d=>d.pass===true),
       observedCheck(localBridgeAdmission,"cash-only bridge admission prices staging, full restoration and each required NAV; rejects unsupported exposure and prevents build after HOLD",d=>d.pass===true),
-      observedCheck(localWithdrawalAdmission,"debt-free withdrawal, intermediate NAV, full collateral/debt-residue conversions and aggregate bridge return receive measured admission; outstanding debt and over-cap full returns reject",d=>d.pass===true),
-      observedCheck(localSendJournal,"local journal persists producer-measured bridge and debt-free withdrawal costs, preserves concurrency/restart binding, reprices before send, and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
+      observedCheck(localWithdrawalAdmission,"funded payoff uses actual interest basis and unrounded debt, reserves full withdrawal/residue return and following NAV, and rejects underfunded, changed or over-cap exits",d=>d.pass===true),
+      observedCheck(localSendJournal,"local journal persists bridge, debt-free withdrawal and funded payoff costs, preserves concurrency/restart binding, reprices before send, and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
     ],[
-      "Production admission for entry, borrowing, debt-bearing repayment/conversion graphs, setup and safe one-time budget initialization; debt-free return admission does not cover those shapes.",
+      "Production admission for entry, borrowing, collateral release/conversion to fund repayment, setup and safe one-time budget initialization; funded full-payoff admission does not cover those shapes.",
       "Complete admission/send witnesses beyond local controlled-input build rejection: concurrency, restart, ambiguity, final-send freshness and successful reserved unwind.",
       "Independent reconciliation of deployed spent/reserved accounting, including setup and full-custody restore.",
     ]),
@@ -556,7 +559,7 @@ export async function verify() {
     ]),
     measuredCondition("R04","All-lane positives/negatives and full stateful lifecycle",[
       observedCheck(localCandidateJupiter,"V2 candidates create on cloned Settings and execute two sequential swaps plus fourteen rejecting mutations; current Go matches SDK wires with test-only candidate bindings, not installed authority or a full lifecycle",d=>d.pass===true),
-      observedCheck(localSequentialKamino,"Ethena Go deposit/borrow/repay/withdraw execute sequentially against deployed binaries with captured custody effects, flat terminal obligation and an installed-policy amount rejection",d=>d.pass===true),
+      observedCheck(localSequentialKamino,"Ethena Go lending legs execute sequentially under deployed programs; finite payoff covers a 60-second/32-slot clock advance and current Go reconciles its actual debit, while dust partial repayment rejects",d=>d.pass===true),
       observedCheck(localSequentialJupiter,"Ethena USDC/collateral and collateral/debt Go swaps execute sequentially against deployed binaries with measured debit/min-output and installed-policy rejection before Jupiter CPI",d=>d.pass===true),
     ],[
       "Complete sequential bridge/swap/Kamino/return/NAV lifecycle with signer proof, fee/exit admission and explicit controlled-capacity overrides where required; the four-leg local Kamino probe is only a subclaim.",

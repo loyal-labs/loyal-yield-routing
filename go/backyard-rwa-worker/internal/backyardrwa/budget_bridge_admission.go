@@ -27,6 +27,8 @@ type phase3BridgeAdmission struct {
 	ValidThroughSlot      int64                  `json:"validThroughSlot"`
 	QuotedExit            *phase3QuotedExit      `json:"quotedExit,omitempty"`
 	AdditionalQuotedExits []phase3QuotedExit     `json:"additionalQuotedExits,omitempty"`
+	Payoff                *KaminoPayoffBound     `json:"payoff,omitempty"`
+	PayoffWithdrawal      *phase3BuildInput      `json:"payoffWithdrawal,omitempty"`
 }
 
 type phase3QuotedExit struct {

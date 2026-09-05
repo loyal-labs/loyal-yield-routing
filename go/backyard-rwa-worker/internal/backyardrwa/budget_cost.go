@@ -67,6 +67,9 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 			return ExecutableDebit{}, err
 		}
 		source, _ = kaminoLegCustodiesForRoute(leg, route)
+		if r.FullPayoff && (leg != kaminoLegRepay || effects.Repayment == nil) {
+			return ExecutableDebit{}, budgetHold("invalid_full_payoff_intent")
+		}
 		if effects.Repayment != nil {
 			_, destination := kaminoLegCustodiesForRoute(leg, route)
 			if leg != kaminoLegRepay || effects.Repayment.MaximumDebitRaw != r.AmountRaw ||

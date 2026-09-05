@@ -139,7 +139,7 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
         svm.set_account(address, a).unwrap();
         overrides.push(json!({"address":address.to_string(),"field":if token{"tokenAmount"}else{"lamports"},"before":before,"after":amount,"reason":"local-only funded precondition; no authority, policy or program change"}));
     }
-    let mut protected = vec![];
+    let mut protected = vec![solana_sdk::sysvar::clock::ID];
     for step in plan["steps"].as_array().unwrap() {
         let wire = bytes(step, "wireBase64");
         assert_eq!(sha(&wire), step["wireSha256"]);
@@ -204,8 +204,16 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
             // partial request: it is not a payoff or viable retry-loop proof.
             // Go re-compiles these exact wires
             // and reconciles these captured token transitions in the verifier.
-            for maximum in [1_010u64, 999u64] {
+            for maximum in [1_010u64, 999u64, 1_001u64] {
                 let mut probe_svm = svm.clone();
+                let clock_before = probe_svm.get_sysvar::<Clock>();
+                let mut execution_clock = clock_before.clone();
+                if maximum == 1_001 {
+                    execution_clock.slot += 32;
+                    execution_clock.unix_timestamp += 60;
+                    probe_svm.set_sysvar(&execution_clock);
+                }
+                let probe_before = capture(&probe_svm, &protected);
                 let mut probe_tx = tx.clone();
                 let VersionedMessage::Legacy(ref mut message) = probe_tx.message else {
                     panic!("unexpected probe message version")
@@ -222,8 +230,8 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
                 let wire = bincode::serialize(&probe_tx).unwrap();
                 let (error, meta) = match probe_svm.send_transaction(probe_tx) {
                     Ok(meta) => {
-                        assert_eq!(
-                            maximum, 1_010,
+                        assert!(
+                            maximum == 1_010 || maximum == 1_001,
                             "dust partial repayment unexpectedly succeeded"
                         );
                         (None, meta)
@@ -244,7 +252,14 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
                 };
                 let actual_debit = balances_before.1 - token_amount(&probe_svm, debt_custody);
                 let (remaining_collateral, remaining_debt) = position(&probe_svm, obligation);
-                assert_eq!(actual_debit, if maximum == 1_010 { 1_000 } else { 0 });
+                assert_eq!(
+                    actual_debit,
+                    match maximum {
+                        1_010 => 1_000,
+                        1_001 => 1_001,
+                        _ => 0,
+                    }
+                );
                 assert!(remaining_collateral > 0);
                 assert_eq!(remaining_debt == 0, maximum >= 1_000);
                 if maximum == 999 {
@@ -265,7 +280,9 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
                 );
                 repayment_probes.push(json!({"maximumDebitRaw":maximum,"actualDebitRaw":actual_debit,
                     "wireBase64":STANDARD.encode(&wire),"wireSha256":sha(&wire),
-                    "before":before,"after":capture(&probe_svm,&protected),"logs":meta.logs,"error":error,
+                    "before":probe_before,"after":capture(&probe_svm,&protected),"logs":meta.logs,"error":error,
+                    "clockBefore":{"slot":clock_before.slot,"unixTimestamp":clock_before.unix_timestamp},
+                    "executionClock":{"slot":execution_clock.slot,"unixTimestamp":execution_clock.unix_timestamp},
                     "computeUnits":meta.compute_units_consumed,"borrowedSF":remaining_debt.to_string(),
                     "obligationDebtZero":remaining_debt==0,"mutation":"finite repayment amount only; recompiled by current Go verifier"}));
             }
@@ -315,7 +332,7 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
       "proofLevel":"CONTROLLED_PROGRAM_EXECUTION_NOT_FULL_R04_LIFECYCLE","slot":snapshot["slot"],"clockSlot":svm.get_sysvar::<Clock>().slot,"programs":snapshot["programs"],
       "planSha256":sha(&fs::read(directory.join("plan.json")).unwrap()),"snapshotSha256":sha(&fs::read(directory.join("snapshot.json")).unwrap()),
       "overrides":overrides,"negative":negative_evidence,"steps":results,"fourKaminoLegsPassed":pass && results.len()==4,
-      "boundedRepaymentProbes":repayment_probes,"boundedRepaymentProofPassed":repayment_probes.len()==2});
+      "boundedRepaymentProbes":repayment_probes,"boundedRepaymentProofPassed":repayment_probes.len()==3});
     let result_name =
         std::env::var("PHASE3_KAMINO_PROBE_RESULT").unwrap_or_else(|_| "result.json".into());
     assert!(!result_name.contains('/') && result_name.ends_with(".json"));

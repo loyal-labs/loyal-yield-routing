@@ -57,10 +57,14 @@ func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 			Error                              *string
 			ObligationDebtZero                 bool
 			Before, After                      []capturedAccount
+			ClockBefore, ExecutionClock        struct {
+				Slot          uint64
+				UnixTimestamp int64
+			}
 		}
 	}
 	read(resultName, &result)
-	if !result.BoundedRepaymentProofPassed || len(result.BoundedRepaymentProbes) != 2 {
+	if !result.BoundedRepaymentProofPassed || len(result.BoundedRepaymentProbes) != 3 {
 		t.Fatal("complete real-program repayment witnesses missing")
 	}
 	decodeAccounts := func(captured []capturedAccount) []ConfirmedAccount {
@@ -81,8 +85,11 @@ func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 	route := ethenaUSDePYUSD
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
 	for i, probe := range result.BoundedRepaymentProbes {
-		maximum := []uint64{1_010, 999}[i]
+		maximum := []uint64{1_010, 999, 1_001}[i]
 		actual := uint64(1_000)
+		if maximum == 1_001 {
+			actual = 1_001
+		}
 		if maximum == 999 {
 			actual = 0
 			if probe.Error == nil || *probe.Error != "InstructionError(3, Custom(6092))" {
@@ -95,6 +102,21 @@ func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 			t.Fatal("unexpected actual repayment or payoff result", maximum)
 		}
 		before, after := decodeAccounts(probe.Before), decodeAccounts(probe.After)
+		if maximum == 1_001 {
+			clock := accountAt(before, budgetClockAddress)
+			if probe.ExecutionClock.UnixTimestamp-probe.ClockBefore.UnixTimestamp != kaminoPayoffWindowSeconds ||
+				probe.ExecutionClock.Slot-probe.ClockBefore.Slot != uint64(budgetMaxObservationLagSlots) {
+				t.Fatal("missing real execution-horizon clock advance")
+			}
+			// Price at the original clock against the post-borrow reserve, then
+			// prove that maximum fully repaid at the future execution clock.
+			binary.LittleEndian.PutUint64(clock.Data[:8], probe.ClockBefore.Slot)
+			binary.LittleEndian.PutUint64(clock.Data[32:40], uint64(probe.ClockBefore.UnixTimestamp))
+			bound, err := decodeKaminoPayoffBound(before, route, result.Slot)
+			if err != nil || bound.InterestBasis != 1 || bound.UpperDebtRaw != maximum || bound.ThroughUnix != probe.ExecutionClock.UnixTimestamp {
+				t.Fatal("payoff bound does not cover executed seconds-based interest", bound, err)
+			}
+		}
 		beforeObligation, err := decodeKaminoObligation(accountAt(before, route.Kamino.Obligation), route.Kamino)
 		if err != nil || beforeObligation.debtRaw != 1_000 {
 			t.Fatal("witness did not start from the real borrow poststate", beforeObligation.debtRaw, err)

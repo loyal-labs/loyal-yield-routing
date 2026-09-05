@@ -36,6 +36,9 @@ type KaminoPrimeUSDCRequest struct {
 	RecentBlockhash         string
 	LastValidBlockHeight    int64
 	RouteLane               string
+	// FullPayoff requires a fresh finite interest-window bound at build/send.
+	// It changes no instruction bytes and never asserts terminal debt by itself.
+	FullPayoff bool `json:"fullPayoff,omitempty"`
 	// ObligationReserves is the exact confirmed deposit-then-borrow reserve
 	// sequence currently present in the obligation. RefreshObligation requires
 	// this live topology; deriving it from the mutation leg breaks re-deposits.
