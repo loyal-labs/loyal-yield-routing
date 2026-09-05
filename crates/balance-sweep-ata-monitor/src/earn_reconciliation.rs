@@ -16,6 +16,7 @@ use anyhow::{bail, Context, Result};
 use chrono::{Duration as ChronoDuration, Utc};
 use helius_laserstream::grpc::SubscribeUpdateTransactionInfo;
 use klend_interface::{
+    discriminators::WITHDRAW_OBLIGATION_COLLATERAL_AND_REDEEM_RESERVE_COLLATERAL_V2,
     from_account_data,
     state::{Obligation, Reserve},
     KLEND_PROGRAM_ID,
@@ -1129,9 +1130,10 @@ fn resolve_rpc_mutation(
         return Ok(EarnDirectMutation::Noop);
     };
     if cash_flow.kind == CashFlowKind::Refund {
+        let proof = read_cleanup_proof(rpc, vault, update.slot)?;
         return Ok(EarnDirectMutation::Refund(EarnRefundMutation {
             cluster: vault.environment.clone(),
-            full_cleanup: false,
+            full_cleanup: proof.balances_zero && proof.policies_closed,
             settings: vault.settings.clone(),
             vault_index: vault.vault_index,
             vault_pubkey: vault.vault.clone(),
@@ -1716,6 +1718,175 @@ fn transaction_owner_lamport_credit(transaction: &Value, owner: &str) -> Result<
     Ok(post.saturating_add(fee).saturating_sub(pre))
 }
 
+fn transaction_instructions(transaction: &Value) -> Vec<&Value> {
+    let mut instructions = transaction
+        .pointer("/transaction/message/instructions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    instructions.extend(
+        transaction
+            .pointer("/meta/innerInstructions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|group| group.get("instructions").and_then(Value::as_array))
+            .flatten(),
+    );
+    instructions
+}
+
+fn read_drained_obligation_withdraw_target(
+    rpc: &RpcClient,
+    update: &NormalizedEarnUpdate,
+    vault: &EarnVaultWatch,
+    route_policy: &PolicyMatchInput,
+    transaction: &Value,
+    liquidity_mint: &str,
+) -> Result<Option<EarnReserveMutation>> {
+    let vault_pubkey = Pubkey::from_str(&vault.vault)?;
+    let watched_obligations = vault
+        .accounts
+        .iter()
+        .filter(|binding| binding.role == "obligation")
+        .map(|binding| Pubkey::from_str(&binding.pubkey))
+        .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+    if watched_obligations.is_empty() {
+        return Ok(None);
+    }
+    let expected_program = KLEND_PROGRAM_ID.to_string();
+    let mut candidates = BTreeSet::new();
+    for instruction in transaction_instructions(transaction) {
+        if instruction.get("programId").and_then(Value::as_str) != Some(expected_program.as_str()) {
+            continue;
+        }
+        let Some(data) = instruction.get("data").and_then(Value::as_str) else {
+            continue;
+        };
+        let data = bs58::decode(data)
+            .into_vec()
+            .context("decode Kamino transaction instruction")?;
+        if !data.starts_with(&WITHDRAW_OBLIGATION_COLLATERAL_AND_REDEEM_RESERVE_COLLATERAL_V2) {
+            continue;
+        }
+        let accounts = instruction
+            .get("accounts")
+            .and_then(Value::as_array)
+            .context("Kamino withdrawal instruction has no accounts")?;
+        if accounts.len() < 6 {
+            bail!("Kamino withdrawal instruction has too few accounts");
+        }
+        let account = |index: usize, label: &str| -> Result<Pubkey> {
+            Pubkey::from_str(
+                accounts[index]
+                    .as_str()
+                    .with_context(|| format!("Kamino withdrawal {label} is not a public key"))?,
+            )
+            .with_context(|| format!("invalid Kamino withdrawal {label}"))
+        };
+        let obligation = account(1, "obligation")?;
+        let instruction_mint = account(5, "liquidity mint")?;
+        if account(0, "owner")? != vault_pubkey
+            || !watched_obligations.contains(&obligation)
+            || instruction_mint.to_string() != liquidity_mint
+        {
+            continue;
+        }
+        candidates.insert((
+            obligation,
+            account(4, "reserve")?,
+            account(2, "market")?,
+            instruction_mint,
+        ));
+    }
+    let mut candidates = candidates.into_iter();
+    let Some((obligation, reserve_address, instruction_market, instruction_mint)) =
+        candidates.next()
+    else {
+        return Ok(None);
+    };
+    if candidates.next().is_some() {
+        bail!("closed Earn obligation transaction has more than one withdrawal target");
+    }
+    if !route_policy
+        .kamino_markets
+        .iter()
+        .any(|market| market == &instruction_market.to_string())
+        || !route_policy
+            .kamino_liquidity_mints
+            .iter()
+            .any(|mint| mint == liquidity_mint)
+    {
+        bail!("closed Earn obligation withdrawal target is outside the route policy");
+    }
+    let response = rpc.get_multiple_accounts_with_config(
+        &[obligation, reserve_address],
+        earn_snapshot_config(update.slot),
+    )?;
+    if response.context.slot < update.slot {
+        bail!(
+            "full-withdraw reserve context slot {} is below minimum {}",
+            response.context.slot,
+            update.slot
+        );
+    }
+    let [obligation_account, reserve_account] = response.value.as_slice() else {
+        bail!("full-withdraw proof did not return the obligation and reserve");
+    };
+    if let Some(account) = obligation_account {
+        if account.owner != KLEND_PROGRAM_ID {
+            bail!(
+                "full-withdraw obligation {obligation} has unexpected owner {}",
+                account.owner
+            );
+        }
+        let obligation_state = from_account_data::<Obligation>(&account.data)
+            .context("decode full-withdraw Kamino obligation")?;
+        if obligation_state.owner != vault_pubkey
+            || obligation_state
+                .deposits
+                .iter()
+                .any(|deposit| deposit.deposited_amount > 0)
+            || obligation_state
+                .borrows
+                .iter()
+                .any(|borrow| borrow.borrow_reserve != Pubkey::default())
+        {
+            bail!("full-withdraw obligation {obligation} still has an open position");
+        }
+    }
+    let account = reserve_account
+        .as_ref()
+        .context("full-withdraw reserve account is unavailable")?;
+    if account.owner != KLEND_PROGRAM_ID {
+        bail!(
+            "full-withdraw reserve {reserve_address} has unexpected owner {}",
+            account.owner
+        );
+    }
+    let reserve = from_account_data::<Reserve>(&account.data)
+        .context("decode full-withdraw Kamino reserve")?;
+    if reserve.lending_market != instruction_market
+        || reserve.liquidity.mint_pubkey != instruction_mint
+    {
+        bail!("full-withdraw reserve state does not match its transaction accounts");
+    }
+    Ok(Some(EarnReserveMutation {
+        reserve: reserve_address.to_string(),
+        market: Some(instruction_market.to_string()),
+        liquidity_mint: instruction_mint.to_string(),
+        amount_raw: 0,
+        has_value: false,
+        supply_apy_bps: None,
+        borrow_apy_bps: None,
+        planning_metadata: json!({
+            "kind": "earn_laserstream_drained_obligation_withdrawal",
+            "slot": response.context.slot,
+        }),
+    }))
+}
+
 fn read_cash_flow_proof(
     rpc: &RpcClient,
     update: &NormalizedEarnUpdate,
@@ -1731,10 +1902,30 @@ fn read_cash_flow_proof(
         .context("cash-flow update is missing its transaction signature")?;
     let snapshot = read_complete_vault_snapshot(rpc, vault, &route_policy, update.slot)?;
     let transaction_accounts = transaction_accounts(&transaction);
-    let target = snapshot.reserve_state.iter().find(|reserve| {
-        reserve.liquidity_mint == cash_flow.mint && transaction_accounts.contains(&reserve.reserve)
-    });
+    let target = snapshot
+        .reserve_state
+        .iter()
+        .find(|reserve| {
+            reserve.liquidity_mint == cash_flow.mint
+                && transaction_accounts.contains(&reserve.reserve)
+        })
+        .cloned();
+    let target = match (target, cash_flow.kind) {
+        (Some(target), _) => Some(target),
+        (None, CashFlowKind::Withdrawal) => read_drained_obligation_withdraw_target(
+            rpc,
+            update,
+            vault,
+            &route_policy,
+            &transaction,
+            &cash_flow.mint,
+        )?,
+        (None, _) => None,
+    };
     let Some(target) = target else {
+        if cash_flow.kind == CashFlowKind::Withdrawal {
+            bail!("withdrawal cash flow {signature} has no provable Kamino target");
+        }
         return Ok(EarnDirectMutation::Noop);
     };
     let remaining_amount_raw = snapshot
