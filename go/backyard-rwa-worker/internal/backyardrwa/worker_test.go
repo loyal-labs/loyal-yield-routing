@@ -86,17 +86,28 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 			}
 			return nil
 		},
+		admitBridge: func(_ context.Context, id string, got Observation, d Decision, _ BridgeExecutionEvidence) error {
+			order = append(order, "admit")
+			if id != "operation" || got != observation || d != decision {
+				t.Fatal("admission lost the recorded decision")
+			}
+			return nil
+		},
 	}}
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "prepare,record,build" {
+	if got := strings.Join(order, ","); got != "prepare,record,admit,build" {
 		t.Fatalf("decision was not persisted before build: %s", got)
 	}
 	// The same real dispatch path must preserve a typed admission rejection,
 	// not turn it into generic restart recovery or a successful build.
 	rejected := &BudgetHold{Reason: "transaction_cap_exceeded"}
-	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error { return rejected }
+	worker.runtime.admitBridge = func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return rejected }
+	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error {
+		t.Fatal("admission rejection reached construction/signing")
+		return nil
+	}
 	journaled := false
 	worker.runtime.recordBudgetHold = func(_ context.Context, id string, hold *BudgetHold) error {
 		if id != "operation" || hold != rejected {
@@ -409,6 +420,7 @@ func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 			cancel()
 			return nil
 		},
+		admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return nil },
 	}}
 	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
 	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("f", 40), config)

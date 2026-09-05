@@ -117,6 +117,14 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 		return ValuedTransactionCost{}, budgetHold("persisted_signature_or_expiry_mismatch")
 	}
 	cost, err := observePhase3KnownBuildCost(ctx, rpc, request, effects)
+	if err == nil && auth.BridgeAdmission != nil {
+		// Fresh principal pricing cannot extend the earlier complete exit
+		// estimate. The locked send fence checks this reduced window again.
+		cost.ValidThroughSlot = min(cost.ValidThroughSlot, auth.BridgeAdmission.ValidThroughSlot)
+		if cost.ObservationSlot < auth.BridgeAdmission.CurrentCost.ObservationSlot || cost.ObservationSlot > cost.ValidThroughSlot {
+			err = budgetHold("send_valuation_expired")
+		}
+	}
 	var hold *BudgetHold
 	if errors.As(err, &hold) {
 		return cost, &validatedSignedBudgetHold{hold}

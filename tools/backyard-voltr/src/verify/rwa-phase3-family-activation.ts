@@ -131,6 +131,16 @@ async function localSendJournalObservation(): Promise<Observation> {
   if (result.data) result.data.proofLevel="LOCAL_DATABASE_AND_CONTROLLED_RPC_UNSIGNED_FIXTURE_NO_SIGNER_OR_SEND";
   return result;
 }
+async function localBridgeAdmissionObservation(): Promise<Observation> {
+  const result=await localCapObservation([
+    "TestBridgeAdmissionMeasuresCompleteCashReturnWithoutSigner",
+    "TestBridgeAdmissionRejectsUnpricedExposureAndFullSweepCap",
+    "TestBridgeAdmissionReturnGraphConsumesReservedBudget",
+    "TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction",
+  ],"production bridge admission, cash-only return pricing and worker rejection ordering");
+  if(result.data)result.data.proofLevel="LOCAL_CONTROLLED_RPC_BRIDGE_RETURN_ACCOUNTING_NOT_EXECUTED_LIFECYCLE";
+  return result;
+}
 async function localKaminoConstructionObservation(): Promise<Observation> {
   const result=await localCapObservation(["TestCatalogKaminoConstructionMatchesRetainedAUTOAndEthena"],
     "AUTO/Ethena unsigned Kamino construction against retained SDK account vectors");
@@ -373,8 +383,8 @@ export async function verify() {
   const catalogLanes = catalog.lanes.map((l: Json) => [l.market,l.collateral,l.debt].join("/"));
   const active = manifest.runtimeActivation?.runtimeRoutes ?? [];
   const offline = process.argv.includes("--offline");
-  const [runtime,localCaps,localSendJournal,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino] = await Promise.all([
-    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localKaminoConstructionObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation()]);
+  const [runtime,localCaps,localSendJournal,localBridgeAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino] = await Promise.all([
+    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localBridgeAdmissionObservation(),localKaminoConstructionObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation()]);
   const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
   const [chain,database,deployment,setupRent] = offline
     ? ["Solana RPC","Postgres","Render","setup rent feasibility"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
@@ -386,9 +396,10 @@ export async function verify() {
         JSON.stringify(d.capsMicros) === JSON.stringify([1_000_000,20_000_000,60_000_000])),
       observedCheck(database,"durable budget exists for this goal",d => d.route?.phase3?.goalId === GOAL),
       observedCheck(localCaps,"local production builders reject fresh over-cap costs before signing and reject stale valuation",d=>d.pass===true),
-      observedCheck(localSendJournal,"local journal reprices persisted input before broadcast intent and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
+      observedCheck(localBridgeAdmission,"cash-only bridge admission prices staging, full restoration and each required NAV; rejects unsupported exposure and prevents build after HOLD",d=>d.pass===true),
+      observedCheck(localSendJournal,"local journal atomically persists producer-measured bridge admission across concurrency/restart, reprices before send, and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
     ],[
-      "Production-created admission from exact executable costs and complete exit graph; not direct test-only ReservePhase3 calls.",
+      "Production admission for position/swap/setup graphs and safe one-time budget initialization; cash-only bridge admission does not cover those shapes.",
       "Complete admission/send witnesses beyond local controlled-input build rejection: concurrency, restart, ambiguity, final-send freshness and successful reserved unwind.",
       "Independent reconciliation of deployed spent/reserved accounting, including setup and full-custody restore.",
     ]),
@@ -452,7 +463,7 @@ export async function verify() {
     // Existing policy allocations are a diagnostic sample, not a fabricated
     // pass/fail for the complete proposed setup graph. Retain prices, hashes,
     // rent and the explicit new-allocation proof limitation in the snapshot.
-    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino},
+    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localBridgeAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino},
     conditions,
   };
 }

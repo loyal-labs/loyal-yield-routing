@@ -201,6 +201,27 @@ admission, ambiguous submission, actual sweep versus request, and successful
 reserved-budget unwind. Drive the production admission/send path; show zero
 signing/sending on rejection and reservation binding on accepted wires.
 
+#### Local bridge-admission checkpoint — 2026-09-04
+
+The production worker now derives a cash-only bridge return estimate from its
+confirmed construction snapshot: after the proposed action, include staging,
+full strategy-custody restoration and a separate NAV report after every capital
+mutation. Price exact compiled messages and underlying debits using fresh RPC
+fees and the existing conservative token/SOL valuation. Future reports are cost
+templates, not reusable signable instructions; each actual leg must be rebuilt
+from fresh poststate. The exit estimate's freshness also bounds build/send.
+
+Admission persists the measured graph, immutable current build input and both
+budget sides atomically under the existing journal lease. Missing goal state
+remains HOLD, not initialization. Existing startup signer validation, per-build
+signer validation, caps, wire binding and final-send checks remain in place.
+
+This covers selected-lane zero-collateral/zero-debt bridge custody only. It is
+not position/swap/setup admission, global flat-queue proof, deployed governor
+proof or live recovery. The sole verifier measures these local subclaims without
+promoting R01 to PASS; full position exits, safe one-time budget initialization,
+all-lane proof and deployment/canaries remain required.
+
 ### R02 — exact allowlist and frozen canary queue
 
 Resolve the exact 11 scope tuples against authoritative identities; reject

@@ -75,6 +75,22 @@ func ObserveConfirmedBridgeExecutionEvidence(
 			return Observation{}, BridgeExecutionEvidence{}, err
 		}
 		ticketRequired := decision.Action != StageSquadsToVoltr
+		if phase3BudgetFamilyForLane(route.Lane) != "" {
+			// Reserve the entire bridge exit, including a report after staging.
+			// Every required policy and the existing ticket must be present in
+			// this same confirmed snapshot; admission cannot authorize setup.
+			ticketRequired = true
+			for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
+				address, hash, err := manifest.bridgePolicy(action)
+				if err != nil {
+					return Observation{}, BridgeExecutionEvidence{}, err
+				}
+				account := accountAt(accounts, address)
+				if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+					return Observation{}, BridgeExecutionEvidence{}, budgetHold("bridge_exit_policy_unavailable")
+				}
+			}
+		}
 		policyAccount := accountAt(accounts, policy)
 		if policyAccount.Owner != bridgeSquadsProgram || policyAccount.Executable ||
 			policyAccount.Lamports == 0 || sha256Bytes(policyAccount.Data) != policyHash {

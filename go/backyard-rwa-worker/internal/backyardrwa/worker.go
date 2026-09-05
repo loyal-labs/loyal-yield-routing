@@ -36,6 +36,7 @@ type tickRuntime struct {
 	prepareKamino    func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
 	prepareJupiter   func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
 	recordDecision   func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
+	admitBridge      func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error
 	buildBridge      func(context.Context, string, BridgeExecutionEvidence) error
 	buildKamino      func(context.Context, string, KaminoExecutionEvidence) error
 	buildJupiter     func(context.Context, string, JupiterExecutionEvidence) error
@@ -78,6 +79,9 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		},
 		recordDecision:   database.RecordDecision,
 		recordBudgetHold: database.RecordPhase3BudgetHold,
+		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+			return database.admitPhase3Bridge(ctx, rpc, operationID, observation, decision, evidence)
+		},
 		buildBridge: func(ctx context.Context, operationID string, evidence BridgeExecutionEvidence) error {
 			return BuildSimulateAndPersistBridge(ctx, database, rpc, operationID, evidence)
 		},
@@ -193,7 +197,14 @@ func (w *Worker) Tick(ctx context.Context) error {
 	}
 	switch executionDecision {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		err = w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
+		if w.runtime.admitBridge == nil {
+			err = budgetHold("bridge_admission_unavailable")
+		} else {
+			err = w.runtime.admitBridge(ctx, record.OperationID, observation, decision, bridgeEvidence)
+			if err == nil {
+				err = w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
+			}
+		}
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
 		err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:

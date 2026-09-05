@@ -17,6 +17,7 @@ type phase3OperationAuthorization struct {
 	BookedSpentMicros   int64                  `json:"bookedSpentMicros,omitempty"`
 	BuildInput          *phase3BuildInput      `json:"buildInput,omitempty"`
 	SendKnownCost       *ValuedTransactionCost `json:"sendKnownCost,omitempty"`
+	BridgeAdmission     *phase3BridgeAdmission `json:"bridgeAdmission,omitempty"`
 }
 
 // Preserve an admission failure before restart recovery can replace it with a
@@ -216,6 +217,88 @@ func (d *Database) ReservePhase3(ctx context.Context, r BudgetReservation) error
 	return tx.Commit(ctx)
 }
 
+// Production bridge admission adds a measured reservation; it does not replace
+// authorizePhase3Build, the pinned signer check, or the final-send cost fence.
+// Existing caps, goal identity and missing-budget HOLD remain unchanged.
+func (d *Database) admitPhase3Bridge(ctx context.Context, rpc *RPCClient, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+	plan, err := observePhase3BridgeAdmission(ctx, rpc, observation, decision, evidence)
+	if err != nil {
+		return err
+	}
+	if d == nil || d.pool == nil {
+		return budgetHold("bridge_admission_database_unavailable")
+	}
+	intent, err := Phase3IntentDigest(evidence.Request, plan.Input.Effects)
+	if err != nil {
+		return err
+	}
+	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
+	if err != nil {
+		return err
+	}
+	var status, lane, action string
+	var decisionBytes []byte
+	if err = tx.QueryRow(ctx, `SELECT status,COALESCE(strategy_key,''),COALESCE(action,''),expected_effects->'decision' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&status, &lane, &action, &decisionBytes); err != nil {
+		return err
+	}
+	var recorded decisionEvidence
+	if json.Unmarshal(decisionBytes, &recorded) != nil || status != string(Decided) || lane != decision.StrategyKey || action != string(decision.Action) ||
+		recorded.StrategyKey != lane || recorded.AmountRaw != decision.AmountRaw || recorded.Reason != decision.Reason ||
+		recorded.ObservationID != observation.Snapshot.ObservationID || recorded.ObservationSlot > observation.Snapshot.Slot || recorded.ObservationSlot <= 0 {
+		return budgetHold("bridge_admission_journal_mismatch")
+	}
+	// Recheck time after acquiring the existing route lock. Contention cannot
+	// promote an expired observation into a fresh authorization.
+	slot, err := rpc.ConfirmedSlot(ctx)
+	if err != nil {
+		return err
+	}
+	if slot < plan.CurrentCost.ObservationSlot || slot > plan.ValidThroughSlot {
+		return budgetHold("stale_bridge_admission_snapshot")
+	}
+	if auth.GoalID != "" {
+		// Retry preserves all prior authorization and wire identity.
+		if auth.GoalID != Phase3GoalID || auth.IntentSHA256 != intent || auth.BridgeAdmission == nil || auth.ReservationReleased {
+			return budgetHold("reservation_identity_mismatch")
+		}
+		if err = budget.AuthorizeIntent(operationID, intent); err != nil {
+			return err
+		}
+		reserved := budget.Reservations[operationID]
+		if plan.CurrentCost.TotalMicros > reserved.UpperMicros || plan.ExitAfterMicros > reserved.ExitAfterMicros {
+			return budgetHold("fresh_bridge_cost_exceeds_reservation")
+		}
+		return tx.Commit(ctx)
+	}
+	family := phase3BudgetFamilyForLane(lane)
+	for other, row := range budget.Families {
+		if other != family && row.ExitMicros != 0 {
+			return budgetHold("another_family_has_reserved_exit")
+		}
+	}
+	recovery := decision.Action != VoltrAllocateToSquads
+	// An already-flat maintenance report is fee spend. Staging/restoration
+	// cannot adopt unreserved capital through this exception.
+	if decision.Action == ReportNAV && budget.Families[family].ExitMicros == 0 && len(plan.Exit) == 0 {
+		recovery = false
+	}
+	r := BudgetReservation{OperationID: operationID, Family: family, IntentSHA256: intent,
+		UpperMicros: plan.CurrentCost.TotalMicros, ExitAfterMicros: plan.ExitAfterMicros, Recovery: recovery}
+	if err = budget.Admit(r); err != nil {
+		return err
+	}
+	auth = phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: intent, BuildInput: plan.Input, BridgeAdmission: &plan}
+	if err = d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // Called only after the production cost observation, before signer access.
 // A fresh known debit cannot inherit a smaller durable reservation.
 func (d *Database) authorizePhase3Build(ctx context.Context, operationID string, request any, effects []byte, knownCost ValuedTransactionCost) error {
@@ -242,6 +325,9 @@ func (d *Database) authorizePhase3Build(ctx context.Context, operationID string,
 		return err
 	}
 	reservation := budget.Reservations[operationID]
+	if auth.BridgeAdmission != nil && (knownCost.ObservationSlot < auth.BridgeAdmission.CurrentCost.ObservationSlot || knownCost.ObservationSlot > auth.BridgeAdmission.ValidThroughSlot) {
+		return budgetHold("stale_bridge_admission_snapshot")
+	}
 	if knownCost.TotalMicros <= 0 || knownCost.TotalMicros > reservation.UpperMicros {
 		return &BudgetHold{Reason: "fresh_build_cost_exceeds_reservation", Details: map[string]string{
 			"knownCostMicros":     strconv.FormatInt(knownCost.TotalMicros, 10),

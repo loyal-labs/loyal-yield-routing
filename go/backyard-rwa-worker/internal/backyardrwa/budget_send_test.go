@@ -60,6 +60,17 @@ func TestPersistedSendInputRevaluesWithoutRebuildingWire(t *testing.T) {
 	if !errors.As(err, &validated) {
 		t.Fatal("valid expired wire cannot use proven-absence recovery")
 	}
+	auth.BridgeAdmission = &phase3BridgeAdmission{CurrentCost: ValuedTransactionCost{ObservationSlot: 40}, ValidThroughSlot: 43}
+	cost, err = revaluePhase3SignedInput(context.Background(), budgetBuildRPC(t, 5_000, 42), auth, operation)
+	if err != nil || cost.ValidThroughSlot != 43 {
+		t.Fatal("fresh principal valuation extended the exit estimate", err)
+	}
+	auth.BridgeAdmission.ValidThroughSlot = 41
+	_, err = revaluePhase3SignedInput(context.Background(), budgetBuildRPC(t, 5_000, 42), auth, operation)
+	assertBudgetHold(t, err, "send_valuation_expired")
+	if !errors.As(err, &validated) {
+		t.Fatal("expired exit estimate lost signed absence-recovery path")
+	}
 }
 
 func TestPersistedSendInputRejectsIdentityDriftBeforeRPC(t *testing.T) {
