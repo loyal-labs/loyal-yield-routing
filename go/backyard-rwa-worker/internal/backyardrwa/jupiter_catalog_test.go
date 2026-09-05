@@ -189,10 +189,18 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 					if err != nil || !bytesEqual(message, raw) {
 						t.Fatal("fitting packet rejected", err)
 					}
-				} else if err == nil {
-					t.Fatal("oversized legacy packet accepted")
+				} else {
+					if err == nil {
+						t.Fatal("oversized legacy packet accepted")
+					}
+					request.LookupTables = retainedJupiterLookups(t)
+					message, err = CompileJupiterMessage(request)
+					if err != nil || message[0] != 0x80 {
+						t.Fatal("retained exit does not fit with reviewed lookups", err)
+					}
+					assertV0SDKParity(t, mustKey(bridgeDelegate), mustKey(bridgeVault), []compiledInstruction{outer}, request.LookupTables, message)
 				}
-				packetEvidence, _ := json.Marshal(map[string]any{"lane": lane, "edge": key, "packetBytes": len(raw) + 65, "fits": len(raw)+65 <= solanaPacketBytes})
+				packetEvidence, _ := json.Marshal(map[string]any{"lane": lane, "edge": key, "packetBytes": len(message) + 65, "legacyPacketBytes": len(raw) + 65, "fits": len(message)+65 <= solanaPacketBytes})
 				t.Logf("PHASE3_JUPITER_PACKET %s", packetEvidence)
 				for index := range pinned {
 					for _, field := range []string{"key", "signer", "writable"} {

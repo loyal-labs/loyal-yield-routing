@@ -67,6 +67,7 @@ type JupiterSwapRequest struct {
 	RecentBlockhash         string
 	LastValidBlockHeight    int64
 	RouteLane               string
+	LookupTables            []LookupTableSnapshot `json:",omitempty"`
 }
 
 type JupiterExecutionEvidence struct {
@@ -396,7 +397,15 @@ func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publi
 	if err != nil {
 		return nil, err
 	}
-	message, err := compileLegacyMessage(delegate, blockhash, []compiledInstruction{outer})
+	if err := validateJupiterLookupIdentities(request); err != nil {
+		return nil, err
+	}
+	var message []byte
+	if len(request.LookupTables) > 0 {
+		message, err = compileV0Message(delegate, blockhash, []compiledInstruction{outer}, request.LookupTables)
+	} else {
+		message, err = compileLegacyMessage(delegate, blockhash, []compiledInstruction{outer})
+	}
 	if err != nil {
 		return nil, err
 	}

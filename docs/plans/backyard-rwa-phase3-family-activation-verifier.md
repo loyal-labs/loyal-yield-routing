@@ -256,14 +256,20 @@ The disposable journal witness also checks NAV/manual-recovery handling for
 debt conversions. Neither observation establishes Jupiter dispatch, executable
 exit-cost admission, real-program state transitions or deployed support.
 
-Jupiter integration checkpoint: ten unique AUTO/Ethena conversion samples now
-exercise installed edge-specific layouts, controlled API responses, identity
-mutations and worker dispatch. The verifier separately measures the compiled
-Squads legacy packet envelope. Nine fit; retained USDe -> PYUSD is 1,399 bytes
-and is rejected above 1,232. Layout/dispatch success cannot conceal this failed
-exit-packet measurement. Lookup-table-backed construction or a fresh compatible
-route, actual execution and complete exit admission remain required; no limits
-or acceptance conditions change.
+Jupiter integration checkpoint: all ten unique AUTO/Ethena conversion samples
+(twelve lane/edge pairs) now fit the actual Squads packet envelope. The retained
+USDe -> PYUSD exit failed at 1,399 legacy bytes; v0 construction using its two
+existing lookup tables reduces it to 756 bytes, byte-identical to the installed
+Solana SDK. Public table accounts were read at finalized slot 444423409 and
+retained in `docs/evidence/backyard-rwa-go/phase3/jupiter-lookup-accounts-2026-09-04.json`.
+Runtime preparation fetches tables afresh; the common pre-signer/final-send
+valuation path rejects inactive, immature, wrong-owner or changed-prefix tables.
+An extension can pass only with the persisted prefix intact; it cannot rebuild
+or alter a signed wire. Controlled RPC negatives and deterministic local signing
+prove these local boundaries, not mainnet execution. Legacy intents retain their
+JSON shape. Actual program execution, complete exit-cost admission, seven missing
+runtime lane bindings and deployment remain unfinished; no caps or acceptance
+conditions change.
 
 ### R04 — batched lane proof with explicit simulation boundaries
 

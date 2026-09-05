@@ -87,10 +87,11 @@ export function catalogJupiterPacketProof(output:string) {
     .filter(e=>e.Action==="output"&&typeof e.Test==="string"&&e.Test.startsWith("TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations/")&&typeof e.Output==="string"&&e.Output.includes("PHASE3_JUPITER_PACKET "))
     .map(e=>JSON.parse(e.Output.slice(e.Output.indexOf("PHASE3_JUPITER_PACKET ")+"PHASE3_JUPITER_PACKET ".length).trim()) as Json);
   const complete=exactSet(rows.map(r=>r.lane+"|"+r.edge),expected)&&rows.every(r=>Number.isSafeInteger(r.packetBytes)&&r.packetBytes>65&&r.fits===(r.packetBytes<=1232));
-  return {complete,allFit:complete&&rows.every(r=>r.fits),rows,proofLevel:"LOCAL_UNSIGNED_SQUADS_LEGACY_PACKET_SAMPLES"};
+  return {complete,allFit:complete&&rows.every(r=>r.fits),rows,proofLevel:"LOCAL_UNSIGNED_SQUADS_LEGACY_OR_VALIDATED_V0_PACKET_SAMPLES"};
 }
 async function localJupiterObservation(): Promise<Observation> {
-  const result=await localCapObservation(["TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations","TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity"],
+  const result=await localCapObservation(["TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations","TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity",
+    "TestVersionedMessageMatchesSDKAndRejectsInvalidLookupAccounts","TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts"],
     "AUTO/Ethena installed Jupiter layouts, controlled client/dispatch and packet measurements",true);
   if(result.data)result.data.proofLevel="LOCAL_CONSTRUCTION_CONTROLLED_API_AND_DISPATCH_NOT_PROGRAM_EXECUTION";
   return result;
@@ -330,6 +331,7 @@ function sourceIdentity() {
     "docs/evidence/backyard-rwa-go/phase3/setup-feasibility-2026-09-04.json",
     "docs/evidence/backyard-rwa-go/policy-compiled-v1.json","docs/evidence/backyard-rwa-go/policy-install-readback-v1.json",
     "docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json",
+    "docs/evidence/backyard-rwa-go/phase3/jupiter-lookup-accounts-2026-09-04.json",
   ]).split("\0").filter(Boolean))].sort();
   const files=paths.map(path=>({path,sha256:sha(read(path))}));
   return {head:git(["rev-parse","HEAD"]).trim(),
@@ -372,7 +374,7 @@ export async function verify() {
       observedCheck(localKaminoConstruction,"AUTO/Ethena four-leg unsigned construction matches retained SDK vectors and rejects account/policy substitutions",d=>d.pass===true),
       observedCheck(localDebtDecisions,"non-USDC planner separates repayment and bridge custody, drains residues, and receives decimal-aware USDC entry capacity",d=>d.pass===true),
       observedCheck(localJupiter,"AUTO/Ethena Jupiter layouts match installed edge constraints and controlled worker dispatch preserves conversion identities",d=>d.pass===true),
-      observedCheck(localJupiter,"all AUTO/Ethena retained conversion samples fit the actual Squads legacy packet envelope",d=>d.pass===true&&d.packets?.allFit===true),
+      observedCheck(localJupiter,"all AUTO/Ethena retained conversion samples fit the actual Squads packet envelope (legacy or validated v0)",d=>d.pass===true&&d.packets?.allFit===true),
       measured("catalog operation and swap-edge cardinality",catalog.operations.length === 44 && catalog.swapEdges.length === 52,
         {operations:catalog.operations.length,swapEdges:catalog.swapEdges.length}),
       observedCheck(chain,"required observed accounts are present",d => Array.isArray(d.accounts) && d.accounts.length > 0 && d.accounts.every((a: Json) => a.present === true)),

@@ -170,7 +170,9 @@ func compileBridgeMessageForDelegate(request BridgeBuildRequest, delegate public
 }
 
 func checkedUnsignedMessage(message []byte) ([]byte, error) {
-	if len(message) < 3 || message[0] != 1 || 1+ed25519.SignatureSize+len(message) > solanaPacketBytes {
+	legacy := len(message) >= 3 && message[0] == 1
+	v0 := len(message) >= 4 && message[0] == 0x80 && message[1] == 1
+	if (!legacy && !v0) || 1+ed25519.SignatureSize+len(message) > solanaPacketBytes {
 		return nil, fmt.Errorf("unsigned message does not fit the single-signer packet envelope")
 	}
 	return message, nil
