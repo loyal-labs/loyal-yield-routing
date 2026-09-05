@@ -259,10 +259,24 @@ passes. PostgreSQL integration is environment-gated and was not enabled in this
 resumption's full Go suite. No policy installs, runtime-binding activation,
 deployment, mainnet budget initialization, signing or sending occurred.
 
-Next discriminating work: demonstrate sequential execution with real programs
-(local `solana-test-validator` 4.2.0 is installed but not yet exercised), then
+Next discriminating work: demonstrate sequential execution with real programs,
+then
 finish complete cost/exit admission through production. Continue exact binding
 review and narrow farm-policy repairs without waiting on unrelated work. The
 platform's rejected expansion must be resolved by its permitted review with
 this exact evidence; new authority still requires the operator. Goal remains
 active and R01-R08 remain incomplete, not capacity-pending or completed.
+
+Local mechanism probe subsequently passed on `solana-test-validator` 4.2.0:
+`/private/tmp/backyard-phase3-svm.VAO9c4/sequential-probe.ts` executed two dependent
+native-program transfers at local slots 245/246, reconciling the intermediate
+recipient balance from 1,000,000 to 985,000 lamports after a 10,000-lamport return
+and 5,000-lamport fee. Genesis was
+`CZc1XFVecEauFk2AcHZCRxaLrKaALq5uV4M2uKzvqGga`, explicitly not mainnet. Only
+ephemeral in-process keys and fake local funds were used. The sandbox required
+permitted local-port execution; its review approved the bounded probe. The
+validator was stopped and port 18899 verified closed. This proves local state
+persistence, not Squads/Kamino/Jupiter/Voltr execution, production signer proof,
+controlled capacity or R04 acceptance. The next sample must load exact real
+program/account state and execute the required lifecycle without bypassing
+policy or authority checks. Do not repeat the native-program probe.
