@@ -35,6 +35,9 @@ func (w *Worker) SetRevalidator(revalidator *Revalidator) error {
 	if revalidator == nil {
 		return fmt.Errorf("revalidator is required")
 	}
+	if w.config.Mode != ModePublish {
+		return fmt.Errorf("shadow mode cannot run durable revalidation")
+	}
 	w.revalidator = revalidator
 	return nil
 }
@@ -112,10 +115,21 @@ func (w *Worker) cycle(ctx context.Context) error {
 }
 
 func (w *Worker) planningCycle(ctx context.Context) error {
-	// Register before reading evidence so source fan-out knows the explicit
-	// cluster. Registration does not refresh successful-cycle health.
-	if err := w.store.RegisterFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
-		return err
+	// Shadow never changes durable state. Keep Rust serving production while
+	// observing Go-specific successful-cycle logs, not the shared heartbeat.
+	if w.config.Mode == ModePublish {
+		if err := w.store.RegisterFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
+			return err
+		}
+		// Sweep before loading evidence: an RPC/Timescale outage must not leave
+		// expired unstarted routes blocking vaults indefinitely.
+		swept, err := w.store.SweepExpiredOpportunities(ctx, w.config.Cluster, 10_000)
+		if err != nil {
+			return err
+		}
+		if swept > 0 {
+			logEvent(map[string]any{"event": "kamino_fleet_planner_expiry_sweep", "cluster": w.config.Cluster, "sweptCount": swept})
+		}
 	}
 	if w.marketEvidence == nil {
 		return fmt.Errorf("complete durable market evidence is required")
@@ -169,12 +183,16 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	// lifetime. An epoch need not contain USDC when the migrated fleet only
 	// uses another supported stablecoin.
 	snapshot.ExpiresAt = epoch.ExpiresAt
-	snapshot.OptimizerEpochID, err = w.store.EnsureOptimizerEpoch(ctx, w.config.Cluster, epoch)
-	if err != nil {
-		return fmt.Errorf("resolve durable optimizer epoch: %w", err)
+	if w.config.Mode == ModePublish {
+		snapshot.OptimizerEpochID, err = w.store.EnsureOptimizerEpoch(ctx, w.config.Cluster, epoch)
+		if err == nil {
+			err = w.store.RefreshCapacityEpoch(ctx, w.config.Cluster, epoch)
+		}
+	} else {
+		snapshot.OptimizerEpochID, err = w.store.LookupOptimizerEpoch(ctx, w.config.Cluster, epoch.Fingerprint)
 	}
-	if err := w.store.RefreshCapacityEpoch(ctx, w.config.Cluster, epoch); err != nil {
-		return fmt.Errorf("refresh durable capacity epoch: %w", err)
+	if err != nil {
+		return fmt.Errorf("resolve optimizer/capacity epoch: %w", err)
 	}
 	vaults, err := w.store.LoadMigratedFleet(ctx, w.config.Cluster, epoch, FleetLoadOptions{DelegatedSigner: w.config.DelegatedSigner, EnableCrossMint: w.config.CrossMintEnabled, CrossMintMaxValueLossBPS: w.config.CrossMintMaxValueLossBPS, OptimizerEpochID: snapshot.OptimizerEpochID})
 	if err != nil {
@@ -204,11 +222,13 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	}
 	// Advance durable health only after evidence loading, coherent RPC
 	// verification, planning, and all requested publications have succeeded.
-	if err := w.store.HeartbeatFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
-		return err
+	if w.config.Mode == ModePublish {
+		if err := w.store.HeartbeatFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
+			return err
+		}
 	}
 	w.lastConfirmedSlot = slot
-	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "rejections": fleetPlan.Rejections})
+	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "rejections": fleetPlan.Rejections})
 	return nil
 }
 

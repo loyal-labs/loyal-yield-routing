@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -134,6 +135,39 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	if err != nil || len(expectedPlan.Opportunities) != 1 {
 		t.Fatalf("expected fleet plan: %#v %v", expectedPlan, err)
 	}
+	// PostgreSQL enforces the shadow contract, not just table-count assertions.
+	// Neither existing nor absent epochs/registrations may cause a write.
+	readOnlyURL, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := readOnlyURL.Query()
+	query.Set("options", "-c default_transaction_read_only=on")
+	readOnlyURL.RawQuery = query.Encode()
+	shadowStore, err := OpenStore(ctx, readOnlyURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shadowStore.Close()
+	shadowConfig := config
+	shadowConfig.Mode = ModeShadow
+	shadow, err := NewWorker(shadowConfig, shadowStore, NewRPCClient(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := shadow.SetMarketEvidence(staticMarketEpochSource{epoch: epoch}); err != nil {
+		t.Fatal(err)
+	}
+	if err := shadow.planningCycle(ctx); err != nil {
+		t.Fatalf("read-only shadow existing epoch: %v", err)
+	}
+	shadow.config.Cluster = "shadow-" + suffix
+	if err := shadow.planningCycle(ctx); err != nil {
+		t.Fatalf("read-only shadow absent epoch: %v", err)
+	}
+	if err := shadow.SetRevalidator(&Revalidator{}); err == nil {
+		t.Fatal("shadow accepted a durable revalidator")
+	}
 	if err := worker.cycle(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +212,19 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("same confirmed evidence produced %d opportunities", count)
+	}
+	// Cleanup must survive an evidence outage; successful-cycle health must not.
+	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET created_at=now()-interval '10 minutes',available_at=now()-interval '9 minutes',expires_at=now()-interval '1 minute' WHERE vault_id=$1`, vaultID); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.SetMarketEvidence(failedMarketEpochSource{err: fmt.Errorf("Timescale unavailable during expiry")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.planningCycle(ctx); err == nil {
+		t.Fatal("outage was not reported")
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT opportunity_state FROM loyal_yield.rebalance_opportunities WHERE vault_id=$1`, vaultID).Scan(&state); err != nil || state != "stale" {
+		t.Fatalf("outage prevented expiry recovery: %s %v", state, err)
 	}
 }
 

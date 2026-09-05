@@ -182,6 +182,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("invalid cross-mint delegated signer: %w", err)
 		}
 	}
+	if c.RevalidatorEnabled && c.Mode != ModePublish {
+		return fmt.Errorf("shadow mode cannot enable durable revalidation; keep the Rust services running")
+	}
 	if c.RevalidatorEnabled {
 		if c.KLendProxyPath == "" || len(c.KLendProxySHA256) != 64 || !isHex(c.KLendProxySHA256) || c.DelegatedSigner == "" || c.RevalidationOwner == "" || c.RevalidationLeaseTTL < time.Second || c.RevalidationPollInterval <= 0 || c.RevalidationConcurrency <= 0 || c.RevalidationConcurrency > 256 || c.RevalidationComputeLimit == 0 || c.RevalidationComputeLimit > defaultComputeLimit {
 			return fmt.Errorf("revalidator requires a digest-pinned KLend proxy, delegated signer, owner, valid lease, concurrency, poll interval, and compute limit")

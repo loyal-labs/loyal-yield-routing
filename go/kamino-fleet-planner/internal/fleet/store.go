@@ -69,6 +69,55 @@ WHERE cluster=$1`, cluster)
 	return nil
 }
 
+// SweepExpiredOpportunities mirrors the retained Rust planner's bounded expiry
+// sweep. A live lease, decision, or nonterminal signed submission keeps ownership
+// of the route: expiry is never permission to discard an unresolved chain effect.
+func (s *Store) SweepExpiredOpportunities(ctx context.Context, cluster string, limit int) (int64, error) {
+	if s == nil || s.pool == nil || cluster == "" || cluster != strings.TrimSpace(cluster) || limit < 1 || limit > 10_000 {
+		return 0, errors.New("opportunity expiry sweep requires canonical cluster and limit in 1..=10000")
+	}
+	var swept int64
+	err := s.pool.QueryRow(ctx, `
+WITH candidate AS (
+ SELECT o.id FROM loyal_yield.rebalance_opportunities o
+ WHERE o.cluster=$1 AND o.expires_at<=now()
+   AND o.opportunity_state IN ('waiting_alt','revalidate','ready','leased')
+   AND (o.opportunity_state<>'leased' OR o.lease_expires_at<=now())
+   AND o.decision_id IS NULL
+   AND NOT EXISTS (
+     SELECT 1 FROM loyal_yield.signed_route_submissions submission
+     WHERE submission.opportunity_id=o.id
+       AND submission.submission_state NOT IN ('reconciled','expired','failed'))
+ ORDER BY o.expires_at,o.id
+ FOR UPDATE OF o SKIP LOCKED LIMIT $2
+), stale AS (
+ UPDATE loyal_yield.rebalance_opportunities o
+ SET opportunity_state='stale',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,
+     terminal_reason='optimizer_epoch_expired',updated_at=now()
+ FROM candidate WHERE o.id=candidate.id RETURNING o.id
+), released_conflicts AS (
+ DELETE FROM loyal_yield.route_account_conflict_leases conflict USING stale
+ WHERE conflict.opportunity_id=stale.id AND conflict.submission_id IS NULL
+ RETURNING conflict.opportunity_id
+)
+SELECT count(*)::bigint FROM stale`, cluster, limit).Scan(&swept)
+	if err != nil {
+		return 0, fmt.Errorf("sweep expired opportunities: %w", err)
+	}
+	return swept, nil
+}
+
+// LookupOptimizerEpoch is read-only so parallel shadow evaluation cannot publish
+// epochs, refresh production health, or change the capacity frontier.
+func (s *Store) LookupOptimizerEpoch(ctx context.Context, cluster, fingerprint string) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `SELECT id FROM loyal_yield.optimizer_epochs WHERE cluster=$1 AND epoch_key=$2`, cluster, fingerprint).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return id, err
+}
+
 func (s *Store) LoadVaultPosition(ctx context.Context, cluster string, vaultID int64, source, target ReserveIdentity) (VaultPosition, error) {
 	var position VaultPosition
 	position.VaultID = vaultID
