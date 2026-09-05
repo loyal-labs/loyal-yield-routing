@@ -41,6 +41,9 @@ type JupiterSwapInstruction struct {
 	ProgramID string                      `json:"programId"`
 	Accounts  []JupiterInstructionAccount `json:"accounts"`
 	Data      string                      `json:"data"`
+	// Quote metadata, not instruction bytes or authority. Tables must be read
+	// from chain and may only encode accounts already present above.
+	LookupTableAddresses []string `json:"lookupTableAddresses,omitempty"`
 }
 
 type JupiterQuote struct {
@@ -192,11 +195,12 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
 	}
 	var response struct {
-		SetupInstructions      []json.RawMessage      `json:"setupInstructions"`
-		OtherInstructions      []json.RawMessage      `json:"otherInstructions"`
-		CleanupInstruction     json.RawMessage        `json:"cleanupInstruction"`
-		TokenLedgerInstruction json.RawMessage        `json:"tokenLedgerInstruction"`
-		SwapInstruction        JupiterSwapInstruction `json:"swapInstruction"`
+		AddressLookupTableAddresses []string               `json:"addressLookupTableAddresses"`
+		SetupInstructions           []json.RawMessage      `json:"setupInstructions"`
+		OtherInstructions           []json.RawMessage      `json:"otherInstructions"`
+		CleanupInstruction          json.RawMessage        `json:"cleanupInstruction"`
+		TokenLedgerInstruction      json.RawMessage        `json:"tokenLedgerInstruction"`
+		SwapInstruction             JupiterSwapInstruction `json:"swapInstruction"`
 	}
 	if err := json.Unmarshal(responseRaw, &response); err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, fmt.Errorf("decode Jupiter instructions: %w", err)
@@ -209,6 +213,12 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 	}
 	if !catalogJupiterRoute(lane) {
 		if err := validateInstalledJupiterHeader(action, response.SwapInstruction); err != nil {
+			return JupiterQuote{}, JupiterSwapInstruction{}, err
+		}
+	}
+	if lane == "Ethena/USDe/PYUSD" && action == SwapCollateralToDebtStep {
+		response.SwapInstruction.LookupTableAddresses = response.AddressLookupTableAddresses
+		if err := validateJupiterLookupCandidates(response.AddressLookupTableAddresses); err != nil {
 			return JupiterQuote{}, JupiterSwapInstruction{}, err
 		}
 	}

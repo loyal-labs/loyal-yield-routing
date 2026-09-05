@@ -146,7 +146,7 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 						if request.UserPublicKey != bridgeVault || request.UseSharedAccounts != (b.DiscriminatorHex == "c1209b3341d69c81") {
 							t.Fatal("requested wrong installed instruction family")
 						}
-						payload = map[string]any{"swapInstruction": instruction}
+						payload = map[string]any{"swapInstruction": instruction, "addressLookupTableAddresses": []string{bridgeVault}}
 					} else {
 						t.Fatal("unexpected API call")
 					}
@@ -159,8 +159,16 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, _, err = client.freshSwapForRoute(context.Background(), lane, action, amount); err != nil || calls != 2 {
+				_, returned, err := client.freshSwapForRoute(context.Background(), lane, action, amount)
+				if err != nil || calls != 2 {
 					t.Fatal("production client failed exact retained layout", err, calls)
+				}
+				if lane == "Ethena/USDe/PYUSD" && action == SwapCollateralToDebtStep {
+					if len(returned.LookupTableAddresses) != 1 || returned.LookupTableAddresses[0] != bridgeVault {
+						t.Fatal("fresh lookup hints lost at API boundary")
+					}
+				} else if len(returned.LookupTableAddresses) != 0 {
+					t.Fatal("lookup hints expanded outside selected conversion")
 				}
 				binding, err := manifest.jupiterPolicyForRoute(action, lane)
 				if err != nil {

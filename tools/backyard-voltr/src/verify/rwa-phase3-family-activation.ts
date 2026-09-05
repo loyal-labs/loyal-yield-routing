@@ -91,7 +91,8 @@ export function catalogJupiterPacketProof(output:string) {
 }
 async function localJupiterObservation(): Promise<Observation> {
   const result=await localCapObservation(["TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations","TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity",
-    "TestVersionedMessageMatchesSDKAndRejectsInvalidLookupAccounts","TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts"],
+    "TestVersionedMessageMatchesSDKAndRejectsInvalidLookupAccounts","TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts",
+    "TestFreshJupiterLookupHintsPreservePolicyAndPersistedMapping"],
     "AUTO/Ethena installed Jupiter layouts, controlled client/dispatch and packet measurements",true);
   if(result.data)result.data.proofLevel="LOCAL_CONSTRUCTION_CONTROLLED_API_AND_DISPATCH_NOT_PROGRAM_EXECUTION";
   return result;
@@ -130,6 +131,33 @@ async function localSendJournalObservation(): Promise<Observation> {
   const result=await localCapObservation(["TestPhase3DatabaseAdmissionAndSendFence"],source);
   if (result.data) result.data.proofLevel="LOCAL_DATABASE_AND_CONTROLLED_RPC_UNSIGNED_FIXTURE_NO_SIGNER_OR_SEND";
   return result;
+}
+
+async function localSequentialJupiterObservation(): Promise<Observation> {
+  const source="two Go Jupiter swaps executed sequentially through cloned deployed programs and installed policies";
+  const directory=process.env.PHASE3_JUPITER_PROBE_DIR;
+  if(!directory)return {status:"BLOCKED",source,reason:"EXPLICIT_PUBLIC_JUPITER_SNAPSHOT_NOT_CONFIGURED"};
+  if(!/^\/private\/tmp\/backyard-phase3-jupiter-probe\.[A-Za-z0-9]+$/.test(directory))return {status:"BLOCKED",source,reason:"INVALID_PUBLIC_JUPITER_SNAPSHOT_DIRECTORY"};
+  try {
+    const inputs={plan:JSON.parse(readFileSync(resolve(directory,"plan.json"),"utf8")),snapshot:JSON.parse(readFileSync(resolve(directory,"snapshot.json"),"utf8"))};
+    const compiler=await localCapObservation(["TestPhase3JupiterProbeMatchesProduction"],"Jupiter probe compared with current Go compiler");
+    if(compiler.status!=="OBSERVED"||compiler.data?.pass!==true)return {status:"OBSERVED",source,data:{pass:false,reason:"JUPITER_PROBE_COMPILER_MISMATCH"}};
+    const resultName=`verifier-${randomUUID()}.json`;
+    const child=spawn("cargo",["test","-p","squads-test-harness","--test","rwa_jupiter_controlled_probe","--","--ignored","--nocapture"],{
+      cwd:ROOT,stdio:"ignore",env:{...process.env,PHASE3_JUPITER_PROBE_RESULT:resultName},
+    });
+    const deadline=setTimeout(()=>child.kill("SIGKILL"),120_000);
+    let code:number|null;
+    try {code=await new Promise<number|null>((resolve,reject)=>{child.once("error",reject);child.once("close",resolve);});}
+    finally {clearTimeout(deadline);}
+    let execution:Json;
+    try {execution=JSON.parse(readFileSync(resolve(directory,resultName),"utf8"));}
+    catch {return {status:"OBSERVED",source,data:{pass:false,reason:"JUPITER_EXECUTION_DID_NOT_PRODUCE_EVIDENCE",exitCode:code}};}
+    const pass=code===0&&execution.schema==="phase3-jupiter-controlled-result/v1"&&execution.broadcast===false&&execution.signatureProof===false&&
+      execution.twoSwapsPassed===true&&execution.steps?.length===2&&execution.steps.every((s:Json)=>s.economicPass===true&&s.error===null&&s.negative?.rejectedBeforeJupiterCPI===true)&&
+      execution.planSha256===sha(readFileSync(resolve(directory,"plan.json")))&&execution.snapshotSha256===sha(readFileSync(resolve(directory,"snapshot.json")));
+    return {status:"OBSERVED",source,data:{pass,proofLevel:"TWO_SWAP_PROGRAM_EXECUTION_NOT_FULL_R04_LIFECYCLE",inputs,execution}};
+  } catch {return {status:"BLOCKED",source,reason:"LOCAL_SEQUENTIAL_JUPITER_PROBE_UNAVAILABLE"};}
 }
 async function localBridgeAdmissionObservation(): Promise<Observation> {
   const result=await localCapObservation([
@@ -378,7 +406,7 @@ function sourceIdentity() {
     "docs/evidence/backyard-rwa-go/policy-compiled-v1.json","docs/evidence/backyard-rwa-go/policy-install-readback-v1.json",
     "docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json",
     "docs/evidence/backyard-rwa-go/phase3/jupiter-lookup-accounts-2026-09-04.json",
-    "crates/squads-test-harness/tests/rwa_kamino_controlled_probe.rs","crates/squads-test-harness/Cargo.toml","Cargo.lock",
+    "crates/squads-test-harness/tests/rwa_kamino_controlled_probe.rs","crates/squads-test-harness/tests/rwa_jupiter_controlled_probe.rs","crates/squads-test-harness/Cargo.toml","Cargo.lock",
   ]).split("\0").filter(Boolean))].sort();
   const files=paths.map(path=>({path,sha256:sha(read(path))}));
   return {head:git(["rev-parse","HEAD"]).trim(),
@@ -393,8 +421,8 @@ export async function verify() {
   const catalogLanes = catalog.lanes.map((l: Json) => [l.market,l.collateral,l.debt].join("/"));
   const active = manifest.runtimeActivation?.runtimeRoutes ?? [];
   const offline = process.argv.includes("--offline");
-  const [runtime,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino] = await Promise.all([
-    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localBridgeAdmissionObservation(),localWithdrawalAdmissionObservation(),localKaminoConstructionObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation()]);
+  const [runtime,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter] = await Promise.all([
+    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localBridgeAdmissionObservation(),localWithdrawalAdmissionObservation(),localKaminoConstructionObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation(),localSequentialJupiterObservation()]);
   const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
   const [chain,database,deployment,setupRent] = offline
     ? ["Solana RPC","Postgres","Render","setup rent feasibility"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
@@ -437,6 +465,7 @@ export async function verify() {
     ]),
     measuredCondition("R04","All-lane positives/negatives and full stateful lifecycle",[
       observedCheck(localSequentialKamino,"Ethena Go deposit/borrow/repay/withdraw execute sequentially against deployed binaries with captured custody effects, flat terminal obligation and an installed-policy amount rejection",d=>d.pass===true),
+      observedCheck(localSequentialJupiter,"Ethena USDC/collateral and collateral/debt Go swaps execute sequentially against deployed binaries with measured debit/min-output and installed-policy rejection before Jupiter CPI",d=>d.pass===true),
     ],[
       "Complete sequential bridge/swap/Kamino/return/NAV lifecycle with signer proof, fee/exit admission and explicit controlled-capacity overrides where required; the four-leg local Kamino probe is only a subclaim.",
       "Batched exact eleven-lane behavioral coverage with identity-bound retained equivalence and dangerous mutations.",
@@ -474,7 +503,7 @@ export async function verify() {
     // Existing policy allocations are a diagnostic sample, not a fabricated
     // pass/fail for the complete proposed setup graph. Retain prices, hashes,
     // rent and the explicit new-allocation proof limitation in the snapshot.
-    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino},
+    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter},
     conditions,
   };
 }

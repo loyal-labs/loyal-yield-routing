@@ -194,3 +194,53 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 		t.Fatal("legacy persisted intent changed")
 	}
 }
+
+func TestFreshJupiterLookupHintsPreservePolicyAndPersistedMapping(t *testing.T) {
+	r, _ := retainedEthenaExit(t)
+	// A different table can encode the same already-validated instruction keys.
+	// Its address grants no account, signer or program authority.
+	r.LookupTables[0].Address = encodeBase58(bytes.Repeat([]byte{83}, 32))
+	for _, table := range r.LookupTables {
+		r.Instruction.LookupTableAddresses = append(r.Instruction.LookupTableAddresses, table.Address)
+	}
+	rpc, reads := lookupRPC(t, r.LookupTables, nil, false)
+	input := r
+	input.LookupTables = nil
+	prepared, err := prepareJupiterLookupTables(context.Background(), rpc, input, r.LookupTables[0].ObservedSlot)
+	if err != nil || *reads != 1 {
+		t.Fatal("fresh hint preparation failed", err)
+	}
+	message, err := CompileJupiterMessage(prepared)
+	if err != nil || len(message)+65 > solanaPacketBytes {
+		t.Fatal("fresh lookup packet failed", err)
+	}
+	encoded, _ := json.Marshal(prepared)
+	var restored JupiterSwapRequest
+	if json.Unmarshal(encoded, &restored) != nil {
+		t.Fatal("persisted lookup decode failed")
+	}
+	again, err := CompileJupiterMessage(restored)
+	if err != nil || !bytes.Equal(message, again) {
+		t.Fatal("persisted hint changed wire", err)
+	}
+	if _, err := revalidateJupiterLookupTables(context.Background(), rpc, restored, r.LookupTables[0].ObservedSlot); err != nil {
+		t.Fatal("final-send cannot revalidate fresh hint", err)
+	}
+	rpc, _ = lookupRPC(t, r.LookupTables, func(s *LookupTableSnapshot) { s.Data[56] ^= 1 }, false)
+	_, err = revalidateJupiterLookupTables(context.Background(), rpc, restored, r.LookupTables[0].ObservedSlot)
+	assertBudgetHold(t, err, "lookup_mapping_changed")
+	for _, addresses := range [][]string{{"not-a-key"}, {bridgeVault, bridgeVault}, {bridgeVault, bridgeDelegate, bridgeUSDC, bridgeSquadsATA, bridgeTokenProgram}} {
+		bad := input
+		bad.Instruction.LookupTableAddresses = addresses
+		if _, err := CompileJupiterMessage(bad); err == nil {
+			t.Fatal("invalid hint accepted")
+		}
+	}
+	bad := restored
+	bad.Instruction.Accounts = append([]JupiterInstructionAccount(nil), restored.Instruction.Accounts...)
+	b, _ := catalogJupiterBindingForRoute(bad.Action, bad.RouteLane)
+	bad.Instruction.Accounts[b.DestinationIndex].Pubkey = bridgeVault
+	if _, err := CompileJupiterMessage(bad); err == nil {
+		t.Fatal("lookup hint bypassed destination policy")
+	}
+}

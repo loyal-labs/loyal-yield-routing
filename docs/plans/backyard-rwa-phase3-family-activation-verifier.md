@@ -530,3 +530,35 @@ implementation; do not introduce new close-out requirements midway through.
 Revalidate retained proof when relevant deployment, program, SDK/byte, policy,
 account graph or other invalidation keys change or cannot be matched. Old live
 proof does not establish current capacity or a new deployment's identity.
+
+### Implementation checkpoint — fresh Jupiter feasibility (2026-09-04)
+
+This is a diagnostic checkpoint, not a change to R01–R08 or authorization.
+`docs/evidence/backyard-rwa-go/phase3/jupiter-construction-failures-2026-09-04.json`
+retains three public, unsigned construction failures: a policy-compatible
+USDe/PYUSD packet exceeded the envelope with the historical lookup-table pair;
+another USDe/PYUSD quote used 38 bytes rather than the installed 48-byte layout;
+a 0.9-USDC entry quote used 36 bytes rather than the installed 37-byte layout.
+These observations establish neither capacity absence nor a usable full exit.
+
+The local worker now accepts bounded fresh lookup hints for the existing
+Ethena collateral/debt conversion, resolves chain-owned tables, compiles only
+the policy-validated instruction keys, persists their exact mappings and
+revalidates them before build/send. No lookup creation/extension or policy,
+signer, destination, amount or slippage expansion is implied. Historical
+persisted requests retain their original lookup identities. Local tests cover
+mapping substitution, invalid hints and unchanged custody enforcement; fresh
+two-swap program execution remains unproven.
+
+The sole verifier now measures the two-swap deployed-program experiment when
+`PHASE3_JUPITER_PROBE_DIR` points to a complete public snapshot. Missing input,
+construction failure or a compiled-only test cannot pass that measurement.
+Even a successful two-swap experiment is only an existing R04 subclaim, never
+a full lending lifecycle or mainnet/signature proof.
+
+Next critical path: resolve the quote-dependent policy layouts through the
+existing forward-repair workflow while preserving exact custody/economic
+constraints; prove the sequential bridge/swap/lending/return mechanics; then
+finish entry/debt-bearing admission and remaining lane/queue implementation.
+Do not poll indefinitely for a favorable quote, treat catalog coverage as
+executable coverage, or raise setup/transaction caps without authorization.
