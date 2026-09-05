@@ -18,6 +18,12 @@ type RuntimeRoute struct {
 	CollateralReceiptSupply   string
 	DebtLiquiditySupply       string
 	DebtFeeReceiver           string
+	CollateralTokenProgram    string
+	DebtTokenProgram          string
+	CollateralFarm            string
+	ObligationCollateralFarm  string
+	DebtFarm                  string
+	ObligationDebtFarm        string
 	PolicyHashes              map[Action]string
 	PolicyAccounts            map[Action]string
 }
@@ -38,6 +44,10 @@ var mapleSyrupUSDCUSDC = RuntimeRoute{
 	CollateralReceiptSupply:   "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58",
 	DebtLiquiditySupply:       "BBcwMNSMyhhBnYE9pevEvkxKHGzTafMP9v3j7Kk7nAWM",
 	DebtFeeReceiver:           "HH7GLnRcGHJrdkEueVVj7mccNUjnSeWobDmtu9cHLkJV",
+	CollateralTokenProgram:    classicTokenProgram,
+	DebtTokenProgram:          classicTokenProgram,
+	DebtFarm:                  mapleDebtFarm,
+	ObligationDebtFarm:        mapleObligationDebtFarm,
 	PolicyHashes: map[Action]string{
 		OpenRouteStep:              "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f",
 		DeleverRouteStep:           "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11",
@@ -77,7 +87,11 @@ func runtimeRoute(lane string) (RuntimeRoute, error) {
 		if err != nil {
 			return RuntimeRoute{}, err
 		}
-		return RuntimeRoute{Lane: RouteID, Protocol: "Prime", CollateralSymbol: FixedCollateral, DebtSymbol: FixedDebt, Kamino: config, CollateralCustody: kaminoPrimeCustody, DebtCustody: bridgeSquadsATA}, nil
+		return RuntimeRoute{Lane: RouteID, Protocol: "Prime", CollateralSymbol: FixedCollateral, DebtSymbol: FixedDebt, Kamino: config,
+			CollateralCustody: kaminoPrimeCustody, DebtCustody: bridgeSquadsATA,
+			CollateralLiquiditySupply: kaminoPrimeLiquiditySupply, CollateralReceiptMint: kaminoPrimeReceiptMint,
+			CollateralReceiptSupply: kaminoPrimeReceiptSupply, DebtLiquiditySupply: kaminoUSDCLiquiditySupply,
+			DebtFeeReceiver: kaminoUSDCFeeVault, CollateralTokenProgram: classicTokenProgram, DebtTokenProgram: classicTokenProgram}, nil
 	case SelectedRouteID:
 		return mapleSyrupUSDCUSDC, nil
 	default:

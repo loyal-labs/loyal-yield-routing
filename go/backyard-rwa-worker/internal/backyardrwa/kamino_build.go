@@ -279,39 +279,27 @@ func matchesKaminoStep(action Action, discriminator []byte, accounts []accountMe
 }
 
 func matchesKaminoStepForRoute(action Action, discriminator []byte, accounts []accountMeta, lane string) (kaminoPrimeUSDCLeg, bool) {
-	if lane == SelectedRouteID {
-		deposit, borrow, repay, withdraw := mapleKaminoMetas()
-		switch action {
-		case OpenRouteStep, OpenPrimeUSDCStep:
-			if bytesEqual(discriminator, kaminoDepositCollateral) && exactKaminoMetas(accounts, deposit) {
-				return kaminoLegDeposit, true
-			}
-			if bytesEqual(discriminator, kaminoBorrowUSDC) && exactKaminoMetas(accounts, borrow) {
-				return kaminoLegBorrow, true
-			}
-		case DeleverRouteStep, DeleverPrimeUSDCStep:
-			if bytesEqual(discriminator, kaminoRepayUSDC) && exactKaminoMetas(accounts, repay) {
-				return kaminoLegRepay, true
-			}
-			if bytesEqual(discriminator, kaminoWithdrawCollateral) && exactKaminoMetas(accounts, withdraw) {
-				return kaminoLegWithdraw, true
-			}
-		}
+	if lane == "" {
+		lane = RouteID
+	}
+	route, err := runtimeRoute(lane)
+	if err != nil {
 		return 0, false
 	}
+	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 	switch action {
-	case OpenPrimeUSDCStep:
-		if string(discriminator) == string(kaminoDepositCollateral) && exactKaminoMetas(accounts, kaminoDepositMetas()) {
+	case OpenRouteStep, OpenPrimeUSDCStep:
+		if bytesEqual(discriminator, kaminoDepositCollateral) && exactKaminoMetas(accounts, deposit) {
 			return kaminoLegDeposit, true
 		}
-		if string(discriminator) == string(kaminoBorrowUSDC) && exactKaminoMetas(accounts, kaminoBorrowMetas()) {
+		if bytesEqual(discriminator, kaminoBorrowUSDC) && exactKaminoMetas(accounts, borrow) {
 			return kaminoLegBorrow, true
 		}
-	case DeleverPrimeUSDCStep:
-		if string(discriminator) == string(kaminoRepayUSDC) && exactKaminoMetas(accounts, kaminoRepayMetas()) {
+	case DeleverRouteStep, DeleverPrimeUSDCStep:
+		if bytesEqual(discriminator, kaminoRepayUSDC) && exactKaminoMetas(accounts, repay) {
 			return kaminoLegRepay, true
 		}
-		if string(discriminator) == string(kaminoWithdrawCollateral) && exactKaminoMetas(accounts, kaminoWithdrawMetas()) {
+		if bytesEqual(discriminator, kaminoWithdrawCollateral) && exactKaminoMetas(accounts, withdraw) {
 			return kaminoLegWithdraw, true
 		}
 	}
@@ -454,12 +442,62 @@ func kaminoPrimeUSDCRefreshInstructionsForRequest(leg kaminoPrimeUSDCLeg, reques
 }
 
 func mapleKaminoMetas() (deposit, borrow, repay, withdraw []accountMeta) {
-	r := mapleSyrupUSDCUSDC
-	meta := func(address string, signer, writable bool) accountMeta { return kaminoMeta(address, signer, writable) }
-	deposit = []accountMeta{meta(bridgeVault, true, true), meta(r.Kamino.Obligation, false, true), meta(r.Kamino.Market, false, false), meta("6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g", false, false), meta(r.Kamino.CollateralReserve, false, true), meta(r.Kamino.CollateralMint, false, false), meta(r.CollateralLiquiditySupply, false, true), meta(r.CollateralReceiptMint, false, true), meta(r.CollateralReceiptSupply, false, true), meta(r.CollateralCustody, false, true), meta(r.Kamino.Program, false, false), meta(bridgeTokenProgram, false, false), meta(bridgeTokenProgram, false, false), meta(kaminoInstructions, false, false), meta(r.Kamino.Program, false, false), meta(r.Kamino.Program, false, false), meta(kaminoFarmsProgram, false, false)}
-	borrow = []accountMeta{meta(bridgeVault, true, false), meta(r.Kamino.Obligation, false, true), meta(r.Kamino.Market, false, false), meta("6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g", false, false), meta(r.Kamino.DebtReserve, false, true), meta(r.Kamino.DebtMint, false, false), meta(r.DebtLiquiditySupply, false, true), meta(r.DebtFeeReceiver, false, true), meta(r.DebtCustody, false, true), meta(r.Kamino.Program, false, false), meta(bridgeTokenProgram, false, false), meta(kaminoInstructions, false, false), meta(mapleObligationDebtFarm, false, true), meta(mapleDebtFarm, false, true), meta(kaminoFarmsProgram, false, false)}
-	repay = []accountMeta{meta(bridgeVault, true, false), meta(r.Kamino.Obligation, false, true), meta(r.Kamino.Market, false, false), meta(r.Kamino.DebtReserve, false, true), meta(r.Kamino.DebtMint, false, false), meta(r.DebtLiquiditySupply, false, true), meta(r.DebtCustody, false, true), meta(bridgeTokenProgram, false, false), meta(kaminoInstructions, false, false), meta(mapleObligationDebtFarm, false, true), meta(mapleDebtFarm, false, true), meta("6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g", false, false), meta(kaminoFarmsProgram, false, false)}
-	withdraw = []accountMeta{meta(bridgeVault, true, true), meta(r.Kamino.Obligation, false, true), meta(r.Kamino.Market, false, false), meta("6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g", false, false), meta(r.Kamino.CollateralReserve, false, true), meta(r.Kamino.CollateralMint, false, false), meta(r.CollateralReceiptSupply, false, true), meta(r.CollateralReceiptMint, false, true), meta(r.CollateralLiquiditySupply, false, true), meta(r.CollateralCustody, false, true), meta(r.Kamino.Program, false, false), meta(bridgeTokenProgram, false, false), meta(bridgeTokenProgram, false, false), meta(kaminoInstructions, false, false), meta(r.Kamino.Program, false, false), meta(r.Kamino.Program, false, false), meta(kaminoFarmsProgram, false, false)}
+	return kaminoMetasForRoute(mapleSyrupUSDCUSDC)
+}
+
+// The SDK v2 layout is shared; only the bound market/custody/token/farm
+// identities vary. Receipt tokens always use classic SPL independently of the
+// underlying token program. Absent farm accounts use the Anchor sentinel.
+func kaminoMetasForRoute(r RuntimeRoute) (deposit, borrow, repay, withdraw []accountMeta) {
+	deposit, borrow, repay, withdraw = kaminoDepositMetas(), kaminoBorrowMetas(), kaminoRepayMetas(), kaminoWithdrawMetas()
+	set := func(m []accountMeta, index int, address string) { m[index].key = mustKey(address) }
+	farm := func(m []accountMeta, index int, address string) {
+		if address == "" {
+			m[index] = kaminoMeta(r.Kamino.Program, false, false)
+		} else {
+			m[index] = kaminoMeta(address, false, true)
+		}
+	}
+	for _, m := range [][]accountMeta{deposit, borrow, repay, withdraw} {
+		set(m, 0, r.Kamino.Vault)
+		set(m, 1, r.Kamino.Obligation)
+		set(m, 2, r.Kamino.Market)
+	}
+	for _, m := range [][]accountMeta{deposit, withdraw} {
+		set(m, 3, r.Kamino.MarketAuthority)
+		set(m, 4, r.Kamino.CollateralReserve)
+		set(m, 5, r.Kamino.CollateralMint)
+		set(m, 9, r.CollateralCustody)
+		set(m, 10, r.Kamino.Program)
+		set(m, 11, classicTokenProgram)
+		set(m, 12, r.CollateralTokenProgram)
+		farm(m, 14, r.ObligationCollateralFarm)
+		farm(m, 15, r.CollateralFarm)
+	}
+	set(deposit, 6, r.CollateralLiquiditySupply)
+	set(deposit, 7, r.CollateralReceiptMint)
+	set(deposit, 8, r.CollateralReceiptSupply)
+	set(withdraw, 6, r.CollateralReceiptSupply)
+	set(withdraw, 7, r.CollateralReceiptMint)
+	set(withdraw, 8, r.CollateralLiquiditySupply)
+	set(borrow, 3, r.Kamino.MarketAuthority)
+	set(borrow, 4, r.Kamino.DebtReserve)
+	set(borrow, 5, r.Kamino.DebtMint)
+	set(borrow, 6, r.DebtLiquiditySupply)
+	set(borrow, 7, r.DebtFeeReceiver)
+	set(borrow, 8, r.DebtCustody)
+	set(borrow, 9, r.Kamino.Program)
+	set(borrow, 10, r.DebtTokenProgram)
+	farm(borrow, 12, r.ObligationDebtFarm)
+	farm(borrow, 13, r.DebtFarm)
+	set(repay, 3, r.Kamino.DebtReserve)
+	set(repay, 4, r.Kamino.DebtMint)
+	set(repay, 5, r.DebtLiquiditySupply)
+	set(repay, 6, r.DebtCustody)
+	set(repay, 7, r.DebtTokenProgram)
+	farm(repay, 9, r.ObligationDebtFarm)
+	farm(repay, 10, r.DebtFarm)
+	set(repay, 11, r.Kamino.MarketAuthority)
 	return
 }
 

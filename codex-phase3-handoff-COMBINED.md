@@ -190,3 +190,10 @@ Confidential mint configuration does not authorize confidential custody or
 operations. This validation is wired into the price observer, not yet complete
 production admission; lane-pinned authority identities and send-time freshness
 still need end-to-end proof. Local race tests passed, not live all-lane proof.
+Kamino's four mutation account vectors now share typed route inputs for market,
+custody, underlying token programs and optional farms. The SDK receipt-token
+program stays classic SPL independently of liquidity token programs. Existing
+Prime byte fingerprints remain unchanged; unknown lanes and caller token-program
+mutations reject. This is the shared layout groundwork, not installation of the
+other nine routes: fresh exact bindings, policy bytes, oracle refresh graph and
+full program execution proof remain required before they can execute.
