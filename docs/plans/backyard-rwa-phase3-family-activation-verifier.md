@@ -296,6 +296,41 @@ enforcement. Label it CONTROLLED_STATE; it proves neither current execution nor
 future capacity. Mock success, skipped downstream actions and unsigned builder
 inventories fail. Missing simulation facilities are a preflight external gate.
 
+Sequential execution checkpoint — 2026-09-04: the Go-built Ethena deposit,
+borrow, repay and withdrawal execute in one LiteSVM instance against the exact
+captured deployed Squads, K-Lend and token binaries and installed policy bytes.
+The finalized account batch is slot 444426663; its captured Clock reports
+444426664 and is preserved, not rewritten. Adjacent writable post/pre states
+match. A 100,000,000-raw USDe deposit (9 decimals) backs a 1,000-raw PYUSD borrow
+(6 decimals); repayment clears the debt and withdrawal clears the obligation,
+returning 99,999,999 raw collateral. The over-limit deposit mutation is rejected
+by Squads with `ProgramInteractionInvalidNumericValue` (6064), before K-Lend CPI.
+This establishes the local sequential mechanism and four-leg subclaim, not the
+complete lifecycle. Only fee-payer/token funding was overridden; signature and
+blockhash verification are disabled for these zero-signature local fixtures.
+No authority, policy, program or capacity field is changed. The full bridge,
+swap, return/NAV, signer, admission and controlled-capacity requirements remain.
+
+The sole verifier runs the current Go byte comparison and actual Rust execution
+when `PHASE3_KAMINO_PROBE_DIR` points to the explicit public snapshot directory.
+Each subprocess is bounded (Go test timeout 30 seconds; outer execution ceilings
+90/120 seconds). The retained verifier output embeds the input plan, account
+snapshot, program hashes, overrides, raw pre/post captures and execution logs:
+`docs/evidence/backyard-rwa-go/phase3/kamino-sequential-2026-09-04.json`.
+The current local snapshot is `/private/tmp/backyard-phase3-kamino-probe.cJUj9H`.
+To reproduce using it:
+
+```sh
+PHASE3_KAMINO_PROBE_DIR=/private/tmp/backyard-phase3-kamino-probe.cJUj9H \
+  bun run --cwd tools/backyard-voltr verify:rwa-phase3-family-activation --offline
+```
+
+For a new snapshot, export `plan.json` with the explicitly gated
+`TestExportPhase3KaminoControlledProbe` Go test, then run the read-only
+`tools/backyard-voltr/src/verify/snapshot-phase3-kamino-probe.ts` under the mounted
+RPC environment. Neither exporter nor capture tool signs or broadcasts. The
+four-leg witness remains inside `crates/squads-test-harness`, not a second worker.
+
 ### R05 — immutable deployment and bounded sequential activation
 
 Deploy the committed immutable image through the existing workflow and read

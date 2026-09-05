@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -95,6 +95,32 @@ async function localJupiterObservation(): Promise<Observation> {
     "AUTO/Ethena installed Jupiter layouts, controlled client/dispatch and packet measurements",true);
   if(result.data)result.data.proofLevel="LOCAL_CONSTRUCTION_CONTROLLED_API_AND_DISPATCH_NOT_PROGRAM_EXECUTION";
   return result;
+}
+async function localSequentialKaminoObservation(): Promise<Observation> {
+  const source="Go production messages executed sequentially through cloned deployed Ethena programs and installed policies";
+  const directory=process.env.PHASE3_KAMINO_PROBE_DIR;
+  if(!directory)return {status:"BLOCKED",source,reason:"EXPLICIT_PUBLIC_SVM_SNAPSHOT_NOT_CONFIGURED"};
+  if(!/^\/private\/tmp\/backyard-phase3-kamino-probe\.[A-Za-z0-9]+$/.test(directory))
+    return {status:"BLOCKED",source,reason:"INVALID_PUBLIC_SVM_SNAPSHOT_DIRECTORY"};
+  const resultName=`verifier-${randomUUID()}.json`;
+  const run=async(command:string,args:string[],cwd:string)=>{
+    const child=spawn(command,args,{cwd,stdio:"ignore",env:{...process.env,PHASE3_KAMINO_PROBE_RESULT:resultName}});
+    const timeout=setTimeout(()=>child.kill("SIGKILL"),120_000);
+    try{return await new Promise<number|null>((resolve,reject)=>{child.once("error",reject);child.once("close",resolve);});}
+    finally{clearTimeout(timeout);}
+  };
+  try{
+    const inputs={plan:JSON.parse(readFileSync(resolve(directory,"plan.json"),"utf8")),snapshot:JSON.parse(readFileSync(resolve(directory,"snapshot.json"),"utf8"))};
+    const currentCompiler=await localCapObservation(["TestPhase3KaminoProbeMatchesProduction"],"probe messages compared with the current Go compiler");
+    if(currentCompiler.status!=="OBSERVED"||currentCompiler.data?.pass!==true)return {status:"OBSERVED",source,data:{pass:false,reason:"PROBE_DOES_NOT_MATCH_CURRENT_GO_COMPILER"}};
+    const exitCode=await run("cargo",["test","-p","squads-test-harness","--test","rwa_kamino_controlled_probe","--","--ignored","--nocapture"],ROOT);
+    let execution:Json;
+    try{execution=JSON.parse(readFileSync(resolve(directory,resultName),"utf8"));}
+    catch{return {status:"OBSERVED",source,data:{pass:false,reason:"SVM_EXECUTION_DID_NOT_PRODUCE_EVIDENCE",exitCode}};}
+    const pass=exitCode===0&&execution.fourKaminoLegsPassed===true&&execution.negative?.rejectedBeforeKaminoCPI===true&&
+      execution.planSha256===sha(readFileSync(resolve(directory,"plan.json")))&&execution.snapshotSha256===sha(readFileSync(resolve(directory,"snapshot.json")));
+    return {status:"OBSERVED",source,data:{pass,slot:execution.slot,proofLevel:"CONTROLLED_FOUR_KAMINO_LEGS_NOT_FULL_LIFECYCLE_OR_SIGNER_PROOF",inputs,execution}};
+  }catch{return {status:"BLOCKED",source,reason:"LOCAL_SEQUENTIAL_KAMINO_PROBE_UNAVAILABLE"};}
 }
 async function localSendJournalObservation(): Promise<Observation> {
   const source="disposable PostgreSQL final-send and expiry witnesses";
@@ -332,6 +358,7 @@ function sourceIdentity() {
     "docs/evidence/backyard-rwa-go/policy-compiled-v1.json","docs/evidence/backyard-rwa-go/policy-install-readback-v1.json",
     "docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json",
     "docs/evidence/backyard-rwa-go/phase3/jupiter-lookup-accounts-2026-09-04.json",
+    "crates/squads-test-harness/tests/rwa_kamino_controlled_probe.rs","crates/squads-test-harness/Cargo.toml","Cargo.lock",
   ]).split("\0").filter(Boolean))].sort();
   const files=paths.map(path=>({path,sha256:sha(read(path))}));
   return {head:git(["rev-parse","HEAD"]).trim(),
@@ -346,8 +373,8 @@ export async function verify() {
   const catalogLanes = catalog.lanes.map((l: Json) => [l.market,l.collateral,l.debt].join("/"));
   const active = manifest.runtimeActivation?.runtimeRoutes ?? [];
   const offline = process.argv.includes("--offline");
-  const [runtime,localCaps,localSendJournal,localKaminoConstruction,localDebtDecisions,localJupiter] = await Promise.all([
-    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localKaminoConstructionObservation(),localDebtDecisionObservation(),localJupiterObservation()]);
+  const [runtime,localCaps,localSendJournal,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino] = await Promise.all([
+    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localKaminoConstructionObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation()]);
   const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
   const [chain,database,deployment,setupRent] = offline
     ? ["Solana RPC","Postgres","Render","setup rent feasibility"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
@@ -386,8 +413,10 @@ export async function verify() {
       "Installed policy bytes and exact account derivation/ownership/setup compared against each proposed binding.",
       "All-lane production observation, construction, non-USDC valuation, exit and reconciliation behavior; catalog counts alone prove none of these.",
     ]),
-    measuredCondition("R04","All-lane positives/negatives and full stateful lifecycle",[],[
-      "Sequential real-program lifecycle capability sample with captured effects and explicit controlled-capacity overrides.",
+    measuredCondition("R04","All-lane positives/negatives and full stateful lifecycle",[
+      observedCheck(localSequentialKamino,"Ethena Go deposit/borrow/repay/withdraw execute sequentially against deployed binaries with captured custody effects, flat terminal obligation and an installed-policy amount rejection",d=>d.pass===true),
+    ],[
+      "Complete sequential bridge/swap/Kamino/return/NAV lifecycle with signer proof, fee/exit admission and explicit controlled-capacity overrides where required; the four-leg local Kamino probe is only a subclaim.",
       "Batched exact eleven-lane behavioral coverage with identity-bound retained equivalence and dangerous mutations.",
     ]),
     measuredCondition("R05","Immutable deployment, one fenced writer and flat queue transitions",[
@@ -423,7 +452,7 @@ export async function verify() {
     // Existing policy allocations are a diagnostic sample, not a fabricated
     // pass/fail for the complete proposed setup graph. Retain prices, hashes,
     // rent and the explicit new-allocation proof limitation in the snapshot.
-    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localKaminoConstruction,localDebtDecisions,localJupiter},
+    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localKaminoConstruction,localDebtDecisions,localJupiter,localSequentialKamino},
     conditions,
   };
 }
