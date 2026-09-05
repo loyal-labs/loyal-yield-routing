@@ -373,11 +373,12 @@ projects:
             plan: standard
             autoDeploy: false
             image:
-              url: ghcr.io/loyal-labs/loyal-yield-routing/kamino-fleet-planner:sha-88e1be779a016e627fb926d842916cf879ad03c7
+              # Shadow-only baseline; publish needs the cross-mint proxy fix image.
+              url: ghcr.io/loyal-labs/loyal-yield-routing/kamino-fleet-planner:sha-d34e09ca4283f4d35a6599937e624b42742b62b3
               creds:
                 fromRegistryCreds:
                   name: loyal-ghcr
-            preDeployCommand: /usr/local/bin/yield-migrations --apply
+            # Shadow must not migrate either database.
             dockerCommand: /usr/local/bin/loyal-kamino-fleet-planner
             maxShutdownDelaySeconds: 60
             envVars:
@@ -394,7 +395,7 @@ projects:
               - key: KAMINO_FLEET_POLL_INTERVAL
                 value: 1s
               - key: KAMINO_FLEET_REVALIDATOR_ENABLED
-                value: "true"
+                value: "false"
               - key: KAMINO_FLEET_REVALIDATION_OWNER
                 value: loyal-kamino-fleet-planner
               - key: KAMINO_FLEET_REVALIDATION_LEASE_TTL
@@ -410,7 +411,7 @@ projects:
               - key: KAMINO_API_BASE
                 value: https://api.kamino.finance
               - key: EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER
-                value: "false"
+                value: "true"
               - key: EARN_ROUTER_ENABLED_STABLE_MINTS
                 value: CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH,2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH,2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo,EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v,Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB,USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA
               - key: EARN_ROUTER_CROSS_MINT_MAX_SLIPPAGE_BPS

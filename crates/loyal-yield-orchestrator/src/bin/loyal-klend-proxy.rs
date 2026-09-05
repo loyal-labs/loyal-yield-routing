@@ -229,16 +229,21 @@ fn deposit_ix(vault: Pubkey, p: &Position, amount: u64) -> Result<Instruction, B
 }
 pub fn build_json(raw: &str) -> Result<String, Box<dyn Error>> {
     let input: ProxyRequest = serde_json::from_str(raw)?;
-    if input.schema_version != 1 || input.operation != "buildSameMintRoute" {
-        return Err("unsupported KLend proxy schema or operation".into());
-    }
+    let operation = match (input.schema_version, input.operation.as_str()) {
+        (1, "buildSameMintRoute") => "buildSameMintRoute",
+        (1, "buildCrossMintLegs") => "buildCrossMintLegs",
+        _ => return Err("unsupported KLend proxy schema or operation".into()),
+    };
     let mut r = input.request;
-    if r.withdraw_collateral_amount == 0
-        || r.deposit_liquidity_amount == 0
-        || r.source.liquidity_mint != r.target.liquidity_mint
-        || r.source.vault_liquidity_ata != r.target.vault_liquidity_ata
-    {
-        return Err("invalid same-mint route request".into());
+    let same_mint = r.source.liquidity_mint == r.target.liquidity_mint;
+    let same_ata = r.source.vault_liquidity_ata == r.target.vault_liquidity_ata;
+    let valid_lane = match operation {
+        "buildSameMintRoute" => same_mint && same_ata,
+        "buildCrossMintLegs" => !same_mint && !same_ata,
+        _ => false,
+    };
+    if r.withdraw_collateral_amount == 0 || r.deposit_liquidity_amount == 0 || !valid_lane {
+        return Err("invalid KLend route lane or amount".into());
     }
     let vault = key(&r.vault)?;
     bind_pdas(&mut r.source, vault)?;
@@ -273,7 +278,7 @@ pub fn build_json(raw: &str) -> Result<String, Box<dyn Error>> {
     ));
     Ok(serde_json::to_string(&ProxyOutput {
         schema_version: 1,
-        operation: "buildSameMintRoute",
+        operation,
         route: RouteOutput { public, protected },
     })?)
 }

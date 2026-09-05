@@ -32,6 +32,22 @@ python3 "$comparator" --self-test
 scratch="$(mktemp -d /tmp/kamino-fleet-parity.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT
 cd "$root"
+echo "== Squads cross-mint policy execution and adversarial mutations in LiteSVM"
+cargo build-sbf --manifest-path crates/mock-yield-protocols-program/Cargo.toml -- --locked --offline
+if ! cargo test --locked --offline -p squads-test-harness --test cross_mint_generalized_policy \
+  -- --nocapture >"$scratch/cross-mint-svm.log" 2>&1; then
+  python3 -c 'import sys; print(open(sys.argv[1]).read())' "$scratch/cross-mint-svm.log" >&2
+  fail "cross-mint Squads execution failed"
+fi
+python3 - "$scratch/cross-mint-svm.log" <<'PY'
+import sys
+text = open(sys.argv[1]).read()
+expected = "test generalized_cross_mint_policy_set_creates_reads_executes_and_rejects_mutations ... ok"
+if expected not in text or "1 passed; 0 failed; 0 ignored" not in text or "skipping:" in text:
+    print(text, file=sys.stderr)
+    raise SystemExit("FAIL: missing or skipped cross-mint Squads execution")
+print("PASS: cross-mint policies created, read back, executed, and mutation-tested in LiteSVM")
+PY
 cargo build --locked --offline -p loyal-yield-orchestrator --bin kamino-fleet-parity-reference --bin loyal-klend-proxy
 proxy="$root/target/debug/loyal-klend-proxy"
 export KAMINO_PARITY_KLEND_PROXY="$proxy"
@@ -49,5 +65,5 @@ for artifact in "$scratch/rust.json" "$scratch/go.json"; do
   ' "$artifact" >/dev/null || fail "artifact fixture binding failed"
 done
 python3 "$comparator" --reference "$scratch/rust.json" --candidate "$scratch/go.json"
-echo "PASS: all local Go/database, retained Rust lifecycle, and deterministic parity gates completed"
+echo "PASS: all local Go/proxy/database, retained Rust lifecycle, Squads policy execution, and deterministic parity gates completed"
 echo "NOTE: local fixtures do not prove live RPC/Jupiter availability or production cutover safety; follow the shadow rollout gates"

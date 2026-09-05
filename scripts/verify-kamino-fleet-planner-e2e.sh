@@ -34,6 +34,10 @@ echo "Boundary under test: existing PostgreSQL optimizer_epochs/rebalance_opport
 echo "Boundary includes durable revalidate and atomic prepared leased-execute handoff"
 echo "== Rust/Go immutable market epoch parity"
 "$root/scripts/verify-kamino-market-epoch-parity.sh"
+echo "== Actual Rust KLend proxy for Go integration tests"
+cd "$root"
+cargo build --locked -p loyal-yield-orchestrator --bin loyal-klend-proxy >/dev/null
+export KAMINO_TEST_KLEND_PROXY_PATH="$root/target/debug/loyal-klend-proxy"
 echo "== Go verifier-first checks"
 cd "$root/go/kamino-fleet-planner"
 go vet ./...
@@ -96,8 +100,8 @@ python3 "$root/scripts/verify-kamino-go-test-evidence.py" "$scratch/go-tests.jso
 
 echo "== Complete retained lifecycle in the same disposable PostgreSQL server"
 cd "$root"
-createdb -h "$socket" -p "$port" fleet_verify_lifecycle
-lifecycle_database_url="postgresql://$(id -un)@127.0.0.1:$port/fleet_verify_lifecycle"
+createdb -h "$socket" -p "$port" cross_mint_store_test_fleet_verify_lifecycle
+lifecycle_database_url="postgresql://$(id -un)@127.0.0.1:$port/cross_mint_store_test_fleet_verify_lifecycle"
 set +e
 lifecycle_migration_output="$(NEON_DATABASE_URL="$lifecycle_database_url" target/debug/yield-migrations --apply 2>&1)"
 lifecycle_migration_status=$?
@@ -131,6 +135,44 @@ jq -e '
     | length == 1)
 ' "$lifecycle_artifact" >/dev/null
 
+# Require the cross-mint recovery checks by name: disappearance must fail the
+# gate rather than silently narrowing the lifecycle verifier's claimed scope.
+jq -e '
+  [.checks[].subchecks[]? | select(.verdict == "PASS") | .name] as $passed
+  | ["cross_mint_proved_no_effect_advances_leg_generation",
+     "cross_mint_ambiguous_effect_freezes_progression",
+     "cross_mint_source_idle_recovers_to_source_mint_reserve",
+     "cross_mint_target_fallback_atomically_rebinds_capacity",
+     "cross_mint_every_valid_leg_purpose_survives_every_crash_window",
+     "cross_mint_activation_uses_canonical_projection_with_normal_opt_in",
+     "cross_mint_initial_withdraw_uses_canonical_policy_projection",
+     "cross_mint_pause_fences_activation_and_initial_withdraw",
+     "cross_mint_policy_revocation_linearizes_before_initial_signature_admission",
+     "cross_mint_start_and_continue_gates_are_independent",
+     "cross_mint_manual_closure_requires_evidence"] - $passed | length == 0
+' "$lifecycle_artifact" >/dev/null || fail "required cross-mint lifecycle evidence missing"
+
+# These live-gated store tests are safe only against this disposable database.
+store_test_log="$scratch/cross-mint-store.log"
+if ! CROSS_MINT_STORE_TEST_DATABASE_URL="$lifecycle_database_url" cargo test --locked \
+  -p loyal-yield-store --test cross_mint_movement_db --test cross_mint_swap_policy_db \
+  -- --ignored --nocapture >"$store_test_log" 2>&1; then
+  python3 -c 'import sys; print(open(sys.argv[1]).read())' "$store_test_log" >&2
+  fail "cross-mint store integration tests failed"
+fi
+python3 - "$store_test_log" <<'PY'
+import re, sys
+text = open(sys.argv[1]).read()
+required = {"finalized_effects_drive_custody_parent_and_capacity_lifecycle",
+            "one_row_policy_catalog_is_finality_and_ambiguity_safe",
+            "per_vault_opt_in_is_only_intent_and_disable_is_committed"}
+passed = set(re.findall(r"^test (\w+) \.\.\. ok$", text, re.MULTILINE))
+if required - passed or "skipping:" in text or re.search(r"[1-9][0-9]* ignored", text):
+    print(text, file=sys.stderr)
+    raise SystemExit("FAIL: missing or skipped cross-mint store evidence")
+print("PASS: all three cross-mint custody/capacity, policy, and opt-in store tests executed")
+PY
+
 for role_command in \
   "target/debug/same-mint-reserve-swap --fleet-worker execute --role-probe" \
   "target/debug/fleet-route-confirmer --role-probe" \
@@ -142,6 +184,7 @@ for role_command in \
 done
 
 echo "PASS: loopback RPC -> Go planner -> durable revalidate; separate Go store tests verify prepared handoff"
+echo "PASS: actual Go/Rust KLend proxy builds separate cross-mint legs and rejects wrong-lane requests"
 echo "PASS: cross-mint claims use the immutable bound withdraw policy when it differs from the active base policy"
 echo "PASS: blocked mint coverage does not stop healthy-mint planning and failed passes do not refresh planner health"
 echo "PASS: live capacity reservations survive terminal queue state and are counted exactly once"
