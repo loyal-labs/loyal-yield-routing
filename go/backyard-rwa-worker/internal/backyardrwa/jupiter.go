@@ -100,6 +100,13 @@ func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMin
 	if lane == "" {
 		lane = RouteID
 	}
+	if catalogJupiterRoute(lane) {
+		b, err := catalogJupiterBindingForRoute(action, lane)
+		return b.SourceMint, b.DestinationMint, b.SourceCustody, b.DestinationCustody, err
+	}
+	if lane != RouteID && lane != PhaseOneLaneID && lane != SelectedRouteID {
+		return "", "", "", "", fmt.Errorf("unregistered Jupiter lane")
+	}
 	if lane == SelectedRouteID {
 		switch action {
 		case SwapStableToCollateralStep, SwapUSDCToPrimeStep:
@@ -159,9 +166,17 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 	if err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
 	}
+	useSharedAccounts := true
+	if catalogJupiterRoute(lane) {
+		binding, err := catalogJupiterBindingForRoute(action, lane)
+		if err != nil {
+			return JupiterQuote{}, JupiterSwapInstruction{}, err
+		}
+		useSharedAccounts = binding.DiscriminatorHex == "c1209b3341d69c81"
+	}
 	body, err := json.Marshal(map[string]any{
 		"userPublicKey": bridgeVault, "quoteResponse": json.RawMessage(quoteRaw),
-		"wrapAndUnwrapSol": false, "useSharedAccounts": true, "dynamicComputeUnitLimit": false,
+		"wrapAndUnwrapSol": false, "useSharedAccounts": useSharedAccounts, "dynamicComputeUnitLimit": false,
 	})
 	if err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
@@ -191,8 +206,10 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 	if _, err := validateJupiterInstructionForRoute(response.SwapInstruction, action, amount, out, minimum, lane); err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
 	}
-	if err := validateInstalledJupiterHeader(action, response.SwapInstruction); err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, err
+	if !catalogJupiterRoute(lane) {
+		if err := validateInstalledJupiterHeader(action, response.SwapInstruction); err != nil {
+			return JupiterQuote{}, JupiterSwapInstruction{}, err
+		}
 	}
 	return quote, response.SwapInstruction, nil
 }
@@ -277,6 +294,9 @@ func validateJupiterInstruction(value JupiterSwapInstruction, action Action, amo
 }
 
 func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Action, amount, out, minimum uint64, lane string) (compiledInstruction, error) {
+	if catalogJupiterRoute(lane) {
+		return validateCatalogJupiterInstruction(value, action, amount, out, minimum, lane)
+	}
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(action, lane)
 	if err != nil {
 		return compiledInstruction{}, err
@@ -360,7 +380,12 @@ func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publi
 	if err != nil {
 		return nil, err
 	}
-	if err = validateInstalledJupiterHeader(request.Action, request.Instruction); err != nil {
+	if catalogJupiterRoute(request.RouteLane) {
+		b, err := catalogJupiterBindingForRoute(request.Action, request.RouteLane)
+		if err != nil || request.Policy != b.Policy || request.PolicyAccountDataSHA256 != b.PolicySHA256 || request.PolicyConstraintIndex != b.ConstraintIndex {
+			return nil, fmt.Errorf("Jupiter policy does not match catalog edge")
+		}
+	} else if err = validateInstalledJupiterHeader(request.Action, request.Instruction); err != nil {
 		return nil, err
 	}
 	policy, err := decodeKey(request.Policy)

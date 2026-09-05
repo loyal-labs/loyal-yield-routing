@@ -7,7 +7,7 @@ import (
 )
 
 func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, client *jupiterClient) (Observation, JupiterExecutionEvidence, error) {
-	if rpc == nil || client == nil || (decision.Action != SwapUSDCToPrimeStep && decision.Action != SwapPrimeToUSDCStep && decision.Action != SwapStableToCollateralStep && decision.Action != SwapCollateralToStableStep) || decision.AmountRaw <= 0 {
+	if rpc == nil || client == nil || decision.AmountRaw <= 0 {
 		return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter evidence request")
 	}
 	binding, err := manifest.jupiterPolicyForRoute(decision.Action, decision.StrategyKey)
@@ -24,12 +24,23 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 				fmt.Errorf("actionable decision changed before Jupiter construction"),
 			)
 		}
-		sourceMint, destinationMint, sourceATA, destinationATA, _ := jupiterEdgeForRoute(decision.Action, decision.StrategyKey)
+		sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(decision.Action, decision.StrategyKey)
+		if err != nil {
+			return Observation{}, JupiterExecutionEvidence{}, err
+		}
+		sourceProgram, destinationProgram := bridgeTokenProgram, bridgeTokenProgram
+		if catalogJupiterRoute(decision.StrategyKey) {
+			edge, err := catalogJupiterBindingForRoute(decision.Action, decision.StrategyKey)
+			if err != nil {
+				return Observation{}, JupiterExecutionEvidence{}, err
+			}
+			sourceProgram, destinationProgram = edge.SourceTokenProgram, edge.DestinationTokenProgram
+		}
 		policy := accountAt(accounts, binding.Policy)
 		if policy.Owner != bridgeSquadsProgram || policy.Executable || policy.Lamports == 0 || sha256Bytes(policy.Data) != binding.PolicyAccountDataSHA256 {
 			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("Jupiter policy bytes or owner drifted")
 		}
-		decode := func(address, mint string) (uint64, error) {
+		decode := func(address, mint, program string) (uint64, error) {
 			mintKey, err := decodeBase58PublicKey(mint)
 			if err != nil {
 				return 0, err
@@ -40,16 +51,16 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 			}
 			account := accountAt(accounts, address)
 			custody, err := DecodeTokenCustody(account.Owner, account.Data, mintKey, authority)
-			if err != nil || account.Address != address || account.Owner != bridgeTokenProgram || account.Executable || account.Lamports == 0 {
+			if err != nil || account.Address != address || account.Owner != program || account.Executable || account.Lamports == 0 {
 				return 0, fmt.Errorf("Jupiter custody %s drifted: %w", address, err)
 			}
 			return custody.Raw, nil
 		}
-		sourceRaw, err := decode(sourceATA, sourceMint)
+		sourceRaw, err := decode(sourceATA, sourceMint, sourceProgram)
 		if err != nil {
 			return Observation{}, JupiterExecutionEvidence{}, err
 		}
-		destinationRaw, err := decode(destinationATA, destinationMint)
+		destinationRaw, err := decode(destinationATA, destinationMint, destinationProgram)
 		if err != nil {
 			return Observation{}, JupiterExecutionEvidence{}, err
 		}
@@ -81,8 +92,8 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 		return observation, JupiterExecutionEvidence{
 			Request: JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: binding.Policy, PolicyAccountDataSHA256: binding.PolicyAccountDataSHA256, PolicyConstraintIndex: constraintIndex, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: decision.StrategyKey},
 			ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Conserved: false, Accounts: []ExpectedAccountEffect{
-				{Address: sourceATA, Owner: bridgeTokenProgram, Mint: sourceMint, Authority: bridgeVault, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
-				{Address: destinationATA, Owner: bridgeTokenProgram, Mint: destinationMint, Authority: bridgeVault, BeforeRaw: destinationRaw, AfterRaw: minimumAfter, MinimumAfterRaw: &minimumAfter},
+				{Address: sourceATA, Owner: sourceProgram, Mint: sourceMint, Authority: bridgeVault, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
+				{Address: destinationATA, Owner: destinationProgram, Mint: destinationMint, Authority: bridgeVault, BeforeRaw: destinationRaw, AfterRaw: minimumAfter, MinimumAfterRaw: &minimumAfter},
 			}},
 		}, nil
 	}

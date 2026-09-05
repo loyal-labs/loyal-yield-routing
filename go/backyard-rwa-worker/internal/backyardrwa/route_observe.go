@@ -58,6 +58,14 @@ func optionalLifecycleObligations(addresses []string) []string {
 			break
 		}
 	}
+	for _, obligation := range []string{autoAUTOPYUSD.Kamino.Obligation, ethenaUSDePYUSD.Kamino.Obligation} {
+		for _, candidate := range addresses {
+			if candidate == obligation {
+				optional = append(optional, obligation)
+				break
+			}
+		}
+	}
 	return optional
 }
 
@@ -241,6 +249,17 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 		return nil
 	}
 	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
+	if catalogJupiterRoute(route.Lane) {
+		policies, err := catalogRoutePolicyHashes(route, manifest)
+		if err != nil {
+			return nil
+		}
+		for address := range policies {
+			addressSet[address] = struct{}{}
+		}
+		addressSet[route.CollateralLiquiditySupply] = struct{}{}
+		addressSet[route.DebtLiquiditySupply] = struct{}{}
+	}
 	if route.Lane == SelectedRouteID {
 		addressSet[mapleSyrupUSDCUSDC.CollateralLiquiditySupply] = struct{}{}
 		addressSet[mapleSyrupUSDCUSDC.DebtLiquiditySupply] = struct{}{}
@@ -268,6 +287,19 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 }
 
 func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount) (bool, bool) {
+	if catalogJupiterRoute(route.Lane) {
+		policies, err := catalogRoutePolicyHashes(route, manifest)
+		if err != nil {
+			return false, false
+		}
+		for address, hash := range policies {
+			account := accountAt(accounts, address)
+			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+				return false, false
+			}
+		}
+		return true, true
+	}
 	if route.Lane == RouteID {
 		return manifest.livePrimeUSDCPolicyReadiness(accounts)
 	}

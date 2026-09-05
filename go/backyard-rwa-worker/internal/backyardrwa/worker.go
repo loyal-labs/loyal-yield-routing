@@ -167,9 +167,9 @@ func (w *Worker) Tick(ctx context.Context) error {
 	switch executionDecision {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 		observation, bridgeEvidence, err = w.runtime.prepareBridge(ctx, w.manifest, wireDecision)
-	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep:
+	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
 		observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, wireDecision)
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep:
+	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
 		observation, jupiterEvidence, err = w.runtime.prepareJupiter(ctx, w.manifest, wireDecision)
 	default:
 		return fmt.Errorf("action %s is not dispatchable", decision.Action)
@@ -194,9 +194,9 @@ func (w *Worker) Tick(ctx context.Context) error {
 	switch executionDecision {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 		err = w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
-	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep:
+	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
 		err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep:
+	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
 		err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
 	default:
 		return fmt.Errorf("prepared evidence no longer matches an actionable decision")

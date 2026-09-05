@@ -125,6 +125,9 @@ func neutralizeRouteAction(decision Decision) Decision {
 }
 
 func fixedRouteAction(action Action, lane string) (Action, error) {
+	if catalogJupiterRoute(lane) {
+		return action, nil
+	}
 	if lane == RouteID || lane == "" {
 		return action, nil
 	}

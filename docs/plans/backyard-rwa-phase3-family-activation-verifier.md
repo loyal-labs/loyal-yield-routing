@@ -256,6 +256,15 @@ The disposable journal witness also checks NAV/manual-recovery handling for
 debt conversions. Neither observation establishes Jupiter dispatch, executable
 exit-cost admission, real-program state transitions or deployed support.
 
+Jupiter integration checkpoint: ten unique AUTO/Ethena conversion samples now
+exercise installed edge-specific layouts, controlled API responses, identity
+mutations and worker dispatch. The verifier separately measures the compiled
+Squads legacy packet envelope. Nine fit; retained USDe -> PYUSD is 1,399 bytes
+and is rejected above 1,232. Layout/dispatch success cannot conceal this failed
+exit-packet measurement. Lookup-table-backed construction or a fresh compatible
+route, actual execution and complete exit admission remain required; no limits
+or acceptance conditions change.
+
 ### R04 — batched lane proof with explicit simulation boundaries
 
 For all 11 lanes prove builder bytes, discriminators, accounts/signers,

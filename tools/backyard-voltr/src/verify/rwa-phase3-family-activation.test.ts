@@ -1,7 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { exactSet, measuredCondition, localCapTestProof } from "./rwa-phase3-family-activation.js";
+import { exactSet, measuredCondition, localCapTestProof, catalogJupiterPacketProof } from "./rwa-phase3-family-activation.js";
 
 describe("Phase 3 measured verifier", () => {
+  test("packet coverage distinguishes an oversized witnessed exit from missing or forged measurements",()=>{
+    const rows=[...["USDC->AUTO","AUTO->USDC","PYUSD->AUTO","AUTO->PYUSD","USDC->PYUSD","PYUSD->USDC"].map(edge=>({lane:"AUTO/AUTO/PYUSD",edge,packetBytes:900,fits:true})),
+      ...["USDC->USDe","USDe->USDC","PYUSD->USDe","USDe->PYUSD","USDC->PYUSD","PYUSD->USDC"].map(edge=>({lane:"Ethena/USDe/PYUSD",edge,packetBytes:edge==="USDe->PYUSD"?1399:900,fits:edge!=="USDe->PYUSD"}))];
+    const encode=(values:unknown[])=>values.map(row=>JSON.stringify({Action:"output",Test:"TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations/lane/edge",Output:"file.go:1: PHASE3_JUPITER_PACKET "+JSON.stringify(row)+"\n"})).join("\n");
+    expect(catalogJupiterPacketProof(encode(rows))).toMatchObject({complete:true,allFit:false});
+    expect(catalogJupiterPacketProof(encode(rows.slice(1))).complete).toBe(false);
+    expect(catalogJupiterPacketProof(encode([...rows,rows[0]])).complete).toBe(false);
+    expect(catalogJupiterPacketProof(encode(rows.map(r=>({...r,fits:true})))).complete).toBe(false);
+    expect(catalogJupiterPacketProof("").allFit).toBe(false);
+  });
   test("rejects missing, duplicate, extra and substituted lane identities", () => {
     expect(exactSet(["a","b"],["b","a"])).toBe(true);
     for (const candidate of [[],["a"],["a","a"],["a","b","c"],["a","c"],null])

@@ -5,7 +5,39 @@ That file alone defines acceptance; this handoff supplies implementation order.
 The operator requested the revision to remove late cap/proof blockers and ship
 all catalogued markets through one shared implementation.
 
-## Current checkpoint — non-USDC decisions and exit sizing, 2026-09-04
+## Current checkpoint — Jupiter conversion integration, 2026-09-04
+
+AUTO/Ethena's six conversion action types now dispatch through the existing
+worker prepare -> journal -> build path without changing their identities.
+The ten unique conversion bindings were extracted from retained compiled and
+installed policy evidence, with matching policy hashes in the retained Phase 3
+binding snapshot. No policy creation, replacement or live activation occurred.
+
+The production Jupiter client selects the installed shared-account or ordinary
+Route family. Validation uses each edge's exact authority, custody, mint,
+classic/Token-2022 program, discriminator, amount/slippage/fee offsets and policy
+constraint index. The old Prime/Maple paths remain intact; unknown lanes no
+longer inherit Prime quote or policy bindings. Preparation preserves the exact
+token programs in its expected effects. Observation gathers the conversion and
+Kamino policy graph; policy availability is not quote/packet/exit-admission proof.
+
+The retained SDK instruction samples pass the production client/validator with
+controlled API responses and reject boundary mutations. Actual unsigned Squads
+legacy packet measurements expose one remaining construction failure:
+USDe -> PYUSD is 1,399 bytes, exceeding 1,232. The other nine unique samples fit
+(860–1,206 bytes). The compiler rejects the oversized packet; it is not counted
+as a successful construction. The sole verifier records both the passing layout
+and dispatch subclaim and the failing full-sample packet-fit subclaim in
+`docs/evidence/backyard-rwa-go/phase3/jupiter-conversions-2026-09-04.json`.
+
+Next resolve packet fit through reviewed existing lookup tables/versioned
+construction or a fresh policy-compatible route, then finish exact executable
+exit/setup costs and production reservation admission. Do not confuse controlled
+API/dispatch tests with program execution or live liquidity. The selection
+manifest remains unchanged, all full R01-R08 conditions remain incomplete, and
+there was no signing, deployment, production database mutation or broadcast.
+
+## Prior checkpoint — non-USDC decisions and exit sizing, 2026-09-04
 
 The production decision entrypoint now has a non-USDC single-loop path for
 registered AUTO/Ethena bindings. It distinguishes bridge USDC, idle debt and

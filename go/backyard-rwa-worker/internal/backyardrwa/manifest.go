@@ -147,6 +147,7 @@ type SelectedLaneBinding struct {
 }
 
 type JupiterPolicyBinding struct {
+	CatalogLane             string                     `json:"catalogLane,omitempty"`
 	Action                  Action                     `json:"action"`
 	Policy                  string                     `json:"policy"`
 	PolicyAccountDataSHA256 string                     `json:"policyAccountDataSha256"`
@@ -190,6 +191,17 @@ func (m RouteManifest) jupiterPolicy(action Action) (JupiterPolicyBinding, error
 }
 
 func (m RouteManifest) jupiterPolicyForRoute(action Action, lane string) (JupiterPolicyBinding, error) {
+	if catalogJupiterRoute(lane) {
+		b, err := catalogJupiterBindingForRoute(action, lane)
+		if err != nil {
+			return JupiterPolicyBinding{}, err
+		}
+		return JupiterPolicyBinding{CatalogLane: lane, Action: action, Policy: b.Policy, PolicyAccountDataSHA256: b.PolicySHA256,
+			PolicyConstraintIndex: b.ConstraintIndex, InstructionDataLength: b.FeeOffset + 1, AmountOffset: b.AmountOffset}, nil
+	}
+	if lane != "" && lane != RouteID && lane != PhaseOneLaneID && lane != SelectedRouteID {
+		return JupiterPolicyBinding{}, fmt.Errorf("unregistered Jupiter policy lane")
+	}
 	if lane == SelectedRouteID {
 		mapped := action
 		if action == SwapStableToCollateralStep {
@@ -224,6 +236,13 @@ func (b JupiterPolicyBinding) constraintIndex(instruction JupiterSwapInstruction
 	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
 	if err != nil || len(data) != b.InstructionDataLength || b.AmountOffset != len(data)-19 {
 		return 0, fmt.Errorf("fresh Jupiter header does not match the manifest binding")
+	}
+	if b.CatalogLane != "" {
+		bound, err := catalogJupiterBindingForRoute(b.Action, b.CatalogLane)
+		if err != nil || b.Policy != bound.Policy || b.PolicyAccountDataSHA256 != bound.PolicySHA256 || b.PolicyConstraintIndex != bound.ConstraintIndex {
+			return 0, fmt.Errorf("Jupiter catalog policy changed")
+		}
+		return bound.ConstraintIndex, nil
 	}
 	if b.Action == SwapPrimeToUSDCStep {
 		return b.PolicyConstraintIndex, nil
