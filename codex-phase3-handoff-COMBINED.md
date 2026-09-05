@@ -177,3 +177,9 @@ Fresh state confirms ONyc/USDe use 9 decimals. PYUSD/USDG include Token-2022
 extensions, currently disabled transfer hooks and zero transfer-fee schedules;
 decode and recheck these settings in production rather than assuming plain SPL
 accounts. Non-USDC debt custody/NAV/conversion is still unfinished.
+The shared custody decoder now accepts the Token-2022 account ABI for
+ImmutableOwner, zero TransferFeeAmount and inactive TransferHookAccount, while
+rejecting unknown/duplicate/truncated extensions, wrong account types, withheld
+fees and active hook state. This is an account-side compatibility change only:
+fresh mint-level fee schedules/hooks, exact lane binding and non-USDC NAV are
+still required before those lanes can execute or advertise readiness.
