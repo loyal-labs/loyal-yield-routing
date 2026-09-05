@@ -161,7 +161,7 @@ async function localSequentialKaminoObservation(): Promise<Observation> {
   }catch{return {status:"BLOCKED",source,reason:"LOCAL_SEQUENTIAL_KAMINO_PROBE_UNAVAILABLE"};}
 }
 async function localSendJournalObservation(): Promise<Observation> {
-  const source="disposable PostgreSQL initialization, final-send, expiry, atomic unsigned setup refresh, finalized prefund/creation settlement, fence release and actual migration constraints";
+  const source="disposable PostgreSQL initialization, final-send, expiry, unsigned and funded-creation setup refresh, finalized prefund/creation settlement, fence release and actual migration constraints";
   if (!process.env.PHASE3_TEST_DATABASE_URL) return {status:"BLOCKED",source,reason:"DISPOSABLE_TEST_DATABASE_NOT_CONFIGURED"};
   // The selected test itself rejects any non-disposable connection. Production
   // DB credentials are never used to initialize or mutate this test fixture.
@@ -174,6 +174,8 @@ async function localSendJournalObservation(): Promise<Observation> {
       "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/direct_creation_settles_and_releases_fence",
       "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/payment_authorization_preserves_setup_budget",
       "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/unsigned_refresh_is_atomic_and_preserves_lifetime_spend",
+      "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/finalized_prefund_advances_atomically_without_duplicate_funding/unpaid_creation_refresh_preserves_finalized_prefund",
+      "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/finalized_prefund_advances_atomically_without_duplicate_funding/unpaid_creation_refresh_preserves_finalized_prefund/refreshed_creation_settles",
     ]));
   if (result.data) {
     result.data.pass=result.data.pass===true&&result.data.witness?.pass===true;
@@ -707,7 +709,7 @@ export async function verify() {
       observedCheck(localCaps,"local production builders reject fresh over-cap costs before signing and reject stale valuation",d=>d.pass===true),
       observedCheck(localBridgeAdmission,"cash-only bridge admission prices staging, full restoration and each required NAV; rejects unsupported exposure and prevents build after HOLD",d=>d.pass===true),
       observedCheck(localWithdrawalAdmission,"initial swap/deposit/borrow, leveraged swap and debt-bearing redeposit reserve complete returns from validated poststate; funding continuations preserve residue and reject underfunding/custody drift; linked worker execution is separately unproven",d=>d.pass===true),
-      observedCheck(localSendJournal,"one-time budget initialization and atomic unsigned setup refresh preserve lifetime spend, restart and lease fencing; signed/partially funded setup cannot refresh; local journal reprices before send and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
+      observedCheck(localSendJournal,"initial setup and unpaid creation refresh preserve lifetime spend, finalized prefund, restart and lease fencing; signed setup cannot refresh; refreshed creation settles without repeating prefunding; local journal reprices before send and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
     ],[
       "End-to-end worker execution of the leveraged entry and full return, setup and verified production budget initialization; local bookkeeping/admission/continuation checks do not prove activation or the complete deployed lifecycle. All-lane admission remains unproven.",
       "Complete admission/send witnesses beyond local controlled-input build rejection: concurrency, restart, ambiguity, final-send freshness and successful reserved unwind.",

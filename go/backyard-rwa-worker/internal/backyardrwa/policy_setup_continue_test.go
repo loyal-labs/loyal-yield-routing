@@ -89,6 +89,12 @@ func setupCompletionRPC(t *testing.T, plan policySetupObservation, op PersistedO
 			}
 		case "getLatestBlockhash":
 			result = map[string]any{"context": map[string]int{"slot": 42}, "value": map[string]any{"blockhash": bridgeUSDC, "lastValidBlockHeight": 199}}
+			if drift == "refresh" {
+				result = map[string]any{"context": map[string]int{"slot": 42}, "value": map[string]any{"blockhash": bridgeDelegate, "lastValidBlockHeight": 299}}
+			}
+			if drift == "refresh again" {
+				result = map[string]any{"context": map[string]int{"slot": 42}, "value": map[string]any{"blockhash": bridgeSettings, "lastValidBlockHeight": 399}}
+			}
 		case "getMultipleAccounts":
 			var addresses []string
 			var config map[string]any
@@ -128,10 +134,15 @@ func setupCompletionRPC(t *testing.T, plan policySetupObservation, op PersistedO
 				map[string]any{"owner": "11111111111111111111111111111111", "lamports": balance, "data": []string{"", "base64"}}, target,
 			}}
 		case "getMinimumBalanceForRentExemption":
-			if drift != "over cap" {
+			if drift == "refresh" {
+				result = plan.RentLamports + 100_000
+			} else if drift == "refresh again" {
+				result = plan.RentLamports + 200_000
+			} else if drift != "over cap" {
 				return base.RoundTrip(request)
+			} else {
+				result = uint64(30_000_000)
 			}
-			result = uint64(30_000_000)
 		default:
 			return base.RoundTrip(request)
 		}

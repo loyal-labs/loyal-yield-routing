@@ -193,6 +193,9 @@ func testPolicySetupDurability(t *testing.T, url string) {
 				}
 			})
 		}
+		t.Run("unpaid creation refresh preserves finalized prefund", func(t *testing.T) {
+			testPolicySetupCompletionRefresh(t, ctx, db, plan, prepare)
+		})
 		op := prepare(t)
 		var wg sync.WaitGroup
 		errs := make(chan error, 2)

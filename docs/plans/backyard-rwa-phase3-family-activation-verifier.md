@@ -1557,3 +1557,30 @@ The preceding refresh snapshot retains a failing test-observation decoding case,
 corrected by clearing a reused map before decoding the next database snapshot.
 All eight top-level conditions remain FAIL. No production mutation occurred;
 the full implementation goal remains active.
+
+#### Unpaid creation refresh after finalized prefunding — 2026-09-05
+
+The unsigned creation continuation now refreshes its blockhash, remaining rent
+and fee valuation under the same route lock. It keeps the deterministic child
+operation and original finalized prefund unchanged. Only the unspent creation
+reservation is replaced, consuming the original one-payment recovery allowance;
+family and goal spend are not reset. The previous unsigned completion is retained
+in that operation's evidence. Stale callers cannot overwrite a later generation.
+
+The method rechecks the exact finalized prefund wire/native deltas and current
+funded PDA/Settings, and rejects any signing evidence, changed prefund, missing
+parent finality, over-cap payment or lost lease. Failure leaves both journal rows
+and reservations unchanged. Local PostgreSQL tests cover concurrent refresh,
+restart, older-parent replay and refreshed creation through terminal settlement.
+The sole verifier requires both refresh and subsequent settlement witnesses.
+
+This is still a local recovery component, not an enabled signer/coordinator or
+proof of live setup. Signed-creation expiry handling, setup build/simulation/sign
+integration, the five unresolved runtime bindings and all final deployment/canary
+requirements remain. The initial-intent refresh cannot cancel a funded setup.
+
+Checkpoint `phase3/funded-creation-refresh-2026-09-05.json.gz` has gzip SHA256
+`8781d0de50002b82f9e6ff7d72c3912f9f3a14ec786e8563abd3277dcf5ba92e`.
+All nine named local journal witnesses pass; targeted setup/journal race tests
+pass (14.689s), as do TypeScript checking and 12 verifier tests. R01–R08 remain
+FAIL overall. No production signing, broadcast, migration or deployment occurred.
