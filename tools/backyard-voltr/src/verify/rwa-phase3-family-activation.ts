@@ -99,6 +99,15 @@ async function localKaminoConstructionObservation(): Promise<Observation> {
   }
   return result;
 }
+async function localDebtDecisionObservation(): Promise<Observation> {
+  const result=await localCapObservation([
+    "TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate",
+    "TestNonUSDCLifecycleSafetyPrecedence",
+    "TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity",
+  ],"non-USDC lifecycle decisions and fixed-account valuation with controlled inputs");
+  if (result.data) result.data.proofLevel="LOCAL_PRODUCTION_DECISIONS_AND_ACCOUNT_DECODING_NOT_EXECUTED_LIFECYCLE";
+  return result;
+}
 async function rpc(method: string, params: unknown[] = []): Promise<any> {
   const endpoint = process.env.SOLANA_RPC_URL;
   if (!endpoint) throw new Error("RPC_CREDENTIAL_MISSING");
@@ -317,8 +326,8 @@ export async function verify() {
   const catalogLanes = catalog.lanes.map((l: Json) => [l.market,l.collateral,l.debt].join("/"));
   const active = manifest.runtimeActivation?.runtimeRoutes ?? [];
   const offline = process.argv.includes("--offline");
-  const [runtime,localCaps,localSendJournal,localKaminoConstruction] = await Promise.all([
-    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localKaminoConstructionObservation()]);
+  const [runtime,localCaps,localSendJournal,localKaminoConstruction,localDebtDecisions] = await Promise.all([
+    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localKaminoConstructionObservation(),localDebtDecisionObservation()]);
   const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
   const [chain,database,deployment,setupRent] = offline
     ? ["Solana RPC","Postgres","Render","setup rent feasibility"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
@@ -343,6 +352,7 @@ export async function verify() {
     ],["Durable three-family queue with reviewed identity bindings and in-family-only flat substitution behavior."]),
     measuredCondition("R03","Shared debt/token/valuation/exit runtime and existing policy authority",[
       observedCheck(localKaminoConstruction,"AUTO/Ethena four-leg unsigned construction matches retained SDK vectors and rejects account/policy substitutions",d=>d.pass===true),
+      observedCheck(localDebtDecisions,"non-USDC planner separates repayment and bridge custody, drains residues, and receives decimal-aware USDC entry capacity",d=>d.pass===true),
       measured("catalog operation and swap-edge cardinality",catalog.operations.length === 44 && catalog.swapEdges.length === 52,
         {operations:catalog.operations.length,swapEdges:catalog.swapEdges.length}),
       observedCheck(chain,"required observed accounts are present",d => Array.isArray(d.accounts) && d.accounts.length > 0 && d.accounts.every((a: Json) => a.present === true)),
@@ -391,7 +401,7 @@ export async function verify() {
     // Existing policy allocations are a diagnostic sample, not a fabricated
     // pass/fail for the complete proposed setup graph. Retain prices, hashes,
     // rent and the explicit new-allocation proof limitation in the snapshot.
-    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localKaminoConstruction},
+    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localKaminoConstruction,localDebtDecisions},
     conditions,
   };
 }

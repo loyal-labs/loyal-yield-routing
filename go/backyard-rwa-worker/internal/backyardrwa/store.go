@@ -31,7 +31,7 @@ const AssertRouteLeaseSQL = `SELECT lease_expires_at FROM loyal_yield.multiply_r
 
 const OperationRouteForLeaseSQL = `SELECT operation.route_key FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key = operation.route_key WHERE operation.operation_id = $1 AND route.lease_owner = $2 AND route.fencing_token = $3 AND route.lease_expires_at > clock_timestamp() FOR UPDATE OF route`
 
-const PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
+const PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
 
 // LatestDecisionEpochSQL advances after a fully reconciled mutation or an
 // explicitly terminal pre-broadcast failure. A confirmed report-only operation
@@ -44,7 +44,7 @@ const LatestDecisionEpochSQL = `SELECT COALESCE((SELECT operation_id FROM loyal_
 // The sole exclusion is the operator-authorized, independently finalized
 // Voltr restore incident. Keep every identity field in this predicate so no
 // other manual recovery becomes executable merely by sharing an action.
-const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') AND NOT (operation_id = 'fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe' AND action = 'VOLTR_RESTORE_IDLE' AND transaction_signature = '46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz' AND confirmed_slot = 444157954 AND recovery_reason = 'exact_effect_reconciliation_failed'))`
+const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') AND NOT (operation_id = 'fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe' AND action = 'VOLTR_RESTORE_IDLE' AND transaction_signature = '46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz' AND confirmed_slot = 444157954 AND recovery_reason = 'exact_effect_reconciliation_failed'))`
 
 const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7, updated_at = now() WHERE operation_id = $1 AND status = 'simulated'`
 
@@ -508,6 +508,7 @@ type routeObservationProjection struct {
 	VoltrIdleRaw         string `json:"voltrIdleRaw"`
 	VoltrStrategyIdleRaw string `json:"voltrStrategyIdleRaw"`
 	SquadsIdleRaw        string `json:"squadsIdleRaw"`
+	DebtIdleRaw          string `json:"debtIdleRaw"`
 	AUMRaw               string `json:"aumRaw"`
 	AUMUSDMicros         string `json:"aumUsdMicros"`
 	NAVRaw               string `json:"navRaw"`
@@ -523,7 +524,7 @@ type routeObservationProjection struct {
 
 func newRouteObservationProjection(observation Observation) (routeObservationProjection, error) {
 	snapshot := observation.Snapshot
-	if snapshot.VoltrIdleRaw < 0 || snapshot.VoltrStrategyIdleRaw < 0 || snapshot.SquadsIdleRaw < 0 ||
+	if snapshot.VoltrIdleRaw < 0 || snapshot.VoltrStrategyIdleRaw < 0 || snapshot.SquadsIdleRaw < 0 || snapshot.DebtIdleRaw < 0 ||
 		snapshot.PositionCollateralRaw < 0 || snapshot.PositionDebtRaw < 0 ||
 		snapshot.PositionCollateralValueRaw < 0 || snapshot.PositionDebtValueRaw < 0 ||
 		snapshot.StrategyNAVRaw < 0 || snapshot.TotalVaultNAVRaw < 0 || snapshot.PriorReportedNAVRaw < 0 ||
@@ -558,7 +559,7 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 	return routeObservationProjection{
 		ObservedSlot: snapshot.Slot, ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano), RouteStatus: status,
 		VoltrIdleRaw: fmt.Sprint(snapshot.VoltrIdleRaw), VoltrStrategyIdleRaw: fmt.Sprint(snapshot.VoltrStrategyIdleRaw),
-		SquadsIdleRaw: fmt.Sprint(snapshot.SquadsIdleRaw), AUMRaw: fmt.Sprint(snapshot.TotalVaultNAVRaw),
+		SquadsIdleRaw: fmt.Sprint(snapshot.SquadsIdleRaw), DebtIdleRaw: fmt.Sprint(snapshot.DebtIdleRaw), AUMRaw: fmt.Sprint(snapshot.TotalVaultNAVRaw),
 		AUMUSDMicros: fmt.Sprint(snapshot.TotalVaultNAVRaw), NAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
 		NAVUSDMicros: fmt.Sprint(snapshot.PriorReportedNAVRaw), ReportedNAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
 		ComputedStrategyNAV: fmt.Sprint(snapshot.StrategyNAVRaw), ReportSequence: snapshot.ReportSequence,

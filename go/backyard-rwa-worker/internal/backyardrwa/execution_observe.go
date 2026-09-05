@@ -349,7 +349,7 @@ func withdrawExcessForRepayment(position KaminoPosition) (uint64, uint64, error)
 	if position.CollateralDepositedRaw == 0 || position.RedeemablePrimeRaw == 0 || position.DebtRaw == 0 {
 		return 0, 0, fmt.Errorf("position has no withdrawable repayment collateral")
 	}
-	debtValue, err := valueInDebtRaw(position.DebtRaw, position.DebtPriceSF, position.DebtPriceSF, true)
+	debtValue, err := valueBetweenTokenRaw(position.DebtRaw, position.DebtDecimals, position.DebtDecimals, position.DebtPriceSF, position.DebtPriceSF, true)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -359,7 +359,7 @@ func withdrawExcessForRepayment(position KaminoPosition) (uint64, uint64, error)
 	if !requiredDebtValue.IsUint64() {
 		return 0, 0, fmt.Errorf("required unwind collateral exceeds u64")
 	}
-	requiredPrime, err := valueInDebtRaw(requiredDebtValue.Uint64(), position.DebtPriceSF, position.CollateralPriceSF, true)
+	requiredPrime, err := valueBetweenTokenRaw(requiredDebtValue.Uint64(), position.DebtDecimals, position.CollateralDecimals, position.DebtPriceSF, position.CollateralPriceSF, true)
 	if err != nil {
 		return 0, 0, err
 	}

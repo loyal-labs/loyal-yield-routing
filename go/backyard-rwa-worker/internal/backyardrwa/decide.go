@@ -4,8 +4,12 @@ import "fmt"
 
 // Decide resolves the already-frozen lane carried by the confirmed
 // observation. It does not choose a lane; observations for any lane outside
-// the two manifest-approved routes fail closed.
+// the registered routes fail closed. Registration does not enable the live
+// selection manifest or replace policy/exit/admission checks.
 func Decide(s Snapshot) Decision {
+	if route, err := runtimeRoute(s.RouteLane); err == nil && route.Kamino.DebtMint != bridgeUSDC && len(route.KaminoPolicies) == 4 {
+		return decideNonUSDC(s)
+	}
 	if s.RouteLane == SelectedRouteID {
 		if s.CollateralIdleRaw >= 0 {
 			s.PrimeIdleRaw = s.CollateralIdleRaw

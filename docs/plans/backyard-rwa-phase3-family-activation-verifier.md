@@ -248,6 +248,14 @@ the selection manifest is unchanged. This subclaim does not establish fresh
 oracle/refresh correctness, program execution, complete entry/exit support or
 live activation. R03 and the all-eleven R02/R04 requirements remain unchanged.
 
+The subsequent local planner/account-decoder measurement covers separate idle
+debt, bridge-USDC entry capacity, decimal-aware LTV and safe collateral release,
+repayment/conversion precedence and a flat terminal drain. Its proof level is
+`LOCAL_PRODUCTION_DECISIONS_AND_ACCOUNT_DECODING_NOT_EXECUTED_LIFECYCLE`.
+The disposable journal witness also checks NAV/manual-recovery handling for
+debt conversions. Neither observation establishes Jupiter dispatch, executable
+exit-cost admission, real-program state transitions or deployed support.
+
 ### R04 — batched lane proof with explicit simulation boundaries
 
 For all 11 lanes prove builder bytes, discriminators, accounts/signers,

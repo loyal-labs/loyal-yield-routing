@@ -5,7 +5,38 @@ That file alone defines acceptance; this handoff supplies implementation order.
 The operator requested the revision to remove late cap/proof blockers and ship
 all catalogued markets through one shared implementation.
 
-## Current checkpoint — AUTO/Ethena construction, 2026-09-04
+## Current checkpoint — non-USDC decisions and exit sizing, 2026-09-04
+
+The production decision entrypoint now has a non-USDC single-loop path for
+registered AUTO/Ethena bindings. It distinguishes bridge USDC, idle debt and
+idle collateral through entry, repayment, conversion of both residues, full
+staging/restoration and terminal NAV. A drain does not terminate just because
+Voltr idle covers the withdrawal. Hard-LTV repayment and unresolved-operation
+recovery retain precedence; missing entry policy/exit readiness prevents funding.
+This is planner behavior, not an executed lifecycle or reservation producer.
+
+The fixed-account observation now carries reserve decimals into borrowing,
+normalizes debt-denominated capacity into bridge USDC, and retains idle debt
+in the decision snapshot and durable observation projection. LTV now includes
+decimal scales and rounds risk upward. Safe repayment-collateral release uses
+debt-to-collateral decimal conversion; a controlled 9/6-decimal fixture proves
+unsafe release rejection and the actual builder's bounded receipt/asset amount.
+
+All four new debt-conversion actions participate in existing journal NAV and
+manual-recovery checks. Withdrawal preempts debt reinvestment before broadcast,
+but does not cancel exit conversions or resend an ambiguous wire. These SQL
+behaviors passed on the disposable PostgreSQL database. The verifier records
+the local planner/account-decoder subclaim separately in
+`docs/evidence/backyard-rwa-go/phase3/debt-decisions-2026-09-04.json`.
+
+Still required on this path: reviewed Jupiter edge/header bindings and dispatch,
+complete executable exit/setup costs and the production reservation producer,
+queue integration, real-program proof and deployment. The new conversion
+actions are deliberately not yet dispatched by the worker; no incomplete path
+is enabled in the unchanged selection manifest. All full R01-R08 conditions
+remain incomplete. No live mutation, signer access or cap change occurred.
+
+## Prior checkpoint — AUTO/Ethena construction, 2026-09-04
 
 The goal remains active and all full R01-R08 conditions remain incomplete.
 Local route resolution now covers four of eleven lanes: retained Prime/USDC

@@ -22,6 +22,10 @@ const (
 	SwapCollateralToStableStep Action = "SWAP_COLLATERAL_TO_STABLE_STEP"
 	OpenRouteStep              Action = "OPEN_ROUTE_STEP"
 	DeleverRouteStep           Action = "DELEVER_ROUTE_STEP"
+	SwapDebtToCollateralStep   Action = "SWAP_DEBT_TO_COLLATERAL_STEP"
+	SwapCollateralToDebtStep   Action = "SWAP_COLLATERAL_TO_DEBT_STEP"
+	SwapUSDCToDebtStep         Action = "SWAP_USDC_TO_DEBT_STEP"
+	SwapDebtToUSDCStep         Action = "SWAP_DEBT_TO_USDC_STEP"
 	StageSquadsToVoltr         Action = "STAGE_SQUADS_TO_VOLTR"
 	VoltrRestoreIdle           Action = "VOLTR_RESTORE_IDLE"
 	ReportNAV                  Action = "REPORT_NAV"
@@ -58,7 +62,10 @@ type Snapshot struct {
 	// CollateralIdleRaw is the selected lane's idle collateral amount. For the
 	// PRIME route it is deliberately left unset and PrimeIdleRaw remains the
 	// compatibility field.
-	CollateralIdleRaw          int64
+	CollateralIdleRaw int64
+	// DebtIdleRaw is in the selected debt mint's raw units. SquadsIdleRaw
+	// remains bridge USDC, even when the lane borrows PYUSD/USDG/USDS.
+	DebtIdleRaw                int64
 	RouteLane                  string
 	StrategyKey                string
 	CutoverDrain               bool
@@ -102,11 +109,21 @@ func (d Decision) Validate() error {
 		return fmt.Errorf("incomplete decision")
 	}
 	neutral := d.Action == SwapStableToCollateralStep || d.Action == SwapCollateralToStableStep || d.Action == OpenRouteStep || d.Action == DeleverRouteStep
-	if neutral && d.StrategyKey != SelectedRouteID {
+	catalog := false
+	if route, err := runtimeRoute(d.StrategyKey); err == nil {
+		catalog = route.Kamino.DebtMint != bridgeUSDC && len(route.KaminoPolicies) == 4
+	}
+	if neutral && d.StrategyKey != SelectedRouteID && !catalog {
 		return fmt.Errorf("route-neutral action requires the selected Phase 2 strategy")
 	}
-	if d.StrategyKey != "" && d.StrategyKey != RouteID && d.StrategyKey != PhaseOneLaneID && d.StrategyKey != SelectedRouteID && d.Action != HoldManualRecovery {
+	if d.StrategyKey != "" && d.StrategyKey != RouteID && d.StrategyKey != PhaseOneLaneID && d.StrategyKey != SelectedRouteID && !catalog && d.Action != HoldManualRecovery {
 		return fmt.Errorf("decision strategy is not installed")
+	}
+	if d.Action == SwapDebtToCollateralStep || d.Action == SwapCollateralToDebtStep || d.Action == SwapUSDCToDebtStep || d.Action == SwapDebtToUSDCStep {
+		if !catalog {
+			return fmt.Errorf("debt conversion requires an exact non-USDC runtime binding")
+		}
+		return nil
 	}
 	switch d.Action {
 	case Hold, RecoverTransaction, VoltrAllocateToSquads, SwapUSDCToPrimeStep,

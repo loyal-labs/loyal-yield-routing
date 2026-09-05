@@ -73,6 +73,7 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	 status text NOT NULL,expected_effects jsonb NOT NULL,signed_wire bytea,broadcast_intent_at timestamptz,
 	 updated_at timestamptz NOT NULL DEFAULT now());
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS recovery_reason text;
+	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS action text;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS strategy_key text;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS transaction_signature text,
 	 ADD COLUMN IF NOT EXISTS confirmed_slot bigint,ADD COLUMN IF NOT EXISTS confirmation_status text,
@@ -443,4 +444,40 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	if json.Unmarshal(persisted, &settled) != nil || len(settled.Reservations) != 0 || settled.Families["OnRe"].SpentMicros != 900_000 || settled.Families["OnRe"].ExitMicros != 3_000_000 {
 		t.Fatal("signed expiry did not preserve gross spend and restore exit headroom")
 	}
+	t.Run("non-USDC conversion journal safety", func(t *testing.T) {
+		tx, err := restarted.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		decisionRoute := key + "-debt-decisions"
+		if _, err = tx.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,'{"generation":1}')`, decisionRoute); err != nil {
+			t.Fatal(err)
+		}
+		for i, action := range []Action{SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
+			id := fmt.Sprintf("%s-%d", decisionRoute, i)
+			if _, err = tx.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,confirmed_slot) VALUES($1,$2,'manual_recovery',$3,'{}',$4)`, id, decisionRoute, action, i*2+1); err != nil {
+				t.Fatal(err)
+			}
+			var blocked, navRequired bool
+			if err = tx.QueryRow(ctx, UnresolvedCapitalRecoverySQL, decisionRoute).Scan(&blocked); err != nil || !blocked {
+				t.Fatalf("ambiguous %s lost capital fence: %v", action, err)
+			}
+			if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled' WHERE operation_id=$1`, id); err != nil {
+				t.Fatal(err)
+			}
+			if err = tx.QueryRow(ctx, UnresolvedCapitalRecoverySQL, decisionRoute).Scan(&blocked); err != nil || blocked {
+				t.Fatalf("reconciled %s retained ambiguity: %v", action, err)
+			}
+			if err = tx.QueryRow(ctx, PostMutationNAVRequiredSQL, decisionRoute).Scan(&navRequired); err != nil || !navRequired {
+				t.Fatalf("%s lost NAV obligation: %v", action, err)
+			}
+			if _, err = tx.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,confirmed_slot) VALUES($1,$2,'reconciled','REPORT_NAV','{}',$3)`, id+"-report", decisionRoute, i*2+2); err != nil {
+				t.Fatal(err)
+			}
+			if err = tx.QueryRow(ctx, PostMutationNAVRequiredSQL, decisionRoute).Scan(&navRequired); err != nil || navRequired {
+				t.Fatalf("later report did not clear %s NAV obligation: %v", action, err)
+			}
+		}
+	})
 }
