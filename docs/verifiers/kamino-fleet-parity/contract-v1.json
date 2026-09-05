@@ -1,63 +1,28 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "fixtureId": "kamino-planner-revalidator-replacement-v1",
   "clock": "2026-01-01T00:00:00Z",
-  "requiredPlannerChecks": [
-    "complete ImmutableMarketEpoch JSON round-trip through Rust",
-    "complete same-mint material frontier with at least three reserves",
-    "identical capacity-aware selection and rejection",
-    "identical canonical execution_plan JSON",
-    "identical rebalance opportunity identity and idempotency key"
+  "scope": "deterministic_planner_and_same_mint_wire",
+  "artifactEvidence": [
+    "computed capacity-aware planner opportunities",
+    "canonical execution_plan JSON and opportunity idempotency keys",
+    "computed same-mint route fingerprint",
+    "exact unsigned Solana v0 message and wire bytes"
   ],
-  "requiredRevalidationCases": [
-    "fresh_route_ready",
-    "fresh_route_fused_execute",
-    "missing_reusable_alt",
-    "oversized_packet",
-    "simulation_failure",
-    "stale_market_epoch",
-    "changed_opportunity_fence",
-    "lost_lease"
+  "separateRequiredLocalGates": [
+    "complete ImmutableMarketEpoch Rust/Go parity",
+    "Go race suite with every required integration test executed and no skipped fleet tests",
+    "guarded opportunity expiry and fresh-epoch recovery",
+    "PostgreSQL-enforced read-only shadow and rejected shadow revalidation",
+    "Go fresh-policy, missing-ALT, oversized-packet, simulation-failure, and identity-fence tests",
+    "Go durable ALT readmission and fused handoff integration tests",
+    "cross-mint immutable withdraw-policy publication and claim integration test",
+    "retained Rust isolated-database lifecycle transition checks and side-effect-free role probes"
   ],
-  "requiredRevalidationEvidence": [
-    "disposition",
-    "queueTransition",
-    "routeFingerprint",
-    "requirementsFingerprint",
-    "altAddresses",
-    "packet",
-    "simulation",
-    "opportunityFence",
-    "marketEpochFence"
-  ],
-  "requiredLifecycleStates": [
-    "revalidate",
-    "ready",
-    "leased",
-    "decision_created",
-    "submitted",
-    "confirmed",
-    "reconciled",
-    "completed"
-  ],
-  "requiredGoOwnedRoles": [
-    "opportunity_planner",
-    "route_revalidator"
-  ],
-  "approvedKlendProxy": {
-    "transport": "stdin_stdout_json_v1",
-    "officialKlendBuilders": true,
-    "networkAccess": false,
-    "databaseAccess": false,
-    "signerAccess": false,
-    "broadcastCapability": false,
-    "binaryDigestRequired": true
-  },
-  "retainedRustRoles": [
-    "executor",
-    "confirmer",
-    "reconciler",
-    "health_projector",
-    "alt_provisioner"
+  "notProvenByArtifacts": [
+    "RPC simulation or real chain execution",
+    "cross-mint end-to-end execution through live Jupiter",
+    "queue transitions or retained lifecycle execution",
+    "production availability, alert delivery, or cutover safety"
   ]
 }

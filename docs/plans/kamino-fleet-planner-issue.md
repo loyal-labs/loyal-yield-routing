@@ -1,5 +1,15 @@
 # Fuse Kamino state ingestion with rebalance planning and remove the standalone planner hop
 
+## September 5 post-merge review correction
+
+This document includes historical scope and verification claims. The current
+rollout procedure is `go/kamino-fleet-planner/README.md`; keep Rust running during
+parallel read-only shadow evaluation. Go now owns the guarded expired-opportunity
+sweep. Schema-v1 parity artifacts overstated runtime/lifecycle coverage and have
+been replaced with computed planner/wire artifacts plus separately enforced
+executable tests. See `docs/verifiers/kamino-fleet-parity/README.md` for exact
+local evidence boundaries; local PASS alone does not authorize cutover.
+
 ## Summary
 
 The rebalance hot path currently crosses a database boundary between Kamino

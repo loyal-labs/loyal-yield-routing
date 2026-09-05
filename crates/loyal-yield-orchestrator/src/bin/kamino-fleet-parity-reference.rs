@@ -1,8 +1,7 @@
 #![recursion_limit = "512"]
-//! Isolated Rust parity oracle for the complete Go fleet planner/revalidator.
-//! It uses Rust's established capacity-aware planner and canonical opportunity
-//! identity, official KLend/Squads builders, Solana's v0 compiler, and a
-//! disposable PostgreSQL lifecycle. It never uses RPC/signers.
+//! Deterministic planner and same-mint wire parity oracle. Uses the established
+//! capacity-aware planner, canonical identity, official KLend/Squads builders,
+//! and Solana v0 compiler. Does not claim RPC or durable lifecycle execution.
 #[path = "loyal-klend-proxy.rs"]
 mod klend_proxy;
 
@@ -29,13 +28,10 @@ use solana_sdk::{
     signature::Signature,
     transaction::VersionedTransaction,
 };
-use sqlx::postgres::PgPoolOptions;
 use std::{collections::HashSet, env, error::Error, fs, str::FromStr};
 
 const MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const ALT: &str = "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu";
 const ROUTE_FP: &str = "44beb1514255da5f9da4a768b75bda05ca048c5ff1233c0332012c04d88aa75a";
-const REQUIREMENTS_FP: &str = "0d78a5244aafdc689c6cda1d9025baf2bbd2c96d024e738d2721c9d25fdcf124";
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -331,19 +327,6 @@ fn planner_artifact(now: DateTime<Utc>, expires: DateTime<Utc>) -> Result<Value,
     Ok(Value::Array(artifacts))
 }
 
-fn case(
-    name: &str,
-    disposition: &str,
-    to: &str,
-    alts: Value,
-    packet: Value,
-    simulation: Value,
-    opp: &str,
-    epoch: &str,
-) -> Value {
-    json!({"name":name,"disposition":disposition,"queueTransition":{"from":"revalidate","to":to},"routeFingerprint":ROUTE_FP,"requirementsFingerprint":REQUIREMENTS_FP,"altAddresses":alts,"packet":packet,"simulation":simulation,"opportunityFence":opp,"marketEpochFence":epoch})
-}
-
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
@@ -359,11 +342,6 @@ async fn run() -> Result<(), Box<dyn Error>> {
         return Err("contract digest mismatch".into());
     }
     let now = DateTime::parse_from_rfc3339(&env::var("KAMINO_PARITY_CLOCK")?)?.with_timezone(&Utc);
-    let db = env::var("KAMINO_PARITY_DATABASE_URL")?;
-    if !db.contains("@127.0.0.1:") {
-        return Err("disposable loopback database required".into());
-    }
-    exercise_lifecycle(&db).await?;
     let route_fixture = fs::read_to_string(
         std::path::Path::new(&contract_path)
             .parent()
@@ -383,140 +361,18 @@ async fn run() -> Result<(), Box<dyn Error>> {
     if computed_route != ROUTE_FP {
         return Err(format!("official KLend route fingerprint drifted: {computed_route}").into());
     }
-    let (_, wire) = compile_reference_wire(&output.route, &request)?;
-    let wire_fingerprint = digest(&wire);
+    let (message, wire) = compile_reference_wire(&output.route, &request)?;
     let expires = now + Duration::minutes(5);
     let opportunities = planner_artifact(now, expires)?;
-    let packet = json!({"sha256":wire_fingerprint,"bytes":wire.len()});
-    let simulation =
-        json!({"succeeded":true,"unitsConsumed":617432,"slot":1001,"wireSha256":wire_fingerprint});
-    let cases = json!([
-        case(
-            "fresh_route_ready",
-            "ready",
-            "ready",
-            json!([ALT]),
-            packet.clone(),
-            simulation.clone(),
-            "current",
-            "current"
-        ),
-        case(
-            "fresh_route_fused_execute",
-            "fused_execute",
-            "leased",
-            json!([ALT]),
-            packet.clone(),
-            simulation.clone(),
-            "current",
-            "current"
-        ),
-        case(
-            "missing_reusable_alt",
-            "waiting_alt",
-            "waiting_alt",
-            json!([]),
-            json!({"sha256":"","bytes":0}),
-            json!({"succeeded":false,"unitsConsumed":0,"error":"missing_reusable_alt"}),
-            "current",
-            "current"
-        ),
-        case(
-            "oversized_packet",
-            "failed",
-            "revalidate",
-            json!([ALT]),
-            json!({"sha256":"","bytes":1233}),
-            json!({"succeeded":false,"unitsConsumed":0,"error":"oversized_packet"}),
-            "current",
-            "current"
-        ),
-        case(
-            "simulation_failure",
-            "failed",
-            "revalidate",
-            json!([ALT]),
-            packet.clone(),
-            json!({"succeeded":false,"unitsConsumed":1,"error":"simulation_failure"}),
-            "current",
-            "current"
-        ),
-        case(
-            "stale_market_epoch",
-            "stale",
-            "stale",
-            json!([]),
-            json!({"sha256":"","bytes":0}),
-            json!({"succeeded":false,"unitsConsumed":0,"error":"stale_market_epoch"}),
-            "current",
-            "stale"
-        ),
-        case(
-            "changed_opportunity_fence",
-            "superseded",
-            "superseded",
-            json!([]),
-            json!({"sha256":"","bytes":0}),
-            json!({"succeeded":false,"unitsConsumed":0,"error":"changed_opportunity_fence"}),
-            "changed",
-            "current"
-        ),
-        case(
-            "lost_lease",
-            "fenced",
-            "revalidate",
-            json!([]),
-            json!({"sha256":"","bytes":0}),
-            json!({"succeeded":false,"unitsConsumed":0,"error":"lost_lease"}),
-            "lost_lease",
-            "current"
-        )
-    ]);
-    let proxy_digest = env::var("KAMINO_PARITY_KLEND_PROXY_SHA256")?;
-    let artifact = json!({"schemaVersion":1,"implementation":"rust","fixture":{"id":"kamino-planner-revalidator-replacement-v1","sha256":contract_digest,"clock":now.to_rfc3339_opts(chrono::SecondsFormat::Secs,true)},
-      "isolation":{"productionCredentialsLoaded":false,"productionDatabaseAccessed":false,"externalRpcAccessed":false,"externalHttpAccessed":false,"transactionBroadcast":false,"outboundNetworkAttempts":0,"databaseKind":"disposable_postgres","rpcKind":"deterministic_loopback"},
-      "topology":{"serviceProcessCount":1,"goOwnedRoles":["opportunity_planner","route_revalidator"],"rustPlannerStarted":false,"rustRevalidatorStarted":false,"argvHandoffUsed":false,"childStdoutHandoffUsed":false,"klendProxyOnlyChild":true,"durablePostgresHandoff":true,"retainedRustRoles":["executor","confirmer","reconciler","health_projector","alt_provisioner"]},
-      "planner":{"marketEpoch":{"optimizerEpochId":7,"fingerprint":"e".repeat(64),"catalogFingerprint":"c".repeat(64),"mintCoverage":[{"mint":MINT,"complete":true}],"reserves":[{"reserve":"reserve-a"},{"reserve":"reserve-b"},{"reserve":"reserve-c"}]},"epochRoundTrip":true,"canonicalExecutionPlans":true,"canonicalOpportunityIdentities":true,"opportunities":opportunities},
-      "revalidator":{"typedInProcessHandoff":true,"childProcessesSpawned":1,"klendProxy":{"officialKlendBuilders":true,"transport":"stdin_stdout_json_v1","networkAccess":false,"databaseAccess":false,"signerAccess":false,"broadcastCapability":false,"binarySha256":proxy_digest},"cases":cases},
-      "lifecycle":{"states":["revalidate","ready","leased","decision_created","submitted","confirmed","reconciled","completed"],"signedWirePersistedBeforeBroadcast":true,"leaseAndConflictFencesAtomic":true,"confirmationObserved":true,"reconciliationObserved":true,"noDuplicateCapitalMovement":true,"terminalState":"completed"}});
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let artifact = json!({
+        "schemaVersion": 2,
+        "implementation": "rust",
+        "scope": "deterministic_planner_and_same_mint_wire",
+        "fixture": {"id":"kamino-planner-revalidator-replacement-v1","sha256":contract_digest,"clock":now.to_rfc3339_opts(chrono::SecondsFormat::Secs,true)},
+        "opportunities": opportunities,
+        "route": {"fingerprint":computed_route,"messageHex":hex(&message),"wireHex":hex(&wire)}
+    });
     println!("{}", serde_json::to_string(&artifact)?);
-    Ok(())
-}
-async fn exercise_lifecycle(url: &str) -> Result<(), Box<dyn Error>> {
-    let pool = PgPoolOptions::new().max_connections(1).connect(url).await?;
-    sqlx::query("CREATE SCHEMA IF NOT EXISTS kamino_parity")
-        .execute(&pool)
-        .await?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS kamino_parity.lifecycle(implementation text,ordinal int,state text,PRIMARY KEY(implementation,ordinal))").execute(&pool).await?;
-    sqlx::query("DELETE FROM kamino_parity.lifecycle WHERE implementation='rust'")
-        .execute(&pool)
-        .await?;
-    for (i, state) in [
-        "revalidate",
-        "ready",
-        "leased",
-        "decision_created",
-        "submitted",
-        "confirmed",
-        "reconciled",
-        "completed",
-    ]
-    .iter()
-    .enumerate()
-    {
-        sqlx::query("INSERT INTO kamino_parity.lifecycle VALUES('rust',$1,$2)")
-            .bind(i as i32)
-            .bind(state)
-            .execute(&pool)
-            .await?;
-    }
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM kamino_parity.lifecycle WHERE implementation='rust'",
-    )
-    .fetch_one(&pool)
-    .await?;
-    if count != 8 {
-        return Err("incomplete durable lifecycle".into());
-    }
     Ok(())
 }
