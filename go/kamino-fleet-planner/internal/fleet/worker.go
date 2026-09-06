@@ -200,9 +200,13 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("resolve optimizer/capacity epoch: %w", err)
 	}
-	vaults, err := w.store.LoadMigratedFleet(ctx, w.config.Cluster, epoch, FleetLoadOptions{DelegatedSigner: w.config.DelegatedSigner, EnableCrossMint: w.config.CrossMintEnabled, CrossMintMaxValueLossBPS: w.config.CrossMintMaxValueLossBPS, OptimizerEpochID: snapshot.OptimizerEpochID})
+	vaults, err := w.store.LoadMigratedFleet(ctx, w.config.Cluster, epoch, FleetLoadOptions{DelegatedSigner: w.config.DelegatedSigner, EnableCrossMint: w.config.CrossMintEnabled, CrossMintMaxValueLossBPS: w.config.CrossMintMaxValueLossBPS, OptimizerEpochID: snapshot.OptimizerEpochID, IncludeIdleShadowSources: w.config.Mode == ModeShadow})
 	if err != nil {
 		return err
+	}
+	var idleSummary map[string]any
+	if w.config.Mode == ModeShadow {
+		vaults, idleSummary = idleShadowChecks(snapshot, vaults)
 	}
 	fleetPlan, err := PlanFleet(snapshot, vaults)
 	if err != nil {
@@ -234,6 +238,9 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		}
 	}
 	w.lastConfirmedSlot = slot
+	if idleSummary != nil {
+		logEvent(idleSummary)
+	}
 	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "rejectedVaultCount": len(fleetPlan.Rejections), "rejectionCounts": rejectionCounts(fleetPlan.Rejections)})
 	return nil
 }

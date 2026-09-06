@@ -29,6 +29,8 @@ const (
 // FleetVault is one migrated and currently unblocked policy/vault. Callers
 // must load this complete set in one repeatable-read snapshot.
 type FleetVault struct {
+	// Nonempty only for read-only idle-balance diagnostics. Not executable.
+	IdleTokenAccount         string
 	Position                 VaultPosition
 	AllowedTargets           []string
 	CrossMintTargets         map[string]CrossMintPolicyBindings
@@ -52,6 +54,11 @@ type FleetPlan struct {
 // economic priority tie-breaks, and admits a wave while carrying forward the
 // selected inflow/outflow. No reserve can exceed its 2% frontier.
 func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) {
+	for _, vault := range vaults {
+		if vault.IdleTokenAccount != "" {
+			return FleetPlan{}, errors.New("idle shadow sources cannot enter executable fleet planning")
+		}
+	}
 	if len(snapshot.Reserves) < 2 {
 		return FleetPlan{}, errors.New("complete reserve frontier is required")
 	}

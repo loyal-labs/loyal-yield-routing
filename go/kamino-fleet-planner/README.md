@@ -68,6 +68,27 @@ work. Shadow rejects enabled revalidation. It is safe to evaluate alongside
 Rust using a database role with read-only access. `publish` is an explicit
 deployment choice and is valid on mainnet.
 
+### Idle balances in shadow mode
+
+Shadow additionally reads eligible idle stablecoin balances in the same read-only
+transaction as reserve positions and committed capacity. This includes idle-only
+vaults and vaults with both kinds of balance. Finalized policy/mint/market checks,
+active work, five-minute confirmation cooldown, and Autodeposit pull/top-up
+ownership exclusions remain enforced.
+
+`kamino_fleet_idle_shadow_checks` logs compact coverage and reason counts:
+`idleSourceCount`, `idleVaultCount`, `idleOnlyVaultCount`, and
+`combinedSourceVaultCount`. Candidate checks use zero source yield and the retained
+observer's default $0.50 idle-deposit cost estimate. `sourceReasonCounts` counts a
+source once per reason across alternative targets, so categories may overlap.
+
+These are **independent candidate checks**, not joint fleet selection: they do not
+allocate additional capacity, compete with reserve moves, build executable idle
+routes, or publish anything. Existing reserve-cycle metrics retain their meaning.
+Idle candidates are explicitly rejected by executable planning/publication. Exact
+Rust economic/selection parity and retained idle execution integration remain
+separate work before replacement; these logs are not cutover evidence.
+
 ## Required configuration
 
 - `NEON_DATABASE_URL`

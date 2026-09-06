@@ -17,6 +17,15 @@ const (
 )
 
 func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, targetAddress string) Decision {
+	return planSource(snapshot, position, sourceAddress, targetAddress, false)
+}
+
+// planIdleDeposit is read-only shadow evaluation, not an executable route.
+func planIdleDeposit(snapshot MarketSnapshot, position VaultPosition, targetAddress string) Decision {
+	return planSource(snapshot, position, "", targetAddress, true)
+}
+
+func planSource(snapshot MarketSnapshot, position VaultPosition, sourceAddress, targetAddress string, idle bool) Decision {
 	source, sourceOK := snapshot.Reserves[sourceAddress]
 	target, targetOK := snapshot.Reserves[targetAddress]
 	routeKind := "same_mint"
@@ -31,6 +40,11 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 			serviceMillis = expectedServiceMillis * 3
 		}
 	}
+	if idle {
+		routeKind = "idle_vault_deposit"
+		// Match the retained observer's default idle-deposit cost estimate.
+		estimatedCost = 500_000
+	}
 	anchored := true
 	if routeKind == "cross_mint_jupiter" {
 		position, anchored = crossMintRecoveryAnchoredPosition(position)
@@ -44,25 +58,34 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 		ConfidencePPM: confidencePPM,
 	}
 	ineligible := func(reason string) Decision { decision.Reason = reason; return decision }
+	if idle {
+		expiry, ok := snapshot.MintExpiresAt[position.Mint]
+		if !ok || !expiry.After(time.Now().Add(minimumPublicationLifetime)) {
+			return ineligible("idle_market_evidence_lifetime_too_short")
+		}
+	}
 	if !anchored {
 		return ineligible("invalid_cross_mint_recovery_anchor")
 	}
 	if position.BlockedReason != "" {
 		return ineligible(position.BlockedReason)
 	}
-	if !sourceOK || !targetOK || source.Address != position.SourceReserve || source.Market != position.Market ||
-		source.Mint != position.Mint || !isEarnStableMint(source.Mint) || !isEarnStableMint(target.Mint) {
+	if !targetOK || !isEarnStableMint(target.Mint) ||
+		(idle && target.Mint != position.Mint) ||
+		(!idle && (!sourceOK || source.Address != position.SourceReserve || source.Market != position.Market ||
+			source.Mint != position.Mint || !isEarnStableMint(source.Mint))) {
 		return ineligible("identity_mismatch")
 	}
-	if position.VaultID <= 0 || position.SnapshotID <= 0 || position.AmountRaw <= 0 ||
-		(position.SourceAmountSemantics == amountSemanticsKaminoCollateralDeposited && position.SourceCollateralAmountRaw <= 0) ||
-		position.SourceAmountSemantics != amountSemanticsKaminoCollateralDeposited && position.SourceAmountSemantics != amountSemanticsRedeemableLiquidity {
+	if position.VaultID <= 0 || position.AmountRaw <= 0 ||
+		(!idle && (position.SnapshotID <= 0 ||
+			(position.SourceAmountSemantics == amountSemanticsKaminoCollateralDeposited && position.SourceCollateralAmountRaw <= 0) ||
+			position.SourceAmountSemantics != amountSemanticsKaminoCollateralDeposited && position.SourceAmountSemantics != amountSemanticsRedeemableLiquidity)) {
 		return ineligible("unsupported_source_amount_evidence")
 	}
 	if position.AmountRaw < minimumNotionalUSDMicros {
 		return ineligible("below_minimum_notional")
 	}
-	if source.TotalSupplyUSDMicros < minimumSupplyUSDMicros || target.TotalSupplyUSDMicros < minimumSupplyUSDMicros {
+	if (!idle && source.TotalSupplyUSDMicros < minimumSupplyUSDMicros) || target.TotalSupplyUSDMicros < minimumSupplyUSDMicros {
 		return ineligible("below_minimum_reserve_supply")
 	}
 	if target.LastUpdateStale {
@@ -95,16 +118,20 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	if !hasCapacity {
 		return ineligible("target_capacity_exhausted")
 	}
-	sourceProjectedSupply, ok := sumInt64(source.TotalSupplyUSDMicros, position.SourceCommittedInflowUSDMicros, -position.SourceCommittedOutflowUSDMicros)
-	if !ok {
-		return ineligible("capacity_arithmetic_overflow")
-	}
-	if sourceProjectedSupply <= 0 {
-		return ineligible("invalid_capacity_projection")
-	}
-	sourceAPY, ok := mulDivInt64(source.SupplyAPYBPS, source.TotalSupplyUSDMicros, sourceProjectedSupply)
-	if !ok {
-		return ineligible("capacity_arithmetic_overflow")
+	// Idle tokens earn zero; do not invent a source reserve or its capacity.
+	sourceAPY := int64(0)
+	if !idle {
+		sourceProjectedSupply, valid := sumInt64(source.TotalSupplyUSDMicros, position.SourceCommittedInflowUSDMicros, -position.SourceCommittedOutflowUSDMicros)
+		if !valid {
+			return ineligible("capacity_arithmetic_overflow")
+		}
+		if sourceProjectedSupply <= 0 {
+			return ineligible("invalid_capacity_projection")
+		}
+		sourceAPY, valid = mulDivInt64(source.SupplyAPYBPS, source.TotalSupplyUSDMicros, sourceProjectedSupply)
+		if !valid {
+			return ineligible("capacity_arithmetic_overflow")
+		}
 	}
 	edge := targetAPY - sourceAPY
 	if edge < 1 {
