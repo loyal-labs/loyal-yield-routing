@@ -234,7 +234,7 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		}
 	}
 	w.lastConfirmedSlot = slot
-	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "rejections": fleetPlan.Rejections})
+	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "rejectedVaultCount": len(fleetPlan.Rejections), "rejectionCounts": rejectionCounts(fleetPlan.Rejections)})
 	return nil
 }
 
@@ -271,6 +271,16 @@ func marketSnapshotFromEpoch(epoch ImmutableMarketEpoch, addresses ...string) (M
 		}
 	}
 	return result, nil
+}
+
+// Log one count per reason, not a fleet-sized map of vault IDs every cycle.
+// Keep the detailed per-vault results in FleetPlan for callers that need them.
+func rejectionCounts(rejections map[int64]string) map[string]int {
+	counts := make(map[string]int)
+	for _, reason := range rejections {
+		counts[reason]++
+	}
+	return counts
 }
 
 func shadowObservationDifference(mode Mode, err error) bool {
