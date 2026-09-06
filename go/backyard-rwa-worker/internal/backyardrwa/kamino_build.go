@@ -111,6 +111,21 @@ func CompileKaminoMessage(request KaminoPrimeUSDCRequest) ([]byte, error) {
 }
 
 func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
+	lane := request.RouteLane
+	if lane == "" {
+		lane = RouteID
+	}
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return nil, err
+	}
+	return compileResolvedKaminoMessage(request, delegate, route)
+}
+
+// The public compiler and signer resolve installed routes before entering this
+// shared byte builder. Keeping resolution outside permits offline SDK/SBF parity
+// tests without registering candidate routes or changing production authority.
+func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
 	if request.LastValidBlockHeight <= 0 {
 		return nil, fmt.Errorf("invalid Kamino blockhash lifetime")
 	}
@@ -118,7 +133,7 @@ func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate pu
 	if err != nil {
 		return nil, err
 	}
-	inner, leg, err := kaminoPrimeUSDCInstruction(request)
+	inner, leg, err := kaminoResolvedRouteInstruction(request, route)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +145,7 @@ func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate pu
 	if err != nil {
 		return nil, err
 	}
-	instructions := append(kaminoPrimeUSDCRefreshInstructionsForRequest(leg, request), outer)
+	instructions := append(kaminoRefreshInstructionsForResolvedRoute(leg, request, route), outer)
 	message, err := compileKaminoLegacyMessage(delegate, blockhash, instructions)
 	if err != nil {
 		return nil, err
@@ -244,6 +259,24 @@ func kaminoPrimeUSDCInstruction(request KaminoPrimeUSDCRequest) (compiledInstruc
 }
 
 func kaminoRouteInstruction(request KaminoPrimeUSDCRequest, lane string) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
+	if lane == "" {
+		lane = RouteID
+	}
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return compiledInstruction{}, 0, err
+	}
+	return kaminoResolvedRouteInstruction(request, route)
+}
+
+func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route RuntimeRoute) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
+	lane := request.RouteLane
+	if lane == "" || lane == PhaseOneLaneID {
+		lane = RouteID
+	}
+	if lane != route.Lane {
+		return compiledInstruction{}, 0, fmt.Errorf("Kamino request does not match resolved lane")
+	}
 	if request.AmountRaw == 0 || len(request.Accounts) == 0 || len(request.Data) != 16 {
 		return compiledInstruction{}, 0, fmt.Errorf("incomplete exact Kamino PRIME/USDC packet")
 	}
@@ -258,18 +291,14 @@ func kaminoRouteInstruction(request KaminoPrimeUSDCRequest, lane string) (compil
 		}
 		accounts[i] = accountMeta{key: key, signer: input.Signer, writable: input.Writable}
 	}
-	leg, ok := matchesKaminoStepForRoute(request.Action, request.Data[:8], accounts, lane)
+	leg, ok := matchesKaminoStepForResolvedRoute(request.Action, request.Data[:8], accounts, route)
 	if !ok {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet is not an approved PRIME/USDC lifecycle step")
 	}
 	if request.PolicyConstraintIndex != kaminoConstraintIndex(leg) {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet uses the wrong fixed lane constraint index")
 	}
-	if lane != "" && lane != RouteID && lane != PhaseOneLaneID {
-		route, err := runtimeRoute(lane)
-		if err != nil {
-			return compiledInstruction{}, 0, err
-		}
+	if route.Lane != RouteID {
 		binding, ok := route.KaminoPolicies[leg]
 		if !ok || request.Policy != binding.Policy || request.PolicyAccountDataSHA256 != binding.DataSHA256 {
 			return compiledInstruction{}, 0, fmt.Errorf("Kamino policy does not match the exact route leg binding")
@@ -301,6 +330,10 @@ func matchesKaminoStepForRoute(action Action, discriminator []byte, accounts []a
 	if err != nil {
 		return 0, false
 	}
+	return matchesKaminoStepForResolvedRoute(action, discriminator, accounts, route)
+}
+
+func matchesKaminoStepForResolvedRoute(action Action, discriminator []byte, accounts []accountMeta, route RuntimeRoute) (kaminoPrimeUSDCLeg, bool) {
 	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 	switch action {
 	case OpenRouteStep, OpenPrimeUSDCStep:
@@ -407,6 +440,10 @@ func kaminoPrimeUSDCRefreshInstructionsForRequest(leg kaminoPrimeUSDCLeg, reques
 	if err != nil {
 		return nil
 	}
+	return kaminoRefreshInstructionsForResolvedRoute(leg, request, route)
+}
+
+func kaminoRefreshInstructionsForResolvedRoute(leg kaminoPrimeUSDCLeg, request KaminoPrimeUSDCRequest, route RuntimeRoute) []compiledInstruction {
 	program, market := route.Kamino.Program, route.Kamino.Market
 	refreshReserve := func(reserve string) compiledInstruction {
 		return compiledInstruction{program: mustKey(program), accounts: []accountMeta{

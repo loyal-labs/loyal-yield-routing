@@ -44,6 +44,28 @@ Kamino deposit/USDC borrow → bounded position change → full repayment/withdr
 Carry the actual poststate between steps through the existing worker, journal
 and lease. Separate successful leg fixtures do not establish this path.
 
+Current Go lending integration, 2026-09-06 UTC: the shared builder now separates
+installed-route lookup from private resolved-route construction. A test-only
+OnRe graph compares deposit, borrow, debt-bearing redeposit, finite repayment
+and full withdrawal against the five SDK lending packets executed in the
+connected leverage witness at slot 444670816. It checks every resolved top-level
+instruction, ordered account identity, global privilege, embedded Squads payload,
+payer and blockhash. Go and web3.js differ only in readonly-key enumeration;
+this is semantic construction parity, not byte-identical wire execution.
+Amounts come from executed poststate, not the original quote/template amounts.
+Production route lookup and signing remain unchanged and reject OnRe. No test
+mutates the production registry. Account/privilege, policy/hash, lane, amount,
+constraint and obligation-topology mutations reject. The sole verifier measures
+this separately as `lendingCompiler`; it is not bridge, admission, signer,
+registration, live execution or full R04 proof. Do not repeat this unchanged
+comparison as a substitute for the bridge/authority/resolved-worker blockers.
+The sole-verifier checkpoint is
+`phase3/onre-go-lending-parity-2026-09-06.json.gz` (gzip SHA256
+`b011e1ca2f75aad02926246675577341fa9cc4c13059b6ff487a219e6785a2d6`):
+the five-operation `lendingCompiler` subclaim passes; R01–R08 remain FAIL.
+Targeted Go race regressions pass (3.499s); TypeScript and the 17 verifier tests
+with 222 assertions pass. Changes are local only, with no live movement.
+
 Current blockers and uncertainties, ordered by the actions they prevent:
 
 | Boundary | Evidence and next necessary action |

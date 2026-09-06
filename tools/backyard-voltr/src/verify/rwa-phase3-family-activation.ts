@@ -413,7 +413,14 @@ async function localCandidateJupiterObservation(returning=false,linked=false,onr
         exactSet(execution.stateAddresses,inputs.plan.addresses.filter((a:string)=>!programs.has(a)))&&
         isDeepStrictEqual(execution.programs,inputs.snapshot.programs)&&
         inputs.plan.candidate.artifactSha256===sha(candidateBytes);
-      return {status:"OBSERVED",source,data:{pass,...(onreLending?{setupStaging:pass&&onreSetupStagingProof(execution,onreLeverage)}:{}),slot:execution.slot,inputs:{...inputs,candidates:JSON.parse(candidateBytes.toString())},execution,
+      let lendingCompiler:Json|undefined;
+      if(onreLeverage&&pass) {
+        const names=["TestOnReConnectedLendingMatchesGoWithoutRegistration"];
+        const go=await run("go",["test","./internal/backyardrwa","-json","-race","-count=1","-timeout=60s","-run","^"+names[0]+"$"],resolve(ROOT,"go/backyard-rwa-worker"));
+        lendingCompiler={...localCapTestProof(go.output,go.code,names),operations:["deposit","borrow","redeposit","repay","withdraw"],
+          proofLevel:"CURRENT_GO_RESOLVED_LENDING_INSTRUCTIONS_AND_PRIVILEGES_MATCH_EXECUTED_SDK_WITH_TEST_ONLY_BINDINGS_NOT_GO_WIRE_EXECUTION_OR_RUNTIME_REGISTRATION"};
+      }
+      return {status:"OBSERVED",source,data:{pass:pass&&(!onreLeverage||lendingCompiler?.pass===true),...(lendingCompiler?{lendingCompiler}:{}),...(onreLending?{setupStaging:pass&&onreSetupStagingProof(execution,onreLeverage)}:{}),slot:execution.slot,inputs:{...inputs,candidates:JSON.parse(candidateBytes.toString())},execution,
         proofLevel:onreLeverage?"LOCAL_ONRE_LINKED_LEVERAGE_PAYOFF_RETURN_NOT_BRIDGE_GO_SIGNER_RUNTIME_OR_MAINNET":onreLending?"LOCAL_ONRE_SWAP_LENDING_RETURN_NOT_LEVERAGE_BRIDGE_GO_SIGNER_RUNTIME_OR_MAINNET":"LOCAL_ONRE_CANDIDATE_SWAP_ROUNDTRIP_NOT_LENDING_BRIDGE_SIGNER_OR_RUNTIME_PROOF"}};
     }
     const executionPass=candidateJupiterExecutionProof(execution,inputs.plan,sha(planBytes),sha(snapshotBytes),rust.code,returning)&&
