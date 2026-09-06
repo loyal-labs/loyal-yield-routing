@@ -2,20 +2,93 @@ package backyardrwa
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"io"
+	"math"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"testing"
 	"time"
 )
 
+// These are the policy accounts that actually authorized all six connected
+// OnRe legs under the captured deployed programs, not synthetic expected rows.
+func TestOnReSetupCompilerMatchesConnectedPolicyState(t *testing.T) {
+	raw, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/phase3/onre-connected-lending-2026-09-06.json.gz")
+	if err != nil || sha256Bytes(raw) != "796db9c09720f2c96e9f6dcd6cee4a4732abcbf5ff6c19b9d108579b39ada8b2" {
+		t.Fatal("connected witness identity", err)
+	}
+	r, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var witness struct {
+		Preflight struct {
+			LocalOnReConnected struct {
+				Data struct {
+					Pass      bool
+					Execution struct {
+						Schema                                          string
+						Broadcast, InstalledPolicyProof, TwoSwapsPassed bool
+						CandidateCreation                               []struct {
+							Policy string
+							Seed   uint64
+							After  []struct {
+								Address, Owner, DataBase64, DataSHA256 string
+								Lamports                               uint64
+								Present                                bool
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if json.Unmarshal(data, &witness) != nil {
+		t.Fatal("connected witness decoding")
+	}
+	e := witness.Preflight.LocalOnReConnected.Data.Execution
+	if !witness.Preflight.LocalOnReConnected.Data.Pass || e.Schema != "phase3-onre-lending-roundtrip-result/v1" || e.Broadcast || e.InstalledPolicyProof || !e.TwoSwapsPassed || len(e.CandidateCreation) != 4 {
+		t.Fatal("not a connected local candidate proof")
+	}
+	for i, operation := range []string{"onre-entry-swap", "onre-return-swap", "borrow", "repay"} {
+		c := e.CandidateCreation[i]
+		request := setupTestRequest(operation)
+		request.Seed = c.Seed
+		matched := false
+		for _, row := range c.After {
+			if row.Address == c.Policy {
+				b, err := base64.StdEncoding.Strict().DecodeString(row.DataBase64)
+				if err != nil || !row.Present || sha256Bytes(b) != row.DataSHA256 {
+					t.Fatal("created state identity")
+				}
+				account := ConfirmedAccount{Address: row.Address, Owner: row.Owner, Data: b, Lamports: row.Lamports}
+				if err = validatePolicySetupCreatedAccount(request, account, row.Lamports, math.MaxInt64); err != nil {
+					t.Fatalf("%s differs from executed policy: %v", operation, err)
+				}
+				matched = true
+			}
+		}
+		if !matched {
+			t.Fatal("missing executed policy", operation)
+		}
+	}
+}
+
 func TestPolicySetupCreatedStateMatchesSDKAndRejectsAuthorityDrift(t *testing.T) {
 	var inputs []map[string]string
-	for _, operation := range []string{"borrow", "repay"} {
+	for _, operation := range []string{"borrow", "repay", "onre-entry-swap", "onre-return-swap"} {
 		for _, seed := range []uint64{140, 256} {
 			r := setupTestRequest(operation)
 			r.Seed = seed
@@ -52,8 +125,8 @@ func TestPolicySetupCreatedStateMatchesSDKAndRejectsAuthorityDrift(t *testing.T)
 		t.Fatalf("created state disagrees with SDK/chain: %v %s", err, output)
 	}
 	var result struct{ Passed int }
-	if json.Unmarshal(output, &result) != nil || result.Passed != 4 {
-		t.Fatal("state oracle did not cover both operations/seeds")
+	if json.Unmarshal(output, &result) != nil || result.Passed != 8 {
+		t.Fatal("state oracle did not cover all four repairs and both seeds")
 	}
 }
 

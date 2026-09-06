@@ -126,7 +126,7 @@ func setupObservationRPC(t *testing.T, s *setupRPCScenario) *RPCClient {
 			_ = json.Unmarshal(body.Params[0], &size)
 			if size == 0 {
 				result = uint64(890_880)
-			} else if size == 1400 || size == 1250 {
+			} else if size == 1400 || size == 1250 || size == 1383 {
 				result = s.rent
 			} else {
 				t.Fatalf("unexpected allocation %d", size)
@@ -204,7 +204,7 @@ func TestPolicySetupObservationPrefersDirectAndPricesStagingFallback(t *testing.
 		operation, mode string
 		rent            uint64
 		payments        int
-	}{{"repay", "direct-create", 8_000_000, 1}, {"borrow", "prefund-then-create", 10_634_881, 2}} {
+	}{{"repay", "direct-create", 8_000_000, 1}, {"borrow", "prefund-then-create", 10_634_881, 2}, {"onre-entry-swap", "prefund-then-create", 10_516_560, 2}, {"onre-return-swap", "prefund-then-create", 10_516_560, 2}} {
 		t.Run(tc.mode, func(t *testing.T) {
 			s := &setupRPCScenario{rent: tc.rent}
 			out, err := observePolicySetup(context.Background(), setupObservationRPC(t, s), tc.operation)

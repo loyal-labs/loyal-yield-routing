@@ -137,12 +137,14 @@ func testPolicySetupDurability(t *testing.T, url string) {
 		testPolicySetupSignedPersistence(t, ctx, db, newRoute, plan)
 	})
 	t.Run("expired initial setup wire preserves evidence and budget", func(t *testing.T) {
-		for _, operation := range []string{"borrow", "repay"} {
+		for _, operation := range []string{"borrow", "repay", "onre-entry-swap", "onre-return-swap"} {
 			t.Run(operation, func(t *testing.T) {
 				testPolicySetupExpiredWire(t, ctx, db, func(t *testing.T) PersistedOperation {
 					initial := plan
 					if operation == "repay" {
 						initial = *setupPaymentAuth(t, "direct").PolicySetup
+					} else if operation != "borrow" {
+						initial = observedSetupFixture(t, operation)
 					}
 					budget := emptyTestBudget()
 					budget.Families["OnRe"] = FamilyBudget{SpentMicros: 3_000_000}

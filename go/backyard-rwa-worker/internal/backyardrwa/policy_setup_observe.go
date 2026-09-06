@@ -71,7 +71,7 @@ type policySetupObservation struct {
 // journal. A nonempty target is an unfinished/conflicting setup, never adopted.
 func observePolicySetup(ctx context.Context, rpc *RPCClient, operation string) (policySetupObservation, error) {
 	var out policySetupObservation
-	if _, _, _, err := policySetupConstraint(operation); err != nil {
+	if _, _, err := policySetupConstraints(operation); err != nil {
 		return out, err
 	}
 	if rpc == nil {

@@ -9,7 +9,7 @@ import { Reserve } from "@kamino-finance/klend-sdk";
 import { ExtensionType, getExtensionTypes, getTransferFeeConfig, getTransferHook, unpackMint } from "@solana/spl-token";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { reviewPhase3Bindings } from "./rwa-phase3-binding-review.js";
-import { onreConnectedProof } from "./onre-connected-proof.js";
+import { onreConnectedProof, onreSetupStagingProof } from "./onre-connected-proof.js";
 
 const ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const CONTRACT = "docs/plans/backyard-rwa-phase3-family-activation-verifier.md";
@@ -392,7 +392,7 @@ async function localCandidateJupiterObservation(returning=false,linked=false,onr
         exactSet(execution.stateAddresses,inputs.plan.addresses.filter((a:string)=>!programs.has(a)))&&
         isDeepStrictEqual(execution.programs,inputs.snapshot.programs)&&
         inputs.plan.candidate.artifactSha256===sha(candidateBytes);
-      return {status:"OBSERVED",source,data:{pass,slot:execution.slot,inputs:{...inputs,candidates:JSON.parse(candidateBytes.toString())},execution,
+      return {status:"OBSERVED",source,data:{pass,...(onreLending?{setupStaging:pass&&onreSetupStagingProof(execution)}:{}),slot:execution.slot,inputs:{...inputs,candidates:JSON.parse(candidateBytes.toString())},execution,
         proofLevel:onreLending?"LOCAL_ONRE_SWAP_LENDING_RETURN_NOT_LEVERAGE_BRIDGE_GO_SIGNER_RUNTIME_OR_MAINNET":"LOCAL_ONRE_CANDIDATE_SWAP_ROUNDTRIP_NOT_LENDING_BRIDGE_SIGNER_OR_RUNTIME_PROOF"}};
     }
     const executionPass=candidateJupiterExecutionProof(execution,inputs.plan,sha(planBytes),sha(snapshotBytes),rust.code,returning)&&
@@ -475,11 +475,12 @@ async function localPolicySetupObservation(): Promise<Observation> {
     "TestPolicySetupIntentRejectsUnpricedOrChangedPlan",
     "TestPolicySetupCompletionRequiresExactFinalizedPrefundAndFreshRemainingPayment",
     "TestPolicySetupCreatedStateMatchesSDKAndRejectsAuthorityDrift",
+    "TestOnReSetupCompilerMatchesConnectedPolicyState",
     "TestPolicySetupCreationReconcilesDirectAndPrefundedPayments",
     "TestPolicySetupPaymentRepricesEveryStageAndRejectsUnfitCompletion",
     "TestPolicySetupSignedIdentityRejectsSyntheticOrDifferentSignersBeforeRPC",
     "TestPolicySetupSigningNeverFallsBackToDelegate",
-  ],"OnRe/USDC setup payloads and created state against installed SDK/retained accounts; controlled finalized receipts, remaining-payment pricing and accounting");
+  ],"all four OnRe/USDC repair payloads and created state against installed SDK and connected SBF accounts; controlled finalized receipts, remaining-payment pricing and accounting");
   if(result.data) {
     result.data.proofLevel="LOCAL_SETUP_BUILDERS_AND_CONTROLLED_RPC_RECOVERY_NOT_LIVE_AUTHORITY";
     result.data.broadcast=false;
@@ -781,6 +782,7 @@ export async function verify() {
     measuredCondition("R04","All-lane positives/negatives and full stateful lifecycle",[
       observedCheck(localOnReRoundtrip,"OnRe candidate swap policies preserve siblings and execute a continuous USDC/ONyc/USDC roundtrip with flat ONyc custody and fourteen rejecting mutations; not lending, bridge, Go, signer or live proof",d=>d.pass===true),
       observedCheck(localOnReConnected,"OnRe entry, deposit, borrow, finite payoff, withdrawal and return execute continuously with four exact local repair candidates and eighteen rejecting mutations; not leverage change, bridge, Go, signer or live proof",d=>d.pass===true),
+      observedCheck(localOnReConnected,"all four exact OnRe candidate policies can create from staged rent with identical policy/Settings state and both payer fees; comparison branches, not budget admission or live setup",d=>d.setupStaging===true),
       observedCheck(localReturnJupiter,"both return conversions clear controlled source custody through exact mixed candidate/installed policies with rejecting mutations and current-Go parity; not linked lending or bridge execution",d=>d.pass===true),
       observedCheck(localLinkedLendingReturn,"four lending legs and both return swaps remain continuous with raw terminal checks and Go parity; a separate Go redeposit executes on debt-bearing cloned state with explicit custody overrides, not linked funding, bridge entry or mainnet proof",d=>d.pass===true),
       observedCheck(localReturnQuotes,"retained funding and both return quotes are accepted by current installed-binding Go validation; sizing samples are not execution or fresh-chain proof",d=>d.pass===true&&d.witness?.allAccepted===true),

@@ -5,6 +5,7 @@ import { PublicKey, SystemProgram, Transaction, Message } from '@solana/web3.js'
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
+import {onreSwapOriginal,repairOnreSwap} from './onre-swap-repair-oracle.mjs';
 
 const input = JSON.parse(await Bun.stdin.text());
 const root = new URL('../../../../../', import.meta.url);
@@ -14,8 +15,9 @@ const catalog = JSON.parse(raw);
 const state = JSON.parse(readFileSync(new URL('docs/evidence/backyard-rwa-go/phase3/setup-feasibility-2026-09-04.json', root)));
 const lane = state.preflight.bindings.data.lanes.find(l => l.lane === 'OnRe/ONyc/USDC');
 const rows = input.map(r => {
-  assert.ok(['borrow', 'repay'].includes(r.Operation));
-  const original = catalog.policies.find(p => p.name === `lane/OnRe/ONyc/USDC/${r.Operation}`);
+  const swap=onreSwapOriginal(r.Operation);
+  assert.ok(swap||['borrow', 'repay'].includes(r.Operation));
+  const original = catalog.policies.find(p => swap?p.policy===swap:p.name === `lane/OnRe/ONyc/USDC/${r.Operation}`);
   const instruction = original.createInstruction;
   const [args] = generated.syncSettingsTransactionArgsBeet.deserialize(Buffer.from(instruction.dataBase64, 'base64').subarray(8));
   assert.equal(args.actions.length, 1);
@@ -23,6 +25,8 @@ const rows = input.map(r => {
   assert.equal(action.__kind, 'PolicyCreate');
   const payload = action.policyCreationPayload.fields[0];
   const constraints = payload.instructionsConstraints;
+  if(swap)repairOnreSwap(constraints);
+  else {
   assert.equal(constraints.length, 1);
   const observed = lane.operations.find(o => o.operation === r.Operation);
   const changed = [];
@@ -34,6 +38,7 @@ const rows = input.map(r => {
     constraint.accountConstraint.fields[0] = [new PublicKey(address)];
   }
   assert.deepEqual(changed, r.Operation === 'borrow' ? [12, 13] : [9, 10]);
+  }
   action.seed = BigInt(r.Seed);
   const settings = new PublicKey(instruction.accounts[0].address);
   const admin = new PublicKey(instruction.accounts[1].address);

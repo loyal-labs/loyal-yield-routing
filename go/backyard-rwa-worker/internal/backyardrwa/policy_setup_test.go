@@ -25,7 +25,7 @@ func TestPolicySetupCompilerMatchesInstalledSDKAndRetainedConstraints(t *testing
 		Messages        []string
 	}
 	var inputs []oracleInput
-	for _, operation := range []string{"borrow", "repay"} {
+	for _, operation := range []string{"borrow", "repay", "onre-entry-swap", "onre-return-swap"} {
 		for _, seed := range []uint64{1, 170, 256, math.MaxUint64} {
 			r := setupTestRequest(operation)
 			r.Seed = seed

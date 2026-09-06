@@ -507,10 +507,52 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool, linked_onre: bool
             let wire = bincode::serialize(&tx).unwrap();
             assert!(wire.len() <= 1232);
             let before = capture(&svm, &[settings, admin, policy]);
+            let mut staged_svm = linked_onre.then(|| svm.clone());
+            let staged_create = tx.clone();
             let meta = svm
                 .send_transaction(tx)
                 .expect("candidate PolicyCreate must execute on cloned real Settings");
-            creation.push(json!({"policy":policy.to_string(),"seed":seed,"candidateOnly":true,"packetBytes":wire.len(),"wireSha256":sha(&wire),"before":before,"after":capture(&svm,&[settings,admin,policy]),"logs":meta.logs,"computeUnits":meta.compute_units_consumed}));
+            let mut staging = Value::Null;
+            if let Some(ref mut staged) = staged_svm {
+                let created = svm.get_account(&policy).unwrap();
+                let rent = created.lamports;
+                let first = rent / 2;
+                assert!(first >= staged.minimum_balance_for_rent_exemption(0));
+                let payer_before = staged.get_balance(&admin).unwrap();
+                let transfer = solana_sdk::system_instruction::transfer(&admin, &policy, first);
+                let funding = VersionedTransaction {
+                    signatures: vec![Signature::default()],
+                    message: VersionedMessage::Legacy(Message::new_with_blockhash(
+                        &[transfer],
+                        Some(&admin),
+                        &Hash::new_from_array([42; 32]),
+                    )),
+                };
+                let funding_wire = bincode::serialize(&funding).unwrap();
+                assert!(funding_wire.len() <= 1232);
+                staged
+                    .send_transaction(funding)
+                    .expect("exact OnRe prefunding must execute");
+                let payer_middle = staged.get_balance(&admin).unwrap();
+                let prefunded = staged.get_account(&policy).unwrap();
+                assert_eq!(prefunded.lamports, first);
+                assert!(prefunded.data.is_empty());
+                assert_eq!(prefunded.owner, key("11111111111111111111111111111111"));
+                staged
+                    .send_transaction(staged_create)
+                    .expect("exact OnRe candidate must create from staged rent");
+                assert_eq!(staged.get_account(&policy).unwrap(), created);
+                assert_eq!(staged.get_account(&settings), svm.get_account(&settings));
+                let payer_after = staged.get_balance(&admin).unwrap();
+                assert_eq!(payer_before - payer_middle, first + 5000);
+                assert_eq!(payer_middle - payer_after, rent - first + 5000);
+                staging = json!({"broadcast":false,"installed":false,"comparisonOnly":true,
+                    "allocatedBytes":created.data.len(),"fundingPacketBytes":funding_wire.len(),
+                    "fundingWireSha256":sha(&funding_wire),"firstFundingLamports":first,"localRentLamports":rent,
+                    "firstPayerDebitLamports":payer_before-payer_middle,"secondPayerDebitLamports":payer_middle-payer_after,
+                    "samePolicyBytesAndBalance":true,"sameSettings":true});
+            }
+            creation.push(json!({"policy":policy.to_string(),"seed":seed,"candidateOnly":true,"packetBytes":wire.len(),"wireSha256":sha(&wire),"before":before,"after":capture(&svm,&[settings,admin,policy]),"logs":meta.logs,"computeUnits":meta.compute_units_consumed,"stagedComparison":staging}));
         }
         assert_eq!(
             creation.len(),

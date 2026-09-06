@@ -52,7 +52,7 @@ Current blockers and uncertainties, ordered by the actions they prevent:
 | Farm setup | At finalized slot 444659449, the USDC user-farm already exists, owned by Farms, with the exact vault owner, obligation delegatee and configured farm. No USDC farm initialization is indicated. Missing sibling farm accounts must not be imported as blockers for this canary. Revalidate before use. |
 | Full-exit authority, before live funding | The connected deployed-program run at snapshot slot 444664437 proves full withdrawal automatically closes the empty OnRe obligation `4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei`, returning all 24165120 lamports to the existing Squads vault `ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh`. The existing close/rent-reclaim exclusion is unchanged. Obtain authorization for this precise protocol-required effect before funding a live lifecycle; no residual deposit or altered flat-exit requirement as a workaround. This does not block local implementation. |
 | Both swap directions | The installed legacy constraints still reject the fresh layouts. The exact V2 forward candidates now execute a continuous direct-route USDC→ONyc→USDC roundtrip on captured deployed programs (details below), preserving sibling constraints. Both replacement policies still need full setup cost/admission, authorized installation/readback and Go binding integration; local candidate creation is not installed authority. The first multi-hop sample exhausted the default compute envelope; its trace remains a failure, not supported routing proof. |
-| Setup cost and completion | At slots 444658919–444658921, borrow setup fits as two 510872-micro-USDC payments and repay as one 921018-micro-USDC payment, including observed fees. Both are independent next-seed-140 candidates, not a ready installation batch. Reprice after each creation; include any necessary swap repair and full lifecycle exit in the budget. Existing staged-payment/recovery code is reusable; do not build another coordinator or ledger. |
+| Setup cost and completion | The existing Go setup compiler now covers the exact two swap repairs plus borrow/repay, with SDK and connected-SBF state agreement. At slots 444669284–444669290, each swap prices as two 507004-micro-USDC payments, borrow as two 512703, and repay as one 924317. Their indicative sum is 3977739 micro-USDC including fees. These are independent next-seed-140 observations, not an admitted batch. Reprice after each creation and reserve the full lifecycle exit. Existing staged-payment/recovery code is reused; no new coordinator or ledger. |
 | Current capacity and custody | At slot 444659449, OnRe obligation deposits/borrows and ONyc/bridge-USDC custody are zero. Collateral available raw 157906157811661997 is below deposit limit 200000000000000000; USDC available raw 9273477956074 and borrowed raw ceiling 67458238043052 do not by themselves show exhausted capacity. Refresh oracle/risk state and simulate actual entry/exit; this read is neither executable-capacity proof nor CAPACITY_PENDING. |
 | Connected runtime and proof | OnRe still lacks registered production bindings, selected-worker integration and a complete stateful lifecycle with real programs/policies, budgeted admission, signer/send fencing and reconciled effects. Prove this one path using existing components. Do not wait for the complete sibling matrix or generic family queue to begin the connected proof. Live gates remain mandatory before live movement. |
 | Production handoff and release | Read-only production journal at 2026-09-06 00:45:52 UTC has zero nonterminal operations, a live existing Render lease on image sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b, and no Phase 3 budget. Verify Phase 2 goal closure, release identity/migrations, initialize the budget under the existing lease protocol, and perform a fenced handoff. Credential-presence checks pass for RPC/database/admin/delegate/Render; actual signer identity and deployment access remain to be verified. No competing writer. |
@@ -119,6 +119,33 @@ mainnet proof. The current Go route resolver still rejects OnRe as uninstalled;
 the rejected registration was not retried. Next: resolve the precise close
 authorization and four forward-roll setups, then connect this path to existing
 Go construction/admission and bridge/NAV. Do not divert to the sibling matrix.
+
+The required four-policy setup path now uses the existing unsigned Go compiler,
+pricing, created-state validation and recovery path. Sixteen seed/operation
+cases match the installed SDK; eight created-state cases match SDK encoding;
+all four Go expected accounts exactly match the candidate accounts that enabled
+the six connected OnRe steps. Both swap siblings remain byte-for-byte unchanged.
+There is no new production route registration, signer or setup queue.
+
+For all four exact candidate groups, the deployed-program probe also executes
+prefund/create comparison branches. They produce identical policy and Settings
+accounts to direct creation, with both 5000-lamport fees accounted for. These
+branches are local setup-mechanics proof, not funded worker execution. The sole
+verifier records setup compilation, connected execution and staging subclaims as
+PASS in `phase3/onre-staged-setup-2026-09-06.json.gz` (gzip SHA256
+`80f7190b56c20a97e0a1c4df67c15eb9d75153b9e818dcaa8196be5f7d40e917`);
+R01–R08 remain FAIL. The expanded local PostgreSQL admission/send-fence race run
+passes in 16.942s, including expired signed setup recovery for both swap repairs.
+Fourteen verifier tests/141 assertions and TypeScript checking pass.
+
+Fresh read-only pricing is retained in
+`phase3/onre-four-policy-setup-2026-09-06.json`. Its first invocation failed at
+native-price observation; the diagnostic retry passed with fresh observations.
+The initial cause is unverified; no valuation freshness or cap check was relaxed.
+This resolves the missing swap-setup compiler/staging dependency. Next connect
+authorized installation/readback and OnRe worker execution to these exact four
+repairs, together with bridge/NAV and the required position change. The explicit
+automatic-close authorization remains pending before any live lifecycle funding.
 
 Next work must resolve an item above or execute the next connected OnRe step.
 Preserve completed local setup-expiry work, but stop accumulating setup-only

@@ -11,6 +11,22 @@ const kamino="KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
 const squads="SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG";
 const finite=(n:unknown):n is number=>Number.isSafeInteger(n)&&Number(n)>0&&Number(n)<=1_000_000_000_000;
 
+export function onreSetupStagingProof(e:Json):boolean {
+  try {
+    return e.schema==="phase3-onre-lending-roundtrip-result/v1"&&e.broadcast===false&&e.installedPolicyProof===false&&e.candidateCreation.length===4&&
+      e.candidateCreation.every((c:Json,i:number)=>{
+        const s=c.stagedComparison;
+        const account=c.after.find((a:Json)=>a.address===c.policy);
+        return s?.broadcast===false&&s.installed===false&&s.comparisonOnly===true&&s.samePolicyBytesAndBalance===true&&s.sameSettings===true&&
+          s.allocatedBytes===[1383,1383,1400,1250][i]&&account?.present===true&&account.owner===squads&&
+          Buffer.from(account.dataBase64,"base64").length===s.allocatedBytes&&hash(Buffer.from(account.dataBase64,"base64"))===account.dataSha256&&
+          finite(s.localRentLamports)&&account.lamports===s.localRentLamports&&s.firstFundingLamports===Math.floor(s.localRentLamports/2)&&
+          s.firstPayerDebitLamports===s.firstFundingLamports+5000&&s.secondPayerDebitLamports===s.localRentLamports-s.firstFundingLamports+5000&&
+          finite(s.fundingPacketBytes)&&s.fundingPacketBytes<=1232&&/^[a-f0-9]{64}$/.test(s.fundingWireSha256);
+      });
+  } catch {return false;}
+}
+
 function wire(step:Json,instructions:number) {
   const b=Buffer.from(step.wireBase64,"base64");
   if(b.length>1232||b.length<65||b[0]!==1||b.subarray(1,65).some(x=>x!==0)||hash(b)!==step.wireSha256)throw Error("wire");

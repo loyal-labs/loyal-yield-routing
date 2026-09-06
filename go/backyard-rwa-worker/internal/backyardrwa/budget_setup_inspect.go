@@ -35,6 +35,12 @@ func InspectPhase3SetupRent(ctx context.Context, endpoint string) ([]byte, error
 	}
 	price, err := ObserveNativeSOLBudgetPrice(ctx, rpc, slot)
 	if err != nil {
+		// BudgetHold reasons are fixed internal identifiers. Do not include
+		// underlying RPC errors or details that can contain provider responses.
+		var hold *BudgetHold
+		if errors.As(err, &hold) {
+			return nil, fmt.Errorf("setup rent inspection: native price HOLD %s", hold.Reason)
+		}
 		return nil, fmt.Errorf("setup rent inspection: native price observation failed")
 	}
 	type row struct {
@@ -73,7 +79,7 @@ func InspectPhase3SetupRent(ctx context.Context, endpoint string) ([]byte, error
 		Reason      string                 `json:"reason,omitempty"`
 	}
 	var candidates []candidate
-	for _, operation := range []string{"borrow", "repay"} {
+	for _, operation := range []string{"onre-entry-swap", "onre-return-swap", "borrow", "repay"} {
 		observed, observeErr := observePolicySetup(ctx, rpc, operation)
 		row := candidate{Operation: operation, Observation: observed}
 		if observeErr != nil {

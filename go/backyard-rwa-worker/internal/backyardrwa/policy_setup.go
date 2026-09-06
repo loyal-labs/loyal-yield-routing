@@ -6,7 +6,7 @@ import (
 )
 
 // This unsigned compiler is deliberately NOT registered in phase3BuildInput,
-// the signer, or the worker queue. It measures the two exact OnRe/USDC repair
+// the signer, or the worker queue. It measures the four exact OnRe/USDC repair
 // candidates; it does not authorize their installation or runtime activation.
 // Production setup still needs finalized Settings/seed and deployment checks,
 // durable admission, and reconciliation/recovery of the partially funded PDA.
@@ -67,7 +67,7 @@ func policySetupConstraint(operation string) ([]string, []byte, int, error) {
 }
 
 func policySetupCreateInstruction(r policySetupRequest) (compiledInstruction, int, error) {
-	accounts, discriminator, allocated, err := policySetupConstraint(r.Operation)
+	constraints, allocated, err := policySetupConstraints(r.Operation)
 	if err != nil {
 		return compiledInstruction{}, 0, err
 	}
@@ -85,27 +85,8 @@ func policySetupCreateInstruction(r policySetupRequest) (compiledInstruction, in
 	data = append(data, 7) // PolicyCreate
 	data = binary.LittleEndian.AppendUint64(data, r.Seed)
 	data = append(data, 3, 0) // LegacyProgramInteraction; vault index zero
-	data = binary.LittleEndian.AppendUint32(data, 1)
-	program := mustKey(kaminoProgram)
-	data = append(data, program[:]...)
-	data = binary.LittleEndian.AppendUint32(data, uint32(len(accounts)))
-	for index, address := range accounts {
-		data = append(data, byte(index), 0) // index, Pubkey constraint
-		data = binary.LittleEndian.AppendUint32(data, 1)
-		key := mustKey(address)
-		data = append(data, key[:]...)
-		data = append(data, 0) // owner None
-	}
-	data = binary.LittleEndian.AppendUint32(data, 2)
-	data = binary.LittleEndian.AppendUint64(data, 0)
-	data = append(data, 5) // U8Slice
-	data = binary.LittleEndian.AppendUint32(data, uint32(len(discriminator)))
-	data = append(data, discriminator...)
-	data = append(data, 0) // Equals
-	data = binary.LittleEndian.AppendUint64(data, 8)
-	data = append(data, 3) // U64Le
-	data = binary.LittleEndian.AppendUint64(data, bridgeCapRaw)
-	data = append(data, 5, 0, 0)                     // LessThanOrEqual; pre/post hooks None
+	data = append(data, constraints...)
+	data = append(data, 0, 0)                        // pre/post hooks None
 	data = binary.LittleEndian.AppendUint32(data, 0) // no spending limits
 	data = binary.LittleEndian.AppendUint32(data, 1) // one policy signer
 	delegate := mustKey(bridgeDelegate)
@@ -120,6 +101,29 @@ func policySetupCreateInstruction(r policySetupRequest) (compiledInstruction, in
 		{mustKey("11111111111111111111111111111111"), false, false},
 		{mustKey(bridgeSquadsProgram), false, false}, {admin, true, false}, {policy, false, true},
 	}, data: data}, allocated, nil
+}
+
+func policySetupConstraints(operation string) ([]byte, int, error) {
+	if operation == "onre-entry-swap" || operation == "onre-return-swap" {
+		return onreSwapSetupConstraints(operation), 1383, nil
+	}
+	accounts, discriminator, size, err := policySetupConstraint(operation)
+	if err != nil {
+		return nil, 0, err
+	}
+	data := binary.LittleEndian.AppendUint32(nil, 1)
+	program := mustKey(kaminoProgram)
+	data = append(data, program[:]...)
+	data = binary.LittleEndian.AppendUint32(data, uint32(len(accounts)))
+	for index, address := range accounts {
+		data = appendSetupPubkey(data, byte(index), address)
+	}
+	data = binary.LittleEndian.AppendUint32(data, 2)
+	data = appendSetupSlice(data, 0, discriminator)
+	data = binary.LittleEndian.AppendUint64(data, 8)
+	data = append(data, 3) // U64Le
+	data = binary.LittleEndian.AppendUint64(data, bridgeCapRaw)
+	return append(data, 5), size, nil // LessThanOrEqual
 }
 
 func compilePolicySetupMessages(r policySetupRequest, prefundLamports uint64) ([2][]byte, error) {
