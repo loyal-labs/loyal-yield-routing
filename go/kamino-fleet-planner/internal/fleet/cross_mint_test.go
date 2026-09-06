@@ -23,7 +23,11 @@ func rawIX(ix RouteInstruction) rawJupiterInstruction {
 
 func validJupiterBuildFixture(t *testing.T) ([]byte, crossMintPlan) {
 	t.Helper()
-	vault := testPubkey(31)
+	return jupiterBuildForVault(t, testPubkey(31), 1_000_000, 999_000, 10)
+}
+
+func jupiterBuildForVault(t *testing.T, vault string, amount, quoted uint64, slippage uint16) ([]byte, crossMintPlan) {
+	t.Helper()
 	inputATA, err := deriveATA(vault, USDCMint, tokenProgram)
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +36,6 @@ func validJupiterBuildFixture(t *testing.T) ([]byte, crossMintPlan) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	amount, quoted, slippage := uint64(1_000_000), uint64(999_000), uint16(10)
 	data := append([]byte{}, jupiterRouteV2Discriminator...)
 	data = appendU64x(data, amount)
 	data = appendU64x(data, quoted)

@@ -133,6 +133,16 @@ func (p *KLendProxy) build(ctx context.Context, request KaminoSameMintRouteReque
 	if request.WithdrawCollateralAmount == 0 || request.DepositLiquidityAmount == 0 || request.Source.LiquidityMint == "" || request.Target.LiquidityMint == "" || !validLane {
 		return KaminoSameMintRoute{}, fmt.Errorf("invalid %s request", operation)
 	}
+	// Fresh empty obligations have nil slices in Go. The Rust Vec contract
+	// requires arrays, not JSON null, for both empty deposits and borrows.
+	for _, position := range []*KaminoPositionAccounts{&request.Source, &request.Target} {
+		if position.ObligationDepositReserves == nil {
+			position.ObligationDepositReserves = []string{}
+		}
+		if position.ObligationBorrowReserves == nil {
+			position.ObligationBorrowReserves = []string{}
+		}
+	}
 	input, err := json.Marshal(proxyRequest{SchemaVersion: 1, Operation: operation, Request: request})
 	if err != nil {
 		return KaminoSameMintRoute{}, err

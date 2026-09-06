@@ -37,6 +37,23 @@ func TestRealKLendProxyCrossMintLegs(t *testing.T) {
 	if _, err := proxy.BuildCrossMintLegs(ctx, sameMint); err == nil {
 		t.Fatal("cross-mint lane accepted a same-mint request")
 	}
+	t.Run("empty-obligation-vectors", func(t *testing.T) {
+		request := sameMint
+		request.Source.ObligationBorrowReserves = nil
+		request.Target.ObligationDepositReserves = nil
+		request.Target.ObligationBorrowReserves = nil
+		if _, err := proxy.Build(ctx, request); err != nil {
+			t.Fatalf("same-mint empty obligation serialization: %v", err)
+		}
+		request.Target.LiquidityMint = USDTMint
+		request.Target.VaultLiquidityATA, err = deriveATA(request.Vault, USDTMint, tokenProgram)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := proxy.BuildCrossMintLegs(ctx, request); err != nil {
+			t.Fatalf("cross-mint empty obligation serialization: %v", err)
+		}
+	})
 	for _, mint := range earnStableMints {
 		t.Run(mint, func(t *testing.T) {
 			request := sameMint

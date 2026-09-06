@@ -268,6 +268,11 @@ func canonicalCrossMintExecutionPlan(position VaultPosition, decision Decision, 
 	if decision.PolicyBindings == nil || decision.SourceMint == decision.TargetMint || !isEarnStableMint(decision.SourceMint) || !isEarnStableMint(decision.TargetMint) {
 		return nil, errors.New("cross-mint route requires distinct supported mints and exact policy bindings")
 	}
+	anchored, ok := crossMintRecoveryAnchoredPosition(position)
+	if !ok || anchored.AmountRaw != decision.AmountRaw {
+		return nil, errors.New("cross-mint route amounts do not preserve the source recovery anchor")
+	}
+	position = anchored
 	feeTier := "base"
 	if decision.EstimatedCostLamports >= 50_000 {
 		feeTier = "high_value"

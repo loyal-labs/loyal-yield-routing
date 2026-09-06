@@ -9,18 +9,19 @@ use std::{
     convert::TryInto,
     env,
     error::Error,
-    panic::{catch_unwind, AssertUnwindSafe},
+    panic::{AssertUnwindSafe, catch_unwind},
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use klend_interface::{
+    FARMS_PROGRAM_ID, KLEND_PROGRAM_ID,
     discriminators::{
         DEPOSIT_RESERVE_LIQUIDITY_AND_OBLIGATION_COLLATERAL_V2, INIT_OBLIGATION,
         REFRESH_OBLIGATION, WITHDRAW_OBLIGATION_COLLATERAL_AND_REDEEM_RESERVE_COLLATERAL_V2,
@@ -28,24 +29,28 @@ use klend_interface::{
     from_account_data,
     instructions::{
         deposit::{
-            deposit_reserve_liquidity_and_obligation_collateral_v2,
             DepositReserveLiquidityAndObligationCollateralV2Accounts,
+            deposit_reserve_liquidity_and_obligation_collateral_v2,
         },
-        obligation::{init_obligation, InitObligationAccounts},
+        obligation::{InitObligationAccounts, init_obligation},
         refresh::{
-            refresh_obligation, refresh_reserve, RefreshObligationAccounts, RefreshReserveAccounts,
+            RefreshObligationAccounts, RefreshReserveAccounts, refresh_obligation, refresh_reserve,
         },
         withdraw::{
-            withdraw_obligation_collateral_and_redeem_reserve_collateral_v2,
             WithdrawObligationCollateralAndRedeemReserveCollateralV2Accounts,
+            withdraw_obligation_collateral_and_redeem_reserve_collateral_v2,
         },
     },
     pda::{farms_user_state, lending_market_authority, obligation, user_metadata},
     state::{Obligation, Reserve},
     types::InitObligationArgs,
-    FARMS_PROGRAM_ID, KLEND_PROGRAM_ID,
 };
 use loyal_actions::{
+    ASSOCIATED_TOKEN_PROGRAM_ID, KAMINO_MAIN_USDC_RESERVE, KaminoInitObligationFarm,
+    KaminoReserveLookupTableAccounts, LookupTableManifest, LoyalActionContext, RouteTopology,
+    SQUADS_SMART_ACCOUNT_PROGRAM_ID, SwapLane, USDC_MINT, YIELD_ROUTE_WITHDRAW_ACTION_SEED,
+    YieldRouteActionBuilder, YieldRouteActionSeeds, YieldRouteActionSetup, YieldRouteInstruction,
+    YieldRouteInstructionPlan, YieldRouteLookupTableRequirements, YieldRouteUniverse,
     compile_squads_inner_instruction, compiler_lookup_eligible_addresses,
     create_init_obligation_yield_route_action, create_same_mint_market_mint_yield_route_action,
     derive_action_account, derive_kamino_obligation_farm_user_state,
@@ -53,41 +58,48 @@ use loyal_actions::{
     execute_sync_transaction_instruction, kamino_init_obligation_farm_instruction,
     remove_policy_instruction, update_all_in_one_market_mint_yield_route_action,
     update_init_obligation_yield_route_action, update_same_mint_market_mint_yield_route_action,
-    KaminoInitObligationFarm, KaminoReserveLookupTableAccounts, LookupTableManifest,
-    LoyalActionContext, RouteTopology, SwapLane, YieldRouteActionBuilder, YieldRouteActionSeeds,
-    YieldRouteActionSetup, YieldRouteInstruction, YieldRouteInstructionPlan,
-    YieldRouteLookupTableRequirements, YieldRouteUniverse, ASSOCIATED_TOKEN_PROGRAM_ID,
-    KAMINO_MAIN_USDC_RESERVE, SQUADS_SMART_ACCOUNT_PROGRAM_ID, USDC_MINT,
-    YIELD_ROUTE_WITHDRAW_ACTION_SEED,
 };
 use loyal_observability::{
-    init_from_env, EarnRebalanceMetrics, EarnRebalanceStage, OperationalError,
+    EarnRebalanceMetrics, EarnRebalanceStage, OperationalError, init_from_env,
 };
 use loyal_yield_orchestrator::sqlx;
 use loyal_yield_orchestrator::sqlx::{
-    postgres::{PgConnectOptions, PgPoolOptions},
     PgPool, Row,
+    postgres::{PgConnectOptions, PgPoolOptions},
 };
 use loyal_yield_orchestrator::{
-    enabled_stable_mints_from_env, enabled_stable_mints_hash,
+    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, ConfirmSameMintRebalanceInput,
+    CurrentIdleTokenBalance, DecisionAdvance, DecisionId, DecisionStatus, EarnUniverse,
+    EffectiveLookupTableRollout, FIXED_KAMINO_MAIN_ROUTE_MODE, IdleVaultDepositDecisionInput,
+    LookupTableAllocationKind, LookupTableManifestAddressRecord, LookupTableManifestSubject,
+    LookupTableProvisioningRequestUpsert, LookupTableReadinessRecord, LookupTableReadinessStatus,
+    LookupTableRolloutMode, LookupTableSelectionKind, LookupTableSimulationState,
+    LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind, MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM,
+    NeonSqlClient, NeonSqlConfig, OrchestratorError, PlanOutcomeStatus, PolicyMatchInput,
+    ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY, RebalanceDecision, ReconciledReservePosition,
+    ReconciledVaultState, ResolvedLookupTableBundle, ResolverTableCandidate,
+    STANDARD_POLICY_AUTHORITY, SameMintRebalanceInput, SameMintRebalanceResult,
+    SharedMarketCatalogReadiness, SharedMarketCatalogRouteValidation,
+    SharedMarketCatalogRouteValidationState, SnapshotId, VaultId, enabled_stable_mints_from_env,
+    enabled_stable_mints_hash,
     fleet_orchestration::{
-        classify_idle_deposit_post_effect, code_owned_stablecoin_valuations,
-        evaluate_fresh_route_economics, fleet_stage_health_report, fleet_worker_role_probe,
-        maximum_target_inflight_usd_micros, observe_market_epoch, outer_task_failure_recovery,
-        project_fleet_route_source_evidence, projected_target_apy_bps, reconciliation_is_stalled,
-        reconciliation_retry_delay_seconds, validate_fleet_route_kind_binding,
-        validate_fleet_route_source_evidence, CrossMintNoEffectProofInput, DurablePgWakeupEvent,
-        DurablePgWakeupListener, EconomicPolicy, FleetObservationConfig, FleetOrchestrationStatus,
-        FleetRouteSourceEvidence, FleetRouteSourceKind as SameMintRouteSourceKind, FleetWorkerRole,
-        FreshRouteEconomicsInput, IdleDepositPostEffectDecision, IdleDepositPostEffectObservation,
-        IdleDepositRouteContract, ImmutableMarketEpoch, OpportunityInput, OuterTaskFailureKind,
-        RebalanceOpportunityAdvance, RebalanceOpportunityAdvanceOutcome,
+        CrossMintNoEffectProofInput, DurablePgWakeupEvent, DurablePgWakeupListener, EconomicPolicy,
+        FleetObservationConfig, FleetOrchestrationStatus, FleetRouteSourceEvidence,
+        FleetRouteSourceKind as SameMintRouteSourceKind, FleetWorkerRole, FreshRouteEconomicsInput,
+        IdleDepositPostEffectDecision, IdleDepositPostEffectObservation, IdleDepositRouteContract,
+        ImmutableMarketEpoch, MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS, OpportunityInput,
+        OuterTaskFailureKind, RebalanceOpportunityAdvance, RebalanceOpportunityAdvanceOutcome,
         RebalanceOpportunityClaimKind, RebalanceOpportunityLease, RebalanceOpportunityRecord,
         RebalanceOpportunityState, ReconciliationStallLatch, RouteFeePayerKind,
         RouteFeePayerShardConfig, RouteFeePolicy, SignedRouteSubmissionAdvance,
         SignedRouteSubmissionInput, SignedRouteSubmissionLease, SignedRouteSubmissionState,
         TargetCapacityObservation, TargetCapacityReservationInput,
-        MINIMUM_USABLE_MARKET_EPOCH_LIFETIME_SECONDS,
+        classify_idle_deposit_post_effect, code_owned_stablecoin_valuations,
+        evaluate_fresh_route_economics, fleet_stage_health_report, fleet_worker_role_probe,
+        maximum_target_inflight_usd_micros, observe_market_epoch, outer_task_failure_recovery,
+        project_fleet_route_source_evidence, projected_target_apy_bps, reconciliation_is_stalled,
+        reconciliation_retry_delay_seconds, validate_fleet_route_kind_binding,
+        validate_fleet_route_source_evidence,
     },
     lookup_table_manifest_address_records_hash,
     lookup_table_manifest_hash as control_plane_lookup_table_manifest_hash,
@@ -96,26 +108,12 @@ use loyal_yield_orchestrator::{
     rpc_safety::{redacted_external_error, validate_rpc_endpoint, validate_rpc_genesis_hash},
     shared_market_manifest_addresses, solana_testing_keypair_from_env,
     standard_policy_keypair_from_env, supported_stable_mints, vault_manifest_addresses,
-    ConfirmSameMintRebalanceInput, CurrentIdleTokenBalance, DecisionAdvance, DecisionId,
-    DecisionStatus, EarnUniverse, EffectiveLookupTableRollout, IdleVaultDepositDecisionInput,
-    LookupTableAllocationKind, LookupTableManifestAddressRecord, LookupTableManifestSubject,
-    LookupTableProvisioningRequestUpsert, LookupTableReadinessRecord, LookupTableReadinessStatus,
-    LookupTableRolloutMode, LookupTableSelectionKind, LookupTableSimulationState,
-    LookupTableUsageLeaseBundle, LookupTableUsageLeaseKind, NeonSqlClient, NeonSqlConfig,
-    OrchestratorError, PlanOutcomeStatus, PolicyMatchInput, RebalanceDecision,
-    ReconciledReservePosition, ReconciledVaultState, ResolvedLookupTableBundle,
-    ResolverTableCandidate, SameMintRebalanceInput, SameMintRebalanceResult,
-    SharedMarketCatalogReadiness, SharedMarketCatalogRouteValidation,
-    SharedMarketCatalogRouteValidationState, SnapshotId, VaultId,
-    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, FIXED_KAMINO_MAIN_ROUTE_MODE,
-    MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
-    STANDARD_POLICY_AUTHORITY,
 };
 use loyal_yield_router::timescale::{TimescaleRouterClient, TimescaleRouterClientConfig};
 use num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use solana_account_decoder_client_types::UiAccountEncoding;
 use solana_client::{
@@ -139,7 +137,7 @@ use solana_sdk::{
     commitment_config::CommitmentConfig,
     hash::Hash,
     instruction::{AccountMeta, Instruction},
-    message::{v0, AddressLookupTableAccount, VersionedMessage},
+    message::{AddressLookupTableAccount, VersionedMessage, v0},
     packet::PACKET_DATA_SIZE,
     pubkey::Pubkey,
     signature::{Keypair, Signature, Signer},
@@ -293,7 +291,7 @@ impl ReserveMove {
                     return Err(
                         "--source-reserve and --target-reserve must be provided together"
                             .to_owned(),
-                    )
+                    );
                 }
             };
         Pubkey::from_str(&source_reserve)
@@ -1211,9 +1209,9 @@ impl SameMintRouteRuntime {
             Duration::from_secs(10),
             CommitmentConfig::confirmed(),
         ));
-        let observed_genesis_hash = rpc.get_genesis_hash().map_err(|_| {
-            "failed to read genesis hash from configured same-mint route RPC endpoint"
-        })?;
+        let observed_genesis_hash = rpc.get_genesis_hash().map_err(
+            |_| "failed to read genesis hash from configured same-mint route RPC endpoint",
+        )?;
         validate_same_mint_rpc_genesis(cluster, observed_genesis_hash)?;
         client
             .require_schema_migration(20, "demand_driven_shared_market_catalog")
@@ -6021,6 +6019,7 @@ async fn reconcile_same_mint_submission_effect(
     runtime: &SameMintRouteRuntime,
     lease: &SignedRouteSubmissionLease,
 ) -> Result<i64, Box<dyn Error>> {
+    runtime.client.validate_reconciliation_owner(lease).await?;
     let submission = &lease.submission;
     if submission.state != SignedRouteSubmissionState::ReconciliationPending {
         return Err("reconciler received a submission outside reconciliation_pending".into());
@@ -6061,7 +6060,7 @@ async fn reconcile_same_mint_submission_effect(
         SameMintRouteSourceKind::ReservePosition => {
             reconcile_reserve_submission_effect(
                 runtime,
-                submission,
+                lease,
                 decision_id,
                 confirmed_slot,
                 &opportunity,
@@ -6069,8 +6068,14 @@ async fn reconcile_same_mint_submission_effect(
             .await
         }
         SameMintRouteSourceKind::IdleVaultUsdc => {
-            reconcile_idle_submission_effect(runtime, decision_id, confirmed_slot, &opportunity)
-                .await
+            reconcile_idle_submission_effect(
+                runtime,
+                lease,
+                decision_id,
+                confirmed_slot,
+                &opportunity,
+            )
+            .await
         }
     }
 }
@@ -6096,11 +6101,12 @@ async fn reconciliation_vault(
 
 async fn reconcile_reserve_submission_effect(
     runtime: &SameMintRouteRuntime,
-    submission: &loyal_yield_orchestrator::fleet_orchestration::SignedRouteSubmissionRecord,
+    lease: &SignedRouteSubmissionLease,
     decision_id: DecisionId,
     confirmed_slot: i64,
     opportunity: &RebalanceOpportunityRecord,
 ) -> Result<i64, Box<dyn Error>> {
+    let submission = &lease.submission;
     let decision =
         load_prepared_same_mint_decision(&runtime.pool, decision_id, DecisionStatus::Confirming)
             .await?;
@@ -6118,14 +6124,17 @@ async fn reconcile_reserve_submission_effect(
     {
         runtime
             .client
-            .confirm_same_mint_rebalance(ConfirmSameMintRebalanceInput {
-                decision_id,
-                signature: submission.transaction_signature.clone(),
-                submitted_slot: submission.submitted_slot,
-                confirmed_slot,
-                observed_at: Some(Utc::now()),
-                post_snapshot_id: Some(snapshot_id),
-            })
+            .confirm_same_mint_rebalance_guarded(
+                ConfirmSameMintRebalanceInput {
+                    decision_id,
+                    signature: submission.transaction_signature.clone(),
+                    submitted_slot: submission.submitted_slot,
+                    confirmed_slot,
+                    observed_at: Some(Utc::now()),
+                    post_snapshot_id: Some(snapshot_id),
+                },
+                Some(lease),
+            )
             .await?;
         return Ok(observed_slot);
     }
@@ -6152,24 +6161,28 @@ async fn reconcile_reserve_submission_effect(
     ensure_post_confirm_chain_reconcile_state(&decision, &post_state)?;
     let snapshot = runtime
         .client
-        .apply_observed_patch(decision.vault_id, post_state)
+        .apply_reconciliation_patch(decision.vault_id, post_state, lease)
         .await?;
     runtime
         .client
-        .confirm_same_mint_rebalance(ConfirmSameMintRebalanceInput {
-            decision_id,
-            signature: submission.transaction_signature.clone(),
-            submitted_slot: submission.submitted_slot,
-            confirmed_slot,
-            observed_at: Some(Utc::now()),
-            post_snapshot_id: Some(snapshot.id),
-        })
+        .confirm_same_mint_rebalance_guarded(
+            ConfirmSameMintRebalanceInput {
+                decision_id,
+                signature: submission.transaction_signature.clone(),
+                submitted_slot: submission.submitted_slot,
+                confirmed_slot,
+                observed_at: Some(Utc::now()),
+                post_snapshot_id: Some(snapshot.id),
+            },
+            Some(lease),
+        )
         .await?;
     Ok(snapshot.observed_slot)
 }
 
 async fn reconcile_idle_submission_effect(
     runtime: &SameMintRouteRuntime,
+    lease: &SignedRouteSubmissionLease,
     decision_id: DecisionId,
     confirmed_slot: i64,
     opportunity: &RebalanceOpportunityRecord,
@@ -6214,12 +6227,13 @@ async fn reconcile_idle_submission_effect(
         {
             runtime
                 .client
-                .advance_decision(
+                .advance_decision_guarded(
                     decision_id,
                     DecisionAdvance::Confirm {
                         slot: Some(confirmed_slot),
                         post_snapshot_id: Some(target.snapshot_id),
                     },
+                    Some(lease),
                 )
                 .await?;
             println!(
@@ -6287,30 +6301,32 @@ async fn reconcile_idle_submission_effect(
     };
     let snapshot = runtime
         .client
-        .apply_observed_patch(vault.id, chain_preview_reconciled_state(&preview)?)
+        .apply_reconciliation_patch_with_idle(
+            vault.id,
+            chain_preview_reconciled_state(&preview)?,
+            vec![CurrentIdleTokenBalance {
+                vault_id: vault.id,
+                mint: opportunity.liquidity_mint.clone(),
+                amount_raw: i64::try_from(target.vault_liquidity_amount_raw)?,
+                owner: vault.vault_pubkey.clone(),
+                token_account: idle_token_account,
+                observed_slot: preview.observed_slot,
+                observed_at: Utc::now(),
+                source_commitment: "confirmed".to_owned(),
+                updated_at: Utc::now(),
+            }],
+            lease,
+        )
         .await?;
     runtime
         .client
-        .record_current_idle_token_balance(CurrentIdleTokenBalance {
-            vault_id: vault.id,
-            mint: opportunity.liquidity_mint.clone(),
-            amount_raw: i64::try_from(target.vault_liquidity_amount_raw)?,
-            owner: vault.vault_pubkey.clone(),
-            token_account: idle_token_account,
-            observed_slot: preview.observed_slot,
-            observed_at: Utc::now(),
-            source_commitment: "confirmed".to_owned(),
-            updated_at: Utc::now(),
-        })
-        .await?;
-    runtime
-        .client
-        .advance_decision(
+        .advance_decision_guarded(
             decision_id,
             DecisionAdvance::Confirm {
                 slot: Some(confirmed_slot),
                 post_snapshot_id: Some(snapshot.id),
             },
+            Some(lease),
         )
         .await?;
     println!(
@@ -6826,11 +6842,11 @@ fn validate_fleet_worker_advance_outcome(
         {
             Ok(true)
         }
-        RebalanceOpportunityAdvanceOutcome::Expired => Err(OrchestratorError::StoreInvariant(
-            format!(
+        RebalanceOpportunityAdvanceOutcome::Expired => {
+            Err(OrchestratorError::StoreInvariant(format!(
                 "rebalance opportunity {opportunity_id} expired after a potentially effectful worker outcome"
-            ),
-        )),
+            )))
+        }
         RebalanceOpportunityAdvanceOutcome::Fenced => Err(OrchestratorError::StoreInvariant(
             format!("rebalance opportunity {opportunity_id} lost fencing while advancing"),
         )),
@@ -6966,7 +6982,7 @@ pub async fn execute_same_mint_route_in_process(
             return request.outcome(
                 SameMintRouteExecutionState::Terminal,
                 Some("NEON_DATABASE_URL must be set".to_owned()),
-            )
+            );
         }
     };
     let client = match NeonSqlClient::connect(NeonSqlConfig::new(database_url)).await {
@@ -6975,7 +6991,7 @@ pub async fn execute_same_mint_route_in_process(
             return request.outcome(
                 SameMintRouteExecutionState::Retry,
                 Some(safe_same_mint_operational_error(&error)),
-            )
+            );
         }
     };
     let runtime =
@@ -6985,7 +7001,7 @@ pub async fn execute_same_mint_route_in_process(
                 return request.outcome(
                     SameMintRouteExecutionState::Retry,
                     Some(safe_same_mint_operational_error(error.as_ref())),
-                )
+                );
             }
         };
     execute_same_mint_route_with_runtime(request, &runtime, None).await
@@ -7099,7 +7115,7 @@ async fn require_current_opportunity_fence(
             return Err(
                 "queue route execution has a partial opportunity lease identity and is fenced"
                     .into(),
-            )
+            );
         }
     };
     let current = client
@@ -7169,6 +7185,11 @@ async fn require_current_opportunity_fence(
         if current.route_fingerprint.as_deref() != Some(route_fingerprint)
             || current.requirements_fingerprint.as_deref() != Some(requirements_fingerprint)
         {
+            #[cfg(test)]
+            eprintln!(
+                "connected fingerprint mismatch: persisted_route={:?} retained_route={route_fingerprint} persisted_requirements={:?} retained_requirements={requirements_fingerprint}",
+                current.route_fingerprint, current.requirements_fingerprint
+            );
             return Err(format!(
                 "rebalance opportunity {opportunity_id} exact route/requirements fingerprints changed while leased; worker is fenced"
             )
@@ -8085,9 +8106,11 @@ async fn run_with_runtime(
         );
         fields.insert(
             "route_fee_payer".to_owned(),
-            json!(route_execution
-                .as_ref()
-                .map(|plan| plan.preview.fee_payer.as_str())),
+            json!(
+                route_execution
+                    .as_ref()
+                    .map(|plan| plan.preview.fee_payer.as_str())
+            ),
         );
         fields.insert("alt_readiness".to_owned(), resolution.evidence.clone());
 
@@ -15084,8 +15107,8 @@ fn compile_lookup_table_bundle(
                     Ok(recompiled) => compiled = recompiled,
                     Err(error) => {
                         simulation_error = Some(format!(
-                        "v0 recompilation after zero-contribution table removal failed: {error}"
-                    ))
+                            "v0 recompilation after zero-contribution table removal failed: {error}"
+                        ))
                     }
                 }
                 let covered = loaded_lookup_table_addresses(&compiled, &lookup_table_accounts);
@@ -15398,11 +15421,13 @@ async fn persist_route_lookup_table_resolution(
             },
             required_address_count: required_count,
             covered_address_count: required_count - reusable_missing_count,
-            missing_addresses: json!(resolution
-                .reusable_missing_addresses
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()),
+            missing_addresses: json!(
+                resolution
+                    .reusable_missing_addresses
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            ),
             legacy_table_ids: Vec::new(),
             reusable_table_ids: resolution.reusable_table_ids.clone(),
             compiled_message_size: packet_size,
@@ -17783,7 +17808,7 @@ fn read_compact_program_interaction_instruction_constraints(
                 tag => {
                     return Err(format!(
                         "unknown compact program interaction account constraint kind {tag}"
-                    ))
+                    ));
                 }
             };
             let owner = match cursor.read_u8()? {
@@ -17841,7 +17866,7 @@ fn read_program_interaction_account_constraints(
             tag => {
                 return Err(format!(
                     "unknown program interaction account constraint kind {tag}"
-                ))
+                ));
             }
         };
         let owner = cursor.read_option_pubkey()?;
@@ -19810,7 +19835,7 @@ fn policy_data_constraint_matches(
                     return Err(format!(
                         "unsupported byte-slice operator {}",
                         other.as_str()
-                    ))
+                    ));
                 }
             }
         }
@@ -22701,27 +22726,31 @@ mod tests {
             (SameMintRouteExecutionState::Retry, true, false),
             (SameMintRouteExecutionState::Retry, false, true),
         ] {
-            assert!(validate_fleet_worker_advance_outcome(
-                42,
-                state,
-                writes_decision,
-                sends_transactions,
-                RebalanceOpportunityAdvanceOutcome::Expired,
-            )
-            .is_err());
+            assert!(
+                validate_fleet_worker_advance_outcome(
+                    42,
+                    state,
+                    writes_decision,
+                    sends_transactions,
+                    RebalanceOpportunityAdvanceOutcome::Expired,
+                )
+                .is_err()
+            );
         }
     }
 
     #[test]
     fn fleet_worker_advance_outcome_rejects_fenced() {
-        assert!(validate_fleet_worker_advance_outcome(
-            43,
-            SameMintRouteExecutionState::Retry,
-            false,
-            false,
-            RebalanceOpportunityAdvanceOutcome::Fenced,
-        )
-        .is_err());
+        assert!(
+            validate_fleet_worker_advance_outcome(
+                43,
+                SameMintRouteExecutionState::Retry,
+                false,
+                false,
+                RebalanceOpportunityAdvanceOutcome::Fenced,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -23101,13 +23130,15 @@ mod tests {
         assert_eq!(reserve.expected_idle_token_account, None);
         assert_eq!(reserve.expected_idle_observed_slot, None);
         assert_eq!(reserve.expected_idle_observed_at, None);
-        assert!(validate_fleet_route_source_evidence(
-            SameMintRouteSourceKind::ReservePosition,
-            Some(&Pubkey::new_unique().to_string()),
-            Some(1),
-            &reserve,
-        )
-        .is_ok());
+        assert!(
+            validate_fleet_route_source_evidence(
+                SameMintRouteSourceKind::ReservePosition,
+                Some(&Pubkey::new_unique().to_string()),
+                Some(1),
+                &reserve,
+            )
+            .is_ok()
+        );
 
         let idle_plan = json!({
             "source_kind": "idle_vault_usdc",
@@ -23127,13 +23158,15 @@ mod tests {
             idle.expected_idle_observed_at.unwrap().to_rfc3339(),
             "2026-07-16T03:11:11+00:00"
         );
-        assert!(validate_fleet_route_source_evidence(
-            SameMintRouteSourceKind::IdleVaultUsdc,
-            None,
-            None,
-            &idle,
-        )
-        .is_ok());
+        assert!(
+            validate_fleet_route_source_evidence(
+                SameMintRouteSourceKind::IdleVaultUsdc,
+                None,
+                None,
+                &idle,
+            )
+            .is_ok()
+        );
 
         let corrupt_reserve = project_fleet_route_source_evidence(
             SameMintRouteSourceKind::ReservePosition,
@@ -23285,40 +23318,51 @@ mod tests {
             vault: None,
         };
 
-        assert!(reusable_runtime_blocker(
-            &rollout(LookupTableRolloutMode::ReusableOnly, false),
-            true,
-            true,
-        )
-        .is_none());
-        assert!(reusable_runtime_blocker(
-            &rollout(LookupTableRolloutMode::ReusableOnly, false),
-            true,
-            false,
-        )
-        .is_some_and(|blocker| blocker.contains("complete reusable ALT coverage")));
-        assert!(reusable_runtime_blocker(
-            &rollout(LookupTableRolloutMode::ReusableOnly, false),
-            false,
-            true,
-        )
-        .is_some_and(|blocker| blocker.contains("shared_market_catalog_drift")));
+        assert!(
+            reusable_runtime_blocker(
+                &rollout(LookupTableRolloutMode::ReusableOnly, false),
+                true,
+                true,
+            )
+            .is_none()
+        );
+        assert!(
+            reusable_runtime_blocker(
+                &rollout(LookupTableRolloutMode::ReusableOnly, false),
+                true,
+                false,
+            )
+            .is_some_and(|blocker| blocker.contains("complete reusable ALT coverage"))
+        );
+        assert!(
+            reusable_runtime_blocker(
+                &rollout(LookupTableRolloutMode::ReusableOnly, false),
+                false,
+                true,
+            )
+            .is_some_and(|blocker| blocker.contains("shared_market_catalog_drift"))
+        );
 
         for mode in [
             LookupTableRolloutMode::Legacy,
             LookupTableRolloutMode::Shadow,
             LookupTableRolloutMode::PreferReusable,
         ] {
-            assert!(reusable_runtime_blocker(&rollout(mode, false), true, true)
-                .is_some_and(|blocker| blocker.contains("legacy ALT resolution has been removed")));
+            assert!(
+                reusable_runtime_blocker(&rollout(mode, false), true, true).is_some_and(
+                    |blocker| blocker.contains("legacy ALT resolution has been removed")
+                )
+            );
         }
 
-        assert!(reusable_runtime_blocker(
-            &rollout(LookupTableRolloutMode::ReusableOnly, true),
-            true,
-            true,
-        )
-        .is_some_and(|blocker| blocker.contains("force-legacy is a fail-closed stop")));
+        assert!(
+            reusable_runtime_blocker(
+                &rollout(LookupTableRolloutMode::ReusableOnly, true),
+                true,
+                true,
+            )
+            .is_some_and(|blocker| blocker.contains("force-legacy is a fail-closed stop"))
+        );
     }
 
     #[test]
@@ -23418,14 +23462,18 @@ mod tests {
             &[policy],
         )
         .expect("policy operation should have complete typed provenance");
-        assert!(policy_manifest
-            .vault()
-            .iter()
-            .any(|requirement| requirement.address == settings));
-        assert!(policy_manifest
-            .vault()
-            .iter()
-            .any(|requirement| requirement.address == policy));
+        assert!(
+            policy_manifest
+                .vault()
+                .iter()
+                .any(|requirement| requirement.address == settings)
+        );
+        assert!(
+            policy_manifest
+                .vault()
+                .iter()
+                .any(|requirement| requirement.address == policy)
+        );
 
         let setup_plan = init_obligation_execution_instructions(
             policy,
@@ -23445,10 +23493,12 @@ mod tests {
             &[],
         )
         .expect("setup operation should have complete typed provenance");
-        assert!(setup_manifest
-            .vault()
-            .iter()
-            .any(|requirement| requirement.address == obligation));
+        assert!(
+            setup_manifest
+                .vault()
+                .iter()
+                .any(|requirement| requirement.address == obligation)
+        );
 
         let deposit_inner =
             kamino_deposit_to_obligation_instruction(vault_pubkey, target, vault_ata, 1)
@@ -23469,10 +23519,12 @@ mod tests {
             &[],
         )
         .expect("deposit operation should have complete typed provenance");
-        assert!(deposit_manifest
-            .shared_market()
-            .iter()
-            .any(|requirement| requirement.address == reserve));
+        assert!(
+            deposit_manifest
+                .shared_market()
+                .iter()
+                .any(|requirement| requirement.address == reserve)
+        );
 
         let recovery_plan = vault_usdc_recovery_instructions(
             settings,
@@ -23492,14 +23544,18 @@ mod tests {
             &[wallet_ata],
         )
         .expect("cleanup operation should have complete typed provenance");
-        assert!(recovery_manifest
-            .vault()
-            .iter()
-            .any(|requirement| requirement.address == wallet_ata));
-        assert!(recovery_manifest
-            .vault()
-            .iter()
-            .any(|requirement| requirement.address == vault_ata));
+        assert!(
+            recovery_manifest
+                .vault()
+                .iter()
+                .any(|requirement| requirement.address == wallet_ata)
+        );
+        assert!(
+            recovery_manifest
+                .vault()
+                .iter()
+                .any(|requirement| requirement.address == vault_ata)
+        );
     }
 
     #[test]
@@ -23878,9 +23934,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(0, first.as_str()), (1, third.as_str())]
         );
-        assert!(durable
-            .iter()
-            .all(|address| !address.account_role.is_empty()));
+        assert!(
+            durable
+                .iter()
+                .all(|address| !address.account_role.is_empty())
+        );
         assert_eq!(
             lookup_table_manifest_address_records_hash(&durable).len(),
             64
@@ -23976,7 +24034,7 @@ mod tests {
 
 fn print_help() {
     println!(
-         "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> --cluster <mainnet-beta|devnet|testnet|localnet> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--execute | --prepare-only | --read-only]\n\n\
+        "Usage: same-mint-reserve-swap --settings <PUBKEY> --vault-index <N> --cluster <mainnet-beta|devnet|testnet|localnet> [--e2e-main-prime-main <AMOUNT_RAW>] [--update-policy] [--update-active-policy] [--deposit-main-usdc <AMOUNT_RAW> | --deposit-reserve <RESERVE> <AMOUNT_RAW> | --deposit-idle-vault-reserve <RESERVE> <AMOUNT_RAW>] [--setup-obligation-reserve <RESERVE>] [--full-withdraw-main-usdc | --full-withdraw-reserve <RESERVE>] [--direction main-to-prime|prime-to-main | --source-reserve <PUBKEY> --target-reserve <PUBKEY>] [--optimization-cycle] [--reconcile-from-chain] [--seed-from-user-position] [--rpc-url <URL>] [--execute | --prepare-only | --read-only]\n\n\
          Dry-run is the default, and still records lookup-table readiness and provisioning demand so the readiness wait loop can make progress; add --read-only to suppress every database write for pure inspection. Reads NEON_DATABASE_URL, optionally SOLANA_RPC_URL, and requires YIELD_ALT_CLUSTER or --cluster. E2E mode runs policy update, initial Main USDC deposit, Main -> Prime move, Prime -> Main move, and full Main withdrawal as child invocations of this same binary. Policy update mode uses SOLANA_TESTING_PK for the settings authority and POLICY_KEYPAIR as the delegated policy signer. By default --update-policy targets a fresh next policy seed; add --update-active-policy to intentionally update the currently active DB policy instead. Policy create/update, obligation setup, initial/idle policy deposits, same-mint moves, full withdrawal, wallet recovery, and policy cleanup all use the same Neon rollout, typed-manifest, readiness, usage-lease, fresh-RPC, exact-v0, and immediate pre-send resolver path. The wallet-to-vault funding transaction is deliberately ALT-free. Add --setup-obligation-reserve <reserve> as a setup/admin-only mode to execute the decoded target-market init_obligation constraint from the route or setup policy. Add --optimization-cycle for same-mint route work; it requires explicit source/target reserves plus --reconcile-from-chain and either --execute or --prepare-only. --prepare-only builds and simulates the exact route and persists reusable readiness/provisioning demand without creating a rebalance decision, acquiring a route lease, or sending a transaction. --execute uses POLICY_KEYPAIR as fee payer and delegated signer, requires reusable_only rollout state with force_legacy disabled, fresh-verifies every selected reusable ALT against RPC, compiles and simulates the exact v0 transaction, and fails before the decision or send when readiness or leases are invalid. Missing reusable coverage records an idempotent provisioning request for the dedicated provisioner; this route process never creates or extends ALTs. Legacy, shadow, prefer_reusable, and force_legacy control states fail closed because legacy ALT resolution has been removed. Add --deposit-idle-vault-reserve for router-owned USDC already inside the vault; execute mode requires expected idle token account, observed slot/time, mint, amount, target APY, and edge, uses POLICY_KEYPAIR as fee payer/delegated signer for target obligation setup when needed and for deposit, and does not read SOLANA_TESTING_PK. Initial deposit mode uses SOLANA_TESTING_PK as the funding wallet and POLICY_KEYPAIR for the policy deposit; --deposit-reserve allows choosing a non-Main Safe USDC reserve when Main is already the APY winner. Full withdraw mode uses POLICY_KEYPAIR for the policy withdraw, then SOLANA_TESTING_PK authority cleanup to recover vault USDC, close the route policy plus setup policy when present, and report rent cleanup proof. Run through:\n\
          op run --env-file=.env.1password -- bun run same-mint:swap -- --settings <PUBKEY> --vault-index 1 --reconcile-from-chain --seed-from-user-position"
     );

@@ -31,6 +31,10 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 			serviceMillis = expectedServiceMillis * 3
 		}
 	}
+	anchored := true
+	if routeKind == "cross_mint_jupiter" {
+		position, anchored = crossMintRecoveryAnchoredPosition(position)
+	}
 	decision := Decision{
 		Reason: "ineligible", RouteKind: routeKind, VaultID: position.VaultID, SourceSnapshotID: position.SnapshotID,
 		MarketSlot: snapshot.Slot, SourceReserve: sourceAddress, TargetReserve: targetAddress,
@@ -40,6 +44,9 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 		ConfidencePPM: confidencePPM,
 	}
 	ineligible := func(reason string) Decision { decision.Reason = reason; return decision }
+	if !anchored {
+		return ineligible("invalid_cross_mint_recovery_anchor")
+	}
 	if position.BlockedReason != "" {
 		return ineligible(position.BlockedReason)
 	}
@@ -230,6 +237,21 @@ func sumInt64(values ...int64) (int64, bool) {
 		return 0, false
 	}
 	return value.Int64(), true
+}
+
+// Match Rust's conservative proportional quote while leaving one collateral
+// unit in the source obligation so recovery can reuse the existing obligation.
+func crossMintRecoveryAnchoredPosition(position VaultPosition) (VaultPosition, bool) {
+	if position.SourceCollateralAmountRaw <= 1 || position.AmountRaw <= 0 || position.SourceAmountSemantics != amountSemanticsKaminoCollateralDeposited {
+		return position, false
+	}
+	amount, ok := mulDivInt64(position.AmountRaw, position.SourceCollateralAmountRaw-1, position.SourceCollateralAmountRaw)
+	if !ok || amount <= 0 {
+		return position, false
+	}
+	position.AmountRaw = amount
+	position.SourceCollateralAmountRaw--
+	return position, true
 }
 
 func mulDivInt64(left, right, divisor int64) (int64, bool) {

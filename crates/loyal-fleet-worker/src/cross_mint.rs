@@ -5,10 +5,15 @@
 //! only the finalized withdraw -> Jupiter ExactIn -> deposit movement.
 
 use super::*;
+
+#[cfg(test)]
+#[path = "connected_e2e.rs"]
+mod connected_e2e;
+
 use loyal_actions::jupiter::{
-    parse_and_validate_jupiter_exact_in_build, JupiterBuildLimits, JupiterExactInBuildExpectation,
-    JupiterLookupTableSnapshot, JupiterMintSnapshot, JupiterTokenAccountSnapshot, JupiterV2Dialect,
-    SOLANA_MAX_COMPUTE_UNITS,
+    JupiterBuildLimits, JupiterExactInBuildExpectation, JupiterLookupTableSnapshot,
+    JupiterMintSnapshot, JupiterTokenAccountSnapshot, JupiterV2Dialect, SOLANA_MAX_COMPUTE_UNITS,
+    parse_and_validate_jupiter_exact_in_build,
 };
 use loyal_yield_store::fleet_orchestration::{
     CrossMintBalanceAnchors, CrossMintContinuationLease, CrossMintCustodyPhase,
@@ -24,8 +29,8 @@ use solana_client::{
 };
 use solana_sdk::program_pack::Pack;
 use solana_transaction_status_client_types::{
-    option_serializer::OptionSerializer, TransactionStatus, UiTransactionEncoding,
-    UiTransactionStatusMeta, UiTransactionTokenBalance,
+    TransactionStatus, UiTransactionEncoding, UiTransactionStatusMeta, UiTransactionTokenBalance,
+    option_serializer::OptionSerializer,
 };
 
 const CROSS_MINT_ROUTE_KIND: &str = "cross_mint_jupiter";
@@ -923,7 +928,7 @@ pub(super) async fn inspect_expired_submission(
             Err(_) => {
                 return Ok(ExpiredRouteCheckOutcome::ExternalStateChanged {
                     detail: "expired_cross_mint_anchor_program_or_binding_changed".to_owned(),
-                })
+                });
             }
         };
         if i64::try_from(amount)? != anchor.amount_raw {
@@ -972,7 +977,7 @@ pub(super) async fn inspect_expired_submission(
             Err(_) => {
                 return Ok(ExpiredRouteCheckOutcome::EffectAmbiguous {
                     detail: "expired_cross_mint_kamino_position_readback_failed".to_owned(),
-                })
+                });
             }
         };
         if &observed != expected_position {
@@ -1114,7 +1119,7 @@ fn unique_token_balance(
     let balances = match balances {
         OptionSerializer::Some(balances) => balances,
         OptionSerializer::None | OptionSerializer::Skip => {
-            return Err("finalized transaction omitted token balance metadata".into())
+            return Err("finalized transaction omitted token balance metadata".into());
         }
     };
     let mut matches = balances

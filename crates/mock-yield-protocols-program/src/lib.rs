@@ -1,7 +1,7 @@
 #![allow(unexpected_cfgs)]
 
 use solana_program::{
-    account_info::{next_account_info, AccountInfo},
+    account_info::{AccountInfo, next_account_info},
     entrypoint,
     entrypoint::ProgramResult,
     program::{invoke, invoke_signed},
@@ -40,7 +40,7 @@ pub const KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
 pub const JUPITER_SWAP_AUTHORITY_SEED: &[u8] = b"jupiter-swap-authority";
 pub const KAMINO_RESERVE_LIQUIDITY_AUTHORITY_SEED: &[u8] = b"kamino-reserve-liq-authority";
 pub const KAMINO_COLLATERAL_MINT_AUTHORITY_SEED: &[u8] = b"kamino-collateral-mint-authority";
-pub const KAMINO_LENDING_MARKET_AUTHORITY_SEED: &[u8] = b"kamino-lending-market-authority";
+pub const KAMINO_LENDING_MARKET_AUTHORITY_SEED: &[u8] = b"lma";
 pub const KAMINO_RESERVE_STATE_LEN: usize = 160;
 const KAMINO_RESERVE_DISCRIMINATOR: [u8; 8] = [43, 242, 204, 202, 26, 247, 59, 127];
 const KAMINO_OBLIGATION_DISCRIMINATOR: [u8; 8] = [168, 206, 141, 106, 88, 76, 172, 167];
@@ -81,6 +81,12 @@ pub fn process_instruction(
     data: &[u8],
 ) -> ProgramResult {
     if program_id == &JUPITER_V6_PROGRAM_ID {
+        if accounts.len() == 24
+            && data.len() == 40
+            && data[..8] == JUPITER_ROUTER_USDC_PYUSD_DISCRIMINATOR
+        {
+            return process_local_alphaq_route(program_id, accounts, data);
+        }
         return process_jupiter(program_id, accounts, data);
     }
 
@@ -174,6 +180,59 @@ fn process_jupiter(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
             output_mint,
         ),
     }
+}
+
+// Narrow executable model of the verifier's one-hop RouteV2 envelope. This
+// executes SPL transfers, not the production AlphaQ pricing/CPI implementation.
+// The fixture's pool inventory is owned by Jupiter's event-authority PDA because
+// that PDA is present in the unchanged official RouteV2 account layout.
+fn process_local_alphaq_route(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    if accounts.len() != 24
+        || data[26] != 0
+        || data[27..] != [0, 0, 0, 1, 0, 0, 0, 104, 1, 0x10, 0x27, 0, 1]
+    {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    require_signer(&accounts[0])?;
+    require_key(&accounts[5], &spl_token::id())?;
+    require_key(&accounts[6], &spl_token::id())?;
+    require_key(&accounts[7], program_id)?;
+    require_key(&accounts[9], program_id)?;
+    require_key(&accounts[14], accounts[1].key)?;
+    require_key(&accounts[15], accounts[2].key)?;
+    let authority = Pubkey::find_program_address(&[b"__event_authority"], program_id).0;
+    require_key(&accounts[8], &authority)?;
+    let input = read_u64(&data[8..16])?;
+    let output = read_u64(&data[16..24])?;
+    if input == 0 || output == 0 || accounts[3].key == accounts[4].key {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    let input_decimals = spl_token::state::Mint::unpack(&accounts[3].data.borrow())?.decimals;
+    let output_decimals = spl_token::state::Mint::unpack(&accounts[4].data.borrow())?.decimals;
+    transfer_checked(
+        &accounts[1],
+        &accounts[3],
+        &accounts[16],
+        &accounts[0],
+        &accounts[5],
+        input,
+        input_decimals,
+    )?;
+    transfer_checked_signed(
+        program_id,
+        &accounts[17],
+        &accounts[4],
+        &accounts[2],
+        &accounts[8],
+        &accounts[6],
+        output,
+        output_decimals,
+        &[b"__event_authority"],
+    )
 }
 
 fn parse_jupiter_instruction(data: &[u8]) -> Result<JupiterInstruction, ProgramError> {
@@ -345,6 +404,47 @@ fn process_jupiter_stable_exact_in(
 }
 
 fn process_kamino(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+    // The local fixed-price model does not accrue interest or consult oracles.
+    // Accept only the official refresh wire shape and validated fixture accounts;
+    // do not blanket-accept unknown public instructions ahead of asset movement.
+    if data == [2, 218, 138, 235, 79, 201, 25, 102] {
+        if accounts.len() != 6
+            || accounts[0].owner != program_id
+            || !accounts[0].is_writable
+            || accounts[1].owner != program_id
+            || accounts[2..]
+                .iter()
+                .any(|account| account.key != program_id)
+        {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        let reserve = read_kamino_reserve_state(&accounts[0])?;
+        return require_key(&accounts[1], &reserve.lending_market);
+    }
+    if data == [33, 132, 147, 228, 151, 192, 72, 89] {
+        if accounts.len() < 2
+            || accounts[0].owner != program_id
+            || accounts[1].owner != program_id
+            || !accounts[1].is_writable
+        {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        let obligation = accounts[1].try_borrow_data()?;
+        if obligation.len() < 3344
+            || !obligation.starts_with(&KAMINO_OBLIGATION_DISCRIMINATOR)
+            || obligation[32..64] != accounts[0].key.to_bytes()
+        {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        for account in &accounts[2..] {
+            if account.owner != program_id {
+                return Err(ProgramError::IllegalOwner);
+            }
+            let reserve = read_kamino_reserve_state(account)?;
+            require_key(&accounts[0], &reserve.lending_market)?;
+        }
+        return Ok(());
+    }
     match parse_kamino_instruction(data)? {
         KaminoInstruction::Deposit { amount } => {
             process_kamino_deposit(program_id, accounts, amount)
