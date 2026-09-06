@@ -18,14 +18,20 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 	}
 	// Setup never enters ordinary delegate signing or abandoned-decision
 	// cleanup. A submitted prefund can advance through finalized reconciliation
-	// into one reserved creation intent. Setup signing/sending remains disabled.
+	// into one reserved creation intent. Built/Signed setup may only retire a
+	// proven expired-absent wire, retaining its reservation and signed history.
+	// Setup signing/sending remains disabled in this worker entrypoint.
 	if isPolicySetupAction(operation.Decision.Action) {
+		if operation.Status == Built || operation.Status == Signed {
+			return database.recoverExpiredPolicySetup(ctx, rpc, operation.ID, operation.SignedWireSHA256)
+		}
 		if operation.Decision.Action == PolicySetupPrefund && (operation.Status == BroadcastIntent || operation.Status == Submitted || operation.Status == Confirmed || operation.Status == Reconciling) {
 			_, err := database.continuePolicySetupPrefund(ctx, rpc, operation.ID)
-			return err
+			return recoverUnsettledPolicySetup(ctx, database, rpc, operation, err)
 		}
 		if operation.Decision.Action == PolicySetupCreate && (operation.Status == BroadcastIntent || operation.Status == Submitted || operation.Status == Confirmed || operation.Status == Reconciling) {
-			return database.reconcilePolicySetupCreation(ctx, rpc, operation.ID)
+			err := database.reconcilePolicySetupCreation(ctx, rpc, operation.ID)
+			return recoverUnsettledPolicySetup(ctx, database, rpc, operation, err)
 		}
 		return budgetHold("policy_setup_execution_not_enabled")
 	}
@@ -156,6 +162,19 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 	default:
 		return fmt.Errorf("unsupported nonterminal status: %s", operation.Status)
 	}
+}
+
+// A missing/failed receipt is not itself absence evidence. Only an independent
+// exact-wire expiry proof can retire BroadcastIntent/Submitted setup. Confirmed
+// operations remain reconciliation work, and a successful settlement is final.
+func recoverUnsettledPolicySetup(ctx context.Context, database *Database, rpc *RPCClient, operation PersistedOperation, reconciliationError error) error {
+	if reconciliationError == nil || (operation.Status != BroadcastIntent && operation.Status != Submitted) {
+		return reconciliationError
+	}
+	if err := database.recoverExpiredPolicySetup(ctx, rpc, operation.ID, operation.SignedWireSHA256); err != nil {
+		return errors.Join(reconciliationError, err)
+	}
+	return nil
 }
 
 func preBroadcastRecoveryReason(ctx context.Context, rpc *RPCClient, operation PersistedOperation) (string, error) {

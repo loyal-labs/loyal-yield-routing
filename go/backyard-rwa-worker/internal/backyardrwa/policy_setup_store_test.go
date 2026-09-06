@@ -136,6 +136,29 @@ func testPolicySetupDurability(t *testing.T, url string) {
 	t.Run("setup signed wire and simulation commit atomically", func(t *testing.T) {
 		testPolicySetupSignedPersistence(t, ctx, db, newRoute, plan)
 	})
+	t.Run("expired initial setup wire preserves evidence and budget", func(t *testing.T) {
+		for _, operation := range []string{"borrow", "repay"} {
+			t.Run(operation, func(t *testing.T) {
+				testPolicySetupExpiredWire(t, ctx, db, func(t *testing.T) PersistedOperation {
+					initial := plan
+					if operation == "repay" {
+						initial = *setupPaymentAuth(t, "direct").PolicySetup
+					}
+					budget := emptyTestBudget()
+					budget.Families["OnRe"] = FamilyBudget{SpentMicros: 3_000_000}
+					key := newRoute(t, budget, time.Minute)
+					if _, err := db.persistPolicySetupIntent(ctx, setupGuardRPC(t, 42, 0), key, initial); err != nil {
+						t.Fatal(err)
+					}
+					op, err := db.LoadNonterminal(ctx, key)
+					if err != nil || op == nil {
+						t.Fatal("missing initial setup", err)
+					}
+					return *op
+				})
+			})
+		}
+	})
 	t.Run("payment authorization preserves setup budget", func(t *testing.T) {
 		key := newRoute(t, emptyTestBudget(), time.Minute)
 		r, err := db.persistPolicySetupIntent(ctx, setupGuardRPC(t, 42, 0), key, plan)
@@ -169,6 +192,19 @@ func testPolicySetupDurability(t *testing.T, url string) {
 			}
 			return op
 		}
+		t.Run("expired creation wire preserves finalized prefund", func(t *testing.T) {
+			testPolicySetupExpiredWire(t, ctx, db, func(t *testing.T) PersistedOperation {
+				parent := prepare(t)
+				if err := AdvanceNonterminal(ctx, db, setupCompletionRPC(t, plan, parent, ""), parent); err != nil {
+					t.Fatal(err)
+				}
+				child, err := db.LoadNonterminal(ctx, parent.RouteKey)
+				if err != nil || child == nil || child.Status != Decided {
+					t.Fatal("missing reserved creation", err)
+				}
+				return *child
+			})
+		})
 		for _, drift := range []string{"unfinalized", "target credit", "settings", "over cap", "lease expired"} {
 			t.Run(drift, func(t *testing.T) {
 				op := prepare(t)

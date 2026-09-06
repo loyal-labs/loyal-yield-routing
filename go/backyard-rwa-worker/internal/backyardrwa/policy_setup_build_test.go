@@ -102,7 +102,7 @@ func testPolicySetupSignedPersistence(t *testing.T, ctx context.Context, db *Dat
 			if err != nil || built == nil || built.Status != Built || !bytes.Equal(built.SignedWire, build.SignedWire) || built.BroadcastIntentRecorded {
 				t.Fatal("pre-simulation crash lost signed-unsent identity", err)
 			}
-			assertBudgetHold(t, AdvanceNonterminal(ctx, db, rpc, *built), "policy_setup_execution_not_enabled")
+			assertBudgetHold(t, AdvanceNonterminal(ctx, db, rpc, *built), "setup_signature_invalid")
 			if drift == "" {
 				testPolicySetupPreSimulationMigration(t, ctx, db, r.OperationID)
 			}
@@ -185,7 +185,7 @@ func testPolicySetupSignedPersistence(t *testing.T, ctx context.Context, db *Dat
 			if err = db.pool.QueryRow(ctx, `SELECT simulation_result FROM loyal_yield.multiply_operations WHERE operation_id=$1`, r.OperationID).Scan(&raw); err != nil || json.Unmarshal(raw, &retained) != nil || retained.Slot != 42 || retained.UnitsConsumed != 150 {
 				t.Fatal("wire was not committed with its simulation", err)
 			}
-			assertBudgetHold(t, AdvanceNonterminal(ctx, db, rpc, *pending), "policy_setup_execution_not_enabled")
+			assertBudgetHold(t, AdvanceNonterminal(ctx, db, rpc, *pending), "setup_signature_invalid")
 			if err = db.cancelUnsentPolicySetupIntent(ctx, r.OperationID); err == nil {
 				t.Fatal("signed setup canceled as unsigned")
 			}

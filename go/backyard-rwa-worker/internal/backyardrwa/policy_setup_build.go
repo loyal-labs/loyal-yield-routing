@@ -11,7 +11,7 @@ import (
 
 // Prepare only: no queue registration, readiness assertion or broadcast. The
 // future setup coordinator must establish repaired-farm/deployment readiness
-// and signed-expiry recovery before enabling this in the worker. Exact setup
+// before enabling construction/send in the worker. Exact setup
 // bytes use the Settings admin, not the delegate-only PersistSigned path.
 func buildSimulateAndPersistPolicySetup(ctx context.Context, d *Database, rpc *RPCClient, id string) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
