@@ -1239,13 +1239,13 @@ func (r *Revalidator) cycleCrossMint(ctx context.Context, lease RevalidationLeas
 	if err != nil {
 		return err
 	}
-	if lease.SourceCollateralRaw > 0 && collateral != lease.SourceCollateralRaw {
+	if collateral <= 1 || lease.SourceCollateralRaw != collateral-1 {
 		return errors.New("finalized collateral anchor differs from opportunity")
 	}
 	if _, err = decodeObligation(obligations[1], target.Position.Market, lease.VaultPubkey, "", &target.Position); err != nil {
 		return err
 	}
-	route, err := r.proxy.BuildCrossMintLegs(ctx, KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: source.Position, Target: target.Position, WithdrawCollateralAmount: collateral, DepositLiquidityAmount: validated.MinimumOutput})
+	route, err := r.proxy.BuildCrossMintLegs(ctx, KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: source.Position, Target: target.Position, WithdrawCollateralAmount: lease.SourceCollateralRaw, DepositLiquidityAmount: validated.MinimumOutput})
 	if err != nil {
 		return err
 	}
@@ -1307,13 +1307,18 @@ func (r *Revalidator) cycleCrossMint(ctx context.Context, lease RevalidationLeas
 		}
 	}
 	required = filtered
-	managed, err := r.store.LoadReusableLookupTables(ctx, lease.Cluster, lease.VaultID, slot, required)
-	if err != nil {
-		return err
-	}
-	managed, err = r.verifyLookupTables(ctx, managed, slot)
-	if err != nil {
-		return err
+	var managed []LookupTable
+	// Finalized Jupiter tables can already cover every withdrawal address.
+	// The managed-table query intentionally rejects an empty requirements set.
+	if len(required) > 0 {
+		managed, err = r.store.LoadReusableLookupTables(ctx, lease.Cluster, lease.VaultID, slot, required)
+		if err != nil {
+			return err
+		}
+		managed, err = r.verifyLookupTables(ctx, managed, slot)
+		if err != nil {
+			return err
+		}
 	}
 	instructions := append([]RouteInstruction{}, computeBudgetInstructions(uint32(r.computeLimit), validated.UnitPrice)...)
 	instructions = append(instructions, route.Public[:firstObligation+1]...)

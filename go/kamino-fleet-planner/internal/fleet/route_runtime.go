@@ -215,9 +215,8 @@ func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
 		return r.rpc.SimulateExactTransaction(ctx, wire, evidence.Slot)
 	})
 	if err == nil {
-		routeBytes, _ := json.Marshal(route)
-		hash := sha256.Sum256(routeBytes)
-		preparation.RouteFingerprint = hex.EncodeToString(hash[:])
+		preparation.RouteFingerprint = retainedSameMintRouteFingerprint(*lease)
+		preparation.RequirementsFingerprint, err = retainedSameMintRequirementsFingerprint(input, lease.PolicyAccount, r.signer, instructions)
 	}
 	if err != nil {
 		return true, err
@@ -291,6 +290,19 @@ func computeBudgetInstructions(limit uint32, price uint64) []RouteInstruction {
 		price >>= 8
 	}
 	return []RouteInstruction{{Step: "compute_unit_limit", Program: "ComputeBudget111111111111111111111111111111", Data: limitData}, {Step: "compute_unit_price", Program: "ComputeBudget111111111111111111111111111111", Data: priceData}}
+}
+
+// Match the retained executor's stable_fingerprint identity contract. Exact
+// account requirements are fenced separately by the typed manifest hash.
+func retainedSameMintRouteFingerprint(lease RevalidationLease) string {
+	hash := sha256.New()
+	for _, part := range []string{"same_mint_kamino", lease.Cluster, fmt.Sprint(lease.VaultID), lease.SourceReserve, lease.TargetReserve} {
+		var size [8]byte
+		binary.LittleEndian.PutUint64(size[:], uint64(len(part)))
+		hash.Write(size[:])
+		hash.Write([]byte(part))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func waitingALTPreparation(route KaminoSameMintRoute, missing []string, compute uint64) RoutePreparation {

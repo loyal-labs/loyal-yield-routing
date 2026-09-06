@@ -82,6 +82,17 @@ func TestLoadMigratedFleetBuildsFinalizedCrossMintPolicyBindings(t *testing.T) {
 	}
 	snapshot.ExpiresAt = epoch.ExpiresAt
 	snapshot.MintExpiresAt = map[string]time.Time{USDCMint: epoch.OptimizerEnvelopeExpiresAt(), PYUSDMint: epoch.OptimizerEnvelopeExpiresAt()}
+	unanchoredPlan, err := PlanFleet(snapshot, fleet)
+	if err != nil || len(unanchoredPlan.Opportunities) != 0 {
+		t.Fatalf("cross-mint work without collateral anchor was admitted: %+v %v", unanchoredPlan, err)
+	}
+	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.vault_reserve_positions_current SET planning_metadata='{"amount_semantics":"kamino_obligation_collateral_deposited_amount","redeemable_source_liquidity_amount_raw":"777000000000"}'::jsonb WHERE vault_id=$1`, vaultID); err != nil {
+		t.Fatal(err)
+	}
+	fleet, err = store.LoadMigratedFleet(ctx, cluster, epoch, FleetLoadOptions{DelegatedSigner: authority, EnableCrossMint: true, CrossMintMaxValueLossBPS: 50})
+	if err != nil || len(fleet) != 1 {
+		t.Fatalf("reload anchored fleet: %+v %v", fleet, err)
+	}
 	plan, err := PlanFleet(snapshot, fleet)
 	if err != nil || len(plan.Opportunities) != 1 || !bytes.Contains(plan.Opportunities[0].ExecutionPlan, []byte(`"route_kind":"cross_mint_jupiter"`)) {
 		t.Fatalf("cross-mint plan was not executable: %+v %v", plan, err)

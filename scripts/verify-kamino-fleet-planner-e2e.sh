@@ -2,8 +2,33 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+usage() {
+  echo "usage: $0 [--development-lane same-mint|cross-mint [--reuse-builds WORKER_TEST_BINARY]]"
+  echo "No options: mandatory full gate with current-source builds and both connected lanes."
+  echo "Development options never constitute full audit evidence; reuse may execute stale code."
+}
+lane=""
+cached_worker=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --development-lane)
+      [[ $# -ge 2 && -n "${2:-}" && -z "$lane" ]] || { usage >&2; exit 2; }
+      lane="$2"; shift 2 ;;
+    --reuse-builds)
+      [[ $# -ge 2 && -n "${2:-}" && -z "$cached_worker" ]] || { usage >&2; exit 2; }
+      cached_worker="$2"; shift 2 ;;
+    --help|-h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+[[ -z "$lane" || "$lane" == same-mint || "$lane" == cross-mint ]] || { usage >&2; exit 2; }
+[[ -z "$cached_worker" || -n "$lane" ]] || { usage >&2; exit 2; }
+# Carry only explicit CLI development choices across the credential-clearing boundary.
 if [[ "${KAMINO_VERIFY_ISOLATED:-}" != 1 ]]; then
-  exec env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" KAMINO_VERIFY_ISOLATED=1 bash "$0"
+  options=()
+  [[ -z "$lane" ]] || options+=(--development-lane "$lane")
+  [[ -z "$cached_worker" ]] || options+=(--reuse-builds "$cached_worker")
+  exec env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" KAMINO_VERIFY_ISOLATED=1 bash "$0" ${options[@]+"${options[@]}"}
 fi
 export LC_ALL=C
 export CARGO_NET_OFFLINE=true GOPROXY=off GOSUMDB=off OBSERVABILITY_ENABLED=false
@@ -32,17 +57,38 @@ echo "== Pre-cutover Go planner/store integration tests"
 echo "Not invoked by this verifier: kamino-reserve-monitor and fleet-opportunity-planner"
 echo "Boundary under test: existing PostgreSQL optimizer_epochs/rebalance_opportunities schema"
 echo "Boundary includes durable revalidate and atomic prepared leased-execute handoff"
-echo "== Rust/Go immutable market epoch parity"
-"$root/scripts/verify-kamino-market-epoch-parity.sh"
+if [[ -z "$lane" ]]; then
+  echo "== Rust/Go immutable market epoch parity"
+  "$root/scripts/verify-kamino-market-epoch-parity.sh"
+else
+  echo "== DEVELOPMENT ONLY: focused $lane (not the full audit)"
+fi
 echo "== Actual Rust KLend proxy for Go integration tests"
-cd "$root"
-cargo build --locked -p loyal-yield-orchestrator --bin loyal-klend-proxy >/dev/null
+export KAMINO_CONNECTED_CONFIRMER_PATH="$root/target/debug/fleet-route-confirmer"
 export KAMINO_TEST_KLEND_PROXY_PATH="$root/target/debug/loyal-klend-proxy"
-echo "== Go verifier-first checks"
-cd "$root/go/kamino-fleet-planner"
-go vet ./...
-go test ./...
-echo "PASS: deterministic planner, per-mint epoch isolation, frozen KLend decoder, and adversarial slot fences"
+export KAMINO_CONNECTED_SVM_PATH="$root/target/debug/examples/fleet-local-svm"
+if [[ -z "$cached_worker" ]]; then
+  cd "$root"
+  cargo build --locked --offline -p loyal-yield-orchestrator --bin loyal-klend-proxy --bin fleet-route-confirmer >/dev/null
+  cargo build-sbf --manifest-path crates/mock-yield-protocols-program/Cargo.toml -- --locked --offline >/dev/null
+  cargo build --locked --offline -p squads-test-harness --example fleet-local-svm >/dev/null
+  cargo test --locked --offline -p loyal-fleet-worker --lib --no-run --message-format=json >"$scratch/worker-build.jsonl"
+  KAMINO_CONNECTED_WORKER_PATH="$(python3 -c 'import json,sys; paths=[e["executable"] for e in map(json.loads,open(sys.argv[1])) if e.get("reason")=="compiler-artifact" and e.get("executable") and e.get("profile",{}).get("test") and e.get("target",{}).get("name")=="loyal_fleet_worker"]; assert len(paths)==1, paths; print(paths[0])' "$scratch/worker-build.jsonl")"
+else
+  echo "WARNING: DEVELOPMENT ONLY: reusing unchecked/stale local Rust and SBF builds" >&2
+  KAMINO_CONNECTED_WORKER_PATH="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$cached_worker")"
+fi
+export KAMINO_CONNECTED_WORKER_PATH
+for binary in "$KAMINO_CONNECTED_WORKER_PATH" "$KAMINO_CONNECTED_CONFIRMER_PATH" "$KAMINO_TEST_KLEND_PROXY_PATH" "$KAMINO_CONNECTED_SVM_PATH"; do
+  [[ -f "$binary" && -x "$binary" ]] || fail "required local binary is missing: $binary"
+done
+if [[ -z "$lane" ]]; then
+  echo "== Go verifier-first checks"
+  cd "$root/go/kamino-fleet-planner"
+  go vet ./...
+  go test ./...
+  echo "PASS: deterministic planner, per-mint epoch isolation, frozen KLend decoder, and adversarial slot fences"
+fi
 
 echo "== Disposable PostgreSQL"
 mkdir -p "$socket"
@@ -58,15 +104,20 @@ createdb -h "$socket" -p "$port" fleet
 database_url="postgresql://$(id -un)@127.0.0.1:$port/fleet"
 
 cd "$root"
-cargo build --locked \
-  -p loyal-yield-orchestrator \
-  --bin yield-migrations \
-  --bin fleet-orchestration-verifier \
-  --bin fleet-route-confirmer \
-  --bin fleet-health-projector \
-  --bin route-lookup-table-provisioner \
-  -p loyal-fleet-worker \
-  --bin same-mint-reserve-swap >/dev/null
+if [[ -z "$lane" ]]; then
+  cargo build --locked --offline \
+    -p loyal-yield-orchestrator \
+    --bin yield-migrations \
+    --bin fleet-orchestration-verifier \
+    --bin fleet-route-confirmer \
+    --bin fleet-health-projector \
+    --bin route-lookup-table-provisioner \
+    -p loyal-fleet-worker \
+    --bin same-mint-reserve-swap >/dev/null
+elif [[ -z "$cached_worker" ]]; then
+  cargo build --locked --offline -p loyal-yield-orchestrator --bin yield-migrations >/dev/null
+fi
+[[ -x target/debug/yield-migrations ]] || fail "required local migration binary is missing"
 set +e
 migration_output="$(NEON_DATABASE_URL="$database_url" target/debug/yield-migrations --apply 2>&1)"
 migration_status=$?
@@ -86,14 +137,31 @@ fi
   fail "cutover unexpectedly requires a planner-specific owner table"
 echo "PASS: existing production queue schema is sufficient; no planner-specific migration was applied"
 
+# Each connected lane owns an independent migrated database and local chain.
+createdb -h "$socket" -p "$port" -T fleet fleet_same_mint
+export FLEET_TEST_SAME_MINT_DATABASE_URL="postgresql://$(id -un)@127.0.0.1:$port/fleet_same_mint"
 echo "== Confirmed RPC to durable W3 queue"
 cd "$root/go/kamino-fleet-planner"
 python3 "$root/scripts/verify-kamino-go-test-evidence.py" --self-test
-if ! FLEET_TEST_DATABASE_URL="$database_url" go test -race -json ./... -count=1 -timeout=3m >"$scratch/go-tests.jsonl"; then
+# Generated after isolation: an older run's structured output cannot satisfy this gate.
+export KAMINO_CONNECTED_RUN_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+go_scope=(./...)
+evidence_scope=()
+if [[ -n "$lane" ]]; then
+  test_name=TestConnectedCrossMintPreflight
+  [[ "$lane" != same-mint ]] || test_name=TestConnectedSameMintLifecycle
+  go_scope=(./internal/fleet -run "^${test_name}$")
+  evidence_scope=(--development-lane "$lane")
+fi
+if ! FLEET_TEST_DATABASE_URL="$database_url" go test -race -json "${go_scope[@]}" -count=1 -timeout=3m >"$scratch/go-tests.jsonl"; then
   python3 -c 'import json,sys; [print(e.get("Output", ""), end="") for e in map(json.loads, open(sys.argv[1]))]' "$scratch/go-tests.jsonl" >&2
   fail "Go integration/race suite failed"
 fi
-python3 "$root/scripts/verify-kamino-go-test-evidence.py" "$scratch/go-tests.jsonl"
+python3 "$root/scripts/verify-kamino-go-test-evidence.py" "$scratch/go-tests.jsonl" --run-id "$KAMINO_CONNECTED_RUN_ID" ${evidence_scope[@]+"${evidence_scope[@]}"}
+if [[ -n "$lane" ]]; then
+  echo "PASS: DEVELOPMENT ONLY: $lane lifecycle/recovery; full audit NOT performed"
+  exit 0
+fi
 
 [[ "$(psql "$database_url" -X -Atc "SELECT count(*) > 0 AND bool_and(epoch.market_state->>'fingerprint'=epoch.epoch_key) AND bool_and((epoch.market_state->>'optimizerEpochId')::bigint>0) AND bool_and(jsonb_array_length(epoch.market_state->'reserves')>=2) AND bool_and((epoch.market_state->'mintCoverage'->0->>'complete')::boolean) AND count(*) FILTER (WHERE opportunity.opportunity_state='revalidate')>0 AND count(*) FILTER (WHERE opportunity.opportunity_state='leased' AND opportunity.lease_kind='execute' AND opportunity.execution_plan ? 'prepared_transaction')>0 FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=opportunity.optimizer_epoch_id")" == "t" ]] ||
   fail "durable handoff lacks typed epoch, revalidate work, or atomically prepared execute work"

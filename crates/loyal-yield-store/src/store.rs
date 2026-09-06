@@ -1,18 +1,18 @@
 use crate::domain::{
-    draft_same_mint_decision, route_amount_evidence, state_transition,
-    supported_idle_deposit_mints, PlannedDecision, AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED,
-    MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY,
+    AMOUNT_SEMANTICS_KAMINO_COLLATERAL_DEPOSITED, MAX_QUEUE_POSITIVE_AMOUNT_DRIFT_PPM,
+    PlannedDecision, ROUTE_AMOUNT_SEMANTICS_REDEEMABLE_LIQUIDITY, draft_same_mint_decision,
+    route_amount_evidence, state_transition, supported_idle_deposit_mints,
 };
 use crate::fleet_orchestration::{
-    MultiplyRouteState, RebalanceOpportunityLease, RebalanceOpportunityRecord,
-    SignedRouteSubmissionInput, SignedRouteSubmissionRecord, TargetCapacityReservationInput,
-    MULTIPLY_ENGINE_VERSION,
+    MULTIPLY_ENGINE_VERSION, MultiplyRouteState, RebalanceOpportunityLease,
+    RebalanceOpportunityRecord, SignedRouteSubmissionInput, SignedRouteSubmissionRecord,
+    TargetCapacityReservationInput,
 };
 use crate::types::*;
-use crate::{OrchestratorError, ACTIVE_DECISION_STATUSES};
+use crate::{ACTIVE_DECISION_STATUSES, OrchestratorError};
 use chrono::{DateTime, Utc};
 use log::LevelFilter;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction};
@@ -69,8 +69,10 @@ const MIGRATION_0068: &str = include_str!("../migrations/0068_earn_max_account_c
 const MIGRATION_0069: &str = include_str!("../migrations/0069_autodeposit_event_id_ranges.sql");
 const MIGRATION_0070: &str = include_str!("../migrations/0070_backyard_rwa_worker.sql");
 const MIGRATION_0071: &str = include_str!("../migrations/0071_backyard_rwa_phase1_activation.sql");
-const MIGRATION_0072: &str = include_str!("../migrations/0072_backyard_rwa_phase2_route_neutral_actions.sql");
-const MIGRATION_0073: &str = include_str!("../migrations/0073_backyard_rwa_expired_absent_failure.sql");
+const MIGRATION_0072: &str =
+    include_str!("../migrations/0072_backyard_rwa_phase2_route_neutral_actions.sql");
+const MIGRATION_0073: &str =
+    include_str!("../migrations/0073_backyard_rwa_expired_absent_failure.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -3915,12 +3917,73 @@ impl NeonSqlClient {
         .await
     }
 
+    pub async fn validate_reconciliation_owner(
+        &self,
+        lease: &crate::fleet_orchestration::SignedRouteSubmissionLease,
+    ) -> Result<(), OrchestratorError> {
+        let mut tx = self.pool.begin().await?;
+        lock_reconciliation_owner(&mut tx, lease, lease.submission.decision_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn apply_reconciliation_patch_with_idle(
+        &self,
+        vault_id: VaultId,
+        state: ReconciledVaultState,
+        idle: Vec<CurrentIdleTokenBalance>,
+        lease: &crate::fleet_orchestration::SignedRouteSubmissionLease,
+    ) -> Result<PositionSnapshot, OrchestratorError> {
+        self.reconcile_vault_transaction_guarded(
+            vault_id,
+            state,
+            idle,
+            VaultPublicationScope::ObservedSubset,
+            Some(lease),
+        )
+        .await
+    }
+
+    pub async fn apply_reconciliation_patch(
+        &self,
+        vault_id: VaultId,
+        state: ReconciledVaultState,
+        lease: &crate::fleet_orchestration::SignedRouteSubmissionLease,
+    ) -> Result<PositionSnapshot, OrchestratorError> {
+        self.reconcile_vault_transaction_guarded(
+            vault_id,
+            state,
+            Vec::new(),
+            VaultPublicationScope::ObservedSubset,
+            Some(lease),
+        )
+        .await
+    }
+
     async fn reconcile_vault_transaction(
+        &self,
+        vault_id: VaultId,
+        state: ReconciledVaultState,
+        idle_balances: Vec<CurrentIdleTokenBalance>,
+        publication_scope: VaultPublicationScope,
+    ) -> Result<PositionSnapshot, OrchestratorError> {
+        self.reconcile_vault_transaction_guarded(
+            vault_id,
+            state,
+            idle_balances,
+            publication_scope,
+            None,
+        )
+        .await
+    }
+
+    async fn reconcile_vault_transaction_guarded(
         &self,
         vault_id: VaultId,
         mut state: ReconciledVaultState,
         idle_balances: Vec<CurrentIdleTokenBalance>,
         publication_scope: VaultPublicationScope,
+        lease: Option<&crate::fleet_orchestration::SignedRouteSubmissionLease>,
     ) -> Result<PositionSnapshot, OrchestratorError> {
         if state.positions.is_empty() {
             return Err(OrchestratorError::EmptySnapshot);
@@ -3946,6 +4009,9 @@ impl NeonSqlClient {
         }
 
         let mut tx = self.pool.begin().await?;
+        if let Some(lease) = lease {
+            lock_reconciliation_owner(&mut tx, lease, lease.submission.decision_id).await?;
+        }
         let vault = fetch_managed_vault_for_update(&mut tx, vault_id).await?;
         validate_observed_idle_token_balances(
             vault_id,
@@ -4750,7 +4816,18 @@ impl NeonSqlClient {
         &self,
         input: ConfirmSameMintRebalanceInput,
     ) -> Result<SameMintRebalanceResult, OrchestratorError> {
+        self.confirm_same_mint_rebalance_guarded(input, None).await
+    }
+
+    pub async fn confirm_same_mint_rebalance_guarded(
+        &self,
+        input: ConfirmSameMintRebalanceInput,
+        lease: Option<&crate::fleet_orchestration::SignedRouteSubmissionLease>,
+    ) -> Result<SameMintRebalanceResult, OrchestratorError> {
         let mut tx = self.pool.begin().await?;
+        if let Some(lease) = lease {
+            lock_reconciliation_owner(&mut tx, lease, Some(input.decision_id)).await?;
+        }
         let decision = fetch_decision_for_update(&mut tx, input.decision_id).await?;
         if decision.status == DecisionStatus::Confirmed {
             ensure_same_mint_confirm_repeat_matches(&decision, &input)?;
@@ -4947,7 +5024,20 @@ impl NeonSqlClient {
         decision_id: DecisionId,
         advance: DecisionAdvance,
     ) -> Result<RebalanceDecision, OrchestratorError> {
+        self.advance_decision_guarded(decision_id, advance, None)
+            .await
+    }
+
+    pub async fn advance_decision_guarded(
+        &self,
+        decision_id: DecisionId,
+        advance: DecisionAdvance,
+        lease: Option<&crate::fleet_orchestration::SignedRouteSubmissionLease>,
+    ) -> Result<RebalanceDecision, OrchestratorError> {
         let mut tx = self.pool.begin().await?;
+        if let Some(lease) = lease {
+            lock_reconciliation_owner(&mut tx, lease, Some(decision_id)).await?;
+        }
         let decision = fetch_decision_for_update(&mut tx, decision_id).await?;
         ensure_terminal_repeat_matches(&decision, &advance)?;
         let transition = state_transition(decision.status, advance)?;
@@ -6794,7 +6884,7 @@ async fn apply_earn_refund(
         other => {
             return Err(OrchestratorError::StoreInvariant(format!(
                 "unsupported Earn refund cluster {other:?}"
-            )))
+            )));
         }
     };
     sqlx::query(
@@ -7442,6 +7532,23 @@ async fn update_confirmed_decision(
     .fetch_one(conn)
     .await?;
     from_row_to_decision(row)
+}
+
+// Hold the submission row through the effect transaction. A preflight SELECT
+// alone permits takeover between validation and the durable decision write.
+async fn lock_reconciliation_owner(
+    conn: &mut PgConnection,
+    lease: &crate::fleet_orchestration::SignedRouteSubmissionLease,
+    decision_id: Option<DecisionId>,
+) -> Result<(), OrchestratorError> {
+    let valid: Option<i64> = sqlx::query_scalar("SELECT id FROM loyal_yield.signed_route_submissions WHERE id=$1 AND opportunity_id=$2 AND decision_id IS NOT DISTINCT FROM $3 AND transaction_signature=$4 AND submission_state='reconciliation_pending' AND confirmation_lease_owner=$5 AND confirmation_fencing_token=$6 AND confirmation_lease_expires_at>clock_timestamp() FOR UPDATE")
+        .bind(lease.submission.id).bind(lease.submission.opportunity_id).bind(decision_id.map(DecisionId::as_i64)).bind(&lease.submission.transaction_signature).bind(&lease.owner).bind(lease.fencing_token).fetch_optional(conn).await?;
+    if valid.is_none() {
+        return Err(OrchestratorError::StoreInvariant(
+            "signed reconciliation owner is expired or fenced".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_same_mint_input(
@@ -8176,15 +8283,17 @@ mod tests {
         validate_atomic_idle_token_balances(vault_id, &state, Some("vault-owner"), &balances)
             .unwrap();
 
-        assert!(validate_atomic_idle_token_balances(
-            vault_id,
-            &state,
-            Some("vault-owner"),
-            &balances[..1],
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("requires exactly"));
+        assert!(
+            validate_atomic_idle_token_balances(
+                vault_id,
+                &state,
+                Some("vault-owner"),
+                &balances[..1],
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("requires exactly")
+        );
 
         let mut wrong_slot = balances.clone();
         wrong_slot[1].observed_slot += 1;
@@ -8204,27 +8313,26 @@ mod tests {
         let (vault_id, state, balances) = atomic_idle_state();
         let mut duplicate = balances.clone();
         duplicate[1].mint = IDLE_DEPOSIT_MINT_USDC.to_owned();
-        assert!(validate_atomic_idle_token_balances(
-            vault_id,
-            &state,
-            Some("vault-owner"),
-            &duplicate,
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("repeats mint"));
+        assert!(
+            validate_atomic_idle_token_balances(vault_id, &state, Some("vault-owner"), &duplicate,)
+                .unwrap_err()
+                .to_string()
+                .contains("repeats mint")
+        );
 
         let mut wrong_vault = balances;
         wrong_vault[0].vault_id = VaultId(420);
-        assert!(validate_atomic_idle_token_balances(
-            vault_id,
-            &state,
-            Some("vault-owner"),
-            &wrong_vault,
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("does not match reconciled vault"));
+        assert!(
+            validate_atomic_idle_token_balances(
+                vault_id,
+                &state,
+                Some("vault-owner"),
+                &wrong_vault,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("does not match reconciled vault")
+        );
     }
 
     #[test]
@@ -8234,15 +8342,12 @@ mod tests {
             .unwrap();
 
         balances[3].mint = "not-a-policy-mint".to_owned();
-        assert!(validate_atomic_idle_token_balances(
-            vault_id,
-            &state,
-            Some("vault-owner"),
-            &balances,
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("is not an Earn product mint"));
+        assert!(
+            validate_atomic_idle_token_balances(vault_id, &state, Some("vault-owner"), &balances,)
+                .unwrap_err()
+                .to_string()
+                .contains("is not an Earn product mint")
+        );
     }
 
     #[test]
@@ -8255,13 +8360,15 @@ mod tests {
             &balances[..1],
         )
         .unwrap();
-        assert!(validate_atomic_idle_token_balances(
-            vault_id,
-            &state,
-            Some("vault-owner"),
-            &balances[..1],
-        )
-        .is_err());
+        assert!(
+            validate_atomic_idle_token_balances(
+                vault_id,
+                &state,
+                Some("vault-owner"),
+                &balances[..1],
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -8314,10 +8421,12 @@ mod tests {
         let expected_data_dir = std::fs::canonicalize(expected_data_dir).unwrap();
         let actual_data_dir = std::fs::canonicalize(actual_data_dir).unwrap();
         assert_eq!(actual_data_dir, expected_data_dir);
-        assert!(actual_data_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("earn-router-atomic-")));
+        assert!(
+            actual_data_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("earn-router-atomic-"))
+        );
         let server_address: String =
             sqlx::query_scalar("SELECT COALESCE(inet_server_addr()::TEXT, '')")
                 .fetch_one(client.pool())
@@ -8413,9 +8522,11 @@ mod tests {
             .publish_complete_vault(vault_id, baseline_state, baseline_idle)
             .await
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("injected idle publication failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("injected idle publication failure")
+        );
 
         let current_position_slots = sqlx::query_scalar::<_, i64>(
             "SELECT DISTINCT observed_slot FROM loyal_yield.vault_reserve_positions_current WHERE vault_id = $1",
