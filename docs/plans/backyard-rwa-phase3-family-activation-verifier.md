@@ -50,6 +50,7 @@ Current blockers and uncertainties, ordered by the actions they prevent:
 | --- | --- |
 | OnRe lending policies | Finalized review at slot 444658638 matches the retained installed policy hashes and deposit/withdraw vectors. Borrow positions 12/13 and repay positions 9/10 still constrain KLend placeholders instead of the configured debt user-farm/farm. Resolve the exact two forward repairs through the permitted review path before activating the rejected binding. No broader lane-registration retry. |
 | Farm setup | At finalized slot 444659449, the USDC user-farm already exists, owned by Farms, with the exact vault owner, obligation delegatee and configured farm. No USDC farm initialization is indicated. Missing sibling farm accounts must not be imported as blockers for this canary. Revalidate before use. |
+| Full-exit authority, before live funding | The connected deployed-program run at snapshot slot 444664437 proves full withdrawal automatically closes the empty OnRe obligation `4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei`, returning all 24165120 lamports to the existing Squads vault `ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh`. The existing close/rent-reclaim exclusion is unchanged. Obtain authorization for this precise protocol-required effect before funding a live lifecycle; no residual deposit or altered flat-exit requirement as a workaround. This does not block local implementation. |
 | Both swap directions | The installed legacy constraints still reject the fresh layouts. The exact V2 forward candidates now execute a continuous direct-route USDC→ONyc→USDC roundtrip on captured deployed programs (details below), preserving sibling constraints. Both replacement policies still need full setup cost/admission, authorized installation/readback and Go binding integration; local candidate creation is not installed authority. The first multi-hop sample exhausted the default compute envelope; its trace remains a failure, not supported routing proof. |
 | Setup cost and completion | At slots 444658919–444658921, borrow setup fits as two 510872-micro-USDC payments and repay as one 921018-micro-USDC payment, including observed fees. Both are independent next-seed-140 candidates, not a ready installation batch. Reprice after each creation; include any necessary swap repair and full lifecycle exit in the budget. Existing staged-payment/recovery code is reusable; do not build another coordinator or ledger. |
 | Current capacity and custody | At slot 444659449, OnRe obligation deposits/borrows and ONyc/bridge-USDC custody are zero. Collateral available raw 157906157811661997 is below deposit limit 200000000000000000; USDC available raw 9273477956074 and borrowed raw ceiling 67458238043052 do not by themselves show exhausted capacity. Refresh oracle/risk state and simulate actual entry/exit; this read is neither executable-capacity proof nor CAPACITY_PENDING. |
@@ -82,8 +83,42 @@ R01–R08 still FAIL overall. The first `onre-swap-roundtrip-2026-09-06.json.gz`
 checkpoint miscompared identical program objects by JSON key order; the recheck
 uses structural equality, retaining every identity field and mutation check.
 TypeScript checking and 12 verifier tests/101 assertions pass. Next connect
-OnRe lending and its exact farm repairs to this poststate, rather than producing
+the production path to the connected lending result below, rather than producing
 another disconnected swap or setup checkpoint.
+
+Connected OnRe lending execution, captured slot 444664437: the same SVM now runs
+entry → deposit → borrow → finite repayment → full withdrawal → return without
+interstage account overrides. Entry spends 100000 raw USDC for 87576296 raw ONyc;
+deposit receives 87576296 receipts, borrow and repayment each use 1000 raw USDC,
+and withdrawal returns all collateral. Final ONyc and obligation debt/receipts
+are zero; the obligation is closed by KLend, not left initialized and empty.
+The explicit initial cash buffer is 1000 raw USDC; terminal cash is 100979 raw,
+including that buffer. This is no live cost, admission or funding proof.
+
+Four local candidate groups preserve both swap siblings and change only the
+two verified farm positions in each borrow/repay policy. All six transactions
+fit 1232 bytes and the existing default per-instruction compute allocation;
+measured lending compute is 246342/249853/199143/224236. Eighteen dangerous
+mutations reject before the wrapped protocol CPI with unchanged custody.
+Repay/withdraw amounts derive from executed debt/receipts. The return quote is
+locally rescaled to redeemed collateral, explicitly not a fresh live quote.
+
+The sole verifier independently validates raw six-leg continuity, exact finite
+wire changes, terminal custody, program identities and local-only proof flags.
+Its connected subclaim passes in `phase3/onre-connected-lending-2026-09-06.json.gz`
+(gzip SHA256 `796db9c09720f2c96e9f6dcd6cee4a4732abcbf5ff6c19b9d108579b39ada8b2`).
+The retained real witness also backs mutation tests, including terminal debt,
+policy/wire substitution, continuity, initial funding and unauthorized rent
+redirection. Both earlier swap-only and new connected measurements are retained;
+no historical R04 requirement was removed. R01–R08 remain FAIL overall.
+
+This resolves lending-between-swaps feasibility and exposes the full-exit
+authority dependency before live entry. It is not a leveraged position change,
+Voltr bridge/NAV, production Go compiler parity, worker admission, signer or
+mainnet proof. The current Go route resolver still rejects OnRe as uninstalled;
+the rejected registration was not retried. Next: resolve the precise close
+authorization and four forward-roll setups, then connect this path to existing
+Go construction/admission and bridge/NAV. Do not divert to the sibling matrix.
 
 Next work must resolve an item above or execute the next connected OnRe step.
 Preserve completed local setup-expiry work, but stop accumulating setup-only

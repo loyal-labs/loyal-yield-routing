@@ -9,6 +9,7 @@ import {RWA_MULTIPLY_ROUTE as route} from "../domain/rwa-multiply-route-spec.js"
 import {catalogSwapEdges,validateJupiterHeader} from "../policies/rwa-multiply-jupiter-headers.js";
 import {exactJupiterConstraint} from "../policies/rwa-multiply-jupiter-constraint.js";
 import {buildExactJupiterSquadsExecution} from "./rwa-phase2-jupiter-execution.js";
+import {prepareOnReLending} from "./prepare-phase3-onre-lending.js";
 
 const sha=(data:Uint8Array|string)=>createHash("sha256").update(data).digest("hex");
 class ProbeBoundaryError extends Error {}
@@ -18,8 +19,9 @@ const publicRows:any[]=[];
 try {
   const directory=process.argv[2];
   require(directory&&/^\/private\/tmp\/backyard-phase3-jupiter-probe\.[A-Za-z0-9]+$/.test(directory),"explicit local probe directory required");
-  require(process.argv[3]===undefined||["--return","--lending-return","--onre-roundtrip"].includes(process.argv[3]),"unknown probe mode");
-  const onre=process.argv[3]==="--onre-roundtrip";
+  require(process.argv[3]===undefined||["--return","--lending-return","--onre-roundtrip","--onre-lending-roundtrip"].includes(process.argv[3]),"unknown probe mode");
+  const onreLendingRequested=process.argv[3]==="--onre-lending-roundtrip";
+  const onre=process.argv[3]==="--onre-roundtrip"||onreLendingRequested;
   const returning=process.argv[3]!==undefined&&!onre;
   const linked=process.argv[3]==="--lending-return";
   const lendingPrelude=linked?JSON.parse(readFileSync(resolve(directory,"kamino-plan.json"),"utf8")):undefined;
@@ -136,6 +138,16 @@ try {
       policies[a]=hash as string;
     }
   }
+  let onreLending;
+  if(onreLendingRequested) {
+    stage="OnRe linked lending construction";
+    const prepared=await prepareOnReLending(rpc,seedBefore,BigInt(steps[1]!.amountRaw));
+    const {groups,candidates,policies:originalPolicies,addresses:extraAddresses,...lending}=prepared;
+    artifact.groups.push(...groups);candidatePolicies.push(...candidates);
+    for(const a of extraAddresses)addresses.add(a);
+    for(const [a,hash] of Object.entries(originalPolicies)){require(!policies[a]||policies[a]===hash,"lending policy conflict");policies[a]=hash;}
+    onreLending=lending;
+  }
   require(addresses.size<=100,"coherent batch too large");
   if(onre) {
     artifactBytes=Buffer.from(JSON.stringify(artifact,null,2)+"\n");
@@ -143,6 +155,7 @@ try {
     writeFileSync(resolve(directory,"public-quotes.json"),JSON.stringify({broadcast:false,signatureProof:false,rows:publicRows},null,2)+"\n",{flag:"wx",mode:0o600});
   }
   const plan={schema:"phase3-jupiter-controlled-probe/v1",broadcast:false,compiler:"TYPESCRIPT_CANDIDATE_NOT_INSTALLED_GO",...(onre?{profile:"ONRE_ROUNDTRIP"}:returning?{profile:"RETURN_CONVERSIONS",initialBalancesProof:"LOCAL_POST_PAYOFF_SIZING_PRECONDITIONS_NOT_EXECUTED_LENDING_OR_BRIDGE"}:{}),lane:onre?"OnRe/ONyc/USDC":"Ethena/USDe/PYUSD",delegate:route.squads.delegatedExecutor,inputCustody:returning?steps[0]!.destination:steps[0]!.source,collateralCustody:returning?steps[0]!.source:steps[0]!.destination,debtCustody:returning?steps[1]!.source:steps[1]!.destination,steps,policies,addresses:[...addresses].sort(),
+    ...(onreLending?{onreLending}:{}),
     ...(linked?{lendingPrelude,initialBalancesProof:"LOCAL_FUNDED_LENDING_PRECONDITION_WITH_CONTINUOUS_EXECUTED_RETURNS_NOT_BRIDGE_ENTRY"}:{}),
     candidate:{artifactSha256:sha(artifactBytes),settings:route.squads.settings,settingsDataSha256:sha(settings.value.data),settingsSlot:settings.context.slot,setupAdmin:route.setupAdmin,seedBefore:seedBefore.toString(),policies:candidatePolicies}};
   writeFileSync(resolve(directory,"plan.json"),JSON.stringify(plan,null,2)+"\n",{flag:"wx",mode:0o600});

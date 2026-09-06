@@ -57,28 +57,132 @@ fn lending_position(svm: &LiteSVM, address: Pubkey) -> (u64, u128) {
 #[test]
 #[ignore = "requires explicit public snapshot and zero-signature Go plan"]
 fn ethena_go_swaps_execute_sequentially_under_deployed_policies() {
-    execute_probe(false, false, false);
+    execute_probe(false, false, false, false);
 }
 
 #[test]
 #[ignore = "requires explicit public candidate snapshot; never installed-Go or mainnet proof"]
 fn ethena_v2_candidate_swaps_execute_sequentially() {
-    execute_probe(true, false, false);
+    execute_probe(true, false, false, false);
 }
 
 #[test]
 #[ignore = "requires explicit return snapshot; local custody preconditions are not a lending lifecycle"]
 fn ethena_return_conversions_execute_with_exact_mixed_policy_bindings() {
-    execute_probe(true, true, false);
+    execute_probe(true, true, false, false);
 }
 
 #[test]
 #[ignore = "explicit OnRe public snapshot; local candidate roundtrip, no runtime activation"]
 fn onre_candidate_entry_and_return_execute_continuously() {
-    execute_probe(true, false, true);
+    execute_probe(true, false, true, false);
 }
 
-fn execute_probe(candidate: bool, returning: bool, onre: bool) {
+#[test]
+#[ignore = "explicit OnRe local candidate swap/lending snapshot; no runtime activation"]
+fn onre_candidate_lending_executes_between_entry_and_return() {
+    execute_probe(true, false, true, true);
+}
+
+// Resize finite unsigned SDK templates from the executed obligation/custody.
+// This changes transaction amounts, never account state, policy or authority.
+fn onre_lending(svm: &mut LiteSVM, plan: &Value, addresses: &[Pubkey]) -> (Vec<Value>, bool) {
+    let lending = &plan["onreLending"];
+    assert_eq!(lending["schema"], "phase3-onre-linked-lending-plan/v1");
+    assert_eq!(lending["broadcast"], false);
+    assert_eq!(lending["signatureProof"], false);
+    assert_eq!(lending["lane"], plan["lane"]);
+    let obligation = key(lending["obligation"].as_str().unwrap());
+    assert_eq!(lending_position(svm, obligation), (0, 0));
+    let collateral = key(plan["collateralCustody"].as_str().unwrap());
+    let debt_custody = key(plan["debtCustody"].as_str().unwrap());
+    let mut results: Vec<Value> = vec![];
+    let steps = lending["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 4);
+    for (i, step) in steps.iter().enumerate() {
+        assert_eq!(step["leg"], ["deposit", "borrow", "repay", "withdraw"][i]);
+        let (receipts, debt_sf) = lending_position(svm, obligation);
+        let raw = match i {
+            0 => amount(svm, collateral),
+            1 => 1000,
+            2 => u64::try_from((debt_sf + (1u128 << 60) - 1) >> 60).unwrap(),
+            _ => {
+                assert_eq!(debt_sf, 0);
+                receipts
+            }
+        };
+        assert!(raw > 0 && raw <= 1_000_000_000_000);
+        if i == 2 {
+            assert!(
+                raw <= amount(svm, debt_custody),
+                "initial cash buffer cannot fund payoff"
+            );
+        }
+        let template = bytes(step, "wireBase64");
+        assert_eq!(sha(&template), step["wireSha256"]);
+        assert!(
+            template.len() <= 1232 && template[0] == 1 && template[1..65].iter().all(|b| *b == 0)
+        );
+        let mut tx: VersionedTransaction = bincode::deserialize(&template).unwrap();
+        let VersionedMessage::Legacy(ref mut message) = tx.message else {
+            panic!("unexpected lending encoding")
+        };
+        assert_eq!(message.instructions.len(), 4);
+        let inner = bytes(step, "instructionDataBase64");
+        assert_eq!(inner.len(), 16);
+        let outer = &mut message.instructions[3].data;
+        let matches: Vec<_> = outer
+            .windows(inner.len())
+            .enumerate()
+            .filter_map(|(n, b)| (b == inner).then_some(n))
+            .collect();
+        assert_eq!(matches.len(), 1);
+        let offset = matches[0] + 8;
+        outer[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
+        let wire = bincode::serialize(&tx).unwrap();
+        let before = capture(svm, addresses);
+        if let Some(previous) = results.last() {
+            assert_eq!(previous["after"], before);
+        }
+        let mut forbidden = tx.clone();
+        let VersionedMessage::Legacy(ref mut message) = forbidden.message else {
+            unreachable!()
+        };
+        message.instructions[3].data[offset..offset + 8]
+            .copy_from_slice(&1_000_000_000_001u64.to_le_bytes());
+        let mut negative_svm = svm.clone();
+        let negative = negative_svm
+            .send_transaction(forbidden)
+            .expect_err("lending policy amount boundary bypassed");
+        assert!(format!("{:?}", negative.err).starts_with("InstructionError(3, Custom("));
+        assert!(!negative
+            .meta
+            .logs
+            .iter()
+            .any(|l| l == "Program KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD invoke [2]"));
+        assert_eq!(amount(&negative_svm, collateral), amount(svm, collateral));
+        assert_eq!(
+            amount(&negative_svm, debt_custody),
+            amount(svm, debt_custody)
+        );
+        let (error, meta) = match svm.send_transaction(tx) {
+            Ok(m) => (None, m),
+            Err(f) => (Some(format!("{:?}", f.err)), f.meta),
+        };
+        let (receipts_after, debt_after) = lending_position(svm, obligation);
+        let passed =
+            error.is_none() && (receipts_after > 0) == (i < 3) && (debt_after > 0) == (i == 1);
+        results.push(json!({"leg":step["leg"],"templateSha256":step["wireSha256"],"amountRaw":raw,"wireBase64":STANDARD.encode(&wire),"wireSha256":sha(&wire),
+            "before":before,"after":capture(svm,addresses),"receiptRaw":receipts_after,"debtSF":debt_after.to_string(),"error":error,"pass":passed,
+            "logs":meta.logs,"computeUnits":meta.compute_units_consumed,"negative":{"error":format!("{:?}",negative.err),"rejectedBeforeKaminoCPI":true,"custodyUnchanged":true}}));
+        if !passed {
+            return (results, false);
+        }
+    }
+    (results, true)
+}
+
+fn execute_probe(candidate: bool, returning: bool, onre: bool, linked_onre: bool) {
     let directory = std::env::var(if onre {
         "PHASE3_ONRE_PROBE_DIR"
     } else if returning {
@@ -93,6 +197,8 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool) {
     let plan_bytes = fs::read(directory.join("plan.json")).unwrap();
     let snapshot_bytes = fs::read(directory.join("snapshot.json")).unwrap();
     let plan: Value = serde_json::from_slice(&plan_bytes).unwrap();
+    assert_eq!(!plan["onreLending"].is_null(), linked_onre);
+    assert!(!linked_onre || onre);
     let snapshot: Value = serde_json::from_slice(&snapshot_bytes).unwrap();
     assert_eq!(plan["schema"], "phase3-jupiter-controlled-probe/v1");
     assert_eq!(
@@ -108,12 +214,25 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool) {
         assert_eq!(plan["compiler"], "TYPESCRIPT_CANDIDATE_NOT_INSTALLED_GO");
     }
     assert_eq!(snapshot["schema"], "phase3-jupiter-svm-snapshot/v1");
-    assert_eq!(plan["lane"], if onre { "OnRe/ONyc/USDC" } else { "Ethena/USDe/PYUSD" });
+    assert_eq!(
+        plan["lane"],
+        if onre {
+            "OnRe/ONyc/USDC"
+        } else {
+            "Ethena/USDe/PYUSD"
+        }
+    );
     assert_eq!(plan["profile"].as_str() == Some("ONRE_ROUNDTRIP"), onre);
     if onre {
         assert!(candidate && !returning && plan["lendingPrelude"].is_null());
-        assert_eq!(plan["inputCustody"], "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe");
-        assert_eq!(plan["collateralCustody"], "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3");
+        assert_eq!(
+            plan["inputCustody"],
+            "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"
+        );
+        assert_eq!(
+            plan["collateralCustody"],
+            "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3"
+        );
         assert_eq!(plan["debtCustody"], plan["inputCustody"]);
     }
     assert_eq!(plan["broadcast"], false);
@@ -192,7 +311,7 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool) {
             if returning {
                 0
             } else {
-                steps[0]["amountRaw"].as_u64().unwrap()
+                steps[0]["amountRaw"].as_u64().unwrap() + if linked_onre { 1000 } else { 0 }
             },
             true,
         ),
@@ -273,12 +392,23 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool) {
         if onre {
             assert_eq!(artifact["broadcast"], false);
             assert_eq!(artifact["installed"], false);
-            let catalog: Value = serde_json::from_slice(&fs::read("../../docs/evidence/backyard-rwa-go/policy-compiled-v1.json").unwrap()).unwrap();
+            let catalog: Value = serde_json::from_slice(
+                &fs::read("../../docs/evidence/backyard-rwa-go/policy-compiled-v1.json").unwrap(),
+            )
+            .unwrap();
             let groups = artifact["groups"].as_array().unwrap();
-            assert_eq!(groups.len(), 2);
+            assert_eq!(groups.len(), if linked_onre { 4 } else { 2 });
             for (i, group) in groups.iter().enumerate() {
-                assert_eq!(group["edge"], ["USDC->ONyc", "ONyc->USDC"][i]);
-                let original = catalog["policies"].as_array().unwrap().iter().find(|p| p["policy"] == group["originalPolicy"]).unwrap();
+                assert_eq!(
+                    group["edge"],
+                    ["USDC->ONyc", "ONyc->USDC", "OnRe/borrow", "OnRe/repay"][i]
+                );
+                let original = catalog["policies"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|p| p["policy"] == group["originalPolicy"])
+                    .unwrap();
                 assert_eq!(group["originalConstraints"], original["constraints"]);
                 let old = original["constraints"].as_array().unwrap();
                 let new = group["replacementConstraints"].as_array().unwrap();
@@ -286,9 +416,42 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool) {
                 let replaced = group["replacedConstraintIndex"].as_u64().unwrap() as usize;
                 assert_eq!(replaced, 0);
                 for (index, sibling) in old.iter().enumerate() {
-                    if index != replaced { assert_eq!(&new[index], sibling, "sibling authority changed"); }
+                    if index != replaced {
+                        assert_eq!(&new[index], sibling, "sibling authority changed");
+                    }
                 }
-                assert_eq!(sha(&svm.get_account(&key(group["originalPolicy"].as_str().unwrap())).unwrap().data), group["originalPolicyDataSha256"]);
+                if i >= 2 {
+                    let mut expected = original["constraints"].clone();
+                    let positions = if i == 2 { [12u64, 13] } else { [9, 10] };
+                    for (n, index) in positions.iter().enumerate() {
+                        let a = expected[0]["accountPubkeys"]
+                            .as_array_mut()
+                            .unwrap()
+                            .iter_mut()
+                            .find(|a| a["index"] == *index)
+                            .unwrap();
+                        assert_eq!(
+                            a["pubkeys"],
+                            json!(["KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"])
+                        );
+                        a["pubkeys"] = json!([if n == 0 {
+                            "nMqFZFPQsNwot49QAD1B76LxNV7qRG1tnbkXyTjbUAD"
+                        } else {
+                            "7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF"
+                        }]);
+                    }
+                    assert_eq!(
+                        group["replacementConstraints"], expected,
+                        "repair changed more than the two farm positions"
+                    );
+                }
+                assert_eq!(
+                    sha(&svm
+                        .get_account(&key(group["originalPolicy"].as_str().unwrap()))
+                        .unwrap()
+                        .data),
+                    group["originalPolicyDataSha256"]
+                );
             }
         }
         let settings = key(binding["settings"].as_str().unwrap());
@@ -349,7 +512,16 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool) {
                 .expect("candidate PolicyCreate must execute on cloned real Settings");
             creation.push(json!({"policy":policy.to_string(),"seed":seed,"candidateOnly":true,"packetBytes":wire.len(),"wireSha256":sha(&wire),"before":before,"after":capture(&svm,&[settings,admin,policy]),"logs":meta.logs,"computeUnits":meta.compute_units_consumed}));
         }
-        assert_eq!(creation.len(), if returning { 1 } else { 2 });
+        assert_eq!(
+            creation.len(),
+            if linked_onre {
+                4
+            } else if returning {
+                1
+            } else {
+                2
+            }
+        );
     }
     let mut lending_results: Vec<Value> = vec![];
     let mut deposit_rounding_probes: Vec<Value> = vec![];
@@ -506,13 +678,69 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool) {
     }
     let mut results: Vec<Value> = vec![];
     let mut pass = true;
-    for (step_index, step) in steps.iter().enumerate() {
+    for (step_index, template_step) in steps.iter().enumerate() {
+        let mut resized_step;
+        let step = if linked_onre && step_index == 1 {
+            let (legs, passed) = onre_lending(&mut svm, &plan, &addresses);
+            assert_eq!(
+                legs[0]["before"], results[0]["after"],
+                "entry poststate replaced before lending"
+            );
+            lending_results = legs;
+            if !passed {
+                pass = false;
+                break;
+            }
+            // Preserve the captured route and 50-bps slippage while sizing its
+            // finite unsigned return to actual redeemed collateral. This is a
+            // local quote rescaling, not a fresh live quote or Go planner claim.
+            let raw = amount(&svm, key(plan["collateralCustody"].as_str().unwrap()));
+            let old_raw = template_step["amountRaw"].as_u64().unwrap();
+            let mut inner = bytes(template_step, "instructionDataBase64");
+            let old_inner = inner.clone();
+            let out = u64::from_le_bytes(inner[17..25].try_into().unwrap());
+            let quoted =
+                u64::try_from(u128::from(out) * u128::from(raw) / u128::from(old_raw)).unwrap();
+            inner[9..17].copy_from_slice(&raw.to_le_bytes());
+            inner[17..25].copy_from_slice(&quoted.to_le_bytes());
+            let mut tx: VersionedTransaction =
+                bincode::deserialize(&bytes(template_step, "wireBase64")).unwrap();
+            let ixs = match &mut tx.message {
+                VersionedMessage::Legacy(m) => &mut m.instructions,
+                VersionedMessage::V0(m) => &mut m.instructions,
+            };
+            assert_eq!(ixs.len(), 1);
+            let positions: Vec<_> = ixs[0]
+                .data
+                .windows(old_inner.len())
+                .enumerate()
+                .filter_map(|(n, b)| (b == old_inner).then_some(n))
+                .collect();
+            assert_eq!(positions.len(), 1);
+            ixs[0].data[positions[0]..positions[0] + inner.len()].copy_from_slice(&inner);
+            let wire = bincode::serialize(&tx).unwrap();
+            resized_step = template_step.clone();
+            resized_step["amountRaw"] = json!(raw);
+            resized_step["minimumOutputRaw"] = json!(u64::try_from(
+                u128::from(template_step["minimumOutputRaw"].as_u64().unwrap()) * u128::from(raw)
+                    / u128::from(old_raw)
+            )
+            .unwrap());
+            resized_step["instructionDataBase64"] = json!(STANDARD.encode(&inner));
+            resized_step["wireBase64"] = json!(STANDARD.encode(&wire));
+            resized_step["wireSha256"] = json!(sha(&wire));
+            &resized_step
+        } else {
+            template_step
+        };
         let wire = bytes(step, "wireBase64");
         assert!(wire.len() <= 1232 && wire[0] == 1 && wire[1..65].iter().all(|b| *b == 0));
         assert_eq!(sha(&wire), step["wireSha256"]);
         let tx: VersionedTransaction = bincode::deserialize(&wire).unwrap();
         let before = capture(&svm, &addresses);
-        if let Some(previous) = results.last() {
+        if linked_onre && step_index == 1 {
+            assert_eq!(lending_results.last().unwrap()["after"], before);
+        } else if let Some(previous) = results.last() {
             assert_eq!(previous["after"], before);
         } else if let Some(previous) = lending_results.last() {
             assert_eq!(
@@ -652,7 +880,7 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool) {
                 .1
                 .checked_sub(balances_before.1)
                 .is_some_and(|n| n >= step["minimumOutputRaw"].as_u64().unwrap());
-        results.push(json!({"action":step["action"],"wireSha256":step["wireSha256"],"before":before,"after":capture(&svm,&addresses),"custodyBefore":balances_before,"custodyAfter":balances_after,"error":error,"logs":meta.logs,"computeUnits":meta.compute_units_consumed,"economicPass":economic_pass,"additionalNegatives":additional_negatives,"negative":{"error":format!("{:?}",negative.err),"logs":negative.meta.logs,"rejectedBeforeJupiterCPI":true,"custodyUnchanged":true}}));
+        results.push(json!({"action":step["action"],"wireSha256":step["wireSha256"],"executedRequest":if linked_onre {step.clone()}else{Value::Null},"before":before,"after":capture(&svm,&addresses),"custodyBefore":balances_before,"custodyAfter":balances_after,"error":error,"logs":meta.logs,"computeUnits":meta.compute_units_consumed,"economicPass":economic_pass,"additionalNegatives":additional_negatives,"negative":{"error":format!("{:?}",negative.err),"logs":negative.meta.logs,"rejectedBeforeJupiterCPI":true,"custodyUnchanged":true}}));
         if !economic_pass {
             pass = false;
             break;
@@ -666,9 +894,12 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool) {
     let report = json!({"schema":if returning {"phase3-jupiter-return-controlled-result/v1"} else if candidate {"phase3-jupiter-candidate-controlled-result/v1"} else {"phase3-jupiter-controlled-result/v1"},"broadcast":false,"signatureProof":false,"installedPolicyProof":!candidate,"goCompilerProof":false,"proofLevel":if returning {"LOCAL_MIXED_CANDIDATE_AND_INSTALLED_RETURN_SWAPS_NOT_LENDING_BRIDGE_OR_SIGNATURE_PROOF"} else if candidate {"LOCAL_CANDIDATE_TWO_SWAP_EXECUTION_NOT_INSTALLED_GO_OR_FULL_R04"} else {"TWO_SWAP_PROGRAM_EXECUTION_NOT_FULL_R04_LIFECYCLE"},"slot":snapshot["slot"],"programs":snapshot["programs"],"planSha256":sha(&plan_bytes),"snapshotSha256":sha(&snapshot_bytes),"overrides":overrides,"candidateCreation":creation,"steps":results,"twoSwapsPassed":pass&&results.len()==2,"returnCustodyCleared":return_custody_cleared,"terminalUSDCRaw":amount(&svm,key(plan["inputCustody"].as_str().unwrap()))});
     let mut report = report;
     if onre {
-        let flat = pass && results.len() == 2 && amount(&svm, key(plan["collateralCustody"].as_str().unwrap())) == 0;
+        let flat = pass
+            && results.len() == 2
+            && amount(&svm, key(plan["collateralCustody"].as_str().unwrap())) == 0;
         report["schema"] = json!("phase3-onre-swap-roundtrip-result/v1");
-        report["proofLevel"] = json!("LOCAL_ONRE_CANDIDATE_SWAP_ROUNDTRIP_NOT_LENDING_BRIDGE_SIGNER_OR_RUNTIME_PROOF");
+        report["proofLevel"] =
+            json!("LOCAL_ONRE_CANDIDATE_SWAP_ROUNDTRIP_NOT_LENDING_BRIDGE_SIGNER_OR_RUNTIME_PROOF");
         report["onreCollateralCleared"] = json!(flat);
     }
     report["stateAddresses"] = json!(addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>());
@@ -679,6 +910,11 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool) {
         report["redepositProbe"] = redeposit_probe;
         report["proofLevel"] =
             json!("LOCAL_LINKED_LENDING_AND_RETURN_NOT_BRIDGE_ENTRY_SIGNER_OR_MAINNET_PROOF");
+    }
+    if linked_onre {
+        report["schema"] = json!("phase3-onre-lending-roundtrip-result/v1");
+        report["proofLevel"]=json!("LOCAL_ONRE_SWAP_LENDING_RETURN_WITH_POSTSTATE_SIZING_NOT_BRIDGE_GO_SIGNER_RUNTIME_OR_MAINNET");
+        report["initialCashBufferRaw"] = json!(1000);
     }
     let name =
         std::env::var("PHASE3_JUPITER_PROBE_RESULT").unwrap_or_else(|_| "result.json".into());

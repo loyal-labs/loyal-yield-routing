@@ -9,6 +9,7 @@ import { Reserve } from "@kamino-finance/klend-sdk";
 import { ExtensionType, getExtensionTypes, getTransferFeeConfig, getTransferHook, unpackMint } from "@solana/spl-token";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { reviewPhase3Bindings } from "./rwa-phase3-binding-review.js";
+import { onreConnectedProof } from "./onre-connected-proof.js";
 
 const ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const CONTRACT = "docs/plans/backyard-rwa-phase3-family-activation-verifier.md";
@@ -359,9 +360,9 @@ export function linkedLendingReturnProof(execution:Json,plan:Json,snapshot:Json)
   } catch {return false;}
 }
 
-async function localCandidateJupiterObservation(returning=false,linked=false,onre=false):Promise<Observation> {
+async function localCandidateJupiterObservation(returning=false,linked=false,onre=false,onreLending=false):Promise<Observation> {
   const source=onre?"OnRe local candidate policy creation and continuous entry/return through captured deployed programs; no Go/runtime claim":returning?"two return conversions with one local V2 candidate and one installed policy; conditional current-Go wire comparison":"local V2 candidate PolicyCreate and sequential swaps, with conditional current-Go wire comparison";
-  const directory=onre?process.env.PHASE3_ONRE_PROBE_DIR:linked?process.env.PHASE3_LINKED_LENDING_RETURN_PROBE_DIR:returning?process.env.PHASE3_JUPITER_RETURN_PROBE_DIR:process.env.PHASE3_JUPITER_CANDIDATE_PROBE_DIR;
+  const directory=onreLending?process.env.PHASE3_ONRE_LENDING_PROBE_DIR:onre?process.env.PHASE3_ONRE_PROBE_DIR:linked?process.env.PHASE3_LINKED_LENDING_RETURN_PROBE_DIR:returning?process.env.PHASE3_JUPITER_RETURN_PROBE_DIR:process.env.PHASE3_JUPITER_CANDIDATE_PROBE_DIR;
   if(!directory)return {status:"BLOCKED",source,reason:"EXPLICIT_PUBLIC_JUPITER_CANDIDATE_SNAPSHOT_NOT_CONFIGURED"};
   if(!/^\/private\/tmp\/backyard-phase3-jupiter-probe\.[A-Za-z0-9]+$/.test(directory))return {status:"BLOCKED",source,reason:"INVALID_CANDIDATE_SNAPSHOT_DIRECTORY"};
   try {
@@ -370,7 +371,7 @@ async function localCandidateJupiterObservation(returning=false,linked=false,onr
     const resultName=`verifier-candidate-${randomUUID()}.json`;
     const redepositName=`verifier-redeposit-${randomUUID()}.json`;
     const run=async(command:string,args:string[],cwd:string)=>{
-      const child=spawn(command,args,{cwd,stdio:["ignore","pipe","ignore"],env:{...process.env,...(linked?{PHASE3_JUPITER_RETURN_PROBE_DIR:directory,PHASE3_REDEPOSIT_PLAN:redepositName}:{}),PHASE3_JUPITER_PROBE_RESULT:resultName}});
+      const child=spawn(command,args,{cwd,stdio:["ignore","pipe","ignore"],env:{...process.env,...(onreLending?{PHASE3_ONRE_PROBE_DIR:directory}:{}),...(linked?{PHASE3_JUPITER_RETURN_PROBE_DIR:directory,PHASE3_REDEPOSIT_PLAN:redepositName}:{}),PHASE3_JUPITER_PROBE_RESULT:resultName}});
       let output="";child.stdout.setEncoding("utf8");child.stdout.on("data",chunk=>{output+=chunk;});
       const deadline=setTimeout(()=>child.kill("SIGKILL"),120_000);
       try {const code=await new Promise<number|null>((resolve,reject)=>{child.once("error",reject);child.once("close",resolve);});return {code,output};}
@@ -380,19 +381,19 @@ async function localCandidateJupiterObservation(returning=false,linked=false,onr
       const exported=await run("go",["test","./internal/backyardrwa","-json","-count=1","-timeout=60s","-run","^TestExportPhase3RedepositProbe$"],resolve(ROOT,"go/backyard-rwa-worker"));
       if(!localCapTestProof(exported.output,exported.code,["TestExportPhase3RedepositProbe"]).pass)return {status:"OBSERVED",source,data:{pass:false,reason:"REDEPOSIT_CURRENT_GO_EXPORT_FAILED"}};
     }
-    const rust=await run("cargo",["test","-p","squads-test-harness","--test","rwa_jupiter_controlled_probe",onre?"onre_candidate_entry_and_return_execute_continuously":returning?"ethena_return_conversions_execute_with_exact_mixed_policy_bindings":"ethena_v2_candidate_swaps_execute_sequentially","--","--ignored","--nocapture"],ROOT);
+    const rust=await run("cargo",["test","-p","squads-test-harness","--test","rwa_jupiter_controlled_probe",onreLending?"onre_candidate_lending_executes_between_entry_and_return":onre?"onre_candidate_entry_and_return_execute_continuously":returning?"ethena_return_conversions_execute_with_exact_mixed_policy_bindings":"ethena_v2_candidate_swaps_execute_sequentially","--","--ignored","--nocapture"],ROOT);
     let execution:Json;
     try {execution=JSON.parse(readFileSync(resolve(directory,resultName),"utf8"));}
     catch {return {status:"OBSERVED",source,data:{pass:false,reason:"CANDIDATE_EXECUTION_EVIDENCE_MISSING",exitCode:rust.code}};}
     if(onre) {
       const candidateBytes=readFileSync(resolve(directory,"candidate.json"));
       const programs=new Set(inputs.snapshot.accounts.filter((a:Json)=>a.executable===true).map((a:Json)=>a.address));
-      const pass=candidateJupiterExecutionProof(execution,inputs.plan,sha(planBytes),sha(snapshotBytes),rust.code,false,true)&&
+      const pass=(onreLending?onreConnectedProof(execution,inputs.plan,inputs.snapshot,sha(planBytes),sha(snapshotBytes),rust.code):candidateJupiterExecutionProof(execution,inputs.plan,sha(planBytes),sha(snapshotBytes),rust.code,false,true))&&
         exactSet(execution.stateAddresses,inputs.plan.addresses.filter((a:string)=>!programs.has(a)))&&
         isDeepStrictEqual(execution.programs,inputs.snapshot.programs)&&
         inputs.plan.candidate.artifactSha256===sha(candidateBytes);
       return {status:"OBSERVED",source,data:{pass,slot:execution.slot,inputs:{...inputs,candidates:JSON.parse(candidateBytes.toString())},execution,
-        proofLevel:"LOCAL_ONRE_CANDIDATE_SWAP_ROUNDTRIP_NOT_LENDING_BRIDGE_SIGNER_OR_RUNTIME_PROOF"}};
+        proofLevel:onreLending?"LOCAL_ONRE_SWAP_LENDING_RETURN_NOT_LEVERAGE_BRIDGE_GO_SIGNER_RUNTIME_OR_MAINNET":"LOCAL_ONRE_CANDIDATE_SWAP_ROUNDTRIP_NOT_LENDING_BRIDGE_SIGNER_OR_RUNTIME_PROOF"}};
     }
     const executionPass=candidateJupiterExecutionProof(execution,inputs.plan,sha(planBytes),sha(snapshotBytes),rust.code,returning)&&
       (!linked||linkedLendingReturnProof(execution,inputs.plan,inputs.snapshot))&&
@@ -734,8 +735,8 @@ export async function verify() {
   const catalogLanes = catalog.lanes.map((l: Json) => [l.market,l.collateral,l.debt].join("/"));
   const active = manifest.runtimeActivation?.runtimeRoutes ?? [];
   const offline = process.argv.includes("--offline");
-  const [runtime,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localPolicySetup,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair,localCandidateJupiter,localReturnQuotes,localReturnJupiter,localLinkedLendingReturn,localOnReRoundtrip] = await Promise.all([
-    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localBridgeAdmissionObservation(),localWithdrawalAdmissionObservation(),localKaminoConstructionObservation(),localPolicySetupObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation(),localSequentialJupiterObservation(),localJupiterRepairObservation(),localCandidateJupiterObservation(),localReturnQuoteObservation(),localCandidateJupiterObservation(true),localCandidateJupiterObservation(true,true),localCandidateJupiterObservation(false,false,true)]);
+  const [runtime,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localPolicySetup,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair,localCandidateJupiter,localReturnQuotes,localReturnJupiter,localLinkedLendingReturn,localOnReRoundtrip,localOnReConnected] = await Promise.all([
+    runtimeObservation(),localCapObservation(),localSendJournalObservation(),localBridgeAdmissionObservation(),localWithdrawalAdmissionObservation(),localKaminoConstructionObservation(),localPolicySetupObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation(),localSequentialJupiterObservation(),localJupiterRepairObservation(),localCandidateJupiterObservation(),localReturnQuoteObservation(),localCandidateJupiterObservation(true),localCandidateJupiterObservation(true,true),localCandidateJupiterObservation(false,false,true),localCandidateJupiterObservation(false,false,true,true)]);
   const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
   const [chain,database,deployment,setupRent] = offline
     ? ["Solana RPC","Postgres","Render","setup rent feasibility"].map(source => ({status:"BLOCKED" as const,source,reason:"OFFLINE_DIAGNOSTIC"}))
@@ -779,6 +780,7 @@ export async function verify() {
     ]),
     measuredCondition("R04","All-lane positives/negatives and full stateful lifecycle",[
       observedCheck(localOnReRoundtrip,"OnRe candidate swap policies preserve siblings and execute a continuous USDC/ONyc/USDC roundtrip with flat ONyc custody and fourteen rejecting mutations; not lending, bridge, Go, signer or live proof",d=>d.pass===true),
+      observedCheck(localOnReConnected,"OnRe entry, deposit, borrow, finite payoff, withdrawal and return execute continuously with four exact local repair candidates and eighteen rejecting mutations; not leverage change, bridge, Go, signer or live proof",d=>d.pass===true),
       observedCheck(localReturnJupiter,"both return conversions clear controlled source custody through exact mixed candidate/installed policies with rejecting mutations and current-Go parity; not linked lending or bridge execution",d=>d.pass===true),
       observedCheck(localLinkedLendingReturn,"four lending legs and both return swaps remain continuous with raw terminal checks and Go parity; a separate Go redeposit executes on debt-bearing cloned state with explicit custody overrides, not linked funding, bridge entry or mainnet proof",d=>d.pass===true),
       observedCheck(localReturnQuotes,"retained funding and both return quotes are accepted by current installed-binding Go validation; sizing samples are not execution or fresh-chain proof",d=>d.pass===true&&d.witness?.allAccepted===true),
@@ -822,7 +824,7 @@ export async function verify() {
     // Existing policy allocations are a diagnostic sample, not a fabricated
     // pass/fail for the complete proposed setup graph. Retain prices, hashes,
     // rent and the explicit new-allocation proof limitation in the snapshot.
-    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localPolicySetup,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair,localCandidateJupiter,localReturnQuotes,localReturnJupiter,localLinkedLendingReturn,localOnReRoundtrip},
+    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localPolicySetup,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair,localCandidateJupiter,localReturnQuotes,localReturnJupiter,localLinkedLendingReturn,localOnReRoundtrip,localOnReConnected},
     conditions,
   };
 }
