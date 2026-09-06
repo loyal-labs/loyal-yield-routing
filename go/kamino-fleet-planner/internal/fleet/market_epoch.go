@@ -874,7 +874,19 @@ func coverageMints(coverages []MarketMintCoverage) []string {
 	return result
 }
 
+// DirectObservationHashMismatch distinguishes a changing chain observation
+// from invalid identity, slot, or expiry evidence. It does not establish which
+// observation is newer: a hash difference alone cannot prove ordering.
+type DirectObservationHashMismatch struct {
+	Reserve string
+}
+
+func (e *DirectObservationHashMismatch) Error() string {
+	return fmt.Sprintf("reserve %s direct account hash differs from durable confirmed evidence", e.Reserve)
+}
+
 func (e ImmutableMarketEpoch) VerifyDirectObservation(snapshot MarketSnapshot, required ...string) error {
+	var mismatch *DirectObservationHashMismatch
 	for _, address := range required {
 		evidence, ok := e.Reserve(address)
 		if !ok {
@@ -887,12 +899,17 @@ func (e ImmutableMarketEpoch) VerifyDirectObservation(snapshot MarketSnapshot, r
 		if evidence.Market == nil || *evidence.Market != direct.Market || evidence.LiquidityMint != direct.Mint || evidence.StateSlot > snapshot.Slot || evidence.StateSlot > direct.Slot {
 			return fmt.Errorf("reserve %s direct identity or slot does not cover durable evidence", address)
 		}
-		if !strings.EqualFold(evidence.AccountDataHash, direct.DataHash) {
-			return fmt.Errorf("reserve %s direct account hash is ahead of durable confirmed evidence", address)
+		if !strings.EqualFold(evidence.AccountDataHash, direct.DataHash) && mismatch == nil {
+			mismatch = &DirectObservationHashMismatch{Reserve: address}
 		}
 		if snapshot.ObservedAt.After(e.OptimizerEnvelopeExpiresAt()) {
 			return fmt.Errorf("immutable market epoch expired before direct observation")
 		}
+	}
+	// Validate every required reserve before classifying a mismatch as harmless
+	// for read-only shadow planning. Never hide a later identity/slot failure.
+	if mismatch != nil {
+		return mismatch
 	}
 	return nil
 }

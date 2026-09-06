@@ -80,8 +80,34 @@ func TestImmutableMarketEpochUsesDurableStateIdentityAndCanonicalFingerprint(t *
 	changed := drifted.Reserves[target.Address]
 	changed.DataHash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	drifted.Reserves[target.Address] = changed
-	if err := epoch.VerifyDirectObservation(drifted, source.Address, target.Address); err == nil {
+	mismatch := epoch.VerifyDirectObservation(drifted, source.Address, target.Address)
+	if mismatch == nil {
 		t.Fatal("changed direct account bytes were accepted under old durable evidence")
+	}
+	if !shadowObservationDifference(ModeShadow, mismatch) || shadowObservationDifference(ModePublish, mismatch) {
+		t.Fatal("only shadow may continue planning from the durable epoch after a hash difference")
+	}
+	// A hash difference must not mask a fatal error in a later reserve.
+	invalidSource := drifted.Reserves[source.Address]
+	invalidSource.Market = target.Market
+	drifted.Reserves[source.Address] = invalidSource
+	identityErr := epoch.VerifyDirectObservation(drifted, target.Address, source.Address)
+	if identityErr == nil || shadowObservationDifference(ModeShadow, identityErr) {
+		t.Fatal("hash mismatch masked later reserve identity failure")
+	}
+	drifted.Reserves[source.Address] = snapshot.Reserves[source.Address]
+	invalidSource = drifted.Reserves[source.Address]
+	invalidSource.Slot = 1
+	drifted.Reserves[source.Address] = invalidSource
+	slotErr := epoch.VerifyDirectObservation(drifted, target.Address, source.Address)
+	if slotErr == nil || shadowObservationDifference(ModeShadow, slotErr) {
+		t.Fatal("hash mismatch masked later reserve slot failure")
+	}
+	drifted.Reserves[source.Address] = snapshot.Reserves[source.Address]
+	drifted.ObservedAt = epoch.OptimizerEnvelopeExpiresAt().Add(time.Second)
+	expiryErr := epoch.VerifyDirectObservation(drifted, target.Address, source.Address)
+	if expiryErr == nil || shadowObservationDifference(ModeShadow, expiryErr) {
+		t.Fatal("shadow accepted an expired epoch after a hash mismatch")
 	}
 	changedReserves := append([]MarketEpochReserve(nil), epoch.Reserves...)
 	changedReserves[0].StateEventID++

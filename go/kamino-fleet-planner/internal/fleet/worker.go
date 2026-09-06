@@ -172,7 +172,13 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		direct.Reserves[addresses[i]] = state
 	}
 	if err = epoch.VerifyDirectObservation(direct, addresses...); err != nil {
-		return fmt.Errorf("durable market evidence not converged: %w", err)
+		if !shadowObservationDifference(w.config.Mode, err) {
+			return fmt.Errorf("durable market evidence not converged: %w", err)
+		}
+		// Rust plans from this verified immutable database epoch, not the
+		// subsequent RPC read. Shadow can compare that same epoch while logging
+		// changing account bytes; publish mode retains the strict equality fence.
+		logEvent(map[string]any{"event": "kamino_fleet_planner_observation_difference", "mode": w.config.Mode, "error": err.Error(), "planningEvidence": "durable_verified_epoch"})
 	}
 	snapshot, err := marketSnapshotFromEpoch(epoch, addresses...)
 	if err != nil {
@@ -265,6 +271,11 @@ func marketSnapshotFromEpoch(epoch ImmutableMarketEpoch, addresses ...string) (M
 		}
 	}
 	return result, nil
+}
+
+func shadowObservationDifference(mode Mode, err error) bool {
+	_, mismatch := err.(*DirectObservationHashMismatch)
+	return mode == ModeShadow && mismatch
 }
 
 func logEvent(event map[string]any) {

@@ -11,8 +11,11 @@ The planner:
    market epoch, retaining blocked mint coverage without letting one incomplete
    mint stop otherwise healthy mint lanes;
 2. reads every reserve in the epoch's complete per-mint routable subset in one
-   coherent confirmed RPC observation and requires its identities, slots, and
-   hashes to converge with retained monitor evidence;
+   coherent confirmed RPC observation and validates identities, slot coverage,
+   and epoch lifetime. Publish mode also requires exact account hashes. Shadow
+   mode logs hash differences as `kamino_fleet_planner_observation_difference`
+   and continues planning from the unchanged verified database epoch, like the
+   retained Rust planner; it never substitutes the newer RPC economics;
 3. loads every active migrated vault in a read-only `REPEATABLE READ`
    transaction, including policy target restrictions, active-work fences, and
    non-released durable capacity reservations counted exactly once;
