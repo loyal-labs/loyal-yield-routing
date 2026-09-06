@@ -104,6 +104,9 @@ func testPolicySetupDurability(t *testing.T, url string) {
 	 ADD COLUMN IF NOT EXISTS idempotency_key text,
 	 ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now(),
 	 ADD COLUMN IF NOT EXISTS signed_wire_sha256 text,
+	 ADD COLUMN IF NOT EXISTS message_sha256 text,
+	 ADD COLUMN IF NOT EXISTS simulation_slot bigint,
+	 ADD COLUMN IF NOT EXISTS simulation_result jsonb,
 	 ADD COLUMN IF NOT EXISTS recent_blockhash text,
 	 ADD COLUMN IF NOT EXISTS last_valid_block_height bigint;`); err != nil {
 		t.Fatal(err)
@@ -130,6 +133,9 @@ func testPolicySetupDurability(t *testing.T, url string) {
 		return state, n
 	}
 	plan := observedSetupFixture(t, "borrow")
+	t.Run("setup signed wire and simulation commit atomically", func(t *testing.T) {
+		testPolicySetupSignedPersistence(t, ctx, db, newRoute, plan)
+	})
 	t.Run("payment authorization preserves setup budget", func(t *testing.T) {
 		key := newRoute(t, emptyTestBudget(), time.Minute)
 		r, err := db.persistPolicySetupIntent(ctx, setupGuardRPC(t, 42, 0), key, plan)

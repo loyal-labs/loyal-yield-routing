@@ -1584,3 +1584,35 @@ Checkpoint `phase3/funded-creation-refresh-2026-09-05.json.gz` has gzip SHA256
 All nine named local journal witnesses pass; targeted setup/journal race tests
 pass (14.689s), as do TypeScript checking and 12 verifier tests. R01–R08 remain
 FAIL overall. No production signing, broadcast, migration or deployment occurred.
+
+#### Setup signed-unsent preparation — 2026-09-05
+
+The local preparation path now prices/admission-checks the durable intent before
+loading the existing `SOLANA_TESTING_PK` Settings admin (never a delegate fallback),
+signs the frozen message and atomically retains its wire/reservation binding in
+`built` before exposing it to simulation RPC. Only successful exact-wire,
+signature-verifying simulation of that same persisted wire can promote it to
+`signed`. Both writes revalidate the price window and route lease. A timeout or
+crash retains the wire and prevents unsigned refresh; it does not permit send.
+Migration 0075 permits this complete pre-simulation wire only for the two scoped
+setup actions; ordinary delegate `built` rows remain unsigned. Actual SQL probes
+check the journal-produced row and reject missing identity, wrong lane/action,
+premature submission and promotion without simulation. It is registered in both
+existing migration entrypoints, but has not been applied to production.
+
+The verifier adds separate signer-rejection and atomic journal witnesses. The
+latter deliberately tests the private post-signature storage boundary with a
+synthetic wire, which the production entrypoint rejects. These are not positive
+real-admin signer or live simulation evidence. No worker/CLI registration or send
+is enabled: fresh repaired-farm/deployment readiness and signed-expiry recovery
+still precede setup execution. Runtime bindings, deployment and canaries remain
+unfinished, and the full goal remains active with unchanged R01–R08 acceptance.
+
+Final checkpoint `phase3/setup-signed-preparation-recheck-2026-09-05.json.gz`
+(gzip SHA256 `ad39d4f8b7adb1e44cec1bd0b64c26ba063a40e37e3b8684f09e39cfb4cf53d5`)
+passes the setup and ten named local journal witnesses, including migration 0075.
+Targeted Go race checks pass (15.403s), as do `cargo check -p loyal-yield-store
+--offline`, TypeScript checking and 12 verifier tests. The earlier preparation
+checkpoint predates migration coverage and is retained as intermediate evidence.
+R01–R08 remain FAIL. This work is local only; no production secret access, signing,
+broadcast, database migration or deployment occurred.

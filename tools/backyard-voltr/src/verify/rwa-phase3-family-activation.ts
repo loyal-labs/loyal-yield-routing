@@ -173,6 +173,7 @@ async function localSendJournalObservation(): Promise<Observation> {
       "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/finalized_prefund_advances_atomically_without_duplicate_funding/creation_settles_and_releases_fence",
       "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/direct_creation_settles_and_releases_fence",
       "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/payment_authorization_preserves_setup_budget",
+      "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/setup_signed_wire_and_simulation_commit_atomically",
       "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/unsigned_refresh_is_atomic_and_preserves_lifetime_spend",
       "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/finalized_prefund_advances_atomically_without_duplicate_funding/unpaid_creation_refresh_preserves_finalized_prefund",
       "TestPhase3DatabaseAdmissionAndSendFence/policy_setup_durable_intent/finalized_prefund_advances_atomically_without_duplicate_funding/unpaid_creation_refresh_preserves_finalized_prefund/refreshed_creation_settles",
@@ -438,6 +439,7 @@ async function localPolicySetupObservation(): Promise<Observation> {
     "TestPolicySetupCreationReconcilesDirectAndPrefundedPayments",
     "TestPolicySetupPaymentRepricesEveryStageAndRejectsUnfitCompletion",
     "TestPolicySetupSignedIdentityRejectsSyntheticOrDifferentSignersBeforeRPC",
+    "TestPolicySetupSigningNeverFallsBackToDelegate",
   ],"OnRe/USDC setup payloads and created state against installed SDK/retained accounts; controlled finalized receipts, remaining-payment pricing and accounting");
   if(result.data) {
     result.data.proofLevel="LOCAL_SETUP_BUILDERS_AND_CONTROLLED_RPC_RECOVERY_NOT_LIVE_AUTHORITY";
@@ -709,7 +711,7 @@ export async function verify() {
       observedCheck(localCaps,"local production builders reject fresh over-cap costs before signing and reject stale valuation",d=>d.pass===true),
       observedCheck(localBridgeAdmission,"cash-only bridge admission prices staging, full restoration and each required NAV; rejects unsupported exposure and prevents build after HOLD",d=>d.pass===true),
       observedCheck(localWithdrawalAdmission,"initial swap/deposit/borrow, leveraged swap and debt-bearing redeposit reserve complete returns from validated poststate; funding continuations preserve residue and reject underfunding/custody drift; linked worker execution is separately unproven",d=>d.pass===true),
-      observedCheck(localSendJournal,"initial setup and unpaid creation refresh preserve lifetime spend, finalized prefund, restart and lease fencing; signed setup cannot refresh; refreshed creation settles without repeating prefunding; local journal reprices before send and releases signed HOLD only after proven expiry/absence",d=>d.pass===true),
+      observedCheck(localSendJournal,"setup wire/reservation persist before simulation and only that wire advances, including real setup-only migration constraints; initial setup and unpaid creation refresh preserve lifetime spend, finalized prefund and restart fencing; signed setup cannot refresh; refreshed creation settles without repeating prefunding; lifecycle signed HOLD releases only after proven expiry/absence",d=>d.pass===true),
     ],[
       "End-to-end worker execution of the leveraged entry and full return, setup and verified production budget initialization; local bookkeeping/admission/continuation checks do not prove activation or the complete deployed lifecycle. All-lane admission remains unproven.",
       "Complete admission/send witnesses beyond local controlled-input build rejection: concurrency, restart, ambiguity, final-send freshness and successful reserved unwind.",
