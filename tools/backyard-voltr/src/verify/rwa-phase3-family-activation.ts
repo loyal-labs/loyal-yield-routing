@@ -10,7 +10,7 @@ import { ExtensionType, getExtensionTypes, getTransferFeeConfig, getTransferHook
 import { Connection, PublicKey } from "@solana/web3.js";
 import { reviewPhase3Bindings } from "./rwa-phase3-binding-review.js";
 import { onreConnectedProof, onreSetupStagingProof } from "./onre-connected-proof.js";
-import { onreBridgeEntryProof } from "./onre-bridge-entry-proof.js";
+import { onreBridgeEntryProof, onreAccountingDiagnosis } from "./onre-bridge-entry-proof.js";
 
 const ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const CONTRACT = "docs/plans/backyard-rwa-phase3-family-activation-verifier.md";
@@ -60,7 +60,14 @@ function onreBridgeEntryObservation(manifest:Json):Observation {
     if(!directory||!/^\/private\/tmp\/backyard-phase3-jupiter-probe\.[A-Za-z0-9]+$/.test(directory))return {status:"BLOCKED",source,reason:"EXPLICIT_BRIDGE_CAPTURE_REQUIRED"};
     const raw=readFileSync(resolve(directory,"bridge-rpc-simulation.json"));
     const execution=JSON.parse(raw.toString());
+    let accountingDiagnosis;
+    if(process.env.PHASE3_ONRE_ACCOUNTING_DIAGNOSTIC==="1") {
+      const counterfactual=JSON.parse(readFileSync(resolve(directory,"result-accounting-diagnostic.json"),"utf8"));
+      const deposit=JSON.parse(readFileSync(resolve(directory,"deposit-accounting-rpc-diagnostic.json"),"utf8"));
+      accountingDiagnosis={...onreAccountingDiagnosis(counterfactual,deposit),counterfactual,deposit};
+    }
     return {status:"OBSERVED",source,data:{...onreBridgeEntryProof(execution,manifest),artifactSha256:sha(raw),execution,
+      ...(accountingDiagnosis?{accountingDiagnosis}:{}),
       localConnectedAttempt:JSON.parse(readFileSync(resolve(directory,"result-prerefresh.json"),"utf8")),
       localDirectAllocationAttempt:JSON.parse(readFileSync(resolve(directory,"result.json"),"utf8")),
       inputs:{plan:JSON.parse(readFileSync(resolve(directory,"plan.json"),"utf8")),snapshot:JSON.parse(readFileSync(resolve(directory,"snapshot.json"),"utf8"))}}};

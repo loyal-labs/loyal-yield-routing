@@ -53,3 +53,46 @@ export function onreBridgeEntryProof(e:any,manifest:any) {
       proofLevel:"CAPTURED_UNSIGNED_INDEPENDENT_RPC_BRIDGE_SIMULATIONS_NOT_SIGNATURE_SEQUENTIAL_NAV_COMPLETENESS_OR_LIVE_PROOF"};
   }catch{return invalid;}
 }
+
+// Diagnostic evidence cannot satisfy bridge execution. Check the isolated
+// single-field perturbations and actual deposit deltas, not their success labels.
+export function onreAccountingDiagnosis(e:any,d:any) {
+  const invalid={valid:false,repairProven:false};
+  try {
+    const diag=e.accountingDiagnostic;
+    if(e.schema!=="phase3-onre-voltr-roundtrip-result/v1"||e.broadcast!==false||e.signatureProof!==false||e.bridgeFlat!==false||
+      diag.proofLevel!=="EXPLICIT_ACCOUNTING_COUNTERFACTUAL_NOT_REPAIR_AUTHORITY_OR_LIFECYCLE_PROOF"||diag.mainStateUnchanged!==true||diag.branches.length!==3||
+      !isDeepStrictEqual(diag.before,e.bridgeSteps[0].before)||e.bridgeSteps[0].pass!==false)return invalid;
+    const at=(rows:any[],a:string)=>rows.find(r=>r.address===a);
+    const bytes=(rows:any[],a:string)=>Buffer.from(at(rows,a).dataBase64,"base64");
+    const raw=(rows:any[],a:string,offset:number)=>bytes(rows,a).readBigUInt64LE(offset);
+    const total=raw(diag.before,vault,168),nav=raw(diag.before,receipt,104),idle=raw(diag.before,cash[0]!,64),deficit=nav-total;
+    if(deficit<=0n||raw(diag.before,cash[1]!,64)!==0n||raw(diag.before,cash[2]!,64)!==0n)return invalid;
+    for(const [i,b] of diag.branches.entries()) {
+      const delta=[deficit-1n,deficit,deficit+idle][i]!;
+      if(b.override.address!==vault||b.override.field!=="asset.totalValue"||b.override.offset!==168||BigInt(b.override.before)!==total||BigInt(b.override.after)!==total+delta)return invalid;
+      const expected=structuredClone(diag.before),v=bytes(expected,vault);
+      v.writeBigUInt64LE(total+delta,168);Object.assign(at(expected,vault),{dataBase64:v.toString("base64"),dataSha256:sha(v)});
+      if(!isDeepStrictEqual(expected,b.execution.before)||b.execution.action!=="REPORT_NAV"||b.execution.amountRaw!==0||b.execution.pass!==(i>0)||
+        (i===0?b.execution.error!=="InstructionError(0, Custom(6004))":b.execution.error!==null))return invalid;
+      const after=b.execution.after;
+      for(const a of cash)if(!isDeepStrictEqual(at(diag.before,a),at(after,a)))return invalid;
+      const expectedTotal=i===0?total+delta:i===1?0n:idle,expectedNAV=i===0?nav:0n;
+      if(raw(after,vault,168)!==expectedTotal||raw(after,receipt,104)!==expectedNAV||BigInt(b.vaultTotalAfterRaw)!==expectedTotal||BigInt(b.receiptAfterRaw)!==expectedNAV)return invalid;
+    }
+    if(d.schema!=="phase3-voltr-deposit-accounting-diagnostic/v1"||d.broadcast!==false||d.signatureProof!==false||d.sequentialProof!==false||d.liveRepairAuthorized!==false||d.rows.length!==2)return invalid;
+    if(d.rows[0].amountRaw!=="0"||!isDeepStrictEqual(d.rows[0].simulation.value.err,{InstructionError:[0,{Custom:6000}]}))return invalid;
+    const row=d.rows[1];
+    if(BigInt(row.amountRaw)!==deficit||row.simulation.value.err!==null||row.simulation.context.slot<row.before.slot||row.simulation.value.accounts.length!==row.observed.length)return invalid;
+    const before=row.before.accounts;
+    const after=row.simulation.value.accounts.map((a:any,i:number)=>({address:row.observed[i],dataBase64:a.data[0]}));
+    const input=row.instruction.accounts[5].address;
+    if(raw(after,vault,168)-raw(before,vault,168)!==deficit||raw(after,cash[0]!,64)-raw(before,cash[0]!,64)!==deficit||
+      raw(before,input,64)-raw(after,input,64)!==deficit||raw(after,receipt,104)!==raw(before,receipt,104))return invalid;
+    const gap=(rows:any[])=>raw(rows,receipt,104)+raw(rows,cash[0]!,64)-raw(rows,vault,168);
+    if(gap(before)!==gap(after)||gap(after)<=0n)return invalid;
+    return {valid:true,repairProven:false,underflowThresholdRaw:deficit.toString(),idleAfterThresholdOnlyRaw:idle.toString(),
+      bookValueAfterThresholdOnlyRaw:"0",ordinaryDepositPreservesAccountingGapRaw:gap(after).toString(),
+      conclusion:"UNDERFLOW_ISOLATED_BUT_DEPOSIT_IS_NOT_ACCOUNTING_RECONCILIATION"};
+  }catch{return invalid;}
+}

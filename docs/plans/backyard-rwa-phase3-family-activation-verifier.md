@@ -215,6 +215,41 @@ checking pass, including rejection of forged success labels on the two real
 RPC failures. No live money movement, signer use, deployment or registration
 occurred in this bridge-boundary work.
 
+The arithmetic diagnosis now isolates the failure without changing the main
+local lifecycle state. In three explicitly labelled counterfactual copies,
+increasing only Voltr's book-total field by 118 raw still fails; 119 raw permits
+the zero-NAV call but leaves book total zero with 3793417 raw idle cash; adding
+3793536 raw to that field permits the call and leaves book total equal to idle.
+These impossible-on-chain direct edits are diagnostics, never repair authority,
+funding or lifecycle proof. The unmodified connected attempt still fails.
+
+Fresh unsigned simulations of the official SDK's ordinary deposit at slot
+444677664 reject zero with `InvalidAmount` (6000). A 119-raw deposit succeeds
+in simulation and increases both book total and actual idle cash by 119, while
+the old strategy receipt is unchanged. The discrepancy
+`receipt + idle - book total = 3793536` therefore persists. A top-up is not an
+accounting reconciliation and must not be sent as a proposed fix. The initial
+diagnostic invocation failed without a classified cause; a sanitized-stage
+retry succeeded. No live deposit or LP issuance occurred.
+
+The installed SDK's `VaultConfigField` exposes no book-total or receipt-value
+setter. Voltr's public [accounting documentation](https://github.com/voltrxyz/docs/blob/main/vault-owners/fees-and-accounting.mdx)
+describes fee harvesting and high-water-mark calibration, not a supported
+repair for this discrepancy. Obtain a protocol-supported reconciliation
+procedure and compare its exact effects with the standing envelope before
+implementation or live repair. This requires a Voltr technical contact or an
+authoritative repair procedure, not another cap approval. Do not try arbitrary
+fee changes, receipt closure/recreation or a false NAV. Necessary offline OnRe
+Go construction/admission remains independently actionable while this live gate
+and the separate full-exit-close decision remain unresolved.
+
+Diagnosis retained in `phase3/onre-voltr-accounting-diagnosis-2026-09-06.json.gz`
+(gzip SHA256 `4c38bc51e35ac7bdd3576110313089b9f9075d468c1e8272a21d830f447d1237`).
+The sole verifier checks the explicit counterfactual edits, unchanged original
+state and real deposit deltas, and still reports all R01–R08 FAIL. Seventeen
+verifier tests/222 assertions and TypeScript checking pass. This rules out the
+proposed small-top-up shortcut; it neither authorizes nor proves a repair.
+
 Next work must resolve an item above or execute the next connected OnRe step.
 Preserve completed local setup-expiry work, but stop accumulating setup-only
 checkpoints. A subsequent local-only result must name the falsified assumption

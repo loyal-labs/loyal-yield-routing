@@ -909,6 +909,12 @@ fn execute_probe(
     let mut results: Vec<Value> = vec![];
     let mut pass = true;
     let mut bridge_results = vec![];
+    let accounting_diagnostic =
+        if bridge && std::env::var("PHASE3_ONRE_ACCOUNTING_DIAGNOSTIC").as_deref() == Ok("1") {
+            onre_bridge::accounting_counterfactuals(&svm, &plan, &addresses)
+        } else {
+            Value::Null
+        };
     let bridge_idle_before = if bridge {
         amount(&svm, key(onre_bridge::IDLE))
     } else {
@@ -1178,6 +1184,7 @@ fn execute_probe(
         report["schema"] = json!("phase3-onre-voltr-roundtrip-result/v1");
         report["proofLevel"]=json!("LOCAL_DEPLOYED_PROGRAM_VOLTR_ONRE_FULL_RETURN_WITH_GO_BRIDGE_NOT_GO_LENDING_SIGNER_ADMISSION_OR_MAINNET");
         report["bridgeSteps"] = json!(bridge_results);
+        report["accountingDiagnostic"] = accounting_diagnostic;
         report["bridgeIdleBeforeRaw"] = json!(bridge_idle_before);
         report["bridgeIdleAfterRaw"] = json!(amount(&svm, key(onre_bridge::IDLE)));
         report["bridgeFlat"] = json!(

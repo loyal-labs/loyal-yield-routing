@@ -8,6 +8,44 @@ pub const STAGED: &str = "FTDWN5Ay8tzYPJBJT4s2oZaHRQ7jKPo8XP2ZRWb5GP3M";
 const CASH: &str = "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe";
 const TICKET: &str = "C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5";
 
+// Isolate the arithmetic failure, without claiming a realizable repair or
+// changing the main lifecycle state. Only copies receive this explicit edit.
+pub fn accounting_counterfactuals(svm: &LiteSVM, plan: &Value, addresses: &[Pubkey]) -> Value {
+    let vault = key("HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA");
+    let receipt = key("3GHLmyTTGH9ZfQqb3YCo9xKjpPhMLvHsq2JSYzCnk9U6");
+    let initial = svm.get_account(&vault).unwrap();
+    assert_eq!(initial.data.len(), 928);
+    let total = u64::from_le_bytes(initial.data[168..176].try_into().unwrap());
+    let receipt_account = svm.get_account(&receipt).unwrap();
+    assert_eq!(receipt_account.data.len(), 192);
+    let prior_nav = u64::from_le_bytes(receipt_account.data[104..112].try_into().unwrap());
+    let deficit = prior_nav
+        .checked_sub(total)
+        .expect("requires captured underflow");
+    assert!(deficit > 0);
+    let idle = amount(svm, key(IDLE));
+    let original_state = capture(svm, addresses);
+    let mut branches = vec![];
+    for delta in [deficit - 1, deficit, deficit.checked_add(idle).unwrap()] {
+        let mut diagnostic = svm.clone();
+        let mut changed = initial.clone();
+        changed.data[168..176].copy_from_slice(&total.checked_add(delta).unwrap().to_le_bytes());
+        diagnostic.set_account(vault, changed).unwrap();
+        let result = execute(&mut diagnostic, plan, addresses, "REPORT_NAV", 0);
+        let after = diagnostic.get_account(&vault).unwrap();
+        let after_receipt = diagnostic.get_account(&receipt).unwrap();
+        branches.push(json!({"override":{"address":vault.to_string(),"field":"asset.totalValue","offset":168,"before":total,"after":total+delta},"execution":result,
+            "vaultTotalAfterRaw":u64::from_le_bytes(after.data[168..176].try_into().unwrap()),
+            "receiptAfterRaw":u64::from_le_bytes(after_receipt.data[104..112].try_into().unwrap())}));
+    }
+    assert_eq!(
+        capture(svm, addresses),
+        original_state,
+        "diagnostic changed lifecycle state"
+    );
+    json!({"proofLevel":"EXPLICIT_ACCOUNTING_COUNTERFACTUAL_NOT_REPAIR_AUTHORITY_OR_LIFECYCLE_PROOF","mainStateUnchanged":true,"before":original_state,"branches":branches})
+}
+
 pub fn execute(
     svm: &mut LiteSVM,
     plan: &Value,
