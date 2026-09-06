@@ -12,6 +12,8 @@ use solana_sdk::{
 use std::{fs, io::Write, path::Path, str::FromStr};
 #[path = "support/rwa_jupiter_candidate.rs"]
 mod jupiter_candidate;
+#[path = "support/rwa_onre_bridge.rs"]
+mod onre_bridge;
 
 fn key(s: &str) -> Pubkey {
     Pubkey::from_str(s).unwrap()
@@ -57,37 +59,43 @@ fn lending_position(svm: &LiteSVM, address: Pubkey) -> (u64, u128) {
 #[test]
 #[ignore = "requires explicit public snapshot and zero-signature Go plan"]
 fn ethena_go_swaps_execute_sequentially_under_deployed_policies() {
-    execute_probe(false, false, false, false, false);
+    execute_probe(false, false, false, false, false, false);
 }
 
 #[test]
 #[ignore = "requires explicit public candidate snapshot; never installed-Go or mainnet proof"]
 fn ethena_v2_candidate_swaps_execute_sequentially() {
-    execute_probe(true, false, false, false, false);
+    execute_probe(true, false, false, false, false, false);
 }
 
 #[test]
 #[ignore = "requires explicit return snapshot; local custody preconditions are not a lending lifecycle"]
 fn ethena_return_conversions_execute_with_exact_mixed_policy_bindings() {
-    execute_probe(true, true, false, false, false);
+    execute_probe(true, true, false, false, false, false);
 }
 
 #[test]
 #[ignore = "explicit OnRe public snapshot; local candidate roundtrip, no runtime activation"]
 fn onre_candidate_entry_and_return_execute_continuously() {
-    execute_probe(true, false, true, false, false);
+    execute_probe(true, false, true, false, false, false);
 }
 
 #[test]
 #[ignore = "explicit OnRe local candidate swap/lending snapshot; no runtime activation"]
 fn onre_candidate_lending_executes_between_entry_and_return() {
-    execute_probe(true, false, true, true, false);
+    execute_probe(true, false, true, true, false, false);
 }
 
 #[test]
 #[ignore = "explicit OnRe leverage snapshot; local candidates, no live activation"]
 fn onre_candidate_leverage_and_return_execute_continuously() {
-    execute_probe(true, false, true, true, true);
+    execute_probe(true, false, true, true, true, false);
+}
+
+#[test]
+#[ignore = "explicit OnRe bridge snapshot and local Go test compiler; never broadcasts"]
+fn onre_voltr_funding_leverage_and_restoration_execute_continuously() {
+    execute_probe(true, false, true, true, true, true);
 }
 
 // Rescale a captured V2 route for local executed poststate, not a live quote.
@@ -340,7 +348,14 @@ fn onre_lending(
     (results, true)
 }
 
-fn execute_probe(candidate: bool, returning: bool, onre: bool, linked_onre: bool, leverage: bool) {
+fn execute_probe(
+    candidate: bool,
+    returning: bool,
+    onre: bool,
+    linked_onre: bool,
+    leverage: bool,
+    bridge: bool,
+) {
     let directory = std::env::var(if onre {
         "PHASE3_ONRE_PROBE_DIR"
     } else if returning {
@@ -355,6 +370,12 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool, linked_onre: bool
     let plan_bytes = fs::read(directory.join("plan.json")).unwrap();
     let snapshot_bytes = fs::read(directory.join("snapshot.json")).unwrap();
     let plan: Value = serde_json::from_slice(&plan_bytes).unwrap();
+    assert_eq!(
+        plan["onreBridge"].is_object(),
+        bridge,
+        "bridge proof must not masquerade as the retained eight-step proof"
+    );
+    assert!(!bridge || leverage);
     assert_eq!(!plan["onreLending"].is_null(), linked_onre);
     assert_eq!(plan["onreLending"]["redeposit"].is_object(), leverage);
     assert!(!leverage || linked_onre);
@@ -500,7 +521,14 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool, linked_onre: bool
     ] {
         // USDC is both input and debt custody for OnRe. Never overwrite the
         // initial funding a second time, and never patch custody between legs.
-        if onre && field == "debtCustody" {
+        if (onre && field == "debtCustody") || (bridge && token) {
+            if bridge && token {
+                assert_eq!(
+                    amount(&svm, key(plan[field].as_str().unwrap())),
+                    0,
+                    "bridge proof requires actually flat custody, not a token override"
+                );
+            }
             continue;
         }
         let address = key(plan[field].as_str().unwrap());
@@ -880,7 +908,37 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool, linked_onre: bool
     }
     let mut results: Vec<Value> = vec![];
     let mut pass = true;
+    let mut bridge_results = vec![];
+    let bridge_idle_before = if bridge {
+        amount(&svm, key(onre_bridge::IDLE))
+    } else {
+        0
+    };
+    if bridge {
+        let refresh = onre_bridge::execute(&mut svm, &plan, &addresses, "REPORT_NAV", 0);
+        pass = refresh["pass"] == true;
+        bridge_results.push(refresh);
+    }
+    if bridge && pass {
+        let funding = onre_bridge::execute(
+            &mut svm,
+            &plan,
+            &addresses,
+            "VOLTR_ALLOCATE_TO_SQUADS",
+            101000,
+        );
+        pass = funding["pass"] == true;
+        bridge_results.push(funding);
+    }
+    if bridge && pass {
+        let refresh = onre_bridge::execute(&mut svm, &plan, &addresses, "REPORT_NAV", 0);
+        pass = refresh["pass"] == true;
+        bridge_results.push(refresh);
+    }
     for (step_index, template_step) in steps.iter().enumerate() {
+        if !pass {
+            break;
+        }
         let resized_step;
         let step = if linked_onre && step_index == 1 {
             let (legs, passed) = onre_lending(&mut svm, &plan, &addresses, leverage);
@@ -907,6 +965,9 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool, linked_onre: bool
         assert_eq!(sha(&wire), step["wireSha256"]);
         let tx: VersionedTransaction = bincode::deserialize(&wire).unwrap();
         let before = capture(&svm, &addresses);
+        if bridge && step_index == 0 {
+            assert_eq!(before, bridge_results.last().unwrap()["after"]);
+        }
         if linked_onre && step_index == 1 {
             assert_eq!(lending_results.last().unwrap()["after"], before);
         } else if let Some(previous) = results.last() {
@@ -1055,6 +1116,30 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool, linked_onre: bool
             break;
         }
     }
+    if bridge && pass {
+        assert_eq!(capture(&svm, &addresses), results.last().unwrap()["after"]);
+        for action in [
+            "REPORT_NAV",
+            "STAGE_SQUADS_TO_VOLTR",
+            "REPORT_NAV",
+            "VOLTR_RESTORE_IDLE",
+            "REPORT_NAV",
+        ] {
+            let raw = match action {
+                "STAGE_SQUADS_TO_VOLTR" => {
+                    amount(&svm, key(plan["inputCustody"].as_str().unwrap()))
+                }
+                "VOLTR_RESTORE_IDLE" => amount(&svm, key(onre_bridge::STAGED)),
+                _ => 0,
+            };
+            let step = onre_bridge::execute(&mut svm, &plan, &addresses, action, raw);
+            pass = step["pass"] == true;
+            bridge_results.push(step);
+            if !pass {
+                break;
+            }
+        }
+    }
     let return_custody_cleared = returning
         && pass
         && results.len() == 2
@@ -1088,6 +1173,17 @@ fn execute_probe(candidate: bool, returning: bool, onre: bool, linked_onre: bool
     if leverage {
         report["schema"] = json!("phase3-onre-leverage-roundtrip-result/v1");
         report["proofLevel"]=json!("LOCAL_ONRE_LINKED_BORROW_SWAP_REDEPOSIT_PAYOFF_RETURN_NOT_BRIDGE_GO_SIGNER_RUNTIME_OR_MAINNET");
+    }
+    if bridge {
+        report["schema"] = json!("phase3-onre-voltr-roundtrip-result/v1");
+        report["proofLevel"]=json!("LOCAL_DEPLOYED_PROGRAM_VOLTR_ONRE_FULL_RETURN_WITH_GO_BRIDGE_NOT_GO_LENDING_SIGNER_ADMISSION_OR_MAINNET");
+        report["bridgeSteps"] = json!(bridge_results);
+        report["bridgeIdleBeforeRaw"] = json!(bridge_idle_before);
+        report["bridgeIdleAfterRaw"] = json!(amount(&svm, key(onre_bridge::IDLE)));
+        report["bridgeFlat"] = json!(
+            pass && amount(&svm, key(onre_bridge::STAGED)) == 0
+                && amount(&svm, key(plan["inputCustody"].as_str().unwrap())) == 0
+        );
     }
     let name =
         std::env::var("PHASE3_JUPITER_PROBE_RESULT").unwrap_or_else(|_| "result.json".into());

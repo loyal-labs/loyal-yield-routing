@@ -10,6 +10,7 @@ import { ExtensionType, getExtensionTypes, getTransferFeeConfig, getTransferHook
 import { Connection, PublicKey } from "@solana/web3.js";
 import { reviewPhase3Bindings } from "./rwa-phase3-binding-review.js";
 import { onreConnectedProof, onreSetupStagingProof } from "./onre-connected-proof.js";
+import { onreBridgeEntryProof } from "./onre-bridge-entry-proof.js";
 
 const ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const CONTRACT = "docs/plans/backyard-rwa-phase3-family-activation-verifier.md";
@@ -52,6 +53,19 @@ function observedCheck(observation: Observation, claim: string, predicate: (data
 const read = (p: string) => readFileSync(resolve(ROOT, p), "utf8");
 const json = (p: string): Json => JSON.parse(read(p));
 const sha = (s: string | Uint8Array) => createHash("sha256").update(s).digest("hex");
+function onreBridgeEntryObservation(manifest:Json):Observation {
+  const source="retained fresh unsigned OnRe bridge RPC boundary";
+  try {
+    const directory=process.env.PHASE3_ONRE_BRIDGE_PROBE_DIR;
+    if(!directory||!/^\/private\/tmp\/backyard-phase3-jupiter-probe\.[A-Za-z0-9]+$/.test(directory))return {status:"BLOCKED",source,reason:"EXPLICIT_BRIDGE_CAPTURE_REQUIRED"};
+    const raw=readFileSync(resolve(directory,"bridge-rpc-simulation.json"));
+    const execution=JSON.parse(raw.toString());
+    return {status:"OBSERVED",source,data:{...onreBridgeEntryProof(execution,manifest),artifactSha256:sha(raw),execution,
+      localConnectedAttempt:JSON.parse(readFileSync(resolve(directory,"result-prerefresh.json"),"utf8")),
+      localDirectAllocationAttempt:JSON.parse(readFileSync(resolve(directory,"result.json"),"utf8")),
+      inputs:{plan:JSON.parse(readFileSync(resolve(directory,"plan.json"),"utf8")),snapshot:JSON.parse(readFileSync(resolve(directory,"snapshot.json"),"utf8"))}}};
+  }catch{return {status:"BLOCKED",source,reason:"BRIDGE_CAPTURE_UNAVAILABLE"};}
+}
 export function exactSet(actual: unknown, expected: string[]): boolean {
   return Array.isArray(actual) && actual.every((x) => typeof x === "string") &&
     actual.length === expected.length && new Set(actual).size === actual.length &&
@@ -719,6 +733,7 @@ function sourceIdentity() {
     "docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-repair-candidates-2026-09-05.json",
     "crates/squads-test-harness/tests/rwa_policy_creation_rent.rs",
     "crates/squads-test-harness/tests/support/rwa_jupiter_candidate.rs",
+    "crates/squads-test-harness/tests/support/rwa_onre_bridge.rs",
     "crates/squads-test-harness/tests/rwa_kamino_controlled_probe.rs","crates/squads-test-harness/tests/rwa_jupiter_controlled_probe.rs","crates/squads-test-harness/Cargo.toml","Cargo.lock",
     "crates/loyal-yield-store/migrations/0074_backyard_rwa_phase3_journal_actions.sql",
     "crates/loyal-yield-store/src/store.rs","crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs",
@@ -736,6 +751,7 @@ export async function verify() {
   const catalogLanes = catalog.lanes.map((l: Json) => [l.market,l.collateral,l.debt].join("/"));
   const active = manifest.runtimeActivation?.runtimeRoutes ?? [];
   const offline = process.argv.includes("--offline");
+  const onreBridgeEntry=onreBridgeEntryObservation(manifest);
   const [runtime,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localPolicySetup,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair,localCandidateJupiter,localReturnQuotes,localReturnJupiter,localLinkedLendingReturn,localOnReRoundtrip,localOnReConnected,localOnReLeverage] = await Promise.all([
     runtimeObservation(),localCapObservation(),localSendJournalObservation(),localBridgeAdmissionObservation(),localWithdrawalAdmissionObservation(),localKaminoConstructionObservation(),localPolicySetupObservation(),localDebtDecisionObservation(),localJupiterObservation(),localSequentialKaminoObservation(),localSequentialJupiterObservation(),localJupiterRepairObservation(),localCandidateJupiterObservation(),localReturnQuoteObservation(),localCandidateJupiterObservation(true),localCandidateJupiterObservation(true,true),localCandidateJupiterObservation(false,false,true),localCandidateJupiterObservation(false,false,true,true),localCandidateJupiterObservation(false,false,true,true,true)]);
   const bindings: Observation = offline ? {status:"BLOCKED",source:"binding review",reason:"OFFLINE_DIAGNOSTIC"} : await bindingObservation();
@@ -780,6 +796,7 @@ export async function verify() {
       "All-lane production observation, construction, non-USDC valuation, exit and reconciliation behavior; catalog counts alone prove none of these.",
     ]),
     measuredCondition("R04","All-lane positives/negatives and full stateful lifecycle",[
+      observedCheck(onreBridgeEntry,"captured existing-policy OnRe bridge zero-NAV and allocation execute in fresh unsigned independent RPC simulations; not sequential, signature or complete NAV proof",d=>d.validObservation===true&&d.pass===true),
       observedCheck(localOnReRoundtrip,"OnRe candidate swap policies preserve siblings and execute a continuous USDC/ONyc/USDC roundtrip with flat ONyc custody and fourteen rejecting mutations; not lending, bridge, Go, signer or live proof",d=>d.pass===true),
       observedCheck(localOnReConnected,"OnRe entry, deposit, borrow, finite payoff, withdrawal and return execute continuously with four exact local repair candidates and eighteen rejecting mutations; not leverage change, bridge, Go, signer or live proof",d=>d.pass===true),
       observedCheck(localOnReConnected,"all four exact OnRe candidate policies can create from staged rent with identical policy/Settings state and both payer fees; comparison branches, not budget admission or live setup",d=>d.setupStaging===true),
@@ -827,7 +844,7 @@ export async function verify() {
     // Existing policy allocations are a diagnostic sample, not a fabricated
     // pass/fail for the complete proposed setup graph. Retain prices, hashes,
     // rent and the explicit new-allocation proof limitation in the snapshot.
-    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localPolicySetup,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair,localCandidateJupiter,localReturnQuotes,localReturnJupiter,localLinkedLendingReturn,localOnReRoundtrip,localOnReConnected,localOnReLeverage},
+    preflight:{chain,database,deployment,runtime,bindings,setupRent,localCaps,localSendJournal,localBridgeAdmission,localWithdrawalAdmission,localKaminoConstruction,localPolicySetup,localDebtDecisions,localJupiter,localSequentialKamino,localSequentialJupiter,localJupiterRepair,localCandidateJupiter,localReturnQuotes,localReturnJupiter,localLinkedLendingReturn,localOnReRoundtrip,localOnReConnected,localOnReLeverage,onreBridgeEntry},
     conditions,
   };
 }

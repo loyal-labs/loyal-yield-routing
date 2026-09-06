@@ -48,6 +48,7 @@ Current blockers and uncertainties, ordered by the actions they prevent:
 
 | Boundary | Evidence and next necessary action |
 | --- | --- |
+| Voltr accounting, before OnRe funding | At finalized slot 444675136, independent zero-signature RPC simulations of both the installed-policy cash-only zero-NAV refresh and 101000-raw allocation fail with Voltr `MathOverflow` (6004), after successful adaptor CPI. Captured vault total value is 2793298 raw versus strategy receipt 2793417 raw, a 119-raw inconsistency; idle custody is 3793417 and strategy/Squads custody zero. The same failures occur in the connected local deployed-program run. Determine the protocol-supported accounting repair and its exact authority/funding requirements before any live funding. Do not invent NAV, patch the receipt, deposit unrelated funds, or conceal the failure with a synthetic custody override. |
 | OnRe lending policies | Finalized review at slot 444658638 matches the retained installed policy hashes and deposit/withdraw vectors. Borrow positions 12/13 and repay positions 9/10 still constrain KLend placeholders instead of the configured debt user-farm/farm. Resolve the exact two forward repairs through the permitted review path before activating the rejected binding. No broader lane-registration retry. |
 | Farm setup | At finalized slot 444659449, the USDC user-farm already exists, owned by Farms, with the exact vault owner, obligation delegatee and configured farm. No USDC farm initialization is indicated. Missing sibling farm accounts must not be imported as blockers for this canary. Revalidate before use. |
 | Full-exit authority, before live funding | The connected deployed-program run at snapshot slot 444664437 proves full withdrawal automatically closes the empty OnRe obligation `4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei`, returning all 24165120 lamports to the existing Squads vault `ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh`. The existing close/rent-reclaim exclusion is unchanged. Obtain authorization for this precise protocol-required effect before funding a live lifecycle; no residual deposit or altered flat-exit requirement as a workaround. This does not block local implementation. |
@@ -177,6 +178,42 @@ R01–R08 remain FAIL overall. Fifteen verifier tests/163 assertions and TypeScr
 checking pass. This removes the previously disconnected position-change step.
 Next connect Voltr entry/restoration/NAV and production Go execution/admission
 to this same path; do not substitute another family or another setup-only loop.
+
+Connected Voltr boundary, 2026-09-06 UTC: the OnRe probe now obtains all 75
+accounts in one finalized batch (slot 444674066), including the existing four
+bridge policies and captured Voltr/adaptor binaries. It uses the production Go
+unsigned bridge compiler and `ComputeNAV` for explicitly cash-only local
+boundaries. Token funding overrides are removed; only the existing local
+admin/delegate fee-payer SOL overrides remain. Clock slot advances are retained
+explicitly, without a wall-time/interest claim. No production binding was added.
+
+The first allocation fails at Voltr `vault.rs:603` with `MathOverflow` after
+adaptor CPI, rolling back all three custody balances. A separate initial
+cash-only zero-NAV refresh fails identically. Fresh independent RPC simulations
+at slot 444675136 confirm both failures using installed policies, no signatures,
+no account overrides and no broadcast. Thus the bridge connection exposed a
+previously untested live prerequisite, not a completed full lifecycle. The raw
+119-unit vault/receipt inconsistency is confirmed; the exact internal arithmetic
+and protocol-supported repair remain to be established. Cash-only simulation is
+not complete all-obligation NAV or signer proof.
+
+The sole verifier retains these failures under `preflight.onreBridgeEntry`;
+valid observations must still grade the bridge-execution subclaim FAIL. Its
+local attempted continuation includes allocation, the existing journal's NAV
+checkpoints, eight OnRe steps, staging and restoration, but the failed prefix
+means later bridge steps are unexecuted and unproven. Prior successful eight-step
+evidence remains separate. Next investigate the narrow Voltr accounting repair
+and exact funding/authority coverage, then resume this same connected path.
+Do not bypass this prerequisite by synthetically funding Squads or selecting
+AUTO/Ethena. The full-exit close authorization remains separately pending.
+
+Retained checkpoint: `phase3/onre-voltr-entry-blocker-2026-09-06.json.gz`, gzip
+SHA256 `635785b5642b978fce2f3f45a14990ac95bf7b448849fb757098843616912be1`.
+All R01–R08 remain FAIL; the prior swap-only, six-step and eight-step OnRe
+subclaims still pass. Sixteen verifier tests/208 assertions and TypeScript
+checking pass, including rejection of forged success labels on the two real
+RPC failures. No live money movement, signer use, deployment or registration
+occurred in this bridge-boundary work.
 
 Next work must resolve an item above or execute the next connected OnRe step.
 Preserve completed local setup-expiry work, but stop accumulating setup-only

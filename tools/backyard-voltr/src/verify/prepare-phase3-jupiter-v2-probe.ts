@@ -1,6 +1,7 @@
 // Public reads and zero-signature local candidate wires only. No signer loads,
 // policy installation, simulation RPC or send RPC is available in this script.
 import {createHash} from "node:crypto";
+import {spawnSync} from "node:child_process";
 import {readFileSync,writeFileSync} from "node:fs";
 import {resolve} from "node:path";
 import {generated} from "@loyal-labs/loyal-smart-accounts-core";
@@ -19,8 +20,9 @@ const publicRows:any[]=[];
 try {
   const directory=process.argv[2];
   require(directory&&/^\/private\/tmp\/backyard-phase3-jupiter-probe\.[A-Za-z0-9]+$/.test(directory),"explicit local probe directory required");
-  require(process.argv[3]===undefined||["--return","--lending-return","--onre-roundtrip","--onre-lending-roundtrip","--onre-leverage-roundtrip"].includes(process.argv[3]),"unknown probe mode");
-  const onreLeverageRequested=process.argv[3]==="--onre-leverage-roundtrip";
+  require(process.argv[3]===undefined||["--return","--lending-return","--onre-roundtrip","--onre-lending-roundtrip","--onre-leverage-roundtrip","--onre-bridge-roundtrip"].includes(process.argv[3]),"unknown probe mode");
+  const onreBridgeRequested=process.argv[3]==="--onre-bridge-roundtrip";
+  const onreLeverageRequested=process.argv[3]==="--onre-leverage-roundtrip"||onreBridgeRequested;
   const onreLendingRequested=process.argv[3]==="--onre-lending-roundtrip"||onreLeverageRequested;
   const onre=process.argv[3]==="--onre-roundtrip"||onreLendingRequested;
   const returning=process.argv[3]!==undefined&&!onre;
@@ -149,6 +151,20 @@ try {
     for(const [a,hash] of Object.entries(originalPolicies)){require(!policies[a]||policies[a]===hash,"lending policy conflict");policies[a]=hash;}
     onreLending=lending;
   }
+  let onreBridge;
+  if(onreBridgeRequested) {
+    stage="existing Go bridge account discovery";
+    const binary=process.env.PHASE3_ONRE_BRIDGE_COMPILER;
+    require(binary==="/private/tmp/phase3-onre-bridge-test","explicit local test compiler required");
+    const result=spawnSync(binary,["-test.run=^TestExportOnReBridgeProbe$"],{env:{...process.env,PHASE3_ONRE_BRIDGE_INPUT:JSON.stringify({discover:true})},timeout:30_000});
+    require(result.status===0,"local Go bridge discovery failed");
+    const line=result.stdout.toString().split("\n").find(s=>s.startsWith("ONRE_BRIDGE_JSON="));
+    require(line,"local Go bridge discovery absent");
+    onreBridge=JSON.parse(line.slice("ONRE_BRIDGE_JSON=".length));
+    require(onreBridge.broadcast===false&&onreBridge.signatureProof===false&&onreBridge.discoveryOnly===true&&onreBridge.steps.length===4,"bridge discovery scope drift");
+    for(const a of onreBridge.addresses)addresses.add(a);
+    for(const [a,hash] of Object.entries(onreBridge.policies)){require(!policies[a]||policies[a]===hash,"bridge policy conflict");policies[a]=hash as string;}
+  }
   require(addresses.size<=100,"coherent batch too large");
   if(onre) {
     artifactBytes=Buffer.from(JSON.stringify(artifact,null,2)+"\n");
@@ -157,6 +173,7 @@ try {
   }
   const plan={schema:"phase3-jupiter-controlled-probe/v1",broadcast:false,compiler:"TYPESCRIPT_CANDIDATE_NOT_INSTALLED_GO",...(onre?{profile:"ONRE_ROUNDTRIP"}:returning?{profile:"RETURN_CONVERSIONS",initialBalancesProof:"LOCAL_POST_PAYOFF_SIZING_PRECONDITIONS_NOT_EXECUTED_LENDING_OR_BRIDGE"}:{}),lane:onre?"OnRe/ONyc/USDC":"Ethena/USDe/PYUSD",delegate:route.squads.delegatedExecutor,inputCustody:returning?steps[0]!.destination:steps[0]!.source,collateralCustody:returning?steps[0]!.source:steps[0]!.destination,debtCustody:returning?steps[1]!.source:steps[1]!.destination,steps,policies,addresses:[...addresses].sort(),
     ...(onreLending?{onreLending}:{}),
+    ...(onreBridge?{onreBridge}:{}),
     ...(linked?{lendingPrelude,initialBalancesProof:"LOCAL_FUNDED_LENDING_PRECONDITION_WITH_CONTINUOUS_EXECUTED_RETURNS_NOT_BRIDGE_ENTRY"}:{}),
     candidate:{artifactSha256:sha(artifactBytes),settings:route.squads.settings,settingsDataSha256:sha(settings.value.data),settingsSlot:settings.context.slot,setupAdmin:route.setupAdmin,seedBefore:seedBefore.toString(),policies:candidatePolicies}};
   writeFileSync(resolve(directory,"plan.json"),JSON.stringify(plan,null,2)+"\n",{flag:"wx",mode:0o600});
