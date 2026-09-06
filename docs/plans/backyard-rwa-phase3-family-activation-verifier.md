@@ -32,12 +32,65 @@ The historical return-quote fixture, V2 return candidates, later generated
 checkpoints and local real-program probe snapshots remain unrecovered; do not
 fabricate them or weaken their checks. The full Go suite is not yet green.
 
-The implementation critical path remains: finish setup build/simulation/send and
-expiry recovery; resolve the five rejected/unbound lane bindings using the
-permitted authority-review path; integrate the complete worker lifecycle and
-serialized family queue; verify all eleven lanes; then deploy immutably and
-prove the three accepted canary outcomes. Setup still HOLDs before signing/send.
-The known rejected historical-return verifier change remains unapplied.
+### Current implementation priority: connected OnRe lifecycle first
+
+The operator explicitly prioritizes **OnRe/ONyc/USDC**, not the family with the
+most partial tests. Preserve all eleven lanes, three canaries, R01–R08 and the
+unchanged safety/authority envelope. This is sequencing, not reduced acceptance.
+
+The shortest intended path is the existing Voltr/USDC bridge → ONyc entry swap →
+Kamino deposit/USDC borrow → bounded position change → full repayment/withdrawal
+→ ONyc return swap → Voltr restoration/NAV → finalized flat reconciliation.
+Carry the actual poststate between steps through the existing worker, journal
+and lease. Separate successful leg fixtures do not establish this path.
+
+Current blockers and uncertainties, ordered by the actions they prevent:
+
+| Boundary | Evidence and next necessary action |
+| --- | --- |
+| OnRe lending policies | Finalized review at slot 444658638 matches the retained installed policy hashes and deposit/withdraw vectors. Borrow positions 12/13 and repay positions 9/10 still constrain KLend placeholders instead of the configured debt user-farm/farm. Resolve the exact two forward repairs through the permitted review path before activating the rejected binding. No broader lane-registration retry. |
+| Farm setup | At finalized slot 444659449, the USDC user-farm already exists, owned by Farms, with the exact vault owner, obligation delegatee and configured farm. No USDC farm initialization is indicated. Missing sibling farm accounts must not be imported as blockers for this canary. Revalidate before use. |
+| Both swap directions | The installed legacy constraints still reject the fresh layouts. The exact V2 forward candidates now execute a continuous direct-route USDC→ONyc→USDC roundtrip on captured deployed programs (details below), preserving sibling constraints. Both replacement policies still need full setup cost/admission, authorized installation/readback and Go binding integration; local candidate creation is not installed authority. The first multi-hop sample exhausted the default compute envelope; its trace remains a failure, not supported routing proof. |
+| Setup cost and completion | At slots 444658919–444658921, borrow setup fits as two 510872-micro-USDC payments and repay as one 921018-micro-USDC payment, including observed fees. Both are independent next-seed-140 candidates, not a ready installation batch. Reprice after each creation; include any necessary swap repair and full lifecycle exit in the budget. Existing staged-payment/recovery code is reusable; do not build another coordinator or ledger. |
+| Current capacity and custody | At slot 444659449, OnRe obligation deposits/borrows and ONyc/bridge-USDC custody are zero. Collateral available raw 157906157811661997 is below deposit limit 200000000000000000; USDC available raw 9273477956074 and borrowed raw ceiling 67458238043052 do not by themselves show exhausted capacity. Refresh oracle/risk state and simulate actual entry/exit; this read is neither executable-capacity proof nor CAPACITY_PENDING. |
+| Connected runtime and proof | OnRe still lacks registered production bindings, selected-worker integration and a complete stateful lifecycle with real programs/policies, budgeted admission, signer/send fencing and reconciled effects. Prove this one path using existing components. Do not wait for the complete sibling matrix or generic family queue to begin the connected proof. Live gates remain mandatory before live movement. |
+| Production handoff and release | Read-only production journal at 2026-09-06 00:45:52 UTC has zero nonterminal operations, a live existing Render lease on image sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b, and no Phase 3 budget. Verify Phase 2 goal closure, release identity/migrations, initialize the budget under the existing lease protocol, and perform a fenced handoff. Credential-presence checks pass for RPC/database/admin/delegate/Render; actual signer identity and deployment access remain to be verified. No competing writer. |
+| Eventual full completion | Remaining OnRe siblings, Maple siblings, AUTO and Ethena support/proof, exact serialized three-family progression, immutable deployment, retained-evidence recovery and R01–R08 remain required. The rejected historical-return verifier change remains unapplied; missing artifacts and that unresolved measurement condition cannot be hidden by an OnRe success. Scope their blockers to the affected actions, not this entire first lifecycle. |
+
+Connected OnRe swap execution, 2026-09-06 UTC: at captured slot 444661975,
+the existing real-program probe creates the two exact local V2 candidate groups,
+then executes 100000 raw USDC → 87626313 raw ONyc → 99979 raw USDC. ONyc
+ends at zero; adjacent post/pre account captures match and no balance is patched
+between swaps. Each execution packet is 813 bytes; measured compute is 155618
+and 165251. Fourteen amount/slippage/fee/destination mutations reject before
+Jupiter CPI with unchanged custody. Each candidate creation is 1072 bytes with
+a 1383-byte allocation; original sibling constraints remain unchanged. Candidate
+seeds are local-only and must never be treated as live installed bindings.
+
+The earlier multi-hop attempt at slot 444660664 reaches the underlying swaps
+but rolls back when Squads completion exhausts 200000 compute units. The direct
+request is a measured route choice for this first lifecycle, not a production
+routing change or proof that multi-hop execution works. Initial fee-payer/admin
+SOL and entry USDC are explicit local funding overrides; no real signatures,
+lending, bridge/NAV, worker admission, mainnet writes or deployment are proven.
+
+The sole verifier independently checks continuous raw token-account poststate,
+terminal custody, exact state/program membership and candidate provenance. Its
+OnRe subclaim passes in `phase3/onre-swap-roundtrip-recheck-2026-09-06.json.gz`
+(gzip SHA256 `61cb1cf4a07b2659fc5c53ce99bdb6cb258c73f7ff4544395b2d1d95e844b119`).
+R01–R08 still FAIL overall. The first `onre-swap-roundtrip-2026-09-06.json.gz`
+checkpoint miscompared identical program objects by JSON key order; the recheck
+uses structural equality, retaining every identity field and mutation check.
+TypeScript checking and 12 verifier tests/101 assertions pass. Next connect
+OnRe lending and its exact farm repairs to this poststate, rather than producing
+another disconnected swap or setup checkpoint.
+
+Next work must resolve an item above or execute the next connected OnRe step.
+Preserve completed local setup-expiry work, but stop accumulating setup-only
+checkpoints. A subsequent local-only result must name the falsified assumption
+or lifecycle boundary it resolved and the exact next execution it enables.
+Recurring local-only checkpoints without end-to-end advancement are a sequencing
+failure: reassess the dependency chain before adding more infrastructure.
 
 The durable Codex goal was resumed after recovery and now reports `active`.
 Its objective still names the missing temporary checkout; the persistent
@@ -652,19 +705,26 @@ production governor active.
 
 ## Implementation sequence and rules against stalled loops
 
-1. Capture measured verifier baseline and identify the shortest incomplete
-   production path. Resolve access and demonstrate the sequential simulation
-   mechanism early; do not finish unrelated abstractions before this probe.
-2. Complete admission through reservation, construction, send fencing and exit
-   on a representative existing lane, with decisive production-path negatives.
-   In parallel where independent, reconcile each proposed binding against the
-   installed policy/catalog and fresh account derivation, ownership and setup
-   state. A derived address alone does not prove authorization or readiness.
-   Then extend shared debt/token/valuation paths and the reviewed bindings.
-3. Verify all 11 lanes in batches, repair only demonstrated policy defects and
-   freeze three canaries with bounded amounts and exit reserves.
-4. Deploy verified image, prove R01 at the send boundary, process the fixed
-   queue. Prefer one combined release; extra deploys need a concrete defect/fix.
+1. Use the measured baseline and current blocker table above. OnRe/ONyc/USDC is
+   the first connected lifecycle. Resolve both swap directions, exact lending
+   repair authority, complete setup/entry/exit feasibility and production access
+   before expanding unrelated machinery. A derived address alone proves neither
+   authorization nor readiness.
+2. Integrate and execute that complete OnRe path through actual components,
+   with admission/reservations, policy enforcement, send fencing and terminal
+   reconciliation. Retain decisive negative checks at their enforcing layer.
+   Only implement what removes a named blocker or enables its next step; reuse
+   existing setup, recovery and proof machinery. Do not switch to AUTO/Ethena
+   merely because their partial tests are easier. A genuine OnRe external gate
+   may permit necessary independent work without redefining the priority.
+3. Extend the demonstrated path across measured lane differences, verify all
+   11 lanes in batches, and complete the fixed three-family progression. Repair
+   only demonstrated policy defects and reserve the full bounded canary exits.
+4. Deploy verified immutable code and prove R01 before any live canary movement;
+   perform the authorized OnRe canary as soon as its own mandatory gates pass.
+   The remaining matrix is not a new gate for its offline connected proof.
+   Prefer one combined release, but do not delay the first connected lifecycle
+   for unrelated horizontal work. Preserve the sole lease and all release gates.
 5. Reconcile final state, publish lane readiness and existing handoff, run every
    verifier condition and close only on PASS. Documentation, a named test or a
    deployed image alone cannot complete the implementation goal.
@@ -1616,3 +1676,29 @@ Targeted Go race checks pass (15.403s), as do `cargo check -p loyal-yield-store
 checkpoint predates migration coverage and is retained as intermediate evidence.
 R01–R08 remain FAIL. This work is local only; no production secret access, signing,
 broadcast, database migration or deployment occurred.
+
+#### Signed setup expiry and resumption — 2026-09-05
+
+The existing nonterminal worker now handles `built`/`signed` setup expiry without
+sending: verify the exact admin signature and reserved request, observe finalized
+blockhash expiry, query that signature's history afterward, then verify finalized
+Settings and absent or exactly prefunded target state. Found signatures, RPC
+ambiguity, changed state and lease loss retain the wire and reservation.
+
+Successful recovery archives the exact wire, authorization and original journal
+metadata in that operation's `setupExpiredWires` history before restoring the
+same `decided` intent. It does not release/replenish budget, reset gross spend,
+change the finalized prefund, choose a new request or submit anything. Existing
+priced refresh then handles the expired request. Duplicate/restarted recovery
+finds the retained retirement and does not repeat observations or writes.
+
+The sole verifier adds controlled PostgreSQL/RPC witnesses for prefunding,
+direct creation and funded creation, including expiry-to-refresh-to-finalized
+creation settlement. Synthetic signatures reject at the production entrypoint;
+positive storage/RPC witnesses exercise the private post-signature boundary and
+are not real-admin or live-chain proof. Unsettled `broadcast_intent`/`submitted`
+setup now uses this independent expiry proof after unsuccessful reconciliation;
+a missing receipt alone cannot retire a wire. Confirmed setup remains subject to
+finalized reconciliation, not expiry retirement.
+Fresh setup readiness, signing/send coordination, remaining runtime bindings,
+deployment and canaries remain unfinished. No acceptance condition is relaxed.

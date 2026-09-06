@@ -9,7 +9,8 @@ try {
   const directory=process.argv[2];
   if(!directory||!/^\/private\/tmp\/backyard-phase3-jupiter-probe\.[A-Za-z0-9]+$/.test(directory)||!process.env.SOLANA_RPC_URL)throw new Error();
   const plan=JSON.parse(readFileSync(resolve(directory,"plan.json"),"utf8"));
-  if(plan.schema!=="phase3-jupiter-controlled-probe/v1"||plan.lane!=="Ethena/USDe/PYUSD"||plan.broadcast!==false||plan.steps.length!==2||plan.addresses.length>100)throw new Error();
+  const onre=plan.lane==="OnRe/ONyc/USDC"&&plan.profile==="ONRE_ROUNDTRIP"&&plan.compiler==="TYPESCRIPT_CANDIDATE_NOT_INSTALLED_GO";
+  if(plan.schema!=="phase3-jupiter-controlled-probe/v1"||(!onre&&plan.lane!=="Ethena/USDe/PYUSD")||plan.broadcast!==false||plan.steps.length!==2||plan.addresses.length>100)throw new Error();
   const rpc=new Connection(process.env.SOLANA_RPC_URL,{commitment:"finalized",disableRetryOnRateLimit:true,
     fetch:(input,init)=>fetch(input,{...init,signal:AbortSignal.timeout(30_000)})});
   const genesis=await rpc.getGenesisHash();if(genesis!=="5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d")throw new Error();

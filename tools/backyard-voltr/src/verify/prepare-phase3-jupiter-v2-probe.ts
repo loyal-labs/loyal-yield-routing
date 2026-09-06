@@ -18,8 +18,9 @@ const publicRows:any[]=[];
 try {
   const directory=process.argv[2];
   require(directory&&/^\/private\/tmp\/backyard-phase3-jupiter-probe\.[A-Za-z0-9]+$/.test(directory),"explicit local probe directory required");
-  require(process.argv[3]===undefined||["--return","--lending-return"].includes(process.argv[3]),"unknown probe mode");
-  const returning=process.argv[3]!==undefined;
+  require(process.argv[3]===undefined||["--return","--lending-return","--onre-roundtrip"].includes(process.argv[3]),"unknown probe mode");
+  const onre=process.argv[3]==="--onre-roundtrip";
+  const returning=process.argv[3]!==undefined&&!onre;
   const linked=process.argv[3]==="--lending-return";
   const lendingPrelude=linked?JSON.parse(readFileSync(resolve(directory,"kamino-plan.json"),"utf8")):undefined;
   if(linked)require(lendingPrelude.schema==="phase3-kamino-controlled-probe/v1"&&lendingPrelude.broadcast===false&&lendingPrelude.signatureProof===false&&lendingPrelude.lane==="Ethena/USDe/PYUSD"&&JSON.stringify(lendingPrelude.steps.map((s:any)=>s.leg))===JSON.stringify(["deposit","borrow","repay","withdraw"]),"invalid local Go lending prelude");
@@ -32,23 +33,27 @@ try {
   const [state]=(generated as any).Settings.fromAccountInfo(settings.value);
   require(state.threshold===1&&state.timeLock===0&&state.signers.length===1&&state.signers[0].key.toBase58()===route.setupAdmin&&state.signers[0].permissions.mask===7,"Settings authority drift");
   const seedBefore=BigInt(state.policySeed.toString());
-  const artifactBytes=readFileSync(new URL(returning?"../../../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-repair-candidates-2026-09-05.json":"../../../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json",import.meta.url));
-  const artifact=JSON.parse(artifactBytes.toString());
-  require(artifact.schema==="phase3-jupiter-v2-repair-candidates/v1"&&artifact.broadcast===false&&artifact.installed===false&&artifact.groups.length===(returning?3:2),"candidate scope drift");
+  let artifactBytes=onre?Buffer.alloc(0):readFileSync(new URL(returning?"../../../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-repair-candidates-2026-09-05.json":"../../../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json",import.meta.url));
+  const artifact=onre?{schema:"phase3-jupiter-v2-repair-candidates/v1",broadcast:false,installed:false,groups:[] as any[]}:JSON.parse(artifactBytes.toString());
+  require(artifact.schema==="phase3-jupiter-v2-repair-candidates/v1"&&artifact.broadcast===false&&artifact.installed===false&&artifact.groups.length===(onre?0:returning?3:2),"candidate scope drift");
   const installedCatalog=JSON.parse(readFileSync(new URL("../../../../docs/evidence/backyard-rwa-go/policy-compiled-v1.json",import.meta.url),"utf8"));
   const installedReadback=JSON.parse(readFileSync(new URL("../../../../docs/evidence/backyard-rwa-go/policy-install-readback-v1.json",import.meta.url),"utf8"));
   const addresses=new Set<string>([route.squads.settings,route.setupAdmin,route.squads.delegatedExecutor,route.squads.program,"11111111111111111111111111111111","SysvarC1ock11111111111111111111111111111111"]);
   const policies:Record<string,string>={};const steps=[];const candidatePolicies:Array<{edge:string;seed:string;policy:string}>=[];
   let amount=100_000n;
-  for(const [i,key] of (returning?["USDe->USDC","PYUSD->USDC"]:["USDC->USDe","USDe->PYUSD"]).entries()) {
+  for(const [i,key] of (onre?["USDC->ONyc","ONyc->USDC"]:returning?["USDe->USDC","PYUSD->USDC"]:["USDC->USDe","USDe->PYUSD"]).entries()) {
     stage=key+" public quote";
-    const edge=catalogSwapEdges().find(e=>e.key===key)!;const group=artifact.groups.find((g:any)=>g.edge===key);
+    const edge=catalogSwapEdges().find(e=>e.key===key)!;let group=artifact.groups.find((g:any)=>g.edge===key);
     const installedOnly=returning&&i===1;
-    require(edge&&(group||installedOnly),"candidate edge absent");
+    require(edge&&(group||installedOnly||onre),"candidate edge absent");
     // Sizing assumptions must match actual lending poststate. The runner never
     // patches custody to make these quotes fit.
     if(returning)amount=linked?(i===0?99_999_999n:2_000n):(i===0?2_224_590n:96_256n);
     const query=new URLSearchParams({inputMint:edge.source.mint,outputMint:edge.destination.mint,amount:amount.toString(),slippageBps:"50",swapMode:"ExactIn",maxAccounts:"32",instructionVersion:installedOnly?"V1":"V2"});
+    // The first OnRe multi-hop sample exhausted the existing 200k envelope.
+    // Test the complete direct roundtrip before adding compute machinery.
+    // This request filter changes no policy constraints or production routing.
+    if(onre)query.set("onlyDirectRoutes","true");
     const q=await fetch("https://lite-api.jup.ag/swap/v1/quote?"+query,{signal:AbortSignal.timeout(20_000)});require(q.ok,"quote HTTP failure");const quote=await q.json() as any;
     require(quote.inputMint===edge.source.mint&&quote.outputMint===edge.destination.mint&&quote.inAmount===amount.toString()&&quote.swapMode==="ExactIn"&&quote.slippageBps===50&&quote.routePlan.length>0&&quote.routePlan.length<=4,"quote identity drift");
     stage=key+" public instructions";
@@ -64,6 +69,25 @@ try {
     const row={pass:true,key,source:edge.source,destination:edge.destination,quote:{inAmountRaw:quote.inAmount,outAmountRaw:quote.outAmount},header,
       instruction:{...response.swapInstruction,dataBase64:response.swapInstruction.data,dataSha256:sha(data)},lookupTables:response.addressLookupTableAddresses};
     const exact=exactJupiterConstraint(row);
+    if(onre) {
+      // Closed OnRe diagnostic: retain the original logical group and every
+      // sibling constraint. This does not install policies or register a lane.
+      const originals=installedCatalog.policies.filter((p:any)=>p.swapEdges?.some((e:any)=>e.from===edge.from&&e.to===edge.to));
+      require(originals.length===1,"OnRe original group missing or duplicate");
+      const original=originals[0];
+      const oldEdge=original.swapEdges.find((e:any)=>e.from===edge.from&&e.to===edge.to);
+      const old=original.constraints[oldEdge.constraintIndex];
+      const readback=installedReadback.operations.find((p:any)=>p.policyAddress===original.policy);
+      require(readback?.active===true&&sha(Buffer.from(readback.dataBase64,"base64"))===readback.dataSha256,"OnRe original policy provenance drift");
+      for(const field of ["authority","sourceCustody","destinationCustody","sourceMint","destinationMint","sourceTokenProgram","destinationTokenProgram"])
+        require(oldEdge[field]===exact.edge[field],"OnRe replacement changes an authority or asset boundary");
+      require(old.programId===exact.constraint.programId&&old.data.find((d:any)=>d.kind==="u64-less-than-or-equal")?.value===1_000_000_000_000&&
+        old.data.find((d:any)=>d.kind==="u16-less-than-or-equal")?.value===50&&old.data.find((d:any)=>d.kind==="u8-equals")?.value===0,"OnRe replacement changes economic authority");
+      group={edge:key,originalPolicy:original.policy,originalPolicyDataSha256:readback.dataSha256,
+        originalConstraints:original.constraints,replacedConstraintIndex:oldEdge.constraintIndex,
+        replacementConstraints:original.constraints.map((c:any,index:number)=>index===oldEdge.constraintIndex?{operation:null,...exact.constraint}:c)};
+      artifact.groups.push(group);
+    }
     let compiledPolicy:any;
     if(installedOnly) {
       const matches=installedCatalog.policies.filter((p:any)=>p.swapEdges?.some((e:any)=>e.from===edge.from&&e.to===edge.to));
@@ -99,8 +123,10 @@ try {
     const wire=new VersionedTransaction(message).serialize();require(wire.length<=1232&&wire[0]===1&&wire.slice(1,65).every(b=>b===0),"unsigned packet envelope drift");
     for(const a of [...message.staticAccountKeys,...instruction.keys.map(a=>a.pubkey),...execution.lookupTables.map(t=>t.key)])addresses.add(a.toBase58());
     const minimum=BigInt(quote.otherAmountThreshold);require(minimum>0n&&minimum<=BigInt(quote.outAmount),"invalid minimum output");
-    steps.push({action:returning?(i===0?"SWAP_COLLATERAL_TO_STABLE_STEP":"SWAP_DEBT_TO_USDC_STEP"):(i===0?"SWAP_STABLE_TO_COLLATERAL_STEP":"SWAP_COLLATERAL_TO_DEBT_STEP"),source:edge.source.ata,destination:edge.destination.ata,amountRaw:Number(amount),minimumOutputRaw:Number(minimum),instructionDataBase64:row.instruction.dataBase64,amountOffset:installedOnly?data.length-19:9,policyMaximumInputRaw:1_000_000_000_000,wireBase64:Buffer.from(wire).toString("base64"),wireSha256:sha(wire),headerRow:row});
-    amount=minimum;
+    steps.push({action:onre?(i===0?"SWAP_STABLE_TO_COLLATERAL_STEP":"SWAP_COLLATERAL_TO_STABLE_STEP"):returning?(i===0?"SWAP_COLLATERAL_TO_STABLE_STEP":"SWAP_DEBT_TO_USDC_STEP"):(i===0?"SWAP_STABLE_TO_COLLATERAL_STEP":"SWAP_COLLATERAL_TO_DEBT_STEP"),source:edge.source.ata,destination:edge.destination.ata,amountRaw:Number(amount),minimumOutputRaw:Number(minimum),instructionDataBase64:row.instruction.dataBase64,amountOffset:installedOnly?data.length-19:9,policyMaximumInputRaw:1_000_000_000_000,wireBase64:Buffer.from(wire).toString("base64"),wireSha256:sha(wire),headerRow:row});
+    // The OnRe runner must consume the actual entry output, with no custody
+    // patch between swaps. A stale/mismatching quote fails that assertion.
+    amount=onre?BigInt(quote.outAmount):minimum;
   }
   if(linked) {
     require(lendingPrelude.delegate===route.squads.delegatedExecutor&&lendingPrelude.collateralCustody===steps[0]!.source&&lendingPrelude.debtCustody===steps[1]!.source,"lending custody differs from return custody");
@@ -111,7 +137,12 @@ try {
     }
   }
   require(addresses.size<=100,"coherent batch too large");
-  const plan={schema:"phase3-jupiter-controlled-probe/v1",broadcast:false,compiler:"TYPESCRIPT_CANDIDATE_NOT_INSTALLED_GO",...(returning?{profile:"RETURN_CONVERSIONS",initialBalancesProof:"LOCAL_POST_PAYOFF_SIZING_PRECONDITIONS_NOT_EXECUTED_LENDING_OR_BRIDGE"}:{}),lane:"Ethena/USDe/PYUSD",delegate:route.squads.delegatedExecutor,inputCustody:returning?steps[0]!.destination:steps[0]!.source,collateralCustody:returning?steps[0]!.source:steps[0]!.destination,debtCustody:returning?steps[1]!.source:steps[1]!.destination,steps,policies,addresses:[...addresses].sort(),
+  if(onre) {
+    artifactBytes=Buffer.from(JSON.stringify(artifact,null,2)+"\n");
+    writeFileSync(resolve(directory,"candidate.json"),artifactBytes,{flag:"wx",mode:0o600});
+    writeFileSync(resolve(directory,"public-quotes.json"),JSON.stringify({broadcast:false,signatureProof:false,rows:publicRows},null,2)+"\n",{flag:"wx",mode:0o600});
+  }
+  const plan={schema:"phase3-jupiter-controlled-probe/v1",broadcast:false,compiler:"TYPESCRIPT_CANDIDATE_NOT_INSTALLED_GO",...(onre?{profile:"ONRE_ROUNDTRIP"}:returning?{profile:"RETURN_CONVERSIONS",initialBalancesProof:"LOCAL_POST_PAYOFF_SIZING_PRECONDITIONS_NOT_EXECUTED_LENDING_OR_BRIDGE"}:{}),lane:onre?"OnRe/ONyc/USDC":"Ethena/USDe/PYUSD",delegate:route.squads.delegatedExecutor,inputCustody:returning?steps[0]!.destination:steps[0]!.source,collateralCustody:returning?steps[0]!.source:steps[0]!.destination,debtCustody:returning?steps[1]!.source:steps[1]!.destination,steps,policies,addresses:[...addresses].sort(),
     ...(linked?{lendingPrelude,initialBalancesProof:"LOCAL_FUNDED_LENDING_PRECONDITION_WITH_CONTINUOUS_EXECUTED_RETURNS_NOT_BRIDGE_ENTRY"}:{}),
     candidate:{artifactSha256:sha(artifactBytes),settings:route.squads.settings,settingsDataSha256:sha(settings.value.data),settingsSlot:settings.context.slot,setupAdmin:route.setupAdmin,seedBefore:seedBefore.toString(),policies:candidatePolicies}};
   writeFileSync(resolve(directory,"plan.json"),JSON.stringify(plan,null,2)+"\n",{flag:"wx",mode:0o600});

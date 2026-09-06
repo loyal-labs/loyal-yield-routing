@@ -57,23 +57,31 @@ fn lending_position(svm: &LiteSVM, address: Pubkey) -> (u64, u128) {
 #[test]
 #[ignore = "requires explicit public snapshot and zero-signature Go plan"]
 fn ethena_go_swaps_execute_sequentially_under_deployed_policies() {
-    execute_probe(false, false);
+    execute_probe(false, false, false);
 }
 
 #[test]
 #[ignore = "requires explicit public candidate snapshot; never installed-Go or mainnet proof"]
 fn ethena_v2_candidate_swaps_execute_sequentially() {
-    execute_probe(true, false);
+    execute_probe(true, false, false);
 }
 
 #[test]
 #[ignore = "requires explicit return snapshot; local custody preconditions are not a lending lifecycle"]
 fn ethena_return_conversions_execute_with_exact_mixed_policy_bindings() {
-    execute_probe(true, true);
+    execute_probe(true, true, false);
 }
 
-fn execute_probe(candidate: bool, returning: bool) {
-    let directory = std::env::var(if returning {
+#[test]
+#[ignore = "explicit OnRe public snapshot; local candidate roundtrip, no runtime activation"]
+fn onre_candidate_entry_and_return_execute_continuously() {
+    execute_probe(true, false, true);
+}
+
+fn execute_probe(candidate: bool, returning: bool, onre: bool) {
+    let directory = std::env::var(if onre {
+        "PHASE3_ONRE_PROBE_DIR"
+    } else if returning {
         "PHASE3_JUPITER_RETURN_PROBE_DIR"
     } else if candidate {
         "PHASE3_JUPITER_CANDIDATE_PROBE_DIR"
@@ -100,7 +108,14 @@ fn execute_probe(candidate: bool, returning: bool) {
         assert_eq!(plan["compiler"], "TYPESCRIPT_CANDIDATE_NOT_INSTALLED_GO");
     }
     assert_eq!(snapshot["schema"], "phase3-jupiter-svm-snapshot/v1");
-    assert_eq!(plan["lane"], "Ethena/USDe/PYUSD");
+    assert_eq!(plan["lane"], if onre { "OnRe/ONyc/USDC" } else { "Ethena/USDe/PYUSD" });
+    assert_eq!(plan["profile"].as_str() == Some("ONRE_ROUNDTRIP"), onre);
+    if onre {
+        assert!(candidate && !returning && plan["lendingPrelude"].is_null());
+        assert_eq!(plan["inputCustody"], "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe");
+        assert_eq!(plan["collateralCustody"], "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3");
+        assert_eq!(plan["debtCustody"], plan["inputCustody"]);
+    }
     assert_eq!(plan["broadcast"], false);
     assert_eq!(snapshot["broadcast"], false);
     assert_eq!(
@@ -119,7 +134,9 @@ fn execute_probe(candidate: bool, returning: bool) {
     );
     assert_eq!(
         steps[1]["action"],
-        if returning {
+        if onre {
+            "SWAP_COLLATERAL_TO_STABLE_STEP"
+        } else if returning {
             "SWAP_DEBT_TO_USDC_STEP"
         } else {
             "SWAP_COLLATERAL_TO_DEBT_STEP"
@@ -202,6 +219,11 @@ fn execute_probe(candidate: bool, returning: bool) {
             true,
         ),
     ] {
+        // USDC is both input and debt custody for OnRe. Never overwrite the
+        // initial funding a second time, and never patch custody between legs.
+        if onre && field == "debtCustody" {
+            continue;
+        }
         let address = key(plan[field].as_str().unwrap());
         let mut a = svm.get_account(&address).unwrap();
         let before = if token {
@@ -241,9 +263,34 @@ fn execute_probe(candidate: bool, returning: bool) {
         };
         use solana_sdk::{hash::Hash, message::Message, signature::Signature};
         let binding = &plan["candidate"];
-        let artifact_bytes=fs::read(if returning { "../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-repair-candidates-2026-09-05.json" } else { "../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json" }).unwrap();
+        let artifact_bytes = if onre {
+            fs::read(directory.join("candidate.json"))
+        } else {
+            fs::read(if returning { "../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-return-repair-candidates-2026-09-05.json" } else { "../../docs/evidence/backyard-rwa-go/phase3/jupiter-v2-repair-candidates-2026-09-04.json" })
+        }.unwrap();
         assert_eq!(sha(&artifact_bytes), binding["artifactSha256"]);
         let artifact: Value = serde_json::from_slice(&artifact_bytes).unwrap();
+        if onre {
+            assert_eq!(artifact["broadcast"], false);
+            assert_eq!(artifact["installed"], false);
+            let catalog: Value = serde_json::from_slice(&fs::read("../../docs/evidence/backyard-rwa-go/policy-compiled-v1.json").unwrap()).unwrap();
+            let groups = artifact["groups"].as_array().unwrap();
+            assert_eq!(groups.len(), 2);
+            for (i, group) in groups.iter().enumerate() {
+                assert_eq!(group["edge"], ["USDC->ONyc", "ONyc->USDC"][i]);
+                let original = catalog["policies"].as_array().unwrap().iter().find(|p| p["policy"] == group["originalPolicy"]).unwrap();
+                assert_eq!(group["originalConstraints"], original["constraints"]);
+                let old = original["constraints"].as_array().unwrap();
+                let new = group["replacementConstraints"].as_array().unwrap();
+                assert_eq!(new.len(), old.len());
+                let replaced = group["replacedConstraintIndex"].as_u64().unwrap() as usize;
+                assert_eq!(replaced, 0);
+                for (index, sibling) in old.iter().enumerate() {
+                    if index != replaced { assert_eq!(&new[index], sibling, "sibling authority changed"); }
+                }
+                assert_eq!(sha(&svm.get_account(&key(group["originalPolicy"].as_str().unwrap())).unwrap().data), group["originalPolicyDataSha256"]);
+            }
+        }
         let settings = key(binding["settings"].as_str().unwrap());
         assert_eq!(
             sha(&svm.get_account(&settings).unwrap().data),
@@ -476,7 +523,7 @@ fn execute_probe(candidate: bool, returning: bool) {
         let source = key(step["source"].as_str().unwrap());
         let destination = key(step["destination"].as_str().unwrap());
         let balances_before = (amount(&svm, source), amount(&svm, destination));
-        if returning {
+        if returning || (onre && step_index == 1) {
             assert_eq!(
                 balances_before.0,
                 step["amountRaw"].as_u64().unwrap(),
@@ -618,6 +665,12 @@ fn execute_probe(candidate: bool, returning: bool) {
         && amount(&svm, key(plan["debtCustody"].as_str().unwrap())) == 0;
     let report = json!({"schema":if returning {"phase3-jupiter-return-controlled-result/v1"} else if candidate {"phase3-jupiter-candidate-controlled-result/v1"} else {"phase3-jupiter-controlled-result/v1"},"broadcast":false,"signatureProof":false,"installedPolicyProof":!candidate,"goCompilerProof":false,"proofLevel":if returning {"LOCAL_MIXED_CANDIDATE_AND_INSTALLED_RETURN_SWAPS_NOT_LENDING_BRIDGE_OR_SIGNATURE_PROOF"} else if candidate {"LOCAL_CANDIDATE_TWO_SWAP_EXECUTION_NOT_INSTALLED_GO_OR_FULL_R04"} else {"TWO_SWAP_PROGRAM_EXECUTION_NOT_FULL_R04_LIFECYCLE"},"slot":snapshot["slot"],"programs":snapshot["programs"],"planSha256":sha(&plan_bytes),"snapshotSha256":sha(&snapshot_bytes),"overrides":overrides,"candidateCreation":creation,"steps":results,"twoSwapsPassed":pass&&results.len()==2,"returnCustodyCleared":return_custody_cleared,"terminalUSDCRaw":amount(&svm,key(plan["inputCustody"].as_str().unwrap()))});
     let mut report = report;
+    if onre {
+        let flat = pass && results.len() == 2 && amount(&svm, key(plan["collateralCustody"].as_str().unwrap())) == 0;
+        report["schema"] = json!("phase3-onre-swap-roundtrip-result/v1");
+        report["proofLevel"] = json!("LOCAL_ONRE_CANDIDATE_SWAP_ROUNDTRIP_NOT_LENDING_BRIDGE_SIGNER_OR_RUNTIME_PROOF");
+        report["onreCollateralCleared"] = json!(flat);
+    }
     report["stateAddresses"] = json!(addresses.iter().map(|a| a.to_string()).collect::<Vec<_>>());
     if !lending_results.is_empty() {
         report["lendingSteps"] = json!(lending_results);
@@ -638,7 +691,7 @@ fn execute_probe(candidate: bool, returning: bool) {
         .write_all(serde_json::to_string_pretty(&report).unwrap().as_bytes())
         .unwrap();
     assert!(
-        pass && results.len() == 2,
+        pass && results.len() == 2 && (!onre || report["onreCollateralCleared"] == true),
         "Jupiter execution failed; inspect retained public result"
     );
 }

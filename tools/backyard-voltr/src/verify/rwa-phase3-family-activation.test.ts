@@ -1,8 +1,33 @@
 import { describe, expect, test } from "bun:test";
 import {createHash} from "node:crypto";
-import { exactSet, measuredCondition, localCapTestProof, catalogJupiterPacketProof, candidateJupiterExecutionProof, returnQuoteCompatibilityProof, linkedLendingReturnProof, prefundedPolicyProof } from "./rwa-phase3-family-activation.js";
+import { exactSet, measuredCondition, localCapTestProof, catalogJupiterPacketProof, candidateJupiterExecutionProof, returnQuoteCompatibilityProof, linkedLendingReturnProof, prefundedPolicyProof, onreRoundtripStateProof } from "./rwa-phase3-family-activation.js";
 
 describe("Phase 3 measured verifier", () => {
+  test("OnRe roundtrip derives complete return from continuous raw custody, not a success flag",()=>{
+    const usdc="EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",onre="AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3";
+    const state=(a:number,b:number)=>[usdc,onre].map((address,i)=>{
+      const data=Buffer.alloc(165);data.writeBigUInt64LE(BigInt(i===0?a:b),64);
+      return {address,present:true,owner:"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",dataBase64:data.toString("base64"),dataSha256:createHash("sha256").update(data).digest("hex")};
+    });
+    const plan={inputCustody:usdc,collateralCustody:onre,debtCustody:usdc,steps:[
+      {source:usdc,destination:onre,amountRaw:100,minimumOutputRaw:89},
+      {source:onre,destination:usdc,amountRaw:90,minimumOutputRaw:95}]};
+    const e={onreCollateralCleared:true,stateAddresses:[usdc,onre],terminalUSDCRaw:96,
+      steps:[{before:state(100,0),after:state(0,90)},{before:state(0,90),after:state(96,0)}]};
+    expect(onreRoundtripStateProof(e,plan)).toBe(true);
+    for(const mutate of [
+      (x:any)=>x.steps[1].before=state(0,91),
+      (x:any)=>x.steps[1].after=state(96,1),
+      (x:any)=>x.steps[0].before=state(100,1),
+      (x:any)=>x.steps[1].after=state(94,0),
+      (x:any)=>x.steps[1].after[0].dataSha256="forged",
+      (x:any)=>x.steps[1].after[0].owner="wrong-owner",
+      (x:any)=>x.stateAddresses.push("missing"),
+      (x:any)=>x.terminalUSDCRaw=97,
+      (x:any)=>x.onreCollateralCleared=false,
+    ]){const bad=structuredClone(e);mutate(bad);expect(onreRoundtripStateProof(bad,plan)).toBe(false);}
+    expect(onreRoundtripStateProof(e,{...plan,inputCustody:onre})).toBe(false);
+  });
   test("prefunded setup proof requires exact policy preservation and both real debits including fees",()=>{
     const rows=[{accountCount:15,allocatedBytes:1400},{accountCount:13,allocatedBytes:1250}].map(r=>({...r,broadcast:false,installed:false,accepted:true,error:null,samePolicyBytesAndBalance:true,firstFundingLamports:50000,localRentLamports:100000,firstPayerDebitLamports:55000,secondPayerDebitLamports:55000}));
     const encode=(r:unknown[])=>r.map(v=>"PHASE3_PREFUNDED_POLICY "+JSON.stringify(v)).join("\n");
