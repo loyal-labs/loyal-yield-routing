@@ -58,8 +58,11 @@ func decodeKaminoReserve(account Account, identity ReserveIdentity, contextSlot 
 	economicLifetime := time.Duration(remainingSlots) * slotDuration
 	status := account.Data[reserveConfigOffset]
 	emergency := account.Data[reserveConfigOffset+8]
-	if status != 0 || emergency != 0 {
-		return ReserveState{}, fmt.Errorf("reserve %s is not active", identity.Address)
+	// KLend check_reserve_status_and_version allows Active (0) and Hidden
+	// (2); Hidden is not Obsolete (1). Reject unknown enum values rather than
+	// treating every nonzero status as inactive or admitting future statuses.
+	if (status != 0 && status != 2) || emergency != 0 {
+		return ReserveState{}, fmt.Errorf("reserve %s is not routable: status=%d emergency=%d", identity.Address, status, emergency)
 	}
 	decimals := binary.LittleEndian.Uint64(account.Data[272:280])
 	if decimals != 6 {

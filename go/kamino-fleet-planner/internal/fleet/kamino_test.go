@@ -61,6 +61,43 @@ func TestDecodeKaminoReserveMatchesFrozenLayout(t *testing.T) {
 	}
 }
 
+// KLend's check_reserve_status_and_version permits Hidden as well as Active.
+// The production shadow encountered a Hidden reserve and incorrectly aborted
+// the entire catalog observation before any planning could run.
+func TestDecodeKaminoReserveStatusAdmission(t *testing.T) {
+	identity := ReserveIdentity{Address: testIdentity(3), Market: testIdentity(40), Mint: USDCMint}
+	for _, tc := range []struct {
+		name      string
+		status    byte
+		emergency byte
+		allowed   bool
+	}{
+		{"active", 0, 0, true},
+		{"hidden", 2, 0, true},
+		{"obsolete", 1, 0, false},
+		{"unknown", 3, 0, false},
+		{"unknown_max", 255, 0, false},
+		{"active_emergency", 0, 1, false},
+		{"hidden_emergency", 2, 1, false},
+		{"hidden_noncanonical_emergency", 2, 255, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := reserveFixture(identity, 50_000_000_000_000, 50_000_000_000_000)
+			account.Data[reserveConfigOffset] = tc.status
+			account.Data[reserveConfigOffset+8] = tc.emergency
+			for _, decode := range []func(Account, ReserveIdentity, int64, time.Duration) (ReserveState, error){DecodeKaminoReserve, DecodeKaminoSourceReserve} {
+				state, err := decode(account, identity, 1_000, 400*time.Millisecond)
+				if (err == nil) != tc.allowed {
+					t.Fatalf("allowed=%v, error=%v", tc.allowed, err)
+				}
+				if tc.allowed && (state.TotalSupplyUSDMicros != 100_000_000_000_000 || state.Slot != 1_000 || state.DataHash == "") {
+					t.Fatalf("admitted reserve lost its verified economics: %+v", state)
+				}
+			}
+		})
+	}
+}
+
 func TestDecodeKaminoReserveRejectsIdentityAndLayoutDrift(t *testing.T) {
 	identity := ReserveIdentity{Address: testIdentity(3), Market: testIdentity(40), Mint: USDCMint}
 	account := reserveFixture(identity, 1_000_000, 1_000_000)
