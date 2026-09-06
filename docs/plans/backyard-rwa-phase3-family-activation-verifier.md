@@ -54,7 +54,7 @@ Current blockers and uncertainties, ordered by the actions they prevent:
 | Both swap directions | The installed legacy constraints still reject the fresh layouts. The exact V2 forward candidates now execute a continuous direct-route USDC→ONyc→USDC roundtrip on captured deployed programs (details below), preserving sibling constraints. Both replacement policies still need full setup cost/admission, authorized installation/readback and Go binding integration; local candidate creation is not installed authority. The first multi-hop sample exhausted the default compute envelope; its trace remains a failure, not supported routing proof. |
 | Setup cost and completion | The existing Go setup compiler now covers the exact two swap repairs plus borrow/repay, with SDK and connected-SBF state agreement. At slots 444669284–444669290, each swap prices as two 507004-micro-USDC payments, borrow as two 512703, and repay as one 924317. Their indicative sum is 3977739 micro-USDC including fees. These are independent next-seed-140 observations, not an admitted batch. Reprice after each creation and reserve the full lifecycle exit. Existing staged-payment/recovery code is reused; no new coordinator or ledger. |
 | Current capacity and custody | At slot 444659449, OnRe obligation deposits/borrows and ONyc/bridge-USDC custody are zero. Collateral available raw 157906157811661997 is below deposit limit 200000000000000000; USDC available raw 9273477956074 and borrowed raw ceiling 67458238043052 do not by themselves show exhausted capacity. Refresh oracle/risk state and simulate actual entry/exit; this read is neither executable-capacity proof nor CAPACITY_PENDING. |
-| Connected runtime and proof | OnRe still lacks registered production bindings, selected-worker integration and a complete stateful lifecycle with real programs/policies, budgeted admission, signer/send fencing and reconciled effects. Prove this one path using existing components. Do not wait for the complete sibling matrix or generic family queue to begin the connected proof. Live gates remain mandatory before live movement. |
+| Connected runtime and proof | The local eight-step OnRe entry/borrow/funding-swap/redeposit/payoff/return now executes continuously under deployed programs and exact candidate policies (details below). Remaining: connect the existing Voltr bridge/NAV and Go worker construction/admission, then authorized installed bindings, signer/send fencing and reconciled effects. No production registration was retried. Do not wait for the sibling matrix or a generic family queue. Live gates remain mandatory before live movement. |
 | Production handoff and release | Read-only production journal at 2026-09-06 00:45:52 UTC has zero nonterminal operations, a live existing Render lease on image sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b, and no Phase 3 budget. Verify Phase 2 goal closure, release identity/migrations, initialize the budget under the existing lease protocol, and perform a fenced handoff. Credential-presence checks pass for RPC/database/admin/delegate/Render; actual signer identity and deployment access remain to be verified. No competing writer. |
 | Eventual full completion | Remaining OnRe siblings, Maple siblings, AUTO and Ethena support/proof, exact serialized three-family progression, immutable deployment, retained-evidence recovery and R01–R08 remain required. The rejected historical-return verifier change remains unapplied; missing artifacts and that unresolved measurement condition cannot be hidden by an OnRe success. Scope their blockers to the affected actions, not this entire first lifecycle. |
 
@@ -146,6 +146,37 @@ This resolves the missing swap-setup compiler/staging dependency. Next connect
 authorized installation/readback and OnRe worker execution to these exact four
 repairs, together with bridge/NAV and the required position change. The explicit
 automatic-close authorization remains pending before any live lifecycle funding.
+
+Connected OnRe position change, captured slot 444670816: entry → deposit →
+borrow → USDC/ONyc funding swap → debt-bearing redeposit → finite repayment →
+full withdrawal → ONyc/USDC return all execute on continuous raw state. Entry
+deposits 87576520 receipt units; 1000 raw borrowed USDC buys 874976 raw ONyc,
+whose redeposit increases receipts to 88451496 while debt remains exactly
+1000 raw USDC. Repayment consumes the original explicit 1000-raw cash buffer,
+then withdrawal and return leave zero ONyc/debt/receipts and 100978 raw USDC.
+No interstage token/account funding override occurs; full withdrawal still
+automatically closes the obligation and returns rent only to the existing vault.
+
+The funding swap reuses the exact entry policy/wrapper, consumes only actual
+net borrowed cash and has a separate rejecting amount mutation. Redeposit uses
+the original deposit policy with both current obligation reserves in its refresh
+prefix and has its own rejecting amount mutation. Together with the prior
+fourteen swap and four lending negatives this is twenty rejecting mutations;
+there are still only four local repair groups. Every packet and compute envelope
+passes without a policy-bound or compute-budget increase. Funding and final
+return quotes are locally rescaled captured routes, not fresh live execution
+quotes. No elapsed-interest-window or complete live-cost claim is made.
+
+The sole verifier retains the stricter eight-step subclaim alongside, not in
+place of, the six-step and swap-only checks in
+`phase3/onre-connected-leverage-2026-09-06.json.gz` (gzip SHA256
+`fa180d6a455761168ca40947ae996d228cd0329759d1e73412de3ae3672c6adb`).
+Raw continuity, borrowed-cash conservation, increasing debt-bearing receipts,
+unchanged debt during redeposit, finite payoff and terminal custody pass;
+R01–R08 remain FAIL overall. Fifteen verifier tests/163 assertions and TypeScript
+checking pass. This removes the previously disconnected position-change step.
+Next connect Voltr entry/restoration/NAV and production Go execution/admission
+to this same path; do not substitute another family or another setup-only loop.
 
 Next work must resolve an item above or execute the next connected OnRe step.
 Preserve completed local setup-expiry work, but stop accumulating setup-only

@@ -15,7 +15,7 @@ const sha=(b:Uint8Array)=>createHash("sha256").update(b).digest("hex");
 function require(v:unknown):asserts v {if(!v)throw new Error("OnRe local lending boundary mismatch");}
 const read=(name:string)=>JSON.parse(readFileSync(new URL(`../../../../docs/evidence/backyard-rwa-go/${name}`,import.meta.url),"utf8"));
 
-export async function prepareOnReLending(rpc:Connection,seedBefore:bigint,collateralAmount:bigint) {
+export async function prepareOnReLending(rpc:Connection,seedBefore:bigint,collateralAmount:bigint,leverage=false) {
   const resolution=await resolveCurrentRwaMultiplyCatalog(rpc,"finalized");
   require(BigInt(resolution.policySeedBefore)===seedBefore);
   const lane=resolution.lanes.find(l=>l.key==="OnRe/ONyc/USDC");require(lane?.exact);
@@ -37,7 +37,7 @@ export async function prepareOnReLending(rpc:Connection,seedBefore:bigint,collat
   const compiled=read("policy-compiled-v1.json"),installed=read("policy-install-readback-v1.json");
   const groups:any[]=[],candidates:any[]=[],steps:any[]=[];
   const policies:Record<string,string>={};const addresses=new Set<string>([user,farm,g.obligation]);
-  for(const [i,operation] of ["deposit","borrow","repay","withdraw"].entries()) {
+  for(const [i,operation] of ["deposit","borrow","repay","withdraw",...(leverage?["deposit"]:[])].entries()) {
     const matches=compiled.policies.filter((p:any)=>p.logicalName===`lane/${lane.key}`&&p.operations?.includes(operation));require(matches.length===1);
     const original=matches[0];const receipt=installed.operations.find((p:any)=>p.policyAddress===original.policy);
     require(receipt?.active===true&&sha(Buffer.from(receipt.dataBase64,"base64"))===receipt.dataSha256);
@@ -61,15 +61,16 @@ export async function prepareOnReLending(rpc:Connection,seedBefore:bigint,collat
     const shape=buildPhaseTwoKaminoLaneOperations(lane,amount,{debt:{farm,user}}).find(s=>s.operation===operation)!;
     const inner=new TransactionInstruction({programId:new PublicKey(shape.programId),data:Buffer.from(shape.dataBase64,"base64"),keys:shape.accounts.map(a=>({pubkey:new PublicKey(a.address),isSigner:a.signer,isWritable:a.writable}))});
     const execution=buildExactKaminoSquadsExecution({compiledPolicy:policy,operation,innerInstruction:inner,delegatedSigner:new PublicKey(route.squads.delegatedExecutor)});
-    const remaining=i===0?[]:i===2?reserveKeys:[reserveKeys[0]!];
+    const remaining=i===0?[]:i===2||i===4?reserveKeys:[reserveKeys[0]!];
     const refresh=toWeb3Instruction(refreshObligation({lendingMarket:address(g.lendingMarket),obligation:address(g.obligation)},remaining.map(a=>({address:address(a),role:AccountRole.WRITABLE})),address(route.kamino.program)));
     const ixs=[...refreshes,refresh,execution.outerInstruction];
     const message=new TransactionMessage({payerKey:new PublicKey(route.squads.delegatedExecutor),recentBlockhash:route.squads.vault,instructions:ixs}).compileToLegacyMessage();
     const wire=new VersionedTransaction(message).serialize();require(wire.length<=1232&&wire.slice(1,65).every(b=>b===0));
     for(const ix of ixs){addresses.add(ix.programId.toBase58());for(const a of ix.keys)addresses.add(a.pubkey.toBase58());}
-    steps.push({leg:operation,wireBase64:Buffer.from(wire).toString("base64"),wireSha256:sha(wire),instructionDataBase64:shape.dataBase64,amountRaw:Number(amount)});
+    steps.push({leg:i===4?"redeposit":operation,wireBase64:Buffer.from(wire).toString("base64"),wireSha256:sha(wire),instructionDataBase64:shape.dataBase64,amountRaw:Number(amount)});
   }
+  const redeposit=leverage?steps.pop():undefined;
   return {schema:"phase3-onre-linked-lending-plan/v1",broadcast:false,signatureProof:false,lane:lane.key,obligation:g.obligation,
-    collateralCustody:g.collateralCustody.address,debtCustody:g.debtCustody.address,steps,groups,candidates,policies,addresses:[...addresses],
+    collateralCustody:g.collateralCustody.address,debtCustody:g.debtCustody.address,steps,...(redeposit?{redeposit}:{}),groups,candidates,policies,addresses:[...addresses],
     observedSlot:batch.context.slot,farmUserSha256:sha(batch.value[2]!.data)};
 }

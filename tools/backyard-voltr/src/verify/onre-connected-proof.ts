@@ -11,9 +11,9 @@ const kamino="KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
 const squads="SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG";
 const finite=(n:unknown):n is number=>Number.isSafeInteger(n)&&Number(n)>0&&Number(n)<=1_000_000_000_000;
 
-export function onreSetupStagingProof(e:Json):boolean {
+export function onreSetupStagingProof(e:Json,leverage=false):boolean {
   try {
-    return e.schema==="phase3-onre-lending-roundtrip-result/v1"&&e.broadcast===false&&e.installedPolicyProof===false&&e.candidateCreation.length===4&&
+    return e.schema===(leverage?"phase3-onre-leverage-roundtrip-result/v1":"phase3-onre-lending-roundtrip-result/v1")&&e.broadcast===false&&e.installedPolicyProof===false&&e.candidateCreation.length===4&&
       e.candidateCreation.every((c:Json,i:number)=>{
         const s=c.stagedComparison;
         const account=c.after.find((a:Json)=>a.address===c.policy);
@@ -42,10 +42,10 @@ function resize(template:Json,inner:Buffer,instructions:number) {
   inner.copy(b,offset);return b;
 }
 
-export function onreConnectedProof(e:Json,p:Json,snapshot:Json,planHash:string,snapshotHash:string,exitCode:number|null):boolean {
+export function onreConnectedProof(e:Json,p:Json,snapshot:Json,planHash:string,snapshotHash:string,exitCode:number|null,leverage=false):boolean {
   try {
     const lending=p.onreLending,legs=e.lendingSteps;
-    if(exitCode!==0||e.schema!=="phase3-onre-lending-roundtrip-result/v1"||p.profile!=="ONRE_ROUNDTRIP"||p.lane!=="OnRe/ONyc/USDC"||
+    if(exitCode!==0||e.schema!==(leverage?"phase3-onre-leverage-roundtrip-result/v1":"phase3-onre-lending-roundtrip-result/v1")||p.profile!=="ONRE_ROUNDTRIP"||p.lane!=="OnRe/ONyc/USDC"||
       p.compiler!=="TYPESCRIPT_CANDIDATE_NOT_INSTALLED_GO"||p.broadcast!==false||
       ["broadcast","signatureProof","installedPolicyProof","goCompilerProof"].some(k=>e[k]!==false)||
       e.planSha256!==planHash||e.snapshotSha256!==snapshotHash||!isDeepStrictEqual(e.programs,snapshot.programs)||e.slot!==snapshot.slot||
@@ -53,7 +53,7 @@ export function onreConnectedProof(e:Json,p:Json,snapshot:Json,planHash:string,s
       lending.obligation!=="4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei"||
       p.inputCustody!=="EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"||p.collateralCustody!=="AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3"||
       p.debtCustody!==p.inputCustody||lending.debtCustody!==p.debtCustody||lending.collateralCustody!==p.collateralCustody||
-      p.steps.length!==2||lending.steps.length!==4||legs.length!==4||e.steps.length!==2||e.initialCashBufferRaw!==1000||
+      p.steps.length!==2||lending.steps.length!==4||legs.length!==(leverage?6:4)||Boolean(lending.redeposit)!==leverage||e.steps.length!==2||e.initialCashBufferRaw!==1000||
       e.twoSwapsPassed!==true||e.onreCollateralCleared!==true)return false;
     const edges=["USDC->ONyc","ONyc->USDC","OnRe/borrow","OnRe/repay"];
     if(!sameSet(p.candidate.policies.map((c:Json)=>c.edge),edges)||e.candidateCreation.length!==4||
@@ -88,47 +88,57 @@ export function onreConnectedProof(e:Json,p:Json,snapshot:Json,planHash:string,s
       return [receipts,debt];
     };
     const chain=[e.steps[0],...legs,e.steps[1]];
+    const terminal=chain.length-1;
     for(const [i,s] of chain.entries()) {
       for(const rows of [s.before,s.after])if(!sameSet(rows.map((a:Json)=>a.address),addresses)||rows.some((a:Json)=>a.present!==false&&(a.present!==true||hash(Buffer.from(a.dataBase64,"base64"))!==a.dataSha256)))return false;
       if(i>0&&!isDeepStrictEqual(chain[i-1].after,s.before))return false;
-      if(s.error!==null||!finite(s.computeUnits)||s.computeUnits>(i===0||i===5?200_000:800_000))return false;
+      if(s.error!==null||!finite(s.computeUnits)||s.computeUnits>(i===0||i===terminal||s.leg==="funding-swap"?200_000:800_000))return false;
     }
     // The deployed full withdrawal closes the empty obligation and returns its
     // rent to this existing vault. Observing it does not authorize a live close.
-    const withdrawal=legs[3],obligationBefore=withdrawal.before.find((a:Json)=>a.address===lending.obligation);
+    const withdrawal=legs[legs.length-1],obligationBefore=withdrawal.before.find((a:Json)=>a.address===lending.obligation);
     const obligationAfter=withdrawal.after.find((a:Json)=>a.address===lending.obligation);
     const vault="ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh";
     const vaultBefore=withdrawal.before.find((a:Json)=>a.address===vault),vaultAfter=withdrawal.after.find((a:Json)=>a.address===vault);
     if(obligationBefore?.present!==true||obligationAfter?.present!==false||!finite(obligationBefore.lamports)||
       vaultBefore?.present!==true||vaultAfter?.present!==true||vaultAfter.lamports-vaultBefore.lamports!==obligationBefore.lamports)return false;
-    if(!position(chain[0].before).every(n=>n===0n)||!position(chain[5].after).every(n=>n===0n)||
+    if(!position(chain[0].before).every(n=>n===0n)||!position(chain[terminal].after).every(n=>n===0n)||
       token(chain[0].before,p.inputCustody)!==BigInt(p.steps[0].amountRaw)+1000n||token(chain[0].before,p.collateralCustody)!==0n||
-      token(chain[5].after,p.collateralCustody)!==0n||token(chain[5].after,p.inputCustody)!==BigInt(e.terminalUSDCRaw))return false;
-    for(const [i,s] of legs.entries()) {
-      const template=lending.steps[i],inner=Buffer.from(template.instructionDataBase64,"base64");
+      token(chain[terminal].after,p.collateralCustody)!==0n||token(chain[terminal].after,p.inputCustody)!==BigInt(e.terminalUSDCRaw))return false;
+    for(const [n,s] of legs.entries()) {
+      const i=leverage?[0,1,-1,4,2,3][n]!:n;
+      if(i===-1){if(s.leg!=="funding-swap")return false;continue;}
+      const template=i===4?lending.redeposit:lending.steps[i],inner=Buffer.from(template.instructionDataBase64,"base64");
       const [receipts,debt]=position(s.before),[afterReceipts,afterDebt]=position(s.after);
-      const amount=i===0?token(s.before,p.collateralCustody):i===1?1000n:i===2?(debt!+(1n<<60n)-1n)>>60n:receipts!;
-      if(!finite(s.amountRaw)||BigInt(s.amountRaw)!==amount||inner.length!==16||s.leg!==["deposit","borrow","repay","withdraw"][i]||s.leg!==template.leg||s.templateSha256!==template.wireSha256)return false;
+      const amount=i===0||i===4?token(s.before,p.collateralCustody):i===1?1000n:i===2?(debt!+(1n<<60n)-1n)>>60n:receipts!;
+      if(!finite(s.amountRaw)||BigInt(s.amountRaw)!==amount||inner.length!==16||s.leg!==["deposit","borrow","repay","withdraw","redeposit"][i]||s.leg!==template.leg||s.templateSha256!==template.wireSha256)return false;
       inner.writeBigUInt64LE(amount,8);
       if(!resize(template,inner,4).equals(wire(s,4))||s.negative?.rejectedBeforeKaminoCPI!==true||s.negative?.custodyUnchanged!==true||
         !String(s.negative.error).startsWith("InstructionError(3, Custom(")||s.pass!==true||
-        (afterReceipts!>0n)!==(i<3)||(afterDebt!>0n)!==(i===1)||BigInt(s.receiptRaw)!==afterReceipts||BigInt(s.debtSF)!==afterDebt)return false;
+        (afterReceipts!>0n)!==(i!==3)||(afterDebt!>0n)!==(i===1||i===4)||BigInt(s.receiptRaw)!==afterReceipts||BigInt(s.debtSF)!==afterDebt)return false;
       const cashDelta=token(s.after,p.inputCustody)-token(s.before,p.inputCustody),collateralDelta=token(s.after,p.collateralCustody)-token(s.before,p.collateralCustody);
-      if(i===0&&(collateralDelta!==-amount||cashDelta!==0n)||i===1&&(collateralDelta!==0n||cashDelta<=0n||cashDelta>amount||afterDebt!==amount<<60n)||
-        i===2&&(collateralDelta!==0n||cashDelta!==-amount)||i===3&&(collateralDelta<=0n||cashDelta!==0n||debt!==0n))return false;
+      if((i===0||i===4)&&(collateralDelta!==-amount||cashDelta!==0n)||i===1&&(collateralDelta!==0n||cashDelta<=0n||cashDelta>amount||afterDebt!==amount<<60n)||
+        i===2&&(collateralDelta!==0n||cashDelta!==-amount)||i===3&&(collateralDelta<=0n||cashDelta!==0n||debt!==0n)||
+        i===4&&(afterReceipts!<=receipts!||afterDebt!==debt||token(s.after,p.collateralCustody)!==0n))return false;
     }
-    for(const [i,s] of e.steps.entries()) {
+    for(const [n,s] of [...e.steps,...(leverage?[legs[2]]:[])].entries()) {
+      const funding=n===2,i=n===1?1:0;
       const t=p.steps[i],r=s.executedRequest,inner=Buffer.from(t.instructionDataBase64,"base64");
-      const amount=i===0?BigInt(t.amountRaw):token(s.before,p.collateralCustody);
+      const amount=funding?token(legs[1].after,p.inputCustody)-token(legs[1].before,p.inputCustody):i===0?BigInt(t.amountRaw):token(s.before,p.collateralCustody);
       const quoted=inner.readBigUInt64LE(17)*amount/BigInt(t.amountRaw),minimum=BigInt(t.minimumOutputRaw)*amount/BigInt(t.amountRaw);
       inner.writeBigUInt64LE(amount,9);inner.writeBigUInt64LE(quoted,17);
       const expected={...t,amountRaw:Number(amount),minimumOutputRaw:Number(minimum),instructionDataBase64:inner.toString("base64")};
       const bytes=resize(t,inner,1);Object.assign(expected,{wireBase64:bytes.toString("base64"),wireSha256:hash(bytes)});
       if(!isDeepStrictEqual(r,expected)||!finite(r.amountRaw)||!finite(r.minimumOutputRaw)||!bytes.equals(wire(r,1))||s.wireSha256!==r.wireSha256||
-        s.action!==["SWAP_STABLE_TO_COLLATERAL_STEP","SWAP_COLLATERAL_TO_STABLE_STEP"][i]||r.source!==(i===0?p.inputCustody:p.collateralCustody)||r.destination!==(i===0?p.collateralCustody:p.inputCustody)||
+        (!funding&&s.action!==["SWAP_STABLE_TO_COLLATERAL_STEP","SWAP_COLLATERAL_TO_STABLE_STEP"][i])||r.source!==(i===0?p.inputCustody:p.collateralCustody)||r.destination!==(i===0?p.collateralCustody:p.inputCustody)||
         token(s.before,r.source)-token(s.after,r.source)!==amount||token(s.after,r.destination)-token(s.before,r.destination)<minimum||
-        s.economicPass!==true||s.negative?.rejectedBeforeJupiterCPI!==true||s.negative?.custodyUnchanged!==true||
-        !sameSet(s.additionalNegatives.map((n:Json)=>n.mutation),["slippage_above_50_bps","platform_fee_low_byte","platform_fee_high_byte","positive_slippage_fee_low_byte","positive_slippage_fee_high_byte","destination_replaced_by_source"])||
+        (funding?s.pass:s.economicPass)!==true||s.negative?.rejectedBeforeJupiterCPI!==true||s.negative?.custodyUnchanged!==true)return false;
+      if(funding) {
+        // Same exact entry policy/wrapper as the fully mutation-tested entry,
+        // now consuming only net borrowed cash; its obligation must not change.
+        if(BigInt(s.amountRaw)!==amount||!isDeepStrictEqual(position(s.before),position(s.after))||
+          !String(s.negative.error).startsWith("InstructionError(0, Custom("))return false;
+      } else if(!sameSet(s.additionalNegatives.map((n:Json)=>n.mutation),["slippage_above_50_bps","platform_fee_low_byte","platform_fee_high_byte","positive_slippage_fee_low_byte","positive_slippage_fee_high_byte","destination_replaced_by_source"])||
         s.additionalNegatives.some((n:Json)=>n.rejectedBeforeJupiterCPI!==true||n.custodyUnchanged!==true))return false;
     }
     return finite(e.terminalUSDCRaw);

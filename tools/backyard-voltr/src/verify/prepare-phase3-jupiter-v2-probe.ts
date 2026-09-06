@@ -19,8 +19,9 @@ const publicRows:any[]=[];
 try {
   const directory=process.argv[2];
   require(directory&&/^\/private\/tmp\/backyard-phase3-jupiter-probe\.[A-Za-z0-9]+$/.test(directory),"explicit local probe directory required");
-  require(process.argv[3]===undefined||["--return","--lending-return","--onre-roundtrip","--onre-lending-roundtrip"].includes(process.argv[3]),"unknown probe mode");
-  const onreLendingRequested=process.argv[3]==="--onre-lending-roundtrip";
+  require(process.argv[3]===undefined||["--return","--lending-return","--onre-roundtrip","--onre-lending-roundtrip","--onre-leverage-roundtrip"].includes(process.argv[3]),"unknown probe mode");
+  const onreLeverageRequested=process.argv[3]==="--onre-leverage-roundtrip";
+  const onreLendingRequested=process.argv[3]==="--onre-lending-roundtrip"||onreLeverageRequested;
   const onre=process.argv[3]==="--onre-roundtrip"||onreLendingRequested;
   const returning=process.argv[3]!==undefined&&!onre;
   const linked=process.argv[3]==="--lending-return";
@@ -141,7 +142,7 @@ try {
   let onreLending;
   if(onreLendingRequested) {
     stage="OnRe linked lending construction";
-    const prepared=await prepareOnReLending(rpc,seedBefore,BigInt(steps[1]!.amountRaw));
+    const prepared=await prepareOnReLending(rpc,seedBefore,BigInt(steps[1]!.amountRaw),onreLeverageRequested);
     const {groups,candidates,policies:originalPolicies,addresses:extraAddresses,...lending}=prepared;
     artifact.groups.push(...groups);candidatePolicies.push(...candidates);
     for(const a of extraAddresses)addresses.add(a);
