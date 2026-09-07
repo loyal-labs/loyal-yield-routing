@@ -322,8 +322,13 @@ ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options
 			Idle             json.RawMessage `json:"idle_vault_liquidity_amount_raw"`
 		}
 		if json.Unmarshal(metadata, &evidence) != nil {
-			return nil, fmt.Errorf("vault %d has invalid planning metadata", p.VaultID)
+			p.BlockedReason = "invalid_source_planning_metadata"
+			fleet = append(fleet, FleetVault{Position: p})
+			continue
 		}
+		// Amount validation is per source, not a failure of the whole fleet.
+		// Reset the row-local parse error before handling explicit semantics.
+		err = nil
 		p.SourceAmountSemantics = evidence.AmountSemantics
 		switch evidence.AmountSemantics {
 		case amountSemanticsKaminoCollateralDeposited:
@@ -346,7 +351,9 @@ ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options
 			p.IdleVaultLiquidityAmountRaw = &idle
 		}
 		if err != nil || p.AmountRaw <= 0 || (p.SourceAmountSemantics == amountSemanticsKaminoCollateralDeposited && p.SourceCollateralAmountRaw <= 0) {
-			return nil, fmt.Errorf("vault %d lacks executable amount evidence", p.VaultID)
+			p.BlockedReason = "unsupported_source_amount_evidence"
+			fleet = append(fleet, FleetVault{Position: p})
+			continue
 		}
 		allowed := []string{}
 		for _, reserve := range epoch.Reserves {

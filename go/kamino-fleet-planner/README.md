@@ -68,6 +68,19 @@ work. Shadow rejects enabled revalidation. It is safe to evaluate alongside
 Rust using a database role with read-only access. `publish` is an explicit
 deployment choice and is valid on mainnet.
 
+Missing or malformed source amount metadata blocks only that reserve source,
+not the entire fleet check. Summary rejection counts report
+`unsupported_source_amount_evidence` or `invalid_source_planning_metadata`;
+no amount is guessed and the affected source cannot produce a move. Database
+query failures still fail the cycle.
+
+RPC calls retry temporary transport failures, HTTP 408/429/5xx, node-unhealthy
+(-32005), and minimum-context-slot lag (-32016), up to five attempts within a
+45-second total deadline. Confirmed/finalized commitments and minimum slots do
+not change across retries. Permanent provider errors fail immediately. Logs
+retain safe numeric error codes, not provider messages or credential-bearing URLs.
+Persistent RPC failures still fail the cycle rather than using unverified data.
+
 ### Idle balances in shadow mode
 
 Shadow additionally reads eligible idle stablecoin balances in the same read-only

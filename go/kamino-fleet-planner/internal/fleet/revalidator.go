@@ -98,6 +98,10 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 			return FleetPlan{}, errors.New("fleet contains duplicate or invalid vault")
 		}
 		seen[vault.Position.VaultID] = true
+		if vault.Position.BlockedReason != "" {
+			out.Rejections[vault.Position.VaultID] = vault.Position.BlockedReason
+			continue
+		}
 		allowed := map[string]bool{}
 		for _, target := range vault.AllowedTargets {
 			allowed[target] = true

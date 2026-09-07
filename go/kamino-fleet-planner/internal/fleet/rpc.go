@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -23,8 +25,9 @@ type Account struct {
 }
 
 type RPCClient struct {
-	url    string
-	client *http.Client
+	url        string
+	client     *http.Client
+	retryDelay func(int) time.Duration // test override; production uses bounded backoff
 }
 
 func NewRPCClient(rpcURL string) *RPCClient {
@@ -32,32 +35,69 @@ func NewRPCClient(rpcURL string) *RPCClient {
 }
 
 func (c *RPCClient) call(ctx context.Context, method string, params []any, output any) error {
+	// Bound the whole retry sequence as well as each HTTP request.
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
 	payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	if err != nil {
 		return err
 	}
 	var last error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 5; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		retry := false
+		delay := 250 * time.Millisecond * time.Duration(1<<attempt)
+		if c.retryDelay != nil {
+			delay = c.retryDelay(attempt)
+		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(payload))
 		if err != nil {
 			return err
 		}
 		request.Header.Set("content-type", "application/json")
 		response, err := c.client.Do(request)
-		if err == nil {
+		if err != nil {
+			// Transport errors may contain the credential-bearing RPC URL.
+			err = fmt.Errorf("RPC %s transport failure", method)
+			retry = true
+		} else {
 			var envelope struct {
 				Result json.RawMessage `json:"result"`
-				Error  json.RawMessage `json:"error"`
+				Error  *struct {
+					Code int `json:"code"`
+				} `json:"error"`
 			}
 			err = json.NewDecoder(response.Body).Decode(&envelope)
 			response.Body.Close()
+			retry = errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 			if response.StatusCode != http.StatusOK {
 				err = fmt.Errorf("RPC %s returned HTTP %d", method, response.StatusCode)
-			}
-			if err == nil && len(envelope.Error) > 0 && string(envelope.Error) != "null" {
-				err = fmt.Errorf("RPC %s failed", method)
-			}
-			if err == nil {
+				retry = response.StatusCode == 429 || response.StatusCode == 408 || response.StatusCode >= 500
+				if after := response.Header.Get("Retry-After"); retry && after != "" {
+					wait := time.Duration(0)
+					if seconds, parseErr := strconv.Atoi(after); parseErr == nil && seconds >= 0 && seconds <= 5 {
+						wait = time.Duration(seconds) * time.Second
+					} else if deadline, parseErr := http.ParseTime(after); parseErr == nil {
+						wait = time.Until(deadline)
+					} else {
+						retry = false
+					}
+					// Do not hammer a server asking for a longer pause: let the next
+					// scheduled cycle try rather than extending this call unboundedly.
+					if wait > 5*time.Second {
+						retry = false
+					}
+					if wait > delay {
+						delay = wait
+					}
+				}
+			} else if err == nil && envelope.Error != nil {
+				// Keep the numeric code, never arbitrary provider error text/data.
+				err = fmt.Errorf("RPC %s failed with code %d", method, envelope.Error.Code)
+				retry = envelope.Error.Code == -32016 || envelope.Error.Code == -32005
+			} else if err == nil {
 				err = json.Unmarshal(envelope.Result, output)
 			}
 		}
@@ -65,11 +105,17 @@ func (c *RPCClient) call(ctx context.Context, method string, params []any, outpu
 			return nil
 		}
 		last = err
-		if attempt < 2 {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !retry {
+			return err
+		}
+		if attempt < 4 {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+			case <-time.After(delay):
 			}
 		}
 	}
