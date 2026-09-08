@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -24,6 +23,10 @@ import {
   type CanonicalInstruction,
 } from "../integrations/voltr.js";
 import { verifyNonCatalogSquadsPoliciesIsolated } from "../verify/squads.js";
+import {
+  runRustCompiler,
+  type CompilerProvenance,
+} from "./compiler-build.js";
 
 const COMPILER_BIN = "compile-voltr-kamino-runtime-policy";
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
@@ -114,6 +117,7 @@ export type RuntimePolicyArtifact = Readonly<{
   sourceManifest: RuntimePolicyManifest;
   sourceManifests?: readonly RuntimePolicyManifest[];
   artifactSha256: string;
+  compiler: CompilerProvenance;
 }>;
 
 export type RuntimePolicyArtifactEntry = Readonly<{
@@ -185,24 +189,22 @@ function compilerArgs(...args: string[]): string[] {
   ];
 }
 
-function runCompiler(args: readonly string[], input?: string): unknown {
-  const result = spawnSync("cargo", compilerArgs(...args), {
+function runCompiler<T>(args: readonly string[], input?: string): { output: T; compiler: CompilerProvenance } {
+  const result = runRustCompiler<T>({
+    compilerBinary: COMPILER_BIN,
+    args,
     cwd: REPOSITORY_ROOT,
-    encoding: "utf8",
-    input,
     maxBuffer: 16 * 1024 * 1024,
-    env: process.env,
+    label: "runtime policy compiler",
+    ...(input === undefined ? {} : { input }),
   });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.status}`;
-    throw new Error(`runtime policy compiler refused input: ${detail}`);
+  if (!result.output || typeof result.output !== "object" || Array.isArray(result.output)) {
+    throw new Error("runtime policy compiler returned a non-object");
   }
-  try {
-    return JSON.parse(result.stdout);
-  } catch {
-    throw new Error("runtime policy compiler returned non-JSON output");
-  }
+  return {
+    ...result,
+    output: { ...(result.output as Record<string, unknown>), compiler: result.compiler } as T,
+  };
 }
 
 function assertArtifact(value: unknown): asserts value is RuntimePolicyArtifact {
@@ -285,6 +287,11 @@ function assertArtifact(value: unknown): asserts value is RuntimePolicyArtifact 
     || !exactSourceManifests
     || !/^[0-9a-f]{64}$/.test(artifact.sourceManifestSha256 ?? "")
     || !/^[0-9a-f]{64}$/.test(artifact.artifactSha256 ?? "")
+    || !artifact.compiler
+    || !/^[0-9a-f]{64}$/.test(artifact.compiler.compilerBinarySha256)
+    || !/^[0-9a-f]{64}$/.test(artifact.compiler.compilerSourceTreeSha256)
+    || !artifact.compiler.compilerBinaryPath.endsWith(`/debug/${COMPILER_BIN}`)
+    || !artifact.compiler.compilerTargetDir.endsWith("/target/backyard-voltr-compilers")
     || !exactPolicies
   ) {
     throw new Error("runtime policy compiler output escaped the exact approved policy catalog boundary");
@@ -410,7 +417,9 @@ export async function compileRuntimePolicyArtifact(): Promise<RuntimePolicyArtif
   });
   let artifact: unknown;
   try {
-    artifact = runCompiler(manifestPaths.flatMap((path) => ["--manifest", path]));
+    artifact = runCompiler<RuntimePolicyArtifact>(
+      manifestPaths.flatMap((path) => ["--manifest", path]),
+    ).output;
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -419,8 +428,8 @@ export async function compileRuntimePolicyArtifact(): Promise<RuntimePolicyArtif
 }
 
 export function verifyRuntimePolicyArtifact(path: string) {
-  const report = runCompiler(["--verify-artifact", resolve(path)]);
-  const value = report as Record<string, unknown>;
+  const report = runCompiler<Record<string, unknown>>(["--verify-artifact", resolve(path)]);
+  const value = report.output;
   const fourMarket = value.runtimePolicyCount === 8;
   if (
     value.verdict !== "RUNTIME_POLICY_ARTIFACT_VERIFIED"
@@ -432,7 +441,7 @@ export function verifyRuntimePolicyArtifact(path: string) {
   ) {
     throw new Error("runtime policy artifact verifier returned an invalid verdict");
   }
-  return report;
+  return report.output;
 }
 
 export function loadRuntimePolicyArtifact(path: string): Readonly<{

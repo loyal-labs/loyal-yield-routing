@@ -20,7 +20,6 @@
  * and docs/plans/backyard-rwa-adaptor-strategy2-audit-2026-09-08.md §7.
  */
 
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -78,6 +77,12 @@ import {
   compileCustomPolicyArtifact,
   type CustomPolicyArtifact,
 } from "../policies/rwa-multiply-custom.js";
+import type { CustomPolicyTarget } from "../domain/custom-policy-target.js";
+import {
+  compilerSourceTreeSha256,
+  runRustCompiler,
+  type CompilerProvenance,
+} from "../policies/compiler-build.js";
 import {
   buildRwaMultiplyArmReportInstruction,
   buildRwaMultiplyManagerInstructions,
@@ -113,7 +118,6 @@ import {
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const EVIDENCE_DIR = resolve(REPOSITORY_ROOT, "docs/evidence/hxtk-reset-2026-09-08");
 const SCHEMA = "loyal-voltr-hxtk-reset-step/v1";
-const SHARED_CARGO_TARGET_DIR = "/Users/user/loyal/loyal-yield-routing/.phase3-recovery/target";
 
 // ---- identities (all public keys; no secrets) --------------------------------
 
@@ -1383,6 +1387,15 @@ type FinalizedPolicyProvenance = Readonly<{
   }>;
 }>;
 
+function assertPolicyCompilerSourceTree(record: JsonRecord): void {
+  const compiler = recordAt(record.compiler, "repair-policy journal compiler");
+  if (String(compiler.compilerSourceTreeSha256 ?? "") !== compilerSourceTreeSha256(REPOSITORY_ROOT)) {
+    throw new Error(
+      "RECONCILE_MISMATCH: policy compiler source tree drifted; operator must use the same checkout revision",
+    );
+  }
+}
+
 async function verifyFinalizedPolicyCreationJournal(
   rpcUrl: string,
   path: string,
@@ -1393,6 +1406,7 @@ async function verifyFinalizedPolicyCreationJournal(
     REPAIR_POLICY_SCHEMA,
     "repair-policy",
   );
+  assertPolicyCompilerSourceTree(record);
   const seed = parseSeed(String(record.expectedSeed ?? record.seed ?? ""), "repair-policy journal expectedSeed");
   const policy = address(stringAt(record.policy, "repair-policy journal policy"));
   assertRepairPolicyHardBinding(seed, policy);
@@ -1512,6 +1526,7 @@ async function verifyFinalizedRepairJournal(
     REPAIR_POLICY_SCHEMA,
     "repair-policy",
   );
+  assertPolicyCompilerSourceTree(policyCreation.record);
   const creationSeed = parseSeed(
     String(policyCreation.record.expectedSeed ?? policyCreation.record.seed ?? ""),
     "repair-policy journal expectedSeed",
@@ -1584,7 +1599,25 @@ async function verifyFinalizedRepairJournal(
 
 async function compileRepairPolicy(seed: bigint) {
   assertRepairPolicyHardBinding(seed, REPAIR_POLICY_EXPECTED_PDA);
-  const artifact = await compileCustomPolicyArtifact(seed - 2n, { navExactRaw: PHANTOM_NAV_RAW });
+  const repairTarget: CustomPolicyTarget = {
+    route: RWA_MULTIPLY_ROUTE,
+    seeds: {
+      allocation: seed - 1n,
+      navRefresh: seed,
+      stageWithdrawal: seed + 1n,
+      withdraw: seed + 2n,
+    },
+    caps: {
+      amountRaw: RWA_MULTIPLY_ROUTE.vault.capRaw,
+      reportNavRaw: null,
+      dailySpendingLimit: null,
+    },
+  };
+  const artifact = await compileCustomPolicyArtifact(
+    seed - 2n,
+    repairTarget,
+    { navExactRaw: PHANTOM_NAV_RAW },
+  );
   const target = artifact.policies.find((entry) =>
     entry.operation === REPAIR_POLICY_OPERATION && BigInt(entry.seed) === seed);
   if (!target) throw new Error(`compiler did not emit nav-refresh policy seed ${seed}`);
@@ -1606,6 +1639,7 @@ type CustomExecutionArtifact = Readonly<{
   schema: "loyal-voltr-custom-execution/v2";
   sourceSha256: string;
   instruction: PolicyWireInstruction;
+  compiler: CompilerProvenance;
 }>;
 
 function compileCustomExecution(
@@ -1623,25 +1657,18 @@ function compileCustomExecution(
     constraintIndices,
     inner: inner.map(wireFromInstruction),
   });
-  const result = spawnSync("cargo", ["run", "--quiet", "-p", "loyal-actions", "--bin", EXECUTION_COMPILER_BIN], {
-    cwd: REPOSITORY_ROOT,
-    input: source,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-    env: {
-      ...process.env,
-      CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR ?? SHARED_CARGO_TARGET_DIR,
-    },
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`repair execution compiler failed: ${(result.stderr || result.stdout).trim()}`);
-  }
-  const output = JSON.parse(result.stdout) as {
+  const result = runRustCompiler<{
     schema?: unknown;
     sourceSha256?: unknown;
     instruction?: PolicyWireInstruction;
-  };
+  }>({
+    compilerBinary: EXECUTION_COMPILER_BIN,
+    cwd: REPOSITORY_ROOT,
+    input: source,
+    maxBuffer: 16 * 1024 * 1024,
+    label: "repair execution compiler",
+  });
+  const output = result.output;
   if (output.schema !== "loyal-voltr-custom-execution/v2"
     || typeof output.sourceSha256 !== "string"
     || !output.instruction
@@ -1664,6 +1691,7 @@ function compileCustomExecution(
     schema: "loyal-voltr-custom-execution/v2",
     sourceSha256: output.sourceSha256,
     instruction: output.instruction,
+    compiler: result.compiler,
   };
 }
 
@@ -2847,6 +2875,7 @@ async function cmdRepairPolicyOperator(mode: RepairPolicyOperatorMode): Promise<
         expectedSeed: seed.toString(),
         policy: target.policy,
         compiler: {
+          ...artifact.compiler,
           compilerArtifactSchema: artifact.schema,
           sourceSha256: artifact.sourceSha256,
           compilerPolicySeedBefore: (seed - 2n).toString(),
@@ -3053,6 +3082,7 @@ async function cmdRepairPolicy(): Promise<number> {
     seedReadback: readback,
     settingsReadback: settingsPolicyReadback(settingsBefore),
     compiler: {
+      ...artifact.compiler,
       compilerArtifactSchema: artifact.schema,
       sourceSha256: artifact.sourceSha256,
       compilerPolicySeedBefore: (seed - 2n).toString(),
@@ -3435,6 +3465,7 @@ async function cmdRepair(): Promise<number> {
       snapshotDigest: Buffer.from(built.report.snapshotDigest).toString("hex"),
     },
     compiler: {
+      ...built.executionArtifact.compiler,
       schema: built.executionArtifact.schema,
       sourceSha256: built.executionArtifact.sourceSha256,
       constraintIndices: [0, 1],
@@ -3582,6 +3613,7 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
           snapshotDigest: Buffer.from(built.report.snapshotDigest).toString("hex"),
         },
         compiler: {
+          ...built.executionArtifact.compiler,
           schema: built.executionArtifact.schema,
           sourceSha256: built.executionArtifact.sourceSha256,
           constraintIndices: [0, 1],

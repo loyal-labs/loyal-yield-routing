@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
@@ -20,10 +19,13 @@ import {
   buildRwaMultiplyWithdrawalStagingInstruction,
   deriveRwaMultiplyVoltrAccounts,
 } from "../integrations/rwa-multiply-voltr.js";
+import {
+  runRustCompiler,
+  type CompilerProvenance,
+} from "./compiler-build.js";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const COMPILER_BIN = "compile-voltr-custom-policy";
-const SHARED_CARGO_TARGET_DIR = "/Users/user/loyal/loyal-yield-routing/.phase3-recovery/target";
 
 type SettingsState = Readonly<{
   policySeed: { toString(): string } | null;
@@ -60,6 +62,7 @@ export type CustomPolicyArtifact = Readonly<{
   physicalPolicyCount: 4;
   deploymentReady: false;
   sourceSha256: string;
+  compiler: CompilerProvenance;
   policies: readonly Readonly<{
     operation: "allocation" | "nav-refresh" | "stage-withdrawal" | "withdraw";
     seed: string;
@@ -392,26 +395,19 @@ export async function compileCustomPolicyArtifact(
     },
   };
   const source = JSON.stringify(input);
-  const result = spawnSync("cargo", ["run", "--quiet", "-p", "loyal-actions", "--bin", COMPILER_BIN], {
+  const result = runRustCompiler<CustomPolicyArtifact>({
+    compilerBinary: COMPILER_BIN,
     cwd: REPOSITORY_ROOT,
     input: source,
-    encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
-    env: {
-      ...process.env,
-      CARGO_TARGET_DIR: SHARED_CARGO_TARGET_DIR,
-    },
+    label: "custom policy compiler",
   });
-  if (result.error) throw result.error;
-  invariant(result.status === 0,
-    `custom policy compiler failed (status ${result.status}, signal ${result.signal}): ${
-      result.stderr.trim() || result.stdout.trim() || "<no output>"}`);
-  const artifact = parseArtifact(JSON.parse(result.stdout), [
+  const artifact = parseArtifact(result.output, [
     seeds.allocation, seeds.navRefresh, seeds.stageWithdrawal, seeds.withdraw,
   ], route);
   invariant(artifact.sourceSha256 === createHash("sha256").update(source).digest("hex"),
     "custom policy compiler source hash drifted");
-  return artifact;
+  return { ...artifact, compiler: result.compiler };
 }
 
 export async function readFinalizedCustomPolicySeed(connection: Connection) {

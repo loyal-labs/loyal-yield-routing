@@ -9,6 +9,14 @@ executor, and four policies at fresh seeds. Everything in this runbook is
 unsigned-by-default: every rehearsal below loads no key material and never sets
 `CONFIRM_MAINNET`.
 
+### Compiler build hygiene
+
+Policy compilation uses the per-checkout target
+`target/backyard-voltr-compilers`; it never uses the shared
+`.phase3-recovery/target`. The shared directory remains reserved for
+`bun run build:adaptor` (whose script verifies the artifact hash) and Rust
+tests.
+
 ## Identities and derivation
 
 | Role | Value / derivation |

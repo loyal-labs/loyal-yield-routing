@@ -8,7 +8,6 @@
  * being expired before it is persisted; this command never sends a packet.
  */
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +22,7 @@ import {
   resolutionLanes,
   type ResolvedLane,
 } from "../policies/rwa-multiply-phase2-kamino.js";
+import { runRustCompiler, type CompilerProvenance } from "../policies/compiler-build.js";
 
 type Json = Record<string, unknown>;
 type SettingsState = Readonly<{
@@ -47,6 +47,7 @@ type Artifact = Readonly<{
     exactSwapPackingProof?: Json;
   }>;
   packetMeasurements: readonly Json[];
+  compiler: CompilerProvenance;
 }>;
 
 const ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
@@ -209,15 +210,14 @@ async function main() {
       swapEdges: [edge],
     }))] as Json[]),
   };
-  const compilation = spawnSync("cargo", ["run", "--quiet", "-p", "loyal-actions", "--bin", COMPILER], {
+  const compilation = runRustCompiler<Artifact>({
+    compilerBinary: COMPILER,
     cwd: ROOT,
     input: JSON.stringify(compilerInput),
-    encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
+    label: "Phase-2 Kamino policy compiler",
   });
-  invariant(compilation.status === 0,
-    `Phase-2 Kamino policy compiler failed: ${(compilation.stderr || compilation.stdout).trim()}`);
-  const artifact = JSON.parse(compilation.stdout) as Artifact;
+  const artifact = { ...compilation.output, compiler: compilation.compiler };
   invariant(artifact.schema === "loyal-backyard-rwa-resolved-policy-artifact/v1"
     && artifact.phase === "phase2" && artifact.verdict === "COMPILED_SIGNED_SIMULATION_REQUIRED"
     && artifact.broadcast === false && artifact.packing.attemptedRungs.length > 0
@@ -237,6 +237,7 @@ async function main() {
       minimumExpiredGapSlots: EXPIRED_BLOCKHASH_GAP,
     },
     compiledArtifactSha256: sha256(compiledBytes),
+    compiler: compilation.compiler,
     selectedRung: artifact.packing.selectedRung,
     packing: {
       activationPrefix: artifact.packing.activationPrefix ?? [],

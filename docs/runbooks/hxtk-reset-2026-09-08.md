@@ -42,6 +42,14 @@ finalized Settings readback reports policy seed `139`, so Squads
 derived for that exact seed is
 `7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR`.
 
+### Compiler build hygiene
+
+Policy compilation uses the per-checkout target
+`target/backyard-voltr-compilers`; it never uses the shared
+`.phase3-recovery/target`. The shared directory remains reserved for
+`bun run build:adaptor` (whose script verifies the artifact hash) and Rust
+tests.
+
 The deployed program does not accept an arbitrary policy seed from the action:
 it derives `Settings.policySeed + 1`. The tool therefore records
 `expectedSeed=140`, compiles and derives exactly that seed, re-reads the

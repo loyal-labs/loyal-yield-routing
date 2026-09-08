@@ -15,7 +15,8 @@ operator signer and the guarded command shown in the linked runbook.
    render services instances srv-dabkt0ojo6nc7381o9fg -o json
    ```
 
-1. **Run Phase 1.** From `tools/backyard-voltr`, follow every ordered step in
+1. **Run Phase 1.** From `tools/backyard-voltr`, use the per-checkout
+`target/backyard-voltr-compilers` for policy compilation, then follow every ordered step in
    [`hxtk-reset-2026-09-08.md`](hxtk-reset-2026-09-08.md), beginning with
    `bun run reset:hxtk verify --simulate`. Do not skip the canonical machine-
    and user-local state root, per-leg replay fence, journal barrier, finalized
@@ -37,7 +38,8 @@ operator signer and the guarded command shown in the linked runbook.
    Update the worker M6 adaptor slot/hash and manifest only after the finalized
    readback, then rebuild and re-prove the worker image.
 
-3. **Bootstrap strategy two and install policies.** Follow
+3. **Bootstrap strategy two and install policies.** Compile policies only in the
+per-checkout `target/backyard-voltr-compilers`, then follow
    [`hxtk-strategy2-bootstrap-2026-09-08.md`](hxtk-strategy2-bootstrap-2026-09-08.md)
    in order: rehearsal, bootstrap phases A/B/C, then one policy per transaction
    at the Settings-derived seeds `141, 142, 143, 144`. Generate the worker

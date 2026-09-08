@@ -26,6 +26,12 @@ function artifact(): CustomPolicyArtifact {
     physicalPolicyCount: 4,
     deploymentReady: false,
     sourceSha256: "0".repeat(64),
+    compiler: {
+      compilerBinarySha256: "1".repeat(64),
+      compilerBinaryPath: "/repo/target/backyard-voltr-compilers/debug/compile-voltr-custom-policy",
+      compilerTargetDir: "/repo/target/backyard-voltr-compilers",
+      compilerSourceTreeSha256: "2".repeat(64),
+    },
     policies: operations.map((operation, index) => {
       const seed = String(62 + index);
       const policy = `policy-${seed}`;

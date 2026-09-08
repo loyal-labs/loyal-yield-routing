@@ -10,13 +10,13 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 import { Reserve, initObligation, refreshObligation, refreshReserve, userMetadataPda } from "@kamino-finance/klend-sdk";
 import { executeTransactionSyncV2 } from "@loyal-labs/loyal-smart-accounts-core/internal";
 import { AccountRole, address, createNoopSigner, none, some, type Address, type Instruction } from "@solana/kit";
 import bs58 from "bs58";
 import { Connection, Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import { runRustCompiler, type CompilerProvenance } from "../policies/compiler-build.js";
 import { signingMaterialFromEnvironment } from "../integrations/signer.js";
 import { toWeb3Instruction } from "../integrations/solana-compat.js";
 import { buildRwaMultiplyArmReportInstruction, buildRwaMultiplyManagerInstructions, buildRwaMultiplyWithdrawalStagingInstruction, deriveRwaMultiplyVoltrAccounts, type RwaReportV1 } from "../integrations/rwa-multiply-voltr.js";
@@ -40,6 +40,7 @@ const BRIDGE_POLICIES = {
   stage: "ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY",
   restore: "DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t",
 } as const;
+let compilerProvenance: CompilerProvenance | null = null;
 function invariant(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 function sha(value: Uint8Array | string): string { return createHash("sha256").update(value).digest("hex"); }
 function optionalAddress(value: string): ReturnType<typeof none<Address>> | ReturnType<typeof some<Address>> { return hasConfiguredKaminoOracle(value) ? some(address(value)) : none<Address>(); }
@@ -110,7 +111,7 @@ function exitPolicy(): Json {
     }],
   };
 }
-function wrapper(policy: string, instructions: readonly Instruction[], indices: readonly number[]): TransactionInstruction { const inner = instructions.map((ix) => ({ programId: ix.programAddress, accounts: (ix.accounts ?? []).map((account) => ({ address: account.address, signer: account.role === AccountRole.READONLY_SIGNER || account.role === AccountRole.WRITABLE_SIGNER, writable: account.role === AccountRole.WRITABLE || account.role === AccountRole.WRITABLE_SIGNER })), dataBase64: Buffer.from(ix.data ?? []).toString("base64") })); const result = spawnSync("cargo", ["run", "--quiet", "-p", "loyal-actions", "--bin", "compile-voltr-custom-execution"], { cwd: ROOT, input: JSON.stringify({ policy, delegatedSigner: RWA_MULTIPLY_ROUTE.squads.delegatedExecutor, accountIndex: 0, constraintIndices: indices, inner }), encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }); invariant(result.status === 0, `bridge wrapper compiler failed: ${(result.stderr || result.stdout).slice(-500)}`); const out = object(JSON.parse(result.stdout), "bridge wrapper"); const row = object(out.instruction, "bridge wrapper instruction"); return new TransactionInstruction({ programId: new PublicKey(String(row.programId)), data: Buffer.from(String(row.dataBase64), "base64"), keys: array(row.accounts, "bridge wrapper accounts").map((entry) => { const account = object(entry, "bridge wrapper account"); return { pubkey: new PublicKey(String(account.address)), isSigner: account.signer === true, isWritable: account.writable === true }; }) }); }
+function wrapper(policy: string, instructions: readonly Instruction[], indices: readonly number[]): TransactionInstruction { const inner = instructions.map((ix) => ({ programId: ix.programAddress, accounts: (ix.accounts ?? []).map((account) => ({ address: account.address, signer: account.role === AccountRole.READONLY_SIGNER || account.role === AccountRole.WRITABLE_SIGNER, writable: account.role === AccountRole.WRITABLE || account.role === AccountRole.WRITABLE_SIGNER })), dataBase64: Buffer.from(ix.data ?? []).toString("base64") })); const result = runRustCompiler<Json>({ compilerBinary: "compile-voltr-custom-execution", cwd: ROOT, input: JSON.stringify({ policy, delegatedSigner: RWA_MULTIPLY_ROUTE.squads.delegatedExecutor, accountIndex: 0, constraintIndices: indices, inner }), maxBuffer: 16 * 1024 * 1024, label: "bridge wrapper compiler" }); compilerProvenance = result.compiler; const out = object(result.output, "bridge wrapper"); const row = object(out.instruction, "bridge wrapper instruction"); return new TransactionInstruction({ programId: new PublicKey(String(row.programId)), data: Buffer.from(String(row.dataBase64), "base64"), keys: array(row.accounts, "bridge wrapper accounts").map((entry) => { const account = object(entry, "bridge wrapper account"); return { pubkey: new PublicKey(String(account.address)), isSigner: account.signer === true, isWritable: account.writable === true }; }) }); }
 
 export async function buildR03Plan(connection: Connection, admin: Keypair, delegated: Keypair): Promise<Json> {
   invariant(admin.publicKey.toBase58() === RWA_MULTIPLY_ROUTE.setupAdmin && delegated.publicKey.toBase58() === RWA_MULTIPLY_ROUTE.squads.delegatedExecutor, "R03 signer identities drifted");
@@ -186,7 +187,7 @@ export async function buildR03Plan(connection: Connection, admin: Keypair, deleg
   wires.push(sign("voltr-restore", "return", delegated, [await managerPayload("restore", returnAmount)], latest.value.blockhash));
   wires.push(sign("nav-refresh", "nav", delegated, [await managerPayload("nav", 0n)], latest.value.blockhash));
   const hold = { action: "HOLD", reason: "single_loop_position_ready", observationId: sha(`${LANE}:${latest.context.slot}`), slot: latest.context.slot, broadcast: false, signature: null };
-  return { schema: "loyal-backyard-rwa-phase2-runtime-signed-unsent/v1", lane: LANE, protectedAddresses: [RWA_MULTIPLY_ROUTE.squads.settings, RWA_MULTIPLY_ROUTE.squads.vault, lane.resolved.obligation, lane.resolved.collateralCustody.address, ...protectedBridgeAddresses], obligationAddress: lane.resolved.obligation, obligationAbsent: absent, hold, transactions: wires.map((row) => ({ role: row.role, phase: row.phase, signature: row.signature, packetBytes: row.wire.length, transactionBase64: Buffer.from(row.wire).toString("base64"), transactionSha256: sha(row.wire) })) };
+  return { schema: "loyal-backyard-rwa-phase2-runtime-signed-unsent/v1", lane: LANE, compiler: compilerProvenance, protectedAddresses: [RWA_MULTIPLY_ROUTE.squads.settings, RWA_MULTIPLY_ROUTE.squads.vault, lane.resolved.obligation, lane.resolved.collateralCustody.address, ...protectedBridgeAddresses], obligationAddress: lane.resolved.obligation, obligationAbsent: absent, hold, transactions: wires.map((row) => ({ role: row.role, phase: row.phase, signature: row.signature, packetBytes: row.wire.length, transactionBase64: Buffer.from(row.wire).toString("base64"), transactionSha256: sha(row.wire) })) };
 }
 
 async function main() { invariant(!process.argv.includes("--execute"), "this producer has no broadcast mode"); invariant(!existsSync(PLAN), `${PLAN} already exists`); const rpc = process.env.SOLANA_RPC_URL?.trim(); invariant(rpc, "SOLANA_RPC_URL is required"); const connection = new Connection(rpc, "confirmed"); invariant(await connection.getGenesisHash() === RWA_MULTIPLY_ROUTE.genesisHash, "RPC is not mainnet-beta"); const admin = Keypair.fromSecretKey((await signingMaterialFromEnvironment("SOLANA_TESTING_PK")).secretKey); const delegated = Keypair.fromSecretKey((await signingMaterialFromEnvironment("POLICY_KEYPAIR")).secretKey); const plan = await buildR03Plan(connection, admin, delegated); writeFileSync(PLAN, `${JSON.stringify(plan, null, 2)}\n`, { flag: "wx", mode: 0o600 }); console.log(JSON.stringify({ verdict: "PLAN_READY", broadcast: false, plan: PLAN, next: "go run ./go/backyard-rwa-worker/cmd/r03-signed-unsent-evidence --plan docs/evidence/backyard-rwa-go/phase2-runtime/r03-plan-v1.json --out docs/evidence/backyard-rwa-go/phase2-runtime/signed-unsent-v1.json" }, null, 2)); }
