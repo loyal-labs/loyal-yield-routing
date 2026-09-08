@@ -6,7 +6,7 @@
   "verdict": "SIMULATION_PASS_UNSENT",
   "broadcast": false,
   "before": {
-    "contextSlot": 445415567,
+    "contextSlot": 445424899,
     "epoch": 1031,
     "totalValue": "2793298",
     "idleBalance": "3793417",
@@ -113,7 +113,7 @@
       "field": "LockedProfitDegradationDuration",
       "oldValue": "86400",
       "newValue": "0",
-      "updatedTs": "1788894984"
+      "updatedTs": "1788897950"
     },
     {
       "admin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
@@ -121,7 +121,7 @@
       "field": "AdminPerformanceFee",
       "oldValue": "500",
       "newValue": "0",
-      "updatedTs": "1788894984"
+      "updatedTs": "1788897950"
     }
   ],
   "postState": {
