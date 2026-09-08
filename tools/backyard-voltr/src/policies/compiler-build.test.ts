@@ -48,20 +48,31 @@ test("compiler provenance is present and stable across consecutive compiles", as
     for (const artifact of [first, second]) {
       assert.match(artifact.compiler.compilerBinarySha256, /^[0-9a-f]{64}$/);
       assert.match(artifact.compiler.compilerBinarySha256AtExec, /^[0-9a-f]{64}$/);
+      assert.ok(["fd", "private-copy"].includes(artifact.compiler.compilerExecMode));
       assert.equal(
         artifact.compiler.compilerBinarySha256AtExec,
         artifact.compiler.compilerBinarySha256,
       );
       assert.match(artifact.compiler.compilerSourceTreeSha256, /^[0-9a-f]{64}$/);
-      assert.ok(artifact.compiler.compilerBinaryPath.startsWith(
-        `${REPOSITORY_ROOT}/target/backyard-voltr-compilers/`,
-      ));
+      if (artifact.compiler.compilerExecMode === "fd") {
+        assert.ok(artifact.compiler.compilerBinaryPath.startsWith(
+          `${REPOSITORY_ROOT}/target/backyard-voltr-compilers/`,
+        ));
+      } else {
+        assert.match(artifact.compiler.compilerBinaryPath, /loyal-voltr-compiler-/);
+      }
       assert.equal(
         artifact.compiler.compilerTargetDir,
         `${REPOSITORY_ROOT}/target/backyard-voltr-compilers`,
       );
     }
-    assert.deepEqual(first.compiler, second.compiler);
+    const stable = (compiler: typeof first.compiler) => ({
+      ...compiler,
+      compilerBinaryPath: compiler.compilerExecMode === "private-copy"
+        ? "<private-copy>"
+        : compiler.compilerBinaryPath,
+    });
+    assert.deepEqual(stable(first.compiler), stable(second.compiler));
   } finally {
     if (previous === undefined) {
       delete process.env.CARGO_TARGET_DIR;

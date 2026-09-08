@@ -1,15 +1,21 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   constants,
   fstatSync,
+  lstatSync,
+  mkdtempSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
   readSync,
+  fsyncSync,
+  writeSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +25,7 @@ export const COMPILER_TARGET_DIR_NAME = "target/backyard-voltr-compilers";
 export type CompilerProvenance = Readonly<{
   compilerBinarySha256: string;
   compilerBinarySha256AtExec: string;
+  compilerExecMode: "fd" | "private-copy";
   compilerBinaryPath: string;
   compilerTargetDir: string;
   compilerSourceTreeSha256: string;
@@ -158,25 +165,54 @@ function currentUid(): number {
   return uid;
 }
 
+function assertCompilerDescriptor(path: string, fd: number): ReturnType<typeof fstatSync> {
+  const stat = fstatSync(fd);
+  if (!stat.isFile()) throw new Error(`compiler binary ${path} is not a regular file`);
+  if (stat.uid !== currentUid()) throw new Error(`compiler binary ${path} is not owned by the current uid`);
+  if ((stat.mode & 0o022) !== 0) throw new Error(`compiler binary ${path} is group/other-writable`);
+  return stat;
+}
+
+function compilerBinarySha256FromOpenDescriptor(path: string, fd: number): string {
+  const stat = assertCompilerDescriptor(path, fd);
+  const size = Number(stat.size);
+  const digest = createHash("sha256");
+  const buffer = Buffer.alloc(64 * 1024);
+  let offset = 0;
+  while (offset < size) {
+    const count = readSync(fd, buffer, 0, Math.min(buffer.length, size - offset), offset);
+    if (count === 0) throw new Error(`compiler binary ${path} changed while hashing`);
+    digest.update(buffer.subarray(0, count));
+    offset += count;
+  }
+  const after = assertCompilerDescriptor(path, fd);
+  if (after.ino !== stat.ino || Number(after.size) !== size) {
+    throw new Error(`compiler binary ${path} changed while hashing`);
+  }
+  return digest.digest("hex");
+}
+
+function compilerBinaryBytesFromOpenDescriptor(path: string, fd: number): Buffer {
+  const stat = assertCompilerDescriptor(path, fd);
+  const size = Number(stat.size);
+  const bytes = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+    if (count === 0) throw new Error(`compiler binary ${path} changed while reading`);
+    offset += count;
+  }
+  const after = assertCompilerDescriptor(path, fd);
+  if (after.ino !== stat.ino || Number(after.size) !== size) {
+    throw new Error(`compiler binary ${path} changed while reading`);
+  }
+  return bytes;
+}
+
 function compilerBinarySha256FromDescriptor(path: string): string {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) throw new Error(`compiler binary ${path} is not a regular file`);
-    if (stat.uid !== currentUid()) throw new Error(`compiler binary ${path} is not owned by the current uid`);
-    if ((stat.mode & 0o022) !== 0) throw new Error(`compiler binary ${path} is group/other-writable`);
-    const digest = createHash("sha256");
-    const buffer = Buffer.alloc(64 * 1024);
-    let offset = 0;
-    while (offset < stat.size) {
-      const count = readSync(fd, buffer, 0, Math.min(buffer.length, stat.size - offset), offset);
-      if (count === 0) throw new Error(`compiler binary ${path} changed while hashing`);
-      digest.update(buffer.subarray(0, count));
-      offset += count;
-    }
-    const after = fstatSync(fd);
-    if (after.size !== stat.size) throw new Error(`compiler binary ${path} changed while hashing`);
-    return digest.digest("hex");
+    return compilerBinarySha256FromOpenDescriptor(path, fd);
   } finally {
     closeSync(fd);
   }
@@ -227,32 +263,97 @@ export function runRustCompiler<T>(
     repositoryRoot,
     plan.compilerTargetDir,
   );
-  const compilerBinarySha256 = compilerBinarySha256FromDescriptor(compilerBinaryPath);
-
-  const compiler = {
-    compilerBinarySha256,
-    compilerBinarySha256AtExec: assertCompilerBinaryAtExec(compilerBinaryPath, compilerBinarySha256),
-    compilerBinaryPath,
-    compilerTargetDir: plan.compilerTargetDir,
-    compilerSourceTreeSha256: compilerSourceTreeSha256(repositoryRoot),
-  } satisfies CompilerProvenance;
-  const run = spawnSync(compilerBinaryPath, [...(input.args ?? [])], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-    input: input.input,
-    maxBuffer: input.maxBuffer ?? 16 * 1024 * 1024,
-    env: childEnvironment,
-  });
-  if (run.error) throw run.error;
-  if (run.status !== 0) {
-    const detail = run.stderr.trim() || run.stdout.trim() || `exit ${run.status}`;
-    throw new Error(`${input.label} failed: ${detail}`);
-  }
-  let output: T;
+  const compilerFd = openSync(compilerBinaryPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let compilerBinarySha256: string;
+  let compilerBinarySha256AtExec: string;
+  let compilerExecMode: CompilerProvenance["compilerExecMode"];
+  let executedCompilerPath = compilerBinaryPath;
+  let run: ReturnType<typeof spawnSync>;
   try {
-    output = JSON.parse(run.stdout) as T;
-  } catch {
-    throw new Error(`${input.label} returned non-JSON output`);
+    compilerBinarySha256 = compilerBinarySha256FromOpenDescriptor(compilerBinaryPath, compilerFd);
+    const sourceTreeHash = compilerSourceTreeSha256(repositoryRoot);
+    // Keep the verified descriptor open across the child execution. On this
+    // macOS/Bun combination, direct `/dev/fd/3` execution returns EACCES, so
+    // the private-copy fallback below is the supported mode here.
+    const fdRun = spawnSync("/dev/fd/3", [...(input.args ?? [])], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      input: input.input,
+      maxBuffer: input.maxBuffer ?? 16 * 1024 * 1024,
+      env: childEnvironment,
+      stdio: ["pipe", "pipe", "pipe", compilerFd],
+    });
+    if (fdRun.error && ["EACCES", "ENOENT", "ENOTSUP"].includes((fdRun.error as NodeJS.ErrnoException).code ?? "")) {
+      const bytes = compilerBinaryBytesFromOpenDescriptor(compilerBinaryPath, compilerFd);
+      const privateDirectory = mkdtempSync(join(tmpdir(), "loyal-voltr-compiler-"));
+      chmodSync(privateDirectory, 0o700);
+      const privatePath = join(privateDirectory, basename(compilerBinaryPath));
+      const privateFd = openSync(
+        privatePath,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        0o700,
+      );
+      try {
+        let offset = 0;
+        while (offset < bytes.length) {
+          const written = writeSync(privateFd, bytes, offset, bytes.length - offset);
+          if (written === 0) throw new Error("private compiler copy write made no progress");
+          offset += written;
+        }
+        fsyncSync(privateFd);
+      } finally {
+        closeSync(privateFd);
+      }
+      const privateHash = compilerBinarySha256FromDescriptor(privatePath);
+      if (privateHash !== compilerBinarySha256) {
+        throw new Error(`COMPILER_BINARY_HASH_MISMATCH: private copy ${privatePath} differs from the verified descriptor`);
+      }
+      const privateInode = lstatSync(privatePath).ino;
+      // The copy lives in a mode-0700 directory. The residual same-uid window
+      // is rechecked by inode and hash immediately after the child exits.
+      run = spawnSync(privatePath, [...(input.args ?? [])], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        input: input.input,
+        maxBuffer: input.maxBuffer ?? 16 * 1024 * 1024,
+        env: childEnvironment,
+      });
+      const afterInode = lstatSync(privatePath).ino;
+      compilerBinarySha256AtExec = compilerBinarySha256FromDescriptor(privatePath);
+      if (afterInode !== privateInode || compilerBinarySha256AtExec !== compilerBinarySha256) {
+        throw new Error(`COMPILER_BINARY_HASH_MISMATCH: private compiler copy changed during execution`);
+      }
+      executedCompilerPath = privatePath;
+      compilerExecMode = "private-copy";
+    } else {
+      run = fdRun;
+      compilerBinarySha256AtExec = compilerBinarySha256FromOpenDescriptor(compilerBinaryPath, compilerFd);
+      if (compilerBinarySha256AtExec !== compilerBinarySha256) {
+        throw new Error(`COMPILER_BINARY_HASH_MISMATCH: verified compiler descriptor changed during execution`);
+      }
+      compilerExecMode = "fd";
+    }
+    if (run.error) throw run.error;
+    if (run.status !== 0) {
+      const detail = String(run.stderr ?? "").trim() || String(run.stdout ?? "").trim() || `exit ${run.status}`;
+      throw new Error(`${input.label} failed: ${detail}`);
+    }
+    const compiler = {
+      compilerBinarySha256,
+      compilerBinarySha256AtExec,
+      compilerExecMode,
+      compilerBinaryPath: executedCompilerPath,
+      compilerTargetDir: plan.compilerTargetDir,
+      compilerSourceTreeSha256: sourceTreeHash,
+    } satisfies CompilerProvenance;
+    let output: T;
+    try {
+      output = JSON.parse(String(run.stdout ?? "")) as T;
+    } catch {
+      throw new Error(`${input.label} returned non-JSON output`);
+    }
+    return { output, compiler };
+  } finally {
+    closeSync(compilerFd);
   }
-  return { output, compiler };
 }

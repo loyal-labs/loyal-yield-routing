@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   closeSync,
@@ -6,16 +7,18 @@ import {
   existsSync,
   fsyncSync,
   fstatSync,
+  linkSync,
   openSync,
   lstatSync,
   mkdirSync,
   renameSync,
   readSync,
   unlinkSync,
+  statSync,
   writeSync,
 } from "node:fs";
 import { hostname, userInfo } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export type JsonRecord = Record<string, unknown>;
 
@@ -137,9 +140,23 @@ function writeAll(fd: number, bytes: Uint8Array): void {
   }
 }
 
-function writeExclusivePrivate(path: string, bytes: Uint8Array): void {
+function syncDirectory(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function privateTemporaryPath(path: string): string {
+  return `${path}.tmp-${process.pid}-${Date.now()}-${randomBytes(8).toString("hex")}`;
+}
+
+function writePrivateTemporary(path: string, bytes: Uint8Array): string {
+  const temporary = privateTemporaryPath(path);
   const fd = openSync(
-    path,
+    temporary,
     constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
     0o600,
   );
@@ -149,12 +166,61 @@ function writeExclusivePrivate(path: string, bytes: Uint8Array): void {
   } finally {
     closeSync(fd);
   }
+  return temporary;
+}
+
+function unlinkPrivateTemporary(path: string): void {
+  try {
+    unlinkSync(path);
+    syncDirectory(dirname(path));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function writeExclusivePrivate(path: string, bytes: Uint8Array): void {
+  const temporary = writePrivateTemporary(path, bytes);
+  try {
+    // link(2) publishes the fully fsynced inode without exposing a partial file
+    // at the final name and fails atomically when the name is occupied.
+    linkSync(temporary, path);
+    syncDirectory(dirname(path));
+  } catch (error) {
+    unlinkPrivateTemporary(temporary);
+    throw error;
+  }
+  unlinkPrivateTemporary(temporary);
 }
 
 function atomicWritePrivate(path: string, value: JsonRecord): void {
-  const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
-  writeExclusivePrivate(temporary, Buffer.from(`${canonicalJson(value)}\n`));
-  renameSync(temporary, path);
+  const temporary = writePrivateTemporary(path, Buffer.from(`${canonicalJson(value)}\n`));
+  try {
+    renameSync(temporary, path);
+    syncDirectory(dirname(path));
+  } catch (error) {
+    unlinkPrivateTemporary(temporary);
+    throw error;
+  }
+}
+
+export function writePrivateExclusive(path: string, bytes: Uint8Array): void {
+  writeExclusivePrivate(path, bytes);
+}
+
+export function writePrivateAtomic(path: string, bytes: Uint8Array): void {
+  const temporary = writePrivateTemporary(path, bytes);
+  try {
+    renameSync(temporary, path);
+    syncDirectory(dirname(path));
+  } catch (error) {
+    unlinkPrivateTemporary(temporary);
+    throw error;
+  }
+}
+
+export function renamePrivateFile(from: string, to: string): void {
+  renameSync(from, to);
+  syncDirectory(dirname(from));
 }
 
 export function rewritePendingStatus(path: string, statusFields: Readonly<JsonRecord>): JsonRecord {
@@ -194,6 +260,31 @@ export function canonicalStateGeneration(value: JsonRecord): number {
   return generation as number;
 }
 
+export function readCanonicalState(path: string): Readonly<{
+  record: JsonRecord;
+  sha256: string;
+  bytes: Uint8Array;
+}> {
+  const result = readBoundJournal(path);
+  const generation = canonicalStateGeneration(result.record);
+  const generationPath = `${path}.gen-${generation}`;
+  let generationBytes: Uint8Array;
+  try {
+    generationBytes = readPrivateBytes(generationPath);
+  } catch (error) {
+    throw new Error(
+      `STATE_GENERATION_CONFLICT: canonical state ${path} is missing its generation audit inode`,
+      { cause: error },
+    );
+  }
+  if (!Buffer.from(result.bytes).equals(Buffer.from(generationBytes))) {
+    throw new Error(
+      `STATE_GENERATION_CONFLICT: canonical state ${path} does not match ${generationPath}`,
+    );
+  }
+  return result;
+}
+
 /**
  * Replace one canonical state record with a compare-and-swap generation bump.
  * The caller owns the section claim and must carry the expected generation
@@ -211,7 +302,7 @@ export function writeCanonicalStateCas(
 
   let current: JsonRecord | null = null;
   try {
-    current = readBoundJournal(path).record;
+    current = readCanonicalState(path).record;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -227,18 +318,57 @@ export function writeCanonicalStateCas(
     ...value,
     generation: (expectedGeneration ?? -1) + 1,
   };
+  const nextBytes = Buffer.from(`${canonicalJson(next)}\n`);
+  const temporary = writePrivateTemporary(path, nextBytes);
+  const generationPath = `${path}.gen-${next.generation}`;
+  let elected = false;
+  let renamed = false;
   try {
-    if (current === null) {
-      writeExclusivePrivate(path, Buffer.from(`${canonicalJson(next)}\n`));
-    } else {
-      atomicWritePrivate(path, next);
+    // The raw send is reachable only after this process won the `attempted`
+    // generation; no claim logic is relied upon for that guarantee.
+    try {
+      linkSync(temporary, generationPath);
+      elected = true;
+      syncDirectory(dirname(path));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new Error(
+          `STATE_GENERATION_CONFLICT: generation ${next.generation} is already elected`,
+          { cause: error },
+        );
+      }
+      throw error;
     }
+    // Only the hard-link winner reaches the reader-pointer rename.
+    renameSync(temporary, path);
+    renamed = true;
+    syncDirectory(dirname(path));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST"
-      || (error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error("STATE_GENERATION_CONFLICT: canonical state changed during write", { cause: error });
+    if (!elected) {
+      unlinkPrivateTemporary(temporary);
+    } else if (!renamed) {
+      // A failed pointer publish must not strand the next generation as a
+      // permanent conflict. A successful rename deliberately keeps the audit
+      // inode and is never cleaned up here.
+      try {
+        unlinkSync(generationPath);
+        syncDirectory(dirname(path));
+      } catch (cleanupError) {
+        if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") throw cleanupError;
+      }
+    }
+    if ((error as Error).message?.startsWith("STATE_GENERATION_CONFLICT")) throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("STATE_GENERATION_CONFLICT: canonical state changed during publish", { cause: error });
     }
     throw error;
+  } finally {
+    try {
+      unlinkSync(temporary);
+      syncDirectory(dirname(path));
+    } catch (cleanupError) {
+      if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") throw cleanupError;
+    }
   }
   return next;
 }
@@ -249,8 +379,11 @@ function validLegName(step: string): void {
 
 export type CanonicalLegClaim = Readonly<{
   path: string;
+  tokenPath: string;
+  inode: number;
   pid: number;
   startedAtUnixMs: number;
+  processStartTime: string;
   journal: string;
   hostname: string;
   token: string;
@@ -261,10 +394,32 @@ function claimPath(stateRoot: string, step: string): string {
   return join(stateRoot, `${step}.claim`);
 }
 
+function claimTokenPath(path: string, token: string): string {
+  if (!/^[0-9a-f]{32}$/.test(token)) throw new Error(`invalid HXTK claim token ${token}`);
+  return `${path}.${token}`;
+}
+
+function processStartTimeForPid(pid: number): string {
+  try {
+    const output = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (output.length === 0) throw new Error("ps returned no process start time");
+    return output;
+  } catch (error) {
+    if (pid === process.pid) return CURRENT_PROCESS_START_TIME;
+    throw new Error(`cannot determine process start time for pid ${pid}`, { cause: error });
+  }
+}
+
 function readClaim(path: string): CanonicalLegClaim {
+  const pointer = lstatSync(path);
+  if (pointer.isSymbolicLink()) throw new Error(`HXTK claim ${path} is a symbolic link`);
   const parsed = JSON.parse(Buffer.from(readPrivateBytes(path)).toString("utf8")) as Partial<CanonicalLegClaim>;
   if (!Number.isSafeInteger(parsed.pid) || (parsed.pid ?? 0) <= 0
     || typeof parsed.startedAtUnixMs !== "number"
+    || typeof parsed.processStartTime !== "string"
     || typeof parsed.journal !== "string"
     || typeof parsed.hostname !== "string"
     || typeof parsed.token !== "string"
@@ -273,8 +428,11 @@ function readClaim(path: string): CanonicalLegClaim {
   }
   return {
     path,
+    tokenPath: claimTokenPath(path, parsed.token),
+    inode: pointer.ino,
     pid: parsed.pid!,
     startedAtUnixMs: parsed.startedAtUnixMs,
+    processStartTime: parsed.processStartTime,
     journal: parsed.journal,
     hostname: parsed.hostname,
     token: parsed.token,
@@ -282,6 +440,13 @@ function readClaim(path: string): CanonicalLegClaim {
 }
 
 const PROCESS_CLAIM_TOKEN = randomBytes(16).toString("hex");
+const OWNED_CLAIM_TOKENS = new Set<string>();
+// macOS `ps` is the authoritative cross-process source. Sandboxed test
+// runners can deny that utility even for the current process, so retain a
+// process-local wall-clock start marker as the only same-process fallback.
+const CURRENT_PROCESS_START_TIME = new Date(
+  Date.now() - Math.round(process.uptime() * 1000),
+).toISOString();
 
 function claimOccupied(step: string, existing: CanonicalLegClaim): Error {
   return new Error(`another hxtk-reset process holds the ${step} claim: pid ${existing.pid}`);
@@ -300,6 +465,7 @@ function assertDeadLocalClaim(step: string, existing: CanonicalLegClaim): void {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
     throw error;
   }
+  if (processStartTimeForPid(existing.pid) !== existing.processStartTime) return;
   throw claimOccupied(step, existing);
 }
 
@@ -372,7 +538,7 @@ function finishBreakLease(lease: BreakLease): void {
   if (existing.token !== PROCESS_CLAIM_TOKEN || lease.token !== PROCESS_CLAIM_TOKEN) return;
   try {
     // Keep break cleanup rename-only: no break path is unlinked or reused.
-    renameSync(lease.path, `${lease.path}.done-${Date.now()}-${process.pid}`);
+    renamePrivateFile(lease.path, `${lease.path}.done-${Date.now()}-${process.pid}`);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -411,7 +577,7 @@ function acquireBreakLease(claimPath: string, step: string): BreakLease {
 
   const stalePath = `${path}.stale-${Date.now()}-${process.pid}`;
   try {
-    renameSync(path, stalePath);
+    renamePrivateFile(path, stalePath);
   } catch (renameError) {
     const code = (renameError as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === "EEXIST") return refuseAfterBreakRace(claimPath, step);
@@ -426,25 +592,45 @@ function acquireBreakLease(claimPath: string, step: string): BreakLease {
   }
 }
 
-function newClaim(path: string, journal: string): CanonicalLegClaim {
+function newClaim(path: string, journal: string): Omit<CanonicalLegClaim, "inode"> {
+  const token = randomBytes(16).toString("hex");
   return {
     path,
+    tokenPath: claimTokenPath(path, token),
     pid: process.pid,
     startedAtUnixMs: Date.now(),
+    processStartTime: processStartTimeForPid(process.pid),
     journal,
     hostname: hostname(),
-    token: PROCESS_CLAIM_TOKEN,
+    token,
   };
 }
 
-function createClaim(claim: CanonicalLegClaim): void {
-  writeExclusivePrivate(claim.path, Buffer.from(`${canonicalJson({
+function createClaim(claim: Omit<CanonicalLegClaim, "inode">): CanonicalLegClaim {
+  writeExclusivePrivate(claim.tokenPath, Buffer.from(`${canonicalJson({
     pid: claim.pid,
     startedAtUnixMs: claim.startedAtUnixMs,
+    processStartTime: claim.processStartTime,
     hostname: claim.hostname,
     journal: claim.journal,
     token: claim.token,
   })}\n`));
+  try {
+    linkSync(claim.tokenPath, claim.path);
+    syncDirectory(dirname(claim.path));
+  } catch (error) {
+    try {
+      unlinkSync(claim.tokenPath);
+      syncDirectory(dirname(claim.path));
+    } catch (cleanupError) {
+      if ((cleanupError as NodeJS.ErrnoException).code !== "ENOENT") throw cleanupError;
+    }
+    throw error;
+  }
+  const inode = statSync(claim.tokenPath).ino;
+  const owned = { ...claim, inode };
+  OWNED_CLAIM_TOKENS.add(claim.token);
+  return owned;
 }
 
 export function acquireCanonicalLegClaim(input: Readonly<{
@@ -458,8 +644,7 @@ export function acquireCanonicalLegClaim(input: Readonly<{
   const breakLease = input.breakClaim ? acquireBreakLease(path, input.step) : null;
   try {
     try {
-      createClaim(claim);
-      return claim;
+      return createClaim(claim);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       let existing: CanonicalLegClaim;
@@ -476,9 +661,13 @@ export function acquireCanonicalLegClaim(input: Readonly<{
       }
 
       assertDeadLocalClaim(input.step, existing);
-      const brokenPath = `${path}.broken-${Date.now()}-${process.pid}`;
+      const brokenPath = `${existing.tokenPath}.broken-${Date.now()}-${process.pid}`;
       try {
-        renameSync(path, brokenPath);
+        // Break the exact dead token inode inspected above. The fixed pointer
+        // remains in place until its inode is checked immediately before the
+        // unlink, so a replacement live claim cannot be removed by an ABA
+        // breaker.
+        renamePrivateFile(existing.tokenPath, brokenPath);
       } catch (renameError) {
         const code = (renameError as NodeJS.ErrnoException).code;
         if (code === "ENOENT" || code === "EEXIST") {
@@ -486,9 +675,26 @@ export function acquireCanonicalLegClaim(input: Readonly<{
         }
         throw renameError;
       }
+      let pointer: ReturnType<typeof statSync>;
       try {
-        createClaim(claim);
-        return claim;
+        pointer = statSync(path);
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === "ENOENT") {
+          return refuseAfterBreakRace(path, input.step);
+        }
+        throw statError;
+      }
+      if (pointer.ino !== existing.inode) return refuseAfterBreakRace(path, input.step);
+      try {
+        unlinkSync(path);
+        syncDirectory(dirname(path));
+      } catch (unlinkError) {
+        const code = (unlinkError as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "EEXIST") return refuseAfterBreakRace(path, input.step);
+        throw unlinkError;
+      }
+      try {
+        return createClaim(claim);
       } catch (createError) {
         if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError;
         let replacement: CanonicalLegClaim;
@@ -509,22 +715,41 @@ export function acquireCanonicalLegClaim(input: Readonly<{
 }
 
 export function releaseCanonicalLegClaim(claim: CanonicalLegClaim): void {
-  let existing: CanonicalLegClaim;
-  try {
-    existing = readClaim(claim.path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-  if (existing.token !== PROCESS_CLAIM_TOKEN || claim.token !== PROCESS_CLAIM_TOKEN) {
-    console.warn("claim owned by another process; not released");
+  if (!OWNED_CLAIM_TOKENS.has(claim.token)) {
+    console.warn("claim token is not owned by this process; not released");
     return;
   }
+  let tokenStat: ReturnType<typeof statSync>;
   try {
-    unlinkSync(claim.path);
+    tokenStat = statSync(claim.tokenPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      OWNED_CLAIM_TOKENS.delete(claim.token);
+      return;
+    }
+    throw error;
   }
+  let pointerStat: ReturnType<typeof statSync>;
+  try {
+    pointerStat = statSync(claim.path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      unlinkSync(claim.tokenPath);
+      syncDirectory(dirname(claim.path));
+      OWNED_CLAIM_TOKENS.delete(claim.token);
+      return;
+    }
+    throw error;
+  }
+  if (pointerStat.ino !== tokenStat.ino) {
+    console.warn("claim pointer inode changed; not released");
+    return;
+  }
+  unlinkSync(claim.path);
+  syncDirectory(dirname(claim.path));
+  unlinkSync(claim.tokenPath);
+  syncDirectory(dirname(claim.path));
+  OWNED_CLAIM_TOKENS.delete(claim.token);
 }
 
 export type CanonicalLegStateStatus =

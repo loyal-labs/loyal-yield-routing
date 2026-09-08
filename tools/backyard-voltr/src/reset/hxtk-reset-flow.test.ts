@@ -4,7 +4,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Keypair, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 
-import { buildRepairRecoveryCommands, runJournaledStepForTest } from "./hxtk-reset.js";
+import {
+  JournalTransitionFault,
+  buildRepairRecoveryCommands,
+  runJournaledStepForTest,
+  type JournalTransitionStep,
+} from "./hxtk-reset.js";
 import { parseHxtkCli } from "./hxtk-cli.js";
 import { resolveCanonicalStateRoot } from "./hxtk-fence.js";
 
@@ -72,44 +77,54 @@ function fixture() {
   return { root, stateRoot, journal, prepared, finalized, input };
 }
 
-function deps(fx: ReturnType<typeof fixture>, options: Readonly<{ send?: () => Promise<unknown>; finalize?: () => Promise<unknown> }> = {}) {
+function deps(fx: ReturnType<typeof fixture>, options: Readonly<{
+  send?: () => Promise<unknown>;
+  finalize?: () => Promise<unknown>;
+  faultAfterTransitionStep?: (step: JournalTransitionStep) => void | Promise<void>;
+}> = {}) {
   return {
     stateRoot: fx.stateRoot,
     sendPreparedOnce: (options.send ?? (async () => ({ signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 }))) as never,
     finalizedTransaction: (options.finalize ?? (async () => fx.finalized)) as never,
+    faultAfterTransitionStep: options.faultAfterTransitionStep,
   };
 }
 
 describe("HXtk journaled flow", () => {
   test("repair recovery commands carry the complete parser-visible provenance", () => {
-    const commands = buildRepairRecoveryCommands({
+    const base = {
       repairJournal: "/tmp/hxtk-repair.json",
       policyJournal: "/tmp/hxtk-repair-policy.json",
       policyRemoveJournal: "/tmp/hxtk-repair.policy-remove.json",
-      removalStatus: "attempted",
+    } as const;
+    for (const [status, mode] of [
+      ["pending", "reconcile"],
+      ["attempted", "reconcile"],
+      ["aborted-pre-send", "execute"],
+      [null, "execute"],
+    ] as const) {
+      const commands = buildRepairRecoveryCommands({ ...base, removalStatus: status });
+      expect(commands).toHaveLength(2);
+      const repair = parseHxtkCli(commands[0]!.split(/\s+/));
+      expect(repair).toMatchObject({ step: "repair", mode: "reconcile" });
+      expect(repair.value("--policy-journal")).toBe(base.policyJournal);
+      expect(repair.value("--journal")).toBe(base.repairJournal);
+      const removal = parseHxtkCli(commands[1]!.split(/\s+/));
+      expect(removal).toMatchObject({ step: "repair-policy-remove", mode });
+      expect(removal.value("--expect-seed")).toBe("140");
+      expect(removal.value("--policy-journal")).toBe(base.policyJournal);
+      expect(removal.value("--repair-journal")).toBe(base.repairJournal);
+      expect(removal.value("--journal")).toBe(base.policyRemoveJournal);
+      if (mode === "execute") {
+        expect(commands[1]).toStartWith("op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk ");
+      }
+    }
+    const finalized = buildRepairRecoveryCommands({ ...base, removalStatus: "finalized" });
+    expect(finalized[1]).toBe("repair-policy-remove already finalized; verify with bun run reset:hxtk verify");
+    expect(parseHxtkCli(finalized[1]!.split("verify with ")[1]!.split(/\s+/))).toMatchObject({
+      step: "verify",
+      mode: null,
     });
-    expect(commands).toHaveLength(2);
-    const parsed = commands.map((command) => parseHxtkCli(command.split(/\s+/)));
-    expect(parsed[0]).toMatchObject({ step: "repair", mode: "reconcile" });
-    expect(parsed[0]!.has("--expect-seed")).toBe(true);
-    expect(parsed[0]!.value("--expect-seed")).toBe("140");
-    expect(parsed[0]!.value("--policy-journal")).toBe("/tmp/hxtk-repair-policy.json");
-    expect(parsed[0]!.value("--journal")).toBe("/tmp/hxtk-repair.json");
-    expect(parsed[1]).toMatchObject({ step: "repair-policy-remove", mode: "reconcile" });
-    expect(parsed[1]!.value("--expect-seed")).toBe("140");
-    expect(parsed[1]!.value("--policy-journal")).toBe("/tmp/hxtk-repair-policy.json");
-    expect(parsed[1]!.value("--repair-journal")).toBe("/tmp/hxtk-repair.json");
-    expect(parsed[1]!.value("--journal")).toBe("/tmp/hxtk-repair.policy-remove.json");
-    const executeCommands = buildRepairRecoveryCommands({
-      repairJournal: "/tmp/hxtk-repair.json",
-      policyJournal: "/tmp/hxtk-repair-policy.json",
-      policyRemoveJournal: "/tmp/hxtk-repair.policy-remove.json",
-      removalStatus: null,
-    });
-    const executeParsed = parseHxtkCli(executeCommands[1]!.split(/\s+/));
-    expect(executeCommands[1]).toStartWith("op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk ");
-    expect(executeParsed).toMatchObject({ step: "repair-policy-remove", mode: "execute" });
-    expect(executeParsed.value("--repair-journal")).toBe("/tmp/hxtk-repair.json");
   });
 
   test("send failure leaves attempted state and reconcile finalizes without resend", async () => {
@@ -210,5 +225,113 @@ describe("HXtk journaled flow", () => {
     })).rejects.toThrow("STATE_GENERATION_CONFLICT");
     expect(sends).toBe(0);
     expect(existsSync(join(fx.stateRoot, "flow-test.claim"))).toBe(false);
+  });
+
+  test("fresh execution resumes every finalized transition boundary without a second send", async () => {
+    for (const transitionStep of ["final-journal", "sent-wire", "finalized-state"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        },
+        faultAfterTransitionStep: (step) => {
+          if (step === transitionStep) throw new JournalTransitionFault(step);
+        },
+      }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: " + transitionStep);
+      expect(sends).toBe(1);
+      expect(await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          throw new Error("must not send twice");
+        },
+      }))).toBe(0);
+      expect(sends).toBe(1);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+      expect(existsSync(`${fx.journal}.pending`)).toBe(false);
+      expect(existsSync(`${fx.journal}.sent-wire`)).toBe(true);
+    }
+  });
+
+  test("fresh execution resumes every aborted-pre-send transition boundary and re-arms", async () => {
+    for (const transitionStep of ["aborted-pending", "aborted-journal", "aborted-state"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      const aborting = {
+        ...fx.input(fx.journal, "execute"),
+        build: async () => ({
+          prepared: fx.prepared,
+          plan: { transaction: { kind: "test" } },
+          beforeSend: async () => { throw new Error("prestate changed"); },
+        }),
+      };
+      await expect(runJournaledStepForTest(aborting, deps(fx, {
+        faultAfterTransitionStep: (step) => {
+          if (step === transitionStep) throw new JournalTransitionFault(step);
+        },
+      }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: " + transitionStep);
+      expect(sends).toBe(0);
+      expect(await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        },
+      }))).toBe(0);
+      expect(sends).toBe(1);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+      expect(existsSync(`${fx.journal}.pending`)).toBe(false);
+    }
+  });
+
+  test("two Bun processes racing one leg elect one generation and send once", async () => {
+    const root = mkdtempSync(join("/tmp", "hxtk-race-"));
+    roots.push(root);
+    const stateRoot = resolveCanonicalStateRoot({ vault: "HXtk", homeDir: root, create: true });
+    const startFile = join(root, "start");
+    const sendCounter = join(root, "sends");
+    writeFileSync(sendCounter, "", { mode: 0o600 });
+    const childPath = join(import.meta.dir, "hxtk-reset-race-child.ts");
+    const children = [0, 1].map((childId) => Bun.spawn([
+      process.execPath,
+      "run",
+      childPath,
+    ], {
+      cwd: join(import.meta.dir, "../.."),
+      env: {
+        PATH: process.env.PATH ?? "",
+        HXTK_FAKE_RPC: "1",
+        HXTK_RACE_STATE_ROOT: stateRoot,
+        HXTK_RACE_START_FILE: startFile,
+        HXTK_RACE_SEND_COUNTER: sendCounter,
+        HXTK_RACE_DIRECTORY: root,
+        HXTK_RACE_CHILD_ID: String(childId),
+        HXTK_RACE_JOURNAL: join(root, "race-" + childId + ".json"),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    writeFileSync(startFile, "go\n", { mode: 0o600 });
+    const results = await Promise.all(children.map(async (child) => {
+      const stdout = await new Response(child.stdout).text();
+      const stderr = await new Response(child.stderr).text();
+      const exitCode = await child.exited;
+      const line = stdout.split(/\r?\n/).filter((entry) => entry.startsWith("RACE_RESULT ")).pop();
+      return {
+        exitCode,
+        stdout,
+        stderr,
+        result: line ? JSON.parse(line.slice("RACE_RESULT ".length)) as {
+          ok: boolean;
+          error?: string;
+        } : null,
+      };
+    }));
+    const sentPids = readFileSync(sendCounter, "utf8").trim().split(/\r?\n/).filter(Boolean);
+    expect(sentPids).toHaveLength(1);
+    expect(results.filter((result) => result.result?.ok)).toHaveLength(1);
+    expect(results.filter((result) => result.result?.error?.includes("STATE_GENERATION_CONFLICT"))).toHaveLength(1);
+    expect(results.every((result) => result.exitCode === 0)).toBe(true);
   });
 });
