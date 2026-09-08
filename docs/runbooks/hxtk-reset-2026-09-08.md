@@ -429,9 +429,9 @@ be proved.
 The final adversarial audit of this tool (fleet/integration `2fe25fa`) confirmed
 that two clean concurrent invocations cannot both reach the raw send, that the
 evidence decodes to the pinned 837-byte PolicyCreate, and that every canonical
-state write is generation-elected. It did not clear the crash-then-recovery
-paths. Until those are fixed, the following rules are mandatory for every
-`--execute` and `--reconcile` invocation:
+state write is generation-elected. The recovery-path hardening in commit
+`23d62a8` adds the same guarantees to crash recovery. The following rules stay
+mandatory for every `--execute` and `--reconcile` invocation:
 
 1. **One process per leg, one operator, one machine.** Never start a second
    `reset:hxtk` invocation for this vault while another is running or while the
@@ -442,36 +442,57 @@ paths. Until those are fixed, the following rules are mandatory for every
    `bun run reset:hxtk verify --simulate` and read the on-chain state for the
    leg you were executing (receipt values, pending request receipt, the policy
    at seed 140, config values). Then run `--reconcile` with the SAME journal
-   path. Continue only when the reconcile result agrees with the chain.
-3. **Never reuse a journal path that has an `.aborted-<ms>.json` sibling, and
-   never trust a recovery result that reports `aborted` for a leg whose send may
-   have landed.** Abort artifacts are not yet bound to the attempt that produced
-   them; an old abort record can be misapplied after a crash mid-send and would
-   let a fresh journal send again. The chain readback in rule 2 is the
-   authority.
+   path. Continue only when the reconcile result agrees with the chain. An
+   attempted record is never downgraded by an abort artifact; reconciliation
+   can finalize it from the expected signature or re-arm it only after the
+   recorded blockhash validity height is proven passed.
+3. **Treat abort artifacts as attempt-bound evidence.** Their name is
+   `<journal>.aborted-<unix-ms>-<attemptToken>.json`; the content repeats the
+   16-byte attempt token, canonical generation, journal binding hash, pending
+   binding hash, signed wire, and expected signature. Recovery applies one only
+   when all bindings match the current `pending` record. Foreign or legacy
+   artifacts are stale; a foreign artifact blocks reuse unless the current
+   state is already `aborted-pre-send`.
 4. **Never delete, rename, or edit files under the canonical state root**
-   (`~/.loyal/hxtk-reset/<vault>/`). If the tool reports
-   `STATE_GENERATION_CONFLICT`, a stranded `.gen-N` file, or a claim that cannot
-   be released after a crash, stop and inspect the directory listing and the
-   chain; do not force through with `--break-claim`. `--break-claim` is only for
-   a claim whose recorded pid is proven dead on this host, and a break that was
-   interrupted between the token rename and the pointer unlink must be
-   inspected by hand.
+   (`~/.loyal/hxtk-reset/<vault>/`). Claim-held readers roll a pointer forward
+   from the highest contiguous `.gen-N`; read-only/simulate paths report
+   `STATE_POINTER_BEHIND` with the generation numbers. Claim breaks use an
+   elected breaking marker and inode-checked unlink, and `--break-claim` is only
+   for a claim whose recorded pid and start time are proven dead on this host.
 5. **Do not rely on the tool alone for the second-send guarantee.** Each leg
    also has on-chain guards (the one-shot policy at seed 140, the adaptor
    ticket-sequence check, the exact-payout claim fence, receipt state), but the
-   audit did not prove per-leg idempotence for every leg; the simulate
-   immediately before each send is what catches a repeat.
+   simulate immediately before each send is what catches a repeat. Keep fees at
+   zero and preserve the Option A operating rules until the external gates are
+   deliberately changed.
 
-Known gaps recorded by the audit, to be fixed before this tool is reused for
-any other vault: abort artifacts are not bound to attempts; a crash between the
-generation hard link and the pointer rename strands `.gen-(g+1)`; a crash
-between the canonical `pending` write and journal publication has no
-reconcilable recovery; a crash before the attempted mark can leave the leg
-recorded as `attempted` with no send; claim break and break-lease takeover are
-not fully crash- and identity-safe; the macOS private-copy compiler fallback
-executes by pathname between its hash checks; the recovery-command parser test
-covers only the repair and removal legs.
+No known gaps remain after commit `23d62a8`; the rules stay mandatory.
+
+## Recovery matrix
+
+`attemptToken` is a random 16-byte lowercase hex value created with the
+canonical `pending` record and carried into the `attempted` record. It is also
+stored in every abort artifact, whose exact name is
+`<journal>.aborted-<unix-ms>-<attemptToken>.json`. A canonical `attempted`
+record is changed only by signature reconciliation or by the blockhash-expiry
+reconciliation path after the current finalized block height is greater than
+its recorded `lastValidBlockHeight`.
+
+| Canonical state | Artifacts present | Fresh `--execute` | Fresh `--reconcile` | Fresh `--simulate` | Fresh `--break-claim` |
+| --- | --- | --- | --- | --- | --- |
+| `none` | none | Builds and elects a new `pending` generation; only that sender may mark `attempted`. | Refuses: there is no attempted canonical binding to reconcile. | Reads and reports the pre-reset gate; writes no state. | Repairs only a proven-dead claim; otherwise leaves the leg untouched. |
+| `none` | stranded `.gen-N` | Claim-held read rolls the pointer to the highest contiguous generation, then applies the normal journal barrier. | Same roll-forward while the claim is held; no new attempted record. | Reports `STATE_POINTER_BEHIND` and generation numbers; writes no pointer. | Resumes an elected break marker if present, then applies the dead-claim test. |
+| `pending` | `.pending` journal | Validates the token/binding; a pre-send failure becomes an attempt-bound `aborted-pre-send`; it never sends from recovery. | Applies only the matching pre-send abort and leaves the leg re-armable; never writes `attempted`. | Reports the pending binding and writes no transition. | Handles only the independent claim; it cannot alter the canonical leg. |
+| `pending` | journal only, no `.pending` | Publishes an attempt-bound synthetic abort through the generation election; the leg may be re-run. | Same self-sufficient pre-send recovery; no send. | Reports the recoverable pending condition; writes no abort or pointer. | Handles only the independent claim. |
+| `pending` | bound abort artifact | Refuses reuse of the same pending attempt; the next send must re-arm from `aborted-pre-send`. | Applies the artifact only when token, generation, journal binding, and pending binding all match. | Lists the artifact as matching evidence; writes nothing. | Handles only the independent claim. |
+| `pending` | foreign abort artifact | Refuses with `JOURNAL_HAS_FOREIGN_ABORT_ARTIFACT`. | Ignores it for state transition and lists it in `staleAbortArtifacts`. | Lists it as stale; writes nothing. | Handles only the independent claim. |
+| `attempted` | `.pending` journal | Refuses a fresh send and refuses artifact-driven downgrade. | Checks the expected signature; finalizes on chain proof, or re-arms only after blockhash expiry is proven. | Reports attempted and its validity height; writes nothing. | Handles only the independent claim. |
+| `attempted` | final journal | Refuses filename-only promotion and a second send. | Requires the chain signature/message proof before `finalized`; otherwise keeps `attempted`. | Reports the final journal as non-authoritative without chain proof. | Handles only the independent claim. |
+| `attempted` | foreign abort artifact | Refuses; an abort artifact can never move `attempted`. | Lists it as stale and reconciles the attempted record independently. | Lists it as stale; writes nothing. | Handles only the independent claim. |
+| `aborted-pre-send` | abort artifact(s) | May re-arm with a new attempt token when the journal/leg policy permits; stale artifacts remain visible. | Does not send; reports the abort and its bindings. | Reports re-armable state and stale artifacts; writes nothing. | Handles only the independent claim. |
+| `finalized` | final journal | Emits `already finalized`; no new send. | Emits `already finalized` with the verification command. | Emits the same recovery command; writes nothing. | Handles only the independent claim. |
+| any state | dead claim | Takes over only through the token/inode election and dead-process proof. | Same claim takeover rules; it does not change a leg state by itself. | Reports the claim/deadness decision; writes no takeover. | Completes a resumable breaking marker and unlinks only on inode match. |
+| any state | breaking marker or renamed token | Resumes the marker before proceeding; a live replacement claim is never removed. | Resumes the marker without creating an attempted record. | Reports the marker and identity mismatch if present; writes nothing. | Completes the marker idempotently, then removes only the recorded dead inode. |
 
 ## Canonical state root and replay recovery
 
@@ -504,18 +525,22 @@ state history. A one-shot leg, or any leg still `pending` or `attempted`, may
 not use this recovery path.
 
 If the pre-send snapshot gate fails, the tool aborts before the attempted mark
-and before the sole raw-send call. It moves the signed wire to
-`<journal>.aborted-<unix ms>.json`, records `status: "aborted-pre-send"`, and
-leaves no `.pending` file to reconcile. Recheck finalized state, then rerun
-the same leg with the same or a new journal and no `--allow-repeat`:
+and before the sole raw-send call. It moves the self-sufficient signed wire to
+`<journal>.aborted-<unix-ms>-<attemptToken>.json`, records
+`status: "aborted-pre-send"`, and leaves no `.pending` file to reconcile.
+Recheck finalized state, then rerun the same leg with the same or a new journal
+and no `--allow-repeat`:
 
 ```sh
 op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk repair --expect-seed 140 --policy-journal /absolute/path/hxtk-repair-policy.json --execute --journal /absolute/path/hxtk-repair.json
 ```
 
-`--reconcile` always refuses an aborted journal. Any exception after the
+`--reconcile` never sends from an aborted journal. Any exception after the
 attempted mark keeps the leg `attempted`; use the same journal's reconcile path
-after checking whether the expected signature finalized.
+after checking whether the expected signature finalized. A pre-send crash with
+canonical `pending` but no published journal produces the same bound
+`aborted-pre-send` recovery record, because the raw send is unreachable before
+the attempted mark.
 
 ## Idempotency and journal policy
 
