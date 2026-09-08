@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   closeSync,
   constants,
   existsSync,
+  fsyncSync,
   fstatSync,
   openSync,
   lstatSync,
@@ -11,7 +12,7 @@ import {
   renameSync,
   readSync,
   unlinkSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { join, resolve } from "node:path";
@@ -127,10 +128,32 @@ const SEND_STATUS_FIELDS = new Set([
   "signature",
 ]);
 
+function writeAll(fd: number, bytes: Uint8Array): void {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = writeSync(fd, bytes, offset, bytes.length - offset);
+    if (written === 0) throw new Error("private HXTK file write made no progress");
+    offset += written;
+  }
+}
+
+function writeExclusivePrivate(path: string, bytes: Uint8Array): void {
+  const fd = openSync(
+    path,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    writeAll(fd, bytes);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function atomicWritePrivate(path: string, value: JsonRecord): void {
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(temporary, `${canonicalJson(value)}\n`, { flag: "wx", mode: 0o600 });
-  chmodSync(temporary, 0o600);
+  writeExclusivePrivate(temporary, Buffer.from(`${canonicalJson(value)}\n`));
   renameSync(temporary, path);
 }
 
@@ -163,6 +186,63 @@ export function rewritePendingStatus(path: string, statusFields: Readonly<JsonRe
   return next;
 }
 
+export function canonicalStateGeneration(value: JsonRecord): number {
+  const generation = value.generation;
+  if (!Number.isSafeInteger(generation) || (generation as number) < 0) {
+    throw new Error("STATE_GENERATION_CONFLICT: canonical state has no valid integer generation");
+  }
+  return generation as number;
+}
+
+/**
+ * Replace one canonical state record with a compare-and-swap generation bump.
+ * The caller owns the section claim and must carry the expected generation
+ * forward after each successful write.
+ */
+export function writeCanonicalStateCas(
+  path: string,
+  value: JsonRecord,
+  expectedGeneration: number | null,
+): JsonRecord {
+  if (expectedGeneration !== null
+    && (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0)) {
+    throw new Error("STATE_GENERATION_CONFLICT: expected generation is invalid");
+  }
+
+  let current: JsonRecord | null = null;
+  try {
+    current = readBoundJournal(path).record;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const actualGeneration = current === null ? null : canonicalStateGeneration(current);
+  if (actualGeneration !== expectedGeneration) {
+    throw new Error(
+      `STATE_GENERATION_CONFLICT: expected generation ${expectedGeneration ?? "absent"}, `
+      + `found ${actualGeneration ?? "absent"}`,
+    );
+  }
+
+  const next = {
+    ...value,
+    generation: (expectedGeneration ?? -1) + 1,
+  };
+  try {
+    if (current === null) {
+      writeExclusivePrivate(path, Buffer.from(`${canonicalJson(next)}\n`));
+    } else {
+      atomicWritePrivate(path, next);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST"
+      || (error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("STATE_GENERATION_CONFLICT: canonical state changed during write", { cause: error });
+    }
+    throw error;
+  }
+  return next;
+}
+
 function validLegName(step: string): void {
   if (!/^[a-z0-9-]+$/.test(step)) throw new Error(`invalid canonical HXtk leg name ${step}`);
 }
@@ -173,6 +253,7 @@ export type CanonicalLegClaim = Readonly<{
   startedAtUnixMs: number;
   journal: string;
   hostname: string;
+  token: string;
 }>;
 
 function claimPath(stateRoot: string, step: string): string {
@@ -185,10 +266,71 @@ function readClaim(path: string): CanonicalLegClaim {
   if (!Number.isSafeInteger(parsed.pid) || (parsed.pid ?? 0) <= 0
     || typeof parsed.startedAtUnixMs !== "number"
     || typeof parsed.journal !== "string"
-    || typeof parsed.hostname !== "string") {
+    || typeof parsed.hostname !== "string"
+    || typeof parsed.token !== "string"
+    || !/^[0-9a-f]{32}$/.test(parsed.token)) {
     throw new Error(`HXTK claim ${path} is malformed; refusing to break it`);
   }
-  return { path, pid: parsed.pid!, startedAtUnixMs: parsed.startedAtUnixMs, journal: parsed.journal, hostname: parsed.hostname };
+  return {
+    path,
+    pid: parsed.pid!,
+    startedAtUnixMs: parsed.startedAtUnixMs,
+    journal: parsed.journal,
+    hostname: parsed.hostname,
+    token: parsed.token,
+  };
+}
+
+const PROCESS_CLAIM_TOKEN = randomBytes(16).toString("hex");
+
+function claimOccupied(step: string, existing: CanonicalLegClaim): Error {
+  return new Error(`another hxtk-reset process holds the ${step} claim: pid ${existing.pid}`);
+}
+
+function assertDeadLocalClaim(step: string, existing: CanonicalLegClaim): void {
+  const localHostname = hostname();
+  if (existing.hostname !== localHostname) {
+    throw new Error(
+      `cannot break ${step} claim from hostname ${existing.hostname}; expected ${localHostname}`,
+    );
+  }
+  try {
+    process.kill(existing.pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+    throw error;
+  }
+  throw claimOccupied(step, existing);
+}
+
+function refuseAfterBreakRace(path: string, step: string): never {
+  try {
+    throw claimOccupied(step, readClaim(path));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  throw new Error(`another hxtk-reset process won breaking the ${step} claim; refusing to acquire it`);
+}
+
+function newClaim(path: string, journal: string): CanonicalLegClaim {
+  return {
+    path,
+    pid: process.pid,
+    startedAtUnixMs: Date.now(),
+    journal,
+    hostname: hostname(),
+    token: PROCESS_CLAIM_TOKEN,
+  };
+}
+
+function createClaim(claim: CanonicalLegClaim): void {
+  writeExclusivePrivate(claim.path, Buffer.from(`${canonicalJson({
+    pid: claim.pid,
+    startedAtUnixMs: claim.startedAtUnixMs,
+    hostname: claim.hostname,
+    journal: claim.journal,
+    token: claim.token,
+  })}\n`));
 }
 
 export function acquireCanonicalLegClaim(input: Readonly<{
@@ -198,36 +340,67 @@ export function acquireCanonicalLegClaim(input: Readonly<{
   breakClaim?: boolean;
 }>): CanonicalLegClaim {
   const path = claimPath(input.stateRoot, input.step);
-  const claim = {
-    pid: process.pid,
-    startedAtUnixMs: Date.now(),
-    journal: input.journal,
-    hostname: hostname(),
-  } satisfies Omit<CanonicalLegClaim, "path">;
+  const claim = newClaim(path, input.journal);
   try {
-    writeFileSync(path, `${canonicalJson(claim)}\n`, { flag: "wx", mode: 0o600 });
-    chmodSync(path, 0o600);
-    return { path, ...claim };
+    createClaim(claim);
+    return claim;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const existing = readClaim(path);
+    let existing: CanonicalLegClaim;
+    try {
+      existing = readClaim(path);
+    } catch (readError) {
+      if ((readError as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(`HXTK ${input.step} claim disappeared while acquiring; retry`, { cause: readError });
+      }
+      throw readError;
+    }
     if (!input.breakClaim) {
-      throw new Error(`another hxtk-reset process holds the ${input.step} claim: pid ${existing.pid}`);
+      throw claimOccupied(input.step, existing);
+    }
+
+    assertDeadLocalClaim(input.step, existing);
+    const brokenPath = `${path}.broken-${Date.now()}-${process.pid}`;
+    try {
+      renameSync(path, brokenPath);
+    } catch (renameError) {
+      const code = (renameError as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "EEXIST") {
+        return refuseAfterBreakRace(path, input.step);
+      }
+      throw renameError;
     }
     try {
-      process.kill(existing.pid, 0);
-      throw new Error(`another hxtk-reset process holds the ${input.step} claim: pid ${existing.pid}`);
-    } catch (probeError) {
-      if ((probeError as NodeJS.ErrnoException).code !== "ESRCH") throw probeError;
+      createClaim(claim);
+      return claim;
+    } catch (createError) {
+      if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError;
+      let replacement: CanonicalLegClaim;
+      try {
+        replacement = readClaim(path);
+      } catch (readError) {
+        if ((readError as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new Error(`another hxtk-reset process won breaking the ${input.step} claim; refusing to acquire it`, { cause: readError });
+        }
+        throw readError;
+      }
+      throw claimOccupied(input.step, replacement);
     }
-    unlinkSync(path);
-    writeFileSync(path, `${canonicalJson(claim)}\n`, { flag: "wx", mode: 0o600 });
-    chmodSync(path, 0o600);
-    return { path, ...claim };
   }
 }
 
 export function releaseCanonicalLegClaim(claim: CanonicalLegClaim): void {
+  let existing: CanonicalLegClaim;
+  try {
+    existing = readClaim(claim.path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (existing.token !== PROCESS_CLAIM_TOKEN || claim.token !== PROCESS_CLAIM_TOKEN) {
+    console.warn("claim owned by another process; not released");
+    return;
+  }
   try {
     unlinkSync(claim.path);
   } catch (error) {

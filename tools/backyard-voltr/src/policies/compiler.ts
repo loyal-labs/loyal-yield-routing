@@ -289,6 +289,7 @@ function assertArtifact(value: unknown): asserts value is RuntimePolicyArtifact 
     || !/^[0-9a-f]{64}$/.test(artifact.artifactSha256 ?? "")
     || !artifact.compiler
     || !/^[0-9a-f]{64}$/.test(artifact.compiler.compilerBinarySha256)
+    || artifact.compiler.compilerBinarySha256AtExec !== artifact.compiler.compilerBinarySha256
     || !/^[0-9a-f]{64}$/.test(artifact.compiler.compilerSourceTreeSha256)
     || !artifact.compiler.compilerBinaryPath.endsWith(`/debug/${COMPILER_BIN}`)
     || !artifact.compiler.compilerTargetDir.endsWith("/target/backyard-voltr-compilers")

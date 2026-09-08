@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 
@@ -9,6 +10,7 @@ import {
   acquireCanonicalLegClaim,
   beginCanonicalLegRecord,
   canonicalJson,
+  canonicalStateGeneration,
   finalizedJournalSha256,
   pendingBindingSha256,
   readBoundPending,
@@ -16,6 +18,7 @@ import {
   repairPostFinalizationStatus,
   resolveCanonicalStateRoot,
   rewritePendingStatus,
+  writeCanonicalStateCas,
 } from "./hxtk-fence.js";
 
 const temporaryRoots: string[] = [];
@@ -296,10 +299,61 @@ describe("HXtk canonical fence", () => {
     releaseCanonicalLegClaim(first);
 
     const stale = join(stateRoot, "repair.claim");
-    writeFileSync(stale, `${JSON.stringify({ pid: 99999999, startedAtUnixMs: 1, journal: "/tmp/old.json", hostname: "dead" })}\n`, { mode: 0o600 });
-    const replacement = acquireCanonicalLegClaim({ stateRoot, step: "repair", journal: "/tmp/new.json", breakClaim: true });
-    expect(replacement.journal).toBe("/tmp/new.json");
-    releaseCanonicalLegClaim(replacement);
+    writeFileSync(stale, `${JSON.stringify({
+      pid: 99999999,
+      startedAtUnixMs: 1,
+      journal: "/tmp/old.json",
+      hostname: hostname(),
+      token: "a".repeat(32),
+    })}\n`, { mode: 0o600 });
+    const winner = acquireCanonicalLegClaim({
+      stateRoot,
+      step: "repair",
+      journal: "/tmp/new.json",
+      breakClaim: true,
+    });
+    expect(winner.journal).toBe("/tmp/new.json");
+    expect(JSON.parse(readFileSync(stale, "utf8"))).toMatchObject({ journal: "/tmp/new.json", token: winner.token });
+    expect(() => acquireCanonicalLegClaim({
+      stateRoot,
+      step: "repair",
+      journal: "/tmp/loser.json",
+      breakClaim: true,
+    })).toThrow("another hxtk-reset process holds the repair claim");
+    expect(JSON.parse(readFileSync(stale, "utf8"))).toMatchObject({ journal: "/tmp/new.json", token: winner.token });
+    releaseCanonicalLegClaim(winner);
+  });
+
+  test("foreign claim token is never unlinked by release", () => {
+    const home = tempRoot();
+    const stateRoot = resolveCanonicalStateRoot({ vault: "HXtk", homeDir: home, uid, create: true });
+    const claim = acquireCanonicalLegClaim({ stateRoot, step: "repair", journal: "/tmp/owned.json" });
+    writeFileSync(claim.path, `${JSON.stringify({
+      pid: process.pid,
+      startedAtUnixMs: Date.now(),
+      journal: "/tmp/foreign.json",
+      hostname: hostname(),
+      token: "f".repeat(32),
+    })}\n`, { mode: 0o600 });
+    releaseCanonicalLegClaim(claim);
+    expect(existsSync(claim.path)).toBe(true);
+    expect(JSON.parse(readFileSync(claim.path, "utf8")).journal).toBe("/tmp/foreign.json");
+  });
+
+  test("canonical state CAS rejects a stale generation", () => {
+    const root = tempRoot();
+    const path = join(root, "repair.state");
+    const first = writeCanonicalStateCas(path, {
+      schema: "loyal-voltr-hxtk-reset-state/v2",
+      step: "repair",
+      status: "pending",
+    }, null);
+    expect(canonicalStateGeneration(first)).toBe(0);
+    const second = writeCanonicalStateCas(path, { ...first, status: "attempted" }, 0);
+    expect(canonicalStateGeneration(second)).toBe(1);
+    expect(() => writeCanonicalStateCas(path, { ...second, status: "finalized" }, 0))
+      .toThrow("STATE_GENERATION_CONFLICT");
+    expect(canonicalStateGeneration(JSON.parse(readFileSync(path, "utf8")))).toBe(1);
   });
 
   test("finalized journal hash mismatch refuses the later-leg load", () => {

@@ -102,6 +102,7 @@ import {
   assertFinalizedJournalBinding,
   assertPendingJournalBinding,
   acquireCanonicalLegClaim,
+  canonicalStateGeneration,
   beginCanonicalLegRecord,
   finalizedJournalSha256,
   pendingBindingSha256,
@@ -112,8 +113,10 @@ import {
   repairPostFinalizationStatus,
   resolveCanonicalStateRoot,
   rewritePendingStatus,
+  writeCanonicalStateCas,
   type CanonicalLegStateStatus,
 } from "./hxtk-fence.js";
+import { parseHxtkCli } from "./hxtk-cli.js";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const EVIDENCE_DIR = resolve(REPOSITORY_ROOT, "docs/evidence/hxtk-reset-2026-09-08");
@@ -179,6 +182,14 @@ const POLICY_PROVENANCE_STATEMENT =
   "Live policy bytes are compared to the hash recorded in the finalized PolicyCreate journal as a dynamic continuity pin, alongside decoded semantic checks.";
 const HXTK_STATE_SCHEMA = "loyal-voltr-hxtk-reset-state/v2";
 const REPEATABLE_LEGS = new Set(["config", "harvest", "restore-degradation"]);
+
+type ParsedHxtkCli = ReturnType<typeof parseHxtkCli>;
+let activeCli: ParsedHxtkCli | null = null;
+
+function currentCli(): ParsedHxtkCli {
+  return activeCli ?? parseHxtkCli([]);
+}
+
 const REPAIR_FROZEN = {
   totalValue: 2_793_298n,
   idleBalance: 3_793_417n,
@@ -1160,15 +1171,11 @@ function parseSeed(value: string, label: string): bigint {
 }
 
 function cliValue(flag: string): string {
-  const index = process.argv.indexOf(flag);
-  if (index < 0) return "";
-  const value = process.argv[index + 1] ?? "";
-  if (value.length === 0 || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
+  return currentCli().value(flag) ?? "";
 }
 
 function assertNoArbitraryRepairSeed() {
-  if (process.argv.includes("--seed")) {
+  if (currentCli().has("--seed")) {
     throw new Error("--seed is not accepted; the HXtk repair policy is hard-bound to Settings seed 140");
   }
   const requested = cliValue("--expect-seed");
@@ -1225,12 +1232,8 @@ type RepairPolicyJournalTarget = Readonly<{
 }>;
 
 function optionalPolicyJournalPath(): string | null {
-  const index = process.argv.indexOf(POLICY_JOURNAL_FLAG);
-  if (index < 0) return null;
-  const raw = process.argv[index + 1] ?? "";
-  if (raw.length === 0 || raw.startsWith("--")) {
-    throw new Error(`${POLICY_JOURNAL_FLAG} requires a value`);
-  }
+  const raw = currentCli().value(POLICY_JOURNAL_FLAG);
+  if (raw === undefined) return null;
   const path = resolve(raw);
   if (!path.endsWith(".json") || !existsSync(path)) {
     throw new Error(`${POLICY_JOURNAL_FLAG} requires an existing JSON journal`);
@@ -1239,12 +1242,8 @@ function optionalPolicyJournalPath(): string | null {
 }
 
 function optionalRepairJournalPath(): string | null {
-  const index = process.argv.indexOf(REPAIR_JOURNAL_FLAG);
-  if (index < 0) return null;
-  const raw = process.argv[index + 1] ?? "";
-  if (raw.length === 0 || raw.startsWith("--")) {
-    throw new Error(`${REPAIR_JOURNAL_FLAG} requires a value`);
-  }
+  const raw = currentCli().value(REPAIR_JOURNAL_FLAG);
+  if (raw === undefined) return null;
   const path = resolve(raw);
   if (!path.endsWith(".json") || !existsSync(path)) {
     throw new Error(`${REPAIR_JOURNAL_FLAG} requires an existing JSON journal`);
@@ -1253,10 +1252,8 @@ function optionalRepairJournalPath(): string | null {
 }
 
 function requiredJournalPath(flag: string, description: string): string {
-  const index = process.argv.indexOf(flag);
-  if (index < 0) throw new Error(`${flag} is required: ${description}`);
-  const raw = process.argv[index + 1] ?? "";
-  if (raw.length === 0 || raw.startsWith("--")) throw new Error(`${flag} requires a value`);
+  const raw = currentCli().value(flag);
+  if (raw === undefined) throw new Error(`${flag} is required: ${description}`);
   const path = resolve(raw);
   if (!path.endsWith(".json") || !existsSync(path)) {
     throw new Error(`${flag} requires an existing finalized JSON journal`);
@@ -1802,14 +1799,7 @@ function writePrivate(path: string, value: Record<string, unknown>, flag: "w" | 
 type RepairPolicyOperatorMode = "execute" | "reconcile";
 
 function operatorMode(): RepairPolicyOperatorMode | null {
-  const simulate = process.argv.includes("--simulate");
-  const execute = process.argv.includes("--execute");
-  const reconcile = process.argv.includes("--reconcile");
-  if (simulate && (execute || reconcile)) {
-    throw new Error("--simulate cannot be combined with --execute or --reconcile");
-  }
-  if (execute && reconcile) throw new Error("--execute and --reconcile are mutually exclusive");
-  return execute ? "execute" : reconcile ? "reconcile" : null;
+  return currentCli().mode;
 }
 
 function operatorJournal(): string {
@@ -1844,41 +1834,43 @@ function readCanonicalLegState(step: string, create = false, stateRootOverride?:
     && parsed.status !== "finalized" && parsed.status !== "aborted-pre-send") {
     throw new Error(`canonical HXtk state ${path} has an invalid status`);
   }
+  canonicalStateGeneration(parsed);
   return parsed;
 }
 
-function canonicalLegStatePathForJournal(step: string, journal: string, stateRootOverride?: string): string {
-  const path = canonicalLegStatePath(step, true, stateRootOverride);
-  const state = readCanonicalLegState(step, false, stateRootOverride);
-  if (state !== null && String(state.journal ?? "") !== journal) {
-    throw new Error(
-      `${step} canonical replay fence belongs to journal ${sanitizeText(String(state.journal ?? ""))}; `
-      + `refusing journal ${sanitizeText(journal)}`,
-    );
-  }
-  return path;
+function stateGeneration(state: JsonRecord | null): number | null {
+  return state === null ? null : canonicalStateGeneration(state);
 }
 
-function assertCanonicalLegAvailable(step: string, journal: string, stateRootOverride?: string) {
-  const existing = readCanonicalLegState(step, false, stateRootOverride);
+function assertCanonicalLegAvailable(
+  step: string,
+  journal: string,
+  stateRootOverride?: string,
+  existingOverride?: JsonRecord | null,
+): JsonRecord | null {
+  const existing = existingOverride === undefined
+    ? readCanonicalLegState(step, false, stateRootOverride)
+    : existingOverride;
   assertCanonicalLegAvailableFence({
     step,
     journal,
     existing,
     repeatable: REPEATABLE_LEGS.has(step),
-    allowRepeat: process.argv.includes("--allow-repeat"),
+    allowRepeat: currentCli().has("--allow-repeat"),
     journalExists: existsSync(journal) || existsSync(`${journal}.pending`),
   });
+  return existing;
 }
 
 function beginCanonicalLegState(
   step: string,
   journal: string,
   pending: JsonRecord,
+  existing: JsonRecord | null,
+  expectedGeneration: number | null,
   stateRootOverride?: string,
-): string {
+): Readonly<{ path: string; generation: number }> {
   const path = canonicalLegStatePath(step, true, stateRootOverride);
-  const existing = readCanonicalLegState(step, false, stateRootOverride);
   const transaction = recordAt(pending.transaction, "pending transaction");
   const state = beginCanonicalLegRecord({
     step,
@@ -1891,12 +1883,12 @@ function beginCanonicalLegState(
     checkoutRoot: REPOSITORY_ROOT,
     stateRoot: canonicalStateRoot(false, stateRootOverride),
     repeatable: REPEATABLE_LEGS.has(step),
-    allowRepeat: process.argv.includes("--allow-repeat"),
+    allowRepeat: currentCli().has("--allow-repeat"),
     journalExists: existsSync(journal) || existsSync(`${journal}.pending`),
     existing,
   });
-  writePrivate(path, state, existing === null ? "wx" : "w");
-  return path;
+  const written = writeCanonicalStateCas(path, state, expectedGeneration);
+  return { path, generation: canonicalStateGeneration(written) };
 }
 
 function markCanonicalLegState(
@@ -1911,17 +1903,31 @@ function markCanonicalLegState(
     abortedJournal?: string;
     finalizedJournalSha256?: string;
   }>,
+  expectedGeneration: number | null,
   stateRootOverride?: string,
-) {
-  const path = canonicalLegStatePathForJournal(step, journal, stateRootOverride);
+): number {
+  const path = canonicalLegStatePath(step, false, stateRootOverride);
   const current = readCanonicalLegState(step, false, stateRootOverride);
   if (current === null) throw new Error(`${step} canonical state disappeared during execution`);
-  writePrivate(path, {
+  if (stateGeneration(current) !== expectedGeneration) {
+    throw new Error(
+      `STATE_GENERATION_CONFLICT: expected generation ${expectedGeneration ?? "absent"}, `
+      + `found ${stateGeneration(current) ?? "absent"}`,
+    );
+  }
+  if (String(current.journal ?? "") !== journal) {
+    throw new Error(
+      `${step} canonical replay fence belongs to journal ${sanitizeText(String(current.journal ?? ""))}; `
+      + `refusing journal ${sanitizeText(journal)}`,
+    );
+  }
+  const written = writeCanonicalStateCas(path, {
     ...current,
     ...patch,
     ...(patch.error === undefined ? {} : { error: sanitizeText(patch.error) }),
     updatedAtUnixMs: Date.now(),
-  }, "w");
+  }, expectedGeneration);
+  return canonicalStateGeneration(written);
 }
 
 function ensureCanonicalLegStateForReconcile(
@@ -1929,10 +1935,11 @@ function ensureCanonicalLegStateForReconcile(
   journal: string,
   pending: JsonRecord,
   wire: Readonly<{ signature: string; messageSha256: string; wireSha256: string }>,
+  existing: JsonRecord | null,
+  expectedGeneration: number | null,
   stateRootOverride?: string,
-): string {
+): Readonly<{ path: string; generation: number }> {
   const path = canonicalLegStatePath(step, false, stateRootOverride);
-  const existing = readCanonicalLegState(step, false, stateRootOverride);
   if (existing === null) throw new Error("RECONCILE_MISMATCH: pending journal does not match the canonical binding");
   assertPendingJournalBinding({
     pending,
@@ -1948,8 +1955,14 @@ function ensureCanonicalLegStateForReconcile(
     || String(existing.journal ?? "") !== journal) {
     throw new Error(`${step} pending journal does not match the canonical replay state`);
   }
-  markCanonicalLegState(step, journal, { status: "attempted", broadcast: "attempted", signature: wire.signature }, stateRootOverride);
-  return path;
+  const generation = markCanonicalLegState(
+    step,
+    journal,
+    { status: "attempted", broadcast: "attempted", signature: wire.signature },
+    expectedGeneration,
+    stateRootOverride,
+  );
+  return { path, generation };
 }
 
 function repairPolicyRemoveJournalPath(repairJournal: string): string {
@@ -1968,9 +1981,23 @@ export function buildRepairRecoveryCommands(input: Readonly<{
     && removalState !== "aborted-pre-send"
     ? "reconcile"
     : "execute";
+  const repairJournal = resolve(input.repairJournal);
+  const policyJournal = resolve(input.policyJournal);
+  const policyRemoveJournal = resolve(input.policyRemoveJournal);
+  const command = (step: string, mode: "execute" | "reconcile", flags: readonly string[], journal: string) => {
+    const prefix = mode === "reconcile"
+      ? "bun run reset:hxtk"
+      : "op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk";
+    return [prefix, step, ...flags, `--${mode}`, "--journal", journal].join(" ");
+  };
   return [
-    `reset:hxtk repair --reconcile --expect-seed 140 --policy-journal ${input.policyJournal} --journal ${input.repairJournal}`,
-    `reset:hxtk repair-policy-remove --${removalMode} --expect-seed 140 --policy-journal ${input.policyJournal} --repair-journal ${input.repairJournal} --journal ${input.policyRemoveJournal}`,
+    command("repair", "reconcile", ["--expect-seed", "140", "--policy-journal", policyJournal], repairJournal),
+    command(
+      "repair-policy-remove",
+      removalMode,
+      ["--expect-seed", "140", "--policy-journal", policyJournal, "--repair-journal", repairJournal],
+      policyRemoveJournal,
+    ),
   ];
 }
 
@@ -2404,11 +2431,14 @@ async function runJournaledStep(input: Readonly<{
   }>) => Promise<JsonRecord>;
 }>): Promise<number> {
   const stateRoot = resolveCanonicalStateRoot({ vault: VAULT.toString(), create: true });
+  // Invariant: the claim is acquired before any canonical-state or journal
+  // barrier read, and remains held through build, simulation, send,
+  // finalization, reconciliation, and every canonical state write.
   const claim = acquireCanonicalLegClaim({
     stateRoot,
     step: input.step,
     journal: input.journal,
-    breakClaim: process.argv.includes("--break-claim"),
+    breakClaim: currentCli().has("--break-claim"),
   });
   try {
     return await runJournaledStepHeld(input);
@@ -2432,6 +2462,8 @@ async function runJournaledStepHeld(input: Readonly<{
   const stateRoot = dependencies.stateRoot ?? canonicalStateRoot(true);
   const sendOnce = dependencies.sendPreparedOnce ?? sendPreparedOnce;
   const loadFinalized = dependencies.finalizedTransaction ?? finalizedTransaction;
+  const sectionState = readCanonicalLegState(input.step, false, stateRoot);
+  let expectedGeneration = stateGeneration(sectionState);
   if (new Set(["harvest", "cancel", "request", "claim", "restore-degradation"]).has(input.step)) {
     await assertRepairPolicyRetired(input.step);
   }
@@ -2449,13 +2481,17 @@ async function runJournaledStepHeld(input: Readonly<{
     } catch (error) {
       throw new Error(PENDING_BINDING_MISMATCH, { cause: error });
     }
-    const canonicalStatePath = ensureCanonicalLegStateForReconcile(
+    const reconciledState = ensureCanonicalLegStateForReconcile(
       input.step,
       input.journal,
       pending,
       wire,
+      sectionState,
+      expectedGeneration,
       stateRoot,
     );
+    const canonicalStatePath = reconciledState.path;
+    expectedGeneration = reconciledState.generation;
     const finalized = await loadFinalized(input.rpcUrl, wire.signature);
     assertFinalizedJournalMessage(wire, finalized);
     const reconciliation = await input.reconcile({ pending, finalized });
@@ -2477,12 +2513,12 @@ async function runJournaledStepHeld(input: Readonly<{
     }, "wx");
     const finalizedJournalHash = finalizedJournalSha256(input.journal);
     renameSync(`${input.journal}.pending`, `${input.journal}.sent-wire`);
-    markCanonicalLegState(input.step, input.journal, {
+    expectedGeneration = markCanonicalLegState(input.step, input.journal, {
       status: "finalized",
       broadcast: true,
       signature: wire.signature,
       finalizedJournalSha256: finalizedJournalHash,
-    }, stateRoot);
+    }, expectedGeneration, stateRoot);
     console.log(toJson({
       schema: input.schema,
       step: input.step,
@@ -2497,12 +2533,12 @@ async function runJournaledStepHeld(input: Readonly<{
   if (!dependencies.allowExecuteWithoutConfirmation && process.env.CONFIRM_MAINNET !== "1") {
     throw new Error(`${input.step} --execute requires CONFIRM_MAINNET=1`);
   }
+  // The canonical replay fence is consulted while the claim is held and
+  // before the requested journal barrier, build, or simulation.
+  assertCanonicalLegAvailable(input.step, input.journal, stateRoot, sectionState);
   if (existsSync(input.journal) || existsSync(`${input.journal}.pending`)) {
     throw new Error(`${input.step} journal replay barrier already exists`);
   }
-  // Consult the vault-scoped replay fence before building or signing a fresh
-  // packet. The journal path is deliberately not the source of truth.
-  assertCanonicalLegAvailable(input.step, input.journal, stateRoot);
   const built = await input.build();
   if (built.prepared.packetBytes > PACKET_LIMIT) {
     throw new Error(`${input.step} packet is ${built.prepared.packetBytes} bytes; limit ${PACKET_LIMIT}`);
@@ -2543,12 +2579,16 @@ async function runJournaledStepHeld(input: Readonly<{
     ...pendingWithoutBinding,
     pendingBindingSha256: pendingBindingSha256(pendingWithoutBinding),
   };
-  const canonicalStatePath = beginCanonicalLegState(
+  const begunState = beginCanonicalLegState(
     input.step,
     input.journal,
     pending,
+    sectionState,
+    expectedGeneration,
     stateRoot,
   );
+  const canonicalStatePath = begunState.path;
+  expectedGeneration = begunState.generation;
   writePrivate(`${input.journal}.pending`, pending, "wx");
   try {
     await built.beforeSend?.();
@@ -2565,13 +2605,13 @@ async function runJournaledStepHeld(input: Readonly<{
     });
     renameSync(`${input.journal}.pending`, abortedPendingPath);
     // This abort path can only run before the attempted mark and before the sole raw send.
-    markCanonicalLegState(input.step, input.journal, {
+    expectedGeneration = markCanonicalLegState(input.step, input.journal, {
       status: "aborted-pre-send",
       broadcast: false,
       error: abortReason,
       abortReason,
       abortedJournal: abortedPendingPath,
-    }, stateRoot);
+    }, expectedGeneration, stateRoot);
     throw error;
   }
   // Mark the exact expected signature as attempted before the raw RPC call.
@@ -2590,11 +2630,11 @@ async function runJournaledStepHeld(input: Readonly<{
       signature: built.prepared.expectedSignature,
     },
   });
-  markCanonicalLegState(input.step, input.journal, {
+  expectedGeneration = markCanonicalLegState(input.step, input.journal, {
     status: "attempted",
     broadcast: "attempted",
     signature: built.prepared.expectedSignature,
-  }, stateRoot);
+  }, expectedGeneration, stateRoot);
   // sendPreparedOnce has MAX_IDENTICAL_SUBMISSION_ATTEMPTS=1. It is the only
   // raw-send call in this shared flow; a failure leaves the pending wire for
   // the read-only --reconcile path and is never retried here.
@@ -2627,12 +2667,12 @@ async function runJournaledStepHeld(input: Readonly<{
     }, "wx");
     const finalizedJournalHash = finalizedJournalSha256(input.journal);
     renameSync(`${input.journal}.pending`, `${input.journal}.sent-wire`);
-    markCanonicalLegState(input.step, input.journal, {
+    expectedGeneration = markCanonicalLegState(input.step, input.journal, {
       status: "finalized",
       broadcast: true,
       signature: settled.signature,
       finalizedJournalSha256: finalizedJournalHash,
-    }, stateRoot);
+    }, expectedGeneration, stateRoot);
     console.log(toJson({
       schema: input.schema,
       step: input.step,
@@ -2671,12 +2711,12 @@ async function runJournaledStepHeld(input: Readonly<{
         },
       });
       try {
-        markCanonicalLegState(input.step, input.journal, {
+        expectedGeneration = markCanonicalLegState(input.step, input.journal, {
           status: "attempted",
           broadcast: "attempted",
           signature,
           error: sanitizeError(error),
-        }, stateRoot);
+        }, expectedGeneration, stateRoot);
       } catch {
         // The pending journal itself remains a durable replay fence if the
         // secondary state update is unavailable during error handling.
@@ -2994,10 +3034,10 @@ async function cmdRepairPolicy(): Promise<number> {
   const mode = operatorMode();
   if (mode) return cmdRepairPolicyOperator(mode);
   assertNoArbitraryRepairSeed();
-  if (process.argv.includes("--journal")) {
+  if (currentCli().has("--journal")) {
     // --journal without an operator mode is almost certainly an operator typo
     // and must not be ignored.
-    if (process.argv.includes("--journal")) {
+    if (currentCli().has("--journal")) {
       throw new Error("repair-policy --journal requires --execute or --reconcile");
     }
   }
@@ -3322,7 +3362,7 @@ async function cmdRepair(): Promise<number> {
   const mode = operatorMode();
   if (mode) return cmdRepairOperator(mode);
   assertNoArbitraryRepairSeed();
-  if (process.argv.includes("--journal")) {
+  if (currentCli().has("--journal")) {
     throw new Error("repair --journal requires --execute or --reconcile");
   }
   const state = await readState("finalized", true);
@@ -3949,10 +3989,10 @@ async function cmdRepairPolicyRemove(): Promise<number> {
   const mode = operatorMode();
   if (mode) return cmdRepairPolicyRemoveOperator(mode);
   assertNoArbitraryRepairSeed();
-  if (process.argv.includes("--journal")) {
+  if (currentCli().has("--journal")) {
     throw new Error("repair-policy-remove --journal is not supported");
   }
-  if (!process.argv.includes(POLICY_JOURNAL_FLAG) || !process.argv.includes(REPAIR_JOURNAL_FLAG)) {
+  if (!currentCli().has(POLICY_JOURNAL_FLAG) || !currentCli().has(REPAIR_JOURNAL_FLAG)) {
     const output = {
       schema: REPAIR_POLICY_REMOVE_SCHEMA,
       step: "repair-policy-remove",
@@ -4815,7 +4855,7 @@ async function cmdRequest(): Promise<number> {
   const mode = operatorMode();
   if (mode) return cmdRequestOperator(mode);
   await assertRepairPolicyRetired("request");
-  if (!process.argv.includes(CANCEL_JOURNAL_FLAG)) {
+  if (!currentCli().has(CANCEL_JOURNAL_FLAG)) {
     const output = {
       schema: SCHEMA,
       step: "request",
@@ -5175,7 +5215,7 @@ async function cmdClaim(): Promise<number> {
   const mode = operatorMode();
   if (mode) return cmdClaimOperator(mode);
   await assertRepairPolicyRetired("claim");
-  if (!process.argv.includes(REQUEST_JOURNAL_FLAG)) {
+  if (!currentCli().has(REQUEST_JOURNAL_FLAG)) {
     const output = {
       schema: SCHEMA,
       step: "claim",
@@ -5469,7 +5509,7 @@ async function cmdRestoreDegradation(): Promise<number> {
   if (mode) return cmdRestoreDegradationOperator(mode);
   await assertRepairPolicyRetired("restore-degradation");
   const rpcUrl = process.env.SOLANA_RPC_URL?.trim() || DEFAULT_RPC_URL;
-  if (!process.argv.includes(REPAIR_JOURNAL_FLAG) || !process.argv.includes(CLAIM_JOURNAL_FLAG)) {
+  if (!currentCli().has(REPAIR_JOURNAL_FLAG) || !currentCli().has(CLAIM_JOURNAL_FLAG)) {
     const output = {
       schema: SCHEMA,
       step: "restore-degradation",
@@ -5588,9 +5628,9 @@ repair requires --policy-journal; PolicyRemove additionally requires
 const PENDING_STEPS: Readonly<Record<string, string>> = {};
 
 async function main(): Promise<number> {
-  const argv = process.argv.slice(2).filter((value) => value !== "--");
-  const step = argv[0] ?? "";
-  if (argv.includes("--send")) {
+  activeCli = parseHxtkCli(process.argv.slice(2));
+  const step = activeCli.step;
+  if (activeCli.has("--send")) {
     throw new Error("--send is removed; use --execute --journal PATH.json");
   }
   // Apply mode validation before dispatch so even read-only commands cannot

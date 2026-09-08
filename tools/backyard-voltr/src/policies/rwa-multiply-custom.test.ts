@@ -28,6 +28,7 @@ function artifact(): CustomPolicyArtifact {
     sourceSha256: "0".repeat(64),
     compiler: {
       compilerBinarySha256: "1".repeat(64),
+      compilerBinarySha256AtExec: "1".repeat(64),
       compilerBinaryPath: "/repo/target/backyard-voltr-compilers/debug/compile-voltr-custom-policy",
       compilerTargetDir: "/repo/target/backyard-voltr-compilers",
       compilerSourceTreeSha256: "2".repeat(64),
