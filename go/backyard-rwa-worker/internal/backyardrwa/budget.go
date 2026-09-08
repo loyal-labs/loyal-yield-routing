@@ -51,12 +51,15 @@ type Phase3Budget struct {
 	Reservations map[string]BudgetReservation `json:"reservations"`
 }
 
+// The funded families are the three canary lanes plus the manifest-selected
+// Maple lane. They share one goal envelope, so the goal cap still bounds the
+// whole program; a family row only appears once that lane actually reserves.
 func phase3Family(family string) bool {
-	return family == "OnRe" || family == "AUTO" || family == "Ethena"
+	return family == "OnRe" || family == "AUTO" || family == "Ethena" || family == "Maple"
 }
 
 // This is the finite canary budget scope, not a runtime route registration.
-// Sibling substitutions share their family account; retained Prime/Maple
+// Sibling substitutions share their family account: retained Prime sibling
 // evidence does not authorize an extra funded historical lifecycle.
 func phase3BudgetFamilyForLane(lane string) string {
 	switch lane {
@@ -66,6 +69,11 @@ func phase3BudgetFamilyForLane(lane string) string {
 		return "AUTO"
 	case "Ethena/USDe/PYUSD":
 		return "Ethena"
+	case SelectedRouteID:
+		// The manifest-selected lane is part of the funded program. Without it
+		// every decision cycled decided -> failed on an unavailable admission
+		// snapshot (audit B2) even though its construction evidence is exact.
+		return "Maple"
 	default:
 		return ""
 	}
@@ -83,7 +91,7 @@ func budgetSum(values ...int64) (int64, error) {
 }
 
 func (b Phase3Budget) validate() error {
-	if b.GoalID != Phase3GoalID || len(b.Families) != 3 || b.Reservations == nil {
+	if b.GoalID != Phase3GoalID || len(b.Families) < 3 || len(b.Families) > 4 || b.Reservations == nil {
 		return budgetHold("missing_or_mismatched_goal_budget")
 	}
 	for family, row := range b.Families {

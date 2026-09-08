@@ -53,7 +53,7 @@ type RouteNAVSnapshot struct {
 }
 
 func pinnedRouteNAVAddresses() []string {
-	return pinnedRouteNAVAddressesForRoute(RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve}, CollateralCustody: kaminoPrimeCustody})
+	return pinnedRouteNAVAddressesForRoute(RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, Market: kaminoMarket, Program: kaminoProgram}, CollateralCustody: kaminoPrimeCustody})
 }
 
 func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
@@ -67,6 +67,10 @@ func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
 		route.Kamino.Obligation,
 		route.Kamino.CollateralReserve,
 		route.Kamino.DebtReserve,
+		// The lending market is part of the valuation input: its emergency
+		// mode pauses the whole position, so it is pinned, hashed into the
+		// NAV fingerprint, and required in every batch.
+		route.Kamino.Market,
 	}
 	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
 		addresses = append(addresses, route.DebtCustody, kaminoDebtReserve)
@@ -75,7 +79,7 @@ func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
 }
 
 func selectRouteNAVAccounts(accounts []ConfirmedAccount) ([]ConfirmedAccount, error) {
-	return selectRouteNAVAccountsForRoute(accounts, RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve}, CollateralCustody: kaminoPrimeCustody})
+	return selectRouteNAVAccountsForRoute(accounts, RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, Market: kaminoMarket, Program: kaminoProgram}, CollateralCustody: kaminoPrimeCustody})
 }
 
 func selectRouteNAVAccountsForRoute(accounts []ConfirmedAccount, route RuntimeRoute) ([]ConfirmedAccount, error) {
@@ -199,7 +203,7 @@ func valueBetweenTokenRaw(raw uint64, tokenDecimals, debtDecimals uint8, tokenPr
 }
 
 func navInputFingerprint(slot int64, accounts []ConfirmedAccount, custodies RouteNAVCustodies) (string, error) {
-	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve}, CollateralCustody: kaminoPrimeCustody}
+	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, Market: kaminoMarket, Program: kaminoProgram}, CollateralCustody: kaminoPrimeCustody}
 	return navInputFingerprintForRoute(slot, accounts, custodies, route)
 }
 
@@ -299,7 +303,15 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	if err := validateKaminoRefresh(obligation, collateralReserve, debtReserve); err != nil {
+	// Audit U5 / monitor M5: NAV is never computed from a market in emergency
+	// mode, an inactive reserve, or a reserve whose refresh is outside the
+	// adaptor's report window. Such a batch would keep reporting the previous
+	// valuation, so it fails closed into a HOLD reason instead.
+	marketEmergency, err := decodeKaminoMarketEmergency(accountAt(accounts, kaminoConfig.Market), kaminoConfig)
+	if err != nil {
+		return RouteNAVSnapshot{}, err
+	}
+	if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, collateralReserve, debtReserve); err != nil {
 		return RouteNAVSnapshot{}, err
 	}
 	if collateralReserve.refreshedSlot > slot || debtReserve.refreshedSlot > slot || obligation.refreshedSlot > slot {
@@ -318,7 +330,7 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 		if err != nil {
 			return RouteNAVSnapshot{}, fmt.Errorf("decode NAV USDC reference: %w", err)
 		}
-		if err := validateKaminoRefresh(obligation, usdcReserve); err != nil {
+		if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, usdcReserve); err != nil {
 			return RouteNAVSnapshot{}, err
 		}
 		if usdcReserve.refreshedSlot > slot {

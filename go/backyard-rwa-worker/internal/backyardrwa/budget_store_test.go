@@ -104,6 +104,10 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	}
 	request := bridgeTestRequest(ReportNAV, 0)
 	request.LastValidBlockHeight = 10
+	// Fresh against every confirmed slot this test drives (42 and 75): the U4
+	// report-age fence must pass through here and let the valuation holds
+	// under test fire, instead of refusing a stale report first.
+	request.Report.ObservedSlot, request.Report.Sequence = 47, 47
 	buildEffects, _, _, err := bridgeExpectedEffects(Decision{Action: ReportNAV}, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +210,22 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	// quotes reject without committing broadcast intent or releasing budget.
 	signedOperation := PersistedOperation{Operation: Operation{ID: op, RouteKey: key, Decision: Decision{Action: ReportNAV}}, Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: 10}
 	assertBudgetHold(t, AdvanceNonterminal(ctx, restarted, budgetBuildRPC(t, 20_000_000, 42), signedOperation), "transaction_cap_exceeded")
-	assertBudgetHold(t, AdvanceNonterminal(ctx, restarted, budgetBuildRPC(t, 5_000, 75), signedOperation), "fee_message_or_slot_mismatch")
+	// The U4 send fence consumes this RPC's first confirmed-slot read, so keep
+	// the fence's own read fresh and let the stale quote reach the revaluation
+	// exactly as before.
+	staleQuoteRPC := budgetBuildRPC(t, 5_000, 75)
+	baseStaleTransport := staleQuoteRPC.client.Transport
+	fenceReads := 0
+	staleQuoteRPC.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(request.Body)
+		request.Body = io.NopCloser(strings.NewReader(string(body)))
+		if fenceReads == 0 && strings.Contains(string(body), `"method":"getSlot"`) {
+			fenceReads++
+			return response(`{"jsonrpc":"2.0","id":1,"result":42}`), nil
+		}
+		return baseStaleTransport.RoundTrip(request)
+	})
+	assertBudgetHold(t, AdvanceNonterminal(ctx, restarted, staleQuoteRPC, signedOperation), "fee_message_or_slot_mismatch")
 	var rejectedStatus string
 	var rejectedIntent bool
 	if err = restarted.pool.QueryRow(ctx, `SELECT status,broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, op).Scan(&rejectedStatus, &rejectedIntent); err != nil {

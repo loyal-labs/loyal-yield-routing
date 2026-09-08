@@ -169,7 +169,7 @@ func TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity(t *testing
 			t.Fatal("unexpected oracle graph")
 		}
 		return slot, []ConfirmedAccount{{Address: kaminoScopePrices, Lamports: 1, Data: []byte{1}}}, nil
-	}, 77, accounts, route.Kamino)
+	}, 77, append(append([]ConfirmedAccount{}, accounts...), clockFixture()), route.Kamino)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -73,7 +73,7 @@ func TestAccruedDebtFlowsThroughObservationNAVAndRepayment(t *testing.T) {
 	} // BigFraction padding is NOT part of the rate.
 	position, err := observeKaminoFromFixedAccounts(context.Background(), func(_ context.Context, _ []string, slot int64) (int64, []ConfirmedAccount, error) {
 		return slot, []ConfirmedAccount{{Address: kaminoScopePrices, Lamports: 1, Data: []byte{1}}}, nil
-	}, 77, accounts, route.Kamino)
+	}, 77, append(append([]ConfirmedAccount{}, accounts...), clockFixture()), route.Kamino)
 	if err != nil || position.DebtRaw != 9 {
 		t.Fatalf("position=%+v err=%v", position, err)
 	}

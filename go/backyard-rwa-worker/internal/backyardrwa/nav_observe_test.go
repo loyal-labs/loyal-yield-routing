@@ -62,6 +62,26 @@ func strategyReceiptFixture(t *testing.T, positionRaw uint64) ConfirmedAccount {
 	return ConfirmedAccount{Address: bridgeStrategyReceipt, Owner: bridgeVoltrProgram, Lamports: 1, Data: data}
 }
 
+// kaminoFixtureUnix is the chain-time every fixture reserve publishes its
+// oracle price at; route-level fixtures set the Clock sysvar to the same
+// instant so the freshness gate sees a fresh batch.
+const kaminoFixtureUnix = int64(1_700_000_000)
+
+func marketFixture(t *testing.T, address string) ConfirmedAccount {
+	t.Helper()
+	data := make([]byte, kaminoMarketLength)
+	copy(data[:8], kaminoMarketDiscriminator[:])
+	return ConfirmedAccount{Address: address, Owner: kaminoProgram, Lamports: 1, Data: data}
+}
+
+// clockFixture publishes kaminoFixtureUnix as the batch's chain time so the
+// reserve oracle freshness gate sees a fresh observation.
+func clockFixture() ConfirmedAccount {
+	data := make([]byte, 40)
+	binary.LittleEndian.PutUint64(data[32:40], uint64(kaminoFixtureUnix))
+	return ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Data: data}
+}
+
 func putScaledFraction(dst []byte, value *big.Int) {
 	for index := range dst {
 		dst[index] = 0
@@ -88,6 +108,7 @@ func reserveFixture(t *testing.T, address, mint string, slot int64, priceSF *big
 	binary.LittleEndian.PutUint64(data[224:232], liquidityRaw)
 	putScaledFraction(data[248:264], priceSF)
 	binary.LittleEndian.PutUint64(data[272:280], 6)
+	binary.LittleEndian.PutUint64(data[264:272], uint64(kaminoFixtureUnix))
 	putScaledFraction(data[296:328], new(big.Int).Lsh(big.NewInt(1), 60))
 	binary.LittleEndian.PutUint64(data[2592:2600], collateralSupply)
 	return ConfirmedAccount{Address: address, Owner: kaminoProgram, Lamports: 1, Data: data}
@@ -132,6 +153,7 @@ func routeNAVFixture(t *testing.T, slot int64) []ConfirmedAccount {
 		obligationFixture(t, slot, 10, 7),
 		reserveFixture(t, kaminoCollateralReserve, kaminoPrimeMint, slot, oneAndHalf, 200, 100),
 		reserveFixture(t, kaminoDebtReserve, kaminoUSDCMint, slot, one, 100, 100),
+		marketFixture(t, kaminoMarket),
 	}
 }
 

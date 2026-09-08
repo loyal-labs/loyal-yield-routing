@@ -180,6 +180,12 @@ func (w *Worker) Tick(ctx context.Context) error {
 		return err
 	}
 	decision := Decide(observation.Snapshot)
+	// Decide maps every observation-level hold to one generic reason. The
+	// observer records the audited Kamino health reason on the snapshot, so it
+	// is carried into the durable decision instead of being discarded.
+	if decision.Action == HoldManualRecovery && observation.Snapshot.ManualReason != "" {
+		decision.Reason = observation.Snapshot.ManualReason
+	}
 	if err := decision.Validate(); err != nil {
 		return err
 	}

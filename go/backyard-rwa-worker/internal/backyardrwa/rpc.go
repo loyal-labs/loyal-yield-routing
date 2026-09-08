@@ -174,6 +174,20 @@ func (c *RPCClient) ConfirmedSlot(ctx context.Context) (int64, error) {
 	return slot, nil
 }
 
+// ConfirmedBlockTime returns the chain's own unix seconds for a slot. Kamino
+// oracle freshness is judged against block time, never the worker's clock: the
+// two can drift by more than the freshness window the audit requires.
+func (c *RPCClient) ConfirmedBlockTime(ctx context.Context, slot int64) (int64, error) {
+	var blockTime *int64
+	if err := c.call(ctx, "getBlockTime", []any{slot}, &blockTime); err != nil {
+		return 0, confirmedObservationUnavailable(err)
+	}
+	if blockTime == nil || *blockTime <= 0 {
+		return 0, confirmedObservationUnavailable(fmt.Errorf("confirmed block time unavailable for slot %d", slot))
+	}
+	return *blockTime, nil
+}
+
 // GetMultipleAccounts reads one coherent confirmed account set. The returned
 // context slot is the only slot callers may use for the resulting Snapshot.
 func (c *RPCClient) GetMultipleAccounts(
@@ -348,16 +362,34 @@ func (c *RPCClient) SendSignedTransactionOnce(ctx context.Context, signedWire []
 	return signature, nil
 }
 
+type signatureStatusRow struct {
+	Slot               int64           `json:"slot"`
+	Err                json.RawMessage `json:"err"`
+	ConfirmationStatus string          `json:"confirmationStatus"`
+}
+
+// signatureObservation is the settled invariant shared by the singular and the
+// batch reader: a processed-only result can still be forked away, so it proves
+// nothing about failure or success and may never drive a terminal transition.
+// Only a settled observation reports Failed; `Confirmed` additionally excludes
+// a settled on-chain error.
+func signatureObservation(row *signatureStatusRow) SignatureObservation {
+	settled := row.Slot > 0 && (row.ConfirmationStatus == "confirmed" || row.ConfirmationStatus == "finalized")
+	failed := settled && len(row.Err) > 0 && string(row.Err) != "null"
+	return SignatureObservation{
+		Found: true, Confirmed: settled && !failed,
+		Finalized: settled && row.ConfirmationStatus == "finalized",
+		Settled:   settled, ProcessedOnly: !settled,
+		ConfirmationSlot: row.Slot, Failed: failed,
+	}
+}
+
 func (c *RPCClient) SignatureStatus(ctx context.Context, signature string) (SignatureObservation, error) {
 	if signature == "" {
 		return SignatureObservation{}, fmt.Errorf("transaction signature is required")
 	}
 	var result struct {
-		Value []*struct {
-			Slot               int64           `json:"slot"`
-			Err                json.RawMessage `json:"err"`
-			ConfirmationStatus string          `json:"confirmationStatus"`
-		} `json:"value"`
+		Value []*signatureStatusRow `json:"value"`
 	}
 	if err := c.call(ctx, "getSignatureStatuses", []any{[]string{signature}, map[string]bool{"searchTransactionHistory": true}}, &result); err != nil {
 		return SignatureObservation{}, err
@@ -368,10 +400,16 @@ func (c *RPCClient) SignatureStatus(ctx context.Context, signature string) (Sign
 	if result.Value[0] == nil {
 		return SignatureObservation{Found: false}, nil
 	}
-	status := result.Value[0]
-	failed := len(status.Err) > 0 && string(status.Err) != "null"
-	confirmed := !failed && status.Slot > 0 && (status.ConfirmationStatus == "confirmed" || status.ConfirmationStatus == "finalized")
-	return SignatureObservation{Found: true, Confirmed: confirmed, Finalized: confirmed && status.ConfirmationStatus == "finalized", ConfirmationSlot: status.Slot, Failed: failed}, nil
+	return signatureObservation(result.Value[0]), nil
+}
+
+// FinalizedSignatureStatus re-reads a signature before an unreadable failure
+// receipt may terminate an operation durably. getSignatureStatuses reports the
+// highest confirmation level the node has observed, so only an observation
+// with Finalized - or a settled success - proves the failure survived fork
+// risk; a confirmed-only or absent signature keeps the operation observing.
+func (c *RPCClient) FinalizedSignatureStatus(ctx context.Context, signature string) (SignatureObservation, error) {
+	return c.SignatureStatus(ctx, signature)
 }
 
 // ConfirmedTransaction reads the immutable receipt for the exact persisted
@@ -481,6 +519,37 @@ func (c *RPCClient) transactionReceipt(ctx context.Context, signature, commitmen
 		}
 	}
 	return evidence, nil
+}
+
+// FailedTransactionEvidence reads the immutable failure receipt for the exact
+// persisted signature. The success-path receipt readers reject a non-null
+// meta.err; this reader keeps it, because classifying a failed broadcast needs
+// the RPC error shape and the failing program's log lines. Only a finalized
+// receipt is acceptable: a failure can only be classified once it provably
+// cannot be forked away.
+func (c *RPCClient) FailedTransactionEvidence(ctx context.Context, signature string) (ConfirmedFailureEvidence, error) {
+	if signature == "" {
+		return ConfirmedFailureEvidence{}, fmt.Errorf("transaction signature is required")
+	}
+	var result struct {
+		Slot int64 `json:"slot"`
+		Meta struct {
+			Err         json.RawMessage `json:"err"`
+			LogMessages []string        `json:"logMessages"`
+		} `json:"meta"`
+	}
+	if err := c.call(ctx, "getTransaction", []any{signature, map[string]any{
+		"commitment": "finalized", "encoding": "json", "maxSupportedTransactionVersion": 0,
+	}}, &result); err != nil {
+		return ConfirmedFailureEvidence{}, err
+	}
+	if result.Slot <= 0 || len(result.Meta.Err) == 0 || string(result.Meta.Err) == "null" {
+		return ConfirmedFailureEvidence{}, fmt.Errorf("failed transaction receipt is unavailable")
+	}
+	return ConfirmedFailureEvidence{
+		Slot: result.Slot, Err: append([]byte(nil), result.Meta.Err...),
+		Logs: append([]string(nil), result.Meta.LogMessages...),
+	}, nil
 }
 
 func (c *RPCClient) ConfirmedBlockHeight(ctx context.Context) (int64, error) {

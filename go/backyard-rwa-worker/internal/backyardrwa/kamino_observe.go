@@ -8,10 +8,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
 	"sort"
+	"time"
 )
 
 const (
@@ -26,12 +28,73 @@ const (
 	kaminoReserveLength       = 8624
 	kaminoRequiredPriceStatus = 0x3f
 	kaminoReserveConfigOffset = 4856
+
+	// LendingMarket: 8-byte discriminator + size_of::<LendingMarket>() == 4656
+	// in the pinned klend-interface 23b9f2b. emergency_mode follows version,
+	// bump_seed, the two owner keys, quote_currency, and referral_fee_bps.
+	kaminoMarketLength              = 4664
+	kaminoMarketEmergencyModeOffset = 122
+
+	// ReserveConfig.status (0 = Active) sits at the config base, and its
+	// emergency_mode follows status, asset_tier padding, host_fixed_interest_
+	// rate_bps, min_deleveraging_bonus_bps, block_ctoken_usage, and early_
+	// repay_remaining_interest_pct. liquidation_threshold_pct at +17 is the
+	// already-decoded cross-check for this base.
+	kaminoReserveStatusOffset        = kaminoReserveConfigOffset
+	kaminoReserveEmergencyModeOffset = kaminoReserveConfigOffset + 8
+	// ReserveLiquidity.market_price_last_updated_ts: i64 unix seconds between
+	// market_price_sf (248) and mint_decimals (272, already decoded as u64).
+	kaminoMarketPriceLastUpdatedTSOffset = 264
+
+	// Audit U5 / monitor M5: a reserve that has not refreshed within the
+	// adaptor's report window, a paused reserve, or a stale oracle price keeps
+	// reporting the last valuation. Every report-bearing action fails closed.
+	kaminoMaxReserveAgeSlots = int64(32)
+	kaminoOracleMaxAgeSecs   = int64(300)
 )
 
 var (
 	kaminoObligationDiscriminator = [8]byte{168, 206, 141, 106, 88, 76, 172, 167}
 	kaminoReserveDiscriminator    = [8]byte{43, 242, 204, 202, 26, 247, 59, 127}
+	// Verified against the live mainnet market account bytes as well as the
+	// pinned klend-interface layout.
+	kaminoMarketDiscriminator = [8]byte{246, 114, 50, 98, 72, 157, 28, 120}
 )
+
+// Fail-closed reserve health violations are sentinel errors so the observers
+// can turn them into HOLD_MANUAL_RECOVERY decisions with the contract's
+// reasons instead of a failed observation tick.
+var (
+	errKaminoReserveStale    = errors.New("kamino_stale")
+	errKaminoReservePaused   = errors.New("reserve_paused")
+	errKaminoOracleStale     = errors.New("kamino_oracle_stale")
+	errKaminoMarketEmergency = errors.New("kamino_market_emergency")
+)
+
+// kaminoHealthReason maps a reserve-health sentinel to its HOLD reason.
+func kaminoHealthReason(err error) (string, bool) {
+	switch {
+	case errors.Is(err, errKaminoReserveStale), errors.Is(err, errKaminoOracleStale):
+		return "kamino_stale", true
+	case errors.Is(err, errKaminoReservePaused), errors.Is(err, errKaminoMarketEmergency):
+		return "reserve_paused", true
+	}
+	return "", false
+}
+
+// KaminoHealthHoldObservation converts one fail-closed reserve-health
+// violation into a HOLD_MANUAL_RECOVERY observation. Any other error is not a
+// reserve-health verdict and is returned unchanged.
+func KaminoHealthHoldObservation(err error, slot int64, now time.Time) (Observation, bool) {
+	reason, known := kaminoHealthReason(err)
+	if !known {
+		return Observation{}, false
+	}
+	return Observation{ObservedAt: now, Snapshot: Snapshot{
+		ObservationID: "kamino-health:" + reason, Slot: slot, RouteKind: RouteKind,
+		ManualReason: reason,
+	}}, true
+}
 
 type KaminoObservationConfig struct {
 	Program, Market, Obligation, CollateralReserve, DebtReserve string
@@ -84,7 +147,7 @@ func (c *RPCClient) observeKaminoPrimeUSDC(ctx context.Context, config KaminoObs
 		return KaminoPosition{}, err
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		baseSlot, accounts, err := c.GetMultipleAccounts(ctx, []string{config.Obligation, config.CollateralReserve, config.DebtReserve}, minSlot)
+		baseSlot, accounts, err := c.GetMultipleAccounts(ctx, []string{config.Obligation, config.CollateralReserve, config.DebtReserve, config.Market}, minSlot)
 		if err != nil {
 			return KaminoPosition{}, err
 		}
@@ -100,7 +163,11 @@ func (c *RPCClient) observeKaminoPrimeUSDC(ctx context.Context, config KaminoObs
 		if err != nil {
 			return KaminoPosition{}, err
 		}
-		if err := validateKaminoRefresh(obligation, collateral, debt); err != nil {
+		marketEmergency, err := decodeKaminoMarketEmergency(accountAt(accounts, config.Market), config)
+		if err != nil {
+			return KaminoPosition{}, err
+		}
+		if err := validateKaminoReserveHealth(baseSlot, marketEmergency, obligation, collateral, debt); err != nil {
 			return KaminoPosition{}, err
 		}
 		oracles := uniqueNonzero(append(collateral.oracles, debt.oracles...))
@@ -136,6 +203,13 @@ func (c *RPCClient) observeKaminoPrimeUSDC(ctx context.Context, config KaminoObs
 		if err != nil {
 			return KaminoPosition{}, err
 		}
+		blockTime, err := c.ConfirmedBlockTime(ctx, baseSlot)
+		if err != nil {
+			return KaminoPosition{}, err
+		}
+		if err := validateKaminoOracleAge(blockTime, collateral, debt); err != nil {
+			return KaminoPosition{}, err
+		}
 		return KaminoPosition{
 			Slot: baseSlot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition,
 			CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw,
@@ -160,20 +234,22 @@ type decodedKaminoObligation struct {
 	cumulativeBorrowRate   [32]byte
 }
 type decodedKaminoReserve struct {
-	refreshedSlot           int64
-	stale, priceStatus      byte
-	marketPriceSF           [16]byte
-	mintDecimals            uint8
-	oracles                 []string
-	totalLiquiditySF        *big.Int
-	collateralMintSupply    uint64
-	liquidationThresholdPct byte
-	depositLimitRaw         uint64
-	borrowLimitRaw          uint64
-	borrowedRaw             uint64
-	borrowedLiquiditySF     *big.Int
-	utilizationLimitPct     byte
-	cumulativeBorrowRate    [32]byte
+	refreshedSlot            int64
+	stale, priceStatus       byte
+	status, emergencyMode    byte
+	marketPriceLastUpdatedTS int64
+	marketPriceSF            [16]byte
+	mintDecimals             uint8
+	oracles                  []string
+	totalLiquiditySF         *big.Int
+	collateralMintSupply     uint64
+	liquidationThresholdPct  byte
+	depositLimitRaw          uint64
+	borrowLimitRaw           uint64
+	borrowedRaw              uint64
+	borrowedLiquiditySF      *big.Int
+	utilizationLimitPct      byte
+	cumulativeBorrowRate     [32]byte
 }
 
 func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig) (decodedKaminoObligation, error) {
@@ -266,8 +342,11 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 	return decodedKaminoReserve{
 		refreshedSlot: int64(binary.LittleEndian.Uint64(account.Data[16:24])), stale: account.Data[24],
 		priceStatus: account.Data[25], marketPriceSF: price, oracles: oracles,
-		mintDecimals:     uint8(decimals),
-		totalLiquiditySF: totalLiquidity, collateralMintSupply: binary.LittleEndian.Uint64(account.Data[2592:2600]),
+		status:                   account.Data[kaminoReserveStatusOffset],
+		emergencyMode:            account.Data[kaminoReserveEmergencyModeOffset],
+		marketPriceLastUpdatedTS: int64(binary.LittleEndian.Uint64(account.Data[kaminoMarketPriceLastUpdatedTSOffset : kaminoMarketPriceLastUpdatedTSOffset+8])),
+		mintDecimals:             uint8(decimals),
+		totalLiquiditySF:         totalLiquidity, collateralMintSupply: binary.LittleEndian.Uint64(account.Data[2592:2600]),
 		liquidationThresholdPct: account.Data[kaminoReserveConfigOffset+17],
 		depositLimitRaw:         binary.LittleEndian.Uint64(account.Data[kaminoReserveConfigOffset+160 : kaminoReserveConfigOffset+168]),
 		borrowLimitRaw:          binary.LittleEndian.Uint64(account.Data[kaminoReserveConfigOffset+168 : kaminoReserveConfigOffset+176]),
@@ -464,6 +543,53 @@ func (p KaminoPosition) targetLTVBorrowRaw() (uint64, error) {
 	return raw.Uint64(), nil
 }
 
+// decodeKaminoMarketEmergency reads the market's global emergency-mode flag.
+// The account bytes are otherwise ignored: an unexpected length, owner, or
+// discriminator is an observation failure, never an assumed healthy market.
+func decodeKaminoMarketEmergency(account ConfirmedAccount, c KaminoObservationConfig) (bool, error) {
+	if err := kaminoEnvelope(account, c.Market, kaminoMarketLength, kaminoMarketDiscriminator, c.Program); err != nil {
+		return false, err
+	}
+	return account.Data[kaminoMarketEmergencyModeOffset] != 0, nil
+}
+
+// validateKaminoReserveHealth is the fail-closed gate behind monitor M5. On
+// top of validateKaminoRefresh's relative freshness it requires, at the
+// observation slot: every reserve refreshed within kaminoMaxReserveAgeSlots,
+// ReserveConfig.status 0, and no reserve- or market-level emergency mode.
+func validateKaminoReserveHealth(observedSlot int64, marketEmergencyMode bool, obligation decodedKaminoObligation, reserves ...decodedKaminoReserve) error {
+	if marketEmergencyMode {
+		return fmt.Errorf("Kamino market is in emergency mode: %w", errKaminoMarketEmergency)
+	}
+	for _, reserve := range reserves {
+		if reserve.status != 0 || reserve.emergencyMode != 0 {
+			return fmt.Errorf("Kamino reserve %d/%d is not active: %w",
+				reserve.status, reserve.emergencyMode, errKaminoReservePaused)
+		}
+		if reserve.refreshedSlot > observedSlot || observedSlot-reserve.refreshedSlot > kaminoMaxReserveAgeSlots {
+			return fmt.Errorf("Kamino reserve last refreshed at %d, observation slot %d: %w",
+				reserve.refreshedSlot, observedSlot, errKaminoReserveStale)
+		}
+	}
+	// The pre-existing relative coherency check stays subordinate: an
+	// absolutely stale reserve is reported as kamino_stale even when it is also
+	// older than its obligation.
+	return validateKaminoRefresh(obligation, reserves...)
+}
+
+// validateKaminoOracleAge requires every reserve's market price to have been
+// published within kaminoOracleMaxAgeSecs of the observed block time.
+func validateKaminoOracleAge(observedUnix int64, reserves ...decodedKaminoReserve) error {
+	for _, reserve := range reserves {
+		updated := reserve.marketPriceLastUpdatedTS
+		if updated <= 0 || updated > observedUnix || observedUnix-updated > kaminoOracleMaxAgeSecs {
+			return fmt.Errorf("Kamino oracle price last updated at %d, observed %d: %w",
+				updated, observedUnix, errKaminoOracleStale)
+		}
+	}
+	return nil
+}
+
 func validateKaminoRefresh(o decodedKaminoObligation, reserves ...decodedKaminoReserve) error {
 	for _, r := range reserves {
 		if r.refreshedSlot <= 0 {
@@ -489,6 +615,17 @@ func validateKaminoRefresh(o decodedKaminoObligation, reserves ...decodedKaminoR
 		}
 	}
 	return nil
+}
+
+// clockUnixTimestamp reads the Clock sysvar carried in the same confirmed
+// batch as the reserves, so oracle freshness is judged on chain time from the
+// observed context rather than the worker's wall clock.
+func clockUnixTimestamp(accounts []ConfirmedAccount) int64 {
+	clock := accountAt(accounts, budgetClockAddress)
+	if len(clock.Data) < 40 {
+		return 0
+	}
+	return int64(binary.LittleEndian.Uint64(clock.Data[32:40]))
 }
 
 func kaminoEnvelope(a ConfirmedAccount, address string, length int, discriminator [8]byte, program string) error {

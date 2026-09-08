@@ -128,6 +128,11 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		}
 		position, err := observeKaminoFromFixedAccounts(ctx, runtime.accounts, slot, accounts, route.Kamino)
 		if err != nil {
+			// A stale, paused, or emergency Kamino state is a decision input,
+			// not a broken observer: the tick holds with the audited reason.
+			if hold, ok := KaminoHealthHoldObservation(err, slot, runtime.now()); ok {
+				return hold, accounts, nil
+			}
 			return Observation{}, nil, err
 		}
 		afterSlot, afterReceipts, err := runtime.receipts(ctx, slot)
@@ -148,6 +153,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		}
 		nav, err := ComputeRouteNAVForRoute(slot, navAccounts, manifest, nil, route)
 		if err != nil {
+			if hold, ok := KaminoHealthHoldObservation(err, slot, runtime.now()); ok {
+				return hold, accounts, nil
+			}
 			return Observation{}, nil, err
 		}
 		collateralMint, err := decodeBase58PublicKey(route.Kamino.CollateralMint)
@@ -365,7 +373,21 @@ func observeKaminoFromFixedAccounts(ctx context.Context, accountsReader func(con
 	if err != nil {
 		return KaminoPosition{}, err
 	}
-	if err := validateKaminoRefresh(obligation, collateral, debt); err != nil {
+	// Audit U5 / monitor M5: the position view refuses the same unhealthy
+	// reserve states the NAV refuses, plus oracle staleness against chain time
+	// read from this batch's own Clock sysvar.
+	marketEmergency, err := decodeKaminoMarketEmergency(accountAt(accounts, config.Market), config)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, collateral, debt); err != nil {
+		return KaminoPosition{}, err
+	}
+	observedUnix := clockUnixTimestamp(accounts)
+	if observedUnix <= 0 {
+		return KaminoPosition{}, fmt.Errorf("confirmed batch has no usable Clock sysvar")
+	}
+	if err := validateKaminoOracleAge(observedUnix, collateral, debt); err != nil {
 		return KaminoPosition{}, err
 	}
 	oracles := uniqueNonzero(append(collateral.oracles, debt.oracles...))

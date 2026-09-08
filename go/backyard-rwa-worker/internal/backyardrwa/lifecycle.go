@@ -57,6 +57,16 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 			operation.TransactionSignature == "" || operation.RecentBlockhash == "" || operation.LastValidBlockHeight <= 0 {
 			return database.MarkManualRecovery(ctx, operation.ID, Signed, "incomplete_persisted_signed_wire")
 		}
+		// U4 send fence: refuse to broadcast a report that can no longer land
+		// inside the adaptor's report age window. Nothing was submitted, so the
+		// wire terminates in `failed` and the next tick observes afresh.
+		if stopped, err := database.RefuseStaleReportSend(ctx, rpc, operation.ID, operation.Status); err != nil {
+			return err
+		} else if stopped.OperationID != "" {
+			// The durable row is already terminal. Advancing the stale
+			// in-memory status would revalue and send again on this tick.
+			return nil
+		}
 		if err := database.RevalueAndMarkBroadcastIntent(ctx, rpc, operation); err != nil {
 			var hold *BudgetHold
 			if errors.As(err, &hold) {
@@ -102,14 +112,19 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 			return err
 		}
 		if status.Failed {
-			return database.MarkManualRecovery(ctx, operation.ID, operation.Status, "confirmed_transaction_error")
+			// A failed Solana transaction moves no funds. Decode the failure
+			// before stopping capital: an adaptor report refusal is a liveness
+			// termination, everything else stays a capital stop.
+			return database.recoverConfirmedFailure(ctx, rpc, operation)
 		}
 		if status.Confirmed {
 			return database.MarkConfirmed(ctx, operation.ID, operation.Status, status.ConfirmationSlot)
 		}
 		if status.Found {
-			// A processed signature may still reach confirmed after its blockhash
-			// expires. Keep observing it; expiry is only decisive when absent.
+			// A processed signature — including a processed-only failure, which
+			// may still be forked away — may yet reach confirmed after its
+			// blockhash expires. Keep observing it; expiry is only decisive
+			// when absent, and only a settled failure is classified.
 			return nil
 		}
 		height, err := rpc.FinalizedBlockHeight(ctx)
