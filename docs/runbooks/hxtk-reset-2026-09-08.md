@@ -424,6 +424,55 @@ haircut/degradation result (audit T10.7), and abort if the 24-hour delay,
 finalized repair timestamp, post-claim book, or finalized journal wire cannot
 be proved.
 
+## Operational rules for `--execute` (2026-09-08 audit)
+
+The final adversarial audit of this tool (fleet/integration `2fe25fa`) confirmed
+that two clean concurrent invocations cannot both reach the raw send, that the
+evidence decodes to the pinned 837-byte PolicyCreate, and that every canonical
+state write is generation-elected. It did not clear the crash-then-recovery
+paths. Until those are fixed, the following rules are mandatory for every
+`--execute` and `--reconcile` invocation:
+
+1. **One process per leg, one operator, one machine.** Never start a second
+   `reset:hxtk` invocation for this vault while another is running or while the
+   outcome of the previous one is unknown. Do not run any leg from two
+   terminals, two checkouts, or two hosts.
+2. **After a crash, timeout, or any ambiguous outcome during `--execute`, do
+   not re-arm and do not start a fresh journal.** First run
+   `bun run reset:hxtk verify --simulate` and read the on-chain state for the
+   leg you were executing (receipt values, pending request receipt, the policy
+   at seed 140, config values). Then run `--reconcile` with the SAME journal
+   path. Continue only when the reconcile result agrees with the chain.
+3. **Never reuse a journal path that has an `.aborted-<ms>.json` sibling, and
+   never trust a recovery result that reports `aborted` for a leg whose send may
+   have landed.** Abort artifacts are not yet bound to the attempt that produced
+   them; an old abort record can be misapplied after a crash mid-send and would
+   let a fresh journal send again. The chain readback in rule 2 is the
+   authority.
+4. **Never delete, rename, or edit files under the canonical state root**
+   (`~/.loyal/hxtk-reset/<vault>/`). If the tool reports
+   `STATE_GENERATION_CONFLICT`, a stranded `.gen-N` file, or a claim that cannot
+   be released after a crash, stop and inspect the directory listing and the
+   chain; do not force through with `--break-claim`. `--break-claim` is only for
+   a claim whose recorded pid is proven dead on this host, and a break that was
+   interrupted between the token rename and the pointer unlink must be
+   inspected by hand.
+5. **Do not rely on the tool alone for the second-send guarantee.** Each leg
+   also has on-chain guards (the one-shot policy at seed 140, the adaptor
+   ticket-sequence check, the exact-payout claim fence, receipt state), but the
+   audit did not prove per-leg idempotence for every leg; the simulate
+   immediately before each send is what catches a repeat.
+
+Known gaps recorded by the audit, to be fixed before this tool is reused for
+any other vault: abort artifacts are not bound to attempts; a crash between the
+generation hard link and the pointer rename strands `.gen-(g+1)`; a crash
+between the canonical `pending` write and journal publication has no
+reconcilable recovery; a crash before the attempted mark can leave the leg
+recorded as `attempted` with no send; claim break and break-lease takeover are
+not fully crash- and identity-safe; the macOS private-copy compiler fallback
+executes by pathname between its hash checks; the recovery-command parser test
+covers only the repair and removal legs.
+
 ## Canonical state root and replay recovery
 
 The canonical fence is machine- and user-local, not checkout-local. The execute

@@ -18,7 +18,11 @@ operator signer and the guarded command shown in the linked runbook.
 1. **Run Phase 1.** From `tools/backyard-voltr`, use the per-checkout
 `target/backyard-voltr-compilers` for policy compilation, then follow every ordered step in
    [`hxtk-reset-2026-09-08.md`](hxtk-reset-2026-09-08.md), beginning with
-   `bun run reset:hxtk verify --simulate`. Do not skip the canonical machine-
+   `bun run reset:hxtk verify --simulate`. Read and follow the "Operational
+   rules for `--execute`" section of that runbook before the first `--execute`:
+   one process per leg, never re-arm after a crash without a chain readback
+   and a reconcile of the same journal, and never force a wedged claim. Do
+   not skip the canonical machine-
    and user-local state root, per-leg replay fence, journal barrier, finalized
    request-time check, exact-payout claim fence, or the automatic seed-140
    one-shot policy retirement chained by `repair --execute`. Save the finalized
