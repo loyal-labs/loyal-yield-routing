@@ -17,12 +17,12 @@
     "sequentialSeedRule": "PolicyCreate uses Settings.policySeed + 1; seed 140 is the only permitted repair policy target"
   },
   "seedReadback": {
-    "contextSlot": 445394607,
+    "contextSlot": 445415555,
     "contextSlots": [
-      445394603,
-      445394604,
-      445394605,
-      445394607
+      445415551,
+      445415552,
+      445415554,
+      445415555
     ],
     "scan": {
       "minSeed": "0",
@@ -2212,8 +2212,12 @@
     "seedRule": "PolicyCreate derives Settings.policySeed + 1; an arbitrary action seed is ignored by the deployed program"
   },
   "compiler": {
+    "compilerBinarySha256": "b15fc58c0c36e327032bb59c9be52766e5d974d4b7068e54e4bdbe158f3d657a",
+    "compilerBinaryPath": "/Users/user/loyal/loyal-yield-routing/.claude/worktrees/fleet-merge/target/backyard-voltr-compilers/debug/compile-voltr-custom-policy",
+    "compilerTargetDir": "/Users/user/loyal/loyal-yield-routing/.claude/worktrees/fleet-merge/target/backyard-voltr-compilers",
+    "compilerSourceTreeSha256": "35e21c35ed4b295455da02719ca0b1d78762278562c75146c6362f9afcc5e68c",
     "compilerArtifactSchema": "loyal-voltr-custom-policy-artifact/v5",
-    "sourceSha256": "f175a11d0510cf66cf43edf583f7ff8ae8b00772a248f2fc294891c34d52b8f3",
+    "sourceSha256": "c0ee8836de273c2d47634c38baa85eeb3a534063215321fcf27fa8ee83ab034a",
     "compilerPolicySeedBefore": "138",
     "operation": "nav-refresh",
     "constraintIndices": [
@@ -2417,7 +2421,7 @@
     }
   },
   "simulatedPolicyDataBytes": 1420,
-  "simulatedPolicyDataSha256": "1deac0e8586903a4a2beca1b387837fcb39900d17ffada9fbb155f39bfe7262c",
+  "simulatedPolicyDataSha256": "d68ec7d1e1217ef1daf270c2dd175d5429eaca012b0a27355669af96e949847e",
   "policyProvenanceStatement": "Live policy bytes are compared to the hash recorded in the finalized PolicyCreate journal as a dynamic continuity pin, alongside decoded semantic checks.",
   "transaction": {
     "feePayer": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
@@ -3053,7 +3057,7 @@
       "check": "simulated policy account is present",
       "pass": true,
       "expected": "present",
-      "actual": "1420 bytes/1deac0e8586903a4a2beca1b387837fcb39900d17ffada9fbb155f39bfe7262c"
+      "actual": "1420 bytes/d68ec7d1e1217ef1daf270c2dd175d5429eaca012b0a27355669af96e949847e"
     },
     {
       "check": "simulated policy identity and delegated signer are exact",
