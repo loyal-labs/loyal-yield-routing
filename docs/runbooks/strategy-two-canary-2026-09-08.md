@@ -15,11 +15,16 @@ supplied as public addresses and never as key material. Do not use the generic
 `runtime simulate-user-*` commands in `tools/backyard-voltr`: those commands
 target the unrelated `AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK` route.
 
-Every repository-controlled mainnet send is operator-only, requires
+Every repository-controlled mainnet CLI send is operator-only, requires
 `CONFIRM_MAINNET=1` inside the `op run --env-file=.env.1password` boundary, and
-requires the appropriate operator signer. The worker must not be started until
-the deployment control enforces that same rule; the current Go worker has no
-CLI `--confirm` switch. No agent run, simulation, or returned signature is
+requires the appropriate operator signer. The Go worker has no
+`CONFIRM_MAINNET` gate: deploying or resuming the pinned image on Render with
+`POLICY_KEYPAIR` provisioned is the operator's send authorization for the
+worker. The worker then sends autonomously within its policies, start gates
+(legacy-retired policy gate, Settings anchor plus genesis check,
+program-identity pins, and latch), and M1–M8 monitors. Keep the service
+suspended until every precondition below is verified; a worker send before
+that is an abort condition. No agent run, simulation, or returned signature is
 authorization to send.
 
 ## Preconditions
@@ -28,7 +33,10 @@ authorization to send.
    `docs/evidence/backyard-rwa-strategy2/phase1-postconditions.json`: `tv ==
    idle`, strategy-one `receipt1 == 3,793,536` and unchanged, all fee
    accumulators are zero, strategy-one custody is zero, LP dead weight is
-   `1,000`, and `D = tv - idle - Σreceipts == 3,793,536`. Never crank the old
+   `1,000`, and `D = idle + Σreceipts − tv == 3,793,536`. At the Phase 1
+   post-state, `tv == idle == 3,793,417` and strategy-one `receipt1 ==
+   3,793,536`, so `idle + receipt1 − tv == 3,793,536`; before repair,
+   `3,793,417 + 2,793,417 − 2,793,298 == 3,793,536`. Never crank the old
    receipt below `3,793,536`.
 2. The fresh strategy-two config, report ticket, strategy receipt, and custody
    ATA are initialized and read back at finalized commitment with receipt and
@@ -83,9 +91,11 @@ policy identities, and latch state in
    pinned strategy-two worker through the approved Render deployment. The
    worker chooses the allocation path; there is no standalone `allocate`
    subcommand. Capture the worker operation id, policy seed, transaction
-   signature, finalized slot, and before/after account batch. Any worker start
-   or send that cannot be tied to the approved `CONFIRM_MAINNET=1` and operator
-   signature gate is an abort.
+   signature, finalized slot, and before/after account batch. The worker has no
+   `CONFIRM_MAINNET` gate: the pinned Render deployment/resumption with
+   `POLICY_KEYPAIR` provisioned is the operator's send authorization, and the
+   worker sends autonomously within its policies and start gates. Any worker
+   start or send before every precondition is verified is an abort.
 3. **Refresh and restore.** Let the worker complete the report/refresh and
    restore path only when M1–M8 remain green. Record each finalized signature,
    ticket sequence, report NAV, Voltr `tv`, idle, strategy-two receipt, and
@@ -129,14 +139,17 @@ The evidence file must contain the pre-canary snapshot, every lifecycle step,
 signatures and finalized slots, decoded `tv`/idle/receipt2/custody2, LP and USDC
 deltas, all M1–M8 verdicts, policy and ProgramData identities, worker image
 revision, and the final conservation check. Finish only when custody2 and
-receipt2 are zero and `tv` equals the pre-canary value, with no performance-fee
-LP minted.
+receipt2 are zero and final `tv == pre-canary tv + 1,000,000 − payoutRaw`,
+where `payoutRaw` is the actual finalized claim payout recorded in the
+evidence (the LiteSVM reference is `999,999`), with no performance-fee LP
+minted.
 
 Abort immediately on any monitor hold, latch, missing/foreign account, policy or
 identity drift, old policy presence, non-finalized or ambiguous send, unknown
 worker image, NAV/book mismatch, custody residue, ticket sequence mismatch,
 nonzero fee, future/mismatched deadline, incorrect payout or LP burn, duplicate
-operation, or inability to prove the operator/`CONFIRM_MAINNET=1` gate. Preserve
-all journals and use only the relevant reconciliation path after an ambiguous
-send; never replay a one-shot leg.
-
+operation, or inability to prove the repository CLI send's
+operator/`CONFIRM_MAINNET=1` gate or the worker's pinned-image/
+`POLICY_KEYPAIR` authorization. Preserve all journals and use only the
+relevant reconciliation path after an ambiguous send; never replay a one-shot
+leg.

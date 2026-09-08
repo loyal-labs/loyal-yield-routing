@@ -60,17 +60,21 @@ Derived per config key (compute with
     "strategyTwoConfig": "<config2-addr>",
     "delegatedSigner": "<executor2-addr>",
     "repairPolicy": "7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR",
-    "repairPolicyDataSha256": "ba1226588ce9799b3dd4cfbe52b2048f2c62ac2f22046cc095d6d2502ac09a28",
+    "repairPolicyDataSha256": "<recorded repairPolicyDataSha256 from the finalized seed/creation journal>",
     "observationSlot": "<finalized-observation-slot>"
   }
   ```
 
   The config, delegated signer, and observation slot above illustrate the
   finalized readback shape; the installer writes the real operator-derived
-  identities and observed slot. The repair hash is expected to be
-  `ba1226588ce9799b3dd4cfbe52b2048f2c62ac2f22046cc095d6d2502ac09a28` for
-  the NAV-pinned repair policy, but the installer records the bytes it reads
-  at finalized commitment and every later invocation must match that hash.
+  identities and observed slot. The repair hash is dynamic: use the
+  `repairPolicyDataSha256` field recorded in the finalized seed/creation
+  journal at
+  `docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-policy-seeds.journal.json`.
+  The continuity pin compares the live policy bytes with that recorded hash
+  and also runs the decoded constraint and identity checks. Do not paste a
+  static hash into this runbook; every later invocation must match the
+  journaled value.
   Every invocation revalidates the Settings counter, genesis, Settings
   identity, strategy-two identities, repair PDA ownership/presence, repair
   account hash, and finalized observation before it proceeds.

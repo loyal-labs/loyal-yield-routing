@@ -78,11 +78,19 @@ operator signer and the guarded command shown in the linked runbook.
 
    Confirm the revision label, `LOYAL_IMAGE_VERSION`, command, policy-generation
    start gate, Settings anchor/genesis check, and 60-second startup deadline.
+   The Go worker has no `CONFIRM_MAINNET` gate: deploying or resuming this
+   pinned image with `POLICY_KEYPAIR` provisioned is the operator's send
+   authorization, after which it sends autonomously within its policies and
+   start gates. Keep the service suspended until every canary precondition is
+   verified.
 
 6. **Run the canary.** Use [`strategy-two-canary-2026-09-08.md`](strategy-two-canary-2026-09-08.md): 1 USDC deposit, worker allocation, refresh/restore, user withdrawal request, finalized 600-second wait, then claim. Capture
    `docs/evidence/backyard-rwa-strategy2/phase2-canary.json`. The existing
    generic user CLI is for `AdwK…`; use the deployed HXtk strategy-two wallet
-   flow and record its exact finalized signatures.
+   flow and record its exact finalized signatures. Do not treat
+   `CONFIRM_MAINNET=1` as a worker gate; its authorization is the pinned
+   Render deployment/resumption with `POLICY_KEYPAIR` provisioned after all
+   preconditions pass. A worker send before then is an abort condition.
 
 7. **Restore degradation only after the repair.** Do not restore before the
    finalized repair transaction plus `86,400` seconds and a finalized closed
@@ -96,4 +104,3 @@ operator signer and the guarded command shown in the linked runbook.
 8. **Operator decisions still open.** Keep the settings-graph relaxation (P3.1
    (g)) as `OPERATOR CONFIRMATION REQUIRED`; keep the single hot key for this
    week. Key separation is required before third-party money.
-

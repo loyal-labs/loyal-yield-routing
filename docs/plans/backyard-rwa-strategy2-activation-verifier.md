@@ -746,8 +746,10 @@ numbered requirement.
 - **Not encoded update.** The old seed-63 path and static policy-account-hash
   pinning are superseded by the seed-140 one-shot policy and its dynamic
   continuity pin. Source `fleet/*` commits retain their original history, but
-  the Codex squashes on `fleet/integration` are unsigned and trailer-free;
-  re-sign or squash-merge them at the release boundary. This amendment
+  the Codex squashes on `fleet/integration` are trailer-free and SSH-signed by
+  the integrating environment; the repository has no
+  `gpg.ssh.allowedSignersFile`, so the operator verifies the signer identity
+  (or re-signs on squash-merge) before merging. This amendment
   strengthens the verifier/operator boundary and does not treat simulated
   evidence as live deployment proof.
 
@@ -757,9 +759,10 @@ numbered requirement.
   journaled expectation must abort. This is now encoded in P1.2/P2.8 and is
   not an unencoded assumption.
 - Source fleet commits may retain Codex trailers, but the integrated
-  `fleet/integration` squashes are trailer-free and unsigned because the
-  repository signing hook was unavailable to the agent; re-sign or
-  squash-merge the integration branch before release.
+  `fleet/integration` squashes are trailer-free and SSH-signed by the
+  integrating environment; the repository has no
+  `gpg.ssh.allowedSignersFile`, so the operator verifies the signer identity
+  (or re-signs on squash-merge) before merging.
 - Settings-graph relaxation (U2): required before Squads governance is hardened /
   before third-party money; not part of Phase 3. The deployed v2/v3 check stays
   strict — exactly one signer, mask 7, threshold 1 — so adding a Squads member or
