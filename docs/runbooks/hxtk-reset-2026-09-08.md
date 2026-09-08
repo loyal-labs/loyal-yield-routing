@@ -258,7 +258,7 @@ removal leaves a finalized repair journal but the seed-140 policy still
 exists. Simulate removal against the same finalized creation journal:
 
 ```sh
-bun run reset:hxtk repair-policy-remove --expect-seed 140 --policy-journal /absolute/path/hxtk-repair-policy.json --simulate
+bun run reset:hxtk repair-policy-remove --expect-seed 140 --policy-journal /absolute/path/hxtk-repair-policy.json --repair-journal /absolute/path/hxtk-repair.json --simulate
 ```
 
 Require the exact seed-140 one-shot policy to close, Settings bytes to remain
@@ -279,6 +279,13 @@ repair send itself is ambiguous, reconcile it first with:
 
 ```sh
 bun run reset:hxtk repair --expect-seed 140 --policy-journal /absolute/path/hxtk-repair-policy.json --reconcile --journal /absolute/path/hxtk-repair.json
+```
+
+If the canonical `repair-policy-remove` state is already `finalized`, no
+removal command is needed; the recovery mapping emits:
+
+```text
+repair-policy-remove already finalized; verify with bun run reset:hxtk verify
 ```
 
 Reconcile must read the seed-140 PDA as closed (absent or zero-lamport
@@ -405,6 +412,12 @@ The guarded execute and ambiguous-send recovery commands are:
 op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk restore-degradation --repair-journal /absolute/path/hxtk-repair.json --claim-journal /absolute/path/hxtk-claim.json --execute --journal /absolute/path/hxtk-restore-degradation.json
 ```
 
+If that send is ambiguous, reconcile the same journal without a new send:
+
+```sh
+bun run reset:hxtk restore-degradation --repair-journal /absolute/path/hxtk-repair.json --claim-journal /absolute/path/hxtk-claim.json --reconcile --journal /absolute/path/hxtk-restore-degradation.json
+```
+
 Require degradation `86,400`, admin/manager performance fees `0`, and waiting
 period `600` after finalized reconciliation. Record the NAV-sniper
 haircut/degradation result (audit T10.7), and abort if the 24-hour delay,
@@ -480,22 +493,26 @@ above, regardless of the requested journal directory. The state records
 `pending`, `attempted`, `aborted-pre-send`, or `finalized`; one-shot legs cannot
 be replayed, and `config`, `harvest`, and `restore-degradation` require an
 explicit `--allow-repeat` plus a new journal only when intentionally repeated.
-Before the read/check/write fence, every send or reconcile path creates an
-exclusive `<leg>.claim` with `pid`, `startedAtUnixMs`, `hostname`, `journal`, and
-a process-held 16-byte hex `token`. The file is created with exclusive `wx`
-semantics and fsynced. The claim stays held through build, simulation, send,
-finalization, reconciliation, and every canonical state write. Release reads
-the claim and unlinks only when its token still matches; a foreign token is
-left in place and logged. A live claim blocks the leg with the owning pid. A
-crash leaves the claim in place; `--break-claim` is allowed only for a claim on
-the local hostname whose pid is proven dead, and breaks it atomically with
-`renameSync(<leg>.claim, <leg>.claim.broken-<unix ms>-<pid>)`. It never unlinks
-the live claim; exactly one breaker may win, and a loser re-reads and refuses.
-After a successful break, the breaker acquires the replacement claim normally
-with exclusive `wx` creation. Never use that flag in the normal runbook path.
-Each canonical state write also re-reads and compare-and-swaps an integer
-`generation`, writes a `0600` same-directory temporary, and increments the
-generation; a mismatch is `STATE_GENERATION_CONFLICT` and prevents a send.
+Before the read/check/write fence, every send or reconcile path creates a
+token-named `<leg>.claim.<token>` with `pid`, `startedAtUnixMs`,
+`processStartTime`, `hostname`, `journal`, and a 16-byte hex `token`, then
+publishes the fixed `<leg>.claim` pointer as a hard link. Claims are advisory;
+the generation election below is the send gate. The claim stays held through
+build, simulation, send, finalization, reconciliation, and every canonical
+state write. Release compares the pointer inode with this process's token-file
+inode before unlinking either name. A live claim blocks the leg with the
+owning pid; a reused pid is dead when its recorded process start time differs.
+A crash leaves the claim in place; `--break-claim` is allowed only for a claim
+on the local hostname whose pid and process start time are proven dead. It
+renames only that exact dead token file, then unlinks the fixed pointer only if
+its inode is unchanged. A competing breaker or a replacement live claim is
+never removed. The break lease remains the serialization point for breakers.
+Each canonical state write writes a `0600` same-directory temporary, fsyncs it,
+and atomically elects `.gen-N` with a hard link before renaming the reader
+pointer. Readers require the pointer bytes to equal the elected generation
+inode; a mismatch is `STATE_GENERATION_CONFLICT` and prevents a send. The raw
+send is reachable only after this process wins the `attempted` generation; no
+claim logic is relied upon for that guarantee.
 The pre-send journal is marked `broadcast:"attempted"` with the expected
 signature before raw submission, so a crash in the ambiguous-send window
 remains fenced. Post-pre-mark status is volatile and nested as:

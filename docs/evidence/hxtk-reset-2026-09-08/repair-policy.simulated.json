@@ -17,12 +17,12 @@
     "sequentialSeedRule": "PolicyCreate uses Settings.policySeed + 1; seed 140 is the only permitted repair policy target"
   },
   "seedReadback": {
-    "contextSlot": 445424905,
+    "contextSlot": 445441376,
     "contextSlots": [
-      445424901,
-      445424903,
-      445424904,
-      445424905
+      445441372,
+      445441373,
+      445441375,
+      445441376
     ],
     "scan": {
       "minSeed": "0",
@@ -2214,7 +2214,8 @@
   "compiler": {
     "compilerBinarySha256": "b15fc58c0c36e327032bb59c9be52766e5d974d4b7068e54e4bdbe158f3d657a",
     "compilerBinarySha256AtExec": "b15fc58c0c36e327032bb59c9be52766e5d974d4b7068e54e4bdbe158f3d657a",
-    "compilerBinaryPath": "/Users/user/loyal/loyal-yield-routing/.claude/worktrees/fleet-merge/target/backyard-voltr-compilers/debug/compile-voltr-custom-policy",
+    "compilerExecMode": "private-copy",
+    "compilerBinaryPath": "/var/folders/sr/ljr01xs11dq_6499qvdr0cq40000gn/T/loyal-voltr-compiler-ffBv4h/compile-voltr-custom-policy",
     "compilerTargetDir": "/Users/user/loyal/loyal-yield-routing/.claude/worktrees/fleet-merge/target/backyard-voltr-compilers",
     "compilerSourceTreeSha256": "35e21c35ed4b295455da02719ca0b1d78762278562c75146c6362f9afcc5e68c",
     "compilerArtifactSchema": "loyal-voltr-custom-policy-artifact/v5",
@@ -2422,7 +2423,7 @@
     }
   },
   "simulatedPolicyDataBytes": 1420,
-  "simulatedPolicyDataSha256": "88b79106bb4b2de3d19b197f78066d72757454f993531ebbbc6d3d9fe8a1dc68",
+  "simulatedPolicyDataSha256": "5cad9cdb47c0e0ddd76834e864a3e3c7f0779762603a0da0afc6bdfdf42e1509",
   "policyProvenanceStatement": "Live policy bytes are compared to the hash recorded in the finalized PolicyCreate journal as a dynamic continuity pin, alongside decoded semantic checks.",
   "transaction": {
     "feePayer": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
@@ -3058,7 +3059,7 @@
       "check": "simulated policy account is present",
       "pass": true,
       "expected": "present",
-      "actual": "1420 bytes/88b79106bb4b2de3d19b197f78066d72757454f993531ebbbc6d3d9fe8a1dc68"
+      "actual": "1420 bytes/5cad9cdb47c0e0ddd76834e864a3e3c7f0779762603a0da0afc6bdfdf42e1509"
     },
     {
       "check": "simulated policy identity and delegated signer are exact",
