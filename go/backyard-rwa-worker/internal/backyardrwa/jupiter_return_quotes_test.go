@@ -17,12 +17,12 @@ func TestPhase3ReturnQuoteCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	var artifact struct {
-		Schema string
+		Schema                                                             string
 		Broadcast, SignatureProof, ExecutionProof, InstalledPolicyReadback bool
-		Rows []struct {
+		Rows                                                               []struct {
 			Key, DataSHA256 string
-			Quote JupiterQuote
-			Response struct { SwapInstruction JupiterSwapInstruction }
+			Quote           JupiterQuote
+			Response        struct{ SwapInstruction JupiterSwapInstruction }
 		}
 	}
 	if err := json.Unmarshal(bytes, &artifact); err != nil {
@@ -40,27 +40,41 @@ func TestPhase3ReturnQuoteCompatibility(t *testing.T) {
 		}
 		seen[row.Key] = true
 		amount, err := strconv.ParseUint(row.Quote.InAmount, 10, 64)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		out, minimum, err := validateJupiterQuoteForRoute(row.Quote, action, amount, "Ethena/USDe/PYUSD")
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		data, err := base64.StdEncoding.Strict().DecodeString(row.Response.SwapInstruction.Data)
-		if err != nil || sha256Bytes(data) != row.DataSHA256 { t.Fatal("quote instruction hash drift") }
+		if err != nil || sha256Bytes(data) != row.DataSHA256 {
+			t.Fatal("quote instruction hash drift")
+		}
 		_, validationErr := validateJupiterInstructionForRoute(row.Response.SwapInstruction, action, amount, out, minimum, "Ethena/USDe/PYUSD")
 		accepted := validationErr == nil
 		// These retained V1 quotes have exact public account/economic boundaries,
 		// but two have different legacy tail offsets from the installed catalog.
-		if accepted != (row.Key == "PYUSD->USDC") { t.Fatalf("%s installed-layout result changed: %v", row.Key, validationErr) }
+		if accepted != (row.Key == "PYUSD->USDC") {
+			t.Fatalf("%s installed-layout result changed: %v", row.Key, validationErr)
+		}
 		binding, err := catalogJupiterBindingForRoute(action, "Ethena/USDe/PYUSD")
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		reason := ""
-		if validationErr != nil { reason = validationErr.Error() }
+		if validationErr != nil {
+			reason = validationErr.Error()
+		}
 		measurement, err := json.Marshal(map[string]any{
-			"edge":row.Key, "accepted":accepted, "reason":reason, "artifactSha256":sha256Bytes(bytes),
-			"policy":binding.Policy, "policyDataSha256":binding.PolicySHA256, "constraintIndex":binding.ConstraintIndex,
-			"installedAmountOffset":binding.AmountOffset, "observedAmountOffset":len(data)-19,
-			"installedSlippageOffset":binding.SlippageOffset, "observedSlippageOffset":len(data)-3,
+			"edge": row.Key, "accepted": accepted, "reason": reason, "artifactSha256": sha256Bytes(bytes),
+			"policy": binding.Policy, "policyDataSha256": binding.PolicySHA256, "constraintIndex": binding.ConstraintIndex,
+			"installedAmountOffset": binding.AmountOffset, "observedAmountOffset": len(data) - 19,
+			"installedSlippageOffset": binding.SlippageOffset, "observedSlippageOffset": len(data) - 3,
 		})
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		t.Logf("PHASE3_RETURN_QUOTE %s", measurement)
 	}
 }

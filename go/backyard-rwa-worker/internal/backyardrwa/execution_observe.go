@@ -47,14 +47,14 @@ func decodeObservedAdaptorConfig(account ConfirmedAccount) (observedAdaptorConfi
 	return observedAdaptorConfig{}, nil
 }
 
-func ObserveConfirmedBridgeExecutionEvidence(
+func observeConfirmedBridgeExecutionEvidenceWithEnrichment(
 	ctx context.Context,
 	rpc *RPCClient,
 	manifest RouteManifest,
 	decision Decision,
-	postMutationNAVRequired bool,
+	enrich func(context.Context, *Observation) error,
 ) (Observation, BridgeExecutionEvidence, error) {
-	if rpc == nil {
+	if rpc == nil || enrich == nil {
 		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("RPC client is required")
 	}
 	policy, policyHash, err := manifest.bridgePolicy(decision.Action)
@@ -62,12 +62,18 @@ func ObserveConfirmedBridgeExecutionEvidence(
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccounts(ctx, rpc, manifest)
+		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(ctx, rpc, manifest, enrich)
 		if err != nil {
 			return Observation{}, BridgeExecutionEvidence{}, err
 		}
-		observation.Snapshot.PostMutationNAVRequired = postMutationNAVRequired
-		if !decisionsEqual(Decide(observation.Snapshot), decision) {
+		refreshedDecision := Decide(observation.Snapshot)
+		if refreshedDecision.Action == HoldManualRecovery {
+			// The refresh itself discovered a safety fault. Return the coherent
+			// observation so Worker.Tick can durably record the hold and latch it;
+			// treating this as ordinary drift would discard the stop.
+			return observation, BridgeExecutionEvidence{}, nil
+		}
+		if !decisionsEqual(refreshedDecision, decision) {
 			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("actionable decision changed before construction")
 		}
 		route, err := runtimeRoute(decision.StrategyKey)
@@ -213,20 +219,28 @@ func bridgeExpectedEffects(decision Decision, idle, strategy, squads uint64) (Ex
 	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: accounts}, strategyAfter, squadsAfter, nil
 }
 
-func ObserveConfirmedKaminoExecutionEvidence(
+func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 	ctx context.Context,
 	rpc *RPCClient,
 	manifest RouteManifest,
 	decision Decision,
+	enrich func(context.Context, *Observation) error,
 ) (Observation, KaminoExecutionEvidence, error) {
-	if rpc == nil || (decision.Action != OpenPrimeUSDCStep && decision.Action != DeleverPrimeUSDCStep &&
+	if rpc == nil || enrich == nil || (decision.Action != OpenPrimeUSDCStep && decision.Action != DeleverPrimeUSDCStep &&
 		decision.Action != OpenRouteStep && decision.Action != DeleverRouteStep) {
 		return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("invalid Kamino evidence request")
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccounts(ctx, rpc, manifest)
+		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(ctx, rpc, manifest, enrich)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
+		}
+		refreshedDecision := Decide(observation.Snapshot)
+		if refreshedDecision.Action == HoldManualRecovery {
+			// Do not attempt reserve decoding or packet construction after the
+			// refresh has already found a durable safety stop. Worker.Tick receives
+			// this coherent observation and persists it before returning.
+			return observation, KaminoExecutionEvidence{}, nil
 		}
 		route, err := runtimeRoute(decision.StrategyKey)
 		if err != nil {

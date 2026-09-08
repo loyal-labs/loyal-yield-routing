@@ -6,8 +6,8 @@ import (
 	"math"
 )
 
-func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, client *jupiterClient) (Observation, JupiterExecutionEvidence, error) {
-	if rpc == nil || client == nil || decision.AmountRaw <= 0 {
+func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, client *jupiterClient, enrich func(context.Context, *Observation) error) (Observation, JupiterExecutionEvidence, error) {
+	if rpc == nil || client == nil || enrich == nil || decision.AmountRaw <= 0 {
 		return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter evidence request")
 	}
 	binding, err := manifest.jupiterPolicyForRoute(decision.Action, decision.StrategyKey)
@@ -15,11 +15,17 @@ func ObserveConfirmedJupiterExecutionEvidence(ctx context.Context, rpc *RPCClien
 		return Observation{}, JupiterExecutionEvidence{}, err
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccounts(ctx, rpc, manifest)
+		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(ctx, rpc, manifest, enrich)
 		if err != nil {
 			return Observation{}, JupiterExecutionEvidence{}, err
 		}
-		if !decisionsEqual(Decide(observation.Snapshot), decision) {
+		refreshedDecision := Decide(observation.Snapshot)
+		if refreshedDecision.Action == HoldManualRecovery {
+			// Preserve the refreshed safety decision for Worker.Tick to journal
+			// atomically with its route latch instead of discarding it as drift.
+			return observation, JupiterExecutionEvidence{}, nil
+		}
+		if !decisionsEqual(refreshedDecision, decision) {
 			return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(
 				fmt.Errorf("actionable decision changed before Jupiter construction"),
 			)

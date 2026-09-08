@@ -40,8 +40,23 @@ func main() {
 			fmt.Println(string(result))
 			return
 		}
+		if os.Args[1] == "clear-hold" {
+			reason, routeKey, err := parseClearHoldFlags(os.Args[2:])
+			if err != nil {
+				log.Fatal(err)
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			// The only operator path that lifts a durable manual recovery stop.
+			result, err := backyardrwa.ClearManualRecoveryHold(ctx, os.Getenv("NEON_DATABASE_URL"), routeKey, reason)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Println(result)
+			return
+		}
 		if os.Args[1] != "--inspect-phase3" || len(os.Args) < 3 {
-			log.Fatal("usage: backyard-rwa-worker [--inspect-phase3 lane ... | --inspect-phase3-setup-rent | --initialize-phase3-budget]")
+			log.Fatal("usage: backyard-rwa-worker [--inspect-phase3 lane ... | --inspect-phase3-setup-rent | --initialize-phase3-budget | clear-hold --route <route key> --reason \"<text>\"]")
 		}
 		result, err := backyardrwa.InspectPhase3Runtime(os.Args[2:])
 		if err != nil {
@@ -56,4 +71,33 @@ func main() {
 	if err := backyardrwa.Run(ctx, os.Stdout); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
+}
+
+// parseClearHoldFlags reads the operator command's only two flags. The reason
+// is mandatory and must be non-empty: it is what the HOLD_CLEARED journal row
+// records.
+func parseClearHoldFlags(args []string) (string, string, error) {
+	reason, routeKey := "", ""
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "--route":
+			if index+1 >= len(args) {
+				return "", "", fmt.Errorf("clear-hold: --route requires a route key")
+			}
+			routeKey = args[index+1]
+			index++
+		case "--reason":
+			if index+1 >= len(args) {
+				return "", "", fmt.Errorf("clear-hold: --reason requires text")
+			}
+			reason = args[index+1]
+			index++
+		default:
+			return "", "", fmt.Errorf("clear-hold: unexpected argument %q", args[index])
+		}
+	}
+	if routeKey == "" || reason == "" {
+		return "", "", fmt.Errorf(`usage: backyard-rwa-worker clear-hold --route <route key> --reason "<text>"`)
+	}
+	return reason, routeKey, nil
 }

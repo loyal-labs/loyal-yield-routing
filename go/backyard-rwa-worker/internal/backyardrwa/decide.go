@@ -2,11 +2,55 @@ package backyardrwa
 
 import "fmt"
 
+// custodyDiscipline fails closed when the strategy custody balance is not
+// exactly the amount this worker last staged into Voltr for the route. Voltr
+// sweeps the entire custody on restore and books that balance into its own
+// total value, so an unexplained balance is manual recovery and never an
+// amount the planner may infer from a custody read.
+func custodyDiscipline(s Snapshot) (Decision, bool) {
+	if s.Nonterminal != "" || s.VoltrStrategyIdleRaw <= 0 {
+		return Decision{}, false
+	}
+	if !s.StagedAmountKnown || s.StagedAmountRaw != s.VoltrStrategyIdleRaw {
+		strategyKey := s.RouteLane
+		if strategyKey == "" {
+			strategyKey = RouteID
+		}
+		return Decision{Action: HoldManualRecovery, Reason: "custody_mismatch", AmountRaw: 0,
+			IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "custody_mismatch", s.VoltrStrategyIdleRaw),
+			StrategyKey:    strategyKey}, true
+	}
+	return Decision{}, false
+}
+
+// custodyResidueHold blocks every accounting refresh while a strategy custody
+// balance exists. A report moves no capital, so it must observe custody empty;
+// a residue has to be restored (or recovered manually) instead of being
+// silently reported as current book.
+func custodyResidueHold(s Snapshot) (Decision, bool) {
+	if s.VoltrStrategyIdleRaw == 0 {
+		return Decision{}, false
+	}
+	strategyKey := s.RouteLane
+	if strategyKey == "" {
+		strategyKey = RouteID
+	}
+	return Decision{Action: HoldManualRecovery, Reason: "custody_residue", AmountRaw: 0,
+		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "custody_residue", s.VoltrStrategyIdleRaw),
+		StrategyKey:    strategyKey}, true
+}
+
 // Decide resolves the already-frozen lane carried by the confirmed
 // observation. It does not choose a lane; observations for any lane outside
 // the registered routes fail closed. Registration does not enable the live
 // selection manifest or replace policy/exit/admission checks.
 func Decide(s Snapshot) Decision {
+	if hold, blocked := custodyDiscipline(s); blocked {
+		return hold
+	}
+	if hold, blocked := bridgeMonitorHold(s); blocked {
+		return hold
+	}
 	if route, err := runtimeRoute(s.RouteLane); err == nil && route.Kamino.DebtMint != bridgeUSDC && len(route.KaminoPolicies) == 4 {
 		return decideNonUSDC(s)
 	}
@@ -125,7 +169,12 @@ func decideFixed(s Snapshot) Decision {
 	// A reconciled Jupiter/Kamino mutation must be accounted before any next
 	// lifecycle leg, including a withdrawal unwind. Hard-LTV safety above is the
 	// only action allowed to preempt this report.
-	if s.PostMutationNAVRequired {
+	if s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
+		// M4: a pending withdrawal queue that Voltr idle cannot cover makes a
+		// refresh-only tick inadmissible; the unwind legs below stay live.
+		if hold, blocked := custodyResidueHold(s); blocked {
+			return hold
+		}
 		return decision(ReportNAV, "post_mutation_nav_due", 0)
 	}
 	// A legacy position can sit at its maximum reviewed LTV, where withdrawing
@@ -139,6 +188,9 @@ func decideFixed(s Snapshot) Decision {
 		shortfall := s.WithdrawalDemandRaw - s.VoltrIdleRaw
 		if shortfall <= 0 {
 			if s.CapitalMutated || s.PostMutationNAVRequired || s.LastReportAgeSeconds >= 60 {
+				if hold, blocked := custodyResidueHold(s); blocked {
+					return hold
+				}
 				return decision(ReportNAV, "withdrawal_covered_nav_due", 0)
 			}
 			return decision(Hold, "withdrawal_covered", 0)
@@ -181,7 +233,17 @@ func decideFixed(s Snapshot) Decision {
 		}
 		return decision(DeleverPrimeUSDCStep, "withdrawal_shortfall", remaining)
 	}
-	if s.CapitalMutated || s.PostMutationNAVRequired || s.LastReportAgeSeconds >= 60 {
+	// S1: an unexplained book drift stops the route instead of reporting it.
+	if hold, drifted := unexplainedNAVDriftHold(s); drifted {
+		return hold
+	}
+	// S2: a reconciled capital mutation reports only beyond the drift
+	// tolerance; the post-mutation requirement and the aging cadence report
+	// unconditionally.
+	if capitalMutationReports(s) || s.PostMutationNAVRequired || s.LastReportAgeSeconds >= 60 {
+		if hold, blocked := custodyResidueHold(s); blocked {
+			return hold
+		}
 		return decision(ReportNAV, "nav_due", 0)
 	}
 	if s.VoltrIdleRaw > 0 {

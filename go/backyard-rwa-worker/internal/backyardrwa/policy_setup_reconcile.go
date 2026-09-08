@@ -187,11 +187,15 @@ func observePolicySetupCreated(ctx context.Context, rpc *RPCClient, auth phase3O
 	// Settings. Normalize that one u64 to its predecessor and compare the
 	// frozen prestate hash; membership, archival authority and counters cannot
 	// silently drift just because the coarse signer/threshold checks still fit.
-	priorSettings:=append([]byte(nil),accounts[0].Data...)
-	seedOffset:=127
-	if priorSettings[78]==1{seedOffset+=32}
-	binary.LittleEndian.PutUint64(priorSettings[seedOffset:seedOffset+8],r.Seed-1)
-	if sha256Bytes(priorSettings)!=auth.PolicySetup.SettingsSHA256{return out,budgetHold("created_policy_settings_mismatch")}
+	priorSettings := append([]byte(nil), accounts[0].Data...)
+	seedOffset := 127
+	if priorSettings[78] == 1 {
+		seedOffset += 32
+	}
+	binary.LittleEndian.PutUint64(priorSettings[seedOffset:seedOffset+8], r.Seed-1)
+	if sha256Bytes(priorSettings) != auth.PolicySetup.SettingsSHA256 {
+		return out, budgetHold("created_policy_settings_mismatch")
+	}
 	admin := accounts[1]
 	if admin.Owner != "11111111111111111111111111111111" || admin.Executable || len(admin.Data) != 0 {
 		return out, budgetHold("policy_setup_payer_mismatch")

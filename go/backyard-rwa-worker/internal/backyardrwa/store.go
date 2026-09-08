@@ -3,6 +3,8 @@ package backyardrwa
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -316,33 +319,221 @@ func (d *Database) RecordDecision(
 	manifestSHA256 string,
 	policyCatalogSHA256 string,
 ) (DecisionRecord, error) {
-	if isPolicySetupAction(decision.Action) {
-		return DecisionRecord{}, budgetHold("policy_setup_requires_atomic_intent")
+	if decision.Action == HoldManualRecovery {
+		return d.RecordManualRecovery(ctx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
 	}
-	if err := decision.Validate(); err != nil {
-		return DecisionRecord{}, fmt.Errorf("validate decision before persistence: %w", err)
-	}
-	if d == nil || d.pool == nil || routeKey == "" {
-		return DecisionRecord{}, fmt.Errorf("database is not configured")
-	}
-	if err := observation.Validate(); err != nil {
+	if err := validateDecisionPersistence(d, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256); err != nil {
 		return DecisionRecord{}, err
-	}
-	if decision.Action != Hold && decision.Action != HoldManualRecovery &&
-		(!observation.Snapshot.Fresh || observation.Snapshot.RouteKind != RouteKind) {
-		return DecisionRecord{}, fmt.Errorf("transactional decision requires a fresh Backyard observation")
-	}
-	if err := decision.Validate(); err != nil {
-		return DecisionRecord{}, err
-	}
-	if !sha256Pattern.MatchString(manifestSHA256) || !sha256Pattern.MatchString(policyCatalogSHA256) {
-		return DecisionRecord{}, fmt.Errorf("manifest or policy catalog hash is invalid")
 	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return DecisionRecord{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	record, err := d.recordDecisionTx(ctx, tx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
+	if err != nil {
+		return DecisionRecord{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return DecisionRecord{}, err
+	}
+	return record, nil
+}
+
+func validateDecisionPersistence(
+	d *Database,
+	routeKey string,
+	observation Observation,
+	decision Decision,
+	manifestSHA256 string,
+	policyCatalogSHA256 string,
+) error {
+	if isPolicySetupAction(decision.Action) {
+		return budgetHold("policy_setup_requires_atomic_intent")
+	}
+	if err := decision.Validate(); err != nil {
+		return fmt.Errorf("validate decision before persistence: %w", err)
+	}
+	if d == nil || d.pool == nil || routeKey == "" {
+		return fmt.Errorf("database is not configured")
+	}
+	if err := observation.Validate(); err != nil {
+		return err
+	}
+	if decision.Action != Hold && decision.Action != HoldManualRecovery &&
+		(!observation.Snapshot.Fresh || observation.Snapshot.RouteKind != RouteKind) {
+		return fmt.Errorf("transactional decision requires a fresh Backyard observation")
+	}
+	if !sha256Pattern.MatchString(manifestSHA256) || !sha256Pattern.MatchString(policyCatalogSHA256) {
+		return fmt.Errorf("manifest or policy catalog hash is invalid")
+	}
+	return nil
+}
+
+// RecordManualRecovery persists the terminal hold and its route latch in the
+// same transaction. A committed HOLD_MANUAL_RECOVERY can therefore never be
+// observed without the stop that protects the next tick.
+func (d *Database) RecordManualRecovery(
+	ctx context.Context,
+	routeKey string,
+	observation Observation,
+	decision Decision,
+	manifestSHA256 string,
+	policyCatalogSHA256 string,
+) (DecisionRecord, error) {
+	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256, nil, nil)
+}
+
+// RecordManualRecoveryAtGeneration re-records a latched hold only if the
+// physical latch still has the generation read at the top of the tick. A clear
+// increments that generation, so a stale tick rolls back its journal attempt
+// instead of re-arming the route.
+func (d *Database) RecordManualRecoveryAtGeneration(
+	ctx context.Context,
+	routeKey string,
+	observation Observation,
+	decision Decision,
+	manifestSHA256 string,
+	policyCatalogSHA256 string,
+	generation int64,
+) (DecisionRecord, error) {
+	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256, &generation, nil)
+}
+
+// recordManualRecovery keeps the failure hook package-private so the database
+// test can force an error after the hold insert and prove that the transaction
+// rolls back both durable facts together.
+func (d *Database) recordManualRecovery(
+	ctx context.Context,
+	routeKey string,
+	observation Observation,
+	decision Decision,
+	manifestSHA256 string,
+	policyCatalogSHA256 string,
+	afterInsert func() error,
+) (DecisionRecord, error) {
+	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256, nil, afterInsert)
+}
+
+func (d *Database) recordManualRecoveryWithGeneration(
+	ctx context.Context,
+	routeKey string,
+	observation Observation,
+	decision Decision,
+	manifestSHA256 string,
+	policyCatalogSHA256 string,
+	expectedGeneration *int64,
+	afterInsert func() error,
+) (DecisionRecord, error) {
+	if decision.Action != HoldManualRecovery {
+		return DecisionRecord{}, fmt.Errorf("manual recovery persistence requires HOLD_MANUAL_RECOVERY")
+	}
+	if err := validateDecisionPersistence(d, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256); err != nil {
+		return DecisionRecord{}, err
+	}
+	latch := ManualRecoveryLatch{
+		Reason:          decision.Reason,
+		ObservationID:   observation.Snapshot.ObservationID,
+		ObservationSlot: observation.Snapshot.Slot,
+	}
+	if err := validateManualRecoveryLatch(latch); err != nil {
+		return DecisionRecord{}, err
+	}
+	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return DecisionRecord{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	record, err := d.recordDecisionTx(ctx, tx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
+	if err != nil {
+		return DecisionRecord{}, err
+	}
+	var generation int64
+	if expectedGeneration != nil {
+		if err := compareAndSetManualRecoveryGeneration(ctx, tx, routeKey, *expectedGeneration); err != nil {
+			return DecisionRecord{}, err
+		}
+		generation = *expectedGeneration
+	} else {
+		generation, err = currentManualRecoveryGeneration(ctx, tx, routeKey)
+		if err != nil {
+			return DecisionRecord{}, err
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations
+		SET expected_effects = expected_effects || jsonb_build_object('latchGeneration', $2::bigint)
+		WHERE operation_id = $1`, record.OperationID, generation); err != nil {
+		return DecisionRecord{}, fmt.Errorf("record manual recovery generation: %w", err)
+	}
+	if afterInsert != nil {
+		if err := afterInsert(); err != nil {
+			return DecisionRecord{}, err
+		}
+	}
+	if _, err := tx.Exec(ctx, latchManualRecoverySQL, routeKey, manualRecoveryLatchReason(latch.Reason), latch.ObservationID, latch.ObservationSlot, generation); err != nil {
+		return DecisionRecord{}, fmt.Errorf("latch manual recovery: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return DecisionRecord{}, err
+	}
+	return record, nil
+}
+
+func currentManualRecoveryGeneration(ctx context.Context, tx pgx.Tx, routeKey string) (int64, error) {
+	var generation int64
+	err := tx.QueryRow(ctx,
+		`SELECT generation FROM loyal_yield.backyard_manual_recovery_latches WHERE route_key = $1 FOR UPDATE`, routeKey).
+		Scan(&generation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A derived legacy latch has no physical row to carry the generation.
+		// Continue the sequence from the journal so a new physical latch cannot
+		// reset the route's fence after an operator clear.
+		err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(
+			CASE
+				WHEN expected_effects ->> 'latchGeneration' ~ '^[0-9]+$'
+				THEN (expected_effects ->> 'latchGeneration')::bigint
+				ELSE 0
+			END
+		), 0)
+		FROM loyal_yield.multiply_operations
+		WHERE route_key = $1 AND status = 'manual_recovery'
+		  AND action IN ('HOLD_MANUAL_RECOVERY', 'HOLD_CLEARED')`, routeKey).Scan(&generation)
+		if err != nil {
+			return 0, fmt.Errorf("read journal manual recovery generation: %w", err)
+		}
+		return generation, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read manual recovery generation: %w", err)
+	}
+	return generation, nil
+}
+
+func compareAndSetManualRecoveryGeneration(ctx context.Context, tx pgx.Tx, routeKey string, expected int64) error {
+	var generation int64
+	err := tx.QueryRow(ctx,
+		`UPDATE loyal_yield.backyard_manual_recovery_latches
+		 SET generation = generation
+		 WHERE route_key = $1 AND cleared_at IS NULL AND generation = $2
+		 RETURNING generation`, routeKey, expected).Scan(&generation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errManualRecoveryLatchGenerationChanged
+	}
+	if err != nil {
+		return fmt.Errorf("compare manual recovery latch generation: %w", err)
+	}
+	return nil
+}
+
+func (d *Database) recordDecisionTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	routeKey string,
+	observation Observation,
+	decision Decision,
+	manifestSHA256 string,
+	policyCatalogSHA256 string,
+) (DecisionRecord, error) {
 	lease, err := d.currentLease()
 	if err != nil || lease.RouteKey != routeKey {
 		return DecisionRecord{}, ErrRouteLeaseLost
@@ -410,9 +601,6 @@ func (d *Database) RecordDecision(
 		if existingEnvelope.Decision != candidate {
 			return DecisionRecord{}, fmt.Errorf("idempotency identity has different decision evidence")
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return DecisionRecord{}, err
-		}
 		return existing, nil
 	}
 	if err != pgx.ErrNoRows {
@@ -446,9 +634,6 @@ func (d *Database) RecordDecision(
 	}
 	if _, err := tx.Exec(ctx, OperationInsert, operationID, routeKey, cycle, string(decision.Action), string(status), persistedIdempotencyKey, strategyKey, string(expected), recoveryReason); err != nil {
 		return DecisionRecord{}, fmt.Errorf("insert decision: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return DecisionRecord{}, err
 	}
 	return DecisionRecord{OperationID: operationID, Cycle: cycle, Status: status}, nil
 }
@@ -509,6 +694,188 @@ func (d *Database) PostMutationNAVRequired(ctx context.Context, routeKey string)
 		return false, fmt.Errorf("read post-mutation NAV requirement: %w", err)
 	}
 	return required, nil
+}
+
+// ReconciledBridgeJournalState is the journal evidence the production observe
+// path merges into a snapshot. Every fact is read from reconciled rows only, so
+// an on-chain state is explained by what this worker actually reconciled and
+// never by comparing two valuations with each other.
+type ReconciledBridgeJournalState struct {
+	// Ticket-consuming evidence. Only VOLTR_ALLOCATE_TO_SQUADS,
+	// VOLTR_RESTORE_IDLE, and REPORT_NAV consume the report ticket, and each of
+	// those transactions ends in the adaptor's report instruction, whose return
+	// data is the NAV the worker armed. STAGE_SQUADS_TO_VOLTR moves Squads cash
+	// into strategy custody without invoking Voltr: it consumes no ticket and
+	// returns nothing, so counting it deadlocked the sequence monitor.
+	TicketSequenceKnown       bool
+	TicketSequenceRaw         int64
+	ArmedNAVKnown             bool
+	ArmedNAVRaw               int64
+	ArmedNAVReturnDataMissing bool
+	ArmedNAVMalformed         bool
+	// Stage-transient evidence: a reconciled stage newer than the last ticket
+	// consumption means the route sits between its stage and restore legs, so
+	// nonzero strategy custody is expected while Voltr still books zero.
+	StagedAmountKnown bool
+	StagedAmountRaw   int64
+	StageAfterTicket  bool
+	// MutationAfterReport is a reconciled bridge mutation newer than the last
+	// reconciled report. Read straight from the journal, it is the only
+	// accepted explanation for a NAV move (S1/S2).
+	MutationAfterReport bool
+}
+
+// ReconciledBridgeJournalSQL reads every journal fact the fail-closed monitors
+// arm from in one lease-guarded round trip. Rows are reconciled only; the
+// ticket-consuming list deliberately excludes STAGE_SQUADS_TO_VOLTR, and every
+// subquery shares one ordering so "after" means the same thing everywhere. The
+// ordering rows additionally return their tie-break columns so the Go side can
+// compare a composite identity (see journalOrderKey) instead of a bare slot.
+const ReconciledBridgeJournalSQL = `SELECT
+ (SELECT (expected_effects->'decision'->>'observationSlot')::bigint FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled'
+     AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT expected_effects->'expectedEffects'->'returnData'->>'dataBase64' FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled'
+     AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT (expected_effects->'decision'->>'amountRaw')::bigint FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT confirmed_slot FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT confirmed_slot FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled'
+     AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT confirmed_slot FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled'
+     AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE')
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT confirmed_slot FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled' AND action = 'REPORT_NAV'
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT updated_at FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT operation_id FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT updated_at FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled'
+     AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT operation_id FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled'
+     AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT updated_at FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled'
+     AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE')
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT operation_id FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled'
+     AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE')
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT updated_at FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled' AND action = 'REPORT_NAV'
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
+ (SELECT operation_id FROM loyal_yield.multiply_operations
+   WHERE route_key = $1 AND status = 'reconciled' AND action = 'REPORT_NAV'
+   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1)`
+
+// journalOrderKey is the composite ordering identity of one journal row: the
+// confirmed slot plus exactly the tie-break columns the SQL ordering uses, so
+// two operations confirmed in the same slot still have one deterministic
+// latest row.
+type journalOrderKey struct {
+	slot        int64
+	updatedAt   time.Time
+	operationID string
+}
+
+// journalOrderAfter reports whether a sorts strictly newer than b under the
+// SQL ordering: confirmed_slot DESC, then updated_at DESC, then operation_id
+// DESC under its byte-wise C collation.
+func journalOrderAfter(a, b journalOrderKey) bool {
+	if a.slot <= 0 || b.slot <= 0 {
+		return false
+	}
+	if a.slot != b.slot {
+		return a.slot > b.slot
+	}
+	if !a.updatedAt.Equal(b.updatedAt) {
+		return a.updatedAt.After(b.updatedAt)
+	}
+	return a.operationID > b.operationID
+}
+
+// ReconciledBridgeJournal returns the journal facts the monitors arm from.
+// A reconciled ticket-consuming operation without usable adaptor return data is
+// reported as missing or malformed instead of known=false, so the receipt
+// monitor holds durably rather than silently disarming.
+func (d *Database) ReconciledBridgeJournal(ctx context.Context, routeKey string) (ReconciledBridgeJournalState, error) {
+	if d == nil || d.pool == nil || routeKey == "" {
+		return ReconciledBridgeJournalState{}, fmt.Errorf("database is not configured")
+	}
+	if err := d.AssertRouteLease(ctx, routeKey); err != nil {
+		return ReconciledBridgeJournalState{}, err
+	}
+	var sequence, staged, stageSlot, ticketSlot, mutationSlot, reportSlot pgtype.Int8
+	var stageUpdated, ticketUpdated, mutationUpdated, reportUpdated pgtype.Timestamptz
+	var armed, stageOp, ticketOp, mutationOp, reportOp pgtype.Text
+	err := d.pool.QueryRow(ctx, ReconciledBridgeJournalSQL, routeKey).
+		Scan(&sequence, &armed, &staged, &stageSlot, &ticketSlot, &mutationSlot, &reportSlot,
+			&stageUpdated, &stageOp, &ticketUpdated, &ticketOp, &mutationUpdated, &mutationOp, &reportUpdated, &reportOp)
+	if err != nil {
+		return ReconciledBridgeJournalState{}, fmt.Errorf("read reconciled bridge journal: %w", err)
+	}
+	state := ReconciledBridgeJournalState{}
+	if sequence.Valid {
+		state.TicketSequenceKnown, state.TicketSequenceRaw = true, sequence.Int64
+	}
+	if armed.Valid {
+		raw, err := base64.StdEncoding.DecodeString(armed.String)
+		switch {
+		case err != nil || len(raw) != 8:
+			state.ArmedNAVMalformed = true
+		case int64(binary.LittleEndian.Uint64(raw)) < 0:
+			state.ArmedNAVMalformed = true
+		default:
+			state.ArmedNAVKnown = true
+			state.ArmedNAVRaw = int64(binary.LittleEndian.Uint64(raw))
+		}
+	} else if sequence.Valid {
+		state.ArmedNAVReturnDataMissing = true
+	}
+	if staged.Valid {
+		state.StagedAmountKnown, state.StagedAmountRaw = true, staged.Int64
+	}
+	stage := journalOrderKey{updatedAt: stageUpdated.Time, operationID: stageOp.String}
+	if stageSlot.Valid {
+		stage.slot = stageSlot.Int64
+	}
+	ticket := journalOrderKey{updatedAt: ticketUpdated.Time, operationID: ticketOp.String}
+	if ticketSlot.Valid {
+		ticket.slot = ticketSlot.Int64
+	}
+	mutation := journalOrderKey{updatedAt: mutationUpdated.Time, operationID: mutationOp.String}
+	if mutationSlot.Valid {
+		mutation.slot = mutationSlot.Int64
+	}
+	report := journalOrderKey{updatedAt: reportUpdated.Time, operationID: reportOp.String}
+	if reportSlot.Valid {
+		report.slot = reportSlot.Int64
+	}
+	if journalOrderAfter(stage, ticket) {
+		state.StageAfterTicket = true
+	}
+	if journalOrderAfter(mutation, report) {
+		state.MutationAfterReport = true
+	}
+	return state, nil
 }
 
 type routeObservationProjection struct {

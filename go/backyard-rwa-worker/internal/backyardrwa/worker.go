@@ -29,55 +29,140 @@ type startupLeaseHandoffRuntime struct {
 }
 
 type tickRuntime struct {
-	loadNonterminal  func(context.Context, string) (*PersistedOperation, error)
-	advance          func(context.Context, PersistedOperation) error
-	observe          func(context.Context) (Observation, error)
-	prepareBridge    func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error)
-	prepareKamino    func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
-	prepareJupiter   func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
-	recordDecision   func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
-	admitBridge      func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error
-	admitKamino      func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error
-	admitJupiter     func(context.Context, string, Observation, Decision, JupiterExecutionEvidence) error
-	buildBridge      func(context.Context, string, BridgeExecutionEvidence) error
-	buildKamino      func(context.Context, string, KaminoExecutionEvidence) error
-	buildJupiter     func(context.Context, string, JupiterExecutionEvidence) error
-	recordBudgetHold func(context.Context, string, *BudgetHold) error
+	loadNonterminal                  func(context.Context, string) (*PersistedOperation, error)
+	advance                          func(context.Context, PersistedOperation) error
+	observe                          func(context.Context) (Observation, error)
+	loadLatch                        func(context.Context, string) (ManualRecoveryLatch, bool, error)
+	recordManualRecovery             func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
+	recordManualRecoveryAtGeneration func(context.Context, string, Observation, Decision, string, string, int64) (DecisionRecord, error)
+	beforeRecordLatchedHold          func(context.Context, ManualRecoveryLatch) error
+	prepareBridge                    func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error)
+	prepareKamino                    func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
+	prepareJupiter                   func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
+	recordDecision                   func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
+	admitBridge                      func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error
+	admitKamino                      func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error
+	admitJupiter                     func(context.Context, string, Observation, Decision, JupiterExecutionEvidence) error
+	buildBridge                      func(context.Context, string, BridgeExecutionEvidence) error
+	buildKamino                      func(context.Context, string, KaminoExecutionEvidence) error
+	buildJupiter                     func(context.Context, string, JupiterExecutionEvidence) error
+	recordBudgetHold                 func(context.Context, string, *BudgetHold) error
+}
+
+// productionJournal is the journal evidence the production observe path merges
+// into a snapshot. *Database implements it.
+type productionJournal interface {
+	PostMutationNAVRequired(ctx context.Context, routeKey string) (bool, error)
+	ReconciledBridgeJournal(ctx context.Context, routeKey string) (ReconciledBridgeJournalState, error)
+	RecordPositionSnapshot(ctx context.Context, routeKey string, observation Observation) error
+}
+
+// productionObserveState is the production observe path with its three readers
+// injectable: the confirmed account batch, the reconciled journal, and the
+// pinned program identity. productionTickRuntime wires all three to the real
+// database, RPC client, and chain; tests stub them to drive the same merge.
+type productionObserveState struct {
+	routeKey string
+	journal  productionJournal
+	batch    func(context.Context) (Observation, error)
+	identity func(context.Context) (programIdentityObservation, error)
+}
+
+// observe merges one confirmed batch with the journal and the pinned program
+// identity, so every monitor input the decision engine reads comes from the
+// same tick and none of it is inferred from a valuation.
+func (p productionObserveState) observe(ctx context.Context) (Observation, error) {
+	observation, err := p.batch(ctx)
+	if err != nil {
+		return Observation{}, err
+	}
+	if err := p.enrich(ctx, &observation); err != nil {
+		return Observation{}, err
+	}
+	// A receipt-integrity observation carries no decodable book, so there is no
+	// coherent position projection to record; the strategy_receipt_integrity
+	// hold decision is itself the durable record of that tick.
+	if observation.Snapshot.StrategyReceiptIntegrityFault {
+		return observation, nil
+	}
+	if err := p.journal.RecordPositionSnapshot(ctx, p.routeKey, observation); err != nil {
+		return Observation{}, err
+	}
+	return observation, nil
+}
+
+// enrich is the one production snapshot merge used by both the outer
+// observation and construction refreshes. Keeping the identity watcher in
+// this callback prevents a refresh from receiving a raw NAV snapshot while
+// the outer tick sees a verified program image.
+func (p productionObserveState) enrich(ctx context.Context, observation *Observation) error {
+	if err := p.mergeJournal(ctx, observation); err != nil {
+		return err
+	}
+	identity, err := p.identity(ctx)
+	if err != nil {
+		return err
+	}
+	applyProgramIdentityObservation(observation, identity)
+	return nil
+}
+
+// mergeJournal copies the durable facts that arm the monitors into a
+// construction refresh. It is shared with the outer observation so a refresh
+// cannot accidentally decide from a raw NAV snapshot with default journal
+// state.
+func (p productionObserveState) mergeJournal(ctx context.Context, observation *Observation) error {
+	if observation == nil {
+		return fmt.Errorf("production observation is nil")
+	}
+	required, err := p.journal.PostMutationNAVRequired(ctx, p.routeKey)
+	if err != nil {
+		return err
+	}
+	observation.Snapshot.PostMutationNAVRequired = required
+	journal, err := p.journal.ReconciledBridgeJournal(ctx, p.routeKey)
+	if err != nil {
+		return err
+	}
+	observation.Snapshot.JournalSequenceKnown = journal.TicketSequenceKnown
+	observation.Snapshot.JournalReconciledSequenceRaw = journal.TicketSequenceRaw
+	observation.Snapshot.JournalArmedNAVKnown = journal.ArmedNAVKnown
+	observation.Snapshot.JournalArmedNAVRaw = journal.ArmedNAVRaw
+	observation.Snapshot.JournalArmedNAVReturnDataMissing = journal.ArmedNAVReturnDataMissing
+	observation.Snapshot.JournalArmedNAVMalformed = journal.ArmedNAVMalformed
+	observation.Snapshot.StagedAmountRaw = journal.StagedAmountRaw
+	observation.Snapshot.StagedAmountKnown = journal.StagedAmountKnown
+	observation.Snapshot.StageTransient = journal.StageAfterTicket
+	observation.Snapshot.CapitalMutated = journal.MutationAfterReport
+	return nil
 }
 
 func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteManifest) tickRuntime {
+	state := productionObserveState{
+		routeKey: productionRouteKey,
+		journal:  database,
+		batch: func(ctx context.Context) (Observation, error) {
+			return ObserveConfirmedRouteSnapshot(ctx, rpc, manifest)
+		},
+		identity: newProgramIdentityWatcher(rpc).observe,
+	}
 	return tickRuntime{
 		loadNonterminal: database.LoadNonterminal,
 		advance: func(ctx context.Context, operation PersistedOperation) error {
 			return AdvanceNonterminal(ctx, database, rpc, operation)
 		},
-		observe: func(ctx context.Context) (Observation, error) {
-			observation, err := ObserveConfirmedRouteSnapshot(ctx, rpc, manifest)
-			if err != nil {
-				return Observation{}, err
-			}
-			required, err := database.PostMutationNAVRequired(ctx, productionRouteKey)
-			if err != nil {
-				return Observation{}, err
-			}
-			observation.Snapshot.PostMutationNAVRequired = required
-			if err := database.RecordPositionSnapshot(ctx, productionRouteKey, observation); err != nil {
-				return Observation{}, err
-			}
-			return observation, nil
-		},
+		observe:                          state.observe,
+		loadLatch:                        database.ManualRecoveryLatch,
+		recordManualRecovery:             database.RecordManualRecovery,
+		recordManualRecoveryAtGeneration: database.RecordManualRecoveryAtGeneration,
 		prepareBridge: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, BridgeExecutionEvidence, error) {
-			required, err := database.PostMutationNAVRequired(ctx, productionRouteKey)
-			if err != nil {
-				return Observation{}, BridgeExecutionEvidence{}, err
-			}
-			return ObserveConfirmedBridgeExecutionEvidence(ctx, rpc, manifest, decision, required)
+			return observeConfirmedBridgeExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, state.enrich)
 		},
 		prepareKamino: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, KaminoExecutionEvidence, error) {
-			return ObserveConfirmedKaminoExecutionEvidence(ctx, rpc, manifest, decision)
+			return observeConfirmedKaminoExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, state.enrich)
 		},
 		prepareJupiter: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, JupiterExecutionEvidence, error) {
-			return ObserveConfirmedJupiterExecutionEvidence(ctx, rpc, manifest, decision, productionJupiterClient())
+			return observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, productionJupiterClient(), state.enrich)
 		},
 		recordDecision:   database.RecordDecision,
 		recordBudgetHold: database.RecordPhase3BudgetHold,
@@ -152,6 +237,18 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if w == nil || w.routeKey != productionRouteKey {
 		return fmt.Errorf("worker route is not the fixed production route")
 	}
+	// The manual recovery latch is re-read before anything else in the tick, so
+	// a healthy batch, a restart, or a new worker state object can never resume
+	// execution behind a durable stop.
+	if w.runtime.loadLatch != nil {
+		latch, latched, err := w.runtime.loadLatch(ctx, w.routeKey)
+		if err != nil {
+			return err
+		}
+		if latched {
+			return w.recordLatchedHold(ctx, latch)
+		}
+	}
 	operation, err := w.runtime.loadNonterminal(ctx, w.routeKey)
 	if err != nil {
 		return err
@@ -194,8 +291,13 @@ func (w *Worker) Tick(ctx context.Context) error {
 	}
 	policyHash := *w.manifest.PolicyCatalog.SHA256
 	if decision.Action == Hold || decision.Action == HoldManualRecovery {
-		_, err = w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash)
-		return err
+		if decision.Action == HoldManualRecovery {
+			return w.recordManualRecoveryDecision(ctx, observation, decision, policyHash)
+		}
+		if _, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash); err != nil {
+			return err
+		}
+		return nil
 	}
 	if blocker := w.manifest.executionBlocker(); blocker != nil {
 		return blocker
@@ -219,6 +321,15 @@ func (w *Worker) Tick(ctx context.Context) error {
 		observation, jupiterEvidence, err = w.runtime.prepareJupiter(ctx, w.manifest, wireDecision)
 	default:
 		return fmt.Errorf("action %s is not dispatchable", decision.Action)
+	}
+	// Construction refreshes the same confirmed inputs that will be sent. A
+	// refreshed manual-recovery decision is a new durable stop, not ordinary
+	// decision drift, and must be recorded before the tick returns.
+	if ok, persistErr := w.persistRefreshedManualRecovery(ctx, observation, policyHash); ok {
+		if persistErr != nil {
+			return persistErr
+		}
+		return nil
 	}
 	if err != nil {
 		return err
@@ -275,6 +386,70 @@ func (w *Worker) Tick(ctx context.Context) error {
 		}
 	}
 	return err
+}
+
+// recordLatchedHold re-records the same durable hold identity on every latched
+// tick. The observation identity comes from the latch itself, so the recorded
+// evidence stays byte-identical across ticks and restarts and the journal keeps
+// showing the stop without anything touching the chain.
+func (w *Worker) recordLatchedHold(ctx context.Context, latch ManualRecoveryLatch) error {
+	if latch.Reason == "" || latch.ObservationID == "" || latch.ObservationSlot <= 0 || latch.Generation < 0 {
+		return fmt.Errorf("latched manual recovery identity is incomplete")
+	}
+	if w.runtime.beforeRecordLatchedHold != nil {
+		if err := w.runtime.beforeRecordLatchedHold(ctx, latch); err != nil {
+			return err
+		}
+	}
+	observation := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{
+		ObservationID: latch.ObservationID, Slot: latch.ObservationSlot,
+		RouteKind: RouteKind, Fresh: true, MonitorsArmed: true,
+	}}
+	decision := Decision{
+		Action:         HoldManualRecovery,
+		Reason:         "latched:" + latch.Reason,
+		AmountRaw:      0,
+		IdempotencyKey: fmt.Sprintf("%s:latched:%s", latch.ObservationID, latch.Reason),
+	}
+	if err := decision.Validate(); err != nil {
+		return err
+	}
+	if w.manifest.PolicyCatalog.SHA256 == nil || !sha256Pattern.MatchString(*w.manifest.PolicyCatalog.SHA256) {
+		return ErrBridgePrerequisitesUnavailable
+	}
+	policyHash := *w.manifest.PolicyCatalog.SHA256
+	if w.runtime.recordManualRecoveryAtGeneration != nil {
+		if _, err := w.runtime.recordManualRecoveryAtGeneration(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash, latch.Generation); err != nil {
+			if errors.Is(err, errManualRecoveryLatchGenerationChanged) && w.runtime.loadLatch != nil {
+				_, _, rereadErr := w.runtime.loadLatch(ctx, w.routeKey)
+				return rereadErr
+			}
+			return err
+		}
+		return nil
+	}
+	return w.recordManualRecoveryDecision(ctx, observation, decision, policyHash)
+}
+
+func (w *Worker) recordManualRecoveryDecision(ctx context.Context, observation Observation, decision Decision, policyHash string) error {
+	if w.runtime.recordManualRecovery == nil {
+		return fmt.Errorf("manual recovery persistence runtime is unavailable")
+	}
+	if _, err := w.runtime.recordManualRecovery(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *Worker) persistRefreshedManualRecovery(ctx context.Context, observation Observation, policyHash string) (bool, error) {
+	if observation.Snapshot.ObservationID == "" || observation.Snapshot.Slot <= 0 {
+		return false, nil
+	}
+	decision := Decide(observation.Snapshot)
+	if decision.Action != HoldManualRecovery {
+		return false, nil
+	}
+	return true, w.recordManualRecoveryDecision(ctx, observation, decision, policyHash)
 }
 
 type routeLeaser interface {

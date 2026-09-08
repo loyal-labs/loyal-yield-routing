@@ -15,6 +15,14 @@ func cadenceNAV(slot, current, reported uint64, lastUpdated time.Time) RouteNAVS
 	}
 }
 
+// cadenceArmedIdentity completes the monitor inputs the production observe path
+// adds for a route whose pinned program identity verified.
+func cadenceArmedIdentity(s *Snapshot) {
+	s.ProgramIdentityKnown = true
+	s.VoltrProgramDeploySlot = voltrProgramDeploySlot
+	s.AdaptorProgramDeploySlot = adaptorProgramDeploySlot
+}
+
 func TestOptionalLifecycleObligationPrefersSelectedPhase2Close(t *testing.T) {
 	selected := mapleSyrupUSDCUSDC.Kamino.Obligation
 	if got := optionalLifecycleObligations([]string{kaminoPrimeUSDCObligation, selected}); len(got) != 2 || got[0] != selected || got[1] != kaminoPrimeUSDCObligation {
@@ -40,6 +48,8 @@ func TestRouteNAVCadenceDoesNotSpamUnchangedFreshReports(t *testing.T) {
 	if err := applyRouteNAVSnapshot(&snapshot, nav, now); err != nil {
 		t.Fatal(err)
 	}
+	snapshot.VoltrTotalValueRaw = 42 // idle 0 + custody 0 + receipt 42
+	cadenceArmedIdentity(&snapshot)
 	if snapshot.CapitalMutated || snapshot.LastReportAgeSeconds != 10 {
 		t.Fatalf("unchanged NAV was marked dirty: %+v", snapshot)
 	}
@@ -81,13 +91,19 @@ func TestRouteNAVCadenceReportsMutationBeforeNextRiskAction(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	snapshot := base()
 	snapshot.SquadsIdleRaw = 100
-	nav := cadenceNAV(uint64(snapshot.Slot), 43, 42, now.Add(-10*time.Second))
+	nav := cadenceNAV(uint64(snapshot.Slot), 2_000, 42, now.Add(-10*time.Second))
 	if err := applyRouteNAVSnapshot(&snapshot, nav, now); err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.CapitalMutated {
-		t.Fatal("changed independently computed NAV was not marked dirty")
+	snapshot.VoltrTotalValueRaw = 42 // idle 0 + custody 0 + receipt 42
+	snapshot.StrategyNAVRaw = 2_000  // the recomputed external NAV this merge observed
+	cadenceArmedIdentity(&snapshot)
+	// The merge no longer reads a capital mutation out of the NAV comparison:
+	// that fact comes from the reconciled journal (productionObserveState.observe).
+	if snapshot.CapitalMutated {
+		t.Fatal("the NAV comparison alone marked a capital mutation")
 	}
+	snapshot.CapitalMutated = true // reconciled bridge mutation newer than the last report
 	if got := Decide(snapshot); got.Action != ReportNAV || got.Reason != "nav_due" {
 		t.Fatalf("risk mutation was selected before NAV report: %+v", got)
 	}
@@ -102,6 +118,8 @@ func TestRouteNAVCadenceReportsReconciledRiskMutationEvenWhenValueIsUnchanged(t 
 		t.Fatal(err)
 	}
 	snapshot.PostMutationNAVRequired = true
+	snapshot.VoltrTotalValueRaw = 42 // idle 0 + custody 0 + receipt 42
+	cadenceArmedIdentity(&snapshot)
 	if snapshot.CapitalMutated {
 		t.Fatal("unchanged value was incorrectly marked as capital mutation")
 	}
@@ -117,6 +135,8 @@ func TestRouteNAVCadenceReportsAtSixtySeconds(t *testing.T) {
 	if err := applyRouteNAVSnapshot(&snapshot, nav, now); err != nil {
 		t.Fatal(err)
 	}
+	snapshot.VoltrTotalValueRaw = 42 // idle 0 + custody 0 + receipt 42
+	cadenceArmedIdentity(&snapshot)
 	if got := Decide(snapshot); got.Action != ReportNAV || snapshot.LastReportAgeSeconds != 60 {
 		t.Fatalf("aged NAV did not report: snapshot=%+v decision=%+v", snapshot, got)
 	}
@@ -142,7 +162,7 @@ func TestRouteNAVCadenceRejectsMixedSlotsAndBoundsFutureClockSkew(t *testing.T) 
 
 func TestRouteFixedAddressesIncludeEveryMutableConstructionInput(t *testing.T) {
 	addresses := routeFixedAddresses(readyWorkerManifest(t))
-	wanted := map[string]bool{bridgeIdleATA: false, bridgeStrategyATA: false, bridgeSquadsATA: false, kaminoPrimeCustody: false, kaminoPrimeUSDCObligation: false, kaminoCollateralReserve: false, kaminoDebtReserve: false, kaminoPrimeLiquiditySupply: false, kaminoUSDCLiquiditySupply: false, reportTicketPDA: false}
+	wanted := map[string]bool{bridgeIdleATA: false, bridgeStrategyATA: false, bridgeSquadsATA: false, bridgeVoltrVault: false, bridgeLPMint: false, kaminoPrimeCustody: false, kaminoPrimeUSDCObligation: false, kaminoCollateralReserve: false, kaminoDebtReserve: false, kaminoPrimeLiquiditySupply: false, kaminoUSDCLiquiditySupply: false, reportTicketPDA: false}
 	for _, address := range addresses {
 		if _, ok := wanted[address]; ok {
 			wanted[address] = true

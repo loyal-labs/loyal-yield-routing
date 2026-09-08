@@ -82,7 +82,12 @@ func decideNonUSDC(s Snapshot) Decision {
 		}
 		return d(HoldManualRecovery, "hard_ltv_without_repayment_buffer", 0)
 	}
-	if s.PostMutationNAVRequired {
+	if s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
+		// M4: the unwind legs below stay admissible when idle cannot cover the
+		// pending withdrawal queue.
+		if hold, blocked := custodyResidueHold(s); blocked {
+			return hold
+		}
 		return d(ReportNAV, "post_mutation_nav_due", 0)
 	}
 	// A requested canary drain stays a drain even when Voltr idle already covers
@@ -122,6 +127,9 @@ func decideNonUSDC(s Snapshot) Decision {
 			return d(StageSquadsToVoltr, "withdrawal_terminal_residue", s.SquadsIdleRaw)
 		}
 		if s.CapitalMutated || s.PriorReportedNAVRaw != 0 || s.LastReportAgeSeconds >= 60 {
+			if hold, blocked := custodyResidueHold(s); blocked {
+				return hold
+			}
 			return d(ReportNAV, "withdrawal_terminal_nav_due", 0)
 		}
 		if s.StrategyNAVRaw != 0 {
@@ -132,7 +140,15 @@ func decideNonUSDC(s Snapshot) Decision {
 		}
 		return d(Hold, "canary_flat_nav_current", 0)
 	}
-	if s.CapitalMutated || s.LastReportAgeSeconds >= 60 {
+	// S1/S2 mirror the fixed lane: an unexplained drift holds, a reconciled
+	// mutation reports only beyond the drift tolerance.
+	if hold, drifted := unexplainedNAVDriftHold(s); drifted {
+		return hold
+	}
+	if capitalMutationReports(s) || s.LastReportAgeSeconds >= 60 {
+		if hold, blocked := custodyResidueHold(s); blocked {
+			return hold
+		}
 		return d(ReportNAV, "nav_due", 0)
 	}
 	if !s.PolicyReady || !s.ExitBuildable {

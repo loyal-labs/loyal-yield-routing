@@ -93,18 +93,68 @@ type Snapshot struct {
 	PriorReportUpdatedUnix     int64
 	ReportSequence             int64
 	ReportSnapshotDigest       string
-	LTVBPS                     int64
-	LiquidationThresholdBPS    int64
-	Fresh                      bool
-	CapacityRaw                int64
-	PolicyLimitRaw             int64
-	MaxTargetLTVEntryRaw       int64
-	BorrowUtilizationBlocked   bool
-	PolicyReady                bool
-	ExitBuildable              bool
-	CapitalMutated             bool
-	PostMutationNAVRequired    bool
-	LastReportAgeSeconds       int64
+	// Voltr book reads from the same confirmed batch. VoltrTotalValueRaw closes
+	// the M1 identity together with the custody Voltr books itself
+	// (VoltrReceiptCustodyTrackedRaw, receipt offset 128); the observed strategy
+	// custody ATA balance (VoltrStrategyIdleRaw) is deliberately absent from
+	// that identity because a stage in flight moves Squads cash into the ATA
+	// without invoking Voltr.
+	VoltrTotalValueRaw             int64
+	VoltrReceiptCustodyTrackedRaw  int64
+	LockedProfitDegradationSeconds int64
+	LastUpdatedLockedProfitRaw     int64
+	LastLockedProfitReportUnix     int64
+	// FeeAccumulatorRaw is the un-harvested LP fee Voltr has accrued, and
+	// LPSupplyInclFeesRaw is the supply those fees are bounded against. The
+	// performance-fee terms must both stay zero until they are calibrated.
+	FeeAccumulatorRaw        int64
+	LPSupplyInclFeesRaw      int64
+	ManagerPerformanceFeeBPS int64
+	AdminPerformanceFeeBPS   int64
+	// StagedAmountRaw is the amount of the most recent reconciled
+	// STAGE_SQUADS_TO_VOLTR operation for this route, with StagedAmountKnown
+	// false when the journal has no such operation. A restore must debit
+	// exactly this amount out of custody; anything else is a custody mismatch.
+	StagedAmountRaw   int64
+	StagedAmountKnown bool
+	// Phase 2 monitor inputs. MonitorsArmed is set only when the serialized
+	// worker merged a coherent confirmed route NAV batch, so hand-built unit
+	// snapshots keep their existing decisions. The journal, ticket, and
+	// program-identity fields are filled by the production observe path.
+	MonitorsArmed                 bool
+	TicketLastConsumedSequenceRaw int64
+	JournalSequenceKnown          bool
+	JournalReconciledSequenceRaw  int64
+	JournalArmedNAVKnown          bool
+	JournalArmedNAVRaw            int64
+	// JournalArmedNAVReturnDataMissing and JournalArmedNAVMalformed record a
+	// reconciled ticket-consuming operation that carries no usable adaptor
+	// return data: both are durable holds, never a silent disarm.
+	JournalArmedNAVReturnDataMissing bool
+	JournalArmedNAVMalformed         bool
+	// StageTransient is true when a reconciled stage is newer than the last
+	// ticket-consuming operation, so nonzero custody is the expected stage leg.
+	StageTransient bool
+	// StrategyReceiptIntegrityFault records a confirmed batch whose strategy
+	// receipt is absent, foreign-owned, or the wrong length: an observed
+	// integrity failure that holds durably instead of failing the tick before
+	// any decision exists.
+	StrategyReceiptIntegrityFault bool
+	ProgramIdentityKnown          bool
+	VoltrProgramDeploySlot        int64
+	AdaptorProgramDeploySlot      int64
+	LTVBPS                        int64
+	LiquidationThresholdBPS       int64
+	Fresh                         bool
+	CapacityRaw                   int64
+	PolicyLimitRaw                int64
+	MaxTargetLTVEntryRaw          int64
+	BorrowUtilizationBlocked      bool
+	PolicyReady                   bool
+	ExitBuildable                 bool
+	CapitalMutated                bool
+	PostMutationNAVRequired       bool
+	LastReportAgeSeconds          int64
 }
 
 type Decision struct {

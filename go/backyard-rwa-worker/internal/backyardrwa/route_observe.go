@@ -30,13 +30,56 @@ func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *RPCC
 			return rpc.getVoltrWithdrawalReceiptAccounts(ctx, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
 		},
 		accounts: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
-			if optional := optionalLifecycleObligations(addresses); len(optional) > 0 {
+			optional := optionalLifecycleObligations(addresses)
+			for _, candidate := range addresses {
+				// A null strategy receipt must reach the integrity classifier
+				// instead of failing the batch as a required absent account.
+				if candidate == bridgeStrategyReceipt {
+					optional = append(optional, candidate)
+					break
+				}
+			}
+			if len(optional) > 0 {
 				return rpc.GetMultipleAccountsWithOptional(ctx, addresses, minSlot, optional...)
 			}
 			return rpc.GetMultipleAccounts(ctx, addresses, minSlot)
 		},
-		now: func() time.Time { return time.Now().UTC() },
+		finalizedReceipt: rpc.strategyReceiptFinalized,
+		now:              func() time.Time { return time.Now().UTC() },
 	})
+}
+
+// observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment is the construction
+// refresh seam. It requires the same journal and verified-identity merge as the
+// outer production observation before any monitor sees this snapshot.
+func observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(
+	ctx context.Context,
+	rpc *RPCClient,
+	manifest RouteManifest,
+	enrich func(context.Context, *Observation) error,
+) (Observation, []ConfirmedAccount, error) {
+	if enrich == nil {
+		return Observation{}, nil, fmt.Errorf("route observation enrichment is required")
+	}
+	observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccounts(ctx, rpc, manifest)
+	if err != nil {
+		return observation, accounts, err
+	}
+	if enrich != nil {
+		if err := enrich(ctx, &observation); err != nil {
+			return Observation{}, nil, err
+		}
+	}
+	return observation, accounts, nil
+}
+
+func applyProgramIdentityObservation(observation *Observation, identity programIdentityObservation) {
+	if observation == nil {
+		return
+	}
+	observation.Snapshot.ProgramIdentityKnown = identity.Verified
+	observation.Snapshot.VoltrProgramDeploySlot = identity.VoltrProgramDeploySlot
+	observation.Snapshot.AdaptorProgramDeploySlot = identity.AdaptorProgramDeploySlot
 }
 
 // A full K-Lend withdrawal closes its obligation account. Prefer the selected
@@ -70,10 +113,11 @@ func optionalLifecycleObligations(addresses []string) []string {
 }
 
 type routeObservationRuntime struct {
-	confirmedSlot func(context.Context) (int64, error)
-	receipts      func(context.Context, int64) (int64, []programAccount, error)
-	accounts      func(context.Context, []string, int64) (int64, []ConfirmedAccount, error)
-	now           func() time.Time
+	confirmedSlot    func(context.Context) (int64, error)
+	receipts         func(context.Context, int64) (int64, []programAccount, error)
+	accounts         func(context.Context, []string, int64) (int64, []ConfirmedAccount, error)
+	finalizedReceipt func(context.Context, int64) (int64, []ConfirmedAccount, error)
+	now              func() time.Time
 }
 
 func observeConfirmedRouteSnapshot(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, error) {
@@ -82,7 +126,7 @@ func observeConfirmedRouteSnapshot(ctx context.Context, manifest RouteManifest, 
 }
 
 func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {
-	if runtime.confirmedSlot == nil || runtime.receipts == nil || runtime.accounts == nil || runtime.now == nil {
+	if runtime.confirmedSlot == nil || runtime.receipts == nil || runtime.accounts == nil || runtime.finalizedReceipt == nil || runtime.now == nil {
 		return Observation{}, nil, fmt.Errorf("route observation runtime is incomplete")
 	}
 	minimumSlot, err := runtime.confirmedSlot(ctx)
@@ -107,6 +151,28 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		slot, accounts, err := runtime.accounts(ctx, addresses, beforeSlot)
 		if err != nil {
 			return Observation{}, nil, err
+		}
+		// A confirmed batch whose strategy receipt is foreign-owned or the wrong
+		// length is an observed integrity failure, not a transport fault. A null
+		// receipt only becomes one at finalized commitment: at confirmed
+		// commitment it can be a replication artifact and stays a retryable tick
+		// error. Transport failures above stay errors.
+		receipt := accountAt(accounts, bridgeStrategyReceipt)
+		if strategyReceiptIntegrityFault(receipt) {
+			if strategyReceiptAbsent(receipt) {
+				finalSlot, finalReceipts, err := runtime.finalizedReceipt(ctx, slot)
+				if err != nil {
+					return Observation{}, nil, err
+				}
+				if finalSlot < slot {
+					return Observation{}, nil, fmt.Errorf("finalized strategy receipt read predates the confirmed batch")
+				}
+				if !strategyReceiptAbsent(accountAt(finalReceipts, bridgeStrategyReceipt)) {
+					return Observation{}, nil, fmt.Errorf("strategy receipt absent at confirmed commitment but present at finalized commitment")
+				}
+			}
+			integrity := receiptIntegrityObservation(slot, route)
+			return integrity, accounts, nil
 		}
 		cutoverDrain := false
 		if route.Lane == SelectedRouteID {
@@ -185,6 +251,10 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if err != nil {
 			return Observation{}, nil, err
 		}
+		ticket, ticketErr := decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
+		if ticketErr != nil {
+			return Observation{}, nil, fmt.Errorf("decode report ticket: %w", ticketErr)
+		}
 		if nav.Custodies.VoltrIdleRaw != idle.Raw || nav.Custodies.StrategyUSDCraw != strategy.Raw || nav.Custodies.SquadsUSDCraw != squads.Raw || nav.Custodies.SquadsPRIMEraw != prime.Raw {
 			return Observation{}, nil, fmt.Errorf("route NAV custody differs inside fixed confirmed account batch")
 		}
@@ -210,6 +280,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base.Snapshot.RouteLane = route.Lane
 		base.Snapshot.StrategyKey = route.Lane
 		base.Snapshot.CutoverDrain = cutoverDrain
+		base.Snapshot.TicketLastConsumedSequenceRaw = int64(ticket.LastConsumedSequence)
 		base.Snapshot.HasPosition = position.HasPosition
 		base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
 		base.Snapshot.PositionDebtRaw = int64(position.DebtRaw)
@@ -259,6 +330,19 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("confirmed receipt fence did not stabilize around fixed account batch"))
 }
 
+// receiptIntegrityObservation is the only observation a batch with a broken
+// strategy receipt can support: a monitors-armed snapshot whose single fact is
+// the integrity fault itself, so Decide persists the hold and nothing else
+// about the book is implied.
+func receiptIntegrityObservation(slot int64, route RuntimeRoute) Observation {
+	fingerprint := sha256.Sum256([]byte(fmt.Sprintf("strategy-receipt-integrity|%s|%d", route.Lane, slot)))
+	return Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{
+		ObservationID: fmt.Sprintf("%x", fingerprint[:]), Slot: slot, RouteKind: RouteKind, Fresh: true,
+		RouteLane: route.Lane, StrategyKey: route.Lane, MonitorsArmed: true,
+		StrategyReceiptIntegrityFault: true,
+	}}
+}
+
 func legacyPrimeExposure(position KaminoPosition, custodyRaw uint64) bool {
 	return custodyRaw != 0 || position.HasPosition || position.CollateralDepositedRaw != 0 || position.DebtRaw != 0
 }
@@ -276,6 +360,12 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	// All deposit rounding bounds use the Clock from the same custody/reserve
 	// batch, including retained PRIME/Maple consumers.
 	addressSet[budgetClockAddress] = struct{}{}
+	// The selected Phase 2 route can still require a legacy PRIME cutover
+	// drain. That observer now validates PRIME's lending market as part of the
+	// same confirmed batch, so pin the legacy market even when Maple is active.
+	if legacy, err := pinnedKaminoObservationConfig(); err == nil {
+		addressSet[legacy.Market] = struct{}{}
+	}
 	addressSet[route.DebtFeeReceiver] = struct{}{}
 	if catalogJupiterRoute(route.Lane) {
 		policies, err := catalogRoutePolicyHashes(route, manifest)
@@ -471,6 +561,10 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 		nav.Report.Sequence > math.MaxInt64 || nav.Custodies.SquadsDebtRaw > math.MaxInt64 || nav.PrimeIdleValueRaw > math.MaxInt64 ||
 		nav.PriorReportUpdatedTS > math.MaxInt64 || nav.Report.Sequence != nav.Report.ObservedSlot ||
 		nav.Report.ObservedSlot != uint64(nav.Slot) || nav.Report.NAVAfterRaw != nav.StrategyNAVRaw ||
+		nav.Voltr.TotalValueRaw > math.MaxInt64 || nav.Receipt.CustodyTrackedRaw > math.MaxInt64 ||
+		nav.Voltr.FeeAccumulatorRaw() > math.MaxInt64 || nav.Voltr.LPSupplyInclFeesRaw(nav.LPSupplyRaw) > math.MaxInt64 ||
+		nav.Voltr.LockedProfitDegradationSeconds > math.MaxInt64 || nav.Voltr.LastUpdatedLockedProfitRaw > math.MaxInt64 ||
+		nav.Voltr.LastLockedProfitReportUnix > math.MaxInt64 ||
 		nav.Report.SnapshotDigest != nav.SnapshotDigest || !sha256Pattern.MatchString(nav.SnapshotDigest) {
 		return fmt.Errorf("route NAV cannot be merged into the confirmed snapshot")
 	}
@@ -482,7 +576,9 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 		// engine treats as incoherent) or force a spurious report.
 		age = 0
 	}
-	snapshot.CapitalMutated = nav.StrategyNAVRaw != nav.PriorReportedNAVRaw
+	// A capital mutation is a journal fact, never a valuation comparison: the
+	// production observe path sets this from reconciled bridge mutations newer
+	// than the last reconciled report, so a NAV move can never explain itself.
 	snapshot.LastReportAgeSeconds = age
 	snapshot.TotalVaultNAVRaw = int64(nav.TotalVaultNAVRaw)
 	snapshot.PriorReportedNAVRaw = int64(nav.PriorReportedNAVRaw)
@@ -491,6 +587,19 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	snapshot.ReportSnapshotDigest = nav.Report.SnapshotDigest
 	snapshot.DebtIdleRaw = int64(nav.Custodies.SquadsDebtRaw)
 	snapshot.CollateralIdleValueRaw = int64(nav.PrimeIdleValueRaw)
+	snapshot.VoltrTotalValueRaw = int64(nav.Voltr.TotalValueRaw)
+	snapshot.VoltrReceiptCustodyTrackedRaw = int64(nav.Receipt.CustodyTrackedRaw)
+	snapshot.LockedProfitDegradationSeconds = int64(nav.Voltr.LockedProfitDegradationSeconds)
+	snapshot.LastUpdatedLockedProfitRaw = int64(nav.Voltr.LastUpdatedLockedProfitRaw)
+	snapshot.LastLockedProfitReportUnix = int64(nav.Voltr.LastLockedProfitReportUnix)
+	snapshot.FeeAccumulatorRaw = int64(nav.Voltr.FeeAccumulatorRaw())
+	snapshot.LPSupplyInclFeesRaw = int64(nav.Voltr.LPSupplyInclFeesRaw(nav.LPSupplyRaw))
+	snapshot.ManagerPerformanceFeeBPS = int64(nav.Voltr.ManagerPerformanceFeeBPS)
+	snapshot.AdminPerformanceFeeBPS = int64(nav.Voltr.AdminPerformanceFeeBPS)
+	// Reaching this point means every identity, book, custody, receipt, and
+	// reserve input decoded coherently from one confirmed batch, so the
+	// fail-closed monitors may gate the decisions planned from it.
+	snapshot.MonitorsArmed = true
 	return nil
 }
 

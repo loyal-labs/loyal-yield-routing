@@ -51,6 +51,11 @@ func tokenAccountFixture(t *testing.T, address, mint, authority string, raw uint
 
 func strategyReceiptFixture(t *testing.T, positionRaw uint64) ConfirmedAccount {
 	t.Helper()
+	return strategyReceiptWithCustodyFixture(t, positionRaw, 0)
+}
+
+func strategyReceiptWithCustodyFixture(t *testing.T, positionRaw, custodyTrackedRaw uint64) ConfirmedAccount {
+	t.Helper()
 	data := make([]byte, strategyReceiptLength)
 	copy(data[:8], strategyReceiptDiscriminator[:])
 	putKey(t, data[8:40], bridgeVoltrVault)
@@ -59,6 +64,7 @@ func strategyReceiptFixture(t *testing.T, positionRaw uint64) ConfirmedAccount {
 	binary.LittleEndian.PutUint64(data[104:112], positionRaw)
 	binary.LittleEndian.PutUint64(data[112:120], 1_700_000_000)
 	data[120], data[121], data[122] = 1, 254, 253
+	binary.LittleEndian.PutUint64(data[128:136], custodyTrackedRaw)
 	return ConfirmedAccount{Address: bridgeStrategyReceipt, Owner: bridgeVoltrProgram, Lamports: 1, Data: data}
 }
 
@@ -80,6 +86,31 @@ func clockFixture() ConfirmedAccount {
 	data := make([]byte, 40)
 	binary.LittleEndian.PutUint64(data[32:40], uint64(kaminoFixtureUnix))
 	return ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Data: data}
+}
+
+func voltrVaultFixture(t *testing.T, totalValueRaw uint64) ConfirmedAccount {
+	t.Helper()
+	data := make([]byte, 928)
+	copy(data[:8], voltrVaultDiscriminator[:])
+	putKey(t, data[104:136], bridgeUSDC)
+	putKey(t, data[136:168], bridgeIdleATA)
+	putKey(t, data[272:304], bridgeLPMint)
+	putKey(t, data[368:400], bridgeVault)
+	putKey(t, data[400:432], bridgeSettingsSigner)
+	binary.LittleEndian.PutUint64(data[168:176], totalValueRaw)
+	binary.LittleEndian.PutUint64(data[448:456], 0)
+	binary.LittleEndian.PutUint64(data[456:464], 600)
+	binary.LittleEndian.PutUint64(data[616:624], 1_000)
+	return ConfirmedAccount{Address: bridgeVoltrVault, Owner: bridgeVoltrProgram, Lamports: 1, Data: data}
+}
+
+func voltrLPMintFixture(t *testing.T, supplyRaw uint64) ConfirmedAccount {
+	t.Helper()
+	data := make([]byte, voltrLPMintLength)
+	putKey(t, data[4:36], bridgeSettingsSigner)
+	binary.LittleEndian.PutUint64(data[36:44], supplyRaw)
+	data[44] = 9
+	return ConfirmedAccount{Address: bridgeLPMint, Owner: bridgeTokenProgram, Lamports: 1, Data: data}
 }
 
 func putScaledFraction(dst []byte, value *big.Int) {
@@ -154,6 +185,8 @@ func routeNAVFixture(t *testing.T, slot int64) []ConfirmedAccount {
 		reserveFixture(t, kaminoCollateralReserve, kaminoPrimeMint, slot, oneAndHalf, 200, 100),
 		reserveFixture(t, kaminoDebtReserve, kaminoUSDCMint, slot, one, 100, 100),
 		marketFixture(t, kaminoMarket),
+		voltrVaultFixture(t, 49),
+		voltrLPMintFixture(t, 1_000),
 	}
 }
 
@@ -166,13 +199,15 @@ func TestComputeRouteNAVValuesConfirmedCustodyAndPositionConservatively(t *testi
 	}
 	// PRIME idle: floor(3 * 1.5) = 4. Position: 10 receipt tokens
 	// redeem 20 PRIME, worth 30 USDC. Debt is conservatively 7 USDC.
-	// Strategy NAV = 5 strategy + 6 Squads + 4 PRIME + 30 - 7 = 38.
-	if got.StrategyNAVRaw != 38 || got.VaultIdleRaw != 11 || got.TotalVaultNAVRaw != 49 ||
+	// Strategy NAV excludes the 5 USDC sitting in the strategy custody ATA
+	// (Voltr books that balance itself): 6 Squads + 4 PRIME + 30 - 7 = 33.
+	if got.StrategyNAVRaw != 33 || got.VaultIdleRaw != 11 || got.TotalVaultNAVRaw != 44 ||
 		got.PrimeIdleValueRaw != 4 || got.PositionCollateralValue != 30 || got.PositionDebtValue != 7 ||
-		got.PriorReportedNAVRaw != 42 {
+		got.PriorReportedNAVRaw != 42 || got.Custodies.StrategyUSDCraw != 5 ||
+		got.Receipt.CustodyTrackedRaw != 0 || got.Voltr.TotalValueRaw != 49 || got.LPSupplyRaw != 1_000 {
 		t.Fatalf("unexpected route NAV: %+v", got)
 	}
-	if got.Report.Sequence != 77 || got.Report.ObservedSlot != 77 || got.Report.NAVAfterRaw != 38 ||
+	if got.Report.Sequence != 77 || got.Report.ObservedSlot != 77 || got.Report.NAVAfterRaw != 33 ||
 		!sha256Pattern.MatchString(got.Report.SnapshotDigest) || got.Report.SnapshotDigest != got.SnapshotDigest {
 		t.Fatalf("invalid ReportV1 inputs: %+v", got.Report)
 	}
@@ -219,15 +254,15 @@ func TestRouteNAVNormalizesNonUSDCDebtAndIncludesIdleDebt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 5 strategy + 6 USDC + floor(3*1.5) + 20*1.5 - 7*2 + 9*2.
-	if got.StrategyNAVRaw != 49 || got.PositionDebtValue != 14 || got.DebtIdleValueRaw != 18 ||
-		got.PositionCollateralValue != 30 || got.PrimeIdleValueRaw != 4 || got.TotalVaultNAVRaw != 60 {
+	// 6 USDC + floor(3*1.5) + 20*1.5 - 7*2 + 9*2, custody excluded.
+	if got.StrategyNAVRaw != 44 || got.PositionDebtValue != 14 || got.DebtIdleValueRaw != 18 ||
+		got.PositionCollateralValue != 30 || got.PrimeIdleValueRaw != 4 || got.TotalVaultNAVRaw != 55 {
 		t.Fatalf("NAV mixed debt raw units with USDC or omitted idle debt: %+v", got)
 	}
 	post := got.Custodies
 	post.SquadsDebtRaw--
 	changed, err := ComputeRouteNAVForRoute(77, accounts, readyWorkerManifest(t), &post, route)
-	if err != nil || changed.StrategyNAVRaw != 47 || changed.SnapshotDigest == got.SnapshotDigest {
+	if err != nil || changed.StrategyNAVRaw != 42 || changed.SnapshotDigest == got.SnapshotDigest {
 		t.Fatalf("debt poststate did not affect valuation and its fingerprint: %+v, %v", changed, err)
 	}
 }
@@ -270,7 +305,9 @@ func TestComputeRouteNAVPoststateOverridesOnlyCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.StrategyNAVRaw != 42 || got.TotalVaultNAVRaw != 49 || got.Report.NAVAfterRaw != 42 {
+	// The custody override no longer enters the armed NAV: allocation reports
+	// only external value, so Squads 10 + PRIME 4 + 30 - 7 = 37.
+	if got.StrategyNAVRaw != 37 || got.TotalVaultNAVRaw != 44 || got.Report.NAVAfterRaw != 37 {
 		t.Fatalf("allocation poststate NAV is not conserved: %+v", got)
 	}
 }

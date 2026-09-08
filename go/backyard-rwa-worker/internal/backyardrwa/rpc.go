@@ -198,6 +198,15 @@ func (c *RPCClient) GetMultipleAccounts(
 	return c.getMultipleAccounts(ctx, addresses, minContextSlot, nil)
 }
 
+// strategyReceiptFinalized re-reads only the strategy receipt at finalized
+// commitment. A null there is settled ledger state; the same null at confirmed
+// commitment may still be a replication artifact, so it stays a retryable tick
+// error until this read settles the question.
+func (c *RPCClient) strategyReceiptFinalized(ctx context.Context, minContextSlot int64) (int64, []ConfirmedAccount, error) {
+	return c.getMultipleAccountsAtCommitment(ctx, []string{bridgeStrategyReceipt}, minContextSlot,
+		map[string]struct{}{bridgeStrategyReceipt: {}}, "finalized")
+}
+
 // GetMultipleAccountsWithOptional permits only caller-pinned lifecycle
 // addresses to be absent. Every other account remains mandatory.
 func (c *RPCClient) GetMultipleAccountsWithOptional(
@@ -287,6 +296,85 @@ func (c *RPCClient) getMultipleAccountsAtCommitment(ctx context.Context, address
 		}
 	}
 	return result.Context.Slot, accounts, nil
+}
+
+// ProgramDataDeploySlots resolves each pinned upgradeable program to its
+// ProgramData account and returns the last-deploy slot recorded there. The
+// read is deliberately two-phase: a program account's 36-byte upgradeable
+// header names its ProgramData account, and the u64 at offset 4 of that
+// account is the slot of the last deploy. An in-place upgrade therefore
+// changes exactly the value this worker compares against its pinned slots.
+// programIdentityAccounts is the confirmed-state reader behind M6. It returns
+// the pinned program header accounts (36 bytes) and their ProgramData accounts
+// (12 bytes, or the full image when full is set). An absent account is a
+// confirmed identity failure rather than a transport error, so the watcher can
+// hold the route durably while only a failed call surfaces as an error.
+func (c *RPCClient) programIdentityAccounts(ctx context.Context, full bool) ([]programIdentityImage, error) {
+	programs := []string{bridgeVoltrProgram, bridgeAdaptorProgram}
+	programDataAddresses := []string{voltrProgramDataAddress, adaptorProgramDataAddress}
+	images, err := c.readProgramIdentityAccounts(ctx, programs, programHeaderLength)
+	if err != nil {
+		return nil, err
+	}
+	if full {
+		// Full ProgramData images are read one address at a time: the pinned
+		// Voltr image is over a megabyte and batch responses are size-capped.
+		for _, address := range programDataAddresses {
+			more, err := c.readProgramIdentityAccounts(ctx, []string{address}, 0)
+			if err != nil {
+				return nil, err
+			}
+			images = append(images, more...)
+		}
+		return images, nil
+	}
+	dataImages, err := c.readProgramIdentityAccounts(ctx, programDataAddresses, programDataHeaderLength)
+	if err != nil {
+		return nil, err
+	}
+	return append(images, dataImages...), nil
+}
+
+// readProgramIdentityAccounts reads one base64 account batch. A length of zero
+// or less asks the node for the whole account instead of a data slice.
+func (c *RPCClient) readProgramIdentityAccounts(ctx context.Context, addresses []string, length int) ([]programIdentityImage, error) {
+	var result struct {
+		Value []*struct {
+			Owner      string          `json:"owner"`
+			Lamports   uint64          `json:"lamports"`
+			Executable bool            `json:"executable"`
+			Data       json.RawMessage `json:"data"`
+		} `json:"value"`
+	}
+	options := map[string]any{"commitment": "confirmed", "encoding": "base64"}
+	if length > 0 {
+		options["dataSlice"] = map[string]any{"offset": 0, "length": length}
+	}
+	if err := c.call(ctx, "getMultipleAccounts", []any{addresses, options}, &result); err != nil {
+		return nil, confirmedObservationUnavailable(err)
+	}
+	if len(result.Value) != len(addresses) {
+		return nil, confirmedObservationUnavailable(fmt.Errorf("incoherent program identity response"))
+	}
+	images := make([]programIdentityImage, 0, len(addresses))
+	for index, value := range result.Value {
+		if value == nil {
+			continue
+		}
+		var encoded []string
+		if err := json.Unmarshal(value.Data, &encoded); err != nil || len(encoded) != 2 || encoded[1] != "base64" {
+			return nil, confirmedObservationUnavailable(fmt.Errorf("program identity account %s has invalid encoding", addresses[index]))
+		}
+		data, err := base64.StdEncoding.DecodeString(encoded[0])
+		if err != nil {
+			return nil, confirmedObservationUnavailable(fmt.Errorf("decode program identity account %s: %w", addresses[index], err))
+		}
+		images = append(images, programIdentityImage{
+			Address: addresses[index], Owner: value.Owner, Lamports: value.Lamports,
+			Executable: value.Executable, Data: data,
+		})
+	}
+	return images, nil
 }
 
 func (c *RPCClient) LatestBlockhash(ctx context.Context) (LatestBlockhash, error) {

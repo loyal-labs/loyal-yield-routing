@@ -98,6 +98,7 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 			s.DebtIdleRaw, s.SquadsIdleRaw = 0, 76
 			check(StageSquadsToVoltr, 76)
 			s.SquadsIdleRaw, s.VoltrStrategyIdleRaw = 0, 76
+			s.StagedAmountKnown, s.StagedAmountRaw = true, 76
 			check(VoltrRestoreIdle, 76)
 			s.VoltrStrategyIdleRaw, s.PriorReportedNAVRaw = 0, 76
 			check(ReportNAV, 0)
