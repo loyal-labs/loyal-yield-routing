@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -14,12 +15,16 @@ import (
 )
 
 type RPCClient struct {
-	url          string
-	client       *http.Client
-	retryBackoff time.Duration
+	url               string
+	client            *http.Client
+	retryBackoff      time.Duration
+	fixedRetryBackoff bool
+	retryDeadline     time.Time
+	now               func() time.Time
+	sleep             func(context.Context, time.Duration) error
 }
 
-const readOnlyRPCAttempts = 3
+const readOnlyRPCAttempts = 5
 
 type ConfirmedAccount struct {
 	Address    string
@@ -109,8 +114,17 @@ func (c *RPCClient) call(ctx context.Context, method string, params []any, outpu
 		attempts = 1
 	}
 	for attempt := 0; attempt < attempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !c.retryDeadline.IsZero() && !c.clockNow().Before(c.retryDeadline) {
+			return context.DeadlineExceeded
+		}
 		freshOutput := reflect.New(outputValue.Elem().Type())
 		err = c.callOnce(ctx, method, payload, freshOutput.Interface())
+		if !c.retryDeadline.IsZero() && !c.clockNow().Before(c.retryDeadline) {
+			return context.DeadlineExceeded
+		}
 		if err == nil {
 			outputValue.Elem().Set(freshOutput.Elem())
 			return nil
@@ -118,30 +132,61 @@ func (c *RPCClient) call(ctx context.Context, method string, params []any, outpu
 		if attempt+1 == attempts {
 			break
 		}
-		backoff := c.retryBackoff * time.Duration(attempt+1)
+		backoff := c.retryBackoff
+		if !c.fixedRetryBackoff {
+			backoff *= time.Duration(attempt + 1)
+		}
 		if backoff <= 0 {
 			continue
 		}
-		timer := time.NewTimer(backoff)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
+		if err := c.wait(ctx, backoff); err != nil {
+			return err
 		}
 	}
 	return err
 }
 
+func (c *RPCClient) clockNow() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *RPCClient) wait(ctx context.Context, duration time.Duration) error {
+	if !c.retryDeadline.IsZero() {
+		remaining := c.retryDeadline.Sub(c.clockNow())
+		if remaining <= 0 {
+			return context.DeadlineExceeded
+		}
+		if duration > remaining {
+			duration = remaining
+		}
+	}
+	if c.sleep != nil {
+		return c.sleep(ctx, duration)
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func (c *RPCClient) callOnce(ctx context.Context, method string, payload []byte, output any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(payload))
 	if err != nil {
-		return err
+		return fmt.Errorf("RPC %s request to %s failed", method, sanitizeRPCURL(c.url))
 	}
 	request.Header.Set("content-type", "application/json")
 	response, err := c.client.Do(request)
 	if err != nil {
-		return err
+		// url.Error and transport errors commonly echo the complete request URL.
+		// Keep credentials, query parameters, and path material out of worker logs.
+		return fmt.Errorf("RPC %s request to %s failed", method, sanitizeRPCURL(c.url))
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -161,6 +206,16 @@ func (c *RPCClient) callOnce(ctx context.Context, method string, payload []byte,
 		return fmt.Errorf("RPC %s returned no result", method)
 	}
 	return json.Unmarshal(envelope.Result, output)
+}
+
+// sanitizeRPCURL is the only URL representation allowed in RPC errors. In
+// particular, URL.User, RawQuery, and Fragment are deliberately discarded.
+func sanitizeRPCURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "<rpc>"
+	}
+	return parsed.Scheme + "://" + parsed.Host
 }
 
 func (c *RPCClient) ConfirmedSlot(ctx context.Context) (int64, error) {
@@ -186,6 +241,28 @@ func (c *RPCClient) ConfirmedBlockTime(ctx context.Context, slot int64) (int64, 
 		return 0, confirmedObservationUnavailable(fmt.Errorf("confirmed block time unavailable for slot %d", slot))
 	}
 	return *blockTime, nil
+}
+
+func (c *RPCClient) FinalizedSlot(ctx context.Context) (int64, error) {
+	var slot int64
+	if err := c.call(ctx, "getSlot", []any{map[string]string{"commitment": "finalized"}}, &slot); err != nil {
+		return 0, confirmedObservationUnavailable(err)
+	}
+	if slot <= 0 {
+		return 0, confirmedObservationUnavailable(fmt.Errorf("finalized slot unavailable"))
+	}
+	return slot, nil
+}
+
+func (c *RPCClient) GenesisHash(ctx context.Context) (string, error) {
+	var genesis string
+	if err := c.call(ctx, "getGenesisHash", []any{}, &genesis); err != nil {
+		return "", confirmedObservationUnavailable(err)
+	}
+	if genesis == "" {
+		return "", confirmedObservationUnavailable(fmt.Errorf("genesis hash unavailable"))
+	}
+	return genesis, nil
 }
 
 // GetMultipleAccounts reads one coherent confirmed account set. The returned

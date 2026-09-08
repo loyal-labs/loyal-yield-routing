@@ -68,6 +68,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Strategy-two cutover gate: never run while a legacy seed 62-65 policy
+	// still exists at finalized commitment (see the strategy-two runbook).
+	if _, err := backyardrwa.AssertLegacyPoliciesRetired(ctx, os.Getenv("SOLANA_RPC_URL")); err != nil {
+		log.Fatal(err)
+	}
+
 	if err := backyardrwa.Run(ctx, os.Stdout); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}

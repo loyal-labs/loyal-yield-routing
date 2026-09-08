@@ -37,8 +37,23 @@ struct Identity {
     strategy_asset_ata: String,
     report_ticket: String,
     max_amount_raw: String,
+    /// Omit (or `null`) only when compiling the deployed v2 identity, whose
+    /// reported NAV is uncapped; strategy-two inputs must set it to the vault
+    /// maxCap so every report-bearing policy pins `nav_after_raw <= maxCap`.
+    nav_cap_raw: Option<String>,
+    /// Omit only for the deployed v2 identity. Strategy two pins a daily USDC
+    /// spending limit on the stage policy, the only lane that moves the asset
+    /// out of the Squads vault.
+    daily_spending_limit: Option<DailySpendingLimit>,
     asset_decimals: u8,
     seeds: Seeds,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DailySpendingLimit {
+    mint: String,
+    max_per_period_raw: String,
 }
 
 #[derive(Deserialize)]
@@ -173,6 +188,17 @@ fn run() -> Result<(), String> {
         strategy_asset_ata: pubkey(&input.identity.strategy_asset_ata, "strategy asset ATA")?,
         report_ticket: pubkey(&input.identity.report_ticket, "report ticket")?,
         max_amount_raw: u64_value(&input.identity.max_amount_raw, "maximum amount")?,
+        report_nav_cap_raw: match input.identity.nav_cap_raw.as_deref() {
+            Some(value) => Some(u64_value(value, "report NAV cap")?),
+            None => None,
+        },
+        daily_spending_limit: match &input.identity.daily_spending_limit {
+            Some(limit) => Some((
+                pubkey(&limit.mint, "stage spending limit mint")?,
+                u64_value(&limit.max_per_period_raw, "stage spending limit")?,
+            )),
+            None => None,
+        },
         asset_decimals: input.identity.asset_decimals,
         seeds: VoltrCustomPolicySeeds {
             allocation: u64_value(&input.identity.seeds.allocation, "allocation seed")?,

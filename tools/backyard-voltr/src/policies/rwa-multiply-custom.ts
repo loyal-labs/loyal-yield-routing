@@ -7,7 +7,13 @@ import { generated as squadsGenerated } from "@loyal-labs/loyal-smart-accounts-c
 import { AccountRole, createNoopSigner, type Instruction } from "@solana/kit";
 import { Connection, PublicKey } from "@solana/web3.js";
 
-import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import { RWA_MULTIPLY_ROUTE, type RwaMultiplyRouteSpec } from "../domain/rwa-multiply-route-spec.js";
+import {
+  V2_CUSTOM_POLICY_TARGET,
+  type CustomPolicyCaps,
+  type CustomPolicySpendingLimit,
+  type CustomPolicyTarget,
+} from "../domain/custom-policy-target.js";
 import {
   buildRwaMultiplyArmReportInstruction,
   buildRwaMultiplyManagerInstructions,
@@ -98,15 +104,15 @@ function wire(instruction: Instruction): WireInstruction {
   };
 }
 
-function policyAddress(seed: bigint): string {
+function policyAddress(seed: bigint, route: RwaMultiplyRouteSpec = RWA_MULTIPLY_ROUTE): string {
   const seedBytes = Buffer.alloc(8);
   seedBytes.writeBigUInt64LE(seed);
   return PublicKey.findProgramAddressSync([
     Buffer.from("smart_account"),
     Buffer.from("policy"),
-    new PublicKey(RWA_MULTIPLY_ROUTE.squads.settings).toBuffer(),
+    new PublicKey(route.squads.settings).toBuffer(),
     seedBytes,
-  ], new PublicKey(RWA_MULTIPLY_ROUTE.squads.program))[0].toBase58();
+  ], new PublicKey(route.squads.program))[0].toBase58();
 }
 
 function dataValue(value: Readonly<{ __kind?: unknown; fields?: readonly unknown[] }>) {
@@ -148,21 +154,85 @@ function decodedConstraint(value: unknown) {
   };
 }
 
-function expectedData(operation: CustomPolicyArtifact["policies"][number]["operation"]) {
+function integerString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "number") return Number.isInteger(value) ? String(value) : null;
+  if (typeof value === "object" && value !== null && "toString" in value) {
+    const toString = (value as { toString?: unknown }).toString;
+    if (typeof toString === "function") return toString.call(value);
+  }
+  return null;
+}
+
+/**
+ * Compare the generated SDK's finalized SpendingLimitV2 shape with the
+ * install target. The period is nested under timeConstraints in account
+ * state; accepting a top-level period would let a failed reconciliation pass
+ * while the ordered policy journal advances.
+ */
+export function spendingLimitsMatch(
+  limits: readonly unknown[],
+  expected: CustomPolicySpendingLimit | null,
+): boolean {
+  if (expected === null) return limits.length === 0;
+  if (limits.length !== 1) return false;
+  const shaped = limits[0] as {
+    mint?: { toBase58?: () => string };
+    timeConstraints?: {
+      start?: unknown;
+      expiration?: unknown;
+      period?: { __kind?: unknown };
+      accumulateUnused?: unknown;
+    };
+    quantityConstraints?: { maxPerPeriod?: unknown };
+  };
+  const timeConstraints = shaped.timeConstraints;
+  const observedExpiration = timeConstraints?.expiration === null
+    ? null
+    : timeConstraints?.expiration === undefined
+      ? undefined
+      : integerString(timeConstraints.expiration);
+  const expectedExpiration = expected.expiration === null
+    ? null
+    : expected.expiration.toString();
+  return shaped.mint?.toBase58?.() === expected.mint
+    && integerString(timeConstraints?.start) === expected.start.toString()
+    && observedExpiration !== undefined
+    && observedExpiration === expectedExpiration
+    && timeConstraints?.period?.__kind === expected.period
+    && timeConstraints?.accumulateUnused === expected.accumulateUnused
+    && integerString(shaped.quantityConstraints?.maxPerPeriod) === expected.maxPerPeriodRaw.toString();
+}
+
+/**
+ * Expected capital-wire constraints for one custom policy set. `navRaw` adds
+ * the `nav_after_raw <= cap` bound at capital offset 51; `null` (v2) leaves
+ * the reported NAV unconstrained there.
+ */
+function expectedData(
+  operation: CustomPolicyArtifact["policies"][number]["operation"],
+  caps: CustomPolicyCaps,
+) {
   const deposit = "f65239e283defdf9";
   const withdraw = "1f2da205c1d986bc";
   const depositEnvelope = "0108000000f223c68952e1f2b6013900000001";
   const withdrawEnvelope = "0108000000b712469c946da122013900000001";
-  const cap = RWA_MULTIPLY_ROUTE.vault.capRaw.toString();
+  const cap = caps.amountRaw!.toString();
+  const navCap = caps.reportNavRaw === null ? [] : [
+    { offset: "51", operator: "LessThanOrEqualTo", kind: "U64Le", value: caps.reportNavRaw.toString() },
+  ];
   if (operation === "allocation") return [
     { offset: "0", operator: "Equals", kind: "U8Slice", value: deposit },
     { offset: "8", operator: "GreaterThan", kind: "U64Le", value: "0" },
     { offset: "8", operator: "LessThanOrEqualTo", kind: "U64Le", value: cap },
+    ...navCap,
     { offset: "16", operator: "Equals", kind: "U8Slice", value: depositEnvelope },
   ];
   if (operation === "nav-refresh") return [
     { offset: "0", operator: "Equals", kind: "U8Slice", value: deposit },
     { offset: "8", operator: "Equals", kind: "U64Le", value: "0" },
+    ...navCap,
     { offset: "16", operator: "Equals", kind: "U8Slice", value: depositEnvelope },
   ];
   if (operation === "stage-withdrawal") return [
@@ -175,13 +245,24 @@ function expectedData(operation: CustomPolicyArtifact["policies"][number]["opera
     { offset: "0", operator: "Equals", kind: "U8Slice", value: withdraw },
     { offset: "8", operator: "GreaterThan", kind: "U64Le", value: "0" },
     { offset: "8", operator: "LessThanOrEqualTo", kind: "U64Le", value: cap },
+    ...navCap,
     { offset: "16", operator: "Equals", kind: "U8Slice", value: withdrawEnvelope },
   ];
 }
 
-function expectedArmData(operation: CustomPolicyArtifact["policies"][number]["operation"]) {
+/**
+ * Expected ArmReport-wire constraints. The reported NAV rides at arm offset
+ * 39, so a capped set carries the same ceiling there before the envelope tail.
+ */
+function expectedArmData(
+  operation: CustomPolicyArtifact["policies"][number]["operation"],
+  caps: CustomPolicyCaps,
+) {
   const operationTag = operation === "withdraw" ? "01" : "00";
-  const cap = RWA_MULTIPLY_ROUTE.vault.capRaw.toString();
+  const cap = caps.amountRaw!.toString();
+  const navCap = caps.reportNavRaw === null ? [] : [
+    { offset: "39", operator: "LessThanOrEqualTo", kind: "U64Le", value: caps.reportNavRaw.toString() },
+  ];
   const constraints = [
     { offset: "0", operator: "Equals", kind: "U8Slice", value: `a4aff629b28c2303${operationTag}` },
   ];
@@ -193,11 +274,16 @@ function expectedArmData(operation: CustomPolicyArtifact["policies"][number]["op
       { offset: "9", operator: "LessThanOrEqualTo", kind: "U64Le", value: cap },
     );
   }
+  constraints.push(...navCap);
   constraints.push({ offset: "17", operator: "Equals", kind: "U8Slice", value: "013900000001" });
   return constraints;
 }
 
-function parseArtifact(value: unknown, expectedSeeds: readonly bigint[]): CustomPolicyArtifact {
+function parseArtifact(
+  value: unknown,
+  expectedSeeds: readonly bigint[],
+  route: RwaMultiplyRouteSpec = RWA_MULTIPLY_ROUTE,
+): CustomPolicyArtifact {
   invariant(value && typeof value === "object", "custom policy compiler returned a non-object");
   const artifact = value as Partial<CustomPolicyArtifact>;
   invariant(artifact.schema === "loyal-voltr-custom-policy-artifact/v5"
@@ -214,10 +300,10 @@ function parseArtifact(value: unknown, expectedSeeds: readonly bigint[]): Custom
     const seed = expectedSeeds[index]!;
     invariant(policy.operation === operations[index]
       && policy.seed === seed.toString()
-      && policy.policy === policyAddress(seed)
+      && policy.policy === policyAddress(seed, route)
       && policy.constraintIndex === 0
       && JSON.stringify(policy.constraintIndices) === JSON.stringify(indexes[index])
-      && policy.createInstruction?.programId === RWA_MULTIPLY_ROUTE.squads.program
+      && policy.createInstruction?.programId === route.squads.program
       && policy.createInstruction.accounts.length === 6
       && policy.createInstruction.dataBase64.length > 0,
     `custom ${operations[index]} policy artifact drifted`);
@@ -225,10 +311,13 @@ function parseArtifact(value: unknown, expectedSeeds: readonly bigint[]): Custom
   return artifact as CustomPolicyArtifact;
 }
 
-export async function compileCustomPolicyArtifact(policySeedBefore: bigint): Promise<CustomPolicyArtifact> {
+export async function compileCustomPolicyArtifact(
+  policySeedBefore: bigint,
+  target: CustomPolicyTarget = V2_CUSTOM_POLICY_TARGET,
+): Promise<CustomPolicyArtifact> {
   invariant(policySeedBefore >= 0n && policySeedBefore < (1n << 64n) - 4n,
     "current Squads policy seed is outside the supported range");
-  const route = RWA_MULTIPLY_ROUTE;
+  const route = target.route;
   const manager = createNoopSigner(route.squads.vault);
   const report = {
     sequence: 1n,
@@ -245,8 +334,12 @@ export async function compileCustomPolicyArtifact(policySeedBefore: bigint): Pro
     buildRwaMultiplyArmReportInstruction(manager, "withdraw", route.vault.proofAmountRaw, report, route),
   ]);
   const accounts = await deriveRwaMultiplyVoltrAccounts(route);
-  const seeds = [policySeedBefore + 1n, policySeedBefore + 2n,
-    policySeedBefore + 3n, policySeedBefore + 4n] as const;
+  const seeds = target.seeds;
+  invariant(target.caps.amountRaw !== null, "custom policy amount cap is required");
+  invariant(seeds.navRefresh === seeds.allocation + 1n
+    && seeds.stageWithdrawal === seeds.allocation + 2n
+    && seeds.withdraw === seeds.allocation + 3n,
+  "custom policy seeds are not the fixed four-policy packet-fit split");
   const input = {
     identity: {
       settings: route.squads.settings,
@@ -264,13 +357,18 @@ export async function compileCustomPolicyArtifact(policySeedBefore: bigint): Pro
       squadsAssetAta: route.squads.assetAta,
       strategyAssetAta: accounts.strategyAssetAta,
       reportTicket: accounts.reportTicket,
-      maxAmountRaw: route.vault.capRaw.toString(),
+      maxAmountRaw: target.caps.amountRaw!.toString(),
+      navCapRaw: target.caps.reportNavRaw === null ? null : target.caps.reportNavRaw.toString(),
+      dailySpendingLimit: target.caps.dailySpendingLimit === null ? null : {
+        mint: target.caps.dailySpendingLimit.mint,
+        maxPerPeriodRaw: target.caps.dailySpendingLimit.maxPerPeriodRaw.toString(),
+      },
       assetDecimals: route.assets.decimals,
       seeds: {
-        allocation: seeds[0]!.toString(),
-        navRefresh: seeds[1]!.toString(),
-        stageWithdrawal: seeds[2]!.toString(),
-        withdraw: seeds[3]!.toString(),
+        allocation: seeds.allocation.toString(),
+        navRefresh: seeds.navRefresh.toString(),
+        stageWithdrawal: seeds.stageWithdrawal.toString(),
+        withdraw: seeds.withdraw.toString(),
       },
     },
     instructions: {
@@ -291,14 +389,18 @@ export async function compileCustomPolicyArtifact(policySeedBefore: bigint): Pro
     maxBuffer: 16 * 1024 * 1024,
   });
   if (result.error) throw result.error;
-  invariant(result.status === 0, `custom policy compiler failed: ${result.stderr.trim() || result.stdout.trim()}`);
-  const artifact = parseArtifact(JSON.parse(result.stdout), seeds);
+  invariant(result.status === 0,
+    `custom policy compiler failed (status ${result.status}, signal ${result.signal}): ${
+      result.stderr.trim() || result.stdout.trim() || "<no output>"}`);
+  const artifact = parseArtifact(JSON.parse(result.stdout), [
+    seeds.allocation, seeds.navRefresh, seeds.stageWithdrawal, seeds.withdraw,
+  ], route);
   invariant(artifact.sourceSha256 === createHash("sha256").update(source).digest("hex"),
     "custom policy compiler source hash drifted");
   return artifact;
 }
 
-export async function compileCurrentCustomPolicyArtifact(connection: Connection) {
+export async function readFinalizedCustomPolicySeed(connection: Connection) {
   const response = await connection.getAccountInfoAndContext(
     new PublicKey(RWA_MULTIPLY_ROUTE.squads.settings),
     { commitment: "finalized" },
@@ -312,23 +414,32 @@ export async function compileCurrentCustomPolicyArtifact(connection: Connection)
     && settings.signers[0]?.permissions.mask === 7,
   "Squads Settings authority boundary drifted");
   const policySeedBefore = BigInt(settings.policySeed?.toString() ?? "0");
-  const fixed = RWA_MULTIPLY_ROUTE.squads.customPolicySeeds;
+  return { contextSlot: response.context.slot, policySeedBefore };
+}
+
+export async function compileCurrentCustomPolicyArtifact(
+  connection: Connection,
+  target: CustomPolicyTarget = V2_CUSTOM_POLICY_TARGET,
+) {
+  const { contextSlot, policySeedBefore } = await readFinalizedCustomPolicySeed(connection);
+  const fixed = target.seeds;
   invariant(fixed.navRefresh === fixed.allocation + 1n
     && fixed.stageWithdrawal === fixed.allocation + 2n
     && fixed.withdraw === fixed.allocation + 3n,
   "custom policy seeds are not the fixed four-policy packet-fit split");
-  invariant(policySeedBefore >= fixed.allocation - 1n,
-    "Squads policy seed has not reached the custom policy installation boundary");
   return {
-    contextSlot: response.context.slot,
+    contextSlot,
     policySeedBefore,
-    artifact: await compileCustomPolicyArtifact(fixed.allocation - 1n),
+    artifact: await compileCustomPolicyArtifact(policySeedBefore, target),
   };
 }
 
-export async function verifyInstalledCustomPolicies(connection: Connection) {
-  const compiled = await compileCurrentCustomPolicyArtifact(connection);
-  const route = RWA_MULTIPLY_ROUTE;
+export async function verifyInstalledCustomPolicies(
+  connection: Connection,
+  target: CustomPolicyTarget = V2_CUSTOM_POLICY_TARGET,
+) {
+  const compiled = await compileCurrentCustomPolicyArtifact(connection, target);
+  const route = target.route;
   const manager = createNoopSigner(route.squads.vault);
   const report = {
     sequence: 1n,
@@ -363,10 +474,10 @@ export async function verifyInstalledCustomPolicies(connection: Connection) {
     [route.customAdaptor.program, route.programs.voltr],
   ] as const;
   const expectedDataSets = [
-    [expectedArmData("allocation"), expectedData("allocation")],
-    [expectedArmData("nav-refresh"), expectedData("nav-refresh")],
-    [expectedData("stage-withdrawal")],
-    [expectedArmData("withdraw"), expectedData("withdraw")],
+    [expectedArmData("allocation", target.caps), expectedData("allocation", target.caps)],
+    [expectedArmData("nav-refresh", target.caps), expectedData("nav-refresh", target.caps)],
+    [expectedData("stage-withdrawal", target.caps)],
+    [expectedArmData("withdraw", target.caps), expectedData("withdraw", target.caps)],
   ] as const;
   const response = await connection.getMultipleAccountsInfoAndContext(
     compiled.artifact.policies.map(({ policy }) => new PublicKey(policy)),
@@ -441,12 +552,19 @@ export async function verifyInstalledCustomPolicies(connection: Connection) {
       && policy.signers.length === 1
       && policy.signers[0]?.key.equals(new PublicKey(route.squads.delegatedExecutor))
       && policy.signers[0]?.permissions.mask === 7);
+    // Every policy in a limited set must carry exactly the configured daily
+    // limit (Squads charges it only on decreases, so deposit-side lanes are
+    // unaffected); the uncapped v2 set must carry none.
+    const expectedLimit = target.caps.dailySpendingLimit === null
+      ? null
+      : target.caps.dailySpendingLimit;
+    const spendingLimitsPass = spendingLimitsMatch(body?.spendingLimits ?? [], expectedLimit);
     const pass = Boolean(authorityBoundaryPass
       && policy.policyState.__kind === "ProgramInteraction"
       && body?.accountIndex === route.squads.vaultIndex
       && body.preHook == null
       && body.postHook == null
-      && (body.spendingLimits?.length ?? 0) === 0
+      && spendingLimitsPass
       && body.instructionsConstraints?.length === expected.constraintIndices.length
       && observedConstraints.every(({ pass }) => pass));
     return {

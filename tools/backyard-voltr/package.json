@@ -29,6 +29,7 @@
     "activate:rwa-multiply-phase2-obligations": "bun src/activation/rwa-multiply-phase2-obligation-prerequisites.ts",
     "activate:rwa-multiply-phase2-policies": "bun src/activation/rwa-multiply-phase2-policies.ts",
     "activate:rwa-multiply-custom-policies": "bun src/activation/rwa-multiply-custom-policies.ts",
+    "generate:rwa-multiply-strategy2-worker-config": "bun src/activation/generate-rwa-multiply-strategy2-worker-config.ts",
     "activate:rwa-multiply-retire-legacy-policies": "bun src/activation/rwa-multiply-retire-legacy-policies.ts",
     "activate:rwa-multiply-forward-jupiter-policy": "bun src/activation/rwa-multiply-forward-jupiter-policy.ts",
     "activate:rwa-multiply-maple-exit-policy": "bun src/activation/rwa-multiply-maple-exit-policy.ts",

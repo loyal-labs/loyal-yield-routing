@@ -100,6 +100,39 @@ func TestConfirmedRPCReadsUseOneContextSlot(t *testing.T) {
 	}
 }
 
+func TestFinalizedRPCReadsUseFinalizedContextSlot(t *testing.T) {
+	client, err := NewRPCClient("https://rpc.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retryBackoff = 0
+	client.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestBody, _ := io.ReadAll(request.Body)
+		body := string(requestBody)
+		if strings.Contains(body, `"method":"getSlot"`) {
+			if !strings.Contains(body, `"commitment":"finalized"`) {
+				t.Fatalf("slot read was not finalized: %s", body)
+			}
+			return response(`{"jsonrpc":"2.0","id":1,"result":42}`), nil
+		}
+		if !strings.Contains(body, `"commitment":"finalized"`) ||
+			!strings.Contains(body, `"minContextSlot":42`) {
+			t.Fatalf("incoherent finalized account request: %s", body)
+		}
+		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":[{"owner":"Tokenkeg","lamports":1,"data":["AQ==","base64"],"executable":false}]}}`), nil
+	})
+	slot, err := client.FinalizedSlot(context.Background())
+	if err != nil || slot != 42 {
+		t.Fatalf("slot=%d err=%v", slot, err)
+	}
+	observedSlot, accounts, err := client.getMultipleAccountsAtCommitment(
+		context.Background(), []string{"account"}, slot, nil, "finalized",
+	)
+	if err != nil || observedSlot != 42 || len(accounts) != 1 {
+		t.Fatalf("slot=%d accounts=%+v err=%v", observedSlot, accounts, err)
+	}
+}
+
 func TestConfirmedRPCRejectsAbsentAccount(t *testing.T) {
 	client, _ := NewRPCClient("https://rpc.invalid")
 	client.client.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
@@ -186,6 +219,30 @@ func TestReadOnlyRPCRetryPublishesOnlyACompleteFreshDecode(t *testing.T) {
 	}
 	if attempts != 2 || output.Optional != nil || output.Required != 42 {
 		t.Fatalf("attempts=%d output=%+v", attempts, output)
+	}
+}
+
+func TestRPCErrorsSanitizeCredentialsAndQueryParameters(t *testing.T) {
+	client, err := NewRPCClient("https://rpc-user:rpc-pass@rpc.example:8899/rpc?api-key=secret-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retryBackoff = 0
+	client.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New(`Post "https://rpc-user:rpc-pass@rpc.example:8899/rpc?api-key=secret-token": connection refused`)
+	})
+	_, err = client.ConfirmedSlot(context.Background())
+	if err == nil {
+		t.Fatal("transport failure unexpectedly succeeded")
+	}
+	if strings.Contains(err.Error(), "rpc-pass") || strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), ":8899/rpc") {
+		t.Fatalf("RPC error leaked sensitive URL material: %v", err)
+	}
+	if !strings.Contains(err.Error(), "https://rpc.example:8899") {
+		t.Fatalf("sanitized host was not retained for diagnosis: %v", err)
+	}
+	if got := sanitizeRPCURL("https://rpc-user:rpc-pass@rpc.example:8899/rpc?api-key=secret-token"); got != "https://rpc.example:8899" {
+		t.Fatalf("sanitized URL=%q", got)
 	}
 }
 
