@@ -81,6 +81,16 @@ not change across retries. Permanent provider errors fail immediately. Logs
 retain safe numeric error codes, not provider messages or credential-bearing URLs.
 Persistent RPC failures still fail the cycle rather than using unverified data.
 
+If a reserve's update slot is ahead of the returned RPC context slot, the planner
+rejects that entire observation and re-reads the full catalog, up to three
+observations within one 45-second deadline (including RPC retries). Each fresh
+read raises the minimum slot to cover the previously observed reserve updates;
+no slots are clamped and no account bytes from rejected batches are reused.
+`kamino_fleet_planner_observation_retry` logs the attempt and numeric slot bounds.
+Other invalid accounts still fail immediately, and persistent slot disagreement
+still fails the cycle. The recovered observation must pass the existing durable
+identity, hash (publish mode), and expiry checks before planning.
+
 ### Idle balances in shadow mode
 
 Shadow additionally reads eligible idle stablecoin balances in the same read-only

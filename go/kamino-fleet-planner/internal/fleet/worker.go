@@ -159,18 +159,11 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	if w.lastConfirmedSlot > minimumSlot {
 		minimumSlot = w.lastConfirmedSlot
 	}
-	slot, accounts, err := w.rpc.ConfirmedAccounts(ctx, addresses, minimumSlot)
+	direct, err := w.observeConfirmedReserveCatalog(ctx, addresses, identities, minimumSlot)
 	if err != nil {
 		return fmt.Errorf("observe complete coherent reserve catalog: %w", err)
 	}
-	direct := MarketSnapshot{Slot: slot, ObservedAt: time.Now().UTC(), Reserves: make(map[string]ReserveState, len(accounts))}
-	for i, account := range accounts {
-		state, e := DecodeKaminoSourceReserve(account, identities[addresses[i]], slot, w.config.SlotDuration)
-		if e != nil {
-			return e
-		}
-		direct.Reserves[addresses[i]] = state
-	}
+	slot := direct.Slot
 	if err = epoch.VerifyDirectObservation(direct, addresses...); err != nil {
 		if !shadowObservationDifference(w.config.Mode, err) {
 			return fmt.Errorf("durable market evidence not converged: %w", err)

@@ -17,6 +17,19 @@ const (
 	minimumPublicationLifetime = 70 * time.Second
 )
 
+// ReserveSlotOrderMismatch means the returned account was updated after the
+// RPC response's context slot. It is not usable evidence; callers may re-read
+// the complete catalog, but must never clamp either slot or reuse these bytes.
+type ReserveSlotOrderMismatch struct {
+	Reserve        string
+	ContextSlot    int64
+	LastUpdateSlot int64
+}
+
+func (e *ReserveSlotOrderMismatch) Error() string {
+	return fmt.Sprintf("reserve %s economic slot order is invalid: contextSlot=%d lastUpdateSlot=%d", e.Reserve, e.ContextSlot, e.LastUpdateSlot)
+}
+
 type curvePoint struct{ utilization, rate float64 }
 
 func DecodeKaminoReserve(account Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
@@ -49,7 +62,7 @@ func decodeKaminoReserve(account Account, identity ReserveIdentity, contextSlot 
 	explicitlyStale := account.Data[24] != 0
 	lag := contextSlot - lastUpdateSlot
 	if lag < 0 {
-		return ReserveState{}, fmt.Errorf("reserve %s economic slot order is invalid", identity.Address)
+		return ReserveState{}, &ReserveSlotOrderMismatch{Reserve: identity.Address, ContextSlot: contextSlot, LastUpdateSlot: lastUpdateSlot}
 	}
 	remainingSlots := maximumEconomicSlotLag - lag
 	if remainingSlots < 0 {
