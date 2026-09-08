@@ -1,0 +1,2516 @@
+{
+  "broadcast": false,
+  "cluster": "mainnet-beta (accounts + program binaries cloned read-only)",
+  "dumpClockUnixTimestamp": 1788837909,
+  "dumpGenesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "dumpSlot": 445235325,
+  "finalState": {
+    "adminLpAta": 41666666,
+    "adminPerformanceFeeBps": 0,
+    "clock": {
+      "epoch": 1033,
+      "slot": 446531625,
+      "unixTimestamp": 1789358124
+    },
+    "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+    "deadWeight": 1000,
+    "feeStateAccumulatedLpAdminFees": 0,
+    "feeStateAccumulatedLpManagerFees": 0,
+    "feeStateAccumulatedLpProtocolFees": 0,
+    "highWaterMarkAssetPerLp": "0.024000",
+    "highWaterMarkAssetPerLpBits": "6755406304376",
+    "idleAta": 1000025,
+    "lockedProfitDegradationDuration": 0,
+    "lockedProfitState": {
+      "effectiveLockedNow": 0,
+      "lastReport": 1789010709,
+      "lastUpdatedLockedProfit": 1000119
+    },
+    "lpPriceAssetPerLp": "0.024000024",
+    "lpPriceRational": "1000025/41667666",
+    "lpSupply": 41666666,
+    "lpSupplyInclFees": 41667666,
+    "managerPerformanceFeeBps": 0,
+    "squadsUsdcAta": 0,
+    "strategy1CustodyAta": 0,
+    "strategy1ReceiptPositionValue": 3793536,
+    "strategy2BookMinusReal": "0",
+    "strategy2CustodyAta": 0,
+    "strategy2ReceiptPositionValue": 0,
+    "tvEqualsIdle": true,
+    "tvEqualsIdlePlusReceipt2": true,
+    "vaultTotalValue": 1000025,
+    "withdrawalWaitingPeriod": 600
+  },
+  "generatedBy": "crates/squads-test-harness/tests/voltr_reset_sequence.rs",
+  "initialState": {
+    "adminLpAta": 0,
+    "adminPerformanceFeeBps": 500,
+    "clock": {
+      "epoch": 1030,
+      "slot": 445235325,
+      "unixTimestamp": 1788837909
+    },
+    "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+    "deadWeight": 1000,
+    "feeStateAccumulatedLpAdminFees": 89601150,
+    "feeStateAccumulatedLpManagerFees": 0,
+    "feeStateAccumulatedLpProtocolFees": 0,
+    "highWaterMarkAssetPerLp": "0.020013",
+    "highWaterMarkAssetPerLpBits": "5633268378698",
+    "idleAta": 3793417,
+    "lockedProfitDegradationDuration": 86400,
+    "lockedProfitState": {
+      "effectiveLockedNow": 0,
+      "lastReport": 1788497414,
+      "lastUpdatedLockedProfit": 0
+    },
+    "lpPriceAssetPerLp": "0.014736963",
+    "lpPriceRational": "2793298/189543672",
+    "lpSupply": 99941522,
+    "lpSupplyInclFees": 189543672,
+    "managerPerformanceFeeBps": 0,
+    "squadsUsdcAta": 0,
+    "strategy1CustodyAta": 0,
+    "strategy1ReceiptPositionValue": 2793417,
+    "strategy2BookMinusReal": null,
+    "strategy2CustodyAta": null,
+    "strategy2ReceiptPositionValue": null,
+    "tvEqualsIdle": false,
+    "tvEqualsIdlePlusReceipt2": null,
+    "vaultTotalValue": 2793298,
+    "withdrawalWaitingPeriod": 600
+  },
+  "overallVerdict": "PASS",
+  "pendingReceiptFixtureFetchedSlot": 445247714,
+  "programs": {
+    "adaptor": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+    "squadsSmartAccount": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+    "voltr": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+  },
+  "protocolTreasury": "C7sE3MjSAqqF7TgXn1VsNQPWem1gdhqv3ZYV9TNfSjY9",
+  "schema": "voltr-reset-litesvm/v1",
+  "signatureProof": false,
+  "signerOverridesAndCaveats": [
+    "LiteSVM built with with_sigverify(false) + with_blockhash_check(false); all transactions carry default (zero) signatures. Nothing was signed or broadcast.",
+    "Vault admin BAqg… is marked a transaction signer directly for updateVaultConfig (R0), cancel/request/withdraw of its own LP (R3) and the seed deposit_vault (R5); its lamports are airdropped locally.",
+    "The Squads vault PDA ST999… (= vault.manager) is marked a transaction signer directly for arm_report + deposit_strategy/withdraw_strategy cranks (R1, R5, R6) and Voltr initializeStrategy (R5). On mainnet these go through the Squads smart-account program: the existing REPORT_NAV policy covers the amount=0 refresh (R1); the allocation (R5) and initializeStrategy need the allocation policy / a Squads proposal.",
+    "harvestFee (R2): the harvester that worked is recorded in R2.harvesterThatWorked; the manager (ST999) and protocol-treasury LP ATAs were created with permissionless ATA CreateIdempotent instructions.",
+    "R3 as-is claim of the mainnet pending request is executed on a CLONE only; the main line cancels it (cancelRequestWithdrawVault) and re-requests all LP at the reset price.",
+    "R4/R6 fresh users and the R5 seed deposit get their USDC via a token-balance override (set_account); no program/authority/policy changes.",
+    "R5 strategy-2 config key is a fresh Pubkey::new_unique() acting as the config keypair signer (on mainnet: a fresh keypair). The custody ATA for the new strategy auth is created via ATA CreateIdempotent.",
+    "R5 withdraw failure mode and R6 orphan probes run on CLONES of the main LiteSVM instance and are discarded; the main line is a single continuous instance.",
+    "Every strategy crank advances the LiteSVM clock to a new epoch because Voltr stamps adaptorAddReceipt.lastUpdatedEpoch per (vault, adaptor) and rejects a second crank in the same epoch (6010). On mainnet that means at most one deposit/withdraw_strategy per epoch (~2 days) across BOTH strategies of this adaptor.",
+    "The external OnRe RWA leg is not present in LiteSVM; the strategy-2 allocation's cash lands in the Squads USDC ATA (EBG2…) exactly as the production bridge does, but no onward RWA leg is modelled."
+  ],
+  "squadsPolicyExecutionProof": false,
+  "steps": [
+    {
+      "after": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1030,
+          "slot": 445235325,
+          "unixTimestamp": 1788837909
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 89601150,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.020013",
+        "highWaterMarkAssetPerLpBits": "5633268378698",
+        "idleAta": 3793417,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1788497414,
+          "lastUpdatedLockedProfit": 0
+        },
+        "lpPriceAssetPerLp": "0.014736963",
+        "lpPriceRational": "2793298/189543672",
+        "lpSupply": 99941522,
+        "lpSupplyInclFees": 189543672,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 2793417,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": false,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 2793298,
+        "withdrawalWaitingPeriod": 600
+      },
+      "afterFirst": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 500,
+        "clock": {
+          "epoch": 1030,
+          "slot": 445235325,
+          "unixTimestamp": 1788837909
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 89601150,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.020013",
+        "highWaterMarkAssetPerLpBits": "5633268378698",
+        "idleAta": 3793417,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1788497414,
+          "lastUpdatedLockedProfit": 0
+        },
+        "lpPriceAssetPerLp": "0.014736963",
+        "lpPriceRational": "2793298/189543672",
+        "lpSupply": 99941522,
+        "lpSupplyInclFees": 189543672,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 2793417,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": false,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 2793298,
+        "withdrawalWaitingPeriod": 600
+      },
+      "before": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 500,
+        "clock": {
+          "epoch": 1030,
+          "slot": 445235325,
+          "unixTimestamp": 1788837909
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 89601150,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.020013",
+        "highWaterMarkAssetPerLpBits": "5633268378698",
+        "idleAta": 3793417,
+        "lockedProfitDegradationDuration": 86400,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1788497414,
+          "lastUpdatedLockedProfit": 0
+        },
+        "lpPriceAssetPerLp": "0.014736963",
+        "lpPriceRational": "2793298/189543672",
+        "lpSupply": 99941522,
+        "lpSupplyInclFees": 189543672,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 2793417,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": false,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 2793298,
+        "withdrawalWaitingPeriod": 600
+      },
+      "checks": [
+        {
+          "check": "updateVaultConfig(LockedProfitDegradationDuration=0) executed",
+          "pass": true
+        },
+        {
+          "check": "lockedProfitDegradationDuration 86400 -> 0",
+          "pass": true
+        },
+        {
+          "check": "updateVaultConfig(AdminPerformanceFee=0) executed",
+          "pass": true
+        },
+        {
+          "check": "adminPerformanceFee 500 -> 0",
+          "pass": true
+        },
+        {
+          "check": "books untouched (tv, receipt1, idle)",
+          "pass": true
+        }
+      ],
+      "id": "R0",
+      "instructions": [
+        {
+          "data": "u64 0",
+          "field": "LockedProfitDegradationDuration(2)",
+          "ix": "updateVaultConfig",
+          "tx": {
+            "computeUnits": 5617,
+            "logsTail": [
+              "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+              "Program ComputeBudget111111111111111111111111111111 success",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 invoke [1]",
+              "Program log: Instruction: UpdateVaultConfig",
+              "Program data: PVzOl6Io7WeXGiRiShf1nnezcq1tysSbxsmw/AY3Ao9ScCBf1Jd8CPWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XHwAAAExvY2tlZFByb2ZpdERlZ3JhZGF0aW9uRHVyYXRpb24FAAAAODY0MDABAAAAMBWAn2oAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 5467 of 1399850 compute units",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          }
+        },
+        {
+          "data": "u16 0",
+          "field": "AdminPerformanceFee(5)",
+          "ix": "updateVaultConfig",
+          "tx": {
+            "computeUnits": 5506,
+            "logsTail": [
+              "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+              "Program ComputeBudget111111111111111111111111111111 success",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 invoke [1]",
+              "Program log: Instruction: UpdateVaultConfig",
+              "Program data: PVzOl6Io7WeXGiRiShf1nnezcq1tysSbxsmw/AY3Ao9ScCBf1Jd8CPWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XEwAAAEFkbWluUGVyZm9ybWFuY2VGZWUDAAAANTAwAQAAADAVgJ9qAAAAAA==",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 5356 of 1399850 compute units",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          }
+        }
+      ],
+      "name": "admin updateVaultConfig: LockedProfitDegradationDuration=0, AdminPerformanceFee=0",
+      "signer": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "verdict": "PASS"
+    },
+    {
+      "after": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1031,
+          "slot": 445667325,
+          "unixTimestamp": 1789010709
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 89601150,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.020013",
+        "highWaterMarkAssetPerLpBits": "5633276756022",
+        "idleAta": 3793417,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.020013419",
+        "lpPriceRational": "3793417/189543672",
+        "lpSupply": 99941522,
+        "lpSupplyInclFees": 189543672,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 3793417,
+        "withdrawalWaitingPeriod": 600
+      },
+      "before": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1030,
+          "slot": 445235325,
+          "unixTimestamp": 1788837909
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 89601150,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.020013",
+        "highWaterMarkAssetPerLpBits": "5633268378698",
+        "idleAta": 3793417,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1788497414,
+          "lastUpdatedLockedProfit": 0
+        },
+        "lpPriceAssetPerLp": "0.014736963",
+        "lpPriceRational": "2793298/189543672",
+        "lpSupply": 99941522,
+        "lpSupplyInclFees": 189543672,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 2793417,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": false,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 2793298,
+        "withdrawalWaitingPeriod": 600
+      },
+      "checks": [
+        {
+          "check": "repair crank executed",
+          "pass": true
+        },
+        {
+          "check": "tv == idle == 3793417",
+          "pass": true
+        },
+        {
+          "check": "receipt1 == 3793536",
+          "pass": true
+        },
+        {
+          "check": "effective lockedProfit == 0 (degradation duration 0)",
+          "pass": true
+        },
+        {
+          "check": "no performance-fee LP accrued (fee 0)",
+          "pass": true
+        },
+        {
+          "check": "lp supply unchanged",
+          "pass": true
+        }
+      ],
+      "id": "R1",
+      "lockedProfitRawAfter": 1000119,
+      "name": "repair crank: arm_report + deposit_strategy(0) nav = idle + receipt1 - tv",
+      "reportedNav": 3793536,
+      "sequence": 445667325,
+      "signer": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+      "tx": {
+        "computeUnits": 76409,
+        "logsTail": [
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 23352 of 1357158 compute units",
+          "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW gOI5AAAAAAA=",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+          "Program data: ysl2MR20dKoGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XgSqb/ZrTVqBtcAAuyTl0bg43PpY6L1OPk/YebYVBjZohoZARa4sV1yvCtciErlebcy4bd+7MoTUV6v5ozLgua9aapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEAAAAAAAAAAFKfKgAAAAAACeI5AAAAAAD4NEwLAAAAAPg0TAsAAAAASuz1mB8FAAAAAAAAAAAAADbAdZkfBQAAAAAAAAAAAAAJ4jkAAAAAAAniOQAAAAAAyZ8qAAAAAACA4jkAAAAAABUjomoAAAAA",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 66354 of 1389945 compute units",
+          "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 gOI5AAAAAAA=",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+        ],
+        "ok": true
+      },
+      "verdict": "PASS"
+    },
+    {
+      "after": {
+        "adminLpAta": 89601150,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1031,
+          "slot": 445667325,
+          "unixTimestamp": 1789010709
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.020013",
+        "highWaterMarkAssetPerLpBits": "5633276756022",
+        "idleAta": 3793417,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.020013419",
+        "lpPriceRational": "3793417/189543672",
+        "lpSupply": 189542672,
+        "lpSupplyInclFees": 189543672,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 3793417,
+        "withdrawalWaitingPeriod": 600
+      },
+      "attempts": [
+        {
+          "harvester": "anyone(random)",
+          "key": "1119DWteoLSdjvrT6g6L8C2PfDD2faiTQUpsjY2RiF",
+          "tx": {
+            "computeUnits": 43555,
+            "logsTail": [
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+              "Program log: Instruction: MintTo",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4589 of 1362206 compute units",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+              "Program data: RTDAF+gWFx4AAAADHsqzVrkspUKcQzoOS1HFYF8KKPiylHybokvXEPWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XOaIdBdpMAi/qURbP90I5J76pHDSLZQt/siOlhrF0fuGXGiRiShf1nnezcq1tysSbxsmw/AY3Ao9ScCBf1Jd8CAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6fjRXBQAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 43405 of 1399850 compute units",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          }
+        },
+        {
+          "harvester": "vaultAdmin",
+          "key": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "tx": {
+            "computeUnits": 43484,
+            "logsTail": [
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+              "Program log: Instruction: MintTo",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4589 of 1362270 compute units",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+              "Program data: RTDAF+gWFx6XGiRiShf1nnezcq1tysSbxsmw/AY3Ao9ScCBf1Jd8CPWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XOaIdBdpMAi/qURbP90I5J76pHDSLZQt/siOlhrF0fuGXGiRiShf1nnezcq1tysSbxsmw/AY3Ao9ScCBf1Jd8CAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 43334 of 1399850 compute units",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          }
+        },
+        {
+          "harvester": "vaultManager",
+          "key": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "tx": {
+            "computeUnits": 43484,
+            "logsTail": [
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+              "Program log: Instruction: MintTo",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4589 of 1362270 compute units",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+              "Program data: RTDAF+gWFx4GhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XOaIdBdpMAi/qURbP90I5J76pHDSLZQt/siOlhrF0fuGXGiRiShf1nnezcq1tysSbxsmw/AY3Ao9ScCBf1Jd8CAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 43334 of 1399850 compute units",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          }
+        }
+      ],
+      "before": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1031,
+          "slot": 445667325,
+          "unixTimestamp": 1789010709
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 89601150,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.020013",
+        "highWaterMarkAssetPerLpBits": "5633276756022",
+        "idleAta": 3793417,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.020013419",
+        "lpPriceRational": "3793417/189543672",
+        "lpSupply": 99941522,
+        "lpSupplyInclFees": 189543672,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 3793417,
+        "withdrawalWaitingPeriod": 600
+      },
+      "checks": [
+        {
+          "check": "LP ATAs created idempotently",
+          "pass": true
+        },
+        {
+          "check": "harvestFee executed",
+          "pass": true
+        },
+        {
+          "check": "feeState.accumulatedLpAdminFees -> 0",
+          "pass": true
+        },
+        {
+          "check": "admin LP ATA (ZvsW) += 89601150",
+          "pass": true
+        },
+        {
+          "check": "lp supply += 89601150",
+          "pass": true
+        },
+        {
+          "check": "lpSupplyInclFees unchanged (fee LP was already counted)",
+          "pass": true
+        },
+        {
+          "check": "tv/idle untouched",
+          "pass": true
+        }
+      ],
+      "harvesterThatWorked": "anyone(random)",
+      "id": "R2",
+      "mintedAdminFeeLp": 89601150,
+      "name": "harvestFee: mint accumulated admin-fee LP to the admin LP ATA",
+      "verdict": "PASS"
+    },
+    {
+      "after": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1031,
+          "slot": 445667425,
+          "unixTimestamp": 1789011314
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.023000",
+        "highWaterMarkAssetPerLpBits": "6473924464345",
+        "idleAta": 23,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.023000000",
+        "lpPriceRational": "23/1000",
+        "lpSupply": 0,
+        "lpSupplyInclFees": 1000,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 23,
+        "withdrawalWaitingPeriod": 600
+      },
+      "asIsClaimBranch": {
+        "after": {
+          "adminLpAta": 89601150,
+          "adminPerformanceFeeBps": 0,
+          "clock": {
+            "epoch": 1031,
+            "slot": 445667325,
+            "unixTimestamp": 1789010709
+          },
+          "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+          "deadWeight": 1000,
+          "feeStateAccumulatedLpAdminFees": 0,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLp": "0.022607",
+          "highWaterMarkAssetPerLpBits": "6363302269524",
+          "idleAta": 2025635,
+          "lockedProfitDegradationDuration": 0,
+          "lockedProfitState": {
+            "effectiveLockedNow": 0,
+            "lastReport": 1789010709,
+            "lastUpdatedLockedProfit": 1000119
+          },
+          "lpPriceAssetPerLp": "0.022606991",
+          "lpPriceRational": "2025635/89602150",
+          "lpSupply": 89601150,
+          "lpSupplyInclFees": 89602150,
+          "managerPerformanceFeeBps": 0,
+          "squadsUsdcAta": 0,
+          "strategy1CustodyAta": 0,
+          "strategy1ReceiptPositionValue": 3793536,
+          "strategy2BookMinusReal": null,
+          "strategy2CustodyAta": null,
+          "strategy2ReceiptPositionValue": null,
+          "tvEqualsIdle": true,
+          "tvEqualsIdlePlusReceipt2": null,
+          "vaultTotalValue": 2025635,
+          "withdrawalWaitingPeriod": 600
+        },
+        "ataCreate": {
+          "computeUnits": 20451,
+          "logsTail": [
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 1405 of 187955 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: InitializeAccount3",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4241 of 184073 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL consumed 20451 of 200000 compute units",
+            "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL success"
+          ],
+          "ok": true
+        },
+        "claim": {
+          "computeUnits": 49915,
+          "logsTail": [
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: TransferChecked",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6200 of 1362230 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program data: xHtP1wTWFMWXGiRiShf1nnezcq1tysSbxsmw/AY3Ao9ScCBf1Jd8CGb5GgAAAAAAkvz0BQAAAAD1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV8b6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hCeI5AAAAAAAJ4jkAAAAAAKPoHgAAAAAA+DRMCwAAAABmOFcFAAAAAAAAAAAAAAAAAAAAAAAAAADoAwAAAAAAAOgDAAAAAAAANsB1mR8FAAAAAAAAAAAAAFQSX5LJBQAAAAAAAAAAAAAVI6JqAAAAAA==",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 49765 of 1399850 compute units",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+          ],
+          "ok": true
+        },
+        "lpBurned": 99941522,
+        "note": "amountAssetToWithdrawDecimalBits (2^48 fixed point) was frozen at request time under the pre-repair price; withdrawVault pays min(atRequest, atPresent) and burns ALL escrowed LP, so claiming as-is forfeits the difference to nobody (it stays in the vault). Cancel + re-request instead (main line below).",
+        "path": "claim pending request as-is (CLONE, discarded)",
+        "payoutRaw": 1767782,
+        "pendingReceiptBefore": {
+          "amountAssetToWithdrawAtRequest": "1767782.265920",
+          "amountAssetToWithdrawDecimalBits": "497586472129346763441",
+          "amountLpEscrowed": 99941522,
+          "present": true,
+          "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "withdrawableFromTs": 1788493649
+        },
+        "verdict": "EXECUTES_BUT_UNFAIR"
+      },
+      "before": {
+        "adminLpAta": 89601150,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1031,
+          "slot": 445667325,
+          "unixTimestamp": 1789010709
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.020013",
+        "highWaterMarkAssetPerLpBits": "5633276756022",
+        "idleAta": 3793417,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.020013419",
+        "lpPriceRational": "3793417/189543672",
+        "lpSupply": 189542672,
+        "lpSupplyInclFees": 189543672,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 3793417,
+        "withdrawalWaitingPeriod": 600
+      },
+      "cancel": {
+        "after": {
+          "adminLpAta": 167797415,
+          "adminPerformanceFeeBps": 0,
+          "clock": {
+            "epoch": 1031,
+            "slot": 445667325,
+            "unixTimestamp": 1789010709
+          },
+          "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+          "deadWeight": 1000,
+          "feeStateAccumulatedLpAdminFees": 0,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLp": "0.022607",
+          "highWaterMarkAssetPerLpBits": "6363301832909",
+          "idleAta": 3793417,
+          "lockedProfitDegradationDuration": 0,
+          "lockedProfitState": {
+            "effectiveLockedNow": 0,
+            "lastReport": 1789010709,
+            "lastUpdatedLockedProfit": 1000119
+          },
+          "lpPriceAssetPerLp": "0.022606989",
+          "lpPriceRational": "3793417/167798415",
+          "lpSupply": 167797415,
+          "lpSupplyInclFees": 167798415,
+          "managerPerformanceFeeBps": 0,
+          "squadsUsdcAta": 0,
+          "strategy1CustodyAta": 0,
+          "strategy1ReceiptPositionValue": 3793536,
+          "strategy2BookMinusReal": null,
+          "strategy2CustodyAta": null,
+          "strategy2ReceiptPositionValue": null,
+          "tvEqualsIdle": true,
+          "tvEqualsIdlePlusReceipt2": null,
+          "vaultTotalValue": 3793417,
+          "withdrawalWaitingPeriod": 600
+        },
+        "escrowAtaStillExists": true,
+        "lpBurnedByCancel": 21745257,
+        "lpRefunded": 78196265,
+        "receiptStillExists": false,
+        "tx": {
+          "computeUnits": 38122,
+          "logsTail": [
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: Burn",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4707 of 1370673 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program data: LqUYcgFQzYj1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV5caJGJKF/Wed7NyrW3KxJvGybD8BjcCj1JwIF/Ul3wIcbfaRDpIs55zo159wLdoE/Mi0kqWTbRYHMAbtcaOed0pLqkEAAAAAGnOSwEAAAAANsB1mR8FAAAAAAAAAAAAAM1oWJLJBQAAAAAAAAAAAAAVI6JqAAAAAA==",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 37972 of 1399850 compute units",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+          ],
+          "ok": true
+        },
+        "why": "Voltr refunds LP worth amountAssetToWithdrawAtRequest at the post-cancel price and burns the remainder (CancelRequestWithdrawVaultEvent.amountLpBurned); the burned LP's value accrues to the other LP holders, which is the same admin wallet here, so the total drain below is unaffected."
+      },
+      "checks": [
+        {
+          "check": "cancelRequestWithdrawVault executed (admin BAqg)",
+          "pass": true
+        },
+        {
+          "check": "after cancel the admin LP ATA holds 100% of LP supply",
+          "pass": true
+        },
+        {
+          "check": "cancel left tv/idle untouched",
+          "pass": true
+        },
+        {
+          "check": "requestWithdrawVault(all) executed",
+          "pass": true
+        },
+        {
+          "check": "withdrawableFromTs == requestTs + 600",
+          "pass": true
+        },
+        {
+          "check": "withdrawVault claim executed",
+          "pass": true
+        },
+        {
+          "check": "payout == floor(tv*lp/lpInclFees) == 3793394",
+          "pass": true
+        },
+        {
+          "check": "LP supply == 0 (only virtual deadWeight 1000 remains)",
+          "pass": true
+        },
+        {
+          "check": "tv > 0",
+          "pass": true
+        },
+        {
+          "check": "tv == idle (book == real)",
+          "pass": true
+        }
+      ],
+      "claim": {
+        "ataCreate": {
+          "computeUnits": 20451,
+          "logsTail": [
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 1405 of 187955 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: InitializeAccount3",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4241 of 184073 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL consumed 20451 of 200000 compute units",
+            "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL success"
+          ],
+          "ok": true
+        },
+        "fairPayout": 3793394,
+        "payoutRaw": 3793394,
+        "residualIdle": 23,
+        "residualTv": 23,
+        "tx": {
+          "computeUnits": 49950,
+          "logsTail": [
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: TransferChecked",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6200 of 1362230 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program data: xHtP1wTWFMWXGiRiShf1nnezcq1tysSbxsmw/AY3Ao9ScCBf1Jd8CPLhOQAAAAAAp2IACgAAAAD1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV8b6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hCeI5AAAAAAAJ4jkAAAAAABcAAAAAAAAAj2YACgAAAADoAwAAAAAAAAAAAAAAAAAAAAAAAAAAAADoAwAAAAAAAOgDAAAAAAAAzWhYkskFAAAAAAAAAAAAANnO91PjBQAAAAAAAAAAAAByJaJqAAAAAA==",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 49800 of 1399850 compute units",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+          ],
+          "ok": true
+        }
+      },
+      "id": "R3",
+      "lpPriceAfterDrain": "23/1000 = 0.023000000",
+      "name": "drain: cancel stale request, re-request ALL LP at reset price, wait 600s, claim",
+      "request": {
+        "lpRequested": 167797415,
+        "receipt": {
+          "amountAssetToWithdrawAtRequest": "3793394.393011",
+          "amountAssetToWithdrawDecimalBits": "1067745598426973642066",
+          "amountLpEscrowed": 167797415,
+          "present": true,
+          "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+          "withdrawableFromTs": 1789011309
+        },
+        "requestClockTs": 1789010709,
+        "tx": {
+          "computeUnits": 37807,
+          "logsTail": [
+            "Program 11111111111111111111111111111111 success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: TransferChecked",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6173 of 1369829 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program data: O14aJi+DnqL1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV5caJGJKF/Wed7NyrW3KxJvGybD8BjcCj1JwIF/Ul3wIp2IACgAAAAABAXG32kQ6SLOec6NefcC3aBPzItJKlk20WBzAG7XGjnndp2IACgAAAABSnaZWnGTy4TkAAAAAAAAAbSWiagAAAADG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQniOQAAAAAACeI5AAAAAACPZgAKAAAAABUjomoAAAAA",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 33221 of 1395414 compute units",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+          ],
+          "ok": true
+        }
+      },
+      "verdict": "PASS"
+    },
+    {
+      "after": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1031,
+          "slot": 445667525,
+          "unixTimestamp": 1789011919
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399441055",
+        "idleAta": 24,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "24/1000",
+        "lpSupply": 0,
+        "lpSupplyInclFees": 1000,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 24,
+        "withdrawalWaitingPeriod": 600
+      },
+      "afterDeposit": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1031,
+          "slot": 445667425,
+          "unixTimestamp": 1789011314
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.023000",
+        "highWaterMarkAssetPerLpBits": "6473924593820",
+        "idleAta": 1000023,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.023000000",
+        "lpPriceRational": "1000023/43479260",
+        "lpSupply": 43478260,
+        "lpSupplyInclFees": 43479260,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 1000023,
+        "withdrawalWaitingPeriod": 600
+      },
+      "amount": 1000000,
+      "before": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1031,
+          "slot": 445667425,
+          "unixTimestamp": 1789011314
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.023000",
+        "highWaterMarkAssetPerLpBits": "6473924464345",
+        "idleAta": 23,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.023000000",
+        "lpPriceRational": "23/1000",
+        "lpSupply": 0,
+        "lpSupplyInclFees": 1000,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 23,
+        "withdrawalWaitingPeriod": 600
+      },
+      "checks": [
+        {
+          "check": "deposit_vault(1000000) executed",
+          "pass": true
+        },
+        {
+          "check": "tv += 1000000 and idle += 1000000",
+          "pass": true
+        },
+        {
+          "check": "LP minted == floor(amount*lpInclFees/tv) == 43478260",
+          "pass": true
+        },
+        {
+          "check": "requestWithdrawVault(all) executed",
+          "pass": true
+        },
+        {
+          "check": "withdrawVault executed after 600s",
+          "pass": true
+        },
+        {
+          "check": "payout within 5 raw of 1000000",
+          "pass": true
+        },
+        {
+          "check": "tv == idle (+ receipt2) before, after deposit and after claim",
+          "pass": true
+        },
+        {
+          "check": "user LP fully burned",
+          "pass": true
+        }
+      ],
+      "claim": {
+        "deltaFromDeposit": -1,
+        "payoutRaw": 999999,
+        "tx": {
+          "computeUnits": 51450,
+          "logsTail": [
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: TransferChecked",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6200 of 1360730 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program data: xHtP1wTWFMUAAAAEJFyAYE5rcYGGN6QJ5mBjBwRWjLbebV7i4A8yYj9CDwAAAAAA9GyXAgAAAAD1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV8b6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hV0IPAAAAAABXQg8AAAAAABgAAAAAAAAA3HCXAgAAAADoAwAAAAAAAAAAAAAAAAAAAAAAAAAAAADoAwAAAAAAAOgDAAAAAAAAnMj5U+MFAAAAAAAAAAAAAJ8aL90kBgAAAAAAAAAAAADPJ6JqAAAAAA==",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 51300 of 1399850 compute units",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+          ],
+          "ok": true
+        }
+      },
+      "deposit": {
+        "expectedLp": 43478260,
+        "impliedPriceAssetPerLp": "0.023000000",
+        "lpMinted": 43478260,
+        "tx": {
+          "computeUnits": 66029,
+          "logsTail": [
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: MintTo",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4492 of 1344225 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program data: Cw8HXJZkpegAAAAEJFyAYE5rcYGGN6QJ5mBjBwRWjLbebV7i4A8yYkBCDwAAAAAA9GyXAgAAAAD1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV8b6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hFwAAAAAAAABXQg8AAAAAAOgDAAAAAAAA3HCXAgAAAAAAAAAAAAAAAAAAAAAAAAAA6AMAAAAAAADoAwAAAAAAANnO91PjBQAAAAAAAAAAAACcyPlT4wUAAAAAAAAAAAAAciWiagAAAAA=",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 45485 of 1379456 compute units",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+          ],
+          "ok": true
+        }
+      },
+      "id": "R4",
+      "name": "fresh user lifecycle at reset price: deposit_vault(1_000_000) -> request all -> wait -> claim",
+      "request": {
+        "receipt": {
+          "amountAssetToWithdrawAtRequest": "999999.1000000",
+          "amountAssetToWithdrawDecimalBits": "281474976710526524486",
+          "amountLpEscrowed": 43478260,
+          "present": true,
+          "user": "111BuZ6b86gm7XhxjvTakhRvxSMjXp2GqgifkNUmDK",
+          "withdrawableFromTs": 1789011914
+        },
+        "tx": {
+          "computeUnits": 56867,
+          "logsTail": [
+            "Program 11111111111111111111111111111111 success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: TransferChecked",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6173 of 1350769 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program data: O14aJi+DnqL1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vVwAAAAQkXIBgTmtxgYY3pAnmYGMHBFaMtt5tXuLgDzJi9GyXAgAAAAABAaT6Z64V6aEwjlD8uqR8GhyJqa4hSSFs53RbsFLuAJSb9GyXAgAAAABGXEj4//8/Qg8AAAAAAAAAyieiagAAAADG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYVdCDwAAAAAAV0IPAAAAAADccJcCAAAAAHIlomoAAAAA",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 34721 of 1377854 compute units",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+          ],
+          "ok": true
+        }
+      },
+      "user": "111BuZ6b86gm7XhxjvTakhRvxSMjXp2GqgifkNUmDK",
+      "verdict": "PASS"
+    },
+    {
+      "after": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1031,
+          "slot": 445667525,
+          "unixTimestamp": 1789011919
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399441055",
+        "idleAta": 24,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "24/1000",
+        "lpSupply": 0,
+        "lpSupplyInclFees": 1000,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 24,
+        "withdrawalWaitingPeriod": 600
+      },
+      "before": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1031,
+          "slot": 445667525,
+          "unixTimestamp": 1789011919
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399441055",
+        "idleAta": 24,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "24/1000",
+        "lpSupply": 0,
+        "lpSupplyInclFees": 1000,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 24,
+        "withdrawalWaitingPeriod": 600
+      },
+      "checks": [
+        {
+          "check": "adaptor initialize_config executed (new config = new strategy key)",
+          "pass": true
+        },
+        {
+          "check": "adaptor initialize_report_ticket executed",
+          "pass": true
+        },
+        {
+          "check": "Voltr initializeStrategy executed (manager ST999 signer)",
+          "pass": true
+        },
+        {
+          "check": "receipt2.positionValue == 0",
+          "pass": true
+        },
+        {
+          "check": "custody2 ATA created",
+          "pass": true
+        },
+        {
+          "check": "books untouched by setup",
+          "pass": true
+        }
+      ],
+      "custodyAtaCreate": {
+        "computeUnits": 20552,
+        "logsTail": [
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 1405 of 187877 compute units",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+          "Program log: Instruction: InitializeAccount3",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4241 of 183993 compute units",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL consumed 20552 of 200000 compute units",
+          "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL success"
+        ],
+        "ok": true
+      },
+      "id": "R5a-setup",
+      "initializeConfig": {
+        "args": {
+          "maxReportAgeSlots": 32,
+          "maxReportNavRaw": 2000000000000,
+          "squadsVaultIndex": 0
+        },
+        "tx": {
+          "computeUnits": 19007,
+          "logsTail": [
+            "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+            "Program ComputeBudget111111111111111111111111111111 success",
+            "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [1]",
+            "Program 11111111111111111111111111111111 invoke [2]",
+            "Program 11111111111111111111111111111111 success",
+            "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 18857 of 1399850 compute units",
+            "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success"
+          ],
+          "ok": true
+        }
+      },
+      "initializeReportTicket": {
+        "computeUnits": 6899,
+        "logsTail": [
+          "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+          "Program ComputeBudget111111111111111111111111111111 success",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [1]",
+          "Program 11111111111111111111111111111111 invoke [2]",
+          "Program 11111111111111111111111111111111 success",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 6749 of 1399850 compute units",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success"
+        ],
+        "ok": true
+      },
+      "name": "second strategy on the same custom adaptor FSj27: initialize_config + initialize_report_ticket + Voltr initializeStrategy",
+      "strategy2": {
+        "config": "111FJo4zLAGU9nzTWa6EnbV4VAmtG4FR8kcokrtZYr",
+        "custodyAta": "53PjtoUvUkF2qT3AyJ6bTakwmFuqfdzqtfVcmeQdgz6c",
+        "reportTicket": "BjyoLmJuEm9L9csRuJiHGhdiAPy4pba3op9pYZayycmW",
+        "strategyInitReceipt": "HpPYzssQKLZhi3CyVRgF55suHQWMu1W3ApSbto8qECjj",
+        "vaultStrategyAuth": "97QcQPnCVjbCWrU7Q4k9DRFLz7W6pyzms3btnciv4UeR"
+      },
+      "verdict": "PASS",
+      "voltrInitializeStrategy": {
+        "computeUnits": 41774,
+        "logsTail": [
+          "Program 11111111111111111111111111111111 invoke [2]",
+          "Program 11111111111111111111111111111111 success",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 12724 of 1372153 compute units",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+          "Program data: HunT+VO86pgGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XeIGtN8I70DmK++43eUYtA5IuI+JKOEujAc6ztG78Nu4AAAAFbwACFyuN/09aMnQOJxkE1+GI+o5s7VHOFQYTn/neycJnW1Z4RfnJXdcs8CHYmcvHZTlDqstI9wTBMR+i1pql/THt14B8m2YCp04JwinnC8xcYmF0WMozd5PR84fPJ6JqAAAAAAA=",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 41624 of 1399850 compute units",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+        ],
+        "ok": true
+      }
+    },
+    {
+      "after": {
+        "adminLpAta": 41666666,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1032,
+          "slot": 446099525,
+          "unixTimestamp": 1789184719
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399549139",
+        "idleAta": 500024,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "1000024/41667666",
+        "lpSupply": 41666666,
+        "lpSupplyInclFees": 41667666,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 500000,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 500000,
+        "tvEqualsIdle": false,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 1000024,
+        "withdrawalWaitingPeriod": 600
+      },
+      "before": {
+        "adminLpAta": 41666666,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1031,
+          "slot": 445667525,
+          "unixTimestamp": 1789011919
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399549139",
+        "idleAta": 1000024,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "1000024/41667666",
+        "lpSupply": 41666666,
+        "lpSupplyInclFees": 41667666,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 1000024,
+        "withdrawalWaitingPeriod": 600
+      },
+      "checks": [
+        {
+          "check": "seed deposit_vault(1000000) by admin executed",
+          "pass": true
+        },
+        {
+          "check": "deposit_strategy(500_000, nav=500_000) on strategy 2 executed",
+          "pass": true
+        },
+        {
+          "check": "receipt2 == 500_000",
+          "pass": true
+        },
+        {
+          "check": "tv unchanged",
+          "pass": true
+        },
+        {
+          "check": "idle -= 500_000",
+          "pass": true
+        },
+        {
+          "check": "tv == idle + receipt2",
+          "pass": true
+        },
+        {
+          "check": "custody2 == 0",
+          "pass": true
+        },
+        {
+          "check": "Squads USDC ATA (EBG2) += 500_000",
+          "pass": true
+        },
+        {
+          "check": "receipt1 untouched",
+          "pass": true
+        }
+      ],
+      "id": "R5a-allocate",
+      "name": "strategy 2 allocation: arm_report + deposit_strategy(500_000) with truthful nav_after = 500_000",
+      "seedDeposit": {
+        "computeUnits": 49972,
+        "logsTail": [
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+          "Program log: Instruction: MintTo",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4492 of 1360282 compute units",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program data: Cw8HXJZkpeiXGiRiShf1nnezcq1tysSbxsmw/AY3Ao9ScCBf1Jd8CEBCDwAAAAAAash7AgAAAAD1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV8b6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hGAAAAAAAAABYQg8AAAAAAOgDAAAAAAAAUsx7AgAAAAAAAAAAAAAAAAAAAAAAAAAA6AMAAAAAAADoAwAAAAAAAJ8aL90kBgAAAAAAAAAAAADTwDDdJAYAAAAAAAAAAAAAzyeiagAAAAA=",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 45485 of 1395513 compute units",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+        ],
+        "ok": true
+      },
+      "sequence": 446099525,
+      "tx": {
+        "computeUnits": 82133,
+        "logsTail": [
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 27131 of 1352596 compute units",
+          "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW IKEHAAAAAAA=",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+          "Program data: ysl2MR20dKoGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XAAAABW8AAhcrjf9PWjJ0DicZBNfhiPqObO1RzhUGE5/53snCZ1tWeEX5yV3XLPAh2JnLx2U5Q6rLSPcEwTEfotaapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEgoQcAAAAAAFhCDwAAAAAAWEIPAAAAAABSzHsCAAAAAFLMewIAAAAA08Aw3SQGAAAAAAAAAAAAANPAMN0kBgAAAAAAAAAAAABYQg8AAAAAADihBwAAAAAAAAAAAAAAAAAgoQcAAAAAAM/KpGoAAAAA",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 73578 of 1391445 compute units",
+          "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 IKEHAAAAAAA=",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+        ],
+        "ok": true
+      },
+      "verdict": "PASS"
+    },
+    {
+      "cases": [
+        {
+          "after": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1033,
+              "slot": 446531525,
+              "unixTimestamp": 1789357519
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.036000",
+            "highWaterMarkAssetPerLpBits": "10133018260860",
+            "idleAta": 1000024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1789357519,
+              "lastUpdatedLockedProfit": 500000
+            },
+            "lpPriceAssetPerLp": "0.035999713",
+            "lpPriceRational": "1500024/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 0,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "0",
+            "strategy2CustodyAta": 0,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": true,
+            "vaultTotalValue": 1500024,
+            "withdrawalWaitingPeriod": 600
+          },
+          "before": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1032,
+              "slot": 446099525,
+              "unixTimestamp": 1789184719
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024000",
+            "highWaterMarkAssetPerLpBits": "6755399549139",
+            "idleAta": 500024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1789010709,
+              "lastUpdatedLockedProfit": 1000119
+            },
+            "lpPriceAssetPerLp": "0.024000000",
+            "lpPriceRational": "1000024/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 0,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "0",
+            "strategy2CustodyAta": 500000,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": true,
+            "vaultTotalValue": 1000024,
+            "withdrawalWaitingPeriod": 600
+          },
+          "case": "(i) custody staged 500_000, withdraw_strategy(500_000, nav = old = 500_000)",
+          "matchesExpectation": true,
+          "observed": "tv inflated by the swept cash while receipt2 stayed 500_000 -> book exceeds real by 500_000 (phantom NAV, the receipt>tv seed of the original brick)",
+          "sequence": 446531525,
+          "stage": {
+            "computeUnits": 6199,
+            "logsTail": [
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [1]",
+              "Program log: Instruction: TransferChecked",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6199 of 200000 compute units",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success"
+            ],
+            "ok": true
+          },
+          "tx": {
+            "computeUnits": 78270,
+            "logsTail": [
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+              "Program log: Instruction: TransferChecked",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6200 of 1337833 compute units",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+              "Program data: cC0QrKohFtQGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XAAAABW8AAhcrjf9PWjJ0DicZBNfhiPqObO1RzhUGE5/53snCZ1tWeEX5yV3XLPAh2JnLx2U5Q6rLSPcEwTEfotaapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEgoQcAAAAAAFhCDwAAAAAAeOMWAAAAAABSzHsCAAAAAFLMewIAAAAA08Aw3SQGAAAAAAAAAAAAAHw19EY3CQAAAAAAAAAAAAA4oQcAAAAAAFhCDwAAAAAAIKEHAAAAAAAgoQcAAAAAAM9tp2oAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 69712 of 1391442 compute units",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          }
+        },
+        {
+          "after": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1033,
+              "slot": 446531525,
+              "unixTimestamp": 1789357519
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024000",
+            "highWaterMarkAssetPerLpBits": "6755399549139",
+            "idleAta": 500024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1789010709,
+              "lastUpdatedLockedProfit": 1000119
+            },
+            "lpPriceAssetPerLp": "0.012000288",
+            "lpPriceRational": "500024/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "0",
+            "strategy2CustodyAta": 0,
+            "strategy2ReceiptPositionValue": 0,
+            "tvEqualsIdle": true,
+            "tvEqualsIdlePlusReceipt2": true,
+            "vaultTotalValue": 500024,
+            "withdrawalWaitingPeriod": 600
+          },
+          "before": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1032,
+              "slot": 446099525,
+              "unixTimestamp": 1789184719
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024000",
+            "highWaterMarkAssetPerLpBits": "6755399549139",
+            "idleAta": 500024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1789010709,
+              "lastUpdatedLockedProfit": 1000119
+            },
+            "lpPriceAssetPerLp": "0.024000000",
+            "lpPriceRational": "1000024/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "0",
+            "strategy2CustodyAta": 0,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": true,
+            "vaultTotalValue": 1000024,
+            "withdrawalWaitingPeriod": 600
+          },
+          "case": "(ii) no cash staged, withdraw_strategy(0, nav = 0)",
+          "matchesExpectation": true,
+          "observed": "tv written down by 500_000, receipt2 -> 0, idle unchanged; books consistent but the 500_000 USDC stays stranded in EBG2 (LP holders eat the loss)",
+          "sequence": 446531525,
+          "tx": {
+            "computeUnits": 66572,
+            "logsTail": [
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 18851 of 1361342 compute units",
+              "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW AAAAAAAAAAA=",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program data: cC0QrKohFtQGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XAAAABW8AAhcrjf9PWjJ0DicZBNfhiPqObO1RzhUGE5/53snCZ1tWeEX5yV3XLPAh2JnLx2U5Q6rLSPcEwTEfotaapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEAAAAAAAAAAFhCDwAAAAAAOKEHAAAAAABSzHsCAAAAAFLMewIAAAAA08Aw3SQGAAAAAAAAAAAAANPAMN0kBgAAAAAAAAAAAAA4oQcAAAAAADihBwAAAAAAIKEHAAAAAAAAAAAAAAAAAM9tp2oAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 58014 of 1391442 compute units",
+              "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 AAAAAAAAAAA=",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          }
+        },
+        {
+          "case": "(iii) custody empty, withdraw_strategy(500_000, nav = 0)",
+          "error": "InstructionError(2, Custom(12))",
+          "matchesExpectation": true,
+          "observed": "rejected before any book change",
+          "sequence": 446531525,
+          "tx": {
+            "error": "InstructionError(2, Custom(12))",
+            "logsTail": [
+              "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+              "Program ComputeBudget111111111111111111111111111111 success",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [1]",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 8408 of 1399850 compute units",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 invoke [1]",
+              "Program log: Instruction: WithdrawStrategy",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 18088 of 1361342 compute units",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW failed: custom program error: 0xc",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 48188 of 1391442 compute units",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 failed: custom program error: 0xc"
+            ],
+            "ok": false
+          }
+        }
+      ],
+      "checks": [
+        {
+          "check": "all three mismatch cases behave as recorded (i inflates, ii writes down, iii rejected)",
+          "pass": true
+        }
+      ],
+      "id": "R5a-hazards",
+      "name": "CLONE ONLY: NAV/cash mismatch hazards on strategy 2 (the real failure modes; never do (i) on mainnet)",
+      "stateRestored": "clones discarded; main line continues from the post-allocation state",
+      "verdict": "PASS"
+    },
+    {
+      "after": {
+        "adminLpAta": 41666666,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1033,
+          "slot": 446531525,
+          "unixTimestamp": 1789357519
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399549139",
+        "idleAta": 1000024,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "1000024/41667666",
+        "lpSupply": 41666666,
+        "lpSupplyInclFees": 41667666,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 1000024,
+        "withdrawalWaitingPeriod": 600
+      },
+      "afterStage": {
+        "adminLpAta": 41666666,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1032,
+          "slot": 446099525,
+          "unixTimestamp": 1789184719
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399549139",
+        "idleAta": 500024,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "1000024/41667666",
+        "lpSupply": 41666666,
+        "lpSupplyInclFees": 41667666,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 500000,
+        "strategy2ReceiptPositionValue": 500000,
+        "tvEqualsIdle": false,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 1000024,
+        "withdrawalWaitingPeriod": 600
+      },
+      "before": {
+        "adminLpAta": 41666666,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1032,
+          "slot": 446099525,
+          "unixTimestamp": 1789184719
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399549139",
+        "idleAta": 500024,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "1000024/41667666",
+        "lpSupply": 41666666,
+        "lpSupplyInclFees": 41667666,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 500000,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 500000,
+        "tvEqualsIdle": false,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 1000024,
+        "withdrawalWaitingPeriod": 600
+      },
+      "checks": [
+        {
+          "check": "manager SPL transfer EBG2 -> custody2 (500_000) executed",
+          "pass": true
+        },
+        {
+          "check": "withdraw_strategy(500_000, nav = old - 500_000 = 0) executed",
+          "pass": true
+        },
+        {
+          "check": "receipt2 -> 0",
+          "pass": true
+        },
+        {
+          "check": "idle += 500_000",
+          "pass": true
+        },
+        {
+          "check": "tv unchanged",
+          "pass": true
+        },
+        {
+          "check": "custody2 swept to 0",
+          "pass": true
+        },
+        {
+          "check": "tv == idle + receipt2 (book == real)",
+          "pass": true
+        }
+      ],
+      "id": "R5a-withdraw",
+      "name": "strategy 2 withdraw shape for the custom adaptor: stage 500_000 into custody, withdraw_strategy(500_000, nav=0)",
+      "sequence": 446531525,
+      "stage": {
+        "computeUnits": 6199,
+        "logsTail": [
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [1]",
+          "Program log: Instruction: TransferChecked",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6199 of 200000 compute units",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success"
+        ],
+        "ok": true
+      },
+      "tx": {
+        "computeUnits": 75655,
+        "logsTail": [
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+          "Program log: Instruction: TransferChecked",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6200 of 1337833 compute units",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program data: cC0QrKohFtQGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XAAAABW8AAhcrjf9PWjJ0DicZBNfhiPqObO1RzhUGE5/53snCZ1tWeEX5yV3XLPAh2JnLx2U5Q6rLSPcEwTEfotaapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEgoQcAAAAAAFhCDwAAAAAAWEIPAAAAAABSzHsCAAAAAFLMewIAAAAA08Aw3SQGAAAAAAAAAAAAANPAMN0kBgAAAAAAAAAAAAA4oQcAAAAAAFhCDwAAAAAAIKEHAAAAAAAAAAAAAAAAAM9tp2oAAAAA",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 67097 of 1391442 compute units",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+        ],
+        "ok": true
+      },
+      "verdict": "PASS",
+      "why": "Voltr sweeps the strategy custody ATA to idle after the adaptor CPI and credits the swept amount: tv' = tv - old_receipt + new_receipt + swept. With swept == amount and new = old - amount the book is unchanged. The custom adaptor only checks custody >= amount (InsufficientBridgeLiquidity otherwise) and moves nothing itself, so the cash must be staged by the manager (Squads) BEFORE the crank — that is the production VOLTR_RESTORE_IDLE shape."
+    },
+    {
+      "cases": [
+        {
+          "case": "refresh nav = receipt1 (unchanged)",
+          "error": null,
+          "executed": true,
+          "matchesExpectation": true,
+          "receipt1After": 3793536,
+          "receipt1Before": 3793536,
+          "reportedNav": 3793536,
+          "sequence": 446963525,
+          "tvAfter": 1000024,
+          "tvBefore": 1000024,
+          "tx": {
+            "computeUnits": 73794,
+            "logsTail": [
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 23352 of 1357156 compute units",
+              "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW gOI5AAAAAAA=",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program data: ysl2MR20dKoGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XgSqb/ZrTVqBtcAAuyTl0bg43PpY6L1OPk/YebYVBjZohoZARa4sV1yvCtciErlebcy4bd+7MoTUV6v5ozLgua9aapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEAAAAAAAAAAFhCDwAAAAAAWEIPAAAAAABSzHsCAAAAAFLMewIAAAAA08Aw3SQGAAAAAAAAAAAAANPAMN0kBgAAAAAAAAAAAABYQg8AAAAAAFhCDwAAAAAAgOI5AAAAAACA4jkAAAAAAM8QqmoAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 63739 of 1389945 compute units",
+              "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 gOI5AAAAAAA=",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          }
+        },
+        {
+          "case": "refresh nav = 0 (try to zero the phantom)",
+          "error": "InstructionError(2, Custom(6004))",
+          "executed": false,
+          "matchesExpectation": true,
+          "receipt1After": 3793536,
+          "receipt1Before": 3793536,
+          "reportedNav": 0,
+          "sequence": 446963525,
+          "tvAfter": 1000024,
+          "tvBefore": 1000024,
+          "tx": {
+            "error": "InstructionError(2, Custom(6004))",
+            "logsTail": [
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [1]",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 9905 of 1399850 compute units",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 invoke [1]",
+              "Program log: Instruction: DepositStrategy",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 23352 of 1357156 compute units",
+              "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW AAAAAAAAAAA=",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program log: Math error thrown at programs/voltr-vault/src/state/vault.rs:603",
+              "Program log: AnchorError occurred. Error Code: MathOverflow. Error Number: 6004. Error Message: Math overflow..",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 62745 of 1389945 compute units",
+              "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 AAAAAAAAAAA=",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 failed: custom program error: 0x1774"
+            ],
+            "ok": false
+          }
+        },
+        {
+          "case": "HAZARD refresh nav = receipt1 - 100",
+          "error": null,
+          "executed": true,
+          "matchesExpectation": true,
+          "receipt1After": 3793436,
+          "receipt1Before": 3793536,
+          "reportedNav": 3793436,
+          "sequence": 446963525,
+          "tvAfter": 999924,
+          "tvBefore": 1000024,
+          "tx": {
+            "computeUnits": 73798,
+            "logsTail": [
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 23352 of 1357156 compute units",
+              "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW HOI5AAAAAAA=",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program data: ysl2MR20dKoGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XgSqb/ZrTVqBtcAAuyTl0bg43PpY6L1OPk/YebYVBjZohoZARa4sV1yvCtciErlebcy4bd+7MoTUV6v5ozLgua9aapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEAAAAAAAAAAFhCDwAAAAAA9EEPAAAAAABSzHsCAAAAAFLMewIAAAAA08Aw3SQGAAAAAAAAAAAAANPAMN0kBgAAAAAAAAAAAABYQg8AAAAAAFhCDwAAAAAAgOI5AAAAAAAc4jkAAAAAAM8QqmoAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 63743 of 1389945 compute units",
+              "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 HOI5AAAAAAA=",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          }
+        }
+      ],
+      "checks": [
+        {
+          "check": "nav == receipt1 is a no-op; nav = 0 rejected with 6004 (MathOverflow); nav = receipt1-100 silently writes tv down by 100",
+          "pass": true
+        }
+      ],
+      "id": "R6-orphan",
+      "name": "CLONE ONLY: strategy 1 (old receipt 3GHL…) after the reset — never lower its NAV",
+      "note": "receipt1.positionValue (3_793_536) is a phantom: tv' = tv - old + new underflows for nav = 0 (Voltr MathOverflow 6004 at vault.rs:603) and closeStrategy is rejected (2003, positionValue != 0). Any nav in (tv-shortfall, receipt1) is accepted and moves depositor value out of tv, so the REPORT_NAV policy must never target strategy 1 again.",
+      "verdict": "PASS"
+    },
+    {
+      "adminLpAfter": 199730663,
+      "adminLpValueAfter": "1000019",
+      "after": {
+        "adminLpAta": 199730663,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1034,
+          "slot": 446963525,
+          "unixTimestamp": 1789530319
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399565071",
+        "idleAta": 4793560,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.005006838",
+        "lpPriceRational": "1000024/199731663",
+        "lpSupply": 199730663,
+        "lpSupplyInclFees": 199731663,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 0,
+        "strategy2BookMinusReal": "-3793536",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": false,
+        "tvEqualsIdlePlusReceipt2": false,
+        "vaultTotalValue": 1000024,
+        "withdrawalWaitingPeriod": 600
+      },
+      "afterDeposit": {
+        "adminLpAta": 199730663,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1033,
+          "slot": 446531525,
+          "unixTimestamp": 1789357519
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399565071",
+        "idleAta": 4793560,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "4793560/199731663",
+        "lpSupply": 199730663,
+        "lpSupplyInclFees": 199731663,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 4793560,
+        "withdrawalWaitingPeriod": 600
+      },
+      "afterZeroRefresh": {
+        "adminLpAta": 199730663,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1034,
+          "slot": 446963525,
+          "unixTimestamp": 1789530319
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399565071",
+        "idleAta": 4793560,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.005006838",
+        "lpPriceRational": "1000024/199731663",
+        "lpSupply": 199730663,
+        "lpSupplyInclFees": 199731663,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 0,
+        "strategy2BookMinusReal": "-3793536",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": false,
+        "tvEqualsIdlePlusReceipt2": false,
+        "vaultTotalValue": 1000024,
+        "withdrawalWaitingPeriod": 600
+      },
+      "before": {
+        "adminLpAta": 41666666,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1033,
+          "slot": 446531525,
+          "unixTimestamp": 1789357519
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399549139",
+        "idleAta": 1000024,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "1000024/41667666",
+        "lpSupply": 41666666,
+        "lpSupplyInclFees": 41667666,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 1000024,
+        "withdrawalWaitingPeriod": 600
+      },
+      "checks": [
+        {
+          "check": "admin deposit_vault(3793536) executed",
+          "pass": true
+        },
+        {
+          "check": "refresh strategy 1 with nav = 0 executed (tv back to pre-deposit level, receipt1 = 0)",
+          "pass": true
+        },
+        {
+          "check": "closeStrategy(strategy 1) executed and receipt account closed",
+          "pass": true
+        },
+        {
+          "check": "the 3793536 deposited USDC is now UNBOOKED idle (idle - tv - receipt2 == 3793536); D = tv - idle - receipts is conserved",
+          "pass": true
+        }
+      ],
+      "closeStrategy": {
+        "computeUnits": 7420,
+        "logsTail": [
+          "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+          "Program ComputeBudget111111111111111111111111111111 success",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 invoke [1]",
+          "Program log: Instruction: CloseStrategy",
+          "Program data: 1V/boRHQXf8GhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XgSqb/ZrTVqBtcAAuyTl0bg43PpY6L1OPk/YebYVBjZohoZARa4sV1yvCtciErlebcy4bd+7MoTUV6v5ozLgua88QqmoAAAAA",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 7270 of 1399850 compute units",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+        ],
+        "ok": true
+      },
+      "costRawUsdc": 3793536,
+      "deposit": {
+        "computeUnits": 49937,
+        "logsTail": [
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+          "Program log: Instruction: MintTo",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4492 of 1360282 compute units",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program data: Cw8HXJZkpeiXGiRiShf1nnezcq1tysSbxsmw/AY3Ao9ScCBf1Jd8CIDiOQAAAAAAfd1rCQAAAAD1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV8b6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hWEIPAAAAAADYJEkAAAAAAFLMewIAAAAAz6nnCwAAAAAAAAAAAAAAAAAAAAAAAAAA6AMAAAAAAADoAwAAAAAAANPAMN0kBgAAAAAAAAAAAAAP/zDdJAYAAAAAAAAAAAAAz22nagAAAAA=",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 45450 of 1395513 compute units",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+        ],
+        "ok": true
+      },
+      "id": "R6-orphan-close",
+      "name": "CLONE ONLY (optional): retire strategy 1 by writing the phantom down — converts it into stranded unbooked idle, not into value",
+      "note": "Voltr conserves D = tv - idle - sum(receipts) (= -3_793_536 on this vault) under every instruction, so the phantom can only change form: a receipt-1 position that must never be lowered, or (after this write-down) 3_793_536 raw USDC sitting in the idle ATA that no LP claims. The write-down needs tv >= receipt1 first (hence the deposit) and its cost is socialised across LP holders at that moment. NOT recommended; leaving strategy 1 untouched is strictly better.",
+      "unbookedIdleAfter": "3793536",
+      "verdict": "PASS",
+      "zeroRefresh": {
+        "sequence": 446963525,
+        "tx": {
+          "computeUnits": 73798,
+          "logsTail": [
+            "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+            "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 23352 of 1357156 compute units",
+            "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW AAAAAAAAAAA=",
+            "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+            "Program data: ysl2MR20dKoGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XgSqb/ZrTVqBtcAAuyTl0bg43PpY6L1OPk/YebYVBjZohoZARa4sV1yvCtciErlebcy4bd+7MoTUV6v5ozLgua9aapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEAAAAAAAAAANgkSQAAAAAAWEIPAAAAAADPqecLAAAAAM+p5wsAAAAAD/8w3SQGAAAAAAAAAAAAAA//MN0kBgAAAAAAAAAAAADYJEkAAAAAANgkSQAAAAAAgOI5AAAAAAAAAAAAAAAAAM8QqmoAAAAA",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 63743 of 1389945 compute units",
+            "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 AAAAAAAAAAA=",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+          ],
+          "ok": true
+        }
+      }
+    },
+    {
+      "after": {
+        "adminLpAta": 41666666,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1033,
+          "slot": 446531625,
+          "unixTimestamp": 1789358124
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755406304376",
+        "idleAta": 1000025,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000024",
+        "lpPriceRational": "1000025/41667666",
+        "lpSupply": 41666666,
+        "lpSupplyInclFees": 41667666,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 1000025,
+        "withdrawalWaitingPeriod": 600
+      },
+      "afterDeposit": {
+        "adminLpAta": 41666666,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1033,
+          "slot": 446531525,
+          "unixTimestamp": 1789357519
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399549140",
+        "idleAta": 2000024,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "2000024/83334332",
+        "lpSupply": 83333332,
+        "lpSupplyInclFees": 83334332,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 2000024,
+        "withdrawalWaitingPeriod": 600
+      },
+      "amount": 1000000,
+      "before": {
+        "adminLpAta": 41666666,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1033,
+          "slot": 446531525,
+          "unixTimestamp": 1789357519
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399549139",
+        "idleAta": 1000024,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "1000024/41667666",
+        "lpSupply": 41666666,
+        "lpSupplyInclFees": 41667666,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 1000024,
+        "withdrawalWaitingPeriod": 600
+      },
+      "checks": [
+        {
+          "check": "deposit_vault(1000000) executed",
+          "pass": true
+        },
+        {
+          "check": "tv += 1000000 and idle += 1000000",
+          "pass": true
+        },
+        {
+          "check": "LP minted == floor(amount*lpInclFees/tv) == 41666666",
+          "pass": true
+        },
+        {
+          "check": "requestWithdrawVault(all) executed",
+          "pass": true
+        },
+        {
+          "check": "withdrawVault executed after 600s",
+          "pass": true
+        },
+        {
+          "check": "payout within 5 raw of 1000000",
+          "pass": true
+        },
+        {
+          "check": "tv == idle (+ receipt2) before, after deposit and after claim",
+          "pass": true
+        },
+        {
+          "check": "user LP fully burned",
+          "pass": true
+        }
+      ],
+      "claim": {
+        "deltaFromDeposit": -1,
+        "payoutRaw": 999999,
+        "tx": {
+          "computeUnits": 49913,
+          "logsTail": [
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: TransferChecked",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6200 of 1362230 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program data: xHtP1wTWFMUAAAARbCHG9qmvmoVIso/1Sa/9FoQpSgXiPGLluOO6OT9CDwAAAAAAash7AgAAAAD1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV8b6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hmIQeAAAAAACYhB4AAAAAAFlCDwAAAAAAvJT3BAAAAABSzHsCAAAAAAAAAAAAAAAAAAAAAAAAAADoAwAAAAAAAOgDAAAAAAAA1MAw3SQGAAAAAAAAAAAAAHjUl90kBgAAAAAAAAAAAAAscKdqAAAAAA==",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 49763 of 1399850 compute units",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+          ],
+          "ok": true
+        }
+      },
+      "deposit": {
+        "expectedLp": 41666666,
+        "impliedPriceAssetPerLp": "0.024000000",
+        "lpMinted": 41666666,
+        "tx": {
+          "computeUnits": 65993,
+          "logsTail": [
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: MintTo",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4492 of 1344225 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program data: Cw8HXJZkpegAAAARbCHG9qmvmoVIso/1Sa/9FoQpSgXiPGLluOO6OUBCDwAAAAAAash7AgAAAAD1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV8b6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hWEIPAAAAAACYhB4AAAAAAFLMewIAAAAAvJT3BAAAAAAAAAAAAAAAAAAAAAAAAAAA6AMAAAAAAADoAwAAAAAAANPAMN0kBgAAAAAAAAAAAADUwDDdJAYAAAAAAAAAAAAAz22nagAAAAA=",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 45449 of 1379456 compute units",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+          ],
+          "ok": true
+        }
+      },
+      "id": "R6-lifecycle",
+      "name": "fresh user deposit_vault + withdraw_vault still work with strategy 2 live",
+      "request": {
+        "receipt": {
+          "amountAssetToWithdrawAtRequest": "999999.1000000",
+          "amountAssetToWithdrawDecimalBits": "281474976710601957452",
+          "amountLpEscrowed": 41666666,
+          "present": true,
+          "user": "111nsfrnL7NwUjsqEJscfSDLfzgSfKBcRQyUF5e2oa",
+          "withdrawableFromTs": 1789358119
+        },
+        "tx": {
+          "computeUnits": 55367,
+          "logsTail": [
+            "Program 11111111111111111111111111111111 success",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+            "Program log: Instruction: TransferChecked",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6173 of 1352269 compute units",
+            "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+            "Program data: O14aJi+DnqL1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vVwAAABFsIcb2qa+ahUiyj/VJr/0WhClKBeI8YuW447o5ash7AgAAAAABAeiibFheuaV2Oryux0N0bIjOesUCI7pQcfJuIKDXMSr4ash7AgAAAABMYMf8//8/Qg8AAAAAAAAAJ3CnagAAAADG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYZiEHgAAAAAAmIQeAAAAAAC8lPcEAAAAAM9tp2oAAAAA",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 34721 of 1379354 compute units",
+            "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+          ],
+          "ok": true
+        }
+      },
+      "user": "111nsfrnL7NwUjsqEJscfSDLfzgSfKBcRQyUF5e2oa",
+      "verdict": "PASS"
+    },
+    {
+      "checks": [
+        {
+          "check": "D = tv - idle - receipts conserved end to end (-3793536 -> -3793536)",
+          "pass": true
+        },
+        {
+          "check": "final: tv == idle + receipt2 (book == real for the live strategy)",
+          "pass": true
+        },
+        {
+          "check": "final: no accumulated fee LP, fee 0, locked-profit degradation 0",
+          "pass": true
+        },
+        {
+          "check": "final: tv > 0 and lpSupplyInclFees > 0",
+          "pass": true
+        }
+      ],
+      "final": {
+        "adminLpAta": 41666666,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1033,
+          "slot": 446531625,
+          "unixTimestamp": 1789358124
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755406304376",
+        "idleAta": 1000025,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000024",
+        "lpPriceRational": "1000025/41667666",
+        "lpSupply": 41666666,
+        "lpSupplyInclFees": 41667666,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 1000025,
+        "withdrawalWaitingPeriod": 600
+      },
+      "id": "R7-invariants",
+      "initial": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 500,
+        "clock": {
+          "epoch": 1030,
+          "slot": 445235325,
+          "unixTimestamp": 1788837909
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 89601150,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.020013",
+        "highWaterMarkAssetPerLpBits": "5633268378698",
+        "idleAta": 3793417,
+        "lockedProfitDegradationDuration": 86400,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1788497414,
+          "lastUpdatedLockedProfit": 0
+        },
+        "lpPriceAssetPerLp": "0.014736963",
+        "lpPriceRational": "2793298/189543672",
+        "lpSupply": 99941522,
+        "lpSupplyInclFees": 189543672,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 2793417,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": false,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 2793298,
+        "withdrawalWaitingPeriod": 600
+      },
+      "name": "end-to-end invariants on the main-line instance",
+      "verdict": "PASS"
+    }
+  ],
+  "strategy1": {
+    "config": "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj",
+    "custodyAta": "FTDWN5Ay8tzYPJBJT4s2oZaHRQ7jKPo8XP2ZRWb5GP3M",
+    "reportTicket": "C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5",
+    "strategyInitReceipt": "3GHLmyTTGH9ZfQqb3YCo9xKjpPhMLvHsq2JSYzCnk9U6",
+    "vaultStrategyAuth": "8fLTf2ufePttZW3Es1xVoW3ows3WjXcuHQkkBCVvHsdH"
+  },
+  "strategy2": {
+    "config": "111FJo4zLAGU9nzTWa6EnbV4VAmtG4FR8kcokrtZYr",
+    "custodyAta": "53PjtoUvUkF2qT3AyJ6bTakwmFuqfdzqtfVcmeQdgz6c",
+    "reportTicket": "BjyoLmJuEm9L9csRuJiHGhdiAPy4pba3op9pYZayycmW",
+    "strategyInitReceipt": "HpPYzssQKLZhi3CyVRgF55suHQWMu1W3ApSbto8qECjj",
+    "vaultStrategyAuth": "97QcQPnCVjbCWrU7Q4k9DRFLz7W6pyzms3btnciv4UeR"
+  },
+  "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "vaultAdmin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+  "vaultManager": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+}
