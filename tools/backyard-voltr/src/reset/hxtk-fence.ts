@@ -1,11 +1,19 @@
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
+  openSync,
   lstatSync,
   mkdirSync,
-  readFileSync,
+  renameSync,
+  readSync,
+  unlinkSync,
+  writeFileSync,
 } from "node:fs";
+import { hostname, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 
 export type JsonRecord = Record<string, unknown>;
@@ -22,6 +30,7 @@ const VOLATILE_PENDING_FIELDS = new Set([
   "signature",
   "abortReason",
   "pendingBindingSha256",
+  "sendStatus",
 ]);
 
 function canonicalValue(value: unknown): unknown {
@@ -57,8 +66,173 @@ export function pendingBindingSha256(pending: unknown): string {
   return sha256Hex(canonicalJson(pendingBindingValue(pending)));
 }
 
+function readPrivateBytes(path: string): Uint8Array {
+  const flags = constants.O_RDONLY | constants.O_NOFOLLOW;
+  const fd = openSync(path, flags);
+  try {
+    const stat = fstatSync(fd);
+    const uid = currentUid();
+    if (!stat.isFile()) throw new Error(`HXTK journal ${path} is not a regular file`);
+    if (stat.uid !== uid) throw new Error(`HXTK journal ${path} is not owned by the current uid`);
+    if ((stat.mode & 0o077) !== 0) throw new Error(`HXTK journal ${path} is group/other-accessible`);
+    const bytes = new Uint8Array(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const read = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (read === 0) throw new Error(`HXTK journal ${path} changed while reading`);
+      offset += read;
+    }
+    return bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function readBoundJournal(path: string, expectedSha256?: string): Readonly<{
+  record: JsonRecord;
+  sha256: string;
+  bytes: Uint8Array;
+}> {
+  const bytes = readPrivateBytes(path);
+  const sha256 = sha256Hex(bytes);
+  if (expectedSha256 !== undefined && sha256 !== expectedSha256) {
+    throw new Error(`HXTK journal ${path} hash does not match the canonical fence`);
+  }
+  const parsed = JSON.parse(Buffer.from(bytes).toString("utf8")) as JsonRecord;
+  return { record: parsed, sha256, bytes };
+}
+
+export function readBoundPending(path: string): Readonly<{
+  record: JsonRecord;
+  sha256: string;
+  bytes: Uint8Array;
+}> {
+  const result = readBoundJournal(path);
+  const binding = result.record.pendingBindingSha256;
+  if (typeof binding !== "string" || binding !== pendingBindingSha256(result.record)) {
+    throw new Error(PENDING_BINDING_MISMATCH);
+  }
+  return result;
+}
+
 export function finalizedJournalSha256(path: string): string {
-  return sha256Hex(readFileSync(path));
+  return readBoundJournal(path).sha256;
+}
+
+const SEND_STATUS_FIELDS = new Set([
+  "verdict",
+  "sendError",
+  "submission",
+  "attemptedAtUnixMs",
+  "signature",
+]);
+
+function atomicWritePrivate(path: string, value: JsonRecord): void {
+  const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(temporary, `${canonicalJson(value)}\n`, { flag: "wx", mode: 0o600 });
+  chmodSync(temporary, 0o600);
+  renameSync(temporary, path);
+}
+
+export function rewritePendingStatus(path: string, statusFields: Readonly<JsonRecord>): JsonRecord {
+  for (const [key, value] of Object.entries(statusFields)) {
+    if (!VOLATILE_PENDING_FIELDS.has(key)) {
+      throw new Error(`pending status rewrite refuses non-volatile field ${key}`);
+    }
+    if (key === "sendStatus") {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("pending status rewrite sendStatus must be an object");
+      }
+      for (const nestedKey of Object.keys(value as JsonRecord)) {
+        if (!SEND_STATUS_FIELDS.has(nestedKey)) {
+          throw new Error(`pending status rewrite refuses non-volatile sendStatus field ${nestedKey}`);
+        }
+      }
+    }
+  }
+  const current = readBoundPending(path).record;
+  const binding = pendingBindingSha256(current);
+  if (String(current.pendingBindingSha256 ?? "") !== binding) {
+    throw new Error(PENDING_BINDING_MISMATCH);
+  }
+  const next = { ...current, ...statusFields };
+  if (String(next.pendingBindingSha256 ?? "") !== binding || pendingBindingSha256(next) !== binding) {
+    throw new Error(PENDING_BINDING_MISMATCH);
+  }
+  atomicWritePrivate(path, next);
+  return next;
+}
+
+function validLegName(step: string): void {
+  if (!/^[a-z0-9-]+$/.test(step)) throw new Error(`invalid canonical HXtk leg name ${step}`);
+}
+
+export type CanonicalLegClaim = Readonly<{
+  path: string;
+  pid: number;
+  startedAtUnixMs: number;
+  journal: string;
+  hostname: string;
+}>;
+
+function claimPath(stateRoot: string, step: string): string {
+  validLegName(step);
+  return join(stateRoot, `${step}.claim`);
+}
+
+function readClaim(path: string): CanonicalLegClaim {
+  const parsed = JSON.parse(Buffer.from(readPrivateBytes(path)).toString("utf8")) as Partial<CanonicalLegClaim>;
+  if (!Number.isSafeInteger(parsed.pid) || (parsed.pid ?? 0) <= 0
+    || typeof parsed.startedAtUnixMs !== "number"
+    || typeof parsed.journal !== "string"
+    || typeof parsed.hostname !== "string") {
+    throw new Error(`HXTK claim ${path} is malformed; refusing to break it`);
+  }
+  return { path, pid: parsed.pid!, startedAtUnixMs: parsed.startedAtUnixMs, journal: parsed.journal, hostname: parsed.hostname };
+}
+
+export function acquireCanonicalLegClaim(input: Readonly<{
+  stateRoot: string;
+  step: string;
+  journal: string;
+  breakClaim?: boolean;
+}>): CanonicalLegClaim {
+  const path = claimPath(input.stateRoot, input.step);
+  const claim = {
+    pid: process.pid,
+    startedAtUnixMs: Date.now(),
+    journal: input.journal,
+    hostname: hostname(),
+  } satisfies Omit<CanonicalLegClaim, "path">;
+  try {
+    writeFileSync(path, `${canonicalJson(claim)}\n`, { flag: "wx", mode: 0o600 });
+    chmodSync(path, 0o600);
+    return { path, ...claim };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const existing = readClaim(path);
+    if (!input.breakClaim) {
+      throw new Error(`another hxtk-reset process holds the ${input.step} claim: pid ${existing.pid}`);
+    }
+    try {
+      process.kill(existing.pid, 0);
+      throw new Error(`another hxtk-reset process holds the ${input.step} claim: pid ${existing.pid}`);
+    } catch (probeError) {
+      if ((probeError as NodeJS.ErrnoException).code !== "ESRCH") throw probeError;
+    }
+    unlinkSync(path);
+    writeFileSync(path, `${canonicalJson(claim)}\n`, { flag: "wx", mode: 0o600 });
+    chmodSync(path, 0o600);
+    return { path, ...claim };
+  }
+}
+
+export function releaseCanonicalLegClaim(claim: CanonicalLegClaim): void {
+  try {
+    unlinkSync(claim.path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 export type CanonicalLegStateStatus =
@@ -262,61 +436,51 @@ function assertPrivateDirectory(path: string, uid: number): void {
 }
 
 function ensurePrivateDirectory(path: string, uid: number): void {
-  if (!existsSync(path)) mkdirSync(path, { recursive: true, mode: 0o700 });
+  if (!existsSync(path)) mkdirSync(path, { mode: 0o700 });
   assertPrivateDirectory(path, uid);
   chmodSync(path, 0o700);
   assertPrivateDirectory(path, uid);
 }
 
-function ensureDefaultRoot(root: string, base: string, uid: number, create: boolean): void {
-  const relative = root.slice(base.length).split("/").filter(Boolean);
-  let current = base;
-  if (!existsSync(current)) {
-    if (!create) return;
-    ensurePrivateDirectory(current, uid);
-  } else {
-    assertPrivateDirectory(current, uid);
+function assertHomeDirectory(path: string): void {
+  const stat = lstatSync(path);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`HXTK state root home component ${path} is not a real directory`);
   }
+  if ((stat.mode & 0o022) !== 0) {
+    throw new Error(`HXTK state root home component ${path} is group/world-writable`);
+  }
+}
+
+function ensureDefaultRoot(root: string, home: string, uid: number, create: boolean): void {
+  assertHomeDirectory(home);
+  const relative = root.slice(home.length).split("/").filter(Boolean);
+  let current = home;
   for (const component of relative) {
     current = join(current, component);
-    if (!existsSync(current)) {
+    try {
+      lstatSync(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       if (!create) return;
       ensurePrivateDirectory(current, uid);
-    } else {
-      assertPrivateDirectory(current, uid);
+      continue;
     }
+    assertPrivateDirectory(current, uid);
   }
 }
 
 export function resolveCanonicalStateRoot(input: Readonly<{
   vault: string;
-  env?: Readonly<Record<string, string | undefined>>;
+  homeDir?: string;
   uid?: number;
   create?: boolean;
 }>): string {
-  const env = input.env ?? process.env;
-  const override = env.HXTK_RESET_STATE_ROOT?.trim();
   const create = input.create === true;
   const uid = currentUid(input.uid);
-  if (override) {
-    if (!override.startsWith("/")) {
-      throw new Error("HXTK_RESET_STATE_ROOT must be an absolute path");
-    }
-    const root = resolve(override);
-    if (!existsSync(root)) {
-      if (!create) return root;
-      ensurePrivateDirectory(root, uid);
-    } else {
-      assertPrivateDirectory(root, uid);
-    }
-    return root;
-  }
-
-  const home = env.HOME?.trim();
-  if (!home) throw new Error("HXTK state root requires HOME when HXTK_RESET_STATE_ROOT is unset");
-  if (!home.startsWith("/")) throw new Error("HOME must be an absolute path for the HXTK state root");
-  const base = join(resolve(home), ".loyal");
-  const root = join(base, "hxtk-reset", input.vault);
-  ensureDefaultRoot(root, base, uid, create);
+  const home = resolve(input.homeDir ?? userInfo().homedir);
+  if (!home.startsWith("/")) throw new Error("HXTK state root home must be absolute");
+  const root = join(home, ".loyal", "hxtk-reset", input.vault);
+  ensureDefaultRoot(root, home, uid, create);
   return root;
 }

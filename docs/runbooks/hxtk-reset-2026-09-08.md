@@ -261,7 +261,16 @@ command has a simulate-before-send, pending-wire journal, and finalized
 reconcile path:
 
 ```sh
-op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk repair-policy-remove --expect-seed 140 --policy-journal /absolute/path/hxtk-repair-policy.json --repair-journal /absolute/path/hxtk-repair.json --execute --journal /absolute/path/hxtk-repair-policy-remove.json
+op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk repair-policy-remove --expect-seed 140 --policy-journal /absolute/path/hxtk-repair-policy.json --repair-journal /absolute/path/hxtk-repair.json --reconcile --journal /absolute/path/hxtk-repair.policy-remove.json
+```
+
+Use `--reconcile` whenever automatic removal reached its attempted or
+finalized mark. Use `--execute` with the same complete flags only when the
+automatic removal never started and no removal pending journal exists. If the
+repair send itself is ambiguous, reconcile it first with:
+
+```sh
+op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk repair --expect-seed 140 --policy-journal /absolute/path/hxtk-repair-policy.json --reconcile --journal /absolute/path/hxtk-repair.json
 ```
 
 Reconcile must read the seed-140 PDA as closed (absent or zero-lamport
@@ -396,20 +405,21 @@ be proved.
 
 ## Canonical state root and replay recovery
 
-The canonical fence is machine- and user-local, not checkout-local. By default
-the tool resolves it to:
+The canonical fence is machine- and user-local, not checkout-local. The execute
+and reconcile paths always resolve it from `os.userInfo().homedir`; environment
+variables cannot select another namespace. By default it is:
 
 ```text
-${HOME}/.loyal/hxtk-reset/HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA/
+/Users/<operator>/.loyal/hxtk-reset/HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA/
 ```
 
-`HOME` must be set for an operator run. The root and every component below
-`${HOME}/.loyal` must be owned by the current uid and have no group/other
-permission bits; the tool creates missing components with mode `0700` and
-refuses an existing insecure or foreign-owned path. A controlled test or
-isolated operator environment may set `HXTK_RESET_STATE_ROOT` to an absolute
-path, subject to the same ownership and mode checks. Simulation prints the
-resolved `canonicalStateRoot` but never creates or writes anything below it.
+The home directory must be a real directory and not group/world-writable. Each
+component `.loyal`, `hxtk-reset`, and the vault directory is walked with
+`lstat`, must not be a symlink, must be owned by the current uid, and must have
+no group/other permission bits. Missing components are created with mode
+`0700`; an insecure or foreign-owned component names itself in the error.
+`HXTK_RESET_STATE_ROOT` and `HOME` are ignored by execute/reconcile and are not
+recovery controls.
 
 Run every leg as the same user on the same machine. The canonical state file,
 not the requested journal directory, is the replay authority. Each state file
@@ -462,10 +472,17 @@ above, regardless of the requested journal directory. The state records
 `pending`, `attempted`, `aborted-pre-send`, or `finalized`; one-shot legs cannot
 be replayed, and `config`, `harvest`, and `restore-degradation` require an
 explicit `--allow-repeat` plus a new journal only when intentionally repeated.
-The pre-send journal is marked
-`broadcast:"attempted"` with the expected signature before raw submission, so
-a crash in the ambiguous-send window remains fenced. The repair leg also
-re-runs its single finalized multi-account snapshot immediately before send.
+Before the read/check/write fence, every send or reconcile path creates an
+exclusive `<leg>.claim` containing `pid`, `startedAtUnixMs`, `journal`, and
+`hostname`. A live claim blocks the leg with the owning pid. A crash leaves the
+claim in place; after proving the pid is gone, an operator may use the explicit
+`--break-claim` recovery flag. Never use that flag in the normal runbook path.
+The pre-send journal is marked `broadcast:"attempted"` with the expected
+signature before raw submission, so a crash in the ambiguous-send window
+remains fenced. Post-pre-mark status is volatile and nested as:
+`sendStatus: { verdict, sendError, submission, attemptedAtUnixMs, signature }`.
+The repair leg also re-runs its single finalized multi-account snapshot
+immediately before send.
 This rehearsal set
 `CONFIRM_MAINNET` nowhere and sent nothing.
 

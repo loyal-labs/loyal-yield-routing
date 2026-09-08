@@ -7,7 +7,7 @@
   "signed": false,
   "broadcast": false,
   "verdict": "REPAIR_FROZEN_STATE_MISMATCH",
-  "observationSlot": 445394645,
+  "observationSlot": 445407574,
   "frozenPrestate": {
     "totalValue": "2793298",
     "idleBalance": "3793417",
@@ -22,7 +22,7 @@
     "ticketLastConsumedSequence": "444157930"
   },
   "state": {
-    "contextSlot": 445394645,
+    "contextSlot": 445407574,
     "epoch": null,
     "totalValue": "2793298",
     "idleBalance": "3793417",
@@ -67,5 +67,5 @@
     "conservedGap_idlePlusReceiptsMinusTv": "3793536",
     "tvEqualsIdle": false
   },
-  "reason": "REPAIR_FROZEN_STATE_MISMATCH {\"canonicalStateRoot\":\"/Users/user/.loyal/hxtk-reset/HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA\",\"observationSlot\":445394645,\"checks\":[{\"check\":\"frozen tv\",\"pass\":true,\"expected\":\"2793298\",\"actual\":\"2793298\"},{\"check\":\"frozen idle\",\"pass\":true,\"expected\":\"3793417\",\"actual\":\"3793417\"},{\"check\":\"frozen strategy-one receipt\",\"pass\":true,\"expected\":\"2793417\",\"actual\":\"2793417\"},{\"check\":\"frozen strategy custody\",\"pass\":true,\"expected\":\"0\",\"actual\":\"0\"},{\"check\":\"frozen LP supply\",\"pass\":true,\"expected\":\"99941522\",\"actual\":\"99941522\"},{\"check\":\"frozen degradation\",\"pass\":false,\"expected\":\"0\",\"actual\":\"86400\"},{\"check\":\"frozen admin performance fee\",\"pass\":false,\"expected\":0,\"actual\":500},{\"check\":\"frozen waiting period\",\"pass\":true,\"expected\":\"600\",\"actual\":\"600\"},{\"check\":\"frozen pending request receipt is present\",\"pass\":true,\"expected\":\"8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e\",\"actual\":\"8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e\"},{\"check\":\"frozen request receipt identity\",\"pass\":true,\"expected\":\"HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA/BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ\",\"actual\":\"HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA/BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ\"},{\"check\":\"frozen request escrow\",\"pass\":true,\"expected\":\"99941522\",\"actual\":\"99941522\"},{\"check\":\"frozen request amount\",\"pass\":true,\"expected\":\"99941522\",\"actual\":\"99941522\"},{\"check\":\"frozen ticket last consumed sequence\",\"pass\":true,\"expected\":\"444157930\",\"actual\":\"444157930\"}]}"
+  "reason": "REPAIR_FROZEN_STATE_MISMATCH {\"canonicalStateRoot\":\"/Users/user/.loyal/hxtk-reset/HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA\",\"observationSlot\":445407574,\"checks\":[{\"check\":\"frozen tv\",\"pass\":true,\"expected\":\"2793298\",\"actual\":\"2793298\"},{\"check\":\"frozen idle\",\"pass\":true,\"expected\":\"3793417\",\"actual\":\"3793417\"},{\"check\":\"frozen strategy-one receipt\",\"pass\":true,\"expected\":\"2793417\",\"actual\":\"2793417\"},{\"check\":\"frozen strategy custody\",\"pass\":true,\"expected\":\"0\",\"actual\":\"0\"},{\"check\":\"frozen LP supply\",\"pass\":true,\"expected\":\"99941522\",\"actual\":\"99941522\"},{\"check\":\"frozen degradation\",\"pass\":false,\"expected\":\"0\",\"actual\":\"86400\"},{\"check\":\"frozen admin performance fee\",\"pass\":false,\"expected\":0,\"actual\":500},{\"check\":\"frozen waiting period\",\"pass\":true,\"expected\":\"600\",\"actual\":\"600\"},{\"check\":\"frozen pending request receipt is present\",\"pass\":true,\"expected\":\"8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e\",\"actual\":\"8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e\"},{\"check\":\"frozen request receipt identity\",\"pass\":true,\"expected\":\"HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA/BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ\",\"actual\":\"HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA/BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ\"},{\"check\":\"frozen request escrow\",\"pass\":true,\"expected\":\"99941522\",\"actual\":\"99941522\"},{\"check\":\"frozen request amount\",\"pass\":true,\"expected\":\"99941522\",\"actual\":\"99941522\"},{\"check\":\"frozen ticket last consumed sequence\",\"pass\":true,\"expected\":\"444157930\",\"actual\":\"444157930\"}]}"
 }

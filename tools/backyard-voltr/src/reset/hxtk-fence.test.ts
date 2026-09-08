@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 
@@ -6,12 +6,16 @@ import {
   assertCanonicalLegAvailable,
   assertFinalizedJournalBinding,
   assertPendingJournalBinding,
+  acquireCanonicalLegClaim,
   beginCanonicalLegRecord,
   canonicalJson,
   finalizedJournalSha256,
   pendingBindingSha256,
+  readBoundPending,
+  releaseCanonicalLegClaim,
   repairPostFinalizationStatus,
   resolveCanonicalStateRoot,
+  rewritePendingStatus,
 } from "./hxtk-fence.js";
 
 const temporaryRoots: string[] = [];
@@ -177,38 +181,125 @@ describe("HXtk canonical fence", () => {
   });
 
   test("state root is private, owned by the current user, and never created by read-only resolution", () => {
-    const root = tempRoot();
-    const missing = join(root, "not-created");
+    const home = tempRoot();
+    const missing = join(home, ".loyal");
     expect(resolveCanonicalStateRoot({
       vault: "HXtk",
-      env: { HXTK_RESET_STATE_ROOT: missing },
+      homeDir: home,
       uid,
       create: false,
-    })).toBe(missing);
+    })).toBe(join(missing, "hxtk-reset", "HXtk"));
     expect(existsSync(missing)).toBe(false);
 
-    const secure = join(root, "secure");
+    const secure = join(home, "secure");
+    mkdirSync(secure, { mode: 0o700 });
     const resolved = resolveCanonicalStateRoot({
       vault: "HXtk",
-      env: { HXTK_RESET_STATE_ROOT: secure },
+      homeDir: secure,
       uid,
       create: true,
     });
-    expect(resolved).toBe(secure);
-    chmodSync(secure, 0o770);
+    expect(resolved).toBe(join(secure, ".loyal", "hxtk-reset", "HXtk"));
+    const leaf = resolved;
+    chmodSync(leaf, 0o770);
     expect(() => resolveCanonicalStateRoot({
       vault: "HXtk",
-      env: { HXTK_RESET_STATE_ROOT: secure },
+      homeDir: secure,
       uid,
       create: false,
     })).toThrow("group/other-accessible");
+    chmodSync(leaf, 0o700);
+    chmodSync(secure, 0o702);
+    expect(() => resolveCanonicalStateRoot({
+      vault: "HXtk",
+      homeDir: secure,
+      uid,
+      create: false,
+    })).toThrow("home component");
     chmodSync(secure, 0o700);
     expect(() => resolveCanonicalStateRoot({
       vault: "HXtk",
-      env: { HXTK_RESET_STATE_ROOT: secure },
+      homeDir: secure,
       uid: uid + 1,
       create: false,
     })).toThrow("not owned by the current uid");
+  });
+
+  test("state-root component symlinks are refused", () => {
+    const home = tempRoot();
+    const loyal = join(home, ".loyal");
+    const target = join(home, "target");
+    mkdirSync(target, { mode: 0o700 });
+    symlinkSync(target, loyal);
+    expect(() => resolveCanonicalStateRoot({
+      vault: "HXtk",
+      homeDir: home,
+      uid,
+      create: true,
+    })).toThrow("not a real directory");
+  });
+
+  test("failed-send, pre-mark, and abort rewrites preserve the immutable binding", () => {
+    const root = tempRoot();
+    const path = join(root, "harvest.json.pending");
+    const base = {
+      schema: "schema",
+      step: "harvest",
+      canonicalStateRoot: "/state",
+      before: { amount: 3 },
+      expectedPayoutRaw: "10",
+      transaction: {
+        expectedSignature: "signature",
+        messageSha256: "message-hash",
+        wireSha256: "wire-hash",
+      },
+    };
+    writeFileSync(path, `${JSON.stringify({ ...base, pendingBindingSha256: pendingBindingSha256(base) })}\n`, { mode: 0o600 });
+    rewritePendingStatus(path, {
+      verdict: "SEND_ATTEMPTED_PENDING_RECONCILE",
+      sent: false,
+      signed: true,
+      broadcast: "attempted",
+      signature: "signature",
+      sendStatus: { verdict: "SEND_ATTEMPTED_PENDING_RECONCILE", attemptedAtUnixMs: 1, signature: "signature" },
+    });
+    rewritePendingStatus(path, {
+      verdict: "SEND_ATTEMPTED_PENDING_RECONCILE",
+      sendStatus: { verdict: "SEND_ATTEMPTED_PENDING_RECONCILE", sendError: "ambiguous", submission: null, attemptedAtUnixMs: 1, signature: "signature" },
+    });
+    const pending = readBoundPending(path).record;
+    expect(pending.expectedPayoutRaw).toBe("10");
+    expect(pending.before).toEqual({ amount: 3 });
+    expect((pending.sendStatus as Record<string, unknown>).sendError).toBe("ambiguous");
+    expect(() => rewritePendingStatus(path, { expectedPayoutRaw: "11" })).toThrow("non-volatile field expectedPayoutRaw");
+    expect(() => rewritePendingStatus(path, { before: { amount: 4 } })).toThrow("non-volatile field before");
+    expect(() => rewritePendingStatus(path, { transaction: { messageSha256: "changed" } })).toThrow("non-volatile field transaction");
+    rewritePendingStatus(path, {
+      verdict: "ABORTED_PRE_SEND",
+      sent: false,
+      signed: true,
+      broadcast: false,
+      abortReason: "state changed",
+      sendStatus: { verdict: "ABORTED_PRE_SEND" },
+    });
+    expect(readBoundPending(path).record.abortReason).toBe("state changed");
+  });
+
+  test("exclusive leg claims allow one claimant and support only dead-pid breaking", () => {
+    const home = tempRoot();
+    const stateRoot = resolveCanonicalStateRoot({ vault: "HXtk", homeDir: home, uid, create: true });
+    const first = acquireCanonicalLegClaim({ stateRoot, step: "repair", journal: "/tmp/one.json" });
+    expect(() => acquireCanonicalLegClaim({ stateRoot, step: "repair", journal: "/tmp/two.json" }))
+      .toThrow("another hxtk-reset process holds the repair claim: pid");
+    expect(() => acquireCanonicalLegClaim({ stateRoot, step: "repair", journal: "/tmp/two.json", breakClaim: true }))
+      .toThrow("another hxtk-reset process holds the repair claim: pid");
+    releaseCanonicalLegClaim(first);
+
+    const stale = join(stateRoot, "repair.claim");
+    writeFileSync(stale, `${JSON.stringify({ pid: 99999999, startedAtUnixMs: 1, journal: "/tmp/old.json", hostname: "dead" })}\n`, { mode: 0o600 });
+    const replacement = acquireCanonicalLegClaim({ stateRoot, step: "repair", journal: "/tmp/new.json", breakClaim: true });
+    expect(replacement.journal).toBe("/tmp/new.json");
+    releaseCanonicalLegClaim(replacement);
   });
 
   test("finalized journal hash mismatch refuses the later-leg load", () => {
