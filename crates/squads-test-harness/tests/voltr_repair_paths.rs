@@ -19,6 +19,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use litesvm::LiteSVM;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use solana_sdk::{
     account::Account,
     clock::Clock,
@@ -29,6 +30,17 @@ use solana_sdk::{
     transaction::Transaction,
 };
 use std::{fs, path::PathBuf, str::FromStr};
+
+use loyal_actions::{
+    compile_squads_inner_instruction, decode_program_interaction_policy_account,
+    SquadsAccountConstraintKindView, SquadsCompiledInstruction as LoyalCompiledInstruction,
+    SquadsDataOperatorView, SquadsDataValueView,
+};
+use squads_test_harness::{
+    create_squads_program_interaction_voltr_repair_policy_instruction,
+    derive_squads_policy, execute_squads_program_interaction_instruction,
+    remove_squads_policy_instruction, SquadsCompiledInstruction,
+};
 
 // ---- deployed program ids -------------------------------------------------
 const VOLTR: &str = "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8";
@@ -51,6 +63,7 @@ const SQUADS_VAULT: &str = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"; // man
 const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const LP_MINT: &str = "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb";
 const ADMIN: &str = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ";
+const DELEGATED_EXECUTOR: &str = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5";
 // PDAs (derived + verified against on-chain owners)
 const PROTOCOL: &str = "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y";
 const IDLE_AUTH: &str = "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb";
@@ -72,6 +85,13 @@ const VOLTR_INSTANT_WITHDRAW_STRATEGY: [u8; 8] = [105, 57, 166, 130, 147, 221, 2
 const ADAPTOR_DEPOSIT: [u8; 8] = [242, 35, 198, 137, 82, 225, 242, 182];
 const ADAPTOR_WITHDRAW: [u8; 8] = [183, 18, 70, 156, 148, 109, 161, 34];
 const ADAPTOR_ARM_REPORT: [u8; 8] = [164, 175, 246, 41, 178, 140, 35, 3];
+const REPAIR_NAV: u64 = 3_793_536;
+const WIRES_REPAIR_POLICY_CREATE_DATA_BYTES: usize = 837;
+const WIRES_REPAIR_POLICY_CREATE_DATA_SHA256: &str =
+    "796624dfef068d71db889913de3527f36c23e19e11aafc9e370f021b649f153e";
+const TASK_REQUESTED_NAV_CONSTRAINT_ERROR_CODE: u32 = 6069;
+const DEPLOYED_SQUADS_NAV_NUMERIC_ERROR_CODE: u32 = 6064;
+const DEPLOYED_ADAPTOR_SEQUENCE_SLOT_ERROR_CODE: u32 = 8;
 
 fn key(s: &str) -> Pubkey {
     Pubkey::from_str(s).unwrap()
@@ -79,6 +99,15 @@ fn key(s: &str) -> Pubkey {
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/voltr-repair")
+}
+
+fn wires_repair_policy_evidence() -> Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/evidence/hxtk-reset-2026-09-08/repair-policy.simulated.json");
+    serde_json::from_slice(&fs::read(&path).unwrap_or_else(|_| {
+        panic!("missing wires repair-policy evidence {}", path.display())
+    }))
+    .unwrap()
 }
 
 fn load_fixture(addr: &str) -> Value {
@@ -196,10 +225,6 @@ struct Base {
 }
 
 fn build_base() -> Base {
-    let manifest: Value =
-        serde_json::from_slice(&fs::read(fixtures_dir().join("_manifest.json")).unwrap()).unwrap();
-    let slot0 = manifest["slot"].as_u64().unwrap();
-
     let mut svm = LiteSVM::new()
         .with_sigverify(false)
         .with_blockhash_check(false)
@@ -317,6 +342,453 @@ fn send(
     }
 }
 
+fn send_with_failure_compute_units(
+    svm: &mut LiteSVM,
+    ixs: &[Instruction],
+    fee_payer: &Pubkey,
+) -> Result<(u64, Vec<String>), (String, Vec<String>, u64)> {
+    let msg = Message::new_with_blockhash(ixs, Some(fee_payer), &svm.latest_blockhash());
+    let num = msg.header.num_required_signatures as usize;
+    let tx = Transaction {
+        signatures: vec![Signature::default(); num],
+        message: msg,
+    };
+    match svm.send_transaction(tx) {
+        Ok(m) => Ok((m.compute_units_consumed, m.logs)),
+        Err(f) => Err((
+            format!("{:?}", f.err),
+            f.meta.logs,
+            f.meta.compute_units_consumed,
+        )),
+    }
+}
+
+fn custom_error_code(error: &str) -> Option<u32> {
+    let marker = "Custom(";
+    let start = error.find(marker)? + marker.len();
+    let end = error[start..].find(')')?;
+    error[start..start + end].parse().ok()
+}
+
+fn rejected_tx_result_json(
+    result: &Result<(u64, Vec<String>), (String, Vec<String>, u64)>,
+    packet_bytes: usize,
+    before: &State,
+    after: &State,
+) -> Value {
+    match result {
+        Ok((compute_units, logs)) => json!({
+            "verdict": "UNEXPECTED_PASS",
+            "packetBytes": packet_bytes,
+            "packetFits": packet_bytes <= 1232,
+            "computeUnits": compute_units,
+            "before": state_json(before),
+            "after": state_json(after),
+            "logsTail": logs.iter().rev().take(8).rev().collect::<Vec<_>>(),
+        }),
+        Err((error, logs, compute_units)) => json!({
+            "verdict": "REJECTED",
+            "packetBytes": packet_bytes,
+            "packetFits": packet_bytes <= 1232,
+            "computeUnits": compute_units,
+            "error": error,
+            "errorCode": custom_error_code(error),
+            "before": state_json(before),
+            "after": state_json(after),
+            "logsTail": logs.iter().rev().take(16).rev().collect::<Vec<_>>(),
+        }),
+    }
+}
+
+fn packet_bytes(svm: &LiteSVM, ixs: &[Instruction], fee_payer: &Pubkey) -> usize {
+    let msg = Message::new_with_blockhash(ixs, Some(fee_payer), &svm.latest_blockhash());
+    let signatures = vec![Signature::default(); msg.header.num_required_signatures as usize];
+    bincode::serialize(&Transaction {
+        signatures,
+        message: msg,
+    })
+    .unwrap()
+    .len()
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn policy_data_value_json(value: &DataValue) -> Value {
+    match value {
+        DataValue::U8(value) => json!({"kind": "U8", "value": value.to_string()}),
+        DataValue::U16Le(value) => {
+            json!({"kind": "U16Le", "value": value.to_string()})
+        }
+        DataValue::U32Le(value) => {
+            json!({"kind": "U32Le", "value": value.to_string()})
+        }
+        DataValue::U64Le(value) => {
+            json!({"kind": "U64Le", "value": value.to_string()})
+        }
+        DataValue::U128Le(value) => {
+            json!({"kind": "U128Le", "value": value.to_string()})
+        }
+        DataValue::U8Slice(value) => {
+            json!({"kind": "U8Slice", "value": hex_bytes(value)})
+        }
+    }
+}
+
+fn policy_constraint_json(constraint: &InstructionConstraintView) -> Value {
+    let accounts = constraint
+        .account_constraints
+        .iter()
+        .map(|account| {
+            let (kind, keys) = match &account.kind {
+                AccountConstraintKind::Pubkey(keys) => ("Pubkey", keys.clone()),
+                AccountConstraintKind::AccountData(_) => ("AccountData", Vec::new()),
+            };
+            json!({
+                "index": account.account_index,
+                "kind": kind,
+                "keys": keys.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "owner": account.owner.map(|owner| owner.to_string()),
+            })
+        })
+        .collect::<Vec<_>>();
+    let data = constraint
+        .data_constraints
+        .iter()
+        .map(|data| {
+            let operator = match data.operator {
+                DataOperator::Equals => "Equals",
+                DataOperator::NotEquals => "NotEquals",
+                DataOperator::GreaterThan => "GreaterThan",
+                DataOperator::GreaterThanOrEqualTo => "GreaterThanOrEqualTo",
+                DataOperator::LessThan => "LessThan",
+                DataOperator::LessThanOrEqualTo => "LessThanOrEqualTo",
+            };
+            let mut value = policy_data_value_json(&data.data_value);
+            value["offset"] = json!(data.data_offset.to_string());
+            value["operator"] = json!(operator);
+            value
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "programId": constraint.program_id.to_string(),
+        "accountConstraints": accounts,
+        "dataConstraints": data,
+    })
+}
+
+type AccountConstraintKind = SquadsAccountConstraintKindView;
+type DataOperator = SquadsDataOperatorView;
+type DataValue = SquadsDataValueView;
+type InstructionConstraintView = loyal_actions::SquadsInstructionConstraintView;
+
+fn policy_view_json(view: &loyal_actions::SquadsProgramInteractionPolicyAccountView) -> Value {
+    json!({
+        "settings": view.settings.to_string(),
+        "seed": view.policy_seed,
+        "policy": view.policy_account.to_string(),
+        "delegatedSigner": view.delegated_signer.to_string(),
+        "threshold": view.threshold,
+        "vaultIndex": view.payload.vault_index,
+        "pubkeyTable": view.payload.pubkey_table.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "spendingLimits": view.payload.spending_limits.len(),
+        "constraints": view.payload.constraints.iter().map(policy_constraint_json).collect::<Vec<_>>(),
+    })
+}
+
+fn assert_policy_account(
+    account: &Account,
+    settings: Pubkey,
+    policy: Pubkey,
+    policy_seed: u64,
+    delegated_signer: Pubkey,
+    arm_template: &Instruction,
+    deposit_template: &Instruction,
+) -> Value {
+    let view = decode_program_interaction_policy_account(&account.data)
+        .expect("created repair policy must decode")
+        .expect("created repair policy must be ProgramInteraction");
+    assert_eq!(view.settings, settings);
+    assert_eq!(view.policy_seed, policy_seed);
+    assert_eq!(view.policy_account, policy);
+    assert_eq!(view.delegated_signer, delegated_signer);
+    assert_eq!(view.threshold, 1);
+    assert_eq!(view.payload.vault_index, 0);
+    assert!(view.payload.pubkey_table.is_empty(), "repair policy must use the deployed legacy encoding");
+    assert!(view.payload.spending_limits.is_empty());
+    assert_eq!(view.payload.constraints.len(), 2);
+
+    let arm = &view.payload.constraints[0];
+    assert_eq!(arm.program_id, key(ADAPTOR));
+    assert_eq!(arm.account_constraints.len(), 2);
+    for (actual, (index, expected)) in arm
+        .account_constraints
+        .iter()
+        .zip([(0u8, key(STRATEGY)), (1u8, key(TICKET))])
+    {
+        assert_eq!(actual.account_index, index);
+        assert_eq!(actual.owner, None);
+        assert_eq!(actual.kind, AccountConstraintKind::Pubkey(vec![expected]));
+    }
+    assert_eq!(arm.data_constraints.len(), 4);
+    assert_eq!(arm.data_constraints[0].data_offset, 0);
+    assert_eq!(arm.data_constraints[0].operator, DataOperator::Equals);
+    assert_eq!(
+        arm.data_constraints[0].data_value,
+        DataValue::U8Slice(arm_template.data[..9].to_vec())
+    );
+    assert_eq!(arm.data_constraints[1].data_offset, 9);
+    assert_eq!(arm.data_constraints[1].operator, DataOperator::Equals);
+    assert_eq!(arm.data_constraints[1].data_value, DataValue::U64Le(0));
+    assert_eq!(arm.data_constraints[2].data_offset, 39);
+    assert_eq!(arm.data_constraints[2].operator, DataOperator::Equals);
+    assert_eq!(
+        arm.data_constraints[2].data_value,
+        DataValue::U64Le(REPAIR_NAV)
+    );
+    assert_eq!(u64_le(&arm_template.data, 39), REPAIR_NAV);
+    assert_eq!(arm.data_constraints[3].data_offset, 17);
+    assert_eq!(arm.data_constraints[3].operator, DataOperator::Equals);
+    assert_eq!(
+        arm.data_constraints[3].data_value,
+        DataValue::U8Slice(arm_template.data[17..23].to_vec())
+    );
+
+    let deposit = &view.payload.constraints[1];
+    assert_eq!(deposit.program_id, key(VOLTR));
+    let expected_deposit_accounts = [
+        (0u8, key(SQUADS_VAULT)),
+        (2u8, key(VAULT)),
+        (3u8, key(STRATEGY)),
+        (8u8, key(USDC)),
+        (11u8, key(CUSTODY_ATA)),
+        (12u8, key(TOKEN)),
+        (13u8, key(ADAPTOR)),
+        (14u8, key(SETTINGS)),
+        (15u8, key(SQUADS_VAULT)),
+        (16u8, key(SQUADS_USDC_ATA)),
+        (17u8, key(TICKET)),
+    ];
+    assert_eq!(deposit.account_constraints.len(), expected_deposit_accounts.len());
+    for (actual, (index, expected)) in deposit
+        .account_constraints
+        .iter()
+        .zip(expected_deposit_accounts)
+    {
+        assert_eq!(actual.account_index, index);
+        assert_eq!(actual.owner, None);
+        assert_eq!(actual.kind, AccountConstraintKind::Pubkey(vec![expected]));
+    }
+    assert_eq!(deposit.data_constraints.len(), 4);
+    assert_eq!(deposit.data_constraints[0].data_offset, 0);
+    assert_eq!(deposit.data_constraints[0].operator, DataOperator::Equals);
+    assert_eq!(
+        deposit.data_constraints[0].data_value,
+        DataValue::U8Slice(deposit_template.data[..8].to_vec())
+    );
+    assert_eq!(deposit.data_constraints[1].data_offset, 8);
+    assert_eq!(deposit.data_constraints[1].operator, DataOperator::Equals);
+    assert_eq!(deposit.data_constraints[1].data_value, DataValue::U64Le(0));
+    assert_eq!(deposit.data_constraints[2].data_offset, 51);
+    assert_eq!(deposit.data_constraints[2].operator, DataOperator::Equals);
+    assert_eq!(
+        deposit.data_constraints[2].data_value,
+        DataValue::U64Le(REPAIR_NAV)
+    );
+    assert_eq!(u64_le(&deposit_template.data, 51), REPAIR_NAV);
+    assert_eq!(deposit.data_constraints[3].data_offset, 16);
+    assert_eq!(deposit.data_constraints[3].operator, DataOperator::Equals);
+    assert_eq!(
+        deposit.data_constraints[3].data_value,
+        DataValue::U8Slice(deposit_template.data[16..35].to_vec())
+    );
+
+    policy_view_json(&view)
+}
+
+fn compile_inner_for_harness(
+    instruction: Instruction,
+    transaction_accounts: &mut Vec<AccountMeta>,
+) -> SquadsCompiledInstruction {
+    let compiled: LoyalCompiledInstruction =
+        compile_squads_inner_instruction(transaction_accounts, instruction);
+    SquadsCompiledInstruction {
+        program_id_index: compiled.program_id_index as usize,
+        accounts: compiled
+            .accounts
+            .into_iter()
+            .map(|index| index as usize)
+            .collect(),
+        data: compiled.data,
+    }
+}
+
+fn repair_execute_sync_ix(
+    policy: Pubkey,
+    delegated_signer: Pubkey,
+    sequence: u64,
+    observed_slot: u64,
+    nav: u64,
+) -> Instruction {
+    let arm = arm_report_ix_with_observed_slot(0, 0, sequence, observed_slot, nav);
+    let deposit = deposit_strategy_ix_with_observed_slot(0, sequence, observed_slot, nav);
+    let mut transaction_accounts = Vec::new();
+    let arm_compiled = compile_inner_for_harness(arm, &mut transaction_accounts);
+    let deposit_compiled = compile_inner_for_harness(deposit, &mut transaction_accounts);
+    for account in &mut transaction_accounts {
+        account.is_signer = false;
+    }
+    execute_squads_program_interaction_instruction(
+        policy,
+        delegated_signer,
+        0,
+        vec![arm_compiled, deposit_compiled],
+        vec![0, 1],
+        transaction_accounts,
+    )
+}
+
+fn install_repair_policy(
+    base: &Base,
+    create_policy_ix: &Instruction,
+    settings: Pubkey,
+    admin: Pubkey,
+    delegated_signer: Pubkey,
+    policy: Pubkey,
+    policy_seed: u64,
+    arm_template: &Instruction,
+    deposit_template: &Instruction,
+) -> LiteSVM {
+    let mut svm = base.svm.clone();
+    fund(&mut svm, &admin, 100_000_000);
+    fund(&mut svm, &delegated_signer, 100_000_000);
+    let result = send(&mut svm, std::slice::from_ref(create_policy_ix), &admin);
+    assert!(result.is_ok(), "negative-case PolicyCreate failed: {result:?}");
+    let account = svm
+        .get_account(&policy)
+        .expect("negative-case PolicyCreate must create the repair policy");
+    assert_policy_account(
+        &account,
+        settings,
+        policy,
+        policy_seed,
+        delegated_signer,
+        arm_template,
+        deposit_template,
+    );
+    svm
+}
+
+fn run_negative_repair_case(
+    base: &Base,
+    create_policy_ix: &Instruction,
+    settings: Pubkey,
+    admin: Pubkey,
+    delegated_signer: Pubkey,
+    policy: Pubkey,
+    policy_seed: u64,
+    arm_template: &Instruction,
+    deposit_template: &Instruction,
+    name: &str,
+    nav: u64,
+    observed_slot_delta: u64,
+    expected_error_code: u32,
+    rejection_layer: &str,
+) -> Value {
+    let mut svm = install_repair_policy(
+        base,
+        create_policy_ix,
+        settings,
+        admin,
+        delegated_signer,
+        policy,
+        policy_seed,
+        arm_template,
+        deposit_template,
+    );
+    advance_epoch(&mut svm);
+    let clock: Clock = svm.get_sysvar();
+    let sequence = clock.slot;
+    let observed_slot = sequence + observed_slot_delta;
+    let execute_policy_ix = repair_execute_sync_ix(
+        policy,
+        delegated_signer,
+        sequence,
+        observed_slot,
+        nav,
+    );
+    let packet_bytes = packet_bytes(
+        &svm,
+        &[cu_ix(), execute_policy_ix.clone()],
+        &delegated_signer,
+    );
+    let before = read_state(&svm);
+    let result = send_with_failure_compute_units(
+        &mut svm,
+        &[cu_ix(), execute_policy_ix],
+        &delegated_signer,
+    );
+    let after = read_state(&svm);
+    let transaction = rejected_tx_result_json(&result, packet_bytes, &before, &after);
+    assert_eq!(transaction["verdict"], "REJECTED", "negative case {name}");
+    assert_eq!(
+        transaction["errorCode"],
+        json!(expected_error_code),
+        "negative case {name} must reject with the expected {rejection_layer} error"
+    );
+    assert_eq!(
+        transaction["before"], transaction["after"],
+        "negative case {name} must leave the cloned state unchanged"
+    );
+    eprintln!(
+        "R_POLICY_NEGATIVE name={} layer={} packetBytes={} computeUnits={} errorCode={}",
+        name,
+        rejection_layer,
+        transaction["packetBytes"],
+        transaction["computeUnits"],
+        transaction["errorCode"]
+    );
+    json!({
+        "name": name,
+        "rejectionLayer": rejection_layer,
+        "reportedNav": nav,
+        "sequence": sequence,
+        "observedSlot": observed_slot,
+        "sequenceEqualsObservedSlot": sequence == observed_slot,
+        "expectedErrorCode": expected_error_code,
+        "transaction": transaction,
+    })
+}
+
+fn tx_result_json(
+    result: &Result<(u64, Vec<String>), (String, Vec<String>)>,
+    packet_bytes: usize,
+    before: &State,
+    after: &State,
+) -> Value {
+    match result {
+        Ok((compute_units, logs)) => json!({
+            "verdict": "PASS",
+            "packetBytes": packet_bytes,
+            "packetFits": packet_bytes <= 1232,
+            "computeUnits": compute_units,
+            "before": state_json(before),
+            "after": state_json(after),
+            "logsTail": logs.iter().rev().take(8).rev().collect::<Vec<_>>(),
+        }),
+        Err((error, logs)) => json!({
+            "verdict": "FAIL",
+            "packetBytes": packet_bytes,
+            "packetFits": packet_bytes <= 1232,
+            "error": error,
+            "before": state_json(before),
+            "after": state_json(after),
+            "logsTail": logs.iter().rev().take(16).rev().collect::<Vec<_>>(),
+        }),
+    }
+}
+
 fn meta(am: bool, aw: bool, addr: &str) -> AccountMeta {
     AccountMeta {
         pubkey: key(addr),
@@ -329,18 +801,33 @@ fn meta(am: bool, aw: bool, addr: &str) -> AccountMeta {
 
 /// The 57-byte ReportV1 tail (version || sequence || observed_slot || nav ||
 /// digest). `seq` == `observed_slot` == the clock slot the adaptor authorises.
-fn report_v1(seq: u64, nav: u64) -> Vec<u8> {
+fn report_v1_with_observed_slot(seq: u64, observed_slot: u64, nav: u64) -> Vec<u8> {
     let mut r = vec![1u8]; // version
     r.extend_from_slice(&seq.to_le_bytes());
-    r.extend_from_slice(&seq.to_le_bytes()); // observed_slot == sequence
+    r.extend_from_slice(&observed_slot.to_le_bytes());
     r.extend_from_slice(&nav.to_le_bytes());
     r.extend_from_slice(&[7u8; 32]); // nonzero snapshot digest
     let _ = nav;
     r
 }
 
+fn report_v1(seq: u64, nav: u64) -> Vec<u8> {
+    report_v1_with_observed_slot(seq, seq, nav)
+}
+
 /// Voltr deposit_strategy / withdraw_strategy 91-byte "v2 adaptor envelope".
 fn voltr_capital_data(outer: [u8; 8], amount: u64, inner: [u8; 8], seq: u64, nav: u64) -> Vec<u8> {
+    voltr_capital_data_with_observed_slot(outer, amount, inner, seq, seq, nav)
+}
+
+fn voltr_capital_data_with_observed_slot(
+    outer: [u8; 8],
+    amount: u64,
+    inner: [u8; 8],
+    seq: u64,
+    observed_slot: u64,
+    nav: u64,
+) -> Vec<u8> {
     let mut d = Vec::with_capacity(91);
     d.extend_from_slice(&outer);
     d.extend_from_slice(&amount.to_le_bytes());
@@ -349,25 +836,45 @@ fn voltr_capital_data(outer: [u8; 8], amount: u64, inner: [u8; 8], seq: u64, nav
     d.extend_from_slice(&inner);
     d.push(1); // Some(additionalArgs)
     d.extend_from_slice(&57u32.to_le_bytes());
-    d.extend_from_slice(&report_v1(seq, nav));
+    d.extend_from_slice(&report_v1_with_observed_slot(seq, observed_slot, nav));
     assert_eq!(d.len(), 91);
     d
 }
 
 /// Adaptor ArmReport 79-byte wire.
 fn arm_report_data(operation: u8, amount: u64, seq: u64, nav: u64) -> Vec<u8> {
+    arm_report_data_with_observed_slot(operation, amount, seq, seq, nav)
+}
+
+fn arm_report_data_with_observed_slot(
+    operation: u8,
+    amount: u64,
+    seq: u64,
+    observed_slot: u64,
+    nav: u64,
+) -> Vec<u8> {
     let mut d = Vec::with_capacity(79);
     d.extend_from_slice(&ADAPTOR_ARM_REPORT);
     d.push(operation);
     d.extend_from_slice(&amount.to_le_bytes());
     d.push(1);
     d.extend_from_slice(&57u32.to_le_bytes());
-    d.extend_from_slice(&report_v1(seq, nav));
+    d.extend_from_slice(&report_v1_with_observed_slot(seq, observed_slot, nav));
     assert_eq!(d.len(), 79);
     d
 }
 
 fn arm_report_ix(operation: u8, amount: u64, seq: u64, nav: u64) -> Instruction {
+    arm_report_ix_with_observed_slot(operation, amount, seq, seq, nav)
+}
+
+fn arm_report_ix_with_observed_slot(
+    operation: u8,
+    amount: u64,
+    seq: u64,
+    observed_slot: u64,
+    nav: u64,
+) -> Instruction {
     Instruction {
         program_id: key(ADAPTOR),
         accounts: vec![
@@ -377,12 +884,21 @@ fn arm_report_ix(operation: u8, amount: u64, seq: u64, nav: u64) -> Instruction 
             meta(true, false, SQUADS_VAULT),  // 3 squads vault (signer)
             meta(false, false, SQUADS),       // 4 squads program
         ],
-        data: arm_report_data(operation, amount, seq, nav),
+        data: arm_report_data_with_observed_slot(operation, amount, seq, observed_slot, nav),
     }
 }
 
 /// Voltr deposit_strategy (18 accounts) as production builds it.
 fn deposit_strategy_ix(amount: u64, seq: u64, nav: u64) -> Instruction {
+    deposit_strategy_ix_with_observed_slot(amount, seq, seq, nav)
+}
+
+fn deposit_strategy_ix_with_observed_slot(
+    amount: u64,
+    seq: u64,
+    observed_slot: u64,
+    nav: u64,
+) -> Instruction {
     Instruction {
         program_id: key(VOLTR),
         accounts: vec![
@@ -405,7 +921,14 @@ fn deposit_strategy_ix(amount: u64, seq: u64, nav: u64) -> Instruction {
             meta(false, true, SQUADS_USDC_ATA),    // 16 squads asset ata (w)
             meta(false, true, TICKET),             // 17 report ticket (w)
         ],
-        data: voltr_capital_data(VOLTR_DEPOSIT_STRATEGY, amount, ADAPTOR_DEPOSIT, seq, nav),
+        data: voltr_capital_data_with_observed_slot(
+            VOLTR_DEPOSIT_STRATEGY,
+            amount,
+            ADAPTOR_DEPOSIT,
+            seq,
+            observed_slot,
+            nav,
+        ),
     }
 }
 
@@ -1006,6 +1529,16 @@ fn base_state_receipt(svm: &LiteSVM) -> u64 {
     u64_le(&svm.get_account(&key(RECEIPT)).unwrap().data, 104)
 }
 
+fn ticket_last_consumed_sequence(svm: &LiteSVM) -> u64 {
+    u64_le(&svm.get_account(&key(TICKET)).unwrap().data, 48)
+}
+
+fn settings_policy_seed(svm: &LiteSVM) -> u64 {
+    let data = &svm.get_account(&key(SETTINGS)).unwrap().data;
+    assert_eq!(data[158], 1, "fixture Settings must contain a policy seed");
+    u64_le(data, 159)
+}
+
 // ---- T6: removeAdaptor / updateVaultAdaptorPolicy -------------------------
 fn t6(base: &Base) -> Value {
     // updateVaultAdaptorPolicy (admin sets allowAnyAdaptor) — must not touch books
@@ -1177,4 +1710,370 @@ fn voltr_repair_paths() {
         assert_eq!(case["verdict"], "PASS", "T0 case {case}");
     }
     assert_eq!(t1v["verdict"], "PASS", "T1 repair must succeed: {t1v}");
+}
+
+// ---- R-policy: actual Squads ExecuteSync repair ---------------------------
+#[test]
+#[ignore = "clones deployed Voltr/adaptor/Squads programs+accounts into LiteSVM; run explicitly with --ignored"]
+fn voltr_squads_repair_policy() {
+    eprintln!("CASE_NAME voltr_squads_repair_policy");
+    let settings = key(SETTINGS);
+    let admin = key(ADMIN);
+    let delegated_signer = key(DELEGATED_EXECUTOR);
+    // Squads derives the created PDA from Settings.policy_seed + 1.  The
+    // cloned pre-repair fixture is at 139, so this one-shot policy is seed
+    // 140.  The sibling wires scan selected 144 for a later live state, but
+    // its current simulation also stops at 6024 before policy creation.
+    let policy_seed = 140u64;
+    let (policy, _) = derive_squads_policy(&settings, policy_seed);
+
+    let base = build_base();
+    let initial = read_state(&base.svm);
+    let settings_policy_seed_before = settings_policy_seed(&base.svm);
+    assert_eq!(initial.tv, 2_793_298);
+    assert_eq!(initial.idle, 3_793_417);
+    assert_eq!(initial.receipt_pv, 2_793_417);
+    assert_eq!(initial.custody, 0);
+    assert_eq!(settings_policy_seed_before, 139);
+    assert!(base.svm.get_account(&policy).is_none());
+
+    let mut svm = base.svm.clone();
+    fund(&mut svm, &admin, 100_000_000);
+    fund(&mut svm, &delegated_signer, 100_000_000);
+    // The sibling wires repair-policy artifact selected seed 144 from the
+    // finalized policy scan; the cloned Settings state is at seed 139.
+    let repair_nav = repair_nav(&base);
+    assert_eq!(repair_nav, REPAIR_NAV);
+    let policy_template_clock: Clock = svm.get_sysvar();
+    let policy_arm_template = arm_report_ix(0, 0, policy_template_clock.slot, repair_nav);
+    let policy_deposit_template =
+        deposit_strategy_ix(0, policy_template_clock.slot, repair_nav);
+    let create_policy_ix = create_squads_program_interaction_voltr_repair_policy_instruction(
+        settings,
+        admin,
+        delegated_signer,
+        policy_seed,
+        0,
+        &policy_arm_template,
+        &policy_deposit_template,
+    );
+    let wires_evidence = wires_repair_policy_evidence();
+    let wires_policy_create = &wires_evidence["transaction"]["policyCreate"];
+    let wires_create_data = STANDARD
+        .decode(wires_policy_create["dataBase64"].as_str().unwrap())
+        .expect("wires PolicyCreate dataBase64 must decode");
+    let wires_constraints = wires_evidence["decodedPolicy"]["constraints"]
+        .as_array()
+        .expect("wires decoded policy constraints must be an array");
+    let wire_arm_data_constraints = wires_constraints[0]["dataConstraints"]
+        .as_array()
+        .expect("wires arm_report data constraints must be an array");
+    let wire_capital_data_constraints = wires_constraints[1]["dataConstraints"]
+        .as_array()
+        .expect("wires capital data constraints must be an array");
+    assert_eq!(wire_arm_data_constraints[2]["offset"].as_str(), Some("39"));
+    assert_eq!(wire_arm_data_constraints[2]["operator"].as_str(), Some("Equals"));
+    assert_eq!(wire_arm_data_constraints[2]["kind"].as_str(), Some("U64Le"));
+    assert_eq!(wire_arm_data_constraints[2]["value"].as_str(), Some("3793536"));
+    assert_eq!(wire_capital_data_constraints[2]["offset"].as_str(), Some("51"));
+    assert_eq!(
+        wire_capital_data_constraints[2]["operator"].as_str(),
+        Some("Equals")
+    );
+    assert_eq!(
+        wire_capital_data_constraints[2]["kind"].as_str(),
+        Some("U64Le")
+    );
+    assert_eq!(
+        wire_capital_data_constraints[2]["value"].as_str(),
+        Some("3793536")
+    );
+    let wires_create_data_sha256 = hex_bytes(&Sha256::digest(&wires_create_data));
+    let harness_create_data_sha256 = hex_bytes(&Sha256::digest(&create_policy_ix.data));
+    eprintln!(
+        "R_POLICY_CREATE_DATA harnessSha256={} harnessBytes={} wiresSha256={} wiresBytes={}",
+        harness_create_data_sha256,
+        create_policy_ix.data.len(),
+        wires_create_data_sha256,
+        wires_create_data.len()
+    );
+    assert_eq!(wires_create_data.len(), WIRES_REPAIR_POLICY_CREATE_DATA_BYTES);
+    assert_eq!(
+        wires_create_data_sha256,
+        WIRES_REPAIR_POLICY_CREATE_DATA_SHA256
+    );
+    assert_eq!(create_policy_ix.data.len(), wires_create_data.len());
+    assert_eq!(harness_create_data_sha256, wires_create_data_sha256);
+    assert_eq!(
+        create_policy_ix.data, wires_create_data,
+        "harness PolicyCreate data must be byte-identical to the wires evidence"
+    );
+    let wires_accounts = wires_policy_create["accounts"]
+        .as_array()
+        .expect("wires PolicyCreate accounts must be an array");
+    assert_eq!(create_policy_ix.accounts.len(), wires_accounts.len());
+    for (actual, expected) in create_policy_ix.accounts.iter().zip(wires_accounts) {
+        assert_eq!(
+            actual.pubkey.to_string(),
+            expected["address"].as_str().unwrap()
+        );
+        assert_eq!(actual.is_signer, expected["signer"].as_bool().unwrap());
+        assert_eq!(actual.is_writable, expected["writable"].as_bool().unwrap());
+    }
+    let create_packet_bytes = packet_bytes(&svm, std::slice::from_ref(&create_policy_ix), &admin);
+    assert!(
+        create_packet_bytes <= 1232,
+        "repair PolicyCreate packet is {} bytes",
+        create_packet_bytes
+    );
+    let create_before = read_state(&svm);
+    let create_result = send(&mut svm, std::slice::from_ref(&create_policy_ix), &admin);
+    let create_after = read_state(&svm);
+    let settings_policy_seed_after = settings_policy_seed(&svm);
+    let create_case = tx_result_json(
+        &create_result,
+        create_packet_bytes,
+        &create_before,
+        &create_after,
+    );
+    assert!(
+        create_result.is_ok(),
+        "Squads PolicyCreate failed: {create_case}"
+    );
+    assert_eq!(settings_policy_seed_after, policy_seed);
+    let policy_account = svm
+        .get_account(&policy)
+        .expect("Squads PolicyCreate must create the repair policy");
+    assert_eq!(policy_account.owner, key(SQUADS));
+    let installed_policy = assert_policy_account(
+        &policy_account,
+        settings,
+        policy,
+        policy_seed,
+        delegated_signer,
+        &policy_arm_template,
+        &policy_deposit_template,
+    );
+    eprintln!(
+        "R_POLICY_CREATE packetBytes={} policy={} createDataBytes={} policyAccountDataBytes={} policyAccountDataSha256={}",
+        create_packet_bytes,
+        policy,
+        create_policy_ix.data.len(),
+        policy_account.data.len(),
+        hex_bytes(&Sha256::digest(&policy_account.data))
+    );
+
+    // The real repair crank is two inner instructions under the created policy:
+    // adaptor arm_report followed by Voltr deposit_strategy(0). Inner account
+    // signer bits are cleared so the Squads vault receives signer privilege via
+    // its PDA invocation, not as a direct transaction signer.
+    advance_epoch(&mut svm);
+    let clock: Clock = svm.get_sysvar();
+    let sequence = clock.slot;
+    let execute_policy_ix = repair_execute_sync_ix(
+        policy,
+        delegated_signer,
+        sequence,
+        sequence,
+        repair_nav,
+    );
+    let execute_packet_bytes =
+        packet_bytes(&svm, &[cu_ix(), execute_policy_ix.clone()], &delegated_signer);
+    assert!(
+        execute_packet_bytes <= 1232,
+        "repair ExecuteSync packet is {} bytes",
+        execute_packet_bytes
+    );
+    let execute_before = read_state(&svm);
+    assert_eq!(execute_before.tv, 2_793_298);
+    assert_eq!(execute_before.idle, 3_793_417);
+    assert_eq!(execute_before.receipt_pv, 2_793_417);
+    let execute_result = send(
+        &mut svm,
+        &[cu_ix(), execute_policy_ix],
+        &delegated_signer,
+    );
+    let execute_after = read_state(&svm);
+    let execute_case = tx_result_json(
+        &execute_result,
+        execute_packet_bytes,
+        &execute_before,
+        &execute_after,
+    );
+    assert!(
+        execute_result.is_ok(),
+        "Squads ExecuteSync repair failed: {execute_case}"
+    );
+    assert_eq!(execute_after.tv, 3_793_417);
+    assert_eq!(execute_after.idle, 3_793_417);
+    assert_eq!(execute_after.receipt_pv, 3_793_536);
+    assert_eq!(execute_after.custody, 0);
+    assert_eq!(execute_after.lp_supply, execute_before.lp_supply);
+    assert_eq!(ticket_last_consumed_sequence(&svm), sequence);
+    eprintln!(
+        "R_POLICY_EXECUTE packetBytes={} sequence={} nav={} tv={} idle={} receipt1={} custody={} lp={}",
+        execute_packet_bytes,
+        sequence,
+        repair_nav,
+        execute_after.tv,
+        execute_after.idle,
+        execute_after.receipt_pv,
+        execute_after.custody,
+        execute_after.lp_supply
+    );
+
+    let remove_policy_ix = remove_squads_policy_instruction(settings, admin, policy);
+    let remove_packet_bytes = packet_bytes(&svm, std::slice::from_ref(&remove_policy_ix), &admin);
+    assert!(
+        remove_packet_bytes <= 1232,
+        "repair PolicyRemove packet is {} bytes",
+        remove_packet_bytes
+    );
+    let remove_before = read_state(&svm);
+    let remove_result = send(&mut svm, std::slice::from_ref(&remove_policy_ix), &admin);
+    let remove_after = read_state(&svm);
+    let policy_after_remove = svm.get_account(&policy);
+    let policy_closed = policy_after_remove
+        .as_ref()
+        .map(|account| {
+            account.lamports == 0
+                && account.data.is_empty()
+                && account.owner == solana_sdk::system_program::ID
+        })
+        .unwrap_or(true);
+    let remove_case = tx_result_json(
+        &remove_result,
+        remove_packet_bytes,
+        &remove_before,
+        &remove_after,
+    );
+    assert!(remove_result.is_ok(), "Squads PolicyRemove failed: {remove_case}");
+    assert!(policy_closed, "repair policy PDA must be closed after PolicyRemove");
+    eprintln!(
+        "R_POLICY_REMOVE packetBytes={} policyClosed={}",
+        remove_packet_bytes, policy_closed
+    );
+
+    let mut nav_too_high = run_negative_repair_case(
+        &base,
+        &create_policy_ix,
+        settings,
+        admin,
+        delegated_signer,
+        policy,
+        policy_seed,
+        &policy_arm_template,
+        &policy_deposit_template,
+        "R-policy-execute-nav-too-high",
+        REPAIR_NAV + 1,
+        0,
+        DEPLOYED_SQUADS_NAV_NUMERIC_ERROR_CODE,
+        "Squads ProgramInteraction data constraint",
+    );
+    nav_too_high["taskRequestedErrorCode"] = json!(TASK_REQUESTED_NAV_CONSTRAINT_ERROR_CODE);
+    let mut nav_too_low = run_negative_repair_case(
+        &base,
+        &create_policy_ix,
+        settings,
+        admin,
+        delegated_signer,
+        policy,
+        policy_seed,
+        &policy_arm_template,
+        &policy_deposit_template,
+        "R-policy-execute-nav-too-low",
+        REPAIR_NAV - 1,
+        0,
+        DEPLOYED_SQUADS_NAV_NUMERIC_ERROR_CODE,
+        "Squads ProgramInteraction data constraint",
+    );
+    nav_too_low["taskRequestedErrorCode"] = json!(TASK_REQUESTED_NAV_CONSTRAINT_ERROR_CODE);
+    let sequence_slot_mismatch = run_negative_repair_case(
+        &base,
+        &create_policy_ix,
+        settings,
+        admin,
+        delegated_signer,
+        policy,
+        policy_seed,
+        &policy_arm_template,
+        &policy_deposit_template,
+        "R-policy-execute-sequence-slot-mismatch",
+        REPAIR_NAV,
+        1,
+        DEPLOYED_ADAPTOR_SEQUENCE_SLOT_ERROR_CODE,
+        "custom adaptor ReportSlot",
+    );
+
+    let report = json!({
+        "schema": "voltr-squads-repair-policy-litesvm/v1",
+        "generatedBy": "crates/squads-test-harness/tests/voltr_repair_paths.rs",
+        "broadcast": false,
+        "signatureProof": false,
+        "squadsPolicyExecutionProof": true,
+        "cluster": "mainnet-beta (accounts + program binaries cloned read-only)",
+        "dumpSlot": base.slot0,
+        "programs": {"voltr": VOLTR, "adaptor": ADAPTOR, "squadsSmartAccount": SQUADS},
+        "vault": VAULT,
+            "settings": settings.to_string(),
+            "settingsSigner": admin.to_string(),
+            "delegatedExecutor": delegated_signer.to_string(),
+            "settingsPolicySeedBefore": settings_policy_seed_before,
+            "settingsPolicySeedAfter": settings_policy_seed_after,
+        "vaultIndex": 0,
+        "policy": {
+            "seed": policy_seed,
+            "address": policy.to_string(),
+            "bump": derive_squads_policy(&settings, policy_seed).1,
+            "encoding": "LegacyProgramInteraction",
+            "threshold": 1,
+            "timeLock": 0,
+            "installed": installed_policy,
+            "createDataBytes": create_policy_ix.data.len(),
+            "createDataSha256": hex_bytes(&Sha256::digest(&create_policy_ix.data)),
+            "wireCreateDataBytes": wires_create_data.len(),
+            "wireCreateDataSha256": wires_create_data_sha256,
+            "createDataMatchesWires": create_policy_ix.data == wires_create_data,
+            "policyAccountDataBytes": policy_account.data.len(),
+            "policyAccountDataSha256": hex_bytes(&Sha256::digest(&policy_account.data)),
+        },
+        "repair": {
+            "reportedNav": repair_nav,
+            "sequence": sequence,
+            "sequenceEqualsClockSlot": sequence == clock.slot,
+            "ticketLastConsumedSequence": ticket_last_consumed_sequence(&svm),
+        },
+        "packetLimitBytes": 1232,
+        "cases": {
+            "R-policy-create": create_case,
+            "R-policy-execute-sync": execute_case,
+            "R-policy-remove": {
+                "transaction": remove_case,
+                "policyClosed": policy_closed,
+                "accountAfter": policy_after_remove.as_ref().map(|account| json!({
+                    "lamports": account.lamports,
+                    "dataBytes": account.data.len(),
+                    "owner": account.owner.to_string(),
+                })),
+            },
+        },
+        "negativeCases": {
+            "R-policy-execute-nav-too-high": nav_too_high,
+            "R-policy-execute-nav-too-low": nav_too_low,
+            "R-policy-execute-sequence-slot-mismatch": sequence_slot_mismatch,
+        },
+        "codeExpectationNote": {
+            "taskRequestedNavConstraintErrorCode": TASK_REQUESTED_NAV_CONSTRAINT_ERROR_CODE,
+            "observedNavConstraintErrorCode": DEPLOYED_SQUADS_NAV_NUMERIC_ERROR_CODE,
+            "observedNavConstraintErrorName": "ProgramInteractionInvalidNumericValue",
+            "observedSequenceSlotMismatchErrorCode": DEPLOYED_ADAPTOR_SEQUENCE_SLOT_ERROR_CODE,
+            "note": "The exact wires policy uses Equals U64Le constraints. The cloned deployed Squads binary rejects NAV mismatches with its numeric-value error 6064, not 6069; 6069 is not observed for this exact policy/data path.",
+        },
+        "verdict": "PASS",
+    });
+    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/evidence/voltr-squads-repair-policy-litesvm-2026-09-08.results.json");
+    fs::write(&out, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    eprintln!("wrote {}", out.display());
+    eprintln!("{}", serde_json::to_string_pretty(&report).unwrap());
 }
