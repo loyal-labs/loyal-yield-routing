@@ -394,7 +394,48 @@ haircut/degradation result (audit T10.7), and abort if the 24-hour delay,
 finalized repair timestamp, post-claim book, or finalized journal wire cannot
 be proved.
 
-## Signer and recovery rules
+## Canonical state root and replay recovery
+
+The canonical fence is machine- and user-local, not checkout-local. By default
+the tool resolves it to:
+
+```text
+${HOME}/.loyal/hxtk-reset/HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA/
+```
+
+`HOME` must be set for an operator run. The root and every component below
+`${HOME}/.loyal` must be owned by the current uid and have no group/other
+permission bits; the tool creates missing components with mode `0700` and
+refuses an existing insecure or foreign-owned path. A controlled test or
+isolated operator environment may set `HXTK_RESET_STATE_ROOT` to an absolute
+path, subject to the same ownership and mode checks. Simulation prints the
+resolved `canonicalStateRoot` but never creates or writes anything below it.
+
+Run every leg as the same user on the same machine. The canonical state file,
+not the requested journal directory, is the replay authority. Each state file
+records both `checkoutRoot` and `stateRoot`, binds the signed message/wire and
+pending metadata, and records the exact SHA-256 of the finalized journal.
+
+The normal path never uses `--allow-repeat`. If a repeatable state-idempotent
+leg (`config`, `harvest`, or `restore-degradation`) is intentionally retried
+after finalization, use a new journal path that does not exist and pass
+`--allow-repeat`; the old journal and signature are retained in the canonical
+state history. A one-shot leg, or any leg still `pending` or `attempted`, may
+not use this recovery path.
+
+If the pre-send snapshot gate fails, the tool aborts before the attempted mark
+and before the sole raw-send call. It moves the signed wire to
+`<journal>.aborted-<unix ms>.json`, records `status: "aborted-pre-send"`, and
+leaves no `.pending` file to reconcile. Recheck finalized state, then rerun
+the same leg with the same or a new journal and no `--allow-repeat`:
+
+```sh
+op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk repair --execute --journal /absolute/path/hxtk-repair.json
+```
+
+`--reconcile` always refuses an aborted journal. Any exception after the
+attempted mark keeps the leg `attempted`; use the same journal's reconcile path
+after checking whether the expected signature finalized.
 
 ## Idempotency and journal policy
 
@@ -416,12 +457,12 @@ ExecuteSync leg. Resolve those through the mounted 1Password environment and
 never print key material. Every `--execute` call requires
 `CONFIRM_MAINNET=1`, a journal path, simulation immediately
 before submission, and finalized reconciliation in the same process. Before
-any raw send, the tool consults the canonical vault-scoped state root
-`tools/backyard-voltr/.hxtk-reset/<vault>/<leg>.state`, created exclusively
-with mode `0600`, regardless of the requested journal directory. The state
-records `pending`, `attempted`, or `finalized`; one-shot legs cannot be
-replayed, and `config`, `harvest`, and `restore-degradation` require explicit
-`--allow-repeat`. The pre-send journal is marked
+any raw send, the tool consults the canonical vault-scoped state root described
+above, regardless of the requested journal directory. The state records
+`pending`, `attempted`, `aborted-pre-send`, or `finalized`; one-shot legs cannot
+be replayed, and `config`, `harvest`, and `restore-degradation` require an
+explicit `--allow-repeat` plus a new journal only when intentionally repeated.
+The pre-send journal is marked
 `broadcast:"attempted"` with the expected signature before raw submission, so
 a crash in the ambiguous-send window remains fenced. The repair leg also
 re-runs its single finalized multi-account snapshot immediately before send.

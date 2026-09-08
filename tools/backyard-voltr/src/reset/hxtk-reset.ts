@@ -93,6 +93,18 @@ import {
   type PreparedTransaction,
 } from "../integrations/solana-compat.js";
 import { signingMaterialFromEnvironment } from "../integrations/signer.js";
+import {
+  assertCanonicalLegAvailable as assertCanonicalLegAvailableFence,
+  assertFinalizedJournalBinding,
+  assertPendingJournalBinding,
+  beginCanonicalLegRecord,
+  finalizedJournalSha256,
+  pendingBindingSha256,
+  PENDING_BINDING_MISMATCH,
+  repairPostFinalizationStatus,
+  resolveCanonicalStateRoot,
+  type CanonicalLegStateStatus,
+} from "./hxtk-fence.js";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const EVIDENCE_DIR = resolve(REPOSITORY_ROOT, "docs/evidence/hxtk-reset-2026-09-08");
@@ -105,7 +117,6 @@ const VOLTR = address(RWA_MULTIPLY_ROUTE.programs.voltr);
 const SQUADS_PROGRAM = RWA_MULTIPLY_ROUTE.squads.program;
 const SQUADS_SETTINGS = RWA_MULTIPLY_ROUTE.squads.settings;
 const VAULT = address(RWA_MULTIPLY_ROUTE.vault.address);
-const HXTK_STATE_ROOT = resolve(REPOSITORY_ROOT, "tools/backyard-voltr/.hxtk-reset", VAULT.toString());
 const ADMIN = RWA_MULTIPLY_ROUTE.setupAdmin; // BAqg…  vault admin
 const PROTOCOL = address("4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y");
 const RENT_SYSVAR = address("SysvarRent111111111111111111111111111111111");
@@ -158,7 +169,7 @@ const REPAIR_POLICY_CREATE_DATA_SHA256 = "796624dfef068d71db889913de3527f36c23e1
 const RESTORED_DEGRADATION_SECONDS = 86_400n;
 const POLICY_PROVENANCE_STATEMENT =
   "Live policy bytes are compared to the hash recorded in the finalized PolicyCreate journal as a dynamic continuity pin, alongside decoded semantic checks.";
-const HXTK_STATE_SCHEMA = "loyal-voltr-hxtk-reset-state/v1";
+const HXTK_STATE_SCHEMA = "loyal-voltr-hxtk-reset-state/v2";
 const REPEATABLE_LEGS = new Set(["config", "harvest", "restore-degradation"]);
 const REPAIR_FROZEN = {
   totalValue: 2_793_298n,
@@ -1070,12 +1081,22 @@ function postAccount(postAccounts: readonly RawAccount[], target: Address): RawA
 
 /** JSON.stringify rejects BigInt; every decoded field is emitted as a string. */
 function toJson(value: unknown, pretty = 0): string {
-  return JSON.stringify(value, (_key, entry) =>
+  const withRoot = value && typeof value === "object" && !Array.isArray(value)
+    ? {
+        canonicalStateRoot: canonicalStateRootForOutput(),
+        ...(value as Record<string, unknown>),
+      }
+    : value;
+  return JSON.stringify(withRoot, (_key, entry) =>
     typeof entry === "bigint"
       ? entry.toString()
       : typeof entry === "string"
         ? sanitizeText(entry)
         : entry, pretty) ?? "{}";
+}
+
+function canonicalStateRootForOutput(): string {
+  return resolveCanonicalStateRoot({ vault: VAULT.toString(), create: false });
 }
 
 // ---- evidence ----------------------------------------------------------------
@@ -1240,6 +1261,7 @@ async function readRepairConsumedJournal(
 ): Promise<Readonly<{ path: string; seed: bigint; policy: Address }> | null> {
   const path = optionalRepairJournalPath();
   if (path === null) return null;
+  assertFinalizedJournalBound("repair", path);
   const parsed = JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
   if (parsed.schema !== REPAIR_EXECUTION_SCHEMA || parsed.verdict !== "FINALIZED_RECONCILED"
     || parsed.sent !== true || parsed.signed !== true || parsed.broadcast !== true) {
@@ -1252,6 +1274,7 @@ async function readRepairConsumedJournal(
   if (!existsSync(policyJournalPath)) {
     throw new Error(`${REPAIR_JOURNAL_FLAG} policy-linked PolicyCreate journal is absent`);
   }
+  assertFinalizedJournalBound("repair-policy", policyJournalPath);
   const policyJournal = JSON.parse(readFileSync(policyJournalPath, "utf8")) as JsonRecord;
   if (policyJournal.schema !== REPAIR_POLICY_SCHEMA || policyJournal.verdict !== "FINALIZED_RECONCILED"
     || policyJournal.sent !== true || policyJournal.signed !== true || policyJournal.broadcast !== true) {
@@ -1285,6 +1308,7 @@ async function assertRepairNotAlreadyApplied(state: LiveState, rpcUrl: string) {
 function readPolicyJournalTarget(): RepairPolicyJournalTarget | null {
   const path = optionalPolicyJournalPath();
   if (path === null) return null;
+  assertFinalizedJournalBound("repair-policy", path);
   const parsed = JSON.parse(readFileSync(path, "utf8")) as RepairPolicyJournalRecord;
   if (parsed.schema !== REPAIR_POLICY_SCHEMA) {
     throw new Error(`${POLICY_JOURNAL_FLAG} must be the finalized repair-policy creation journal`);
@@ -1760,32 +1784,35 @@ function operatorJournal(): string {
   return journal;
 }
 
-type CanonicalLegStateStatus = "pending" | "attempted" | "finalized";
-
-function canonicalLegStatePath(step: string): string {
+function canonicalLegStatePath(step: string, create = false): string {
   if (!/^[a-z0-9-]+$/.test(step)) throw new Error(`invalid canonical HXtk leg name ${step}`);
-  mkdirSync(HXTK_STATE_ROOT, { recursive: true, mode: 0o700 });
-  chmodSync(HXTK_STATE_ROOT, 0o700);
-  return resolve(HXTK_STATE_ROOT, `${step}.state`);
+  return resolve(canonicalStateRoot(create), `${step}.state`);
 }
 
-function readCanonicalLegState(step: string): JsonRecord | null {
-  const path = canonicalLegStatePath(step);
+function canonicalStateRoot(create = false): string {
+  return resolveCanonicalStateRoot({ vault: VAULT.toString(), create });
+}
+
+function readCanonicalLegState(step: string, create = false): JsonRecord | null {
+  const path = canonicalLegStatePath(step, create);
   if (!existsSync(path)) return null;
   const parsed = JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
   if (parsed.schema !== HXTK_STATE_SCHEMA
     || parsed.step !== step
-    || parsed.vault !== VAULT.toString()) {
+    || parsed.vault !== VAULT.toString()
+    || parsed.checkoutRoot !== REPOSITORY_ROOT
+    || parsed.stateRoot !== canonicalStateRoot(false)) {
     throw new Error(`canonical HXtk state ${path} has an unexpected schema, leg, or vault`);
   }
-  if (parsed.status !== "pending" && parsed.status !== "attempted" && parsed.status !== "finalized") {
+  if (parsed.status !== "pending" && parsed.status !== "attempted"
+    && parsed.status !== "finalized" && parsed.status !== "aborted-pre-send") {
     throw new Error(`canonical HXtk state ${path} has an invalid status`);
   }
   return parsed;
 }
 
 function canonicalLegStatePathForJournal(step: string, journal: string): string {
-  const path = canonicalLegStatePath(step);
+  const path = canonicalLegStatePath(step, true);
   const state = readCanonicalLegState(step);
   if (state !== null && String(state.journal ?? "") !== journal) {
     throw new Error(
@@ -1798,81 +1825,55 @@ function canonicalLegStatePathForJournal(step: string, journal: string): string 
 
 function assertCanonicalLegAvailable(step: string, journal: string) {
   const existing = readCanonicalLegState(step);
-  if (existing === null) return;
-  if (String(existing.journal ?? "") !== journal) {
-    throw new Error(
-      `${step} canonical replay fence belongs to journal ${sanitizeText(String(existing.journal ?? ""))}; `
-      + `refusing journal ${sanitizeText(journal)}`,
-    );
-  }
-  if (existing.status === "pending" || existing.status === "attempted") {
-    throw new Error(
-      `${step} canonical replay fence is ${existing.status}; use the same journal's --reconcile path after checking finalized status`,
-    );
-  }
-  if (!process.argv.includes("--allow-repeat")) {
-    throw new Error(`${step} canonical replay fence is finalized; rerun requires explicit --allow-repeat`);
-  }
-  if (!REPEATABLE_LEGS.has(step)) {
-    throw new Error(`--allow-repeat is not accepted for one-shot HXtk leg ${step}`);
-  }
+  assertCanonicalLegAvailableFence({
+    step,
+    journal,
+    existing,
+    repeatable: REPEATABLE_LEGS.has(step),
+    allowRepeat: process.argv.includes("--allow-repeat"),
+    journalExists: existsSync(journal) || existsSync(`${journal}.pending`),
+  });
 }
 
 function beginCanonicalLegState(
   step: string,
   journal: string,
-  expectedSignature: string,
+  pending: JsonRecord,
 ): string {
-  const path = canonicalLegStatePath(step);
+  const path = canonicalLegStatePath(step, true);
   const existing = readCanonicalLegState(step);
-  const allowRepeat = process.argv.includes("--allow-repeat");
-  if (allowRepeat && !REPEATABLE_LEGS.has(step)) {
-    throw new Error(`--allow-repeat is not accepted for one-shot HXtk leg ${step}`);
-  }
-  if (existing !== null) {
-    if (existing.status !== "finalized") {
-      throw new Error(
-        `${step} canonical replay fence is ${existing.status}; use the same journal's --reconcile path after checking finalized status`,
-      );
-    }
-    if (!allowRepeat) {
-      throw new Error(`${step} canonical replay fence is finalized; rerun requires explicit --allow-repeat`);
-    }
-    const history = Array.isArray(existing.history)
-      ? [...existing.history, { ...existing, history: undefined }]
-      : [{ ...existing, history: undefined }];
-    writePrivate(path, {
-      schema: HXTK_STATE_SCHEMA,
-      vault: VAULT.toString(),
-      step,
-      status: "pending" satisfies CanonicalLegStateStatus,
-      broadcast: false,
-      journal,
-      expectedSignature,
-      attempt: Number(existing.attempt ?? 1) + 1,
-      history,
-      updatedAtUnixMs: Date.now(),
-    }, "w");
-    return path;
-  }
-  writePrivate(path, {
-    schema: HXTK_STATE_SCHEMA,
-    vault: VAULT.toString(),
+  const transaction = recordAt(pending.transaction, "pending transaction");
+  const state = beginCanonicalLegRecord({
     step,
-    status: "pending" satisfies CanonicalLegStateStatus,
-    broadcast: false,
+    vault: VAULT.toString(),
     journal,
-    expectedSignature,
-    attempt: 1,
-    updatedAtUnixMs: Date.now(),
-  }, "wx");
+    expectedSignature: stringAt(transaction.expectedSignature, "pending transaction.expectedSignature"),
+    messageSha256: stringAt(transaction.messageSha256, "pending transaction.messageSha256"),
+    wireSha256: stringAt(transaction.wireSha256, "pending transaction.wireSha256"),
+    pendingBindingSha256: stringAt(pending.pendingBindingSha256, "pending pendingBindingSha256"),
+    checkoutRoot: REPOSITORY_ROOT,
+    stateRoot: canonicalStateRoot(false),
+    repeatable: REPEATABLE_LEGS.has(step),
+    allowRepeat: process.argv.includes("--allow-repeat"),
+    journalExists: existsSync(journal) || existsSync(`${journal}.pending`),
+    existing,
+  });
+  writePrivate(path, state, existing === null ? "wx" : "w");
   return path;
 }
 
 function markCanonicalLegState(
   step: string,
   journal: string,
-  patch: Readonly<{ status: CanonicalLegStateStatus; broadcast: false | "attempted" | true; signature?: string; error?: string }>,
+  patch: Readonly<{
+    status: CanonicalLegStateStatus;
+    broadcast: false | "attempted" | true;
+    signature?: string;
+    error?: string;
+    abortReason?: string;
+    abortedJournal?: string;
+    finalizedJournalSha256?: string;
+  }>,
 ) {
   const path = canonicalLegStatePathForJournal(step, journal);
   const current = readCanonicalLegState(step);
@@ -1888,38 +1889,42 @@ function markCanonicalLegState(
 function ensureCanonicalLegStateForReconcile(
   step: string,
   journal: string,
-  expectedSignature: string,
+  pending: JsonRecord,
+  wire: Readonly<{ signature: string; messageSha256: string; wireSha256: string }>,
 ): string {
   const path = canonicalLegStatePath(step);
   const existing = readCanonicalLegState(step);
-  if (existing === null) {
-    writePrivate(path, {
-      schema: HXTK_STATE_SCHEMA,
-      vault: VAULT.toString(),
-      step,
-      status: "attempted" satisfies CanonicalLegStateStatus,
-      broadcast: "attempted",
-      journal,
-      expectedSignature,
-      attempt: 1,
-      recoveredFromPendingJournal: true,
-      updatedAtUnixMs: Date.now(),
-    }, "wx");
-    return path;
-  }
+  if (existing === null) throw new Error("RECONCILE_MISMATCH: pending journal does not match the canonical binding");
+  assertPendingJournalBinding({
+    pending,
+    canonicalState: existing,
+    expectedSignature: wire.signature,
+    messageSha256: wire.messageSha256,
+    wireSha256: wire.wireSha256,
+  });
   if (existing.status === "finalized") {
     throw new Error(`${step} canonical state is already finalized; refusing a second reconciliation`);
   }
-  if (String(existing.journal ?? "") !== journal
-    || String(existing.expectedSignature ?? "") !== expectedSignature) {
+  if (existing.status === "aborted-pre-send"
+    || String(existing.journal ?? "") !== journal) {
     throw new Error(`${step} pending journal does not match the canonical replay state`);
   }
-  markCanonicalLegState(step, journal, { status: "attempted", broadcast: "attempted", signature: expectedSignature });
+  markCanonicalLegState(step, journal, { status: "attempted", broadcast: "attempted", signature: wire.signature });
   return path;
 }
 
 function repairPolicyRemoveJournalPath(repairJournal: string): string {
   return repairJournal.replace(/\.json$/i, ".policy-remove.json");
+}
+
+function abortedJournalPath(journal: string): string {
+  let timestamp = Date.now();
+  let path = `${journal}.aborted-${timestamp}.json`;
+  while (existsSync(path)) {
+    timestamp += 1;
+    path = `${journal}.aborted-${timestamp}.json`;
+  }
+  return path;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -2024,12 +2029,28 @@ function assertFinalizedJournalMessage(
   }
 }
 
+function assertFinalizedJournalBound(step: string, path: string): void {
+  let journalSha256: string;
+  try {
+    journalSha256 = finalizedJournalSha256(path);
+  } catch {
+    throw new Error(`RECONCILE_MISMATCH: finalized ${step} journal is not bound to the canonical fence`);
+  }
+  assertFinalizedJournalBinding({
+    step,
+    journal: path,
+    canonicalState: readCanonicalLegState(step),
+    journalSha256,
+  });
+}
+
 async function readFinalizedJournal(
   rpcUrl: string,
   path: string,
   schema: string,
   step: string,
 ) {
+  assertFinalizedJournalBound(step, path);
   const parsed = JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
   const wire = journalWire(parsed, schema, step, "finalized");
   const finalized = await finalizedTransaction(rpcUrl, wire.signature);
@@ -2258,6 +2279,7 @@ async function readRestorePrerequisites(
     REPAIR_JOURNAL_FLAG,
     "restore-degradation requires the finalized repair journal",
   );
+  assertFinalizedJournalBound("repair", repairPath);
   const repairRecord = JSON.parse(readFileSync(repairPath, "utf8")) as JsonRecord;
   const policyJournal = resolve(stringAt(repairRecord.policyJournal, "repair journal policyJournal"));
   const repairJournal = await verifyFinalizedRepairJournal(rpcUrl, repairPath, policyJournal);
@@ -2304,6 +2326,7 @@ async function runJournaledStep(input: Readonly<{
     finalized: FinalizedTransaction;
   }>) => Promise<JsonRecord>;
 }>): Promise<number> {
+  resolveCanonicalStateRoot({ vault: VAULT.toString(), create: true });
   if (new Set(["harvest", "cancel", "request", "claim", "restore-degradation"]).has(input.step)) {
     await assertRepairPolicyRetired(input.step);
   }
@@ -2315,8 +2338,18 @@ async function runJournaledStep(input: Readonly<{
     if (pending.verdict === "ABORTED_PRE_SEND") {
       throw new Error(`${input.step} pending journal was aborted before send; rebuild with a new journal after rechecking state`);
     }
-    const wire = journalWire(pending, input.schema, input.step, "pending");
-    const canonicalStatePath = ensureCanonicalLegStateForReconcile(input.step, input.journal, wire.signature);
+    let wire: ReturnType<typeof journalWire>;
+    try {
+      wire = journalWire(pending, input.schema, input.step, "pending");
+    } catch (error) {
+      throw new Error(PENDING_BINDING_MISMATCH, { cause: error });
+    }
+    const canonicalStatePath = ensureCanonicalLegStateForReconcile(
+      input.step,
+      input.journal,
+      pending,
+      wire,
+    );
     const finalized = await finalizedTransaction(input.rpcUrl, wire.signature);
     assertFinalizedJournalMessage(wire, finalized);
     const reconciliation = await input.reconcile({ pending, finalized });
@@ -2331,11 +2364,13 @@ async function runJournaledStep(input: Readonly<{
       finalizedBlockTime: finalized.blockTime ?? null,
       ...reconciliation,
     }, "wx");
+    const finalizedJournalHash = finalizedJournalSha256(input.journal);
     renameSync(`${input.journal}.pending`, `${input.journal}.sent-wire`);
     markCanonicalLegState(input.step, input.journal, {
       status: "finalized",
       broadcast: true,
       signature: wire.signature,
+      finalizedJournalSha256: finalizedJournalHash,
     });
     console.log(toJson({
       schema: input.schema,
@@ -2370,7 +2405,7 @@ async function runJournaledStep(input: Readonly<{
   const wireSha256 = createHash("sha256").update(built.prepared.serializedTransaction).digest("hex");
   const messageSha256 = createHash("sha256").update(built.prepared.serializedMessage).digest("hex");
   const planTransaction = recordAt(built.plan.transaction, "plan.transaction");
-  const pending: JsonRecord = {
+  const pendingWithoutBinding: JsonRecord = {
     ...built.plan,
     schema: input.schema,
     step: input.step,
@@ -2381,6 +2416,7 @@ async function runJournaledStep(input: Readonly<{
     expectedPreState: built.plan.expectedPreState ?? built.plan.before ?? null,
     expectedPostState: built.plan.expectedPostState ?? built.plan.postState ?? null,
     signedWireBase64: Buffer.from(built.prepared.serializedTransaction).toString("base64"),
+    canonicalStateRoot: canonicalStateRoot(false),
     transaction: {
       ...planTransaction,
       expectedSignature: built.prepared.expectedSignature,
@@ -2392,27 +2428,37 @@ async function runJournaledStep(input: Readonly<{
       simulationSlot: built.prepared.simulationSlot,
     },
   };
+  const pending: JsonRecord = {
+    ...pendingWithoutBinding,
+    pendingBindingSha256: pendingBindingSha256(pendingWithoutBinding),
+  };
   const canonicalStatePath = beginCanonicalLegState(
     input.step,
     input.journal,
-    built.prepared.expectedSignature,
+    pending,
   );
   writePrivate(`${input.journal}.pending`, pending, "wx");
   try {
     await built.beforeSend?.();
   } catch (error) {
+    const abortReason = sanitizeError(error);
+    const abortedPendingPath = abortedJournalPath(input.journal);
     writePrivate(`${input.journal}.pending`, {
       ...pending,
       verdict: "ABORTED_PRE_SEND",
-      abortReason: sanitizeError(error),
+      abortReason,
       sent: false,
       signed: true,
       broadcast: false,
     }, "w");
+    renameSync(`${input.journal}.pending`, abortedPendingPath);
+    // This abort path can only run before the attempted mark and before the sole raw send.
     markCanonicalLegState(input.step, input.journal, {
-      status: "pending",
+      status: "aborted-pre-send",
       broadcast: false,
-      error: sanitizeError(error),
+      error: abortReason,
+      abortReason,
+      abortedJournal: abortedPendingPath,
     });
     throw error;
   }
@@ -2459,11 +2505,13 @@ async function runJournaledStep(input: Readonly<{
       finalizedBlockTime: finalized.blockTime ?? null,
       ...reconciliation,
     }, "wx");
+    const finalizedJournalHash = finalizedJournalSha256(input.journal);
     renameSync(`${input.journal}.pending`, `${input.journal}.sent-wire`);
     markCanonicalLegState(input.step, input.journal, {
       status: "finalized",
       broadcast: true,
       signature: settled.signature,
+      finalizedJournalSha256: finalizedJournalHash,
     });
     console.log(toJson({
       schema: input.schema,
@@ -3294,13 +3342,20 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
   assertNoArbitraryRepairSeed();
   const journal = operatorJournal();
   const rpcUrl = operatorRpcUrl();
-  const repairResult = await runJournaledStep({
-    mode,
-    step: "repair",
-    schema: REPAIR_EXECUTION_SCHEMA,
-    journal,
-    rpcUrl,
-    build: async () => {
+  const policyRemoveJournal = repairPolicyRemoveJournalPath(journal);
+  const recoveryCommands = [
+    `reset:hxtk repair --reconcile --journal ${journal}`,
+    `reset:hxtk repair-policy-remove --execute --journal ${policyRemoveJournal} --repair-journal ${journal}`,
+  ];
+  let repairResult: number;
+  try {
+    repairResult = await runJournaledStep({
+      mode,
+      step: "repair",
+      schema: REPAIR_EXECUTION_SCHEMA,
+      journal,
+      rpcUrl,
+      build: async () => {
       const state = await readState("finalized", true);
       await assertRepairNotAlreadyApplied(state, rpcUrl);
       repairPrecondition(state);
@@ -3436,8 +3491,8 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
           }
         },
       };
-    },
-    reconcile: async ({ pending }) => {
+      },
+      reconcile: async ({ pending }) => {
       const seed = parseSeed(String(pending.seed ?? pending.expectedSeed ?? ""), "repair journal seed");
       const policy = address(stringAt(pending.policy, "repair journal policy"));
       assertRepairPolicyHardBinding(seed, policy);
@@ -3487,10 +3542,25 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
         finalizedPostState: post.postState,
         finalizedState: summarize(state),
       };
-    },
-  });
+      },
+    });
+  } catch (error) {
+    const canonicalRepairState = readCanonicalLegState("repair");
+    const status = repairPostFinalizationStatus(canonicalRepairState?.status);
+    if (status === null) throw error;
+    console.error(toJson({
+      schema: REPAIR_EXECUTION_SCHEMA,
+      step: "repair",
+      status,
+      verdict: status,
+      error: sanitizeError(error),
+      repairJournal: journal,
+      policyRemoveJournal,
+      recoveryCommands,
+    }, 2));
+    return 1;
+  }
   if (mode !== "execute" || repairResult !== 0) return repairResult;
-  const policyRemoveJournal = repairPolicyRemoveJournalPath(journal);
   try {
     // A finalized repair is not a usable reset milestone until its one-shot
     // policy is retired. Keep removal as a separate journaled leg while
@@ -3507,7 +3577,8 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
       verdict: "REPAIR_FINALIZED_POLICY_STILL_PRESENT",
       repairJournal: journal,
       policyRemoveJournal,
-      blocker: sanitizeError(error),
+      error: sanitizeError(error),
+      recoveryCommands,
     }, 2));
     return 1;
   }

@@ -1,4 +1,5 @@
 {
+  "canonicalStateRoot": "/Users/user/.loyal/hxtk-reset/HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
   "schema": "loyal-voltr-hxtk-reset-step/v1",
   "step": "verify",
   "verdict": "PRE_RESET_OR_PARTIAL",
@@ -35,8 +36,8 @@
     "repairNavBelowPhantom": false
   },
   "state": {
-    "contextSlot": 445385460,
-    "epoch": 1030,
+    "contextSlot": 445394548,
+    "epoch": 1031,
     "totalValue": "2793298",
     "idleBalance": "3793417",
     "custody1Balance": "0",

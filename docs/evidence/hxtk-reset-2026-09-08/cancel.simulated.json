@@ -1,4 +1,5 @@
 {
+  "canonicalStateRoot": "/Users/user/.loyal/hxtk-reset/HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
   "schema": "loyal-voltr-hxtk-reset-step/v1",
   "step": "cancel",
   "verdict": "SIMULATION_PASS_UNSENT",
@@ -6,8 +7,8 @@
   "requestReceiptPda": "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
   "originalFrozenReceipt": true,
   "before": {
-    "contextSlot": 445386395,
-    "epoch": 1030,
+    "contextSlot": 445394792,
+    "epoch": 1031,
     "totalValue": "2793298",
     "idleBalance": "3793417",
     "custody1Balance": "0",
@@ -98,7 +99,7 @@
       "amountLpBurned": "0",
       "vaultHighestAssetPerLpDecimalBitsBefore": "5633268378698",
       "vaultHighestAssetPerLpDecimalBitsAfter": "5633268378698",
-      "cancelledTs": "1788885717"
+      "cancelledTs": "1788888376"
     }
   ],
   "sent": false,
