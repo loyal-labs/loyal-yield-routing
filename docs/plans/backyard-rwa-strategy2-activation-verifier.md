@@ -682,14 +682,84 @@ remains `OPERATOR CONFIRMATION REQUIRED` and unchanged.
   preserves the verifier/operator boundary and records the signing follow-up
   without treating an unsigned proof commit as release proof.
 
+### 2026-09-08 — v1.4 NAV-pinned one-shot policy, spending-limit proof, latch generation
+
+This amendment strengthens P1.2, P2.3, and P2.8 throughout without editing a
+numbered requirement.
+
+- **P1.2 — the one-shot repair policy pins NAV on chain.** The compiler field
+  `report_nav_exact_raw` is additive to `report_nav_cap_raw` and emits
+  `Equals U64Le 3,793,536` at the arm-report NAV offset `39` and capital-report
+  NAV offset `51`. The PolicyCreate data is `837` bytes with SHA-256
+  `796624dfef068d71db889913de3527f36c23e19e11aafc9e370f021b649f153e`; it is
+  byte-identical between the mainnet-tool evidence
+  `docs/evidence/hxtk-reset-2026-09-08/repair-policy.simulated.json` (packet
+  `1,151` B) and the LiteSVM proof from `09ae747` (create `1,109` B, repair
+  `1,067` B, remove `318` B). NAV `3,793,535` and `3,793,537` are rejected by
+  Squads `6064 ProgramInteractionInvalidNumericValue`; a wrong ticket sequence
+  is rejected by adaptor error `8`.
+
+  The tool’s provenance check compares live policy bytes with the finalized
+  creation journal’s recorded hash, which is a dynamic continuity pin, then
+  decodes live policy constraints and identities. Request reconciliation
+  requires `withdrawableFromTs == requestTx.blockTime + 600` with the documented
+  one-second Voltr rounding tolerance. Restore requires
+  `restoreTx.blockTime - repairTx.blockTime >= 86,400` plus the finalized claim
+  and closed request state. The per-leg canonical replay fence, journal
+  barriers, exact-payout claim fence, and one-shot policy retirement remain
+  chained inside `repair --execute`, with standalone policy removal only as
+  recovery if the chained removal fails.
+
+  The canonical fence is machine- and user-local, not checkout-local: by
+  default it is `${HOME}/.loyal/hxtk-reset/<vault>/`, or an absolute
+  `HXTK_RESET_STATE_ROOT` override subject to current-uid ownership and
+  group/other permission checks. Simulation prints the resolved root but does
+  not write it. The canonical state file, rather than the requested journal
+  directory, binds checkout/state roots, pending metadata, signed wire, and the
+  finalized-journal SHA-256. A pre-send snapshot failure occurs before the
+  attempted mark and raw send, moves the wire to
+  `<journal>.aborted-<unix ms>.json`, records `aborted-pre-send`, and leaves no
+  pending file; recheck finalized state and rerun without `--allow-repeat`.
+  An exception after the attempted mark remains `attempted` and must use the
+  same journal’s reconcile path only after checking the expected signature.
+  `--allow-repeat` is reserved for new journals on repeatable state-idempotent
+  legs; one-shot, pending, and attempted legs cannot use it.
+
+- **P2.8 — production spending-limit seam.** The daily-limit LiteSVM proof now
+  exercises the production
+  `create_program_interaction_action_instruction_with_daily_spending_limits`
+  seam and rejects excess packed outflow with `6073
+  ProgramInteractionInsufficientTokenAllowance`. The seed journal is bound to
+  identities and revalidates its live Settings, genesis, repair-policy, config,
+  delegated-signer, and finalized anchor before each use. The worker start gate
+  independently checks the Settings anchor and genesis and refuses to continue
+  after its bounded `60 s` deadline.
+
+- **P2.3 — generation-aware latch and snapshots.** The route latch uses the
+  migration-v77 generation column: CAS re-records preserve the current
+  generation, and the fallback path is generation-aware and ignores
+  `latched:*` re-records from another generation. Construction snapshots now
+  carry the identity-enriched inputs needed to prove that the wire was built
+  from the same route, strategy, policy, and program identities that were
+  observed.
+
+- **Not encoded update.** The old seed-63 path and static policy-account-hash
+  pinning are superseded by the seed-140 one-shot policy and its dynamic
+  continuity pin. Source `fleet/*` commits retain their original history, but
+  the Codex squashes on `fleet/integration` are unsigned and trailer-free;
+  re-sign or squash-merge them at the release boundary. This amendment
+  strengthens the verifier/operator boundary and does not treat simulated
+  evidence as live deployment proof.
+
 ## Not encoded (audit items with no checkable requirement yet)
 
 - **v1.3 closure note:** Policy seeds are sequential per Settings; a stale
   journaled expectation must abort. This is now encoded in P1.2/P2.8 and is
   not an unencoded assumption.
-- Codex-authored commits on `fleet/v3-proof` are unsigned because the
+- Source fleet commits may retain Codex trailers, but the integrated
+  `fleet/integration` squashes are trailer-free and unsigned because the
   repository signing hook was unavailable to the agent; re-sign or
-  squash-merge them before release.
+  squash-merge the integration branch before release.
 - Settings-graph relaxation (U2): required before Squads governance is hardened /
   before third-party money; not part of Phase 3. The deployed v2/v3 check stays
   strict — exactly one signer, mask 7, threshold 1 — so adding a Squads member or
