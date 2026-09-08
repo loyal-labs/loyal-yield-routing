@@ -42,6 +42,13 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	source := ReserveIdentity{Address: testIdentity(4), Market: market, Mint: USDCMint}
 	target := ReserveIdentity{Address: testIdentity(81), Market: market, Mint: USDCMint}
 	vaultID := seedWorkerVault(t, ctx, store, suffix, market, source.Address)
+	delegatedSigner := testIdentity(9)
+	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.route_policies
+		SET cluster='localnet', source_commitment='finalized', finalized_eligible=true,
+		    delegated_signers=ARRAY[$2]::text[]
+		WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, vaultID, delegatedSigner); err != nil {
+		t.Fatal(err)
+	}
 	sourceAccount := reserveFixture(source, 1_000_000_000_000_000, 1_000_000_000_000_000)
 	setCurveScale(sourceAccount.Data, 30)
 	targetAccount := reserveFixture(target, 1_000_000_000_000_000, 1_000_000_000_000_000)
@@ -90,6 +97,7 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	}))
 	defer server.Close()
 	config := Config{DatabaseURL: databaseURL, TimescaleURL: databaseURL, TimescaleSchema: "kamino", RPCURL: server.URL, Cluster: "localnet", Mode: ModePublish, VaultID: vaultID, Source: source, Target: target, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
+	config.DelegatedSigner = delegatedSigner
 	worker, err := NewWorker(config, store, NewRPCClient(server.URL))
 	if err != nil {
 		t.Fatal(err)
