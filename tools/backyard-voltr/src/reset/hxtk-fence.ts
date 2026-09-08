@@ -312,6 +312,120 @@ function refuseAfterBreakRace(path: string, step: string): never {
   throw new Error(`another hxtk-reset process won breaking the ${step} claim; refusing to acquire it`);
 }
 
+type BreakLease = Readonly<{
+  path: string;
+  pid: number;
+  startedAtUnixMs: number;
+  hostname: string;
+  token: string;
+}>;
+
+function breakLeasePath(claimPath: string): string {
+  return `${claimPath}.break`;
+}
+
+function readBreakLease(path: string): BreakLease {
+  const parsed = JSON.parse(Buffer.from(readPrivateBytes(path)).toString("utf8")) as Partial<BreakLease>;
+  if (!Number.isSafeInteger(parsed.pid) || (parsed.pid ?? 0) <= 0
+    || typeof parsed.startedAtUnixMs !== "number"
+    || typeof parsed.hostname !== "string"
+    || typeof parsed.token !== "string"
+    || !/^[0-9a-f]{32}$/.test(parsed.token)) {
+    throw new Error(`HXTK break lease ${path} is malformed; refusing to break it`);
+  }
+  return {
+    path,
+    pid: parsed.pid!,
+    startedAtUnixMs: parsed.startedAtUnixMs,
+    hostname: parsed.hostname,
+    token: parsed.token,
+  };
+}
+
+function newBreakLease(path: string): BreakLease {
+  return {
+    path,
+    pid: process.pid,
+    startedAtUnixMs: Date.now(),
+    hostname: hostname(),
+    token: PROCESS_CLAIM_TOKEN,
+  };
+}
+
+function createBreakLease(lease: BreakLease): void {
+  writeExclusivePrivate(lease.path, Buffer.from(`${canonicalJson({
+    pid: lease.pid,
+    startedAtUnixMs: lease.startedAtUnixMs,
+    hostname: lease.hostname,
+    token: lease.token,
+  })}\n`));
+}
+
+function finishBreakLease(lease: BreakLease): void {
+  let existing: BreakLease;
+  try {
+    existing = readBreakLease(lease.path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (existing.token !== PROCESS_CLAIM_TOKEN || lease.token !== PROCESS_CLAIM_TOKEN) return;
+  try {
+    // Keep break cleanup rename-only: no break path is unlinked or reused.
+    renameSync(lease.path, `${lease.path}.done-${Date.now()}-${process.pid}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function acquireBreakLease(claimPath: string, step: string): BreakLease {
+  const path = breakLeasePath(claimPath);
+  const lease = newBreakLease(path);
+  try {
+    createBreakLease(lease);
+    return lease;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+
+  let existing: BreakLease;
+  try {
+    existing = readBreakLease(path);
+  } catch (readError) {
+    if ((readError as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`HXTK ${step} break lease disappeared while acquiring; retry`, { cause: readError });
+    }
+    throw readError;
+  }
+  if (existing.hostname !== hostname()) {
+    throw new Error(
+      `cannot take ${step} break lease from hostname ${existing.hostname}; expected ${hostname()}`,
+    );
+  }
+  try {
+    process.kill(existing.pid, 0);
+    return refuseAfterBreakRace(claimPath, step);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+
+  const stalePath = `${path}.stale-${Date.now()}-${process.pid}`;
+  try {
+    renameSync(path, stalePath);
+  } catch (renameError) {
+    const code = (renameError as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "EEXIST") return refuseAfterBreakRace(claimPath, step);
+    throw renameError;
+  }
+  try {
+    createBreakLease(lease);
+    return lease;
+  } catch (createError) {
+    if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError;
+    return refuseAfterBreakRace(claimPath, step);
+  }
+}
+
 function newClaim(path: string, journal: string): CanonicalLegClaim {
   return {
     path,
@@ -341,51 +455,56 @@ export function acquireCanonicalLegClaim(input: Readonly<{
 }>): CanonicalLegClaim {
   const path = claimPath(input.stateRoot, input.step);
   const claim = newClaim(path, input.journal);
+  const breakLease = input.breakClaim ? acquireBreakLease(path, input.step) : null;
   try {
-    createClaim(claim);
-    return claim;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    let existing: CanonicalLegClaim;
-    try {
-      existing = readClaim(path);
-    } catch (readError) {
-      if ((readError as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new Error(`HXTK ${input.step} claim disappeared while acquiring; retry`, { cause: readError });
-      }
-      throw readError;
-    }
-    if (!input.breakClaim) {
-      throw claimOccupied(input.step, existing);
-    }
-
-    assertDeadLocalClaim(input.step, existing);
-    const brokenPath = `${path}.broken-${Date.now()}-${process.pid}`;
-    try {
-      renameSync(path, brokenPath);
-    } catch (renameError) {
-      const code = (renameError as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "EEXIST") {
-        return refuseAfterBreakRace(path, input.step);
-      }
-      throw renameError;
-    }
     try {
       createClaim(claim);
       return claim;
-    } catch (createError) {
-      if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError;
-      let replacement: CanonicalLegClaim;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      let existing: CanonicalLegClaim;
       try {
-        replacement = readClaim(path);
+        existing = readClaim(path);
       } catch (readError) {
         if ((readError as NodeJS.ErrnoException).code === "ENOENT") {
-          throw new Error(`another hxtk-reset process won breaking the ${input.step} claim; refusing to acquire it`, { cause: readError });
+          throw new Error(`HXTK ${input.step} claim disappeared while acquiring; retry`, { cause: readError });
         }
         throw readError;
       }
-      throw claimOccupied(input.step, replacement);
+      if (!input.breakClaim) {
+        throw claimOccupied(input.step, existing);
+      }
+
+      assertDeadLocalClaim(input.step, existing);
+      const brokenPath = `${path}.broken-${Date.now()}-${process.pid}`;
+      try {
+        renameSync(path, brokenPath);
+      } catch (renameError) {
+        const code = (renameError as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "EEXIST") {
+          return refuseAfterBreakRace(path, input.step);
+        }
+        throw renameError;
+      }
+      try {
+        createClaim(claim);
+        return claim;
+      } catch (createError) {
+        if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError;
+        let replacement: CanonicalLegClaim;
+        try {
+          replacement = readClaim(path);
+        } catch (readError) {
+          if ((readError as NodeJS.ErrnoException).code === "ENOENT") {
+            throw new Error(`another hxtk-reset process won breaking the ${input.step} claim; refusing to acquire it`, { cause: readError });
+          }
+          throw readError;
+        }
+        throw claimOccupied(input.step, replacement);
+      }
     }
+  } finally {
+    if (breakLease !== null) finishBreakLease(breakLease);
   }
 }
 
