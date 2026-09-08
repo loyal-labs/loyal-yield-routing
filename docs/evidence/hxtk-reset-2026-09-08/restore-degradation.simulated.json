@@ -1,0 +1,9 @@
+{
+  "schema": "loyal-voltr-hxtk-reset-step/v1",
+  "step": "restore-degradation",
+  "sent": false,
+  "signed": false,
+  "broadcast": false,
+  "verdict": "PENDING_FINALIZED_REPAIR_AND_CLAIM",
+  "reason": "--repair-journal and --claim-journal are required before restoring degradation"
+}

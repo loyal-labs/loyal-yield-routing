@@ -45,6 +45,9 @@ struct Identity {
     /// spending limit on the stage policy, the only lane that moves the asset
     /// out of the Squads vault.
     daily_spending_limit: Option<DailySpendingLimit>,
+    /// Set only for a one-shot policy whose report NAV must equal one exact
+    /// value at both arm-report and capital-report offsets.
+    report_nav_exact_raw: Option<String>,
     asset_decimals: u8,
     seeds: Seeds,
 }
@@ -197,6 +200,10 @@ fn run() -> Result<(), String> {
                 pubkey(&limit.mint, "stage spending limit mint")?,
                 u64_value(&limit.max_per_period_raw, "stage spending limit")?,
             )),
+            None => None,
+        },
+        report_nav_exact_raw: match input.identity.report_nav_exact_raw.as_deref() {
+            Some(value) => Some(u64_value(value, "exact report NAV")?),
             None => None,
         },
         asset_decimals: input.identity.asset_decimals,

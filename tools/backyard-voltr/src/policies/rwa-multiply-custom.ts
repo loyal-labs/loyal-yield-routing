@@ -23,6 +23,7 @@ import {
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const COMPILER_BIN = "compile-voltr-custom-policy";
+const SHARED_CARGO_TARGET_DIR = "/Users/user/loyal/loyal-yield-routing/.phase3-recovery/target";
 
 type SettingsState = Readonly<{
   policySeed: { toString(): string } | null;
@@ -87,6 +88,9 @@ export type CustomPolicyMutation = Readonly<
     instructions: readonly [WireInstruction];
   }
 >;
+
+type CustomPolicyCompileOptions = Readonly<{ navExactRaw?: bigint }>;
+type CustomPolicyTargetOrOptions = CustomPolicyTarget | CustomPolicyCompileOptions;
 
 function invariant(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -313,10 +317,13 @@ function parseArtifact(
 
 export async function compileCustomPolicyArtifact(
   policySeedBefore: bigint,
-  target: CustomPolicyTarget = V2_CUSTOM_POLICY_TARGET,
+  targetOrOptions: CustomPolicyTargetOrOptions = V2_CUSTOM_POLICY_TARGET,
+  options: CustomPolicyCompileOptions = {},
 ): Promise<CustomPolicyArtifact> {
   invariant(policySeedBefore >= 0n && policySeedBefore < (1n << 64n) - 4n,
     "current Squads policy seed is outside the supported range");
+  const target = "route" in targetOrOptions ? targetOrOptions : V2_CUSTOM_POLICY_TARGET;
+  const compileOptions = "route" in targetOrOptions ? options : targetOrOptions;
   const route = target.route;
   const manager = createNoopSigner(route.squads.vault);
   const report = {
@@ -363,6 +370,9 @@ export async function compileCustomPolicyArtifact(
         mint: target.caps.dailySpendingLimit.mint,
         maxPerPeriodRaw: target.caps.dailySpendingLimit.maxPerPeriodRaw.toString(),
       },
+      reportNavExactRaw: compileOptions.navExactRaw === undefined
+        ? null
+        : compileOptions.navExactRaw.toString(),
       assetDecimals: route.assets.decimals,
       seeds: {
         allocation: seeds.allocation.toString(),
@@ -387,6 +397,10 @@ export async function compileCustomPolicyArtifact(
     input: source,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
+    env: {
+      ...process.env,
+      CARGO_TARGET_DIR: SHARED_CARGO_TARGET_DIR,
+    },
   });
   if (result.error) throw result.error;
   invariant(result.status === 0,

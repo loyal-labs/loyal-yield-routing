@@ -1,0 +1,9 @@
+{
+  "schema": "loyal-voltr-hxtk-reset-step/v1",
+  "step": "request",
+  "sent": false,
+  "signed": false,
+  "broadcast": false,
+  "verdict": "PENDING_FINALIZED_CANCEL",
+  "reason": "--cancel-journal is required; request is request-only after finalized cancel"
+}

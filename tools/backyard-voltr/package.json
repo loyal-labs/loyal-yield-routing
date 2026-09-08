@@ -46,7 +46,8 @@
     "verify:rwa-multiply-phase2-authority": "bun src/verify/rwa-multiply-phase2-authority.ts",
     "activate:rwa-multiply-custom-add-adaptor": "bun src/activation/rwa-multiply-custom-add-adaptor.ts",
     "activate:rwa-multiply-custom-pre-admission": "bun src/activation/rwa-multiply-voltr-pre-admission.ts",
-    "activate:rwa-multiply-custom-post-admission": "bun src/activation/rwa-multiply-voltr-post-admission.ts"
+    "activate:rwa-multiply-custom-post-admission": "bun src/activation/rwa-multiply-voltr-post-admission.ts",
+    "reset:hxtk": "bun src/reset/hxtk-reset.ts"
   },
   "dependencies": {
     "@kamino-finance/farms-sdk": "3.2.14",

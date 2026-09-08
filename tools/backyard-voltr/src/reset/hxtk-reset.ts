@@ -1,0 +1,5405 @@
+/**
+ * Phase 1 reset tooling for Voltr vault HXtk… (Loyal RWA Multiply USDC).
+ *
+ * Every subcommand follows the same contract:
+ *   1. fetch fresh chain state (one getAccountInfo per address, rate limited),
+ *   2. build the exact transaction,
+ *   3. simulate it over RPC with sigVerify:false + replaceRecentBlockhash:true,
+ *   4. decode the emitted Voltr event(s) from the program logs and assert the
+ *      expected post-state,
+ *   5. write docs/evidence/hxtk-reset-2026-09-08/<step>.simulated.json with
+ *      "sent": false.
+ *
+ * The signing/sending path is only reachable when the operator passes
+ * --execute --journal PATH with CONFIRM_MAINNET=1 and the matching signer env
+ * var. --simulate (the default) never reads key material, because a simulated
+ * transaction carries zero-filled signature slots and sigVerify is false.
+ *
+ * Reference shapes: go/backyard-rwa-worker/internal/backyardrwa/build.go,
+ * report_ticket.go, crates/squads-test-harness/tests/voltr_reset_sequence.rs
+ * and docs/plans/backyard-rwa-adaptor-strategy2-audit-2026-09-08.md §7.
+ */
+
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { generated as squadsGenerated } from "@loyal-labs/loyal-smart-accounts-core";
+import { executeSettingsTransactionSync } from "@loyal-labs/loyal-smart-accounts-core/internal";
+import {
+  findAssociatedTokenPda,
+  getCreateAssociatedTokenIdempotentInstruction,
+} from "@solana-program/token";
+import {
+  AccountRole,
+  address,
+  createNoopSigner,
+  type Address,
+  type Instruction,
+} from "@solana/kit";
+import {
+  ComputeBudgetProgram,
+  PublicKey,
+  TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction,
+} from "@solana/web3.js";
+import {
+  findRequestWithdrawVaultReceiptPda,
+  getCancelRequestWithdrawVaultInstructionAsync,
+  getHarvestFeeInstructionAsync,
+  getRequestWithdrawVaultInstructionAsync,
+  getRequestWithdrawVaultReceiptDecoder,
+  getStrategyInitReceiptDecoder,
+  getUpdateVaultConfigInstructionAsync,
+  getVaultDecoder,
+  getWithdrawVaultInstructionAsync,
+  VaultConfigField,
+} from "@voltr/vault-sdk";
+import {
+  getCancelRequestWithdrawVaultEventDecoder,
+  getHarvestFeeEventDecoder,
+  getRequestWithdrawVaultEventDecoder,
+  getUpdateVaultConfigEventDecoder,
+  getWithdrawVaultEventDecoder,
+} from "@voltr/vault-sdk";
+import bs58 from "bs58";
+
+import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import {
+  compileCustomPolicyArtifact,
+  type CustomPolicyArtifact,
+} from "../policies/rwa-multiply-custom.js";
+import {
+  buildRwaMultiplyArmReportInstruction,
+  buildRwaMultiplyManagerInstructions,
+} from "../integrations/rwa-multiply-voltr.js";
+import {
+  prepareSignedV0Transaction,
+  finalizedTransaction,
+  PreparedTransactionSendError,
+  sendPreparedOnce,
+  fromWeb3Instruction,
+  toWeb3Instruction,
+  type PreparedTransaction,
+} from "../integrations/solana-compat.js";
+import { signingMaterialFromEnvironment } from "../integrations/signer.js";
+
+const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
+const EVIDENCE_DIR = resolve(REPOSITORY_ROOT, "docs/evidence/hxtk-reset-2026-09-08");
+const SCHEMA = "loyal-voltr-hxtk-reset-step/v1";
+const SHARED_CARGO_TARGET_DIR = "/Users/user/loyal/loyal-yield-routing/.phase3-recovery/target";
+
+// ---- identities (all public keys; no secrets) --------------------------------
+
+const VOLTR = address(RWA_MULTIPLY_ROUTE.programs.voltr);
+const SQUADS_PROGRAM = RWA_MULTIPLY_ROUTE.squads.program;
+const SQUADS_SETTINGS = RWA_MULTIPLY_ROUTE.squads.settings;
+const VAULT = address(RWA_MULTIPLY_ROUTE.vault.address);
+const HXTK_STATE_ROOT = resolve(REPOSITORY_ROOT, "tools/backyard-voltr/.hxtk-reset", VAULT.toString());
+const ADMIN = RWA_MULTIPLY_ROUTE.setupAdmin; // BAqg…  vault admin
+const PROTOCOL = address("4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y");
+const RENT_SYSVAR = address("SysvarRent111111111111111111111111111111111");
+const LP_MINT = address("6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb");
+const IDLE_ATA = address("6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh");
+const RECEIPT1 = address("3GHLmyTTGH9ZfQqb3YCo9xKjpPhMLvHsq2JSYzCnk9U6");
+const CUSTODY1 = address("FTDWN5Ay8tzYPJBJT4s2oZaHRQ7jKPo8XP2ZRWb5GP3M");
+const REPORT_TICKET = address("C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5");
+const REPORT_NAV_POLICY = address("41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP");
+/** Pending withdraw request receipt PDA: seeds { vault, userTransferAuthority: ADMIN }. */
+const REQUEST_RECEIPT = address("8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e");
+/** Escrow LP ATA of REQUEST_RECEIPT; holds the entire LP supply pre-reset. */
+const PENDING_ESCROW = address("C35aUCiMtQa7Zou8Jag5qRbMHqvnVarPwkSwYRgshcC1");
+const ADMIN_LP_ATA = address("ZvsW29zAXZwMayzP9jAVBryRi5rt6X7em5vYdhKGbvZ");
+const PROTOCOL_TREASURY = address("C7sE3MjSAqqF7TgXn1VsNQPWem1gdhqv3ZYV9TNfSjY9");
+const SQUADS_VAULT = RWA_MULTIPLY_ROUTE.squads.vault; // ST999…  (also vault.manager)
+const SQUADS_USDC_ATA = RWA_MULTIPLY_ROUTE.squads.assetAta; // EBG2…
+const DELEGATED_EXECUTOR = RWA_MULTIPLY_ROUTE.squads.delegatedExecutor; // 62JL…
+const USDC = RWA_MULTIPLY_ROUTE.assets.assetMint;
+const TOKEN_PROGRAM = RWA_MULTIPLY_ROUTE.assets.tokenProgram;
+const ATOKEN_PROGRAM = RWA_MULTIPLY_ROUTE.assets.associatedTokenProgram;
+const IDLE_AUTH = address("EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb");
+const LP_MINT_AUTH = address("HHM86gQUM7rN8bz2VPWhqNn7ZcfznLC5KyT7kLs569yq");
+const SYS_PROGRAM = address("11111111111111111111111111111111");
+
+/** idle + receipt1 − tv. Never crank receipt1 below this (audit §6 underflow gate). */
+const PHANTOM_NAV_RAW = 3_793_536n;
+const REQUEST_WAITING_PERIOD_SECONDS = 600n;
+const REPAIR_POLICY_SEED_MIN = 0n;
+const REPAIR_POLICY_SEED_MAX = 255n;
+const REPAIR_POLICY_SEED_BATCH_SIZE = 64;
+const REPAIR_POLICY_LEGACY_RANGES = ["62-65"] as const;
+const REPAIR_POLICY_SCHEMA = "loyal-voltr-hxtk-repair-policy/v1";
+const REPAIR_EXECUTION_SCHEMA = "loyal-voltr-hxtk-repair-execution/v1";
+const REPAIR_POLICY_REMOVE_SCHEMA = "loyal-voltr-hxtk-repair-policy-remove/v1";
+const REPAIR_POLICY_OPERATION = "nav-refresh" as const;
+const REPORT_DIGEST = new Uint8Array(32).fill(7);
+const REPAIRED_BOOK_RAW = 3_793_417n;
+const EXECUTION_COMPILER_BIN = "compile-voltr-custom-execution";
+const POLICY_JOURNAL_FLAG = "--policy-journal";
+const REPAIR_JOURNAL_FLAG = "--repair-journal";
+const CANCEL_JOURNAL_FLAG = "--cancel-journal";
+const REQUEST_JOURNAL_FLAG = "--request-journal";
+const CLAIM_JOURNAL_FLAG = "--claim-journal";
+const REPAIR_POLICY_EXPECTED_SEED = 140n;
+const REPAIR_POLICY_EXPECTED_SETTINGS_SEED = 139n;
+const REPAIR_POLICY_EXPECTED_PDA = address("7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR");
+const REPAIR_POLICY_CREATE_DATA_BYTES = 837;
+const REPAIR_POLICY_CREATE_DATA_SHA256 = "796624dfef068d71db889913de3527f36c23e19e11aafc9e370f021b649f153e";
+const RESTORED_DEGRADATION_SECONDS = 86_400n;
+const POLICY_PROVENANCE_STATEMENT =
+  "Live policy bytes are compared to the hash recorded in the finalized PolicyCreate journal as a dynamic continuity pin, alongside decoded semantic checks.";
+const HXTK_STATE_SCHEMA = "loyal-voltr-hxtk-reset-state/v1";
+const REPEATABLE_LEGS = new Set(["config", "harvest", "restore-degradation"]);
+const REPAIR_FROZEN = {
+  totalValue: 2_793_298n,
+  idleBalance: 3_793_417n,
+  receipt1PositionValue: 2_793_417n,
+  custody1Balance: 0n,
+  lpSupply: 99_941_522n,
+  degradation: 0n,
+  adminPerformanceFeeBps: 0,
+  waitingPeriod: REQUEST_WAITING_PERIOD_SECONDS,
+  requestReceipt: REQUEST_RECEIPT,
+  requestEscrowLpBalance: 99_941_522n,
+  ticketLastConsumedSequence: 444_157_930n,
+} as const;
+
+// ---- tiny JSON-RPC layer (read + simulate only, no key material) -------------
+
+const DEFAULT_RPC_URL = "https://api.mainnet-beta.solana.com";
+const URL_PATTERN = /\bhttps?:\/\/[^\s"'`<>)}\]]+/gi;
+
+function redactUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return value.replace(/([?#\/]).*$/, "");
+  }
+}
+
+function sanitizeText(value: string): string {
+  const configuredRpc = process.env.SOLANA_RPC_URL?.trim();
+  const replaced = configuredRpc
+    ? value.split(configuredRpc).join(redactUrl(configuredRpc))
+    : value;
+  return replaced.replace(URL_PATTERN, (candidate) => redactUrl(candidate));
+}
+
+function sanitizeError(error: unknown): string {
+  return sanitizeText(error instanceof Error ? error.message : String(error));
+}
+
+let lastRpcAt = 0;
+async function rpc<T = unknown>(method: string, params: unknown): Promise<T> {
+  const url = process.env.SOLANA_RPC_URL?.trim() || DEFAULT_RPC_URL;
+  const gap = 400 - (Date.now() - lastRpcAt);
+  if (gap > 0) await new Promise((resolve_) => setTimeout(resolve_, gap));
+  lastRpcAt = Date.now();
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  const json = await response.json() as { result?: T; error?: unknown };
+  if (json.error !== undefined) throw new Error(sanitizeText(`rpc ${method}: ${JSON.stringify(json.error)}`));
+  return json.result as T;
+}
+
+async function rpcWithRetry<T>(method: string, params: unknown, tries = 5): Promise<T> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    try {
+      return await rpc<T>(method, params);
+    } catch (error) {
+      lastError = error;
+      if (attempt === tries - 1) break;
+      await new Promise((resolve_) => setTimeout(resolve_, 800 * (attempt + 1)));
+    }
+  }
+  throw new Error(sanitizeError(lastError));
+}
+
+// ---- account decoding --------------------------------------------------------
+
+type RawAccount = Readonly<{
+  address: Address;
+  owner: string;
+  lamports: number;
+  data: Uint8Array;
+} | null>;
+
+type Commitment = "confirmed" | "finalized";
+
+type RpcAccountValue = Readonly<{
+  owner: string;
+  lamports: number;
+  data: readonly [string, string];
+} | null>;
+
+async function getAccount(pubkey: Address, commitment: Commitment = "confirmed"): Promise<RawAccount> {
+  const result = await rpcWithRetry<{
+    value: RpcAccountValue;
+  }>("getAccountInfo", [pubkey, { encoding: "base64", commitment }]);
+  const value = result?.value ?? null;
+  if (!value) return null;
+  if (value.data[1] !== "base64") throw new Error(`unexpected encoding for ${pubkey}`);
+  return {
+    address: pubkey,
+    owner: value.owner,
+    lamports: value.lamports,
+    data: new Uint8Array(Buffer.from(value.data[0], "base64")),
+  };
+}
+
+function decodeRpcAccount(addressValue: Address, value: RpcAccountValue): RawAccount {
+  if (!value) return null;
+  if (value.data[1] !== "base64") throw new Error(`unexpected encoding for ${addressValue}`);
+  return {
+    address: addressValue,
+    owner: value.owner,
+    lamports: value.lamports,
+    data: new Uint8Array(Buffer.from(value.data[0], "base64")),
+  };
+}
+
+function u64Le(bytes: Uint8Array, offset: number): bigint {
+  let out = 0n;
+  for (let index = 7; index >= 0; index -= 1) out = (out << 8n) | BigInt(bytes[offset + index] ?? 0);
+  return out;
+}
+
+function u128Le(bytes: Uint8Array, offset: number): bigint {
+  let out = 0n;
+  for (let index = 15; index >= 0; index -= 1) out = (out << 8n) | BigInt(bytes[offset + index] ?? 0);
+  return out;
+}
+
+/** SPL Token standard layout: account amount at 64. */
+function tokenAmount(account: RawAccount): bigint | null {
+  return account ? u64Le(account.data, 64) : null;
+}
+
+/** SPL Mint standard layout: supply at 36. */
+function mintSupply(account: RawAccount): bigint | null {
+  return account ? u64Le(account.data, 36) : null;
+}
+
+async function associatedToken(owner: Address, mint: Address): Promise<Address> {
+  const [ata] = await findAssociatedTokenPda(
+    { owner, mint, tokenProgram: TOKEN_PROGRAM },
+    { programAddress: ATOKEN_PROGRAM },
+  );
+  return address(ata);
+}
+
+// ---- Voltr decoders ----------------------------------------------------------
+
+function decodeVault(account: RawAccount) {
+  if (!account) return null;
+  const vault = getVaultDecoder().decode(account.data);
+  return {
+    manager: vault.manager,
+    admin: vault.admin,
+    pendingAdmin: vault.pendingAdmin,
+    allowAnyAdaptor: vault.allowAnyAdaptor,
+    totalValue: vault.asset.totalValue,
+    idleAta: vault.asset.idleAta,
+    lpMint: vault.lp.mint,
+    maxCap: vault.vaultConfiguration.maxCap,
+    lockedProfitDegradationDuration: vault.vaultConfiguration.lockedProfitDegradationDuration,
+    withdrawalWaitingPeriod: vault.vaultConfiguration.withdrawalWaitingPeriod,
+    managerPerformanceFeeBps: vault.feeConfiguration.managerPerformanceFee,
+    adminPerformanceFeeBps: vault.feeConfiguration.adminPerformanceFee,
+    accumulatedLpManagerFees: vault.feeState.accumulatedLpManagerFees,
+    accumulatedLpAdminFees: vault.feeState.accumulatedLpAdminFees,
+    accumulatedLpProtocolFees: vault.feeState.accumulatedLpProtocolFees,
+    deadWeight: vault.deadWeight,
+    highWaterMarkBits: vault.highWaterMark.highestAssetPerLpDecimalBits,
+    lastUpdatedLockedProfit: vault.lockedProfitState.lastUpdatedLockedProfit,
+    lockedProfitLastReport: vault.lockedProfitState.lastReport,
+    version: vault.version,
+  };
+}
+
+function decodeStrategyReceipt(account: RawAccount) {
+  if (!account) return null;
+  const receipt = getStrategyInitReceiptDecoder().decode(account.data);
+  return {
+    vault: receipt.vault,
+    strategy: receipt.strategy,
+    adaptorProgram: receipt.adaptorProgram,
+    positionValue: receipt.positionValue,
+    /** Post-upgrade the binary tracks the custody balance here (audit §1.3). */
+    custodyTrackedRaw: u64Le(account.data, 128),
+  };
+}
+
+/** Report ticket of the custom adaptor (96 bytes, report_ticket.go). */
+function decodeReportTicket(account: RawAccount) {
+  if (!account) return null;
+  const data = account.data;
+  return {
+    version: data[8],
+    bump: data[9],
+    armed: data[10] === 1,
+    strategy: bs58.encode(data.subarray(16, 48)),
+    lastConsumedSequence: u64Le(data, 48),
+    activeSequence: u64Le(data, 56),
+    activeHashIsZero: data.subarray(64, 96).every((byte) => byte === 0),
+  };
+}
+
+type SquadsPolicyState = Readonly<{
+  settings: PublicKey;
+  seed: { toString(): string };
+  threshold: number;
+  timeLock: number;
+  signers: readonly Readonly<{
+    key: PublicKey;
+    permissions: Readonly<{ mask: number }>;
+  }>[];
+  policyState: Readonly<{ __kind: string; fields?: readonly unknown[] }>;
+}>;
+
+const SquadsPolicy = (squadsGenerated as unknown as {
+  Policy: {
+    fromAccountInfo(account: Readonly<{
+      owner: PublicKey;
+      lamports: number;
+      executable: boolean;
+      rentEpoch: number;
+      data: Buffer;
+    }>): readonly [SquadsPolicyState, number];
+  };
+}).Policy;
+
+type SquadsProgramInteraction = Readonly<{
+  accountIndex?: number;
+  preHook?: unknown;
+  postHook?: unknown;
+  spendingLimits?: readonly unknown[];
+  instructionsConstraints?: readonly Readonly<{
+    programId: PublicKey;
+    accountConstraints?: readonly unknown[];
+    dataConstraints?: readonly unknown[];
+  }>[];
+}>;
+
+function policyPda(seed: bigint): Address {
+  if (seed < 0n || seed > (1n << 64n) - 1n) {
+    throw new Error(`policy seed ${seed} is outside u64`);
+  }
+  const seedBytes = Buffer.alloc(8);
+  seedBytes.writeBigUInt64LE(seed);
+  const [pda] = PublicKey.findProgramAddressSync([
+    Buffer.from("smart_account"),
+    Buffer.from("policy"),
+    new PublicKey(SQUADS_SETTINGS).toBuffer(),
+    seedBytes,
+  ], new PublicKey(SQUADS_PROGRAM));
+  return address(pda.toBase58());
+}
+
+function dataValue(value: Readonly<{ __kind?: unknown; fields?: readonly unknown[] }>) {
+  const kind = String(value.__kind ?? "");
+  const raw = value.fields?.[0];
+  if (kind === "U8Slice") {
+    const bytes = raw instanceof Uint8Array
+      ? raw
+      : raw && typeof raw === "object"
+        ? Uint8Array.from(Object.values(raw as Record<string, number>))
+        : new Uint8Array();
+    return { kind, value: Buffer.from(bytes).toString("hex") };
+  }
+  return {
+    kind,
+    value: typeof raw === "number"
+      ? String(raw)
+      : String((raw as { toString?: () => string })?.toString?.() ?? raw),
+  };
+}
+
+type StableDecodedConstraint = Readonly<{
+  index: number | null;
+  kind: string;
+  keys: readonly string[];
+} | {
+  offset: string;
+  operator: string;
+  kind: string;
+  value: string;
+}>;
+
+type StableDecodedPolicy = Readonly<{
+  constraints: readonly Readonly<{
+    index: number;
+    programId: string;
+    accountConstraints: readonly StableDecodedConstraint[];
+    dataConstraints: readonly StableDecodedConstraint[];
+  }>[];
+}>;
+
+function decodedConstraint(value: unknown): StableDecodedConstraint {
+  const constraint = value as {
+    accountIndex?: number;
+    accountConstraint?: { __kind?: unknown; fields?: readonly unknown[] };
+    dataOffset?: { toString(): string } | number;
+    dataValue?: { __kind?: unknown; fields?: readonly unknown[] };
+    operator?: { __kind?: unknown } | number;
+  };
+  if (constraint.accountConstraint) {
+    const keys = constraint.accountConstraint.fields?.[0] as readonly PublicKey[] | undefined;
+    return {
+      index: constraint.accountIndex ?? null,
+      kind: String(constraint.accountConstraint.__kind ?? ""),
+      keys: keys?.map((key) => key.toBase58()) ?? [],
+    };
+  }
+  return {
+    offset: String((constraint.dataOffset as { toString?: () => string })?.toString?.() ?? constraint.dataOffset),
+    operator: typeof constraint.operator === "number"
+      ? (["Equals", "NotEquals", "GreaterThan", "GreaterThanOrEqualTo", "LessThan", "LessThanOrEqualTo"] as const)[constraint.operator]
+        ?? `Unknown(${constraint.operator})`
+      : String(constraint.operator?.__kind ?? ""),
+    ...dataValue(constraint.dataValue ?? {}),
+  };
+}
+
+function decodeSquadsPolicy(account: RawAccount) {
+  if (!account) return null;
+  if (account.owner !== SQUADS_PROGRAM) throw new Error(`policy ${account.address} has owner ${account.owner}`);
+  const [policy] = SquadsPolicy.fromAccountInfo({
+    owner: new PublicKey(account.owner),
+    lamports: account.lamports,
+    executable: false,
+    rentEpoch: 0,
+    data: Buffer.from(account.data),
+  });
+  const body = policy.policyState.fields?.[0] as SquadsProgramInteraction | undefined;
+  return {
+    settings: policy.settings.toBase58(),
+    seed: policy.seed.toString(),
+    threshold: policy.threshold,
+    timeLock: policy.timeLock,
+    signers: policy.signers.map((signer) => ({
+      address: signer.key.toBase58(),
+      permissionsMask: signer.permissions.mask,
+    })),
+    policyState: policy.policyState.__kind,
+    accountIndex: body?.accountIndex ?? null,
+    preHook: body?.preHook ?? null,
+    postHook: body?.postHook ?? null,
+    spendingLimitCount: body?.spendingLimits?.length ?? 0,
+    constraints: body?.instructionsConstraints?.map((constraint, index) => ({
+      index,
+      programId: constraint.programId.toBase58(),
+      accountConstraints: constraint.accountConstraints?.map(decodedConstraint) ?? [],
+      dataConstraints: constraint.dataConstraints?.map(decodedConstraint) ?? [],
+    })) ?? [],
+  };
+}
+
+function decodeSquadsSettingsPolicySeed(account: RawAccount): string | null {
+  if (!account || account.owner !== SQUADS_PROGRAM) return null;
+  const Settings = (squadsGenerated as unknown as {
+    Settings: {
+      fromAccountInfo(info: Readonly<{
+        owner: PublicKey;
+        lamports: number;
+        executable: boolean;
+        rentEpoch: number;
+        data: Buffer;
+      }>): readonly [{ policySeed?: { toString(): string } | null }, number];
+    };
+  }).Settings;
+  const [settings] = Settings.fromAccountInfo({
+    owner: new PublicKey(account.owner),
+    lamports: account.lamports,
+    executable: false,
+    rentEpoch: 0,
+    data: Buffer.from(account.data),
+  });
+  return settings.policySeed?.toString() ?? null;
+}
+
+function stablePolicyConstraints(decoded: StableDecodedPolicy | null) {
+  return (decoded?.constraints ?? []).map((constraint) => ({
+    index: constraint.index,
+    programId: constraint.programId,
+    pinnedPubkeys: constraint.accountConstraints
+      .filter((accountConstraint): accountConstraint is { index: number | null; kind: string; keys: readonly string[] } => "keys" in accountConstraint)
+      .flatMap((accountConstraint) => accountConstraint.keys),
+    accountConstraints: constraint.accountConstraints
+      .filter((accountConstraint): accountConstraint is { index: number | null; kind: string; keys: readonly string[] } => "keys" in accountConstraint)
+      .map((accountConstraint) => ({
+      index: accountConstraint.index,
+      kind: accountConstraint.kind,
+      pinnedPubkeys: accountConstraint.keys,
+      })),
+    dataConstraints: constraint.dataConstraints
+      .filter((dataConstraint): dataConstraint is {
+        offset: string;
+        operator: string;
+        kind: string;
+        value: string;
+      } => "offset" in dataConstraint)
+      .map(({ offset, operator, kind, value }) => ({ offset, operator, kind, value })),
+  }));
+}
+
+function decodePolicyCreateWire(instruction: Instruction) {
+  const SyncSettingsArgs = (squadsGenerated as unknown as {
+    syncSettingsTransactionArgsBeet: {
+      deserialize(data: Buffer): readonly [{
+        numSigners: number;
+        actions: readonly unknown[];
+        memo: string | null;
+      }, number];
+    };
+  }).syncSettingsTransactionArgsBeet;
+  const [args] = SyncSettingsArgs.deserialize(Buffer.from(instruction.data ?? []).subarray(8));
+  const action = args.actions[0] as {
+    __kind?: unknown;
+    seed?: unknown;
+    signers?: readonly unknown[];
+    threshold?: unknown;
+    timeLock?: unknown;
+    policyCreationPayload?: {
+      __kind?: unknown;
+      fields?: readonly unknown[];
+    };
+  } | undefined;
+  const payload = action?.policyCreationPayload;
+  const body = payload?.__kind === "ProgramInteraction"
+    ? payload.fields?.[0] as {
+        accountIndex?: unknown;
+        instructionsConstraints?: readonly unknown[];
+        preHook?: unknown;
+        postHook?: unknown;
+        spendingLimits?: readonly unknown[];
+      } | undefined
+    : undefined;
+  return {
+    seed: action?.seed === undefined || action.seed === null
+      ? null
+      : String((action.seed as { toString?: () => string }).toString?.() ?? action.seed),
+    policyState: String(payload?.__kind ?? ""),
+    threshold: typeof action?.threshold === "number"
+      ? action.threshold
+      : typeof action?.threshold === "bigint"
+        ? Number(action.threshold)
+        : null,
+    timeLock: typeof action?.timeLock === "number"
+      ? action.timeLock
+      : typeof action?.timeLock === "bigint"
+        ? Number(action.timeLock)
+        : null,
+    signers: action?.signers?.map((signer) => {
+      const decoded = signer as {
+        key?: PublicKey;
+        permissions?: { mask?: number };
+      };
+      return {
+        address: decoded.key?.toBase58() ?? "",
+        permissionsMask: decoded.permissions?.mask ?? null,
+      };
+    }) ?? [],
+    accountIndex: typeof body?.accountIndex === "number" ? body.accountIndex : null,
+    preHook: body?.preHook ?? null,
+    postHook: body?.postHook ?? null,
+    spendingLimitCount: body?.spendingLimits?.length ?? 0,
+    constraints: body?.instructionsConstraints?.map((constraint, index) => {
+      const decoded = constraint as {
+        programId?: PublicKey;
+        accountConstraints?: readonly unknown[];
+        dataConstraints?: readonly unknown[];
+      };
+      return {
+        index,
+        programId: decoded.programId?.toBase58() ?? "",
+        accountConstraints: decoded.accountConstraints?.map(decodedConstraint) ?? [],
+        dataConstraints: decoded.dataConstraints?.map(decodedConstraint) ?? [],
+      };
+    }) ?? [],
+  };
+}
+
+type RepairPolicySeedRow = Readonly<{
+  seed: string;
+  policy: Address;
+  present: boolean;
+  owner: string | null;
+  dataBytes: number;
+  dataSha256: string | null;
+}>;
+
+function seedRanges(seeds: readonly bigint[]): readonly string[] {
+  const ordered = [...seeds].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  const ranges: string[] = [];
+  let start: bigint | null = null;
+  let previous: bigint | null = null;
+  for (const seed of ordered) {
+    if (start === null) {
+      start = seed;
+      previous = seed;
+      continue;
+    }
+    if (seed === previous! + 1n) {
+      previous = seed;
+      continue;
+    }
+    ranges.push(start === previous ? start.toString() : `${start}-${previous}`);
+    start = seed;
+    previous = seed;
+  }
+  if (start !== null) {
+    ranges.push(start === previous ? start.toString() : `${start}-${previous}`);
+  }
+  return ranges;
+}
+
+async function readRepairPolicySeeds(): Promise<Readonly<{
+  contextSlot: number;
+  contextSlots: readonly number[];
+  scan: Readonly<{
+    minSeed: string;
+    maxSeed: string;
+    batchSize: number;
+    batchCount: number;
+    legacyPolicyRanges: readonly string[];
+    seedRule: string;
+  }>;
+  occupiedCount: number;
+  occupiedSeeds: readonly string[];
+  occupiedRanges: readonly string[];
+  rows: readonly RepairPolicySeedRow[];
+}>> {
+  const seeds = Array.from(
+    { length: Number(REPAIR_POLICY_SEED_MAX - REPAIR_POLICY_SEED_MIN + 1n) },
+    (_unused, index) => REPAIR_POLICY_SEED_MIN + BigInt(index),
+  );
+  const rows: RepairPolicySeedRow[] = [];
+  const contextSlots: number[] = [];
+  for (let offset = 0; offset < seeds.length; offset += REPAIR_POLICY_SEED_BATCH_SIZE) {
+    const batchSeeds = seeds.slice(offset, offset + REPAIR_POLICY_SEED_BATCH_SIZE);
+    const policyAddresses = batchSeeds.map(policyPda);
+    const response = await rpcWithRetry<{
+      context: { slot: number };
+      value: readonly RpcAccountValue[];
+    }>("getMultipleAccounts", [
+      policyAddresses,
+      { encoding: "base64", commitment: "finalized" },
+    ]);
+    if (response.value.length !== policyAddresses.length) {
+      throw new Error("finalized repair-policy seed readback omitted an account slot");
+    }
+    contextSlots.push(response.context.slot);
+    rows.push(...policyAddresses.map((policy, index) => {
+      const account = decodeRpcAccount(policy, response.value[index] ?? null);
+      return {
+        seed: batchSeeds[index]!.toString(),
+        policy,
+        present: account !== null,
+        owner: account?.owner ?? null,
+        dataBytes: account?.data.length ?? 0,
+        dataSha256: account ? createHash("sha256").update(account.data).digest("hex") : null,
+      } satisfies RepairPolicySeedRow;
+    }));
+  }
+  const occupied = rows.filter((row) => row.present).map((row) => BigInt(row.seed));
+  return {
+    contextSlot: Math.max(...contextSlots),
+    contextSlots,
+    scan: {
+      minSeed: REPAIR_POLICY_SEED_MIN.toString(),
+      maxSeed: REPAIR_POLICY_SEED_MAX.toString(),
+      batchSize: REPAIR_POLICY_SEED_BATCH_SIZE,
+      batchCount: contextSlots.length,
+      legacyPolicyRanges: REPAIR_POLICY_LEGACY_RANGES,
+      seedRule: "PolicyCreate derives Settings.policySeed + 1; an arbitrary action seed is ignored by the deployed program",
+    },
+    occupiedCount: occupied.length,
+    occupiedSeeds: occupied.map((seed) => seed.toString()),
+    occupiedRanges: seedRanges(occupied),
+    rows,
+  };
+}
+
+type SettingsPolicyCounter = Readonly<{
+  account: Exclude<RawAccount, null>;
+  policySeed: bigint;
+  expectedSeed: bigint;
+}>;
+
+async function readSettingsPolicyCounter(): Promise<SettingsPolicyCounter> {
+  const account = await getAccount(SQUADS_SETTINGS, "finalized");
+  const policySeedText = decodeSquadsSettingsPolicySeed(account);
+  if (!account || policySeedText === null) {
+    throw new Error("finalized Squads Settings is absent or has no policy seed");
+  }
+  const policySeed = BigInt(policySeedText);
+  if (policySeed >= (1n << 64n) - 1n) {
+    throw new Error("finalized Squads Settings policy seed cannot advance");
+  }
+  return { account, policySeed, expectedSeed: policySeed + 1n };
+}
+
+function settingsPolicyReadback(counter: SettingsPolicyCounter) {
+  return {
+    commitment: "finalized" as const,
+    policySeed: counter.policySeed.toString(),
+    expectedSeed: counter.expectedSeed.toString(),
+    seedRule: "PolicyCreate derives Settings.policySeed + 1; an arbitrary action seed is ignored by the deployed program",
+  };
+}
+
+// ---- live state --------------------------------------------------------------
+
+type LiveState = Awaited<ReturnType<typeof readState>>;
+
+async function readState(commitment: Commitment = "confirmed", atomic = false) {
+  const [managerLpAta, treasuryLpAta, adminUsdcAta] = await Promise.all([
+    associatedToken(SQUADS_VAULT, LP_MINT),
+    associatedToken(PROTOCOL_TREASURY, LP_MINT),
+    associatedToken(ADMIN, USDC),
+  ]);
+  // SDK seeds: { vault, userTransferAuthority } — the pending request's authority
+  // is the admin hot key, so the PDA must land on REQUEST_RECEIPT (8eufrx…).
+  const derivedRequestReceipt = (await findRequestWithdrawVaultReceiptPda({
+    vault: VAULT,
+    userTransferAuthority: ADMIN,
+  }))[0];
+  if (derivedRequestReceipt !== REQUEST_RECEIPT) {
+    throw new Error(
+      `request receipt PDA ${derivedRequestReceipt} does not match recorded ${REQUEST_RECEIPT}`,
+    );
+  }
+  const [escrowAta] = await Promise.all([
+    associatedToken(REQUEST_RECEIPT, LP_MINT),
+  ]);
+  if (escrowAta !== PENDING_ESCROW) {
+    throw new Error(`request escrow ATA ${escrowAta} does not match recorded ${PENDING_ESCROW}`);
+  }
+
+  const addresses = [
+    VAULT, IDLE_ATA, LP_MINT, RECEIPT1, CUSTODY1, REPORT_TICKET,
+    PENDING_ESCROW, ADMIN_LP_ATA, managerLpAta, treasuryLpAta, adminUsdcAta,
+    REQUEST_RECEIPT, SQUADS_USDC_ATA,
+  ] as const;
+  const names = [
+    "vault", "idle", "lpMint", "receipt1", "custody1", "ticket",
+    "pendingEscrow", "adminLp", "managerLp", "treasuryLp", "adminUsdc",
+    "requestReceipt", "squadsUsdc",
+  ] as const;
+  const accounts = {} as Record<typeof names[number], RawAccount>;
+  let contextSlot: number;
+  let epoch: number | null;
+  if (atomic) {
+    const response = await rpcWithRetry<{
+      context: { slot: number };
+      value: readonly RpcAccountValue[];
+    }>("getMultipleAccounts", [addresses, { encoding: "base64", commitment }]);
+    if (response.value.length !== addresses.length) {
+      throw new Error(`atomic ${commitment} snapshot returned ${response.value.length} accounts; expected ${addresses.length}`);
+    }
+    for (let index = 0; index < addresses.length; index += 1) {
+      accounts[names[index]!] = decodeRpcAccount(addresses[index]!, response.value[index] ?? null);
+    }
+    contextSlot = response.context.slot;
+    epoch = null;
+  } else {
+    for (let index = 0; index < addresses.length; index += 1) {
+      accounts[names[index]!] = await getAccount(addresses[index]!, commitment);
+    }
+    const epochInfo = await rpcWithRetry<{ absoluteSlot: number; epoch: number }>("getEpochInfo", [{ commitment }]);
+    contextSlot = epochInfo.absoluteSlot;
+    epoch = epochInfo.epoch;
+  }
+  return {
+    contextSlot,
+    epoch,
+    identity: {
+      managerLpAta,
+      treasuryLpAta,
+      requestReceiptAddress: REQUEST_RECEIPT,
+      requestReceiptPdaSeeds: { vault: VAULT, userTransferAuthority: ADMIN },
+      escrowAta: PENDING_ESCROW,
+      adminUsdcAta,
+    },
+    vault: decodeVault(accounts.vault),
+    idleBalance: tokenAmount(accounts.idle),
+    lpSupply: mintSupply(accounts.lpMint),
+    receipt1: decodeStrategyReceipt(accounts.receipt1),
+    custody1Balance: tokenAmount(accounts.custody1),
+    reportTicket: decodeReportTicket(accounts.ticket),
+    requestEscrowLpBalance: tokenAmount(accounts.pendingEscrow),
+    adminLpBalance: tokenAmount(accounts.adminLp),
+    managerLpBalance: tokenAmount(accounts.managerLp),
+    treasuryLpBalance: tokenAmount(accounts.treasuryLp),
+    adminUsdcBalance: tokenAmount(accounts.adminUsdc),
+    requestReceipt: accounts.requestReceipt
+      ? {
+          vault: bs58.encode(accounts.requestReceipt.data.subarray(8, 40)),
+          userTransferAuthority: bs58.encode(accounts.requestReceipt.data.subarray(40, 72)),
+          amountLpEscrowed: u64Le(accounts.requestReceipt.data, 72),
+          amountAssetBits: u128Le(accounts.requestReceipt.data, 80),
+          amountAssetToWithdrawRaw: u128Le(accounts.requestReceipt.data, 80) >> 48n,
+          withdrawableFromTs: u64Le(accounts.requestReceipt.data, 96),
+          bump: accounts.requestReceipt.data[104] ?? null,
+        }
+      : null,
+    squadsUsdcBalance: tokenAmount(accounts.squadsUsdc),
+  };
+}
+
+/** Parked value no instruction can remove (audit §6 D invariant, evidence-file sign). */
+function conservedGap(state: LiveState): bigint | null {
+  if (!state.vault || state.idleBalance === null || state.receipt1 === null) return null;
+  return state.idleBalance + state.receipt1.positionValue - state.vault.totalValue;
+}
+
+function summarize(state: LiveState) {
+  const gap = conservedGap(state);
+  return {
+    contextSlot: state.contextSlot,
+    epoch: state.epoch,
+    totalValue: state.vault?.totalValue.toString() ?? null,
+    idleBalance: state.idleBalance?.toString() ?? null,
+    custody1Balance: state.custody1Balance?.toString() ?? null,
+    receipt1PositionValue: state.receipt1?.positionValue.toString() ?? null,
+    receipt1CustodyTracked: state.receipt1?.custodyTrackedRaw.toString() ?? null,
+    lpSupply: state.lpSupply?.toString() ?? null,
+    deadWeight: state.vault?.deadWeight.toString() ?? null,
+    feeAccumulatedLpManager: state.vault?.accumulatedLpManagerFees.toString() ?? null,
+    feeAccumulatedLpAdmin: state.vault?.accumulatedLpAdminFees.toString() ?? null,
+    feeAccumulatedLpProtocol: state.vault?.accumulatedLpProtocolFees.toString() ?? null,
+    lockedProfitDegradationDuration: state.vault?.lockedProfitDegradationDuration.toString() ?? null,
+    withdrawalWaitingPeriod: state.vault?.withdrawalWaitingPeriod.toString() ?? null,
+    adminPerformanceFeeBps: state.vault?.adminPerformanceFeeBps ?? null,
+    managerPerformanceFeeBps: state.vault?.managerPerformanceFeeBps ?? null,
+    maxCap: state.vault?.maxCap.toString() ?? null,
+    lastUpdatedLockedProfit: state.vault?.lastUpdatedLockedProfit.toString() ?? null,
+    lockedProfitLastReport: state.vault?.lockedProfitLastReport.toString() ?? null,
+    highWaterMarkBits: state.vault?.highWaterMarkBits.toString() ?? null,
+    managerLpBalance: state.managerLpBalance?.toString() ?? null,
+    adminLpBalance: state.adminLpBalance?.toString() ?? null,
+    treasuryLpBalance: state.treasuryLpBalance?.toString() ?? null,
+    requestEscrowLpBalance: state.requestEscrowLpBalance?.toString() ?? null,
+    adminUsdcBalance: state.adminUsdcBalance?.toString() ?? null,
+    squadsUsdcBalance: state.squadsUsdcBalance?.toString() ?? null,
+    requestReceipt: state.requestReceipt
+      ? {
+          vault: state.requestReceipt.vault,
+          userTransferAuthority: state.requestReceipt.userTransferAuthority,
+          amountLpEscrowed: state.requestReceipt.amountLpEscrowed.toString(),
+          amountAssetBits: state.requestReceipt.amountAssetBits.toString(),
+          amountAssetToWithdrawRaw: state.requestReceipt.amountAssetToWithdrawRaw.toString(),
+          withdrawableFromTs: state.requestReceipt.withdrawableFromTs.toString(),
+          bump: state.requestReceipt.bump,
+        }
+      : null,
+    reportTicket: state.reportTicket
+      ? {
+          version: state.reportTicket.version,
+          armed: state.reportTicket.armed,
+          lastConsumedSequence: state.reportTicket.lastConsumedSequence.toString(),
+          activeSequence: state.reportTicket.activeSequence.toString(),
+          activeHashIsZero: state.reportTicket.activeHashIsZero,
+        }
+      : null,
+    conservedGap_idlePlusReceiptsMinusTv: gap === null ? null : gap.toString(),
+    tvEqualsIdle: state.vault && state.idleBalance !== null
+      ? state.vault.totalValue === state.idleBalance
+      : null,
+  };
+}
+
+/**
+ * Fingerprint the repair account snapshot without its RPC context metadata.
+ * The context slot is expected to advance between the initial read and the
+ * pre-send read; every decoded account/state value must remain identical.
+ */
+function repairStateFingerprint(state: LiveState): string {
+  const summary = summarize(state);
+  return toJson({ ...summary, contextSlot: undefined, epoch: undefined });
+}
+
+// ---- event decoding ----------------------------------------------------------
+
+const EVENT_DECODERS = {
+  UpdateVaultConfig: getUpdateVaultConfigEventDecoder(),
+  HarvestFee: getHarvestFeeEventDecoder(),
+  CancelRequestWithdrawVault: getCancelRequestWithdrawVaultEventDecoder(),
+  RequestWithdrawVault: getRequestWithdrawVaultEventDecoder(),
+  WithdrawVault: getWithdrawVaultEventDecoder(),
+} as const;
+
+type EventName = keyof typeof EVENT_DECODERS;
+
+/**
+ * Anchor events arrive as `Program data: <base64(disc(8) + borsh)>`. The
+ * deployed binary uses sha256("event:<Name>Event")[..8]; the value below was
+ * confirmed byte-for-byte against the LiteSVM capture of the same instruction.
+ */
+function eventDiscriminator(name: EventName): Uint8Array {
+  const suffix = name.endsWith("Event") ? name : `${name}Event`;
+  return new Uint8Array(createHash("sha256").update(`event:${suffix}`).digest().subarray(0, 8));
+}
+
+function decodeEvents(name: EventName, logs: readonly string[]): unknown[] {
+  const marker = "Program data: ";
+  const prefix = Buffer.from(eventDiscriminator(name)).toString("base64").slice(0, 10);
+  const decoder = EVENT_DECODERS[name];
+  const found: unknown[] = [];
+  for (const line of logs) {
+    const at = line.indexOf(marker);
+    if (at < 0) continue;
+    const payload = line.slice(at + marker.length).trim();
+    if (!payload.startsWith(prefix)) continue;
+    const bytes = new Uint8Array(Buffer.from(payload, "base64"));
+    try {
+      found.push(decoder.decode(bytes.subarray(8)));
+    } catch {
+      // Truncated or foreign event; report it rather than guessing.
+      found.push({ undecodable: payload });
+    }
+  }
+  return found;
+}
+
+// ---- build + simulate --------------------------------------------------------
+
+/**
+ * Simulated wires are never sent. They are paid by the step's real fee payer
+ * address (which must be funded, exactly as in the live transaction) but every
+ * signature slot is zero-filled: legal here only because sigVerify is false.
+ * No key material is read or required by this path.
+ */
+const PACKET_LIMIT = 1_232;
+const MAX_SIMULATION_ACCOUNTS = 31;
+
+type Simulation = Readonly<{
+  err: unknown;
+  logs: readonly string[];
+  unitsConsumed: number | null;
+  packetBytes: number;
+  postAccounts: readonly RawAccount[];
+}>;
+
+async function simulate(
+  feePayerAddress: Address,
+  instructions: readonly Instruction[],
+  watchedAddresses: readonly Address[],
+): Promise<Simulation> {
+  const distinct = [...new Set(watchedAddresses)].slice(0, MAX_SIMULATION_ACCOUNTS);
+  const web3Instructions: TransactionInstruction[] = [
+    fromWeb3Instruction(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })),
+    ...instructions,
+  ].map(toWeb3Instruction);
+  const blockhash = await rpcWithRetry<{ value: { blockhash: string } }>("getLatestBlockhash", [
+    { commitment: "confirmed" },
+  ]);
+  const message = new TransactionMessage({
+    payerKey: new PublicKey(feePayerAddress),
+    recentBlockhash: blockhash.value.blockhash,
+    instructions: web3Instructions,
+  }).compileToV0Message();
+  const transaction = new VersionedTransaction(message);
+  // Zero-filled signature slots: legal here only because sigVerify is false.
+  transaction.signatures = Array.from(
+    { length: message.header.numRequiredSignatures },
+    () => new Uint8Array(64),
+  );
+  const wire = transaction.serialize();
+  if (wire.length > PACKET_LIMIT) {
+    throw new Error(`simulated packet is ${wire.length} bytes; limit ${PACKET_LIMIT}`);
+  }
+  const response = await rpcWithRetry<{
+    value: {
+      err: unknown;
+      logs: readonly string[] | null;
+      unitsConsumed?: number;
+      accounts?: readonly ({ owner: string; lamports: number; data: [string, string] } | null)[];
+    };
+  }>("simulateTransaction", [
+    Buffer.from(wire).toString("base64"),
+    {
+      commitment: "confirmed",
+      encoding: "base64",
+      sigVerify: false,
+      replaceRecentBlockhash: true,
+      innerInstructions: true,
+      accounts: { encoding: "base64", addresses: [...distinct] },
+    },
+  ]);
+  const result = response?.value;
+  return {
+    err: result?.err ?? null,
+    logs: result?.logs ?? [],
+    unitsConsumed: result?.unitsConsumed ?? null,
+    packetBytes: wire.length,
+    postAccounts: distinct.map((target, index) => {
+      const value = result?.accounts?.[index];
+      if (!value) return null;
+      return {
+        address: target,
+        owner: value.owner,
+        lamports: value.lamports,
+        data: new Uint8Array(Buffer.from(value.data[0], "base64")),
+      };
+    }),
+  };
+}
+
+function postAccount(postAccounts: readonly RawAccount[], target: Address): RawAccount {
+  return postAccounts.find((account) => account?.address === target) ?? null;
+}
+
+// ---- output ------------------------------------------------------------------
+
+/** JSON.stringify rejects BigInt; every decoded field is emitted as a string. */
+function toJson(value: unknown, pretty = 0): string {
+  return JSON.stringify(value, (_key, entry) =>
+    typeof entry === "bigint"
+      ? entry.toString()
+      : typeof entry === "string"
+        ? sanitizeText(entry)
+        : entry, pretty) ?? "{}";
+}
+
+// ---- evidence ----------------------------------------------------------------
+
+function writeEvidence(step: string, evidence: Record<string, unknown>): string {
+  mkdirSync(EVIDENCE_DIR, { recursive: true });
+  const path = resolve(EVIDENCE_DIR, `${step}.simulated.json`);
+  // Simulation evidence is never a send authorization. Keep all three
+  // lifecycle flags explicit and false even if a caller accidentally passes a
+  // stale flag from an operator plan.
+  writeFileSync(path, `${toJson({ schema: SCHEMA, step, ...evidence, sent: false, signed: false, broadcast: false }, 2)}\n`);
+  return path;
+}
+
+// ---- one-shot repair policy -------------------------------------------------
+
+type PolicyWireInstruction = CustomPolicyArtifact["policies"][number]["createInstruction"];
+
+function wireInstruction(value: PolicyWireInstruction): Instruction {
+  return {
+    programAddress: address(value.programId),
+    accounts: value.accounts.map((account) => ({
+      address: address(account.address),
+      role: account.signer
+        ? account.writable ? AccountRole.WRITABLE_SIGNER : AccountRole.READONLY_SIGNER
+        : account.writable ? AccountRole.WRITABLE : AccountRole.READONLY,
+    })),
+    data: new Uint8Array(Buffer.from(value.dataBase64, "base64")),
+  };
+}
+
+function wireFromInstruction(instruction: Instruction): PolicyWireInstruction {
+  return {
+    programId: instruction.programAddress,
+    accounts: (instruction.accounts ?? []).map((account) => ({
+      address: account.address,
+      signer: account.role === AccountRole.READONLY_SIGNER
+        || account.role === AccountRole.WRITABLE_SIGNER,
+      writable: account.role === AccountRole.WRITABLE
+        || account.role === AccountRole.WRITABLE_SIGNER,
+    })),
+    dataBase64: Buffer.from(instruction.data ?? []).toString("base64"),
+  };
+}
+
+function parseSeed(value: string, label: string): bigint {
+  if (!/^[0-9]+$/.test(value)) throw new Error(`${label} must be a decimal u64 seed`);
+  const seed = BigInt(value);
+  if (seed < REPAIR_POLICY_SEED_MIN || seed > REPAIR_POLICY_SEED_MAX) {
+    throw new Error(`${label} must be in the scanned one-shot repair range 0..255`);
+  }
+  return seed;
+}
+
+function cliValue(flag: string): string {
+  const index = process.argv.indexOf(flag);
+  if (index < 0) return "";
+  const value = process.argv[index + 1] ?? "";
+  if (value.length === 0 || value.startsWith("--")) throw new Error(`${flag} requires a value`);
+  return value;
+}
+
+function assertNoArbitraryRepairSeed() {
+  if (process.argv.includes("--seed")) {
+    throw new Error("--seed is not accepted; the HXtk repair policy is hard-bound to Settings seed 140");
+  }
+  const requested = cliValue("--expect-seed");
+  if (requested.length > 0 && parseSeed(requested, "--expect-seed") !== REPAIR_POLICY_EXPECTED_SEED) {
+    throw new Error(`--expect-seed ${requested} does not equal the hard-bound repair policy seed ${REPAIR_POLICY_EXPECTED_SEED}`);
+  }
+}
+
+function assertRepairPolicySettingsCounter(counter: SettingsPolicyCounter, phase: string) {
+  if (counter.policySeed !== REPAIR_POLICY_EXPECTED_SETTINGS_SEED
+    || counter.expectedSeed !== REPAIR_POLICY_EXPECTED_SEED) {
+    throw new Error(
+      `${phase}: finalized Settings counter is ${counter.policySeed} (next ${counter.expectedSeed}); `
+      + `expected policySeed ${REPAIR_POLICY_EXPECTED_SETTINGS_SEED} (next ${REPAIR_POLICY_EXPECTED_SEED})`,
+    );
+  }
+}
+
+function assertRepairPolicyHardBinding(seed: bigint, policy: Address, createData?: Uint8Array) {
+  if (seed !== REPAIR_POLICY_EXPECTED_SEED) {
+    throw new Error(`repair policy seed ${seed} is not the hard-bound seed ${REPAIR_POLICY_EXPECTED_SEED}`);
+  }
+  if (policy !== REPAIR_POLICY_EXPECTED_PDA || policyPda(seed) !== REPAIR_POLICY_EXPECTED_PDA) {
+    throw new Error(`repair policy PDA ${policy} is not the hard-bound ${REPAIR_POLICY_EXPECTED_PDA}`);
+  }
+  if (createData !== undefined) {
+    const dataSha256 = createHash("sha256").update(createData).digest("hex");
+    if (createData.length !== REPAIR_POLICY_CREATE_DATA_BYTES
+      || dataSha256 !== REPAIR_POLICY_CREATE_DATA_SHA256) {
+      throw new Error(
+        `PolicyCreate data ${createData.length} bytes/${dataSha256} does not match the reviewed `
+        + `${REPAIR_POLICY_CREATE_DATA_BYTES} bytes/${REPAIR_POLICY_CREATE_DATA_SHA256}`,
+      );
+    }
+  }
+}
+
+type RepairPolicyJournalRecord = Readonly<{
+  schema?: unknown;
+  verdict?: unknown;
+  expectedSeed?: unknown;
+  seed?: unknown;
+  policy?: unknown;
+  settingsReadback?: Readonly<{
+    policySeed?: unknown;
+    expectedSeed?: unknown;
+  }>;
+}>;
+
+type RepairPolicyJournalTarget = Readonly<{
+  path: string;
+  expectedSeed: bigint;
+  policy: Address;
+}>;
+
+function optionalPolicyJournalPath(): string | null {
+  const index = process.argv.indexOf(POLICY_JOURNAL_FLAG);
+  if (index < 0) return null;
+  const raw = process.argv[index + 1] ?? "";
+  if (raw.length === 0 || raw.startsWith("--")) {
+    throw new Error(`${POLICY_JOURNAL_FLAG} requires a value`);
+  }
+  const path = resolve(raw);
+  if (!path.endsWith(".json") || !existsSync(path)) {
+    throw new Error(`${POLICY_JOURNAL_FLAG} requires an existing JSON journal`);
+  }
+  return path;
+}
+
+function optionalRepairJournalPath(): string | null {
+  const index = process.argv.indexOf(REPAIR_JOURNAL_FLAG);
+  if (index < 0) return null;
+  const raw = process.argv[index + 1] ?? "";
+  if (raw.length === 0 || raw.startsWith("--")) {
+    throw new Error(`${REPAIR_JOURNAL_FLAG} requires a value`);
+  }
+  const path = resolve(raw);
+  if (!path.endsWith(".json") || !existsSync(path)) {
+    throw new Error(`${REPAIR_JOURNAL_FLAG} requires an existing JSON journal`);
+  }
+  return path;
+}
+
+function requiredJournalPath(flag: string, description: string): string {
+  const index = process.argv.indexOf(flag);
+  if (index < 0) throw new Error(`${flag} is required: ${description}`);
+  const raw = process.argv[index + 1] ?? "";
+  if (raw.length === 0 || raw.startsWith("--")) throw new Error(`${flag} requires a value`);
+  const path = resolve(raw);
+  if (!path.endsWith(".json") || !existsSync(path)) {
+    throw new Error(`${flag} requires an existing finalized JSON journal`);
+  }
+  return path;
+}
+
+async function readRepairConsumedJournal(
+  rpcUrl: string,
+): Promise<Readonly<{ path: string; seed: bigint; policy: Address }> | null> {
+  const path = optionalRepairJournalPath();
+  if (path === null) return null;
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
+  if (parsed.schema !== REPAIR_EXECUTION_SCHEMA || parsed.verdict !== "FINALIZED_RECONCILED"
+    || parsed.sent !== true || parsed.signed !== true || parsed.broadcast !== true) {
+    throw new Error(`${REPAIR_JOURNAL_FLAG} must be a finalized repair journal`);
+  }
+  if (typeof parsed.policyJournal !== "string" || parsed.policyJournal.length === 0) {
+    throw new Error(`${REPAIR_JOURNAL_FLAG} must be policy-linked`);
+  }
+  const policyJournalPath = resolve(parsed.policyJournal);
+  if (!existsSync(policyJournalPath)) {
+    throw new Error(`${REPAIR_JOURNAL_FLAG} policy-linked PolicyCreate journal is absent`);
+  }
+  const policyJournal = JSON.parse(readFileSync(policyJournalPath, "utf8")) as JsonRecord;
+  if (policyJournal.schema !== REPAIR_POLICY_SCHEMA || policyJournal.verdict !== "FINALIZED_RECONCILED"
+    || policyJournal.sent !== true || policyJournal.signed !== true || policyJournal.broadcast !== true) {
+    throw new Error(`${REPAIR_JOURNAL_FLAG} policy link is not a finalized PolicyCreate journal`);
+  }
+  const seed = parseSeed(String(parsed.seed ?? parsed.expectedSeed ?? ""), `${REPAIR_JOURNAL_FLAG} seed`);
+  const policy = address(stringAt(parsed.policy, `${REPAIR_JOURNAL_FLAG}.policy`));
+  assertRepairPolicyHardBinding(seed, policy);
+  const linkedSeed = parseSeed(String(policyJournal.seed ?? policyJournal.expectedSeed ?? ""), `${REPAIR_JOURNAL_FLAG} linked policy seed`);
+  const linkedPolicy = address(stringAt(policyJournal.policy, `${REPAIR_JOURNAL_FLAG} linked policy`));
+  if (linkedSeed !== seed || linkedPolicy !== policy) {
+    throw new Error(`${REPAIR_JOURNAL_FLAG} policy link does not match the repair seed/PDA`);
+  }
+  const finalized = await verifyFinalizedRepairJournal(rpcUrl, path, policyJournalPath);
+  if (finalized.seed !== seed || finalized.policy !== policy) {
+    throw new Error(`${REPAIR_JOURNAL_FLAG} finalized provenance does not match the repair journal`);
+  }
+  return { path, seed, policy };
+}
+
+async function assertRepairNotAlreadyApplied(state: LiveState, rpcUrl: string) {
+  const consumed = await readRepairConsumedJournal(rpcUrl);
+  if (state.vault?.totalValue === state.idleBalance) {
+    throw new Error(
+      `REPAIR_ALREADY_APPLIED: ${consumed === null ? "on-chain tv == idle" : `finalized repair journal ${consumed.path} is policy-linked and `}`
+      + `on-chain tv ${state.vault?.totalValue} already equals idle ${state.idleBalance}`,
+    );
+  }
+}
+
+function readPolicyJournalTarget(): RepairPolicyJournalTarget | null {
+  const path = optionalPolicyJournalPath();
+  if (path === null) return null;
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as RepairPolicyJournalRecord;
+  if (parsed.schema !== REPAIR_POLICY_SCHEMA) {
+    throw new Error(`${POLICY_JOURNAL_FLAG} must be the finalized repair-policy creation journal`);
+  }
+  if (parsed.verdict !== "FINALIZED_RECONCILED") {
+    throw new Error(`${POLICY_JOURNAL_FLAG} must be the finalized repair-policy journal`);
+  }
+  const raw = parsed.expectedSeed ?? parsed.seed ?? parsed.settingsReadback?.expectedSeed;
+  if (typeof raw !== "string") {
+    throw new Error(`${POLICY_JOURNAL_FLAG} has no expectedSeed`);
+  }
+  const expectedSeed = parseSeed(raw, "repair-policy journal expectedSeed");
+  assertRepairPolicyHardBinding(expectedSeed, address(String(parsed.policy ?? REPAIR_POLICY_EXPECTED_PDA)));
+  if (parsed.seed !== undefined && String(parsed.seed) !== expectedSeed.toString()) {
+    throw new Error(`${POLICY_JOURNAL_FLAG} seed differs from expectedSeed`);
+  }
+  if (parsed.policy !== undefined && String(parsed.policy) !== policyPda(expectedSeed)) {
+    throw new Error(`${POLICY_JOURNAL_FLAG} policy PDA does not match expectedSeed`);
+  }
+  if (parsed.settingsReadback?.expectedSeed !== undefined
+    && String(parsed.settingsReadback.expectedSeed) !== expectedSeed.toString()) {
+    throw new Error(`${POLICY_JOURNAL_FLAG} Settings readback disagrees with expectedSeed`);
+  }
+  return {
+    path,
+    expectedSeed,
+    policy: address(String(parsed.policy ?? REPAIR_POLICY_EXPECTED_PDA)),
+  };
+}
+
+type RepairPolicyTarget = Readonly<{
+  seed: bigint;
+  source: "policy-journal";
+  settings: SettingsPolicyCounter;
+  policyJournal: string;
+}>;
+
+async function resolveRepairPolicyTarget(
+  _readback: Awaited<ReturnType<typeof readRepairPolicySeeds>>,
+): Promise<RepairPolicyTarget> {
+  const settings = await readSettingsPolicyCounter();
+  const journal = readPolicyJournalTarget();
+  assertNoArbitraryRepairSeed();
+  if (journal === null) {
+    throw new Error(`${POLICY_JOURNAL_FLAG} is required; repair and PolicyRemove cannot use a journal-less policy target`);
+  }
+  return {
+    seed: journal.expectedSeed,
+    source: "policy-journal",
+    settings,
+    policyJournal: journal.path,
+  };
+}
+
+type FinalizedPolicyProvenance = Readonly<{
+  path: string;
+  seed: bigint;
+  policy: Address;
+  creationSignature: string;
+  creationMessageSha256: string;
+  creationMessageBase64: string;
+  compiledPolicy: ReturnType<typeof decodePolicyCreateWire>;
+  policyDataBytes: number;
+  policyDataSha256: string;
+  settingsIdentity: Readonly<{
+    address: Address;
+    owner: string;
+    dataBytes: number;
+    dataSha256: string;
+    policySeed: string;
+  }>;
+}>;
+
+async function verifyFinalizedPolicyCreationJournal(
+  rpcUrl: string,
+  path: string,
+): Promise<FinalizedPolicyProvenance> {
+  const { record, wire, finalized } = await readFinalizedJournal(
+    rpcUrl,
+    path,
+    REPAIR_POLICY_SCHEMA,
+    "repair-policy",
+  );
+  const seed = parseSeed(String(record.expectedSeed ?? record.seed ?? ""), "repair-policy journal expectedSeed");
+  const policy = address(stringAt(record.policy, "repair-policy journal policy"));
+  assertRepairPolicyHardBinding(seed, policy);
+  const hardBinding = recordAt(record.hardBinding, "repair-policy journal hardBinding");
+  if (String(hardBinding.expectedSeed) !== REPAIR_POLICY_EXPECTED_SEED.toString()
+    || String(hardBinding.expectedPolicy) !== REPAIR_POLICY_EXPECTED_PDA
+    || Number(hardBinding.createDataBytes) !== REPAIR_POLICY_CREATE_DATA_BYTES
+    || String(hardBinding.createDataSha256) !== REPAIR_POLICY_CREATE_DATA_SHA256) {
+    throw new Error("repair-policy journal hard binding is not the reviewed seed-140 contract");
+  }
+  const transaction = wire.transaction;
+  const policyCreate = recordAt(transaction.policyCreate, "repair-policy transaction.policyCreate");
+  const policyCreateData = assertBase64Bytes(
+    stringAt(policyCreate.dataBase64, "repair-policy transaction.policyCreate.dataBase64"),
+    "repair-policy transaction.policyCreate.dataBase64",
+  );
+  const policyCreateDataSha256 = createHash("sha256").update(policyCreateData).digest("hex");
+  if (policyCreateData.length !== REPAIR_POLICY_CREATE_DATA_BYTES
+    || policyCreateDataSha256 !== REPAIR_POLICY_CREATE_DATA_SHA256
+    || String(policyCreate.programId) !== SQUADS_PROGRAM) {
+    throw new Error("repair-policy journal PolicyCreate wire is not the reviewed exact-NAV message");
+  }
+  const compiledPolicy = decodePolicyCreateWire(
+    wireInstruction(policyCreate as unknown as PolicyWireInstruction),
+  );
+  const policyAccount = await getAccount(policy, "finalized");
+  const policyDataSha256 = policyAccount
+    ? createHash("sha256").update(policyAccount.data).digest("hex")
+    : null;
+  const semantics = repairPolicySemantics(
+    decodeSquadsPolicy(policyAccount),
+    seed,
+    compiledPolicy,
+  );
+  if (!policyAccount || !semantics.identityPass || !semantics.payloadPass
+    || !semantics.digestUnconstrained || !semantics.navExact.pass || !semantics.compiledMatch) {
+    throw new Error("finalized repair policy journal points to a policy with drifted compiled semantics");
+  }
+  const settings = await getAccount(SQUADS_SETTINGS, "finalized");
+  const settingsIdentity = recordAt(record.settingsIdentity, "repair-policy journal settingsIdentity");
+  const settingsOwner = stringAt(settingsIdentity.owner, "settingsIdentity.owner");
+  const settingsAddress = address(stringAt(settingsIdentity.address, "settingsIdentity.address"));
+  const settingsDataBytes = Number(settingsIdentity.dataBytes);
+  const settingsDataSha256 = stringAt(settingsIdentity.dataSha256, "settingsIdentity.dataSha256");
+  const recordedSettingsPolicySeed = BigInt(stringAt(settingsIdentity.policySeed, "settingsIdentity.policySeed"));
+  const settingsPolicySeed = decodeSquadsSettingsPolicySeed(settings);
+  if (settingsAddress !== SQUADS_SETTINGS
+    || settingsOwner !== SQUADS_PROGRAM
+    || recordedSettingsPolicySeed !== seed
+    || !settings
+    || settings.owner !== settingsOwner
+    || settingsPolicySeed === null
+    || BigInt(settingsPolicySeed) < seed
+    || !Number.isInteger(settingsDataBytes)
+    || settingsDataBytes <= 0
+    || !/^[0-9a-f]{64}$/.test(settingsDataSha256)) {
+    throw new Error("finalized repair-policy journal Settings identity does not match chain");
+  }
+  if (String(record.finalizedPolicyDataSha256 ?? "") !== policyDataSha256
+    || Number(record.finalizedPolicyDataBytes) !== policyAccount.data.length) {
+    throw new Error("repair-policy journal finalized policy hash/length disagrees with chain");
+  }
+  if (wire.signature !== finalized.transaction.signatures[0]) {
+    throw new Error("finalized PolicyCreate signature differs from the journal");
+  }
+  return {
+    path,
+    seed,
+    policy,
+    creationSignature: wire.signature,
+    creationMessageSha256: wire.messageSha256,
+    creationMessageBase64: Buffer.from(wire.message).toString("base64"),
+    compiledPolicy,
+    policyDataBytes: policyAccount.data.length,
+    policyDataSha256,
+    settingsIdentity: {
+      address: settingsAddress,
+      owner: settings.owner,
+      dataBytes: settings.data.length,
+      dataSha256: createHash("sha256").update(settings.data).digest("hex"),
+      policySeed: settingsPolicySeed,
+    },
+  };
+}
+
+type FinalizedRepairJournal = Readonly<{
+  path: string;
+  record: JsonRecord;
+  finalized: FinalizedTransaction;
+  seed: bigint;
+  policy: Address;
+}>;
+
+async function verifyFinalizedRepairJournal(
+  rpcUrl: string,
+  path: string,
+  policyJournal: string,
+): Promise<FinalizedRepairJournal> {
+  const { record, finalized } = await readFinalizedJournal(
+    rpcUrl,
+    path,
+    REPAIR_EXECUTION_SCHEMA,
+    "repair",
+  );
+  const seed = parseSeed(String(record.seed ?? record.expectedSeed ?? ""), "repair journal seed");
+  const policy = address(stringAt(record.policy, "repair journal policy"));
+  assertRepairPolicyHardBinding(seed, policy);
+  if (resolve(String(record.policyJournal ?? "")) !== resolve(policyJournal)) {
+    throw new Error("repair journal is not linked to the supplied finalized PolicyCreate journal");
+  }
+  // The one-shot policy may already be closed by PolicyRemove when this
+  // journal is checked from the later restore gate. Re-read the immutable
+  // PolicyCreate transaction and its decoded semantic provenance here.
+  const policyCreation = await readFinalizedJournal(
+    rpcUrl,
+    resolve(policyJournal),
+    REPAIR_POLICY_SCHEMA,
+    "repair-policy",
+  );
+  const creationSeed = parseSeed(
+    String(policyCreation.record.expectedSeed ?? policyCreation.record.seed ?? ""),
+    "repair-policy journal expectedSeed",
+  );
+  const creationPolicy = address(stringAt(policyCreation.record.policy, "repair-policy journal policy"));
+  if (creationSeed !== seed || creationPolicy !== policy) {
+    throw new Error("repair journal policy provenance does not match the finalized PolicyCreate");
+  }
+  const policyCreate = recordAt(policyCreation.wire.transaction.policyCreate, "repair journal PolicyCreate");
+  const policyCreateData = assertBase64Bytes(
+    stringAt(policyCreate.dataBase64, "repair journal PolicyCreate.dataBase64"),
+    "repair journal PolicyCreate.dataBase64",
+  );
+  if (String(policyCreate.programId) !== SQUADS_PROGRAM
+    || policyCreateData.length !== REPAIR_POLICY_CREATE_DATA_BYTES
+    || createHash("sha256").update(policyCreateData).digest("hex") !== REPAIR_POLICY_CREATE_DATA_SHA256) {
+    throw new Error("repair journal is not linked to the reviewed seed-140 PolicyCreate wire");
+  }
+  const compiledPolicy = decodePolicyCreateWire(
+    wireInstruction(policyCreate as unknown as PolicyWireInstruction),
+  );
+  const recordedPolicy = policyCreation.record.decodedPolicy === null
+    || typeof policyCreation.record.decodedPolicy !== "object"
+    ? null
+    : policyCreation.record.decodedPolicy as ReturnType<typeof decodeSquadsPolicy>;
+  const policySemantics = repairPolicySemantics(recordedPolicy, seed, compiledPolicy);
+  if (!policySemantics.identityPass || !policySemantics.payloadPass
+    || !policySemantics.digestUnconstrained || !policySemantics.navExact.pass
+    || !policySemantics.compiledMatch) {
+    throw new Error("repair journal PolicyCreate provenance does not carry the exact compiled policy semantics");
+  }
+  const policyHardBinding = recordAt(policyCreation.record.hardBinding, "repair journal PolicyCreate.hardBinding");
+  if (String(policyHardBinding.expectedSeed) !== REPAIR_POLICY_EXPECTED_SEED.toString()
+    || String(policyHardBinding.expectedPolicy) !== REPAIR_POLICY_EXPECTED_PDA) {
+    throw new Error("repair journal PolicyCreate hard binding is not seed 140");
+  }
+  const postState = recordAt(record.finalizedPostState, "repair journal finalizedPostState");
+  const postChecks = record.expectedPostState ?? record.postState;
+  if (postChecks === undefined) throw new Error("repair journal has no expected post-state");
+  const policyDataBytes = Number(record.finalizedPolicyDataBytes);
+  const policyDataSha256 = String(record.finalizedPolicyDataSha256 ?? "");
+  if (!Number.isInteger(policyDataBytes) || policyDataBytes <= 0
+    || !/^[0-9a-f]{64}$/.test(policyDataSha256)
+    || policyDataBytes !== Number(policyCreation.record.finalizedPolicyDataBytes)
+    || policyDataSha256 !== String(policyCreation.record.finalizedPolicyDataSha256 ?? "")) {
+    throw new Error("repair journal finalized policy observation differs from the PolicyCreate journal");
+  }
+  const requiredPostState: Readonly<Record<string, string>> = {
+    totalValue: REPAIRED_BOOK_RAW.toString(),
+    idleBalance: REPAIRED_BOOK_RAW.toString(),
+    receipt1PositionValue: PHANTOM_NAV_RAW.toString(),
+    custody1Balance: "0",
+    lpSupply: REPAIR_FROZEN.lpSupply.toString(),
+    lockedProfitDegradationDuration: REPAIR_FROZEN.degradation.toString(),
+  };
+  for (const [field, expected] of Object.entries(requiredPostState)) {
+    if (String(postState[field] ?? "") !== expected) {
+      throw new Error(`repair journal finalized post-state ${field} is ${String(postState[field] ?? "absent")}; expected ${expected}`);
+    }
+  }
+  const recordedProvenance = recordAt(record.policyProvenance, "repair journal policyProvenance");
+  if (String(recordedProvenance.creationSignature ?? "") !== policyCreation.wire.signature
+    || String(recordedProvenance.creationMessageSha256 ?? "") !== policyCreation.wire.messageSha256
+    || Number(recordedProvenance.policyDataBytes) !== policyDataBytes
+    || String(recordedProvenance.policyDataSha256 ?? "") !== policyDataSha256) {
+    throw new Error("repair journal policy provenance fields differ from the finalized PolicyCreate");
+  }
+  return { path, record, finalized, seed, policy };
+}
+
+async function compileRepairPolicy(seed: bigint) {
+  assertRepairPolicyHardBinding(seed, REPAIR_POLICY_EXPECTED_PDA);
+  const artifact = await compileCustomPolicyArtifact(seed - 2n, { navExactRaw: PHANTOM_NAV_RAW });
+  const target = artifact.policies.find((entry) =>
+    entry.operation === REPAIR_POLICY_OPERATION && BigInt(entry.seed) === seed);
+  if (!target) throw new Error(`compiler did not emit nav-refresh policy seed ${seed}`);
+  if (target.policy !== policyPda(seed)) {
+    throw new Error(`compiler policy PDA for seed ${seed} drifted from the local derivation`);
+  }
+  assertRepairPolicyHardBinding(
+    seed,
+    address(target.policy),
+    Buffer.from(target.createInstruction.dataBase64, "base64"),
+  );
+  if (JSON.stringify(target.constraintIndices) !== JSON.stringify([0, 1])) {
+    throw new Error("nav-refresh policy must constrain arm_report and deposit_strategy with [0, 1]");
+  }
+  return { artifact, target } as const;
+}
+
+type CustomExecutionArtifact = Readonly<{
+  schema: "loyal-voltr-custom-execution/v2";
+  sourceSha256: string;
+  instruction: PolicyWireInstruction;
+}>;
+
+function compileCustomExecution(
+  policy: Address,
+  inner: readonly Instruction[],
+  constraintIndices: readonly number[],
+): CustomExecutionArtifact {
+  if (inner.length === 0 || inner.length !== constraintIndices.length) {
+    throw new Error("repair execution inner instructions and constraints must be nonempty and aligned");
+  }
+  const source = JSON.stringify({
+    policy,
+    delegatedSigner: DELEGATED_EXECUTOR,
+    accountIndex: 0,
+    constraintIndices,
+    inner: inner.map(wireFromInstruction),
+  });
+  const result = spawnSync("cargo", ["run", "--quiet", "-p", "loyal-actions", "--bin", EXECUTION_COMPILER_BIN], {
+    cwd: REPOSITORY_ROOT,
+    input: source,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    env: {
+      ...process.env,
+      CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR ?? SHARED_CARGO_TARGET_DIR,
+    },
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`repair execution compiler failed: ${(result.stderr || result.stdout).trim()}`);
+  }
+  const output = JSON.parse(result.stdout) as {
+    schema?: unknown;
+    sourceSha256?: unknown;
+    instruction?: PolicyWireInstruction;
+  };
+  if (output.schema !== "loyal-voltr-custom-execution/v2"
+    || typeof output.sourceSha256 !== "string"
+    || !output.instruction
+    || typeof output.instruction.programId !== "string"
+    || !Array.isArray(output.instruction.accounts)
+    || typeof output.instruction.dataBase64 !== "string") {
+    throw new Error("repair execution compiler escaped its exact v2 wrapper contract");
+  }
+  const expectedSourceSha256 = createHash("sha256").update(source).digest("hex");
+  if (output.sourceSha256 !== expectedSourceSha256) {
+    throw new Error("repair execution compiler source hash drifted");
+  }
+  if (output.instruction.programId !== SQUADS_PROGRAM
+    || output.instruction.accounts[0]?.address !== policy
+    || output.instruction.accounts[2]?.address !== DELEGATED_EXECUTOR
+    || !output.instruction.accounts[2]?.signer) {
+    throw new Error("repair execution wrapper account graph drifted from policy/delegated signer");
+  }
+  return {
+    schema: "loyal-voltr-custom-execution/v2",
+    sourceSha256: output.sourceSha256,
+    instruction: output.instruction,
+  };
+}
+
+function buildPolicyRemoveInstruction(policy: Address): Instruction {
+  const web3Instruction = executeSettingsTransactionSync({
+    settingsPda: new PublicKey(SQUADS_SETTINGS),
+    signers: [new PublicKey(ADMIN)],
+    actions: [{ __kind: "PolicyRemove" as const, policy: new PublicKey(policy) }],
+    feePayer: new PublicKey(ADMIN),
+    programId: new PublicKey(SQUADS_PROGRAM),
+    remainingAccounts: [{ pubkey: new PublicKey(policy), isSigner: false, isWritable: true }],
+  });
+  if (web3Instruction.programId.toBase58() !== SQUADS_PROGRAM) {
+    throw new Error("PolicyRemove escaped the Squads program");
+  }
+  const instruction = fromWeb3Instruction(web3Instruction);
+  const accounts = instruction.accounts ?? [];
+  if (accounts.length !== 6
+    || accounts[0]?.address !== SQUADS_SETTINGS
+    || accounts[0]?.role !== AccountRole.WRITABLE
+    || accounts[1]?.address !== ADMIN
+    || accounts[1]?.role !== AccountRole.WRITABLE_SIGNER
+    || accounts[4]?.address !== ADMIN
+    || accounts[4]?.role !== AccountRole.READONLY_SIGNER
+    || accounts[5]?.address !== policy
+    || accounts[5]?.role !== AccountRole.WRITABLE) {
+    throw new Error("PolicyRemove account graph drifted from Settings/admin/policy");
+  }
+  return instruction;
+}
+
+function repairPolicySemantics(
+  decoded: ReturnType<typeof decodeSquadsPolicy>,
+  seed: bigint,
+  compiled: ReturnType<typeof decodePolicyCreateWire> | null = null,
+) {
+  const constraints = decoded?.constraints ?? [];
+  const dataConstraints = constraints
+    .flatMap((constraint) => constraint.dataConstraints)
+    .filter((constraint): constraint is {
+      offset: string;
+      operator: string;
+      kind: string;
+      value: string;
+    } => "offset" in constraint);
+  const digestConstraints = dataConstraints.filter((constraint) =>
+    constraint.offset === "47" || constraint.offset === "59");
+  const navExactConstraints = dataConstraints.filter((constraint) =>
+    constraint.offset === "39" || constraint.offset === "51");
+  const navExactPass = navExactConstraints.length === 2
+    && ["39", "51"].every((offset) => {
+      const matches = navExactConstraints.filter((constraint) => constraint.offset === offset);
+      return matches.length === 1
+        && matches[0]?.kind === "U64Le"
+        && matches[0]?.operator === "Equals"
+        && BigInt(matches[0].value) === PHANTOM_NAV_RAW;
+    });
+  const compiledMatch = decoded !== null && compiled !== null
+    && compiled.seed === decoded.seed
+    && compiled.threshold === decoded.threshold
+    && compiled.timeLock === decoded.timeLock
+    && toJson(compiled.signers) === toJson(decoded.signers)
+    && compiled.policyState === decoded.policyState
+    && compiled.accountIndex === decoded.accountIndex
+    && toJson(stablePolicyConstraints(compiled)) === toJson(stablePolicyConstraints(decoded));
+  return {
+    identityPass: decoded !== null
+      && decoded.settings === SQUADS_SETTINGS
+      && decoded.seed === seed.toString()
+      && decoded.threshold === 1
+      && decoded.timeLock === 0
+      && decoded.signers.length === 1
+      && decoded.signers[0]?.address === DELEGATED_EXECUTOR
+      && decoded.signers[0]?.permissionsMask === 7,
+    payloadPass: decoded !== null
+      && decoded.policyState === "ProgramInteraction"
+      && decoded.accountIndex === 0
+      && decoded.preHook === null
+      && decoded.postHook === null
+      && decoded.spendingLimitCount === 0
+      && constraints.length === 2
+      && constraints[0]?.programId === RWA_MULTIPLY_ROUTE.customAdaptor.program
+      && constraints[1]?.programId === VOLTR,
+    digestUnconstrained: digestConstraints.length === 0,
+    navExact: {
+      present: navExactConstraints.length > 0,
+      pass: navExactPass,
+      constraints: navExactConstraints,
+    },
+    compiledMatch,
+    compiledPolicy: compiled,
+    decoded,
+  } as const;
+}
+
+function writePrivate(path: string, value: Record<string, unknown>, flag: "w" | "wx") {
+  writeFileSync(path, `${toJson(value, 2)}\n`, { flag, mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+type RepairPolicyOperatorMode = "execute" | "reconcile";
+
+function operatorMode(): RepairPolicyOperatorMode | null {
+  const simulate = process.argv.includes("--simulate");
+  const execute = process.argv.includes("--execute");
+  const reconcile = process.argv.includes("--reconcile");
+  if (simulate && (execute || reconcile)) {
+    throw new Error("--simulate cannot be combined with --execute or --reconcile");
+  }
+  if (execute && reconcile) throw new Error("--execute and --reconcile are mutually exclusive");
+  return execute ? "execute" : reconcile ? "reconcile" : null;
+}
+
+function operatorJournal(): string {
+  const journal = resolve(cliValue("--journal"));
+  if (!journal.endsWith(".json") || !existsSync(dirname(journal))) {
+    throw new Error("--execute/--reconcile requires --journal PATH.json under an existing directory");
+  }
+  return journal;
+}
+
+type CanonicalLegStateStatus = "pending" | "attempted" | "finalized";
+
+function canonicalLegStatePath(step: string): string {
+  if (!/^[a-z0-9-]+$/.test(step)) throw new Error(`invalid canonical HXtk leg name ${step}`);
+  mkdirSync(HXTK_STATE_ROOT, { recursive: true, mode: 0o700 });
+  chmodSync(HXTK_STATE_ROOT, 0o700);
+  return resolve(HXTK_STATE_ROOT, `${step}.state`);
+}
+
+function readCanonicalLegState(step: string): JsonRecord | null {
+  const path = canonicalLegStatePath(step);
+  if (!existsSync(path)) return null;
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
+  if (parsed.schema !== HXTK_STATE_SCHEMA
+    || parsed.step !== step
+    || parsed.vault !== VAULT.toString()) {
+    throw new Error(`canonical HXtk state ${path} has an unexpected schema, leg, or vault`);
+  }
+  if (parsed.status !== "pending" && parsed.status !== "attempted" && parsed.status !== "finalized") {
+    throw new Error(`canonical HXtk state ${path} has an invalid status`);
+  }
+  return parsed;
+}
+
+function canonicalLegStatePathForJournal(step: string, journal: string): string {
+  const path = canonicalLegStatePath(step);
+  const state = readCanonicalLegState(step);
+  if (state !== null && String(state.journal ?? "") !== journal) {
+    throw new Error(
+      `${step} canonical replay fence belongs to journal ${sanitizeText(String(state.journal ?? ""))}; `
+      + `refusing journal ${sanitizeText(journal)}`,
+    );
+  }
+  return path;
+}
+
+function assertCanonicalLegAvailable(step: string, journal: string) {
+  const existing = readCanonicalLegState(step);
+  if (existing === null) return;
+  if (String(existing.journal ?? "") !== journal) {
+    throw new Error(
+      `${step} canonical replay fence belongs to journal ${sanitizeText(String(existing.journal ?? ""))}; `
+      + `refusing journal ${sanitizeText(journal)}`,
+    );
+  }
+  if (existing.status === "pending" || existing.status === "attempted") {
+    throw new Error(
+      `${step} canonical replay fence is ${existing.status}; use the same journal's --reconcile path after checking finalized status`,
+    );
+  }
+  if (!process.argv.includes("--allow-repeat")) {
+    throw new Error(`${step} canonical replay fence is finalized; rerun requires explicit --allow-repeat`);
+  }
+  if (!REPEATABLE_LEGS.has(step)) {
+    throw new Error(`--allow-repeat is not accepted for one-shot HXtk leg ${step}`);
+  }
+}
+
+function beginCanonicalLegState(
+  step: string,
+  journal: string,
+  expectedSignature: string,
+): string {
+  const path = canonicalLegStatePath(step);
+  const existing = readCanonicalLegState(step);
+  const allowRepeat = process.argv.includes("--allow-repeat");
+  if (allowRepeat && !REPEATABLE_LEGS.has(step)) {
+    throw new Error(`--allow-repeat is not accepted for one-shot HXtk leg ${step}`);
+  }
+  if (existing !== null) {
+    if (existing.status !== "finalized") {
+      throw new Error(
+        `${step} canonical replay fence is ${existing.status}; use the same journal's --reconcile path after checking finalized status`,
+      );
+    }
+    if (!allowRepeat) {
+      throw new Error(`${step} canonical replay fence is finalized; rerun requires explicit --allow-repeat`);
+    }
+    const history = Array.isArray(existing.history)
+      ? [...existing.history, { ...existing, history: undefined }]
+      : [{ ...existing, history: undefined }];
+    writePrivate(path, {
+      schema: HXTK_STATE_SCHEMA,
+      vault: VAULT.toString(),
+      step,
+      status: "pending" satisfies CanonicalLegStateStatus,
+      broadcast: false,
+      journal,
+      expectedSignature,
+      attempt: Number(existing.attempt ?? 1) + 1,
+      history,
+      updatedAtUnixMs: Date.now(),
+    }, "w");
+    return path;
+  }
+  writePrivate(path, {
+    schema: HXTK_STATE_SCHEMA,
+    vault: VAULT.toString(),
+    step,
+    status: "pending" satisfies CanonicalLegStateStatus,
+    broadcast: false,
+    journal,
+    expectedSignature,
+    attempt: 1,
+    updatedAtUnixMs: Date.now(),
+  }, "wx");
+  return path;
+}
+
+function markCanonicalLegState(
+  step: string,
+  journal: string,
+  patch: Readonly<{ status: CanonicalLegStateStatus; broadcast: false | "attempted" | true; signature?: string; error?: string }>,
+) {
+  const path = canonicalLegStatePathForJournal(step, journal);
+  const current = readCanonicalLegState(step);
+  if (current === null) throw new Error(`${step} canonical state disappeared during execution`);
+  writePrivate(path, {
+    ...current,
+    ...patch,
+    ...(patch.error === undefined ? {} : { error: sanitizeText(patch.error) }),
+    updatedAtUnixMs: Date.now(),
+  }, "w");
+}
+
+function ensureCanonicalLegStateForReconcile(
+  step: string,
+  journal: string,
+  expectedSignature: string,
+): string {
+  const path = canonicalLegStatePath(step);
+  const existing = readCanonicalLegState(step);
+  if (existing === null) {
+    writePrivate(path, {
+      schema: HXTK_STATE_SCHEMA,
+      vault: VAULT.toString(),
+      step,
+      status: "attempted" satisfies CanonicalLegStateStatus,
+      broadcast: "attempted",
+      journal,
+      expectedSignature,
+      attempt: 1,
+      recoveredFromPendingJournal: true,
+      updatedAtUnixMs: Date.now(),
+    }, "wx");
+    return path;
+  }
+  if (existing.status === "finalized") {
+    throw new Error(`${step} canonical state is already finalized; refusing a second reconciliation`);
+  }
+  if (String(existing.journal ?? "") !== journal
+    || String(existing.expectedSignature ?? "") !== expectedSignature) {
+    throw new Error(`${step} pending journal does not match the canonical replay state`);
+  }
+  markCanonicalLegState(step, journal, { status: "attempted", broadcast: "attempted", signature: expectedSignature });
+  return path;
+}
+
+function repairPolicyRemoveJournalPath(repairJournal: string): string {
+  return repairJournal.replace(/\.json$/i, ".policy-remove.json");
+}
+
+type JsonRecord = Record<string, unknown>;
+type FinalizedTransaction = Awaited<ReturnType<typeof finalizedTransaction>>;
+
+type JournaledExecutionBuild = Readonly<{
+  prepared: PreparedTransaction;
+  plan: JsonRecord;
+  beforeSend?: () => Promise<void>;
+}>;
+
+function recordAt(value: unknown, key: string): JsonRecord {
+  const record = value && typeof value === "object" ? value as JsonRecord : null;
+  if (!record) throw new Error(`journal field ${key} is not an object`);
+  return record;
+}
+
+function stringAt(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`journal field ${label} is missing`);
+  }
+  return value;
+}
+
+function assertBase64Bytes(value: string, label: string): Uint8Array {
+  const bytes = Uint8Array.from(Buffer.from(value, "base64"));
+  if (Buffer.from(bytes).toString("base64") !== value) {
+    throw new Error(`journal field ${label} is not canonical base64`);
+  }
+  return bytes;
+}
+
+function journalWire(
+  journal: JsonRecord,
+  expectedSchema: string,
+  expectedStep: string,
+  lifecycle: "pending" | "finalized",
+) {
+  if (journal.schema !== expectedSchema || journal.step !== expectedStep) {
+    throw new Error(`journal is not the ${expectedStep} ${expectedSchema} schema`);
+  }
+  const transaction = recordAt(journal.transaction, "transaction");
+  const signature = stringAt(transaction.expectedSignature, "transaction.expectedSignature");
+  const signedWireBase64 = stringAt(journal.signedWireBase64, "signedWireBase64");
+  const messageBase64 = stringAt(transaction.messageBase64, "transaction.messageBase64");
+  const wire = assertBase64Bytes(signedWireBase64, "signedWireBase64");
+  const message = assertBase64Bytes(messageBase64, "transaction.messageBase64");
+  const wireSha256 = createHash("sha256").update(wire).digest("hex");
+  const messageSha256 = createHash("sha256").update(message).digest("hex");
+  if (transaction.wireSha256 !== wireSha256) {
+    throw new Error("pending journal signed wire hash does not match signedWireBase64");
+  }
+  if (transaction.messageSha256 !== messageSha256) {
+    throw new Error("pending journal message hash does not match messageBase64");
+  }
+  const signedTransaction = VersionedTransaction.deserialize(Buffer.from(wire));
+  const signedMessage = signedTransaction.message.serialize();
+  if (!Buffer.from(signedMessage).equals(Buffer.from(message))) {
+    throw new Error("journal signed wire message is not byte-identical to transaction.messageBase64");
+  }
+  const signedSignature = signedTransaction.signatures[0]
+    ? bs58.encode(signedTransaction.signatures[0])
+    : null;
+  if (signedSignature !== signature) {
+    throw new Error(`journal signed wire signature ${signedSignature ?? "absent"} differs from ${signature}`);
+  }
+  if (lifecycle === "pending"
+    && (journal.sent !== false
+      || (journal.broadcast !== false && journal.broadcast !== "attempted")
+      || journal.signed !== true)) {
+    throw new Error("pending journal lifecycle flags are not signed-but-unsent");
+  }
+  if (lifecycle === "finalized"
+    && (journal.verdict !== "FINALIZED_RECONCILED"
+      || journal.sent !== true || journal.signed !== true || journal.broadcast !== true)) {
+    throw new Error("finalized journal lifecycle flags are not finalized-reconciled");
+  }
+  if (lifecycle === "finalized" && journal.signature !== signature) {
+    throw new Error("finalized journal top-level signature differs from transaction.expectedSignature");
+  }
+  if (lifecycle === "pending" && journal.signature !== undefined && journal.signature !== signature) {
+    throw new Error("pending journal top-level signature differs from transaction.expectedSignature");
+  }
+  return { transaction, signature, wire, message, wireSha256, messageSha256, signedTransaction } as const;
+}
+
+function assertFinalizedJournalMessage(
+  wire: ReturnType<typeof journalWire>,
+  finalized: FinalizedTransaction,
+) {
+  const observedSignature = finalized.transaction.signatures[0];
+  if (observedSignature !== wire.signature) {
+    throw new Error(`finalized transaction signature ${observedSignature ?? "absent"} differs from journal ${wire.signature}`);
+  }
+  const finalizedMessage = finalized.transaction.message.serialize();
+  if (!Buffer.from(finalizedMessage).equals(Buffer.from(wire.message))) {
+    throw new Error("finalized transaction message is not byte-identical to the journal message");
+  }
+  const finalizedMessageSha256 = createHash("sha256").update(finalizedMessage).digest("hex");
+  if (finalizedMessageSha256 !== wire.messageSha256) {
+    throw new Error("finalized transaction message hash differs from the journal");
+  }
+}
+
+async function readFinalizedJournal(
+  rpcUrl: string,
+  path: string,
+  schema: string,
+  step: string,
+) {
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as JsonRecord;
+  const wire = journalWire(parsed, schema, step, "finalized");
+  const finalized = await finalizedTransaction(rpcUrl, wire.signature);
+  assertFinalizedJournalMessage(wire, finalized);
+  if (parsed.finalizedSlot !== undefined && Number(parsed.finalizedSlot) !== finalized.slot) {
+    throw new Error(`${step} journal finalizedSlot differs from the chain transaction slot`);
+  }
+  if (parsed.finalizedBlockTime !== undefined
+    && parsed.finalizedBlockTime !== null
+    && Number(parsed.finalizedBlockTime) !== finalized.blockTime) {
+    throw new Error(`${step} journal finalizedBlockTime differs from the chain transaction`);
+  }
+  return { record: parsed, wire, finalized } as const;
+}
+
+type FinalizedCancelJournal = Readonly<{
+  path: string;
+  record: JsonRecord;
+  finalized: FinalizedTransaction;
+  escrowRefundLp: bigint;
+  beforeAdminLp: bigint;
+  adminLpDelta: bigint;
+}>;
+
+async function verifyFinalizedCancelJournal(
+  rpcUrl: string,
+  path: string,
+): Promise<FinalizedCancelJournal> {
+  const result = await readFinalizedJournal(rpcUrl, path, SCHEMA, "cancel");
+  const before = recordAt(result.record.before, "cancel journal before");
+  const cancel = recordAt(result.record.cancel, "cancel journal cancel");
+  const finalizedState = recordAt(result.record.finalizedState, "cancel journal finalizedState");
+  if (String(result.record.requestReceiptPda ?? cancel.requestReceipt ?? "") !== REQUEST_RECEIPT
+    || cancel.originalFrozenReceipt !== true
+    || BigInt(stringAt(cancel.escrowRefundLp, "cancel journal cancel.escrowRefundLp"))
+      !== REPAIR_FROZEN.requestEscrowLpBalance) {
+    throw new Error("RECONCILE_MISMATCH: finalized cancel journal is not pinned to the original frozen request receipt");
+  }
+  const beforeAdminLp = BigInt(String(before.adminLpBalance ?? "0"));
+  const escrowRefundLp = BigInt(stringAt(cancel.escrowRefundLp, "cancel journal cancel.escrowRefundLp"));
+  const finalizedAdminLp = BigInt(stringAt(finalizedState.adminLpBalance, "cancel journal finalizedState.adminLpBalance"));
+  const adminLpDelta = finalizedAdminLp - beforeAdminLp;
+  const finalizedReceipt = finalizedState.requestReceipt === null
+    ? null
+    : recordAt(finalizedState.requestReceipt, "cancel journal finalized requestReceipt");
+  if (adminLpDelta !== escrowRefundLp
+    || String(finalizedState.requestEscrowLpBalance) !== "0"
+    || finalizedReceipt !== null
+      && (String(finalizedReceipt.vault) !== VAULT
+        || String(finalizedReceipt.userTransferAuthority) !== ADMIN
+        || String(finalizedReceipt.amountLpEscrowed) !== "0")) {
+    throw new Error("RECONCILE_MISMATCH: finalized cancel journal does not reconcile the escrow refund delta and cleared receipt");
+  }
+  return {
+    path,
+    record: result.record,
+    finalized: result.finalized,
+    escrowRefundLp,
+    beforeAdminLp,
+    adminLpDelta,
+  };
+}
+
+type FinalizedRequestJournal = Readonly<{
+  path: string;
+  record: JsonRecord;
+  finalized: FinalizedTransaction;
+  requestBlockTime: number;
+  chainExpectedWithdrawableFromTs: bigint;
+  requestReceipt: JsonRecord;
+  amountLpEscrowed: bigint;
+  withdrawableFromTs: bigint;
+}>;
+
+async function verifyFinalizedRequestJournal(
+  rpcUrl: string,
+  path: string,
+): Promise<FinalizedRequestJournal> {
+  const result = await readFinalizedJournal(rpcUrl, path, SCHEMA, "request");
+  if (String(result.record.requestReceiptPda ?? "") !== REQUEST_RECEIPT) {
+    throw new Error("finalized request journal is not bound to the HXtk request receipt PDA");
+  }
+  const requestReceipt = recordAt(result.record.requestReceipt, "request journal requestReceipt");
+  if (String(requestReceipt.vault) !== VAULT
+    || String(requestReceipt.userTransferAuthority) !== ADMIN) {
+    throw new Error("finalized request journal receipt is not the HXtk admin request receipt");
+  }
+  const amountLpEscrowed = BigInt(stringAt(requestReceipt.amountLpEscrowed, "requestReceipt.amountLpEscrowed"));
+  const withdrawableFromTs = BigInt(stringAt(requestReceipt.withdrawableFromTs, "requestReceipt.withdrawableFromTs"));
+  const requestBlockTime = result.finalized.blockTime;
+  if (requestBlockTime === null || requestBlockTime === undefined) {
+    throw new Error("finalized request transaction has no blockTime; cannot reconcile the chain waiting period");
+  }
+  const chainExpectedWithdrawableFromTs = BigInt(requestBlockTime) + REQUEST_WAITING_PERIOD_SECONDS;
+  const waitingPeriodDelta = withdrawableFromTs - chainExpectedWithdrawableFromTs;
+  if (waitingPeriodDelta < -1n || waitingPeriodDelta > 1n) {
+    throw new Error(
+      `finalized request withdrawableFromTs ${withdrawableFromTs} does not equal request blockTime ${requestBlockTime} + `
+      + `${REQUEST_WAITING_PERIOD_SECONDS} (${chainExpectedWithdrawableFromTs}); observed delta ${waitingPeriodDelta}`,
+    );
+  }
+  if (amountLpEscrowed <= 0n) throw new Error("finalized request journal has no escrowed LP");
+  const finalizedState = recordAt(result.record.finalizedState, "request journal finalizedState");
+  if (String(finalizedState.adminLpBalance) !== "0"
+    || String(finalizedState.requestEscrowLpBalance) !== amountLpEscrowed.toString()) {
+    throw new Error("finalized request journal post-state does not bind the new request receipt");
+  }
+  return {
+    path,
+    record: result.record,
+    finalized: result.finalized,
+    requestBlockTime,
+    chainExpectedWithdrawableFromTs,
+    requestReceipt,
+    amountLpEscrowed,
+    withdrawableFromTs,
+  };
+}
+
+function claimExpectedRaw(value: unknown, label: string): bigint {
+  try {
+    return BigInt(stringAt(value, label));
+  } catch (error) {
+    throw new Error(`RECONCILE_MISMATCH: ${sanitizeError(error)}`);
+  }
+}
+
+async function verifyFinalizedClaimJournal(
+  rpcUrl: string,
+  path: string,
+) {
+  const result = await readFinalizedJournal(rpcUrl, path, SCHEMA, "claim");
+  const finalizedState = recordAt(result.record.finalizedState, "claim journal finalizedState");
+  if (finalizedState.requestReceipt !== null || String(finalizedState.requestEscrowLpBalance) !== "0") {
+    throw new Error("RECONCILE_MISMATCH: finalized claim journal does not prove request closure and escrow drain");
+  }
+  const before = recordAt(result.record.before, "claim journal before");
+  const claim = recordAt(result.record.claim, "claim journal claim");
+  const reconciliation = recordAt(result.record.claimReconciliation, "claim journal claimReconciliation");
+  if (String(result.record.requestReceiptPda ?? claim.requestReceipt ?? "") !== REQUEST_RECEIPT) {
+    throw new Error("RECONCILE_MISMATCH: finalized claim journal is not bound to the request receipt in the request journal");
+  }
+  const expectedPayoutRaw = claimExpectedRaw(
+    result.record.expectedPayoutRaw ?? claim.expectedPayoutRaw,
+    "claim.expectedPayoutRaw",
+  );
+  const expectedLpBurnRaw = claimExpectedRaw(
+    result.record.expectedLpBurnRaw ?? claim.expectedLpBurnRaw,
+    "claim.expectedLpBurnRaw",
+  );
+  const payoutRaw = BigInt(stringAt(reconciliation.payoutRaw, "claimReconciliation.payoutRaw"));
+  const idleDeltaRaw = BigInt(stringAt(reconciliation.idleDeltaRaw, "claimReconciliation.idleDeltaRaw"));
+  const tvAfter = BigInt(stringAt(reconciliation.tvAfter, "claimReconciliation.tvAfter"));
+  const lpBurnedRaw = BigInt(stringAt(reconciliation.lpBurnedRaw, "claimReconciliation.lpBurnedRaw"));
+  const lpSupplyAfter = BigInt(stringAt(reconciliation.lpSupplyAfter, "claimReconciliation.lpSupplyAfter"));
+  const requestAmountLp = BigInt(stringAt(claim.requestAmountLp, "claim.requestAmountLp"));
+  const amountAssetToWithdrawRaw = BigInt(stringAt(
+    claim.amountAssetToWithdrawRaw,
+    "claim.amountAssetToWithdrawRaw",
+  ));
+  const beforeAdminUsdc = BigInt(stringAt(before.adminUsdcBalance, "claim journal before.adminUsdcBalance"));
+  const finalizedAdminUsdc = BigInt(stringAt(finalizedState.adminUsdcBalance, "claim journal finalizedState.adminUsdcBalance"));
+  const beforeIdle = BigInt(stringAt(before.idleBalance, "claim journal before.idleBalance"));
+  const finalizedIdle = BigInt(stringAt(finalizedState.idleBalance, "claim journal finalizedState.idleBalance"));
+  const beforeTv = BigInt(stringAt(before.totalValue, "claim journal before.totalValue"));
+  const finalizedTv = BigInt(stringAt(finalizedState.totalValue, "claim journal finalizedState.totalValue"));
+  const beforeSupply = BigInt(stringAt(before.lpSupply, "claim journal before.lpSupply"));
+  const finalizedSupply = BigInt(stringAt(finalizedState.lpSupply, "claim journal finalizedState.lpSupply"));
+  const beforeTicket = before.reportTicket;
+  const finalizedTicket = finalizedState.reportTicket;
+  if (payoutRaw < 1n
+    || payoutRaw !== expectedPayoutRaw
+    || finalizedAdminUsdc - beforeAdminUsdc !== payoutRaw
+    || payoutRaw > amountAssetToWithdrawRaw
+    || idleDeltaRaw !== payoutRaw
+    || finalizedIdle !== beforeIdle - payoutRaw
+    || tvAfter !== beforeTv - payoutRaw
+    || finalizedTv !== tvAfter
+    || lpBurnedRaw !== expectedLpBurnRaw
+    || lpBurnedRaw !== requestAmountLp
+    || finalizedSupply !== beforeSupply - lpBurnedRaw
+    || lpSupplyAfter !== finalizedSupply
+    || reconciliation.requestReceiptClosed !== true
+    || reconciliation.escrowLpBalanceAfter !== "0"
+    || reconciliation.ticketUnchanged !== true
+    || toJson(beforeTicket) !== toJson(finalizedTicket)) {
+    throw new Error("RECONCILE_MISMATCH: finalized claim journal does not prove the exact simulated payout, book, LP burn, closure, and ticket invariants");
+  }
+  return { ...result, path } as const;
+}
+
+type RestorePrerequisites = Readonly<{
+  repairJournal: FinalizedRepairJournal;
+  claimJournal: Awaited<ReturnType<typeof verifyFinalizedClaimJournal>>;
+  repairBlockTime: number;
+  eligibleAt: number;
+  eligibilityObservationSlot: number;
+  eligibilityChainTime: number;
+}>;
+
+async function latestFinalizedChainTime(rpcUrl: string): Promise<Readonly<{
+  slot: number;
+  blockTime: number;
+}>> {
+  // Eligibility is a chain-time decision. Read the latest finalized slot and
+  // its bank timestamp together; wall-clock Date.now() is not authoritative
+  // for a transaction that will be admitted by the cluster.
+  const slot = await rpcWithRetry<number>("getSlot", [{ commitment: "finalized" }]);
+  const blockTime = await rpcWithRetry<number | null>("getBlockTime", [slot]);
+  if (blockTime === null || blockTime === undefined) {
+    throw new Error(`latest finalized slot ${slot} has no blockTime`);
+  }
+  return { slot, blockTime };
+}
+
+async function readRestorePrerequisites(
+  rpcUrl: string,
+  paths?: Readonly<{
+    repairJournal?: string;
+    claimJournal?: string;
+    enforceEligibility?: boolean;
+  }>,
+): Promise<RestorePrerequisites> {
+  await assertRepairPolicyRetired("restore-degradation");
+  const repairPath = paths?.repairJournal ?? requiredJournalPath(
+    REPAIR_JOURNAL_FLAG,
+    "restore-degradation requires the finalized repair journal",
+  );
+  const repairRecord = JSON.parse(readFileSync(repairPath, "utf8")) as JsonRecord;
+  const policyJournal = resolve(stringAt(repairRecord.policyJournal, "repair journal policyJournal"));
+  const repairJournal = await verifyFinalizedRepairJournal(rpcUrl, repairPath, policyJournal);
+  const claimPath = paths?.claimJournal ?? requiredJournalPath(
+    CLAIM_JOURNAL_FLAG,
+    "restore-degradation requires the finalized claim journal",
+  );
+  const claimJournal = await verifyFinalizedClaimJournal(rpcUrl, claimPath);
+  if (claimJournal.finalized.slot <= repairJournal.finalized.slot) {
+    throw new Error("restore-degradation claim journal must finalize after the repair journal");
+  }
+  const blockTime = repairJournal.finalized.blockTime;
+  if (blockTime === null || blockTime === undefined) {
+    throw new Error("RESTORE_DEGRADATION_BLOCKED: finalized repair transaction has no blockTime");
+  }
+  const repairBlockTime: number = blockTime;
+  const eligibleAt = repairBlockTime + Number(RESTORED_DEGRADATION_SECONDS);
+  const eligibility = await latestFinalizedChainTime(rpcUrl);
+  if (paths?.enforceEligibility !== false && eligibleAt > eligibility.blockTime) {
+    throw new Error(
+      `RESTORE_DEGRADATION_WAIT: repair blockTime ${repairBlockTime} + ${RESTORED_DEGRADATION_SECONDS}s `
+      + `= ${eligibleAt}, latest finalized slot ${eligibility.slot} blockTime ${eligibility.blockTime}`,
+    );
+  }
+  return {
+    repairJournal,
+    claimJournal,
+    repairBlockTime,
+    eligibleAt,
+    eligibilityObservationSlot: eligibility.slot,
+    eligibilityChainTime: eligibility.blockTime,
+  };
+}
+
+async function runJournaledStep(input: Readonly<{
+  mode: RepairPolicyOperatorMode;
+  step: string;
+  schema: string;
+  journal: string;
+  rpcUrl: string;
+  build: () => Promise<JournaledExecutionBuild>;
+  reconcile: (input: Readonly<{
+    pending: JsonRecord;
+    finalized: FinalizedTransaction;
+  }>) => Promise<JsonRecord>;
+}>): Promise<number> {
+  if (new Set(["harvest", "cancel", "request", "claim", "restore-degradation"]).has(input.step)) {
+    await assertRepairPolicyRetired(input.step);
+  }
+  if (input.mode === "reconcile") {
+    if (existsSync(input.journal) || !existsSync(`${input.journal}.pending`)) {
+      throw new Error(`${input.step} --reconcile requires one pending journal and no finalized journal`);
+    }
+    const pending = JSON.parse(readFileSync(`${input.journal}.pending`, "utf8")) as JsonRecord;
+    if (pending.verdict === "ABORTED_PRE_SEND") {
+      throw new Error(`${input.step} pending journal was aborted before send; rebuild with a new journal after rechecking state`);
+    }
+    const wire = journalWire(pending, input.schema, input.step, "pending");
+    const canonicalStatePath = ensureCanonicalLegStateForReconcile(input.step, input.journal, wire.signature);
+    const finalized = await finalizedTransaction(input.rpcUrl, wire.signature);
+    assertFinalizedJournalMessage(wire, finalized);
+    const reconciliation = await input.reconcile({ pending, finalized });
+    writePrivate(input.journal, {
+      ...pending,
+      verdict: "FINALIZED_RECONCILED",
+      sent: true,
+      signed: true,
+      broadcast: true,
+      signature: wire.signature,
+      finalizedSlot: finalized.slot,
+      finalizedBlockTime: finalized.blockTime ?? null,
+      ...reconciliation,
+    }, "wx");
+    renameSync(`${input.journal}.pending`, `${input.journal}.sent-wire`);
+    markCanonicalLegState(input.step, input.journal, {
+      status: "finalized",
+      broadcast: true,
+      signature: wire.signature,
+    });
+    console.log(toJson({
+      schema: input.schema,
+      step: input.step,
+      verdict: "FINALIZED_RECONCILED",
+      signature: wire.signature,
+      finalizedSlot: finalized.slot,
+      journal: input.journal,
+      canonicalState: canonicalStatePath,
+    }, 2));
+    return 0;
+  }
+  if (process.env.CONFIRM_MAINNET !== "1") {
+    throw new Error(`${input.step} --execute requires CONFIRM_MAINNET=1`);
+  }
+  if (existsSync(input.journal) || existsSync(`${input.journal}.pending`)) {
+    throw new Error(`${input.step} journal replay barrier already exists`);
+  }
+  // Consult the vault-scoped replay fence before building or signing a fresh
+  // packet. The journal path is deliberately not the source of truth.
+  assertCanonicalLegAvailable(input.step, input.journal);
+  const built = await input.build();
+  if (built.prepared.packetBytes > PACKET_LIMIT) {
+    throw new Error(`${input.step} packet is ${built.prepared.packetBytes} bytes; limit ${PACKET_LIMIT}`);
+  }
+  if (built.prepared.simulation.err !== null) {
+    throw new Error(`${input.step} signed simulation failed: ${JSON.stringify({
+      err: built.prepared.simulation.err,
+      logs: built.prepared.simulation.logs,
+    })}`);
+  }
+  const wireSha256 = createHash("sha256").update(built.prepared.serializedTransaction).digest("hex");
+  const messageSha256 = createHash("sha256").update(built.prepared.serializedMessage).digest("hex");
+  const planTransaction = recordAt(built.plan.transaction, "plan.transaction");
+  const pending: JsonRecord = {
+    ...built.plan,
+    schema: input.schema,
+    step: input.step,
+    verdict: "SIGNED_SIMULATION_PASS_PENDING_SEND",
+    sent: false,
+    signed: true,
+    broadcast: false,
+    expectedPreState: built.plan.expectedPreState ?? built.plan.before ?? null,
+    expectedPostState: built.plan.expectedPostState ?? built.plan.postState ?? null,
+    signedWireBase64: Buffer.from(built.prepared.serializedTransaction).toString("base64"),
+    transaction: {
+      ...planTransaction,
+      expectedSignature: built.prepared.expectedSignature,
+      wireSha256,
+      messageSha256,
+      messageBase64: Buffer.from(built.prepared.serializedMessage).toString("base64"),
+      packetBytes: built.prepared.packetBytes,
+      prestateSlot: built.prepared.prestateSlot,
+      simulationSlot: built.prepared.simulationSlot,
+    },
+  };
+  const canonicalStatePath = beginCanonicalLegState(
+    input.step,
+    input.journal,
+    built.prepared.expectedSignature,
+  );
+  writePrivate(`${input.journal}.pending`, pending, "wx");
+  try {
+    await built.beforeSend?.();
+  } catch (error) {
+    writePrivate(`${input.journal}.pending`, {
+      ...pending,
+      verdict: "ABORTED_PRE_SEND",
+      abortReason: sanitizeError(error),
+      sent: false,
+      signed: true,
+      broadcast: false,
+    }, "w");
+    markCanonicalLegState(input.step, input.journal, {
+      status: "pending",
+      broadcast: false,
+      error: sanitizeError(error),
+    });
+    throw error;
+  }
+  // Mark the exact expected signature as attempted before the raw RPC call.
+  // A process crash after submission and before catch therefore remains
+  // fenced as attempted instead of looking like an unsent transaction.
+  const attemptedPending: JsonRecord = {
+    ...pending,
+    verdict: "SEND_ATTEMPTED_PENDING_RECONCILE",
+    sent: false,
+    signed: true,
+    broadcast: "attempted",
+    signature: built.prepared.expectedSignature,
+    broadcastPreMark: "before-raw-submission",
+  };
+  writePrivate(`${input.journal}.pending`, attemptedPending, "w");
+  markCanonicalLegState(input.step, input.journal, {
+    status: "attempted",
+    broadcast: "attempted",
+    signature: built.prepared.expectedSignature,
+  });
+  // sendPreparedOnce has MAX_IDENTICAL_SUBMISSION_ATTEMPTS=1. It is the only
+  // raw-send call in this shared flow; a failure leaves the pending wire for
+  // the read-only --reconcile path and is never retried here.
+  let settled: Awaited<ReturnType<typeof sendPreparedOnce>> | null = null;
+  try {
+    settled = await sendPreparedOnce(input.rpcUrl, built.prepared, built.prepared.simulationSlot);
+    if (settled.err !== null) {
+      throw new Error(sanitizeText(`${input.step} finalized with ${JSON.stringify(settled.err)}`));
+    }
+    const finalized = await finalizedTransaction(input.rpcUrl, settled.signature);
+    const wire = journalWire(attemptedPending, input.schema, input.step, "pending");
+    assertFinalizedJournalMessage(wire, finalized);
+    const reconciliation = await input.reconcile({ pending: attemptedPending, finalized });
+    writePrivate(input.journal, {
+      ...attemptedPending,
+      verdict: "FINALIZED_RECONCILED",
+      sent: true,
+      signed: true,
+      broadcast: true,
+      signature: settled.signature,
+      finalizedSlot: finalized.slot,
+      finalizedContextSlot: settled.confirmationSlot,
+      finalizedBlockTime: finalized.blockTime ?? null,
+      ...reconciliation,
+    }, "wx");
+    renameSync(`${input.journal}.pending`, `${input.journal}.sent-wire`);
+    markCanonicalLegState(input.step, input.journal, {
+      status: "finalized",
+      broadcast: true,
+      signature: settled.signature,
+    });
+    console.log(toJson({
+      schema: input.schema,
+      step: input.step,
+      verdict: "FINALIZED_RECONCILED",
+      signature: settled.signature,
+      finalizedSlot: finalized.slot,
+      journal: input.journal,
+      canonicalState: canonicalStatePath,
+    }, 2));
+    return 0;
+  } catch (error) {
+    if (existsSync(`${input.journal}.pending`)) {
+      const signature = settled?.signature
+        ?? (error instanceof PreparedTransactionSendError
+          ? error.expectedSignature
+          : built.prepared.expectedSignature);
+      const submission = error instanceof PreparedTransactionSendError
+        ? {
+            submissionAttemptCount: error.submissionAttemptCount,
+            submissionWireSha256: error.submissionWireSha256,
+            submissionAttempts: error.submissionAttempts,
+          }
+        : null;
+      writePrivate(`${input.journal}.pending`, {
+        ...attemptedPending,
+        verdict: "SEND_ATTEMPTED_PENDING_RECONCILE",
+        sent: false,
+        signed: true,
+        broadcast: "attempted",
+        signature,
+        sendError: sanitizeError(error),
+        ...(submission === null ? {} : { submission }),
+      }, "w");
+      try {
+        markCanonicalLegState(input.step, input.journal, {
+          status: "attempted",
+          broadcast: "attempted",
+          signature,
+          error: sanitizeError(error),
+        });
+      } catch {
+        // The pending journal itself remains a durable replay fence if the
+        // secondary state update is unavailable during error handling.
+      }
+    }
+    throw error;
+  }
+}
+
+function operatorRpcUrl(): string {
+  const rpcUrl = process.env.SOLANA_RPC_URL?.trim();
+  if (!rpcUrl) throw new Error("SOLANA_RPC_URL is required for the operator path");
+  return rpcUrl;
+}
+
+function configPostState(account: RawAccount) {
+  const vault = decodeVault(account);
+  return vault ? {
+    lockedProfitDegradationDuration: vault.lockedProfitDegradationDuration.toString(),
+    adminPerformanceFeeBps: vault.adminPerformanceFeeBps,
+    totalValue: vault.totalValue.toString(),
+    admin: vault.admin,
+    manager: vault.manager,
+  } : null;
+}
+
+async function cmdConfigOperator(mode: RepairPolicyOperatorMode): Promise<number> {
+  const journal = operatorJournal();
+  const rpcUrl = operatorRpcUrl();
+  return runJournaledStep({
+    mode,
+    step: "config",
+    schema: SCHEMA,
+    journal,
+    rpcUrl,
+    build: async () => {
+      const state = await readState("finalized");
+      if (!state.vault) throw new Error("vault account is absent");
+      if (state.vault.admin !== ADMIN) throw new Error(`vault admin ${state.vault.admin} is not ${ADMIN}`);
+      const noopAdmin = createNoopSigner(ADMIN);
+      const degradation = await getUpdateVaultConfigInstructionAsync({
+        admin: noopAdmin, protocol: PROTOCOL, vault: VAULT, rent: RENT_SYSVAR,
+        field: VaultConfigField.LockedProfitDegradationDuration, data: new Uint8Array(8),
+      }, { programAddress: VOLTR });
+      const adminFee = await getUpdateVaultConfigInstructionAsync({
+        admin: noopAdmin, protocol: PROTOCOL, vault: VAULT, rent: RENT_SYSVAR,
+        field: VaultConfigField.AdminPerformanceFee, data: new Uint8Array(2),
+      }, { programAddress: VOLTR });
+      const instructions = [degradation, adminFee];
+      for (const instruction of instructions) {
+        const accounts = instruction.accounts ?? [];
+        if (accounts.length !== 4 || accounts[0]?.address !== ADMIN || accounts[2]?.address !== VAULT) {
+          throw new Error("updateVaultConfig account list drifted from admin/protocol/vault/rent");
+        }
+      }
+      const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
+      if (admin.signer.address !== ADMIN) throw new Error("SOLANA_TESTING_PK is not the HXtk admin signer");
+      const prepared = await prepareSignedV0Transaction({
+        rpcUrl,
+        feePayer: admin,
+        instructions,
+        inspectedAddresses: [VAULT],
+        prestateAddresses: [VAULT],
+        minimumContextSlot: state.contextSlot,
+        commitment: "finalized",
+      });
+      const postVault = decodeVault(rawFromPreparedSnapshot(VAULT, prepared.simulation.postAccounts[0]));
+      if (!postVault || postVault.lockedProfitDegradationDuration !== 0n || postVault.adminPerformanceFeeBps !== 0) {
+        throw new Error("signed config simulation did not project degradation and admin fee to zero");
+      }
+      return {
+        prepared,
+        plan: {
+          before: summarize(state),
+          expectedPreState: summarize(state),
+          expectedPostState: configPostState(rawFromPreparedSnapshot(VAULT, prepared.simulation.postAccounts[0])),
+          transaction: {
+            feePayer: ADMIN,
+            signer: ADMIN,
+            signerEnvVar: "SOLANA_TESTING_PK",
+            instructionCount: 2,
+            instructions: [
+              "updateVaultConfig(LockedProfitDegradationDuration, u64 0)",
+              "updateVaultConfig(AdminPerformanceFee, u16 0)",
+            ],
+          },
+        },
+      };
+    },
+    reconcile: async ({ pending }) => {
+      const state = await readState("finalized");
+      if (!state.vault || state.vault.lockedProfitDegradationDuration !== 0n || state.vault.adminPerformanceFeeBps !== 0) {
+        throw new Error("finalized config did not reconcile degradation and admin fee to zero");
+      }
+      const before = recordAt(pending.before, "before");
+      if (String(before.totalValue) !== state.vault.totalValue.toString()) {
+        throw new Error("finalized config changed vault total value");
+      }
+      return { finalizedState: summarize(state) };
+    },
+  });
+}
+
+function rawFromPreparedSnapshot(
+  target: Address,
+  account: Readonly<{ owner: string; lamports: number; data: Uint8Array }> | null | undefined,
+): RawAccount {
+  if (!account) return null;
+  return { address: target, owner: account.owner, lamports: account.lamports, data: account.data };
+}
+
+async function cmdRepairPolicyOperator(mode: RepairPolicyOperatorMode): Promise<number> {
+  assertNoArbitraryRepairSeed();
+  const journal = operatorJournal();
+  const rpcUrl = operatorRpcUrl();
+  return runJournaledStep({
+    mode,
+    step: "repair-policy",
+    schema: REPAIR_POLICY_SCHEMA,
+    journal,
+    rpcUrl,
+    build: async () => {
+      const settingsBefore = await readSettingsPolicyCounter();
+      assertRepairPolicySettingsCounter(settingsBefore, "repair-policy initial read");
+      const readback = await readRepairPolicySeeds();
+      const seed = REPAIR_POLICY_EXPECTED_SEED;
+      const row = readback.rows.find((candidate) => BigInt(candidate.seed) === seed);
+      if (row?.present) throw new Error(`repair-policy seed ${seed} is already present on finalized chain`);
+      const { artifact, target } = await compileRepairPolicy(seed);
+      const policyCreate = wireInstruction(target.createInstruction);
+      const createData = Uint8Array.from(policyCreate.data ?? []);
+      assertRepairPolicyHardBinding(seed, address(target.policy), createData);
+      const compiledPolicy = decodePolicyCreateWire(policyCreate);
+      const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
+      if (admin.signer.address !== ADMIN) throw new Error("SOLANA_TESTING_PK is not the HXtk admin signer");
+      const prepared = await prepareSignedV0Transaction({
+        rpcUrl,
+        feePayer: admin,
+        instructions: [policyCreate],
+        inspectedAddresses: [target.policy, SQUADS_SETTINGS, ADMIN],
+        prestateAddresses: [target.policy, SQUADS_SETTINGS, ADMIN],
+        minimumContextSlot: readback.contextSlot,
+        commitment: "finalized",
+      });
+      const projectedPolicy = rawFromPreparedSnapshot(address(target.policy), prepared.simulation.postAccounts[0]);
+      const projectedSettings = rawFromPreparedSnapshot(SQUADS_SETTINGS, prepared.simulation.postAccounts[1]);
+      const decoded = decodeSquadsPolicy(projectedPolicy);
+      const projectedPolicyDataSha256 = projectedPolicy
+        ? createHash("sha256").update(projectedPolicy.data).digest("hex")
+        : null;
+      const semantics = repairPolicySemantics(decoded, seed, compiledPolicy);
+      if (!semantics.identityPass || !semantics.payloadPass || !semantics.digestUnconstrained
+        || !semantics.navExact.pass || !semantics.compiledMatch) {
+        throw new Error("signed repair-policy simulation did not project the exact one-shot contract");
+      }
+      if (!projectedPolicy) throw new Error("signed repair-policy simulation omitted the projected policy account");
+      if (!projectedSettings || projectedSettings.owner !== SQUADS_PROGRAM) {
+        throw new Error("signed PolicyCreate simulation did not preserve the Squads Settings identity");
+      }
+      const settingsIdentity = {
+        address: SQUADS_SETTINGS,
+        owner: projectedSettings.owner,
+        dataBytes: projectedSettings.data.length,
+        dataSha256: createHash("sha256").update(projectedSettings.data).digest("hex"),
+        policySeed: decodeSquadsSettingsPolicySeed(projectedSettings),
+      };
+      if (settingsIdentity.policySeed !== seed.toString()) {
+        throw new Error("signed PolicyCreate simulation did not advance Settings to seed 140");
+      }
+      const plan: JsonRecord = {
+        seed: seed.toString(),
+        expectedSeed: seed.toString(),
+        policy: target.policy,
+        compiler: {
+          compilerArtifactSchema: artifact.schema,
+          sourceSha256: artifact.sourceSha256,
+          compilerPolicySeedBefore: (seed - 2n).toString(),
+          operation: target.operation,
+          constraintIndices: target.constraintIndices,
+          createDataBytes: createData.length,
+          createDataSha256: createHash("sha256").update(createData).digest("hex"),
+          navExact: semantics.navExact,
+          navConstraint: "Equals",
+          digest: "unconstrained",
+          compiledPolicy,
+        },
+        hardBinding: {
+          expectedSeed: REPAIR_POLICY_EXPECTED_SEED.toString(),
+          expectedPolicy: REPAIR_POLICY_EXPECTED_PDA,
+          createDataBytes: REPAIR_POLICY_CREATE_DATA_BYTES,
+          createDataSha256: REPAIR_POLICY_CREATE_DATA_SHA256,
+          simulatedPolicyDataBytes: projectedPolicy.data.length,
+          simulatedPolicyDataSha256: projectedPolicyDataSha256,
+          settingsPolicySeed: REPAIR_POLICY_EXPECTED_SETTINGS_SEED.toString(),
+        },
+        settingsReadback: settingsPolicyReadback(settingsBefore),
+        settingsIdentity,
+        seedReadback: readback,
+        expectedPreState: {
+          settingsPolicySeed: settingsBefore.policySeed.toString(),
+          expectedSeed: seed.toString(),
+          policy: "absent",
+        },
+        expectedPostState: {
+          settingsPolicySeed: seed.toString(),
+          policy: target.policy,
+          policyDataBytes: projectedPolicy.data.length,
+        },
+        constraints: stablePolicyConstraints(semantics.decoded),
+        decodedPolicy: semantics.decoded,
+        transaction: {
+          feePayer: ADMIN,
+          signer: ADMIN,
+          signerEnvVar: "SOLANA_TESTING_PK",
+          instructionCount: 1,
+          policyCreate: wireFromInstruction(policyCreate),
+        },
+      };
+      return {
+        prepared,
+        plan,
+        beforeSend: async () => {
+          const settingsAtSend = await readSettingsPolicyCounter();
+          if (settingsAtSend.policySeed !== settingsBefore.policySeed
+            || settingsAtSend.expectedSeed !== seed) {
+            throw new Error(`Settings policy seed moved during repair-policy preparation (${settingsBefore.policySeed} -> ${settingsAtSend.policySeed}); refusing send`);
+          }
+          assertRepairPolicySettingsCounter(settingsAtSend, "repair-policy pre-send read");
+          assertRepairPolicyHardBinding(seed, address(target.policy), createData);
+          if (await getAccount(address(target.policy), "finalized")) {
+            throw new Error("repair-policy target PDA appeared before send; refusing duplicate creation");
+          }
+        },
+      };
+    },
+    reconcile: async ({ pending }) => {
+      const seed = REPAIR_POLICY_EXPECTED_SEED;
+      const policy = address(stringAt(pending.policy, "policy"));
+      assertRepairPolicyHardBinding(seed, policy);
+      const settingsCounter = await readSettingsPolicyCounter();
+      if (settingsCounter.policySeed !== seed) {
+        throw new Error(`finalized Settings policy seed ${settingsCounter.policySeed} does not equal created seed ${seed}`);
+      }
+      const policyAccount = await getAccount(policy, "finalized");
+      const policyCreate = recordAt(
+        recordAt(pending.transaction, "repair-policy transaction").policyCreate,
+        "repair-policy transaction.policyCreate",
+      );
+      const compiledPolicy = decodePolicyCreateWire(
+        wireInstruction(policyCreate as unknown as PolicyWireInstruction),
+      );
+      const semantics = repairPolicySemantics(decodeSquadsPolicy(policyAccount), seed, compiledPolicy);
+      const dataSha256 = policyAccount
+        ? createHash("sha256").update(policyAccount.data).digest("hex")
+        : null;
+      if (!policyAccount || !semantics.identityPass || !semantics.payloadPass
+        || !semantics.digestUnconstrained || !semantics.navExact.pass || !semantics.compiledMatch) {
+        throw new Error("finalized repair-policy readback is not the exact one-shot contract");
+      }
+      const settings = await getAccount(SQUADS_SETTINGS, "finalized");
+      const settingsIdentity = recordAt(pending.settingsIdentity, "settingsIdentity");
+      const expectedSettingsHash = stringAt(settingsIdentity.dataSha256, "settingsIdentity.dataSha256");
+      if (!settings || settings.owner !== SQUADS_PROGRAM
+        || settings.data.length !== Number(settingsIdentity.dataBytes)
+        || createHash("sha256").update(settings.data).digest("hex") !== expectedSettingsHash
+        || decodeSquadsSettingsPolicySeed(settings) !== seed.toString()
+        || String(settingsIdentity.address) !== SQUADS_SETTINGS) {
+        throw new Error("finalized PolicyCreate changed or omitted the reviewed Settings identity");
+      }
+      return {
+        finalizedPolicyDataBytes: policyAccount.data.length,
+        finalizedPolicyDataSha256: dataSha256,
+        finalizedSettingsIdentity: {
+          address: SQUADS_SETTINGS,
+          owner: settings.owner,
+          dataBytes: settings.data.length,
+          dataSha256: createHash("sha256").update(settings.data).digest("hex"),
+          policySeed: decodeSquadsSettingsPolicySeed(settings),
+        },
+        finalizedSettingsReadback: settingsPolicyReadback(settingsCounter),
+        finalizedPolicy: semantics.decoded,
+        finalizedCompiledPolicy: compiledPolicy,
+        finalizedConstraints: stablePolicyConstraints(semantics.decoded),
+      };
+    },
+  });
+}
+
+async function cmdRepairPolicy(): Promise<number> {
+  const mode = operatorMode();
+  if (mode) return cmdRepairPolicyOperator(mode);
+  assertNoArbitraryRepairSeed();
+  if (process.argv.includes("--journal")) {
+    // --journal without an operator mode is almost certainly an operator typo
+    // and must not be ignored.
+    if (process.argv.includes("--journal")) {
+      throw new Error("repair-policy --journal requires --execute or --reconcile");
+    }
+  }
+  const settingsBefore = await readSettingsPolicyCounter();
+  assertRepairPolicySettingsCounter(settingsBefore, "repair-policy initial read");
+  const readback = await readRepairPolicySeeds();
+  const seed = REPAIR_POLICY_EXPECTED_SEED;
+  const row = readback.rows.find((candidate) => BigInt(candidate.seed) === seed);
+  if (row?.present) throw new Error(`repair-policy seed ${seed} is already present on finalized chain`);
+  const { artifact, target } = await compileRepairPolicy(seed);
+  const policyCreate = wireInstruction(target.createInstruction);
+  assertRepairPolicyHardBinding(seed, address(target.policy), Uint8Array.from(policyCreate.data ?? []));
+  const compiledPolicy = decodePolicyCreateWire(policyCreate);
+  const targetPolicy = address(target.policy);
+  const policyCreateAccounts = policyCreate.accounts ?? [];
+  const simulation = await simulate(ADMIN, [policyCreate], [targetPolicy, SQUADS_SETTINGS, ADMIN]);
+  const projectedPolicy = simulation.err === null
+    ? postAccount(simulation.postAccounts, targetPolicy)
+    : null;
+  const decoded = simulation.err === null ? decodeSquadsPolicy(projectedPolicy) : null;
+  const projectedPolicyDataSha256 = projectedPolicy
+    ? createHash("sha256").update(projectedPolicy.data).digest("hex")
+    : null;
+  const semantics = repairPolicySemantics(decoded, seed, compiledPolicy);
+  const checks = [
+    checkRow("simulation succeeds", simulation.err === null, null,
+      simulation.err === null ? null : JSON.stringify(simulation.err)),
+    checkRow("packet <= 1,232 bytes", simulation.packetBytes <= PACKET_LIMIT,
+      `<= ${PACKET_LIMIT}`, simulation.packetBytes),
+    checkRow("PolicyCreate uses the HXtk admin as fee payer/signer",
+      policyCreateAccounts.some((account) => account.address === ADMIN && (
+        account.role === AccountRole.READONLY_SIGNER || account.role === AccountRole.WRITABLE_SIGNER)),
+      ADMIN, policyCreateAccounts.map((account) => account.address)),
+    checkRow("PolicyCreate action seed equals Settings expectedSeed",
+      target.seed === seed.toString(), seed.toString(), target.seed),
+    checkRow("PolicyCreate seed is the hard-bound 140", seed === REPAIR_POLICY_EXPECTED_SEED,
+      REPAIR_POLICY_EXPECTED_SEED.toString(), seed.toString()),
+    checkRow("PolicyCreate PDA is the hard-bound PDA", targetPolicy === REPAIR_POLICY_EXPECTED_PDA,
+      REPAIR_POLICY_EXPECTED_PDA, targetPolicy),
+    checkRow("PolicyCreate data is the reviewed exact-NAV wire",
+      (policyCreate.data?.length ?? 0) === REPAIR_POLICY_CREATE_DATA_BYTES,
+      REPAIR_POLICY_CREATE_DATA_BYTES, policyCreate.data?.length ?? null),
+    checkRow("PolicyCreate data hash is the reviewed hash",
+      createHash("sha256").update(Uint8Array.from(policyCreate.data ?? [])).digest("hex") === REPAIR_POLICY_CREATE_DATA_SHA256,
+      REPAIR_POLICY_CREATE_DATA_SHA256,
+      createHash("sha256").update(Uint8Array.from(policyCreate.data ?? [])).digest("hex")),
+    checkRow("simulated policy owner is Squads",
+      projectedPolicy?.owner === SQUADS_PROGRAM, SQUADS_PROGRAM, projectedPolicy?.owner ?? null),
+    checkRow("simulated policy account is present",
+      projectedPolicy !== null,
+      "present",
+      projectedPolicy ? `${projectedPolicy.data.length} bytes/${projectedPolicyDataSha256}` : null),
+    checkRow("simulated policy identity and delegated signer are exact",
+      semantics.identityPass, true, semantics.identityPass),
+    checkRow("simulated policy is ProgramInteraction with account index 0 and no spending limit",
+      semantics.payloadPass, true, semantics.payloadPass),
+    checkRow("report digest is unconstrained", semantics.digestUnconstrained, true,
+      semantics.digestUnconstrained),
+    checkRow("exact NAV Equals constraints are present at offsets 39 and 51", semantics.navExact.pass, true,
+      semantics.navExact),
+    checkRow("decoded live policy matches the compiled PolicyCreate", semantics.compiledMatch, true,
+      semantics.compiledMatch),
+  ];
+  const pass = checks.every((check) => check.pass);
+  const output = {
+    schema: REPAIR_POLICY_SCHEMA,
+    step: "repair-policy",
+    sent: false,
+    broadcast: false,
+    verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    seed: seed.toString(),
+    expectedSeed: seed.toString(),
+    policy: target.policy,
+    hardBinding: {
+      expectedSeed: REPAIR_POLICY_EXPECTED_SEED.toString(),
+      expectedPolicy: REPAIR_POLICY_EXPECTED_PDA,
+      createDataBytes: REPAIR_POLICY_CREATE_DATA_BYTES,
+      createDataSha256: REPAIR_POLICY_CREATE_DATA_SHA256,
+      settingsPolicySeed: REPAIR_POLICY_EXPECTED_SETTINGS_SEED.toString(),
+      sequentialSeedRule: "PolicyCreate uses Settings.policySeed + 1; seed 140 is the only permitted repair policy target",
+    },
+    seedReadback: readback,
+    settingsReadback: settingsPolicyReadback(settingsBefore),
+    compiler: {
+      compilerArtifactSchema: artifact.schema,
+      sourceSha256: artifact.sourceSha256,
+      compilerPolicySeedBefore: (seed - 2n).toString(),
+      operation: target.operation,
+      constraintIndices: target.constraintIndices,
+      createDataBytes: Buffer.from(target.createInstruction.dataBase64, "base64").length,
+      createDataSha256: createHash("sha256").update(Buffer.from(target.createInstruction.dataBase64, "base64")).digest("hex"),
+      navExact: semantics.navExact,
+      navConstraint: "Equals",
+      digest: "unconstrained",
+      compiledPolicy,
+    },
+    simulatedPolicyDataBytes: projectedPolicy?.data.length ?? null,
+    simulatedPolicyDataSha256: projectedPolicyDataSha256,
+    policyProvenanceStatement: POLICY_PROVENANCE_STATEMENT,
+    transaction: {
+      feePayer: ADMIN,
+      signer: ADMIN,
+      signerEnvVar: "SOLANA_TESTING_PK",
+      packetBytes: simulation.packetBytes,
+      instructionCount: 1,
+      unitsConsumed: simulation.unitsConsumed,
+      policyCreate: wireFromInstruction(policyCreate),
+    },
+    constraintSource: simulation.err === null ? "simulated_policy_account" : "compiled_policy_create_payload",
+    constraints: stablePolicyConstraints(simulation.err === null ? semantics.decoded : compiledPolicy),
+    compiledConstraints: stablePolicyConstraints(compiledPolicy),
+    decodedPolicy: semantics.decoded,
+    simulationBlocker: simulation.err !== null
+      ? {
+          err: simulation.err,
+          reason: "PolicyCreate simulation failed for the exact finalized Settings next seed",
+        }
+      : null,
+    checks,
+    ...(simulation.err === null ? {} : { logs: simulation.logs }),
+  };
+  console.log(toJson(output, 2));
+  writeEvidence("repair-policy", output);
+  return pass ? 0 : 1;
+}
+
+function repairPrecondition(state: LiveState): Readonly<{
+  repairNavRaw: bigint;
+  sequence: bigint;
+}> {
+  if (!state.vault || !state.receipt1 || !state.reportTicket || state.idleBalance === null) {
+    throw new Error("repair requires the HXtk vault, strategy receipt, idle ATA, and report ticket");
+  }
+  const frozenChecks = [
+    checkRow("frozen tv", state.vault.totalValue === REPAIR_FROZEN.totalValue,
+      REPAIR_FROZEN.totalValue.toString(), state.vault.totalValue.toString()),
+    checkRow("frozen idle", state.idleBalance === REPAIR_FROZEN.idleBalance,
+      REPAIR_FROZEN.idleBalance.toString(), state.idleBalance.toString()),
+    checkRow("frozen strategy-one receipt", state.receipt1.positionValue === REPAIR_FROZEN.receipt1PositionValue,
+      REPAIR_FROZEN.receipt1PositionValue.toString(), state.receipt1.positionValue.toString()),
+    checkRow("frozen strategy custody", state.custody1Balance === REPAIR_FROZEN.custody1Balance,
+      REPAIR_FROZEN.custody1Balance.toString(), state.custody1Balance?.toString() ?? null),
+    checkRow("frozen LP supply", state.lpSupply === REPAIR_FROZEN.lpSupply,
+      REPAIR_FROZEN.lpSupply.toString(), state.lpSupply?.toString() ?? null),
+    checkRow("frozen degradation", state.vault.lockedProfitDegradationDuration === REPAIR_FROZEN.degradation,
+      REPAIR_FROZEN.degradation.toString(), state.vault.lockedProfitDegradationDuration.toString()),
+    checkRow("frozen admin performance fee", state.vault.adminPerformanceFeeBps === REPAIR_FROZEN.adminPerformanceFeeBps,
+      REPAIR_FROZEN.adminPerformanceFeeBps, state.vault.adminPerformanceFeeBps),
+    checkRow("frozen waiting period", state.vault.withdrawalWaitingPeriod === REPAIR_FROZEN.waitingPeriod,
+      REPAIR_FROZEN.waitingPeriod.toString(), state.vault.withdrawalWaitingPeriod.toString()),
+    checkRow("frozen pending request receipt is present", state.requestReceipt !== null,
+      REPAIR_FROZEN.requestReceipt, state.requestReceipt ? REPAIR_FROZEN.requestReceipt : null),
+    checkRow("frozen request receipt identity", state.requestReceipt?.vault === VAULT.toString()
+      && state.requestReceipt.userTransferAuthority === ADMIN.toString(),
+    `${VAULT}/${ADMIN}`, state.requestReceipt ? `${state.requestReceipt.vault}/${state.requestReceipt.userTransferAuthority}` : null),
+    checkRow("frozen request escrow", state.requestEscrowLpBalance === REPAIR_FROZEN.requestEscrowLpBalance,
+      REPAIR_FROZEN.requestEscrowLpBalance.toString(), state.requestEscrowLpBalance?.toString() ?? null),
+    checkRow("frozen request amount", state.requestReceipt?.amountLpEscrowed === REPAIR_FROZEN.requestEscrowLpBalance,
+      REPAIR_FROZEN.requestEscrowLpBalance.toString(), state.requestReceipt?.amountLpEscrowed.toString() ?? null),
+    checkRow("frozen ticket last consumed sequence", state.reportTicket.lastConsumedSequence === REPAIR_FROZEN.ticketLastConsumedSequence,
+      REPAIR_FROZEN.ticketLastConsumedSequence.toString(), state.reportTicket.lastConsumedSequence.toString()),
+  ];
+  if (!frozenChecks.every((check) => check.pass)) {
+    throw new Error(`REPAIR_FROZEN_STATE_MISMATCH ${toJson({ observationSlot: state.contextSlot, checks: frozenChecks })}`);
+  }
+  if (state.vault.admin !== ADMIN || state.vault.manager !== SQUADS_VAULT) {
+    throw new Error("repair authority boundary drifted from the HXtk admin and Squads manager");
+  }
+  if (state.receipt1.vault !== VAULT
+    || state.receipt1.strategy !== RWA_MULTIPLY_ROUTE.customAdaptor.strategyConfig
+    || state.receipt1.adaptorProgram !== RWA_MULTIPLY_ROUTE.customAdaptor.program) {
+    throw new Error("strategy-one receipt identity drifted from the HXtk custom adaptor");
+  }
+  if (state.custody1Balance !== 0n) {
+    throw new Error(`repair requires zero strategy custody; observed ${state.custody1Balance ?? "null"}`);
+  }
+  if (state.reportTicket.armed || state.reportTicket.activeSequence !== 0n || !state.reportTicket.activeHashIsZero) {
+    throw new Error("repair requires an idle report ticket with no active report");
+  }
+  const repairNavRaw = state.idleBalance + state.receipt1.positionValue - state.vault.totalValue;
+  if (repairNavRaw !== PHANTOM_NAV_RAW) {
+    throw new Error(`repair NAV changed from the frozen phantom ${PHANTOM_NAV_RAW}; observed ${repairNavRaw}`);
+  }
+  const sequence = BigInt(state.contextSlot);
+  if (sequence <= state.reportTicket.lastConsumedSequence) {
+    throw new Error(`repair sequence ${sequence} is not above last consumed ${state.reportTicket.lastConsumedSequence}`);
+  }
+  return { repairNavRaw, sequence };
+}
+
+async function buildRepairExecution(
+  policy: Address,
+  state: LiveState,
+) {
+  const precondition = repairPrecondition(state);
+  const manager = createNoopSigner(SQUADS_VAULT);
+  const report = {
+    sequence: precondition.sequence,
+    observedSlot: precondition.sequence,
+    navAfterRaw: PHANTOM_NAV_RAW,
+    snapshotDigest: REPORT_DIGEST,
+  } as const;
+  const arm = await buildRwaMultiplyArmReportInstruction(
+    manager,
+    "deposit",
+    0n,
+    report,
+  );
+  const capital = await buildRwaMultiplyManagerInstructions(manager, 0n, report);
+  const executionArtifact = compileCustomExecution(
+    policy,
+    [arm, capital.deposit],
+    [0, 1],
+  );
+  return {
+    precondition,
+    report,
+    arm,
+    capital: capital.deposit,
+    executionArtifact,
+    execution: wireInstruction(executionArtifact.instruction),
+  } as const;
+}
+
+type RepairObservedState = Readonly<{
+  totalValue: bigint | null;
+  idleBalance: bigint | null;
+  receipt1PositionValue: bigint | null;
+  custody1Balance: bigint | null;
+  lpSupply: bigint | null;
+  lockedProfitDegradationDuration: bigint | null;
+  reportTicket: ReturnType<typeof decodeReportTicket>;
+}>;
+
+function repairObservedState(state: LiveState): RepairObservedState {
+  return {
+    totalValue: state.vault?.totalValue ?? null,
+    idleBalance: state.idleBalance,
+    receipt1PositionValue: state.receipt1?.positionValue ?? null,
+    custody1Balance: state.custody1Balance,
+    lpSupply: state.lpSupply,
+    lockedProfitDegradationDuration: state.vault?.lockedProfitDegradationDuration ?? null,
+    reportTicket: state.reportTicket,
+  };
+}
+
+function repairChecks(
+  observed: RepairObservedState,
+  before: LiveState,
+  sequence: bigint,
+) {
+  return repairChecksAgainst(
+    observed,
+    before.lpSupply,
+    before.vault?.lockedProfitDegradationDuration ?? null,
+    sequence,
+  );
+}
+
+function repairChecksAgainst(
+  observed: RepairObservedState,
+  expectedLpSupply: bigint | null,
+  expectedDegradation: bigint | null,
+  sequence: bigint,
+) {
+  const checks = [
+    checkRow("post tv == repaired idle 3,793,417", observed.totalValue === REPAIRED_BOOK_RAW,
+      REPAIRED_BOOK_RAW.toString(), observed.totalValue?.toString() ?? null),
+    checkRow("post idle == 3,793,417", observed.idleBalance === REPAIRED_BOOK_RAW,
+      REPAIRED_BOOK_RAW.toString(), observed.idleBalance?.toString() ?? null),
+    checkRow("post strategy-one receipt == 3,793,536", observed.receipt1PositionValue === PHANTOM_NAV_RAW,
+      PHANTOM_NAV_RAW.toString(), observed.receipt1PositionValue?.toString() ?? null),
+    checkRow("post strategy custody == 0", observed.custody1Balance === 0n, "0", observed.custody1Balance?.toString() ?? null),
+    checkRow("LP supply unchanged", observed.lpSupply === expectedLpSupply,
+      expectedLpSupply?.toString() ?? null, observed.lpSupply?.toString() ?? null),
+    checkRow("locked-profit degradation is unchanged from the read", observed.lockedProfitDegradationDuration === expectedDegradation,
+      expectedDegradation?.toString() ?? null,
+      observed.lockedProfitDegradationDuration?.toString() ?? null),
+    checkRow("report ticket consumed the repair sequence", observed.reportTicket?.lastConsumedSequence === sequence,
+      sequence.toString(), observed.reportTicket?.lastConsumedSequence.toString() ?? null),
+    checkRow("report ticket is idle after consume", observed.reportTicket?.armed === false
+      && observed.reportTicket.activeSequence === 0n && observed.reportTicket.activeHashIsZero,
+    "false/0/zero", observed.reportTicket ? `${observed.reportTicket.armed}/${observed.reportTicket.activeSequence}/${observed.reportTicket.activeHashIsZero}` : null),
+  ];
+  return {
+    postState: {
+      totalValue: observed.totalValue?.toString() ?? null,
+      idleBalance: observed.idleBalance?.toString() ?? null,
+      receipt1PositionValue: observed.receipt1PositionValue?.toString() ?? null,
+      custody1Balance: observed.custody1Balance?.toString() ?? null,
+      lpSupply: observed.lpSupply?.toString() ?? null,
+      lockedProfitDegradationDuration: observed.lockedProfitDegradationDuration?.toString() ?? null,
+      reportTicket: observed.reportTicket ? {
+        armed: observed.reportTicket.armed,
+        lastConsumedSequence: observed.reportTicket.lastConsumedSequence.toString(),
+        activeSequence: observed.reportTicket.activeSequence.toString(),
+        activeHashIsZero: observed.reportTicket.activeHashIsZero,
+      } : null,
+    },
+    checks,
+  } as const;
+}
+
+function repairPoststate(
+  postAccounts: readonly RawAccount[],
+  before: LiveState,
+  sequence: bigint,
+) {
+  return repairChecks({
+    totalValue: decodeVault(postAccount(postAccounts, VAULT))?.totalValue ?? null,
+    idleBalance: tokenAmount(postAccount(postAccounts, IDLE_ATA)),
+    receipt1PositionValue: decodeStrategyReceipt(postAccount(postAccounts, RECEIPT1))?.positionValue ?? null,
+    custody1Balance: tokenAmount(postAccount(postAccounts, CUSTODY1)),
+    lpSupply: mintSupply(postAccount(postAccounts, LP_MINT)),
+    lockedProfitDegradationDuration: decodeVault(postAccount(postAccounts, VAULT))?.lockedProfitDegradationDuration ?? null,
+    reportTicket: decodeReportTicket(postAccount(postAccounts, REPORT_TICKET)),
+  }, before, sequence);
+}
+
+async function cmdRepair(): Promise<number> {
+  const mode = operatorMode();
+  if (mode) return cmdRepairOperator(mode);
+  assertNoArbitraryRepairSeed();
+  if (process.argv.includes("--journal")) {
+    throw new Error("repair --journal requires --execute or --reconcile");
+  }
+  const state = await readState("finalized", true);
+  const rpcUrl = process.env.SOLANA_RPC_URL?.trim() || DEFAULT_RPC_URL;
+  await assertRepairNotAlreadyApplied(state, rpcUrl);
+  try {
+    repairPrecondition(state);
+  } catch (error) {
+    const blocker = error instanceof Error ? error.message : String(error);
+    if (!blocker.startsWith("REPAIR_FROZEN_STATE_MISMATCH")) throw error;
+    const output = {
+      schema: REPAIR_EXECUTION_SCHEMA,
+      step: "repair",
+      policyProvenanceStatement: POLICY_PROVENANCE_STATEMENT,
+      sent: false,
+      signed: false,
+      broadcast: false,
+      verdict: "REPAIR_FROZEN_STATE_MISMATCH",
+      observationSlot: state.contextSlot,
+      frozenPrestate: {
+        totalValue: REPAIR_FROZEN.totalValue.toString(),
+        idleBalance: REPAIR_FROZEN.idleBalance.toString(),
+        receipt1PositionValue: REPAIR_FROZEN.receipt1PositionValue.toString(),
+        custody1Balance: REPAIR_FROZEN.custody1Balance.toString(),
+        lpSupply: REPAIR_FROZEN.lpSupply.toString(),
+        degradation: REPAIR_FROZEN.degradation.toString(),
+        adminPerformanceFeeBps: REPAIR_FROZEN.adminPerformanceFeeBps,
+        withdrawalWaitingPeriod: REPAIR_FROZEN.waitingPeriod.toString(),
+        requestReceipt: REPAIR_FROZEN.requestReceipt,
+        requestEscrowLpBalance: REPAIR_FROZEN.requestEscrowLpBalance.toString(),
+        ticketLastConsumedSequence: REPAIR_FROZEN.ticketLastConsumedSequence.toString(),
+      },
+      state: summarize(state),
+      reason: blocker,
+    };
+    console.log(toJson(output, 2));
+    writeEvidence("repair", output);
+    return 2;
+  }
+  const readback = await readRepairPolicySeeds();
+  const target = await resolveRepairPolicyTarget(readback);
+  const seed = target.seed;
+  const policy = policyPda(seed);
+  const policyAccount = await getAccount(policy, "finalized");
+  if (!policyAccount) {
+    const output = {
+      schema: REPAIR_EXECUTION_SCHEMA,
+      step: "repair",
+      policyProvenanceStatement: POLICY_PROVENANCE_STATEMENT,
+      sent: false,
+      broadcast: false,
+      verdict: "PENDING_REPAIR_POLICY",
+      seed: seed.toString(),
+      expectedSeed: seed.toString(),
+      policy,
+      reason: `finalized repair policy seed ${seed} (${policy}) is absent; run repair-policy, await finalized readback, then rerun repair`,
+      targetSource: target.source,
+      settingsReadback: settingsPolicyReadback(target.settings),
+      policyJournal: target.policyJournal,
+      seedReadback: readback,
+      state: summarize(state),
+    };
+    console.log(toJson(output, 2));
+    writeEvidence("repair", output);
+    return 2;
+  }
+  const provenance = await verifyFinalizedPolicyCreationJournal(rpcUrl, target.policyJournal);
+  if (provenance.seed !== seed || provenance.policy !== policy) {
+    throw new Error("repair policy provenance does not match the derived seed-140 target");
+  }
+  const decoded = decodeSquadsPolicy(policyAccount);
+  const semantics = repairPolicySemantics(decoded, seed, provenance.compiledPolicy);
+  if (!semantics.identityPass || !semantics.payloadPass || !semantics.digestUnconstrained
+    || !semantics.navExact.pass || !semantics.compiledMatch) {
+    throw new Error(`finalized repair policy seed ${seed} is present but is not the exact one-shot contract`);
+  }
+  const built = await buildRepairExecution(policy, state);
+  const simulation = await simulate(DELEGATED_EXECUTOR, [built.execution], [
+    policy, SQUADS_SETTINGS, VAULT, IDLE_ATA, RECEIPT1, CUSTODY1, LP_MINT, REPORT_TICKET, SQUADS_USDC_ATA,
+  ]);
+  const post = simulation.err === null
+    ? repairPoststate(simulation.postAccounts, state, built.report.sequence)
+    : { postState: null, checks: [] } as const;
+  const checks = [
+    checkRow("policy is the exact one-shot ProgramInteraction", semantics.payloadPass, true, semantics.payloadPass),
+    checkRow("outer ExecuteSync uses the Squads program", built.execution.programAddress === SQUADS_PROGRAM,
+      SQUADS_PROGRAM, built.execution.programAddress),
+    checkRow("simulation succeeds", simulation.err === null, null,
+      simulation.err === null ? null : JSON.stringify(simulation.err)),
+    ...post.checks,
+  ];
+  const pass = checks.every((check) => check.pass);
+  const output = {
+    schema: REPAIR_EXECUTION_SCHEMA,
+    step: "repair",
+    sent: false,
+    broadcast: false,
+    verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    seed: seed.toString(),
+    expectedSeed: seed.toString(),
+    policy,
+    targetSource: target.source,
+    settingsReadback: settingsPolicyReadback(target.settings),
+    policyJournal: target.policyJournal,
+    seedReadback: readback,
+    observationSlot: state.contextSlot,
+    frozenPrestate: {
+      totalValue: REPAIR_FROZEN.totalValue.toString(),
+      idleBalance: REPAIR_FROZEN.idleBalance.toString(),
+      receipt1PositionValue: REPAIR_FROZEN.receipt1PositionValue.toString(),
+      custody1Balance: REPAIR_FROZEN.custody1Balance.toString(),
+      lpSupply: REPAIR_FROZEN.lpSupply.toString(),
+      degradation: REPAIR_FROZEN.degradation.toString(),
+      adminPerformanceFeeBps: REPAIR_FROZEN.adminPerformanceFeeBps,
+      withdrawalWaitingPeriod: REPAIR_FROZEN.waitingPeriod.toString(),
+      requestReceipt: REPAIR_FROZEN.requestReceipt,
+      ticketLastConsumedSequence: REPAIR_FROZEN.ticketLastConsumedSequence.toString(),
+    },
+    policyReadback: {
+      finalizedDataBytes: policyAccount.data.length,
+      finalizedDataSha256: createHash("sha256").update(policyAccount.data).digest("hex"),
+      constraints: stablePolicyConstraints(semantics.decoded),
+      compiledConstraints: stablePolicyConstraints(provenance.compiledPolicy),
+      decodedPolicy: semantics.decoded,
+    },
+    policyProvenance: {
+      continuityPin: POLICY_PROVENANCE_STATEMENT,
+      creationSignature: provenance.creationSignature,
+      creationMessageSha256: provenance.creationMessageSha256,
+      policyDataBytes: provenance.policyDataBytes,
+      policyDataSha256: provenance.policyDataSha256,
+      settingsIdentity: provenance.settingsIdentity,
+      compiledPolicy: provenance.compiledPolicy,
+    },
+    before: summarize(state),
+    report: {
+      sequence: built.report.sequence.toString(),
+      observedSlot: built.report.observedSlot.toString(),
+      navAfterRaw: built.report.navAfterRaw.toString(),
+      snapshotDigest: Buffer.from(built.report.snapshotDigest).toString("hex"),
+    },
+    compiler: {
+      schema: built.executionArtifact.schema,
+      sourceSha256: built.executionArtifact.sourceSha256,
+      constraintIndices: [0, 1],
+    },
+    transaction: {
+      feePayer: DELEGATED_EXECUTOR,
+      delegatedSigner: DELEGATED_EXECUTOR,
+      signerEnvVar: "POLICY_KEYPAIR",
+      packetBytes: simulation.packetBytes,
+      instructionCount: 1,
+      unitsConsumed: simulation.unitsConsumed,
+      outer: wireFromInstruction(built.execution),
+      inner: [wireFromInstruction(built.arm), wireFromInstruction(built.capital)],
+    },
+    checks,
+    postState: post.postState,
+    ...(simulation.err === null ? {} : { logs: simulation.logs }),
+  };
+  console.log(toJson(output, 2));
+  writeEvidence("repair", output);
+  return pass ? 0 : 1;
+}
+
+async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number> {
+  assertNoArbitraryRepairSeed();
+  const journal = operatorJournal();
+  const rpcUrl = operatorRpcUrl();
+  const repairResult = await runJournaledStep({
+    mode,
+    step: "repair",
+    schema: REPAIR_EXECUTION_SCHEMA,
+    journal,
+    rpcUrl,
+    build: async () => {
+      const state = await readState("finalized", true);
+      await assertRepairNotAlreadyApplied(state, rpcUrl);
+      repairPrecondition(state);
+      const readback = await readRepairPolicySeeds();
+      const target = await resolveRepairPolicyTarget(readback);
+      const seed = target.seed;
+      assertRepairPolicyHardBinding(seed, policyPda(seed));
+      const policy = policyPda(seed);
+      const policyJournal = target.policyJournal;
+      if (policyJournal === null) {
+        throw new Error(`${POLICY_JOURNAL_FLAG} is required for repair`);
+      }
+      const provenance = await verifyFinalizedPolicyCreationJournal(rpcUrl, policyJournal);
+      if (provenance.seed !== seed || provenance.policy !== policy) {
+        throw new Error("repair policy provenance does not match the derived seed-140 target");
+      }
+      const policyAccount = await getAccount(policy, "finalized");
+      if (!policyAccount) {
+        throw new Error(`PENDING_REPAIR_POLICY: finalized repair policy seed ${seed} (${policy}) is absent; run repair-policy, await finalized readback, then rerun repair`);
+      }
+      const policyDataSha256 = createHash("sha256").update(policyAccount.data).digest("hex");
+      const semantics = repairPolicySemantics(
+        decodeSquadsPolicy(policyAccount),
+        seed,
+        provenance.compiledPolicy,
+      );
+      if (!semantics.identityPass || !semantics.payloadPass || !semantics.digestUnconstrained
+        || !semantics.navExact.pass || !semantics.compiledMatch) {
+        throw new Error(`finalized repair policy seed ${seed} is present but is not the exact one-shot contract`);
+      }
+      const built = await buildRepairExecution(policy, state);
+      const delegated = await signingMaterialFromEnvironment("POLICY_KEYPAIR");
+      if (delegated.signer.address !== DELEGATED_EXECUTOR) {
+        throw new Error("POLICY_KEYPAIR is not the HXtk delegated executor signer");
+      }
+      const inspectedAddresses = [
+        policy, SQUADS_SETTINGS, VAULT, IDLE_ATA, RECEIPT1, CUSTODY1, LP_MINT, REPORT_TICKET, SQUADS_USDC_ATA,
+      ];
+      const prepared = await prepareSignedV0Transaction({
+        rpcUrl,
+        feePayer: delegated,
+        instructions: [built.execution],
+        inspectedAddresses,
+        prestateAddresses: inspectedAddresses,
+        minimumContextSlot: state.contextSlot,
+        commitment: "finalized",
+      });
+      const postAccounts = prepared.simulation.postAccounts.map((account, index) =>
+        rawFromPreparedSnapshot(inspectedAddresses[index]!, account
+          ? { owner: account.owner, lamports: account.lamports, data: account.data }
+          : null));
+      const post = repairPoststate(postAccounts, state, built.report.sequence);
+      if (!post.checks.every((check) => check.pass)) {
+        throw new Error(`signed repair simulation did not project the exact post-state: ${JSON.stringify(post.checks)}`);
+      }
+      const plan: JsonRecord = {
+        seed: seed.toString(),
+        expectedSeed: seed.toString(),
+        policy,
+        targetSource: target.source,
+        settingsReadback: settingsPolicyReadback(target.settings),
+        policyJournal: target.policyJournal,
+        policyRemoveJournal: repairPolicyRemoveJournalPath(journal),
+        seedReadback: readback,
+        policyReadback: {
+          finalizedDataBytes: policyAccount.data.length,
+          finalizedDataSha256: policyDataSha256,
+          constraints: stablePolicyConstraints(semantics.decoded),
+          compiledConstraints: stablePolicyConstraints(provenance.compiledPolicy),
+          decodedPolicy: semantics.decoded,
+        },
+        policyProvenance: {
+          continuityPin: POLICY_PROVENANCE_STATEMENT,
+          creationSignature: provenance.creationSignature,
+          creationMessageSha256: provenance.creationMessageSha256,
+          policyDataBytes: provenance.policyDataBytes,
+          policyDataSha256: provenance.policyDataSha256,
+          settingsIdentity: provenance.settingsIdentity,
+          compiledPolicy: provenance.compiledPolicy,
+        },
+        before: summarize(state),
+        observationSlot: state.contextSlot,
+        expectedPreState: summarize(state),
+        prestateExpectations: {
+          totalValue: REPAIR_FROZEN.totalValue.toString(),
+          idleBalance: REPAIR_FROZEN.idleBalance.toString(),
+          receipt1PositionValue: REPAIR_FROZEN.receipt1PositionValue.toString(),
+          custody1Balance: REPAIR_FROZEN.custody1Balance.toString(),
+          lpSupply: REPAIR_FROZEN.lpSupply.toString(),
+          lockedProfitDegradationDuration: REPAIR_FROZEN.degradation.toString(),
+          adminPerformanceFeeBps: REPAIR_FROZEN.adminPerformanceFeeBps,
+          withdrawalWaitingPeriod: REPAIR_FROZEN.waitingPeriod.toString(),
+          requestReceipt: REPAIR_FROZEN.requestReceipt,
+          requestEscrowLpBalance: REPAIR_FROZEN.requestEscrowLpBalance.toString(),
+          ticketLastConsumedSequence: REPAIR_FROZEN.ticketLastConsumedSequence.toString(),
+        },
+        report: {
+          sequence: built.report.sequence.toString(),
+          observedSlot: built.report.observedSlot.toString(),
+          navAfterRaw: built.report.navAfterRaw.toString(),
+          snapshotDigest: Buffer.from(built.report.snapshotDigest).toString("hex"),
+        },
+        compiler: {
+          schema: built.executionArtifact.schema,
+          sourceSha256: built.executionArtifact.sourceSha256,
+          constraintIndices: [0, 1],
+        },
+        expectedPostState: post.postState,
+        postState: post.postState,
+        transaction: {
+          feePayer: DELEGATED_EXECUTOR,
+          delegatedSigner: DELEGATED_EXECUTOR,
+          signerEnvVar: "POLICY_KEYPAIR",
+          instructionCount: 1,
+          outer: wireFromInstruction(built.execution),
+          inner: [wireFromInstruction(built.arm), wireFromInstruction(built.capital)],
+        },
+        checks: post.checks,
+      };
+      return {
+        prepared,
+        plan,
+        beforeSend: async () => {
+          // Re-run the same atomic finalized account snapshot immediately
+          // before the only raw send. A changed vault/book/ticket/request
+          // value aborts the pending journal rather than sending a stale NAV.
+          const current = await readState("finalized", true);
+          if (repairStateFingerprint(current) !== repairStateFingerprint(state)) {
+            throw new Error(
+              `ABORTED_PRE_SEND: finalized repair snapshot changed after signed simulation (initial slot ${state.contextSlot}, `
+              + `pre-send slot ${current.contextSlot})`,
+            );
+          }
+        },
+      };
+    },
+    reconcile: async ({ pending }) => {
+      const seed = parseSeed(String(pending.seed ?? pending.expectedSeed ?? ""), "repair journal seed");
+      const policy = address(stringAt(pending.policy, "repair journal policy"));
+      assertRepairPolicyHardBinding(seed, policy);
+      const policyJournal = stringAt(pending.policyJournal, "repair journal policyJournal");
+      const provenance = await verifyFinalizedPolicyCreationJournal(rpcUrl, resolve(policyJournal));
+      if (provenance.seed !== seed || provenance.policy !== policy) {
+        throw new Error("finalized repair journal policy provenance does not match its policy target");
+      }
+      const policyAccount = await getAccount(policy, "finalized");
+      const semantics = repairPolicySemantics(
+        decodeSquadsPolicy(policyAccount),
+        seed,
+        provenance.compiledPolicy,
+      );
+      const policyDataSha256 = policyAccount
+        ? createHash("sha256").update(policyAccount.data).digest("hex")
+        : null;
+      if (!policyAccount || !semantics.identityPass || !semantics.payloadPass
+        || !semantics.digestUnconstrained || !semantics.navExact.pass || !semantics.compiledMatch) {
+        throw new Error("finalized repair policy is not the exact one-shot contract");
+      }
+      const state = await readState("finalized", true);
+      const report = recordAt(pending.report, "report");
+      const expectations = recordAt(pending.prestateExpectations, "prestateExpectations");
+      const sequence = BigInt(stringAt(report.sequence, "report.sequence"));
+      const post = repairChecksAgainst(
+        repairObservedState(state),
+        BigInt(stringAt(expectations.lpSupply, "prestateExpectations.lpSupply")),
+        BigInt(stringAt(expectations.lockedProfitDegradationDuration, "prestateExpectations.lockedProfitDegradationDuration")),
+        sequence,
+      );
+      if (!post.checks.every((check) => check.pass)) {
+        throw new Error(`finalized repair post-state did not reconcile: ${JSON.stringify(post.checks)}`);
+      }
+      return {
+        finalizedPolicyDataBytes: policyAccount.data.length,
+        finalizedPolicyDataSha256: policyDataSha256,
+        policyProvenance: {
+          continuityPin: POLICY_PROVENANCE_STATEMENT,
+          creationSignature: provenance.creationSignature,
+          creationMessageSha256: provenance.creationMessageSha256,
+          policyDataBytes: provenance.policyDataBytes,
+          policyDataSha256: provenance.policyDataSha256,
+          settingsIdentity: provenance.settingsIdentity,
+          compiledPolicy: provenance.compiledPolicy,
+        },
+        finalizedPostState: post.postState,
+        finalizedState: summarize(state),
+      };
+    },
+  });
+  if (mode !== "execute" || repairResult !== 0) return repairResult;
+  const policyRemoveJournal = repairPolicyRemoveJournalPath(journal);
+  try {
+    // A finalized repair is not a usable reset milestone until its one-shot
+    // policy is retired. Keep removal as a separate journaled leg while
+    // making it inseparable from the normal --execute repair invocation.
+    return await cmdRepairPolicyRemoveOperator("execute", {
+      journal: policyRemoveJournal,
+      repairJournal: journal,
+    });
+  } catch (error) {
+    console.error(toJson({
+      schema: REPAIR_EXECUTION_SCHEMA,
+      step: "repair",
+      status: "REPAIR_FINALIZED_POLICY_STILL_PRESENT",
+      verdict: "REPAIR_FINALIZED_POLICY_STILL_PRESENT",
+      repairJournal: journal,
+      policyRemoveJournal,
+      blocker: sanitizeError(error),
+    }, 2));
+    return 1;
+  }
+}
+
+function policyClosed(account: RawAccount): boolean {
+  return account === null
+    || (account.lamports === 0 && account.owner === SYS_PROGRAM && account.data.length === 0);
+}
+
+async function assertRepairPolicyRetired(step: string) {
+  const policy = await getAccount(REPAIR_POLICY_EXPECTED_PDA, "finalized");
+  if (!policyClosed(policy)) {
+    throw new Error(
+      `REPAIR_FINALIZED_POLICY_STILL_PRESENT: ${step} refuses while finalized seed-140 policy `
+      + `${REPAIR_POLICY_EXPECTED_PDA} exists`,
+    );
+  }
+}
+
+function assertOriginalFrozenReceipt(state: LiveState, step: string) {
+  if (state.identity.requestReceiptAddress.toString() !== REQUEST_RECEIPT.toString()
+    || state.identity.requestReceiptPdaSeeds.vault.toString() !== VAULT.toString()
+    || state.identity.requestReceiptPdaSeeds.userTransferAuthority.toString() !== ADMIN.toString()) {
+    throw new Error(
+      `RECONCILE_MISMATCH: ${step} is not bound to the original HXtk frozen request receipt ${REQUEST_RECEIPT}`,
+    );
+  }
+  if (state.requestReceipt !== null
+    && (state.requestReceipt.vault !== VAULT.toString()
+      || state.requestReceipt.userTransferAuthority !== ADMIN.toString())) {
+    throw new Error(
+      `RECONCILE_MISMATCH: ${step} observed a request receipt with the wrong vault or authority`,
+    );
+  }
+}
+
+function assertOriginalFrozenCancelReceipt(state: LiveState, step: string) {
+  assertOriginalFrozenReceipt(state, step);
+  if (!state.requestReceipt
+    || state.requestReceipt.amountLpEscrowed !== REPAIR_FROZEN.requestEscrowLpBalance
+    || state.requestEscrowLpBalance !== REPAIR_FROZEN.requestEscrowLpBalance) {
+    throw new Error(
+      `RECONCILE_MISMATCH: ${step} is not bound to the original frozen receipt amount `
+      + `${REPAIR_FROZEN.requestEscrowLpBalance} LP`,
+    );
+  }
+}
+
+async function cmdRepairPolicyRemoveOperator(
+  mode: RepairPolicyOperatorMode,
+  overrides: Readonly<{ journal?: string; repairJournal?: string }> = {},
+): Promise<number> {
+  assertNoArbitraryRepairSeed();
+  const journal = overrides.journal ?? operatorJournal();
+  const rpcUrl = operatorRpcUrl();
+  return runJournaledStep({
+    mode,
+    step: "repair-policy-remove",
+    schema: REPAIR_POLICY_REMOVE_SCHEMA,
+    journal,
+    rpcUrl,
+    build: async () => {
+      const readback = await readRepairPolicySeeds();
+      const target = await resolveRepairPolicyTarget(readback);
+      const seed = target.seed;
+      assertRepairPolicyHardBinding(seed, policyPda(seed));
+      const policy = policyPda(seed);
+      const policyJournal = target.policyJournal;
+      if (policyJournal === null) throw new Error(`${POLICY_JOURNAL_FLAG} is required for PolicyRemove`);
+      const provenance = await verifyFinalizedPolicyCreationJournal(rpcUrl, policyJournal);
+      if (provenance.seed !== seed || provenance.policy !== policy) {
+        throw new Error("PolicyRemove policy provenance does not match the seed-140 target");
+      }
+      const repairJournal = overrides.repairJournal ?? requiredJournalPath(
+        REPAIR_JOURNAL_FLAG,
+        "PolicyRemove requires the finalized repair journal",
+      );
+      const repair = await verifyFinalizedRepairJournal(rpcUrl, repairJournal, policyJournal);
+      if (repair.seed !== seed || repair.policy !== policy) {
+        throw new Error("PolicyRemove repair journal does not match the proven repair policy");
+      }
+      const policyAccount = await getAccount(policy, "finalized");
+      if (!policyAccount) throw new Error(`PENDING_REPAIR_POLICY: finalized repair policy ${policy} is absent; there is no policy to remove`);
+      const policyDataSha256 = createHash("sha256").update(policyAccount.data).digest("hex");
+      const semantics = repairPolicySemantics(
+        decodeSquadsPolicy(policyAccount),
+        seed,
+        provenance.compiledPolicy,
+      );
+      if (!semantics.identityPass || !semantics.payloadPass || !semantics.digestUnconstrained
+        || !semantics.navExact.pass || !semantics.compiledMatch) {
+        throw new Error(`finalized repair policy seed ${seed} is not the exact one-shot contract; refusing removal`);
+      }
+      const settingsBefore = await getAccount(SQUADS_SETTINGS, "finalized");
+      const adminBefore = await getAccount(ADMIN, "finalized");
+      if (!settingsBefore || !adminBefore) throw new Error("PolicyRemove prestate omitted Settings or admin");
+      const remove = buildPolicyRemoveInstruction(policy);
+      const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
+      if (admin.signer.address !== ADMIN) throw new Error("SOLANA_TESTING_PK is not the HXtk admin signer");
+      const prepared = await prepareSignedV0Transaction({
+        rpcUrl,
+        feePayer: admin,
+        instructions: [remove],
+        inspectedAddresses: [policy, SQUADS_SETTINGS, ADMIN],
+        prestateAddresses: [policy, SQUADS_SETTINGS, ADMIN],
+        minimumContextSlot: readback.contextSlot,
+        commitment: "finalized",
+      });
+      const projectedPolicy = rawFromPreparedSnapshot(policy, prepared.simulation.postAccounts[0]);
+      const projectedSettings = rawFromPreparedSnapshot(SQUADS_SETTINGS, prepared.simulation.postAccounts[1]);
+      const projectedAdmin = rawFromPreparedSnapshot(ADMIN, prepared.simulation.postAccounts[2]);
+      const projectedSettingsDataSha256 = projectedSettings
+        ? createHash("sha256").update(projectedSettings.data).digest("hex")
+        : null;
+      if (!policyClosed(projectedPolicy) || !projectedSettings || !projectedAdmin
+        || projectedSettingsDataSha256 !== createHash("sha256").update(settingsBefore.data).digest("hex")) {
+        throw new Error("signed PolicyRemove simulation did not close only the repair policy");
+      }
+      return {
+        prepared,
+        plan: {
+          expectedPreState: {
+            policy: policy,
+            policyDataBytes: policyAccount.data.length,
+            policyDataSha256,
+            settingsDataSha256: createHash("sha256").update(settingsBefore.data).digest("hex"),
+          },
+          expectedPostState: { policy: "closed", settingsUnchanged: true, adminPresent: true },
+          expectedSeed: seed.toString(),
+          seed: seed.toString(),
+          policy,
+          targetSource: target.source,
+          policyJournal: target.policyJournal,
+          repairJournal,
+          policyProvenance: {
+            continuityPin: POLICY_PROVENANCE_STATEMENT,
+            creationSignature: provenance.creationSignature,
+            creationMessageSha256: provenance.creationMessageSha256,
+            policyDataBytes: provenance.policyDataBytes,
+            policyDataSha256: provenance.policyDataSha256,
+            settingsIdentity: provenance.settingsIdentity,
+          },
+          repairProvenance: {
+            finalizedSignature: repair.finalized.transaction.signatures[0] ?? null,
+            finalizedSlot: repair.finalized.slot,
+            finalizedBlockTime: repair.finalized.blockTime ?? null,
+          },
+          settingsReadback: settingsPolicyReadback(target.settings),
+          seedReadback: readback,
+          before: {
+            policyDataBytes: policyAccount.data.length,
+            policyDataSha256: createHash("sha256").update(policyAccount.data).digest("hex"),
+            constraints: stablePolicyConstraints(semantics.decoded),
+            decodedPolicy: semantics.decoded,
+          },
+          transaction: {
+            feePayer: ADMIN,
+            signer: ADMIN,
+            signerEnvVar: "SOLANA_TESTING_PK",
+            instructionCount: 1,
+            policyRemove: wireFromInstruction(remove),
+            projectedSettingsDataSha256,
+          },
+        },
+      };
+    },
+    reconcile: async ({ pending }) => {
+      const seed = parseSeed(String(pending.seed ?? pending.expectedSeed ?? ""), "removal journal seed");
+      const policy = address(stringAt(pending.policy, "removal journal policy"));
+      assertRepairPolicyHardBinding(seed, policy);
+      const policyJournal = stringAt(pending.policyJournal, "removal journal policyJournal");
+      const policyCreation = await readFinalizedJournal(
+        rpcUrl,
+        resolve(policyJournal),
+        REPAIR_POLICY_SCHEMA,
+        "repair-policy",
+      );
+      if (address(stringAt(policyCreation.record.policy, "repair-policy journal policy")) !== policy
+        || parseSeed(String(policyCreation.record.seed ?? policyCreation.record.expectedSeed ?? ""), "repair-policy journal seed") !== seed) {
+        throw new Error("finalized PolicyRemove policy provenance does not match the removal target");
+      }
+      const policyProvenance = recordAt(pending.policyProvenance, "removal journal policyProvenance");
+      if (String(policyProvenance.creationSignature) !== policyCreation.wire.signature
+        || String(policyProvenance.creationMessageSha256) !== policyCreation.wire.messageSha256) {
+        throw new Error("removal journal policy provenance signature/hash differs from the finalized PolicyCreate");
+      }
+      const repairJournal = stringAt(pending.repairJournal, "removal journal repairJournal");
+      const repair = await verifyFinalizedRepairJournal(rpcUrl, resolve(repairJournal), resolve(policyJournal));
+      if (repair.seed !== seed || repair.policy !== policy) {
+        throw new Error("finalized PolicyRemove repair journal does not match the policy target");
+      }
+      const finalizedPolicy = await getAccount(policy, "finalized");
+      const finalizedSettings = await getAccount(SQUADS_SETTINGS, "finalized");
+      const finalizedAdmin = await getAccount(ADMIN, "finalized");
+      const settingsHash = finalizedSettings
+        ? createHash("sha256").update(finalizedSettings.data).digest("hex")
+        : null;
+      const transaction = recordAt(pending.transaction, "transaction");
+      if (!policyClosed(finalizedPolicy) || !finalizedSettings || !finalizedAdmin
+        || settingsHash !== transaction.projectedSettingsDataSha256) {
+        throw new Error("finalized PolicyRemove did not close the policy without changing Settings/admin");
+      }
+      return {
+        finalizedPolicyClosed: true,
+        finalizedSettingsDataSha256: settingsHash,
+      };
+    },
+  });
+}
+
+async function cmdRepairPolicyRemove(): Promise<number> {
+  const mode = operatorMode();
+  if (mode) return cmdRepairPolicyRemoveOperator(mode);
+  assertNoArbitraryRepairSeed();
+  if (process.argv.includes("--journal")) {
+    throw new Error("repair-policy-remove --journal is not supported");
+  }
+  if (!process.argv.includes(POLICY_JOURNAL_FLAG) || !process.argv.includes(REPAIR_JOURNAL_FLAG)) {
+    const output = {
+      schema: REPAIR_POLICY_REMOVE_SCHEMA,
+      step: "repair-policy-remove",
+      policyProvenanceStatement: POLICY_PROVENANCE_STATEMENT,
+      sent: false,
+      signed: false,
+      broadcast: false,
+      verdict: "PENDING_FINALIZED_POLICY_AND_REPAIR",
+      reason: `${POLICY_JOURNAL_FLAG} and ${REPAIR_JOURNAL_FLAG} are required; removal follows the proven PolicyCreate and finalized repair journals`,
+    };
+    console.log(toJson(output, 2));
+    writeEvidence("repair-policy-remove", output);
+    return 2;
+  }
+  const rpcUrl = process.env.SOLANA_RPC_URL?.trim() || DEFAULT_RPC_URL;
+  const readback = await readRepairPolicySeeds();
+  const target = await resolveRepairPolicyTarget(readback);
+  const seed = target.seed;
+  const policy = policyPda(seed);
+  const policyJournal = target.policyJournal;
+  if (policyJournal === null) throw new Error(`${POLICY_JOURNAL_FLAG} is required for PolicyRemove`);
+  const provenance = await verifyFinalizedPolicyCreationJournal(rpcUrl, policyJournal);
+  if (provenance.seed !== seed || provenance.policy !== policy) {
+    throw new Error("PolicyRemove policy provenance does not match the seed-140 target");
+  }
+  const repairJournalPath = requiredJournalPath(
+    REPAIR_JOURNAL_FLAG,
+    "PolicyRemove requires the finalized repair journal",
+  );
+  const repair = await verifyFinalizedRepairJournal(rpcUrl, repairJournalPath, policyJournal);
+  if (repair.seed !== seed || repair.policy !== policy) {
+    throw new Error("PolicyRemove repair journal does not match the proven policy");
+  }
+  const policyAccount = await getAccount(policy, "finalized");
+  if (!policyAccount) {
+    const output = {
+      schema: REPAIR_POLICY_REMOVE_SCHEMA,
+      step: "repair-policy-remove",
+      policyProvenanceStatement: POLICY_PROVENANCE_STATEMENT,
+      sent: false,
+      broadcast: false,
+      verdict: "PENDING_REPAIR_POLICY",
+      seed: seed.toString(),
+      expectedSeed: seed.toString(),
+      policy,
+      reason: `finalized repair policy seed ${seed} (${policy}) is absent; there is no policy to remove`,
+      targetSource: target.source,
+      settingsReadback: settingsPolicyReadback(target.settings),
+      policyJournal: target.policyJournal,
+      seedReadback: readback,
+    };
+    console.log(toJson(output, 2));
+    writeEvidence("repair-policy-remove", output);
+    return 2;
+  }
+  const policyDataSha256 = createHash("sha256").update(policyAccount.data).digest("hex");
+  const decoded = decodeSquadsPolicy(policyAccount);
+  const semantics = repairPolicySemantics(decoded, seed, provenance.compiledPolicy);
+  if (!semantics.identityPass || !semantics.payloadPass || !semantics.digestUnconstrained
+    || !semantics.navExact.pass || !semantics.compiledMatch) {
+    throw new Error(`finalized repair policy seed ${seed} is not the exact one-shot contract; refusing removal`);
+  }
+  const settingsBefore = await getAccount(SQUADS_SETTINGS, "finalized");
+  const adminBefore = await getAccount(ADMIN, "finalized");
+  if (!settingsBefore || !adminBefore) throw new Error("PolicyRemove prestate omitted Settings or admin");
+  const remove = buildPolicyRemoveInstruction(policy);
+  const simulation = await simulate(ADMIN, [remove], [policy, SQUADS_SETTINGS, ADMIN]);
+  const postPolicy = postAccount(simulation.postAccounts, policy);
+  const postSettings = postAccount(simulation.postAccounts, SQUADS_SETTINGS);
+  const postAdmin = postAccount(simulation.postAccounts, ADMIN);
+  const checks = [
+    checkRow("simulation succeeds", simulation.err === null, null,
+      simulation.err === null ? null : JSON.stringify(simulation.err)),
+    checkRow("PolicyRemove closes the one-shot policy", simulation.err === null && postPolicy === null,
+      "closed", postPolicy === null ? "closed" : "present"),
+    checkRow("Settings owner and bytes remain unchanged", postSettings?.owner === settingsBefore.owner
+      && postSettings !== null
+      && createHash("sha256").update(postSettings.data).digest("hex")
+        === createHash("sha256").update(settingsBefore.data).digest("hex"),
+    settingsBefore.owner, postSettings?.owner ?? null),
+    checkRow("admin remains present after rent refund", postAdmin?.owner === adminBefore.owner,
+      adminBefore.owner, postAdmin?.owner ?? null),
+  ];
+  const pass = checks.every((check) => check.pass);
+  const output = {
+    schema: REPAIR_POLICY_REMOVE_SCHEMA,
+    step: "repair-policy-remove",
+    sent: false,
+    broadcast: false,
+    verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    seed: seed.toString(),
+    expectedSeed: seed.toString(),
+    policy,
+    targetSource: target.source,
+    settingsReadback: settingsPolicyReadback(target.settings),
+    policyJournal: target.policyJournal,
+    repairJournal: repairJournalPath,
+    policyProvenance: {
+      continuityPin: POLICY_PROVENANCE_STATEMENT,
+      creationSignature: provenance.creationSignature,
+      creationMessageSha256: provenance.creationMessageSha256,
+      policyDataBytes: provenance.policyDataBytes,
+      policyDataSha256: provenance.policyDataSha256,
+      settingsIdentity: provenance.settingsIdentity,
+    },
+    repairProvenance: {
+      finalizedSignature: repair.finalized.transaction.signatures[0] ?? null,
+      finalizedSlot: repair.finalized.slot,
+      finalizedBlockTime: repair.finalized.blockTime ?? null,
+    },
+    seedReadback: readback,
+    before: {
+      policyDataBytes: policyAccount.data.length,
+      policyDataSha256,
+      constraints: stablePolicyConstraints(semantics.decoded),
+      decodedPolicy: semantics.decoded,
+    },
+    transaction: {
+      feePayer: ADMIN,
+      signer: ADMIN,
+      signerEnvVar: "SOLANA_TESTING_PK",
+      packetBytes: simulation.packetBytes,
+      instructionCount: 1,
+      unitsConsumed: simulation.unitsConsumed,
+      policyRemove: wireFromInstruction(remove),
+    },
+    checks,
+    ...(simulation.err === null ? {} : { logs: simulation.logs }),
+  };
+  console.log(toJson(output, 2));
+  writeEvidence("repair-policy-remove", output);
+  return pass ? 0 : 1;
+}
+
+// ---- verify ------------------------------------------------------------------
+
+async function cmdVerify(): Promise<number> {
+  const state = await readState();
+  const summary = summarize(state);
+  const navRepairRaw = state.vault && state.idleBalance !== null && state.receipt1
+    ? state.idleBalance + state.receipt1.positionValue - state.vault.totalValue
+    : null;
+  const ticket = state.reportTicket;
+  const endState = {
+    tvEqualsIdle: summary.tvEqualsIdle,
+    receipt1NotBelowPhantom: (state.receipt1?.positionValue ?? 0n) >= PHANTOM_NAV_RAW,
+    receipt1EqualsPhantom: state.receipt1?.positionValue === PHANTOM_NAV_RAW,
+    feeAccumulatorsZero: (state.vault?.accumulatedLpAdminFees ?? 1n) === 0n
+      && (state.vault?.accumulatedLpManagerFees ?? 1n) === 0n
+      && (state.vault?.accumulatedLpProtocolFees ?? 1n) === 0n,
+    custody1Zero: (state.custody1Balance ?? 1n) === 0n,
+    degradationZero: (state.vault?.lockedProfitDegradationDuration ?? 1n) === 0n,
+    performanceFeesZero: (state.vault?.adminPerformanceFeeBps ?? 1) === 0
+      && (state.vault?.managerPerformanceFeeBps ?? 1) === 0,
+    waitingPeriodIs600: (state.vault?.withdrawalWaitingPeriod ?? 0n) === REQUEST_WAITING_PERIOD_SECONDS,
+  };
+  const phase1Complete = endState.tvEqualsIdle === true
+    && endState.receipt1NotBelowPhantom
+    && endState.feeAccumulatorsZero
+    && endState.custody1Zero;
+  const output = {
+    step: "verify",
+    sent: false,
+    verdict: phase1Complete ? "PHASE1_END_STATE_OK" : "PRE_RESET_OR_PARTIAL",
+    phase1Complete,
+    endStateChecks: endState,
+    preconditions: {
+      reportTicketArmed: ticket?.armed ?? null,
+      reportTicketCoherent: ticket
+        ? (!ticket.armed && ticket.activeSequence === 0n && ticket.activeHashIsZero)
+          || (ticket.armed && ticket.activeSequence !== 0n && !ticket.activeHashIsZero)
+        : null,
+      ticketLastConsumedSequence: ticket?.lastConsumedSequence.toString() ?? null,
+      computedRepairNavRaw: navRepairRaw === null ? null : navRepairRaw.toString(),
+      computedRepairNavMatchesPhantom: navRepairRaw === PHANTOM_NAV_RAW,
+      openWithdrawRequest: state.requestReceipt,
+    },
+    aborts: {
+      reportTicketArmed: ticket?.armed === true,
+      custody1NonZero: (state.custody1Balance ?? 0n) !== 0n,
+      // The gate that matters: the NAV the repair reports must never be cranked
+      // below the phantom. receipt1 itself may legitimately sit below it (§6).
+      repairNavBelowPhantom: navRepairRaw === null || navRepairRaw < PHANTOM_NAV_RAW,
+    },
+    state: summary,
+  };
+  console.log(toJson(output, 2));
+  writeEvidence("verify", {
+    verdict: output.verdict,
+    phase1Complete,
+    endStateChecks: endState,
+    preconditions: output.preconditions,
+    aborts: output.aborts,
+    state: summary,
+  });
+  return 0;
+}
+
+// ---- config ------------------------------------------------------------------
+
+async function cmdConfig(): Promise<number> {
+  const mode = operatorMode();
+  if (mode) return cmdConfigOperator(mode);
+  const state = await readState();
+  if (!state.vault) throw new Error("vault account is absent");
+  if (state.vault.admin !== ADMIN) {
+    throw new Error(`vault admin ${state.vault.admin} is not ${ADMIN}`);
+  }
+  const before = summarize(state);
+
+  const noopAdmin = createNoopSigner(ADMIN);
+  const degradation = await getUpdateVaultConfigInstructionAsync({
+    admin: noopAdmin,
+    protocol: PROTOCOL,
+    vault: VAULT,
+    rent: RENT_SYSVAR,
+    field: VaultConfigField.LockedProfitDegradationDuration,
+    data: new Uint8Array(8),
+  }, { programAddress: VOLTR });
+  const adminFee = await getUpdateVaultConfigInstructionAsync({
+    admin: noopAdmin,
+    protocol: PROTOCOL,
+    vault: VAULT,
+    rent: RENT_SYSVAR,
+    field: VaultConfigField.AdminPerformanceFee,
+    data: new Uint8Array(2),
+  }, { programAddress: VOLTR });
+  for (const instruction of [degradation, adminFee]) {
+    const accounts = instruction.accounts ?? [];
+    if (accounts.length !== 4) {
+      throw new Error(`updateVaultConfig has ${accounts.length} accounts; expected admin/protocol/vault/rent`);
+    }
+    if (accounts[0]?.address !== ADMIN || accounts[2]?.address !== VAULT) {
+      throw new Error("updateVaultConfig account list drifted from admin/protocol/vault/rent");
+    }
+  }
+
+  const simulation = await simulate(ADMIN, [degradation, adminFee], [VAULT]);
+  const events = simulation.err === null ? decodeEvents("UpdateVaultConfig", simulation.logs) : [];
+
+  type ConfigEvent = { field?: string; oldValue?: string; newValue?: string };
+  const degradationEvent = events.find((event) => (event as ConfigEvent).field === "LockedProfitDegradationDuration") as ConfigEvent | undefined;
+  const feeEvent = events.find((event) => (event as ConfigEvent).field === "AdminPerformanceFee") as ConfigEvent | undefined;
+  const postVault = simulation.err === null ? decodeVault(postAccount(simulation.postAccounts, VAULT)) : null;
+  const checks = [
+    {
+      check: "simulation succeeds",
+      pass: simulation.err === null,
+      expected: null,
+      actual: simulation.err === null ? null : JSON.stringify(simulation.err),
+    },
+    {
+      check: "lockedProfitDegradationDuration -> 0",
+      pass: postVault?.lockedProfitDegradationDuration === 0n,
+      expected: "0",
+      actual: postVault?.lockedProfitDegradationDuration.toString() ?? null,
+    },
+    {
+      check: "adminPerformanceFeeBps -> 0",
+      pass: postVault?.adminPerformanceFeeBps === 0,
+      expected: 0,
+      actual: postVault?.adminPerformanceFeeBps ?? null,
+    },
+    {
+      check: "books untouched (tv, idle, lp supply, receipt1, custody1)",
+      pass: postVault?.totalValue === state.vault.totalValue
+        && state.idleBalance !== null
+        && state.receipt1 !== null,
+      expected: state.vault.totalValue.toString(),
+      actual: postVault?.totalValue.toString() ?? null,
+    },
+    {
+      check: "event 1: LockedProfitDegradationDuration 86400 -> 0",
+      pass: degradationEvent?.oldValue === "86400" && degradationEvent?.newValue === "0",
+      expected: "86400 -> 0",
+      actual: degradationEvent ? `${degradationEvent.oldValue} -> ${degradationEvent.newValue}` : null,
+    },
+    {
+      check: "event 2: AdminPerformanceFee 500 -> 0",
+      pass: feeEvent?.oldValue === "500" && feeEvent?.newValue === "0",
+      expected: "500 -> 0",
+      actual: feeEvent ? `${feeEvent.oldValue} -> ${feeEvent.newValue}` : null,
+    },
+  ];
+  const pass = checks.every((row) => row.pass);
+  const output = {
+    step: "config",
+    sent: false,
+    verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    broadcast: false,
+    before,
+    transaction: {
+      packetBytes: simulation.packetBytes,
+      unitsConsumed: simulation.unitsConsumed,
+      instructions: [
+        "updateVaultConfig(LockedProfitDegradationDuration, u64 0)",
+        "updateVaultConfig(AdminPerformanceFee, u16 0)",
+      ],
+      accounts: { admin: ADMIN, protocol: PROTOCOL, vault: VAULT, rent: RENT_SYSVAR },
+      signer: ADMIN,
+      signerEnvVar: "SOLANA_TESTING_PK",
+      executeCommand:
+        'op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk config --execute --journal /absolute/path/hxtk-config.json',
+    },
+    checks,
+    events,
+    postState: postVault
+      ? {
+          lockedProfitDegradationDuration: postVault.lockedProfitDegradationDuration.toString(),
+          adminPerformanceFeeBps: postVault.adminPerformanceFeeBps,
+          totalValue: postVault.totalValue.toString(),
+          admin: postVault.admin,
+          manager: postVault.manager,
+        }
+      : null,
+    ...(simulation.err === null ? {} : { logs: simulation.logs }),
+  };
+  console.log(toJson(output, 2));
+  writeEvidence("config", output);
+  return pass ? 0 : 1;
+}
+
+// ---- phase 2: harvest / cancel / request / claim -----------------------------
+
+function checkRow(label: string, pass: boolean, expected: unknown, actual: unknown) {
+  return { check: label, pass, expected, actual };
+}
+
+function postToken(postAccounts: readonly RawAccount[], target: Address): bigint | null {
+  return tokenAmount(postAccount(postAccounts, target));
+}
+
+async function createAtaIdempotent(payer: Address, ata: Address, owner: Address, mint: Address): Promise<Instruction> {
+  return getCreateAssociatedTokenIdempotentInstruction({
+    payer: createNoopSigner(payer),
+    ata,
+    owner,
+    mint,
+    tokenProgram: TOKEN_PROGRAM,
+  });
+}
+
+async function cmdHarvestOperator(mode: RepairPolicyOperatorMode): Promise<number> {
+  const journal = operatorJournal();
+  const rpcUrl = operatorRpcUrl();
+  return runJournaledStep({
+    mode,
+    step: "harvest",
+    schema: SCHEMA,
+    journal,
+    rpcUrl,
+    build: async () => {
+      await assertRepairPolicyRetired("harvest");
+      const state = await readState("finalized");
+      if (!state.vault) throw new Error("vault account is absent");
+      const { managerLpAta, treasuryLpAta } = state.identity;
+      const noopAdmin = createNoopSigner(ADMIN);
+      const adminFeeAccrued = state.vault.accumulatedLpAdminFees;
+      const instructions = [
+        await createAtaIdempotent(ADMIN, managerLpAta, SQUADS_VAULT, LP_MINT),
+        await createAtaIdempotent(ADMIN, treasuryLpAta, PROTOCOL_TREASURY, LP_MINT),
+        await getHarvestFeeInstructionAsync({
+          harvester: noopAdmin,
+          vaultManager: SQUADS_VAULT,
+          vaultAdmin: ADMIN,
+          protocolTreasury: PROTOCOL_TREASURY,
+          protocol: PROTOCOL,
+          vault: VAULT,
+          vaultLpMint: LP_MINT,
+          vaultLpMintAuth: LP_MINT_AUTH,
+          vaultManagerLpAta: managerLpAta,
+          vaultAdminLpAta: ADMIN_LP_ATA,
+          protocolTreasuryLpAta: treasuryLpAta,
+          lpTokenProgram: TOKEN_PROGRAM,
+        }, { programAddress: VOLTR }),
+      ];
+      if ((instructions[2]?.accounts ?? []).length !== 12) throw new Error("harvestFee account list drifted from the 12-account wire");
+      const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
+      if (admin.signer.address !== ADMIN) throw new Error("SOLANA_TESTING_PK is not the HXtk admin signer");
+      const inspectedAddresses = [VAULT, LP_MINT, ADMIN_LP_ATA, managerLpAta, treasuryLpAta];
+      const prepared = await prepareSignedV0Transaction({
+        rpcUrl,
+        feePayer: admin,
+        instructions,
+        inspectedAddresses,
+        prestateAddresses: inspectedAddresses,
+        minimumContextSlot: state.contextSlot,
+        commitment: "finalized",
+      });
+      const postVault = decodeVault(rawFromPreparedSnapshot(VAULT, prepared.simulation.postAccounts[0]));
+      const postAdminLp = tokenAmount(rawFromPreparedSnapshot(ADMIN_LP_ATA, prepared.simulation.postAccounts[2]));
+      const postSupply = mintSupply(rawFromPreparedSnapshot(LP_MINT, prepared.simulation.postAccounts[1]));
+      const postAdminLpDelta = postAdminLp === null ? null : postAdminLp - (state.adminLpBalance ?? 0n);
+      if (!postVault || postVault.accumulatedLpAdminFees !== 0n || postVault.accumulatedLpManagerFees !== 0n
+        || postVault.accumulatedLpProtocolFees !== 0n
+        || postAdminLpDelta !== adminFeeAccrued
+        || postSupply !== (state.lpSupply ?? 0n) + adminFeeAccrued) {
+        throw new Error("signed harvest simulation did not project the accrued fee transfer exactly");
+      }
+      return {
+        prepared,
+        plan: {
+          before: summarize(state),
+          expectedPreState: summarize(state),
+          expectedPostState: {
+            adminLpBalance: postAdminLp?.toString() ?? null,
+            adminLpDelta: adminFeeAccrued.toString(),
+            lpSupply: postSupply?.toString() ?? null,
+            feeAccumulators: "0",
+          },
+          harvest: { adminFeeAccrued: adminFeeAccrued.toString() },
+          transaction: {
+            feePayer: ADMIN,
+            signer: ADMIN,
+            signerEnvVar: "SOLANA_TESTING_PK",
+            instructionCount: instructions.length,
+            instructions: [
+              "createAssociatedTokenAccountIdempotent(manager LP ATA)",
+              "createAssociatedTokenAccountIdempotent(treasury LP ATA)",
+              "harvestFee",
+            ],
+          },
+        },
+      };
+    },
+    reconcile: async ({ pending }) => {
+      const state = await readState("finalized");
+      if (!state.vault) throw new Error("finalized harvest omitted the vault");
+      const before = recordAt(pending.before, "before");
+      const harvest = recordAt(pending.harvest, "harvest");
+      const accrued = BigInt(stringAt(harvest.adminFeeAccrued, "harvest.adminFeeAccrued"));
+      const beforeAdmin = BigInt(String(before.adminLpBalance ?? "0"));
+      const beforeSupply = BigInt(stringAt(before.lpSupply, "before.lpSupply"));
+      const adminLpDelta = (state.adminLpBalance ?? 0n) - beforeAdmin;
+      if (adminLpDelta !== accrued || state.lpSupply !== beforeSupply + accrued
+        || state.vault.accumulatedLpAdminFees !== 0n || state.vault.accumulatedLpManagerFees !== 0n
+        || state.vault.accumulatedLpProtocolFees !== 0n) {
+        throw new Error("finalized harvest did not reconcile the fee delta and cleared accumulators");
+      }
+      return { finalizedAdminLpDelta: adminLpDelta.toString(), finalizedState: summarize(state) };
+    },
+  });
+}
+
+function buildCancelInstruction(noopUser: ReturnType<typeof createNoopSigner>) {
+  return getCancelRequestWithdrawVaultInstructionAsync({
+    userTransferAuthority: noopUser,
+    protocol: PROTOCOL,
+    vault: VAULT,
+    vaultLpMint: LP_MINT,
+    userLpAta: ADMIN_LP_ATA,
+    requestWithdrawLpAta: PENDING_ESCROW,
+    requestWithdrawVaultReceipt: REQUEST_RECEIPT,
+    lpTokenProgram: TOKEN_PROGRAM,
+    systemProgram: SYS_PROGRAM,
+  }, { programAddress: VOLTR });
+}
+
+/** Receipt stays live after cancel/request; decode the tracked LP straight from bytes. */
+function requestReceiptLp(account: RawAccount): bigint | null {
+  return account ? u64Le(account.data, 72) : null;
+}
+
+function requestReceiptWithdrawableFromTs(account: RawAccount): bigint | null {
+  return account ? u64Le(account.data, 96) : null;
+}
+
+async function cmdHarvest(): Promise<number> {
+  const mode = operatorMode();
+  if (mode) return cmdHarvestOperator(mode);
+  await assertRepairPolicyRetired("harvest");
+  const state = await readState();
+  if (!state.vault) throw new Error("vault account is absent");
+  const before = summarize(state);
+  const { managerLpAta, treasuryLpAta } = state.identity;
+  const noopAdmin = createNoopSigner(ADMIN);
+  const adminFeeAccrued = state.vault.accumulatedLpAdminFees;
+  const instructions = [
+    await createAtaIdempotent(ADMIN, managerLpAta, SQUADS_VAULT, LP_MINT),
+    await createAtaIdempotent(ADMIN, treasuryLpAta, PROTOCOL_TREASURY, LP_MINT),
+    await getHarvestFeeInstructionAsync({
+      harvester: noopAdmin,
+      vaultManager: SQUADS_VAULT,
+      vaultAdmin: ADMIN,
+      protocolTreasury: PROTOCOL_TREASURY,
+      protocol: PROTOCOL,
+      vault: VAULT,
+      vaultLpMint: LP_MINT,
+      vaultLpMintAuth: LP_MINT_AUTH,
+      vaultManagerLpAta: managerLpAta,
+      vaultAdminLpAta: ADMIN_LP_ATA,
+      protocolTreasuryLpAta: treasuryLpAta,
+      lpTokenProgram: TOKEN_PROGRAM,
+    }, { programAddress: VOLTR }),
+  ];
+  if ((instructions[2]?.accounts ?? []).length !== 12) {
+    throw new Error("harvestFee account list drifted from the 12-account wire (harvester/manager/admin/treasury/protocol/vault/mint/mintAuth/3 atas/token)");
+  }
+
+  const simulation = await simulate(ADMIN, instructions, [
+    VAULT, LP_MINT, ADMIN_LP_ATA, managerLpAta, treasuryLpAta,
+  ]);
+  const events = simulation.err === null ? decodeEvents("HarvestFee", simulation.logs) : [];
+  const postVault = simulation.err === null ? decodeVault(postAccount(simulation.postAccounts, VAULT)) : null;
+  const supplyAfter = mintSupply(postAccount(simulation.postAccounts, LP_MINT));
+  const adminLpBefore = state.adminLpBalance ?? 0n;
+  const adminLpAfter = postToken(simulation.postAccounts, ADMIN_LP_ATA);
+  const adminLpDelta = adminLpAfter === null ? null : adminLpAfter - adminLpBefore;
+  const checks = [
+    checkRow("simulation succeeds", simulation.err === null, null,
+      simulation.err === null ? null : JSON.stringify(simulation.err)),
+    checkRow("harvest event emitted", events.length > 0, ">=1", events.length),
+    checkRow("admin LP ATA delta equals the accrued admin fee",
+      adminLpDelta === adminFeeAccrued,
+      adminFeeAccrued.toString(), adminLpDelta?.toString() ?? null),
+    checkRow("manager LP ATA credited 0 (accumulator empty)",
+      postToken(simulation.postAccounts, managerLpAta) === 0n, "0",
+      postToken(simulation.postAccounts, managerLpAta)?.toString() ?? null),
+    checkRow("treasury LP ATA credited 0 (accumulator empty)",
+      postToken(simulation.postAccounts, treasuryLpAta) === 0n, "0",
+      postToken(simulation.postAccounts, treasuryLpAta)?.toString() ?? null),
+    checkRow("lp supply grows by exactly the admin fee",
+      supplyAfter === (state.lpSupply ?? 0n) + adminFeeAccrued,
+      ((state.lpSupply ?? 0n) + adminFeeAccrued).toString(),
+      supplyAfter?.toString() ?? null),
+    checkRow("fee accumulators reset to 0",
+      postVault?.accumulatedLpAdminFees === 0n && postVault?.accumulatedLpManagerFees === 0n,
+      "0/0",
+      postVault ? `${postVault.accumulatedLpAdminFees}/${postVault.accumulatedLpManagerFees}` : null),
+    checkRow("books untouched (tv)",
+      postVault?.totalValue === state.vault.totalValue,
+      state.vault.totalValue.toString(), postVault?.totalValue.toString() ?? null),
+  ];
+  const pass = checks.every((row) => row.pass);
+  console.log(toJson({
+    step: "harvest", sent: false, verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    adminLpDelta: adminLpDelta?.toString() ?? null,
+    before, transaction: {
+      packetBytes: simulation.packetBytes, unitsConsumed: simulation.unitsConsumed,
+      instructions: [
+        "createAssociatedTokenAccountIdempotent(manager ST999… LP)",
+        "createAssociatedTokenAccountIdempotent(treasury C7sE… LP)",
+        "harvestFee",
+      ],
+      signer: ADMIN, signerEnvVar: "SOLANA_TESTING_PK",
+      executeCommand: "op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk harvest --execute --journal /absolute/path/hxtk-harvest.json",
+    }, checks, events,
+  }, 2));
+  writeEvidence("harvest", {
+    verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    adminLpDelta: adminLpDelta?.toString() ?? null,
+    adminFeeAccrued: adminFeeAccrued.toString(),
+    before, checks, events,
+  });
+  return pass ? 0 : 1;
+}
+
+async function cmdCancelOperator(mode: RepairPolicyOperatorMode): Promise<number> {
+  const journal = operatorJournal();
+  const rpcUrl = operatorRpcUrl();
+  return runJournaledStep({
+    mode,
+    step: "cancel",
+    schema: SCHEMA,
+    journal,
+    rpcUrl,
+    build: async () => {
+      await assertRepairPolicyRetired("cancel");
+      const state = await readState("finalized");
+      assertOriginalFrozenCancelReceipt(state, "cancel");
+      if (!state.requestReceipt) throw new Error("no pending withdraw request receipt on chain");
+      if (state.requestReceipt.userTransferAuthority !== ADMIN) throw new Error("pending request authority is not the HXtk admin");
+      if (state.requestReceipt.amountLpEscrowed !== (state.requestEscrowLpBalance ?? 0n)) {
+        throw new Error("escrow balance disagrees with the receipt's amountLpEscrowed");
+      }
+      const noopAdmin = createNoopSigner(ADMIN);
+      const cancel = await buildCancelInstruction(noopAdmin);
+      if ((cancel.accounts ?? []).length !== 9) throw new Error("cancelRequestWithdrawVault account list drifted from the 9-account wire");
+      const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
+      if (admin.signer.address !== ADMIN) throw new Error("SOLANA_TESTING_PK is not the HXtk admin signer");
+      const inspectedAddresses = [VAULT, LP_MINT, ADMIN_LP_ATA, PENDING_ESCROW, REQUEST_RECEIPT];
+      const prepared = await prepareSignedV0Transaction({
+        rpcUrl,
+        feePayer: admin,
+        instructions: [cancel],
+        inspectedAddresses,
+        prestateAddresses: inspectedAddresses,
+        minimumContextSlot: state.contextSlot,
+        commitment: "finalized",
+      });
+      const postEscrow = tokenAmount(rawFromPreparedSnapshot(PENDING_ESCROW, prepared.simulation.postAccounts[3]));
+      const postAdminLp = tokenAmount(rawFromPreparedSnapshot(ADMIN_LP_ATA, prepared.simulation.postAccounts[2]));
+      const postReceipt = rawFromPreparedSnapshot(REQUEST_RECEIPT, prepared.simulation.postAccounts[4]);
+      const postSupply = mintSupply(rawFromPreparedSnapshot(LP_MINT, prepared.simulation.postAccounts[1]));
+      const postAdminLpDelta = postAdminLp === null
+        ? null
+        : postAdminLp - (state.adminLpBalance ?? 0n);
+      if (postEscrow !== 0n || postAdminLpDelta !== state.requestReceipt.amountLpEscrowed
+        || postSupply !== state.lpSupply
+        || (postReceipt !== null && requestReceiptLp(postReceipt) !== 0n)) {
+        throw new Error("signed cancel simulation did not project the full escrow refund and receipt clear");
+      }
+      return {
+        prepared,
+        plan: {
+          before: summarize(state),
+          expectedPreState: summarize(state),
+          expectedPostState: {
+            escrowLpBalance: "0",
+            adminLpDelta: state.requestReceipt.amountLpEscrowed.toString(),
+            requestReceipt: "closed|0",
+          },
+          requestReceiptPda: REQUEST_RECEIPT,
+          originalFrozenReceipt: true,
+          cancel: {
+            escrowRefundLp: state.requestReceipt.amountLpEscrowed.toString(),
+            requestReceipt: REQUEST_RECEIPT,
+            originalFrozenReceipt: true,
+          },
+          transaction: {
+            feePayer: ADMIN,
+            signer: ADMIN,
+            signerEnvVar: "SOLANA_TESTING_PK",
+            instructionCount: 1,
+            instructions: ["cancelRequestWithdrawVault"],
+          },
+        },
+      };
+    },
+    reconcile: async ({ pending }) => {
+      const state = await readState("finalized");
+      const before = recordAt(pending.before, "before");
+      const cancel = recordAt(pending.cancel, "cancel");
+      const escrowRefund = BigInt(stringAt(cancel.escrowRefundLp, "cancel.escrowRefundLp"));
+      const beforeAdmin = BigInt(String(before.adminLpBalance ?? "0"));
+      const adminLpDelta = (state.adminLpBalance ?? 0n) - beforeAdmin;
+      if ((state.requestEscrowLpBalance ?? 0n) !== 0n
+        || state.requestReceipt === null
+        || state.requestReceipt.amountLpEscrowed !== 0n
+        || adminLpDelta !== escrowRefund) {
+        throw new Error("finalized cancel did not reconcile the escrow refund and cleared receipt");
+      }
+      return { finalizedAdminLpDelta: adminLpDelta.toString(), finalizedState: summarize(state) };
+    },
+  });
+}
+
+async function cmdCancel(): Promise<number> {
+  const mode = operatorMode();
+  if (mode) return cmdCancelOperator(mode);
+  await assertRepairPolicyRetired("cancel");
+  const state = await readState();
+  assertOriginalFrozenCancelReceipt(state, "cancel");
+  if (!state.requestReceipt) throw new Error("no pending withdraw request receipt on chain");
+  if (state.requestReceipt.userTransferAuthority !== ADMIN) {
+    throw new Error(`request authority ${state.requestReceipt.userTransferAuthority} is not ${ADMIN}`);
+  }
+  if (state.requestReceipt.amountLpEscrowed !== (state.requestEscrowLpBalance ?? 0n)) {
+    throw new Error("escrow balance disagrees with the receipt's amountLpEscrowed");
+  }
+  const before = summarize(state);
+  const noopAdmin = createNoopSigner(ADMIN);
+  const cancel = await buildCancelInstruction(noopAdmin);
+  if ((cancel.accounts ?? []).length !== 9) {
+    throw new Error("cancelRequestWithdrawVault account list drifted from the 9-account wire");
+  }
+  const simulation = await simulate(ADMIN, [cancel], [
+    VAULT, LP_MINT, ADMIN_LP_ATA, PENDING_ESCROW, REQUEST_RECEIPT,
+  ]);
+  const events = simulation.err === null ? decodeEvents("CancelRequestWithdrawVault", simulation.logs) : [];
+  const supplyAfter = mintSupply(postAccount(simulation.postAccounts, LP_MINT));
+  const adminLpBefore = state.adminLpBalance ?? 0n;
+  const adminLpAfter = postToken(simulation.postAccounts, ADMIN_LP_ATA);
+  const refund = adminLpAfter === null ? null : adminLpAfter - adminLpBefore;
+  const escrowAfter = postToken(simulation.postAccounts, PENDING_ESCROW);
+  const burned = (state.lpSupply ?? 0n) - (supplyAfter ?? 0n);
+  const checks = [
+    checkRow("simulation succeeds", simulation.err === null, null,
+      simulation.err === null ? null : JSON.stringify(simulation.err)),
+    checkRow("cancel event emitted", events.length > 0, ">=1", events.length),
+    checkRow("escrow drained", escrowAfter === 0n, "0", escrowAfter?.toString() ?? null),
+    checkRow("admin LP balance delta equals the full escrow refund 1:1",
+      refund === state.requestReceipt.amountLpEscrowed,
+      state.requestReceipt.amountLpEscrowed.toString(), refund?.toString() ?? null),
+    checkRow("lp supply unchanged (the program burns nothing on cancel)",
+      supplyAfter === state.lpSupply && burned === 0n,
+      `${state.lpSupply?.toString()} (burn 0)`, `${supplyAfter?.toString()} (burn ${burned})`),
+    checkRow("receipt cleared (closed or amountLpEscrowed 0)",
+      postAccount(simulation.postAccounts, REQUEST_RECEIPT) === null
+        || requestReceiptLp(postAccount(simulation.postAccounts, REQUEST_RECEIPT)) === 0n,
+      "closed|0",
+      postAccount(simulation.postAccounts, REQUEST_RECEIPT) === null
+        ? "closed" : requestReceiptLp(postAccount(simulation.postAccounts, REQUEST_RECEIPT))?.toString() ?? null),
+  ];
+  const pass = checks.every((row) => row.pass);
+  console.log(toJson({
+    step: "cancel", sent: false, verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    adminLpDelta: refund?.toString() ?? null,
+    requestReceiptPda: REQUEST_RECEIPT,
+    originalFrozenReceipt: true,
+    before, transaction: {
+      packetBytes: simulation.packetBytes, unitsConsumed: simulation.unitsConsumed,
+      instructions: ["cancelRequestWithdrawVault"], signer: ADMIN, signerEnvVar: "SOLANA_TESTING_PK",
+      executeCommand: "op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk cancel --execute --journal /absolute/path/hxtk-cancel.json",
+    }, checks, events,
+  }, 2));
+  writeEvidence("cancel", {
+    verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    adminLpDelta: refund?.toString() ?? null,
+    requestReceiptPda: REQUEST_RECEIPT,
+    originalFrozenReceipt: true,
+    before, checks, events,
+  });
+  return pass ? 0 : 1;
+}
+
+type RequestAfterCancel = Readonly<{
+  cancelJournal: FinalizedCancelJournal;
+  state: LiveState;
+  amountLp: bigint;
+}>;
+
+async function readRequestAfterFinalizedCancel(rpcUrl: string): Promise<RequestAfterCancel> {
+  await assertRepairPolicyRetired("request");
+  const cancelPath = requiredJournalPath(
+    CANCEL_JOURNAL_FLAG,
+    "request must follow a finalized cancel journal",
+  );
+  const cancelJournal = await verifyFinalizedCancelJournal(rpcUrl, cancelPath);
+  const state = await readState("finalized", true);
+  assertOriginalFrozenReceipt(state, "request");
+  if (!state.requestReceipt || state.requestReceipt.userTransferAuthority !== ADMIN) {
+    throw new Error("request requires the finalized cancel receipt owned by the HXtk admin");
+  }
+  if (state.requestReceipt.amountLpEscrowed !== 0n || (state.requestEscrowLpBalance ?? 0n) !== 0n) {
+    throw new Error("request requires a finalized cancel with an empty request receipt and escrow");
+  }
+  const amountLp = state.adminLpBalance ?? 0n;
+  if (amountLp <= 0n) throw new Error("request requires a positive post-cancel admin LP balance");
+  return { cancelJournal, state, amountLp };
+}
+
+async function cmdRequestOperator(mode: RepairPolicyOperatorMode): Promise<number> {
+  const journal = operatorJournal();
+  const rpcUrl = operatorRpcUrl();
+  return runJournaledStep({
+    mode,
+    step: "request",
+    schema: SCHEMA,
+    journal,
+    rpcUrl,
+    build: async () => {
+      const afterCancel = await readRequestAfterFinalizedCancel(rpcUrl);
+      const { state, amountLp } = afterCancel;
+      const noopAdmin = createNoopSigner(ADMIN);
+      const request = await getRequestWithdrawVaultInstructionAsync({
+        payer: noopAdmin,
+        userTransferAuthority: noopAdmin,
+        protocol: PROTOCOL,
+        vault: VAULT,
+        vaultLpMint: LP_MINT,
+        userLpAta: ADMIN_LP_ATA,
+        requestWithdrawLpAta: PENDING_ESCROW,
+        requestWithdrawVaultReceipt: REQUEST_RECEIPT,
+        amount: amountLp,
+        isAmountInLp: true,
+        isWithdrawAll: true,
+        lpTokenProgram: TOKEN_PROGRAM,
+        systemProgram: SYS_PROGRAM,
+      }, { programAddress: VOLTR });
+      const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
+      if (admin.signer.address !== ADMIN) throw new Error("SOLANA_TESTING_PK is not the HXtk admin signer");
+      const instructions = [request];
+      const inspectedAddresses = [VAULT, LP_MINT, ADMIN_LP_ATA, PENDING_ESCROW, REQUEST_RECEIPT];
+      const prepared = await prepareSignedV0Transaction({
+        rpcUrl,
+        feePayer: admin,
+        instructions,
+        inspectedAddresses,
+        prestateAddresses: inspectedAddresses,
+        minimumContextSlot: state.contextSlot,
+        commitment: "finalized",
+      });
+      const postReceipt = rawFromPreparedSnapshot(REQUEST_RECEIPT, prepared.simulation.postAccounts[4]);
+      const postEscrow = tokenAmount(rawFromPreparedSnapshot(PENDING_ESCROW, prepared.simulation.postAccounts[3]));
+      const postAdminLp = tokenAmount(rawFromPreparedSnapshot(ADMIN_LP_ATA, prepared.simulation.postAccounts[2]));
+      const postWithdrawable = requestReceiptWithdrawableFromTs(postReceipt);
+      if (postEscrow !== amountLp || postAdminLp !== 0n || postReceipt === null
+        || postWithdrawable === null || postWithdrawable < BigInt(Math.floor(Date.now() / 1000)) + REQUEST_WAITING_PERIOD_SECONDS) {
+        throw new Error("signed request-only simulation did not project the post-cancel request and waiting period");
+      }
+      return {
+        prepared,
+        plan: {
+          cancelJournal: afterCancel.cancelJournal.path,
+          before: summarize(state),
+          expectedPreState: summarize(state),
+          expectedPostState: {
+            escrowLpBalance: amountLp.toString(),
+            adminLpBalance: "0",
+            waitingPeriodSeconds: REQUEST_WAITING_PERIOD_SECONDS.toString(),
+          },
+          requestAmountLp: amountLp.toString(),
+          requestReceipt: REQUEST_RECEIPT,
+          requestReceiptPda: REQUEST_RECEIPT,
+          simulatedWithCancelPrefix: false,
+          transaction: {
+            feePayer: ADMIN,
+            signer: ADMIN,
+            signerEnvVar: "SOLANA_TESTING_PK",
+            instructionCount: 1,
+            instructions: ["requestWithdrawVault(all post-cancel admin LP, isAmountInLp, isWithdrawAll)"],
+          },
+        },
+      };
+    },
+    reconcile: async ({ pending, finalized }) => {
+      const cancelJournal = await verifyFinalizedCancelJournal(
+        rpcUrl,
+        resolve(stringAt(pending.cancelJournal, "request journal cancelJournal")),
+      );
+      const state = await readState("finalized", true);
+      const request = state.requestReceipt;
+      const expectedPostState = recordAt(pending.expectedPostState, "expectedPostState");
+      const expectedAmount = BigInt(stringAt(expectedPostState.escrowLpBalance, "expectedPostState.escrowLpBalance"));
+      if (finalized.slot <= cancelJournal.finalized.slot) {
+        throw new Error("finalized request transaction predates or equals the finalized cancel transaction");
+      }
+      if (!request || request.amountLpEscrowed === 0n || state.adminLpBalance !== 0n
+        || (state.requestEscrowLpBalance ?? 0n) !== expectedAmount
+        || cancelJournal.adminLpDelta !== cancelJournal.escrowRefundLp) {
+        throw new Error("finalized request did not reconcile the new escrowed request");
+      }
+      const requestBlockTime = finalized.blockTime;
+      if (requestBlockTime === null || requestBlockTime === undefined) {
+        throw new Error("finalized request transaction has no blockTime; cannot reconcile the chain waiting period");
+      }
+      const chainExpectedWithdrawableFromTs = BigInt(requestBlockTime) + REQUEST_WAITING_PERIOD_SECONDS;
+      const waitingPeriodDelta = request.withdrawableFromTs - chainExpectedWithdrawableFromTs;
+      if (waitingPeriodDelta < -1n || waitingPeriodDelta > 1n) {
+        throw new Error(
+          `finalized request withdrawableFromTs ${request.withdrawableFromTs} does not equal request blockTime ${requestBlockTime} + `
+          + `${REQUEST_WAITING_PERIOD_SECONDS} (${chainExpectedWithdrawableFromTs}); observed delta ${waitingPeriodDelta}`,
+        );
+      }
+      return {
+        cancelJournal: cancelJournal.path,
+        requestReceipt: request,
+        claimableAt: request.withdrawableFromTs.toString(),
+        requestBlockTime,
+        chainExpectedWithdrawableFromTs: chainExpectedWithdrawableFromTs.toString(),
+        waitingPeriodDelta: waitingPeriodDelta.toString(),
+        finalizedState: summarize(state),
+      };
+    },
+  });
+}
+
+async function cmdRequest(): Promise<number> {
+  const mode = operatorMode();
+  if (mode) return cmdRequestOperator(mode);
+  await assertRepairPolicyRetired("request");
+  if (!process.argv.includes(CANCEL_JOURNAL_FLAG)) {
+    const output = {
+      schema: SCHEMA,
+      step: "request",
+      sent: false,
+      signed: false,
+      broadcast: false,
+      verdict: "PENDING_FINALIZED_CANCEL",
+      reason: `${CANCEL_JOURNAL_FLAG} is required; request is request-only after finalized cancel`,
+    };
+    console.log(toJson(output, 2));
+    writeEvidence("request", output);
+    return 2;
+  }
+  const afterCancel = await readRequestAfterFinalizedCancel(
+    process.env.SOLANA_RPC_URL?.trim() || DEFAULT_RPC_URL,
+  );
+  const { state, amountLp } = afterCancel;
+  const before = summarize(state);
+  const noopAdmin = createNoopSigner(ADMIN);
+  const request = await getRequestWithdrawVaultInstructionAsync({
+    payer: noopAdmin,
+    userTransferAuthority: noopAdmin,
+    protocol: PROTOCOL,
+    vault: VAULT,
+    vaultLpMint: LP_MINT,
+    userLpAta: ADMIN_LP_ATA,
+    requestWithdrawLpAta: PENDING_ESCROW,
+    requestWithdrawVaultReceipt: REQUEST_RECEIPT,
+    amount: amountLp,
+    isAmountInLp: true,
+    isWithdrawAll: true,
+    lpTokenProgram: TOKEN_PROGRAM,
+    systemProgram: SYS_PROGRAM,
+  }, { programAddress: VOLTR });
+  const simulation = await simulate(ADMIN, [request], [
+    VAULT, LP_MINT, ADMIN_LP_ATA, PENDING_ESCROW, REQUEST_RECEIPT,
+  ]);
+  const events = simulation.err === null ? decodeEvents("RequestWithdrawVault", simulation.logs) : [];
+  const postReceipt = postAccount(simulation.postAccounts, REQUEST_RECEIPT);
+  const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+  const withdrawableFromTs = requestReceiptWithdrawableFromTs(postReceipt);
+  const postBits = postReceipt ? u128Le(postReceipt.data, 80) : null;
+  const escrowAfter = postToken(simulation.postAccounts, PENDING_ESCROW);
+  const checks = [
+    checkRow("simulation succeeds", simulation.err === null, null,
+      simulation.err === null ? null : JSON.stringify(simulation.err)),
+    checkRow("request event emitted", events.length > 0, ">=1", events.length),
+    checkRow("escrow re-funded with the entire admin LP balance (plan: request all)",
+      escrowAfter === amountLp,
+      amountLp.toString(), escrowAfter?.toString() ?? null),
+    checkRow("admin LP ATA emptied", postToken(simulation.postAccounts, ADMIN_LP_ATA) === 0n, "0",
+      postToken(simulation.postAccounts, ADMIN_LP_ATA)?.toString() ?? null),
+    checkRow("supply unchanged by request",
+      mintSupply(postAccount(simulation.postAccounts, LP_MINT)) === (state.lpSupply ?? 0n),
+      (state.lpSupply ?? 0n).toString(),
+      mintSupply(postAccount(simulation.postAccounts, LP_MINT))?.toString() ?? null),
+    checkRow(`withdrawableFromTs >= now + ${REQUEST_WAITING_PERIOD_SECONDS}s waiting period`,
+      withdrawableFromTs !== null && withdrawableFromTs >= nowSeconds + REQUEST_WAITING_PERIOD_SECONDS,
+      `>= ${nowSeconds + REQUEST_WAITING_PERIOD_SECONDS} (now + 600)`, withdrawableFromTs?.toString() ?? null),
+    checkRow("amountAssetToWithdraw reported (informational)", true, "n/a",
+      postBits === null ? null : (postBits >> 48n).toString()),
+  ];
+  const pass = checks.slice(0, -1).every((row) => row.pass);
+  console.log(toJson({
+    step: "request", sent: false, verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    cancelJournal: afterCancel.cancelJournal.path,
+    simulatedWithCancelPrefix: false, before, transaction: {
+      packetBytes: simulation.packetBytes, unitsConsumed: simulation.unitsConsumed,
+      instructions: ["requestWithdrawVault(all post-cancel admin LP, isAmountInLp, isWithdrawAll)"],
+      signer: ADMIN, signerEnvVar: "SOLANA_TESTING_PK",
+      executeCommand: "op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk request --cancel-journal /absolute/path/hxtk-cancel.json --execute --journal /absolute/path/hxtk-request.json",
+    }, checks, events,
+  }, 2));
+  writeEvidence("request", {
+    verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    cancelJournal: afterCancel.cancelJournal.path,
+    simulatedWithCancelPrefix: false, before, checks, events,
+  });
+  return pass ? 0 : 1;
+}
+
+type ClaimBeforeObservation = Readonly<{
+  adminUsdcBalance: bigint | null;
+  idleBalance: bigint | null;
+  totalValue: bigint | null;
+  lpSupply: bigint | null;
+  reportTicket: ReturnType<typeof decodeReportTicket>;
+  amountAssetToWithdrawRaw: bigint | null;
+}>;
+
+type ClaimPostObservation = Readonly<{
+  adminUsdcBalance: bigint | null;
+  idleBalance: bigint | null;
+  totalValue: bigint | null;
+  lpSupply: bigint | null;
+  requestReceiptClosed: boolean;
+  escrowLpBalance: bigint | null;
+  reportTicket: ReturnType<typeof decodeReportTicket>;
+}>;
+
+function claimReconciliationFromObservations(
+  before: ClaimBeforeObservation,
+  post: ClaimPostObservation,
+  requestAmountLp: bigint,
+  expectedPayoutRaw?: bigint,
+  expectedLpBurnRaw?: bigint,
+) {
+  const payout = before.adminUsdcBalance === null || post.adminUsdcBalance === null
+    ? null
+    : post.adminUsdcBalance - before.adminUsdcBalance;
+  const idleDelta = before.idleBalance === null || post.idleBalance === null
+    ? null
+    : before.idleBalance - post.idleBalance;
+  const tvAfter = post.totalValue;
+  const lpBurned = before.lpSupply === null || post.lpSupply === null
+    ? null
+    : before.lpSupply - post.lpSupply;
+  const ticketUnchanged = before.reportTicket !== null
+    && post.reportTicket !== null
+    && toJson(before.reportTicket) === toJson(post.reportTicket);
+  const checks = [
+    checkRow("payout balance delta is available", payout !== null, "non-null", payout?.toString() ?? null),
+    checkRow("payout is positive", payout !== null && payout >= 1n, ">= 1", payout?.toString() ?? null),
+    checkRow("payout equals the pre-send simulation", expectedPayoutRaw === undefined
+      || (payout !== null && payout === expectedPayoutRaw),
+    expectedPayoutRaw?.toString() ?? "bound after simulation", payout?.toString() ?? null),
+    checkRow("payout <= the receipt's amountAssetToWithdrawRaw (redeemable-value cap)",
+      payout !== null && before.amountAssetToWithdrawRaw !== null
+        && payout <= before.amountAssetToWithdrawRaw,
+      before.amountAssetToWithdrawRaw === null ? "receipt amountAssetToWithdrawRaw" : `<= ${before.amountAssetToWithdrawRaw}`,
+      payout?.toString() ?? null),
+    checkRow("idle delta equals payout", idleDelta !== null && payout !== null && idleDelta === payout,
+      payout?.toString() ?? null, idleDelta?.toString() ?? null),
+    checkRow("tv after equals tv before minus payout",
+      tvAfter !== null && before.totalValue !== null && payout !== null && tvAfter === before.totalValue - payout,
+      before.totalValue === null || payout === null ? "tv before - payout" : (before.totalValue - payout).toString(),
+      tvAfter?.toString() ?? null),
+    checkRow("LP burned equals the request amount", lpBurned !== null && lpBurned === requestAmountLp,
+      requestAmountLp.toString(), lpBurned?.toString() ?? null),
+    checkRow("LP burned equals the pre-send simulation", expectedLpBurnRaw === undefined
+      || (lpBurned !== null && lpBurned === expectedLpBurnRaw),
+    expectedLpBurnRaw?.toString() ?? "bound after simulation", lpBurned?.toString() ?? null),
+    checkRow("LP supply after matches the burn", before.lpSupply !== null && lpBurned !== null
+      && post.lpSupply === before.lpSupply - lpBurned,
+    before.lpSupply === null || lpBurned === null ? "lp supply before - burn" : (before.lpSupply - lpBurned).toString(),
+    post.lpSupply?.toString() ?? null),
+    checkRow("request receipt is closed", post.requestReceiptClosed, true, post.requestReceiptClosed),
+    checkRow("escrow drained", post.escrowLpBalance === 0n, "0", post.escrowLpBalance?.toString() ?? null),
+    checkRow("report ticket is unchanged", ticketUnchanged, true, ticketUnchanged),
+  ];
+  return {
+    payout,
+    idleDelta,
+    tvAfter,
+    lpBurned,
+    lpSupplyAfter: post.lpSupply,
+    requestReceiptClosed: post.requestReceiptClosed,
+    escrowLpBalanceAfter: post.escrowLpBalance,
+    ticketUnchanged,
+    checks,
+    postState: {
+      payoutRaw: payout?.toString() ?? null,
+      idleDeltaRaw: idleDelta?.toString() ?? null,
+      tvAfter: tvAfter?.toString() ?? null,
+      lpBurnedRaw: lpBurned?.toString() ?? null,
+      lpSupplyAfter: post.lpSupply?.toString() ?? null,
+      requestReceiptClosed: post.requestReceiptClosed,
+      escrowLpBalanceAfter: post.escrowLpBalance?.toString() ?? null,
+      ticketUnchanged,
+    },
+  } as const;
+}
+
+async function cmdClaimOperator(mode: RepairPolicyOperatorMode): Promise<number> {
+  const journal = operatorJournal();
+  const rpcUrl = operatorRpcUrl();
+  return runJournaledStep({
+    mode,
+    step: "claim",
+    schema: SCHEMA,
+    journal,
+    rpcUrl,
+    build: async () => {
+      await assertRepairPolicyRetired("claim");
+      const requestJournalPath = requiredJournalPath(
+        REQUEST_JOURNAL_FLAG,
+        "claim must follow a finalized request journal",
+      );
+      const requestJournal = await verifyFinalizedRequestJournal(rpcUrl, requestJournalPath);
+      const state = await readState("finalized", true);
+      if (!state.requestReceipt) throw new Error("no pending withdraw request receipt on chain");
+      if (!state.vault) throw new Error("vault account is absent");
+      if (state.requestReceipt.amountLpEscrowed !== requestJournal.amountLpEscrowed
+        || state.requestReceipt.withdrawableFromTs !== requestJournal.withdrawableFromTs) {
+        throw new Error("claim request receipt differs from the finalized request journal");
+      }
+      const eligibility = await latestFinalizedChainTime(rpcUrl);
+      if (state.requestReceipt.withdrawableFromTs > BigInt(eligibility.blockTime)) {
+        throw new Error(
+          `withdrawableFromTs ${state.requestReceipt.withdrawableFromTs} is after latest finalized chain time `
+          + `${eligibility.blockTime} at slot ${eligibility.slot}`,
+        );
+      }
+      const noopAdmin = createNoopSigner(ADMIN);
+      const { adminUsdcAta } = state.identity;
+      const withdraw = await getWithdrawVaultInstructionAsync({
+        userTransferAuthority: noopAdmin,
+        protocol: PROTOCOL,
+        vault: VAULT,
+        vaultAssetMint: USDC,
+        vaultLpMint: LP_MINT,
+        requestWithdrawLpAta: PENDING_ESCROW,
+        vaultAssetIdleAta: IDLE_ATA,
+        vaultAssetIdleAuth: IDLE_AUTH,
+        userAssetAta: adminUsdcAta,
+        requestWithdrawVaultReceipt: REQUEST_RECEIPT,
+        assetTokenProgram: TOKEN_PROGRAM,
+        lpTokenProgram: TOKEN_PROGRAM,
+        systemProgram: SYS_PROGRAM,
+      }, { programAddress: VOLTR });
+      if ((withdraw.accounts ?? []).length !== 13) throw new Error("withdrawVault account list drifted from the 13-account wire");
+      const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
+      if (admin.signer.address !== ADMIN) throw new Error("SOLANA_TESTING_PK is not the HXtk admin signer");
+      const inspectedAddresses = [VAULT, IDLE_ATA, LP_MINT, PENDING_ESCROW, adminUsdcAta, REQUEST_RECEIPT, REPORT_TICKET];
+      const prepared = await prepareSignedV0Transaction({
+        rpcUrl,
+        feePayer: admin,
+        instructions: [withdraw],
+        inspectedAddresses,
+        prestateAddresses: inspectedAddresses,
+        minimumContextSlot: state.contextSlot,
+        commitment: "finalized",
+      });
+      const postUserAsset = tokenAmount(rawFromPreparedSnapshot(adminUsdcAta, prepared.simulation.postAccounts[4]));
+      const postIdle = tokenAmount(rawFromPreparedSnapshot(IDLE_ATA, prepared.simulation.postAccounts[1]));
+      const postSupply = mintSupply(rawFromPreparedSnapshot(LP_MINT, prepared.simulation.postAccounts[2]));
+      const postVault = decodeVault(rawFromPreparedSnapshot(VAULT, prepared.simulation.postAccounts[0]));
+      const postReceipt = rawFromPreparedSnapshot(REQUEST_RECEIPT, prepared.simulation.postAccounts[5]);
+      const postEscrow = tokenAmount(rawFromPreparedSnapshot(PENDING_ESCROW, prepared.simulation.postAccounts[3]));
+      const postTicket = decodeReportTicket(rawFromPreparedSnapshot(REPORT_TICKET, prepared.simulation.postAccounts[6]));
+      const claim = claimReconciliationFromObservations(
+        {
+          adminUsdcBalance: state.adminUsdcBalance,
+          idleBalance: state.idleBalance,
+          totalValue: state.vault.totalValue,
+          lpSupply: state.lpSupply,
+          reportTicket: state.reportTicket,
+          amountAssetToWithdrawRaw: state.requestReceipt.amountAssetToWithdrawRaw,
+        },
+        {
+          adminUsdcBalance: postUserAsset,
+          idleBalance: postIdle,
+          totalValue: postVault?.totalValue ?? null,
+          lpSupply: postSupply,
+          requestReceiptClosed: postReceipt === null,
+          escrowLpBalance: postEscrow,
+          reportTicket: postTicket,
+        },
+        requestJournal.amountLpEscrowed,
+      );
+      if (!claim.checks.every((check) => check.pass)) {
+        throw new Error(`signed claim simulation did not project the complete payout and closure state: ${JSON.stringify(claim.checks)}`);
+      }
+      if (claim.payout === null || claim.lpBurned === null) {
+        throw new Error("signed claim simulation did not produce exact payout and LP-burn expectations");
+      }
+      const expectedPayoutRaw = claim.payout;
+      const expectedLpBurnRaw = claim.lpBurned;
+      return {
+        prepared,
+        plan: {
+          before: summarize(state),
+          expectedPreState: summarize(state),
+          expectedPostState: claim.postState,
+          requestJournal: requestJournal.path,
+          requestReceiptPda: REQUEST_RECEIPT,
+          expectedPayoutRaw: expectedPayoutRaw.toString(),
+          expectedLpBurnRaw: expectedLpBurnRaw.toString(),
+          claim: {
+            requestReceipt: REQUEST_RECEIPT,
+            requestAmountLp: requestJournal.amountLpEscrowed.toString(),
+            amountAssetToWithdrawRaw: requestJournal.requestReceipt.amountAssetToWithdrawRaw,
+            expectedPayoutRaw: expectedPayoutRaw.toString(),
+            expectedLpBurnRaw: expectedLpBurnRaw.toString(),
+          },
+          eligibilityObservationSlot: eligibility.slot,
+          eligibilityChainTime: eligibility.blockTime,
+          claimReconciliation: claim.postState,
+          transaction: {
+            feePayer: ADMIN,
+            signer: ADMIN,
+            signerEnvVar: "SOLANA_TESTING_PK",
+            instructionCount: 1,
+            instructions: ["withdrawVault"],
+          },
+        },
+      };
+    },
+    reconcile: async ({ pending, finalized }) => {
+      const requestJournal = await verifyFinalizedRequestJournal(
+        rpcUrl,
+        resolve(stringAt(pending.requestJournal, "claim journal requestJournal")),
+      );
+      const state = await readState("finalized", true);
+      if (finalized.slot <= requestJournal.finalized.slot) {
+        throw new Error("finalized claim transaction predates or equals the finalized request transaction");
+      }
+      const before = recordAt(pending.before, "claim before");
+      const claim = recordAt(pending.claim, "claim");
+      if (String(pending.requestReceiptPda ?? claim.requestReceipt ?? "") !== REQUEST_RECEIPT) {
+        throw new Error("RECONCILE_MISMATCH: claim journal is not bound to the request receipt PDA");
+      }
+      const amountAssetToWithdrawRaw = BigInt(stringAt(claim.amountAssetToWithdrawRaw, "claim.amountAssetToWithdrawRaw"));
+      const expectedPayoutRaw = claimExpectedRaw(
+        pending.expectedPayoutRaw ?? claim.expectedPayoutRaw,
+        "claim.expectedPayoutRaw",
+      );
+      const expectedLpBurnRaw = claimExpectedRaw(
+        pending.expectedLpBurnRaw ?? claim.expectedLpBurnRaw,
+        "claim.expectedLpBurnRaw",
+      );
+      const claimReconciliation = claimReconciliationFromObservations(
+        {
+          adminUsdcBalance: BigInt(stringAt(before.adminUsdcBalance, "claim before.adminUsdcBalance")),
+          idleBalance: BigInt(stringAt(before.idleBalance, "claim before.idleBalance")),
+          totalValue: BigInt(stringAt(before.totalValue, "claim before.totalValue")),
+          lpSupply: BigInt(stringAt(before.lpSupply, "claim before.lpSupply")),
+          reportTicket: before.reportTicket as ReturnType<typeof decodeReportTicket>,
+          amountAssetToWithdrawRaw,
+        },
+        {
+          adminUsdcBalance: state.adminUsdcBalance,
+          idleBalance: state.idleBalance,
+          totalValue: state.vault?.totalValue ?? null,
+          lpSupply: state.lpSupply,
+          requestReceiptClosed: state.requestReceipt === null,
+          escrowLpBalance: state.requestEscrowLpBalance,
+          reportTicket: state.reportTicket,
+        },
+        requestJournal.amountLpEscrowed,
+        expectedPayoutRaw,
+        expectedLpBurnRaw,
+      );
+      if (!claimReconciliation.checks.every((check) => check.pass)) {
+        throw new Error(`RECONCILE_MISMATCH: finalized claim did not reconcile the exact payout and closure state: ${JSON.stringify(claimReconciliation.checks)}`);
+      }
+      return {
+        requestJournal: requestJournal.path,
+        claimReconciliation: claimReconciliation.postState,
+        finalizedState: summarize(state),
+      };
+    },
+  });
+}
+
+async function cmdClaim(): Promise<number> {
+  const mode = operatorMode();
+  if (mode) return cmdClaimOperator(mode);
+  await assertRepairPolicyRetired("claim");
+  if (!process.argv.includes(REQUEST_JOURNAL_FLAG)) {
+    const output = {
+      schema: SCHEMA,
+      step: "claim",
+      sent: false,
+      signed: false,
+      broadcast: false,
+      verdict: "PENDING_FINALIZED_REQUEST",
+      reason: `${REQUEST_JOURNAL_FLAG} is required; claim must bind to the new request receipt`,
+    };
+    console.log(toJson(output, 2));
+    writeEvidence("claim", output);
+    return 2;
+  }
+  const requestJournal = await verifyFinalizedRequestJournal(
+    process.env.SOLANA_RPC_URL?.trim() || DEFAULT_RPC_URL,
+    resolve(requiredJournalPath(REQUEST_JOURNAL_FLAG, "claim must follow a finalized request journal")),
+  );
+  const state = await readState("finalized", true);
+  if (!state.requestReceipt) throw new Error("no pending withdraw request receipt on chain");
+  if (!state.vault) throw new Error("vault account is absent");
+  if (state.requestReceipt.amountLpEscrowed !== requestJournal.amountLpEscrowed
+    || state.requestReceipt.withdrawableFromTs !== requestJournal.withdrawableFromTs) {
+    throw new Error("claim request receipt differs from the finalized request journal");
+  }
+  const eligibility = await latestFinalizedChainTime(
+    process.env.SOLANA_RPC_URL?.trim() || DEFAULT_RPC_URL,
+  );
+  if (state.requestReceipt.withdrawableFromTs > BigInt(eligibility.blockTime)) {
+    throw new Error(
+      `withdrawableFromTs ${state.requestReceipt.withdrawableFromTs} is after latest finalized chain time `
+      + `${eligibility.blockTime} at slot ${eligibility.slot}`,
+    );
+  }
+  const before = summarize(state);
+  const noopAdmin = createNoopSigner(ADMIN);
+  const { adminUsdcAta } = state.identity;
+  const withdraw = await getWithdrawVaultInstructionAsync({
+    userTransferAuthority: noopAdmin,
+    protocol: PROTOCOL,
+    vault: VAULT,
+    vaultAssetMint: USDC,
+    vaultLpMint: LP_MINT,
+    requestWithdrawLpAta: PENDING_ESCROW,
+    vaultAssetIdleAta: IDLE_ATA,
+    vaultAssetIdleAuth: IDLE_AUTH,
+    userAssetAta: adminUsdcAta,
+    requestWithdrawVaultReceipt: REQUEST_RECEIPT,
+    assetTokenProgram: TOKEN_PROGRAM,
+    lpTokenProgram: TOKEN_PROGRAM,
+    systemProgram: SYS_PROGRAM,
+  }, { programAddress: VOLTR });
+  if ((withdraw.accounts ?? []).length !== 13) {
+    throw new Error("withdrawVault account list drifted from the 13-account wire");
+  }
+  const simulation = await simulate(ADMIN, [withdraw], [
+    VAULT, IDLE_ATA, LP_MINT, PENDING_ESCROW, adminUsdcAta, REQUEST_RECEIPT, REPORT_TICKET,
+  ]);
+  const events = simulation.err === null ? decodeEvents("WithdrawVault", simulation.logs) : [];
+  const postVault = simulation.err === null ? decodeVault(postAccount(simulation.postAccounts, VAULT)) : null;
+  const postReceipt = postAccount(simulation.postAccounts, REQUEST_RECEIPT);
+  const simulatedClaim = claimReconciliationFromObservations(
+    {
+      adminUsdcBalance: state.adminUsdcBalance,
+      idleBalance: state.idleBalance,
+      totalValue: state.vault.totalValue,
+      lpSupply: state.lpSupply,
+      reportTicket: state.reportTicket,
+      amountAssetToWithdrawRaw: state.requestReceipt.amountAssetToWithdrawRaw,
+    },
+    {
+      adminUsdcBalance: postToken(simulation.postAccounts, adminUsdcAta),
+      idleBalance: postToken(simulation.postAccounts, IDLE_ATA),
+      totalValue: postVault?.totalValue ?? null,
+      lpSupply: mintSupply(postAccount(simulation.postAccounts, LP_MINT)),
+      requestReceiptClosed: postReceipt === null,
+      escrowLpBalance: postToken(simulation.postAccounts, PENDING_ESCROW),
+      reportTicket: decodeReportTicket(postAccount(simulation.postAccounts, REPORT_TICKET)),
+    },
+    state.requestReceipt.amountLpEscrowed,
+  );
+  if (simulatedClaim.payout === null || simulatedClaim.lpBurned === null) {
+    throw new Error("claim simulation did not produce exact payout and LP-burn expectations");
+  }
+  const expectedPayoutRaw = simulatedClaim.payout;
+  const expectedLpBurnRaw = simulatedClaim.lpBurned;
+  const claim = claimReconciliationFromObservations(
+    {
+      adminUsdcBalance: state.adminUsdcBalance,
+      idleBalance: state.idleBalance,
+      totalValue: state.vault.totalValue,
+      lpSupply: state.lpSupply,
+      reportTicket: state.reportTicket,
+      amountAssetToWithdrawRaw: state.requestReceipt.amountAssetToWithdrawRaw,
+    },
+    {
+      adminUsdcBalance: postToken(simulation.postAccounts, adminUsdcAta),
+      idleBalance: postToken(simulation.postAccounts, IDLE_ATA),
+      totalValue: postVault?.totalValue ?? null,
+      lpSupply: mintSupply(postAccount(simulation.postAccounts, LP_MINT)),
+      requestReceiptClosed: postReceipt === null,
+      escrowLpBalance: postToken(simulation.postAccounts, PENDING_ESCROW),
+      reportTicket: decodeReportTicket(postAccount(simulation.postAccounts, REPORT_TICKET)),
+    },
+    state.requestReceipt.amountLpEscrowed,
+    expectedPayoutRaw,
+    expectedLpBurnRaw,
+  );
+  const checks = [
+    checkRow("simulation succeeds", simulation.err === null, null,
+      simulation.err === null ? null : JSON.stringify(simulation.err)),
+    checkRow("withdraw event emitted", events.length > 0, ">=1", events.length),
+    ...claim.checks,
+  ];
+  const pass = checks.every((row) => row.pass);
+  const output = {
+    step: "claim", sent: false, signed: false, broadcast: false,
+    verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    requestJournal: requestJournal.path,
+    requestReceiptPda: REQUEST_RECEIPT,
+    expectedPayoutRaw: expectedPayoutRaw.toString(),
+    expectedLpBurnRaw: expectedLpBurnRaw.toString(),
+    eligibilityObservationSlot: eligibility.slot,
+    eligibilityChainTime: eligibility.blockTime,
+    claimStage: "post-repair",
+    note: "claim is bound to the finalized request journal; the simulation proves payout, book, LP-burn, closure, and ticket invariants.",
+    before,
+    transaction: {
+      packetBytes: simulation.packetBytes, unitsConsumed: simulation.unitsConsumed,
+      instructions: ["withdrawVault"], signer: ADMIN, signerEnvVar: "SOLANA_TESTING_PK",
+      executeCommand: "op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk claim --request-journal /absolute/path/hxtk-request.json --execute --journal /absolute/path/hxtk-claim.json",
+    },
+    checks, events,
+    postState: claim.postState,
+  };
+  console.log(toJson(output, 2));
+  writeEvidence("claim", { ...output });
+  return pass ? 0 : 1;
+}
+
+async function buildRestoreDegradationInstruction(noopAdmin: ReturnType<typeof createNoopSigner>) {
+  const data = Buffer.alloc(8);
+  data.writeBigUInt64LE(RESTORED_DEGRADATION_SECONDS);
+  return getUpdateVaultConfigInstructionAsync({
+    admin: noopAdmin,
+    protocol: PROTOCOL,
+    vault: VAULT,
+    rent: RENT_SYSVAR,
+    field: VaultConfigField.LockedProfitDegradationDuration,
+    data: new Uint8Array(data),
+  }, { programAddress: VOLTR });
+}
+
+function assertPostClaimState(state: LiveState) {
+  if (state.requestReceipt !== null || (state.requestEscrowLpBalance ?? 0n) !== 0n) {
+    throw new Error("restore-degradation requires finalized claim assertions: request receipt closed and escrow drained");
+  }
+  if (!state.vault || state.vault.admin !== ADMIN || state.vault.manager !== SQUADS_VAULT) {
+    throw new Error("restore-degradation vault authority identity drifted");
+  }
+  if (state.vault.lockedProfitDegradationDuration !== 0n
+    || state.vault.adminPerformanceFeeBps !== 0
+    || state.vault.withdrawalWaitingPeriod !== REQUEST_WAITING_PERIOD_SECONDS) {
+    throw new Error("restore-degradation requires degradation 0, admin fee 0, and waiting period 600 after claim");
+  }
+}
+
+function assertRestoredState(state: LiveState, expectedAdminPerformanceFeeBps: number) {
+  if (state.requestReceipt !== null || (state.requestEscrowLpBalance ?? 0n) !== 0n) {
+    throw new Error("finalized restore-degradation did not preserve the finalized claim closure");
+  }
+  if (!state.vault || state.vault.admin !== ADMIN || state.vault.manager !== SQUADS_VAULT) {
+    throw new Error("finalized restore-degradation vault authority identity drifted");
+  }
+  if (state.vault.lockedProfitDegradationDuration !== RESTORED_DEGRADATION_SECONDS
+    || state.vault.adminPerformanceFeeBps !== expectedAdminPerformanceFeeBps
+    || state.vault.withdrawalWaitingPeriod !== REQUEST_WAITING_PERIOD_SECONDS) {
+    throw new Error(
+      `finalized restore-degradation state is not restored: degradation=${state.vault.lockedProfitDegradationDuration}, `
+      + `adminPerformanceFeeBps=${state.vault.adminPerformanceFeeBps}, waitingPeriod=${state.vault.withdrawalWaitingPeriod}; `
+      + `expected degradation=${RESTORED_DEGRADATION_SECONDS}, adminPerformanceFeeBps=${expectedAdminPerformanceFeeBps}, `
+      + `waitingPeriod=${REQUEST_WAITING_PERIOD_SECONDS}`,
+    );
+  }
+}
+
+async function cmdRestoreDegradationOperator(mode: RepairPolicyOperatorMode): Promise<number> {
+  const journal = operatorJournal();
+  const rpcUrl = operatorRpcUrl();
+  return runJournaledStep({
+    mode,
+    step: "restore-degradation",
+    schema: SCHEMA,
+    journal,
+    rpcUrl,
+    build: async () => {
+      const prerequisites = await readRestorePrerequisites(rpcUrl);
+      const state = await readState("finalized", true);
+      assertPostClaimState(state);
+      if (!state.vault) throw new Error("vault account is absent");
+      const noopAdmin = createNoopSigner(ADMIN);
+      const restore = await buildRestoreDegradationInstruction(noopAdmin);
+      const accounts = restore.accounts ?? [];
+      if (accounts.length !== 4 || accounts[0]?.address !== ADMIN || accounts[2]?.address !== VAULT) {
+        throw new Error("restore-degradation account list drifted from admin/protocol/vault/rent");
+      }
+      const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
+      if (admin.signer.address !== ADMIN) throw new Error("SOLANA_TESTING_PK is not the HXtk admin signer");
+      const prepared = await prepareSignedV0Transaction({
+        rpcUrl,
+        feePayer: admin,
+        instructions: [restore],
+        inspectedAddresses: [VAULT],
+        prestateAddresses: [VAULT],
+        minimumContextSlot: state.contextSlot,
+        commitment: "finalized",
+      });
+      const projectedVault = decodeVault(rawFromPreparedSnapshot(VAULT, prepared.simulation.postAccounts[0]));
+      if (!projectedVault || projectedVault.lockedProfitDegradationDuration !== RESTORED_DEGRADATION_SECONDS
+        || projectedVault.adminPerformanceFeeBps !== 0
+        || projectedVault.withdrawalWaitingPeriod !== REQUEST_WAITING_PERIOD_SECONDS) {
+        throw new Error("signed restore-degradation simulation did not project the reviewed post-claim config");
+      }
+      return {
+        prepared,
+        plan: {
+          repairJournal: prerequisites.repairJournal.path,
+          claimJournal: prerequisites.claimJournal.path,
+          repairBlockTime: prerequisites.repairBlockTime,
+          eligibleAt: prerequisites.eligibleAt,
+          before: summarize(state),
+          expectedPreState: summarize(state),
+          expectedPostState: configPostState(rawFromPreparedSnapshot(VAULT, prepared.simulation.postAccounts[0])),
+          transaction: {
+            feePayer: ADMIN,
+            signer: ADMIN,
+            signerEnvVar: "SOLANA_TESTING_PK",
+            instructionCount: 1,
+            instructions: ["updateVaultConfig(LockedProfitDegradationDuration, u64 86400)"],
+          },
+        },
+      };
+    },
+    reconcile: async ({ pending, finalized }) => {
+      const prerequisites = await readRestorePrerequisites(rpcUrl, {
+        repairJournal: resolve(stringAt(pending.repairJournal, "restore-degradation repairJournal")),
+        claimJournal: resolve(stringAt(pending.claimJournal, "restore-degradation claimJournal")),
+        enforceEligibility: false,
+      });
+      if (Number(pending.repairBlockTime) !== prerequisites.repairBlockTime
+        || Number(pending.eligibleAt) !== prerequisites.eligibleAt) {
+        throw new Error("restore-degradation journal timing fields differ from the finalized repair transaction");
+      }
+      const restoreBlockTime = finalized.blockTime;
+      if (restoreBlockTime === null || restoreBlockTime === undefined) {
+        throw new Error("finalized restore-degradation transaction has no blockTime");
+      }
+      if (restoreBlockTime - prerequisites.repairBlockTime < Number(RESTORED_DEGRADATION_SECONDS)) {
+        throw new Error(
+          `finalized restore-degradation transaction is too early: restore blockTime ${restoreBlockTime} - `
+          + `repair blockTime ${prerequisites.repairBlockTime} < ${RESTORED_DEGRADATION_SECONDS}`,
+        );
+      }
+      const expectedPreState = recordAt(pending.expectedPreState, "restore-degradation expectedPreState");
+      const expectedAdminPerformanceFeeBps = Number(expectedPreState.adminPerformanceFeeBps);
+      if (!Number.isInteger(expectedAdminPerformanceFeeBps) || expectedAdminPerformanceFeeBps < 0) {
+        throw new Error("restore-degradation journal has no valid configured admin performance fee");
+      }
+      const state = await readState("finalized", true);
+      assertRestoredState(state, expectedAdminPerformanceFeeBps);
+      const expected = recordAt(pending.expectedPostState, "restore-degradation expectedPostState");
+      if (String(expected.lockedProfitDegradationDuration) !== RESTORED_DEGRADATION_SECONDS.toString()
+        || Number(expected.adminPerformanceFeeBps) !== expectedAdminPerformanceFeeBps) {
+        throw new Error("restore-degradation journal expected post-state does not match the configured admin fee and degradation");
+      }
+      return {
+        repairJournal: prerequisites.repairJournal.path,
+        repairBlockTime: prerequisites.repairBlockTime,
+        eligibleAt: prerequisites.eligibleAt,
+        eligibilityObservationSlot: prerequisites.eligibilityObservationSlot,
+        eligibilityChainTime: prerequisites.eligibilityChainTime,
+        restoreBlockTime,
+        restoreElapsedSeconds: restoreBlockTime - prerequisites.repairBlockTime,
+        finalizedState: summarize(state),
+      };
+    },
+  });
+}
+
+async function cmdRestoreDegradation(): Promise<number> {
+  const mode = operatorMode();
+  if (mode) return cmdRestoreDegradationOperator(mode);
+  await assertRepairPolicyRetired("restore-degradation");
+  const rpcUrl = process.env.SOLANA_RPC_URL?.trim() || DEFAULT_RPC_URL;
+  if (!process.argv.includes(REPAIR_JOURNAL_FLAG) || !process.argv.includes(CLAIM_JOURNAL_FLAG)) {
+    const output = {
+      schema: SCHEMA,
+      step: "restore-degradation",
+      sent: false,
+      signed: false,
+      broadcast: false,
+      verdict: "PENDING_FINALIZED_REPAIR_AND_CLAIM",
+      reason: `${REPAIR_JOURNAL_FLAG} and ${CLAIM_JOURNAL_FLAG} are required before restoring degradation`,
+    };
+    console.log(toJson(output, 2));
+    writeEvidence("restore-degradation", output);
+    return 2;
+  }
+  let prerequisites: RestorePrerequisites;
+  try {
+    prerequisites = await readRestorePrerequisites(rpcUrl);
+  } catch (error) {
+    const blocker = error instanceof Error ? error.message : String(error);
+    if (!blocker.startsWith("RESTORE_DEGRADATION_WAIT:")) throw error;
+    const output = {
+      schema: SCHEMA,
+      step: "restore-degradation",
+      sent: false,
+      signed: false,
+      broadcast: false,
+      verdict: "RESTORE_DEGRADATION_WAIT",
+      reason: blocker,
+    };
+    console.log(toJson(output, 2));
+    writeEvidence("restore-degradation", output);
+    return 2;
+  }
+  const state = await readState("finalized", true);
+  assertPostClaimState(state);
+  if (!state.vault) throw new Error("vault account is absent");
+  const noopAdmin = createNoopSigner(ADMIN);
+  const restore = await buildRestoreDegradationInstruction(noopAdmin);
+  const simulation = await simulate(ADMIN, [restore], [VAULT]);
+  const projectedVault = simulation.err === null ? decodeVault(postAccount(simulation.postAccounts, VAULT)) : null;
+  const checks = [
+    checkRow("simulation succeeds", simulation.err === null, null,
+      simulation.err === null ? null : JSON.stringify(simulation.err)),
+    checkRow("post-claim request receipt is closed", state.requestReceipt === null, null,
+      state.requestReceipt ? "present" : null),
+    checkRow("post-claim request escrow is drained", state.requestEscrowLpBalance === 0n, "0",
+      state.requestEscrowLpBalance?.toString() ?? null),
+    checkRow("degradation -> 86,400", projectedVault?.lockedProfitDegradationDuration === RESTORED_DEGRADATION_SECONDS,
+      RESTORED_DEGRADATION_SECONDS.toString(), projectedVault?.lockedProfitDegradationDuration.toString() ?? null),
+    checkRow("admin performance fee remains 0", projectedVault?.adminPerformanceFeeBps === 0, 0,
+      projectedVault?.adminPerformanceFeeBps ?? null),
+    checkRow("waiting period remains 600", projectedVault?.withdrawalWaitingPeriod === REQUEST_WAITING_PERIOD_SECONDS,
+      REQUEST_WAITING_PERIOD_SECONDS.toString(), projectedVault?.withdrawalWaitingPeriod.toString() ?? null),
+    checkRow("packet <= 1,232 bytes", simulation.packetBytes <= PACKET_LIMIT, `<= ${PACKET_LIMIT}`, simulation.packetBytes),
+  ];
+  const pass = checks.every((check) => check.pass);
+  const output = {
+    schema: SCHEMA,
+    step: "restore-degradation",
+    sent: false,
+    signed: false,
+    broadcast: false,
+    verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
+    repairJournal: prerequisites.repairJournal.path,
+    claimJournal: resolve(requiredJournalPath(CLAIM_JOURNAL_FLAG, "claim journal")),
+    repairBlockTime: prerequisites.repairBlockTime,
+    eligibleAt: prerequisites.eligibleAt,
+    before: summarize(state),
+    transaction: {
+      packetBytes: simulation.packetBytes,
+      unitsConsumed: simulation.unitsConsumed,
+      instructions: ["updateVaultConfig(LockedProfitDegradationDuration, u64 86400)"],
+      signer: ADMIN,
+      signerEnvVar: "SOLANA_TESTING_PK",
+      executeCommand: "op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk restore-degradation --repair-journal /absolute/path/hxtk-repair.json --claim-journal /absolute/path/hxtk-claim.json --execute --journal /absolute/path/hxtk-restore-degradation.json",
+    },
+    checks,
+    postState: projectedVault ? configPostState(postAccount(simulation.postAccounts, VAULT)) : null,
+    ...(simulation.err === null ? {} : { logs: simulation.logs }),
+  };
+  console.log(toJson(output, 2));
+  writeEvidence("restore-degradation", output);
+  return pass ? 0 : 1;
+}
+
+// ---- entrypoint --------------------------------------------------------------
+
+const USAGE = `usage: bun run reset:hxtk <step> [--simulate|--execute --journal PATH.json|--reconcile --journal PATH.json]
+
+steps:
+  verify   read live state; evaluate the Phase 1 end-state assertions
+  config   updateVaultConfig: LockedProfitDegradationDuration = 0, AdminPerformanceFee = 0
+  harvest  createIdempotent manager/treasury LP ATAs + harvestFee                (Phase 2)
+  cancel   cancelRequestWithdrawVault: refund 78,196,265 LP, burn 21,745,257    (Phase 2)
+  request  requestWithdrawVault(all LP, isAmountInLp, isWithdrawAll)            (Phase 2)
+  claim    withdrawVault once withdrawableFromTs passes (600 s)                 (Phase 2)
+  repair-policy       create the one-shot nav-refresh policy (simulate by default)
+  repair              ExecuteSync arm_report + deposit_strategy(0) through it, then retire policy
+  repair-policy-remove standalone recovery for the one-shot policy after repair finalization
+  restore-degradation restore locked-profit degradation to 86,400 after claim + 24h
+
+Order: verify -> config -> repair-policy -> repair-policy finalized readback -> repair ->
+repair-policy-remove -> harvest -> cancel -> request -> (600 s wait) -> claim.
+--simulate (default) never reads a key: the fee payer is the step's real signer
+address with an empty signature slot, legal because sigVerify is false and the
+RPC fee-payer check only needs a funded address.
+--execute requires CONFIRM_MAINNET=1, --journal PATH.json, and the step's signer
+environment. --reconcile only reads a pending journal and finalized chain state.
+repair requires --policy-journal; PolicyRemove additionally requires
+--repair-journal; request requires --cancel-journal; claim requires
+--request-journal; restore-degradation requires --repair-journal and
+--claim-journal.
+--send is removed and rejected; use --execute with a journal instead.`;
+
+const PENDING_STEPS: Readonly<Record<string, string>> = {};
+
+async function main(): Promise<number> {
+  const argv = process.argv.slice(2).filter((value) => value !== "--");
+  const step = argv[0] ?? "";
+  if (argv.includes("--send")) {
+    throw new Error("--send is removed; use --execute --journal PATH.json");
+  }
+  // Apply mode validation before dispatch so even read-only commands cannot
+  // accidentally treat a mixed --simulate/--execute invocation as execute.
+  operatorMode();
+  switch (step) {
+    case "verify": return cmdVerify();
+    case "config": return cmdConfig();
+    case "harvest": return cmdHarvest();
+    case "cancel": return cmdCancel();
+    case "request": return cmdRequest();
+    case "claim": return cmdClaim();
+    case "repair-policy": return cmdRepairPolicy();
+    case "repair": return cmdRepair();
+    case "repair-policy-remove": return cmdRepairPolicyRemove();
+    case "restore-degradation": return cmdRestoreDegradation();
+    case "":
+      console.error(USAGE);
+      return 2;
+    default: {
+      const phase = PENDING_STEPS[step];
+      if (phase) {
+        console.error(JSON.stringify({ verdict: "BLOCKED", blocker: `${step} is built in ${phase}` }));
+        return 2;
+      }
+      console.error(USAGE);
+      return 2;
+    }
+  }
+}
+
+try {
+  process.exitCode = await main();
+} catch (error) {
+  console.error(JSON.stringify({
+    verdict: "BLOCKED",
+    blocker: sanitizeError(error),
+  }));
+  process.exitCode = 1;
+}

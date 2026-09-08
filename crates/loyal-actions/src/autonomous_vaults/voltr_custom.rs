@@ -54,6 +54,9 @@ pub struct VoltrCustomPolicyIdentity {
     /// the deployed v2 constraint set byte-exactly (its reported NAV is
     /// deliberately unconstrained there).
     pub report_nav_cap_raw: Option<u64>,
+    /// One-shot repair-only exact NAV constraint. This remains distinct from
+    /// the strategy-two `report_nav_cap_raw` field above and is additive to it.
+    pub report_nav_exact_raw: Option<u64>,
     /// Daily spending limit carried by EVERY policy in the set. Squads charges a
     /// spending limit only against balance DECREASES, so on the deposit-side
     /// policies (allocation, NAV refresh — the adaptor's capital path moves
@@ -276,12 +279,27 @@ fn nav_cap_constraint(
     })
 }
 
+/// An optional exact NAV equality for the one-shot repair policy. Arm-report
+/// data carries `nav_after_raw` at offset 39; the Voltr capital wire carries it
+/// at offset 51.
+fn report_nav_exact_constraint(
+    identity: &VoltrCustomPolicyIdentity,
+    offset: u64,
+) -> Option<SquadsDataConstraint> {
+    identity.report_nav_exact_raw.map(|value| SquadsDataConstraint {
+        data_offset: offset,
+        data_value: SquadsDataValue::U64Le(value),
+        operator: SquadsDataOperator::Equals,
+    })
+}
+
 fn voltr_constraint(
     instruction: &Instruction,
     outer: [u8; 8],
     inner: [u8; 8],
     amount_constraints: Vec<SquadsDataConstraint>,
     nav_cap: Option<SquadsDataConstraint>,
+    nav_exact: Option<SquadsDataConstraint>,
     account_indexes: &[usize],
 ) -> SquadsInstructionConstraint {
     let mut envelope = Vec::with_capacity(14);
@@ -298,6 +316,7 @@ fn voltr_constraint(
     }];
     data_constraints.extend(amount_constraints);
     data_constraints.extend(nav_cap);
+    data_constraints.extend(nav_exact);
     data_constraints.push(SquadsDataConstraint {
         data_offset: 16,
         data_value: SquadsDataValue::U8Slice(envelope),
@@ -378,6 +397,7 @@ fn arm_constraint(
     instruction: &Instruction,
     amount_constraints: Vec<SquadsDataConstraint>,
     nav_cap: Option<SquadsDataConstraint>,
+    nav_exact: Option<SquadsDataConstraint>,
 ) -> SquadsInstructionConstraint {
     let mut discriminator_and_operation = CUSTOM_ADAPTOR_ARM_REPORT_DISCRIMINATOR.to_vec();
     discriminator_and_operation.push(instruction.data[8]);
@@ -388,6 +408,7 @@ fn arm_constraint(
     }];
     data_constraints.extend(amount_constraints);
     data_constraints.extend(nav_cap);
+    data_constraints.extend(nav_exact);
     data_constraints.push(SquadsDataConstraint {
         data_offset: 17,
         data_value: SquadsDataValue::U8Slice(vec![1, 57, 0, 0, 0, 1]),
@@ -468,7 +489,10 @@ pub fn create_voltr_custom_policies(
     {
         return Err(VoltrCustomPolicyError::DuplicateSeeds);
     }
-    if identity.max_amount_raw == 0 || identity.report_nav_cap_raw == Some(0) {
+    if identity.max_amount_raw == 0
+        || identity.report_nav_cap_raw == Some(0)
+        || identity.report_nav_exact_raw == Some(0)
+    {
         return Err(VoltrCustomPolicyError::InvalidLimit);
     }
     if identity
@@ -708,6 +732,7 @@ pub fn create_voltr_custom_policies(
         CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR,
         bounded_positive(identity.max_amount_raw),
         nav_cap_constraint(identity, CAPITAL_REPORT_NAV_OFFSET),
+        report_nav_exact_constraint(identity, CAPITAL_REPORT_NAV_OFFSET),
         DEPOSIT_BOUND_ACCOUNT_INDEXES,
     );
     let refresh_constraint = voltr_constraint(
@@ -720,6 +745,7 @@ pub fn create_voltr_custom_policies(
             operator: SquadsDataOperator::Equals,
         }],
         nav_cap_constraint(identity, CAPITAL_REPORT_NAV_OFFSET),
+        report_nav_exact_constraint(identity, CAPITAL_REPORT_NAV_OFFSET),
         DEPOSIT_BOUND_ACCOUNT_INDEXES,
     );
     let stage_constraint = SquadsInstructionConstraint {
@@ -754,6 +780,7 @@ pub fn create_voltr_custom_policies(
         CUSTOM_ADAPTOR_WITHDRAW_DISCRIMINATOR,
         bounded_positive(identity.max_amount_raw),
         nav_cap_constraint(identity, CAPITAL_REPORT_NAV_OFFSET),
+        report_nav_exact_constraint(identity, CAPITAL_REPORT_NAV_OFFSET),
         WITHDRAW_BOUND_ACCOUNT_INDEXES,
     );
 
@@ -766,6 +793,7 @@ pub fn create_voltr_custom_policies(
                     &templates.allocation_arm,
                     bounded_positive_at(9, identity.max_amount_raw),
                     nav_cap_constraint(identity, ARM_REPORT_NAV_OFFSET),
+                    report_nav_exact_constraint(identity, ARM_REPORT_NAV_OFFSET),
                 ),
                 allocation_constraint,
             ],
@@ -782,6 +810,7 @@ pub fn create_voltr_custom_policies(
                         operator: SquadsDataOperator::Equals,
                     }],
                     nav_cap_constraint(identity, ARM_REPORT_NAV_OFFSET),
+                    report_nav_exact_constraint(identity, ARM_REPORT_NAV_OFFSET),
                 ),
                 refresh_constraint,
             ],
@@ -795,6 +824,7 @@ pub fn create_voltr_custom_policies(
                     &templates.withdraw_arm,
                     bounded_positive_at(9, identity.max_amount_raw),
                     nav_cap_constraint(identity, ARM_REPORT_NAV_OFFSET),
+                    report_nav_exact_constraint(identity, ARM_REPORT_NAV_OFFSET),
                 ),
                 withdraw_constraint,
             ],
@@ -862,6 +892,7 @@ mod tests {
             report_ticket: key(14),
             max_amount_raw: 1_000_000,
             report_nav_cap_raw: Some(1_000_000_000_000),
+            report_nav_exact_raw: None,
             daily_spending_limit: None,
             asset_decimals: 6,
             seeds: VoltrCustomPolicySeeds {
@@ -1054,13 +1085,19 @@ mod tests {
             } else {
                 bounded_positive_at(9, identity.max_amount_raw)
             };
-            let armed = arm_constraint(arm, arm_amounts, nav_cap_constraint(&identity, 39));
+            let armed = arm_constraint(
+                arm,
+                arm_amounts,
+                nav_cap_constraint(&identity, 39),
+                report_nav_exact_constraint(&identity, 39),
+            );
             let capital_constraint = voltr_constraint(
                 capital,
                 outer,
                 inner,
                 amounts,
                 nav_cap_constraint(&identity, 51),
+                report_nav_exact_constraint(&identity, 51),
                 account_indexes,
             );
             for (wire, offset, envelope_offset) in
@@ -1127,6 +1164,74 @@ mod tests {
         let base = identity();
         let identity = VoltrCustomPolicyIdentity {
             report_nav_cap_raw: Some(0),
+            ..base
+        };
+        assert!(matches!(
+            create_voltr_custom_policies(&identity, &templates(&identity)),
+            Err(VoltrCustomPolicyError::InvalidLimit)
+        ));
+    }
+
+    #[test]
+    fn one_shot_report_nav_constraint_is_exact_at_both_report_offsets() {
+        let base = identity();
+        let exact_identity = VoltrCustomPolicyIdentity {
+            report_nav_exact_raw: Some(3_793_536),
+            ..base.clone()
+        };
+        let exact_templates = templates(&exact_identity);
+        let policies = create_voltr_custom_policies(&exact_identity, &exact_templates).unwrap();
+        let exact_arm = arm_constraint(
+            &exact_templates.nav_refresh_arm,
+            vec![SquadsDataConstraint {
+                data_offset: 9,
+                data_value: SquadsDataValue::U64Le(0),
+                operator: SquadsDataOperator::Equals,
+            }],
+            nav_cap_constraint(&exact_identity, ARM_REPORT_NAV_OFFSET),
+            report_nav_exact_constraint(&exact_identity, ARM_REPORT_NAV_OFFSET),
+        );
+        let exact_capital = voltr_constraint(
+            &exact_templates.nav_refresh,
+            VOLTR_DEPOSIT,
+            CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR,
+            vec![SquadsDataConstraint {
+                data_offset: 8,
+                data_value: SquadsDataValue::U64Le(0),
+                operator: SquadsDataOperator::Equals,
+            }],
+            nav_cap_constraint(&exact_identity, CAPITAL_REPORT_NAV_OFFSET),
+            report_nav_exact_constraint(&exact_identity, CAPITAL_REPORT_NAV_OFFSET),
+            DEPOSIT_BOUND_ACCOUNT_INDEXES,
+        );
+        for (constraints, offset) in [
+            (&exact_arm.data_constraints, ARM_REPORT_NAV_OFFSET),
+            (&exact_capital.data_constraints, CAPITAL_REPORT_NAV_OFFSET),
+        ] {
+            let matches = constraints
+                .iter()
+                .filter(|constraint| constraint.data_offset == offset)
+                .collect::<Vec<_>>();
+            assert_eq!(matches.len(), 2, "both NAV cap and exact equality must be present");
+            assert!(matches.iter().any(|constraint| {
+                matches!(constraint.operator, SquadsDataOperator::Equals)
+                    && matches!(constraint.data_value, SquadsDataValue::U64Le(3_793_536))
+            }));
+            assert!(matches.iter().any(|constraint| {
+                matches!(constraint.operator, SquadsDataOperator::LessThanOrEqualTo)
+                    && matches!(constraint.data_value, SquadsDataValue::U64Le(1_000_000_000_000))
+            }));
+        }
+        let legacy = create_voltr_custom_policies(&base, &templates(&base)).unwrap();
+        assert!(policies.nav_refresh.create_instruction.data.len()
+            > legacy.nav_refresh.create_instruction.data.len());
+    }
+
+    #[test]
+    fn rejects_zero_report_nav_exact_value() {
+        let base = identity();
+        let identity = VoltrCustomPolicyIdentity {
+            report_nav_exact_raw: Some(0),
             ..base
         };
         assert!(matches!(
@@ -1297,6 +1402,7 @@ mod tests {
             CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR,
             bounded_positive(identity.max_amount_raw),
             nav_cap_constraint(&identity, 51),
+            report_nav_exact_constraint(&identity, 51),
             &indexes,
         );
         let widened_constraint = voltr_constraint(
@@ -1305,6 +1411,7 @@ mod tests {
             CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR,
             bounded_positive(identity.max_amount_raw),
             nav_cap_constraint(&identity, 51),
+            report_nav_exact_constraint(&identity, 51),
             &indexes,
         );
         let canonical_policy = policy_plan(

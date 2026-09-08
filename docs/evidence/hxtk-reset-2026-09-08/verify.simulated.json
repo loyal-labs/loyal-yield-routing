@@ -1,0 +1,86 @@
+{
+  "schema": "loyal-voltr-hxtk-reset-step/v1",
+  "step": "verify",
+  "verdict": "PRE_RESET_OR_PARTIAL",
+  "phase1Complete": false,
+  "endStateChecks": {
+    "tvEqualsIdle": false,
+    "receipt1NotBelowPhantom": false,
+    "receipt1EqualsPhantom": false,
+    "feeAccumulatorsZero": false,
+    "custody1Zero": true,
+    "degradationZero": false,
+    "performanceFeesZero": false,
+    "waitingPeriodIs600": true
+  },
+  "preconditions": {
+    "reportTicketArmed": false,
+    "reportTicketCoherent": true,
+    "ticketLastConsumedSequence": "444157930",
+    "computedRepairNavRaw": "3793536",
+    "computedRepairNavMatchesPhantom": true,
+    "openWithdrawRequest": {
+      "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+      "userTransferAuthority": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "amountLpEscrowed": "99941522",
+      "amountAssetBits": "497586472129346763441",
+      "amountAssetToWithdrawRaw": "1767782",
+      "withdrawableFromTs": "1788493649",
+      "bump": 255
+    }
+  },
+  "aborts": {
+    "reportTicketArmed": false,
+    "custody1NonZero": false,
+    "repairNavBelowPhantom": false
+  },
+  "state": {
+    "contextSlot": 445385460,
+    "epoch": 1030,
+    "totalValue": "2793298",
+    "idleBalance": "3793417",
+    "custody1Balance": "0",
+    "receipt1PositionValue": "2793417",
+    "receipt1CustodyTracked": "0",
+    "lpSupply": "99941522",
+    "deadWeight": "1000",
+    "feeAccumulatedLpManager": "0",
+    "feeAccumulatedLpAdmin": "89601150",
+    "feeAccumulatedLpProtocol": "0",
+    "lockedProfitDegradationDuration": "86400",
+    "withdrawalWaitingPeriod": "600",
+    "adminPerformanceFeeBps": 500,
+    "managerPerformanceFeeBps": 0,
+    "maxCap": "1000000000000",
+    "lastUpdatedLockedProfit": "0",
+    "lockedProfitLastReport": "1788497414",
+    "highWaterMarkBits": "5633268378698",
+    "managerLpBalance": null,
+    "adminLpBalance": "0",
+    "treasuryLpBalance": null,
+    "requestEscrowLpBalance": "99941522",
+    "adminUsdcBalance": "3022630",
+    "squadsUsdcBalance": "0",
+    "requestReceipt": {
+      "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+      "userTransferAuthority": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "amountLpEscrowed": "99941522",
+      "amountAssetBits": "497586472129346763441",
+      "amountAssetToWithdrawRaw": "1767782",
+      "withdrawableFromTs": "1788493649",
+      "bump": 255
+    },
+    "reportTicket": {
+      "version": 1,
+      "armed": false,
+      "lastConsumedSequence": "444157930",
+      "activeSequence": "0",
+      "activeHashIsZero": true
+    },
+    "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+    "tvEqualsIdle": false
+  },
+  "sent": false,
+  "signed": false,
+  "broadcast": false
+}
