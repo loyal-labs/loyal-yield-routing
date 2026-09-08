@@ -291,7 +291,7 @@ export function runRustCompiler<T>(
       const privateFd = openSync(
         privatePath,
         constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-        0o700,
+        0o500,
       );
       try {
         let offset = 0;
@@ -304,24 +304,66 @@ export function runRustCompiler<T>(
       } finally {
         closeSync(privateFd);
       }
-      const privateHash = compilerBinarySha256FromDescriptor(privatePath);
-      if (privateHash !== compilerBinarySha256) {
-        throw new Error(`COMPILER_BINARY_HASH_MISMATCH: private copy ${privatePath} differs from the verified descriptor`);
-      }
-      const privateInode = lstatSync(privatePath).ino;
-      // The copy lives in a mode-0700 directory. The residual same-uid window
-      // is rechecked by inode and hash immediately after the child exits.
-      run = spawnSync(privatePath, [...(input.args ?? [])], {
-        cwd: repositoryRoot,
-        encoding: "utf8",
-        input: input.input,
-        maxBuffer: input.maxBuffer ?? 16 * 1024 * 1024,
-        env: childEnvironment,
-      });
-      const afterInode = lstatSync(privatePath).ino;
-      compilerBinarySha256AtExec = compilerBinarySha256FromDescriptor(privatePath);
-      if (afterInode !== privateInode || compilerBinarySha256AtExec !== compilerBinarySha256) {
-        throw new Error(`COMPILER_BINARY_HASH_MISMATCH: private compiler copy changed during execution`);
+      // Keep a descriptor to the private copy open across the child. The
+      // residual same-uid window is an in-place write between this pre-spawn
+      // check and exec start; the post-exit hash through this same descriptor
+      // closes that window for the output that is used.
+      const privateExecFd = openSync(privatePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const beforeFd = assertCompilerDescriptor(privatePath, privateExecFd);
+        const beforePath = lstatSync(privatePath);
+        const beforeIdentityMatches = beforePath.isFile()
+          && !beforePath.isSymbolicLink()
+          && Number(beforePath.dev) === Number(beforeFd.dev)
+          && Number(beforePath.ino) === Number(beforeFd.ino)
+          && Number(beforeFd.nlink) === 1
+          && Number(beforePath.nlink) === 1;
+        if (!beforeIdentityMatches) {
+          throw new Error(`COMPILER_BINARY_CHANGED_DURING_EXEC: private compiler copy changed before execution`);
+        }
+        const privateHash = compilerBinarySha256FromOpenDescriptor(privatePath, privateExecFd);
+        if (privateHash !== compilerBinarySha256) {
+          throw new Error(`COMPILER_BINARY_CHANGED_DURING_EXEC: private copy ${privatePath} differs from the verified descriptor`);
+        }
+        run = spawnSync(privatePath, [...(input.args ?? [])], {
+          cwd: repositoryRoot,
+          encoding: "utf8",
+          input: input.input,
+          maxBuffer: input.maxBuffer ?? 16 * 1024 * 1024,
+          env: childEnvironment,
+        });
+        let afterFd: ReturnType<typeof fstatSync>;
+        let afterPath: ReturnType<typeof lstatSync>;
+        try {
+          afterFd = fstatSync(privateExecFd);
+          afterPath = lstatSync(privatePath);
+        } catch (error) {
+          throw new Error(`COMPILER_BINARY_CHANGED_DURING_EXEC: private compiler copy disappeared or was replaced`, { cause: error });
+        }
+        const unchanged = afterPath.isFile()
+          && !afterPath.isSymbolicLink()
+          && Number(afterFd.dev) === Number(beforeFd.dev)
+          && Number(afterFd.ino) === Number(beforeFd.ino)
+          && Number(afterPath.dev) === Number(beforePath.dev)
+          && Number(afterPath.ino) === Number(beforePath.ino)
+          && Number(afterFd.nlink) === 1
+          && Number(afterPath.nlink) === 1
+          && Number(afterFd.size) === Number(beforeFd.size)
+          && Number(afterPath.size) === Number(beforePath.size)
+          && afterFd.mtimeMs === beforeFd.mtimeMs
+          && afterPath.mtimeMs === beforePath.mtimeMs;
+        let postHash: string;
+        try {
+          postHash = compilerBinarySha256FromOpenDescriptor(privatePath, privateExecFd);
+        } catch (error) {
+          throw new Error(`COMPILER_BINARY_CHANGED_DURING_EXEC: private compiler copy changed during execution`, { cause: error });
+        }
+        if (!unchanged || postHash !== compilerBinarySha256) {
+          throw new Error(`COMPILER_BINARY_CHANGED_DURING_EXEC: private compiler copy changed during execution`);
+        }
+        compilerBinarySha256AtExec = postHash;
+      } finally {
+        closeSync(privateExecFd);
       }
       executedCompilerPath = privatePath;
       compilerExecMode = "private-copy";

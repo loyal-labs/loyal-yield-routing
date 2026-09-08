@@ -20,7 +20,7 @@
  * and docs/plans/backyard-rwa-adaptor-strategy2-audit-2026-09-08.md §7.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -1817,10 +1817,21 @@ function canonicalStateRoot(create = false, stateRootOverride?: string): string 
   return stateRootOverride ?? resolveCanonicalStateRoot({ vault: VAULT.toString(), create });
 }
 
-function readCanonicalLegState(step: string, create = false, stateRootOverride?: string): JsonRecord | null {
+function readCanonicalLegState(
+  step: string,
+  create = false,
+  stateRootOverride?: string,
+  options: Readonly<{ allowRollForward?: boolean }> = {},
+): JsonRecord | null {
   const path = canonicalLegStatePath(step, create, stateRootOverride);
-  if (!existsSync(path)) return null;
-  const parsed = readCanonicalState(path).record;
+  let parsed: JsonRecord;
+  try {
+    parsed = readCanonicalState(path, options).record;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT"
+      && !existsSync(path + ".gen-0")) return null;
+    throw error;
+  }
   if (parsed.schema !== HXTK_STATE_SCHEMA
     || parsed.step !== step
     || parsed.vault !== VAULT.toString()
@@ -1849,6 +1860,17 @@ function assertCanonicalLegAvailable(
   const existing = existingOverride === undefined
     ? readCanonicalLegState(step, false, stateRootOverride)
     : existingOverride;
+  const currentAttemptToken = String(existing?.attemptToken ?? "");
+  if (existing?.status !== "aborted-pre-send") {
+    const foreign = interruptedAbortedJournalPaths(journal).filter((artifact) =>
+      artifact.filenameAttemptToken !== currentAttemptToken
+      || abortArtifactAttemptToken(artifact) !== currentAttemptToken);
+    if (foreign.length > 0) {
+      throw new Error(
+        `JOURNAL_HAS_FOREIGN_ABORT_ARTIFACT: ${foreign.map((artifact) => artifact.path).join(", ")}`,
+      );
+    }
+  }
   assertCanonicalLegAvailableFence({
     step,
     journal,
@@ -1870,6 +1892,14 @@ function beginCanonicalLegState(
 ): Readonly<{ path: string; generation: number }> {
   const path = canonicalLegStatePath(step, true, stateRootOverride);
   const transaction = recordAt(pending.transaction, "pending transaction");
+  const attemptToken = stringAt(pending.attemptToken, "pending attemptToken");
+  if (!/^[0-9a-f]{32}$/.test(attemptToken)) {
+    throw new Error("pending attemptToken must be a 16-byte lowercase hex token");
+  }
+  const lastValidBlockHeight = Number(transaction.lastValidBlockHeight);
+  if (!Number.isSafeInteger(lastValidBlockHeight) || lastValidBlockHeight < 0) {
+    throw new Error("pending transaction.lastValidBlockHeight is missing or invalid");
+  }
   const state = beginCanonicalLegRecord({
     step,
     vault: VAULT.toString(),
@@ -1878,6 +1908,11 @@ function beginCanonicalLegState(
     messageSha256: stringAt(transaction.messageSha256, "pending transaction.messageSha256"),
     wireSha256: stringAt(transaction.wireSha256, "pending transaction.wireSha256"),
     pendingBindingSha256: stringAt(pending.pendingBindingSha256, "pending pendingBindingSha256"),
+    attemptToken,
+    signedWireBase64: stringAt(pending.signedWireBase64, "pending signedWireBase64"),
+    messageBase64: stringAt(transaction.messageBase64, "pending transaction.messageBase64"),
+    lastValidBlockHeight,
+    pendingRecord: pending,
     checkoutRoot: REPOSITORY_ROOT,
     stateRoot: canonicalStateRoot(false, stateRootOverride),
     repeatable: REPEATABLE_LEGS.has(step),
@@ -1899,13 +1934,14 @@ function markCanonicalLegState(
     error?: string;
     abortReason?: string;
     abortedJournal?: string;
+    lastValidBlockHeight?: number;
     finalizedJournalSha256?: string;
   }>,
   expectedGeneration: number | null,
   stateRootOverride?: string,
 ): number {
   const path = canonicalLegStatePath(step, false, stateRootOverride);
-  const current = readCanonicalLegState(step, false, stateRootOverride);
+  const current = readCanonicalLegState(step, false, stateRootOverride, { allowRollForward: true });
   if (current === null) throw new Error(`${step} canonical state disappeared during execution`);
   if (stateGeneration(current) !== expectedGeneration) {
     throw new Error(
@@ -1949,30 +1985,77 @@ function ensureCanonicalLegStateForReconcile(
   if (existing.status === "finalized") {
     throw new Error(`${step} canonical state is already finalized; refusing a second reconciliation`);
   }
-  if (existing.status === "aborted-pre-send"
+  if (existing.status !== "attempted"
     || String(existing.journal ?? "") !== journal) {
     throw new Error(`${step} pending journal does not match the canonical replay state`);
   }
-  const generation = markCanonicalLegState(
-    step,
-    journal,
-    { status: "attempted", broadcast: "attempted", signature: wire.signature },
-    expectedGeneration,
-    stateRootOverride,
-  );
-  return { path, generation };
+  if (String(existing.attemptToken ?? "") !== String(pending.attemptToken ?? "")
+    || String(existing.signature ?? wire.signature) !== wire.signature) {
+    throw new Error(`${step} pending journal does not match the attempted canonical record`);
+  }
+  if (stateGeneration(existing) !== expectedGeneration) {
+    throw new Error(
+      `STATE_GENERATION_CONFLICT: expected generation ${expectedGeneration ?? "absent"}, `
+      + `found ${stateGeneration(existing) ?? "absent"}`,
+    );
+  }
+  // Recovery never creates an attempted record. The sending process wrote it
+  // exactly once immediately before the sole raw submission; reconciliation
+  // only proves that this already-attempted record finalized or expired.
+  return { path, generation: expectedGeneration! };
 }
 
 function repairPolicyRemoveJournalPath(repairJournal: string): string {
   return repairJournal.replace(/\.json$/i, ".policy-remove.json");
 }
 
+export const HXTK_RECOVERY_LEGS = [
+  "verify",
+  "config",
+  "repair-policy",
+  "repair",
+  "repair-policy-remove",
+  "harvest",
+  "cancel",
+  "request",
+  "claim",
+  "restore-degradation",
+] as const;
+
+export type HxtkRecoveryLeg = typeof HXTK_RECOVERY_LEGS[number];
+
+export function buildHxtkRecoveryCommand(input: Readonly<{
+  step: HxtkRecoveryLeg | string;
+  mode: "simulate" | "execute" | "reconcile";
+  journal?: string;
+  flags?: readonly string[];
+  finalized?: boolean;
+  breakClaim?: boolean;
+  allowRepeat?: boolean;
+}>): string {
+  const repeatable = REPEATABLE_LEGS.has(input.step);
+  if (input.allowRepeat && !repeatable) {
+    throw new Error(`--allow-repeat is not accepted for one-shot HXtk leg ${input.step}`);
+  }
+  if (input.finalized) return `${input.step} already finalized; verify with bun run reset:hxtk verify`;
+  const prefix = input.mode === "execute"
+    ? "op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk"
+    : "bun run reset:hxtk";
+  const args = [prefix, input.step, ...(input.flags ?? []), `--${input.mode}`];
+  if (input.allowRepeat) args.push("--allow-repeat");
+  if (input.breakClaim) args.push("--break-claim");
+  if (input.journal !== undefined) args.push("--journal", resolve(input.journal));
+  return args.join(" ");
+}
+
 export function buildRepairRecoveryCommands(input: Readonly<{
   repairJournal: string;
   policyJournal: string;
   policyRemoveJournal: string;
+  repairStatus?: CanonicalLegStateStatus | null | undefined;
   removalStatus?: CanonicalLegStateStatus | null | undefined;
 }>): string[] {
+  const repairState = input.repairStatus;
   const removalState = input.removalStatus;
   const removalMode = removalState !== null
     && removalState !== undefined
@@ -1982,14 +2065,13 @@ export function buildRepairRecoveryCommands(input: Readonly<{
   const repairJournal = resolve(input.repairJournal);
   const policyJournal = resolve(input.policyJournal);
   const policyRemoveJournal = resolve(input.policyRemoveJournal);
-  const command = (step: string, mode: "execute" | "reconcile", flags: readonly string[], journal: string) => {
-    const prefix = mode === "reconcile"
-      ? "bun run reset:hxtk"
-      : "op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk";
-    return [prefix, step, ...flags, `--${mode}`, "--journal", journal].join(" ");
-  };
+  const command = (step: HxtkRecoveryLeg, mode: "execute" | "reconcile", flags: readonly string[], journal: string) =>
+    buildHxtkRecoveryCommand({ step, mode, flags, journal });
+  const repairRecovery = repairState === "finalized"
+    ? buildHxtkRecoveryCommand({ step: "repair", mode: "reconcile", finalized: true })
+    : command("repair", "reconcile", ["--expect-seed", "140", "--policy-journal", policyJournal], repairJournal);
   const removalRecovery = removalState === "finalized"
-    ? "repair-policy-remove already finalized; verify with bun run reset:hxtk verify"
+    ? buildHxtkRecoveryCommand({ step: "repair-policy-remove", mode: "reconcile", finalized: true })
     : command(
         "repair-policy-remove",
         removalMode,
@@ -1997,7 +2079,7 @@ export function buildRepairRecoveryCommands(input: Readonly<{
         policyRemoveJournal,
       );
   return [
-    command("repair", "reconcile", ["--expect-seed", "140", "--policy-journal", policyJournal], repairJournal),
+    repairRecovery,
     removalRecovery,
   ];
 }
@@ -2009,41 +2091,168 @@ function repairRecoveryCommands(input: Readonly<{
 }>): string[] {
   return buildRepairRecoveryCommands({
     ...input,
+    repairStatus: readCanonicalLegState("repair")?.status as CanonicalLegStateStatus | null | undefined,
     removalStatus: readCanonicalLegState("repair-policy-remove")?.status as CanonicalLegStateStatus | null | undefined,
   });
 }
 
-function abortedJournalPath(journal: string): string {
+function abortedJournalPath(journal: string, attemptToken: string): string {
+  if (!/^[0-9a-f]{32}$/.test(attemptToken)) {
+    throw new Error("abort artifact requires a 16-byte lowercase hex attemptToken");
+  }
   let timestamp = Date.now();
-  let path = `${journal}.aborted-${timestamp}.json`;
+  let path = `${journal}.aborted-${timestamp}-${attemptToken}.json`;
   while (existsSync(path)) {
     timestamp += 1;
-    path = `${journal}.aborted-${timestamp}.json`;
+    path = `${journal}.aborted-${timestamp}-${attemptToken}.json`;
   }
   return path;
 }
 
-function interruptedAbortedJournalPaths(journal: string): string[] {
+type AbortArtifact = Readonly<{
+  path: string;
+  filenameAttemptToken: string | null;
+  record: JsonRecord | null;
+}>;
+
+function interruptedAbortedJournalPaths(journal: string): AbortArtifact[] {
   const directory = dirname(journal);
   const prefix = `${basename(journal)}.aborted-`;
   try {
     return readdirSync(directory, { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.startsWith(prefix) && entry.name.endsWith(".json"))
-      .map((entry) => resolve(directory, entry.name))
-      .sort();
+      .map((entry) => {
+        const path = resolve(directory, entry.name);
+        const suffix = entry.name.slice(prefix.length, -".json".length);
+        const filenameAttemptToken = /^\d+-([0-9a-f]{32})$/.exec(suffix)?.[1] ?? null;
+        try {
+          return {
+            path,
+            filenameAttemptToken,
+            record: readBoundJournal(path).record,
+          };
+        } catch {
+          // A malformed or legacy artifact is stale by definition; keep it
+          // visible to the caller instead of allowing it to drive recovery.
+          return { path, filenameAttemptToken, record: null };
+        }
+      })
+      .sort((left, right) => left.path.localeCompare(right.path));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
 }
 
+function abortArtifactAttemptToken(artifact: AbortArtifact): string | null {
+  const contentToken = artifact.record?.attemptToken;
+  if (typeof contentToken !== "string" || !/^[0-9a-f]{32}$/.test(contentToken)) return null;
+  return contentToken;
+}
+
+function abortArtifactMatchesState(artifact: AbortArtifact, state: JsonRecord): boolean {
+  const attemptToken = String(state.attemptToken ?? "");
+  const binding = String(state.pendingBindingSha256 ?? "");
+  return state.status === "pending"
+    && attemptToken.length > 0
+    && artifact.filenameAttemptToken === attemptToken
+    && abortArtifactAttemptToken(artifact) === attemptToken
+    && Number(artifact.record?.attemptGeneration) === Number(state.generation)
+    && String(artifact.record?.pendingBindingSha256 ?? "") === binding;
+}
+
+function abortRecordForState(
+  state: JsonRecord,
+  pending: JsonRecord,
+  reason: string,
+  broadcast: false | "attempted" = false,
+): JsonRecord {
+  const attemptToken = String(state.attemptToken ?? pending.attemptToken ?? "");
+  const binding = String(state.pendingBindingSha256 ?? pending.pendingBindingSha256 ?? "");
+  if (!/^[0-9a-f]{32}$/.test(attemptToken) || binding.length === 0
+    || String(pending.attemptToken ?? "") !== attemptToken
+    || String(pending.pendingBindingSha256 ?? "") !== binding) {
+    throw new Error("STATE_GENERATION_CONFLICT: pending recovery record is not bound to the canonical attempt");
+  }
+  return {
+    ...pending,
+    verdict: broadcast === "attempted" ? "ABORTED_AFTER_BLOCKHASH_EXPIRY" : "ABORTED_PRE_SEND",
+    sent: false,
+    signed: true,
+    broadcast,
+    abortReason: reason,
+    attemptGeneration: Number(state.generation),
+    // pendingBindingSha256 is the journal binding hash; retain it in the
+    // artifact under its canonical name as well as the attempt token.
+    journalBindingSha256: binding,
+    sendStatus: {
+      ...(pending.sendStatus && typeof pending.sendStatus === "object" ? pending.sendStatus as JsonRecord : {}),
+      verdict: broadcast === "attempted" ? "ABORTED_AFTER_BLOCKHASH_EXPIRY" : "ABORTED_PRE_SEND",
+      sendError: reason,
+      signature: pending.transaction && typeof pending.transaction === "object"
+        ? (pending.transaction as JsonRecord).expectedSignature
+        : undefined,
+    },
+  };
+}
+
+function publishAbortArtifact(
+  journal: string,
+  state: JsonRecord,
+  pending: JsonRecord,
+  reason: string,
+  pendingPath?: string,
+  broadcast: false | "attempted" = false,
+): string {
+  const artifactPath = abortedJournalPath(journal, String(state.attemptToken));
+  const aborted = abortRecordForState(state, pending, reason, broadcast);
+  if (pendingPath !== undefined && existsSync(pendingPath)) {
+    rewritePendingStatus(pendingPath, {
+      verdict: aborted.verdict,
+      sent: false,
+      signed: true,
+      broadcast,
+      abortReason: reason,
+      attemptGeneration: aborted.attemptGeneration,
+      journalBindingSha256: aborted.journalBindingSha256,
+      sendStatus: aborted.sendStatus,
+    });
+    renamePrivateFile(pendingPath, artifactPath);
+  } else {
+    writePrivate(artifactPath, aborted, "wx");
+  }
+  return artifactPath;
+}
+
+export type InterruptedTransitionRecovery = Readonly<{
+  state: JsonRecord | null;
+  staleAbortArtifacts: readonly string[];
+  autoAbortedPreSend: boolean;
+}>;
+
 export function resumeInterruptedTransition(input: Readonly<{
   step: string;
   journal: string;
   stateRoot: string;
-}>): JsonRecord | null {
+  mode?: RepairPolicyOperatorMode;
+}>): InterruptedTransitionRecovery {
   const pendingPath = `${input.journal}.pending`;
-  let state = readCanonicalLegState(input.step, false, input.stateRoot);
+  let state = readCanonicalLegState(input.step, false, input.stateRoot, { allowRollForward: true });
+  const artifacts = interruptedAbortedJournalPaths(input.journal);
+  const currentAttemptToken = state?.status === "aborted-pre-send" ? null : String(state?.attemptToken ?? "");
+  const foreignArtifacts = state?.status === "aborted-pre-send"
+    ? []
+    : artifacts.filter((artifact) => artifact.filenameAttemptToken !== currentAttemptToken
+      || abortArtifactAttemptToken(artifact) !== currentAttemptToken);
+  // A new execute must not reuse a journal whose directory contains an abort
+  // artifact from another attempt. Reconcile is the read-only chain check for
+  // the current attempted record, so it carries foreign artifacts forward as
+  // stale evidence instead of letting them shadow that attempt.
+  if (foreignArtifacts.length > 0 && input.mode !== "reconcile") {
+    throw new Error(
+      `JOURNAL_HAS_FOREIGN_ABORT_ARTIFACT: ${foreignArtifacts.map((artifact) => artifact.path).join(", ")}`,
+    );
+  }
 
   // Finalization is ordered as: publish the final journal, publish the
   // sent-wire rename, then advance canonical state. Each check is safe to
@@ -2058,62 +2267,122 @@ export function resumeInterruptedTransition(input: Readonly<{
     if (String(state.journal ?? "") !== input.journal) {
       throw new Error(`STATE_GENERATION_CONFLICT: ${input.step} finalized journal is not bound to canonical state`);
     }
-    if (state.status !== "finalized") {
-      const finalized = readBoundJournal(input.journal).record;
-      const signature = stringAt(finalized.signature ?? state.signature, `${input.step} finalized signature`);
-      markCanonicalLegState(
-        input.step,
-        input.journal,
-        {
-          status: "finalized",
-          broadcast: true,
-          signature,
-          finalizedJournalSha256: finalizedJournalSha256(input.journal),
-        },
-        stateGeneration(state),
-        input.stateRoot,
-      );
-      state = readCanonicalLegState(input.step, false, input.stateRoot);
-    } else if (String(state.finalizedJournalSha256 ?? "") !== finalizedJournalSha256(input.journal)) {
+    if (state.status === "finalized"
+      && String(state.finalizedJournalSha256 ?? "") !== finalizedJournalSha256(input.journal)) {
       throw new Error(`RECONCILE_MISMATCH: finalized ${input.step} journal hash is not bound to canonical state`);
     }
-    return state;
+    if (state.status !== "attempted" && state.status !== "finalized") {
+      throw new Error(`STATE_GENERATION_CONFLICT: ${input.step} finalized journal is not backed by an attempted canonical record`);
+    }
+    // A published final journal is evidence to be checked by the async
+    // reconcile path; it is never allowed to promote attempted -> finalized by
+    // filename presence alone.
+    return {
+      state,
+      staleAbortArtifacts: artifacts.map((artifact) => artifact.path),
+      autoAbortedPreSend: false,
+    };
   }
 
-  let abortedPath = interruptedAbortedJournalPaths(input.journal)[0] ?? null;
+  let appliedAbortPath: string | null = null;
   if (existsSync(pendingPath)) {
     const pending = readBoundPending(pendingPath).record;
-    if (pending.verdict === "ABORTED_PRE_SEND") {
-      abortedPath = abortedPath ?? abortedJournalPath(input.journal);
-      renamePrivateFile(pendingPath, abortedPath);
-    }
-  }
-  if (abortedPath !== null) {
-    if (state === null) {
-      throw new Error(`STATE_GENERATION_CONFLICT: ${input.step} aborted journal has no canonical state`);
-    }
-    if (String(state.journal ?? "") !== input.journal) {
-      throw new Error(`STATE_GENERATION_CONFLICT: ${input.step} aborted journal is not bound to canonical state`);
-    }
-    if (state.status !== "aborted-pre-send") {
-      const aborted = readBoundJournal(abortedPath).record;
-      const abortReason = typeof aborted.abortReason === "string" ? aborted.abortReason : undefined;
+    if (state?.status === "pending") {
+      // No attempted canonical state means no raw send was reachable. Convert
+      // every pre-mark pending recovery to an attempt-bound abort artifact.
+      appliedAbortPath = publishAbortArtifact(
+        input.journal,
+        state,
+        pending,
+        "recovered pending journal before the canonical attempted mark; no send was reachable",
+        pendingPath,
+      );
       markCanonicalLegState(
         input.step,
         input.journal,
         {
           status: "aborted-pre-send",
           broadcast: false,
-          ...(abortReason === undefined ? {} : { abortReason, error: abortReason }),
-          abortedJournal: abortedPath,
+          abortReason: "recovered pending journal before the canonical attempted mark; no send was reachable",
+          abortedJournal: appliedAbortPath,
         },
         stateGeneration(state),
         input.stateRoot,
       );
-      state = readCanonicalLegState(input.step, false, input.stateRoot);
+      state = readCanonicalLegState(input.step, false, input.stateRoot, { allowRollForward: true });
+    } else if (pending.verdict === "ABORTED_PRE_SEND" && state?.status === "aborted-pre-send") {
+      // A previous process may have completed the volatile rewrite but crashed
+      // before the rename. Only the already-aborted canonical attempt can adopt
+      // this artifact; attempted records are never touched by it.
+      const attemptToken = String(state.attemptToken ?? "");
+      if (String(pending.attemptToken ?? "") !== attemptToken) {
+        throw new Error(`JOURNAL_HAS_FOREIGN_ABORT_ARTIFACT: ${pendingPath}`);
+      }
+      appliedAbortPath = publishAbortArtifact(
+        input.journal,
+        state,
+        pending,
+        String(pending.abortReason ?? "pre-send abort"),
+        pendingPath,
+      );
     }
   }
-  return state;
+
+  let autoAbortedPreSend = false;
+  const hasMatchingAbortArtifact = state?.status === "pending"
+    && artifacts.some((artifact) => abortArtifactMatchesState(artifact, state!));
+  if (state?.status === "pending" && !existsSync(pendingPath) && !hasMatchingAbortArtifact) {
+    const pending = recordAt(state.pendingRecord, `${input.step} canonical pendingRecord`);
+    appliedAbortPath = publishAbortArtifact(
+      input.journal,
+      state,
+      pending,
+      "recovered canonical pending state before journal publication; no send was reachable",
+    );
+    markCanonicalLegState(
+      input.step,
+      input.journal,
+      {
+        status: "aborted-pre-send",
+        broadcast: false,
+        abortReason: "recovered canonical pending state before journal publication; no send was reachable",
+        abortedJournal: appliedAbortPath,
+      },
+      stateGeneration(state),
+      input.stateRoot,
+    );
+    state = readCanonicalLegState(input.step, false, input.stateRoot, { allowRollForward: true });
+    autoAbortedPreSend = true;
+  }
+
+  if (state?.status === "pending") {
+    const matching = artifacts.find((artifact) => abortArtifactMatchesState(artifact, state!));
+    if (matching !== undefined) {
+      const aborted = matching.record!;
+      const abortReason = typeof aborted.abortReason === "string" ? aborted.abortReason : "pre-send abort";
+      markCanonicalLegState(
+        input.step,
+        input.journal,
+        {
+          status: "aborted-pre-send",
+          broadcast: false,
+          abortReason,
+          error: abortReason,
+          abortedJournal: matching.path,
+        },
+        stateGeneration(state),
+        input.stateRoot,
+      );
+      state = readCanonicalLegState(input.step, false, input.stateRoot, { allowRollForward: true });
+      appliedAbortPath = matching.path;
+    }
+  }
+
+  const staleAbortArtifacts = artifacts
+    .filter((artifact) => artifact.path !== appliedAbortPath
+      && artifact.path !== String(state?.abortedJournal ?? ""))
+    .map((artifact) => artifact.path);
+  return { state, staleAbortArtifacts, autoAbortedPreSend };
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -2130,10 +2399,14 @@ type JournaledStepDependencies = Readonly<{
   allowExecuteWithoutConfirmation?: boolean;
   sendPreparedOnce?: typeof sendPreparedOnce;
   finalizedTransaction?: typeof finalizedTransaction;
+  currentBlockHeight?: (rpcUrl: string) => Promise<number>;
   faultAfterTransitionStep?: (step: JournalTransitionStep) => void | Promise<void>;
 }>;
 
 export type JournalTransitionStep =
+  | "canonical-pending"
+  | "pending-journal"
+  | "attempted-state"
   | "final-journal"
   | "sent-wire"
   | "finalized-state"
@@ -2156,6 +2429,44 @@ async function faultAfterTransitionStep(
   step: JournalTransitionStep,
 ): Promise<void> {
   await dependencies.faultAfterTransitionStep?.(step);
+}
+
+async function reconcilePublishedJournal(
+  input: Parameters<typeof runJournaledStep>[0],
+  dependencies: JournaledStepDependencies,
+  stateRoot: string,
+  state: JsonRecord,
+  loadFinalized: typeof finalizedTransaction,
+): Promise<Readonly<{ state: JsonRecord; generation: number }>> {
+  if (String(state.journal ?? "") !== input.journal) {
+    throw new Error(`STATE_GENERATION_CONFLICT: ${input.step} finalized journal is not bound to canonical state`);
+  }
+  const journalHash = finalizedJournalSha256(input.journal);
+  if (state.status === "finalized") {
+    if (String(state.finalizedJournalSha256 ?? "") !== journalHash) {
+      throw new Error(`RECONCILE_MISMATCH: finalized ${input.step} journal hash is not bound to canonical state`);
+    }
+    return { state, generation: stateGeneration(state)! };
+  }
+  if (state.status !== "attempted") {
+    throw new Error(`STATE_GENERATION_CONFLICT: ${input.step} finalized journal is not backed by an attempted canonical record`);
+  }
+  const finalizedRecord = readBoundJournal(input.journal).record;
+  const wire = journalWire(finalizedRecord, input.schema, input.step, "finalized");
+  const finalized = await loadFinalized(input.rpcUrl, wire.signature);
+  assertFinalizedJournalMessage(wire, finalized);
+  await input.reconcile({ pending: finalizedRecord, finalized });
+  const generation = markCanonicalLegState(input.step, input.journal, {
+    status: "finalized",
+    broadcast: true,
+    signature: wire.signature,
+    finalizedJournalSha256: journalHash,
+  }, stateGeneration(state), stateRoot);
+  await faultAfterTransitionStep(dependencies, "finalized-state");
+  return {
+    state: readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true })!,
+    generation,
+  };
 }
 
 function recordAt(value: unknown, key: string): JsonRecord {
@@ -2582,31 +2893,57 @@ async function runJournaledStepHeld(input: Readonly<{
   const stateRoot = dependencies.stateRoot ?? canonicalStateRoot(true);
   const sendOnce = dependencies.sendPreparedOnce ?? sendPreparedOnce;
   const loadFinalized = dependencies.finalizedTransaction ?? finalizedTransaction;
-  resumeInterruptedTransition({
+  const currentBlockHeight = dependencies.currentBlockHeight
+    ?? (async (rpcUrl: string) => rpcWithRetry<number>("getBlockHeight", [{ commitment: "finalized" }]));
+  const resumed = resumeInterruptedTransition({
     step: input.step,
     journal: input.journal,
     stateRoot,
+    mode: input.mode,
   });
-  const sectionState = readCanonicalLegState(input.step, false, stateRoot);
+  const sectionState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true });
+  const staleAbortArtifacts = [...resumed.staleAbortArtifacts];
   let expectedGeneration = stateGeneration(sectionState);
   if (new Set(["harvest", "cancel", "request", "claim", "restore-degradation"]).has(input.step)) {
     await assertRepairPolicyRetired(input.step);
   }
-  if (input.mode === "reconcile") {
-    if (existsSync(input.journal)) {
-      if (sectionState?.status === "finalized" && String(sectionState.journal ?? "") === input.journal) {
-        console.log(toJson({
-          schema: input.schema,
-          step: input.step,
-          verdict: "FINALIZED_RECONCILED",
-          signature: sectionState.signature ?? null,
-          journal: input.journal,
-          canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
-        }, 2));
-        return 0;
-      }
-      throw new Error(`${input.step} --reconcile found a finalized journal with an incompatible canonical state`);
+  if (resumed.autoAbortedPreSend) {
+    console.log(toJson({
+      schema: input.schema,
+      step: input.step,
+      verdict: "ABORTED_PRE_SEND_REARMABLE",
+      reason: "canonical pending state was recovered before the attempted mark; rerun after reviewing the attempt-bound abort artifact",
+      journal: input.journal,
+      canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
+      abortedJournal: resumed.state?.abortedJournal ?? null,
+      staleAbortArtifacts,
+    }, 2));
+    return 0;
+  }
+  if (existsSync(input.journal)) {
+    if (sectionState === null) {
+      throw new Error(`STATE_GENERATION_CONFLICT: ${input.step} finalized journal has no canonical state`);
     }
+    const completed = await reconcilePublishedJournal(
+      input,
+      dependencies,
+      stateRoot,
+      sectionState,
+      loadFinalized,
+    );
+    console.log(toJson({
+      schema: input.schema,
+      step: input.step,
+      verdict: "FINALIZED_RECONCILED",
+      signature: completed.state.signature ?? null,
+      journal: input.journal,
+      canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
+      staleAbortArtifacts,
+      recoveryCommand: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: true }),
+    }, 2));
+    return 0;
+  }
+  if (input.mode === "reconcile") {
     if (!existsSync(`${input.journal}.pending`)) {
       throw new Error(`${input.step} --reconcile requires one pending journal and no finalized journal`);
     }
@@ -2631,7 +2968,48 @@ async function runJournaledStepHeld(input: Readonly<{
     );
     const canonicalStatePath = reconciledState.path;
     expectedGeneration = reconciledState.generation;
-    const finalized = await loadFinalized(input.rpcUrl, wire.signature);
+    let finalized: FinalizedTransaction;
+    try {
+      finalized = await loadFinalized(input.rpcUrl, wire.signature);
+    } catch (error) {
+      const lastValidBlockHeight = Number(
+        sectionState?.lastValidBlockHeight
+          ?? recordAt(pending.transaction, "pending transaction").lastValidBlockHeight,
+      );
+      const notReadable = error instanceof Error && /not readable/i.test(error.message);
+      if (!notReadable
+        || !Number.isSafeInteger(lastValidBlockHeight)
+        || lastValidBlockHeight < 0) throw error;
+      const observedBlockHeight = await currentBlockHeight(input.rpcUrl);
+      if (observedBlockHeight <= lastValidBlockHeight) throw error;
+      const reason = `expected signature was not finalized before lastValidBlockHeight ${lastValidBlockHeight}; finalized block height is ${observedBlockHeight}`;
+      const abortedPath = publishAbortArtifact(
+        input.journal,
+        sectionState!,
+        pending,
+        reason,
+        `${input.journal}.pending`,
+        "attempted",
+      );
+      markCanonicalLegState(input.step, input.journal, {
+        status: "aborted-pre-send",
+        broadcast: "attempted",
+        abortReason: reason,
+        abortedJournal: abortedPath,
+      }, expectedGeneration, stateRoot);
+      console.log(toJson({
+        schema: input.schema,
+        step: input.step,
+        verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY",
+        rearmable: true,
+        lastValidBlockHeight,
+        finalizedBlockHeight: observedBlockHeight,
+        journal: input.journal,
+        canonicalState: canonicalStatePath,
+        staleAbortArtifacts,
+      }, 2));
+      return 0;
+    }
     assertFinalizedJournalMessage(wire, finalized);
     const reconciliation = await input.reconcile({ pending, finalized });
     writePrivate(input.journal, {
@@ -2669,6 +3047,8 @@ async function runJournaledStepHeld(input: Readonly<{
       finalizedSlot: finalized.slot,
       journal: input.journal,
       canonicalState: canonicalStatePath,
+      staleAbortArtifacts,
+      recoveryCommand: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: true }),
     }, 2));
     return 0;
   }
@@ -2687,6 +3067,8 @@ async function runJournaledStepHeld(input: Readonly<{
       signature: sectionState.signature ?? null,
       journal: input.journal,
       canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
+      staleAbortArtifacts,
+      recoveryCommand: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: true }),
     }, 2));
     return 0;
   }
@@ -2706,6 +3088,7 @@ async function runJournaledStepHeld(input: Readonly<{
   }
   const wireSha256 = createHash("sha256").update(built.prepared.serializedTransaction).digest("hex");
   const messageSha256 = createHash("sha256").update(built.prepared.serializedMessage).digest("hex");
+  const attemptToken = randomBytes(16).toString("hex");
   const planTransaction = recordAt(built.plan.transaction, "plan.transaction");
   const pendingWithoutBinding: JsonRecord = {
     ...built.plan,
@@ -2715,6 +3098,7 @@ async function runJournaledStepHeld(input: Readonly<{
     sent: false,
     signed: true,
     broadcast: false,
+    attemptToken,
     expectedPreState: built.plan.expectedPreState ?? built.plan.before ?? null,
     expectedPostState: built.plan.expectedPostState ?? built.plan.postState ?? null,
     signedWireBase64: Buffer.from(built.prepared.serializedTransaction).toString("base64"),
@@ -2725,6 +3109,7 @@ async function runJournaledStepHeld(input: Readonly<{
       wireSha256,
       messageSha256,
       messageBase64: Buffer.from(built.prepared.serializedMessage).toString("base64"),
+      lastValidBlockHeight: built.prepared.latestBlockhash.lastValidBlockHeight,
       packetBytes: built.prepared.packetBytes,
       prestateSlot: built.prepared.prestateSlot,
       simulationSlot: built.prepared.simulationSlot,
@@ -2744,18 +3129,22 @@ async function runJournaledStepHeld(input: Readonly<{
   );
   const canonicalStatePath = begunState.path;
   expectedGeneration = begunState.generation;
+  await faultAfterTransitionStep(dependencies, "canonical-pending");
   writePrivate(`${input.journal}.pending`, pending, "wx");
+  await faultAfterTransitionStep(dependencies, "pending-journal");
   try {
     await built.beforeSend?.();
   } catch (error) {
     const abortReason = sanitizeError(error);
-    const abortedPendingPath = abortedJournalPath(input.journal);
+    const abortedPendingPath = abortedJournalPath(input.journal, attemptToken);
     rewritePendingStatus(`${input.journal}.pending`, {
       verdict: "ABORTED_PRE_SEND",
       abortReason,
       sent: false,
       signed: true,
       broadcast: false,
+      attemptGeneration: expectedGeneration,
+      journalBindingSha256: String(pending.pendingBindingSha256),
       sendStatus: { verdict: "ABORTED_PRE_SEND" },
     });
     await faultAfterTransitionStep(dependencies, "aborted-pending");
@@ -2792,7 +3181,9 @@ async function runJournaledStepHeld(input: Readonly<{
     status: "attempted",
     broadcast: "attempted",
     signature: built.prepared.expectedSignature,
+    lastValidBlockHeight: built.prepared.latestBlockhash.lastValidBlockHeight,
   }, expectedGeneration, stateRoot);
+  await faultAfterTransitionStep(dependencies, "attempted-state");
   // sendPreparedOnce has MAX_IDENTICAL_SUBMISSION_ATTEMPTS=1. It is the only
   // raw-send call in this shared flow; a failure leaves the pending wire for
   // the read-only --reconcile path and is never retried here.
@@ -2842,6 +3233,7 @@ async function runJournaledStepHeld(input: Readonly<{
       finalizedSlot: finalized.slot,
       journal: input.journal,
       canonicalState: canonicalStatePath,
+      recoveryCommand: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: true }),
     }, 2));
     return 0;
   } catch (error) {
@@ -2872,12 +3264,9 @@ async function runJournaledStepHeld(input: Readonly<{
           signature,
         },
       });
-      expectedGeneration = markCanonicalLegState(input.step, input.journal, {
-        status: "attempted",
-        broadcast: "attempted",
-        signature,
-        error: sanitizeError(error),
-      }, expectedGeneration, stateRoot);
+      // The canonical attempted mark is written exactly once, immediately
+      // before sendOnce. Error details remain in the pending journal; a catch
+      // or recovery path never writes another attempted state.
     }
     throw error;
   }
@@ -2891,6 +3280,7 @@ export async function runJournaledStepForTest(
     sendPreparedOnce: typeof sendPreparedOnce;
     finalizedTransaction: typeof finalizedTransaction;
     claim?: CanonicalLegClaim;
+    breakClaim?: boolean;
     faultAfterTransitionStep?: (step: JournalTransitionStep) => void | Promise<void>;
   }>,
 ): Promise<number> {
@@ -2898,6 +3288,7 @@ export async function runJournaledStepForTest(
     stateRoot: dependencies.stateRoot,
     step: input.step,
     journal: input.journal,
+    ...(dependencies.breakClaim === undefined ? {} : { breakClaim: dependencies.breakClaim }),
   });
   try {
     return await runJournaledStepHeld(input, {

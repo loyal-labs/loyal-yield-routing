@@ -12,9 +12,9 @@ import {
   lstatSync,
   mkdirSync,
   renameSync,
+  readdirSync,
   readSync,
   unlinkSync,
-  statSync,
   writeSync,
 } from "node:fs";
 import { hostname, userInfo } from "node:os";
@@ -33,6 +33,8 @@ const VOLATILE_PENDING_FIELDS = new Set([
   "broadcastPreMark",
   "signature",
   "abortReason",
+  "attemptGeneration",
+  "journalBindingSha256",
   "pendingBindingSha256",
   "sendStatus",
 ]);
@@ -70,25 +72,52 @@ export function pendingBindingSha256(pending: unknown): string {
   return sha256Hex(canonicalJson(pendingBindingValue(pending)));
 }
 
+type FileIdentity = Readonly<{
+  dev: number;
+  ino: number;
+}>;
+
+function sameFileIdentity(left: FileIdentity, right: FileIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function assertPrivateDescriptor(path: string, fd: number, stat = fstatSync(fd)) {
+  const uid = currentUid();
+  if (!stat.isFile()) throw new Error(`HXTK journal ${path} is not a regular file`);
+  if (stat.uid !== uid) throw new Error(`HXTK journal ${path} is not owned by the current uid`);
+  if ((stat.mode & 0o077) !== 0) throw new Error(`HXTK journal ${path} is group/other-accessible`);
+  return stat;
+}
+
+function readPrivateBytesFromDescriptor(path: string, fd: number, initialStat = fstatSync(fd)): Uint8Array {
+  const stat = assertPrivateDescriptor(path, fd, initialStat);
+  const bytes = new Uint8Array(stat.size);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const read = readSync(fd, bytes, offset, bytes.length - offset, offset);
+    if (read === 0) throw new Error(`HXTK journal ${path} changed while reading`);
+    offset += read;
+  }
+  return bytes;
+}
+
 function readPrivateBytes(path: string): Uint8Array {
-  const flags = constants.O_RDONLY | constants.O_NOFOLLOW;
-  const fd = openSync(path, flags);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const stat = fstatSync(fd);
-    const uid = currentUid();
-    if (!stat.isFile()) throw new Error(`HXTK journal ${path} is not a regular file`);
-    if (stat.uid !== uid) throw new Error(`HXTK journal ${path} is not owned by the current uid`);
-    if ((stat.mode & 0o077) !== 0) throw new Error(`HXTK journal ${path} is group/other-accessible`);
-    const bytes = new Uint8Array(stat.size);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const read = readSync(fd, bytes, offset, bytes.length - offset, offset);
-      if (read === 0) throw new Error(`HXTK journal ${path} changed while reading`);
-      offset += read;
-    }
-    return bytes;
+    return readPrivateBytesFromDescriptor(path, fd);
   } finally {
     closeSync(fd);
+  }
+}
+
+function openPrivateIdentity(path: string): Readonly<{ fd: number; stat: ReturnType<typeof fstatSync> }> {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = assertPrivateDescriptor(path, fd);
+    return { fd, stat };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
   }
 }
 
@@ -260,12 +289,54 @@ export function canonicalStateGeneration(value: JsonRecord): number {
   return generation as number;
 }
 
-export function readCanonicalState(path: string): Readonly<{
-  record: JsonRecord;
-  sha256: string;
-  bytes: Uint8Array;
-}> {
-  const result = readBoundJournal(path);
+function generationPaths(path: string): Map<number, string> {
+  const directory = dirname(path);
+  const prefix = `${path}.gen-`;
+  const generations = new Map<number, string>();
+  let entries: ReturnType<typeof readdirSync>;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return generations;
+    throw error;
+  }
+  for (const entry of entries) {
+    const candidate = join(directory, entry.name);
+    if (!candidate.startsWith(prefix)) continue;
+    const suffix = candidate.slice(prefix.length);
+    if (!/^\d+$/.test(suffix)) continue;
+    const generation = Number(suffix);
+    if (!Number.isSafeInteger(generation) || generation < 0) {
+      throw new Error(`STATE_GENERATION_CONFLICT: invalid generation filename ${candidate}`);
+    }
+    const stat = lstatSync(candidate);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new Error(`STATE_GENERATION_CONFLICT: generation audit inode ${candidate} is not a regular file`);
+    }
+    generations.set(generation, candidate);
+  }
+  return generations;
+}
+
+function highestContiguousGeneration(path: string): number | null {
+  const generations = generationPaths(path);
+  if (!generations.has(0)) return null;
+  let highest = 0;
+  while (generations.has(highest + 1)) highest += 1;
+  return highest;
+}
+
+function statePointerBehind(path: string, pointerGeneration: number | null, highest: number): Error {
+  return new Error(
+    `STATE_POINTER_BEHIND: ${path} pointer generation ${pointerGeneration === null ? "absent" : pointerGeneration} `
+    + `is behind highest contiguous generation ${highest}`,
+  );
+}
+
+function assertCanonicalStateBytes(
+  path: string,
+  result: Readonly<{ record: JsonRecord; sha256: string; bytes: Uint8Array }>,
+): Readonly<{ record: JsonRecord; sha256: string; bytes: Uint8Array }> {
   const generation = canonicalStateGeneration(result.record);
   const generationPath = `${path}.gen-${generation}`;
   let generationBytes: Uint8Array;
@@ -285,6 +356,51 @@ export function readCanonicalState(path: string): Readonly<{
   return result;
 }
 
+export function readCanonicalState(
+  path: string,
+  options: Readonly<{ allowRollForward?: boolean }> = {},
+): Readonly<{
+  record: JsonRecord;
+  sha256: string;
+  bytes: Uint8Array;
+}> {
+  let result: Readonly<{ record: JsonRecord; sha256: string; bytes: Uint8Array }>;
+  try {
+    result = readBoundJournal(path);
+  } catch (error) {
+    const highest = highestContiguousGeneration(path);
+    if (highest === null) throw error;
+    if (!options.allowRollForward) throw statePointerBehind(path, null, highest);
+    writePrivateAtomic(path, readPrivateBytes(`${path}.gen-${highest}`));
+    result = readBoundJournal(path);
+  }
+
+  let pointerGeneration = canonicalStateGeneration(result.record);
+  const highest = highestContiguousGeneration(path);
+  if (highest === null || pointerGeneration > highest) {
+    throw new Error(
+      `STATE_GENERATION_CONFLICT: canonical state ${path} generation ${pointerGeneration} `
+      + `has no contiguous generation audit chain`,
+    );
+  }
+  if (pointerGeneration < highest) {
+    if (!options.allowRollForward) throw statePointerBehind(path, pointerGeneration, highest);
+    // This is the only read-side repair. It is used only by a caller that
+    // already holds the leg claim; simulation and other read-only paths leave
+    // the pointer untouched and report STATE_POINTER_BEHIND instead.
+    writePrivateAtomic(path, readPrivateBytes(`${path}.gen-${highest}`));
+    result = readBoundJournal(path);
+    pointerGeneration = canonicalStateGeneration(result.record);
+    if (pointerGeneration !== highest) {
+      throw new Error(
+        `STATE_GENERATION_CONFLICT: canonical state ${path} roll-forward published generation `
+        + `${pointerGeneration}, expected ${highest}`,
+      );
+    }
+  }
+  return assertCanonicalStateBytes(path, result);
+}
+
 /**
  * Replace one canonical state record with a compare-and-swap generation bump.
  * The caller owns the section claim and must carry the expected generation
@@ -302,7 +418,7 @@ export function writeCanonicalStateCas(
 
   let current: JsonRecord | null = null;
   try {
-    current = readCanonicalState(path).record;
+    current = readCanonicalState(path, { allowRollForward: true }).record;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
@@ -380,6 +496,7 @@ function validLegName(step: string): void {
 export type CanonicalLegClaim = Readonly<{
   path: string;
   tokenPath: string;
+  dev: number;
   inode: number;
   pid: number;
   startedAtUnixMs: number;
@@ -414,32 +531,40 @@ function processStartTimeForPid(pid: number): string {
 }
 
 function readClaim(path: string): CanonicalLegClaim {
-  const pointer = lstatSync(path);
-  if (pointer.isSymbolicLink()) throw new Error(`HXTK claim ${path} is a symbolic link`);
-  const parsed = JSON.parse(Buffer.from(readPrivateBytes(path)).toString("utf8")) as Partial<CanonicalLegClaim>;
-  if (!Number.isSafeInteger(parsed.pid) || (parsed.pid ?? 0) <= 0
-    || typeof parsed.startedAtUnixMs !== "number"
-    || typeof parsed.processStartTime !== "string"
-    || typeof parsed.journal !== "string"
-    || typeof parsed.hostname !== "string"
-    || typeof parsed.token !== "string"
-    || !/^[0-9a-f]{32}$/.test(parsed.token)) {
-    throw new Error(`HXTK claim ${path} is malformed; refusing to break it`);
+  // Open once with O_NOFOLLOW and keep this descriptor's fstat identity for
+  // every comparison below. A separate lstat/open pair permits an ABA swap.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const pointer = assertPrivateDescriptor(path, fd);
+    const parsed = JSON.parse(Buffer.from(
+      readPrivateBytesFromDescriptor(path, fd, pointer),
+    ).toString("utf8")) as Partial<CanonicalLegClaim>;
+    if (!Number.isSafeInteger(parsed.pid) || (parsed.pid ?? 0) <= 0
+      || typeof parsed.startedAtUnixMs !== "number"
+      || typeof parsed.processStartTime !== "string"
+      || typeof parsed.journal !== "string"
+      || typeof parsed.hostname !== "string"
+      || typeof parsed.token !== "string"
+      || !/^[0-9a-f]{32}$/.test(parsed.token)) {
+      throw new Error(`HXTK claim ${path} is malformed; refusing to break it`);
+    }
+    return {
+      path,
+      tokenPath: claimTokenPath(path, parsed.token),
+      dev: pointer.dev,
+      inode: pointer.ino,
+      pid: parsed.pid!,
+      startedAtUnixMs: parsed.startedAtUnixMs,
+      processStartTime: parsed.processStartTime,
+      journal: parsed.journal,
+      hostname: parsed.hostname,
+      token: parsed.token,
+    };
+  } finally {
+    closeSync(fd);
   }
-  return {
-    path,
-    tokenPath: claimTokenPath(path, parsed.token),
-    inode: pointer.ino,
-    pid: parsed.pid!,
-    startedAtUnixMs: parsed.startedAtUnixMs,
-    processStartTime: parsed.processStartTime,
-    journal: parsed.journal,
-    hostname: parsed.hostname,
-    token: parsed.token,
-  };
 }
 
-const PROCESS_CLAIM_TOKEN = randomBytes(16).toString("hex");
 const OWNED_CLAIM_TOKENS = new Set<string>();
 // macOS `ps` is the authoritative cross-process source. Sandboxed test
 // runners can deny that utility even for the current process, so retain a
@@ -459,14 +584,29 @@ function assertDeadLocalClaim(step: string, existing: CanonicalLegClaim): void {
       `cannot break ${step} claim from hostname ${existing.hostname}; expected ${localHostname}`,
     );
   }
+  if (!processIsDeadLocal(existing.pid, existing.processStartTime)) {
+    throw claimOccupied(step, existing);
+  }
+}
+
+function processIsDeadLocal(pid: number, recordedStartTime: string): boolean {
   try {
-    process.kill(existing.pid, 0);
+    process.kill(pid, 0);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
     throw error;
   }
-  if (processStartTimeForPid(existing.pid) !== existing.processStartTime) return;
-  throw claimOccupied(step, existing);
+  try {
+    // A sandbox may permit pid existence checks while denying the process
+    // table lookup. Unknown start time is conservatively live; only a
+    // positively different recorded start time permits takeover.
+    return processStartTimeForPid(pid) !== recordedStartTime;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("cannot determine process start time")) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function refuseAfterBreakRace(path: string, step: string): never {
@@ -478,53 +618,231 @@ function refuseAfterBreakRace(path: string, step: string): never {
   throw new Error(`another hxtk-reset process won breaking the ${step} claim; refusing to acquire it`);
 }
 
-type BreakLease = Readonly<{
+export type ClaimBreakTransitionStep = "breaking-marker" | "breaking-renamed" | "breaking-pointer";
+
+type ClaimBreakMarker = Readonly<{
   path: string;
-  pid: number;
-  startedAtUnixMs: number;
-  hostname: string;
-  token: string;
+  targetToken: string;
+  targetTokenPath: string;
+  targetDev: number;
+  targetIno: number;
+  targetPid: number;
+  targetProcessStartTime: string;
 }>;
 
-function breakLeasePath(claimPath: string): string {
-  return `${claimPath}.break`;
+function breakingMarkerPath(claimPath: string, token: string): string {
+  if (!/^[0-9a-f]{32}$/.test(token)) throw new Error(`invalid HXTK breaking token ${token}`);
+  return `${claimPath}.breaking.${token}`;
 }
 
-function readBreakLease(path: string): BreakLease {
-  const parsed = JSON.parse(Buffer.from(readPrivateBytes(path)).toString("utf8")) as Partial<BreakLease>;
-  if (!Number.isSafeInteger(parsed.pid) || (parsed.pid ?? 0) <= 0
-    || typeof parsed.startedAtUnixMs !== "number"
-    || typeof parsed.hostname !== "string"
-    || typeof parsed.token !== "string"
-    || !/^[0-9a-f]{32}$/.test(parsed.token)) {
-    throw new Error(`HXTK break lease ${path} is malformed; refusing to break it`);
+function readBreakingMarker(path: string): ClaimBreakMarker {
+  const parsed = JSON.parse(Buffer.from(readPrivateBytes(path)).toString("utf8")) as Partial<ClaimBreakMarker>;
+  if (typeof parsed.targetToken !== "string"
+    || !/^[0-9a-f]{32}$/.test(parsed.targetToken)
+    || typeof parsed.targetTokenPath !== "string"
+    || !Number.isSafeInteger(parsed.targetDev)
+    || !Number.isSafeInteger(parsed.targetIno)
+    || !Number.isSafeInteger(parsed.targetPid)
+    || typeof parsed.targetProcessStartTime !== "string") {
+    throw new Error(`HXTK claim break marker ${path} is malformed; refusing to continue`);
   }
   return {
     path,
-    pid: parsed.pid!,
-    startedAtUnixMs: parsed.startedAtUnixMs,
-    hostname: parsed.hostname,
-    token: parsed.token,
+    targetToken: parsed.targetToken,
+    targetTokenPath: parsed.targetTokenPath,
+    targetDev: parsed.targetDev!,
+    targetIno: parsed.targetIno!,
+    targetPid: parsed.targetPid!,
+    targetProcessStartTime: parsed.targetProcessStartTime,
   };
 }
 
-function newBreakLease(path: string): BreakLease {
+function electBreakingMarker(existing: CanonicalLegClaim): ClaimBreakMarker {
+  const path = breakingMarkerPath(existing.path, existing.token);
+  const marker: ClaimBreakMarker = {
+    path,
+    targetToken: existing.token,
+    targetTokenPath: existing.tokenPath,
+    targetDev: existing.dev,
+    targetIno: existing.inode,
+    targetPid: existing.pid,
+    targetProcessStartTime: existing.processStartTime,
+  };
+  try {
+    writeExclusivePrivate(path, Buffer.from(`${canonicalJson({
+      targetToken: marker.targetToken,
+      targetTokenPath: marker.targetTokenPath,
+      targetDev: marker.targetDev,
+      targetIno: marker.targetIno,
+      targetPid: marker.targetPid,
+      targetProcessStartTime: marker.targetProcessStartTime,
+    })}\n`));
+    return marker;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const occupied = readBreakingMarker(path);
+    if (occupied.targetToken === marker.targetToken
+      && occupied.targetDev === marker.targetDev
+      && occupied.targetIno === marker.targetIno) return occupied;
+    throw new Error(`HXTK ${existing.path} has a foreign claim-break marker`, { cause: error });
+  }
+}
+
+function unlinkPointerIfIdentity(path: string, expected: FileIdentity): boolean {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = assertPrivateDescriptor(path, fd);
+    if (!sameFileIdentity({ dev: stat.dev, ino: stat.ino }, expected)) return false;
+    unlinkSync(path);
+    syncDirectory(dirname(path));
+    return true;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function finishBreakingMarker(
+  claimPath: string,
+  marker: ClaimBreakMarker,
+  afterPointerUnlink?: () => void,
+): boolean {
+  let pointer: CanonicalLegClaim;
+  try {
+    pointer = readClaim(claimPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      unlinkPrivateTemporary(marker.path);
+      return false;
+    }
+    throw error;
+  }
+  if (pointer.token !== marker.targetToken
+    || pointer.dev !== marker.targetDev
+    || pointer.inode !== marker.targetIno) {
+    // A replacement claim owns the pointer. The marker is no longer useful,
+    // but its mismatch must never remove the replacement inode.
+    unlinkPrivateTemporary(marker.path);
+    return false;
+  }
+  if (!unlinkPointerIfIdentity(claimPath, { dev: marker.targetDev, ino: marker.targetIno })) {
+    unlinkPrivateTemporary(marker.path);
+    return false;
+  }
+  afterPointerUnlink?.();
+  unlinkPrivateTemporary(marker.path);
+  return true;
+}
+
+function resumeBreakingMarkers(claimPath: string): boolean {
+  const directory = dirname(claimPath);
+  const prefix = `${claimPath}.breaking.`;
+  let entries: ReturnType<typeof readdirSync>;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  let finished = false;
+  for (const entry of entries) {
+    const candidate = join(directory, entry.name);
+    if (!candidate.startsWith(prefix) || !entry.isFile()) continue;
+    const marker = readBreakingMarker(candidate);
+    if (finishBreakingMarker(claimPath, marker)) finished = true;
+  }
+  return finished;
+}
+
+type BreakLease = Readonly<{
+  path: string;
+  tokenPath: string;
+  dev: number;
+  ino: number;
+  pid: number;
+  startedAtUnixMs: number;
+  hostname: string;
+  processStartTime: string;
+  token: string;
+}>;
+
+const OWNED_BREAK_LEASE_TOKENS = new Set<string>();
+
+function breakLeasePath(claimPath: string): string {
+  return `${claimPath}.break-lease`;
+}
+
+function breakLeaseTokenPath(path: string, token: string): string {
+  if (!/^[0-9a-f]{32}$/.test(token)) throw new Error(`invalid HXTK break lease token ${token}`);
+  return `${path}.${token}`;
+}
+
+function readBreakLease(path: string): BreakLease {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const pointer = assertPrivateDescriptor(path, fd);
+    const parsed = JSON.parse(Buffer.from(
+      readPrivateBytesFromDescriptor(path, fd, pointer),
+    ).toString("utf8")) as Partial<BreakLease>;
+    if (!Number.isSafeInteger(parsed.pid) || (parsed.pid ?? 0) <= 0
+      || typeof parsed.startedAtUnixMs !== "number"
+      || typeof parsed.hostname !== "string"
+      || typeof parsed.processStartTime !== "string"
+      || typeof parsed.token !== "string"
+      || !/^[0-9a-f]{32}$/.test(parsed.token)) {
+      throw new Error(`HXTK break lease ${path} is malformed; refusing to break it`);
+    }
+    return {
+      path,
+      tokenPath: breakLeaseTokenPath(path, parsed.token),
+      dev: pointer.dev,
+      ino: pointer.ino,
+      pid: parsed.pid!,
+      startedAtUnixMs: parsed.startedAtUnixMs,
+      hostname: parsed.hostname,
+      processStartTime: parsed.processStartTime,
+      token: parsed.token,
+    };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function newBreakLease(path: string): Omit<BreakLease, "dev" | "ino"> {
+  const token = randomBytes(16).toString("hex");
   return {
     path,
+    tokenPath: breakLeaseTokenPath(path, token),
     pid: process.pid,
     startedAtUnixMs: Date.now(),
     hostname: hostname(),
-    token: PROCESS_CLAIM_TOKEN,
+    processStartTime: processStartTimeForPid(process.pid),
+    token,
   };
 }
 
-function createBreakLease(lease: BreakLease): void {
-  writeExclusivePrivate(lease.path, Buffer.from(`${canonicalJson({
+function createBreakLease(lease: Omit<BreakLease, "dev" | "ino">): BreakLease {
+  writeExclusivePrivate(lease.tokenPath, Buffer.from(`${canonicalJson({
     pid: lease.pid,
     startedAtUnixMs: lease.startedAtUnixMs,
     hostname: lease.hostname,
+    processStartTime: lease.processStartTime,
     token: lease.token,
   })}\n`));
+  try {
+    linkSync(lease.tokenPath, lease.path);
+    syncDirectory(dirname(lease.path));
+  } catch (error) {
+    unlinkPrivateTemporary(lease.tokenPath);
+    throw error;
+  }
+  const identity = openPrivateIdentity(lease.tokenPath);
+  try {
+    const created = { ...lease, dev: Number(identity.stat.dev), ino: Number(identity.stat.ino) };
+    OWNED_BREAK_LEASE_TOKENS.add(lease.token);
+    return created;
+  } finally {
+    closeSync(identity.fd);
+  }
 }
 
 function finishBreakLease(lease: BreakLease): void {
@@ -535,21 +853,20 @@ function finishBreakLease(lease: BreakLease): void {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  if (existing.token !== PROCESS_CLAIM_TOKEN || lease.token !== PROCESS_CLAIM_TOKEN) return;
-  try {
-    // Keep break cleanup rename-only: no break path is unlinked or reused.
-    renamePrivateFile(lease.path, `${lease.path}.done-${Date.now()}-${process.pid}`);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  if (existing.token !== lease.token
+    || !sameFileIdentity(existing, lease)
+    || !OWNED_BREAK_LEASE_TOKENS.has(lease.token)) return;
+  if (unlinkPointerIfIdentity(lease.path, lease)) {
+    unlinkPrivateTemporary(lease.tokenPath);
   }
+  OWNED_BREAK_LEASE_TOKENS.delete(lease.token);
 }
 
 function acquireBreakLease(claimPath: string, step: string): BreakLease {
   const path = breakLeasePath(claimPath);
   const lease = newBreakLease(path);
   try {
-    createBreakLease(lease);
-    return lease;
+    return createBreakLease(lease);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
@@ -568,31 +885,42 @@ function acquireBreakLease(claimPath: string, step: string): BreakLease {
       `cannot take ${step} break lease from hostname ${existing.hostname}; expected ${hostname()}`,
     );
   }
-  try {
-    process.kill(existing.pid, 0);
+  if (!processIsDeadLocal(existing.pid, existing.processStartTime)) {
     return refuseAfterBreakRace(claimPath, step);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
 
-  const stalePath = `${path}.stale-${Date.now()}-${process.pid}`;
+  const stalePath = `${existing.tokenPath}.stale-${Date.now()}-${process.pid}`;
   try {
-    renamePrivateFile(path, stalePath);
+    renamePrivateFile(existing.tokenPath, stalePath);
   } catch (renameError) {
     const code = (renameError as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "EEXIST") return refuseAfterBreakRace(claimPath, step);
-    throw renameError;
+    if (code !== "ENOENT" && code !== "EEXIST") throw renameError;
   }
+  let pointer: FileIdentity;
   try {
-    createBreakLease(lease);
-    return lease;
+    const opened = openPrivateIdentity(path);
+    try {
+      pointer = { dev: Number(opened.stat.dev), ino: Number(opened.stat.ino) };
+    } finally {
+      closeSync(opened.fd);
+    }
+  } catch (pointerError) {
+    if ((pointerError as NodeJS.ErrnoException).code === "ENOENT") {
+      return refuseAfterBreakRace(claimPath, step);
+    }
+    throw pointerError;
+  }
+  if (!sameFileIdentity(pointer, existing)) return refuseAfterBreakRace(claimPath, step);
+  if (!unlinkPointerIfIdentity(path, existing)) return refuseAfterBreakRace(claimPath, step);
+  try {
+    return createBreakLease(lease);
   } catch (createError) {
     if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError;
     return refuseAfterBreakRace(claimPath, step);
   }
 }
 
-function newClaim(path: string, journal: string): Omit<CanonicalLegClaim, "inode"> {
+function newClaim(path: string, journal: string): Omit<CanonicalLegClaim, "dev" | "inode"> {
   const token = randomBytes(16).toString("hex");
   return {
     path,
@@ -606,7 +934,7 @@ function newClaim(path: string, journal: string): Omit<CanonicalLegClaim, "inode
   };
 }
 
-function createClaim(claim: Omit<CanonicalLegClaim, "inode">): CanonicalLegClaim {
+function createClaim(claim: Omit<CanonicalLegClaim, "dev" | "inode">): CanonicalLegClaim {
   writeExclusivePrivate(claim.tokenPath, Buffer.from(`${canonicalJson({
     pid: claim.pid,
     startedAtUnixMs: claim.startedAtUnixMs,
@@ -627,8 +955,9 @@ function createClaim(claim: Omit<CanonicalLegClaim, "inode">): CanonicalLegClaim
     }
     throw error;
   }
-  const inode = statSync(claim.tokenPath).ino;
-  const owned = { ...claim, inode };
+  const identity = openPrivateIdentity(claim.tokenPath);
+  const owned = { ...claim, dev: Number(identity.stat.dev), inode: Number(identity.stat.ino) };
+  closeSync(identity.fd);
   OWNED_CLAIM_TOKENS.add(claim.token);
   return owned;
 }
@@ -638,11 +967,13 @@ export function acquireCanonicalLegClaim(input: Readonly<{
   step: string;
   journal: string;
   breakClaim?: boolean;
+  faultAfterBreakStep?: (step: ClaimBreakTransitionStep) => void;
 }>): CanonicalLegClaim {
   const path = claimPath(input.stateRoot, input.step);
   const claim = newClaim(path, input.journal);
   const breakLease = input.breakClaim ? acquireBreakLease(path, input.step) : null;
   try {
+    resumeBreakingMarkers(path);
     try {
       return createClaim(claim);
     } catch (error) {
@@ -657,10 +988,21 @@ export function acquireCanonicalLegClaim(input: Readonly<{
         throw readError;
       }
       if (!input.breakClaim) {
+        // A marker proves that a previous breaker already proved this local
+        // claim dead. If an older interrupted break left only the pointer's
+        // hard link, a dead recorded process is still required before cleanup.
+        if (!existsSync(existing.tokenPath) && processIsDeadLocal(existing.pid, existing.processStartTime)) {
+          if (!unlinkPointerIfIdentity(path, { dev: existing.dev, ino: existing.inode })) {
+            return refuseAfterBreakRace(path, input.step);
+          }
+          return createClaim(claim);
+        }
         throw claimOccupied(input.step, existing);
       }
 
       assertDeadLocalClaim(input.step, existing);
+      const marker = electBreakingMarker(existing);
+      input.faultAfterBreakStep?.("breaking-marker");
       const brokenPath = `${existing.tokenPath}.broken-${Date.now()}-${process.pid}`;
       try {
         // Break the exact dead token inode inspected above. The fixed pointer
@@ -671,28 +1013,16 @@ export function acquireCanonicalLegClaim(input: Readonly<{
       } catch (renameError) {
         const code = (renameError as NodeJS.ErrnoException).code;
         if (code === "ENOENT" || code === "EEXIST") {
+          if (resumeBreakingMarkers(path)) return createClaim(claim);
           return refuseAfterBreakRace(path, input.step);
         }
         throw renameError;
       }
-      let pointer: ReturnType<typeof statSync>;
-      try {
-        pointer = statSync(path);
-      } catch (statError) {
-        if ((statError as NodeJS.ErrnoException).code === "ENOENT") {
-          return refuseAfterBreakRace(path, input.step);
-        }
-        throw statError;
-      }
-      if (pointer.ino !== existing.inode) return refuseAfterBreakRace(path, input.step);
-      try {
-        unlinkSync(path);
-        syncDirectory(dirname(path));
-      } catch (unlinkError) {
-        const code = (unlinkError as NodeJS.ErrnoException).code;
-        if (code === "ENOENT" || code === "EEXIST") return refuseAfterBreakRace(path, input.step);
-        throw unlinkError;
-      }
+      input.faultAfterBreakStep?.("breaking-renamed");
+      const finished = finishBreakingMarker(path, marker, () => {
+        input.faultAfterBreakStep?.("breaking-pointer");
+      });
+      if (!finished) return refuseAfterBreakRace(path, input.step);
       try {
         return createClaim(claim);
       } catch (createError) {
@@ -719,9 +1049,14 @@ export function releaseCanonicalLegClaim(claim: CanonicalLegClaim): void {
     console.warn("claim token is not owned by this process; not released");
     return;
   }
-  let tokenStat: ReturnType<typeof statSync>;
+  let tokenIdentity: FileIdentity;
   try {
-    tokenStat = statSync(claim.tokenPath);
+    const opened = openPrivateIdentity(claim.tokenPath);
+    try {
+      tokenIdentity = { dev: Number(opened.stat.dev), ino: Number(opened.stat.ino) };
+    } finally {
+      closeSync(opened.fd);
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       OWNED_CLAIM_TOKENS.delete(claim.token);
@@ -729,9 +1064,14 @@ export function releaseCanonicalLegClaim(claim: CanonicalLegClaim): void {
     }
     throw error;
   }
-  let pointerStat: ReturnType<typeof statSync>;
+  let pointerIdentity: FileIdentity;
   try {
-    pointerStat = statSync(claim.path);
+    const opened = openPrivateIdentity(claim.path);
+    try {
+      pointerIdentity = { dev: Number(opened.stat.dev), ino: Number(opened.stat.ino) };
+    } finally {
+      closeSync(opened.fd);
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       unlinkSync(claim.tokenPath);
@@ -741,7 +1081,7 @@ export function releaseCanonicalLegClaim(claim: CanonicalLegClaim): void {
     }
     throw error;
   }
-  if (pointerStat.ino !== tokenStat.ino) {
+  if (!sameFileIdentity(pointerIdentity, tokenIdentity)) {
     console.warn("claim pointer inode changed; not released");
     return;
   }
@@ -770,6 +1110,11 @@ type CanonicalLegBase = Readonly<{
   stateRoot: string;
   repeatable: boolean;
   allowRepeat: boolean;
+  attemptToken?: string;
+  signedWireBase64?: string;
+  messageBase64?: string;
+  lastValidBlockHeight?: number;
+  pendingRecord?: JsonRecord;
   journalExists?: boolean;
   nowUnixMs?: number;
 }>;
@@ -837,11 +1182,21 @@ export function beginCanonicalLegRecord(input: CanonicalLegBase & Readonly<{
     stateRoot,
     repeatable,
     allowRepeat,
+    attemptToken: providedAttemptToken,
+    signedWireBase64,
+    messageBase64,
+    lastValidBlockHeight,
+    pendingRecord,
     journalExists,
     existing,
     nowUnixMs = Date.now(),
   } = input;
   assertAllowRepeatFlag(step, repeatable, allowRepeat);
+
+  const attemptToken = providedAttemptToken ?? randomBytes(16).toString("hex");
+  if (!/^[0-9a-f]{32}$/.test(attemptToken)) {
+    throw new Error(`${step} canonical state has an invalid attemptToken`);
+  }
 
   if (existing !== null
     && existing.status !== "finalized"
@@ -875,6 +1230,11 @@ export function beginCanonicalLegRecord(input: CanonicalLegBase & Readonly<{
     messageSha256,
     wireSha256,
     pendingBindingSha256: binding,
+    attemptToken,
+    ...(signedWireBase64 === undefined ? {} : { signedWireBase64 }),
+    ...(messageBase64 === undefined ? {} : { messageBase64 }),
+    ...(lastValidBlockHeight === undefined ? {} : { lastValidBlockHeight }),
+    ...(pendingRecord === undefined ? {} : { pendingRecord }),
     checkoutRoot,
     stateRoot,
     attempt: Number(existing?.attempt ?? 0) + 1,
@@ -895,8 +1255,12 @@ export function assertPendingJournalBinding(input: Readonly<{
     ? pending.transaction as JsonRecord
     : null;
   const binding = pendingBindingSha256(pending);
+  const attemptToken = pending.attemptToken;
+  const attemptMatches = typeof attemptToken !== "string"
+    || String(canonicalState.attemptToken ?? "") === attemptToken;
   const matches = transaction !== null
     && String(pending.pendingBindingSha256 ?? "") === binding
+    && attemptMatches
     && String(canonicalState.pendingBindingSha256 ?? "") === binding
     && String(canonicalState.expectedSignature ?? "") === expectedSignature
     && String(canonicalState.messageSha256 ?? "") === messageSha256

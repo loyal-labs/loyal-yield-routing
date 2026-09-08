@@ -365,6 +365,78 @@ describe("HXtk canonical fence", () => {
     expect(JSON.parse(readFileSync(claim.path, "utf8")).journal).toBe("/tmp/foreign.json");
   });
 
+  test("claim breaking resumes after token rename and never removes a live replacement", () => {
+    const plantDeadClaim = (stateRoot: string, journal: string) => {
+      const path = join(stateRoot, "repair.claim");
+      const token = "d".repeat(32);
+      const tokenPath = path + "." + token;
+      writeFileSync(tokenPath, JSON.stringify({
+        pid: 99999999,
+        startedAtUnixMs: 1,
+        processStartTime: "dead-process",
+        journal,
+        hostname: hostname(),
+        token,
+      }) + "\n", { mode: 0o600 });
+      linkSync(tokenPath, path);
+      return { path, tokenPath };
+    };
+
+    for (const breakClaim of [false, true]) {
+      const home = tempRoot();
+      const stateRoot = resolveCanonicalStateRoot({ vault: "HXtk", homeDir: home, uid, create: true });
+      const stale = plantDeadClaim(stateRoot, "/tmp/dead.json");
+      expect(() => acquireCanonicalLegClaim({
+        stateRoot,
+        step: "repair",
+        journal: "/tmp/new.json",
+        breakClaim: true,
+        faultAfterBreakStep: (step) => {
+          if (step === "breaking-renamed") throw new Error("injected break crash");
+        },
+      })).toThrow("injected break crash");
+      expect(existsSync(stale.path + ".breaking." + "d".repeat(32))).toBe(true);
+      expect(existsSync(stale.tokenPath)).toBe(false);
+
+      const resumed = acquireCanonicalLegClaim({
+        stateRoot,
+        step: "repair",
+        journal: "/tmp/resumed.json",
+        breakClaim,
+      });
+      expect(resumed.journal).toBe("/tmp/resumed.json");
+      releaseCanonicalLegClaim(resumed);
+      expect(existsSync(join(stateRoot, "repair.claim"))).toBe(false);
+      expect(existsSync(join(stateRoot, "repair.claim.break-lease"))).toBe(false);
+    }
+
+    const home = tempRoot();
+    const stateRoot = resolveCanonicalStateRoot({ vault: "HXtk", homeDir: home, uid, create: true });
+    const stale = plantDeadClaim(stateRoot, "/tmp/dead.json");
+    expect(() => acquireCanonicalLegClaim({
+      stateRoot,
+      step: "repair",
+      journal: "/tmp/replacement.json",
+      breakClaim: true,
+      faultAfterBreakStep: (step) => {
+        if (step !== "breaking-marker") return;
+        unlinkSync(stale.path);
+        const replacementToken = "e".repeat(32);
+        const replacementPath = stale.path + "." + replacementToken;
+        writeFileSync(replacementPath, JSON.stringify({
+          pid: process.pid,
+          startedAtUnixMs: Date.now(),
+          processStartTime: "live-replacement",
+          journal: "/tmp/live.json",
+          hostname: hostname(),
+          token: replacementToken,
+        }) + "\n", { mode: 0o600 });
+        linkSync(replacementPath, stale.path);
+      },
+    })).toThrow("another hxtk-reset process holds the repair claim");
+    expect(JSON.parse(readFileSync(stale.path, "utf8"))).toMatchObject({ journal: "/tmp/live.json" });
+  });
+
   test("canonical state CAS rejects a stale generation", () => {
     const root = tempRoot();
     const path = join(root, "repair.state");
@@ -386,6 +458,34 @@ describe("HXtk canonical fence", () => {
     writeFileSync(tampered, `${JSON.stringify({ ...second, status: "pending" })}\n`, { mode: 0o600 });
     renameSync(tampered, path);
     expect(() => readCanonicalState(path)).toThrow("STATE_GENERATION_CONFLICT");
+  });
+
+  test("read-only readers report a stranded generation and claim-held readers roll it forward", () => {
+    const root = tempRoot();
+    const path = join(root, "repair.state");
+    const first = writeCanonicalStateCas(path, {
+      schema: "loyal-voltr-hxtk-reset-state/v2",
+      step: "repair",
+      status: "pending",
+    }, null);
+    const stranded = { ...first, status: "attempted", generation: 1 };
+    const temporary = path + ".stranded";
+    writeFileSync(temporary, canonicalJson(stranded) + "\n", { mode: 0o600 });
+    linkSync(temporary, path + ".gen-1");
+    unlinkSync(temporary);
+
+    expect(() => readCanonicalState(path)).toThrow(
+      "STATE_POINTER_BEHIND: " + path + " pointer generation 0 is behind highest contiguous generation 1",
+    );
+    expect(JSON.parse(readFileSync(path, "utf8")).generation).toBe(0);
+    const duplicate = path + ".duplicate";
+    writeFileSync(duplicate, canonicalJson(stranded) + "\n", { mode: 0o600 });
+    expect(() => linkSync(duplicate, path + ".gen-1")).toThrow();
+    unlinkSync(duplicate);
+
+    const rolledForward = readCanonicalState(path, { allowRollForward: true });
+    expect(rolledForward.record).toEqual(stranded);
+    expect(readFileSync(path, "utf8")).toBe(readFileSync(path + ".gen-1", "utf8"));
   });
 
   test("finalized journal hash mismatch refuses the later-leg load", () => {

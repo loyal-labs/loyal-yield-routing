@@ -4,6 +4,7 @@ import { Keypair, TransactionMessage, VersionedTransaction } from "@solana/web3.
 import bs58 from "bs58";
 
 import { runJournaledStepForTest } from "./hxtk-reset.js";
+import { acquireCanonicalLegClaim, releaseCanonicalLegClaim } from "./hxtk-fence.js";
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -37,19 +38,12 @@ async function waitForPeers(prefix: string): Promise<void> {
   throw new Error(`race child ${childId} timed out waiting for ${prefix} peers`);
 }
 
-async function waitForOtherChildDone(): Promise<void> {
-  const otherId = childId === "0" ? "1" : "0";
-  const otherPath = join(raceDirectory, `done-${otherId}`);
-  for (let attempt = 0; attempt < 2_000; attempt += 1) {
-    if (existsSync(otherPath)) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`race child ${childId} timed out waiting for done-${otherId}`);
-}
-
 async function main(): Promise<void> {
   await waitForStart();
-  await new Promise((resolve) => setTimeout(resolve, 25));
+  // Both processes reach the real hard-link claim election together. The
+  // loser never reaches build or raw submission.
+  writeFileSync(join(raceDirectory, `claim-ready-${childId}`), "ready\n", { mode: 0o600 });
+  await waitForPeers("claim-ready");
   const signer = Keypair.generate();
   const message = new TransactionMessage({
     payerKey: signer.publicKey,
@@ -84,17 +78,6 @@ async function main(): Promise<void> {
     },
     meta: { err: null },
   } as never;
-  const fakeClaim = {
-    path: join(stateRoot, "race-test.claim"),
-    tokenPath: join(stateRoot, "race-test.claim." + childId),
-    inode: 1,
-    pid: process.pid,
-    startedAtUnixMs: Date.now(),
-    processStartTime: "test-" + process.pid,
-    journal,
-    hostname: "race-test",
-    token: (childId + "00000000000000000000000000000000").slice(0, 32),
-  } as never;
   const input = {
     mode: "execute" as const,
     step: "race-test",
@@ -102,10 +85,6 @@ async function main(): Promise<void> {
     journal,
     rpcUrl: "fake://rpc",
     build: async () => {
-      // The barrier is inside build so both children have already read the
-      // same canonical generation before either attempts its first election.
-      writeFileSync(join(raceDirectory, `build-ready-${childId}`), "ready\n", { mode: 0o600 });
-      await waitForPeers("build-ready");
       return {
         prepared,
         plan: { transaction: { kind: "race-test", childId } },
@@ -113,17 +92,34 @@ async function main(): Promise<void> {
     },
     reconcile: async () => ({ reconciled: true }),
   };
-  const result = await runJournaledStepForTest(input, {
-    stateRoot,
-    claim: fakeClaim,
-    sendPreparedOnce: (async () => {
-      await waitForOtherChildDone();
-      appendFileSync(sendCounter, String(process.pid) + "\n");
-      return { signature, err: null, confirmationSlot: 2 };
-    }) as never,
-    finalizedTransaction: (async () => finalized) as never,
-  });
-  console.log("RACE_RESULT " + JSON.stringify({ childId, ok: true, result }));
+  let claim;
+  try {
+    claim = acquireCanonicalLegClaim({
+      stateRoot,
+      step: "race-test",
+      journal,
+      ...(process.env.HXTK_RACE_BREAK_CLAIM === "1" ? { breakClaim: true } : {}),
+    });
+    writeFileSync(join(raceDirectory, `claim-result-${childId}`), "ok\n", { mode: 0o600 });
+  } catch (error) {
+    writeFileSync(join(raceDirectory, `claim-result-${childId}`), "error\n", { mode: 0o600 });
+    throw error;
+  }
+  await waitForPeers("claim-result");
+  try {
+    const result = await runJournaledStepForTest(input, {
+      stateRoot,
+      claim,
+      sendPreparedOnce: (async () => {
+        appendFileSync(sendCounter, String(process.pid) + "\n");
+        return { signature, err: null, confirmationSlot: 2 };
+      }) as never,
+      finalizedTransaction: (async () => finalized) as never,
+    });
+    console.log("RACE_RESULT " + JSON.stringify({ childId, ok: true, result }));
+  } finally {
+    releaseCanonicalLegClaim(claim);
+  }
 }
 
 try {

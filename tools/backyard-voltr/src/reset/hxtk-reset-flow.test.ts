@@ -1,12 +1,16 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { Keypair, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 
 import {
+  buildHxtkRecoveryCommand,
+  HXTK_RECOVERY_LEGS,
   JournalTransitionFault,
   buildRepairRecoveryCommands,
+  resumeInterruptedTransition,
   runJournaledStepForTest,
   type JournalTransitionStep,
 } from "./hxtk-reset.js";
@@ -80,17 +84,57 @@ function fixture() {
 function deps(fx: ReturnType<typeof fixture>, options: Readonly<{
   send?: () => Promise<unknown>;
   finalize?: () => Promise<unknown>;
+  currentBlockHeight?: () => Promise<number>;
   faultAfterTransitionStep?: (step: JournalTransitionStep) => void | Promise<void>;
 }> = {}) {
   return {
     stateRoot: fx.stateRoot,
     sendPreparedOnce: (options.send ?? (async () => ({ signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 }))) as never,
     finalizedTransaction: (options.finalize ?? (async () => fx.finalized)) as never,
+    currentBlockHeight: options.currentBlockHeight,
     faultAfterTransitionStep: options.faultAfterTransitionStep,
   };
 }
 
 describe("HXtk journaled flow", () => {
+  test("every emitted recovery command round-trips through the real CLI parser", () => {
+    for (const step of HXTK_RECOVERY_LEGS) {
+      for (const mode of ["simulate", "execute", "reconcile"] as const) {
+        const command = buildHxtkRecoveryCommand({
+          step,
+          mode,
+          journal: "/tmp/" + step + ".json",
+          allowRepeat: ["config", "harvest", "restore-degradation"].includes(step),
+          breakClaim: true,
+        });
+        const parsed = parseHxtkCli(command.split(/\s+/));
+        expect(parsed.step).toBe(step);
+        expect(parsed.has("--" + mode)).toBe(true);
+        expect(parsed.has("--break-claim")).toBe(true);
+        expect(parsed.value("--journal")).toBe("/tmp/" + step + ".json");
+        if (["config", "harvest", "restore-degradation"].includes(step)) {
+          expect(parsed.has("--allow-repeat")).toBe(true);
+        } else {
+          expect(() => buildHxtkRecoveryCommand({
+            step,
+            mode,
+            allowRepeat: true,
+          })).toThrow("--allow-repeat is not accepted");
+        }
+      }
+      const alreadyFinalized = buildHxtkRecoveryCommand({
+        step,
+        mode: "reconcile",
+        finalized: true,
+      });
+      const verifyCommand = alreadyFinalized.split("verify with ")[1]!;
+      expect(parseHxtkCli(verifyCommand.split(/\s+/))).toMatchObject({
+        step: "verify",
+        mode: null,
+      });
+    }
+  });
+
   test("repair recovery commands carry the complete parser-visible provenance", () => {
     const base = {
       repairJournal: "/tmp/hxtk-repair.json",
@@ -149,6 +193,146 @@ describe("HXtk journaled flow", () => {
     expect(await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), finalized)).toBe(0);
     expect(sends).toBe(1);
     expect(existsSync(fx.journal)).toBe(true);
+  });
+
+  test("canonical pending and pending-journal crashes never become attempted before a send", async () => {
+    for (const transitionStep of ["canonical-pending", "pending-journal"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        faultAfterTransitionStep: (step) => {
+          if (step === transitionStep) throw new JournalTransitionFault(step);
+        },
+      }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: " + transitionStep);
+      const crashedState = JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")) as Record<string, unknown>;
+      expect(crashedState.status).toBe("pending");
+      expect(crashedState.status).not.toBe("attempted");
+
+      expect(await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        },
+      }))).toBe(0);
+      if (transitionStep === "canonical-pending") {
+        expect(sends).toBe(0);
+        expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status)
+          .toBe("aborted-pre-send");
+        await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+          send: async () => {
+            sends += 1;
+            return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+          },
+        }));
+      }
+      expect(sends).toBe(1);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+    }
+  });
+
+  test("a crash after the attempted pre-mark reconciles without a second send", async () => {
+    const fx = fixture();
+    let sends = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      faultAfterTransitionStep: (step) => {
+        if (step === "attempted-state") throw new JournalTransitionFault(step);
+      },
+    }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: attempted-state");
+    expect(sends).toBe(0);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
+
+    await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("reconcile must not send");
+      },
+    }));
+    expect(sends).toBe(0);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
+  test("foreign abort artifacts cannot shadow an attempted retry but reconcile reports them as stale", async () => {
+    const fx = fixture();
+    let sends = 0;
+    const aborting = {
+      ...fx.input(fx.journal, "execute"),
+      build: async () => ({
+        prepared: fx.prepared,
+        plan: { transaction: { kind: "test" } },
+        beforeSend: async () => { throw new Error("prestate changed"); },
+      }),
+    };
+    await expect(runJournaledStepForTest(aborting, deps(fx))).rejects.toThrow("prestate changed");
+    const oldAbort = readdirSync(fx.root)
+      .find((entry) => entry.startsWith("flow.json.aborted-") && entry.endsWith(".json"));
+    expect(oldAbort).toBeDefined();
+
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+      faultAfterTransitionStep: (step) => {
+        if (step === "final-journal") throw new JournalTransitionFault(step);
+      },
+    }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: final-journal");
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx)))
+      .rejects.toThrow("JOURNAL_HAS_FOREIGN_ABORT_ARTIFACT");
+
+    const recovered = resumeInterruptedTransition({
+      step: "flow-test",
+      journal: fx.journal,
+      stateRoot: fx.stateRoot,
+      mode: "reconcile",
+    });
+    expect(recovered.staleAbortArtifacts).toContain(join(fx.root, oldAbort!));
+    await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("reconcile must not send");
+      },
+    }));
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
+  test("attempted reconciliation re-arms only after lastValidBlockHeight is passed", async () => {
+    const fx = fixture();
+    let sends = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("submitted but response was lost");
+      },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("response was lost");
+    expect(sends).toBe(1);
+
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => { throw new Error("not readable"); },
+      currentBlockHeight: async () => 1,
+    }))).rejects.toThrow("not readable");
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
+
+    await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => { throw new Error("not readable"); },
+      currentBlockHeight: async () => 2,
+    }));
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "aborted-pre-send",
+      broadcast: "attempted",
+    });
+
+    await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+    }));
+    expect(sends).toBe(2);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
   });
 
   test("pre-send abort re-arms and concurrent executes produce one send", async () => {
@@ -285,53 +469,73 @@ describe("HXtk journaled flow", () => {
   });
 
   test("two Bun processes racing one leg elect one generation and send once", async () => {
-    const root = mkdtempSync(join("/tmp", "hxtk-race-"));
-    roots.push(root);
-    const stateRoot = resolveCanonicalStateRoot({ vault: "HXtk", homeDir: root, create: true });
-    const startFile = join(root, "start");
-    const sendCounter = join(root, "sends");
-    writeFileSync(sendCounter, "", { mode: 0o600 });
-    const childPath = join(import.meta.dir, "hxtk-reset-race-child.ts");
-    const children = [0, 1].map((childId) => Bun.spawn([
-      process.execPath,
-      "run",
-      childPath,
-    ], {
-      cwd: join(import.meta.dir, "../.."),
-      env: {
-        PATH: process.env.PATH ?? "",
-        HXTK_FAKE_RPC: "1",
-        HXTK_RACE_STATE_ROOT: stateRoot,
-        HXTK_RACE_START_FILE: startFile,
-        HXTK_RACE_SEND_COUNTER: sendCounter,
-        HXTK_RACE_DIRECTORY: root,
-        HXTK_RACE_CHILD_ID: String(childId),
-        HXTK_RACE_JOURNAL: join(root, "race-" + childId + ".json"),
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    }));
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    writeFileSync(startFile, "go\n", { mode: 0o600 });
-    const results = await Promise.all(children.map(async (child) => {
-      const stdout = await new Response(child.stdout).text();
-      const stderr = await new Response(child.stderr).text();
-      const exitCode = await child.exited;
-      const line = stdout.split(/\r?\n/).filter((entry) => entry.startsWith("RACE_RESULT ")).pop();
-      return {
-        exitCode,
-        stdout,
-        stderr,
-        result: line ? JSON.parse(line.slice("RACE_RESULT ".length)) as {
-          ok: boolean;
-          error?: string;
-        } : null,
-      };
-    }));
-    const sentPids = readFileSync(sendCounter, "utf8").trim().split(/\r?\n/).filter(Boolean);
-    expect(sentPids).toHaveLength(1);
-    expect(results.filter((result) => result.result?.ok)).toHaveLength(1);
-    expect(results.filter((result) => result.result?.error?.includes("STATE_GENERATION_CONFLICT"))).toHaveLength(1);
-    expect(results.every((result) => result.exitCode === 0)).toBe(true);
+    for (const breakClaim of [false, true]) {
+      const root = mkdtempSync(join("/tmp", "hxtk-race-"));
+      roots.push(root);
+      const stateRoot = resolveCanonicalStateRoot({ vault: "HXtk", homeDir: root, create: true });
+      const startFile = join(root, "start");
+      const sendCounter = join(root, "sends");
+      const raceJournal = join(root, "race.json");
+      writeFileSync(sendCounter, "", { mode: 0o600 });
+      if (breakClaim) {
+        const claimPath = join(stateRoot, "race-test.claim");
+        const token = "a".repeat(32);
+        const tokenPath = claimPath + "." + token;
+        writeFileSync(tokenPath, JSON.stringify({
+          pid: 99999999,
+          startedAtUnixMs: 1,
+          processStartTime: "dead-process",
+          journal: "/tmp/dead.json",
+          hostname: hostname(),
+          token,
+        }) + "\n", { mode: 0o600 });
+        linkSync(tokenPath, claimPath);
+      }
+      const childPath = join(import.meta.dir, "hxtk-reset-race-child.ts");
+      const children = [0, 1].map((childId) => Bun.spawn([
+        process.execPath,
+        "run",
+        childPath,
+      ], {
+        cwd: join(import.meta.dir, "../.."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          HXTK_FAKE_RPC: "1",
+          HXTK_RACE_BREAK_CLAIM: breakClaim ? "1" : "0",
+          HXTK_RACE_STATE_ROOT: stateRoot,
+          HXTK_RACE_START_FILE: startFile,
+          HXTK_RACE_SEND_COUNTER: sendCounter,
+          HXTK_RACE_DIRECTORY: root,
+          HXTK_RACE_CHILD_ID: String(childId),
+          HXTK_RACE_JOURNAL: raceJournal,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      writeFileSync(startFile, "go\n", { mode: 0o600 });
+      const results = await Promise.all(children.map(async (child) => {
+        const stdout = await new Response(child.stdout).text();
+        const stderr = await new Response(child.stderr).text();
+        const exitCode = await child.exited;
+        const line = stdout.split(/\r?\n/).filter((entry) => entry.startsWith("RACE_RESULT ")).pop();
+        return {
+          exitCode,
+          stdout,
+          stderr,
+          result: line ? JSON.parse(line.slice("RACE_RESULT ".length)) as {
+            ok: boolean;
+            error?: string;
+          } : null,
+        };
+      }));
+      const sentPids = readFileSync(sendCounter, "utf8").trim().split(/\r?\n/).filter(Boolean);
+      expect(sentPids).toHaveLength(1);
+      expect(results.filter((result) => result.result?.ok)).toHaveLength(1);
+      expect(results.filter((result) => !result.result?.ok && /claim/.test(result.result?.error ?? ""))).toHaveLength(1);
+      expect(results.every((result) => result.exitCode === 0)).toBe(true);
+      expect(existsSync(join(stateRoot, "race-test.claim"))).toBe(false);
+      expect(existsSync(join(stateRoot, "race-test.claim.break-lease"))).toBe(false);
+    }
   });
 });
