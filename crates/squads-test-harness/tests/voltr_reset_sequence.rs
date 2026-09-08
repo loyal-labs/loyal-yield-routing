@@ -413,13 +413,24 @@ fn build_base() -> Base {
     clock.leader_schedule_epoch = u64_le(&clock_raw, 24);
     clock.unix_timestamp = i64::from_le_bytes(clock_raw[32..40].try_into().unwrap());
     svm.set_sysvar(&clock);
+    // mainnet-beta epoch schedule (no warmup) so EpochSchedule.get_epoch(slot)
+    // agrees with Clock.epoch; LiteSVM's default carries the 14-epoch warmup.
+    svm.set_sysvar(&solana_sdk::epoch_schedule::EpochSchedule::custom(SLOTS_PER_EPOCH, SLOTS_PER_EPOCH, false));
     Base { svm, slot0: clock.slot, ts0: clock.unix_timestamp }
 }
 
-/// New epoch (slot + 432k, epoch + 1): Voltr stamps adaptorAddReceipt
-/// .lastUpdatedEpoch on every strategy crank and rejects a repeat in the same
-/// epoch (6010), so each deposit/withdraw_strategy needs a fresh one. NOTE: the
-/// add-receipt is per (vault, adaptor program), i.e. shared by strategy 1 and 2.
+/// UpgradeableLoaderState::ProgramData { slot, upgrade_authority } — the slot
+/// the currently deployed binary was written at.
+fn programdata_deployed_slot(programdata_addr: &str) -> u64 {
+    u64_le(&fixture_data(programdata_addr), 4)
+}
+
+/// New epoch (slot + 432k, epoch + 1). Kept for the probe only: the E1 probe
+/// shows Voltr does NOT stamp adaptorAddReceipt.lastUpdatedEpoch and accepts
+/// any number of strategy cranks per epoch; 6010 (AdaptorEpochInvalid) fires
+/// only when Clock.epoch == 0 (LiteSVM's default clock). The real per-crank
+/// gate is the adaptor ticket: report.sequence == Clock.slot must exceed the
+/// last consumed sequence, i.e. one crank per slot per ticket.
 fn advance_epoch(svm: &mut LiteSVM) {
     let mut clock: Clock = svm.get_sysvar();
     clock.slot += SLOTS_PER_EPOCH;
@@ -630,9 +641,14 @@ fn withdraw_strategy_ix(s: &Strat, amount: u64, seq: u64, nav: u64) -> Instructi
     }
 }
 
-/// [arm_report, deposit_strategy] in one tx after advancing to a fresh epoch.
+/// Slots between cranks: the adaptor ticket needs a strictly increasing
+/// sequence (== Clock.slot), so every crank moves the clock a few slots.
+const CRANK_SLOT_GAP: u64 = 10;
+const CRANK_SECS_GAP: i64 = 4;
+
+/// [arm_report, deposit_strategy] in one tx a few slots later (same epoch).
 fn crank_deposit(svm: &mut LiteSVM, s: &Strat, amount: u64, nav: u64) -> (TxResult, u64) {
-    advance_epoch(svm);
+    advance_time(svm, CRANK_SLOT_GAP, CRANK_SECS_GAP);
     let clock: Clock = svm.get_sysvar();
     let seq = clock.slot;
     let payer = new_funded(svm);
@@ -641,7 +657,7 @@ fn crank_deposit(svm: &mut LiteSVM, s: &Strat, amount: u64, nav: u64) -> (TxResu
 }
 
 fn crank_withdraw(svm: &mut LiteSVM, s: &Strat, amount: u64, nav: u64) -> (TxResult, u64) {
-    advance_epoch(svm);
+    advance_time(svm, CRANK_SLOT_GAP, CRANK_SECS_GAP);
     let clock: Clock = svm.get_sysvar();
     let seq = clock.slot;
     let payer = new_funded(svm);
@@ -952,6 +968,417 @@ fn close_strategy_ix(payer: &Pubkey, s: &Strat) -> Instruction {
     }
 }
 
+// ---- fresh-user helpers -------------------------------------------------------------------
+struct User {
+    key: Pubkey,
+    usdc: Pubkey,
+    lp: Pubkey,
+}
+
+/// Fresh wallet with `amount` USDC (balance override) deposits it all.
+fn user_deposit(svm: &mut LiteSVM, amount: u64) -> (User, TxResult, u64) {
+    let usdc = key(USDC);
+    let lp = key(LP_MINT);
+    let user = new_funded(svm);
+    let u = User { key: user, usdc: ata_for(&user, &usdc), lp: ata_for(&user, &lp) };
+    set_token_account(svm, u.usdc, usdc, user, amount);
+    let r = send(svm, &[cu_ix(), create_ata_idempotent_ix(&user, &user, &lp), deposit_vault_ix(&user, &u.usdc, &u.lp, amount)], &user);
+    let minted = token_amount_pk(svm, &u.lp);
+    (u, r, minted)
+}
+
+/// Request ALL of the user's LP now, wait the withdrawal period, claim.
+/// Returns (request tx, request receipt, claim tx, payout).
+fn user_exit(svm: &mut LiteSVM, u: &User) -> (TxResult, Value, TxResult, u64) {
+    let lp = key(LP_MINT);
+    let bal = token_amount_pk(svm, &u.lp);
+    let receipt = pda(&[b"request_withdraw_vault_receipt", key(VAULT).as_ref(), u.key.as_ref()], VOLTR);
+    let escrow = ata_for(&receipt, &lp);
+    let r_req = send(svm, &[cu_ix(), create_ata_idempotent_ix(&u.key, &receipt, &lp), request_withdraw_vault_ix(&u.key, &u.lp, &receipt, &escrow, bal, true)], &u.key);
+    let rj = decode_request_receipt(svm, &receipt);
+    let wf = rj["withdrawableFromTs"].as_u64().unwrap_or(0);
+    let now: Clock = svm.get_sysvar();
+    set_clock_ts(svm, (wf as i64).max(now.unix_timestamp + WAIT_SECS) + 5);
+    let before = token_amount_pk(svm, &u.usdc);
+    let r_claim = send(svm, &[cu_ix(), withdraw_vault_ix(&u.key, &receipt, &escrow, &u.usdc)], &u.key);
+    let payout = token_amount_pk(svm, &u.usdc) - before;
+    (r_req, rj, r_claim, payout)
+}
+
+fn lp_value(s: &Snap, lp: u64) -> u64 {
+    (lp as u128 * s.tv as u128 / s.lp_incl_fees().max(1) as u128) as u64
+}
+
+/// u64-word diff of an account's data (offset, before, after) — used to locate
+/// hidden bookkeeping fields the program writes.
+fn diff_u64_words(before: &[u8], after: &[u8]) -> Vec<Value> {
+    let n = before.len().min(after.len());
+    let mut out = vec![];
+    let mut o = 0;
+    while o + 8 <= n {
+        let (a, b) = (u64_le(before, o), u64_le(after, o));
+        if a != b {
+            out.push(json!({"offset": o, "before": a, "after": b}));
+        }
+        o += 8;
+    }
+    out
+}
+
+fn account_data(svm: &LiteSVM, addr: &Pubkey) -> Vec<u8> {
+    svm.get_account(addr).map(|a| a.data).unwrap_or_default()
+}
+
+// ---- T8 / T9 / T10 --------------------------------------------------------------------------
+/// All cases run on clones of `post` (the post-allocation state: receipt2 =
+/// 500_000, custody2 = 0, Squads USDC ATA = 500_000, tv = idle + 500_000).
+fn extra_cases(post: &LiteSVM, s2: &Strat, admin: &Pubkey, rec: &mut Rec) {
+    let usdc = key(USDC);
+    let squads_ata = key(SQUADS_USDC_ATA);
+    let squads_vault = key(SQUADS_VAULT);
+
+    // ---------------------------------------------------------------- T8 over-staging
+    {
+        let mut cases = vec![];
+        let mut c = vec![];
+        let mut credits = vec![];
+        for (label, stage, amount, nav) in [
+            ("T8.1 stage 600_000, withdraw_strategy(500_000, nav = 0)", 600_000u64, 500_000u64, 0u64),
+            ("T8.2 stage 600_000, withdraw_strategy(500_000, nav = observed external = 0) [same wire as T8.1]", 600_000, 500_000, 0),
+            ("T8.3 control: stage 600_000, withdraw_strategy(600_000, nav = 0)", 600_000, 600_000, 0),
+        ] {
+            let mut clone = post.clone();
+            // +100_000 external yield lands in the Squads USDC ATA (balance override); the manager stages `stage` into custody2
+            set_token_account(&mut clone, squads_ata, usdc, squads_vault, stage);
+            let r_stage = send(&mut clone, &[transfer_checked_ix(&squads_ata, &s2.custody, &squads_vault, stage)], &squads_vault);
+            let b = snap(&clone, Some(s2));
+            let (r_w, seq) = crank_withdraw(&mut clone, s2, amount, nav);
+            let a = snap(&clone, Some(s2));
+            let d_tv = a.tv as i128 - b.tv as i128;
+            let old = b.receipt2.unwrap_or(0) as i128;
+            let implied_credit = d_tv - (nav as i128 - old);
+            let swept = b.custody2.unwrap_or(0) as i128 - a.custody2.unwrap_or(0) as i128;
+            let classification = if implied_credit == swept {
+                "credit == swept custody"
+            } else if implied_credit == amount as i128 {
+                "credit == amount"
+            } else if implied_credit == swept.min(amount as i128) {
+                "credit == min(swept, amount)"
+            } else {
+                "other"
+            };
+            let ok = r_stage.is_ok() && r_w.is_ok();
+            c.push((format!("{label}: executed"), ok));
+            credits.push(implied_credit);
+            cases.push(json!({"case": label, "staged": stage, "amount": amount, "reportedNav": nav, "sequence": seq,
+                "stage": tx_json(&r_stage), "tx": tx_json(&r_w),
+                "before": snap_json(&b), "after": snap_json(&a),
+                "deltaTv": d_tv.to_string(), "deltaIdle": (a.idle as i128 - b.idle as i128).to_string(),
+                "receipt2Before": b.receipt2, "receipt2After": a.receipt2, "custody2Before": b.custody2, "custody2After": a.custody2,
+                "swept": swept.to_string(), "impliedCredit": implied_credit.to_string(), "classification": classification,
+                "uncredited": (swept - implied_credit).to_string(),
+                "bookMinusRealAfter": a.book_minus_real2().map(|v| v.to_string())}));
+        }
+        rec.push("T8-over-staging", "CLONE ONLY: over-staged custody (600_000 staged, 500_000 withdrawn) on strategy 2 — what does the post-upgrade binary credit?", &c, json!({
+            "cases": cases,
+            "impliedCredits": credits.iter().map(|v| v.to_string()).collect::<Vec<_>>(),
+            "reading": "impliedCredit = deltaTv - (nav - oldReceipt). credit == swept (600_000) means the whole custody balance is booked into tv regardless of the withdraw amount (tv +100_000 above the reported position); credit == amount / min(swept, amount) (500_000) would leave 100_000 swept into idle but uncredited (the pre-upgrade hole seen in both mainnet incidents).",
+            "binary": "post-upgrade Voltr (ProgramData slot 445_223_838). Its withdraw rule, from the events and the receipt diff in T9: tv' = tv - old_receipt + new_receipt + swept_to_idle + (custody_after - receipt[128]) — i.e. credit == everything swept, independent of `amount`; `amount` only gates the adaptor's custody >= amount check and the WithdrawStrategyEvent.vaultAmountAssetWithdrawn field.",
+        }));
+    }
+
+    // ---------------------------------------------------------------- T9 residue (100 raw dust in custody2)
+    {
+        let mut cases = vec![];
+        let mut c = vec![];
+        for (label, is_deposit, amount, nav) in [
+            ("T9.a deposit_strategy(0) refresh, nav unchanged 500_000", true, 0u64, 500_000u64),
+            ("T9.b deposit_strategy(200_000, nav 700_000)", true, 200_000, 700_000),
+            ("T9.c withdraw_strategy(0, nav 500_000)", false, 0, 500_000),
+        ] {
+            let mut clone = post.clone();
+            set_token_account(&mut clone, s2.custody, usdc, s2.auth, 100);
+            let b = snap(&clone, Some(s2));
+            let (rcpt_b, vault_b) = (account_data(&clone, &s2.receipt), account_data(&clone, &key(VAULT)));
+            let (r, seq) = if is_deposit { crank_deposit(&mut clone, s2, amount, nav) } else { crank_withdraw(&mut clone, s2, amount, nav) };
+            let a = snap(&clone, Some(s2));
+            let receipt_diff = diff_u64_words(&rcpt_b, &account_data(&clone, &s2.receipt));
+            let vault_diff = diff_u64_words(&vault_b, &account_data(&clone, &key(VAULT)));
+            let old = b.receipt2.unwrap_or(0) as i128;
+            let expected_book_delta = if is_deposit { nav as i128 - old - amount as i128 } else { nav as i128 - old };
+            let d_tv = a.tv as i128 - b.tv as i128;
+            let extra = d_tv - expected_book_delta;
+            let residue_after = a.custody2.unwrap_or(0);
+            c.push((format!("{label}: executed"), r.is_ok()));
+            cases.push(json!({"case": label, "amount": amount, "reportedNav": nav, "sequence": seq, "tx": tx_json(&r), "error": err_of(&r),
+                "before": snap_json(&b), "after": snap_json(&a),
+                "custody2Before": b.custody2, "custody2After": residue_after,
+                "deltaTv": d_tv.to_string(), "deltaIdle": (a.idle as i128 - b.idle as i128).to_string(),
+                "deltaSquadsUsdc": (a.squads_usdc as i128 - b.squads_usdc as i128).to_string(),
+                "expectedBookDeltaWithoutResidue": expected_book_delta.to_string(),
+                "creditForResidue": extra.to_string(),
+                "residueSweptToIdle": residue_after == 0 && a.idle as i128 - b.idle as i128 == (if is_deposit { -(amount as i128) } else { 0 }) + 100,
+                "receipt2WordsChanged": receipt_diff, "vaultWordsChanged": vault_diff,
+                "bookMinusRealAfter": a.book_minus_real2().map(|v| v.to_string())}));
+        }
+        // T9.d: is the deposit-path credit applied on EVERY crank while the dust stays in custody?
+        {
+            let mut clone = post.clone();
+            set_token_account(&mut clone, s2.custody, usdc, s2.auth, 100);
+            let b = snap(&clone, Some(s2));
+            let mut trail = vec![];
+            let mut all_ok = true;
+            for i in 1..=3 {
+                let (r, seq) = crank_deposit(&mut clone, s2, 0, 500_000);
+                let a = snap(&clone, Some(s2));
+                all_ok &= r.is_ok();
+                trail.push(json!({"crank": i, "sequence": seq, "ok": r.is_ok(), "error": err_of(&r), "tv": a.tv, "idle": a.idle, "custody2": a.custody2, "receipt2": a.receipt2,
+                    "bookMinusReal": a.book_minus_real2().map(|v| v.to_string())}));
+            }
+            let a = snap(&clone, Some(s2));
+            let inflation = a.tv as i128 - b.tv as i128;
+            c.push(("T9.d three refreshes with the dust left in custody: executed".to_string(), all_ok));
+            cases.push(json!({"case": "T9.d deposit_strategy(0, nav 500_000) three times with the 100 residue never swept", "before": snap_json(&b), "after": snap_json(&a),
+                "trail": trail, "tvInflationOverThreeCranks": inflation.to_string(),
+                "perCrankCredit": inflation == 300, "creditedOnce": inflation == 100,
+                "bookMinusRealAfter": a.book_minus_real2().map(|v| v.to_string())}));
+        }
+        // T9.e: refresh (credits the dust) then withdraw_strategy(0) (sweeps it) — double credit?
+        {
+            let mut clone = post.clone();
+            set_token_account(&mut clone, s2.custody, usdc, s2.auth, 100);
+            let b = snap(&clone, Some(s2));
+            let (r1, seq1) = crank_deposit(&mut clone, s2, 0, 500_000);
+            let mid = snap(&clone, Some(s2));
+            let (r2, seq2) = crank_withdraw(&mut clone, s2, 0, 500_000);
+            let a = snap(&clone, Some(s2));
+            c.push(("T9.e refresh then sweep: executed".to_string(), r1.is_ok() && r2.is_ok()));
+            cases.push(json!({"case": "T9.e deposit_strategy(0, nav 500_000) then withdraw_strategy(0, nav 500_000) with the 100 residue", "before": snap_json(&b), "afterRefresh": snap_json(&mid), "after": snap_json(&a),
+                "refresh": {"sequence": seq1, "tx": tx_json(&r1)}, "sweep": {"sequence": seq2, "tx": tx_json(&r2)},
+                "deltaTvTotal": (a.tv as i128 - b.tv as i128).to_string(), "deltaIdleTotal": (a.idle as i128 - b.idle as i128).to_string(), "custody2After": a.custody2,
+                "doubleCredited": a.tv as i128 - b.tv as i128 == 200,
+                "bookMinusRealAfter": a.book_minus_real2().map(|v| v.to_string())}));
+        }
+        rec.push("T9-residue", "CLONE ONLY: 100 raw third-party dust sitting in strategy-2 custody — swept? credited? left behind?", &c, json!({
+            "cases": cases,
+            "reading": "creditForResidue = deltaTv - expected book delta (deposit: nav-old-amount; withdraw: nav-old). residueSweptToIdle says whether the 100 left custody for idle. bookMinusReal = tv - idle - receipt2 (custody excluded), so dust that is credited but not swept shows as +dust.",
+            "mechanism": "receipt2WordsChanged shows the post-upgrade binary writing the strategy custody ATA balance into the StrategyInitReceipt's IDL-'reserved' area at offset 128 (0 -> 100 after the deposit-path cranks; the withdraw path sweeps custody to 0 first so it stays 0). Book rule consistent with every case here and in T8/R5: tv' = tv - old_receipt + new_receipt - amount + swept_to_idle + (custody_after - receipt[128]); receipt[128] := custody_after. Dust is therefore credited exactly once (T9.d), a later sweep does not double-credit (T9.e), and deposit-path cranks leave the dust in custody counted as vault value until a withdraw-path crank sweeps it.",
+        }));
+    }
+
+    // ---------------------------------------------------------------- T10 NAV over/under-report + sniper
+    {
+        let mut cases = vec![];
+        let mut c = vec![];
+        let sniper_amount = 1_000_000u64;
+        // `settle_secs`: seconds to let pass after re-enabling the degradation
+        // window and BEFORE the sniper deposits. The vault still carries the R1
+        // repair's lockedProfitState (lastUpdatedLockedProfit 1_000_119,
+        // lastReport = repair ts); with duration 0 it is inert, but the moment
+        // the window is re-enabled that stale profit is locked again until
+        // 86_400 s after the repair report (T10.7 shows the damage).
+        for (label, nav, degradation, perf_fee_bps, settle_secs, request_delay_secs, expect_extract) in [
+            ("T10.1 nav 400_000 (loss), degradation 0", 400_000u64, 0u64, 0u16, 0i64, 0i64, "negative"),
+            ("T10.2 nav 600_000 (gain), degradation 0", 600_000, 0, 0, 0, 0, "positive"),
+            ("T10.3 nav 400_000 (loss), degradation 86_400 (settled)", 400_000, 86_400, 0, 86_400 + 60, 0, "negative"),
+            ("T10.4 nav 600_000 (gain), degradation 86_400 (settled), immediate request", 600_000, 86_400, 0, 86_400 + 60, 0, "zero"),
+            ("T10.5 nav 600_000 (gain), degradation 86_400 (settled), sniper waits 86_400 s before requesting", 600_000, 86_400, 0, 86_400 + 60, 86_400, "positive"),
+            ("T10.6 nav 600_000 (gain), degradation 0, adminPerformanceFee 500 bps", 600_000, 0, 500, 0, 0, "positive"),
+            ("T10.7 WARNING nav 600_000 (gain), degradation 86_400 re-enabled ~20 min after the R1 repair (stale locked profit 1_000_119 re-armed), immediate request", 600_000, 86_400, 0, 0, 0, "negative"),
+        ] {
+            let mut clone = post.clone();
+            let mut cfg = vec![];
+            if degradation != 0 {
+                let r = send(&mut clone, &[cu_ix(), update_vault_config_ix(FIELD_LOCKED_PROFIT_DEGRADATION_DURATION, &degradation.to_le_bytes())], admin);
+                cfg.push(json!({"field": "LockedProfitDegradationDuration", "value": degradation, "tx": tx_json(&r)}));
+            }
+            if settle_secs > 0 {
+                advance_time(&mut clone, (settle_secs as u64) * 5 / 2, settle_secs);
+            }
+            let stale_locked_at_deposit = snap(&clone, Some(s2)).locked_effective();
+            if perf_fee_bps != 0 {
+                let r = send(&mut clone, &[cu_ix(), update_vault_config_ix(FIELD_ADMIN_PERFORMANCE_FEE, &perf_fee_bps.to_le_bytes())], admin);
+                cfg.push(json!({"field": "AdminPerformanceFee", "value": perf_fee_bps, "tx": tx_json(&r)}));
+            }
+            let s0 = snap(&clone, Some(s2));
+            let admin_lp = s0.admin_lp;
+            // sniper deposits BEFORE the report
+            let (sniper, r_dep, minted) = user_deposit(&mut clone, sniper_amount);
+            let s1 = snap(&clone, Some(s2));
+            // the report
+            let (r_nav, seq) = crank_deposit(&mut clone, s2, 0, nav);
+            let s2s = snap(&clone, Some(s2));
+            let fee_lp_minted = s2s.fee_admin as i128 - s1.fee_admin as i128 + s2s.fee_manager as i128 - s1.fee_manager as i128 + s2s.fee_protocol as i128 - s1.fee_protocol as i128;
+            if request_delay_secs > 0 {
+                advance_time(&mut clone, (request_delay_secs as u64) * 5 / 2, request_delay_secs);
+            }
+            let s_req_time = snap(&clone, Some(s2));
+            let (r_req, rj, r_claim, payout) = user_exit(&mut clone, &sniper);
+            let s_end = snap(&clone, Some(s2));
+            let extract = payout as i128 - sniper_amount as i128;
+            let sign_ok = match expect_extract {
+                "positive" => extract > 0,
+                "negative" => extract < 0,
+                _ => extract.abs() <= 5,
+            };
+            let ok = r_dep.is_ok() && r_nav.is_ok() && r_req.is_ok() && r_claim.is_ok() && sign_ok;
+            c.push((format!("{label}: executed, sniper delta {expect_extract} ({extract})"), ok));
+            cases.push(json!({"case": label, "reportedNav": nav, "lockedProfitDegradationDuration": degradation, "adminPerformanceFeeBps": perf_fee_bps,
+                "settleSecsAfterConfig": settle_secs, "staleLockedProfitEffectiveAtSniperDeposit": stale_locked_at_deposit,
+                "requestDelaySecs": request_delay_secs, "config": cfg, "sequence": seq,
+                "sniper": {"deposit": sniper_amount, "lpMinted": minted, "depositTx": tx_json(&r_dep),
+                           "request": {"tx": tx_json(&r_req), "receipt": rj}, "claim": tx_json(&r_claim),
+                           "payoutRaw": payout, "extractedRaw": extract.to_string()},
+                "report": {"tx": tx_json(&r_nav),
+                           "lpPriceBefore": format!("{:.9}", s1.price()), "lpPriceAfter": format!("{:.9}", s2s.price()),
+                           "tvBefore": s1.tv, "tvAfter": s2s.tv, "receipt2Before": s1.receipt2, "receipt2After": s2s.receipt2,
+                           "feeLpMinted": fee_lp_minted.to_string(), "feeStateAfter": {"admin": s2s.fee_admin, "manager": s2s.fee_manager, "protocol": s2s.fee_protocol},
+                           "lockedProfitAfter": {"lastUpdatedLockedProfit": s2s.locked_raw, "lastReport": s2s.locked_last_report, "effectiveNow": s2s.locked_effective()},
+                           "hwmBefore": dec48(s1.hwm), "hwmAfter": dec48(s2s.hwm)},
+                "atRequestTime": {"effectiveLockedProfit": s_req_time.locked_effective(), "unlockedTv": s_req_time.tv - s_req_time.locked_effective(), "clockTs": s_req_time.clock_ts},
+                "existingHolder": {"adminLp": admin_lp, "valueBeforeSniper": lp_value(&s0, admin_lp), "valueAfterReport": lp_value(&s2s, admin_lp), "valueAfterSniperExit": lp_value(&s_end, admin_lp)},
+                "before": snap_json(&s0), "afterSniperDeposit": snap_json(&s1), "afterReport": snap_json(&s2s), "afterSniperExit": snap_json(&s_end)}));
+        }
+        rec.push("T10-nav-report-sniper", "CLONE ONLY: NAV under/over-report on strategy 2 via deposit_strategy(0) and what an immediate depositor/withdrawer extracts", &c, json!({
+            "cases": cases,
+            "reading": "extractedRaw = sniper payout - 1_000_000. With lockedProfitDegradationDuration = 0 a positive report is fully unlocked at once and the sniper's share of it is paid on an immediate request; with 86_400 the gain is locked and decays linearly, so an immediate request is priced without it (min(atRequest, atPresent)), and only a request placed after the window captures it. Deposits are always priced on FULL tv while withdrawals are priced on UNLOCKED tv, so re-enabling the window while a large stale locked profit exists (T10.7: the R1 repair's 1_000_119) punishes fresh depositors who exit early, i.e. on mainnet re-enable the window only >= 86_400 s after the repair report (or accept that early exits are haircut).",
+        }));
+    }
+}
+
+// ---- epoch-gate probe -----------------------------------------------------------------
+fn add_receipt_tail(svm: &LiteSVM) -> Value {
+    let d = svm.get_account(&key(ADAPTOR_ADD_RECEIPT)).unwrap().data;
+    json!({
+        "version": d[72], "bump": d[73], "lastUpdatedEpoch": u64_le(&d, 80),
+        "bytes72to152hex": d[72..].iter().map(|b| format!("{b:02x}")).collect::<String>(),
+    })
+}
+
+fn set_add_receipt_epoch(svm: &mut LiteSVM, epoch: u64) {
+    let mut a = svm.get_account(&key(ADAPTOR_ADD_RECEIPT)).unwrap();
+    a.data[80..88].copy_from_slice(&epoch.to_le_bytes());
+    svm.set_account(key(ADAPTOR_ADD_RECEIPT), a).unwrap();
+}
+
+fn set_clock_epoch(svm: &mut LiteSVM, epoch: u64) {
+    let mut clock: Clock = svm.get_sysvar();
+    clock.epoch = epoch;
+    clock.leader_schedule_epoch = epoch + 1;
+    svm.set_sysvar(&clock);
+}
+
+/// One arm_report + deposit_strategy(0, nav) at the CURRENT clock (no epoch advance).
+fn crank_here(svm: &mut LiteSVM, s: &Strat, nav: u64) -> (TxResult, u64) {
+    let clock: Clock = svm.get_sysvar();
+    let seq = clock.slot;
+    let payer = new_funded(svm);
+    let ixs = vec![cu_ix(), arm_report_ix(s, 0, 0, seq, nav), deposit_strategy_ix(s, 0, seq, nav)];
+    (send(svm, &ixs, &payer), seq)
+}
+
+fn epoch_gate_probe(base: &Base) -> (Value, Vec<(String, bool)>) {
+    use solana_sdk::epoch_schedule::EpochSchedule;
+    let s1 = strat1();
+    let nav = {
+        let s = snap(&base.svm, None);
+        s.idle + (s.receipt1 - s.tv)
+    };
+    let clock0: Clock = base.svm.get_sysvar();
+    let es: EpochSchedule = base.svm.get_sysvar();
+    let es_epoch = es.get_epoch(clock0.slot);
+    let mut c = vec![];
+    let mut cases = vec![];
+
+    // A: crank at the dump clock as-is (epoch 1030, receipt.lastUpdatedEpoch 0)
+    let mut a = base.svm.clone();
+    let rc0 = add_receipt_tail(&a);
+    let (ra, seq_a) = crank_here(&mut a, &s1, nav);
+    let rc1 = add_receipt_tail(&a);
+    chk(&mut c, "A: first crank at the dump clock (no epoch advance) executes", ra.is_ok());
+    cases.push(json!({"case": "A first crank at dump clock, no epoch advance", "clock": {"slot": clock0.slot, "epoch": clock0.epoch}, "seq": seq_a,
+        "tx": tx_json(&ra), "addReceiptBefore": rc0, "addReceiptAfter": rc1}));
+
+    // B: second crank in the SAME epoch, later slot (ticket sequence must grow)
+    let mut b = a.clone();
+    advance_time(&mut b, 50, 20);
+    let (rb, seq_b) = crank_here(&mut b, &s1, nav);
+    chk(&mut c, "B: second crank in the same epoch at a later slot executes", rb.is_ok());
+    cases.push(json!({"case": "B second crank, same epoch, slot+50", "seq": seq_b, "tx": tx_json(&rb), "addReceiptAfter": add_receipt_tail(&b)}));
+
+    // C: second crank at the SAME slot -> adaptor ticket replay (18), not Voltr
+    let mut cc = a.clone();
+    let (rc, seq_c) = crank_here(&mut cc, &s1, nav);
+    let replay = matches!(&rc, Err((e, _)) if e.contains("Custom(18)"));
+    chk(&mut c, "C: second crank at the same slot is rejected by the adaptor ticket (TicketReplay 18)", replay);
+    cases.push(json!({"case": "C second crank, same slot", "seq": seq_c, "tx": tx_json(&rc), "error": err_of(&rc)}));
+
+    // D: clock.epoch forced to 0 == receipt.lastUpdatedEpoch(0)
+    let mut d = base.svm.clone();
+    set_clock_epoch(&mut d, 0);
+    let (rd, _) = crank_here(&mut d, &s1, nav);
+    let d_6010 = matches!(&rd, Err((e, _)) if e.contains("Custom(6010)"));
+    cases.push(json!({"case": "D clock.epoch = 0 == adaptorAddReceipt.lastUpdatedEpoch (0)", "tx": tx_json(&rd), "error": err_of(&rd), "isAdaptorEpochInvalid6010": d_6010}));
+
+    // E: receipt.lastUpdatedEpoch forced to the current clock epoch (1030)
+    let mut e = base.svm.clone();
+    set_add_receipt_epoch(&mut e, clock0.epoch);
+    let (re, _) = crank_here(&mut e, &s1, nav);
+    let e_6010 = matches!(&re, Err((e, _)) if e.contains("Custom(6010)"));
+    cases.push(json!({"case": "E adaptorAddReceipt.lastUpdatedEpoch forced == clock.epoch (1030)", "tx": tx_json(&re), "error": err_of(&re), "isAdaptorEpochInvalid6010": e_6010,
+        "addReceiptAfter": add_receipt_tail(&e)}));
+
+    // E2: receipt.lastUpdatedEpoch forced AHEAD of the clock (1031 vs 1030)
+    let mut e2 = base.svm.clone();
+    set_add_receipt_epoch(&mut e2, clock0.epoch + 1);
+    let (re2, _) = crank_here(&mut e2, &s1, nav);
+    cases.push(json!({"case": "E2 adaptorAddReceipt.lastUpdatedEpoch forced == clock.epoch + 1", "tx": tx_json(&re2), "error": err_of(&re2)}));
+
+    // F: clock.epoch inconsistent with slot (epoch 5 at slot 445M) -> does Voltr use Clock.epoch or EpochSchedule?
+    let mut f = base.svm.clone();
+    set_clock_epoch(&mut f, 5);
+    let (rf, _) = crank_here(&mut f, &s1, nav);
+    cases.push(json!({"case": "F clock.epoch = 5 (inconsistent with slot), receipt epoch 0", "tx": tx_json(&rf), "error": err_of(&rf), "addReceiptAfter": add_receipt_tail(&f)}));
+
+    // G: does Voltr initializeStrategy touch the add-receipt? (fresh strategy on a clone)
+    let mut g = base.svm.clone();
+    let s2 = strat_for(Pubkey::new_unique());
+    let payer = new_funded(&mut g);
+    let before_g = add_receipt_tail(&g);
+    let r_cfg = send(&mut g, &[cu_ix(), adaptor_initialize_config_ix(&payer, &s2, 0, 2_000_000_000_000, 32)], &payer);
+    let r_tk = send(&mut g, &[cu_ix(), adaptor_initialize_report_ticket_ix(&payer, &s2)], &payer);
+    let r_init = send(&mut g, &[cu_ix(), voltr_initialize_strategy_ix(&payer, &s2)], &payer);
+    let after_g = add_receipt_tail(&g);
+    let untouched = r_cfg.is_ok() && r_tk.is_ok() && r_init.is_ok() && before_g == after_g;
+    chk(&mut c, "G: initializeStrategy does not modify adaptorAddReceipt", untouched);
+    cases.push(json!({"case": "G initializeStrategy on a fresh strategy", "init": tx_json(&r_init), "addReceiptBefore": before_g, "addReceiptAfter": after_g, "untouched": untouched}));
+
+    let epoch_consistent = es_epoch == clock0.epoch;
+    let es_default = EpochSchedule::default();
+    let value = json!({
+        "dumpClock": {"slot": clock0.slot, "epoch": clock0.epoch, "leaderScheduleEpoch": clock0.leader_schedule_epoch},
+        "installedEpochSchedule": {"slotsPerEpoch": es.slots_per_epoch, "warmup": es.warmup, "firstNormalEpoch": es.first_normal_epoch, "firstNormalSlot": es.first_normal_slot,
+            "getEpochOfDumpSlot": es_epoch, "consistentWithClockEpoch": epoch_consistent},
+        "liteSvmDefaultEpochSchedule": {"warmup": es_default.warmup, "firstNormalEpoch": es_default.first_normal_epoch, "firstNormalSlot": es_default.first_normal_slot,
+            "getEpochOfDumpSlot": es_default.get_epoch(clock0.slot), "consistentWithClockEpoch": es_default.get_epoch(clock0.slot) == clock0.epoch,
+            "note": "the harness previously ran on this default schedule; case F shows Voltr reads Clock.epoch, not EpochSchedule, so the mismatch was inert"},
+        "mainnetEpochOfDumpSlot": clock0.slot / SLOTS_PER_EPOCH,
+        "cases": cases,
+    });
+    (value, c)
+}
+
+#[test]
+#[ignore = "clones deployed mainnet programs+accounts into LiteSVM; run explicitly with --ignored"]
+fn voltr_epoch_gate_probe() {
+    let base = build_base();
+    let (v, c) = epoch_gate_probe(&base);
+    eprintln!("{}", serde_json::to_string_pretty(&v).unwrap());
+    for (n, p) in &c {
+        eprintln!("{} {}", if *p { "PASS" } else { "FAIL" }, n);
+    }
+}
+
 // =========================================================================================
 #[test]
 #[ignore = "clones deployed mainnet programs+accounts into LiteSVM; run explicitly with --ignored"]
@@ -965,6 +1392,15 @@ fn voltr_reset_sequence() {
 
     let s_init = snap(&svm, None);
     assert_eq!(s_init.dead_weight, 1_000, "deadWeight offset sanity");
+
+    // ---------------------------------------------------------------- E1 (clones of the raw dump)
+    {
+        let (v, c) = epoch_gate_probe(&base);
+        rec.push("E1-epoch-gate", "CLONE ONLY: what gates repeated strategy cranks (adaptorAddReceipt.lastUpdatedEpoch / Clock.epoch / ticket)", &c, json!({
+            "probe": v,
+            "conclusion": "Voltr never writes adaptorAddReceipt.lastUpdatedEpoch (stays 0 on-chain and here) and accepts unlimited strategy cranks per epoch; 6010 AdaptorEpochInvalid fires only when Clock.epoch == 0 (LiteSVM default clock, the old test's original setup). The per-crank gate is the adaptor ticket: sequence == Clock.slot must exceed last_consumed_sequence (TicketReplay 18 at the same slot). initializeStrategy does not touch the add-receipt. The epoch advance in the earlier harness was an artifact; cranks now advance 10 slots.",
+        }));
+    }
     assert_eq!(s_init.withdraw_wait, WAIT_SECS as u64, "withdrawalWaitingPeriod");
     // The mainnet pending receipt must be the PDA for admin BAqg; its escrow is C35a.
     let pending_receipt = pda(&[b"request_withdraw_vault_receipt", key(VAULT).as_ref(), admin.as_ref()], VOLTR);
@@ -1252,12 +1688,17 @@ fn voltr_reset_sequence() {
             "seedDeposit": tx_json(&r_seed), "sequence": seq, "tx": tx_json(&r_alloc),
             "before": snap_json(&before), "after": snap_json(&after),
         }));
+        let post_allocate = svm.clone();
 
-        // NAV/cash mismatch hazards on CLONES (discarded). The hypothesised
-        // "pre-staged custody is not credited" failure mode does NOT reproduce
-        // against the deployed program (see R5a-withdraw below): Voltr credits
-        // whatever custody balance it sweeps. What does hurt is a NAV that does
-        // not match the cash movement.
+        // NAV/cash mismatch hazards on CLONES (discarded). NOTE: the binary
+        // under test is the Voltr program written at slot 445,223,838 (see
+        // voltrProgramDataDeployedSlot), i.e. AFTER both mainnet incidents
+        // (443,586,075 and 444,157,954, whose WithdrawStrategyEvents show an
+        // implied credit of 0 for pre-staged custody) and before this dump.
+        // Under THIS binary pre-staged custody IS credited (R5a-withdraw, T8),
+        // so the "uncredited sweep" hole is a property of the old binary and
+        // is not refuted here. What still hurts on the new binary is a NAV that
+        // does not match the cash movement.
         {
             let mut cases = vec![];
             let mut expectations_hold = true;
@@ -1329,9 +1770,12 @@ fn voltr_reset_sequence() {
             rec.push("R5a-withdraw", "strategy 2 withdraw shape for the custom adaptor: stage 500_000 into custody, withdraw_strategy(500_000, nav=0)", &c, json!({
                 "stage": tx_json(&r_stage), "sequence": seq_w, "tx": tx_json(&r_w),
                 "before": snap_json(&before), "afterStage": snap_json(&staged), "after": snap_json(&after),
-                "why": "Voltr sweeps the strategy custody ATA to idle after the adaptor CPI and credits the swept amount: tv' = tv - old_receipt + new_receipt + swept. With swept == amount and new = old - amount the book is unchanged. The custom adaptor only checks custody >= amount (InsufficientBridgeLiquidity otherwise) and moves nothing itself, so the cash must be staged by the manager (Squads) BEFORE the crank — that is the production VOLTR_RESTORE_IDLE shape.",
+                "why": "Under the Voltr binary deployed at slot 445,223,838 (post-incident, pre-dump) the program sweeps the strategy custody ATA to idle after the adaptor CPI and credits the swept amount: tv' = tv - old_receipt + new_receipt + swept. With swept == amount and new = old - amount the book is unchanged. The custom adaptor only checks custody >= amount (InsufficientBridgeLiquidity otherwise) and moves nothing itself, so the cash must be staged by the manager (Squads) BEFORE the crank — the production VOLTR_RESTORE_IDLE shape. The two mainnet incidents (443,586,075 / 444,157,954) ran on the PREVIOUS binary, whose WithdrawStrategyEvents show implied credit 0 for exactly this shape; this result characterises the new binary only and does not refute that forensics.",
             }));
         }
+
+        // ---- T8 / T9 / T10 on clones of the post-allocate state (receipt2 = 500_000)
+        extra_cases(&post_allocate, &s2, &admin, &mut rec);
     } else {
         rec.push("R5b", "fallback (Trustful adaptor 3pnpK…) — NOT ATTEMPTED because R5a succeeded/failed as recorded", &[("R5a setup failed; Trustful fallback not implemented in this run".into(), false)], json!({"trustfulAdaptor": TRUSTFUL_ADAPTOR}));
     }
@@ -1429,6 +1873,10 @@ fn voltr_reset_sequence() {
         "dumpGenesis": manifest["genesis"],
         "pendingReceiptFixtureFetchedSlot": pending_fx["fetchedSlot"],
         "programs": {"voltr": VOLTR, "adaptor": ADAPTOR, "squadsSmartAccount": SQUADS},
+        "voltrProgramDataDeployedSlot": programdata_deployed_slot("3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az"),
+        "adaptorProgramDataDeployedSlot": programdata_deployed_slot("DrvzixaVmAuPVVJPtP5wykb9mvgDWqZbvZau9oiCUpHu"),
+        "mainnetIncidentSlots": [443_586_075u64, 444_157_954u64],
+        "binaryNote": "The Voltr binary under test was written at voltrProgramDataDeployedSlot, after both mainnet incidents and before the dump; credit rules observed here (R5a-withdraw, T8, T9) are properties of that binary, not of the binary the incidents ran on.",
         "vault": VAULT,
         "vaultAdmin": ADMIN,
         "vaultManager": SQUADS_VAULT,
@@ -1447,7 +1895,8 @@ fn voltr_reset_sequence() {
             "R4/R6 fresh users and the R5 seed deposit get their USDC via a token-balance override (set_account); no program/authority/policy changes.",
             "R5 strategy-2 config key is a fresh Pubkey::new_unique() acting as the config keypair signer (on mainnet: a fresh keypair). The custody ATA for the new strategy auth is created via ATA CreateIdempotent.",
             "R5 withdraw failure mode and R6 orphan probes run on CLONES of the main LiteSVM instance and are discarded; the main line is a single continuous instance.",
-            "Every strategy crank advances the LiteSVM clock to a new epoch because Voltr stamps adaptorAddReceipt.lastUpdatedEpoch per (vault, adaptor) and rejects a second crank in the same epoch (6010). On mainnet that means at most one deposit/withdraw_strategy per epoch (~2 days) across BOTH strategies of this adaptor.",
+            "Every strategy crank advances the LiteSVM clock by 10 slots / 4 s only. E1 shows there is no per-epoch gate (adaptorAddReceipt.lastUpdatedEpoch is never written; 6010 fires only for Clock.epoch == 0); the adaptor ticket requires a strictly increasing sequence == Clock.slot, i.e. one crank per slot per ticket. The EpochSchedule sysvar is set to mainnet's (no warmup) so get_epoch(slot) == Clock.epoch.",
+            "T8/T9/T10 run on clones of the post-allocation state; T8 tops up the Squads USDC ATA by balance override (+100_000 modelled yield) before the manager stages cash; T9 injects 100 raw into the strategy custody ATA by balance override (third-party dust); T10 sets lockedProfitDegradationDuration / adminPerformanceFee via admin updateVaultConfig inside the clone.",
             "The external OnRe RWA leg is not present in LiteSVM; the strategy-2 allocation's cash lands in the Squads USDC ATA (EBG2…) exactly as the production bridge does, but no onward RWA leg is modelled.",
         ],
         "steps": rec.steps,

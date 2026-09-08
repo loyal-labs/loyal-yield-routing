@@ -270,9 +270,13 @@ fn build_base() -> Base {
 
 const SLOTS_PER_EPOCH: u64 = 432_000;
 
-/// Advance the clock to a brand-new epoch (slot + 432k, epoch + 1). Voltr's
-/// deposit_strategy stamps adaptor_add_receipt.lastUpdatedEpoch = clock.epoch and
-/// rejects a repeat in the same epoch, so every strategy crank needs a fresh one.
+/// Advance the clock to a brand-new epoch (slot + 432k, epoch + 1).
+/// NOTE (superseded by voltr_reset_sequence.rs E1 probe): Voltr does NOT stamp
+/// adaptor_add_receipt.lastUpdatedEpoch and accepts any number of strategy
+/// cranks per epoch; 6010 only fires when Clock.epoch == 0 (LiteSVM default).
+/// The real per-crank gate is the adaptor ticket sequence (== Clock.slot), so a
+/// slot advance would do. Kept as-is here: harmless, and the results file for
+/// this test was produced with it.
 fn advance_epoch(svm: &mut LiteSVM) {
     let mut clock: Clock = svm.get_sysvar();
     clock.slot += SLOTS_PER_EPOCH;
