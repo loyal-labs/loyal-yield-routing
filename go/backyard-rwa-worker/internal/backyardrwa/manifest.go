@@ -147,6 +147,7 @@ type SelectedLaneBinding struct {
 }
 
 type JupiterPolicyBinding struct {
+	CatalogLane             string                     `json:"catalogLane,omitempty"`
 	Action                  Action                     `json:"action"`
 	Policy                  string                     `json:"policy"`
 	PolicyAccountDataSHA256 string                     `json:"policyAccountDataSha256"`
@@ -190,6 +191,21 @@ func (m RouteManifest) jupiterPolicy(action Action) (JupiterPolicyBinding, error
 }
 
 func (m RouteManifest) jupiterPolicyForRoute(action Action, lane string) (JupiterPolicyBinding, error) {
+	if catalogJupiterRoute(lane) {
+		b, err := catalogJupiterBindingForRoute(action, lane)
+		if err != nil {
+			return JupiterPolicyBinding{}, err
+		}
+		dataLength := b.FeeOffset + 1
+		if b.fixedPrefixV2() {
+			dataLength = 0
+		} // variable route vector; matchesData validates the fixed prefix
+		return JupiterPolicyBinding{CatalogLane: lane, Action: action, Policy: b.Policy, PolicyAccountDataSHA256: b.PolicySHA256,
+			PolicyConstraintIndex: b.ConstraintIndex, InstructionDataLength: dataLength, AmountOffset: b.AmountOffset}, nil
+	}
+	if lane != "" && lane != RouteID && lane != PhaseOneLaneID && lane != SelectedRouteID {
+		return JupiterPolicyBinding{}, fmt.Errorf("unregistered Jupiter policy lane")
+	}
 	if lane == SelectedRouteID {
 		mapped := action
 		if action == SwapStableToCollateralStep {
@@ -222,7 +238,17 @@ func (m RouteManifest) jupiterPolicyForRoute(action Action, lane string) (Jupite
 
 func (b JupiterPolicyBinding) constraintIndex(instruction JupiterSwapInstruction) (byte, error) {
 	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil || len(data) != b.InstructionDataLength || b.AmountOffset != len(data)-19 {
+	if err != nil {
+		return 0, fmt.Errorf("fresh Jupiter header does not match the manifest binding")
+	}
+	if b.CatalogLane != "" {
+		bound, err := catalogJupiterBindingForRoute(b.Action, b.CatalogLane)
+		if err != nil || b.Policy != bound.Policy || b.PolicyAccountDataSHA256 != bound.PolicySHA256 || b.PolicyConstraintIndex != bound.ConstraintIndex || b.AmountOffset != bound.AmountOffset || !bound.matchesData(data) {
+			return 0, fmt.Errorf("Jupiter catalog policy changed")
+		}
+		return bound.ConstraintIndex, nil
+	}
+	if len(data) != b.InstructionDataLength || b.AmountOffset != len(data)-19 {
 		return 0, fmt.Errorf("fresh Jupiter header does not match the manifest binding")
 	}
 	if b.Action == SwapPrimeToUSDCStep {
@@ -445,7 +471,7 @@ func (m RouteManifest) primeUSDCPacket(action Action, leg kaminoPrimeUSDCLeg, am
 }
 
 func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash, lane string) (KaminoPrimeUSDCRequest, error) {
-	if lane != SelectedRouteID {
+	if lane == "" || lane == RouteID || lane == PhaseOneLaneID {
 		request, err := m.primeUSDCPacket(action, leg, amount, blockhash)
 		if err == nil {
 			request.RouteLane = lane
@@ -455,14 +481,13 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	if amount == 0 || blockhash.Blockhash == "" || blockhash.LastValidBlockHeight <= 0 {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
-	policies := map[kaminoPrimeUSDCLeg]struct{ policy, hash string }{
-		kaminoLegDeposit:  {"5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c", "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f"},
-		kaminoLegBorrow:   {"2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV", "6f97d7928d7927d65b588644d2e0506bc86b2173f2f525edf087474e28631a94"},
-		kaminoLegRepay:    {"AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo", "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11"},
-		kaminoLegWithdraw: {"4ZRoNsVZCNJXUdNjFL6MvjMhbLFG512hjStfipMftzcY", "e994455d6351a4f615ae57dd0b0b65287e8c6af10457e70383307bb43c762a7e"},
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
+	policies := route.KaminoPolicies
 	metaSets := func() []KaminoPrimeUSDCAccounts {
-		deposit, borrow, repay, withdraw := mapleKaminoMetas()
+		deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 		convert := func(input []accountMeta) KaminoPrimeUSDCAccounts {
 			out := make(KaminoPrimeUSDCAccounts, len(input))
 			for i, item := range input {
@@ -491,7 +516,7 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	for i := 0; i < 8; i++ {
 		data[8+i] = byte(amount >> (8 * i))
 	}
-	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: entry.policy, PolicyAccountDataSHA256: entry.hash, PolicyConstraintIndex: 0, Accounts: sets[index], Data: data, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
+	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: entry.Policy, PolicyAccountDataSHA256: entry.DataSHA256, PolicyConstraintIndex: 0, Accounts: sets[index], Data: data, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
 	if _, observedLeg, err := kaminoRouteInstruction(request, lane); err != nil || observedLeg != leg {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}

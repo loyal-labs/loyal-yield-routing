@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 )
 
@@ -14,6 +15,25 @@ import (
 func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient, operation PersistedOperation) error {
 	if database == nil || rpc == nil || !IsNonterminal(operation.Status) {
 		return fmt.Errorf("invalid nonterminal recovery input")
+	}
+	// Setup never enters ordinary delegate signing or abandoned-decision
+	// cleanup. A submitted prefund can advance through finalized reconciliation
+	// into one reserved creation intent. Built/Signed setup may only retire a
+	// proven expired-absent wire, retaining its reservation and signed history.
+	// Setup signing/sending remains disabled in this worker entrypoint.
+	if isPolicySetupAction(operation.Decision.Action) {
+		if operation.Status == Built || operation.Status == Signed {
+			return database.recoverExpiredPolicySetup(ctx, rpc, operation.ID, operation.SignedWireSHA256)
+		}
+		if operation.Decision.Action == PolicySetupPrefund && (operation.Status == BroadcastIntent || operation.Status == Submitted || operation.Status == Confirmed || operation.Status == Reconciling) {
+			_, err := database.continuePolicySetupPrefund(ctx, rpc, operation.ID)
+			return recoverUnsettledPolicySetup(ctx, database, rpc, operation, err)
+		}
+		if operation.Decision.Action == PolicySetupCreate && (operation.Status == BroadcastIntent || operation.Status == Submitted || operation.Status == Confirmed || operation.Status == Reconciling) {
+			err := database.reconcilePolicySetupCreation(ctx, rpc, operation.ID)
+			return recoverUnsettledPolicySetup(ctx, database, rpc, operation, err)
+		}
+		return budgetHold("policy_setup_execution_not_enabled")
 	}
 	switch operation.Status {
 	case Decided, Built, Simulated:
@@ -37,7 +57,34 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 			operation.TransactionSignature == "" || operation.RecentBlockhash == "" || operation.LastValidBlockHeight <= 0 {
 			return database.MarkManualRecovery(ctx, operation.ID, Signed, "incomplete_persisted_signed_wire")
 		}
-		if err := database.MarkBroadcastIntent(ctx, operation.ID); err != nil {
+		if err := database.RevalueAndMarkBroadcastIntent(ctx, rpc, operation); err != nil {
+			var hold *BudgetHold
+			if errors.As(err, &hold) {
+				if journalErr := database.RecordPhase3SignedBudgetHold(ctx, operation.ID, hold); journalErr != nil {
+					return errors.Join(err, journalErr)
+				}
+				var validated *validatedSignedBudgetHold
+				if !errors.As(err, &validated) {
+					return err
+				}
+				// A failed fresh valuation must not trap an expired, absent wire
+				// in Signed forever. Release only after finalized expiry and a
+				// subsequent explicit signature-absence observation; never resend.
+				height, heightErr := rpc.FinalizedBlockHeight(ctx)
+				if heightErr != nil {
+					return errors.Join(err, heightErr)
+				}
+				if height > operation.LastValidBlockHeight {
+					status, statusErr := rpc.SignatureStatus(ctx, operation.TransactionSignature)
+					if statusErr != nil {
+						return errors.Join(err, statusErr)
+					}
+					if status.Found {
+						return database.MarkManualRecovery(ctx, operation.ID, Signed, "signed_budget_hold_signature_found")
+					}
+					return database.MarkExpiredAbsentFailed(ctx, operation.ID, Signed)
+				}
+			}
 			return err
 		}
 		if _, err := rpc.SendSignedTransactionOnce(ctx, operation.SignedWire, operation.TransactionSignature); err != nil {
@@ -65,22 +112,42 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 			// expires. Keep observing it; expiry is only decisive when absent.
 			return nil
 		}
-		height, err := rpc.ConfirmedBlockHeight(ctx)
+		height, err := rpc.FinalizedBlockHeight(ctx)
 		if err != nil {
 			return err
 		}
 		if height > operation.LastValidBlockHeight {
+			// Recheck after finalized expiry. The earlier absence observation
+			// may predate a last-valid-block landing. A malformed response or
+			// any found signature retains the reservation and recovery fence.
+			afterExpiry, err := rpc.SignatureStatus(ctx, operation.TransactionSignature)
+			if err != nil {
+				return err
+			}
+			if afterExpiry.Found {
+				return nil
+			}
 			return database.MarkExpiredAbsentFailed(ctx, operation.ID, operation.Status)
 		}
 		return nil
 	case Confirmed:
 		return database.MarkReconciling(ctx, operation.ID)
 	case Reconciling:
+		status, err := rpc.SignatureStatus(ctx, operation.TransactionSignature)
+		if err != nil {
+			return err
+		}
+		if status.Failed {
+			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "finalization_transaction_error")
+		}
+		if !status.Finalized {
+			return nil
+		}
 		expected, err := DecodeExpectedEffects(operation.ExpectedEffects)
 		if err != nil {
 			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "invalid_expected_effects")
 		}
-		receipt, err := rpc.ConfirmedTransaction(ctx, operation.TransactionSignature)
+		receipt, err := rpc.FinalizedTransaction(ctx, operation.TransactionSignature)
 		if err != nil {
 			return err
 		}
@@ -91,10 +158,23 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 		if err != nil {
 			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "exact_effect_reconciliation_failed")
 		}
-		return database.MarkReconciled(ctx, operation.ID, reconciliation, effects)
+		return database.MarkReconciled(ctx, operation.ID, reconciliation, effects, receipt)
 	default:
 		return fmt.Errorf("unsupported nonterminal status: %s", operation.Status)
 	}
+}
+
+// A missing/failed receipt is not itself absence evidence. Only an independent
+// exact-wire expiry proof can retire BroadcastIntent/Submitted setup. Confirmed
+// operations remain reconciliation work, and a successful settlement is final.
+func recoverUnsettledPolicySetup(ctx context.Context, database *Database, rpc *RPCClient, operation PersistedOperation, reconciliationError error) error {
+	if reconciliationError == nil || (operation.Status != BroadcastIntent && operation.Status != Submitted) {
+		return reconciliationError
+	}
+	if err := database.recoverExpiredPolicySetup(ctx, rpc, operation.ID, operation.SignedWireSHA256); err != nil {
+		return errors.Join(reconciliationError, err)
+	}
+	return nil
 }
 
 func preBroadcastRecoveryReason(ctx context.Context, rpc *RPCClient, operation PersistedOperation) (string, error) {

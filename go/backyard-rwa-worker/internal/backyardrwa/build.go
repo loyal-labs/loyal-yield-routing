@@ -140,6 +140,44 @@ func BuildAndSignBridgeTransaction(request BridgeBuildRequest, executor ed25519.
 	return buildAndSignBridgeTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
 }
 
+// CompileBridgeMessage uses the exact signing path without accessing a key.
+// Fee/cap admission therefore measures the message before signing is possible.
+func CompileBridgeMessage(request BridgeBuildRequest) ([]byte, error) {
+	return compileBridgeMessageForDelegate(request, mustKey(bridgeDelegate))
+}
+
+func compileBridgeMessageForDelegate(request BridgeBuildRequest, delegate publicKey) ([]byte, error) {
+	if request.LastValidBlockHeight <= 0 || request.AdaptorConfig != bridgeStrategy || request.Settings != bridgeSettings || request.Report.Sequence != request.Report.ObservedSlot {
+		return nil, fmt.Errorf("bridge config or report is not bound to confirmed state")
+	}
+	blockhash, err := decodeKey(request.RecentBlockhash)
+	if err != nil {
+		return nil, err
+	}
+	inner, policy, indexes, err := ticketedBridgeInstructions(request)
+	if err != nil {
+		return nil, err
+	}
+	outer, err := wrapSquadsPolicyForDelegate(policy, delegate, delegate, indexes, inner)
+	if err != nil {
+		return nil, err
+	}
+	message, err := compileLegacyMessage(delegate, blockhash, []compiledInstruction{outer})
+	if err != nil {
+		return nil, err
+	}
+	return checkedUnsignedMessage(message)
+}
+
+func checkedUnsignedMessage(message []byte) ([]byte, error) {
+	legacy := len(message) >= 3 && message[0] == 1
+	v0 := len(message) >= 4 && message[0] == 0x80 && message[1] == 1
+	if (!legacy && !v0) || 1+ed25519.SignatureSize+len(message) > solanaPacketBytes {
+		return nil, fmt.Errorf("unsigned message does not fit the single-signer packet envelope")
+	}
+	return message, nil
+}
+
 // buildAndSignBridgeTransactionForDelegate exists solely so package tests can
 // verify Solana wire encoding with deterministic non-production key material.
 // Production always calls BuildAndSignBridgeTransaction, which pins the real
@@ -148,27 +186,11 @@ func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, execut
 	if len(executor) != ed25519.PrivateKeySize || request.LastValidBlockHeight <= 0 {
 		return SignedBridgeTransaction{}, fmt.Errorf("invalid bridge signing material")
 	}
-	if request.AdaptorConfig != bridgeStrategy || request.Settings != bridgeSettings ||
-		request.Report.Sequence != request.Report.ObservedSlot {
-		return SignedBridgeTransaction{}, fmt.Errorf("bridge config or report sequence is not bound to the confirmed snapshot")
-	}
 	feePayer := publicKeyFromBytes(executor.Public().(ed25519.PublicKey))
 	if feePayer != expectedDelegate {
 		return SignedBridgeTransaction{}, fmt.Errorf("executor is not the pinned Squads delegate")
 	}
-	blockhash, err := decodeKey(request.RecentBlockhash)
-	if err != nil {
-		return SignedBridgeTransaction{}, fmt.Errorf("invalid confirmed blockhash: %w", err)
-	}
-	inner, policy, constraintIndexes, err := ticketedBridgeInstructions(request)
-	if err != nil {
-		return SignedBridgeTransaction{}, err
-	}
-	outer, err := wrapSquadsPolicyForDelegate(policy, feePayer, expectedDelegate, constraintIndexes, inner)
-	if err != nil {
-		return SignedBridgeTransaction{}, err
-	}
-	message, err := compileLegacyMessage(feePayer, blockhash, []compiledInstruction{outer})
+	message, err := compileBridgeMessageForDelegate(request, expectedDelegate)
 	if err != nil {
 		return SignedBridgeTransaction{}, err
 	}
@@ -340,6 +362,15 @@ func wrapSquadsPolicyForDelegate(policy, executor, expectedDelegate publicKey, c
 func compileLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
 	if len(instructions) != 1 {
 		return nil, fmt.Errorf("bridge transaction must contain exactly one Squads instruction")
+	}
+	return encodeLegacyMessage(feePayer, blockhash, instructions)
+}
+
+// Encoding is separate from each caller's closed instruction-set validation.
+// The bridge/signing boundary above still permits exactly one instruction.
+func encodeLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
+	if len(instructions) == 0 || len(instructions) > 4 {
+		return nil, fmt.Errorf("unsupported legacy instruction count")
 	}
 	accounts := []accountMeta{{key: feePayer, signer: true, writable: true}}
 	for _, instruction := range instructions {
@@ -523,6 +554,12 @@ func encodeBase58(value []byte) string {
 		zeros++
 	}
 	out := make([]byte, zeros, zeros+len(digits))
+	for i := range out {
+		out[i] = base58Alphabet[0]
+	}
+	if zeros == len(value) {
+		return string(out)
+	}
 	for _, digit := range digits {
 		out = append(out, base58Alphabet[digit])
 	}

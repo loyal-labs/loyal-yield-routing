@@ -29,16 +29,20 @@ type startupLeaseHandoffRuntime struct {
 }
 
 type tickRuntime struct {
-	loadNonterminal func(context.Context, string) (*PersistedOperation, error)
-	advance         func(context.Context, PersistedOperation) error
-	observe         func(context.Context) (Observation, error)
-	prepareBridge   func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error)
-	prepareKamino   func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
-	prepareJupiter  func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
-	recordDecision  func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
-	buildBridge     func(context.Context, string, BridgeExecutionEvidence) error
-	buildKamino     func(context.Context, string, KaminoExecutionEvidence) error
-	buildJupiter    func(context.Context, string, JupiterExecutionEvidence) error
+	loadNonterminal  func(context.Context, string) (*PersistedOperation, error)
+	advance          func(context.Context, PersistedOperation) error
+	observe          func(context.Context) (Observation, error)
+	prepareBridge    func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error)
+	prepareKamino    func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
+	prepareJupiter   func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
+	recordDecision   func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
+	admitBridge      func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error
+	admitKamino      func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error
+	admitJupiter     func(context.Context, string, Observation, Decision, JupiterExecutionEvidence) error
+	buildBridge      func(context.Context, string, BridgeExecutionEvidence) error
+	buildKamino      func(context.Context, string, KaminoExecutionEvidence) error
+	buildJupiter     func(context.Context, string, JupiterExecutionEvidence) error
+	recordBudgetHold func(context.Context, string, *BudgetHold) error
 }
 
 func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteManifest) tickRuntime {
@@ -75,7 +79,45 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		prepareJupiter: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, JupiterExecutionEvidence, error) {
 			return ObserveConfirmedJupiterExecutionEvidence(ctx, rpc, manifest, decision, productionJupiterClient())
 		},
-		recordDecision: database.RecordDecision,
+		recordDecision:   database.RecordDecision,
+		recordBudgetHold: database.RecordPhase3BudgetHold,
+		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionDebtRaw > 0 && catalogJupiterRoute(observation.Snapshot.RouteLane) {
+				return database.admitPhase3Funding(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+			}
+			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionCollateralRaw > 0 && observation.Snapshot.PositionDebtRaw == 0 {
+				return database.admitPhase3PositionReturnNAV(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+			}
+			if observation.Snapshot.CollateralIdleRaw > 0 || observation.Snapshot.DebtIdleRaw > 0 {
+				return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+			}
+			return database.admitPhase3Bridge(ctx, rpc, operationID, observation, decision, evidence)
+		},
+		admitKamino: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence KaminoExecutionEvidence) error {
+			_, leg, err := kaminoPrimeUSDCInstruction(evidence.Request)
+			if err != nil {
+				return err
+			}
+			if leg == kaminoLegDeposit && evidence.Request.Action == OpenRouteStep {
+				return database.admitPhase3Deposit(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+			}
+			if leg == kaminoLegBorrow && evidence.Request.Action == OpenRouteStep {
+				return database.admitPhase3Borrow(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+			}
+			return database.admitPhase3Withdrawal(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+		},
+		admitJupiter: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
+			if evidence.Request.Action == SwapDebtToCollateralStep {
+				return database.admitPhase3LeverageSwap(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+			}
+			if evidence.Request.Action == SwapStableToCollateralStep {
+				return database.admitPhase3EntrySwap(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+			}
+			if evidence.Request.FullPayoffFunding {
+				return database.admitPhase3Funding(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+			}
+			return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+		},
 		buildBridge: func(ctx context.Context, operationID string, evidence BridgeExecutionEvidence) error {
 			return BuildSimulateAndPersistBridge(ctx, database, rpc, operationID, evidence)
 		},
@@ -165,9 +207,9 @@ func (w *Worker) Tick(ctx context.Context) error {
 	switch executionDecision {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 		observation, bridgeEvidence, err = w.runtime.prepareBridge(ctx, w.manifest, wireDecision)
-	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep:
+	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
 		observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, wireDecision)
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep:
+	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
 		observation, jupiterEvidence, err = w.runtime.prepareJupiter(ctx, w.manifest, wireDecision)
 	default:
 		return fmt.Errorf("action %s is not dispatchable", decision.Action)
@@ -191,14 +233,42 @@ func (w *Worker) Tick(ctx context.Context) error {
 	}
 	switch executionDecision {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		return w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
-	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep:
-		return w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep:
-		return w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
+		if w.runtime.admitBridge == nil {
+			err = budgetHold("bridge_admission_unavailable")
+		} else {
+			err = w.runtime.admitBridge(ctx, record.OperationID, observation, decision, bridgeEvidence)
+			if err == nil {
+				err = w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
+			}
+		}
+	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
+		if w.runtime.admitKamino == nil {
+			err = budgetHold("position_admission_unavailable")
+		} else {
+			err = w.runtime.admitKamino(ctx, record.OperationID, observation, decision, kaminoEvidence)
+			if err == nil {
+				err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
+			}
+		}
+	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
+		if w.runtime.admitJupiter == nil {
+			err = budgetHold("swap_admission_unavailable")
+		} else {
+			err = w.runtime.admitJupiter(ctx, record.OperationID, observation, decision, jupiterEvidence)
+			if err == nil {
+				err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
+			}
+		}
 	default:
 		return fmt.Errorf("prepared evidence no longer matches an actionable decision")
 	}
+	var hold *BudgetHold
+	if errors.As(err, &hold) && w.runtime.recordBudgetHold != nil {
+		if journalErr := w.runtime.recordBudgetHold(ctx, record.OperationID, hold); journalErr != nil {
+			return errors.Join(err, journalErr)
+		}
+	}
+	return err
 }
 
 type routeLeaser interface {

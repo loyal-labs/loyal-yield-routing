@@ -3,7 +3,7 @@ package backyardrwa
 import "testing"
 
 func base() Snapshot {
-	return Snapshot{ObservationID: "o", Slot: 9, RouteKind: RouteKind, Fresh: true, LiquidationThresholdBPS: 8000, CapacityRaw: 7, PolicyLimitRaw: 10, MaxTargetLTVEntryRaw: 7, PolicyReady: true, ExitBuildable: true}
+	return Snapshot{ObservationID: "o", Slot: 9, RouteKind: RouteKind, Fresh: true, LiquidationThresholdBPS: 8000, CapacityRaw: 7, PolicyLimitRaw: 10, MaxTargetLTVEntryRaw: 7, PolicyReady: true, ExitBuildable: true, MinimumCollateralDepositRaw: 1}
 }
 func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 	s := base()

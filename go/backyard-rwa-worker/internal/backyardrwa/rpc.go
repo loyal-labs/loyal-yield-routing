@@ -34,6 +34,37 @@ type LatestBlockhash struct {
 	LastValidBlockHeight int64
 }
 
+type MessageFeeObservation struct {
+	MessageSHA256 string `json:"messageSha256"`
+	Slot          int64  `json:"slot"`
+	Lamports      uint64 `json:"lamports"`
+}
+
+// ObserveMessageFee asks the chain to price the exact unsigned message,
+// including its compute-budget instructions. Null (expired blockhash) or an
+// incoherent slot is a HOLD, never a zero-fee assumption.
+func (c *RPCClient) ObserveMessageFee(ctx context.Context, message []byte, minimumSlot int64) (MessageFeeObservation, error) {
+	if _, err := checkedUnsignedMessage(message); err != nil {
+		return MessageFeeObservation{}, err
+	}
+	if minimumSlot <= 0 {
+		return MessageFeeObservation{}, budgetHold("invalid_fee_observation_slot")
+	}
+	var result struct {
+		Context struct {
+			Slot int64 `json:"slot"`
+		} `json:"context"`
+		Value *uint64 `json:"value"`
+	}
+	if err := c.call(ctx, "getFeeForMessage", []any{base64.StdEncoding.EncodeToString(message), map[string]any{"commitment": "confirmed", "minContextSlot": minimumSlot}}, &result); err != nil {
+		return MessageFeeObservation{}, budgetHold("network_fee_unavailable")
+	}
+	if result.Value == nil || *result.Value == 0 || result.Context.Slot < minimumSlot {
+		return MessageFeeObservation{}, budgetHold("network_fee_unavailable")
+	}
+	return MessageFeeObservation{MessageSHA256: sha256Bytes(message), Slot: result.Context.Slot, Lamports: *result.Value}, nil
+}
+
 type TransactionTokenBalance struct {
 	Address, OwnerProgram, Mint, Authority string
 	Raw                                    uint64
@@ -45,6 +76,7 @@ type ProgramReturnData struct {
 }
 
 type ConfirmedTransactionEvidence struct {
+	Finalized         bool
 	Signature         string
 	Slot              int64
 	PreTokenBalances  []TransactionTokenBalance
@@ -183,6 +215,15 @@ func (c *RPCClient) getMultipleAccounts(
 	minContextSlot int64,
 	optionalAddresses map[string]struct{},
 ) (int64, []ConfirmedAccount, error) {
+	return c.getMultipleAccountsAtCommitment(ctx, addresses, minContextSlot, optionalAddresses, "confirmed")
+}
+
+// Finalized setup seed reads share the existing decoder; ordinary worker
+// observations retain their confirmed default.
+func (c *RPCClient) getMultipleAccountsAtCommitment(ctx context.Context, addresses []string, minContextSlot int64, optionalAddresses map[string]struct{}, commitment string) (int64, []ConfirmedAccount, error) {
+	if commitment != "confirmed" && commitment != "finalized" {
+		return 0, nil, fmt.Errorf("unsupported account commitment")
+	}
 	if len(addresses) == 0 || minContextSlot <= 0 {
 		return 0, nil, fmt.Errorf("account addresses and minContextSlot are required")
 	}
@@ -198,7 +239,7 @@ func (c *RPCClient) getMultipleAccounts(
 		} `json:"value"`
 	}
 	err := c.call(ctx, "getMultipleAccounts", []any{addresses, map[string]any{
-		"commitment": "confirmed", "encoding": "base64", "minContextSlot": minContextSlot,
+		"commitment": commitment, "encoding": "base64", "minContextSlot": minContextSlot,
 	}}, &result)
 	if err != nil {
 		return 0, nil, confirmedObservationUnavailable(err)
@@ -208,12 +249,15 @@ func (c *RPCClient) getMultipleAccounts(
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for index, value := range result.Value {
-		if value == nil || value.Owner == "" {
+		if value == nil {
 			if _, optional := optionalAddresses[addresses[index]]; optional {
 				accounts[index] = ConfirmedAccount{Address: addresses[index]}
 				continue
 			}
 			return 0, nil, fmt.Errorf("required account %s is absent", addresses[index])
+		}
+		if value.Owner == "" {
+			return 0, nil, confirmedObservationUnavailable(fmt.Errorf("account %s has no owner", addresses[index]))
 		}
 		var encoded []string
 		if err := json.Unmarshal(value.Data, &encoded); err != nil || len(encoded) != 2 || encoded[1] != "base64" {
@@ -318,13 +362,16 @@ func (c *RPCClient) SignatureStatus(ctx context.Context, signature string) (Sign
 	if err := c.call(ctx, "getSignatureStatuses", []any{[]string{signature}, map[string]bool{"searchTransactionHistory": true}}, &result); err != nil {
 		return SignatureObservation{}, err
 	}
-	if len(result.Value) != 1 || result.Value[0] == nil {
+	if len(result.Value) != 1 {
+		return SignatureObservation{}, fmt.Errorf("signature status response has wrong cardinality")
+	}
+	if result.Value[0] == nil {
 		return SignatureObservation{Found: false}, nil
 	}
 	status := result.Value[0]
 	failed := len(status.Err) > 0 && string(status.Err) != "null"
 	confirmed := !failed && status.Slot > 0 && (status.ConfirmationStatus == "confirmed" || status.ConfirmationStatus == "finalized")
-	return SignatureObservation{Found: true, Confirmed: confirmed, ConfirmationSlot: status.Slot, Failed: failed}, nil
+	return SignatureObservation{Found: true, Confirmed: confirmed, Finalized: confirmed && status.ConfirmationStatus == "finalized", ConfirmationSlot: status.Slot, Failed: failed}, nil
 }
 
 // ConfirmedTransaction reads the immutable receipt for the exact persisted
@@ -332,6 +379,14 @@ func (c *RPCClient) SignatureStatus(ctx context.Context, signature string) (Sign
 // balances rather than a later account read that can include unrelated user
 // deposits or claims.
 func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) (ConfirmedTransactionEvidence, error) {
+	return c.transactionReceipt(ctx, signature, "confirmed")
+}
+
+func (c *RPCClient) FinalizedTransaction(ctx context.Context, signature string) (ConfirmedTransactionEvidence, error) {
+	return c.transactionReceipt(ctx, signature, "finalized")
+}
+
+func (c *RPCClient) transactionReceipt(ctx context.Context, signature, commitment string) (ConfirmedTransactionEvidence, error) {
 	if signature == "" {
 		return ConfirmedTransactionEvidence{}, fmt.Errorf("transaction signature is required")
 	}
@@ -367,7 +422,7 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 		} `json:"transaction"`
 	}
 	if err := c.call(ctx, "getTransaction", []any{signature, map[string]any{
-		"commitment": "confirmed", "encoding": "json", "maxSupportedTransactionVersion": 0,
+		"commitment": commitment, "encoding": "json", "maxSupportedTransactionVersion": 0,
 	}}, &result); err != nil {
 		return ConfirmedTransactionEvidence{}, err
 	}
@@ -409,6 +464,7 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 		return ConfirmedTransactionEvidence{}, err
 	}
 	evidence := ConfirmedTransactionEvidence{
+		Finalized: commitment == "finalized",
 		Signature: signature, Slot: result.Slot, PreTokenBalances: pre, PostTokenBalances: post,
 		Logs: append([]string(nil), result.Meta.LogMessages...),
 	}
@@ -428,8 +484,16 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 }
 
 func (c *RPCClient) ConfirmedBlockHeight(ctx context.Context) (int64, error) {
+	return c.blockHeight(ctx, "confirmed")
+}
+
+func (c *RPCClient) FinalizedBlockHeight(ctx context.Context) (int64, error) {
+	return c.blockHeight(ctx, "finalized")
+}
+
+func (c *RPCClient) blockHeight(ctx context.Context, commitment string) (int64, error) {
 	var height int64
-	if err := c.call(ctx, "getBlockHeight", []any{map[string]string{"commitment": "confirmed"}}, &height); err != nil {
+	if err := c.call(ctx, "getBlockHeight", []any{map[string]string{"commitment": commitment}}, &height); err != nil {
 		return 0, err
 	}
 	if height <= 0 {

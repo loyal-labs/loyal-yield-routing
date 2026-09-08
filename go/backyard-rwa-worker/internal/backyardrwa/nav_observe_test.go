@@ -9,6 +9,30 @@ import (
 	"testing"
 )
 
+func TestCrossDecimalValuationUsesPricesAndConservativeRounding(t *testing.T) {
+	var one, two [16]byte
+	binary.LittleEndian.PutUint64(one[:8], uint64(1)<<60)
+	binary.LittleEndian.PutUint64(two[:8], uint64(2)<<60)
+	for _, tc := range []struct {
+		raw          uint64
+		from, to     uint8
+		price, quote [16]byte
+		liability    bool
+		want         uint64
+	}{
+		{1_000_000_000, 9, 6, one, one, false, 1_000_000},
+		{1_000_000, 6, 9, one, one, false, 1_000_000_000},
+		{1_000_000_000, 9, 6, one, two, false, 500_000},
+		{1, 9, 6, one, one, false, 0},
+		{1, 9, 6, one, one, true, 1},
+	} {
+		got, err := valueBetweenTokenRaw(tc.raw, tc.from, tc.to, tc.price, tc.quote, tc.liability)
+		if err != nil || got != tc.want {
+			t.Fatalf("cross-decimal value: got %d, want %d, err %v", got, tc.want, err)
+		}
+	}
+}
+
 func tokenAccountFixture(t *testing.T, address, mint, authority string, raw uint64) ConfirmedAccount {
 	t.Helper()
 	mintKey, err := decodeBase58PublicKey(mint)
@@ -63,6 +87,8 @@ func reserveFixture(t *testing.T, address, mint string, slot int64, priceSF *big
 	putKey(t, data[128:160], mint)
 	binary.LittleEndian.PutUint64(data[224:232], liquidityRaw)
 	putScaledFraction(data[248:264], priceSF)
+	binary.LittleEndian.PutUint64(data[272:280], 6)
+	putScaledFraction(data[296:328], new(big.Int).Lsh(big.NewInt(1), 60))
 	binary.LittleEndian.PutUint64(data[2592:2600], collateralSupply)
 	return ConfirmedAccount{Address: address, Owner: kaminoProgram, Lamports: 1, Data: data}
 }
@@ -85,6 +111,7 @@ func obligationFixture(t *testing.T, slot int64, collateralReceiptRaw, debtRaw u
 	}
 	if debtRaw > 0 {
 		putKey(t, data[1208:1240], config.DebtReserve)
+		putScaledFraction(data[1240:1272], new(big.Int).Lsh(big.NewInt(1), 60))
 		putScaledFraction(data[1296:1312], new(big.Int).Lsh(new(big.Int).SetUint64(debtRaw), 60))
 	}
 	return ConfirmedAccount{Address: config.Obligation, Owner: config.Program, Lamports: 1, Data: data}
@@ -134,6 +161,82 @@ func TestComputeRouteNAVValuesConfirmedCustodyAndPositionConservatively(t *testi
 	again, err := ComputeRouteNAV(77, reversed, manifest, nil)
 	if err != nil || again.SnapshotDigest != got.SnapshotDigest {
 		t.Fatalf("NAV digest depends on RPC account order: %+v err=%v", again, err)
+	}
+}
+
+func nonUSDCDebtNAVFixture(t *testing.T) (RuntimeRoute, []ConfirmedAccount) {
+	t.Helper()
+	route, err := runtimeRoute(RouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Controlled account images only; this does not install a runtime binding.
+	route.Kamino.DebtMint = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+	route.Kamino.DebtReserve = mapleSyrupUSDCUSDC.Kamino.DebtReserve
+	route.DebtCustody = "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+	route.DebtTokenProgram = token2022Program
+	accounts := routeNAVFixture(t, 77)
+	// 9-decimal collateral: 3,000 raw idle and 20,000 raw redeemable,
+	// priced at 1.5 USDC/token; asset conversion must floor in micro-USDC.
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 3_000)
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.CollateralReserve).Data[272:280], 9)
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.Obligation).Data[128:136], 10_000)
+	putKey(t, accountAt(accounts, route.Kamino.Obligation).Data[1208:1240], route.Kamino.DebtReserve)
+	// Deliberately depeg the debt asset to 2 USDC. Equal mint decimals
+	// must not turn its liability or idle balance into USDC at par.
+	debt := reserveFixture(t, route.Kamino.DebtReserve, route.Kamino.DebtMint, 77,
+		new(big.Int).Lsh(big.NewInt(2), 60), 100, 100)
+	custody := tokenAccountFixture(t, route.DebtCustody, route.Kamino.DebtMint, bridgeVault, 9)
+	custody.Owner = token2022Program
+	return route, append(accounts, debt, custody)
+}
+
+func TestRouteNAVNormalizesNonUSDCDebtAndIncludesIdleDebt(t *testing.T) {
+	route, accounts := nonUSDCDebtNAVFixture(t)
+	got, err := ComputeRouteNAVForRoute(77, accounts, readyWorkerManifest(t), nil, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 5 strategy + 6 USDC + floor(3*1.5) + 20*1.5 - 7*2 + 9*2.
+	if got.StrategyNAVRaw != 49 || got.PositionDebtValue != 14 || got.DebtIdleValueRaw != 18 ||
+		got.PositionCollateralValue != 30 || got.PrimeIdleValueRaw != 4 || got.TotalVaultNAVRaw != 60 {
+		t.Fatalf("NAV mixed debt raw units with USDC or omitted idle debt: %+v", got)
+	}
+	post := got.Custodies
+	post.SquadsDebtRaw--
+	changed, err := ComputeRouteNAVForRoute(77, accounts, readyWorkerManifest(t), &post, route)
+	if err != nil || changed.StrategyNAVRaw != 47 || changed.SnapshotDigest == got.SnapshotDigest {
+		t.Fatalf("debt poststate did not affect valuation and its fingerprint: %+v, %v", changed, err)
+	}
+}
+
+func TestNonUSDCDebtNAVRejectsIncompleteOrMismatchedInputs(t *testing.T) {
+	for _, name := range []string{"missing reference", "missing custody", "wrong program", "wrong reference decimals", "future reference"} {
+		t.Run(name, func(t *testing.T) {
+			route, accounts := nonUSDCDebtNAVFixture(t)
+			switch name {
+			case "missing reference", "missing custody":
+				address := kaminoDebtReserve
+				if name == "missing custody" {
+					address = route.DebtCustody
+				}
+				for i, a := range accounts {
+					if a.Address == address {
+						accounts = append(accounts[:i], accounts[i+1:]...)
+						break
+					}
+				}
+			case "wrong program":
+				route.DebtTokenProgram = classicTokenProgram
+			case "wrong reference decimals":
+				binary.LittleEndian.PutUint64(accountAt(accounts, kaminoDebtReserve).Data[272:280], 9)
+			case "future reference":
+				binary.LittleEndian.PutUint64(accountAt(accounts, kaminoDebtReserve).Data[16:24], 78)
+			}
+			if _, err := ComputeRouteNAVForRoute(77, accounts, readyWorkerManifest(t), nil, route); err == nil {
+				t.Fatal("unsafe non-USDC NAV input was accepted")
+			}
+		})
 	}
 }
 

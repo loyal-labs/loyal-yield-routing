@@ -1,0 +1,16 @@
+{
+ "lpMint": "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb",
+ "method": "getProgramAccounts",
+ "holders": [
+  {
+   "address": "C35aUCiMtQa7Zou8Jag5qRbMHqvnVarPwkSwYRgshcC1",
+   "amount": "99941522",
+   "owner": "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e"
+  },
+  {
+   "address": "ZvsW29zAXZwMayzP9jAVBryRi5rt6X7em5vYdhKGbvZ",
+   "amount": "0",
+   "owner": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+  }
+ ]
+}

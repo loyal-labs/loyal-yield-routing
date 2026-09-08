@@ -75,6 +75,22 @@ func ObserveConfirmedBridgeExecutionEvidence(
 			return Observation{}, BridgeExecutionEvidence{}, err
 		}
 		ticketRequired := decision.Action != StageSquadsToVoltr
+		if phase3BudgetFamilyForLane(route.Lane) != "" {
+			// Reserve the entire bridge exit, including a report after staging.
+			// Every required policy and the existing ticket must be present in
+			// this same confirmed snapshot; admission cannot authorize setup.
+			ticketRequired = true
+			for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
+				address, hash, err := manifest.bridgePolicy(action)
+				if err != nil {
+					return Observation{}, BridgeExecutionEvidence{}, err
+				}
+				account := accountAt(accounts, address)
+				if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+					return Observation{}, BridgeExecutionEvidence{}, budgetHold("bridge_exit_policy_unavailable")
+				}
+			}
+		}
 		policyAccount := accountAt(accounts, policy)
 		if policyAccount.Owner != bridgeSquadsProgram || policyAccount.Executable ||
 			policyAccount.Lamports == 0 || sha256Bytes(policyAccount.Data) != policyHash {
@@ -224,6 +240,25 @@ func ObserveConfirmedKaminoExecutionEvidence(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
+		fullPayoff := leg == kaminoLegRepay && decision.Action == DeleverRouteStep && decision.AmountRaw > 0 && uint64(decision.AmountRaw) >= position.DebtRaw
+		repaymentRelease := leg == kaminoLegWithdraw && decision.Action == DeleverRouteStep && decision.Reason == "withdrawal_release_repayment_collateral" && catalogJupiterRoute(route.Lane)
+		if repaymentRelease {
+			bound, err := decodeKaminoRepaymentRelease(accounts, route, observation.Snapshot.Slot)
+			if err != nil {
+				return Observation{}, KaminoExecutionEvidence{}, err
+			}
+			wireAmount, effectAmount = bound.ReceiptRaw, bound.LiquidityRaw
+		}
+		if fullPayoff {
+			bound, err := decodeKaminoPayoffBound(accounts, route, observation.Snapshot.Slot)
+			if err != nil {
+				return Observation{}, KaminoExecutionEvidence{}, err
+			}
+			wireAmount, effectAmount = bound.UpperDebtRaw, bound.ObservedDebtRaw
+			if observation.Snapshot.DebtIdleRaw < 0 || uint64(observation.Snapshot.DebtIdleRaw) < wireAmount {
+				return Observation{}, KaminoExecutionEvidence{}, budgetHold("full_payoff_cash_insufficient")
+			}
+		}
 		blockhash, err := rpc.LatestBlockhash(ctx)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
@@ -233,6 +268,11 @@ func ObserveConfirmedKaminoExecutionEvidence(
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
 		request.ObligationReserves = []string{}
+		request.FullPayoff = fullPayoff
+		request.RepaymentRelease = repaymentRelease
+		if repaymentRelease {
+			request.ReleaseDebtIdleRaw = uint64(observation.Snapshot.DebtIdleRaw)
+		}
 		if position.CollateralDepositedRaw > 0 {
 			request.ObligationReserves = append(request.ObligationReserves, route.Kamino.CollateralReserve)
 		}
@@ -248,7 +288,16 @@ func ObserveConfirmedKaminoExecutionEvidence(
 			sha256Bytes(policy.Data) != request.PolicyAccountDataSHA256 {
 			return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("PRIME/USDC policy bytes or owner drifted")
 		}
-		effects, err := exactKaminoTokenEffects(accounts, source, destination, effectAmount)
+		var effects ExpectedEffects
+		if leg == kaminoLegDeposit {
+			effects, err = boundedKaminoDepositEffects(accounts, route, observation.Snapshot.Slot, wireAmount)
+		} else if leg == kaminoLegBorrow {
+			effects, err = kaminoBorrowEffects(accounts, route, wireAmount)
+		} else if leg == kaminoLegRepay {
+			effects, err = boundedKaminoRepaymentEffects(accounts, source, destination, effectAmount, wireAmount)
+		} else {
+			effects, err = exactKaminoTokenEffects(accounts, source, destination, effectAmount)
+		}
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
@@ -298,10 +347,13 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 		}
 		if position.DebtRaw > 0 {
 			amount := position.DebtRaw
-			if decision.AmountRaw > 0 && uint64(decision.AmountRaw) < amount {
+			if decision.AmountRaw > 0 {
 				amount = uint64(decision.AmountRaw)
 			}
-			return kaminoLegRepay, amount, amount, nil
+			// Keep the finite decision limit on the wire. KLend transfers only
+			// min(request, refreshed debt), which may differ from this request.
+			// This is not a forecast of interest or a full-payoff assertion.
+			return kaminoLegRepay, amount, min(amount, position.DebtRaw), nil
 		}
 		if position.CollateralDepositedRaw > 0 && position.RedeemablePrimeRaw > 0 {
 			receiptRaw := position.CollateralDepositedRaw
@@ -349,7 +401,7 @@ func withdrawExcessForRepayment(position KaminoPosition) (uint64, uint64, error)
 	if position.CollateralDepositedRaw == 0 || position.RedeemablePrimeRaw == 0 || position.DebtRaw == 0 {
 		return 0, 0, fmt.Errorf("position has no withdrawable repayment collateral")
 	}
-	debtValue, err := valueInDebtRaw(position.DebtRaw, position.DebtPriceSF, position.DebtPriceSF, true)
+	debtValue, err := valueBetweenTokenRaw(position.DebtRaw, position.DebtDecimals, position.DebtDecimals, position.DebtPriceSF, position.DebtPriceSF, true)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -359,7 +411,7 @@ func withdrawExcessForRepayment(position KaminoPosition) (uint64, uint64, error)
 	if !requiredDebtValue.IsUint64() {
 		return 0, 0, fmt.Errorf("required unwind collateral exceeds u64")
 	}
-	requiredPrime, err := valueInDebtRaw(requiredDebtValue.Uint64(), position.DebtPriceSF, position.CollateralPriceSF, true)
+	requiredPrime, err := valueBetweenTokenRaw(requiredDebtValue.Uint64(), position.DebtDecimals, position.CollateralDecimals, position.DebtPriceSF, position.CollateralPriceSF, true)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -456,8 +508,27 @@ func exactKaminoTokenEffects(accounts []ConfirmedAccount, source, destination ka
 	if sourceRaw < amount || destinationRaw > math.MaxUint64-amount {
 		return ExpectedEffects{}, fmt.Errorf("Kamino custody effect overflows or underflows")
 	}
+	// Both accounts were decoded under their actual owner above. Preserve it:
+	// PYUSD uses Token-2022, even when the bridge cash uses classic SPL Token.
+	program := accountAt(accounts, source.Address).Owner
+	if program != accountAt(accounts, destination.Address).Owner || source.Mint != destination.Mint {
+		return ExpectedEffects{}, fmt.Errorf("Kamino transfer custody token programs or mints differ")
+	}
 	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{
-		{Address: source.Address, Owner: bridgeTokenProgram, Mint: source.Mint, Authority: source.Authority, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
-		{Address: destination.Address, Owner: bridgeTokenProgram, Mint: destination.Mint, Authority: destination.Authority, BeforeRaw: destinationRaw, AfterRaw: destinationRaw + amount},
+		{Address: source.Address, Owner: program, Mint: source.Mint, Authority: source.Authority, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
+		{Address: destination.Address, Owner: program, Mint: destination.Mint, Authority: destination.Authority, BeforeRaw: destinationRaw, AfterRaw: destinationRaw + amount},
 	}}, nil
+}
+
+func boundedKaminoRepaymentEffects(accounts []ConfirmedAccount, source, destination kaminoCustodyBoundary, minimum, maximum uint64) (ExpectedEffects, error) {
+	effects, err := exactKaminoTokenEffects(accounts, source, destination, maximum)
+	if err != nil {
+		return ExpectedEffects{}, err
+	}
+	effects.Kind = "kamino-repay"
+	effects.Repayment = &ExpectedRepayment{MinimumDebitRaw: minimum, MaximumDebitRaw: maximum}
+	if err := validateRepaymentEffects(effects); err != nil {
+		return ExpectedEffects{}, err
+	}
+	return effects, nil
 }

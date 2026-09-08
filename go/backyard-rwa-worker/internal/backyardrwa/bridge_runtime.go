@@ -37,6 +37,9 @@ func BuildSimulateAndPersistBridge(
 	if _, err := DecodeExpectedEffects(encodedEffects); err != nil {
 		return err
 	}
+	if err := authorizePhase3ProductionBuild(ctx, database, rpc, operationID, evidence.Request, evidence.ExpectedEffects, encodedEffects); err != nil {
+		return err
+	}
 	signer, err := loadPinnedPolicySigner()
 	if err != nil {
 		return err

@@ -58,6 +58,14 @@ func optionalLifecycleObligations(addresses []string) []string {
 			break
 		}
 	}
+	for _, obligation := range []string{autoAUTOPYUSD.Kamino.Obligation, ethenaUSDePYUSD.Kamino.Obligation, primePRIMEPYUSD.Kamino.Obligation, primePRIMEUSDS.Kamino.Obligation} {
+		for _, candidate := range addresses {
+			if candidate == obligation {
+				optional = append(optional, obligation)
+				break
+			}
+		}
+	}
 	return optional
 }
 
@@ -184,22 +192,42 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: beforeDemand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw)}}
 		base.Snapshot.PrimeIdleRaw = int64(prime.Raw)
 		base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
+		if route.Kamino.DebtMint != bridgeUSDC && prime.Raw > 0 && !cutoverDrain && beforeDemand == 0 {
+			minimum, err := kaminoDepositMinimum(accounts, route, slot, math.MaxInt64)
+			if err != nil {
+				return Observation{}, nil, err
+			}
+			base.Snapshot.MinimumCollateralDepositRaw = math.MaxInt64 - int64(minimum) + 1
+		}
 		base.Snapshot.RouteLane = route.Lane
 		base.Snapshot.StrategyKey = route.Lane
 		base.Snapshot.CutoverDrain = cutoverDrain
 		base.Snapshot.HasPosition = position.HasPosition
 		base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
 		base.Snapshot.PositionDebtRaw = int64(position.DebtRaw)
+		if route.Kamino.DebtMint != bridgeUSDC && position.DebtRaw > 0 {
+			// Include NAV -> release -> NAV -> funding -> NAV -> payoff in
+			// planning. Each actual wire still has its own short freshness gate.
+			bound, err := decodeKaminoPayoffWindow(accounts, route, slot, 6)
+			if err != nil {
+				return Observation{}, nil, err
+			}
+			base.Snapshot.PayoffDebtRaw = int64(bound.UpperDebtRaw)
+		}
 		base.Snapshot.PositionCollateralValueRaw = int64(nav.PositionCollateralValue)
 		base.Snapshot.PositionDebtValueRaw = int64(nav.PositionDebtValue)
 		base.Snapshot.StrategyNAVRaw = int64(nav.StrategyNAVRaw)
 		base.Snapshot.LTVBPS = ltv
 		base.Snapshot.LiquidationThresholdBPS = position.LiquidationThresholdBPS
-		if position.EntryCapacityRaw > math.MaxInt64 {
+		entryUSDC, err := routeEntryCapacityUSDC(position, accounts, route)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		if entryUSDC > math.MaxInt64 {
 			return Observation{}, nil, fmt.Errorf("PRIME/USDC entry capacity exceeds signed decision range")
 		}
-		base.Snapshot.CapacityRaw = int64(position.EntryCapacityRaw)
-		base.Snapshot.MaxTargetLTVEntryRaw = int64(position.EntryCapacityRaw)
+		base.Snapshot.CapacityRaw = int64(entryUSDC)
+		base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
 		base.Snapshot.BorrowUtilizationBlocked = position.BorrowUtilizationBlocked
 		base.Snapshot.PolicyLimitRaw = int64(bridgeCapRaw)
 		base.Snapshot.PolicyReady = ready
@@ -211,8 +239,12 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base.Snapshot.ObservationID = routeEconomicObservationID(
 			base.Snapshot.ObservationID, prime.Raw, position.CollateralDepositedRaw, position.DebtRaw,
 			ready, exit, position.BorrowUtilizationBlocked,
-			nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, position.EntryCapacityRaw,
+			nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, entryUSDC,
 		)
+		if route.Kamino.DebtMint != bridgeUSDC {
+			digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d|payoff-debt:%d|idle-collateral-value:%d|position-debt-value:%d|minimum-deposit:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw, base.Snapshot.PayoffDebtRaw, base.Snapshot.CollateralIdleValueRaw, base.Snapshot.PositionDebtValueRaw, base.Snapshot.MinimumCollateralDepositRaw)))
+			base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
+		}
 		base.ObservedAt = observedAt
 		return base, accounts, nil
 	}
@@ -233,6 +265,21 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 		return nil
 	}
 	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
+	// All deposit rounding bounds use the Clock from the same custody/reserve
+	// batch, including retained PRIME/Maple consumers.
+	addressSet[budgetClockAddress] = struct{}{}
+	addressSet[route.DebtFeeReceiver] = struct{}{}
+	if catalogJupiterRoute(route.Lane) {
+		policies, err := catalogRoutePolicyHashes(route, manifest)
+		if err != nil {
+			return nil
+		}
+		for address := range policies {
+			addressSet[address] = struct{}{}
+		}
+		addressSet[route.CollateralLiquiditySupply] = struct{}{}
+		addressSet[route.DebtLiquiditySupply] = struct{}{}
+	}
 	if route.Lane == SelectedRouteID {
 		addressSet[mapleSyrupUSDCUSDC.CollateralLiquiditySupply] = struct{}{}
 		addressSet[mapleSyrupUSDCUSDC.DebtLiquiditySupply] = struct{}{}
@@ -260,6 +307,19 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 }
 
 func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount) (bool, bool) {
+	if catalogJupiterRoute(route.Lane) {
+		policies, err := catalogRoutePolicyHashes(route, manifest)
+		if err != nil {
+			return false, false
+		}
+		for address, hash := range policies {
+			account := accountAt(accounts, address)
+			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+				return false, false
+			}
+		}
+		return true, true
+	}
 	if route.Lane == RouteID {
 		return manifest.livePrimeUSDCPolicyReadiness(accounts)
 	}
@@ -336,7 +396,32 @@ func observeKaminoFromFixedAccounts(ctx context.Context, accountsReader func(con
 	if err != nil {
 		return KaminoPosition{}, err
 	}
-	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: obligation.debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
+	debtRaw, err := obligation.debtAtReserveRate(debt)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
+}
+
+// Capacity is originally debt-denominated. The entry planner spends bridge
+// USDC, so normalize at observed prices and floor rather than assume a peg.
+// The caller has already validated this same batch's NAV/refresh dependencies.
+func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
+	if route.Kamino.DebtMint == bridgeUSDC {
+		return position.EntryCapacityRaw, nil
+	}
+	reference, err := pinnedKaminoObservationConfig()
+	if err != nil {
+		return 0, err
+	}
+	usdc, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
+	if err != nil {
+		return 0, err
+	}
+	if usdc.mintDecimals != 6 || usdc.refreshedSlot > position.Slot {
+		return 0, fmt.Errorf("entry USDC reference drifted")
+	}
+	return valueBetweenTokenRaw(position.EntryCapacityRaw, position.DebtDecimals, 6, position.DebtPriceSF, usdc.marketPriceSF, false)
 }
 
 // routeEconomicObservationID deliberately excludes Slot, the stateless adaptor
@@ -361,7 +446,7 @@ func routeEconomicObservationID(
 func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Time) error {
 	if snapshot == nil || snapshot.Slot <= 0 || nav.Slot != snapshot.Slot || now.IsZero() || now.Unix() < 0 ||
 		nav.StrategyNAVRaw > math.MaxInt64 || nav.TotalVaultNAVRaw > math.MaxInt64 || nav.PriorReportedNAVRaw > math.MaxInt64 ||
-		nav.Report.Sequence > math.MaxInt64 ||
+		nav.Report.Sequence > math.MaxInt64 || nav.Custodies.SquadsDebtRaw > math.MaxInt64 || nav.PrimeIdleValueRaw > math.MaxInt64 ||
 		nav.PriorReportUpdatedTS > math.MaxInt64 || nav.Report.Sequence != nav.Report.ObservedSlot ||
 		nav.Report.ObservedSlot != uint64(nav.Slot) || nav.Report.NAVAfterRaw != nav.StrategyNAVRaw ||
 		nav.Report.SnapshotDigest != nav.SnapshotDigest || !sha256Pattern.MatchString(nav.SnapshotDigest) {
@@ -382,6 +467,8 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	snapshot.PriorReportUpdatedUnix = lastUpdated
 	snapshot.ReportSequence = int64(nav.Report.Sequence)
 	snapshot.ReportSnapshotDigest = nav.Report.SnapshotDigest
+	snapshot.DebtIdleRaw = int64(nav.Custodies.SquadsDebtRaw)
+	snapshot.CollateralIdleValueRaw = int64(nav.PrimeIdleValueRaw)
 	return nil
 }
 
@@ -510,6 +597,9 @@ func manifestPacketLeg(data []byte) kaminoPrimeUSDCLeg {
 }
 
 func observedLTVBPS(position KaminoPosition) (int64, error) {
+	if position.CollateralDecimals > 18 || position.DebtDecimals > 18 {
+		return 0, fmt.Errorf("Kamino LTV decimals exceed supported scale")
+	}
 	if position.DebtRaw == 0 {
 		return 0, nil
 	}
@@ -518,10 +608,15 @@ func observedLTVBPS(position KaminoPosition) (int64, error) {
 	}
 	collateral := new(big.Int).Mul(new(big.Int).SetUint64(position.RedeemablePrimeRaw), littleInt(position.CollateralPriceSF[:]))
 	debt := new(big.Int).Mul(new(big.Int).SetUint64(position.DebtRaw), littleInt(position.DebtPriceSF[:]))
+	// Prices are per token, not per raw unit. Cross-multiply the decimal
+	// scales before division; otherwise a 9/6 lane understates LTV 1,000x.
+	debt.Mul(debt, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(position.CollateralDecimals)), nil))
+	collateral.Mul(collateral, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(position.DebtDecimals)), nil))
 	if collateral.Sign() <= 0 || debt.Sign() <= 0 {
 		return 0, fmt.Errorf("Kamino LTV price is zero")
 	}
-	debt.Mul(debt, big.NewInt(10_000)).Div(debt, collateral)
+	debt.Mul(debt, big.NewInt(10_000))
+	debt.Add(debt, new(big.Int).Sub(collateral, big.NewInt(1))).Div(debt, collateral)
 	if !debt.IsInt64() || debt.Int64() > 10_000 {
 		return 0, fmt.Errorf("Kamino LTV is outside bounded range")
 	}

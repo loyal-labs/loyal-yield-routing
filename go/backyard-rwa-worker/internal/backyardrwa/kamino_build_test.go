@@ -42,6 +42,34 @@ func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoPrimeUSDCReq
 	}
 }
 
+func TestSharedKaminoTokenProgramAndLaneBoundary(t *testing.T) {
+	route, err := runtimeRoute(RouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
+	if !exactKaminoMetas(deposit, kaminoDepositMetas()) || !exactKaminoMetas(borrow, kaminoBorrowMetas()) || !exactKaminoMetas(repay, kaminoRepayMetas()) || !exactKaminoMetas(withdraw, kaminoWithdrawMetas()) {
+		t.Fatal("shared layout changed the retained Prime account graph")
+	}
+	if _, ok := matchesKaminoStepForRoute(OpenPrimeUSDCStep, kaminoDepositCollateral, deposit, "uninstalled/lane"); ok {
+		t.Fatal("unknown lane inherited the Prime account graph")
+	}
+	// Controlled layout variation, not an installed or executable new lane.
+	route.CollateralTokenProgram, route.DebtTokenProgram = token2022Program, token2022Program
+	deposit, borrow, repay, withdraw = kaminoMetasForRoute(route)
+	for _, m := range [][]accountMeta{deposit, withdraw} {
+		if m[11].key != mustKey(classicTokenProgram) || m[12].key != mustKey(token2022Program) {
+			t.Fatal("receipt and underlying token programs were conflated")
+		}
+	}
+	if borrow[10].key != mustKey(token2022Program) || repay[7].key != mustKey(token2022Program) {
+		t.Fatal("debt transfer used the wrong token program")
+	}
+	if _, ok := matchesKaminoStepForRoute(OpenPrimeUSDCStep, kaminoDepositCollateral, deposit, RouteID); ok {
+		t.Fatal("caller mutation changed an installed lane's token program")
+	}
+}
+
 func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -77,6 +105,10 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 			signed, err := buildAndSignKaminoPrimeUSDCTransactionForDelegate(request, key, delegate)
 			if err != nil {
 				t.Fatal(err)
+			}
+			unsigned, err := compileKaminoMessageForDelegate(request, delegate)
+			if err != nil || !bytes.Equal(unsigned, signed.message) {
+				t.Fatalf("unsigned Kamino fee message differs: %v", err)
 			}
 			if len(signed.signedWire) > solanaPacketBytes || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:1+ed25519.SignatureSize]) {
 				t.Fatal("Kamino exact wire signature or packet boundary is invalid")

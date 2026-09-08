@@ -22,10 +22,16 @@ const (
 	SwapCollateralToStableStep Action = "SWAP_COLLATERAL_TO_STABLE_STEP"
 	OpenRouteStep              Action = "OPEN_ROUTE_STEP"
 	DeleverRouteStep           Action = "DELEVER_ROUTE_STEP"
+	SwapDebtToCollateralStep   Action = "SWAP_DEBT_TO_COLLATERAL_STEP"
+	SwapCollateralToDebtStep   Action = "SWAP_COLLATERAL_TO_DEBT_STEP"
+	SwapUSDCToDebtStep         Action = "SWAP_USDC_TO_DEBT_STEP"
+	SwapDebtToUSDCStep         Action = "SWAP_DEBT_TO_USDC_STEP"
 	StageSquadsToVoltr         Action = "STAGE_SQUADS_TO_VOLTR"
 	VoltrRestoreIdle           Action = "VOLTR_RESTORE_IDLE"
 	ReportNAV                  Action = "REPORT_NAV"
 	HoldManualRecovery         Action = "HOLD_MANUAL_RECOVERY"
+	PolicySetupPrefund         Action = "POLICY_SETUP_PREFUND"
+	PolicySetupCreate          Action = "POLICY_SETUP_CREATE"
 )
 
 type OperationStatus string
@@ -58,7 +64,19 @@ type Snapshot struct {
 	// CollateralIdleRaw is the selected lane's idle collateral amount. For the
 	// PRIME route it is deliberately left unset and PrimeIdleRaw remains the
 	// compatibility field.
-	CollateralIdleRaw          int64
+	CollateralIdleRaw int64
+	// Same-batch, rounded-down bridge-USDC NAV value, used only to select a
+	// plausible funding source. The executable quote minimum remains the gate.
+	CollateralIdleValueRaw int64
+	// Smallest input admitted by the current reserve-derived rounding bound.
+	// Remainders below this stay in custody for exit, not repeated deposits.
+	MinimumCollateralDepositRaw int64
+	// DebtIdleRaw is in the selected debt mint's raw units. SquadsIdleRaw
+	// remains bridge USDC, even when the lane borrows PYUSD/USDG/USDS.
+	DebtIdleRaw int64
+	// PayoffDebtRaw includes the current finite interest window for non-USDC
+	// debt. Observation and final-send validation independently recompute it.
+	PayoffDebtRaw              int64
 	RouteLane                  string
 	StrategyKey                string
 	CutoverDrain               bool
@@ -101,12 +119,28 @@ func (d Decision) Validate() error {
 	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 {
 		return fmt.Errorf("incomplete decision")
 	}
+	if isPolicySetupAction(d.Action) {
+		if d.StrategyKey != "OnRe/ONyc/USDC" || d.Reason != "phase3_policy_setup" || d.AmountRaw <= 0 {
+			return fmt.Errorf("invalid policy setup decision")
+		}
+		return nil // Journal identity only; not a runtime lane registration.
+	}
 	neutral := d.Action == SwapStableToCollateralStep || d.Action == SwapCollateralToStableStep || d.Action == OpenRouteStep || d.Action == DeleverRouteStep
-	if neutral && d.StrategyKey != SelectedRouteID {
+	catalog := false
+	if route, err := runtimeRoute(d.StrategyKey); err == nil {
+		catalog = route.Kamino.DebtMint != bridgeUSDC && len(route.KaminoPolicies) == 4
+	}
+	if neutral && d.StrategyKey != SelectedRouteID && !catalog {
 		return fmt.Errorf("route-neutral action requires the selected Phase 2 strategy")
 	}
-	if d.StrategyKey != "" && d.StrategyKey != RouteID && d.StrategyKey != PhaseOneLaneID && d.StrategyKey != SelectedRouteID && d.Action != HoldManualRecovery {
+	if d.StrategyKey != "" && d.StrategyKey != RouteID && d.StrategyKey != PhaseOneLaneID && d.StrategyKey != SelectedRouteID && !catalog && d.Action != HoldManualRecovery {
 		return fmt.Errorf("decision strategy is not installed")
+	}
+	if d.Action == SwapDebtToCollateralStep || d.Action == SwapCollateralToDebtStep || d.Action == SwapUSDCToDebtStep || d.Action == SwapDebtToUSDCStep {
+		if !catalog {
+			return fmt.Errorf("debt conversion requires an exact non-USDC runtime binding")
+		}
+		return nil
 	}
 	switch d.Action {
 	case Hold, RecoverTransaction, VoltrAllocateToSquads, SwapUSDCToPrimeStep,
@@ -182,6 +216,7 @@ type SimulationResult struct {
 type SignatureObservation struct {
 	Found            bool
 	Confirmed        bool
+	Finalized        bool
 	ConfirmationSlot int64
 	Failed           bool
 }

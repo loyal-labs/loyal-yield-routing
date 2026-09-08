@@ -1,0 +1,710 @@
+{
+  "schema": "loyal-backyard-rwa-phase3-preflight/v2",
+  "generatedAt": "2026-09-04T23:42:51.268Z",
+  "goalId": "01a06b6c-8023-72b1-ad5d-c97c0662820e",
+  "contract": {
+    "path": "docs/plans/backyard-rwa-phase3-family-activation-verifier.md",
+    "sha256": "de07b8ebb9746712b6fe77b5b9d92d8413db599f1e12a7a0c5cf10271cb6adc2"
+  },
+  "readOnly": true,
+  "broadcast": false,
+  "verifierVerdict": "FAIL",
+  "preflight": {
+    "chain": {
+      "status": "OBSERVED",
+      "source": "fresh finalized Solana accounts",
+      "data": {
+        "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        "slot": 444373363,
+        "accounts": [
+          {
+            "address": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "346661602",
+            "dataLength": 82,
+            "dataSha256": "f475cce402c2123fc4b823d33a293abd06066426bc27c969dcfe5daac2cd65fd",
+            "mintDecimals": 9,
+            "mintInitialized": true,
+            "extensions": [],
+            "transferHook": null,
+            "transferFees": null
+          },
+          {
+            "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "526986586549",
+            "dataLength": 82,
+            "dataSha256": "eccefa383b6f8017c4657f72dba78a576afe1a1c5b13014d03147b8c80c911c5",
+            "mintDecimals": 6,
+            "mintInitialized": true,
+            "extensions": [],
+            "transferHook": null,
+            "transferFees": null
+          },
+          {
+            "address": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+            "present": true,
+            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "executable": false,
+            "lamports": "562701269",
+            "dataLength": 866,
+            "dataSha256": "d18c8e2cac5693806e4cf43213affde255fc72bc496d406c006818fc533eefa7",
+            "mintDecimals": 6,
+            "mintInitialized": true,
+            "extensions": [
+              {
+                "type": 3,
+                "name": "MintCloseAuthority"
+              },
+              {
+                "type": 12,
+                "name": "PermanentDelegate"
+              },
+              {
+                "type": 1,
+                "name": "TransferFeeConfig"
+              },
+              {
+                "type": 4,
+                "name": "ConfidentialTransferMint"
+              },
+              {
+                "type": 16,
+                "name": "UNMAPPED_SDK_ENUM"
+              },
+              {
+                "type": 14,
+                "name": "TransferHook"
+              },
+              {
+                "type": 18,
+                "name": "MetadataPointer"
+              },
+              {
+                "type": 19,
+                "name": "TokenMetadata"
+              }
+            ],
+            "transferHook": {
+              "authority": "2apBGMsS6ti9RyF5TwQTDswXBWskiJP2LD4cUEDqYJjk",
+              "programId": "11111111111111111111111111111111",
+              "enabled": false
+            },
+            "transferFees": {
+              "older": {
+                "epoch": "722",
+                "maximumFeeRaw": "0",
+                "basisPoints": 0
+              },
+              "newer": {
+                "epoch": "722",
+                "maximumFeeRaw": "0",
+                "basisPoints": 0
+              }
+            }
+          },
+          {
+            "address": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "201461601",
+            "dataLength": 82,
+            "dataSha256": "df93c7782881f400cb91c5347cb050a4ec174b83287c91fd6b5ed89859724960",
+            "mintDecimals": 6,
+            "mintInitialized": true,
+            "extensions": [],
+            "transferHook": null,
+            "transferFees": null
+          },
+          {
+            "address": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "1461600",
+            "dataLength": 82,
+            "dataSha256": "fa419a822789d95ebb8f84740e075b94a2daed2fd18fd0cb3c3242d8b0aecc8c",
+            "mintDecimals": 6,
+            "mintInitialized": true,
+            "extensions": [],
+            "transferHook": null,
+            "transferFees": null
+          },
+          {
+            "address": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "present": true,
+            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "executable": false,
+            "lamports": "2078412093",
+            "dataLength": 866,
+            "dataSha256": "f3fedcb9de73e0193a5f83bd25c63c6ccb5116162c62073cd6b5a00fd0196325",
+            "mintDecimals": 6,
+            "mintInitialized": true,
+            "extensions": [
+              {
+                "type": 3,
+                "name": "MintCloseAuthority"
+              },
+              {
+                "type": 12,
+                "name": "PermanentDelegate"
+              },
+              {
+                "type": 1,
+                "name": "TransferFeeConfig"
+              },
+              {
+                "type": 4,
+                "name": "ConfidentialTransferMint"
+              },
+              {
+                "type": 16,
+                "name": "UNMAPPED_SDK_ENUM"
+              },
+              {
+                "type": 14,
+                "name": "TransferHook"
+              },
+              {
+                "type": 18,
+                "name": "MetadataPointer"
+              },
+              {
+                "type": 19,
+                "name": "TokenMetadata"
+              }
+            ],
+            "transferHook": {
+              "authority": "2apBGMsS6ti9RyF5TwQTDswXBWskiJP2LD4cUEDqYJjk",
+              "programId": "11111111111111111111111111111111",
+              "enabled": false
+            },
+            "transferFees": {
+              "older": {
+                "epoch": "605",
+                "maximumFeeRaw": "0",
+                "basisPoints": 0
+              },
+              "newer": {
+                "epoch": "605",
+                "maximumFeeRaw": "0",
+                "basisPoints": 0
+              }
+            }
+          },
+          {
+            "address": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "10823189",
+            "dataLength": 82,
+            "dataSha256": "2556bcd0c87cd73240c7482a9a4dc95a1c4c98254cf87883bbbce0fdd0a1a825",
+            "mintDecimals": 6,
+            "mintInitialized": true,
+            "extensions": [],
+            "transferHook": null,
+            "transferFees": null
+          },
+          {
+            "address": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "1461600",
+            "dataLength": 82,
+            "dataSha256": "400496992636497fd8f533421ce5cb728a1eab5fa34f6ecf5ccee0e535c110e7",
+            "mintDecimals": 6,
+            "mintInitialized": true,
+            "extensions": [],
+            "transferHook": null,
+            "transferFees": null
+          },
+          {
+            "address": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "1461600",
+            "dataLength": 82,
+            "dataSha256": "b3ffa2153680fbd347526bcfbd86267e7f60d57700752e9978428a34cd7390ec",
+            "mintDecimals": 9,
+            "mintInitialized": true,
+            "extensions": [],
+            "transferHook": null,
+            "transferFees": null
+          },
+          {
+            "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+            "present": true,
+            "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "executable": false,
+            "lamports": "2060160",
+            "dataLength": 168,
+            "dataSha256": "f3a35b21e680c4a10b008d7b838ce82867ec415eb843cb3293f573248c33aa11"
+          },
+          {
+            "address": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+            "present": true,
+            "owner": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+            "executable": false,
+            "lamports": "7349760",
+            "dataLength": 928,
+            "dataSha256": "9bd488018899997fec0696a2c5eda27eae65a55dbeee5c6c1f2723e19fe8dbb4"
+          },
+          {
+            "address": "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj",
+            "present": true,
+            "owner": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+            "executable": false,
+            "lamports": "4176000",
+            "dataLength": 472,
+            "dataSha256": "fbfe43f0b41ae1cf4ac036914c67801450c6ae006440b79838ac6ccac26e14c2"
+          },
+          {
+            "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "2039280",
+            "dataLength": 165,
+            "dataSha256": "11bc82dceb3459b983bf580c0bf6ed5cf432a9f5267aeb2564cbc3b8f52cbd05",
+            "tokenAmountRaw": "0"
+          },
+          {
+            "address": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+            "present": true,
+            "owner": "11111111111111111111111111111111",
+            "executable": false,
+            "lamports": "1521116296",
+            "dataLength": 0,
+            "dataSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "address": "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "73c18881f3d227aae1ab2d14621a53e801c997a27d7214a4d420c5835dc3c880",
+            "reserve": {
+              "status": 0,
+              "mint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+              "mintDecimals": "9",
+              "marketPriceSf": "1316798332203201462",
+              "availableRaw": "159545175146679420",
+              "borrowedRawCeil": "0",
+              "depositHeadroomRaw": "40454824853320580",
+              "borrowHeadroomRaw": "0",
+              "loanToValuePct": 66,
+              "liquidationThresholdPct": 75,
+              "utilizationLimitBlockBorrowingAbovePct": 0
+            }
+          },
+          {
+            "address": "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913931",
+            "dataLength": 8624,
+            "dataSha256": "679204013bf146cfbf063181fb6dccc3d0a643388e0d8802b68e139efec2c2dc",
+            "reserve": {
+              "status": 0,
+              "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "mintDecimals": "6",
+              "marketPriceSf": "1152748727790166593",
+              "availableRaw": "5898247076425",
+              "borrowedRawCeil": "68728929058111",
+              "depositHeadroomRaw": "25372823865464",
+              "borrowHeadroomRaw": "21271070941889",
+              "loanToValuePct": 0,
+              "liquidationThresholdPct": 0,
+              "utilizationLimitBlockBorrowingAbovePct": 90
+            }
+          },
+          {
+            "address": "JBmLCoKqjdKSStK45onRqe6U6sxVgSpdXoeXe4h7NwJw",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913931",
+            "dataLength": 8624,
+            "dataSha256": "836ee02446c38cb9e960caebd5db9dfca88a257ffadf0b65681aa94040a19363",
+            "reserve": {
+              "status": 0,
+              "mint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "mintDecimals": "6",
+              "marketPriceSf": "1152921504606846976",
+              "availableRaw": "329529638670",
+              "borrowedRawCeil": "24949026872415",
+              "depositHeadroomRaw": "34721443488915",
+              "borrowHeadroomRaw": "25050973127585",
+              "loanToValuePct": 0,
+              "liquidationThresholdPct": 0,
+              "utilizationLimitBlockBorrowingAbovePct": 95
+            }
+          },
+          {
+            "address": "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913959",
+            "dataLength": 8624,
+            "dataSha256": "ea6b8a9b862e87151322a35c9de81d9438c240b9f5975500879f7b7efeba7c50",
+            "reserve": {
+              "status": 0,
+              "mint": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+              "mintDecimals": "6",
+              "marketPriceSf": "1152866464134217045",
+              "availableRaw": "59521609360",
+              "borrowedRawCeil": "810295218162",
+              "depositHeadroomRaw": "19130183172478",
+              "borrowHeadroomRaw": "15189704781838",
+              "loanToValuePct": 0,
+              "liquidationThresholdPct": 0,
+              "utilizationLimitBlockBorrowingAbovePct": 90
+            }
+          },
+          {
+            "address": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "f5b89d8cb47b8b7c45a70b8e2ed5cc455323b4f32657e0a84aa5428fd7b007df",
+            "reserve": {
+              "status": 0,
+              "mint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "mintDecimals": "6",
+              "marketPriceSf": "1219271307916019463",
+              "availableRaw": "110415708694852",
+              "borrowedRawCeil": "0",
+              "depositHeadroomRaw": "239584291305148",
+              "borrowHeadroomRaw": "0",
+              "loanToValuePct": 88,
+              "liquidationThresholdPct": 91,
+              "utilizationLimitBlockBorrowingAbovePct": 0
+            }
+          },
+          {
+            "address": "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "26d7cb5fa79ddcfa3a4cdfadf48810ff21efccfb9af62bc4459a02dfb7b8ef48",
+            "reserve": {
+              "status": 0,
+              "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "mintDecimals": "6",
+              "marketPriceSf": "1152748727790166593",
+              "availableRaw": "7621128416574",
+              "borrowedRawCeil": "56329642895003",
+              "depositHeadroomRaw": "176049228688423",
+              "borrowHeadroomRaw": "153670357104997",
+              "loanToValuePct": 0,
+              "liquidationThresholdPct": 0,
+              "utilizationLimitBlockBorrowingAbovePct": 90
+            }
+          },
+          {
+            "address": "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "a009cec17d676577c8383b52e327ef47432ac5a7f4cba3845fd91ec9b6384ef1",
+            "reserve": {
+              "status": 0,
+              "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "mintDecimals": "6",
+              "marketPriceSf": "1152677108306300416",
+              "availableRaw": "13885293360596",
+              "borrowedRawCeil": "20971043119681",
+              "depositHeadroomRaw": "65143663519723",
+              "borrowHeadroomRaw": "29028956880319",
+              "loanToValuePct": 0,
+              "liquidationThresholdPct": 0,
+              "utilizationLimitBlockBorrowingAbovePct": 90
+            }
+          },
+          {
+            "address": "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "73d53dd8d2121e3ee4b539b51b687bf41e30acb39420c7e66c8a727130a8fd2e",
+            "reserve": {
+              "status": 0,
+              "mint": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+              "mintDecimals": "6",
+              "marketPriceSf": "1152904187725847781",
+              "availableRaw": "22406427895",
+              "borrowedRawCeil": "982398879724",
+              "depositHeadroomRaw": "28995194692381",
+              "borrowHeadroomRaw": "23017601120276",
+              "loanToValuePct": 0,
+              "liquidationThresholdPct": 0,
+              "utilizationLimitBlockBorrowingAbovePct": 90
+            }
+          },
+          {
+            "address": "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913928",
+            "dataLength": 8624,
+            "dataSha256": "db075e109da3d637566f0bbe4e87e093d74dd8aef9437fbc415b99d6da0b3197",
+            "reserve": {
+              "status": 0,
+              "mint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "mintDecimals": "6",
+              "marketPriceSf": "1362041281046473654",
+              "availableRaw": "60198362465331",
+              "borrowedRawCeil": "0",
+              "depositHeadroomRaw": "139801637534669",
+              "borrowHeadroomRaw": "0",
+              "loanToValuePct": 88,
+              "liquidationThresholdPct": 90,
+              "utilizationLimitBlockBorrowingAbovePct": 0
+            }
+          },
+          {
+            "address": "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913935",
+            "dataLength": 8624,
+            "dataSha256": "2c4c4278fc11df4702f7c1eea22bef2eb9a2bd3fd64d3c424fe48802f640db6c",
+            "reserve": {
+              "status": 0,
+              "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "mintDecimals": "6",
+              "marketPriceSf": "1152743470468105586",
+              "availableRaw": "57474413305",
+              "borrowedRawCeil": "1083494473906",
+              "depositHeadroomRaw": "28859031112789",
+              "borrowHeadroomRaw": "28916505526094",
+              "loanToValuePct": 0,
+              "liquidationThresholdPct": 0,
+              "utilizationLimitBlockBorrowingAbovePct": 0
+            }
+          },
+          {
+            "address": "HokDw9LaDf9qNzJf4F21RjHU3K4pRBkGQENvWnRGyRbn",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913927",
+            "dataLength": 8624,
+            "dataSha256": "34af5a4790953ee69fb6dfd514bb6bde65a039a7ce0928eb9c45ed9eddcdf112",
+            "reserve": {
+              "status": 0,
+              "mint": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "mintDecimals": "6",
+              "marketPriceSf": "1152921504606846976",
+              "availableRaw": "24474333718",
+              "borrowedRawCeil": "1193298643630",
+              "depositHeadroomRaw": "8782227022652",
+              "borrowHeadroomRaw": "8806701356370",
+              "loanToValuePct": 0,
+              "liquidationThresholdPct": 0,
+              "utilizationLimitBlockBorrowingAbovePct": 0
+            }
+          },
+          {
+            "address": "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913944",
+            "dataLength": 8624,
+            "dataSha256": "195711a33a112dcca0fb920584c0ce9e4273df40c94a05e01ab5eea938e4abca",
+            "reserve": {
+              "status": 0,
+              "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "mintDecimals": "6",
+              "marketPriceSf": "1152575270749798493",
+              "availableRaw": "10489519633025",
+              "borrowedRawCeil": "51374532708834",
+              "depositHeadroomRaw": "138135947658141",
+              "borrowHeadroomRaw": "108625467291166",
+              "loanToValuePct": 0,
+              "liquidationThresholdPct": 0,
+              "utilizationLimitBlockBorrowingAbovePct": 0
+            }
+          },
+          {
+            "address": "G85AgoBdW8zSQBq5i4E8aBLCDdRYGgK44CzU1d1NdBzX",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "93d042f2dfb62a3442af8981c8e2858bd54ef80a7698cf994411dd2776b1a97a",
+            "reserve": {
+              "status": 0,
+              "mint": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+              "mintDecimals": "6",
+              "marketPriceSf": "1170802389004613303",
+              "availableRaw": "3438660215356",
+              "borrowedRawCeil": "0",
+              "depositHeadroomRaw": "6561339784644",
+              "borrowHeadroomRaw": "0",
+              "loanToValuePct": 65,
+              "liquidationThresholdPct": 72,
+              "utilizationLimitBlockBorrowingAbovePct": 0
+            }
+          },
+          {
+            "address": "6A8D3ExQ4CdiZTBmij7MScUeKsgs6mSHksYzJbiY61FM",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "18d95e75dd5a6ef5136b90212d745dcde8c251facfbd0242f82898f2f733c76f",
+            "reserve": {
+              "status": 0,
+              "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "mintDecimals": "6",
+              "marketPriceSf": "1152510211389293529",
+              "availableRaw": "1677562798261",
+              "borrowedRawCeil": "2065842714319",
+              "depositHeadroomRaw": "6256594487420",
+              "borrowHeadroomRaw": "7934157285681",
+              "loanToValuePct": 0,
+              "liquidationThresholdPct": 0,
+              "utilizationLimitBlockBorrowingAbovePct": 90
+            }
+          },
+          {
+            "address": "2erD9GTGcaQbLsVSQweg3HvMpfKxScmz95raWv8H4iPN",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "a223eae7a605163ccf6d1ac24916dc1065a956a543f99bf264cf9542df0bf8b6",
+            "reserve": {
+              "status": 0,
+              "mint": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+              "mintDecimals": "9",
+              "marketPriceSf": "1152921504606846976",
+              "availableRaw": "267727795052033153",
+              "borrowedRawCeil": "1027232565609",
+              "depositHeadroomRaw": "232271177715401238",
+              "borrowHeadroomRaw": "0",
+              "loanToValuePct": 92,
+              "liquidationThresholdPct": 94,
+              "utilizationLimitBlockBorrowingAbovePct": 0
+            }
+          },
+          {
+            "address": "EDf6dGbVnCCABbNhE3mp5i1jV2JhDAVmTWb1ztij1Yhs",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "ad15884a97230f391a422398bab68244ee27c5ea55812973b98a5f898ccf328a",
+            "reserve": {
+              "status": 0,
+              "mint": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "mintDecimals": "6",
+              "marketPriceSf": "1152733359346510184",
+              "availableRaw": "15428367030717",
+              "borrowedRawCeil": "236092228221613",
+              "depositHeadroomRaw": "0",
+              "borrowHeadroomRaw": "907771778387",
+              "loanToValuePct": 0,
+              "liquidationThresholdPct": 90,
+              "utilizationLimitBlockBorrowingAbovePct": 95
+            }
+          }
+        ]
+      }
+    },
+    "database": {
+      "status": "OBSERVED",
+      "source": "fresh read-only Postgres snapshot",
+      "data": {
+        "route": {
+          "routeKey": "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "leaseOwner": "render:srv-dabkt0ojo6nc7381o9fg:sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b",
+          "leaseLive": true,
+          "fencingToken": 15073,
+          "stateVersion": 818,
+          "phase3": null
+        },
+        "nonterminal": [],
+        "phase3OperationCount": 0,
+        "latestOperation": {
+          "operationId": "7d835c1fa1588559055c345d8c14f910367d3dce7b2f8e2f4302ac9aa722fd08",
+          "status": "held",
+          "action": "HOLD",
+          "createdAt": "2026-09-04T23:40:19.486247+00:00"
+        }
+      }
+    },
+    "deployment": {
+      "status": "OBSERVED",
+      "source": "Render deploy API",
+      "data": {
+        "serviceId": "srv-dabkt0ojo6nc7381o9fg",
+        "deploys": [
+          {
+            "id": "dep-dad73rrncjis7388r9sg",
+            "status": "live",
+            "createdAt": "2026-09-04T07:23:27.906297Z",
+            "finishedAt": "2026-09-04T07:23:35.388507Z",
+            "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b"
+          },
+          {
+            "id": "dep-dad6vfrncjis7388e750",
+            "status": "deactivated",
+            "createdAt": "2026-09-04T07:14:07.303561Z",
+            "finishedAt": "2026-09-04T07:14:15.094778Z",
+            "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-a3d0d0aa9169fb48258db6b656a49370f6e84282"
+          },
+          {
+            "id": "dep-dad6sjtg1s2s73fa096g",
+            "status": "deactivated",
+            "createdAt": "2026-09-04T07:07:59.800765Z",
+            "finishedAt": "2026-09-04T07:08:10.584455Z",
+            "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-bf4df9783fd1ebe617114e74f954be3670ed271f"
+          },
+          {
+            "id": "dep-dad6qen10e5c73dja6v0",
+            "status": "deactivated",
+            "createdAt": "2026-09-04T07:03:22.91806Z",
+            "finishedAt": "2026-09-04T07:03:31.759386Z",
+            "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-c75394407f6439ce01d2456df2a273304c914f75"
+          },
+          {
+            "id": "dep-dad6n6n10e5c73disc3g",
+            "status": "deactivated",
+            "createdAt": "2026-09-04T06:56:26.525815Z",
+            "finishedAt": "2026-09-04T06:56:34.771822Z",
+            "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-4ec790dc5c9758e34fbeccb2d2bad0107bfdc956"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -31,7 +31,7 @@ const AssertRouteLeaseSQL = `SELECT lease_expires_at FROM loyal_yield.multiply_r
 
 const OperationRouteForLeaseSQL = `SELECT operation.route_key FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key = operation.route_key WHERE operation.operation_id = $1 AND route.lease_owner = $2 AND route.fencing_token = $3 AND route.lease_expires_at > clock_timestamp() FOR UPDATE OF route`
 
-const PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
+const PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
 
 // LatestDecisionEpochSQL advances after a fully reconciled mutation or an
 // explicitly terminal pre-broadcast failure. A confirmed report-only operation
@@ -44,7 +44,7 @@ const LatestDecisionEpochSQL = `SELECT COALESCE((SELECT operation_id FROM loyal_
 // The sole exclusion is the operator-authorized, independently finalized
 // Voltr restore incident. Keep every identity field in this predicate so no
 // other manual recovery becomes executable merely by sharing an action.
-const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') AND NOT (operation_id = 'fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe' AND action = 'VOLTR_RESTORE_IDLE' AND transaction_signature = '46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz' AND confirmed_slot = 444157954 AND recovery_reason = 'exact_effect_reconciliation_failed'))`
+const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') AND NOT (operation_id = 'fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe' AND action = 'VOLTR_RESTORE_IDLE' AND transaction_signature = '46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz' AND confirmed_slot = 444157954 AND recovery_reason = 'exact_effect_reconciliation_failed'))`
 
 const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7, updated_at = now() WHERE operation_id = $1 AND status = 'simulated'`
 
@@ -316,6 +316,9 @@ func (d *Database) RecordDecision(
 	manifestSHA256 string,
 	policyCatalogSHA256 string,
 ) (DecisionRecord, error) {
+	if isPolicySetupAction(decision.Action) {
+		return DecisionRecord{}, budgetHold("policy_setup_requires_atomic_intent")
+	}
 	if err := decision.Validate(); err != nil {
 		return DecisionRecord{}, fmt.Errorf("validate decision before persistence: %w", err)
 	}
@@ -355,6 +358,13 @@ func (d *Database) RecordDecision(
 	}
 	if stateVersion <= 0 || len(routeState) == 0 {
 		return DecisionRecord{}, fmt.Errorf("invalid locked route state")
+	}
+	var setupState map[string]json.RawMessage
+	if json.Unmarshal(routeState, &setupState) != nil {
+		return DecisionRecord{}, budgetHold("invalid_setup_route_state")
+	}
+	if _, pending := setupState["phase3SetupIntent"]; pending && decision.Action != Hold && decision.Action != HoldManualRecovery {
+		return DecisionRecord{}, budgetHold("policy_setup_in_progress")
 	}
 	operationEpoch := ""
 	if decision.Action != Hold && decision.Action != HoldManualRecovery {
@@ -502,29 +512,33 @@ func (d *Database) PostMutationNAVRequired(ctx context.Context, routeKey string)
 }
 
 type routeObservationProjection struct {
-	ObservedSlot         int64  `json:"observedSlot"`
-	ObservedAt           string `json:"observedAt"`
-	RouteStatus          string `json:"routeStatus"`
-	VoltrIdleRaw         string `json:"voltrIdleRaw"`
-	VoltrStrategyIdleRaw string `json:"voltrStrategyIdleRaw"`
-	SquadsIdleRaw        string `json:"squadsIdleRaw"`
-	AUMRaw               string `json:"aumRaw"`
-	AUMUSDMicros         string `json:"aumUsdMicros"`
-	NAVRaw               string `json:"navRaw"`
-	NAVUSDMicros         string `json:"navUsdMicros"`
-	ReportedNAVRaw       string `json:"reportedNavRaw"`
-	ComputedStrategyNAV  string `json:"computedStrategyNavRaw"`
-	ReportSequence       int64  `json:"reportSequence"`
-	ReportSlot           int64  `json:"reportSlot"`
-	ReportObservedAt     string `json:"reportObservedAt"`
-	ReportSnapshotDigest string `json:"reportSnapshotDigest"`
-	NAVFresh             bool   `json:"navFresh"`
+	ObservedSlot                int64  `json:"observedSlot"`
+	ObservedAt                  string `json:"observedAt"`
+	RouteStatus                 string `json:"routeStatus"`
+	VoltrIdleRaw                string `json:"voltrIdleRaw"`
+	VoltrStrategyIdleRaw        string `json:"voltrStrategyIdleRaw"`
+	SquadsIdleRaw               string `json:"squadsIdleRaw"`
+	DebtIdleRaw                 string `json:"debtIdleRaw"`
+	PayoffDebtRaw               string `json:"payoffDebtRaw"`
+	CollateralIdleValueRaw      string `json:"collateralIdleValueRaw"`
+	MinimumCollateralDepositRaw string `json:"minimumCollateralDepositRaw"`
+	AUMRaw                      string `json:"aumRaw"`
+	AUMUSDMicros                string `json:"aumUsdMicros"`
+	NAVRaw                      string `json:"navRaw"`
+	NAVUSDMicros                string `json:"navUsdMicros"`
+	ReportedNAVRaw              string `json:"reportedNavRaw"`
+	ComputedStrategyNAV         string `json:"computedStrategyNavRaw"`
+	ReportSequence              int64  `json:"reportSequence"`
+	ReportSlot                  int64  `json:"reportSlot"`
+	ReportObservedAt            string `json:"reportObservedAt"`
+	ReportSnapshotDigest        string `json:"reportSnapshotDigest"`
+	NAVFresh                    bool   `json:"navFresh"`
 }
 
 func newRouteObservationProjection(observation Observation) (routeObservationProjection, error) {
 	snapshot := observation.Snapshot
-	if snapshot.VoltrIdleRaw < 0 || snapshot.VoltrStrategyIdleRaw < 0 || snapshot.SquadsIdleRaw < 0 ||
-		snapshot.PositionCollateralRaw < 0 || snapshot.PositionDebtRaw < 0 ||
+	if snapshot.VoltrIdleRaw < 0 || snapshot.VoltrStrategyIdleRaw < 0 || snapshot.SquadsIdleRaw < 0 || snapshot.DebtIdleRaw < 0 || snapshot.PayoffDebtRaw < 0 ||
+		snapshot.PositionCollateralRaw < 0 || snapshot.PositionDebtRaw < 0 || snapshot.CollateralIdleValueRaw < 0 || snapshot.MinimumCollateralDepositRaw < 0 ||
 		snapshot.PositionCollateralValueRaw < 0 || snapshot.PositionDebtValueRaw < 0 ||
 		snapshot.StrategyNAVRaw < 0 || snapshot.TotalVaultNAVRaw < 0 || snapshot.PriorReportedNAVRaw < 0 ||
 		snapshot.LTVBPS < 0 || snapshot.LTVBPS > 10_000 || snapshot.LastReportAgeSeconds < 0 ||
@@ -558,8 +572,11 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 	return routeObservationProjection{
 		ObservedSlot: snapshot.Slot, ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano), RouteStatus: status,
 		VoltrIdleRaw: fmt.Sprint(snapshot.VoltrIdleRaw), VoltrStrategyIdleRaw: fmt.Sprint(snapshot.VoltrStrategyIdleRaw),
-		SquadsIdleRaw: fmt.Sprint(snapshot.SquadsIdleRaw), AUMRaw: fmt.Sprint(snapshot.TotalVaultNAVRaw),
-		AUMUSDMicros: fmt.Sprint(snapshot.TotalVaultNAVRaw), NAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
+		SquadsIdleRaw: fmt.Sprint(snapshot.SquadsIdleRaw), DebtIdleRaw: fmt.Sprint(snapshot.DebtIdleRaw), AUMRaw: fmt.Sprint(snapshot.TotalVaultNAVRaw),
+		PayoffDebtRaw:               fmt.Sprint(snapshot.PayoffDebtRaw),
+		CollateralIdleValueRaw:      fmt.Sprint(snapshot.CollateralIdleValueRaw),
+		MinimumCollateralDepositRaw: fmt.Sprint(snapshot.MinimumCollateralDepositRaw),
+		AUMUSDMicros:                fmt.Sprint(snapshot.TotalVaultNAVRaw), NAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
 		NAVUSDMicros: fmt.Sprint(snapshot.PriorReportedNAVRaw), ReportedNAVRaw: fmt.Sprint(snapshot.PriorReportedNAVRaw),
 		ComputedStrategyNAV: fmt.Sprint(snapshot.StrategyNAVRaw), ReportSequence: snapshot.ReportSequence,
 		ReportSlot: snapshot.ReportSequence, ReportObservedAt: reportUpdatedAt.Format(time.RFC3339),
@@ -661,6 +678,11 @@ func (d *Database) transition(ctx context.Context, operationID string, from, to 
 	if result.RowsAffected() != 1 {
 		return fmt.Errorf("transition %s -> %s lost serialization", from, to)
 	}
+	if to == Failed {
+		if err := d.releasePhase3UnspentTx(ctx, tx, operationID); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }
 
@@ -692,8 +714,8 @@ func (d *Database) MarkPreBroadcastFailed(ctx context.Context, operationID strin
 // impossible: the persisted signature is absent and its blockhash is expired.
 // Found, ambiguous, or failed-on-chain signatures must remain recovery stops.
 func (d *Database) MarkExpiredAbsentFailed(ctx context.Context, operationID string, from OperationStatus) error {
-	if from != BroadcastIntent && from != Submitted {
-		return fmt.Errorf("expired-absent failure requires a submitted source")
+	if from != Signed && from != BroadcastIntent && from != Submitted {
+		return fmt.Errorf("expired-absent failure requires a signed source")
 	}
 	return d.transition(ctx, operationID, from, Failed,
 		`, recovery_reason = 'signature_absent_after_blockhash_expiry'`)
@@ -723,6 +745,9 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, build 
 	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
 		return err
 	}
+	if err := d.bindPhase3WireTx(ctx, tx, operationID, build.SignedWireSHA256); err != nil {
+		return err
+	}
 	result, err := tx.Exec(ctx, PersistSignedUpdate, operationID, build.MessageSHA256, build.SignedWire,
 		build.SignedWireSHA256, build.TransactionSignature, build.RecentBlockhash, build.LastValidBlockHeight)
 	if err != nil {
@@ -734,13 +759,25 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, build 
 	return tx.Commit(ctx)
 }
 
-func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) error {
+func (d *Database) markBroadcastIntent(ctx context.Context, operationID string, rpc *RPCClient, intent, wireHash string, cost ValuedTransactionCost) error {
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
+		return err
+	}
+	// Recheck freshness after acquiring the journal lock, not before waiting
+	// for it. A slow lock or RPC never extends an earlier price's validity.
+	slot, err := rpc.ConfirmedSlot(ctx)
+	if err != nil {
+		return budgetHold("send_valuation_slot_unavailable")
+	}
+	if slot < cost.ObservationSlot || slot > cost.ValidThroughSlot {
+		return budgetHold("send_valuation_expired")
+	}
+	if err := d.authorizePhase3SendTx(ctx, tx, operationID, intent, wireHash, cost); err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx, PersistBroadcastIntentUpdate, operationID)
@@ -789,13 +826,49 @@ func (d *Database) MarkReconciling(ctx context.Context, operationID string) erro
 	return d.transition(ctx, operationID, Confirmed, Reconciling, ``)
 }
 
-func (d *Database) MarkReconciled(ctx context.Context, operationID string, reconciliation Reconciliation, effects []byte) error {
-	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) {
+func (d *Database) MarkReconciled(ctx context.Context, operationID string, reconciliation Reconciliation, effects []byte, receipt ConfirmedTransactionEvidence) error {
+	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) || !receipt.Finalized || receipt.Slot != reconciliation.ConfirmedSlot {
 		return fmt.Errorf("invalid reconciliation evidence")
 	}
-	return d.transition(ctx, operationID, Reconciling, Reconciled,
-		`, confirmed_slot = $4, reconciliation_sha256 = $5, reconciled_effects = $6::jsonb`,
-		reconciliation.ConfirmedSlot, reconciliation.EffectsSHA256, string(effects))
+	if _, err := d.currentLease(); err != nil {
+		return err
+	}
+	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = d.lockOperationLease(ctx, tx, operationID); err != nil {
+		return err
+	}
+	var signature string
+	var slot int64
+	var expectedBytes []byte
+	if err = tx.QueryRow(ctx, `SELECT transaction_signature,confirmed_slot,expected_effects FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='reconciling'`, operationID).Scan(&signature, &slot, &expectedBytes); err != nil {
+		return err
+	}
+	if signature != receipt.Signature || slot != receipt.Slot {
+		return fmt.Errorf("finalized receipt does not match journal identity")
+	}
+	expected, err := DecodeExpectedEffects(expectedBytes)
+	if err != nil {
+		return err
+	}
+	checked, checkedEffects, err := ReconcileConfirmedTransaction(expected, receipt)
+	if err != nil || checked != reconciliation || sha256Bytes(checkedEffects) != sha256Bytes(effects) {
+		return fmt.Errorf("finalized effects do not match journal contract")
+	}
+	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status='reconciling'`, operationID, reconciliation.EffectsSHA256, string(effects))
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("finalized reconciliation lost serialization")
+	}
+	if err = d.settlePhase3ReservationTx(ctx, tx, operationID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (d *Database) MarkManualRecovery(ctx context.Context, operationID string, from OperationStatus, reason string) error {

@@ -86,12 +86,38 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 			}
 			return nil
 		},
+		admitBridge: func(_ context.Context, id string, got Observation, d Decision, _ BridgeExecutionEvidence) error {
+			order = append(order, "admit")
+			if id != "operation" || got != observation || d != decision {
+				t.Fatal("admission lost the recorded decision")
+			}
+			return nil
+		},
 	}}
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "prepare,record,build" {
+	if got := strings.Join(order, ","); got != "prepare,record,admit,build" {
 		t.Fatalf("decision was not persisted before build: %s", got)
+	}
+	// The same real dispatch path must preserve a typed admission rejection,
+	// not turn it into generic restart recovery or a successful build.
+	rejected := &BudgetHold{Reason: "transaction_cap_exceeded"}
+	worker.runtime.admitBridge = func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return rejected }
+	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error {
+		t.Fatal("admission rejection reached construction/signing")
+		return nil
+	}
+	journaled := false
+	worker.runtime.recordBudgetHold = func(_ context.Context, id string, hold *BudgetHold) error {
+		if id != "operation" || hold != rejected {
+			t.Fatal("budget HOLD lost its operation or type")
+		}
+		journaled = true
+		return nil
+	}
+	if err := worker.Tick(context.Background()); !errors.Is(err, rejected) || !journaled {
+		t.Fatalf("budget rejection did not remain a journaled stop: %v", err)
 	}
 }
 
@@ -182,13 +208,25 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 			}
 			return nil
 		},
+		admitKamino: func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error {
+			order = append(order, "admit-kamino")
+			return nil
+		},
 	}}
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "prepare-kamino,record,build-kamino" {
+	if got := strings.Join(order, ","); got != "prepare-kamino,record,admit-kamino,build-kamino" {
 		t.Fatalf("wrong Kamino dispatch order: %s", got)
 	}
+	worker.runtime.admitKamino = func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error {
+		return budgetHold("complete_position_exit_admission_unavailable")
+	}
+	worker.runtime.buildKamino = func(context.Context, string, KaminoExecutionEvidence) error {
+		t.Fatal("rejected position admission reached signing")
+		return nil
+	}
+	assertBudgetHold(t, worker.Tick(context.Background()), "complete_position_exit_admission_unavailable")
 
 	loads := 0
 	reobserved := false
@@ -394,6 +432,7 @@ func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 			cancel()
 			return nil
 		},
+		admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return nil },
 	}}
 	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
 	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("f", 40), config)

@@ -26,6 +26,11 @@ func TestOptionalLifecycleObligationPrefersSelectedPhase2Close(t *testing.T) {
 	if got := optionalLifecycleObligations([]string{bridgeSquadsATA}); len(got) != 0 {
 		t.Fatalf("unrelated account became optional: %v", got)
 	}
+	for _, obligation := range []string{primePRIMEPYUSD.Kamino.Obligation, primePRIMEUSDS.Kamino.Obligation} {
+		if got := optionalLifecycleObligations([]string{bridgeSquadsATA, obligation}); len(got) != 1 || got[0] != obligation {
+			t.Fatalf("closed Prime sibling obligation blocks terminal observation: %v", got)
+		}
+	}
 }
 
 func TestRouteNAVCadenceDoesNotSpamUnchangedFreshReports(t *testing.T) {
