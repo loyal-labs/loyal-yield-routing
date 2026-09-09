@@ -3534,7 +3534,7 @@ async function runJournaledStepHeld(input: Readonly<{
         throw new Error("invalid lastValidBlockHeight while checking finalized signature absence");
       }
       const observedBlockHeight = await currentBlockHeight(input.rpcUrl);
-      if (observedBlockHeight < lastValidBlockHeight + ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS) {
+      if (observedBlockHeight <= lastValidBlockHeight + ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS) {
         throw new Error("finalized signature absence is not beyond the expiry recheck margin");
       }
       // The signature may land after the first lookup and before the expiry
@@ -3655,7 +3655,7 @@ async function runJournaledStepHeld(input: Readonly<{
         throw new Error("invalid lastValidBlockHeight while checking finalized signature absence");
       }
       const observedBlockHeight = await currentBlockHeight(input.rpcUrl);
-      if (observedBlockHeight < lastValidBlockHeight + ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS) {
+      if (observedBlockHeight <= lastValidBlockHeight + ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS) {
         throw new Error("finalized signature absence is not beyond the expiry recheck margin");
       }
       // The signature may land after the first lookup and before the expiry
