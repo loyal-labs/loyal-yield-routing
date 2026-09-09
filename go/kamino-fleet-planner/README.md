@@ -105,12 +105,24 @@ ownership exclusions remain enforced.
 observer's default $0.50 idle-deposit cost estimate. `sourceReasonCounts` counts a
 source once per reason across alternative targets, so categories may overlap.
 
-These are **independent candidate checks**, not joint fleet selection: they do not
-allocate additional capacity, compete with reserve moves, build executable idle
-routes, or publish anything. Existing reserve-cycle metrics retain their meaning.
-Idle candidates are explicitly rejected by executable planning/publication. Exact
-Rust economic/selection parity and retained idle execution integration remain
-separate work before replacement; these logs are not cutover evidence.
+Those candidate counts remain independent diagnostics. Shadow now also runs
+**joint fleet selection**: idle/reserve sources compete for shared target capacity
+and at most one source wins per vault. The event additionally reports
+`jointAllocationChecked`, `jointSelectedIdleCount`, `jointSelectedReserveCount`,
+`candidateChecksOnly=false`, and `executableIdleEnabled=false`. The cycle's
+`selectedMoveCount` includes joint idle selections; `migratedVaultCount` still
+counts reserve sources. Nothing is published.
+
+The 154-case offline Rust/Go comparison includes 25 idle/joint-allocation cases.
+`KLendProxy.BuildIdleDeposit` builds only a deposit, with no withdrawal argument,
+for an existing empty/target-only obligation. Compiled-proxy tests cover all six
+stable mints and reject changed accounts, privileges, amounts and footprints.
+A separate USDC SVM scenario compiles, signs and executes the deposit-only Squads
+wire, rejects wrong policy indexes and verifies replay has no second transfer;
+Kamino is still a mock program. Idle candidates remain rejected by executable
+planning/publication until fresh revalidation, durable ownership, retained
+execution and recovery are connected. Real shared-snapshot parity and production
+compatibility remain separate gates; these logs are not cutover evidence.
 
 ## Required configuration
 

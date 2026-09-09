@@ -198,10 +198,15 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		return err
 	}
 	var idleSummary map[string]any
+	var fleetPlan FleetPlan
+	reserveSourceCount := len(vaults)
 	if w.config.Mode == ModeShadow {
-		vaults, idleSummary = idleShadowChecks(snapshot, vaults)
+		reserveSources, summary := idleShadowChecks(snapshot, vaults)
+		reserveSourceCount, idleSummary = len(reserveSources), summary
+		fleetPlan, err = PlanFleetShadow(snapshot, vaults)
+	} else {
+		fleetPlan, err = PlanFleet(snapshot, vaults)
 	}
-	fleetPlan, err := PlanFleet(snapshot, vaults)
 	if err != nil {
 		return err
 	}
@@ -232,9 +237,20 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	}
 	w.lastConfirmedSlot = slot
 	if idleSummary != nil {
+		idleSelected := 0
+		for _, o := range fleetPlan.Opportunities {
+			if o.Decision.RouteKind == "idle_vault_deposit" {
+				idleSelected++
+			}
+		}
+		idleSummary["candidateChecksOnly"] = false
+		idleSummary["executableIdleEnabled"] = false
+		idleSummary["jointAllocationChecked"] = true
+		idleSummary["jointSelectedIdleCount"] = idleSelected
+		idleSummary["jointSelectedReserveCount"] = len(fleetPlan.Opportunities) - idleSelected
 		logEvent(idleSummary)
 	}
-	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "rejectedVaultCount": len(fleetPlan.Rejections), "rejectionCounts": rejectionCounts(fleetPlan.Rejections)})
+	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": reserveSourceCount, "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "rejectedVaultCount": len(fleetPlan.Rejections), "rejectionCounts": rejectionCounts(fleetPlan.Rejections)})
 	return nil
 }
 

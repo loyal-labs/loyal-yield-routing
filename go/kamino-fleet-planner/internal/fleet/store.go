@@ -314,6 +314,7 @@ ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options
 		if err := rows.Scan(&p.VaultID, &p.Settings, &p.VaultIndex, &p.VaultPubkey, &p.PolicyID, &p.PolicyAccount, &markets, &authority, &delegatedSigners, &earnPolicyJSON, &swapPolicyJSON, &p.SourceReserve, &p.Market, &p.Mint, &projectedAmountRaw, &p.SnapshotID, &p.ObservedSlot, &p.ObservedAt, &metadata); err != nil {
 			return nil, err
 		}
+		p.PolicyAuthority = authority
 		var evidence struct {
 			AmountSemantics  string          `json:"amount_semantics"`
 			Redeemable       json.RawMessage `json:"redeemable_source_liquidity_amount_raw"`

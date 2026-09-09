@@ -360,6 +360,11 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 		t.Fatal(err)
 	}
 	seedConnectedExecutionAccounts(t, accounts, positions, signer, vault)
+	if sameMint {
+		t.Run("idle-deposit-signed-wire", func(t *testing.T) {
+			verifyIdleDepositSignedWire(t, ctx, proxy, accounts, positions, earnPolicy, signer, vault, []string{sharedTable, vaultTable})
+		})
+	}
 	svm := startConnectedSVM(t, ctx, accounts)
 	blockhash, err := decodePublicKey(svm.blockhash)
 	if err != nil {

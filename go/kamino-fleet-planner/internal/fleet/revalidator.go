@@ -7,6 +7,7 @@ package fleet
 
 import (
 	"bytes"
+	"container/heap"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -54,23 +55,43 @@ type FleetPlan struct {
 // economic priority tie-breaks, and admits a wave while carrying forward the
 // selected inflow/outflow. No reserve can exceed its 2% frontier.
 func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) {
+	return PlanFleetWithLimits(snapshot, vaults, DefaultWaveLimits())
+}
+
+func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits) (FleetPlan, error) {
+	return planFleet(snapshot, vaults, limits, false, time.Now())
+}
+
+// PlanFleetShadow jointly allocates idle and reserve sources, but does not enable
+// idle publication or revalidation. Those durable boundaries remain closed.
+func PlanFleetShadow(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) {
+	return PlanFleetShadowAt(snapshot, vaults, time.Now())
+}
+
+// PlanFleetShadowAt supplies an explicit evaluation clock for offline replay.
+// It is shadow-only: Store.Publish still refuses idle diagnostic decisions.
+func PlanFleetShadowAt(snapshot MarketSnapshot, vaults []FleetVault, now time.Time) (FleetPlan, error) {
+	return planFleet(snapshot, vaults, DefaultWaveLimits(), true, now)
+}
+
+func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, allowIdle bool, now time.Time) (FleetPlan, error) {
+	if limits.MaxOpportunities <= 0 || limits.MaxNotionalUSDMicros <= 0 || limits.MaxPerTenant <= 0 || limits.MaxPerWritableConflictKey <= 0 {
+		return FleetPlan{}, errors.New("invalid wave limits")
+	}
 	for _, vault := range vaults {
-		if vault.IdleTokenAccount != "" {
+		if vault.IdleTokenAccount != "" && !allowIdle {
 			return FleetPlan{}, errors.New("idle shadow sources cannot enter executable fleet planning")
 		}
 	}
-	if len(snapshot.Reserves) < 2 {
+	if len(snapshot.Reserves) == 0 || !allowIdle && len(snapshot.Reserves) < 2 {
 		return FleetPlan{}, errors.New("complete reserve frontier is required")
 	}
 	if len(vaults) == 0 {
 		return FleetPlan{Opportunities: []PlannedOpportunity{}, Rejections: map[int64]string{}}, nil
 	}
-	type candidate struct {
-		vault  FleetVault
-		target string
-		d      Decision
-	}
 	seen := map[int64]bool{}
+	seenSources := map[string]bool{}
+	eligibleVaults := map[int64]bool{}
 	baseInflow, baseOutflow := map[string]int64{}, map[string]int64{}
 	for _, vault := range vaults {
 		for reserve, value := range vault.CommittedInflows {
@@ -86,7 +107,7 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 			baseOutflow[reserve] = value
 		}
 	}
-	var candidates []candidate
+	var candidates waveCandidates
 	out := FleetPlan{Rejections: map[int64]string{}}
 	reserveKeys := make([]string, 0, len(snapshot.Reserves))
 	for key := range snapshot.Reserves {
@@ -94,10 +115,12 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 	}
 	sort.Strings(reserveKeys)
 	for _, vault := range vaults {
-		if vault.Position.VaultID <= 0 || seen[vault.Position.VaultID] {
-			return FleetPlan{}, errors.New("fleet contains duplicate or invalid vault")
+		sourceKeyBytes, _ := json.Marshal([]any{vault.Position.VaultID, vault.Position.Mint, vault.Position.SourceReserve, vault.IdleTokenAccount})
+		sourceKey := string(sourceKeyBytes)
+		if vault.Position.VaultID <= 0 || seenSources[sourceKey] || !allowIdle && seen[vault.Position.VaultID] {
+			return FleetPlan{}, errors.New("fleet contains duplicate or invalid source")
 		}
-		seen[vault.Position.VaultID] = true
+		seen[vault.Position.VaultID], seenSources[sourceKey] = true, true
 		if vault.Position.BlockedReason != "" {
 			out.Rejections[vault.Position.VaultID] = vault.Position.BlockedReason
 			continue
@@ -109,7 +132,7 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 		for target := range vault.CrossMintTargets {
 			allowed[target] = true
 		}
-		best := candidate{}
+		eligible := false
 		for _, target := range reserveKeys {
 			if target == vault.Position.SourceReserve || !allowed[target] {
 				continue
@@ -117,7 +140,7 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 			position := vault.Position
 			position.TargetCommittedInflowUSDMicros, position.TargetCommittedOutflowUSDMicros = baseInflow[target], baseOutflow[target]
 			position.SourceCommittedInflowUSDMicros, position.SourceCommittedOutflowUSDMicros = baseInflow[position.SourceReserve], baseOutflow[position.SourceReserve]
-			d := Plan(snapshot, position, position.SourceReserve, target)
+			d := planWaveSource(snapshot, vault, position, target, now)
 			if binding, cross := vault.CrossMintTargets[target]; cross {
 				d.RouteKind = "cross_mint_jupiter"
 				d.SourceMint = position.Mint
@@ -125,31 +148,31 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 				d.Mint = d.TargetMint
 				d.PolicyBindings = &binding
 				d.CrossMintMaxValueLossBPS = vault.CrossMintMaxValueLossBPS
-				if d.Eligible && d.EstimatedCostLamports < 15_000 {
-					d.Eligible, d.Reason = false, "cross_mint_fee_envelope_not_covered"
-				}
 			}
-			if d.Eligible && (!best.d.Eligible || betterDecision(d, best.d)) {
-				best = candidate{vault, target, d}
+			if d.Eligible {
+				eligible = true
+				eligibleVaults[position.VaultID] = true
+				candidates = append(candidates, waveCandidate{vault: vault, target: target, d: d})
 			}
 		}
-		if best.d.Eligible {
-			candidates = append(candidates, best)
-		} else {
+		if !eligible {
 			out.Rejections[vault.Position.VaultID] = "no_eligible_target"
 		}
 	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].d.EconomicPriority != candidates[j].d.EconomicPriority {
-			return candidates[i].d.EconomicPriority > candidates[j].d.EconomicPriority
-		}
-		if candidates[i].d.ExpectedNetGainUSDMicros != candidates[j].d.ExpectedNetGainUSDMicros {
-			return candidates[i].d.ExpectedNetGainUSDMicros > candidates[j].d.ExpectedNetGainUSDMicros
-		}
-		return candidates[i].d.VaultID < candidates[j].d.VaultID
-	})
+	for id := range eligibleVaults {
+		delete(out.Rejections, id)
+	}
+	heap.Init(&candidates)
 	inflow, outflow := map[string]int64{}, map[string]int64{}
-	for _, c := range candidates {
+	versions := map[string]uint64{}
+	selectedVaults := map[int64]bool{}
+	tenantCounts, conflictCounts := map[string]int{}, map[string]int{}
+	selectedCount, selectedNotional := 0, int64(0)
+	for candidates.Len() > 0 && selectedCount < limits.MaxOpportunities {
+		c := heap.Pop(&candidates).(waveCandidate)
+		if selectedVaults[c.d.VaultID] {
+			continue
+		}
 		position := c.vault.Position
 		var ok bool
 		position.TargetCommittedInflowUSDMicros, ok = sumInt64(baseInflow[c.target], inflow[c.target])
@@ -168,7 +191,7 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 		if !ok {
 			return FleetPlan{}, errors.New("wave capacity overflow")
 		}
-		d := Plan(snapshot, position, position.SourceReserve, c.target)
+		d := planWaveSource(snapshot, c.vault, position, c.target, now)
 		if binding, cross := c.vault.CrossMintTargets[c.target]; cross {
 			d.RouteKind = "cross_mint_jupiter"
 			d.SourceMint = position.Mint
@@ -176,22 +199,69 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 			d.Mint = d.TargetMint
 			d.PolicyBindings = &binding
 			d.CrossMintMaxValueLossBPS = c.vault.CrossMintMaxValueLossBPS
-			if d.Eligible && d.EstimatedCostLamports < 15_000 {
-				d.Eligible, d.Reason = false, "cross_mint_fee_envelope_not_covered"
-			}
 		}
 		if !d.Eligible {
 			out.Rejections[position.VaultID] = d.Reason
 			continue
 		}
+		if c.sourceVersion != versions[d.SourceReserve] || c.targetVersion != versions[d.TargetReserve] {
+			c.d, c.sourceVersion, c.targetVersion = d, versions[d.SourceReserve], versions[d.TargetReserve]
+			heap.Push(&candidates, c)
+			continue
+		}
+		nextNotional, ok := sumInt64(selectedNotional, d.PrincipalUSDMicros)
+		if !ok {
+			return FleetPlan{}, errors.New("wave notional overflow")
+		}
+		if nextNotional > limits.MaxNotionalUSDMicros {
+			out.Rejections[position.VaultID] = "wave_notional_limit"
+			continue
+		}
+		if tenantCounts[position.PolicyAuthority] >= limits.MaxPerTenant {
+			out.Rejections[position.VaultID] = "tenant_limit"
+			continue
+		}
+		conflicts := opportunityConflictKeys(position, d)
+		limited := false
+		for _, key := range conflicts {
+			if conflictCounts[key] >= limits.MaxPerWritableConflictKey {
+				limited = true
+				break
+			}
+		}
+		if limited {
+			out.Rejections[position.VaultID] = "writable_conflict_limit"
+			continue
+		}
+		selectedCount++
+		selectedNotional = nextNotional
+		selectedVaults[position.VaultID] = true
+		tenantCounts[position.PolicyAuthority]++
+		for _, key := range conflicts {
+			conflictCounts[key]++
+		}
+		if d.RouteKind != "idle_vault_deposit" {
+			versions[d.SourceReserve]++
+		}
+		versions[d.TargetReserve]++
 		inflow[c.target], ok = sumInt64(inflow[c.target], d.PrincipalUSDMicros)
 		if !ok {
 			return FleetPlan{}, errors.New("wave inflow overflow")
 		}
-		outflow[d.SourceReserve], ok = sumInt64(outflow[d.SourceReserve], d.PrincipalUSDMicros)
-		if !ok {
-			return FleetPlan{}, errors.New("wave outflow overflow")
+		if d.RouteKind != "idle_vault_deposit" {
+			outflow[d.SourceReserve], ok = sumInt64(outflow[d.SourceReserve], d.PrincipalUSDMicros)
+			if !ok {
+				return FleetPlan{}, errors.New("wave outflow overflow")
+			}
 		}
+		// Match Rust's publication admission after wave selection: an unfunded
+		// three-leg route is not published, but must not free in-wave capacity
+		// or let a different candidate bypass the selected vault/limits.
+		if d.RouteKind == "cross_mint_jupiter" && d.EstimatedCostLamports < 15_000 {
+			out.Rejections[position.VaultID] = "cross_mint_fee_envelope_not_covered"
+			continue
+		}
+		delete(out.Rejections, position.VaultID)
 		plan, err := canonicalExecutionPlan(snapshot, c.vault, d)
 		if err != nil {
 			return FleetPlan{}, err
@@ -217,6 +287,13 @@ func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) 
 		key := opportunityIdentity(cluster, epochID, d, plan, expires)
 		out.Opportunities = append(out.Opportunities, PlannedOpportunity{d, plan, key})
 	}
+	// Preserve visibility of unvisited candidates when the wave count fills;
+	// selected vaults (including fee-fenced publications) keep their outcome.
+	for _, candidate := range candidates {
+		if !selectedVaults[candidate.d.VaultID] {
+			out.Rejections[candidate.d.VaultID] = "wave_opportunity_limit"
+		}
+	}
 	return out, nil
 }
 func betterDecision(a, b Decision) bool {
@@ -235,6 +312,9 @@ func canonicalExecutionPlan(snapshot MarketSnapshot, v FleetVault, d Decision) (
 	targetObservedAt := target.ObservedAt
 	if targetObservedAt.IsZero() {
 		targetObservedAt = snapshot.ObservedAt
+	}
+	if d.RouteKind == "idle_vault_deposit" {
+		return canonicalIdleExecutionPlan(v, d, target.SupplyAPYBPS, target.Slot, targetObservedAt)
 	}
 	if d.RouteKind == "cross_mint_jupiter" {
 		return canonicalCrossMintExecutionPlan(v.Position, d, source.SupplyAPYBPS, target.SupplyAPYBPS, target.Slot, targetObservedAt)
@@ -269,7 +349,7 @@ func canonicalSameMintExecutionPlan(position VaultPosition, decision Decision, o
 		"minimum_transaction_fee_lamports": 5_000, "conservative_sol_price_usd_micros": 1_000_000_000,
 		"source_observed_at": position.ObservedAt.UTC(), "source_observed_slot": position.ObservedSlot,
 		"optimizer_market_slot": decision.MarketSlot, "target_observed_at": targetObservedAt.UTC(), "target_observed_slot": targetSlot,
-		"writable_conflict_keys":                  []string{"vault:" + position.VaultPubkey, "policy:" + fmt.Sprint(position.PolicyID), "source-reserve:" + decision.SourceReserve, "target-reserve:" + decision.TargetReserve},
+		"writable_conflict_keys":                  opportunityConflictKeys(position, decision),
 		"planning_economics_are_executable_quote": false, "fresh_executable_jupiter_minimum_output_required": false, "policy_bindings": nil,
 		"source_recovery_anchor_collateral_raw": nil, "cross_mint_maximum_value_loss_bps": nil,
 	}
@@ -291,10 +371,7 @@ func canonicalCrossMintExecutionPlan(position VaultPosition, decision Decision, 
 		feeTier = "standard"
 	}
 	bindings := decision.PolicyBindings
-	conflicts := []string{"vault:" + position.VaultPubkey, "policy:" + fmt.Sprint(position.PolicyID), "source-reserve:" + decision.SourceReserve, "target-reserve:" + decision.TargetReserve, "swap-policy:" + bindings.Swap.PolicyAccount, "earn-policy:" + bindings.Withdraw.PolicyAccount}
-	if bindings.Deposit.PolicyAccount != bindings.Withdraw.PolicyAccount {
-		conflicts = append(conflicts, "earn-policy:"+bindings.Deposit.PolicyAccount)
-	}
+	conflicts := opportunityConflictKeys(position, decision)
 	plan := map[string]any{
 		"kind": "cross_mint_jupiter", "route_kind": "cross_mint_jupiter", "settings": position.Settings, "vault_index": position.VaultIndex,
 		"vault_pubkey": position.VaultPubkey, "policy_id": position.PolicyID, "source_kind": "reserve_position",
@@ -328,7 +405,11 @@ func optionalPositiveInt64(value int64) any {
 }
 
 func opportunityIdentity(cluster string, optimizerEpochID int64, d Decision, plan []byte, expires time.Time) string {
-	values := []string{"loyal-rebalance-opportunity-v1", cluster, fmt.Sprint(d.VaultID), fmt.Sprint(d.SourceSnapshotID), fmt.Sprint(optimizerEpochID), "", "", d.SourceReserve, d.TargetReserve, d.Mint, fmt.Sprint(d.AmountRaw), fmt.Sprint(d.PrincipalUSDMicros), fmt.Sprint(d.SourceAPYBPS), fmt.Sprint(d.TargetAPYBPS), fmt.Sprint(d.EdgeBPS), fmt.Sprint(d.EstimatedCostLamports), fmt.Sprint(d.AnnualYieldGainUSDMicros), fmt.Sprint(d.ExpectedNetGainUSDMicros), fmt.Sprint(d.EconomicPriority), "lost-yield-service-net-reserve-capacity-v3", "yield_optimization", "", string(plan), rustRFC3339(expires), ""}
+	sourceSnapshot, operationClass := fmt.Sprint(d.SourceSnapshotID), "yield_optimization"
+	if d.RouteKind == "idle_vault_deposit" {
+		sourceSnapshot, operationClass = "", "idle_allocation"
+	}
+	values := []string{"loyal-rebalance-opportunity-v1", cluster, fmt.Sprint(d.VaultID), sourceSnapshot, fmt.Sprint(optimizerEpochID), "", "", d.SourceReserve, d.TargetReserve, d.Mint, fmt.Sprint(d.AmountRaw), fmt.Sprint(d.PrincipalUSDMicros), fmt.Sprint(d.SourceAPYBPS), fmt.Sprint(d.TargetAPYBPS), fmt.Sprint(d.EdgeBPS), fmt.Sprint(d.EstimatedCostLamports), fmt.Sprint(d.AnnualYieldGainUSDMicros), fmt.Sprint(d.ExpectedNetGainUSDMicros), fmt.Sprint(d.EconomicPriority), "lost-yield-service-net-reserve-capacity-v3", operationClass, "", string(plan), rustRFC3339(expires), ""}
 	h := sha256.New()
 	var length [8]byte
 	for _, s := range values {
@@ -864,6 +945,10 @@ type RoutePreparation struct {
 }
 
 func PrepareRoute(route KaminoSameMintRoute, policy, signer string, policyAccountIndex uint8, allowedIndexes []uint8, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error)) (RoutePreparation, error) {
+	return prepareRoute(route, policy, signer, policyAccountIndex, allowedIndexes, tables, recentBlockhash, feeLamports, computeLimit, simulate, interleaveMatureSameMintRoute, "same_mint_kamino_v0")
+}
+
+func prepareRoute(route KaminoSameMintRoute, policy, signer string, policyAccountIndex uint8, allowedIndexes []uint8, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error), layout func([]RouteInstruction, []RouteInstruction) ([]RouteInstruction, error), kind string) (RoutePreparation, error) {
 	if len(route.Protected) == 0 || len(allowedIndexes) != len(route.Protected) {
 		return RoutePreparation{}, errors.New("protected instructions and policy indexes differ")
 	}
@@ -886,7 +971,7 @@ func PrepareRoute(route KaminoSameMintRoute, policy, signer string, policyAccoun
 			return RoutePreparation{}, err
 		}
 	}
-	instructions, err := interleaveMatureSameMintRoute(route.Public, wrapped)
+	instructions, err := layout(route.Public, wrapped)
 	if err != nil {
 		return RoutePreparation{}, err
 	}
@@ -930,7 +1015,7 @@ func PrepareRoute(route KaminoSameMintRoute, policy, signer string, policyAccoun
 		CompiledFeeLamports       uint64             `json:"compiled_fee_lamports"`
 		ComputeUnitLimit          uint64             `json:"compute_unit_limit"`
 		Simulation                SimulationEvidence `json:"simulation"`
-	}{"same_mint_kamino_v0", base64.StdEncoding.EncodeToString(tx.Message), tx.MessageSHA256, base64.StdEncoding.EncodeToString(tx.UnsignedWire), tx.WireSHA256, tx.LookupTables, tx.WritableAccounts, tx.PacketBytes, tx.FeeLamports, tx.ComputeLimit, sim})
+	}{kind, base64.StdEncoding.EncodeToString(tx.Message), tx.MessageSHA256, base64.StdEncoding.EncodeToString(tx.UnsignedWire), tx.WireSHA256, tx.LookupTables, tx.WritableAccounts, tx.PacketBytes, tx.FeeLamports, tx.ComputeLimit, sim})
 	return RoutePreparation{hex.EncodeToString(rf[:]), hex.EncodeToString(rq[:]), tx, sim, plan}, nil
 }
 

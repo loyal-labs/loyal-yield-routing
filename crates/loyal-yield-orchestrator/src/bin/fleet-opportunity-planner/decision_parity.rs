@@ -27,6 +27,8 @@ struct Vault {
     amount: i64,
     collateral: i64,
     tenant: String,
+    #[serde(default, rename = "idleMint")]
+    idle_mint: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,14 +106,35 @@ fn produce_shared_input_decisions() -> Result<(), Box<dyn Error>> {
         };
         let mut inputs = Vec::new();
         let mut routes = BTreeMap::new();
-        for vault in &case.vaults {
-            let source = &case.reserves[&vault.source];
+        let mut vaults: Vec<_> = case.vaults.iter().collect();
+        vaults.sort_by_key(|v| {
+            (
+                v.id,
+                v.idle_mint.is_none(),
+                v.idle_mint
+                    .clone()
+                    .unwrap_or_else(|| case.reserves[&v.source].mint.clone()),
+                v.source.clone(),
+            )
+        });
+        for vault in vaults {
+            let idle = vault.idle_mint.is_some();
+            let source = case.reserves.get(&vault.source);
+            let source_mint = vault
+                .idle_mint
+                .as_deref()
+                .unwrap_or_else(|| source.expect("reserve source required").mint.as_str());
+            let source_apy = if idle {
+                0
+            } else {
+                source.expect("reserve source required").apy
+            };
             for target_name in &vault.targets {
                 let target = &case.reserves[target_name];
-                if target.apy <= source.apy {
+                if target.apy <= source_apy || idle && target.mint != source_mint {
                     continue;
                 }
-                let cross = source.mint != target.mint;
+                let cross = source_mint != target.mint;
                 // Normalized source adapter: same one-collateral-unit recovery
                 // anchor as the observer; source parsing is outside this test.
                 let amount = if cross {
@@ -128,7 +151,9 @@ fn produce_shared_input_decisions() -> Result<(), Box<dyn Error>> {
                 let id = i64::try_from(inputs.len() + 1)?;
                 routes.insert(
                     id,
-                    if cross {
+                    if idle {
+                        "idle_vault_deposit"
+                    } else if cross {
                         "cross_mint_jupiter"
                     } else {
                         "same_mint"
@@ -142,23 +167,33 @@ fn produce_shared_input_decisions() -> Result<(), Box<dyn Error>> {
                     tenant_id: vault.tenant.clone(),
                     source_snapshot_id: vault.id,
                     observed_slot: 1000,
-                    mint: source.mint.clone(),
-                    source_reserve: vault.source.clone(),
+                    mint: source_mint.to_owned(),
+                    source_reserve: if idle {
+                        format!("idle-vault:vault-{}", vault.id)
+                    } else {
+                        vault.source.clone()
+                    },
                     target_reserve: target_name.clone(),
                     notional_usd_micros: amount,
-                    source_net_apy_bps: source.apy,
+                    source_net_apy_bps: source_apy,
                     target_net_apy_bps: target.apy,
                     confidence_ppm: 950000,
                     expected_service_millis: 15_000 * multiplier as u64,
                     holding_horizon_seconds: 2_592_000,
-                    estimated_execution_cost_usd_micros: DEFAULT_ESTIMATED_COST_USD_MICROS
-                        * multiplier,
+                    estimated_execution_cost_usd_micros: if idle {
+                        500_000
+                    } else {
+                        DEFAULT_ESTIMATED_COST_USD_MICROS * multiplier
+                    },
                     age_seconds: 0,
                     fairness_credit: 0,
                     writable_conflict_keys: vec![
                         format!("vault:vault-{}", vault.id),
                         "policy:1".into(),
-                        format!("source-reserve:{}", vault.source),
+                        format!(
+                            "source-reserve:{}",
+                            if idle { "idle" } else { &vault.source }
+                        ),
                         format!("target-reserve:{target_name}"),
                     ],
                 });
@@ -190,7 +225,7 @@ fn produce_shared_input_decisions() -> Result<(), Box<dyn Error>> {
             {
                 continue;
             }
-            selected.push(json!({"vaultId":o.vault_id,"source":o.source_reserve,"target":o.target_reserve,"route":route,
+            selected.push(json!({"vaultId":o.vault_id,"source":if route == "idle_vault_deposit" { "" } else { &o.source_reserve },"target":o.target_reserve,"route":route,
                 "amount":o.notional_usd_micros,"sourceApy":e.capacity_adjusted_source_net_apy_bps,
                 "targetApy":e.capacity_adjusted_target_net_apy_bps,"edge":e.capacity_adjusted_net_edge_bps,
                 "netGain":e.net_holding_gain_usd_micros,"priority":e.total_priority,"feeCap":fee.cap_lamports}));

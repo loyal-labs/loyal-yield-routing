@@ -43,8 +43,13 @@ func TestPlanFleetCapacityAwareWave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Opportunities) != 2 || plan.Rejections[3] != "target_capacity_exhausted" {
-		t.Fatalf("unexpected capacity wave: %#v", plan)
+	if len(plan.Opportunities) != 3 || len(plan.Rejections) != 0 {
+		t.Fatalf("unexpected capacity wave: selected=%d rejected=%v", len(plan.Opportunities), plan.Rejections)
+	}
+	for i, target := range []string{testTarget, testTarget, testPolicy} {
+		if plan.Opportunities[i].Decision.TargetReserve != target {
+			t.Fatalf("move %d did not use the remaining target capacity", i)
+		}
 	}
 	if plan.Opportunities[0].IdempotencyKey == plan.Opportunities[1].IdempotencyKey || len(plan.Opportunities[0].IdempotencyKey) != 64 {
 		t.Fatal("opportunity identities are not canonical")
@@ -57,8 +62,15 @@ func TestPlanFleetCapacityAwareWave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(withCommitted.Opportunities) != 1 {
-		t.Fatalf("existing committed capacity was ignored: %#v", withCommitted)
+	if len(withCommitted.Opportunities) != 3 {
+		t.Fatalf("remaining alternative capacity was ignored: selected=%d", len(withCommitted.Opportunities))
+	}
+	inflows := map[string]int64{testTarget: 10_000_000_000}
+	for _, o := range withCommitted.Opportunities {
+		inflows[o.Decision.TargetReserve] += o.Decision.PrincipalUSDMicros
+	}
+	if inflows[testTarget] != 19_000_000_000 || inflows[testPolicy] != 18_000_000_000 {
+		t.Fatalf("wrong capacity allocation: %v", inflows)
 	}
 }
 

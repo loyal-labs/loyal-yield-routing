@@ -198,46 +198,94 @@ records. Standalone validation requires `--run-id RUN_ID`; optional
 Run `bash scripts/compare-fleet-decisions.sh /absolute/new-output-directory`.
 This clears inherited credentials, disables dependency downloads and sends proxy
 traffic to a closed loopback port. It runs Rust's production capacity-curve
-builder, core wave planner and publication fee guard, and Go's `PlanFleet`, on
+builder, core wave planner and publication fee guard, and Go's shared wave engine
+through `PlanFleetShadowAt` (an explicit offline clock), on
 one SHA-256-bound input file. Outputs and a detailed report remain in the new
 private directory. Exit 1 means disagreement; tooling failures also fail closed.
 
-The 129 deterministic scenarios include profitable/unprofitable same-mint and
+The 154 deterministic scenarios include profitable/unprofitable same-mint and
 cross-mint moves, all six same-mint and 30 directed stablecoin pairs, fee/notional
 thresholds, committed inflows/outflows, shared capacity, alternative targets,
-large reserves, scheduling limits, and 32 seeded repricing cases. Comparison is
+large reserves, scheduling limits, and 32 seeded repricing cases. The 25 added
+idle scenarios cover all six mints, joint idle/reserve capacity, alternative
+fallback, competing sources of one vault, and rejection of cross-mint idle routes. Comparison is
 exact, including selected order, route, amount, source/target APY, edge, net gain,
-priority and fee cap. Four comparator controls reject omissions, stale fixtures,
-invalid fields and changed decisions.
+priority and fee cap. Five comparator controls reject omissions, stale fixtures,
+invalid fields, changed decisions, and fabricated idle reserve/source yield.
 
-**Current result: 124/129 match; five disagree. Handover is blocked.** Input
-SHA-256: `c155e6a6eaf3659a3dbb87bbd53f773d7eeeb7195e2fd5e21e1316f0a08f9cbf`.
+**Current diagnostic result: 154/154 match, without waived differences. Handover remains blocked by the separate gates below.** Input
+SHA-256: `55d6bb4bd714f0a2a38de6ba3131620e2510594c7ffbc5d0585ac9383f2a92f9`.
+The preceding 129-case fixture passed with SHA-256
+`c155e6a6eaf3659a3dbb87bbd53f773d7eeeb7195e2fd5e21e1316f0a08f9cbf`;
+those reserve scenarios remain, rather than being replaced by the idle cases.
 
-| Cases | Rust | Go | Cause |
-| --- | --- | --- | --- |
-| same/cross `alternative-after-capacity` | 3 moves | 2 moves | Go keeps only each vault's initial best target; Rust can choose another after capacity fills |
-| same/cross `large-reserve` | 1 move | 0 moves | Go caps the final band at $4M; Rust uses the reserve's 2% frontier ($20M in the $1B-supply fixture) |
-| `same-tenant-conflict-limit` | 64 moves | 65 moves | Go lacks Rust's wave tenant/conflict limits |
+The five original disagreements are now regression cases: both planners select
+three moves when an alternative target remains after the first fills, admit the
+$5M move into a $1B reserve's $20M frontier, and stop the shared-tenant wave at
+64 moves. Go retains every eligible target, reprices stale heap candidates after
+capacity changes, and applies Rust's admission limits and deterministic ordering.
+Fee-envelope publication rejection happens after wave admission, without freeing
+that wave's capacity or bypassing its limits. Focused Go tests isolate tenant,
+conflict, count and exact-notional limits, loader-order independence, and the
+large-reserve frontier boundary.
 
-This is a **diagnostic, not a passing gate with accepted mismatches**. The existing
-`--audit-current` covers the fixed-fixture wire/lifecycle contract; its green
-result does not supersede these failures. No planner behavior is changed by the
-diagnostic. Fix and rerun it before proposing handover.
+`--audit-current` now **requires** this comparison as well as the fixed wire and
+connected lifecycle gates. Any disagreement still fails; there is no allowlist.
+The fixed wire fixture now gives Go only reserve-b as an allowed target, matching
+the Rust reference's candidate list. It previously gave Go an extra reserve-c;
+the old missing-fallback bug concealed those unequal inputs. The separate shared
+fixture retains both alternatives and requires the third move.
 
-Both producers assume policy-eligible, six-decimal stablecoin reserve sources
+Both producers assume policy-eligible, six-decimal stablecoin reserve or idle sources
 with finalized capabilities already admitted. The small Rust adapter normalizes
 source amounts and recovery anchors; it does not run the SQL observer. It uses
 current-source default wave limits, not downloaded production environment
 settings. This is not a replay of a live shared database/RPC snapshot, does not
-compare rejection explanations or policy admission, and does not include idle
-sources or fresh executable quotes. Passing every case would still not establish
+compare rejection explanations or policy admission, and does not include fresh
+executable quotes or durable idle ownership. Passing every case still does not establish
 complete observer/revalidator or production compatibility.
+
+## Idle development boundary
+
+Shadow cycles now use the same wave to allocate reserve and idle candidates,
+with one selection per vault and shared target capacity. Idle has zero source
+yield, no reserve outflow, and absent source/collateral fields in the diagnostic
+plan. The loader retains finalized policy/signer, cooldown, active-work and
+Autodeposit fences. Logs retain independent candidate counts and additionally
+report `jointAllocationChecked`, `jointSelectedIdleCount`, and
+`jointSelectedReserveCount`; `executableIdleEnabled` remains false.
+
+`KLendProxy.BuildIdleDeposit` invokes the official Rust KLend deposit builder
+without a source or withdrawal parameter. It requires an existing, PDA-bound
+empty/target-only obligation and the vault's stablecoin ATA. It does not create
+missing obligations/ATAs or take ownership of funds. The required
+`TestRealKLendProxyIdleDeposit` exercises all six mints through the compiled
+proxy, exact deposit bytes, every returned account/privilege/byte mutation,
+invalid footprints/PDAs/amounts, duplicate JSON fields and withdrawal injection.
+`PrepareIdleDepositRoute` compiles a deposit-only Squads payload, applies its
+compute budget, requires reusable ALT coverage and exact simulation, and cannot
+use the withdrawal policy index. The required
+`TestConnectedSameMintLifecycle/idle-deposit-signed-wire` subtest starts a separate
+SVM with initial USDC idle funds and an existing target obligation. It signs and
+executes the exact Go-produced bytes through Squads/SPL and mock Kamino, rejects
+wrong policy indexes, leaves the reserve source unchanged, and checks that exact
+wire replay retains one successful execution and no second transfer.
+
+This is **local signed-wire proof, not durable idle lifecycle/recovery proof**;
+it does not add a third connected lifecycle record or prove real KLend execution.
+
+`PlanFleet` and `Store.Publish` still reject idle diagnostic routes. Idle
+publication, fresh revalidation, retained execution/reconciliation, restart
+recovery and capacity release must be connected and verified before lifting
+those guards. Never combine an Autodeposit subscription pull with its Kamino
+deposit in one transaction.
 
 ## Remaining production gates
 
 Require a current-source audit with both connected records before accepting the
-local handoff. It does not close the separate executable-idle or broad shared-input
-Rust/Go decision-parity gaps, including mixed idle/reserve capacity competition.
+local handoff. It does not close the separate executable-idle or real shared-snapshot
+Rust/Go observer/revalidator parity gaps. Joint idle/reserve allocation now has
+normalized-input comparison coverage, but not connected idle lifecycle evidence.
 Even a completed connected run uses mock Kamino/Jupiter programs and fixed
 local liquidity/prices, not production KLend interest/oracle behavior, Jupiter
 routing/price discovery/AlphaQ CPI, validator consensus or real RPC finality and

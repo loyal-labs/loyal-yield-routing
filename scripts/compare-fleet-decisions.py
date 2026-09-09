@@ -67,6 +67,36 @@ def fixtures():
         for v in c['vaults']:
             v['source'] = rng.choice(['a', 'd'])
             v['amount'] = v['collateral'] = rng.choice([1_000_000_000, 5_000_000_000, 9_000_000_000])
+    # Idle is a separate source, never a fabricated reserve or withdrawal.
+    # These are admitted-source economics only, not an ownership proof.
+    def idle(v, mint=USDC):
+        v.update(source='', idleMint=mint, collateral=0)
+    for symbol, mint in STABLES.items():
+        for amount in (100_000_000, 9_000_000_000, 20_000_000_001):
+            case(f'idle-{symbol}-{amount}', amount=amount)
+            c = cases[-1]
+            c['reserves']['b']['mint'] = mint
+            idle(c['vaults'][0], mint)
+    for alternative in (False, True):
+        case('idle-wave-'+str(alternative), count=3, alternative=alternative)
+        for v in cases[-1]['vaults']: idle(v)
+    case('idle-and-reserve-shared-capacity', count=3)
+    idle(cases[-1]['vaults'][1])
+    for winner in ('idle', 'reserve'):
+        case('same-vault-'+winner+'-wins', count=2)
+        c = cases[-1]
+        c['vaults'][1]['id'] = c['vaults'][0]['id']
+        idle(c['vaults'][1])
+        small = c['vaults'][0 if winner == 'idle' else 1]
+        small['amount'] = 1_000_000_000
+        if not small.get('idleMint'): small['collateral'] = small['amount']
+    case('same-vault-two-idle-mints', count=2)
+    c = cases[-1]
+    c['reserves']['c'] = {**c['reserves']['b'], 'mint': USDT}
+    idle(c['vaults'][0]); idle(c['vaults'][1], USDT)
+    c['vaults'][1].update(id=1, targets=['c'])
+    case('idle-cross-mint-not-admitted', cross=True)
+    idle(cases[-1]['vaults'][0])
     assert len({c['name'] for c in cases}) == len(cases)
     return {'schemaVersion': 1, 'cases': cases}
 
@@ -107,8 +137,12 @@ def compare(fixture, rust, go):
                     require(type(d[key]) is int and d[key] >= 0, 'invalid numeric decision field')
                 require(d['vaultId'] > 0 and d['vaultId'] not in vaults, 'invalid/duplicate selected vault')
                 vaults.add(d['vaultId'])
-                require(d['route'] in ('same_mint', 'cross_mint_jupiter'), 'unknown route')
-                require(all(isinstance(d[k], str) and d[k] for k in ('source', 'target')), 'missing reserve')
+                require(d['route'] in ('same_mint', 'cross_mint_jupiter', 'idle_vault_deposit'), 'unknown route')
+                require(isinstance(d['target'], str) and d['target'], 'missing target reserve')
+                if d['route'] == 'idle_vault_deposit':
+                    require(d['source'] == '' and d['sourceApy'] == 0, 'fabricated idle source')
+                else:
+                    require(isinstance(d['source'], str) and d['source'], 'missing source reserve')
         outputs.append(artifact['cases'])
     differences = [{'name': r['name'], 'rust': r['selected'], 'go': g['selected']}
                    for r, g in zip(*outputs) if r != g]

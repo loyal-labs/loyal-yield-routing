@@ -20,7 +20,7 @@ func loadIdleShadowSources(ctx context.Context, tx pgx.Tx, cluster, signer strin
 	}
 	rows, err := tx.Query(ctx, `
 SELECT v.id,v.settings,v.vault_index,v.vault_pubkey,r.id,r.policy_account,
-       r.kamino_markets,i.mint,i.token_account,i.amount_raw,i.observed_slot,i.observed_at
+       r.kamino_markets,r.authority,i.mint,i.token_account,i.amount_raw,i.observed_slot,i.observed_at
 FROM loyal_yield.managed_vaults v
 JOIN loyal_yield.route_policies r ON r.id=v.active_policy_id
 JOIN loyal_yield.vault_idle_token_balances_current i ON i.vault_id=v.id
@@ -58,7 +58,7 @@ ORDER BY v.id,i.mint,i.token_account`, cluster, signer, mints)
 		var v FleetVault
 		var markets []string
 		p := &v.Position
-		if err := rows.Scan(&p.VaultID, &p.Settings, &p.VaultIndex, &p.VaultPubkey, &p.PolicyID, &p.PolicyAccount, &markets, &p.Mint, &v.IdleTokenAccount, &p.AmountRaw, &p.ObservedSlot, &p.ObservedAt); err != nil {
+		if err := rows.Scan(&p.VaultID, &p.Settings, &p.VaultIndex, &p.VaultPubkey, &p.PolicyID, &p.PolicyAccount, &markets, &p.PolicyAuthority, &p.Mint, &v.IdleTokenAccount, &p.AmountRaw, &p.ObservedSlot, &p.ObservedAt); err != nil {
 			return nil, err
 		}
 		if v.IdleTokenAccount == "" {

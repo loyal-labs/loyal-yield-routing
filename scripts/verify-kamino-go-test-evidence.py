@@ -16,8 +16,10 @@ REQUIRED = {
     "TestFreshPolicyWrapALTAndExactV0",
     "TestConfigRejectsShadowRevalidation",
     "TestRealKLendProxyCrossMintLegs",
+    "TestRealKLendProxyIdleDeposit",
     "TestConnectedCrossMintPreflight",
     "TestConnectedSameMintLifecycle",
+    "TestConnectedSameMintLifecycle/idle-deposit-signed-wire",
 }
 PACKAGE = "github.com/loyal-labs/loyal-yield-routing/go/kamino-fleet-planner/internal/fleet"
 LANES = {"same-mint": "TestConnectedSameMintLifecycle", "cross-mint": "TestConnectedCrossMintPreflight"}

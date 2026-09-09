@@ -17,15 +17,15 @@ const (
 )
 
 func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, targetAddress string) Decision {
-	return planSource(snapshot, position, sourceAddress, targetAddress, false)
+	return planSourceAt(snapshot, position, sourceAddress, targetAddress, false, snapshot.ObservedAt)
 }
 
 // planIdleDeposit is read-only shadow evaluation, not an executable route.
 func planIdleDeposit(snapshot MarketSnapshot, position VaultPosition, targetAddress string) Decision {
-	return planSource(snapshot, position, "", targetAddress, true)
+	return planSourceAt(snapshot, position, "", targetAddress, true, time.Now())
 }
 
-func planSource(snapshot MarketSnapshot, position VaultPosition, sourceAddress, targetAddress string, idle bool) Decision {
+func planSourceAt(snapshot MarketSnapshot, position VaultPosition, sourceAddress, targetAddress string, idle bool, now time.Time) Decision {
 	source, sourceOK := snapshot.Reserves[sourceAddress]
 	target, targetOK := snapshot.Reserves[targetAddress]
 	routeKind := "same_mint"
@@ -60,7 +60,7 @@ func planSource(snapshot MarketSnapshot, position VaultPosition, sourceAddress, 
 	ineligible := func(reason string) Decision { decision.Reason = reason; return decision }
 	if idle {
 		expiry, ok := snapshot.MintExpiresAt[position.Mint]
-		if !ok || !expiry.After(time.Now().Add(minimumPublicationLifetime)) {
+		if !ok || !expiry.After(now.Add(minimumPublicationLifetime)) {
 			return ineligible("idle_market_evidence_lifetime_too_short")
 		}
 	}
@@ -199,10 +199,10 @@ func capacityAdjustedTargetAPY(target ReserveState, committedInflow, committedOu
 		return 0, false, false
 	}
 	ceilings := []int64{
-		minInt64(target.TotalSupplyUSDMicros/1_000, 1_000_000_000_000),
-		minInt64(target.TotalSupplyUSDMicros/200, 2_000_000_000_000),
-		minInt64(target.TotalSupplyUSDMicros/100, 3_000_000_000_000),
-		maxInt64(minInt64(target.TotalSupplyUSDMicros/50, 4_000_000_000_000), 4_000_000),
+		target.TotalSupplyUSDMicros / 1_000,
+		target.TotalSupplyUSDMicros / 200,
+		target.TotalSupplyUSDMicros / 100,
+		maxInt64(target.TotalSupplyUSDMicros/50, 4_000_000),
 	}
 	if committedInflow > ceilings[len(ceilings)-1] {
 		ceilings[len(ceilings)-1] = committedInflow
