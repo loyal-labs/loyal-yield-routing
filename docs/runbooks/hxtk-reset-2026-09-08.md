@@ -376,8 +376,15 @@ frozen quote at the post-burn price and burn the rest: require exactly one
 `amountLpBurned=21,745,257`, escrow drained, and a cleared receipt. The admin
 LP delta must be the partial refund `78,196,265`, not the full escrow; supply
 must become `167,797,415`, with the admin holding 100% of it, while tv and idle
-remain `3,793,417`. Abort before signing if any pre-state figure, receipt
-owner/authority, or escrow amount differs. The guarded command is:
+remain `3,793,417`. The tool first checks the complete atomic finalized
+pre-state and an unsigned `sigVerify=false` projection; any mismatch aborts
+before signer loading, so no signed wire is written. It then checks the signed
+projection and re-reads the same atomic fingerprint immediately before the
+attempted mark. A drift produces `ABORTED_PRE_SEND_STATE_DRIFT`. Finalized
+reconciliation requires the atomic post-state plus exactly one event with the
+same vault, admin, receipt PDA, refund, and burn; an open or zero-LP receipt is
+not accepted because the proof shows `receiptStillExists=false`. The guarded
+command is:
 
 ```sh
 op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk cancel --execute --journal /absolute/path/hxtk-cancel.json
@@ -386,9 +393,9 @@ op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk can
 ### 8. Re-request all LP at the repaired NAV
 
 Cancel and request are separate mainnet transactions. First confirm that the
-finalized cancel journal has reconciled the partial refund, burn, post-cancel
-supply, event, and cleared receipt. The request simulation is request-only and
-binds to that finalized cancel journal:
+finalized cancel journal has reconciled the atomic post-state and decoded
+partial-refund event. The request simulation is request-only and binds to that
+finalized cancel journal:
 
 ```sh
 bun run reset:hxtk request --cancel-journal /absolute/path/hxtk-cancel.json --simulate
@@ -397,12 +404,16 @@ bun run reset:hxtk request --cancel-journal /absolute/path/hxtk-cancel.json --si
 Require exactly `167,797,415` LP in escrow, the admin LP ATA empty, supply
 unchanged at `167,797,415`, and a request event with
 `requestedAmount=167,797,415`, `isAmountInLp=true`, and
-`isWithdrawAll=true`. Record the proof-pinned expected claim payout
-`3,793,394` and residual `tv=idle=23` in the operator plan. The
-simulation-only projection checks `withdrawableFromTs >= local now + 600`
-seconds; finalized reconciliation instead requires
-`withdrawableFromTs == request transaction blockTime + 600`, with at most a
-one-second Voltr rounding tolerance. Then use:
+`isWithdrawAll=true`. Pin `amountAssetBits=1067745598426973642066` exactly;
+the event and new receipt must carry that quote, and
+`withdrawableFromTs == requestTs + 600`. Record the proof-pinned expected
+claim payout `3,793,394` and residual `tv=idle=23` in the operator plan. The
+unsigned and signed projections enforce the quote and deadline relation;
+finalized reconciliation additionally requires `requestTs` to equal the
+request transaction blockTime exactly, with the atomic receipt, LP supply,
+admin LP/USDC, tv, idle, and orphan receipt values aligned. The pre-send
+atomic fingerprint gate is the same as cancel; drift aborts before the
+attempted mark. Then use:
 
 ```sh
 op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk request --cancel-journal /absolute/path/hxtk-cancel.json --execute --journal /absolute/path/hxtk-request.json
@@ -414,9 +425,11 @@ transactions on mainnet.
 ### 9. Wait for the withdrawal period
 
 Wait at least `600` seconds from the finalized request transaction. Re-read the
-receipt at finalized commitment and continue only when
+atomic finalized receipt and continue only when
 `withdrawableFromTs <= latest finalized slot blockTime`. Abort on a missing
-receipt, authority mismatch, LP amount drift, or a future deadline.
+receipt, authority mismatch, quote/deadline drift, LP amount drift, or a future
+deadline. The request journal must already contain the event-aligned finalized
+receipt and exact block-time deadline.
 
 ### 10. Claim
 
@@ -427,16 +440,19 @@ that journal's new request receipt:
 bun run reset:hxtk claim --request-journal /absolute/path/hxtk-request.json --simulate
 ```
 
-The pre-send simulation records `expectedPayoutRaw` and `expectedLpBurnRaw` in
-the pending journal, and for this proof-pinned request refuses any projection
-other than payout `3,793,394` and LP burn `167,797,415`. Finalized
-reconciliation requires payout `>= 1`, payout exactly equal to both the
-pre-send expectation and `3,793,394`, and LP burned exactly equal to both the
-pre-send expectation and the request LP amount. It also requires the
-`WithdrawVault` event to match, residual `tv=idle=23`, strategy-one receipt
-`3,793,536` unchanged, payout no greater than the receipt quote, idle to
-decrease by exactly the payout, and escrow to drain. Any deviation is
-`RECONCILE_MISMATCH`.
+The tool validates the pre-state and unsigned `sigVerify=false` projection
+before loading the signer, then repeats the payout/burn check on the signed
+projection. For this proof-pinned request it refuses any projection other than
+payout `3,793,394`, LP burn `167,797,415`, LP supply after `0`, and residual
+`tv=idle=23`; the plan also records LP supply including dead weight as `1,000`.
+Immediately before the attempted mark it re-reads the atomic finalized
+fingerprint and aborts with `ABORTED_PRE_SEND_STATE_DRIFT` if anything pinned
+changed. Finalized reconciliation uses a new atomic post-state and exactly one
+`WithdrawVault` event: admin payout delta `3,793,394`, event payout/burn,
+vault/mint/admin identity, tv before/after, LP supply including fees before /
+after (`167,798,415` / `1,000`), admin LP `0`, tv/idle `23`, closed receipt,
+drained escrow, and unchanged receipt1 `3,793,536` must all agree. Any
+deviation is `RECONCILE_MISMATCH`.
 The guarded command is:
 
 ```sh
@@ -474,8 +490,9 @@ If that send is ambiguous, reconcile the same journal without a new send:
 bun run reset:hxtk restore-degradation --repair-journal /absolute/path/hxtk-repair.json --claim-journal /absolute/path/hxtk-claim.json --reconcile --journal /absolute/path/hxtk-restore-degradation.json
 ```
 
-Require degradation `86,400`, admin/manager performance fees `0`, and waiting
-period `600` after finalized reconciliation. Record the NAV-sniper
+Require residual `tv=idle=23`, closed receipt, drained escrow, degradation
+`86,400`, admin/manager performance fees `0`, and waiting period `600` after
+finalized reconciliation. Record the NAV-sniper
 haircut/degradation result (audit T10.7), and abort if the 24-hour delay,
 finalized repair timestamp, post-claim book, or finalized journal wire cannot
 be proved.

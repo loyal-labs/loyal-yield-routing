@@ -177,12 +177,19 @@ const REPAIRED_BOOK_RAW = 3_793_417n;
  * voltr-reset-litesvm-2026-09-08 evidence `cancel` block. These values are
  * valid only for the exact frozen pre-cancel state below.
  */
+// Audit §7 line 90 and the LiteSVM reset evidence "cancel" block pin Voltr's
+// post-burn refund/burn split for this exact HXtk pre-state.
 export const CANCEL_EXPECTED_REFUND_LP = 78_196_265n;
 export const CANCEL_EXPECTED_BURN_LP = 21_745_257n;
 export const CANCEL_EXPECTED_SUPPLY_AFTER = 167_797_415n;
+export const RESET_EXPECTED_LP_SUPPLY_INCL_FEES = 167_798_415n;
 export const REQUEST_EXPECTED_LP = CANCEL_EXPECTED_SUPPLY_AFTER;
+/** R3 request receipt quote, amountAssetToWithdrawDecimalBits (U80F48). */
+export const REQUEST_EXPECTED_QUOTE_BITS = 1_067_745_598_426_973_642_066n;
 export const CLAIM_EXPECTED_PAYOUT_RAW = 3_793_394n;
 export const CLAIM_EXPECTED_RESIDUAL_RAW = 23n;
+export const CLAIM_EXPECTED_SUPPLY_AFTER = 0n;
+export const CLAIM_EXPECTED_SUPPLY_INCL_FEES_AFTER = 1_000n;
 export const HXTK_RESET_PROOF_PRESTATE = {
   amountLpEscrowed: 99_941_522n,
   amountAssetToWithdrawRaw: 1_767_782n,
@@ -332,6 +339,24 @@ export class ReportSlotStaleError extends Error {
     this.name = "ReportSlotStaleError";
     this.verdict = verdict;
     this.age = age;
+  }
+}
+
+export class HxtkPreSendStateDriftError extends Error {
+  readonly step: "cancel" | "request" | "claim";
+  readonly verdict = "ABORTED_PRE_SEND_STATE_DRIFT" as const;
+
+  constructor(
+    step: "cancel" | "request" | "claim",
+    initialContextSlot: number,
+    currentContextSlot: number,
+  ) {
+    super(
+      `ABORTED_PRE_SEND_STATE_DRIFT: ${step} finalized atomic snapshot changed after unsigned/signed simulation `
+      + `(initial slot ${initialContextSlot}, pre-send slot ${currentContextSlot})`,
+    );
+    this.name = "HxtkPreSendStateDriftError";
+    this.step = step;
   }
 }
 
@@ -1058,8 +1083,28 @@ function summarize(state: LiveState) {
  * pre-send read; every decoded account/state value must remain identical.
  */
 function repairStateFingerprint(state: LiveState): string {
+  return hxtkStateFingerprint(state);
+}
+
+/**
+ * The phase-2 pre-send gate uses the same decoded, atomic state image that
+ * drove the projection. Context metadata is deliberately excluded; every
+ * account-derived field, including receipt quote/deadline and token balances,
+ * remains part of the fingerprint.
+ */
+function hxtkStateFingerprint(state: LiveState): string {
   const summary = summarize(state);
   return toJson({ ...summary, contextSlot: undefined, epoch: undefined });
+}
+
+function assertHxtkPreSendStateUnchanged(
+  step: "cancel" | "request" | "claim",
+  initial: LiveState,
+  current: LiveState,
+): void {
+  if (hxtkStateFingerprint(initial) !== hxtkStateFingerprint(current)) {
+    throw new HxtkPreSendStateDriftError(step, initial.contextSlot, current.contextSlot);
+  }
 }
 
 // ---- event decoding ----------------------------------------------------------
@@ -3028,6 +3073,22 @@ function cancelProofPreStateFromRecord(before: JsonRecord): HxtkCancelProofPreSt
   };
 }
 
+function postCancelStateFromRecord(state: JsonRecord): HxtkPostCancelState {
+  const requestReceipt = state.requestReceipt === null
+    ? null
+    : recordAt(state.requestReceipt, "post-cancel requestReceipt");
+  return {
+    adminLpBalance: optionalBigintAt(state.adminLpBalance, "post-cancel adminLpBalance"),
+    lpSupply: optionalBigintAt(state.lpSupply, "post-cancel lpSupply"),
+    adminUsdcBalance: optionalBigintAt(state.adminUsdcBalance, "post-cancel adminUsdcBalance"),
+    totalValue: optionalBigintAt(state.totalValue, "post-cancel totalValue"),
+    idleBalance: optionalBigintAt(state.idleBalance, "post-cancel idleBalance"),
+    receipt1PositionValue: optionalBigintAt(state.receipt1PositionValue, "post-cancel receipt1PositionValue"),
+    requestEscrowLpBalance: optionalBigintAt(state.requestEscrowLpBalance, "post-cancel requestEscrowLpBalance"),
+    requestReceiptLp: optionalBigintAt(requestReceipt?.amountLpEscrowed, "post-cancel requestReceipt.amountLpEscrowed"),
+  };
+}
+
 function assertBase64Bytes(value: string, label: string): Uint8Array {
   const bytes = Uint8Array.from(Buffer.from(value, "base64"));
   if (Buffer.from(bytes).toString("base64") !== value) {
@@ -3159,14 +3220,24 @@ type FinalizedCancelJournal = Readonly<{
   adminLpDelta: bigint;
 }>;
 
+type FinalizedStateSource = "atomic" | "journal";
+
 async function verifyFinalizedCancelJournal(
   rpcUrl: string,
   path: string,
+  stateSource: FinalizedStateSource = "atomic",
 ): Promise<FinalizedCancelJournal> {
   const result = await readFinalizedJournal(rpcUrl, path, SCHEMA, "cancel");
   const before = recordAt(result.record.before, "cancel journal before");
   const cancel = recordAt(result.record.cancel, "cancel journal cancel");
-  const finalizedState = recordAt(result.record.finalizedState, "cancel journal finalizedState");
+  // The leg's own reconcile uses one atomic current snapshot. A downstream
+  // leg may revalidate this already-finalized dependency after chain state has
+  // advanced; in that case use the post-state captured by the prior atomic
+  // reconcile rather than mistaking the downstream state for cancel output.
+  const finalizedState = stateSource === "atomic" ? await readState("finalized", true) : null;
+  const finalizedStateRecord = stateSource === "journal"
+    ? recordAt(result.record.finalizedState, "cancel journal finalizedState")
+    : null;
   const preState = cancelProofPreStateFromRecord(before);
   assertHxtkCancelProofPreState(preState, "finalized cancel journal before");
   const expectedRefundLp = BigInt(stringAt(
@@ -3183,39 +3254,46 @@ async function verifyFinalizedCancelJournal(
     throw new Error("RECONCILE_MISMATCH: finalized cancel journal is not pinned to the reset proof receipt and numbers");
   }
   const beforeAdminLp = BigInt(String(before.adminLpBalance ?? "0"));
-  const finalizedAdminLp = BigInt(stringAt(finalizedState.adminLpBalance, "cancel journal finalizedState.adminLpBalance"));
-  const adminLpDelta = finalizedAdminLp - beforeAdminLp;
-  const finalizedReceipt = finalizedState.requestReceipt === null
+  const finalizedReceiptRecord = finalizedStateRecord?.requestReceipt === null
     ? null
-    : recordAt(finalizedState.requestReceipt, "cancel journal finalized requestReceipt");
-  if (finalizedReceipt !== null
-    && (String(finalizedReceipt.vault) !== VAULT
-      || String(finalizedReceipt.userTransferAuthority) !== ADMIN)) {
+    : finalizedStateRecord === null
+      ? null
+      : recordAt(finalizedStateRecord.requestReceipt, "cancel journal finalized requestReceipt");
+  const finalizedAdminLp = finalizedState?.adminLpBalance
+    ?? optionalBigintAt(finalizedStateRecord?.adminLpBalance, "cancel journal finalizedState.adminLpBalance");
+  if (finalizedAdminLp === null) {
+    throw new Error(`RECONCILE_MISMATCH: finalized cancel ${stateSource} post-state omitted admin LP balance`);
+  }
+  const adminLpDelta = finalizedAdminLp - beforeAdminLp;
+  const finalizedReceiptVault = finalizedState?.requestReceipt?.vault ?? finalizedReceiptRecord?.vault;
+  const finalizedReceiptUser = finalizedState?.requestReceipt?.userTransferAuthority
+    ?? finalizedReceiptRecord?.userTransferAuthority;
+  const hasFinalizedReceipt = finalizedState === null
+    ? finalizedReceiptRecord !== null
+    : finalizedState.requestReceipt !== null;
+  if (hasFinalizedReceipt
+    && (finalizedReceiptVault !== VAULT || finalizedReceiptUser !== ADMIN)) {
     throw new Error("RECONCILE_MISMATCH: finalized cancel receipt identity drifted");
   }
   const events = result.finalized.meta?.logMessages
     ? decodeEvents("CancelRequestWithdrawVault", result.finalized.meta.logMessages)
     : [];
-  const event = events.length === 1
-    ? events[0] as { amountLpRefunded?: bigint; amountLpBurned?: bigint }
-    : null;
-  assertHxtkCancelSimulation({
-    preState,
-    simulationSucceeded: true,
-    cancelEventCount: events.length,
-    eventRefundLp: event?.amountLpRefunded ?? null,
-    eventBurnLp: event?.amountLpBurned ?? null,
-    escrowAfter: optionalBigintAt(finalizedState.requestEscrowLpBalance, "cancel journal finalizedState.requestEscrowLpBalance"),
-    requestReceiptLpAfter: optionalBigintAt(
-      finalizedReceipt?.amountLpEscrowed,
-      "cancel journal finalized requestReceipt.amountLpEscrowed",
-    ),
-    adminLpDelta,
-    adminLpAfter: optionalBigintAt(finalizedState.adminLpBalance, "cancel journal finalizedState.adminLpBalance"),
-    supplyAfter: optionalBigintAt(finalizedState.lpSupply, "cancel journal finalizedState.lpSupply"),
-    totalValueAfter: optionalBigintAt(finalizedState.totalValue, "cancel journal finalizedState.totalValue"),
-    idleBalanceAfter: optionalBigintAt(finalizedState.idleBalance, "cancel journal finalizedState.idleBalance"),
-  }, "finalized cancel journal");
+  const observation = finalizedState === null
+    ? finalizedCancelObservationFromRecord(
+        preState,
+        beforeAdminLp,
+        optionalBigintAt(before.adminUsdcBalance, "cancel journal before.adminUsdcBalance"),
+        finalizedStateRecord!,
+        events,
+      )
+    : finalizedCancelObservation(
+        preState,
+        beforeAdminLp,
+        optionalBigintAt(before.adminUsdcBalance, "cancel journal before.adminUsdcBalance"),
+        finalizedState,
+        events,
+      );
+  assertHxtkCancelFinalizedReconcile(observation, `finalized cancel journal (${stateSource})`);
   return {
     path,
     record: result.record,
@@ -3236,21 +3314,31 @@ type FinalizedRequestJournal = Readonly<{
   chainExpectedWithdrawableFromTs: bigint;
   requestReceipt: JsonRecord;
   amountLpEscrowed: bigint;
+  quoteBits: bigint;
   withdrawableFromTs: bigint;
 }>;
 
 async function verifyFinalizedRequestJournal(
   rpcUrl: string,
   path: string,
+  stateSource: FinalizedStateSource = "atomic",
 ): Promise<FinalizedRequestJournal> {
   const result = await readFinalizedJournal(rpcUrl, path, SCHEMA, "request");
   const before = recordAt(result.record.before, "request journal before");
+  // The request leg itself reconciles against an atomic post-state. Claim
+  // reconciliation may revisit this dependency after the receipt is closed,
+  // so its journal post-state is the correct already-verified image there.
+  const finalizedState = stateSource === "atomic" ? await readState("finalized", true) : null;
+  const finalizedStateRecord = stateSource === "journal"
+    ? recordAt(result.record.finalizedState, "request journal finalizedState")
+    : null;
   const beforeReceipt = before.requestReceipt === null
     ? null
     : recordAt(before.requestReceipt, "request journal before.requestReceipt");
   assertHxtkPostCancelState({
     adminLpBalance: optionalBigintAt(before.adminLpBalance, "request journal before.adminLpBalance"),
     lpSupply: optionalBigintAt(before.lpSupply, "request journal before.lpSupply"),
+    adminUsdcBalance: optionalBigintAt(before.adminUsdcBalance, "request journal before.adminUsdcBalance"),
     totalValue: optionalBigintAt(before.totalValue, "request journal before.totalValue"),
     idleBalance: optionalBigintAt(before.idleBalance, "request journal before.idleBalance"),
     receipt1PositionValue: optionalBigintAt(before.receipt1PositionValue, "request journal before.receipt1PositionValue"),
@@ -3271,6 +3359,12 @@ async function verifyFinalizedRequestJournal(
       `RECONCILE_MISMATCH: finalized request amount ${amountLpEscrowed} is not the proof-pinned ${REQUEST_EXPECTED_LP}`,
     );
   }
+  const quoteBits = BigInt(stringAt(requestReceipt.amountAssetBits, "requestReceipt.amountAssetBits"));
+  if (quoteBits !== REQUEST_EXPECTED_QUOTE_BITS) {
+    throw new Error(
+      `RECONCILE_MISMATCH: finalized request quote bits ${quoteBits} are not the proof-pinned ${REQUEST_EXPECTED_QUOTE_BITS}`,
+    );
+  }
   const withdrawableFromTs = BigInt(stringAt(requestReceipt.withdrawableFromTs, "requestReceipt.withdrawableFromTs"));
   const requestBlockTime = result.finalized.blockTime;
   if (requestBlockTime === null || requestBlockTime === undefined) {
@@ -3278,7 +3372,7 @@ async function verifyFinalizedRequestJournal(
   }
   const chainExpectedWithdrawableFromTs = BigInt(requestBlockTime) + REQUEST_WAITING_PERIOD_SECONDS;
   const waitingPeriodDelta = withdrawableFromTs - chainExpectedWithdrawableFromTs;
-  if (waitingPeriodDelta < -1n || waitingPeriodDelta > 1n) {
+  if (waitingPeriodDelta !== 0n) {
     throw new Error(
       `finalized request withdrawableFromTs ${withdrawableFromTs} does not equal request blockTime ${requestBlockTime} + `
       + `${REQUEST_WAITING_PERIOD_SECONDS} (${chainExpectedWithdrawableFromTs}); observed delta ${waitingPeriodDelta}`,
@@ -3288,34 +3382,26 @@ async function verifyFinalizedRequestJournal(
   const events = result.finalized.meta?.logMessages
     ? decodeEvents("RequestWithdrawVault", result.finalized.meta.logMessages)
     : [];
-  const event = events.length === 1
-    ? events[0] as {
-        vault?: Address;
-        user?: Address;
-        requestedAmount?: bigint;
-        isAmountInLp?: boolean;
-        isWithdrawAll?: boolean;
-        requestWithdrawVaultReceipt?: Address;
-        amountLpEscrowed?: bigint;
-        withdrawableFromTs?: bigint;
-      }
-    : null;
-  if (events.length !== 1
-    || event?.vault?.toString() !== VAULT
-    || event.user?.toString() !== ADMIN
-    || event.requestedAmount !== REQUEST_EXPECTED_LP
-    || event.isAmountInLp !== true
-    || event.isWithdrawAll !== true
-    || event.requestWithdrawVaultReceipt?.toString() !== REQUEST_RECEIPT
-    || event.amountLpEscrowed !== REQUEST_EXPECTED_LP
-    || event.withdrawableFromTs !== withdrawableFromTs) {
-    throw new Error("RECONCILE_MISMATCH: finalized request event is not the proof-pinned all-LP request");
-  }
-  const finalizedState = recordAt(result.record.finalizedState, "request journal finalizedState");
-  if (String(finalizedState.adminLpBalance) !== "0"
-    || String(finalizedState.requestEscrowLpBalance) !== amountLpEscrowed.toString()
-    || String(finalizedState.lpSupply) !== REQUEST_EXPECTED_LP.toString()) {
-    throw new Error("finalized request journal post-state does not bind the new request receipt");
+  const observation = finalizedState === null
+    ? finalizedRequestObservationFromRecord(
+        postCancelStateFromRecord(before),
+        optionalBigintAt(before.adminUsdcBalance, "request journal before.adminUsdcBalance"),
+        finalizedStateRecord!,
+        events,
+        BigInt(requestBlockTime),
+      )
+    : finalizedRequestObservation(
+        postCancelStateFromRecord(before),
+        optionalBigintAt(before.adminUsdcBalance, "request journal before.adminUsdcBalance"),
+        finalizedState,
+        events,
+        BigInt(requestBlockTime),
+      );
+  assertHxtkRequestFinalizedReconcile(observation, `finalized request journal (${stateSource})`);
+  if (observation.requestReceiptLpAfter !== amountLpEscrowed
+    || observation.requestReceiptQuoteBits !== quoteBits
+    || observation.requestReceiptWithdrawableFromTs !== withdrawableFromTs) {
+    throw new Error(`RECONCILE_MISMATCH: finalized request ${stateSource} state differs from the journal receipt`);
   }
   return {
     path,
@@ -3325,6 +3411,7 @@ async function verifyFinalizedRequestJournal(
     chainExpectedWithdrawableFromTs,
     requestReceipt,
     amountLpEscrowed,
+    quoteBits,
     withdrawableFromTs,
   };
 }
@@ -3342,8 +3429,8 @@ async function verifyFinalizedClaimJournal(
   path: string,
 ) {
   const result = await readFinalizedJournal(rpcUrl, path, SCHEMA, "claim");
-  const finalizedState = recordAt(result.record.finalizedState, "claim journal finalizedState");
-  if (finalizedState.requestReceipt !== null || String(finalizedState.requestEscrowLpBalance) !== "0") {
+  const finalizedState = await readState("finalized", true);
+  if (finalizedState.requestReceipt !== null || finalizedState.requestEscrowLpBalance !== 0n) {
     throw new Error("RECONCILE_MISMATCH: finalized claim journal does not prove request closure and escrow drain");
   }
   const before = recordAt(result.record.before, "claim journal before");
@@ -3374,18 +3461,19 @@ async function verifyFinalizedClaimJournal(
     "claim.amountAssetToWithdrawRaw",
   ));
   const beforeAdminUsdc = BigInt(stringAt(before.adminUsdcBalance, "claim journal before.adminUsdcBalance"));
-  const finalizedAdminUsdc = BigInt(stringAt(finalizedState.adminUsdcBalance, "claim journal finalizedState.adminUsdcBalance"));
+  const finalizedAdminUsdc = finalizedState.adminUsdcBalance;
+  if (finalizedAdminUsdc === null) throw new Error("RECONCILE_MISMATCH: finalized claim atomic snapshot omitted admin USDC");
   const beforeIdle = BigInt(stringAt(before.idleBalance, "claim journal before.idleBalance"));
-  const finalizedIdle = BigInt(stringAt(finalizedState.idleBalance, "claim journal finalizedState.idleBalance"));
+  const finalizedIdle = finalizedState.idleBalance;
+  if (finalizedIdle === null) throw new Error("RECONCILE_MISMATCH: finalized claim atomic snapshot omitted idle balance");
   const beforeTv = BigInt(stringAt(before.totalValue, "claim journal before.totalValue"));
-  const finalizedTv = BigInt(stringAt(finalizedState.totalValue, "claim journal finalizedState.totalValue"));
+  const finalizedTv = finalizedState.vault?.totalValue ?? null;
+  if (finalizedTv === null) throw new Error("RECONCILE_MISMATCH: finalized claim atomic snapshot omitted vault");
   const beforeSupply = BigInt(stringAt(before.lpSupply, "claim journal before.lpSupply"));
-  const finalizedSupply = BigInt(stringAt(finalizedState.lpSupply, "claim journal finalizedState.lpSupply"));
+  const finalizedSupply = finalizedState.lpSupply;
+  if (finalizedSupply === null) throw new Error("RECONCILE_MISMATCH: finalized claim atomic snapshot omitted LP supply");
   const beforeReceipt1 = optionalBigintAt(before.receipt1PositionValue, "claim journal before.receipt1PositionValue");
-  const finalizedReceipt1 = optionalBigintAt(
-    finalizedState.receipt1PositionValue,
-    "claim journal finalizedState.receipt1PositionValue",
-  );
+  const finalizedReceipt1 = finalizedState.receipt1?.positionValue ?? null;
   const beforeTicket = before.reportTicket;
   const finalizedTicket = finalizedState.reportTicket;
   assertHxtkClaimProof({
@@ -3398,6 +3486,7 @@ async function verifyFinalizedClaimJournal(
     },
     payout: payoutRaw,
     lpBurned: lpBurnedRaw,
+    lpSupplyAfter: finalizedSupply,
     totalValueAfter: finalizedTv,
     idleBalanceAfter: finalizedIdle,
     receipt1PositionValueAfter: finalizedReceipt1,
@@ -3407,6 +3496,21 @@ async function verifyFinalizedClaimJournal(
   const events = result.finalized.meta?.logMessages
     ? decodeEvents("WithdrawVault", result.finalized.meta.logMessages)
     : [];
+  assertHxtkClaimFinalizedReconcile(
+    finalizedClaimObservation(
+      {
+        requestAmountLp,
+        totalValue: beforeTv,
+        idleBalance: beforeIdle,
+        lpSupply: beforeSupply,
+        receipt1PositionValue: beforeReceipt1,
+      },
+      beforeAdminUsdc,
+      finalizedState,
+      events,
+    ),
+    "finalized claim journal",
+  );
   const event = events.length === 1
     ? events[0] as {
         user?: Address;
@@ -4240,6 +4344,17 @@ async function runJournaledStepHeld(input: Readonly<{
         canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
         recoveryInstruction: `rerun the same ${input.step} leg after the confirmed slot catches up`,
       }, 2));
+    } else if (error instanceof HxtkPreSendStateDriftError) {
+      console.log(toJson({
+        schema: input.schema,
+        step: input.step,
+        verdict: error.verdict,
+        reason: error.message,
+        journal: input.journal,
+        abortedJournal: abortedPendingPath,
+        canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
+        recoveryInstruction: `rerun the same ${input.step} leg with a new journal after reviewing the aborted pre-send artifact`,
+      }, 2));
     }
     throw error;
   }
@@ -4536,6 +4651,30 @@ function rawFromPreparedSnapshot(
 ): RawAccount {
   if (!account) return null;
   return { address: target, owner: account.owner, lamports: account.lamports, data: account.data };
+}
+
+function preparedPostAccount(
+  prepared: PreparedTransaction,
+  target: Address,
+): RawAccount {
+  return rawFromPreparedSnapshot(
+    target,
+    prepared.simulation.postAccounts.find((account) => account?.address === target),
+  );
+}
+
+function preparedAsSimulation(
+  prepared: PreparedTransaction,
+  watchedAddresses: readonly Address[],
+): Simulation {
+  return {
+    err: prepared.simulation.err,
+    logs: prepared.simulation.logs,
+    unitsConsumed: prepared.simulation.unitsConsumed,
+    packetBytes: prepared.packetBytes,
+    contextSlot: prepared.simulationSlot,
+    postAccounts: watchedAddresses.map((target) => preparedPostAccount(prepared, target)),
+  };
 }
 
 async function cmdRepairPolicyOperator(mode: RepairPolicyOperatorMode): Promise<number> {
@@ -6176,6 +6315,9 @@ export type HxtkCancelSimulationObservation = Readonly<{
   preState: HxtkCancelProofPreState;
   simulationSucceeded: boolean;
   cancelEventCount: number;
+  eventVault: string | null;
+  eventUser: string | null;
+  eventReceipt: string | null;
   eventRefundLp: bigint | null;
   eventBurnLp: bigint | null;
   escrowAfter: bigint | null;
@@ -6183,8 +6325,11 @@ export type HxtkCancelSimulationObservation = Readonly<{
   adminLpDelta: bigint | null;
   adminLpAfter: bigint | null;
   supplyAfter: bigint | null;
+  adminUsdcBefore: bigint | null;
+  adminUsdcAfter: bigint | null;
   totalValueAfter: bigint | null;
   idleBalanceAfter: bigint | null;
+  receipt1PositionValueAfter: bigint | null;
 }>;
 
 export function assertHxtkCancelProofPreState(
@@ -6205,6 +6350,7 @@ export function assertHxtkCancelProofPreState(
 export type HxtkPostCancelState = Readonly<{
   adminLpBalance: bigint | null;
   lpSupply: bigint | null;
+  adminUsdcBalance: bigint | null;
   totalValue: bigint | null;
   idleBalance: bigint | null;
   receipt1PositionValue: bigint | null;
@@ -6221,6 +6367,8 @@ export function assertHxtkPostCancelState(
       ? `adminLpBalance expected ${CANCEL_EXPECTED_SUPPLY_AFTER} actual ${actual.adminLpBalance ?? "missing"}` : null,
     actual.lpSupply !== CANCEL_EXPECTED_SUPPLY_AFTER
       ? `lpSupply expected ${CANCEL_EXPECTED_SUPPLY_AFTER} actual ${actual.lpSupply ?? "missing"}` : null,
+    actual.adminUsdcBalance === null
+      ? "adminUsdcBalance expected non-null" : null,
     actual.totalValue !== REPAIRED_BOOK_RAW
       ? `totalValue expected ${REPAIRED_BOOK_RAW} actual ${actual.totalValue ?? "missing"}` : null,
     actual.idleBalance !== REPAIRED_BOOK_RAW
@@ -6229,8 +6377,8 @@ export function assertHxtkPostCancelState(
       ? `receipt1PositionValue expected ${PHANTOM_NAV_RAW} actual ${actual.receipt1PositionValue ?? "missing"}` : null,
     actual.requestEscrowLpBalance !== 0n
       ? `requestEscrowLpBalance expected 0 actual ${actual.requestEscrowLpBalance ?? "missing"}` : null,
-    actual.requestReceiptLp !== null && actual.requestReceiptLp !== 0n
-      ? `requestReceiptLp expected closed|0 actual ${actual.requestReceiptLp}` : null,
+    actual.requestReceiptLp !== null
+      ? `requestReceiptLp expected closed actual ${actual.requestReceiptLp}` : null,
   ].filter((mismatch): mismatch is string => mismatch !== null);
   if (mismatches.length > 0) {
     throw new Error(`HXTK_RESET_POST_CANCEL_DRIFT: ${context} refuses non-proof state; ${mismatches.join(", ")}`);
@@ -6244,6 +6392,12 @@ function hxtkCancelSimulationChecks(input: HxtkCancelSimulationObservation) {
   return [
     checkRow("simulation succeeds", input.simulationSucceeded, true, input.simulationSucceeded),
     checkRow("exactly one cancel event emitted", input.cancelEventCount === 1, 1, input.cancelEventCount),
+    checkRow("cancel event binds the HXtk vault",
+      input.eventVault === VAULT, VAULT, input.eventVault),
+    checkRow("cancel event binds the HXtk admin",
+      input.eventUser === ADMIN, ADMIN, input.eventUser),
+    checkRow("cancel event binds the HXtk request receipt",
+      input.eventReceipt === REQUEST_RECEIPT, REQUEST_RECEIPT, input.eventReceipt),
     checkRow("cancel event refund equals the proof pin",
       input.eventRefundLp === CANCEL_EXPECTED_REFUND_LP,
       CANCEL_EXPECTED_REFUND_LP.toString(), input.eventRefundLp?.toString() ?? null),
@@ -6251,9 +6405,9 @@ function hxtkCancelSimulationChecks(input: HxtkCancelSimulationObservation) {
       input.eventBurnLp === CANCEL_EXPECTED_BURN_LP,
       CANCEL_EXPECTED_BURN_LP.toString(), input.eventBurnLp?.toString() ?? null),
     checkRow("escrow drained", input.escrowAfter === 0n, "0", input.escrowAfter?.toString() ?? null),
-    checkRow("receipt cleared (closed or amountLpEscrowed 0)",
-      input.requestReceiptLpAfter === null || input.requestReceiptLpAfter === 0n,
-      "closed|0",
+    checkRow("receipt is closed (the proof shows receiptStillExists=false)",
+      input.requestReceiptLpAfter === null,
+      "closed",
       input.requestReceiptLpAfter === null ? "closed" : input.requestReceiptLpAfter.toString()),
     checkRow("admin LP balance delta equals the documented refund",
       input.adminLpDelta === CANCEL_EXPECTED_REFUND_LP,
@@ -6265,11 +6419,19 @@ function hxtkCancelSimulationChecks(input: HxtkCancelSimulationObservation) {
     checkRow("admin LP after equals 100% of LP supply",
       input.adminLpAfter === CANCEL_EXPECTED_SUPPLY_AFTER && input.adminLpAfter === input.supplyAfter,
       CANCEL_EXPECTED_SUPPLY_AFTER.toString(), input.adminLpAfter?.toString() ?? null),
+    checkRow("admin USDC is unchanged",
+      input.adminUsdcBefore !== null && input.adminUsdcAfter !== null
+        && input.adminUsdcAfter === input.adminUsdcBefore,
+      input.adminUsdcBefore?.toString() ?? "non-null",
+      input.adminUsdcAfter?.toString() ?? null),
     checkRow("tv and idle are unchanged",
       input.totalValueAfter !== null && input.totalValueAfter === input.preState.totalValue
         && input.idleBalanceAfter !== null && input.idleBalanceAfter === input.preState.idleBalance,
       `${input.preState.totalValue ?? "missing"}/${input.preState.idleBalance ?? "missing"}`,
       `${input.totalValueAfter?.toString() ?? "missing"}/${input.idleBalanceAfter?.toString() ?? "missing"}`),
+    checkRow("strategy-one receipt is unchanged",
+      input.receipt1PositionValueAfter === PHANTOM_NAV_RAW,
+      PHANTOM_NAV_RAW.toString(), input.receipt1PositionValueAfter?.toString() ?? null),
   ] as const;
 }
 
@@ -6286,23 +6448,54 @@ export function assertHxtkCancelSimulation(
   return checks;
 }
 
+export function assertHxtkCancelFinalizedReconcile(
+  input: HxtkCancelSimulationObservation,
+  context = "cancel reconcile",
+) {
+  return assertHxtkCancelSimulation(input, context);
+}
+
 export type HxtkRequestSimulationObservation = Readonly<{
   preState: HxtkPostCancelState;
   simulationSucceeded: boolean;
   requestEventCount: number;
+  eventVault: string | null;
+  eventUser: string | null;
+  eventAssetMint: string | null;
   eventRequestedAmount: bigint | null;
   eventIsAmountInLp: boolean | null;
   eventIsWithdrawAll: boolean | null;
   eventReceipt: string | null;
+  eventAmountLpEscrowed: bigint | null;
+  eventQuoteBits: bigint | null;
+  eventWithdrawableFromTs: bigint | null;
+  eventRequestedTs: bigint | null;
+  eventTotalValueUnlocked: bigint | null;
+  eventTotalValue: bigint | null;
+  eventLpSupplyInclFees: bigint | null;
   escrowAfter: bigint | null;
   adminLpAfter: bigint | null;
   supplyAfter: bigint | null;
+  requestReceiptLpAfter: bigint | null;
+  requestReceiptQuoteBits: bigint | null;
+  requestReceiptWithdrawableFromTs: bigint | null;
+  requestReceiptVault: string | null;
+  requestReceiptUser: string | null;
+  requestBlockTime: bigint | null;
+  adminUsdcBefore: bigint | null;
+  adminUsdcAfter: bigint | null;
+  totalValueAfter: bigint | null;
+  idleBalanceAfter: bigint | null;
+  receipt1PositionValueAfter: bigint | null;
 }>;
 
 function hxtkRequestSimulationChecks(input: HxtkRequestSimulationObservation) {
   return [
     checkRow("simulation succeeds", input.simulationSucceeded, true, input.simulationSucceeded),
     checkRow("exactly one request event emitted", input.requestEventCount === 1, 1, input.requestEventCount),
+    checkRow("request event binds the HXtk vault", input.eventVault === VAULT, VAULT, input.eventVault),
+    checkRow("request event binds the HXtk admin", input.eventUser === ADMIN, ADMIN, input.eventUser),
+    checkRow("request event binds the USDC mint", input.eventAssetMint === USDC, USDC, input.eventAssetMint),
     checkRow("request event amount equals all post-cancel admin LP",
       input.eventRequestedAmount === REQUEST_EXPECTED_LP,
       REQUEST_EXPECTED_LP.toString(), input.eventRequestedAmount?.toString() ?? null),
@@ -6310,13 +6503,68 @@ function hxtkRequestSimulationChecks(input: HxtkRequestSimulationObservation) {
     checkRow("request event uses isWithdrawAll", input.eventIsWithdrawAll === true, true, input.eventIsWithdrawAll),
     checkRow("request event receipt is HXtk's receipt",
       input.eventReceipt === REQUEST_RECEIPT, REQUEST_RECEIPT, input.eventReceipt),
+    checkRow("request event escrow amount is proof-pinned",
+      input.eventAmountLpEscrowed === REQUEST_EXPECTED_LP,
+      REQUEST_EXPECTED_LP.toString(), input.eventAmountLpEscrowed?.toString() ?? null),
+    checkRow("request event quote bits are proof-pinned",
+      input.eventQuoteBits === REQUEST_EXPECTED_QUOTE_BITS,
+      REQUEST_EXPECTED_QUOTE_BITS.toString(), input.eventQuoteBits?.toString() ?? null),
+    checkRow("request event deadline is requestTs + 600",
+      typeof input.eventRequestedTs === "bigint" && typeof input.eventWithdrawableFromTs === "bigint"
+        && input.eventWithdrawableFromTs === input.eventRequestedTs + REQUEST_WAITING_PERIOD_SECONDS,
+      "event requestedTs + 600",
+      typeof input.eventRequestedTs !== "bigint" || typeof input.eventWithdrawableFromTs !== "bigint"
+        ? null : input.eventWithdrawableFromTs.toString()),
+    checkRow("request event blockTime/deadline relation",
+      input.requestBlockTime === null || input.requestBlockTime === undefined
+        || (input.eventRequestedTs === input.requestBlockTime
+          && input.eventWithdrawableFromTs === input.requestBlockTime + REQUEST_WAITING_PERIOD_SECONDS),
+      input.requestBlockTime === null ? "simulation relation only" : `${input.requestBlockTime} + 600`,
+      typeof input.eventRequestedTs !== "bigint" || typeof input.eventWithdrawableFromTs !== "bigint"
+        ? null : `${input.eventRequestedTs}/${input.eventWithdrawableFromTs}`),
+    checkRow("request event unlocked tv is proof-pinned",
+      input.eventTotalValueUnlocked === REPAIRED_BOOK_RAW,
+      REPAIRED_BOOK_RAW.toString(), input.eventTotalValueUnlocked?.toString() ?? null),
+    checkRow("request event tv is proof-pinned",
+      input.eventTotalValue === REPAIRED_BOOK_RAW,
+      REPAIRED_BOOK_RAW.toString(), input.eventTotalValue?.toString() ?? null),
+    checkRow("request event LP supply including fees is proof-pinned",
+      input.eventLpSupplyInclFees === RESET_EXPECTED_LP_SUPPLY_INCL_FEES,
+      RESET_EXPECTED_LP_SUPPLY_INCL_FEES.toString(), input.eventLpSupplyInclFees?.toString() ?? null),
     checkRow("escrow contains all post-cancel LP",
       input.escrowAfter === REQUEST_EXPECTED_LP,
       REQUEST_EXPECTED_LP.toString(), input.escrowAfter?.toString() ?? null),
+    checkRow("request receipt LP amount is proof-pinned",
+      input.requestReceiptLpAfter === REQUEST_EXPECTED_LP,
+      REQUEST_EXPECTED_LP.toString(), input.requestReceiptLpAfter?.toString() ?? null),
+    checkRow("request receipt binds the HXtk vault",
+      input.requestReceiptVault === VAULT, VAULT, input.requestReceiptVault),
+    checkRow("request receipt binds the HXtk admin",
+      input.requestReceiptUser === ADMIN, ADMIN, input.requestReceiptUser),
+    checkRow("request receipt quote bits are proof-pinned",
+      input.requestReceiptQuoteBits === REQUEST_EXPECTED_QUOTE_BITS,
+      REQUEST_EXPECTED_QUOTE_BITS.toString(), input.requestReceiptQuoteBits?.toString() ?? null),
+    checkRow("request receipt deadline matches the event",
+      input.requestReceiptWithdrawableFromTs !== null
+        && input.requestReceiptWithdrawableFromTs === input.eventWithdrawableFromTs,
+      input.eventWithdrawableFromTs?.toString() ?? "event deadline",
+      input.requestReceiptWithdrawableFromTs?.toString() ?? null),
     checkRow("admin LP ATA emptied", input.adminLpAfter === 0n, "0", input.adminLpAfter?.toString() ?? null),
     checkRow("supply unchanged by request",
       input.supplyAfter === REQUEST_EXPECTED_LP,
       REQUEST_EXPECTED_LP.toString(), input.supplyAfter?.toString() ?? null),
+    checkRow("admin USDC is unchanged",
+      input.adminUsdcBefore !== null && input.adminUsdcAfter !== null
+        && input.adminUsdcAfter === input.adminUsdcBefore,
+      input.adminUsdcBefore?.toString() ?? "non-null",
+      input.adminUsdcAfter?.toString() ?? null),
+    checkRow("request leaves tv and idle at the repaired book",
+      input.totalValueAfter === REPAIRED_BOOK_RAW && input.idleBalanceAfter === REPAIRED_BOOK_RAW,
+      `${REPAIRED_BOOK_RAW}/${REPAIRED_BOOK_RAW}`,
+      `${input.totalValueAfter?.toString() ?? "missing"}/${input.idleBalanceAfter?.toString() ?? "missing"}`),
+    checkRow("strategy-one receipt remains the orphaned proof value",
+      input.receipt1PositionValueAfter === PHANTOM_NAV_RAW,
+      PHANTOM_NAV_RAW.toString(), input.receipt1PositionValueAfter?.toString() ?? null),
   ] as const;
 }
 
@@ -6331,6 +6579,13 @@ export function assertHxtkRequestSimulation(
     throw new Error(`HXTK_REQUEST_PROOF_MISMATCH: ${context}; failed checks: ${failures.join(", ")}`);
   }
   return checks;
+}
+
+export function assertHxtkRequestFinalizedReconcile(
+  input: HxtkRequestSimulationObservation,
+  context = "request reconcile",
+) {
+  return assertHxtkRequestSimulation(input, context);
 }
 
 export type HxtkClaimProofPreState = Readonly<{
@@ -6366,6 +6621,7 @@ export type HxtkClaimProofObservation = Readonly<{
   preState: HxtkClaimProofPreState;
   payout: bigint | null;
   lpBurned: bigint | null;
+  lpSupplyAfter: bigint | null;
   totalValueAfter: bigint | null;
   idleBalanceAfter: bigint | null;
   receipt1PositionValueAfter: bigint | null;
@@ -6383,6 +6639,8 @@ export function assertHxtkClaimProof(
       ? `payout expected ${CLAIM_EXPECTED_PAYOUT_RAW} actual ${input.payout ?? "missing"}` : null,
     input.lpBurned !== REQUEST_EXPECTED_LP
       ? `lpBurned expected ${REQUEST_EXPECTED_LP} actual ${input.lpBurned ?? "missing"}` : null,
+    input.lpSupplyAfter !== CLAIM_EXPECTED_SUPPLY_AFTER
+      ? `lpSupplyAfter expected ${CLAIM_EXPECTED_SUPPLY_AFTER} actual ${input.lpSupplyAfter ?? "missing"}` : null,
     input.totalValueAfter !== CLAIM_EXPECTED_RESIDUAL_RAW
       ? `totalValueAfter expected ${CLAIM_EXPECTED_RESIDUAL_RAW} actual ${input.totalValueAfter ?? "missing"}` : null,
     input.idleBalanceAfter !== CLAIM_EXPECTED_RESIDUAL_RAW
@@ -6394,6 +6652,55 @@ export function assertHxtkClaimProof(
   ].filter((mismatch): mismatch is string => mismatch !== null);
   if (mismatches.length > 0) {
     throw new Error(`HXTK_CLAIM_PROOF_MISMATCH: ${context}; ${mismatches.join(", ")}`);
+  }
+}
+
+export type HxtkClaimFinalizedObservation = Readonly<{
+  proof: HxtkClaimProofObservation;
+  eventCount: number;
+  eventUser: string | null;
+  eventVault: string | null;
+  eventAssetMint: string | null;
+  eventPayout: bigint | null;
+  eventLpBurned: bigint | null;
+  eventTvBefore: bigint | null;
+  eventTvAfter: bigint | null;
+  eventLpSupplyInclFeesBefore: bigint | null;
+  eventLpSupplyInclFeesAfter: bigint | null;
+  adminLpAfter: bigint | null;
+  adminUsdcBefore: bigint | null;
+  adminUsdcAfter: bigint | null;
+}>;
+
+export function assertHxtkClaimFinalizedReconcile(
+  input: HxtkClaimFinalizedObservation,
+  context = "claim reconcile",
+): void {
+  assertHxtkClaimProof(input.proof, context);
+  const mismatches = [
+    input.eventCount !== 1 ? `eventCount expected 1 actual ${input.eventCount}` : null,
+    input.eventUser !== ADMIN ? `eventUser expected ${ADMIN} actual ${input.eventUser ?? "missing"}` : null,
+    input.eventVault !== VAULT ? `eventVault expected ${VAULT} actual ${input.eventVault ?? "missing"}` : null,
+    input.eventAssetMint !== USDC ? `eventAssetMint expected ${USDC} actual ${input.eventAssetMint ?? "missing"}` : null,
+    input.eventPayout !== CLAIM_EXPECTED_PAYOUT_RAW
+      ? `eventPayout expected ${CLAIM_EXPECTED_PAYOUT_RAW} actual ${input.eventPayout ?? "missing"}` : null,
+    input.eventLpBurned !== REQUEST_EXPECTED_LP
+      ? `eventLpBurned expected ${REQUEST_EXPECTED_LP} actual ${input.eventLpBurned ?? "missing"}` : null,
+    input.eventTvBefore !== REPAIRED_BOOK_RAW
+      ? `eventTvBefore expected ${REPAIRED_BOOK_RAW} actual ${input.eventTvBefore ?? "missing"}` : null,
+    input.eventTvAfter !== CLAIM_EXPECTED_RESIDUAL_RAW
+      ? `eventTvAfter expected ${CLAIM_EXPECTED_RESIDUAL_RAW} actual ${input.eventTvAfter ?? "missing"}` : null,
+    input.eventLpSupplyInclFeesBefore !== RESET_EXPECTED_LP_SUPPLY_INCL_FEES
+      ? `eventLpSupplyInclFeesBefore expected ${RESET_EXPECTED_LP_SUPPLY_INCL_FEES} actual ${input.eventLpSupplyInclFeesBefore ?? "missing"}` : null,
+    input.eventLpSupplyInclFeesAfter !== CLAIM_EXPECTED_SUPPLY_INCL_FEES_AFTER
+      ? `eventLpSupplyInclFeesAfter expected ${CLAIM_EXPECTED_SUPPLY_INCL_FEES_AFTER} actual ${input.eventLpSupplyInclFeesAfter ?? "missing"}` : null,
+    input.adminLpAfter !== 0n ? `adminLpAfter expected 0 actual ${input.adminLpAfter ?? "missing"}` : null,
+    input.adminUsdcBefore === null || input.adminUsdcAfter === null
+      || input.adminUsdcAfter - input.adminUsdcBefore !== CLAIM_EXPECTED_PAYOUT_RAW
+      ? `adminUsdcDelta expected ${CLAIM_EXPECTED_PAYOUT_RAW} actual ${input.adminUsdcBefore === null || input.adminUsdcAfter === null ? "missing" : input.adminUsdcAfter - input.adminUsdcBefore}` : null,
+  ].filter((mismatch): mismatch is string => mismatch !== null);
+  if (mismatches.length > 0) {
+    throw new Error(`HXTK_CLAIM_RECONCILE_MISMATCH: ${context}; ${mismatches.join(", ")}`);
   }
 }
 
@@ -6413,6 +6720,7 @@ function postCancelStateFromLiveState(state: LiveState): HxtkPostCancelState {
   return {
     adminLpBalance: state.adminLpBalance,
     lpSupply: state.lpSupply,
+    adminUsdcBalance: state.adminUsdcBalance,
     totalValue: state.vault?.totalValue ?? null,
     idleBalance: state.idleBalance,
     receipt1PositionValue: state.receipt1?.positionValue ?? null,
@@ -6428,6 +6736,370 @@ function claimProofPreStateFromLiveState(state: LiveState): HxtkClaimProofPreSta
     idleBalance: state.idleBalance,
     lpSupply: state.lpSupply,
     receipt1PositionValue: state.receipt1?.positionValue ?? null,
+  };
+}
+
+function cancelSimulationObservation(
+  state: LiveState,
+  simulation: Simulation,
+): Readonly<{ observation: HxtkCancelSimulationObservation; events: readonly unknown[] }> {
+  const events = simulation.err === null
+    ? decodeEvents("CancelRequestWithdrawVault", simulation.logs)
+    : [];
+  const event = events.length === 1
+    ? events[0] as {
+        vault?: Address;
+        user?: Address;
+        requestWithdrawVaultReceipt?: Address;
+        amountLpRefunded?: bigint;
+        amountLpBurned?: bigint;
+      }
+    : null;
+  const postAdminLp = postToken(simulation.postAccounts, ADMIN_LP_ATA);
+  return {
+    events,
+    observation: {
+      preState: cancelProofPreStateFromLiveState(state),
+      simulationSucceeded: simulation.err === null,
+      cancelEventCount: events.length,
+      eventVault: event?.vault?.toString() ?? null,
+      eventUser: event?.user?.toString() ?? null,
+      eventReceipt: event?.requestWithdrawVaultReceipt?.toString() ?? null,
+      eventRefundLp: event?.amountLpRefunded ?? null,
+      eventBurnLp: event?.amountLpBurned ?? null,
+      escrowAfter: postToken(simulation.postAccounts, PENDING_ESCROW),
+      requestReceiptLpAfter: postAccount(simulation.postAccounts, REQUEST_RECEIPT) === null
+        ? null : requestReceiptLp(postAccount(simulation.postAccounts, REQUEST_RECEIPT)),
+      adminLpDelta: postAdminLp === null ? null : postAdminLp - (state.adminLpBalance ?? 0n),
+      adminLpAfter: postAdminLp,
+      supplyAfter: mintSupply(postAccount(simulation.postAccounts, LP_MINT)),
+      adminUsdcBefore: state.adminUsdcBalance,
+      adminUsdcAfter: postToken(simulation.postAccounts, state.identity.adminUsdcAta),
+      totalValueAfter: simulation.err === null
+        ? decodeVault(postAccount(simulation.postAccounts, VAULT))?.totalValue ?? null : null,
+      idleBalanceAfter: postToken(simulation.postAccounts, IDLE_ATA),
+      receipt1PositionValueAfter: decodeStrategyReceipt(postAccount(simulation.postAccounts, RECEIPT1))?.positionValue ?? null,
+    },
+  };
+}
+
+function requestSimulationObservation(
+  state: LiveState,
+  simulation: Simulation,
+  requestBlockTime: bigint | null = null,
+): Readonly<{ observation: HxtkRequestSimulationObservation; events: readonly unknown[] }> {
+  const events = simulation.err === null
+    ? decodeEvents("RequestWithdrawVault", simulation.logs)
+    : [];
+  const event = events.length === 1
+    ? events[0] as {
+        vault?: Address;
+        user?: Address;
+        requestedAmount?: bigint;
+        isAmountInLp?: boolean;
+        isWithdrawAll?: boolean;
+        requestWithdrawVaultReceipt?: Address;
+        vaultAssetMint?: Address;
+        amountLpEscrowed?: bigint;
+        amountAssetToWithdrawDecimalBits?: bigint;
+        withdrawableFromTs?: bigint;
+        requestedTs?: bigint;
+        vaultAssetTotalValueUnlocked?: bigint;
+        vaultAssetTotalValue?: bigint;
+        vaultLpSupplyInclFees?: bigint;
+      }
+    : null;
+  const postReceipt = postAccount(simulation.postAccounts, REQUEST_RECEIPT);
+  return {
+    events,
+    observation: {
+      preState: postCancelStateFromLiveState(state),
+      simulationSucceeded: simulation.err === null,
+      requestEventCount: events.length,
+      eventVault: event?.vault?.toString() ?? null,
+      eventUser: event?.user?.toString() ?? null,
+      eventAssetMint: event?.vaultAssetMint?.toString() ?? null,
+      eventRequestedAmount: event?.requestedAmount ?? null,
+      eventIsAmountInLp: event?.isAmountInLp ?? null,
+      eventIsWithdrawAll: event?.isWithdrawAll ?? null,
+      eventReceipt: event?.requestWithdrawVaultReceipt?.toString() ?? null,
+      eventAmountLpEscrowed: event?.amountLpEscrowed ?? null,
+      eventQuoteBits: event?.amountAssetToWithdrawDecimalBits ?? null,
+      eventWithdrawableFromTs: event?.withdrawableFromTs ?? null,
+      eventRequestedTs: event?.requestedTs ?? null,
+      eventTotalValueUnlocked: event?.vaultAssetTotalValueUnlocked ?? null,
+      eventTotalValue: event?.vaultAssetTotalValue ?? null,
+      eventLpSupplyInclFees: event?.vaultLpSupplyInclFees ?? null,
+      escrowAfter: postToken(simulation.postAccounts, PENDING_ESCROW),
+      adminLpAfter: postToken(simulation.postAccounts, ADMIN_LP_ATA),
+      supplyAfter: mintSupply(postAccount(simulation.postAccounts, LP_MINT)),
+      requestReceiptLpAfter: requestReceiptLp(postReceipt),
+      requestReceiptQuoteBits: postReceipt ? u128Le(postReceipt.data, 80) : null,
+      requestReceiptWithdrawableFromTs: requestReceiptWithdrawableFromTs(postReceipt),
+      requestReceiptVault: postReceipt ? bs58.encode(postReceipt.data.subarray(8, 40)) : null,
+      requestReceiptUser: postReceipt ? bs58.encode(postReceipt.data.subarray(40, 72)) : null,
+      requestBlockTime,
+      adminUsdcBefore: state.adminUsdcBalance,
+      adminUsdcAfter: postToken(simulation.postAccounts, state.identity.adminUsdcAta),
+      totalValueAfter: simulation.err === null
+        ? decodeVault(postAccount(simulation.postAccounts, VAULT))?.totalValue ?? null : null,
+      idleBalanceAfter: postToken(simulation.postAccounts, IDLE_ATA),
+      receipt1PositionValueAfter: decodeStrategyReceipt(postAccount(simulation.postAccounts, RECEIPT1))?.positionValue ?? null,
+    },
+  };
+}
+
+function finalizedCancelObservation(
+  preState: HxtkCancelProofPreState,
+  beforeAdminLp: bigint | null,
+  beforeAdminUsdc: bigint | null,
+  state: LiveState,
+  events: readonly unknown[],
+): HxtkCancelSimulationObservation {
+  const event = events.length === 1
+    ? events[0] as {
+        vault?: Address;
+        user?: Address;
+        requestWithdrawVaultReceipt?: Address;
+        amountLpRefunded?: bigint;
+        amountLpBurned?: bigint;
+      }
+    : null;
+  const adminLpAfter = state.adminLpBalance;
+  return {
+    preState,
+    simulationSucceeded: true,
+    cancelEventCount: events.length,
+    eventVault: event?.vault?.toString() ?? null,
+    eventUser: event?.user?.toString() ?? null,
+    eventReceipt: event?.requestWithdrawVaultReceipt?.toString() ?? null,
+    eventRefundLp: event?.amountLpRefunded ?? null,
+    eventBurnLp: event?.amountLpBurned ?? null,
+    escrowAfter: state.requestEscrowLpBalance,
+    requestReceiptLpAfter: state.requestReceipt?.amountLpEscrowed ?? null,
+    adminLpDelta: adminLpAfter === null || beforeAdminLp === null ? null : adminLpAfter - beforeAdminLp,
+    adminLpAfter,
+    supplyAfter: state.lpSupply,
+    adminUsdcBefore: beforeAdminUsdc,
+    adminUsdcAfter: state.adminUsdcBalance,
+    totalValueAfter: state.vault?.totalValue ?? null,
+    idleBalanceAfter: state.idleBalance,
+    receipt1PositionValueAfter: state.receipt1?.positionValue ?? null,
+  };
+}
+
+function finalizedRequestObservation(
+  preState: HxtkPostCancelState,
+  beforeAdminUsdc: bigint | null,
+  state: LiveState,
+  events: readonly unknown[],
+  requestBlockTime: bigint | null,
+): HxtkRequestSimulationObservation {
+  const event = events.length === 1
+    ? events[0] as {
+        vault?: Address;
+        user?: Address;
+        requestedAmount?: bigint;
+        isAmountInLp?: boolean;
+        isWithdrawAll?: boolean;
+        requestWithdrawVaultReceipt?: Address;
+        amountLpEscrowed?: bigint;
+        amountAssetToWithdrawDecimalBits?: bigint;
+        withdrawableFromTs?: bigint;
+        requestedTs?: bigint;
+        vaultAssetMint?: Address;
+        vaultAssetTotalValueUnlocked?: bigint;
+        vaultAssetTotalValue?: bigint;
+        vaultLpSupplyInclFees?: bigint;
+      }
+    : null;
+  return {
+    preState,
+    simulationSucceeded: true,
+    requestEventCount: events.length,
+    eventVault: event?.vault?.toString() ?? null,
+    eventUser: event?.user?.toString() ?? null,
+    eventAssetMint: event?.vaultAssetMint?.toString() ?? null,
+    eventRequestedAmount: event?.requestedAmount ?? null,
+    eventIsAmountInLp: event?.isAmountInLp ?? null,
+    eventIsWithdrawAll: event?.isWithdrawAll ?? null,
+    eventReceipt: event?.requestWithdrawVaultReceipt?.toString() ?? null,
+    eventAmountLpEscrowed: event?.amountLpEscrowed ?? null,
+    eventQuoteBits: event?.amountAssetToWithdrawDecimalBits ?? null,
+    eventWithdrawableFromTs: event?.withdrawableFromTs ?? null,
+    eventRequestedTs: event?.requestedTs ?? null,
+    eventTotalValueUnlocked: event?.vaultAssetTotalValueUnlocked ?? null,
+    eventTotalValue: event?.vaultAssetTotalValue ?? null,
+    eventLpSupplyInclFees: event?.vaultLpSupplyInclFees ?? null,
+    escrowAfter: state.requestEscrowLpBalance,
+    adminLpAfter: state.adminLpBalance,
+    supplyAfter: state.lpSupply,
+    requestReceiptLpAfter: state.requestReceipt?.amountLpEscrowed ?? null,
+    requestReceiptQuoteBits: state.requestReceipt?.amountAssetBits ?? null,
+    requestReceiptWithdrawableFromTs: state.requestReceipt?.withdrawableFromTs ?? null,
+    requestReceiptVault: state.requestReceipt?.vault ?? null,
+    requestReceiptUser: state.requestReceipt?.userTransferAuthority ?? null,
+    requestBlockTime,
+    adminUsdcBefore: beforeAdminUsdc,
+    adminUsdcAfter: state.adminUsdcBalance,
+    totalValueAfter: state.vault?.totalValue ?? null,
+    idleBalanceAfter: state.idleBalance,
+    receipt1PositionValueAfter: state.receipt1?.positionValue ?? null,
+  };
+}
+
+function finalizedCancelObservationFromRecord(
+  preState: HxtkCancelProofPreState,
+  beforeAdminLp: bigint,
+  beforeAdminUsdc: bigint | null,
+  state: JsonRecord,
+  events: readonly unknown[],
+): HxtkCancelSimulationObservation {
+  const receipt = state.requestReceipt === null
+    ? null
+    : recordAt(state.requestReceipt, "cancel journal finalized requestReceipt");
+  const adminLpAfter = optionalBigintAt(state.adminLpBalance, "cancel journal finalizedState.adminLpBalance");
+  return {
+    preState,
+    simulationSucceeded: true,
+    cancelEventCount: events.length,
+    eventVault: events.length === 1 ? String((events[0] as { vault?: Address }).vault ?? "") : null,
+    eventUser: events.length === 1 ? String((events[0] as { user?: Address }).user ?? "") : null,
+    eventReceipt: events.length === 1
+      ? String((events[0] as { requestWithdrawVaultReceipt?: Address }).requestWithdrawVaultReceipt ?? "")
+      : null,
+    eventRefundLp: events.length === 1 ? (events[0] as { amountLpRefunded?: bigint }).amountLpRefunded ?? null : null,
+    eventBurnLp: events.length === 1 ? (events[0] as { amountLpBurned?: bigint }).amountLpBurned ?? null : null,
+    escrowAfter: optionalBigintAt(state.requestEscrowLpBalance, "cancel journal finalizedState.requestEscrowLpBalance"),
+    requestReceiptLpAfter: optionalBigintAt(receipt?.amountLpEscrowed, "cancel journal finalized requestReceipt.amountLpEscrowed"),
+    adminLpDelta: adminLpAfter === null ? null : adminLpAfter - beforeAdminLp,
+    adminLpAfter,
+    supplyAfter: optionalBigintAt(state.lpSupply, "cancel journal finalizedState.lpSupply"),
+    adminUsdcBefore: beforeAdminUsdc,
+    adminUsdcAfter: optionalBigintAt(state.adminUsdcBalance, "cancel journal finalizedState.adminUsdcBalance"),
+    totalValueAfter: optionalBigintAt(state.totalValue, "cancel journal finalizedState.totalValue"),
+    idleBalanceAfter: optionalBigintAt(state.idleBalance, "cancel journal finalizedState.idleBalance"),
+    receipt1PositionValueAfter: optionalBigintAt(
+      state.receipt1PositionValue,
+      "cancel journal finalizedState.receipt1PositionValue",
+    ),
+  };
+}
+
+function finalizedRequestObservationFromRecord(
+  preState: HxtkPostCancelState,
+  beforeAdminUsdc: bigint | null,
+  state: JsonRecord,
+  events: readonly unknown[],
+  requestBlockTime: bigint,
+): HxtkRequestSimulationObservation {
+  const receipt = state.requestReceipt === null
+    ? null
+    : recordAt(state.requestReceipt, "request journal finalized requestReceipt");
+  const event = events.length === 1
+    ? events[0] as {
+        vault?: Address;
+        user?: Address;
+        requestedAmount?: bigint;
+        isAmountInLp?: boolean;
+        isWithdrawAll?: boolean;
+        requestWithdrawVaultReceipt?: Address;
+        amountLpEscrowed?: bigint;
+        amountAssetToWithdrawDecimalBits?: bigint;
+        withdrawableFromTs?: bigint;
+        requestedTs?: bigint;
+        vaultAssetMint?: Address;
+        vaultAssetTotalValueUnlocked?: bigint;
+        vaultAssetTotalValue?: bigint;
+        vaultLpSupplyInclFees?: bigint;
+      }
+    : null;
+  return {
+    preState,
+    simulationSucceeded: true,
+    requestEventCount: events.length,
+    eventVault: event?.vault?.toString() ?? null,
+    eventUser: event?.user?.toString() ?? null,
+    eventAssetMint: event?.vaultAssetMint?.toString() ?? null,
+    eventRequestedAmount: event?.requestedAmount ?? null,
+    eventIsAmountInLp: event?.isAmountInLp ?? null,
+    eventIsWithdrawAll: event?.isWithdrawAll ?? null,
+    eventReceipt: event?.requestWithdrawVaultReceipt?.toString() ?? null,
+    eventAmountLpEscrowed: event?.amountLpEscrowed ?? null,
+    eventQuoteBits: event?.amountAssetToWithdrawDecimalBits ?? null,
+    eventWithdrawableFromTs: event?.withdrawableFromTs ?? null,
+    eventRequestedTs: event?.requestedTs ?? null,
+    eventTotalValueUnlocked: event?.vaultAssetTotalValueUnlocked ?? null,
+    eventTotalValue: event?.vaultAssetTotalValue ?? null,
+    eventLpSupplyInclFees: event?.vaultLpSupplyInclFees ?? null,
+    escrowAfter: optionalBigintAt(state.requestEscrowLpBalance, "request journal finalizedState.requestEscrowLpBalance"),
+    adminLpAfter: optionalBigintAt(state.adminLpBalance, "request journal finalizedState.adminLpBalance"),
+    supplyAfter: optionalBigintAt(state.lpSupply, "request journal finalizedState.lpSupply"),
+    requestReceiptLpAfter: optionalBigintAt(receipt?.amountLpEscrowed, "request journal finalized requestReceipt.amountLpEscrowed"),
+    requestReceiptQuoteBits: optionalBigintAt(receipt?.amountAssetBits, "request journal finalized requestReceipt.amountAssetBits"),
+    requestReceiptWithdrawableFromTs: optionalBigintAt(receipt?.withdrawableFromTs, "request journal finalized requestReceipt.withdrawableFromTs"),
+    requestReceiptVault: typeof receipt?.vault === "string" ? receipt.vault : null,
+    requestReceiptUser: typeof receipt?.userTransferAuthority === "string" ? receipt.userTransferAuthority : null,
+    requestBlockTime,
+    adminUsdcBefore: beforeAdminUsdc,
+    adminUsdcAfter: optionalBigintAt(state.adminUsdcBalance, "request journal finalizedState.adminUsdcBalance"),
+    totalValueAfter: optionalBigintAt(state.totalValue, "request journal finalizedState.totalValue"),
+    idleBalanceAfter: optionalBigintAt(state.idleBalance, "request journal finalizedState.idleBalance"),
+    receipt1PositionValueAfter: optionalBigintAt(
+      state.receipt1PositionValue,
+      "request journal finalizedState.receipt1PositionValue",
+    ),
+  };
+}
+
+function finalizedClaimObservation(
+  preState: HxtkClaimProofPreState,
+  beforeAdminUsdc: bigint | null,
+  state: LiveState,
+  events: readonly unknown[],
+): HxtkClaimFinalizedObservation {
+  const event = events.length === 1
+    ? events[0] as {
+        user?: Address;
+        userAmountAssetWithdrawn?: bigint;
+        userAmountLpBurned?: bigint;
+        vault?: Address;
+        vaultAssetMint?: Address;
+        vaultAssetTotalValueBefore?: bigint;
+        vaultAssetTotalValueAfter?: bigint;
+        vaultLpSupplyInclFeesBefore?: bigint;
+        vaultLpSupplyInclFeesAfter?: bigint;
+      }
+    : null;
+  const adminLpAfter = state.adminLpBalance;
+  const adminUsdcAfter = state.adminUsdcBalance;
+  const payout = adminUsdcAfter === null || beforeAdminUsdc === null ? null : adminUsdcAfter - beforeAdminUsdc;
+  const lpBurned = preState.lpSupply === null || state.lpSupply === null ? null : preState.lpSupply - state.lpSupply;
+  return {
+    proof: {
+      preState,
+      payout,
+      lpBurned,
+      lpSupplyAfter: state.lpSupply,
+      totalValueAfter: state.vault?.totalValue ?? null,
+      idleBalanceAfter: state.idleBalance,
+      receipt1PositionValueAfter: state.receipt1?.positionValue ?? null,
+      requestReceiptClosed: state.requestReceipt === null,
+      escrowAfter: state.requestEscrowLpBalance,
+    },
+    eventCount: events.length,
+    eventUser: event?.user?.toString() ?? null,
+    eventVault: event?.vault?.toString() ?? null,
+    eventAssetMint: event?.vaultAssetMint?.toString() ?? null,
+    eventPayout: event?.userAmountAssetWithdrawn ?? null,
+    eventLpBurned: event?.userAmountLpBurned ?? null,
+    eventTvBefore: event?.vaultAssetTotalValueBefore ?? null,
+    eventTvAfter: event?.vaultAssetTotalValueAfter ?? null,
+    eventLpSupplyInclFeesBefore: event?.vaultLpSupplyInclFeesBefore ?? null,
+    eventLpSupplyInclFeesAfter: event?.vaultLpSupplyInclFeesAfter ?? null,
+    adminLpAfter,
+    adminUsdcBefore: beforeAdminUsdc,
+    adminUsdcAfter,
   };
 }
 
@@ -6667,7 +7339,7 @@ async function cmdCancelOperator(mode: RepairPolicyOperatorMode): Promise<number
     rpcUrl,
     build: async () => {
       await assertRepairPolicyRetired("cancel");
-      const state = await readState("finalized");
+      const state = await readState("finalized", true);
       assertOriginalFrozenCancelReceipt(state, "cancel");
       assertHxtkCancelProofPreState(cancelProofPreStateFromLiveState(state), "cancel pre-sign");
       if (!state.requestReceipt) throw new Error("no pending withdraw request receipt on chain");
@@ -6678,9 +7350,15 @@ async function cmdCancelOperator(mode: RepairPolicyOperatorMode): Promise<number
       const noopAdmin = createNoopSigner(ADMIN);
       const cancel = await buildCancelInstruction(noopAdmin);
       if ((cancel.accounts ?? []).length !== 9) throw new Error("cancelRequestWithdrawVault account list drifted from the 9-account wire");
+      const inspectedAddresses = [
+        VAULT, IDLE_ATA, LP_MINT, ADMIN_LP_ATA, PENDING_ESCROW, REQUEST_RECEIPT,
+        RECEIPT1, state.identity.adminUsdcAta,
+      ];
+      const unsignedSimulation = await simulate(ADMIN, [cancel], inspectedAddresses);
+      const unsignedProjection = cancelSimulationObservation(state, unsignedSimulation);
+      assertHxtkCancelSimulation(unsignedProjection.observation, "unsigned cancel simulation");
       const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
       if (admin.signer.address !== ADMIN) throw new Error("SOLANA_TESTING_PK is not the HXtk admin signer");
-      const inspectedAddresses = [VAULT, IDLE_ATA, LP_MINT, ADMIN_LP_ATA, PENDING_ESCROW, REQUEST_RECEIPT];
       const prepared = await prepareSignedV0Transaction({
         rpcUrl,
         feePayer: admin,
@@ -6690,32 +7368,11 @@ async function cmdCancelOperator(mode: RepairPolicyOperatorMode): Promise<number
         minimumContextSlot: state.contextSlot,
         commitment: "finalized",
       });
-      const postVault = decodeVault(rawFromPreparedSnapshot(VAULT, prepared.simulation.postAccounts[0]));
-      const postIdle = tokenAmount(rawFromPreparedSnapshot(IDLE_ATA, prepared.simulation.postAccounts[1]));
-      const postSupply = mintSupply(rawFromPreparedSnapshot(LP_MINT, prepared.simulation.postAccounts[2]));
-      const postAdminLp = tokenAmount(rawFromPreparedSnapshot(ADMIN_LP_ATA, prepared.simulation.postAccounts[3]));
-      const postEscrow = tokenAmount(rawFromPreparedSnapshot(PENDING_ESCROW, prepared.simulation.postAccounts[4]));
-      const postReceipt = rawFromPreparedSnapshot(REQUEST_RECEIPT, prepared.simulation.postAccounts[5]);
-      const events = prepared.simulation.err === null
-        ? decodeEvents("CancelRequestWithdrawVault", prepared.simulation.logs)
-        : [];
-      const event = events.length === 1
-        ? events[0] as { amountLpRefunded?: bigint; amountLpBurned?: bigint }
-        : null;
-      assertHxtkCancelSimulation({
-        preState: cancelProofPreStateFromLiveState(state),
-        simulationSucceeded: prepared.simulation.err === null,
-        cancelEventCount: events.length,
-        eventRefundLp: event?.amountLpRefunded ?? null,
-        eventBurnLp: event?.amountLpBurned ?? null,
-        escrowAfter: postEscrow,
-        requestReceiptLpAfter: postReceipt === null ? null : requestReceiptLp(postReceipt),
-        adminLpDelta: postAdminLp === null ? null : postAdminLp - (state.adminLpBalance ?? 0n),
-        adminLpAfter: postAdminLp,
-        supplyAfter: postSupply,
-        totalValueAfter: postVault?.totalValue ?? null,
-        idleBalanceAfter: postIdle,
-      }, "signed cancel simulation");
+      const signedProjection = cancelSimulationObservation(
+        state,
+        preparedAsSimulation(prepared, inspectedAddresses),
+      );
+      assertHxtkCancelSimulation(signedProjection.observation, "signed cancel simulation");
       return {
         prepared,
         plan: {
@@ -6728,7 +7385,7 @@ async function cmdCancelOperator(mode: RepairPolicyOperatorMode): Promise<number
             expectedSupplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER.toString(),
             adminLpDelta: CANCEL_EXPECTED_REFUND_LP.toString(),
             adminLpBalance: CANCEL_EXPECTED_SUPPLY_AFTER.toString(),
-            requestReceipt: "closed|0",
+            requestReceipt: "closed",
           },
           requestReceiptPda: REQUEST_RECEIPT,
           originalFrozenReceipt: true,
@@ -6747,10 +7404,15 @@ async function cmdCancelOperator(mode: RepairPolicyOperatorMode): Promise<number
             instructions: ["cancelRequestWithdrawVault"],
           },
         },
+        beforeSend: async () => {
+          const current = await readState("finalized", true);
+          assertHxtkPreSendStateUnchanged("cancel", state, current);
+          return { sendStatus: { preSendSnapshotSlot: current.contextSlot } };
+        },
       };
     },
     reconcile: async ({ pending, finalized }) => {
-      const state = await readState("finalized");
+      const state = await readState("finalized", true);
       const before = recordAt(pending.before, "before");
       const cancel = recordAt(pending.cancel, "cancel");
       const expectedRefundLp = BigInt(stringAt(
@@ -6760,6 +7422,7 @@ async function cmdCancelOperator(mode: RepairPolicyOperatorMode): Promise<number
       const expectedBurnLp = BigInt(stringAt(cancel.expectedBurnLp, "cancel.expectedBurnLp"));
       const expectedSupplyAfter = BigInt(stringAt(cancel.expectedSupplyAfter, "cancel.expectedSupplyAfter"));
       const beforeAdmin = BigInt(String(before.adminLpBalance ?? "0"));
+      const beforeAdminUsdc = optionalBigintAt(before.adminUsdcBalance, "before.adminUsdcBalance");
       const adminLpDelta = (state.adminLpBalance ?? 0n) - beforeAdmin;
       if (expectedRefundLp !== CANCEL_EXPECTED_REFUND_LP
         || expectedBurnLp !== CANCEL_EXPECTED_BURN_LP
@@ -6769,24 +7432,14 @@ async function cmdCancelOperator(mode: RepairPolicyOperatorMode): Promise<number
       const events = finalized.meta?.logMessages
         ? decodeEvents("CancelRequestWithdrawVault", finalized.meta.logMessages)
         : [];
-      const event = events.length === 1
-        ? events[0] as { amountLpRefunded?: bigint; amountLpBurned?: bigint }
-        : null;
-      const post = postCancelStateFromLiveState(state);
-      assertHxtkCancelSimulation({
-        preState: cancelProofPreStateFromRecord(before),
-        simulationSucceeded: true,
-        cancelEventCount: events.length,
-        eventRefundLp: event?.amountLpRefunded ?? null,
-        eventBurnLp: event?.amountLpBurned ?? null,
-        escrowAfter: post.requestEscrowLpBalance,
-        requestReceiptLpAfter: post.requestReceiptLp,
-        adminLpDelta,
-        adminLpAfter: post.adminLpBalance,
-        supplyAfter: post.lpSupply,
-        totalValueAfter: post.totalValue,
-        idleBalanceAfter: post.idleBalance,
-      }, "finalized cancel reconcile");
+      const observation = finalizedCancelObservation(
+        cancelProofPreStateFromRecord(before),
+        beforeAdmin,
+        beforeAdminUsdc,
+        state,
+        events,
+      );
+      assertHxtkCancelFinalizedReconcile(observation, "finalized cancel reconcile");
       return { finalizedAdminLpDelta: adminLpDelta.toString(), finalizedState: summarize(state) };
     },
   });
@@ -6815,32 +7468,12 @@ async function cmdCancel(): Promise<number> {
   }
   const simulation = await simulate(ADMIN, [cancel], [
     VAULT, IDLE_ATA, LP_MINT, ADMIN_LP_ATA, PENDING_ESCROW, REQUEST_RECEIPT,
+    RECEIPT1, state.identity.adminUsdcAta,
   ]);
-  const events = simulation.err === null ? decodeEvents("CancelRequestWithdrawVault", simulation.logs) : [];
-  const event = events.length === 1
-    ? events[0] as { amountLpRefunded?: bigint; amountLpBurned?: bigint }
-    : null;
-  const postVault = simulation.err === null ? decodeVault(postAccount(simulation.postAccounts, VAULT)) : null;
-  const supplyAfter = mintSupply(postAccount(simulation.postAccounts, LP_MINT));
-  const adminLpBefore = state.adminLpBalance ?? 0n;
-  const adminLpAfter = postToken(simulation.postAccounts, ADMIN_LP_ATA);
-  const refund = adminLpAfter === null ? null : adminLpAfter - adminLpBefore;
-  const escrowAfter = postToken(simulation.postAccounts, PENDING_ESCROW);
-  const checks = hxtkCancelSimulationChecks({
-    preState,
-    simulationSucceeded: simulation.err === null,
-    cancelEventCount: events.length,
-    eventRefundLp: event?.amountLpRefunded ?? null,
-    eventBurnLp: event?.amountLpBurned ?? null,
-    escrowAfter,
-    requestReceiptLpAfter: postAccount(simulation.postAccounts, REQUEST_RECEIPT) === null
-      ? null : requestReceiptLp(postAccount(simulation.postAccounts, REQUEST_RECEIPT)),
-    adminLpDelta: refund,
-    adminLpAfter,
-    supplyAfter,
-    totalValueAfter: postVault?.totalValue ?? null,
-    idleBalanceAfter: postToken(simulation.postAccounts, IDLE_ATA),
-  });
+  const projection = cancelSimulationObservation(state, simulation);
+  const { observation, events } = projection;
+  const checks = hxtkCancelSimulationChecks(observation);
+  const refund = observation.adminLpDelta;
   const pass = checks.every((row) => row.pass);
   console.log(toJson({
     step: "cancel", sent: false, verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
@@ -6919,10 +7552,16 @@ async function cmdRequestOperator(mode: RepairPolicyOperatorMode): Promise<numbe
         lpTokenProgram: TOKEN_PROGRAM,
         systemProgram: SYS_PROGRAM,
       }, { programAddress: VOLTR });
+      const instructions = [request];
+      const inspectedAddresses = [
+        VAULT, IDLE_ATA, LP_MINT, ADMIN_LP_ATA, PENDING_ESCROW, REQUEST_RECEIPT,
+        RECEIPT1, state.identity.adminUsdcAta,
+      ];
+      const unsignedSimulation = await simulate(ADMIN, instructions, inspectedAddresses);
+      const unsignedProjection = requestSimulationObservation(state, unsignedSimulation);
+      assertHxtkRequestSimulation(unsignedProjection.observation, "unsigned request simulation");
       const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
       if (admin.signer.address !== ADMIN) throw new Error("SOLANA_TESTING_PK is not the HXtk admin signer");
-      const instructions = [request];
-      const inspectedAddresses = [VAULT, LP_MINT, ADMIN_LP_ATA, PENDING_ESCROW, REQUEST_RECEIPT];
       const prepared = await prepareSignedV0Transaction({
         rpcUrl,
         feePayer: admin,
@@ -6932,38 +7571,11 @@ async function cmdRequestOperator(mode: RepairPolicyOperatorMode): Promise<numbe
         minimumContextSlot: state.contextSlot,
         commitment: "finalized",
       });
-      const postReceipt = rawFromPreparedSnapshot(REQUEST_RECEIPT, prepared.simulation.postAccounts[4]);
-      const postEscrow = tokenAmount(rawFromPreparedSnapshot(PENDING_ESCROW, prepared.simulation.postAccounts[3]));
-      const postAdminLp = tokenAmount(rawFromPreparedSnapshot(ADMIN_LP_ATA, prepared.simulation.postAccounts[2]));
-      const postSupply = mintSupply(rawFromPreparedSnapshot(LP_MINT, prepared.simulation.postAccounts[1]));
-      const postWithdrawable = requestReceiptWithdrawableFromTs(postReceipt);
-      const events = prepared.simulation.err === null
-        ? decodeEvents("RequestWithdrawVault", prepared.simulation.logs)
-        : [];
-      const event = events.length === 1
-        ? events[0] as {
-            requestedAmount?: bigint;
-            isAmountInLp?: boolean;
-            isWithdrawAll?: boolean;
-            requestWithdrawVaultReceipt?: Address;
-          }
-        : null;
-      assertHxtkRequestSimulation({
-        preState: postCancelStateFromLiveState(state),
-        simulationSucceeded: prepared.simulation.err === null,
-        requestEventCount: events.length,
-        eventRequestedAmount: event?.requestedAmount ?? null,
-        eventIsAmountInLp: event?.isAmountInLp ?? null,
-        eventIsWithdrawAll: event?.isWithdrawAll ?? null,
-        eventReceipt: event?.requestWithdrawVaultReceipt?.toString() ?? null,
-        escrowAfter: postEscrow,
-        adminLpAfter: postAdminLp,
-        supplyAfter: postSupply,
-      }, "signed request simulation");
-      if (postReceipt === null || postWithdrawable === null
-        || postWithdrawable < BigInt(Math.floor(Date.now() / 1000)) + REQUEST_WAITING_PERIOD_SECONDS) {
-        throw new Error("signed request-only simulation did not project the post-cancel request and waiting period");
-      }
+      const signedProjection = requestSimulationObservation(
+        state,
+        preparedAsSimulation(prepared, inspectedAddresses),
+      );
+      assertHxtkRequestSimulation(signedProjection.observation, "signed request simulation");
       return {
         prepared,
         plan: {
@@ -6977,8 +7589,12 @@ async function cmdRequestOperator(mode: RepairPolicyOperatorMode): Promise<numbe
             expectedClaimPayoutRaw: CLAIM_EXPECTED_PAYOUT_RAW.toString(),
             expectedResidualTv: CLAIM_EXPECTED_RESIDUAL_RAW.toString(),
             expectedResidualIdle: CLAIM_EXPECTED_RESIDUAL_RAW.toString(),
+            expectedQuoteBits: REQUEST_EXPECTED_QUOTE_BITS.toString(),
+            expectedWithdrawableFromTsRelation: "requestTs + 600",
           },
           requestAmountLp: amountLp.toString(),
+          expectedQuoteBits: REQUEST_EXPECTED_QUOTE_BITS.toString(),
+          expectedWithdrawableFromTsRelation: "requestTs + 600",
           expectedClaimPayoutRaw: CLAIM_EXPECTED_PAYOUT_RAW.toString(),
           expectedResidualTv: CLAIM_EXPECTED_RESIDUAL_RAW.toString(),
           expectedResidualIdle: CLAIM_EXPECTED_RESIDUAL_RAW.toString(),
@@ -6995,14 +7611,22 @@ async function cmdRequestOperator(mode: RepairPolicyOperatorMode): Promise<numbe
             instructions: ["requestWithdrawVault(all post-cancel admin LP, isAmountInLp, isWithdrawAll)"],
           },
         },
+        beforeSend: async () => {
+          const current = await readState("finalized", true);
+          assertHxtkPreSendStateUnchanged("request", state, current);
+          return { sendStatus: { preSendSnapshotSlot: current.contextSlot } };
+        },
       };
     },
     reconcile: async ({ pending, finalized }) => {
       const cancelJournal = await verifyFinalizedCancelJournal(
         rpcUrl,
         resolve(stringAt(pending.cancelJournal, "request journal cancelJournal")),
+        "journal",
       );
       const state = await readState("finalized", true);
+      const before = recordAt(pending.before, "request before");
+      const preState = postCancelStateFromRecord(before);
       const request = state.requestReceipt;
       const expectedPostState = recordAt(pending.expectedPostState, "expectedPostState");
       const expectedAmount = BigInt(stringAt(expectedPostState.escrowLpBalance, "expectedPostState.escrowLpBalance"));
@@ -7021,12 +7645,25 @@ async function cmdRequestOperator(mode: RepairPolicyOperatorMode): Promise<numbe
       }
       const chainExpectedWithdrawableFromTs = BigInt(requestBlockTime) + REQUEST_WAITING_PERIOD_SECONDS;
       const waitingPeriodDelta = request.withdrawableFromTs - chainExpectedWithdrawableFromTs;
-      if (waitingPeriodDelta < -1n || waitingPeriodDelta > 1n) {
+      if (waitingPeriodDelta !== 0n) {
         throw new Error(
           `finalized request withdrawableFromTs ${request.withdrawableFromTs} does not equal request blockTime ${requestBlockTime} + `
           + `${REQUEST_WAITING_PERIOD_SECONDS} (${chainExpectedWithdrawableFromTs}); observed delta ${waitingPeriodDelta}`,
         );
       }
+      const events = finalized.meta?.logMessages
+        ? decodeEvents("RequestWithdrawVault", finalized.meta.logMessages)
+        : [];
+      assertHxtkRequestFinalizedReconcile(
+        finalizedRequestObservation(
+          preState,
+          optionalBigintAt(before.adminUsdcBalance, "request before.adminUsdcBalance"),
+          state,
+          events,
+          BigInt(requestBlockTime),
+        ),
+        "finalized request reconcile",
+      );
       return {
         cancelJournal: cancelJournal.path,
         requestReceipt: request,
@@ -7034,6 +7671,7 @@ async function cmdRequestOperator(mode: RepairPolicyOperatorMode): Promise<numbe
         requestBlockTime,
         chainExpectedWithdrawableFromTs: chainExpectedWithdrawableFromTs.toString(),
         waitingPeriodDelta: waitingPeriodDelta.toString(),
+        expectedQuoteBits: REQUEST_EXPECTED_QUOTE_BITS.toString(),
         finalizedState: summarize(state),
       };
     },
@@ -7080,50 +7718,13 @@ async function cmdRequest(): Promise<number> {
     systemProgram: SYS_PROGRAM,
   }, { programAddress: VOLTR });
   const simulation = await simulate(ADMIN, [request], [
-    VAULT, LP_MINT, ADMIN_LP_ATA, PENDING_ESCROW, REQUEST_RECEIPT,
+    VAULT, IDLE_ATA, LP_MINT, ADMIN_LP_ATA, PENDING_ESCROW, REQUEST_RECEIPT,
+    RECEIPT1, state.identity.adminUsdcAta,
   ]);
-  const events = simulation.err === null ? decodeEvents("RequestWithdrawVault", simulation.logs) : [];
-  const event = events.length === 1
-    ? events[0] as {
-        requestedAmount?: bigint;
-        isAmountInLp?: boolean;
-        isWithdrawAll?: boolean;
-        requestWithdrawVaultReceipt?: Address;
-      }
-    : null;
-  const postReceipt = postAccount(simulation.postAccounts, REQUEST_RECEIPT);
-  const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
-  const withdrawableFromTs = requestReceiptWithdrawableFromTs(postReceipt);
-  const postBits = postReceipt ? u128Le(postReceipt.data, 80) : null;
-  const escrowAfter = postToken(simulation.postAccounts, PENDING_ESCROW);
-  const checks = [
-    checkRow("simulation succeeds", simulation.err === null, null,
-      simulation.err === null ? null : JSON.stringify(simulation.err)),
-    checkRow("exactly one request event emitted", events.length === 1, 1, events.length),
-    checkRow("request event amount equals all post-cancel admin LP",
-      event?.requestedAmount === REQUEST_EXPECTED_LP,
-      REQUEST_EXPECTED_LP.toString(), event?.requestedAmount?.toString() ?? null),
-    checkRow("request event uses LP amount", event?.isAmountInLp === true, true, event?.isAmountInLp ?? null),
-    checkRow("request event uses isWithdrawAll", event?.isWithdrawAll === true, true, event?.isWithdrawAll ?? null),
-    checkRow("request event receipt is HXtk's receipt",
-      event?.requestWithdrawVaultReceipt?.toString() === REQUEST_RECEIPT,
-      REQUEST_RECEIPT, event?.requestWithdrawVaultReceipt?.toString() ?? null),
-    checkRow("escrow re-funded with the entire admin LP balance (plan: request all)",
-      escrowAfter === amountLp,
-      amountLp.toString(), escrowAfter?.toString() ?? null),
-    checkRow("admin LP ATA emptied", postToken(simulation.postAccounts, ADMIN_LP_ATA) === 0n, "0",
-      postToken(simulation.postAccounts, ADMIN_LP_ATA)?.toString() ?? null),
-    checkRow("supply unchanged by request",
-      mintSupply(postAccount(simulation.postAccounts, LP_MINT)) === (state.lpSupply ?? 0n),
-      (state.lpSupply ?? 0n).toString(),
-      mintSupply(postAccount(simulation.postAccounts, LP_MINT))?.toString() ?? null),
-    checkRow(`withdrawableFromTs >= now + ${REQUEST_WAITING_PERIOD_SECONDS}s waiting period`,
-      withdrawableFromTs !== null && withdrawableFromTs >= nowSeconds + REQUEST_WAITING_PERIOD_SECONDS,
-      `>= ${nowSeconds + REQUEST_WAITING_PERIOD_SECONDS} (now + 600)`, withdrawableFromTs?.toString() ?? null),
-    checkRow("amountAssetToWithdraw reported (informational)", true, "n/a",
-      postBits === null ? null : (postBits >> 48n).toString()),
-  ];
-  const pass = checks.slice(0, -1).every((row) => row.pass);
+  const projection = requestSimulationObservation(state, simulation);
+  const { observation, events } = projection;
+  const checks = hxtkRequestSimulationChecks(observation);
+  const pass = checks.every((row) => row.pass);
   console.log(toJson({
     step: "request", sent: false, verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
     cancelJournal: afterCancel.cancelJournal.path,
@@ -7136,12 +7737,16 @@ async function cmdRequest(): Promise<number> {
     expectedClaimPayoutRaw: CLAIM_EXPECTED_PAYOUT_RAW.toString(),
     expectedResidualTv: CLAIM_EXPECTED_RESIDUAL_RAW.toString(),
     expectedResidualIdle: CLAIM_EXPECTED_RESIDUAL_RAW.toString(),
+    expectedQuoteBits: REQUEST_EXPECTED_QUOTE_BITS.toString(),
+    expectedWithdrawableFromTsRelation: "requestTs + 600",
   }, 2));
   writeEvidence("request", {
     verdict: pass ? "SIMULATION_PASS_UNSENT" : "SIMULATION_FAILED",
     cancelJournal: afterCancel.cancelJournal.path,
     simulatedWithCancelPrefix: false, before, checks, events,
     requestAmountLp: REQUEST_EXPECTED_LP.toString(),
+    expectedQuoteBits: REQUEST_EXPECTED_QUOTE_BITS.toString(),
+    expectedWithdrawableFromTsRelation: "requestTs + 600",
     expectedClaimPayoutRaw: CLAIM_EXPECTED_PAYOUT_RAW.toString(),
     expectedResidualTv: CLAIM_EXPECTED_RESIDUAL_RAW.toString(),
     expectedResidualIdle: CLAIM_EXPECTED_RESIDUAL_RAW.toString(),
@@ -7261,6 +7866,56 @@ function claimReconciliationFromObservations(
   } as const;
 }
 
+function claimSimulationProjection(
+  state: LiveState,
+  simulation: Simulation,
+  adminUsdcAta: Address,
+  expectedPayoutRaw?: bigint,
+  expectedLpBurnRaw?: bigint,
+) {
+  const postVault = simulation.err === null ? decodeVault(postAccount(simulation.postAccounts, VAULT)) : null;
+  const postReceipt = postAccount(simulation.postAccounts, REQUEST_RECEIPT);
+  const postReceipt1 = decodeStrategyReceipt(postAccount(simulation.postAccounts, RECEIPT1));
+  const claim = claimReconciliationFromObservations(
+    {
+      adminUsdcBalance: state.adminUsdcBalance,
+      idleBalance: state.idleBalance,
+      totalValue: state.vault?.totalValue ?? null,
+      lpSupply: state.lpSupply,
+      receipt1PositionValue: state.receipt1?.positionValue ?? null,
+      reportTicket: state.reportTicket,
+      amountAssetToWithdrawRaw: state.requestReceipt?.amountAssetToWithdrawRaw ?? null,
+    },
+    {
+      adminUsdcBalance: postToken(simulation.postAccounts, adminUsdcAta),
+      idleBalance: postToken(simulation.postAccounts, IDLE_ATA),
+      totalValue: postVault?.totalValue ?? null,
+      lpSupply: mintSupply(postAccount(simulation.postAccounts, LP_MINT)),
+      receipt1PositionValue: postReceipt1?.positionValue ?? null,
+      requestReceiptClosed: postReceipt === null,
+      escrowLpBalance: postToken(simulation.postAccounts, PENDING_ESCROW),
+      reportTicket: decodeReportTicket(postAccount(simulation.postAccounts, REPORT_TICKET)),
+    },
+    state.requestReceipt?.amountLpEscrowed ?? 0n,
+    expectedPayoutRaw,
+    expectedLpBurnRaw,
+  );
+  return {
+    claim,
+    proof: {
+      preState: claimProofPreStateFromLiveState(state),
+      payout: claim.payout,
+      lpBurned: claim.lpBurned,
+      lpSupplyAfter: claim.lpSupplyAfter,
+      totalValueAfter: claim.tvAfter,
+      idleBalanceAfter: claim.idleAfter,
+      receipt1PositionValueAfter: claim.receipt1PositionValueAfter,
+      requestReceiptClosed: claim.requestReceiptClosed,
+      escrowAfter: claim.escrowLpBalanceAfter,
+    } satisfies HxtkClaimProofObservation,
+  } as const;
+}
+
 async function cmdClaimOperator(mode: RepairPolicyOperatorMode): Promise<number> {
   const journal = operatorJournal();
   const rpcUrl = operatorRpcUrl();
@@ -7281,6 +7936,7 @@ async function cmdClaimOperator(mode: RepairPolicyOperatorMode): Promise<number>
       if (!state.requestReceipt) throw new Error("no pending withdraw request receipt on chain");
       if (!state.vault) throw new Error("vault account is absent");
       if (state.requestReceipt.amountLpEscrowed !== requestJournal.amountLpEscrowed
+        || state.requestReceipt.amountAssetBits !== requestJournal.quoteBits
         || state.requestReceipt.withdrawableFromTs !== requestJournal.withdrawableFromTs) {
         throw new Error("claim request receipt differs from the finalized request journal");
       }
@@ -7310,9 +7966,15 @@ async function cmdClaimOperator(mode: RepairPolicyOperatorMode): Promise<number>
         systemProgram: SYS_PROGRAM,
       }, { programAddress: VOLTR });
       if ((withdraw.accounts ?? []).length !== 13) throw new Error("withdrawVault account list drifted from the 13-account wire");
+      const inspectedAddresses = [VAULT, IDLE_ATA, LP_MINT, PENDING_ESCROW, adminUsdcAta, REQUEST_RECEIPT, REPORT_TICKET, RECEIPT1];
+      const unsignedSimulation = await simulate(ADMIN, [withdraw], inspectedAddresses);
+      const unsignedProjection = claimSimulationProjection(state, unsignedSimulation, adminUsdcAta);
+      assertHxtkClaimProof(unsignedProjection.proof, "unsigned claim simulation");
+      if (!unsignedProjection.claim.checks.every((check) => check.pass)) {
+        throw new Error(`unsigned claim simulation did not project the complete payout and closure state: ${JSON.stringify(unsignedProjection.claim.checks)}`);
+      }
       const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
       if (admin.signer.address !== ADMIN) throw new Error("SOLANA_TESTING_PK is not the HXtk admin signer");
-      const inspectedAddresses = [VAULT, IDLE_ATA, LP_MINT, PENDING_ESCROW, adminUsdcAta, REQUEST_RECEIPT, REPORT_TICKET, RECEIPT1];
       const prepared = await prepareSignedV0Transaction({
         rpcUrl,
         feePayer: admin,
@@ -7322,46 +7984,15 @@ async function cmdClaimOperator(mode: RepairPolicyOperatorMode): Promise<number>
         minimumContextSlot: state.contextSlot,
         commitment: "finalized",
       });
-      const postUserAsset = tokenAmount(rawFromPreparedSnapshot(adminUsdcAta, prepared.simulation.postAccounts[4]));
-      const postIdle = tokenAmount(rawFromPreparedSnapshot(IDLE_ATA, prepared.simulation.postAccounts[1]));
-      const postSupply = mintSupply(rawFromPreparedSnapshot(LP_MINT, prepared.simulation.postAccounts[2]));
-      const postVault = decodeVault(rawFromPreparedSnapshot(VAULT, prepared.simulation.postAccounts[0]));
-      const postReceipt = rawFromPreparedSnapshot(REQUEST_RECEIPT, prepared.simulation.postAccounts[5]);
-      const postEscrow = tokenAmount(rawFromPreparedSnapshot(PENDING_ESCROW, prepared.simulation.postAccounts[3]));
-      const postTicket = decodeReportTicket(rawFromPreparedSnapshot(REPORT_TICKET, prepared.simulation.postAccounts[6]));
-      const postReceipt1 = decodeStrategyReceipt(rawFromPreparedSnapshot(RECEIPT1, prepared.simulation.postAccounts[7]));
-      const claim = claimReconciliationFromObservations(
-        {
-          adminUsdcBalance: state.adminUsdcBalance,
-          idleBalance: state.idleBalance,
-          totalValue: state.vault.totalValue,
-          lpSupply: state.lpSupply,
-          receipt1PositionValue: state.receipt1?.positionValue ?? null,
-          reportTicket: state.reportTicket,
-          amountAssetToWithdrawRaw: state.requestReceipt.amountAssetToWithdrawRaw,
-        },
-        {
-          adminUsdcBalance: postUserAsset,
-          idleBalance: postIdle,
-          totalValue: postVault?.totalValue ?? null,
-          lpSupply: postSupply,
-          receipt1PositionValue: postReceipt1?.positionValue ?? null,
-          requestReceiptClosed: postReceipt === null,
-          escrowLpBalance: postEscrow,
-          reportTicket: postTicket,
-        },
-        requestJournal.amountLpEscrowed,
+      const signedProjection = claimSimulationProjection(
+        state,
+        preparedAsSimulation(prepared, inspectedAddresses),
+        adminUsdcAta,
+        unsignedProjection.claim.payout ?? undefined,
+        unsignedProjection.claim.lpBurned ?? undefined,
       );
-      assertHxtkClaimProof({
-        preState: claimProofPreStateFromLiveState(state),
-        payout: claim.payout,
-        lpBurned: claim.lpBurned,
-        totalValueAfter: claim.tvAfter,
-        idleBalanceAfter: postIdle,
-        receipt1PositionValueAfter: postReceipt1?.positionValue ?? null,
-        requestReceiptClosed: claim.requestReceiptClosed,
-        escrowAfter: claim.escrowLpBalanceAfter,
-      }, "signed claim simulation");
+      const claim = signedProjection.claim;
+      assertHxtkClaimProof(signedProjection.proof, "signed claim simulation");
       if (!claim.checks.every((check) => check.pass)) {
         throw new Error(`signed claim simulation did not project the complete payout and closure state: ${JSON.stringify(claim.checks)}`);
       }
@@ -7390,6 +8021,7 @@ async function cmdClaimOperator(mode: RepairPolicyOperatorMode): Promise<number>
             expectedLpBurnRaw: expectedLpBurnRaw.toString(),
             expectedResidualTv: CLAIM_EXPECTED_RESIDUAL_RAW.toString(),
             expectedResidualIdle: CLAIM_EXPECTED_RESIDUAL_RAW.toString(),
+            expectedQuoteBits: REQUEST_EXPECTED_QUOTE_BITS.toString(),
           },
           eligibilityObservationSlot: eligibility.slot,
           eligibilityChainTime: eligibility.blockTime,
@@ -7402,12 +8034,18 @@ async function cmdClaimOperator(mode: RepairPolicyOperatorMode): Promise<number>
             instructions: ["withdrawVault"],
           },
         },
+        beforeSend: async () => {
+          const current = await readState("finalized", true);
+          assertHxtkPreSendStateUnchanged("claim", state, current);
+          return { sendStatus: { preSendSnapshotSlot: current.contextSlot } };
+        },
       };
     },
     reconcile: async ({ pending, finalized }) => {
       const requestJournal = await verifyFinalizedRequestJournal(
         rpcUrl,
         resolve(stringAt(pending.requestJournal, "claim journal requestJournal")),
+        "journal",
       );
       const state = await readState("finalized", true);
       if (finalized.slot <= requestJournal.finalized.slot) {
@@ -7427,6 +8065,13 @@ async function cmdClaimOperator(mode: RepairPolicyOperatorMode): Promise<number>
         pending.expectedLpBurnRaw ?? claim.expectedLpBurnRaw,
         "claim.expectedLpBurnRaw",
       );
+      const claimPreState = {
+        requestAmountLp: requestJournal.amountLpEscrowed,
+        totalValue: BigInt(stringAt(before.totalValue, "claim before.totalValue")),
+        idleBalance: BigInt(stringAt(before.idleBalance, "claim before.idleBalance")),
+        lpSupply: BigInt(stringAt(before.lpSupply, "claim before.lpSupply")),
+        receipt1PositionValue: optionalBigintAt(before.receipt1PositionValue, "claim before.receipt1PositionValue"),
+      } satisfies HxtkClaimProofPreState;
       const claimReconciliation = claimReconciliationFromObservations(
         {
           adminUsdcBalance: BigInt(stringAt(before.adminUsdcBalance, "claim before.adminUsdcBalance")),
@@ -7451,24 +8096,18 @@ async function cmdClaimOperator(mode: RepairPolicyOperatorMode): Promise<number>
         expectedPayoutRaw,
         expectedLpBurnRaw,
       );
-      assertHxtkClaimProof({
-        preState: {
-          requestAmountLp: requestJournal.amountLpEscrowed,
-          totalValue: BigInt(stringAt(before.totalValue, "claim before.totalValue")),
-          idleBalance: BigInt(stringAt(before.idleBalance, "claim before.idleBalance")),
-          lpSupply: BigInt(stringAt(before.lpSupply, "claim before.lpSupply")),
-          receipt1PositionValue: optionalBigintAt(before.receipt1PositionValue, "claim before.receipt1PositionValue"),
-        },
-        payout: claimReconciliation.payout,
-        lpBurned: claimReconciliation.lpBurned,
-        totalValueAfter: claimReconciliation.tvAfter,
-        idleBalanceAfter: claimReconciliation.idleAfter,
-        receipt1PositionValueAfter: claimReconciliation.receipt1PositionValueAfter === null
-          ? null : BigInt(claimReconciliation.receipt1PositionValueAfter),
-        requestReceiptClosed: claimReconciliation.requestReceiptClosed,
-        escrowAfter: claimReconciliation.escrowLpBalanceAfter === null
-          ? null : BigInt(claimReconciliation.escrowLpBalanceAfter),
-      }, "finalized claim reconcile");
+      const events = finalized.meta?.logMessages
+        ? decodeEvents("WithdrawVault", finalized.meta.logMessages)
+        : [];
+      assertHxtkClaimFinalizedReconcile(
+        finalizedClaimObservation(
+          claimPreState,
+          BigInt(stringAt(before.adminUsdcBalance, "claim before.adminUsdcBalance")),
+          state,
+          events,
+        ),
+        "finalized claim reconcile",
+      );
       if (!claimReconciliation.checks.every((check) => check.pass)) {
         throw new Error(`RECONCILE_MISMATCH: finalized claim did not reconcile the exact payout and closure state: ${JSON.stringify(claimReconciliation.checks)}`);
       }
@@ -7507,6 +8146,7 @@ async function cmdClaim(): Promise<number> {
   if (!state.requestReceipt) throw new Error("no pending withdraw request receipt on chain");
   if (!state.vault) throw new Error("vault account is absent");
   if (state.requestReceipt.amountLpEscrowed !== requestJournal.amountLpEscrowed
+    || state.requestReceipt.amountAssetBits !== requestJournal.quoteBits
     || state.requestReceipt.withdrawableFromTs !== requestJournal.withdrawableFromTs) {
     throw new Error("claim request receipt differs from the finalized request journal");
   }
@@ -7583,6 +8223,7 @@ async function cmdClaim(): Promise<number> {
     preState: claimProofPreStateFromLiveState(state),
     payout: simulatedClaim.payout,
     lpBurned: simulatedClaim.lpBurned,
+    lpSupplyAfter: simulatedClaim.lpSupplyAfter,
     totalValueAfter: simulatedClaim.tvAfter,
     idleBalanceAfter: simulatedClaim.idleAfter,
     receipt1PositionValueAfter: simulatedClaim.receipt1PositionValueAfter,

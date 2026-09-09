@@ -9,8 +9,11 @@ import bs58 from "bs58";
 import {
   assertReportSlotFresh,
   assertHxtkCancelProofPreState,
+  assertHxtkCancelFinalizedReconcile,
   assertHxtkCancelSimulation,
   assertHxtkClaimProof,
+  assertHxtkClaimFinalizedReconcile,
+  assertHxtkRequestFinalizedReconcile,
   assertHxtkRequestSimulation,
   buildFreshRepairReport,
   buildHxtkRecoveryCommand,
@@ -19,12 +22,16 @@ import {
   CANCEL_EXPECTED_SUPPLY_AFTER,
   CLAIM_EXPECTED_PAYOUT_RAW,
   CLAIM_EXPECTED_RESIDUAL_RAW,
+  CLAIM_EXPECTED_SUPPLY_INCL_FEES_AFTER,
   HXTK_RESET_PROOF_PRESTATE,
   HXTK_RECOVERY_LEGS,
   JournalTransitionFault,
   REPORT_AGE_MARGIN_SLOTS,
   ADAPTOR_MAX_REPORT_AGE_SLOTS,
   REQUEST_EXPECTED_LP,
+  REQUEST_EXPECTED_QUOTE_BITS,
+  RESET_EXPECTED_LP_SUPPLY_INCL_FEES,
+  HxtkPreSendStateDriftError,
   buildRepairRecoveryCommands,
   resumeInterruptedTransition,
   runJournaledStepForTest,
@@ -180,6 +187,7 @@ function proofPostCancelState() {
   return {
     adminLpBalance: CANCEL_EXPECTED_SUPPLY_AFTER,
     lpSupply: CANCEL_EXPECTED_SUPPLY_AFTER,
+    adminUsdcBalance: 0n,
     totalValue: 3_793_417n,
     idleBalance: 3_793_417n,
     receipt1PositionValue: 3_793_536n,
@@ -198,12 +206,103 @@ function proofClaimPreState() {
   } as const;
 }
 
+function proofCancelReconcileObservation() {
+  return {
+    preState: HXTK_RESET_PROOF_PRESTATE,
+    simulationSucceeded: true,
+    cancelEventCount: 1,
+    eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+    eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+    eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+    eventRefundLp: CANCEL_EXPECTED_REFUND_LP,
+    eventBurnLp: CANCEL_EXPECTED_BURN_LP,
+    escrowAfter: 0n,
+    requestReceiptLpAfter: null,
+    adminLpDelta: CANCEL_EXPECTED_REFUND_LP,
+    adminLpAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+    supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+    adminUsdcBefore: 0n,
+    adminUsdcAfter: 0n,
+    totalValueAfter: 3_793_417n,
+    idleBalanceAfter: 3_793_417n,
+    receipt1PositionValueAfter: 3_793_536n,
+  } as const;
+}
+
+function proofRequestReconcileObservation() {
+  return {
+    preState: proofPostCancelState(),
+    simulationSucceeded: true,
+    requestEventCount: 1,
+    eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+    eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+    eventAssetMint: RWA_MULTIPLY_ROUTE.assets.assetMint,
+    eventRequestedAmount: REQUEST_EXPECTED_LP,
+    eventIsAmountInLp: true,
+    eventIsWithdrawAll: true,
+    eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+    eventAmountLpEscrowed: REQUEST_EXPECTED_LP,
+    eventQuoteBits: REQUEST_EXPECTED_QUOTE_BITS,
+    eventRequestedTs: 1_000n,
+    eventWithdrawableFromTs: 1_600n,
+    eventTotalValueUnlocked: 3_793_417n,
+    eventTotalValue: 3_793_417n,
+    eventLpSupplyInclFees: RESET_EXPECTED_LP_SUPPLY_INCL_FEES,
+    escrowAfter: REQUEST_EXPECTED_LP,
+    adminLpAfter: 0n,
+    supplyAfter: REQUEST_EXPECTED_LP,
+    requestReceiptLpAfter: REQUEST_EXPECTED_LP,
+    requestReceiptQuoteBits: REQUEST_EXPECTED_QUOTE_BITS,
+    requestReceiptWithdrawableFromTs: 1_600n,
+    requestReceiptVault: RWA_MULTIPLY_ROUTE.vault.address,
+    requestReceiptUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+    requestBlockTime: 1_000n,
+    adminUsdcBefore: 0n,
+    adminUsdcAfter: 0n,
+    totalValueAfter: 3_793_417n,
+    idleBalanceAfter: 3_793_417n,
+    receipt1PositionValueAfter: 3_793_536n,
+  } as const;
+}
+
+function proofClaimReconcileObservation() {
+  return {
+    proof: {
+      preState: proofClaimPreState(),
+      payout: CLAIM_EXPECTED_PAYOUT_RAW,
+      lpBurned: REQUEST_EXPECTED_LP,
+      lpSupplyAfter: 0n,
+      totalValueAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      idleBalanceAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      receipt1PositionValueAfter: 3_793_536n,
+      requestReceiptClosed: true,
+      escrowAfter: 0n,
+    },
+    eventCount: 1,
+    eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+    eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+    eventAssetMint: RWA_MULTIPLY_ROUTE.assets.assetMint,
+    eventPayout: CLAIM_EXPECTED_PAYOUT_RAW,
+    eventLpBurned: REQUEST_EXPECTED_LP,
+    eventTvBefore: 3_793_417n,
+    eventTvAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+    eventLpSupplyInclFeesBefore: RESET_EXPECTED_LP_SUPPLY_INCL_FEES,
+    eventLpSupplyInclFeesAfter: CLAIM_EXPECTED_SUPPLY_INCL_FEES_AFTER,
+    adminLpAfter: 0n,
+    adminUsdcBefore: 0n,
+    adminUsdcAfter: CLAIM_EXPECTED_PAYOUT_RAW,
+  } as const;
+}
+
 describe("HXtk reset proof-pinned assertions", () => {
   test("fake cancel simulation passes the documented partial refund and burn", () => {
     const checks = assertHxtkCancelSimulation({
       preState: HXTK_RESET_PROOF_PRESTATE,
       simulationSucceeded: true,
       cancelEventCount: 1,
+      eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+      eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
       eventRefundLp: CANCEL_EXPECTED_REFUND_LP,
       eventBurnLp: CANCEL_EXPECTED_BURN_LP,
       escrowAfter: 0n,
@@ -211,8 +310,11 @@ describe("HXtk reset proof-pinned assertions", () => {
       adminLpDelta: CANCEL_EXPECTED_REFUND_LP,
       adminLpAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
       supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      adminUsdcBefore: 0n,
+      adminUsdcAfter: 0n,
       totalValueAfter: 3_793_417n,
       idleBalanceAfter: 3_793_417n,
+      receipt1PositionValueAfter: 3_793_536n,
     }, "fake cancel simulation");
     expect(checks.every((check) => check.pass)).toBe(true);
   });
@@ -222,6 +324,9 @@ describe("HXtk reset proof-pinned assertions", () => {
       preState: HXTK_RESET_PROOF_PRESTATE,
       simulationSucceeded: true,
       cancelEventCount: 1,
+      eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+      eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
       eventRefundLp: CANCEL_EXPECTED_REFUND_LP + 1n,
       eventBurnLp: CANCEL_EXPECTED_BURN_LP,
       escrowAfter: 0n,
@@ -229,8 +334,11 @@ describe("HXtk reset proof-pinned assertions", () => {
       adminLpDelta: CANCEL_EXPECTED_REFUND_LP,
       adminLpAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
       supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      adminUsdcBefore: 0n,
+      adminUsdcAfter: 0n,
       totalValueAfter: 3_793_417n,
       idleBalanceAfter: 3_793_417n,
+      receipt1PositionValueAfter: 3_793_536n,
     })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
   });
 
@@ -239,6 +347,9 @@ describe("HXtk reset proof-pinned assertions", () => {
       preState: HXTK_RESET_PROOF_PRESTATE,
       simulationSucceeded: true,
       cancelEventCount: 1,
+      eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+      eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
       eventRefundLp: CANCEL_EXPECTED_REFUND_LP,
       eventBurnLp: CANCEL_EXPECTED_BURN_LP - 1n,
       escrowAfter: 0n,
@@ -246,8 +357,11 @@ describe("HXtk reset proof-pinned assertions", () => {
       adminLpDelta: CANCEL_EXPECTED_REFUND_LP,
       adminLpAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
       supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      adminUsdcBefore: 0n,
+      adminUsdcAfter: 0n,
       totalValueAfter: 3_793_417n,
       idleBalanceAfter: 3_793_417n,
+      receipt1PositionValueAfter: 3_793_536n,
     })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
   });
 
@@ -273,9 +387,30 @@ describe("HXtk reset proof-pinned assertions", () => {
       eventIsAmountInLp: true,
       eventIsWithdrawAll: true,
       eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+      eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+      eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      eventAssetMint: RWA_MULTIPLY_ROUTE.assets.assetMint,
+      eventAmountLpEscrowed: REQUEST_EXPECTED_LP,
+      eventQuoteBits: 1_067_745_598_426_973_642_066n,
+      eventRequestedTs: 1n,
+      eventWithdrawableFromTs: 601n,
+      eventTotalValueUnlocked: 3_793_417n,
+      eventTotalValue: 3_793_417n,
+      eventLpSupplyInclFees: RESET_EXPECTED_LP_SUPPLY_INCL_FEES,
       escrowAfter: REQUEST_EXPECTED_LP,
       adminLpAfter: 0n,
       supplyAfter: REQUEST_EXPECTED_LP,
+      requestReceiptLpAfter: REQUEST_EXPECTED_LP,
+      requestReceiptQuoteBits: 1_067_745_598_426_973_642_066n,
+      requestReceiptWithdrawableFromTs: 601n,
+      requestReceiptVault: RWA_MULTIPLY_ROUTE.vault.address,
+      requestReceiptUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      requestBlockTime: null,
+      adminUsdcBefore: 0n,
+      adminUsdcAfter: 0n,
+      totalValueAfter: 3_793_417n,
+      idleBalanceAfter: 3_793_417n,
+      receipt1PositionValueAfter: 3_793_536n,
     })).not.toThrow();
   });
 
@@ -288,9 +423,30 @@ describe("HXtk reset proof-pinned assertions", () => {
       eventIsAmountInLp: true,
       eventIsWithdrawAll: true,
       eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+      eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+      eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      eventAssetMint: RWA_MULTIPLY_ROUTE.assets.assetMint,
+      eventAmountLpEscrowed: REQUEST_EXPECTED_LP - 1n,
+      eventQuoteBits: 1_067_745_598_426_973_642_066n,
+      eventRequestedTs: 1n,
+      eventWithdrawableFromTs: 601n,
+      eventTotalValueUnlocked: 3_793_417n,
+      eventTotalValue: 3_793_417n,
+      eventLpSupplyInclFees: RESET_EXPECTED_LP_SUPPLY_INCL_FEES,
       escrowAfter: REQUEST_EXPECTED_LP - 1n,
       adminLpAfter: 0n,
       supplyAfter: REQUEST_EXPECTED_LP,
+      requestReceiptLpAfter: REQUEST_EXPECTED_LP - 1n,
+      requestReceiptQuoteBits: 1_067_745_598_426_973_642_066n,
+      requestReceiptWithdrawableFromTs: 601n,
+      requestReceiptVault: RWA_MULTIPLY_ROUTE.vault.address,
+      requestReceiptUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      requestBlockTime: null,
+      adminUsdcBefore: 0n,
+      adminUsdcAfter: 0n,
+      totalValueAfter: 3_793_417n,
+      idleBalanceAfter: 3_793_417n,
+      receipt1PositionValueAfter: 3_793_536n,
     })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
   });
 
@@ -299,6 +455,7 @@ describe("HXtk reset proof-pinned assertions", () => {
       preState: proofClaimPreState(),
       payout: CLAIM_EXPECTED_PAYOUT_RAW,
       lpBurned: REQUEST_EXPECTED_LP,
+      lpSupplyAfter: 0n,
       totalValueAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
       idleBalanceAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
       receipt1PositionValueAfter: 3_793_536n,
@@ -312,12 +469,71 @@ describe("HXtk reset proof-pinned assertions", () => {
       preState: proofClaimPreState(),
       payout: CLAIM_EXPECTED_PAYOUT_RAW + 1n,
       lpBurned: REQUEST_EXPECTED_LP,
+      lpSupplyAfter: 0n,
       totalValueAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
       idleBalanceAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
       receipt1PositionValueAfter: 3_793_536n,
       requestReceiptClosed: true,
       escrowAfter: 0n,
     })).toThrow("HXTK_CLAIM_PROOF_MISMATCH");
+  });
+});
+
+describe("HXtk finalized reconcile negatives", () => {
+  test("cancel reconcile refuses wrong event amount, open receipt, and drifted supply", () => {
+    expect(() => assertHxtkCancelFinalizedReconcile({
+      ...proofCancelReconcileObservation(),
+      eventRefundLp: CANCEL_EXPECTED_REFUND_LP + 1n,
+    })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
+    expect(() => assertHxtkCancelFinalizedReconcile({
+      ...proofCancelReconcileObservation(),
+      requestReceiptLpAfter: 0n,
+    })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
+    expect(() => assertHxtkCancelFinalizedReconcile({
+      ...proofCancelReconcileObservation(),
+      supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER - 1n,
+    })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
+  });
+
+  test("request reconcile refuses wrong event amount, closed receipt, and drifted supply", () => {
+    expect(() => assertHxtkRequestFinalizedReconcile({
+      ...proofRequestReconcileObservation(),
+      eventRequestedAmount: REQUEST_EXPECTED_LP - 1n,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
+    expect(() => assertHxtkRequestFinalizedReconcile({
+      ...proofRequestReconcileObservation(),
+      requestReceiptLpAfter: null,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
+    expect(() => assertHxtkRequestFinalizedReconcile({
+      ...proofRequestReconcileObservation(),
+      supplyAfter: REQUEST_EXPECTED_LP - 1n,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
+  });
+
+  test("claim reconcile refuses wrong event amount, open receipt, and drifted supply", () => {
+    expect(() => assertHxtkClaimFinalizedReconcile({
+      ...proofClaimReconcileObservation(),
+      eventPayout: CLAIM_EXPECTED_PAYOUT_RAW + 1n,
+    })).toThrow("HXTK_CLAIM_RECONCILE_MISMATCH");
+    expect(() => assertHxtkClaimFinalizedReconcile({
+      ...proofClaimReconcileObservation(),
+      proof: { ...proofClaimReconcileObservation().proof, requestReceiptClosed: false },
+    })).toThrow("HXTK_CLAIM_PROOF_MISMATCH");
+    expect(() => assertHxtkClaimFinalizedReconcile({
+      ...proofClaimReconcileObservation(),
+      proof: { ...proofClaimReconcileObservation().proof, lpSupplyAfter: 1n },
+    })).toThrow("HXTK_CLAIM_PROOF_MISMATCH");
+  });
+
+  test("request reconcile pins the exact quote bits and block-time deadline", () => {
+    expect(() => assertHxtkRequestFinalizedReconcile({
+      ...proofRequestReconcileObservation(),
+      eventQuoteBits: REQUEST_EXPECTED_QUOTE_BITS + 1n,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
+    expect(() => assertHxtkRequestFinalizedReconcile({
+      ...proofRequestReconcileObservation(),
+      eventWithdrawableFromTs: 1_601n,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
   });
 });
 
@@ -373,6 +589,42 @@ describe("HXtk journaled flow", () => {
         broadcast: false,
       });
       expect(readdirSync(fx.root).some((entry) => entry.includes("aborted-") && entry.endsWith(".json"))).toBe(true);
+    }
+  });
+
+  test("cancel, request, and claim pre-send state drift aborts distinctly before raw send", async () => {
+    for (const step of ["cancel", "request", "claim"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      const input = {
+        ...fx.input(fx.journal, "execute"),
+        build: async () => ({
+          prepared: fx.prepared,
+          plan: { transaction: { kind: step } },
+          beforeSend: async () => {
+            throw new HxtkPreSendStateDriftError(step, 100, 101);
+          },
+        }),
+      };
+      await expect(runJournaledStepForTest(input, deps(fx, {
+        send: async () => {
+          sends += 1;
+          return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        },
+      }))).rejects.toThrow("ABORTED_PRE_SEND_STATE_DRIFT");
+      expect(sends).toBe(0);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+        status: "aborted-pre-send",
+        broadcast: false,
+        abortReason: expect.stringContaining("ABORTED_PRE_SEND_STATE_DRIFT"),
+      });
+      const aborted = readdirSync(fx.root)
+        .find((entry) => entry.startsWith("flow.json.aborted-") && entry.endsWith(".json"));
+      expect(aborted).toBeDefined();
+      expect(JSON.parse(readFileSync(join(fx.root, aborted!), "utf8"))).toMatchObject({
+        verdict: "ABORTED_PRE_SEND",
+        abortReason: expect.stringContaining("ABORTED_PRE_SEND_STATE_DRIFT"),
+      });
     }
   });
 
