@@ -2985,13 +2985,23 @@ async function runJournaledStepHeld(input: Readonly<{
   const staleAbortArtifacts = [...resumed.staleAbortArtifacts];
   let expectedGeneration = stateGeneration(sectionState);
   if (sectionState?.status === "aborted-pre-send" && sectionState.abortReason === "attempted-expired") {
+    const canonicalJournal = String(sectionState.journal ?? "");
+    // An attempted-expired record remains bound to its original journal until
+    // the expected signature has been reconciled. Refuse a different execute
+    // journal before constructing records, reading the chain, or publishing an
+    // artifact, so a failed re-arm cannot mutate the new journal.
+    if (input.mode === "execute" && canonicalJournal !== input.journal) {
+      throw new Error(
+        `JOURNAL_MISMATCH_ATTEMPTED_EXPIRED: reconcile the original journal ${canonicalJournal} with ${buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: false })}`,
+      );
+    }
     const pending = recordAt(sectionState.pendingRecord, `${input.step} canonical pendingRecord`);
     const wire = journalWire(pending, input.schema, input.step, "pending");
     const signatureStatus = await readSignature(input.rpcUrl, wire.signature);
     const landed = signatureStatus.kind === "finalized" ? signatureStatus.transaction : undefined;
     if (landed !== undefined) {
       assertFinalizedJournalMessage(wire, landed);
-      if (String(sectionState.journal ?? "") !== input.journal) {
+      if (canonicalJournal !== input.journal) {
         console.log(toJson({
           schema: input.schema,
           step: input.step,

@@ -336,12 +336,12 @@ describe("HXtk journaled flow", () => {
       broadcast: "attempted",
     });
 
-    await runJournaledStepForTest(fx.input(join(fx.root, "rearmed.json"), "execute"), deps(fx, {
+    await expect(runJournaledStepForTest(fx.input(join(fx.root, "rearmed.json"), "execute"), deps(fx, {
       send: async () => {
         sends += 1;
         throw new Error("must not re-arm while the original signature is unreadable");
       },
-    }));
+    }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRED");
     expect(sends).toBe(1);
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("aborted-pre-send");
   });
@@ -412,6 +412,31 @@ describe("HXtk journaled flow", () => {
       currentBlockHeight: async () => 100,
     }));
     expect(JSON.parse(readFileSync(join(landed.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
+  test("attempted-expired execute refuses a different journal before any read or write", async () => {
+    for (const status of [
+      { kind: "absent" },
+      { kind: "finalized", slot: 2, err: null, transaction: undefined },
+    ] as const) {
+      const fx = fixture();
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => { throw new Error("submitted but response was lost"); },
+      }))).rejects.toThrow("submitted but response was lost");
+      await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+        readStatus: async () => ({ kind: "absent" }),
+        currentBlockHeight: async () => 100,
+      }));
+      const beforeState = readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8");
+      const beforeEntries = readdirSync(fx.root).sort();
+      await expect(runJournaledStepForTest(fx.input(join(fx.root, "different.json"), "execute"), deps(fx, {
+        readStatus: async () => status,
+        send: async () => { throw new Error("must not send"); },
+      }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRED");
+      expect(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).toBe(beforeState);
+      expect(readdirSync(fx.root).sort()).toEqual(beforeEntries);
+      expect(readdirSync(fx.root).some((entry) => entry.includes("different.json"))).toBe(false);
+    }
   });
 
   test("attempted-expiry transition is canonical-first and resumes after every crash boundary", async () => {
