@@ -227,14 +227,21 @@ pre-send gate, before the attempted mark. The pending send-age status is
 rewritten and fsynced before that final check; on a healthy RPC, expect the
 raw send to follow within the margin, typically **1–4 slots** after the last
 check. A stale check aborts with `REPORT_SLOT_STALE_PRE_SEND` before the
-attempted mark and sole raw send. The simulation uses `commitment:
-"confirmed"` with `replaceRecentBlockhash: true`; when the RPC returns a
-simulation context slot, that slot is used for `reportSlotAgeAtSimulate`. The
-JSON output and journal record `reportSlotAgeAtSimulate`,
-`reportSlotAgeAtSend`, the observed/current slots, the 8-slot margin, and the
-pinned 32-slot maximum.
+attempted mark and sole raw send. The transaction is prepared and simulated
+at `commitment: "confirmed"` with `minimumContextSlot` set to the snapshot
+context slot and `replaceRecentBlockhash: true`; a finalized simulation can
+lag the confirmed report by about 31 slots and therefore cannot satisfy this
+32-slot age rule. The repair leg settles with `sendPreparedConfirmedOnce`,
+then the existing finalized signature read, `assertFinalizedJournalMessage`,
+reconciliation, and attempted-expiry path complete unchanged. The journal
+records the confirmed-settled slot alongside `finalizedSlot`. Every snapshot
+fingerprint, report-age, policy, simulation, attempted-mark, and finalized
+reconciliation gate remains in force. When the RPC returns a simulation
+context slot, that slot is used for `reportSlotAgeAtSimulate`. The JSON output
+and journal record `reportSlotAgeAtSimulate`, `reportSlotAgeAtSend`, the
+observed/current slots, the 8-slot margin, and the pinned 32-slot maximum.
 
-Simulate with finalized prestate immediately before any operator action:
+Simulate the confirmed repair transaction immediately before any operator action:
 
 ```sh
 bun run reset:hxtk repair --expect-seed 140 --policy-journal /absolute/path/hxtk-repair-policy.json --simulate
@@ -258,7 +265,8 @@ The guarded journaled operator path is:
 op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk repair --expect-seed 140 --policy-journal /absolute/path/hxtk-repair-policy.json --execute --journal /absolute/path/hxtk-repair.json
 ```
 
-`--execute` performs finalized repair reconciliation and then immediately runs
+`--execute` settles the repair at confirmed, performs the existing finalized
+repair reconciliation, and then immediately runs
 `repair-policy-remove` with its own derived journal,
 `/absolute/path/hxtk-repair.policy-remove.json`, in the same invocation. The
 normal path therefore has no separate removal command; if removal fails, the

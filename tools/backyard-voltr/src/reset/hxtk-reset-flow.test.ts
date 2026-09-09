@@ -2,6 +2,7 @@ import { existsSync, linkSync, lstatSync, mkdtempSync, readdirSync, readFileSync
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
+import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { Connection, Keypair, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 
@@ -21,7 +22,11 @@ import {
 import { parseHxtkCli } from "./hxtk-cli.js";
 import { resolveCanonicalStateRoot } from "./hxtk-fence.js";
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
-import { sendPreparedOnce } from "../integrations/solana-compat.js";
+import {
+  prepareSignedV0Transaction,
+  sendPreparedConfirmedOnce,
+  sendPreparedOnce,
+} from "../integrations/solana-compat.js";
 
 const roots: string[] = [];
 
@@ -346,6 +351,169 @@ describe("HXtk journaled flow", () => {
       if (previousConfirmation === undefined) delete process.env.CONFIRM_MAINNET;
       else process.env.CONFIRM_MAINNET = previousConfirmation;
     }
+  });
+
+  test("repair execute uses real confirmed preparation and sender before finalized reconciliation", async () => {
+    const previousConfirmation = process.env.CONFIRM_MAINNET;
+    process.env.CONFIRM_MAINNET = "1";
+    const originalMethods = new Map<string, unknown>();
+    const connectionPrototype = Connection.prototype as unknown as Record<string, unknown>;
+    const originalRpcRequest = Object.getOwnPropertyDescriptor(Connection.prototype, "_rpcRequest");
+    const signerKeypair = Keypair.generate();
+    const signer = await createKeyPairSignerFromBytes(signerKeypair.secretKey);
+    const commitments = new Map<string, string[]>();
+    let confirmedSlot = 131;
+    let finalizedSlot = 100;
+    let rawSends = 0;
+    let expectedSignature: string | null = null;
+    const blockhash = Keypair.generate().publicKey.toBase58();
+    const account = {
+      owner: "11111111111111111111111111111111",
+      lamports: 1,
+      executable: false,
+      rentEpoch: 0,
+      data: ["", "base64"],
+    };
+    const response = (result: unknown) => ({ jsonrpc: "2.0", id: "hxtk-confirmed-test", result });
+    const commitmentOf = (args: unknown[]) => {
+      const config = args.find((value) => value !== null && typeof value === "object"
+        && "commitment" in (value as Record<string, unknown>)) as Record<string, unknown> | undefined;
+      return typeof config?.commitment === "string" ? config.commitment : "none";
+    };
+    const advance = (commitment: string) => {
+      if (commitment === "confirmed") {
+        confirmedSlot += 1;
+        return confirmedSlot;
+      }
+      finalizedSlot += 1;
+      return finalizedSlot;
+    };
+    const fakeRpcRequest = async (method: string, args: unknown[] = []) => {
+      const commitment = commitmentOf(args);
+      commitments.set(method, [...(commitments.get(method) ?? []), commitment]);
+      if (method === "getGenesisHash") return response("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d");
+      if (method === "getLatestBlockhash") {
+        return response({ context: { slot: advance(commitment) }, value: { blockhash, lastValidBlockHeight: 1_000 } });
+      }
+      if (method === "getMultipleAccounts") {
+        return response({ context: { slot: advance(commitment) }, value: [account] });
+      }
+      if (method === "getFeeForMessage") {
+        return response({ context: { slot: advance(commitment) }, value: 5_000 });
+      }
+      if (method === "simulateTransaction") {
+        return response({
+          context: { slot: advance(commitment) },
+          value: {
+            err: null,
+            accounts: [account],
+            unitsConsumed: 1,
+            logs: [],
+            returnData: null,
+          },
+        });
+      }
+      if (method === "getSlot") return response(advance(commitment));
+      if (method === "getBlockHeight") return response(1);
+      if (method === "sendTransaction") {
+        rawSends += 1;
+        return response(expectedSignature);
+      }
+      if (method === "getSignatureStatuses") {
+        return response({
+          context: { slot: advance("confirmed") },
+          value: [{ slot: confirmedSlot, confirmations: 1, confirmationStatus: "confirmed", err: null }],
+        });
+      }
+      throw new Error(`unexpected fake RPC method ${method}`);
+    };
+    Object.defineProperty(Connection.prototype, "_rpcRequest", {
+      configurable: true,
+      get() { return fakeRpcRequest; },
+      set() { /* Replace the HTTP transport for this test with fake RPC. */ },
+    });
+    const patchConnection = (name: string, implementation: unknown) => {
+      originalMethods.set(name, connectionPrototype[name]);
+      connectionPrototype[name] = implementation;
+    };
+    try {
+      const prepared = await prepareSignedV0Transaction({
+        rpcUrl: "http://fake.invalid",
+        feePayer: {
+          signer,
+          privateSeed: signerKeypair.secretKey.subarray(0, 32),
+          secretKey: signerKeypair.secretKey,
+        },
+        instructions: [],
+        inspectedAddresses: [signer.address],
+        prestateAddresses: [signer.address],
+        minimumContextSlot: 0,
+        commitment: "confirmed",
+      });
+      expect(prepared.commitment).toBe("confirmed");
+      expect(prepared.simulationSlot).toBeGreaterThan(131);
+      expect(commitments.get("getLatestBlockhash")).toEqual(["confirmed"]);
+      expect(commitments.get("getMultipleAccounts")).toEqual(["confirmed"]);
+      expect(commitments.get("simulateTransaction")).toEqual(["confirmed"]);
+
+      const decoded = VersionedTransaction.deserialize(prepared.serializedTransaction);
+      const finalized = {
+        slot: confirmedSlot + 100,
+        blockTime: 2,
+        transaction: {
+          signatures: [prepared.expectedSignature],
+          message: {
+            serialize: () => prepared.serializedMessage,
+            staticAccountKeys: decoded.message.staticAccountKeys,
+          },
+        },
+        meta: {
+          err: null,
+          fee: 0,
+          preBalances: decoded.message.staticAccountKeys.map(() => 0),
+          postBalances: decoded.message.staticAccountKeys.map(() => 0),
+          loadedAddresses: { writable: [], readonly: [] },
+          preTokenBalances: [],
+          postTokenBalances: [],
+        },
+      };
+      expectedSignature = prepared.expectedSignature;
+      patchConnection("confirmTransaction", async () => ({
+        context: { slot: advance("confirmed") },
+        value: { err: null },
+      }));
+      patchConnection("getTransaction", async () => ({
+        ...finalized,
+        slot: confirmedSlot,
+      }));
+      const fx = fixture();
+      expect(await runJournaledStepForTest({
+        ...fx.input(fx.journal, "execute"),
+        rpcUrl: "http://fake.invalid",
+        step: "repair",
+        build: async () => ({ prepared, plan: { transaction: { kind: "repair" } } }),
+      }, {
+        ...deps(fx, { finalize: async () => finalized }),
+        sendPreparedOnce: sendPreparedConfirmedOnce,
+      })).toBe(0);
+      expect(rawSends).toBe(1);
+      expect(confirmedSlot - finalizedSlot).toBeGreaterThanOrEqual(31);
+      expect(JSON.parse(readFileSync(fx.journal, "utf8"))).toMatchObject({
+        confirmedSettledSlot: confirmedSlot,
+        finalizedSlot: finalized.slot,
+      });
+    } finally {
+      for (const [name, implementation] of originalMethods) connectionPrototype[name] = implementation;
+      if (originalRpcRequest === undefined) delete connectionPrototype._rpcRequest;
+      else Object.defineProperty(Connection.prototype, "_rpcRequest", originalRpcRequest);
+      if (previousConfirmation === undefined) delete process.env.CONFIRM_MAINNET;
+      else process.env.CONFIRM_MAINNET = previousConfirmation;
+    }
+  });
+
+  test("finalized-commitment simulation fails the future-slot freshness check", () => {
+    expect(() => assertReportSlotFresh(132, 101, "pre-simulate"))
+      .toThrow("REPORT_SLOT_STALE_PRE_SIMULATE");
   });
 
   test("every emitted recovery command round-trips through the real CLI parser", () => {

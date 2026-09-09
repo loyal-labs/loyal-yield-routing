@@ -92,6 +92,7 @@ import {
   readFinalizedSignatureStatus,
   PreparedTransactionSendError,
   sendPreparedOnce,
+  sendPreparedConfirmedOnce,
   fromWeb3Instruction,
   toWeb3Instruction,
   type PreparedTransaction,
@@ -2573,10 +2574,19 @@ type JournaledExecutionBuild = Readonly<{
   }> | void>;
 }>;
 
+type PreparedSettlement =
+  | Awaited<ReturnType<typeof sendPreparedOnce>>
+  | Awaited<ReturnType<typeof sendPreparedConfirmedOnce>>;
+type PreparedSendOnce = (
+  rpcUrl: string,
+  prepared: PreparedTransaction,
+  authorizedContextSlot: number,
+) => Promise<PreparedSettlement>;
+
 type JournaledStepDependencies = Readonly<{
   stateRoot?: string;
   allowExecuteWithoutConfirmation?: boolean;
-  sendPreparedOnce?: typeof sendPreparedOnce;
+  sendPreparedOnce?: PreparedSendOnce;
   finalizedTransaction?: typeof finalizedTransaction;
   readFinalizedSignatureStatus?: typeof readFinalizedSignatureStatus;
   currentBlockHeight?: (rpcUrl: string) => Promise<number>;
@@ -3094,8 +3104,9 @@ async function runJournaledStep(input: Readonly<{
     pending: JsonRecord;
     finalized: FinalizedTransaction;
   }>) => Promise<JsonRecord>;
-}>): Promise<number> {
-  const stateRoot = resolveCanonicalStateRoot({ vault: VAULT.toString(), create: true });
+}>, dependencies: JournaledStepDependencies = {}): Promise<number> {
+  const stateRoot = dependencies.stateRoot
+    ?? resolveCanonicalStateRoot({ vault: VAULT.toString(), create: true });
   const preClaimState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: false });
   if (input.mode === "execute"
     && preClaimState?.status === "aborted-pre-send"
@@ -3127,7 +3138,7 @@ async function runJournaledStep(input: Readonly<{
     breakClaim: currentCli().has("--break-claim"),
   });
   try {
-    return await runJournaledStepHeld(input);
+    return await runJournaledStepHeld(input, dependencies);
   } finally {
     releaseCanonicalLegClaim(claim);
   }
@@ -3732,7 +3743,7 @@ async function runJournaledStepHeld(input: Readonly<{
   // sendPreparedOnce has MAX_IDENTICAL_SUBMISSION_ATTEMPTS=1. It is the only
   // raw-send call in this shared flow; a failure leaves the pending wire for
   // the read-only --reconcile path and is never retried here.
-  let settled: Awaited<ReturnType<typeof sendPreparedOnce>> | null = null;
+  let settled: PreparedSettlement | null = null;
   try {
     settled = await sendOnce(input.rpcUrl, built.prepared, built.prepared.simulationSlot);
     if (settled.err !== null) {
@@ -3750,6 +3761,7 @@ async function runJournaledStepHeld(input: Readonly<{
       broadcast: true,
       signature: settled.signature,
       finalizedSlot: finalized.slot,
+      confirmedSettledSlot: "confirmedSlot" in settled ? settled.confirmedSlot : null,
       finalizedContextSlot: settled.confirmationSlot,
       finalizedBlockTime: finalized.blockTime ?? null,
       sendStatus: {
@@ -3776,6 +3788,7 @@ async function runJournaledStepHeld(input: Readonly<{
       verdict: "FINALIZED_RECONCILED",
       signature: settled.signature,
       finalizedSlot: finalized.slot,
+      confirmedSettledSlot: "confirmedSlot" in settled ? settled.confirmedSlot : null,
       reportSlot: attemptedPending.reportSlot ?? null,
       reportSlotAgeAtSend: attemptedPending.sendStatus
         && typeof attemptedPending.sendStatus === "object"
@@ -3827,7 +3840,7 @@ export async function runJournaledStepForTest(
   input: Parameters<typeof runJournaledStep>[0],
   dependencies: Readonly<{
     stateRoot: string;
-    sendPreparedOnce: typeof sendPreparedOnce;
+    sendPreparedOnce: PreparedSendOnce;
     finalizedTransaction: typeof finalizedTransaction;
     claim?: CanonicalLegClaim;
     breakClaim?: boolean;
@@ -4812,10 +4825,10 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
         inspectedAddresses,
         prestateAddresses: inspectedAddresses,
         minimumContextSlot: state.contextSlot,
-        // sendPreparedOnce settles at finalized and rejects a prepared
-        // transaction made at another commitment. Keep blockhash preparation
-        // finalized; only the report slot and simulation stay confirmed.
-        commitment: "finalized",
+        // The report is stamped from the confirmed tip. Prepare and simulate
+        // at confirmed too: finalized banks can lag by about 31 slots, which
+        // is incompatible with the adaptor's 32-slot report-age window.
+        commitment: "confirmed",
       });
       const reportSlotAgeAtSimulate = assertReportSlotFresh(
         built.report.observedSlot,
@@ -4992,6 +5005,10 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
         finalizedState: summarize(state),
       };
       },
+    }, {
+      // Repair alone settles at confirmed; its existing finalized readback,
+      // reconciliation, and expiry path remains the completion boundary.
+      sendPreparedOnce: sendPreparedConfirmedOnce,
     });
   } catch (error) {
     const canonicalRepairState = readCanonicalLegState("repair");
