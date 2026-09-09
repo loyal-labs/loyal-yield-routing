@@ -213,6 +213,22 @@ report slot is the ticket sequence; NAV is `3,793,536`; the report digest is
 the fixed per-run digest emitted by the compiler. The transaction fee payer
 and delegated signer are `62JL...` (`POLICY_KEYPAIR`), not the admin.
 
+The adaptor rejects a report unless `report.sequence == report.observed_slot`,
+`observed_slot <= current_slot`, and `current_slot - observed_slot <= 32`.
+The tool keeps an 8-slot safety margin, so it requires
+`current confirmed slot - observed slot + 8 <= 32`. It takes the report
+sequence from a fresh confirmed `getSlot` immediately before building the arm
+and capital instructions, after the consistent NAV snapshot, policy readbacks,
+and compilation work. The NAV inputs remain those snapshot values; in
+particular the phantom receipt value remains `3,793,536`.
+
+The same age check runs immediately before simulation and immediately before
+the sole raw send. The simulation uses `commitment: "confirmed"` with
+`replaceRecentBlockhash: true`; when the RPC returns a simulation context slot,
+that slot is used for `reportSlotAgeAtSimulate`. The JSON output and journal
+record `reportSlotAgeAtSimulate`, `reportSlotAgeAtSend`, the observed/current
+slots, the 8-slot margin, and the pinned 32-slot maximum.
+
 Simulate with finalized prestate immediately before any operator action:
 
 ```sh
@@ -247,8 +263,12 @@ successfully closes seed 140.
 
 Abort on any failed simulation, report-ticket sequence/hash mismatch, policy
 drift, LP change, custody change, or post-state other than the exact values
-above. The current evidence is pending because the policy is absent; it does
-not contain a fabricated post-state.
+above. A stale confirmed slot aborts with `REPORT_SLOT_STALE_PRE_SEND` before
+the attempted mark and before the sole raw send. The elected
+`aborted-pre-send` artifact is safely re-runnable with the same journal (or a
+new journal) after a plain rerun of the same repair leg; no on-chain mark or
+send occurred. The current evidence is pending because the policy is absent;
+it does not contain a fabricated post-state.
 
 ### 5. Recover one-shot policy removal
 
@@ -508,7 +528,7 @@ reconcile instruction, and a different journal is refused.
 | `aborted-pre-send` (`attempted-expired`) | abort artifact present, signature still unreadable | Emits `JOURNAL_MISMATCH_ATTEMPTED_EXPIRED` with `rearmable:false` and the original-journal reconcile instruction; writes and claims nothing. | A landed signature finalizes the original attempt; an RPC error makes no state transition. | Reports stale evidence; writes nothing. | Handles only the independent claim. |
 | `attempted` | final journal | Refuses filename-only promotion and a second send. | Requires the chain signature/message proof before `finalized`; otherwise keeps `attempted`. | Reports the final journal as non-authoritative without chain proof. | Handles only the independent claim. |
 | `attempted` | foreign abort artifact | Refuses; an abort artifact can never move `attempted`. | Lists it as stale and reconciles the attempted record independently. | Lists it as stale; writes nothing. | Handles only the independent claim. |
-| `aborted-pre-send` | abort artifact(s), excluding `abortReason: "attempted-expired"` | May re-arm with a new attempt token when the journal/leg policy permits; stale artifacts remain visible. | Does not send; reports the abort and its bindings. | Reports re-armable state and stale artifacts; writes nothing. | Handles only the independent claim. |
+| `aborted-pre-send` | abort artifact(s), excluding `abortReason: "attempted-expired"` | May re-arm with a new attempt token when the journal/leg policy permits; stale artifacts remain visible. `REPORT_SLOT_STALE_PRE_SEND` is safe to rerun with the same journal or a new journal because it is elected before the attempted mark and sends nothing. | Does not send; reports the abort and its bindings. | Reports re-armable state and stale artifacts; writes nothing. | Handles only the independent claim. |
 | `finalized` | final journal | Emits `already finalized`; no new send. | Emits `already finalized` with the verification command. | Emits the same recovery command; writes nothing. | Handles only the independent claim. |
 | any state | dead claim | Takes over only through the token/inode election and dead-process proof. | Same claim takeover rules; it does not change a leg state by itself. | Reports the claim/deadness decision; writes no takeover. | Completes a resumable breaking marker and unlinks only on inode match. |
 | any state | breaking marker or renamed token | Resumes the marker before proceeding; a live replacement claim is never removed. | Resumes the marker without creating an attempted record. | Reports the marker and identity mismatch if present; writes nothing. | Completes the marker idempotently, then removes only the recorded dead inode. |

@@ -6,9 +6,13 @@ import { Keypair, TransactionMessage, VersionedTransaction } from "@solana/web3.
 import bs58 from "bs58";
 
 import {
+  assertReportSlotFresh,
+  buildFreshRepairReport,
   buildHxtkRecoveryCommand,
   HXTK_RECOVERY_LEGS,
   JournalTransitionFault,
+  REPORT_AGE_MARGIN_SLOTS,
+  ADAPTOR_MAX_REPORT_AGE_SLOTS,
   buildRepairRecoveryCommands,
   resumeInterruptedTransition,
   runJournaledStepForTest,
@@ -16,6 +20,7 @@ import {
 } from "./hxtk-reset.js";
 import { parseHxtkCli } from "./hxtk-cli.js";
 import { resolveCanonicalStateRoot } from "./hxtk-fence.js";
+import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 
 const roots: string[] = [];
 
@@ -116,7 +121,128 @@ function claimSnapshot(stateRoot: string, step: string) {
     });
 }
 
+function repairSnapshot() {
+  return {
+    contextSlot: 100,
+    epoch: null,
+    vault: {
+      totalValue: 2_793_298n,
+      lockedProfitDegradationDuration: 0n,
+      adminPerformanceFeeBps: 0,
+      withdrawalWaitingPeriod: 600n,
+      admin: RWA_MULTIPLY_ROUTE.setupAdmin,
+      manager: RWA_MULTIPLY_ROUTE.squads.vault,
+    },
+    idleBalance: 3_793_417n,
+    lpSupply: 99_941_522n,
+    receipt1: {
+      positionValue: 2_793_417n,
+      vault: RWA_MULTIPLY_ROUTE.vault.address,
+      strategy: RWA_MULTIPLY_ROUTE.customAdaptor.strategyConfig,
+      adaptorProgram: RWA_MULTIPLY_ROUTE.customAdaptor.program,
+    },
+    custody1Balance: 0n,
+    reportTicket: {
+      armed: false,
+      activeSequence: 0n,
+      activeHashIsZero: true,
+      lastConsumedSequence: 444_157_930n,
+    },
+    requestReceipt: {
+      vault: RWA_MULTIPLY_ROUTE.vault.address,
+      userTransferAuthority: RWA_MULTIPLY_ROUTE.setupAdmin,
+      amountLpEscrowed: 99_941_522n,
+    },
+    requestEscrowLpBalance: 99_941_522n,
+  } as never;
+}
+
 describe("HXtk journaled flow", () => {
+  test("repair report sequence uses the fresh confirmed slot and snapshot NAV", async () => {
+    const snapshot = repairSnapshot();
+    let reads = 0;
+    const fresh = await buildFreshRepairReport({
+      snapshot,
+      readConfirmedSlot: async () => {
+        reads += 1;
+        return 444_157_940;
+      },
+    });
+    expect(reads).toBe(1);
+    expect(fresh.report.sequence).toBe(444_157_940n);
+    expect(fresh.report.observedSlot).toBe(444_157_940n);
+    expect(fresh.report.sequence).not.toBe(BigInt(snapshot.contextSlot));
+    expect(fresh.repairNavRaw).toBe(snapshot.idleBalance + snapshot.receipt1.positionValue - snapshot.vault.totalValue);
+    expect(fresh.report.navAfterRaw).toBe(3_793_536n);
+    expect(REPORT_AGE_MARGIN_SLOTS).toBe(8);
+    expect(ADAPTOR_MAX_REPORT_AGE_SLOTS).toBe(32);
+  });
+
+  test("pre-simulate and pre-send stale slots elect aborted-pre-send with no send", async () => {
+    for (const phase of ["pre-simulate", "pre-send"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      let slotReads = 0;
+      const input = {
+        ...fx.input(fx.journal, "execute"),
+        build: async () => ({
+          prepared: fx.prepared,
+          plan: { transaction: { kind: "test" } },
+          beforeSend: async () => {
+            slotReads += 1;
+            assertReportSlotFresh(100, 125, phase);
+          },
+        }),
+      };
+      await expect(runJournaledStepForTest(input, deps(fx, {
+        send: async () => {
+          sends += 1;
+          return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        },
+      }))).rejects.toThrow(phase === "pre-send"
+        ? "REPORT_SLOT_STALE_PRE_SEND"
+        : "REPORT_SLOT_STALE_PRE_SIMULATE");
+      expect(slotReads).toBe(1);
+      expect(sends).toBe(0);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+        status: "aborted-pre-send",
+        broadcast: false,
+      });
+      expect(readdirSync(fx.root).some((entry) => entry.includes("aborted-") && entry.endsWith(".json"))).toBe(true);
+    }
+  });
+
+  test("fresh slot margin normal path reaches exactly one send", async () => {
+    const fx = fixture();
+    let sends = 0;
+    let slot = 101;
+    const input = {
+      ...fx.input(fx.journal, "execute"),
+      build: async () => ({
+        prepared: fx.prepared,
+        plan: { transaction: { kind: "test" }, reportSlotAgeAtSimulate: 1 },
+        beforeSend: async () => {
+          slot += 1;
+          const age = assertReportSlotFresh(100, slot, "pre-send");
+          expect(age.ageSlots + age.marginSlots).toBeLessThanOrEqual(age.maxAgeSlots);
+          return { sendStatus: { reportSlotAgeAtSend: age.ageSlots } };
+        },
+      }),
+    };
+    expect(await runJournaledStepForTest(input, deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+    }))).toBe(0);
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(fx.journal, "utf8"))).toMatchObject({
+      reportSlotAgeAtSimulate: 1,
+      sendStatus: { reportSlotAgeAtSend: 2 },
+    });
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
   test("every emitted recovery command round-trips through the real CLI parser", () => {
     for (const step of HXTK_RECOVERY_LEGS) {
       for (const mode of ["simulate", "execute", "reconcile"] as const) {

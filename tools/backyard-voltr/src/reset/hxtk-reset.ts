@@ -171,6 +171,13 @@ const REPAIR_POLICY_REMOVE_SCHEMA = "loyal-voltr-hxtk-repair-policy-remove/v1";
 const REPAIR_POLICY_OPERATION = "nav-refresh" as const;
 const REPORT_DIGEST = new Uint8Array(32).fill(7);
 const REPAIRED_BOOK_RAW = 3_793_417n;
+/** Keep eight slots of headroom inside the adaptor's 32-slot ReportSlot bound. */
+export const REPORT_AGE_MARGIN_SLOTS = 8;
+/**
+ * Hard-pinned to crates/loyal-voltr-rwa-nav-adaptor/src/config.rs:307. The
+ * deployed config and LiteSVM reset evidence both prove maxReportAgeSlots=32.
+ */
+export const ADAPTOR_MAX_REPORT_AGE_SLOTS = 32;
 const EXECUTION_COMPILER_BIN = "compile-voltr-custom-execution";
 const POLICY_JOURNAL_FLAG = "--policy-journal";
 const REPAIR_JOURNAL_FLAG = "--repair-journal";
@@ -265,6 +272,10 @@ async function rpcWithRetry<T>(method: string, params: unknown, tries = 5): Prom
   throw new Error(sanitizeError(lastError));
 }
 
+async function readConfirmedSlot(): Promise<number> {
+  return rpcWithRetry<number>("getSlot", [{ commitment: "confirmed" }]);
+}
+
 // ---- account decoding --------------------------------------------------------
 
 type RawAccount = Readonly<{
@@ -275,6 +286,66 @@ type RawAccount = Readonly<{
 } | null>;
 
 type Commitment = "confirmed" | "finalized";
+
+export type ReportSlotAge = Readonly<{
+  observedSlot: number;
+  currentSlot: number;
+  ageSlots: number;
+  marginSlots: number;
+  maxAgeSlots: number;
+}>;
+
+export class ReportSlotStaleError extends Error {
+  readonly verdict: "REPORT_SLOT_STALE_PRE_SIMULATE" | "REPORT_SLOT_STALE_PRE_SEND";
+  readonly age: ReportSlotAge;
+
+  constructor(
+    verdict: "REPORT_SLOT_STALE_PRE_SIMULATE" | "REPORT_SLOT_STALE_PRE_SEND",
+    age: ReportSlotAge,
+  ) {
+    super(
+      `${verdict}: observedSlot=${age.observedSlot} currentSlot=${age.currentSlot} `
+      + `reportSlotAge=${age.ageSlots} margin=${age.marginSlots} maxAge=${age.maxAgeSlots}; `
+      + "wait for a fresher confirmed slot and rerun the same repair leg",
+    );
+    this.name = "ReportSlotStaleError";
+    this.verdict = verdict;
+    this.age = age;
+  }
+}
+
+export function reportSlotAge(observedSlot: bigint | number, currentSlot: number): ReportSlotAge {
+  const observed = typeof observedSlot === "bigint" ? Number(observedSlot) : observedSlot;
+  if (!Number.isSafeInteger(observed) || observed < 0) {
+    throw new Error(`report observed slot ${String(observedSlot)} is not a safe non-negative integer`);
+  }
+  if (!Number.isSafeInteger(currentSlot) || currentSlot < 0) {
+    throw new Error(`current confirmed slot ${currentSlot} is not a safe non-negative integer`);
+  }
+  return {
+    observedSlot: observed,
+    currentSlot,
+    ageSlots: currentSlot - observed,
+    marginSlots: REPORT_AGE_MARGIN_SLOTS,
+    maxAgeSlots: ADAPTOR_MAX_REPORT_AGE_SLOTS,
+  };
+}
+
+export function assertReportSlotFresh(
+  observedSlot: bigint | number,
+  currentSlot: number,
+  phase: "pre-simulate" | "pre-send",
+): ReportSlotAge {
+  const age = reportSlotAge(observedSlot, currentSlot);
+  const verdict = phase === "pre-send"
+    ? "REPORT_SLOT_STALE_PRE_SEND"
+    : "REPORT_SLOT_STALE_PRE_SIMULATE";
+  if (age.currentSlot < age.observedSlot
+    || age.ageSlots + age.marginSlots > age.maxAgeSlots) {
+    throw new ReportSlotStaleError(verdict, age);
+  }
+  return age;
+}
 
 type RpcAccountValue = Readonly<{
   owner: string;
@@ -1029,6 +1100,7 @@ type Simulation = Readonly<{
   logs: readonly string[];
   unitsConsumed: number | null;
   packetBytes: number;
+  contextSlot: number | null;
   postAccounts: readonly RawAccount[];
 }>;
 
@@ -1061,6 +1133,7 @@ async function simulate(
     throw new Error(`simulated packet is ${wire.length} bytes; limit ${PACKET_LIMIT}`);
   }
   const response = await rpcWithRetry<{
+    context?: { slot: number };
     value: {
       err: unknown;
       logs: readonly string[] | null;
@@ -1084,6 +1157,7 @@ async function simulate(
     logs: result?.logs ?? [],
     unitsConsumed: result?.unitsConsumed ?? null,
     packetBytes: wire.length,
+    contextSlot: response?.context?.slot ?? null,
     postAccounts: distinct.map((target, index) => {
       const value = result?.accounts?.[index];
       if (!value) return null;
@@ -1644,6 +1718,20 @@ type CustomExecutionArtifact = Readonly<{
   compiler: CompilerProvenance;
 }>;
 
+function customExecutionSource(
+  policy: Address,
+  inner: readonly Instruction[],
+  constraintIndices: readonly number[],
+): string {
+  return JSON.stringify({
+    policy,
+    delegatedSigner: DELEGATED_EXECUTOR,
+    accountIndex: 0,
+    constraintIndices,
+    inner: inner.map(wireFromInstruction),
+  });
+}
+
 function compileCustomExecution(
   policy: Address,
   inner: readonly Instruction[],
@@ -1652,13 +1740,7 @@ function compileCustomExecution(
   if (inner.length === 0 || inner.length !== constraintIndices.length) {
     throw new Error("repair execution inner instructions and constraints must be nonempty and aligned");
   }
-  const source = JSON.stringify({
-    policy,
-    delegatedSigner: DELEGATED_EXECUTOR,
-    accountIndex: 0,
-    constraintIndices,
-    inner: inner.map(wireFromInstruction),
-  });
+  const source = customExecutionSource(policy, inner, constraintIndices);
   const result = runRustCompiler<{
     schema?: unknown;
     sourceSha256?: unknown;
@@ -1694,6 +1776,63 @@ function compileCustomExecution(
     sourceSha256: output.sourceSha256,
     instruction: output.instruction,
     compiler: result.compiler,
+  };
+}
+
+function findUniqueSubarray(haystack: Uint8Array, needle: ArrayLike<number>, label: string): number {
+  let found = -1;
+  for (let offset = 0; offset <= haystack.length - needle.length; offset += 1) {
+    let matches = true;
+    for (let index = 0; index < needle.length; index += 1) {
+      if (haystack[offset + index] !== needle[index]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) {
+      if (found !== -1) throw new Error(`${label} appears more than once in compiled ExecuteSync data`);
+      found = offset;
+    }
+  }
+  if (found === -1) throw new Error(`${label} is absent from compiled ExecuteSync data`);
+  return found;
+}
+
+/**
+ * The Rust wrapper compiler is the slow step. Compile once with a slot-free
+ * placeholder, then replace only the two equal-length inner report payloads.
+ * Account ordering and all wrapper framing remain compiler-owned; a final
+ * source hash is emitted for the exact slot-bearing inner instructions.
+ */
+function rebindCustomExecutionArtifact(
+  artifact: CustomExecutionArtifact,
+  policy: Address,
+  previousInner: readonly Instruction[],
+  nextInner: readonly Instruction[],
+  constraintIndices: readonly number[],
+): CustomExecutionArtifact {
+  if (previousInner.length !== nextInner.length || previousInner.length !== constraintIndices.length) {
+    throw new Error("compiled ExecuteSync rebind inputs are not aligned");
+  }
+  const data = new Uint8Array(Buffer.from(artifact.instruction.dataBase64, "base64"));
+  for (let index = 0; index < previousInner.length; index += 1) {
+    const previous = previousInner[index]!.data ?? new Uint8Array();
+    const next = nextInner[index]!.data ?? new Uint8Array();
+    if (previous.length !== next.length) {
+      throw new Error(`compiled ExecuteSync rebind changed inner instruction ${index} length`);
+    }
+    const offset = findUniqueSubarray(data, previous, `inner instruction ${index}`);
+    data.set(next, offset);
+  }
+  return {
+    ...artifact,
+    sourceSha256: createHash("sha256")
+      .update(customExecutionSource(policy, nextInner, constraintIndices))
+      .digest("hex"),
+    instruction: {
+      ...artifact.instruction,
+      dataBase64: Buffer.from(data).toString("base64"),
+    },
   };
 }
 
@@ -2426,7 +2565,9 @@ type FinalizedTransaction = Awaited<ReturnType<typeof finalizedTransaction>>;
 type JournaledExecutionBuild = Readonly<{
   prepared: PreparedTransaction;
   plan: JsonRecord;
-  beforeSend?: () => Promise<void>;
+  beforeSend?: () => Promise<Readonly<{
+    sendStatus?: JsonRecord;
+  }> | void>;
 }>;
 
 type JournaledStepDependencies = Readonly<{
@@ -3485,10 +3626,35 @@ async function runJournaledStepHeld(input: Readonly<{
   writePrivate(`${input.journal}.pending`, pending, "wx");
   await faultAfterTransitionStep(dependencies, "pending-journal");
   try {
-    await built.beforeSend?.();
+    const beforeSendEvidence = await built.beforeSend?.();
+    if (beforeSendEvidence?.sendStatus !== undefined) {
+      const currentPending = readBoundPending(`${input.journal}.pending`).record;
+      const currentSendStatus = currentPending.sendStatus && typeof currentPending.sendStatus === "object"
+        ? currentPending.sendStatus as JsonRecord
+        : {};
+      rewritePendingStatus(`${input.journal}.pending`, {
+        sendStatus: {
+          ...currentSendStatus,
+          ...beforeSendEvidence.sendStatus,
+        },
+      });
+    }
   } catch (error) {
     const abortReason = sanitizeError(error);
     const abortedPendingPath = abortedJournalPath(input.journal, attemptToken);
+    const staleSendStatus = error instanceof ReportSlotStaleError
+      ? {
+          reportSlotAgeAtSend: error.age.ageSlots,
+          reportSlotCurrentSlotAtSend: error.age.currentSlot,
+          reportSlotObservedSlot: error.age.observedSlot,
+          reportSlotMarginSlots: error.age.marginSlots,
+          reportSlotMaxAgeSlots: error.age.maxAgeSlots,
+        }
+      : {};
+    const currentPending = readBoundPending(`${input.journal}.pending`).record;
+    const currentSendStatus = currentPending.sendStatus && typeof currentPending.sendStatus === "object"
+      ? currentPending.sendStatus as JsonRecord
+      : {};
     rewritePendingStatus(`${input.journal}.pending`, {
       verdict: "ABORTED_PRE_SEND",
       abortReason,
@@ -3497,7 +3663,12 @@ async function runJournaledStepHeld(input: Readonly<{
       broadcast: false,
       attemptGeneration: expectedGeneration,
       journalBindingSha256: String(pending.pendingBindingSha256),
-      sendStatus: { verdict: "ABORTED_PRE_SEND" },
+      sendStatus: {
+        ...currentSendStatus,
+        ...staleSendStatus,
+        verdict: "ABORTED_PRE_SEND",
+        sendError: abortReason,
+      },
     });
     await faultAfterTransitionStep(dependencies, "aborted-pending");
     renamePrivateFile(`${input.journal}.pending`, abortedPendingPath);
@@ -3511,6 +3682,19 @@ async function runJournaledStepHeld(input: Readonly<{
       abortedJournal: abortedPendingPath,
     }, expectedGeneration, stateRoot);
     await faultAfterTransitionStep(dependencies, "aborted-state");
+    if (error instanceof ReportSlotStaleError) {
+      console.log(toJson({
+        schema: input.schema,
+        step: input.step,
+        verdict: error.verdict,
+        reason: error.message,
+        reportSlot: error.age,
+        journal: input.journal,
+        abortedJournal: abortedPendingPath,
+        canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
+        recoveryInstruction: `rerun the same ${input.step} leg after the confirmed slot catches up`,
+      }, 2));
+    }
     throw error;
   }
   // Mark the exact expected signature as attempted before the raw RPC call.
@@ -3524,6 +3708,10 @@ async function runJournaledStepHeld(input: Readonly<{
     signature: built.prepared.expectedSignature,
     broadcastPreMark: "before-raw-submission",
     sendStatus: {
+      ...(readBoundPending(`${input.journal}.pending`).record.sendStatus
+        && typeof readBoundPending(`${input.journal}.pending`).record.sendStatus === "object"
+        ? readBoundPending(`${input.journal}.pending`).record.sendStatus as JsonRecord
+        : {}),
       verdict: "SEND_ATTEMPTED_PENDING_RECONCILE",
       attemptedAtUnixMs: Date.now(),
       signature: built.prepared.expectedSignature,
@@ -3583,6 +3771,11 @@ async function runJournaledStepHeld(input: Readonly<{
       verdict: "FINALIZED_RECONCILED",
       signature: settled.signature,
       finalizedSlot: finalized.slot,
+      reportSlot: attemptedPending.reportSlot ?? null,
+      reportSlotAgeAtSend: attemptedPending.sendStatus
+        && typeof attemptedPending.sendStatus === "object"
+        ? (attemptedPending.sendStatus as JsonRecord).reportSlotAgeAtSend ?? null
+        : null,
       journal: input.journal,
       canonicalState: canonicalStatePath,
       recoveryCommand: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: true }),
@@ -4076,7 +4269,6 @@ async function cmdRepairPolicy(): Promise<number> {
 
 function repairPrecondition(state: LiveState): Readonly<{
   repairNavRaw: bigint;
-  sequence: bigint;
 }> {
   if (!state.vault || !state.receipt1 || !state.reportTicket || state.idleBalance === null) {
     throw new Error("repair requires the HXtk vault, strategy receipt, idle ATA, and report ticket");
@@ -4131,25 +4323,75 @@ function repairPrecondition(state: LiveState): Readonly<{
   if (repairNavRaw !== PHANTOM_NAV_RAW) {
     throw new Error(`repair NAV changed from the frozen phantom ${PHANTOM_NAV_RAW}; observed ${repairNavRaw}`);
   }
-  const sequence = BigInt(state.contextSlot);
-  if (sequence <= state.reportTicket.lastConsumedSequence) {
-    throw new Error(`repair sequence ${sequence} is not above last consumed ${state.reportTicket.lastConsumedSequence}`);
+  return { repairNavRaw };
+}
+
+export async function buildFreshRepairReport(input: Readonly<{
+  snapshot: LiveState;
+  readConfirmedSlot: () => Promise<number>;
+}>): Promise<Readonly<{
+  report: Readonly<{
+    sequence: bigint;
+    observedSlot: bigint;
+    navAfterRaw: bigint;
+    snapshotDigest: Uint8Array;
+  }>;
+  slot: number;
+  repairNavRaw: bigint;
+}>> {
+  const precondition = repairPrecondition(input.snapshot);
+  // This is intentionally the last chain read and the first slot-dependent
+  // value before the arm/capital instruction builders run. NAV remains bound
+  // to the consistent snapshot above; only the report sequence is fresh.
+  const slot = await input.readConfirmedSlot();
+  const sequence = BigInt(slot);
+  if (sequence <= input.snapshot.reportTicket!.lastConsumedSequence) {
+    throw new Error(
+      `repair sequence ${sequence} is not above last consumed ${input.snapshot.reportTicket!.lastConsumedSequence}`,
+    );
   }
-  return { repairNavRaw, sequence };
+  return {
+    slot,
+    repairNavRaw: precondition.repairNavRaw,
+    report: {
+      sequence,
+      observedSlot: sequence,
+      navAfterRaw: PHANTOM_NAV_RAW,
+      snapshotDigest: REPORT_DIGEST,
+    },
+  };
 }
 
 async function buildRepairExecution(
   policy: Address,
   state: LiveState,
+  readSlot: () => Promise<number> = readConfirmedSlot,
 ) {
   const precondition = repairPrecondition(state);
   const manager = createNoopSigner(SQUADS_VAULT);
-  const report = {
-    sequence: precondition.sequence,
-    observedSlot: precondition.sequence,
+  const placeholderReport = {
+    sequence: 0n,
+    observedSlot: 0n,
     navAfterRaw: PHANTOM_NAV_RAW,
     snapshotDigest: REPORT_DIGEST,
   } as const;
+  const placeholderArm = await buildRwaMultiplyArmReportInstruction(
+    manager,
+    "deposit",
+    0n,
+    placeholderReport,
+  );
+  const placeholderCapital = await buildRwaMultiplyManagerInstructions(manager, 0n, placeholderReport);
+  const compiledPlaceholder = compileCustomExecution(
+    policy,
+    [placeholderArm, placeholderCapital.deposit],
+    [0, 1],
+  );
+  // All readbacks and the slow execution-artifact compiler are complete before
+  // this fresh slot read. Only the final slot-bearing instruction bytes are
+  // built/rebound afterward, leaving a short age window before simulation.
+  const fresh = await buildFreshRepairReport({ snapshot: state, readConfirmedSlot: readSlot });
+  const report = fresh.report;
   const arm = await buildRwaMultiplyArmReportInstruction(
     manager,
     "deposit",
@@ -4157,13 +4399,16 @@ async function buildRepairExecution(
     report,
   );
   const capital = await buildRwaMultiplyManagerInstructions(manager, 0n, report);
-  const executionArtifact = compileCustomExecution(
+  const executionArtifact = rebindCustomExecutionArtifact(
+    compiledPlaceholder,
     policy,
+    [placeholderArm, placeholderCapital.deposit],
     [arm, capital.deposit],
     [0, 1],
   );
   return {
     precondition,
+    freshSlot: fresh.slot,
     report,
     arm,
     capital: capital.deposit,
@@ -4349,9 +4594,48 @@ async function cmdRepair(): Promise<number> {
     throw new Error(`finalized repair policy seed ${seed} is present but is not the exact one-shot contract`);
   }
   const built = await buildRepairExecution(policy, state);
-  const simulation = await simulate(DELEGATED_EXECUTOR, [built.execution], [
-    policy, SQUADS_SETTINGS, VAULT, IDLE_ATA, RECEIPT1, CUSTODY1, LP_MINT, REPORT_TICKET, SQUADS_USDC_ATA,
-  ]);
+  let preSimulationSlot: number;
+  let preSimulationAge: ReportSlotAge;
+  let simulation: Simulation;
+  let reportSlotAgeAtSimulate: ReportSlotAge;
+  try {
+    preSimulationSlot = await readConfirmedSlot();
+    preSimulationAge = assertReportSlotFresh(
+      built.report.observedSlot,
+      preSimulationSlot,
+      "pre-simulate",
+    );
+    simulation = await simulate(DELEGATED_EXECUTOR, [built.execution], [
+      policy, SQUADS_SETTINGS, VAULT, IDLE_ATA, RECEIPT1, CUSTODY1, LP_MINT, REPORT_TICKET, SQUADS_USDC_ATA,
+    ]);
+    const simulationContextSlot = simulation.contextSlot ?? preSimulationSlot;
+    reportSlotAgeAtSimulate = assertReportSlotFresh(
+      built.report.observedSlot,
+      simulationContextSlot,
+      "pre-simulate",
+    );
+  } catch (error) {
+    if (!(error instanceof ReportSlotStaleError)) throw error;
+    const output = {
+      schema: REPAIR_EXECUTION_SCHEMA,
+      step: "repair",
+      sent: false,
+      signed: false,
+      broadcast: false,
+      verdict: error.verdict,
+      reason: error.message,
+      reportSlot: error.age,
+      observationSlot: state.contextSlot,
+      report: {
+        sequence: built.report.sequence.toString(),
+        observedSlot: built.report.observedSlot.toString(),
+        navAfterRaw: built.report.navAfterRaw.toString(),
+      },
+    };
+    console.log(toJson(output, 2));
+    writeEvidence("repair", output);
+    return 1;
+  }
   const post = simulation.err === null
     ? repairPoststate(simulation.postAccounts, state, built.report.sequence)
     : { postState: null, checks: [] } as const;
@@ -4378,6 +4662,15 @@ async function cmdRepair(): Promise<number> {
     policyJournal: target.policyJournal,
     seedReadback: readback,
     observationSlot: state.contextSlot,
+    reportSlot: {
+      maxAgeSlots: ADAPTOR_MAX_REPORT_AGE_SLOTS,
+      marginSlots: REPORT_AGE_MARGIN_SLOTS,
+      preSimulationCurrentSlot: preSimulationSlot,
+      simulationContextSlot: simulation.contextSlot,
+      reportSlotAgeAtSimulate: reportSlotAgeAtSimulate.ageSlots,
+      reportSlotAgeAtSend: null,
+      preSimulationAge: preSimulationAge.ageSlots,
+    },
     frozenPrestate: {
       totalValue: REPAIR_FROZEN.totalValue.toString(),
       idleBalance: REPAIR_FROZEN.idleBalance.toString(),
@@ -4424,6 +4717,7 @@ async function cmdRepair(): Promise<number> {
       delegatedSigner: DELEGATED_EXECUTOR,
       signerEnvVar: "POLICY_KEYPAIR",
       packetBytes: simulation.packetBytes,
+      simulationContextSlot: simulation.contextSlot,
       instructionCount: 1,
       unitsConsumed: simulation.unitsConsumed,
       outer: wireFromInstruction(built.execution),
@@ -4490,6 +4784,15 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
         throw new Error(`finalized repair policy seed ${seed} is present but is not the exact one-shot contract`);
       }
       const built = await buildRepairExecution(policy, state);
+      // Read the confirmed tip after every policy/readback/compiler step and
+      // immediately before the signed simulation. The adaptor evaluates the
+      // same confirmed simulation bank under replaceRecentBlockhash.
+      const preSimulationSlot = await readConfirmedSlot();
+      const preSimulationAge = assertReportSlotFresh(
+        built.report.observedSlot,
+        preSimulationSlot,
+        "pre-simulate",
+      );
       const delegated = await signingMaterialFromEnvironment("POLICY_KEYPAIR");
       if (delegated.signer.address !== DELEGATED_EXECUTOR) {
         throw new Error("POLICY_KEYPAIR is not the HXtk delegated executor signer");
@@ -4504,8 +4807,13 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
         inspectedAddresses,
         prestateAddresses: inspectedAddresses,
         minimumContextSlot: state.contextSlot,
-        commitment: "finalized",
+        commitment: "confirmed",
       });
+      const reportSlotAgeAtSimulate = assertReportSlotFresh(
+        built.report.observedSlot,
+        prepared.simulationSlot,
+        "pre-simulate",
+      );
       const postAccounts = prepared.simulation.postAccounts.map((account, index) =>
         rawFromPreparedSnapshot(inspectedAddresses[index]!, account
           ? { owner: account.owner, lamports: account.lamports, data: account.data }
@@ -4541,6 +4849,15 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
         },
         before: summarize(state),
         observationSlot: state.contextSlot,
+        reportSlot: {
+          maxAgeSlots: ADAPTOR_MAX_REPORT_AGE_SLOTS,
+          marginSlots: REPORT_AGE_MARGIN_SLOTS,
+          preSimulationCurrentSlot: preSimulationSlot,
+          simulationContextSlot: prepared.simulationSlot,
+          reportSlotAgeAtSimulate: reportSlotAgeAtSimulate.ageSlots,
+          reportSlotAgeAtSend: null,
+          preSimulationAge: preSimulationAge.ageSlots,
+        },
         expectedPreState: summarize(state),
         prestateExpectations: {
           totalValue: REPAIR_FROZEN.totalValue.toString(),
@@ -4593,6 +4910,24 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
               + `pre-send slot ${current.contextSlot})`,
             );
           }
+          // This is the final RPC read before the attempted mark and the sole
+          // raw send. A stale report uses the normal elected aborted-pre-send
+          // path, so its signed wire is re-runnable with the same journal.
+          const currentSlot = await readConfirmedSlot();
+          const reportSlotAgeAtSend = assertReportSlotFresh(
+            built.report.observedSlot,
+            currentSlot,
+            "pre-send",
+          );
+          return {
+            sendStatus: {
+              reportSlotAgeAtSend: reportSlotAgeAtSend.ageSlots,
+              reportSlotCurrentSlotAtSend: currentSlot,
+              reportSlotObservedSlot: built.report.observedSlot,
+              reportSlotMarginSlots: REPORT_AGE_MARGIN_SLOTS,
+              reportSlotMaxAgeSlots: ADAPTOR_MAX_REPORT_AGE_SLOTS,
+            },
+          };
         },
       };
       },

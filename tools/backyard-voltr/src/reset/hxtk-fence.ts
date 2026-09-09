@@ -158,6 +158,11 @@ const SEND_STATUS_FIELDS = new Set([
   "submission",
   "attemptedAtUnixMs",
   "signature",
+  "reportSlotAgeAtSend",
+  "reportSlotCurrentSlotAtSend",
+  "reportSlotObservedSlot",
+  "reportSlotMarginSlots",
+  "reportSlotMaxAgeSlots",
 ]);
 
 function writeAll(fd: number, bytes: Uint8Array): void {
