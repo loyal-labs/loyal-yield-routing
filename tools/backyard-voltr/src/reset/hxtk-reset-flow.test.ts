@@ -661,6 +661,32 @@ describe("HXtk journaled flow", () => {
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
   });
 
+  test("pre-send snapshot slot is recorded through the real fence before the sole send", async () => {
+    // cancel, request and claim record the finalized slot of their pre-send re-read;
+    // the fence must accept that field or the leg aborts before the raw send.
+    const fx = fixture();
+    let sends = 0;
+    const input = {
+      ...fx.input(fx.journal, "execute"),
+      build: async () => ({
+        prepared: fx.prepared,
+        plan: { transaction: { kind: "test" } },
+        beforeSend: async () => ({ sendStatus: { preSendSnapshotSlot: 445707000 } }),
+      }),
+    };
+    expect(await runJournaledStepForTest(input, deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+    }))).toBe(0);
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(fx.journal, "utf8"))).toMatchObject({
+      sendStatus: { preSendSnapshotSlot: 445707000 },
+    });
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
   test("repair execute uses real sendPreparedConfirmedOnce with confirmed preparation and one raw send", async () => {
     const previousConfirmation = process.env.CONFIRM_MAINNET;
     process.env.CONFIRM_MAINNET = "1";

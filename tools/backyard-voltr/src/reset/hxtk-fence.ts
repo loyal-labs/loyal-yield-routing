@@ -169,6 +169,7 @@ const SEND_STATUS_FIELDS = new Set([
   "reportSlotObservedSlot",
   "reportSlotMarginSlots",
   "reportSlotMaxAgeSlots",
+  "preSendSnapshotSlot",
 ]);
 
 function writeAll(fd: number, bytes: Uint8Array): void {
