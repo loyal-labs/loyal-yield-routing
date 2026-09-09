@@ -161,7 +161,7 @@ projects:
               - key: REALTIME_AUTH_PREVIOUS_SECRET
                 sync: false
               - key: REALTIME_ALLOWED_ORIGINS
-                value: https://askloyal.com,https://www.askloyal.com
+                value: https://askloyal.com,https://www.askloyal.com,https://*.preview.askloyal.com
               - key: REALTIME_ALLOWED_VERCEL_PREVIEW_PROJECT
                 value: loyal-frontend
               - key: REALTIME_ALLOWED_VERCEL_PREVIEW_TEAM
