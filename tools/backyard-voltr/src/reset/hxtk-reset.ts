@@ -3092,7 +3092,8 @@ async function runJournaledStepHeld(input: Readonly<{
       schema: input.schema,
       step: input.step,
       verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY",
-      rearmable: true,
+      rearmable: false,
+      recoveryInstruction: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: false }),
       journal: input.journal,
       canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
       abortedJournal: resumed.state?.abortedJournal ?? null,
@@ -3103,13 +3104,13 @@ async function runJournaledStepHeld(input: Readonly<{
   if (sectionState?.status === "aborted-pre-send"
     && sectionState.abortReason === "attempted-expired"
     && String(sectionState.journal ?? "") === input.journal) {
-    // A completed attempted-expiry abort is re-armable only with a new journal;
-    // same-journal execute/reconcile is a successful recovery, not a send.
+    // This path does not permit a new journal; report that truthfully.
     console.log(toJson({
       schema: input.schema,
       step: input.step,
       verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY",
-      rearmable: true,
+      rearmable: false,
+      recoveryInstruction: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: false }),
       journal: input.journal,
       canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
       abortedJournal: sectionState.abortedJournal ?? null,
@@ -3168,7 +3169,8 @@ async function runJournaledStepHeld(input: Readonly<{
       // decision. Re-read it once before declaring the attempt expired.
       try {
         finalized = await loadFinalized(input.rpcUrl, wire.signature);
-      } catch {
+      } catch (error) {
+        if (!(error instanceof Error && /not readable/i.test(error.message))) throw error;
         const completed = await completeAttemptedExpiryAbort(
           input,
           dependencies,
@@ -3180,7 +3182,8 @@ async function runJournaledStepHeld(input: Readonly<{
           schema: input.schema,
           step: input.step,
           verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY",
-          rearmable: true,
+          rearmable: false,
+          recoveryInstruction: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: false }),
           lastValidBlockHeight,
           finalizedBlockHeight: observedBlockHeight,
           journal: input.journal,
@@ -3272,7 +3275,8 @@ async function runJournaledStepHeld(input: Readonly<{
       // decision. Re-read it once before declaring the attempt expired.
       try {
         finalized = await loadFinalized(input.rpcUrl, wire.signature);
-      } catch {
+      } catch (error) {
+        if (!(error instanceof Error && /not readable/i.test(error.message))) throw error;
         const completed = await completeAttemptedExpiryAbort(
           input,
           dependencies,
@@ -3286,7 +3290,8 @@ async function runJournaledStepHeld(input: Readonly<{
           schema: input.schema,
           step: input.step,
           verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY",
-          rearmable: true,
+          rearmable: false,
+          recoveryInstruction: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: false }),
           lastValidBlockHeight,
           finalizedBlockHeight: observedBlockHeight,
           journal: input.journal,

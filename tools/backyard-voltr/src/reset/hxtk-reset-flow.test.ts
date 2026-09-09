@@ -335,6 +335,23 @@ describe("HXtk journaled flow", () => {
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("aborted-pre-send");
   });
 
+  test("RPC error on the expiry re-read does not elect an abort", async () => {
+    const fx = fixture();
+    let reads = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => { throw new Error("submitted but response was lost"); },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("submitted but response was lost");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => {
+        reads += 1;
+        throw new Error(reads === 1 ? "not readable" : "rpc unavailable");
+      },
+      currentBlockHeight: async () => 100,
+    }))).rejects.toThrow("rpc unavailable");
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
+  });
+
   test("attempted-expiry transition is canonical-first and resumes after every crash boundary", async () => {
     for (const transitionStep of ["attempted-expiry-state", "attempted-expiry-artifact"] as const) {
       const fx = fixture();
