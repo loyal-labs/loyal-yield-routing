@@ -1,3 +1,8 @@
+mod allowed_origin;
+#[cfg(test)]
+mod cors_tests;
+
+use allowed_origin::AllowedOrigin;
 use std::{
     collections::HashMap,
     convert::Infallible,
@@ -57,7 +62,7 @@ struct Config {
     database_url: String,
     auth_secret: Arc<[u8]>,
     previous_auth_secret: Option<Arc<[u8]>>,
-    allowed_origins: Vec<HeaderValue>,
+    allowed_origins: Vec<AllowedOrigin>,
     vercel_preview_origin: Option<VercelPreviewOriginRule>,
     heartbeat_seconds: u64,
     catch_up_limit: i64,
@@ -247,7 +252,10 @@ async fn run() -> Result<(), BoxError> {
         .route("/metrics", get(metrics))
         .route("/events", get(events))
         .with_state(state)
-        .layer(cors_layer(&config));
+        .layer(cors_layer(
+            config.allowed_origins.clone(),
+            config.vercel_preview_origin.clone(),
+        ));
 
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = TcpListener::bind(address).await?;
@@ -873,9 +881,10 @@ fn resync_required_event(reason: &str) -> Event {
         .data(resync_required_json(reason))
 }
 
-fn cors_layer(config: &Config) -> CorsLayer {
-    let exact_origins = config.allowed_origins.clone();
-    let vercel_preview_origin = config.vercel_preview_origin.clone();
+fn cors_layer(
+    allowed_origins: Vec<AllowedOrigin>,
+    vercel_preview_origin: Option<VercelPreviewOriginRule>,
+) -> CorsLayer {
     CorsLayer::new()
         .allow_methods([Method::GET, Method::OPTIONS])
         .allow_headers([
@@ -885,7 +894,7 @@ fn cors_layer(config: &Config) -> CorsLayer {
             header::HeaderName::from_static("last-event-id"),
         ])
         .allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
-            exact_origins.contains(origin)
+            allowed_origins.iter().any(|rule| rule.matches(origin))
                 || vercel_preview_origin
                     .as_ref()
                     .is_some_and(|rule| rule.matches(origin))
@@ -958,31 +967,16 @@ fn validate_secret(name: &str, value: String) -> Result<Arc<[u8]>, BoxError> {
     Ok(Arc::from(value.into_bytes()))
 }
 
-fn parse_allowed_origins() -> Result<Vec<HeaderValue>, BoxError> {
-    let value = env::var("REALTIME_ALLOWED_ORIGINS")
-        .map_err(|_| "REALTIME_ALLOWED_ORIGINS must list exact browser origins")?;
+fn parse_allowed_origins() -> Result<Vec<AllowedOrigin>, BoxError> {
+    let value = env::var("REALTIME_ALLOWED_ORIGINS").map_err(|_| {
+        "REALTIME_ALLOWED_ORIGINS must list browser origins or HTTPS subdomain wildcards"
+    })?;
     let is_render = env::var("RENDER").as_deref() == Ok("true");
     let origins = value
         .split(',')
         .map(str::trim)
         .filter(|origin| !origin.is_empty())
-        .map(|origin| {
-            let parsed = Url::parse(origin)?;
-            if !matches!(parsed.scheme(), "http" | "https")
-                || parsed.path() != "/"
-                || parsed.query().is_some()
-                || parsed.fragment().is_some()
-                || parsed.username() != ""
-                || parsed.password().is_some()
-            {
-                return Err(format!("invalid exact origin {origin}").into());
-            }
-            let host = parsed.host_str().ok_or("origin host missing")?;
-            if is_render && matches!(host, "localhost" | "127.0.0.1" | "::1") {
-                return Err("localhost origins are forbidden on Render".into());
-            }
-            HeaderValue::from_str(origin).map_err(Into::into)
-        })
+        .map(|origin| AllowedOrigin::parse(origin, is_render))
         .collect::<Result<Vec<_>, BoxError>>()?;
     if origins.is_empty() {
         return Err("REALTIME_ALLOWED_ORIGINS cannot be empty".into());

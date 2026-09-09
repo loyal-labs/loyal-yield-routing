@@ -68,19 +68,39 @@ JSON strings.
 
 ## Browser and native access
 
-Production `REALTIME_ALLOWED_ORIGINS`:
+Target production `REALTIME_ALLOWED_ORIGINS` (requires the wildcard-aware image):
 
 ```text
-https://askloyal.com,https://www.askloyal.com
+https://askloyal.com,https://www.askloyal.com,https://*.preview.askloyal.com
 ```
 
 Browser preflight permits `GET`/`OPTIONS` and `Authorization`, `Accept`,
-`Last-Event-ID`, and `Content-Type`. It echoes only an exact configured origin,
-sets `Vary: Origin`, and does not enable credentialed CORS. Authenticated native
+`Last-Event-ID`, and `Content-Type`. It echoes the requesting origin only when
+an exact origin or configured wildcard matches, sets `Vary: Origin`, and does
+not enable credentialed CORS. Authenticated native
 requests without an `Origin` header are valid. Production has no localhost
 origin.
 
-Vercel previews are limited to aliases owned by the configured project and
+The `https://*.preview.askloyal.com` rule admits HTTPS subdomains (including
+nested subdomains), not the bare `preview.askloyal.com` domain, HTTP, ports,
+paths, credentials, or lookalike suffixes. Use only trusted, organization-owned
+preview domains: all matching deployments gain browser CORS access, though
+wallet-scoped token authentication is still required. Bare `*` and arbitrary
+globs are rejected; wildcard syntax is `https://*.domain` with a lowercase DNS
+suffix. Existing exact-origin behavior is unchanged.
+
+After merge, publish the light-workers image, then update **only the realtime
+service's** immutable image pin and apply the new origin list. The existing
+`render.yaml` image pin is intentionally unchanged in this source PR; applying
+the env change to that old image alone will not enable wildcard matching.
+Do not roll unrelated workers. Verify `/readyz` and an `OPTIONS /events` request
+with the branch preview `Origin`, request method `GET`, and request headers
+`authorization,last-event-id`: the response must echo that exact origin in
+`Access-Control-Allow-Origin`; an unrelated origin must not receive that header.
+Reload the preview and verify authenticated SSE admission. No production env
+or deployment change is performed by this PR.
+
+Vercel-hosted previews are limited to aliases owned by the configured project and
 team. Production uses `REALTIME_ALLOWED_VERCEL_PREVIEW_PROJECT=loyal-frontend`
 and `REALTIME_ALLOWED_VERCEL_PREVIEW_TEAM=loyal-team`, which admits only HTTPS
 origins shaped like
