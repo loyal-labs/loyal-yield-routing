@@ -254,4 +254,42 @@ environment_jobs="$(psql_verify -A -t --command="
 [[ "$environment_jobs" == "1:1:0" ]] ||
   fail "expected only verification-a job, got $environment_jobs"
 
+echo "== Refund-only recovery is explicit, bounded, and independently idempotent"
+psql_verify <<'SQL' >/dev/null
+INSERT INTO loyal_yield.earn_chain_mutations (
+  mutation_kind, chain_signature, settings, vault_index, vault_pubkey, confirmed_slot
+)
+SELECT 'refund', event_payload->>'signature', settings, vault_index, vault_pubkey, durable_slot
+FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name='earn-gap-e2e'
+ORDER BY durable_slot LIMIT 1;
+SQL
+refund_report="$scratch_dir/refund.json"
+refund_args=(--postgres-url "$database_url" --consumer-name earn-gap-e2e
+  --watch-set "$fixture_root/watch-set.json" --history-fixture "$fixture_root/history.json"
+  --wallet Stake11111111111111111111111111111111111111
+  --from-slot 100 --to-slot 150 --report-file "$refund_report")
+scripts/reconcile-earn-laserstream-gap.sh "${refund_args[@]}" >/dev/null
+jq -e '.refundOnlyJobs == 1 and .missingJobs == 1 and .insertedJobs == 0' "$refund_report" >/dev/null ||
+  fail "refund-only signatures were hidden as completed or audit wrote jobs"
+scripts/reconcile-earn-laserstream-gap.sh "${refund_args[@]}" --repair-refund-cleanups --execute >/dev/null
+jq -e '.insertedJobs == 1 and .repairRefundCleanups == true' "$refund_report" >/dev/null ||
+  fail "refund repair did not select exactly the refund-only signature"
+[[ "$(psql_verify -At --command="SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE event_payload->>'event_kind'='refund_cleanup_repair'")" == 1 ]] ||
+  fail "refund repair reused an already-completed cash-flow job"
+scripts/reconcile-earn-laserstream-gap.sh "${refund_args[@]}" --repair-refund-cleanups --execute >/dev/null
+jq -e '.insertedJobs == 0 and .pendingJobs == 1' "$refund_report" >/dev/null ||
+  fail "refund repair enqueued duplicates while pending"
+psql_verify <<'SQL' >/dev/null
+INSERT INTO loyal_yield.earn_chain_mutations (
+  mutation_kind, chain_signature, settings, vault_index, vault_pubkey, confirmed_slot
+)
+SELECT 'cleanup', chain_signature, settings, vault_index, vault_pubkey, confirmed_slot
+FROM loyal_yield.earn_chain_mutations WHERE mutation_kind='refund';
+UPDATE loyal_yield.earn_reconciliation_jobs SET completed_at=now()
+WHERE event_payload->>'event_kind'='refund_cleanup_repair';
+SQL
+scripts/reconcile-earn-laserstream-gap.sh "${refund_args[@]}" --repair-refund-cleanups --execute >/dev/null
+jq -e '.insertedJobs == 0 and .refundOnlyJobs == 0 and .completedJobs == 1' "$refund_report" >/dev/null ||
+  fail "completed cleanup was selected again"
+
 echo "PASS: finalized gap scan is bounded, idempotent, and drains through canonical reconciliation"

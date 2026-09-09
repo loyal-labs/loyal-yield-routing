@@ -121,7 +121,11 @@ fn emulated_update(
         update_oneof: Some(UpdateOneof::Account(SubscribeUpdateAccount {
             account: Some(SubscribeUpdateAccountInfo {
                 pubkey: Pubkey::from_str(account_pubkey)?.to_bytes().to_vec(),
-                lamports: 1,
+                lamports: if matches!(transaction.stage, Stage::FullWithdrawal) {
+                    0
+                } else {
+                    1
+                },
                 owner: Vec::new(),
                 executable: false,
                 rent_epoch: 0,

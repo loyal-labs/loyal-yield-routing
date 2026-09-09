@@ -470,6 +470,7 @@ pub struct EarnReconciliationSignatureCoverage {
     pub vault_pubkey: String,
     pub completed: bool,
     pub pending: bool,
+    pub refund_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -64,7 +64,12 @@ struct Args {
     #[arg(long)]
     live_targets_only: bool,
 
-    /// Enqueue only candidates that the audit found missing. Omit for read-only audit mode.
+    /// Audit/repair refund-only signatures separately from missing cash flows.
+    /// Requires an explicit wallet and upper slot bound; never deletes refund history.
+    #[arg(long, requires_all = ["wallet", "to_slot"])]
+    repair_refund_cleanups: bool,
+
+    /// Enqueue only candidates selected by the audit. Omit for read-only audit mode.
     #[arg(long)]
     execute: bool,
 
@@ -113,6 +118,7 @@ enum CandidateCoverageStatus {
     Completed,
     Missing,
     Pending,
+    RefundOnly,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,6 +153,8 @@ struct ReconciliationReport {
     completed_jobs: usize,
     pending_jobs: usize,
     missing_jobs: usize,
+    refund_only_jobs: usize,
+    repair_refund_cleanups: bool,
     inserted_jobs: usize,
     coalesced_autodeposit_requests: usize,
     execution_requested: bool,
@@ -259,7 +267,7 @@ async fn main() -> Result<()> {
                     coverage.vault_index,
                     coverage.vault_pubkey,
                 ),
-                (coverage.completed, coverage.pending),
+                (coverage.completed, coverage.pending, coverage.refund_only),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -285,10 +293,19 @@ async fn main() -> Result<()> {
                 vault.vault.clone(),
             );
             let status = match coverage_by_key.get(&key) {
-                Some((true, _)) => CandidateCoverageStatus::Completed,
-                Some((false, true)) => CandidateCoverageStatus::Pending,
+                Some((_, true, true)) => CandidateCoverageStatus::Pending,
+                Some((_, false, true)) => {
+                    if args.repair_refund_cleanups {
+                        missing_keys.insert(key.clone());
+                    }
+                    CandidateCoverageStatus::RefundOnly
+                }
+                Some((true, _, false)) => CandidateCoverageStatus::Completed,
+                Some((false, true, false)) => CandidateCoverageStatus::Pending,
                 _ => {
-                    missing_keys.insert(key.clone());
+                    if !args.repair_refund_cleanups {
+                        missing_keys.insert(key.clone());
+                    }
                     CandidateCoverageStatus::Missing
                 }
             };
@@ -354,6 +371,11 @@ async fn main() -> Result<()> {
         completed_jobs,
         pending_jobs,
         missing_jobs,
+        refund_only_jobs: candidates
+            .iter()
+            .filter(|candidate| candidate.status == CandidateCoverageStatus::RefundOnly)
+            .count(),
+        repair_refund_cleanups: args.repair_refund_cleanups,
         inserted_jobs: 0,
         coalesced_autodeposit_requests: 0,
         execution_requested: args.execute,
@@ -401,13 +423,19 @@ async fn main() -> Result<()> {
                     )
                 })
                 .collect::<Vec<_>>();
-            let outcome = enqueue_normalized_earn_update(
-                &store,
-                &consumer_name,
-                &planned_update.update,
-                &missing_watch_set,
-            )
-            .await?;
+            let mut update = planned_update.update.clone();
+            if args.repair_refund_cleanups {
+                update.event_kind = "refund_cleanup_repair".to_owned();
+                update.event_key = Some(format!(
+                    "earn-refund-cleanup-repair:{}:{}:{}",
+                    update.slot,
+                    signature,
+                    update.account_pubkey.as_deref().unwrap_or_default()
+                ));
+            }
+            let outcome =
+                enqueue_normalized_earn_update(&store, &consumer_name, &update, &missing_watch_set)
+                    .await?;
             report.inserted_jobs = report.inserted_jobs.saturating_add(outcome.inserted_jobs);
             report.coalesced_autodeposit_requests = report
                 .coalesced_autodeposit_requests
