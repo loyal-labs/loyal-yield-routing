@@ -97,6 +97,7 @@ function deps(fx: ReturnType<typeof fixture>, options: Readonly<{
   finalize?: () => Promise<unknown>;
   readStatus?: () => Promise<unknown>;
   currentBlockHeight?: () => Promise<number>;
+  sleep?: (milliseconds: number) => Promise<void>;
   faultAfterTransitionStep?: (step: JournalTransitionStep) => void | Promise<void>;
 }> = {}) {
   return {
@@ -113,6 +114,7 @@ function deps(fx: ReturnType<typeof fixture>, options: Readonly<{
       }
     })) as never,
     currentBlockHeight: options.currentBlockHeight,
+    sleep: options.sleep,
     faultAfterTransitionStep: options.faultAfterTransitionStep,
   };
 }
@@ -249,7 +251,7 @@ describe("HXtk journaled flow", () => {
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
   });
 
-  test("repair execute uses real sendPreparedOnce with finalized preparation and one raw send", async () => {
+  test("repair execute uses real sendPreparedConfirmedOnce with confirmed preparation and one raw send", async () => {
     const previousConfirmation = process.env.CONFIRM_MAINNET;
     process.env.CONFIRM_MAINNET = "1";
     const originalMethods = new Map<string, unknown>();
@@ -353,7 +355,7 @@ describe("HXtk journaled flow", () => {
     }
   });
 
-  test("repair execute uses real confirmed preparation and sender before finalized reconciliation", async () => {
+  test("repair execute uses real confirmed sender with a lagging finalized read", async () => {
     const previousConfirmation = process.env.CONFIRM_MAINNET;
     process.env.CONFIRM_MAINNET = "1";
     const originalMethods = new Map<string, unknown>();
@@ -487,19 +489,33 @@ describe("HXtk journaled flow", () => {
         slot: confirmedSlot,
       }));
       const fx = fixture();
+      let finalizedStatusReads = 0;
       expect(await runJournaledStepForTest({
         ...fx.input(fx.journal, "execute"),
         rpcUrl: "http://fake.invalid",
         step: "repair",
         build: async () => ({ prepared, plan: { transaction: { kind: "repair" } } }),
       }, {
-        ...deps(fx, { finalize: async () => finalized }),
+        ...deps(fx, {
+          finalize: async () => finalized,
+          readStatus: async () => {
+            finalizedStatusReads += 1;
+            return finalizedStatusReads < 3
+              ? { kind: "absent" }
+              : { kind: "finalized", slot: finalized.slot, err: null, transaction: finalized };
+          },
+          currentBlockHeight: async () => 1,
+          sleep: async () => {},
+        }),
         sendPreparedOnce: sendPreparedConfirmedOnce,
       })).toBe(0);
       expect(rawSends).toBe(1);
+      expect(finalizedStatusReads).toBe(3);
       expect(confirmedSlot - finalizedSlot).toBeGreaterThanOrEqual(31);
       expect(JSON.parse(readFileSync(fx.journal, "utf8"))).toMatchObject({
         confirmedSettledSlot: confirmedSlot,
+        confirmedContextSlot: expect.any(Number),
+        finalizedContextSlot: null,
         finalizedSlot: finalized.slot,
       });
     } finally {
@@ -514,6 +530,29 @@ describe("HXtk journaled flow", () => {
   test("finalized-commitment simulation fails the future-slot freshness check", () => {
     expect(() => assertReportSlotFresh(132, 101, "pre-simulate"))
       .toThrow("REPORT_SLOT_STALE_PRE_SIMULATE");
+  });
+
+  test("bounded finalized wait leaves attempted on persistent transient errors", async () => {
+    const fx = fixture();
+    let sends = 0;
+    let statusReads = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+      readStatus: async () => {
+        statusReads += 1;
+        return { kind: "error", message: `transient-${statusReads}` };
+      },
+      sleep: async () => {},
+    }))).rejects.toThrow("FINALIZED_WAIT_UNREADABLE");
+    expect(statusReads).toBe(3);
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "attempted",
+      broadcast: "attempted",
+    });
   });
 
   test("every emitted recovery command round-trips through the real CLI parser", () => {
@@ -717,7 +756,59 @@ describe("HXtk journaled flow", () => {
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
   });
 
-  test("attempted reconciliation reports non-rearmable after expiry", async () => {
+  test("proven expiry is re-armable only with a new journal", async () => {
+    const fx = fixture();
+    let sends = 0;
+    let finalizedStatusReads = 0;
+    expect(await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+      readStatus: async () => {
+        finalizedStatusReads += 1;
+        return { kind: "absent" };
+      },
+      currentBlockHeight: async () => 100,
+      sleep: async () => {},
+    }))).toBe(1);
+    expect(sends).toBe(1);
+    expect(finalizedStatusReads).toBe(2);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "aborted-pre-send",
+      broadcast: "attempted",
+      abortReason: "attempted-expired-proven",
+      rearmable: true,
+      attemptedExpiryProof: {
+        lastValidBlockHeight: 1,
+        finalizedBlockHeight: 100,
+        absentReads: [{ kind: "absent" }, { kind: "absent" }],
+      },
+    });
+
+    const newJournal = join(fx.root, "rearmed.json");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("must not reuse the proven-expiry journal");
+      },
+    }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN");
+
+    expect(await runJournaledStepForTest(fx.input(newJournal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+    }))).toBe(0);
+    expect(sends).toBe(2);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "finalized",
+      journal: newJournal,
+      history: [{ journal: fx.journal, abortReason: "attempted-expired-proven" }],
+    });
+  });
+
+  test("expiry cannot re-arm before two absent reads beyond the validity margin", async () => {
     const fx = fixture();
     let sends = 0;
     await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
@@ -727,32 +818,21 @@ describe("HXtk journaled flow", () => {
       },
       finalize: async () => { throw new Error("not readable"); },
     }))).rejects.toThrow("response was lost");
-    expect(sends).toBe(1);
 
     await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
-      finalize: async () => { throw new Error("not readable"); },
-      currentBlockHeight: async () => 1,
+      readStatus: async () => ({ kind: "absent" }),
+      currentBlockHeight: async () => 64,
     }))).rejects.toThrow("finalized signature absence is not beyond the expiry recheck margin");
-    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
-
-    const expiryOutput = await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
-      finalize: async () => { throw new Error("not readable"); },
-      currentBlockHeight: async () => 100,
-    }));
-    expect(expiryOutput).toBe(0);
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
-      status: "aborted-pre-send",
-      broadcast: "attempted",
+      status: "attempted",
     });
-
-    await expect(runJournaledStepForTest(fx.input(join(fx.root, "rearmed.json"), "execute"), deps(fx, {
+    await expect(runJournaledStepForTest(fx.input(join(fx.root, "too-early.json"), "execute"), deps(fx, {
       send: async () => {
         sends += 1;
-        throw new Error("must not re-arm while the original signature is unreadable");
+        throw new Error("must not re-arm an unproven expiry");
       },
-    }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRED");
+    }))).rejects.toThrow("JOURNAL_MISMATCH_CANONICAL_STATE");
     expect(sends).toBe(1);
-    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("aborted-pre-send");
   });
 
   test("RPC error on the expiry re-read does not elect an abort", async () => {
@@ -823,7 +903,7 @@ describe("HXtk journaled flow", () => {
     expect(JSON.parse(readFileSync(join(landed.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
   });
 
-  test("attempted-expired execute refuses a different journal before any read or write", async () => {
+  test("unproven expiry refuses a different journal before any read or write", async () => {
     for (const status of [
       { kind: "absent" },
       { kind: "finalized", slot: 2, err: null, transaction: undefined },
@@ -832,17 +912,17 @@ describe("HXtk journaled flow", () => {
       await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
         send: async () => { throw new Error("submitted but response was lost"); },
       }))).rejects.toThrow("submitted but response was lost");
-      await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
         readStatus: async () => ({ kind: "absent" }),
-        currentBlockHeight: async () => 100,
-      }));
+        currentBlockHeight: async () => 64,
+      }))).rejects.toThrow("finalized signature absence is not beyond the expiry recheck margin");
       const beforeState = readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8");
       const beforeEntries = readdirSync(fx.root).sort();
       const beforeClaims = claimSnapshot(fx.stateRoot, "flow-test");
       await expect(runJournaledStepForTest(fx.input(join(fx.root, "different.json"), "execute"), deps(fx, {
         readStatus: async () => status,
         send: async () => { throw new Error("must not send"); },
-      }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRED");
+      }))).rejects.toThrow("JOURNAL_MISMATCH_CANONICAL_STATE");
       expect(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).toBe(beforeState);
       expect(readdirSync(fx.root).sort()).toEqual(beforeEntries);
       expect(claimSnapshot(fx.stateRoot, "flow-test")).toEqual(beforeClaims);
@@ -875,7 +955,7 @@ describe("HXtk journaled flow", () => {
     const beforeClaims = claimSnapshot(fx.stateRoot, "flow-test");
     await expect(runJournaledStepForTest(fx.input(foreignJournal, "execute"), deps(fx, {
       send: async () => { throw new Error("must not send"); },
-    }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRED");
+    }))).rejects.toThrow("JOURNAL_EXISTS_ATTEMPTED_EXPIRY_PROVEN");
     expect(readdirSync(fx.root).sort()).toEqual(before);
     expect(claimSnapshot(fx.stateRoot, "flow-test")).toEqual(beforeClaims);
     expect(existsSync(`${foreignJournal}.pending`)).toBe(true);
@@ -902,8 +982,14 @@ describe("HXtk journaled flow", () => {
       }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: " + transitionStep);
       expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
         status: "aborted-pre-send",
-        abortReason: "attempted-expired",
+        abortReason: "attempted-expired-proven",
+        rearmable: true,
         broadcast: "attempted",
+        attemptedExpiryProof: {
+          lastValidBlockHeight: 1,
+          finalizedBlockHeight: 100,
+          absentReads: [{ kind: "absent" }, { kind: "absent" }],
+        },
       });
       await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
         finalize: async () => { throw new Error("not readable"); },
@@ -914,7 +1000,7 @@ describe("HXtk journaled flow", () => {
           sends += 1;
           throw new Error("must not send after expiry recovery");
         },
-      }))).resolves.toBe(0);
+      }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN");
       expect(sends).toBe(1);
     }
   });

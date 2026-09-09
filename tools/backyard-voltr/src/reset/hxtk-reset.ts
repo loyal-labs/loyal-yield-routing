@@ -2077,6 +2077,8 @@ function markCanonicalLegState(
     abortedJournal?: string;
     attemptGeneration?: number;
     lastValidBlockHeight?: number;
+    rearmable?: boolean;
+    attemptedExpiryProof?: AttemptedExpiryProof;
     finalizedJournalSha256?: string;
   }>,
   expectedGeneration: number | null,
@@ -2308,6 +2310,7 @@ function abortRecordForState(
   pending: JsonRecord,
   reason: string,
   broadcast: false | "attempted" = false,
+  extra: JsonRecord = {},
 ): JsonRecord {
   const attemptToken = String(state.attemptToken ?? pending.attemptToken ?? "");
   const binding = String(state.pendingBindingSha256 ?? pending.pendingBindingSha256 ?? "");
@@ -2318,6 +2321,7 @@ function abortRecordForState(
   }
   return {
     ...pending,
+    ...extra,
     verdict: broadcast === "attempted" ? "ABORTED_AFTER_BLOCKHASH_EXPIRY" : "ABORTED_PRE_SEND",
     sent: false,
     signed: true,
@@ -2345,6 +2349,7 @@ function publishAbortArtifact(
   reason: string,
   pendingPath?: string,
   broadcast: false | "attempted" = false,
+  extra: JsonRecord = {},
 ): string {
   const existingArtifact = interruptedAbortedJournalPaths(journal).find((artifact) =>
     artifact.filenameAttemptToken === String(state.attemptToken)
@@ -2355,7 +2360,7 @@ function publishAbortArtifact(
   );
   if (existingArtifact !== undefined) return existingArtifact.path;
   const artifactPath = abortedJournalPath(journal, String(state.attemptToken));
-  const aborted = abortRecordForState(state, pending, reason, broadcast);
+  const aborted = abortRecordForState(state, pending, reason, broadcast, extra);
   if (pendingPath !== undefined && existsSync(pendingPath)) {
     rewritePendingStatus(pendingPath, {
       verdict: aborted.verdict,
@@ -2394,11 +2399,20 @@ export function resumeInterruptedTransition(input: Readonly<{
     && typeof state.journal === "string"
     && state.journal !== input.journal
     && (state.status === "attempted" || state.status === "finalized"
-      || (state.status === "aborted-pre-send" && state.abortReason === "attempted-expired"))) {
-    if (state.status === "aborted-pre-send" && state.abortReason === "attempted-expired") {
+      || (state.status === "aborted-pre-send" && state.abortReason === ATTEMPTED_EXPIRY_REASON))) {
+    if (state.status === "aborted-pre-send" && state.abortReason === ATTEMPTED_EXPIRY_REASON) {
       throw new Error(`JOURNAL_MISMATCH_ATTEMPTED_EXPIRED: reconcile the original journal ${state.journal}`);
     }
     throw new Error(`JOURNAL_MISMATCH_CANONICAL_STATE: ${state.journal}`);
+  }
+  if (state?.status === "aborted-pre-send"
+    && state.abortReason === PROVEN_ATTEMPTED_EXPIRY_REASON
+    && state.journal !== input.journal
+    && input.mode === "execute"
+    && (existsSync(input.journal) || existsSync(pendingPath))) {
+    throw new Error(
+      `JOURNAL_EXISTS_ATTEMPTED_EXPIRY_PROVEN: new re-arm journal must not already exist: ${input.journal}`,
+    );
   }
   state = readCanonicalLegState(input.step, false, input.stateRoot, { allowRollForward: true });
   const currentAttemptToken = state?.status === "aborted-pre-send" ? null : String(state?.attemptToken ?? "");
@@ -2449,11 +2463,7 @@ export function resumeInterruptedTransition(input: Readonly<{
 
   let appliedAbortPath: string | null = null;
   let attemptedExpiryRecovered = false;
-  if (state?.status === "aborted-pre-send" && state.abortReason === "attempted-expired") {
-    const complete = typeof state.abortedJournal === "string"
-      && state.abortedJournal.length > 0
-      && existsSync(state.abortedJournal)
-      && !existsSync(pendingPath);
+  if (state?.status === "aborted-pre-send" && state.abortReason === ATTEMPTED_EXPIRY_REASON) {
     // Do not complete or publish an attempted-expired recovery artifact until
     // the async caller has re-read the expected signature at finalized
     // commitment. RPC lag can make an already-landed signature appear absent.
@@ -2590,6 +2600,7 @@ type JournaledStepDependencies = Readonly<{
   finalizedTransaction?: typeof finalizedTransaction;
   readFinalizedSignatureStatus?: typeof readFinalizedSignatureStatus;
   currentBlockHeight?: (rpcUrl: string) => Promise<number>;
+  sleep?: (milliseconds: number) => Promise<void>;
   faultAfterTransitionStep?: (step: JournalTransitionStep) => void | Promise<void>;
 }>;
 
@@ -2611,6 +2622,12 @@ export type JournalTransitionStep =
 // this margin explicit: expiry is only decided after finalized height is at
 // least 64 blocks beyond the transaction's last-valid height.
 export const ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS = 64;
+/** Finalization normally trails confirmed by about 31 slots; wait in bounded 2s polls. */
+export const FINALIZED_WAIT_POLL_INTERVAL_MS = 2_000;
+export const FINALIZED_WAIT_MAX_POLLS = 30;
+export const FINALIZED_WAIT_ERROR_POLLS = 3;
+const ATTEMPTED_EXPIRY_REASON = "attempted-expired" as const;
+const PROVEN_ATTEMPTED_EXPIRY_REASON = "attempted-expired-proven" as const;
 
 export class JournalTransitionFault extends Error {
   readonly transitionStep: JournalTransitionStep;
@@ -2629,21 +2646,108 @@ async function faultAfterTransitionStep(
   await dependencies.faultAfterTransitionStep?.(step);
 }
 
+type AttemptedExpiryProof = Readonly<{
+  lastValidBlockHeight: number;
+  finalizedBlockHeight: number;
+  absentReads: readonly [
+    Readonly<{ kind: "absent"; poll: number; observedAtUnixMs: number }>,
+    Readonly<{ kind: "absent"; poll: number; observedAtUnixMs: number }>,
+  ];
+}>;
+type FinalizedAbsentRead = AttemptedExpiryProof["absentReads"][number];
+
+type FinalizedWaitResult =
+  | Readonly<{ kind: "finalized"; transaction: FinalizedTransaction }>
+  | Readonly<{ kind: "expired"; proof: AttemptedExpiryProof }>;
+
+async function waitForFinalizedSignature(input: Readonly<{
+  rpcUrl: string;
+  signature: string;
+  lastValidBlockHeight: number;
+}>, dependencies: JournaledStepDependencies): Promise<FinalizedWaitResult> {
+  const readSignature = dependencies.readFinalizedSignatureStatus ?? readFinalizedSignatureStatus;
+  const currentBlockHeight = dependencies.currentBlockHeight
+    ?? (async (rpcUrl: string) => rpcWithRetry<number>("getBlockHeight", [{ commitment: "finalized" }]));
+  const sleep = dependencies.sleep
+    ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  let consecutiveErrors = 0;
+  let consecutiveAbsent: FinalizedAbsentRead[] = [];
+
+  for (let poll = 1; poll <= FINALIZED_WAIT_MAX_POLLS; poll += 1) {
+    const status = await readSignature(input.rpcUrl, input.signature);
+    if (status.kind === "finalized") {
+      if (status.err !== null && status.err !== undefined) {
+        throw new Error(`FINALIZED_WAIT_SIGNATURE_ERROR: finalized transaction ${input.signature} has error ${JSON.stringify(status.err)}`);
+      }
+      return { kind: "finalized", transaction: status.transaction };
+    }
+    if (status.kind === "error") {
+      consecutiveErrors += 1;
+      consecutiveAbsent = [];
+      if (consecutiveErrors >= FINALIZED_WAIT_ERROR_POLLS) {
+        throw new Error(
+          `FINALIZED_WAIT_UNREADABLE: finalized signature ${input.signature} returned ${consecutiveErrors} consecutive errors; reconcile the attempted journal read-only (${status.message})`,
+        );
+      }
+    } else {
+      consecutiveErrors = 0;
+      const absentRead = {
+        kind: "absent" as const,
+        poll,
+        observedAtUnixMs: Date.now(),
+      };
+      consecutiveAbsent = [...consecutiveAbsent, absentRead].slice(-2);
+      let finalizedBlockHeight: number;
+      try {
+        finalizedBlockHeight = await currentBlockHeight(input.rpcUrl);
+      } catch (error) {
+        throw new Error(
+          `FINALIZED_WAIT_UNREADABLE: finalized block height read failed while waiting for ${input.signature}: ${sanitizeError(error)}`,
+        );
+      }
+      if (consecutiveAbsent.length === 2
+        && finalizedBlockHeight > input.lastValidBlockHeight + ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS) {
+        return {
+          kind: "expired",
+          proof: {
+            lastValidBlockHeight: input.lastValidBlockHeight,
+            finalizedBlockHeight,
+            absentReads: consecutiveAbsent as unknown as AttemptedExpiryProof["absentReads"],
+          },
+        };
+      }
+    }
+    if (poll < FINALIZED_WAIT_MAX_POLLS) {
+      await sleep(FINALIZED_WAIT_POLL_INTERVAL_MS);
+    }
+  }
+  throw new Error(
+    `FINALIZED_WAIT_TIMEOUT: finalized signature ${input.signature} did not finalize within ${FINALIZED_WAIT_MAX_POLLS} polls; reconcile the attempted journal read-only`,
+  );
+}
+
 async function completeAttemptedExpiryAbort(input: Readonly<{
   step: string;
   journal: string;
 }>, dependencies: JournaledStepDependencies, stateRoot: string,
-pending: JsonRecord, expectedGeneration: number, pendingPath?: string): Promise<Readonly<{
+pending: JsonRecord, expectedGeneration: number, proof: AttemptedExpiryProof,
+pendingPath?: string): Promise<Readonly<{
   state: JsonRecord;
   generation: number;
   abortedJournal: string;
 }>> {
-  const reason = "attempted-expired";
+  const existingLegacyArtifact = interruptedAbortedJournalPaths(input.journal).find((artifact) =>
+    artifact.filenameAttemptToken === String(pending.attemptToken)
+      && artifact.record?.abortReason === ATTEMPTED_EXPIRY_REASON,
+  );
+  const rearmable = existingLegacyArtifact === undefined;
+  const reason = rearmable ? PROVEN_ATTEMPTED_EXPIRY_REASON : ATTEMPTED_EXPIRY_REASON;
   const attemptedGeneration = expectedGeneration;
   const abortedGeneration = markCanonicalLegState(input.step, input.journal, {
     status: "aborted-pre-send",
     broadcast: "attempted",
     abortReason: reason,
+    ...(rearmable ? { rearmable: true, attemptedExpiryProof: proof } : {}),
     attemptGeneration: attemptedGeneration,
   }, expectedGeneration, stateRoot);
   await faultAfterTransitionStep(dependencies, "attempted-expiry-state");
@@ -2655,6 +2759,12 @@ pending: JsonRecord, expectedGeneration: number, pendingPath?: string): Promise<
     reason,
     pendingPath,
     "attempted",
+    rearmable ? {
+      rearmable: true,
+      attemptedExpiryProof: proof,
+      lastValidBlockHeight: proof.lastValidBlockHeight,
+      finalizedBlockHeight: proof.finalizedBlockHeight,
+    } : {},
   );
   await faultAfterTransitionStep(dependencies, "attempted-expiry-artifact");
   const markedState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true })!;
@@ -2664,6 +2774,7 @@ pending: JsonRecord, expectedGeneration: number, pendingPath?: string): Promise<
         status: "aborted-pre-send",
         broadcast: "attempted",
         abortReason: reason,
+        ...(rearmable ? { rearmable: true, attemptedExpiryProof: proof } : {}),
         attemptGeneration: attemptedGeneration,
         abortedJournal: abortedPath,
       }, abortedGeneration, stateRoot);
@@ -3110,7 +3221,7 @@ async function runJournaledStep(input: Readonly<{
   const preClaimState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: false });
   if (input.mode === "execute"
     && preClaimState?.status === "aborted-pre-send"
-    && preClaimState.abortReason === "attempted-expired"
+    && preClaimState.abortReason === ATTEMPTED_EXPIRY_REASON
     && String(preClaimState.journal ?? "") !== input.journal) {
     console.log(toJson({
       verdict: "JOURNAL_MISMATCH_ATTEMPTED_EXPIRED",
@@ -3165,7 +3276,7 @@ async function runJournaledStepHeld(input: Readonly<{
   const preResumeState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: false });
   if (input.mode === "execute"
     && preResumeState?.status === "aborted-pre-send"
-    && preResumeState.abortReason === "attempted-expired"
+    && preResumeState.abortReason === ATTEMPTED_EXPIRY_REASON
     && String(preResumeState.journal ?? "") !== input.journal) {
     throw new Error(`JOURNAL_MISMATCH_ATTEMPTED_EXPIRED: reconcile the original journal ${preResumeState.journal}`);
   }
@@ -3178,7 +3289,7 @@ async function runJournaledStepHeld(input: Readonly<{
   const sectionState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true });
   const staleAbortArtifacts = [...resumed.staleAbortArtifacts];
   let expectedGeneration = stateGeneration(sectionState);
-  if (sectionState?.status === "aborted-pre-send" && sectionState.abortReason === "attempted-expired") {
+  if (sectionState?.status === "aborted-pre-send" && sectionState.abortReason === ATTEMPTED_EXPIRY_REASON) {
     const canonicalJournal = String(sectionState.journal ?? "");
     // An attempted-expired record remains bound to its original journal until
     // the expected signature has been reconciled. Refuse a different execute
@@ -3258,7 +3369,7 @@ async function runJournaledStepHeld(input: Readonly<{
         input.journal,
         sectionState,
         pending,
-        "attempted-expired",
+        ATTEMPTED_EXPIRY_REASON,
         existsSync(pendingPath) ? pendingPath : undefined,
         "attempted",
       );
@@ -3266,7 +3377,7 @@ async function runJournaledStepHeld(input: Readonly<{
         markCanonicalLegState(input.step, input.journal, {
           status: "aborted-pre-send",
           broadcast: "attempted",
-          abortReason: "attempted-expired",
+          abortReason: ATTEMPTED_EXPIRY_REASON,
           attemptGeneration: Number(sectionState.attemptGeneration ?? sectionState.generation),
           abortedJournal: applied,
         }, expectedGeneration, stateRoot);
@@ -3304,7 +3415,7 @@ async function runJournaledStepHeld(input: Readonly<{
     return 0;
   }
   if (sectionState?.status === "aborted-pre-send"
-    && sectionState.abortReason === "attempted-expired"
+    && sectionState.abortReason === ATTEMPTED_EXPIRY_REASON
     && String(sectionState.journal ?? "") === input.journal) {
     // This path does not permit a new journal; report that truthfully.
     console.log(toJson({
@@ -3319,6 +3430,61 @@ async function runJournaledStepHeld(input: Readonly<{
       staleAbortArtifacts,
     }, 2));
     return 0;
+  }
+  if (sectionState?.status === "aborted-pre-send"
+    && sectionState.abortReason === PROVEN_ATTEMPTED_EXPIRY_REASON) {
+    const canonicalJournal = String(sectionState.journal ?? "");
+    const pendingPath = `${input.journal}.pending`;
+    const proof = sectionState.attemptedExpiryProof as AttemptedExpiryProof | undefined;
+    if (canonicalJournal === input.journal
+      && sectionState.abortedJournal === undefined
+      && proof !== undefined) {
+      const pending = recordAt(sectionState.pendingRecord, `${input.step} canonical pendingRecord`);
+      const applied = publishAbortArtifact(
+        input.journal,
+        sectionState,
+        pending,
+        PROVEN_ATTEMPTED_EXPIRY_REASON,
+        existsSync(pendingPath) ? pendingPath : undefined,
+        "attempted",
+        {
+          rearmable: true,
+          attemptedExpiryProof: proof,
+          lastValidBlockHeight: proof.lastValidBlockHeight,
+          finalizedBlockHeight: proof.finalizedBlockHeight,
+        },
+      );
+      await faultAfterTransitionStep(dependencies, "attempted-expiry-artifact");
+      const markedState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true })!;
+      if (String(markedState.abortedJournal ?? "") !== applied) {
+        expectedGeneration = markCanonicalLegState(input.step, input.journal, {
+          status: "aborted-pre-send",
+          broadcast: "attempted",
+          abortReason: PROVEN_ATTEMPTED_EXPIRY_REASON,
+          rearmable: true,
+          attemptedExpiryProof: proof,
+          attemptGeneration: Number(sectionState.attemptGeneration ?? sectionState.generation),
+          abortedJournal: applied,
+        }, expectedGeneration, stateRoot);
+      }
+      await faultAfterTransitionStep(dependencies, "attempted-expiry-marker");
+      return 0;
+    }
+    if (input.mode !== "execute") {
+      throw new Error(
+        `PROVEN_ATTEMPTED_EXPIRY_REARM_REQUIRED: use --execute with a new journal; original journal is ${canonicalJournal}`,
+      );
+    }
+    if (canonicalJournal === input.journal) {
+      throw new Error(
+        `JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN: proven expiry is re-armable only with a new journal; original journal is ${canonicalJournal}`,
+      );
+    }
+    if (existsSync(input.journal) || existsSync(`${input.journal}.pending`)) {
+      throw new Error(
+        `JOURNAL_EXISTS_ATTEMPTED_EXPIRY_PROVEN: new re-arm journal must not already exist: ${input.journal}`,
+      );
+    }
   }
   if (existsSync(input.journal)) {
     if (sectionState === null) {
@@ -3379,21 +3545,30 @@ async function runJournaledStepHeld(input: Readonly<{
       } else if (secondStatus.kind === "error") {
         throw new Error(`finalized signature unreadable-error: ${secondStatus.message}`);
       } else {
+        const proof: AttemptedExpiryProof = {
+          lastValidBlockHeight,
+          finalizedBlockHeight: observedBlockHeight,
+          absentReads: [
+            { kind: "absent", poll: 1, observedAtUnixMs: Date.now() - 1 },
+            { kind: "absent", poll: 2, observedAtUnixMs: Date.now() },
+          ],
+        };
         const completed = await completeAttemptedExpiryAbort(
           input,
           dependencies,
           stateRoot,
           pending,
           expectedGeneration!,
+          proof,
         );
         console.log(toJson({
           schema: input.schema,
           step: input.step,
-          verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY",
-          rearmable: false,
-          recoveryInstruction: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: false }),
-          lastValidBlockHeight,
-          finalizedBlockHeight: observedBlockHeight,
+          verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY_PROVEN",
+          rearmable: true,
+          abortReason: PROVEN_ATTEMPTED_EXPIRY_REASON,
+          attemptedExpiryProof: proof,
+          recoveryInstruction: `rerun ${input.step} with a new journal after reviewing the proven expiry artifact`,
           journal: input.journal,
           canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
           abortedJournal: completed.abortedJournal,
@@ -3491,27 +3666,36 @@ async function runJournaledStepHeld(input: Readonly<{
       } else if (secondStatus.kind === "error") {
         throw new Error(`finalized signature unreadable-error: ${secondStatus.message}`);
       } else {
+        const proof: AttemptedExpiryProof = {
+          lastValidBlockHeight,
+          finalizedBlockHeight: observedBlockHeight,
+          absentReads: [
+            { kind: "absent", poll: 1, observedAtUnixMs: Date.now() - 1 },
+            { kind: "absent", poll: 2, observedAtUnixMs: Date.now() },
+          ],
+        };
         const completed = await completeAttemptedExpiryAbort(
           input,
           dependencies,
           stateRoot,
           pending,
           expectedGeneration!,
+          proof,
           `${input.journal}.pending`,
         );
-        const reason = `expected signature was not finalized before lastValidBlockHeight ${lastValidBlockHeight}; finalized block height is ${observedBlockHeight}`;
         console.log(toJson({
           schema: input.schema,
           step: input.step,
-          verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY",
-          rearmable: false,
+          verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY_PROVEN",
+          rearmable: true,
+          abortReason: PROVEN_ATTEMPTED_EXPIRY_REASON,
+          attemptedExpiryProof: proof,
           recoveryInstruction: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: false }),
           lastValidBlockHeight,
           finalizedBlockHeight: observedBlockHeight,
           journal: input.journal,
           canonicalState: canonicalStatePath,
           abortedJournal: completed.abortedJournal,
-          abortReason: reason,
           staleAbortArtifacts,
         }, 2));
         return 0;
@@ -3747,9 +3931,40 @@ async function runJournaledStepHeld(input: Readonly<{
   try {
     settled = await sendOnce(input.rpcUrl, built.prepared, built.prepared.simulationSlot);
     if (settled.err !== null) {
-      throw new Error(sanitizeText(`${input.step} finalized with ${JSON.stringify(settled.err)}`));
+      throw new Error(sanitizeText(`${input.step} settled with ${JSON.stringify(settled.err)}`));
     }
-    const finalized = await loadFinalized(input.rpcUrl, settled.signature);
+    const finalizedWait = await waitForFinalizedSignature({
+      rpcUrl: input.rpcUrl,
+      signature: settled.signature,
+      lastValidBlockHeight: built.prepared.latestBlockhash.lastValidBlockHeight,
+    }, dependencies);
+    if (finalizedWait.kind === "expired") {
+      const completed = await completeAttemptedExpiryAbort(
+        input,
+        dependencies,
+        stateRoot,
+        attemptedPending,
+        expectedGeneration!,
+        finalizedWait.proof,
+        `${input.journal}.pending`,
+      );
+      console.log(toJson({
+        schema: input.schema,
+        step: input.step,
+        verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY_PROVEN",
+        rearmable: true,
+        abortReason: PROVEN_ATTEMPTED_EXPIRY_REASON,
+        attemptedExpiryProof: finalizedWait.proof,
+        journal: input.journal,
+        canonicalState: canonicalStatePath,
+        abortedJournal: completed.abortedJournal,
+        recoveryInstruction: `rerun ${input.step} with a new journal after reviewing the proven expiry artifact`,
+      }, 2));
+      // This is a completed safety abort, not a finalized repair milestone;
+      // keep cmdRepairOperator from auto-removing the one-shot policy.
+      return 1;
+    }
+    const finalized = finalizedWait.transaction;
     const wire = journalWire(attemptedPending, input.schema, input.step, "pending");
     assertFinalizedJournalMessage(wire, finalized);
     const reconciliation = await input.reconcile({ pending: attemptedPending, finalized });
@@ -3762,7 +3977,8 @@ async function runJournaledStepHeld(input: Readonly<{
       signature: settled.signature,
       finalizedSlot: finalized.slot,
       confirmedSettledSlot: "confirmedSlot" in settled ? settled.confirmedSlot : null,
-      finalizedContextSlot: settled.confirmationSlot,
+      confirmedContextSlot: "confirmedSlot" in settled ? settled.confirmationSlot : null,
+      finalizedContextSlot: "confirmedSlot" in settled ? null : settled.confirmationSlot,
       finalizedBlockTime: finalized.blockTime ?? null,
       sendStatus: {
         ...(attemptedPending.sendStatus && typeof attemptedPending.sendStatus === "object" ? attemptedPending.sendStatus as JsonRecord : {}),
@@ -3789,6 +4005,7 @@ async function runJournaledStepHeld(input: Readonly<{
       signature: settled.signature,
       finalizedSlot: finalized.slot,
       confirmedSettledSlot: "confirmedSlot" in settled ? settled.confirmedSlot : null,
+      confirmedContextSlot: "confirmedSlot" in settled ? settled.confirmationSlot : null,
       reportSlot: attemptedPending.reportSlot ?? null,
       reportSlotAgeAtSend: attemptedPending.sendStatus
         && typeof attemptedPending.sendStatus === "object"
@@ -3842,6 +4059,9 @@ export async function runJournaledStepForTest(
     stateRoot: string;
     sendPreparedOnce: PreparedSendOnce;
     finalizedTransaction: typeof finalizedTransaction;
+    readFinalizedSignatureStatus?: typeof readFinalizedSignatureStatus;
+    currentBlockHeight?: (rpcUrl: string) => Promise<number>;
+    sleep?: (milliseconds: number) => Promise<void>;
     claim?: CanonicalLegClaim;
     breakClaim?: boolean;
     faultAfterTransitionStep?: (step: JournalTransitionStep) => void | Promise<void>;
@@ -3850,7 +4070,7 @@ export async function runJournaledStepForTest(
   const preClaimState = readCanonicalLegState(input.step, false, dependencies.stateRoot, { allowRollForward: false });
   if (input.mode === "execute"
     && preClaimState?.status === "aborted-pre-send"
-    && preClaimState.abortReason === "attempted-expired"
+    && preClaimState.abortReason === ATTEMPTED_EXPIRY_REASON
     && String(preClaimState.journal ?? "") !== input.journal) {
     throw new Error(`JOURNAL_MISMATCH_ATTEMPTED_EXPIRED: reconcile the original journal ${preClaimState.journal}`);
   }
@@ -4804,7 +5024,7 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
       const built = await buildRepairExecution(policy, state);
       // Read the confirmed tip after every policy/readback/compiler step and
       // immediately before the signed simulation. The adaptor evaluates the
-      // same confirmed simulation bank under replaceRecentBlockhash.
+      // confirmed simulation bank using the prepared blockhash.
       const preSimulationSlot = await readConfirmedSlot();
       const preSimulationAge = assertReportSlotFresh(
         built.report.observedSlot,

@@ -229,12 +229,19 @@ raw send to follow within the margin, typically **1–4 slots** after the last
 check. A stale check aborts with `REPORT_SLOT_STALE_PRE_SEND` before the
 attempted mark and sole raw send. The transaction is prepared and simulated
 at `commitment: "confirmed"` with `minimumContextSlot` set to the snapshot
-context slot and `replaceRecentBlockhash: true`; a finalized simulation can
-lag the confirmed report by about 31 slots and therefore cannot satisfy this
-32-slot age rule. The repair leg settles with `sendPreparedConfirmedOnce`,
-then the existing finalized signature read, `assertFinalizedJournalMessage`,
-reconciliation, and attempted-expiry path complete unchanged. The journal
-records the confirmed-settled slot alongside `finalizedSlot`. Every snapshot
+context slot and the prepared blockhash; the prepared simulation does not use
+`replaceRecentBlockhash`. A finalized simulation can lag the confirmed report
+by about 31 slots and therefore cannot satisfy this 32-slot age rule. The
+repair leg settles with `sendPreparedConfirmedOnce`, then polls the typed
+finalized signature read every **2 seconds**, for at most **30 polls**. Three
+consecutive read errors leave the leg attempted for read-only reconcile; two
+consecutive absent reads prove expiry only after finalized block height is
+greater than `lastValidBlockHeight + 64`. A proven expiry is recorded as
+`aborted-pre-send` with `abortReason: attempted-expired-proven`, the same
+attempt token, both heights, and both absent reads; it is safely re-runnable
+only with a **new** journal, while the original journal remains history. On
+finalized, the existing finalized journal message check, reconciliation,
+finalized journal, and auto policy removal continue unchanged. Every snapshot
 fingerprint, report-age, policy, simulation, attempted-mark, and finalized
 reconciliation gate remains in force. When the RPC returns a simulation
 context slot, that slot is used for `reportSlotAgeAtSimulate`. The JSON output
@@ -501,10 +508,13 @@ mandatory for every `--execute` and `--reconcile` invocation:
 
 The attempted-expiry re-read and RPC-error window is fixed after commit
 `1dfd1c4`; no known gaps remain in this audit scope, and the rules stay
-mandatory. Expiry requires a successful finalized-commitment read proving the
-signature absent, followed by a second successful finalized read after the
-finalized block height reaches `lastValidBlockHeight + 64`. A null finalized
-status is absence; an RPC error is unreadable-error and never permits expiry.
+mandatory. After confirmed repair settlement, the tool polls the typed
+finalized signature read every 2 seconds for at most 30 polls. Three
+consecutive finalized-read errors leave the leg attempted for reconcile. A
+null finalized status is absence; expiry requires two consecutive absent reads
+and finalized block height strictly greater than
+`lastValidBlockHeight + 64`. A proven expiry is re-armable only with a new
+journal; the original journal and attempt token remain history.
 
 ## Recovery matrix
 
@@ -514,11 +524,12 @@ stored in every abort artifact, whose exact name is
 `<journal>.aborted-<unix-ms>-<attemptToken>.json`. A canonical `attempted`
 record is changed only by signature reconciliation or by the blockhash-expiry
 reconciliation path after the two-read rule above. Expiry uses
-`abortReason: "attempted-expired"` and `broadcast: "attempted"`; the canonical
-abort election happens before artifact publication. A completed
-`attempted-expired` abort is not re-armable in the current state machine:
-both a landed signature and an unreadable signature require the original-journal
-reconcile instruction, and a different journal is refused.
+`broadcast: "attempted"`; the canonical abort election happens before artifact
+publication. Legacy `abortReason: "attempted-expired"` records remain bound to
+their original journal. New proven expiry records use
+`abortReason: "attempted-expired-proven"`, record the same attempt token,
+both heights, and both absent reads, and may be re-armed only by executing a
+new journal; the original journal remains history.
 
 | Canonical state | Artifacts present | Fresh `--execute` | Fresh `--reconcile` | Fresh `--simulate` | Fresh `--break-claim` |
 | --- | --- | --- | --- | --- | --- |
@@ -530,15 +541,17 @@ reconcile instruction, and a different journal is refused.
 | `pending` | foreign abort artifact | Refuses with `JOURNAL_HAS_FOREIGN_ABORT_ARTIFACT`. | Ignores it for state transition and lists it in `staleAbortArtifacts`. | Lists it as stale; writes nothing. | Handles only the independent claim. |
 | `attempted` | `.pending` journal | Refuses a fresh send and refuses artifact-driven downgrade. | Checks the expected signature; finalizes on chain proof, or elects expiry only after two typed `absent` reads and the 64-block margin. It never re-arms this attempted record. | Reports attempted and its validity height; writes nothing. | Handles only the independent claim. |
 | `attempted` | `.pending`, no abort artifact, signature landed | Does not send; recovers the canonical wire and finalizes. | Re-reads the signature and finalizes; no artifact is created. | Reports attempted/landed; writes nothing. | Handles only the independent claim. |
-| `attempted` | `.pending`, no abort artifact, signature expired | Does not send; canonical-first expiry recovery creates the bound abort artifact. | Elects `attempted-expired`, then publishes the artifact idempotently; no refusal. | Reports attempted and validity height; writes nothing. | Handles only the independent claim. |
+| `attempted` | `.pending`, no abort artifact, signature expired | Does not send; canonical-first expiry recovery creates the bound abort artifact. | Elects `attempted-expired-proven`, records both absent reads and both heights, then publishes the artifact idempotently; no refusal. | Reports attempted and validity height; writes nothing. | Handles only the independent claim. |
 | `attempted` | `.pending`, abort artifact present, signature landed | Does not send; chain proof finalizes and leaves the artifact stale evidence. | Re-reads the signature and finalizes; no abort downgrade. | Lists the artifact; writes nothing. | Handles only the independent claim. |
-| `attempted` | `.pending`, abort artifact present, signature expired | Does not send; completes the canonical-first expiry sequence only after the two-read rule. | Completes the expiry abort with `rearmable:false`; RPC errors leave `attempted`. | Lists the bound artifact; writes nothing. | Handles only the independent claim. |
+| `attempted` | `.pending`, abort artifact present, signature expired | Does not send; completes the canonical-first expiry sequence only after the two-read rule. | Completes the proven expiry abort with `rearmable:true`; RPC errors leave `attempted`. | Lists the bound artifact; writes nothing. | Handles only the independent claim. |
 | `attempted` | no `.pending`, no abort artifact, signature landed | Does not send; reconstructs the final journal from canonical pending data and finalizes. | Re-reads the canonical expected signature and finalizes. | Reports missing journal barrier and attempted state; writes nothing. | Handles only the independent claim. |
 | `attempted` | no `.pending`, no abort artifact, signature expired | Does not send; re-checks height and completes canonical-first expiry recovery. | Re-reads the canonical expected signature and height, then elects the abort and publishes its artifact. | Reports attempted and validity height; writes nothing. | Handles only the independent claim. |
 | `attempted` | no `.pending`, abort artifact present, signature landed | Does not send; finalizes from canonical wire and chain proof. | Re-reads the canonical expected signature and finalizes; artifact remains stale evidence. | Lists the artifact; writes nothing. | Handles only the independent claim. |
 | `attempted` | no `.pending`, abort artifact present, signature expired | Does not send; re-reads the signature and reports `rearmable:false` while unreadable. | Only a null result followed by the 64-block margin and a second successful null result completes the abort marker; RPC errors leave `attempted`. | Lists the artifact; writes nothing. | Handles only the independent claim. |
 | `aborted-pre-send` (`attempted-expired`) | abort artifact present, signature landed | Refuses a new journal and prints the original-journal finalize instruction. | Elects `finalized` for the same attempt token and original journal; never re-arms. | Reports the landed signature; writes nothing. | Handles only the independent claim. |
 | `aborted-pre-send` (`attempted-expired`) | abort artifact present, signature still unreadable | Emits `JOURNAL_MISMATCH_ATTEMPTED_EXPIRED` with `rearmable:false` and the original-journal reconcile instruction; writes and claims nothing. | A landed signature finalizes the original attempt; an RPC error makes no state transition. | Reports stale evidence; writes nothing. | Handles only the independent claim. |
+| `aborted-pre-send` (`attempted-expired-proven`) | abort artifact present, original journal | Refuses the original journal after the proven expiry; never sends or re-arms it. | Reconcile may only complete an interrupted artifact/marker publication; otherwise it reports the proven state. | Reports both heights and both absent reads; writes nothing. | Handles only the independent claim. |
+| `aborted-pre-send` (`attempted-expired-proven`) | new journal | Re-arms with a new attempt token and preserves the original journal in history; never reuses the original journal. | Reports the proven expiry and new-journal instruction; sends nothing. | Reports re-armable state; writes nothing. | Handles only the independent claim. |
 | `attempted` | final journal | Refuses filename-only promotion and a second send. | Requires the chain signature/message proof before `finalized`; otherwise keeps `attempted`. | Reports the final journal as non-authoritative without chain proof. | Handles only the independent claim. |
 | `attempted` | foreign abort artifact | Refuses; an abort artifact can never move `attempted`. | Lists it as stale and reconciles the attempted record independently. | Lists it as stale; writes nothing. | Handles only the independent claim. |
 | `aborted-pre-send` | abort artifact(s), excluding `abortReason: "attempted-expired"` | May re-arm with a new attempt token when the journal/leg policy permits; stale artifacts remain visible. `REPORT_SLOT_STALE_PRE_SEND` is safe to rerun with the same journal or a new journal because it is elected before the attempted mark and sends nothing; rerun after a plain confirmed-slot refresh. | Does not send; reports the abort and its bindings. | Reports re-armable state and stale artifacts; writes nothing. | Handles only the independent claim. |
@@ -593,8 +606,9 @@ after checking whether the expected signature finalized. A pre-send crash with
 canonical `pending` but no published journal produces the same bound
 `aborted-pre-send` recovery record, because the raw send is unreachable before
 the attempted mark. An attempted-expiry abort instead records
-`abortReason: "attempted-expired"`; its canonical state is elected first, then
-the `.pending` rename/artifact and final marker are idempotently completed.
+`abortReason: "attempted-expired-proven"`; its canonical state is elected
+first, then the `.pending` rename/artifact and final marker are idempotently
+completed. Re-arm only with a new journal after the proof is complete.
 
 ## Idempotency and journal policy
 

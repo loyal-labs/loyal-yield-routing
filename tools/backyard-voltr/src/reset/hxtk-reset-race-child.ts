@@ -115,6 +115,13 @@ async function main(): Promise<void> {
         return { signature, err: null, confirmationSlot: 2 };
       }) as never,
       finalizedTransaction: (async () => finalized) as never,
+      readFinalizedSignatureStatus: (async () => ({
+        kind: "finalized",
+        slot: 2,
+        err: null,
+        transaction: finalized,
+      })) as never,
+      currentBlockHeight: (async () => 1) as never,
     });
     console.log("RACE_RESULT " + JSON.stringify({ childId, ok: true, result }));
   } finally {
