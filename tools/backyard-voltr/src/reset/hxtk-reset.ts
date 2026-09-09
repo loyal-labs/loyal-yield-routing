@@ -2561,11 +2561,14 @@ export function resumeInterruptedTransition(input: Readonly<{
 
 type JsonRecord = Record<string, unknown>;
 type FinalizedTransaction = Awaited<ReturnType<typeof finalizedTransaction>>;
+type BeforeSendContext = Readonly<{
+  pendingJournal: string;
+}>;
 
 type JournaledExecutionBuild = Readonly<{
   prepared: PreparedTransaction;
   plan: JsonRecord;
-  beforeSend?: () => Promise<Readonly<{
+  beforeSend?: (context: BeforeSendContext) => Promise<Readonly<{
     sendStatus?: JsonRecord;
   }> | void>;
 }>;
@@ -3626,7 +3629,9 @@ async function runJournaledStepHeld(input: Readonly<{
   writePrivate(`${input.journal}.pending`, pending, "wx");
   await faultAfterTransitionStep(dependencies, "pending-journal");
   try {
-    const beforeSendEvidence = await built.beforeSend?.();
+    const beforeSendEvidence = await built.beforeSend?.({
+      pendingJournal: `${input.journal}.pending`,
+    });
     if (beforeSendEvidence?.sendStatus !== undefined) {
       const currentPending = readBoundPending(`${input.journal}.pending`).record;
       const currentSendStatus = currentPending.sendStatus && typeof currentPending.sendStatus === "object"
@@ -4807,7 +4812,10 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
         inspectedAddresses,
         prestateAddresses: inspectedAddresses,
         minimumContextSlot: state.contextSlot,
-        commitment: "confirmed",
+        // sendPreparedOnce settles at finalized and rejects a prepared
+        // transaction made at another commitment. Keep blockhash preparation
+        // finalized; only the report slot and simulation stay confirmed.
+        commitment: "finalized",
       });
       const reportSlotAgeAtSimulate = assertReportSlotFresh(
         built.report.observedSlot,
@@ -4899,7 +4907,7 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
       return {
         prepared,
         plan,
-        beforeSend: async () => {
+        beforeSend: async ({ pendingJournal }) => {
           // Re-run the same atomic finalized account snapshot immediately
           // before the only raw send. A changed vault/book/ticket/request
           // value aborts the pending journal rather than sending a stale NAV.
@@ -4910,16 +4918,17 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
               + `pre-send slot ${current.contextSlot})`,
             );
           }
-          // This is the final RPC read before the attempted mark and the sole
-          // raw send. A stale report uses the normal elected aborted-pre-send
-          // path, so its signed wire is re-runnable with the same journal.
+          // Persist the send-age evidence before the final freshness assertion
+          // so the healthy path has no journal/fsync work between that check
+          // and the attempted mark. A stale report uses the normal elected
+          // aborted-pre-send path, so its signed wire is re-runnable with the
+          // same journal.
           const currentSlot = await readConfirmedSlot();
-          const reportSlotAgeAtSend = assertReportSlotFresh(
+          const reportSlotAgeAtSend = reportSlotAge(
             built.report.observedSlot,
             currentSlot,
-            "pre-send",
           );
-          return {
+          rewritePendingStatus(pendingJournal, {
             sendStatus: {
               reportSlotAgeAtSend: reportSlotAgeAtSend.ageSlots,
               reportSlotCurrentSlotAtSend: currentSlot,
@@ -4927,7 +4936,8 @@ async function cmdRepairOperator(mode: RepairPolicyOperatorMode): Promise<number
               reportSlotMarginSlots: REPORT_AGE_MARGIN_SLOTS,
               reportSlotMaxAgeSlots: ADAPTOR_MAX_REPORT_AGE_SLOTS,
             },
-          };
+          });
+          assertReportSlotFresh(built.report.observedSlot, currentSlot, "pre-send");
         },
       };
       },

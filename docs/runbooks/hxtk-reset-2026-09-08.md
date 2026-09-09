@@ -222,12 +222,17 @@ and capital instructions, after the consistent NAV snapshot, policy readbacks,
 and compilation work. The NAV inputs remain those snapshot values; in
 particular the phantom receipt value remains `3,793,536`.
 
-The same age check runs immediately before simulation and immediately before
-the sole raw send. The simulation uses `commitment: "confirmed"` with
-`replaceRecentBlockhash: true`; when the RPC returns a simulation context slot,
-that slot is used for `reportSlotAgeAtSimulate`. The JSON output and journal
-record `reportSlotAgeAtSimulate`, `reportSlotAgeAtSend`, the observed/current
-slots, the 8-slot margin, and the pinned 32-slot maximum.
+The same age check runs immediately before simulation and as the final
+pre-send gate, before the attempted mark. The pending send-age status is
+rewritten and fsynced before that final check; on a healthy RPC, expect the
+raw send to follow within the margin, typically **1–4 slots** after the last
+check. A stale check aborts with `REPORT_SLOT_STALE_PRE_SEND` before the
+attempted mark and sole raw send. The simulation uses `commitment:
+"confirmed"` with `replaceRecentBlockhash: true`; when the RPC returns a
+simulation context slot, that slot is used for `reportSlotAgeAtSimulate`. The
+JSON output and journal record `reportSlotAgeAtSimulate`,
+`reportSlotAgeAtSend`, the observed/current slots, the 8-slot margin, and the
+pinned 32-slot maximum.
 
 Simulate with finalized prestate immediately before any operator action:
 
@@ -528,7 +533,7 @@ reconcile instruction, and a different journal is refused.
 | `aborted-pre-send` (`attempted-expired`) | abort artifact present, signature still unreadable | Emits `JOURNAL_MISMATCH_ATTEMPTED_EXPIRED` with `rearmable:false` and the original-journal reconcile instruction; writes and claims nothing. | A landed signature finalizes the original attempt; an RPC error makes no state transition. | Reports stale evidence; writes nothing. | Handles only the independent claim. |
 | `attempted` | final journal | Refuses filename-only promotion and a second send. | Requires the chain signature/message proof before `finalized`; otherwise keeps `attempted`. | Reports the final journal as non-authoritative without chain proof. | Handles only the independent claim. |
 | `attempted` | foreign abort artifact | Refuses; an abort artifact can never move `attempted`. | Lists it as stale and reconciles the attempted record independently. | Lists it as stale; writes nothing. | Handles only the independent claim. |
-| `aborted-pre-send` | abort artifact(s), excluding `abortReason: "attempted-expired"` | May re-arm with a new attempt token when the journal/leg policy permits; stale artifacts remain visible. `REPORT_SLOT_STALE_PRE_SEND` is safe to rerun with the same journal or a new journal because it is elected before the attempted mark and sends nothing. | Does not send; reports the abort and its bindings. | Reports re-armable state and stale artifacts; writes nothing. | Handles only the independent claim. |
+| `aborted-pre-send` | abort artifact(s), excluding `abortReason: "attempted-expired"` | May re-arm with a new attempt token when the journal/leg policy permits; stale artifacts remain visible. `REPORT_SLOT_STALE_PRE_SEND` is safe to rerun with the same journal or a new journal because it is elected before the attempted mark and sends nothing; rerun after a plain confirmed-slot refresh. | Does not send; reports the abort and its bindings. | Reports re-armable state and stale artifacts; writes nothing. | Handles only the independent claim. |
 | `finalized` | final journal | Emits `already finalized`; no new send. | Emits `already finalized` with the verification command. | Emits the same recovery command; writes nothing. | Handles only the independent claim. |
 | any state | dead claim | Takes over only through the token/inode election and dead-process proof. | Same claim takeover rules; it does not change a leg state by itself. | Reports the claim/deadness decision; writes no takeover. | Completes a resumable breaking marker and unlinks only on inode match. |
 | any state | breaking marker or renamed token | Resumes the marker before proceeding; a live replacement claim is never removed. | Resumes the marker without creating an attempted record. | Reports the marker and identity mismatch if present; writes nothing. | Completes the marker idempotently, then removes only the recorded dead inode. |

@@ -2,7 +2,7 @@ import { existsSync, linkSync, lstatSync, mkdtempSync, readdirSync, readFileSync
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { Keypair, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { Connection, Keypair, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 
 import {
@@ -21,6 +21,7 @@ import {
 import { parseHxtkCli } from "./hxtk-cli.js";
 import { resolveCanonicalStateRoot } from "./hxtk-fence.js";
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import { sendPreparedOnce } from "../integrations/solana-compat.js";
 
 const roots: string[] = [];
 
@@ -241,6 +242,110 @@ describe("HXtk journaled flow", () => {
       sendStatus: { reportSlotAgeAtSend: 2 },
     });
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
+  test("repair execute uses real sendPreparedOnce with finalized preparation and one raw send", async () => {
+    const previousConfirmation = process.env.CONFIRM_MAINNET;
+    process.env.CONFIRM_MAINNET = "1";
+    const originalMethods = new Map<string, unknown>();
+    const connectionPrototype = Connection.prototype as unknown as Record<string, unknown>;
+    const originalRpcRequest = Object.getOwnPropertyDescriptor(Connection.prototype, "_rpcRequest");
+    let slot = 1;
+    let rawSends = 0;
+    let expectedSignature: string | null = null;
+    const fakeRpcRequest = async (method: string) => {
+      const response = (result: unknown) => ({ jsonrpc: "2.0", id: "hxtk-test", result });
+      if (method === "getGenesisHash") return response("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d");
+      if (method === "getBlockHeight") return response(1);
+      if (method === "getSlot") {
+        slot += 1;
+        return response(slot);
+      }
+      if (method === "sendTransaction") {
+        rawSends += 1;
+        return response(expectedSignature);
+      }
+      if (method === "getSignatureStatuses") {
+        return response({ context: { slot }, value: [{ slot, confirmations: 1, confirmationStatus: "finalized", err: null }] });
+      }
+      throw new Error(`unexpected fake RPC method ${method}`);
+    };
+    Object.defineProperty(Connection.prototype, "_rpcRequest", {
+      configurable: true,
+      get() { return fakeRpcRequest; },
+      set() { /* Replace the HTTP transport for this test with fake RPC. */ },
+    });
+    const patchConnection = (name: string, implementation: unknown) => {
+      originalMethods.set(name, connectionPrototype[name]);
+      connectionPrototype[name] = implementation;
+    };
+    try {
+      const mismatch = fixture();
+      await expect(runJournaledStepForTest({
+        ...mismatch.input(mismatch.journal, "execute"),
+        rpcUrl: "https://fake.invalid",
+        build: async () => ({
+          prepared: { ...mismatch.prepared, commitment: "confirmed" as const },
+          plan: { transaction: { kind: "repair" } },
+        }),
+      }, {
+        ...deps(mismatch),
+        sendPreparedOnce,
+      })).rejects.toThrow("prepared transaction commitment confirmed does not match settlement finalized");
+
+      const normal = fixture();
+      const normalPrepared = {
+        ...normal.prepared,
+        genesisHash: "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+      };
+      const decoded = VersionedTransaction.deserialize(normalPrepared.serializedTransaction);
+      const finalized = {
+        slot: 4,
+        blockTime: 4,
+        transaction: {
+          signatures: [normalPrepared.expectedSignature],
+          message: {
+            serialize: () => normalPrepared.serializedMessage,
+            staticAccountKeys: decoded.message.staticAccountKeys,
+          },
+        },
+        meta: {
+          err: null,
+          fee: 0,
+          preBalances: decoded.message.staticAccountKeys.map(() => 0),
+          postBalances: decoded.message.staticAccountKeys.map(() => 0),
+          loadedAddresses: { writable: [], readonly: [] },
+          preTokenBalances: [],
+          postTokenBalances: [],
+        },
+      };
+      expectedSignature = normalPrepared.expectedSignature;
+      patchConnection("confirmTransaction", async () => ({
+        context: { slot },
+        value: { err: null },
+      }));
+      patchConnection("getTransaction", async () => finalized);
+
+      expect(await runJournaledStepForTest({
+        ...normal.input(normal.journal, "execute"),
+        rpcUrl: "http://fake.invalid",
+        build: async () => ({
+          prepared: normalPrepared,
+          plan: { transaction: { kind: "repair" } },
+        }),
+      }, {
+        ...deps(normal, { finalize: async () => finalized }),
+        sendPreparedOnce,
+      })).toBe(0);
+      expect(slot).toBeGreaterThan(1);
+      expect(rawSends).toBe(1);
+    } finally {
+      for (const [name, implementation] of originalMethods) connectionPrototype[name] = implementation;
+      if (originalRpcRequest === undefined) delete connectionPrototype._rpcRequest;
+      else Object.defineProperty(Connection.prototype, "_rpcRequest", originalRpcRequest);
+      if (previousConfirmation === undefined) delete process.env.CONFIRM_MAINNET;
+      else process.env.CONFIRM_MAINNET = previousConfirmation;
+    }
   });
 
   test("every emitted recovery command round-trips through the real CLI parser", () => {
