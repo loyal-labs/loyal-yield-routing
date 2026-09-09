@@ -1,4 +1,4 @@
-import { existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -325,7 +325,7 @@ describe("HXtk journaled flow", () => {
       broadcast: "attempted",
     });
 
-    await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+    await runJournaledStepForTest(fx.input(join(fx.root, "rearmed.json"), "execute"), deps(fx, {
       send: async () => {
         sends += 1;
         return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
@@ -333,6 +333,115 @@ describe("HXtk journaled flow", () => {
     }));
     expect(sends).toBe(2);
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
+  test("attempted-expiry transition is canonical-first and resumes after every crash boundary", async () => {
+    for (const transitionStep of ["attempted-expiry-state", "attempted-expiry-artifact"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          throw new Error("submitted but response was lost");
+        },
+        finalize: async () => { throw new Error("not readable"); },
+      }))).rejects.toThrow("response was lost");
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+        finalize: async () => { throw new Error("not readable"); },
+        currentBlockHeight: async () => 2,
+        faultAfterTransitionStep: (step) => {
+          if (step === transitionStep) throw new JournalTransitionFault(step);
+        },
+      }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: " + transitionStep);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+        status: "aborted-pre-send",
+        abortReason: "attempted-expired",
+        broadcast: "attempted",
+      });
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+        finalize: async () => { throw new Error("not readable"); },
+        currentBlockHeight: async () => 2,
+      }))).resolves.toBe(0);
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          throw new Error("must not send after expiry recovery");
+        },
+      }))).resolves.toBe(0);
+      expect(sends).toBe(1);
+    }
+  });
+
+  test("legacy expiry ordering with no pending journal resumes in reconcile and execute", async () => {
+    const fx = fixture();
+    let sends = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("submitted but response was lost");
+      },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("response was lost");
+    const statePath = join(fx.stateRoot, "flow-test.state");
+    const state = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+    const pendingPath = `${fx.journal}.pending`;
+    const pending = JSON.parse(readFileSync(pendingPath, "utf8")) as Record<string, unknown>;
+    const attemptToken = String(pending.attemptToken);
+    const artifactPath = `${fx.journal}.aborted-1-${attemptToken}.json`;
+    writeFileSync(pendingPath, `${JSON.stringify({
+      ...pending,
+      verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY",
+      broadcast: "attempted",
+      abortReason: "attempted-expired",
+      attemptGeneration: state.generation,
+      journalBindingSha256: pending.pendingBindingSha256,
+      sendStatus: { verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY", signature: fx.prepared.expectedSignature },
+    })}\n`, { mode: 0o600 });
+    renameSync(pendingPath, artifactPath);
+
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => { throw new Error("not readable"); },
+      currentBlockHeight: async () => 2,
+    }))).resolves.toBe(0);
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("must not send after legacy expiry recovery");
+      },
+    }))).resolves.toBe(0);
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+      status: "aborted-pre-send",
+      abortReason: "attempted-expired",
+      broadcast: "attempted",
+    });
+  });
+
+  test("a late landed signature wins over the expiry decision", async () => {
+    const fx = fixture();
+    let sends = 0;
+    let finalizeReads = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("submitted but response was lost");
+      },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("response was lost");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => {
+        finalizeReads += 1;
+        if (finalizeReads === 1) throw new Error("not readable");
+        return fx.finalized;
+      },
+      currentBlockHeight: async () => 2,
+    }))).resolves.toBe(0);
+    expect(sends).toBe(1);
+    expect(finalizeReads).toBe(2);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "finalized",
+    });
+    expect(existsSync(fx.journal)).toBe(true);
   });
 
   test("pre-send abort re-arms and concurrent executes produce one send", async () => {
