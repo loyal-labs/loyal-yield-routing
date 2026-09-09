@@ -369,6 +369,51 @@ describe("HXtk journaled flow", () => {
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
   });
 
+  test("pending-journal reconcile uses typed status for both expiry reads", async () => {
+    for (const statuses of [
+      [{ kind: "error", message: "not readable: transport failure" }],
+      [{ kind: "absent" }, { kind: "error", message: "not readable: transport failure" }],
+    ] as const) {
+      const fx = fixture();
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => { throw new Error("submitted but response was lost"); },
+      }))).rejects.toThrow("submitted but response was lost");
+      let statusRead = 0;
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+        readStatus: async () => statuses[Math.min(statusRead++, statuses.length - 1)]!,
+        currentBlockHeight: async () => 100,
+      }))).rejects.toThrow("unreadable-error");
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
+      expect(readdirSync(fx.root).some((entry) => entry.includes("aborted-"))).toBe(false);
+    }
+
+    const absent = fixture();
+    await expect(runJournaledStepForTest(absent.input(absent.journal, "execute"), deps(absent, {
+      send: async () => { throw new Error("submitted but response was lost"); },
+    }))).rejects.toThrow("submitted but response was lost");
+    let reads = 0;
+    await runJournaledStepForTest(absent.input(absent.journal, "reconcile"), deps(absent, {
+      readStatus: async () => { reads += 1; return { kind: "absent" }; },
+      currentBlockHeight: async () => 100,
+    }));
+    expect(reads).toBe(2);
+    expect(JSON.parse(readFileSync(join(absent.stateRoot, "flow-test.state"), "utf8")).status).toBe("aborted-pre-send");
+
+    const landed = fixture();
+    await expect(runJournaledStepForTest(landed.input(landed.journal, "execute"), deps(landed, {
+      send: async () => { throw new Error("submitted but response was lost"); },
+    }))).rejects.toThrow("submitted but response was lost");
+    reads = 0;
+    await runJournaledStepForTest(landed.input(landed.journal, "reconcile"), deps(landed, {
+      readStatus: async () => {
+        reads += 1;
+        return reads === 1 ? { kind: "absent" } : { kind: "finalized", slot: 2, err: null, transaction: landed.finalized };
+      },
+      currentBlockHeight: async () => 100,
+    }));
+    expect(JSON.parse(readFileSync(join(landed.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
   test("attempted-expiry transition is canonical-first and resumes after every crash boundary", async () => {
     for (const transitionStep of ["attempted-expiry-state", "attempted-expiry-artifact"] as const) {
       const fx = fixture();

@@ -3149,10 +3149,13 @@ async function runJournaledStepHeld(input: Readonly<{
     if (wire.signature !== String(sectionState.expectedSignature ?? "")) {
       throw new Error(PENDING_BINDING_MISMATCH);
     }
-    let finalized: FinalizedTransaction | null = null;
-    try {
-      finalized = await loadFinalized(input.rpcUrl, wire.signature);
-    } catch (error) {
+    let finalized: FinalizedTransaction;
+    const initialStatus = await readSignature(input.rpcUrl, wire.signature);
+    if (initialStatus.kind === "finalized") {
+      finalized = initialStatus.transaction;
+    } else if (initialStatus.kind === "error") {
+      throw new Error(`finalized signature unreadable-error: ${initialStatus.message}`);
+    } else {
       const lastValidBlockHeight = Number(
         sectionState.lastValidBlockHeight
           ?? recordAt(pending.transaction, "pending transaction").lastValidBlockHeight,
@@ -3166,10 +3169,12 @@ async function runJournaledStepHeld(input: Readonly<{
       }
       // The signature may land after the first lookup and before the expiry
       // decision. Re-read it once before declaring the attempt expired.
-      try {
-        finalized = await loadFinalized(input.rpcUrl, wire.signature);
-      } catch (error) {
-        if (!(error instanceof Error && /not readable/i.test(error.message))) throw error;
+      const secondStatus = await readSignature(input.rpcUrl, wire.signature);
+      if (secondStatus.kind === "finalized") {
+        finalized = secondStatus.transaction;
+      } else if (secondStatus.kind === "error") {
+        throw new Error(`finalized signature unreadable-error: ${secondStatus.message}`);
+      } else {
         const completed = await completeAttemptedExpiryAbort(
           input,
           dependencies,
@@ -3193,8 +3198,8 @@ async function runJournaledStepHeld(input: Readonly<{
         return 0;
       }
     }
-    assertFinalizedJournalMessage(wire, finalized!);
-    const reconciliation = await input.reconcile({ pending, finalized: finalized! });
+    assertFinalizedJournalMessage(wire, finalized);
+    const reconciliation = await input.reconcile({ pending, finalized });
     writePrivate(input.journal, {
       ...pending,
       verdict: "FINALIZED_RECONCILED",
@@ -3202,8 +3207,8 @@ async function runJournaledStepHeld(input: Readonly<{
       signed: true,
       broadcast: true,
       signature: wire.signature,
-      finalizedSlot: finalized!.slot,
-      finalizedBlockTime: finalized!.blockTime ?? null,
+      finalizedSlot: finalized.slot,
+      finalizedBlockTime: finalized.blockTime ?? null,
       sendStatus: {
         ...(pending.sendStatus && typeof pending.sendStatus === "object" ? pending.sendStatus as JsonRecord : {}),
         verdict: "FINALIZED_RECONCILED",
