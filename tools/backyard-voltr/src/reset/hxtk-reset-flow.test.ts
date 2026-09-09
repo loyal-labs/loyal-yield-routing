@@ -84,6 +84,7 @@ function fixture() {
 function deps(fx: ReturnType<typeof fixture>, options: Readonly<{
   send?: () => Promise<unknown>;
   finalize?: () => Promise<unknown>;
+  readStatus?: () => Promise<unknown>;
   currentBlockHeight?: () => Promise<number>;
   faultAfterTransitionStep?: (step: JournalTransitionStep) => void | Promise<void>;
 }> = {}) {
@@ -91,6 +92,15 @@ function deps(fx: ReturnType<typeof fixture>, options: Readonly<{
     stateRoot: fx.stateRoot,
     sendPreparedOnce: (options.send ?? (async () => ({ signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 }))) as never,
     finalizedTransaction: (options.finalize ?? (async () => fx.finalized)) as never,
+    readFinalizedSignatureStatus: (options.readStatus ?? (async () => {
+      try {
+        const transaction = await (options.finalize ?? (async () => fx.finalized))();
+        return { kind: "finalized", slot: 2, err: null, transaction };
+      } catch (error) {
+        if (error instanceof Error && error.message === "not readable") return { kind: "absent" };
+        return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+      }
+    })) as never,
     currentBlockHeight: options.currentBlockHeight,
     faultAfterTransitionStep: options.faultAfterTransitionStep,
   };
@@ -185,7 +195,7 @@ describe("HXtk journaled flow", () => {
     expect(sends).toBe(1);
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
     expect(existsSync(join(fx.stateRoot, "flow-test.claim"))).toBe(false);
-    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), failing)).rejects.toThrow("not finalized");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), failing)).rejects.toThrow("finalized signature unreadable-error: not finalized");
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
     expect(existsSync(join(fx.stateRoot, "flow-test.claim"))).toBe(false);
 
@@ -298,7 +308,7 @@ describe("HXtk journaled flow", () => {
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
   });
 
-  test("attempted reconciliation re-arms only after lastValidBlockHeight is passed", async () => {
+  test("attempted reconciliation reports non-rearmable after expiry", async () => {
     const fx = fixture();
     let sends = 0;
     await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
@@ -313,13 +323,14 @@ describe("HXtk journaled flow", () => {
     await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
       finalize: async () => { throw new Error("not readable"); },
       currentBlockHeight: async () => 1,
-    }))).rejects.toThrow("not readable");
+    }))).rejects.toThrow("finalized signature absence is not beyond the expiry recheck margin");
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
 
-    await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+    const expiryOutput = await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
       finalize: async () => { throw new Error("not readable"); },
       currentBlockHeight: async () => 100,
     }));
+    expect(expiryOutput).toBe(0);
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
       status: "aborted-pre-send",
       broadcast: "attempted",
@@ -346,6 +357,12 @@ describe("HXtk journaled flow", () => {
       finalize: async () => {
         reads += 1;
         throw new Error(reads === 1 ? "not readable" : "rpc unavailable");
+      },
+      readStatus: async () => {
+        reads += 1;
+        return reads === 1
+          ? { kind: "absent" }
+          : { kind: "error", message: "rpc unavailable" };
       },
       currentBlockHeight: async () => 100,
     }))).rejects.toThrow("rpc unavailable");

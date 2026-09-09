@@ -89,6 +89,7 @@ import {
 import {
   prepareSignedV0Transaction,
   finalizedTransaction,
+  readFinalizedSignatureStatus,
   PreparedTransactionSendError,
   sendPreparedOnce,
   fromWeb3Instruction,
@@ -2422,6 +2423,7 @@ type JournaledStepDependencies = Readonly<{
   allowExecuteWithoutConfirmation?: boolean;
   sendPreparedOnce?: typeof sendPreparedOnce;
   finalizedTransaction?: typeof finalizedTransaction;
+  readFinalizedSignatureStatus?: typeof readFinalizedSignatureStatus;
   currentBlockHeight?: (rpcUrl: string) => Promise<number>;
   faultAfterTransitionStep?: (step: JournalTransitionStep) => void | Promise<void>;
 }>;
@@ -2970,6 +2972,7 @@ async function runJournaledStepHeld(input: Readonly<{
   const stateRoot = dependencies.stateRoot ?? canonicalStateRoot(true);
   const sendOnce = dependencies.sendPreparedOnce ?? sendPreparedOnce;
   const loadFinalized = dependencies.finalizedTransaction ?? finalizedTransaction;
+  const readSignature = dependencies.readFinalizedSignatureStatus ?? readFinalizedSignatureStatus;
   const currentBlockHeight = dependencies.currentBlockHeight
     ?? (async (rpcUrl: string) => rpcWithRetry<number>("getBlockHeight", [{ commitment: "finalized" }]));
   const resumed = resumeInterruptedTransition({
@@ -2984,14 +2987,9 @@ async function runJournaledStepHeld(input: Readonly<{
   if (sectionState?.status === "aborted-pre-send" && sectionState.abortReason === "attempted-expired") {
     const pending = recordAt(sectionState.pendingRecord, `${input.step} canonical pendingRecord`);
     const wire = journalWire(pending, input.schema, input.step, "pending");
-    let landed: FinalizedTransaction | null = null;
-    try {
-      landed = await loadFinalized(input.rpcUrl, wire.signature);
-    } catch {
-      // An unreadable signature is not proof of expiry. The pre-send snapshot
-      // gate below remains the second defense for a new journal.
-    }
-    if (landed !== null) {
+    const signatureStatus = await readSignature(input.rpcUrl, wire.signature);
+    const landed = signatureStatus.kind === "finalized" ? signatureStatus.transaction : undefined;
+    if (landed !== undefined) {
       assertFinalizedJournalMessage(wire, landed);
       if (String(sectionState.journal ?? "") !== input.journal) {
         console.log(toJson({
@@ -3037,7 +3035,7 @@ async function runJournaledStepHeld(input: Readonly<{
       }, 2));
       return 0;
     }
-    if (input.mode === "execute" && String(sectionState.journal ?? "") !== input.journal) {
+    if (signatureStatus.kind === "error" && input.mode === "execute" && String(sectionState.journal ?? "") !== input.journal) {
       console.log(toJson({
         schema: input.schema,
         step: input.step,
@@ -3159,12 +3157,13 @@ async function runJournaledStepHeld(input: Readonly<{
         sectionState.lastValidBlockHeight
           ?? recordAt(pending.transaction, "pending transaction").lastValidBlockHeight,
       );
-      const notReadable = error instanceof Error && /not readable/i.test(error.message);
-      if (!notReadable
-        || !Number.isSafeInteger(lastValidBlockHeight)
-        || lastValidBlockHeight < 0) throw error;
+      if (!Number.isSafeInteger(lastValidBlockHeight) || lastValidBlockHeight < 0) {
+        throw new Error("invalid lastValidBlockHeight while checking finalized signature absence");
+      }
       const observedBlockHeight = await currentBlockHeight(input.rpcUrl);
-      if (observedBlockHeight < lastValidBlockHeight + ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS) throw error;
+      if (observedBlockHeight < lastValidBlockHeight + ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS) {
+        throw new Error("finalized signature absence is not beyond the expiry recheck margin");
+      }
       // The signature may land after the first lookup and before the expiry
       // decision. Re-read it once before declaring the attempt expired.
       try {
@@ -3258,25 +3257,31 @@ async function runJournaledStepHeld(input: Readonly<{
     const canonicalStatePath = reconciledState.path;
     expectedGeneration = reconciledState.generation;
     let finalized: FinalizedTransaction;
-    try {
-      finalized = await loadFinalized(input.rpcUrl, wire.signature);
-    } catch (error) {
+    const initialStatus = await readSignature(input.rpcUrl, wire.signature);
+    if (initialStatus.kind === "finalized") {
+      finalized = initialStatus.transaction;
+    } else if (initialStatus.kind === "error") {
+      throw new Error(`finalized signature unreadable-error: ${initialStatus.message}`);
+    } else {
       const lastValidBlockHeight = Number(
         sectionState?.lastValidBlockHeight
           ?? recordAt(pending.transaction, "pending transaction").lastValidBlockHeight,
       );
-      const notReadable = error instanceof Error && /not readable/i.test(error.message);
-      if (!notReadable
-        || !Number.isSafeInteger(lastValidBlockHeight)
-        || lastValidBlockHeight < 0) throw error;
+      if (!Number.isSafeInteger(lastValidBlockHeight) || lastValidBlockHeight < 0) {
+        throw new Error("invalid lastValidBlockHeight while checking finalized signature absence");
+      }
       const observedBlockHeight = await currentBlockHeight(input.rpcUrl);
-      if (observedBlockHeight < lastValidBlockHeight + ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS) throw error;
+      if (observedBlockHeight < lastValidBlockHeight + ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS) {
+        throw new Error("finalized signature absence is not beyond the expiry recheck margin");
+      }
       // The signature may land after the first lookup and before the expiry
       // decision. Re-read it once before declaring the attempt expired.
-      try {
-        finalized = await loadFinalized(input.rpcUrl, wire.signature);
-      } catch (error) {
-        if (!(error instanceof Error && /not readable/i.test(error.message))) throw error;
+      const secondStatus = await readSignature(input.rpcUrl, wire.signature);
+      if (secondStatus.kind === "finalized") {
+        finalized = secondStatus.transaction;
+      } else if (secondStatus.kind === "error") {
+        throw new Error(`finalized signature unreadable-error: ${secondStatus.message}`);
+      } else {
         const completed = await completeAttemptedExpiryAbort(
           input,
           dependencies,
