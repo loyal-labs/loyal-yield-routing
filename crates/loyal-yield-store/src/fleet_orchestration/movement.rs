@@ -1132,7 +1132,7 @@ impl NeonSqlClient {
                 "cross-mint leg did not assume its exact conflict set".to_owned(),
             ));
         }
-        sqlx::query(
+        let advanced = sqlx::query(
             r#"
             UPDATE loyal_yield.rebalance_decisions
             SET continuation_available_at = NULL,
@@ -1144,7 +1144,7 @@ impl NeonSqlClient {
             WHERE id = $1
               AND continuation_lease_owner = $2
               AND continuation_fencing_token = $3
-              AND continuation_lease_expires_at > now()
+              AND continuation_lease_expires_at > clock_timestamp()
             "#,
         )
         .bind(movement.decision_id.as_i64())
@@ -1152,6 +1152,12 @@ impl NeonSqlClient {
         .bind(lease.fencing_token)
         .execute(&mut *tx)
         .await?;
+        if advanced.rows_affected() != 1 {
+            return Err(OrchestratorError::StoreInvariant(
+                "cross-mint signed publication lease expired or was fenced during durable writes"
+                    .to_owned(),
+            ));
+        }
         tx.commit().await?;
         Ok(submission)
     }
@@ -1183,7 +1189,7 @@ impl NeonSqlClient {
               AND finalized_slot = $4
               AND confirmation_lease_owner = $2
               AND confirmation_fencing_token = $3
-              AND confirmation_lease_expires_at > now()
+              AND confirmation_lease_expires_at > clock_timestamp()
             FOR UPDATE
             "#,
         )
@@ -1334,7 +1340,7 @@ impl NeonSqlClient {
               AND reconciled_effect IS NULL
               AND confirmation_lease_owner = $2
               AND confirmation_fencing_token = $3
-              AND confirmation_lease_expires_at > now()
+              AND confirmation_lease_expires_at > clock_timestamp()
             RETURNING id
             "#,
         )
@@ -2576,9 +2582,9 @@ async fn lock_cross_mint_movement_lease(
     connection: &mut PgConnection,
     lease: &CrossMintContinuationLease,
 ) -> Result<CrossMintMovementRecord, OrchestratorError> {
-    let valid: Option<i64> = sqlx::query_scalar(
+    let expires_at: Option<DateTime<Utc>> = sqlx::query_scalar(
         r#"
-        SELECT id FROM loyal_yield.rebalance_decisions
+        SELECT continuation_lease_expires_at FROM loyal_yield.rebalance_decisions
         WHERE id = $1
           AND movement_route = 'cross_mint_jupiter'
           AND status = 'confirming'::loyal_yield.decision_status
@@ -2586,7 +2592,7 @@ async fn lock_cross_mint_movement_lease(
           AND continuation_lease_owner = $2
           AND continuation_fencing_token = $3
           AND continuation_control_generation = $4
-          AND continuation_lease_expires_at > now()
+          AND continuation_lease_expires_at > clock_timestamp()
         FOR UPDATE
         "#,
     )
@@ -2596,7 +2602,13 @@ async fn lock_cross_mint_movement_lease(
     .bind(lease.control_generation)
     .fetch_optional(&mut *connection)
     .await?;
-    if valid.is_none() {
+    // The WHERE predicate may have been evaluated before a row-lock wait.
+    // Read the DB wall clock after acquisition; now() is transaction-start
+    // time and cannot fence a lease that expired while this write was blocked.
+    let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *connection)
+        .await?;
+    if expires_at.is_none_or(|expires_at| expires_at <= now) {
         return Err(OrchestratorError::StoreInvariant(
             "cross-mint continuation lease is stale, expired, or fenced".to_owned(),
         ));

@@ -584,14 +584,26 @@ is nevertheless **not a drop-in W3 handoff yet**:
 Consequently `KAMINO_FLEET_MODE=publish` must not be enabled in production.
 The offline acceptance boundary now lives in
 `docs/verifiers/kamino-fleet-parity/` and
-`scripts/verify-kamino-planner-revalidator-parity.sh`. Its comparator requires
-exact planner, epoch, opportunity-identity, route, ALT, packet, simulation,
-fence, queue-transition, topology, and retained lifecycle evidence. The
-comparator's negative controls are green. The epoch-specific Rust and Go
-producers now pass frozen and read-only production evidence, but
-`--audit-current` must remain red until the opportunity and route-revalidator
-producers—and the underlying Go revalidator behavior—exist. No deployment
-wiring is accepted until that complete audit is green.
+`scripts/verify-kamino-planner-revalidator-parity.sh`. The independent artifact
+comparator checks deterministic planner decisions, epoch/identity and route wire
+bytes; it does not accept simulated lifecycle assertions. Separate mandatory
+connected tests exercise actual Go publication/revalidation, retained execution,
+confirmation/reconciliation, crash recovery and durable expiry guards against
+local PostgreSQL and Squads/SPL/LiteSVM. Both lanes must emit complete fresh-run
+structured evidence and the full current-source audit must pass. A green local
+audit still does not establish broad shared-input Rust/Go decision parity or
+executable idle routing with joint idle/reserve capacity allocation. Those and
+production compatibility/rollout gates remain required before enabling writes.
+Read-only production shadow remains allowed; retained Rust services stay active.
+
+The broader `scripts/compare-fleet-decisions.sh` diagnostic currently agrees on
+124 of 129 same-input scenarios, including all six same-mint and 30 directed
+cross-mint pairs. Five scenarios expose three additional handover blockers:
+Go drops alternative targets after capacity fills, imposes different large-reserve
+capacity bands, and lacks Rust's tenant/conflict wave limits. This diagnostic
+assumes admitted reserve sources, not a shared live observer snapshot; idle
+admission/execution and production compatibility remain separate missing gates.
+See the verifier README for exact scope, input digest, and reproduction.
 
 ## Relevant code and deployment references
 

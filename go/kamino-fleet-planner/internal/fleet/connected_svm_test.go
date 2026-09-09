@@ -155,13 +155,16 @@ func seedConnectedLookupTable(t *testing.T, ctx context.Context, store *Store, c
 	}
 }
 
-func runConnectedRustWorker(t *testing.T, ctx context.Context, database string, request map[string]any) {
+func runConnectedRustWorker(t *testing.T, ctx context.Context, database string, request map[string]any) json.RawMessage {
 	t.Helper()
 	path := os.Getenv("KAMINO_CONNECTED_WORKER_PATH")
 	if path == "" {
 		t.Fatal("connected lifecycle requires compiled retained worker test binary")
 	}
 	input := filepath.Join(t.TempDir(), "go-handoff.json")
+	evidencePath := filepath.Join(t.TempDir(), "retained-evidence.json")
+	request["evidencePath"] = evidencePath
+	request["runId"] = os.Getenv("KAMINO_CONNECTED_RUN_ID")
 	data, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
@@ -181,6 +184,69 @@ func runConnectedRustWorker(t *testing.T, ctx context.Context, database string, 
 		t.Fatalf("retained worker failed: %v\n%s", err, output)
 	}
 	t.Logf("retained worker: %s", output)
+	if request["setupOnly"] == true {
+		return nil
+	}
+	evidence, err := os.ReadFile(evidencePath)
+	if err != nil {
+		t.Fatalf("retained worker omitted terminal evidence: %v", err)
+	}
+	return json.RawMessage(evidence)
+}
+
+// Only the owning Go test emits the final marker, after both producers have
+// verified their own observations from this run. No parsing of success logs.
+func emitConnectedEvidence(t *testing.T, raw json.RawMessage, cluster string, epochID, opportunityID int64, sameMint bool) {
+	t.Helper()
+	var evidence map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	lane := "cross-mint"
+	if sameMint {
+		lane = "same-mint"
+	}
+	runID := os.Getenv("KAMINO_CONNECTED_RUN_ID")
+	if runID == "" {
+		t.Fatal("connected evidence requires a fresh run ID")
+	}
+	for key, expected := range map[string]any{"runId": runID, "lane": lane, "cluster": cluster, "epochId": epochID, "opportunityId": opportunityID} {
+		want, _ := json.Marshal(expected)
+		if !bytes.Equal(evidence[key], want) {
+			t.Fatalf("retained evidence changed %s", key)
+		}
+	}
+	var legs []struct {
+		SubmissionID int64 `json:"submissionId"`
+	}
+	if err := json.Unmarshal(evidence["legs"], &legs); err != nil || len(legs) == 0 || legs[0].SubmissionID <= 0 {
+		t.Fatal("retained signed evidence missing")
+	}
+	var stages []json.RawMessage
+	if err := json.Unmarshal(evidence["stages"], &stages); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"published", "revalidated", "ambiguous_broadcast_recovered"} {
+		ids := []int64{}
+		if name == "ambiguous_broadcast_recovered" {
+			ids = append(ids, legs[0].SubmissionID)
+		}
+		stage, err := json.Marshal(map[string]any{"name": name, "status": "pass", "submissionIds": ids})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stages = append(stages, stage)
+	}
+	var err error
+	evidence["stages"], err = json.Marshal(stages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("KAMINO_CONNECTED_EVIDENCE %s", output)
 }
 
 func (s *connectedSVM) call(request any) ([]byte, error) {

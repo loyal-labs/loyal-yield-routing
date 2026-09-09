@@ -66,4 +66,5 @@ for artifact in "$scratch/rust.json" "$scratch/go.json"; do
 done
 python3 "$comparator" --reference "$scratch/rust.json" --candidate "$scratch/go.json"
 echo "PASS: all local Go/proxy/database, retained Rust lifecycle, Squads policy execution, and deterministic parity gates completed"
+echo "NOTE: this fixed-fixture audit does not include the broader compare-fleet-decisions.sh diagnostic or executable idle support; both remain handover blockers"
 echo "NOTE: local fixtures do not prove live RPC/Jupiter availability or production cutover safety; follow the shadow rollout gates"

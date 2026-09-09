@@ -531,7 +531,11 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 	if claimed, err = revalidator.Cycle(ctx, cluster); err != nil || claimed {
 		t.Fatalf("ready work was reclaimed by revalidator: %v %v", claimed, err)
 	}
-	runConnectedRustWorker(t, ctx, databaseURL, map[string]any{"sameMint": sameMint, "fixturePolicyBindings": binding, "cluster": cluster, "opportunityId": published.OpportunityID, "epochId": published.EpochID, "executionPlan": json.RawMessage(persisted), "rpcUrl": workerRPC.URL})
+	evidence := runConnectedRustWorker(t, ctx, databaseURL, map[string]any{"sameMint": sameMint, "fixturePolicyBindings": binding, "cluster": cluster, "opportunityId": published.OpportunityID, "epochId": published.EpochID, "executionPlan": json.RawMessage(persisted), "rpcUrl": workerRPC.URL})
+	if ambiguousBroadcasts.Load() != 1 {
+		t.Fatal("connected lifecycle did not exercise lost broadcast response")
+	}
+	emitConnectedEvidence(t, evidence, cluster, published.EpochID, published.OpportunityID, sameMint)
 	if artifact := os.Getenv("KAMINO_CONNECTED_PREFLIGHT_ARTIFACT"); artifact != "" {
 		relative, err := filepath.Rel(os.TempDir(), artifact)
 		if err != nil || relative == ".." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {

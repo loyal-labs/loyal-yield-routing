@@ -1309,6 +1309,11 @@ pub(super) async fn activate_cross_mint_opportunity(
                 .into(),
         );
     }
+    #[cfg(test)]
+    if connected_e2e::initial_withdraw_crash_armed(lease.opportunity.id) {
+        connected_e2e::capture_initial_withdraw(continuation, withdraw)?;
+        return Err("connected injected initial withdrawal crash before signed persistence".into());
+    }
     match publish_prepared_leg(&runtime.client, continuation.clone(), withdraw).await {
         Ok(result) => Ok(result),
         Err(publication_error) => {

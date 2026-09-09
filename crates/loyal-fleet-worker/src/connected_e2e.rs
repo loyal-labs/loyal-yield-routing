@@ -3,6 +3,7 @@
 use super::*;
 #[path = "connected_recovery.rs"]
 mod connected_recovery;
+pub(super) use connected_recovery::{capture_initial_withdraw, initial_withdraw_crash_armed};
 #[path = "connected_terminal.rs"]
 mod connected_terminal;
 use loyal_yield_orchestrator::{
@@ -254,7 +255,7 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
                     cluster,
                     "connected-rust-same-mint",
                     RebalanceOpportunityClaimKind::Execute,
-                    Utc::now() + ChronoDuration::seconds(60),
+                    Utc::now() + ChronoDuration::seconds(5),
                 )
                 .await?
                 .ok_or("same-mint work not claimable")?
@@ -262,6 +263,9 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
         if lease.opportunity.id != opportunity_id {
             return Err("same-mint executor claimed another opportunity".into());
         }
+        let lease =
+            connected_recovery::same_mint_after_pre_persistence_crash(&runtime, lease, rpc_url)
+                .await?;
         let execution_request = same_mint_request_from_opportunity(
             &lease,
             rpc_url,
@@ -275,6 +279,13 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
         if result.state != SameMintRouteExecutionState::SubmissionQueued {
             return Err("same-mint signed persistence failed".into());
         }
+        connected_recovery::recover_persisted_before_broadcast(
+            &runtime,
+            cluster,
+            opportunity_id,
+            0,
+        )
+        .await?;
         for _ in 0..2 {
             let output = std::process::Command::new(env::var("KAMINO_CONNECTED_CONFIRMER_PATH")?)
                 .args([
@@ -414,8 +425,8 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
         {
             return Err("same-mint persisted replay duplicated effects".into());
         }
-        connected_terminal::verify(&runtime, &lease.opportunity, true).await?;
-        return Err("connected same-mint recovery evidence not yet complete".into());
+        let terminal = connected_terminal::verify(&runtime, &lease.opportunity, true).await?;
+        return connected_terminal::write_evidence(&lease.opportunity, &terminal, true);
     }
     let lease = client
         .lease_next_rebalance_opportunity(
@@ -464,7 +475,23 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
         maximum_value_loss_bps: 50,
     };
     setup_connected_catalog(&runtime, &lease.opportunity, &mints, None).await?;
-    let result = activate_cross_mint_opportunity(&runtime, &options, &config, &lease).await?;
+    connected_recovery::arm_initial_withdraw(lease.opportunity.id);
+    let mut crash_options = options.clone();
+    crash_options.lease_seconds = 10;
+    if activate_cross_mint_opportunity(&runtime, &crash_options, &config, &lease)
+        .await
+        .is_ok()
+    {
+        return Err("initial withdrawal did not stop at the pre-persistence crash".into());
+    }
+    let result = connected_recovery::continue_after_pre_persistence_crash(
+        &runtime,
+        &options,
+        &config,
+        opportunity_id,
+        0,
+    )
+    .await?;
     run_connected_legs(
         runtime,
         client,
@@ -618,7 +645,7 @@ async fn run_connected_legs(
         }
         connected_recovery::recover_persisted_before_broadcast(
             &runtime,
-            &options,
+            cluster,
             opportunity_id,
             leg_index,
         )
@@ -661,15 +688,15 @@ async fn run_connected_legs(
                 cluster,
                 "connected-crashed-reconciler",
                 1,
-                Utc::now() + ChronoDuration::milliseconds(250),
+                Utc::now() + ChronoDuration::seconds(2),
             )
             .await?;
         if old_leases.len() != 1 {
             return Err("signed leg did not reach retained reconciliation".into());
         }
-        // A lost worker's real lease expires; another owner resumes from durable
-        // confirmation. Do not rewrite submission states or manufacture receipts.
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        connected_recovery::cross_mint_reconcile_during_expiry(&runtime, &old_leases[0]).await?;
+        // Another owner resumes from durable confirmation. Never rewrite
+        // submission states or manufacture receipts to make recovery succeed.
         let restarted =
             NeonSqlClient::connect(NeonSqlConfig::new(env::var("FLEET_TEST_DATABASE_URL")?))
                 .await?;
@@ -775,8 +802,6 @@ async fn run_connected_legs(
     {
         return Err("cross-mint signed lifecycle evidence incomplete".into());
     }
-    connected_terminal::verify(&runtime, &lease.opportunity, false).await?;
-    // This is deliberately fail-closed until execution, confirmation, exact
-    // reconciliation and recovery assertions below are implemented and run.
-    Err("connected lifecycle has not yet verified terminal reconciliation".into())
+    let terminal = connected_terminal::verify(&runtime, &lease.opportunity, false).await?;
+    connected_terminal::write_evidence(&lease.opportunity, &terminal, false)
 }
