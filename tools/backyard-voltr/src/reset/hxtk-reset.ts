@@ -2248,8 +2248,19 @@ export function resumeInterruptedTransition(input: Readonly<{
   mode?: RepairPolicyOperatorMode;
 }>): InterruptedTransitionRecovery {
   const pendingPath = `${input.journal}.pending`;
-  let state = readCanonicalLegState(input.step, false, input.stateRoot, { allowRollForward: true });
+  let state = readCanonicalLegState(input.step, false, input.stateRoot, { allowRollForward: false });
   const artifacts = interruptedAbortedJournalPaths(input.journal);
+  if (state !== null
+    && typeof state.journal === "string"
+    && state.journal !== input.journal
+    && (state.status === "attempted" || state.status === "finalized"
+      || (state.status === "aborted-pre-send" && state.abortReason === "attempted-expired"))) {
+    if (state.status === "aborted-pre-send" && state.abortReason === "attempted-expired") {
+      throw new Error(`JOURNAL_MISMATCH_ATTEMPTED_EXPIRED: reconcile the original journal ${state.journal}`);
+    }
+    throw new Error(`JOURNAL_MISMATCH_CANONICAL_STATE: ${state.journal}`);
+  }
+  state = readCanonicalLegState(input.step, false, input.stateRoot, { allowRollForward: true });
   const currentAttemptToken = state?.status === "aborted-pre-send" ? null : String(state?.attemptToken ?? "");
   const foreignArtifacts = state?.status === "aborted-pre-send"
     ? []
@@ -2941,9 +2952,25 @@ async function runJournaledStep(input: Readonly<{
   }>) => Promise<JsonRecord>;
 }>): Promise<number> {
   const stateRoot = resolveCanonicalStateRoot({ vault: VAULT.toString(), create: true });
-  // Invariant: the claim is acquired before any canonical-state or journal
-  // barrier read, and remains held through build, simulation, send,
-  // finalization, reconciliation, and every canonical state write.
+  const preClaimState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: false });
+  if (input.mode === "execute"
+    && preClaimState?.status === "aborted-pre-send"
+    && preClaimState.abortReason === "attempted-expired"
+    && String(preClaimState.journal ?? "") !== input.journal) {
+    console.log(toJson({
+      verdict: "JOURNAL_MISMATCH_ATTEMPTED_EXPIRED",
+      rearmable: false,
+      journal: input.journal,
+      canonicalJournal: String(preClaimState.journal ?? ""),
+      recoveryInstruction: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: false }),
+      reason: "the attempted-expired leg remains bound to its original journal; reconcile that journal before any new execute",
+    }, 2));
+    return 0;
+  }
+  // The attempted-expired ownership precheck above is the sole canonical
+  // pointer read allowed before the claim; after it, the claim remains held
+  // through barrier reads, build, simulation, send, reconciliation, and every
+  // canonical state write.
   const claim = acquireCanonicalLegClaim({
     stateRoot,
     step: input.step,
@@ -2975,6 +3002,13 @@ async function runJournaledStepHeld(input: Readonly<{
   const readSignature = dependencies.readFinalizedSignatureStatus ?? readFinalizedSignatureStatus;
   const currentBlockHeight = dependencies.currentBlockHeight
     ?? (async (rpcUrl: string) => rpcWithRetry<number>("getBlockHeight", [{ commitment: "finalized" }]));
+  const preResumeState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: false });
+  if (input.mode === "execute"
+    && preResumeState?.status === "aborted-pre-send"
+    && preResumeState.abortReason === "attempted-expired"
+    && String(preResumeState.journal ?? "") !== input.journal) {
+    throw new Error(`JOURNAL_MISMATCH_ATTEMPTED_EXPIRED: reconcile the original journal ${preResumeState.journal}`);
+  }
   const resumed = resumeInterruptedTransition({
     step: input.step,
     journal: input.journal,
@@ -3597,6 +3631,13 @@ export async function runJournaledStepForTest(
     faultAfterTransitionStep?: (step: JournalTransitionStep) => void | Promise<void>;
   }>,
 ): Promise<number> {
+  const preClaimState = readCanonicalLegState(input.step, false, dependencies.stateRoot, { allowRollForward: false });
+  if (input.mode === "execute"
+    && preClaimState?.status === "aborted-pre-send"
+    && preClaimState.abortReason === "attempted-expired"
+    && String(preClaimState.journal ?? "") !== input.journal) {
+    throw new Error(`JOURNAL_MISMATCH_ATTEMPTED_EXPIRED: reconcile the original journal ${preClaimState.journal}`);
+  }
   const claim = dependencies.claim ?? acquireCanonicalLegClaim({
     stateRoot: dependencies.stateRoot,
     step: input.step,

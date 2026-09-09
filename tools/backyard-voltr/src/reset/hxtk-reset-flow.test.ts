@@ -439,6 +439,27 @@ describe("HXtk journaled flow", () => {
     }
   });
 
+  test("different final journal plus pending file is not resumed or claimed", async () => {
+    const fx = fixture();
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => { throw new Error("submitted but response was lost"); },
+    }))).rejects.toThrow("submitted but response was lost");
+    await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      readStatus: async () => ({ kind: "absent" }),
+      currentBlockHeight: async () => 100,
+    }));
+    const foreignJournal = join(fx.root, "different.json");
+    writeFileSync(foreignJournal, "foreign-final-journal");
+    writeFileSync(`${foreignJournal}.pending`, "foreign-pending-journal");
+    const before = readdirSync(fx.root).sort();
+    await expect(runJournaledStepForTest(fx.input(foreignJournal, "execute"), deps(fx, {
+      send: async () => { throw new Error("must not send"); },
+    }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRED");
+    expect(readdirSync(fx.root).sort()).toEqual(before);
+    expect(existsSync(`${foreignJournal}.pending`)).toBe(true);
+    expect(existsSync(`${foreignJournal}.sent-wire`)).toBe(false);
+  });
+
   test("attempted-expiry transition is canonical-first and resumes after every crash boundary", async () => {
     for (const transitionStep of ["attempted-expiry-state", "attempted-expiry-artifact"] as const) {
       const fx = fixture();
