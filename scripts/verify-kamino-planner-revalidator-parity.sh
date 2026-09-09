@@ -65,6 +65,9 @@ for artifact in "$scratch/rust.json" "$scratch/go.json"; do
   ' "$artifact" >/dev/null || fail "artifact fixture binding failed"
 done
 python3 "$comparator" --reference "$scratch/rust.json" --candidate "$scratch/go.json"
+# Shared-input economic decisions are a separate mandatory gate. The fixed
+# wire fixture alone cannot catch alternative-target or scheduling regressions.
+bash "$root/scripts/compare-fleet-decisions.sh" "$scratch/shared-decisions"
 echo "PASS: all local Go/proxy/database, retained Rust lifecycle, Squads policy execution, and deterministic parity gates completed"
-echo "NOTE: this fixed-fixture audit does not include the broader compare-fleet-decisions.sh diagnostic or executable idle support; both remain handover blockers"
+echo "NOTE: executable idle support and real shared-snapshot/configuration parity remain separate handover requirements"
 echo "NOTE: local fixtures do not prove live RPC/Jupiter availability or production cutover safety; follow the shadow rollout gates"

@@ -66,6 +66,16 @@ class DecisionComparisonTests(unittest.TestCase):
             with self.assertRaises(ValueError): self.compare()
         with self.assertRaises(ValueError): gate.load_json('{"x":1,"x":2}')
 
+    def test_idle_cannot_invent_a_reserve_or_source_yield(self):
+        for artifact in (self.rust, self.go):
+            artifact['cases'][0]['selected'][0].update(route='idle_vault_deposit', source='', sourceApy=0)
+        self.assertEqual(self.compare()['mismatchingCases'], 0)
+        for change in ({'source': 'fabricated'}, {'sourceApy': 1}):
+            baseline = copy.deepcopy(self.go)
+            self.go['cases'][0]['selected'][0].update(change)
+            with self.assertRaises(ValueError): self.compare()
+            self.go = baseline
+
     def test_fixture_contains_all_mint_pairs_and_unique_cases(self):
         cases = gate.fixtures()['cases']
         names = [c['name'] for c in cases]
@@ -73,6 +83,10 @@ class DecisionComparisonTests(unittest.TestCase):
         for source in gate.STABLES:
             for target in gate.STABLES:
                 self.assertIn(f'mint-{source}-to-{target}', names)
+            self.assertIn(f'idle-{source}-9000000000', names)
+        self.assertIn('idle-and-reserve-shared-capacity', names)
+        self.assertIn('same-vault-idle-wins', names)
+        self.assertIn('same-vault-reserve-wins', names)
 
 
 if __name__ == '__main__':

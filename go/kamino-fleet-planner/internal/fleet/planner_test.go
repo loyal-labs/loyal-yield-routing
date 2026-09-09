@@ -41,11 +41,11 @@ func TestPlanFailsClosed(t *testing.T) {
 	}{
 		{"active work", func(_ *MarketSnapshot, p *VaultPosition) { p.BlockedReason = "active_opportunity" }, "active_opportunity"},
 		{"missing amount evidence", func(_ *MarketSnapshot, p *VaultPosition) { p.SourceAmountSemantics = "" }, "unsupported_source_amount_evidence"},
-		{"capacity exhausted", func(_ *MarketSnapshot, p *VaultPosition) {
-			p.TargetCommittedInflowUSDMicros = 4_000_000_000_000
+		{"capacity exhausted", func(s *MarketSnapshot, p *VaultPosition) {
+			p.TargetCommittedInflowUSDMicros = s.Reserves["target"].TotalSupplyUSDMicros / 50
 		}, "target_capacity_exhausted"},
-		{"amount exceeds capacity", func(_ *MarketSnapshot, p *VaultPosition) {
-			p.AmountRaw = 4_000_000_000_001
+		{"amount exceeds capacity", func(s *MarketSnapshot, p *VaultPosition) {
+			p.AmountRaw = s.Reserves["target"].TotalSupplyUSDMicros/50 + 1
 		}, "target_capacity_exhausted"},
 		{"projection overflow", func(s *MarketSnapshot, p *VaultPosition) {
 			reserve := s.Reserves["source"]

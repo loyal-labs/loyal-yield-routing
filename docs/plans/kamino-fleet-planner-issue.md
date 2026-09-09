@@ -591,18 +591,26 @@ connected tests exercise actual Go publication/revalidation, retained execution,
 confirmation/reconciliation, crash recovery and durable expiry guards against
 local PostgreSQL and Squads/SPL/LiteSVM. Both lanes must emit complete fresh-run
 structured evidence and the full current-source audit must pass. A green local
-audit still does not establish broad shared-input Rust/Go decision parity or
+audit still does not establish real shared-snapshot Rust/Go observer/revalidator parity or
 executable idle routing with joint idle/reserve capacity allocation. Those and
 production compatibility/rollout gates remain required before enabling writes.
 Read-only production shadow remains allowed; retained Rust services stay active.
 
-The broader `scripts/compare-fleet-decisions.sh` diagnostic currently agrees on
-124 of 129 same-input scenarios, including all six same-mint and 30 directed
-cross-mint pairs. Five scenarios expose three additional handover blockers:
-Go drops alternative targets after capacity fills, imposes different large-reserve
-capacity bands, and lacks Rust's tenant/conflict wave limits. This diagnostic
-assumes admitted reserve sources, not a shared live observer snapshot; idle
-admission/execution and production compatibility remain separate missing gates.
+The broader `scripts/compare-fleet-decisions.sh` comparison now agrees on all
+154 same-input scenarios, including all six same-mint and 30 directed cross-mint
+pairs plus 25 idle/joint-allocation cases, and is mandatory in the current-source audit. Go now retains and reprices
+alternative targets, uses Rust-equivalent supply-derived capacity bands, and
+enforces wave count/notional/tenant/conflict limits. The five formerly failing
+cases remain in the extended shared fixture, with no waived mismatches.
+Shadow mode now allocates idle and reserve sources jointly with one move per
+vault. The official KLend proxy also has a deposit-only builder, tested across
+all six stable mints and forbidden from accepting withdrawal parameters.
+This comparison assumes admitted sources, not a shared live observer snapshot.
+A separate local USDC scenario also verifies exact signed Squads/SPL deposit
+execution and replay with mock Kamino. Idle publication remains deliberately
+blocked: that wire path has not yet been connected to fresh revalidation,
+durable ownership, retained execution or recovery.
+These and production compatibility remain missing gates.
 See the verifier README for exact scope, input digest, and reproduction.
 
 ## Relevant code and deployment references

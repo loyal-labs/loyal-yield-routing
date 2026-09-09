@@ -33,6 +33,7 @@ func main() {
 				Targets            []string
 				Amount, Collateral int64
 				Tenant             string
+				IdleMint           string `json:"idleMint"`
 			} `json:"vaults"`
 		} `json:"cases"`
 	}
@@ -43,26 +44,35 @@ func main() {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, c := range input.Cases {
 		snapshot := fleet.MarketSnapshot{OptimizerEpochID: 7, Slot: 1000, ObservedAt: now, ExpiresAt: now.Add(5 * time.Minute), Reserves: map[string]fleet.ReserveState{}}
+		snapshot.MintExpiresAt = map[string]time.Time{}
 		inflows, outflows := map[string]int64{}, map[string]int64{}
 		for name, r := range c.Reserves {
 			snapshot.Reserves[name] = fleet.ReserveState{ReserveIdentity: fleet.ReserveIdentity{Address: name, Market: "market-" + name, Mint: r.Mint}, Slot: 1000, SupplyAPYBPS: r.APY, TotalSupplyUSDMicros: r.Supply, EconomicLifetimeMillis: 120000}
 			inflows[name], outflows[name] = r.Inflow, r.Outflow
+			snapshot.MintExpiresAt[r.Mint] = snapshot.ExpiresAt
 		}
 		vaults := []fleet.FleetVault{}
 		for _, v := range c.Vaults {
 			source := c.Reserves[v.Source]
-			fv := fleet.FleetVault{Position: fleet.VaultPosition{VaultID: v.ID, SnapshotID: v.ID, VaultPubkey: fmt.Sprint("vault-", v.ID), PolicyID: 1, SourceReserve: v.Source, Market: "market-" + v.Source, Mint: source.Mint, AmountRaw: v.Amount, SourceCollateralAmountRaw: v.Collateral, SourceAmountSemantics: "kamino_obligation_collateral_deposited_amount"}, CommittedInflows: inflows, CommittedOutflows: outflows, CrossMintTargets: map[string]fleet.CrossMintPolicyBindings{}, CrossMintMaxValueLossBPS: 50}
+			if v.IdleMint != "" {
+				source.Mint = v.IdleMint
+			}
+			fv := fleet.FleetVault{Position: fleet.VaultPosition{VaultID: v.ID, SnapshotID: v.ID, VaultPubkey: fmt.Sprint("vault-", v.ID), PolicyID: 1, PolicyAuthority: v.Tenant, SourceReserve: v.Source, Market: "market-" + v.Source, Mint: source.Mint, AmountRaw: v.Amount, SourceCollateralAmountRaw: v.Collateral, SourceAmountSemantics: "kamino_obligation_collateral_deposited_amount"}, CommittedInflows: inflows, CommittedOutflows: outflows, CrossMintTargets: map[string]fleet.CrossMintPolicyBindings{}, CrossMintMaxValueLossBPS: 50}
+			if v.IdleMint != "" {
+				fv.IdleTokenAccount = fmt.Sprint("idle-ata-", v.ID, "-", v.IdleMint)
+				fv.Position.SourceAmountSemantics = "idle_vault_liquidity"
+			}
 			for _, target := range v.Targets {
 				if c.Reserves[target].Mint == source.Mint {
 					fv.AllowedTargets = append(fv.AllowedTargets, target)
-				} else {
+				} else if v.IdleMint == "" {
 					// Capability admission is an explicit fixture assumption, not tested here.
 					fv.CrossMintTargets[target] = fleet.CrossMintPolicyBindings{}
 				}
 			}
 			vaults = append(vaults, fv)
 		}
-		plan, err := fleet.PlanFleet(snapshot, vaults)
+		plan, err := fleet.PlanFleetShadowAt(snapshot, vaults, now)
 		if err != nil {
 			fatal(fmt.Errorf("%s: %w", c.Name, err))
 		}

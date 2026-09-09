@@ -1,19 +1,19 @@
 use klend_interface::{
+    KLEND_PROGRAM_ID,
     instructions::{
         deposit::{
-            deposit_reserve_liquidity_and_obligation_collateral_v2,
             DepositReserveLiquidityAndObligationCollateralV2Accounts,
+            deposit_reserve_liquidity_and_obligation_collateral_v2,
         },
         refresh::{
-            refresh_obligation, refresh_reserve, RefreshObligationAccounts, RefreshReserveAccounts,
+            RefreshObligationAccounts, RefreshReserveAccounts, refresh_obligation, refresh_reserve,
         },
         withdraw::{
-            withdraw_obligation_collateral_and_redeem_reserve_collateral_v2,
             WithdrawObligationCollateralAndRedeemReserveCollateralV2Accounts,
+            withdraw_obligation_collateral_and_redeem_reserve_collateral_v2,
         },
     },
     pda::{farms_user_state, lending_market_authority, obligation},
-    KLEND_PROGRAM_ID,
 };
 use serde::{Deserialize, Serialize};
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
@@ -72,11 +72,33 @@ struct OutputInstruction {
     data_hex: String,
 }
 #[derive(Deserialize)]
+#[serde(tag = "operation", deny_unknown_fields)]
+enum ProxyRequest {
+    #[serde(rename = "buildSameMintRoute")]
+    SameMint {
+        #[serde(rename = "schemaVersion")]
+        schema_version: u8,
+        request: Request,
+    },
+    #[serde(rename = "buildCrossMintLegs")]
+    CrossMint {
+        #[serde(rename = "schemaVersion")]
+        schema_version: u8,
+        request: Request,
+    },
+    #[serde(rename = "buildIdleDeposit")]
+    IdleDeposit {
+        #[serde(rename = "schemaVersion")]
+        schema_version: u8,
+        request: IdleDepositRequest,
+    },
+}
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ProxyRequest {
-    schema_version: u8,
-    operation: String,
-    request: Request,
+struct IdleDepositRequest {
+    vault: String,
+    target: Position,
+    deposit_liquidity_amount: u64,
 }
 #[derive(Serialize)]
 struct RouteOutput {
@@ -227,14 +249,56 @@ fn deposit_ix(vault: Pubkey, p: &Position, amount: u64) -> Result<Instruction, B
         amount,
     ))
 }
+fn build_idle_json(mut r: IdleDepositRequest) -> Result<String, Box<dyn Error>> {
+    if r.deposit_liquidity_amount == 0
+        || r.target.obligation.is_empty()
+        || r.target.market_authority.is_empty()
+        || !r.target.obligation_borrow_reserves.is_empty()
+        || r.target.obligation_deposit_reserves.len() > 1
+        || r.target
+            .obligation_deposit_reserves
+            .iter()
+            .any(|reserve| reserve != &r.target.reserve)
+    {
+        return Err("invalid idle deposit amount or obligation footprint".into());
+    }
+    let vault = key(&r.vault)?;
+    bind_pdas(&mut r.target, vault)?;
+    let public = vec![
+        encoded("kamino_refresh_reserve", refresh_reserve_ix(&r.target)?),
+        encoded(
+            "kamino_refresh_obligation",
+            refresh_obligation_ix(&r.target, false)?,
+        ),
+    ];
+    let protected = vec![encoded(
+        "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2",
+        deposit_ix(vault, &r.target, r.deposit_liquidity_amount)?,
+    )];
+    Ok(serde_json::to_string(&ProxyOutput {
+        schema_version: 1,
+        operation: "buildIdleDeposit",
+        route: RouteOutput { public, protected },
+    })?)
+}
+
 pub fn build_json(raw: &str) -> Result<String, Box<dyn Error>> {
     let input: ProxyRequest = serde_json::from_str(raw)?;
-    let operation = match (input.schema_version, input.operation.as_str()) {
-        (1, "buildSameMintRoute") => "buildSameMintRoute",
-        (1, "buildCrossMintLegs") => "buildCrossMintLegs",
-        _ => return Err("unsupported KLend proxy schema or operation".into()),
+    let (operation, mut r) = match input {
+        ProxyRequest::SameMint {
+            schema_version: 1,
+            request,
+        } => ("buildSameMintRoute", request),
+        ProxyRequest::CrossMint {
+            schema_version: 1,
+            request,
+        } => ("buildCrossMintLegs", request),
+        ProxyRequest::IdleDeposit {
+            schema_version: 1,
+            request,
+        } => return build_idle_json(request),
+        _ => return Err("unsupported KLend proxy schema".into()),
     };
-    let mut r = input.request;
     let same_mint = r.source.liquidity_mint == r.target.liquidity_mint;
     let same_ata = r.source.vault_liquidity_ata == r.target.vault_liquidity_ata;
     let valid_lane = match operation {

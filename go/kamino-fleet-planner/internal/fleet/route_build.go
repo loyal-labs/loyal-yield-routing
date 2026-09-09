@@ -96,9 +96,9 @@ type proxyInstruction struct {
 	DataHex  string               `json:"dataHex"`
 }
 type proxyRequest struct {
-	SchemaVersion int                        `json:"schemaVersion"`
-	Operation     string                     `json:"operation"`
-	Request       KaminoSameMintRouteRequest `json:"request"`
+	SchemaVersion int    `json:"schemaVersion"`
+	Operation     string `json:"operation"`
+	Request       any    `json:"request"`
 }
 type proxyRoute struct {
 	Public    []proxyInstruction `json:"public"`
@@ -143,7 +143,21 @@ func (p *KLendProxy) build(ctx context.Context, request KaminoSameMintRouteReque
 			position.ObligationBorrowReserves = []string{}
 		}
 	}
-	input, err := json.Marshal(proxyRequest{SchemaVersion: 1, Operation: operation, Request: request})
+	route, err := p.invoke(ctx, proxyRequest{SchemaVersion: 1, Operation: operation, Request: request})
+	if err != nil {
+		return KaminoSameMintRoute{}, err
+	}
+	if err := validateProxyRoute(route, request); err != nil {
+		return KaminoSameMintRoute{}, err
+	}
+	return route, nil
+}
+
+func (p *KLendProxy) invoke(ctx context.Context, request proxyRequest) (KaminoSameMintRoute, error) {
+	if p == nil || p.executable == "" {
+		return KaminoSameMintRoute{}, fmt.Errorf("KLend proxy is not configured")
+	}
+	input, err := json.Marshal(request)
 	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
@@ -182,7 +196,7 @@ func (p *KLendProxy) build(ctx context.Context, request KaminoSameMintRouteReque
 		}
 		return out, nil
 	}
-	if raw.SchemaVersion != 1 || raw.Operation != operation {
+	if raw.SchemaVersion != 1 || raw.Operation != request.Operation {
 		return KaminoSameMintRoute{}, fmt.Errorf("KLend proxy response contract drifted")
 	}
 	public, err := convert(raw.Route.Public)
@@ -193,11 +207,7 @@ func (p *KLendProxy) build(ctx context.Context, request KaminoSameMintRouteReque
 	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
-	route := KaminoSameMintRoute{public, protected}
-	if err := validateProxyRoute(route, request); err != nil {
-		return KaminoSameMintRoute{}, err
-	}
-	return route, nil
+	return KaminoSameMintRoute{public, protected}, nil
 }
 func validateProxyRoute(route KaminoSameMintRoute, r KaminoSameMintRouteRequest) error {
 	publicCount := 4

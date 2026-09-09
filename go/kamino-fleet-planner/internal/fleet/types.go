@@ -245,6 +245,7 @@ type VaultPosition struct {
 	VaultIndex                      int16
 	VaultPubkey                     string
 	PolicyID                        int64
+	PolicyAuthority                 string
 	PolicyAccount                   string
 	SourceReserve                   string
 	Market                          string

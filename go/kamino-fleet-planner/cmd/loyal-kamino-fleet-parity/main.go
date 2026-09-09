@@ -85,15 +85,17 @@ func main() {
 	}
 }
 
+// This fixed wire/identity fixture admits only reserve-b, exactly like
+// kamino-fleet-parity-reference.rs. Alternative-target allocation is exercised
+// independently by compare-fleet-decisions.sh; it must not be suppressed here.
 func buildPlan(now time.Time) ([]map[string]any, error) {
 	snapshot := fleet.MarketSnapshot{OptimizerEpochID: 7, ExpiresAt: now.Add(5 * time.Minute), Slot: 1000, ObservedAt: now, Hash: strings.Repeat("a", 64), Reserves: map[string]fleet.ReserveState{
 		"reserve-a": {ReserveIdentity: fleet.ReserveIdentity{Address: "reserve-a", Market: "market-a", Mint: fleet.USDCMint}, Slot: 1000, SupplyAPYBPS: 81, TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 120000},
 		"reserve-b": {ReserveIdentity: fleet.ReserveIdentity{Address: "reserve-b", Market: "market-b", Mint: fleet.USDCMint}, Slot: 1000, SupplyAPYBPS: 919, TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 120000},
-		"reserve-c": {ReserveIdentity: fleet.ReserveIdentity{Address: "reserve-c", Market: "market-c", Mint: fleet.USDCMint}, Slot: 1000, SupplyAPYBPS: 500, TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 120000},
 	}}
 	vaults := []fleet.FleetVault{}
 	for i := 0; i < 3; i++ {
-		vaults = append(vaults, fleet.FleetVault{Position: fleet.VaultPosition{VaultID: int64(i + 1), SnapshotID: int64(100 + i), VaultPubkey: fmt.Sprintf("vault-%d", i+1), PolicyAccount: "policy", SourceReserve: "reserve-a", Market: "market-a", Mint: fleet.USDCMint, AmountRaw: 9_000_000_000, SourceCollateralAmountRaw: 9_000_000_000, SourceAmountSemantics: "redeemable_liquidity_amount"}, AllowedTargets: []string{"reserve-b", "reserve-c"}})
+		vaults = append(vaults, fleet.FleetVault{Position: fleet.VaultPosition{VaultID: int64(i + 1), SnapshotID: int64(100 + i), VaultPubkey: fmt.Sprintf("vault-%d", i+1), PolicyAccount: "policy", SourceReserve: "reserve-a", Market: "market-a", Mint: fleet.USDCMint, AmountRaw: 9_000_000_000, SourceCollateralAmountRaw: 9_000_000_000, SourceAmountSemantics: "redeemable_liquidity_amount"}, AllowedTargets: []string{"reserve-b"}})
 	}
 	p, err := fleet.PlanFleet(snapshot, vaults)
 	if err != nil {
