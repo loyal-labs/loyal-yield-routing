@@ -318,7 +318,7 @@ describe("HXtk journaled flow", () => {
 
     await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
       finalize: async () => { throw new Error("not readable"); },
-      currentBlockHeight: async () => 2,
+      currentBlockHeight: async () => 100,
     }));
     expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
       status: "aborted-pre-send",
@@ -328,11 +328,11 @@ describe("HXtk journaled flow", () => {
     await runJournaledStepForTest(fx.input(join(fx.root, "rearmed.json"), "execute"), deps(fx, {
       send: async () => {
         sends += 1;
-        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        throw new Error("must not re-arm while the original signature is unreadable");
       },
     }));
-    expect(sends).toBe(2);
-    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("aborted-pre-send");
   });
 
   test("attempted-expiry transition is canonical-first and resumes after every crash boundary", async () => {
@@ -348,7 +348,7 @@ describe("HXtk journaled flow", () => {
       }))).rejects.toThrow("response was lost");
       await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
         finalize: async () => { throw new Error("not readable"); },
-        currentBlockHeight: async () => 2,
+        currentBlockHeight: async () => 100,
         faultAfterTransitionStep: (step) => {
           if (step === transitionStep) throw new JournalTransitionFault(step);
         },
@@ -360,7 +360,7 @@ describe("HXtk journaled flow", () => {
       });
       await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
         finalize: async () => { throw new Error("not readable"); },
-        currentBlockHeight: async () => 2,
+        currentBlockHeight: async () => 100,
       }))).resolves.toBe(0);
       await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
         send: async () => {
@@ -401,7 +401,7 @@ describe("HXtk journaled flow", () => {
 
     await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
       finalize: async () => { throw new Error("not readable"); },
-      currentBlockHeight: async () => 2,
+      currentBlockHeight: async () => 100,
     }))).resolves.toBe(0);
     await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
       send: async () => {
@@ -410,11 +410,7 @@ describe("HXtk journaled flow", () => {
       },
     }))).resolves.toBe(0);
     expect(sends).toBe(1);
-    expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
-      status: "aborted-pre-send",
-      abortReason: "attempted-expired",
-      broadcast: "attempted",
-    });
+    expect(JSON.parse(readFileSync(statePath, "utf8")).status).toBe("finalized");
   });
 
   test("a late landed signature wins over the expiry decision", async () => {
@@ -434,7 +430,7 @@ describe("HXtk journaled flow", () => {
         if (finalizeReads === 1) throw new Error("not readable");
         return fx.finalized;
       },
-      currentBlockHeight: async () => 2,
+      currentBlockHeight: async () => 100,
     }))).resolves.toBe(0);
     expect(sends).toBe(1);
     expect(finalizeReads).toBe(2);

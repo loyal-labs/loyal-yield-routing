@@ -2302,30 +2302,11 @@ export function resumeInterruptedTransition(input: Readonly<{
       && state.abortedJournal.length > 0
       && existsSync(state.abortedJournal)
       && !existsSync(pendingPath);
-    if (!complete) {
-      const pending = existsSync(pendingPath)
-        ? readBoundPending(pendingPath).record
-        : recordAt(state.pendingRecord, `${input.step} canonical pendingRecord`);
-      appliedAbortPath = publishAbortArtifact(
-        input.journal,
-        state,
-        pending,
-        "attempted-expired",
-        existsSync(pendingPath) ? pendingPath : undefined,
-        "attempted",
-      );
-      if (String(state.abortedJournal ?? "") !== appliedAbortPath) {
-        markCanonicalLegState(
-          input.step,
-          input.journal,
-          { status: "aborted-pre-send", broadcast: "attempted", abortedJournal: appliedAbortPath },
-          stateGeneration(state),
-          input.stateRoot,
-        );
-        state = readCanonicalLegState(input.step, false, input.stateRoot, { allowRollForward: true });
-      }
-      attemptedExpiryRecovered = true;
-    }
+    // Do not complete or publish an attempted-expired recovery artifact until
+    // the async caller has re-read the expected signature at finalized
+    // commitment. RPC lag can make an already-landed signature appear absent.
+    // The caller owns the chain read and may finalize this attempt instead.
+    attemptedExpiryRecovered = true;
   }
   if (existsSync(pendingPath)) {
     const pending = readBoundPending(pendingPath).record;
@@ -2458,6 +2439,11 @@ export type JournalTransitionStep =
   | "attempted-expiry-state"
   | "attempted-expiry-artifact"
   | "attempted-expiry-marker";
+
+// A node may lag indexing a signature that was included before expiry. Keep
+// this margin explicit: expiry is only decided after finalized height is at
+// least 64 blocks beyond the transaction's last-valid height.
+export const ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS = 64;
 
 export class JournalTransitionFault extends Error {
   readonly transitionStep: JournalTransitionStep;
@@ -2995,6 +2981,96 @@ async function runJournaledStepHeld(input: Readonly<{
   const sectionState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true });
   const staleAbortArtifacts = [...resumed.staleAbortArtifacts];
   let expectedGeneration = stateGeneration(sectionState);
+  if (sectionState?.status === "aborted-pre-send" && sectionState.abortReason === "attempted-expired") {
+    const pending = recordAt(sectionState.pendingRecord, `${input.step} canonical pendingRecord`);
+    const wire = journalWire(pending, input.schema, input.step, "pending");
+    let landed: FinalizedTransaction | null = null;
+    try {
+      landed = await loadFinalized(input.rpcUrl, wire.signature);
+    } catch {
+      // An unreadable signature is not proof of expiry. The pre-send snapshot
+      // gate below remains the second defense for a new journal.
+    }
+    if (landed !== null) {
+      assertFinalizedJournalMessage(wire, landed);
+      if (String(sectionState.journal ?? "") !== input.journal) {
+        console.log(toJson({
+          schema: input.schema,
+          step: input.step,
+          verdict: "REARM_REFUSED_ATTEMPTED_EXPIRY_SIGNATURE_LANDED",
+          reason: "the original attempted-expired signature is finalized; reconcile the original journal and do not create a second send",
+          journal: input.journal,
+          canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
+          finalizeInstruction: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: true }),
+          staleAbortArtifacts,
+        }, 2));
+        return 0;
+      }
+      const reconciliation = await input.reconcile({ pending, finalized: landed });
+      writePrivate(input.journal, {
+        ...pending,
+        verdict: "FINALIZED_RECONCILED",
+        sent: true,
+        signed: true,
+        broadcast: true,
+        signature: wire.signature,
+        finalizedSlot: landed.slot,
+        finalizedBlockTime: landed.blockTime ?? null,
+        ...reconciliation,
+      }, "wx");
+      expectedGeneration = markCanonicalLegState(input.step, input.journal, {
+        status: "finalized",
+        broadcast: true,
+        signature: wire.signature,
+        finalizedJournalSha256: finalizedJournalSha256(input.journal),
+      }, expectedGeneration, stateRoot);
+      console.log(toJson({
+        schema: input.schema,
+        step: input.step,
+        verdict: "FINALIZED_RECONCILED",
+        signature: wire.signature,
+        finalizedSlot: landed.slot,
+        journal: input.journal,
+        canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
+        staleAbortArtifacts,
+        recoveryCommand: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: true }),
+      }, 2));
+      return 0;
+    }
+    if (input.mode === "execute" && String(sectionState.journal ?? "") !== input.journal) {
+      console.log(toJson({
+        schema: input.schema,
+        step: input.step,
+        verdict: "REARM_REFUSED_ATTEMPTED_EXPIRY_SIGNATURE_UNREADABLE",
+        reason: "the attempted-expired signature remains unreadable after finalized-commitment recheck; reconcile the original journal before re-arming",
+        journal: input.journal,
+        canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
+        finalizeInstruction: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: false }),
+        staleAbortArtifacts,
+      }, 2));
+      return 0;
+    }
+    if (resumed.attemptedExpiryRecovered) {
+      const pendingPath = `${input.journal}.pending`;
+      const applied = publishAbortArtifact(
+        input.journal,
+        sectionState,
+        pending,
+        "attempted-expired",
+        existsSync(pendingPath) ? pendingPath : undefined,
+        "attempted",
+      );
+      if (String(sectionState.abortedJournal ?? "") !== applied) {
+        markCanonicalLegState(input.step, input.journal, {
+          status: "aborted-pre-send",
+          broadcast: "attempted",
+          abortReason: "attempted-expired",
+          attemptGeneration: Number(sectionState.attemptGeneration ?? sectionState.generation),
+          abortedJournal: applied,
+        }, expectedGeneration, stateRoot);
+      }
+    }
+  }
   if (new Set(["harvest", "cancel", "request", "claim", "restore-degradation"]).has(input.step)) {
     await assertRepairPolicyRetired(input.step);
   }
@@ -3087,7 +3163,7 @@ async function runJournaledStepHeld(input: Readonly<{
         || !Number.isSafeInteger(lastValidBlockHeight)
         || lastValidBlockHeight < 0) throw error;
       const observedBlockHeight = await currentBlockHeight(input.rpcUrl);
-      if (observedBlockHeight <= lastValidBlockHeight) throw error;
+      if (observedBlockHeight < lastValidBlockHeight + ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS) throw error;
       // The signature may land after the first lookup and before the expiry
       // decision. Re-read it once before declaring the attempt expired.
       try {
@@ -3191,7 +3267,7 @@ async function runJournaledStepHeld(input: Readonly<{
         || !Number.isSafeInteger(lastValidBlockHeight)
         || lastValidBlockHeight < 0) throw error;
       const observedBlockHeight = await currentBlockHeight(input.rpcUrl);
-      if (observedBlockHeight <= lastValidBlockHeight) throw error;
+      if (observedBlockHeight < lastValidBlockHeight + ATTEMPTED_EXPIRY_RECHECK_MARGIN_BLOCKS) throw error;
       // The signature may land after the first lookup and before the expiry
       // decision. Re-read it once before declaring the attempt expired.
       try {
