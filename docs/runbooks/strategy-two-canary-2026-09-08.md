@@ -38,12 +38,16 @@ authorization to send.
    3,793,536`, so `idle + receipt1 − tv == 3,793,536`; before repair,
    `3,793,417 + 2,793,417 − 2,793,298 == 3,793,536`. Never crank the old
    receipt below `3,793,536`.
-2. The fresh strategy-two config, report ticket, strategy receipt, and custody
+2. The finalized degradation restore is complete with
+   `LockedProfitDegradationDuration = 86,400` at least 24 h after the repair
+   signature and before this canary or any tester deposit (operator checklist
+   step 7; contract P1.7).
+3. The fresh strategy-two config, report ticket, strategy receipt, and custody
    ATA are initialized and read back at finalized commitment with receipt and
    custody both zero. The four replacement policies are finalized at the
    Settings-derived seeds `141–144`; the one-shot repair policy at seed `140`
    is finalized and retired; seeds `62–65` are absent.
-3. The shared seed journal is identity-bound to the Settings address, mainnet
+4. The shared seed journal is identity-bound to the Settings address, mainnet
    genesis hash, strategy-two config, delegated signer, seed-140 repair PDA,
    finalized observation slot, and the recorded repair-policy data hash. Run
    the keyless start gate and expect `PASS_LEGACY_RETIRED`:
@@ -53,16 +57,16 @@ authorization to send.
    op run --env-file=.env.1password -- sh -c 'SOLANA_RPC_URL="$SOLANA_RPC_URL" bun run src/activation/rwa-multiply-custom-policies.ts --target strategy-two --config <config2-addr> --delegated <executor2-addr> --seed-journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-policy-seeds.journal.json --assert-legacy-retired'
    ```
 
-4. The adaptor v3.3 upgrade has a finalized readback and M6 has been re-pinned
+5. The adaptor v3.3 upgrade has a finalized readback and M6 has been re-pinned
    to the deployed adaptor ProgramData slot and
    `836ded9ff4e79cda9fafbafcffcf9f2e9f395c762c69ba5af4630e82a9d8a4d0`. The
    Voltr executable pin remains
    `bf1c1831b3d6350f4340badb942bd2e7bfaca4aa89276cb65e8480aa30d44c56`.
-5. The strategy-two worker manifest/config is generated from the shared seed
+6. The strategy-two worker manifest/config is generated from the shared seed
    journal, the image is an immutable `backyard-rwa-worker:sha-<commit>` image,
    the Render service is configured for that image, and the worker startup
    Settings-anchor plus genesis check passes within its 60-second deadline.
-6. The route-level latch is clear only because its cause was resolved. If an
+7. The route-level latch is clear only because its cause was resolved. If an
    operator must clear it, use the existing command with a meaningful reason;
    it writes the `HOLD_CLEARED` journal row and does not send a chain
    transaction:
@@ -72,7 +76,7 @@ authorization to send.
    op run --env-file=.env.1password -- sh -c 'go run ./cmd/backyard-rwa-worker clear-hold --route "$BACKYARD_RWA_ROUTE_KEY" --reason "<operator reason>"'
    ```
 
-7. Before the canary, verify the zero-fee configuration, `600`-second waiting
+8. Before the canary, verify the zero-fee configuration, `600`-second waiting
    period, `1,000,000,000,000` raw NAV cap, and the complete M1–M8 monitor set.
 
 ## Canary lifecycle
