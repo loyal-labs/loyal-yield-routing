@@ -2360,20 +2360,16 @@ function publishAbortArtifact(
   );
   if (existingArtifact !== undefined) return existingArtifact.path;
   const artifactPath = abortedJournalPath(journal, String(state.attemptToken));
-  const aborted = abortRecordForState(state, pending, reason, broadcast, extra);
   if (pendingPath !== undefined && existsSync(pendingPath)) {
-    rewritePendingStatus(pendingPath, {
-      verdict: aborted.verdict,
-      sent: false,
-      signed: true,
-      broadcast,
-      abortReason: reason,
-      attemptGeneration: aborted.attemptGeneration,
-      journalBindingSha256: aborted.journalBindingSha256,
-      sendStatus: aborted.sendStatus,
-    });
+    // The renamed file is the durable abort artifact. Rewrite the complete
+    // record, including proven-expiry proof and rearmable fields; a
+    // volatile-only pending rewrite would drop those fields at the rename.
+    const currentPending = readBoundPending(pendingPath).record;
+    const aborted = abortRecordForState(state, currentPending, reason, broadcast, extra);
+    writePrivate(pendingPath, aborted, "w");
     renamePrivateFile(pendingPath, artifactPath);
   } else {
+    const aborted = abortRecordForState(state, pending, reason, broadcast, extra);
     writePrivate(artifactPath, aborted, "wx");
   }
   return artifactPath;
@@ -2628,6 +2624,10 @@ export const FINALIZED_WAIT_MAX_POLLS = 30;
 export const FINALIZED_WAIT_ERROR_POLLS = 3;
 const ATTEMPTED_EXPIRY_REASON = "attempted-expired" as const;
 const PROVEN_ATTEMPTED_EXPIRY_REASON = "attempted-expired-proven" as const;
+
+function provenExpiryRearmInstruction(step: string, originalJournal: string): string {
+  return `re-arm ${step} with --execute --journal <new-journal>.json after reviewing the proven expiry artifact; original journal is ${originalJournal}`;
+}
 
 export class JournalTransitionFault extends Error {
   readonly transitionStep: JournalTransitionStep;
@@ -3436,7 +3436,9 @@ async function runJournaledStepHeld(input: Readonly<{
     const canonicalJournal = String(sectionState.journal ?? "");
     const pendingPath = `${input.journal}.pending`;
     const proof = sectionState.attemptedExpiryProof as AttemptedExpiryProof | undefined;
-    if (canonicalJournal === input.journal
+    const sameJournal = canonicalJournal === input.journal;
+    const recoveryInstruction = provenExpiryRearmInstruction(input.step, canonicalJournal);
+    if (sameJournal
       && sectionState.abortedJournal === undefined
       && proof !== undefined) {
       const pending = recordAt(sectionState.pendingRecord, `${input.step} canonical pendingRecord`);
@@ -3468,16 +3470,50 @@ async function runJournaledStepHeld(input: Readonly<{
         }, expectedGeneration, stateRoot);
       }
       await faultAfterTransitionStep(dependencies, "attempted-expiry-marker");
+      if (input.mode === "execute") {
+        throw new Error(
+          `JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN: proven expiry is re-armable only with a new journal; ${recoveryInstruction}`,
+        );
+      }
+      console.log(toJson({
+        schema: input.schema,
+        step: input.step,
+        verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY_PROVEN",
+        rearmable: true,
+        abortReason: PROVEN_ATTEMPTED_EXPIRY_REASON,
+        attemptedExpiryProof: proof,
+        recoveryInstruction,
+        journal: input.journal,
+        canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
+        abortedJournal: applied,
+        staleAbortArtifacts,
+      }, 2));
       return 0;
+    }
+    if (sameJournal && input.mode === "reconcile") {
+      console.log(toJson({
+        schema: input.schema,
+        step: input.step,
+        verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY_PROVEN",
+        rearmable: true,
+        abortReason: PROVEN_ATTEMPTED_EXPIRY_REASON,
+        attemptedExpiryProof: proof ?? null,
+        recoveryInstruction,
+        journal: input.journal,
+        canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
+        abortedJournal: sectionState.abortedJournal ?? null,
+        staleAbortArtifacts,
+      }, 2));
+      return 0;
+    }
+    if (sameJournal) {
+      throw new Error(
+        `JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN: proven expiry is re-armable only with a new journal; ${recoveryInstruction}`,
+      );
     }
     if (input.mode !== "execute") {
       throw new Error(
-        `PROVEN_ATTEMPTED_EXPIRY_REARM_REQUIRED: use --execute with a new journal; original journal is ${canonicalJournal}`,
-      );
-    }
-    if (canonicalJournal === input.journal) {
-      throw new Error(
-        `JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN: proven expiry is re-armable only with a new journal; original journal is ${canonicalJournal}`,
+        `PROVEN_ATTEMPTED_EXPIRY_REARM_REQUIRED: ${recoveryInstruction}`,
       );
     }
     if (existsSync(input.journal) || existsSync(`${input.journal}.pending`)) {
@@ -3690,7 +3726,7 @@ async function runJournaledStepHeld(input: Readonly<{
           rearmable: true,
           abortReason: PROVEN_ATTEMPTED_EXPIRY_REASON,
           attemptedExpiryProof: proof,
-          recoveryInstruction: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: false }),
+          recoveryInstruction: provenExpiryRearmInstruction(input.step, input.journal),
           lastValidBlockHeight,
           finalizedBlockHeight: observedBlockHeight,
           journal: input.journal,

@@ -1005,6 +1005,71 @@ describe("HXtk journaled flow", () => {
     }
   });
 
+  test("same-journal execute completes interrupted proven expiry then refuses before re-arm", async () => {
+    const fx = fixture();
+    let sends = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("submitted but response was lost");
+      },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("response was lost");
+
+    // Crash after the canonical proven-expiry election, before artifact publication.
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => { throw new Error("not readable"); },
+      currentBlockHeight: async () => 100,
+      faultAfterTransitionStep: (step) => {
+        if (step === "attempted-expiry-state") throw new JournalTransitionFault(step);
+      },
+    }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: attempted-expiry-state");
+
+    const statePath = join(fx.stateRoot, "flow-test.state");
+    expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+      status: "aborted-pre-send",
+      abortReason: "attempted-expired-proven",
+      rearmable: true,
+      attemptedExpiryProof: { finalizedBlockHeight: 100 },
+    });
+
+    // The same execute completes the artifact and marker idempotently, then refuses
+    // before build/send and therefore cannot enter the policy-removal chain.
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("must not send before re-arm");
+      },
+    }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN");
+    expect(sends).toBe(1);
+    expect(existsSync(`${fx.journal}.pending`)).toBe(false);
+    const artifactNames = readdirSync(fx.root).filter((entry) => entry.includes("aborted-"));
+    expect(artifactNames).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(fx.root, artifactNames[0]!), "utf8"))).toMatchObject({
+      rearmable: true,
+      attemptedExpiryProof: { finalizedBlockHeight: 100, absentReads: [{ kind: "absent" }, { kind: "absent" }] },
+    });
+    expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+      status: "aborted-pre-send",
+      rearmable: true,
+      attemptedExpiryProof: { finalizedBlockHeight: 100 },
+    });
+
+    const newJournal = join(fx.root, "rearmed-after-interrupted-expiry.json");
+    expect(await runJournaledStepForTest(fx.input(newJournal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+    }))).toBe(0);
+    expect(sends).toBe(2);
+    expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+      status: "finalized",
+      journal: newJournal,
+      history: [{ journal: fx.journal, abortReason: "attempted-expired-proven" }],
+    });
+  });
+
   test("legacy expiry ordering with no pending journal resumes in reconcile and execute", async () => {
     const fx = fixture();
     let sends = 0;

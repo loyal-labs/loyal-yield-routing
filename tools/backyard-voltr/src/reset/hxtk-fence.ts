@@ -37,6 +37,12 @@ const VOLATILE_PENDING_FIELDS = new Set([
   "journalBindingSha256",
   "pendingBindingSha256",
   "sendStatus",
+  // Recovery-only metadata may be added before a pending inode is renamed to
+  // its abort artifact; it is not part of the immutable transaction binding.
+  "rearmable",
+  "attemptedExpiryProof",
+  "lastValidBlockHeight",
+  "finalizedBlockHeight",
 ]);
 
 function canonicalValue(value: unknown): unknown {
