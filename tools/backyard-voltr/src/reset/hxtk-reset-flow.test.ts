@@ -8,12 +8,23 @@ import bs58 from "bs58";
 
 import {
   assertReportSlotFresh,
+  assertHxtkCancelProofPreState,
+  assertHxtkCancelSimulation,
+  assertHxtkClaimProof,
+  assertHxtkRequestSimulation,
   buildFreshRepairReport,
   buildHxtkRecoveryCommand,
+  CANCEL_EXPECTED_BURN_LP,
+  CANCEL_EXPECTED_REFUND_LP,
+  CANCEL_EXPECTED_SUPPLY_AFTER,
+  CLAIM_EXPECTED_PAYOUT_RAW,
+  CLAIM_EXPECTED_RESIDUAL_RAW,
+  HXTK_RESET_PROOF_PRESTATE,
   HXTK_RECOVERY_LEGS,
   JournalTransitionFault,
   REPORT_AGE_MARGIN_SLOTS,
   ADAPTOR_MAX_REPORT_AGE_SLOTS,
+  REQUEST_EXPECTED_LP,
   buildRepairRecoveryCommands,
   resumeInterruptedTransition,
   runJournaledStepForTest,
@@ -164,6 +175,151 @@ function repairSnapshot() {
     requestEscrowLpBalance: 99_941_522n,
   } as never;
 }
+
+function proofPostCancelState() {
+  return {
+    adminLpBalance: CANCEL_EXPECTED_SUPPLY_AFTER,
+    lpSupply: CANCEL_EXPECTED_SUPPLY_AFTER,
+    totalValue: 3_793_417n,
+    idleBalance: 3_793_417n,
+    receipt1PositionValue: 3_793_536n,
+    requestEscrowLpBalance: 0n,
+    requestReceiptLp: null,
+  } as const;
+}
+
+function proofClaimPreState() {
+  return {
+    requestAmountLp: REQUEST_EXPECTED_LP,
+    totalValue: 3_793_417n,
+    idleBalance: 3_793_417n,
+    lpSupply: REQUEST_EXPECTED_LP,
+    receipt1PositionValue: 3_793_536n,
+  } as const;
+}
+
+describe("HXtk reset proof-pinned assertions", () => {
+  test("fake cancel simulation passes the documented partial refund and burn", () => {
+    const checks = assertHxtkCancelSimulation({
+      preState: HXTK_RESET_PROOF_PRESTATE,
+      simulationSucceeded: true,
+      cancelEventCount: 1,
+      eventRefundLp: CANCEL_EXPECTED_REFUND_LP,
+      eventBurnLp: CANCEL_EXPECTED_BURN_LP,
+      escrowAfter: 0n,
+      requestReceiptLpAfter: null,
+      adminLpDelta: CANCEL_EXPECTED_REFUND_LP,
+      adminLpAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      totalValueAfter: 3_793_417n,
+      idleBalanceAfter: 3_793_417n,
+    }, "fake cancel simulation");
+    expect(checks.every((check) => check.pass)).toBe(true);
+  });
+
+  test("cancel assertion refuses a wrong refund before any send", () => {
+    expect(() => assertHxtkCancelSimulation({
+      preState: HXTK_RESET_PROOF_PRESTATE,
+      simulationSucceeded: true,
+      cancelEventCount: 1,
+      eventRefundLp: CANCEL_EXPECTED_REFUND_LP + 1n,
+      eventBurnLp: CANCEL_EXPECTED_BURN_LP,
+      escrowAfter: 0n,
+      requestReceiptLpAfter: null,
+      adminLpDelta: CANCEL_EXPECTED_REFUND_LP,
+      adminLpAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      totalValueAfter: 3_793_417n,
+      idleBalanceAfter: 3_793_417n,
+    })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
+  });
+
+  test("cancel assertion refuses a wrong burn before any send", () => {
+    expect(() => assertHxtkCancelSimulation({
+      preState: HXTK_RESET_PROOF_PRESTATE,
+      simulationSucceeded: true,
+      cancelEventCount: 1,
+      eventRefundLp: CANCEL_EXPECTED_REFUND_LP,
+      eventBurnLp: CANCEL_EXPECTED_BURN_LP - 1n,
+      escrowAfter: 0n,
+      requestReceiptLpAfter: null,
+      adminLpDelta: CANCEL_EXPECTED_REFUND_LP,
+      adminLpAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      totalValueAfter: 3_793_417n,
+      idleBalanceAfter: 3_793_417n,
+    })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
+  });
+
+  test("cancel proof guard refuses drifted pre-state before signer loading", () => {
+    let signerReads = 0;
+    const prepareSignedCancel = () => {
+      assertHxtkCancelProofPreState({
+        ...HXTK_RESET_PROOF_PRESTATE,
+        lpSupply: HXTK_RESET_PROOF_PRESTATE.lpSupply + 1n,
+      }, "fake cancel pre-sign");
+      signerReads += 1;
+    };
+    expect(prepareSignedCancel).toThrow("HXTK_RESET_PROOF_STATE_DRIFT");
+    expect(signerReads).toBe(0);
+  });
+
+  test("request assertion pins all post-cancel LP and isWithdrawAll", () => {
+    expect(() => assertHxtkRequestSimulation({
+      preState: proofPostCancelState(),
+      simulationSucceeded: true,
+      requestEventCount: 1,
+      eventRequestedAmount: REQUEST_EXPECTED_LP,
+      eventIsAmountInLp: true,
+      eventIsWithdrawAll: true,
+      eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+      escrowAfter: REQUEST_EXPECTED_LP,
+      adminLpAfter: 0n,
+      supplyAfter: REQUEST_EXPECTED_LP,
+    })).not.toThrow();
+  });
+
+  test("request assertion refuses a non-proof amount", () => {
+    expect(() => assertHxtkRequestSimulation({
+      preState: proofPostCancelState(),
+      simulationSucceeded: true,
+      requestEventCount: 1,
+      eventRequestedAmount: REQUEST_EXPECTED_LP - 1n,
+      eventIsAmountInLp: true,
+      eventIsWithdrawAll: true,
+      eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+      escrowAfter: REQUEST_EXPECTED_LP - 1n,
+      adminLpAfter: 0n,
+      supplyAfter: REQUEST_EXPECTED_LP,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
+  });
+
+  test("claim assertion pins payout, burn, residual, and unchanged orphan receipt", () => {
+    expect(() => assertHxtkClaimProof({
+      preState: proofClaimPreState(),
+      payout: CLAIM_EXPECTED_PAYOUT_RAW,
+      lpBurned: REQUEST_EXPECTED_LP,
+      totalValueAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      idleBalanceAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      receipt1PositionValueAfter: 3_793_536n,
+      requestReceiptClosed: true,
+      escrowAfter: 0n,
+    })).not.toThrow();
+  });
+
+  test("claim assertion refuses a non-proof payout", () => {
+    expect(() => assertHxtkClaimProof({
+      preState: proofClaimPreState(),
+      payout: CLAIM_EXPECTED_PAYOUT_RAW + 1n,
+      lpBurned: REQUEST_EXPECTED_LP,
+      totalValueAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      idleBalanceAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      receipt1PositionValueAfter: 3_793_536n,
+      requestReceiptClosed: true,
+      escrowAfter: 0n,
+    })).toThrow("HXTK_CLAIM_PROOF_MISMATCH");
+  });
+});
 
 describe("HXtk journaled flow", () => {
   test("repair report sequence uses the fresh confirmed slot and snapshot NAV", async () => {

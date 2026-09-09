@@ -366,10 +366,18 @@ bun run reset:hxtk cancel --simulate
 
 The simulation is authoritative and must be re-read at this step. The cancel
 journal is pinned to the original frozen receipt PDA above; a replacement
-receipt is never an acceptable cancel target. Require
-escrow drain, a 1:1 refund of the actual escrow amount as the admin LP balance
-delta, zero LP burn, and a cleared receipt. Abort if the receipt
-owner/authority or escrow amount differs. The guarded command is:
+receipt is never an acceptable cancel target. For the proof-pinned pre-state,
+require `amountLpEscrowed=99,941,522`, frozen quote
+`amountAssetToWithdrawRaw=1,767,782`, `tv=idle=3,793,417`,
+`lpSupply=189,542,672`, `adminLpBalance=89,601,150`, and
+`receipt1=3,793,536`. Voltr's documented cancel semantics refund LP worth the
+frozen quote at the post-burn price and burn the rest: require exactly one
+`CancelRequestWithdrawVault` event with `amountLpRefunded=78,196,265` and
+`amountLpBurned=21,745,257`, escrow drained, and a cleared receipt. The admin
+LP delta must be the partial refund `78,196,265`, not the full escrow; supply
+must become `167,797,415`, with the admin holding 100% of it, while tv and idle
+remain `3,793,417`. Abort before signing if any pre-state figure, receipt
+owner/authority, or escrow amount differs. The guarded command is:
 
 ```sh
 op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk cancel --execute --journal /absolute/path/hxtk-cancel.json
@@ -378,15 +386,19 @@ op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk can
 ### 8. Re-request all LP at the repaired NAV
 
 Cancel and request are separate mainnet transactions. First confirm that the
-finalized cancel journal has reconciled the admin LP balance delta against the
-escrow refund. The request simulation is request-only and binds to that
-finalized cancel journal:
+finalized cancel journal has reconciled the partial refund, burn, post-cancel
+supply, event, and cleared receipt. The request simulation is request-only and
+binds to that finalized cancel journal:
 
 ```sh
 bun run reset:hxtk request --cancel-journal /absolute/path/hxtk-cancel.json --simulate
 ```
 
-Require all LP in escrow, admin LP ATA empty, and supply unchanged. The
+Require exactly `167,797,415` LP in escrow, the admin LP ATA empty, supply
+unchanged at `167,797,415`, and a request event with
+`requestedAmount=167,797,415`, `isAmountInLp=true`, and
+`isWithdrawAll=true`. Record the proof-pinned expected claim payout
+`3,793,394` and residual `tv=idle=23` in the operator plan. The
 simulation-only projection checks `withdrawableFromTs >= local now + 600`
 seconds; finalized reconciliation instead requires
 `withdrawableFromTs == request transaction blockTime + 600`, with at most a
@@ -416,11 +428,15 @@ bun run reset:hxtk claim --request-journal /absolute/path/hxtk-request.json --si
 ```
 
 The pre-send simulation records `expectedPayoutRaw` and `expectedLpBurnRaw` in
-the pending journal. Finalized reconciliation requires payout `>= 1`, payout
-exactly equal to `expectedPayoutRaw`, and LP burned exactly equal to both
-`expectedLpBurnRaw` and the request LP amount; any deviation is
-`RECONCILE_MISMATCH`. It also requires payout to remain no greater than the
-receipt quote, idle to decrease by exactly the payout, and escrow to drain.
+the pending journal, and for this proof-pinned request refuses any projection
+other than payout `3,793,394` and LP burn `167,797,415`. Finalized
+reconciliation requires payout `>= 1`, payout exactly equal to both the
+pre-send expectation and `3,793,394`, and LP burned exactly equal to both the
+pre-send expectation and the request LP amount. It also requires the
+`WithdrawVault` event to match, residual `tv=idle=23`, strategy-one receipt
+`3,793,536` unchanged, payout no greater than the receipt quote, idle to
+decrease by exactly the payout, and escrow to drain. Any deviation is
+`RECONCILE_MISMATCH`.
 The guarded command is:
 
 ```sh
@@ -630,7 +646,7 @@ completed. Re-arm only with a new journal after the proof is complete.
 | `repair` | One-shot; a finalized policy-linked repair plus `tv == idle` is consumed state. |
 | `repair-policy-remove` | One-shot; PolicyRemove closes the policy and the seed is never reused. |
 | `harvest` | Not durably idempotent if fees accrue between attempts; a repeat requires explicit `--allow-repeat` and a new journal. |
-| `cancel` | One-shot for the frozen request receipt. |
+| `cancel` | One-shot for the frozen request receipt; partial refund `78,196,265` LP plus burn `21,745,257` LP, never a 1:1 escrow refund. |
 | `request` | One-shot for the post-cancel request receipt. |
 | `claim` | One-shot for the post-request receipt. |
 | `restore-degradation` | State-idempotent config restore, but only after the finalized repair/claim gates and 24-hour delay; a repeat requires explicit `--allow-repeat`. |
