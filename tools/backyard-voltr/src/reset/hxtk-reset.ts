@@ -2962,7 +2962,12 @@ async function runJournaledStep(input: Readonly<{
       rearmable: false,
       journal: input.journal,
       canonicalJournal: String(preClaimState.journal ?? ""),
-      recoveryInstruction: buildHxtkRecoveryCommand({ step: input.step, mode: "reconcile", finalized: false }),
+      recoveryInstruction: buildHxtkRecoveryCommand({
+        step: input.step,
+        mode: "reconcile",
+        journal: String(preClaimState.journal ?? ""),
+        finalized: false,
+      }),
       reason: "the attempted-expired leg remains bound to its original journal; reconcile that journal before any new execute",
     }, 2));
     return 0;

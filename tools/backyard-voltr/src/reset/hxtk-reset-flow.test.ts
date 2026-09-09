@@ -1,4 +1,4 @@
-import { existsSync, linkSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -104,6 +104,16 @@ function deps(fx: ReturnType<typeof fixture>, options: Readonly<{
     currentBlockHeight: options.currentBlockHeight,
     faultAfterTransitionStep: options.faultAfterTransitionStep,
   };
+}
+
+function claimSnapshot(stateRoot: string, step: string) {
+  return readdirSync(stateRoot)
+    .filter((entry) => entry.startsWith(`${step}.claim`))
+    .sort()
+    .map((entry) => {
+      const stat = lstatSync(join(stateRoot, entry));
+      return { entry, dev: stat.dev, ino: stat.ino, size: stat.size, mode: stat.mode };
+    });
 }
 
 describe("HXtk journaled flow", () => {
@@ -429,13 +439,24 @@ describe("HXtk journaled flow", () => {
       }));
       const beforeState = readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8");
       const beforeEntries = readdirSync(fx.root).sort();
+      const beforeClaims = claimSnapshot(fx.stateRoot, "flow-test");
       await expect(runJournaledStepForTest(fx.input(join(fx.root, "different.json"), "execute"), deps(fx, {
         readStatus: async () => status,
         send: async () => { throw new Error("must not send"); },
       }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRED");
       expect(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).toBe(beforeState);
       expect(readdirSync(fx.root).sort()).toEqual(beforeEntries);
+      expect(claimSnapshot(fx.stateRoot, "flow-test")).toEqual(beforeClaims);
       expect(readdirSync(fx.root).some((entry) => entry.includes("different.json"))).toBe(false);
+
+      const recoveryInstruction = buildHxtkRecoveryCommand({
+        step: "flow-test",
+        mode: "reconcile",
+        journal: fx.journal,
+        finalized: false,
+      });
+      expect(recoveryInstruction).toContain(`--journal ${fx.journal}`);
+      expect(recoveryInstruction).toContain("--reconcile");
     }
   });
 
@@ -452,10 +473,12 @@ describe("HXtk journaled flow", () => {
     writeFileSync(foreignJournal, "foreign-final-journal");
     writeFileSync(`${foreignJournal}.pending`, "foreign-pending-journal");
     const before = readdirSync(fx.root).sort();
+    const beforeClaims = claimSnapshot(fx.stateRoot, "flow-test");
     await expect(runJournaledStepForTest(fx.input(foreignJournal, "execute"), deps(fx, {
       send: async () => { throw new Error("must not send"); },
     }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRED");
     expect(readdirSync(fx.root).sort()).toEqual(before);
+    expect(claimSnapshot(fx.stateRoot, "flow-test")).toEqual(beforeClaims);
     expect(existsSync(`${foreignJournal}.pending`)).toBe(true);
     expect(existsSync(`${foreignJournal}.sent-wire`)).toBe(false);
   });
