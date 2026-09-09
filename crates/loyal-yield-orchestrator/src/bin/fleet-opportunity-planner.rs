@@ -35,6 +35,10 @@ use loyal_yield_store::fleet_orchestration::{CrossMintEarnPolicyBinding, CrossMi
 use serde_json::{json, Value};
 use tokio::{task::JoinSet, time::Duration};
 
+#[cfg(test)]
+#[path = "fleet-opportunity-planner/decision_parity.rs"]
+mod decision_parity;
+
 const DEFAULT_CLUSTER: &str = "mainnet-beta";
 const CLUSTER_ENV: &str = "YIELD_ALT_CLUSTER";
 const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 1;

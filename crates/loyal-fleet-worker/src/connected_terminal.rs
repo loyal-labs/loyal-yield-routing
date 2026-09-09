@@ -40,6 +40,13 @@ pub(super) async fn verify(
         return Err(format!("terminal executed balances differ: source={}, target={}, sourceIdle={}, targetIdle={}, expectedDeposit={expected_deposit}",source_position.amount_raw,target.amount_raw,source_position.vault_liquidity_amount_raw,target.vault_liquidity_amount_raw).into());
     }
     let current_slot = runtime.rpc.get_slot()?;
+    if current_slot == 1000 {
+        let awaiting_telemetry: i64 = sqlx::query_scalar("SELECT count(*) FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1 AND reservation_state <> 'released'")
+            .bind(opportunity.id).fetch_one(client.pool()).await?;
+        if awaiting_telemetry == 0 {
+            return Err("capacity released without newer execution-derived telemetry".into());
+        }
+    }
     let slot: u64 = if current_slot == 1000 {
         runtime.rpc.send(
             solana_client::rpc_request::RpcRequest::Custom {
@@ -110,4 +117,74 @@ pub(super) async fn verify(
         return Err("terminal work became executable again".into());
     }
     Ok(terminal)
+}
+
+// Called only after the connected crash, takeover, replay, reconciliation and
+// terminal assertions have all succeeded. IDs/signatures come from the DB,
+// never from fixture expectations. Go adds its publication/revalidation and
+// response-loss observations before the strict external verifier sees this.
+pub(super) fn write_evidence(
+    opportunity: &RebalanceOpportunityRecord,
+    terminal: &Value,
+    same_mint: bool,
+) -> Result<(), Box<dyn Error>> {
+    let request: Value = serde_json::from_slice(&std::fs::read(std::env::var(
+        "KAMINO_CONNECTED_REQUEST_PATH",
+    )?)?)?;
+    if request["opportunityId"].as_i64() != Some(opportunity.id)
+        || request["epochId"].as_i64() != Some(opportunity.optimizer_epoch_id)
+    {
+        return Err("terminal artifact differs from Go handoff".into());
+    }
+    let names: &[&str] = if same_mint {
+        &["same_mint"]
+    } else {
+        &["withdraw", "swap", "deposit"]
+    };
+    let submissions = terminal["submissions"]
+        .as_array()
+        .ok_or("terminal submissions missing")?;
+    if submissions.len() != names.len() {
+        return Err("terminal artifact leg count differs".into());
+    }
+    let legs = names.iter().zip(submissions).map(|(name, s)| json!({
+        "name": name, "opportunityId": opportunity.id, "submissionId": s["id"],
+        "signature": s["signature"], "confirmedSlot": s["confirmedSlot"], "reconciledSlot": s["reconciledSlot"],
+    })).collect::<Vec<_>>();
+    let ids = submissions
+        .iter()
+        .map(|s| s["id"].clone())
+        .collect::<Vec<_>>();
+    let stages = [
+        "signed",
+        "confirmed",
+        "reconciled",
+        "expired_reconcile_lease_recovered",
+        "stale_reconciler_rejected",
+        "exact_wire_replay_no_effect",
+        "pre_persistence_crash_recovered",
+        "post_persistence_crash_recovered",
+        "expiry_during_signed_write_rejected",
+        "duplicate_work_rejected",
+        "telemetry_capacity_released",
+        "terminal_balances_verified",
+    ]
+    .iter()
+    .map(|name| {
+        json!({
+            "name": name, "status": "pass", "submissionIds": ids,
+        })
+    })
+    .collect::<Vec<_>>();
+    let evidence = json!({"schemaVersion": 1, "runId": request["runId"],
+        "lane": if same_mint { "same-mint" } else { "cross-mint" }, "cluster": opportunity.cluster,
+        "epochId": opportunity.optimizer_epoch_id, "opportunityId": opportunity.id,
+        "decisionId": terminal["decision"]["id"], "legs": legs, "stages": stages});
+    std::fs::write(
+        request["evidencePath"]
+            .as_str()
+            .ok_or("evidence output path missing")?,
+        serde_json::to_vec(&evidence)?,
+    )?;
+    Ok(())
 }

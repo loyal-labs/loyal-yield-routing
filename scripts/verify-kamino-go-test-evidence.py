@@ -27,6 +27,8 @@ MARKER = "KAMINO_CONNECTED_EVIDENCE "
 ALL_LEG_STAGES = {
     "signed", "confirmed", "reconciled", "expired_reconcile_lease_recovered",
     "stale_reconciler_rejected", "exact_wire_replay_no_effect",
+    "pre_persistence_crash_recovered", "post_persistence_crash_recovered",
+    "expiry_during_signed_write_rejected",
 }
 STAGES = ALL_LEG_STAGES | {
     "published", "revalidated", "ambiguous_broadcast_recovered",
@@ -118,25 +120,38 @@ def verify(events, *, run_id, lane=None):
     require(len(finishes) == 1 and finishes[0] == len(relevant) - 1, "fleet package missing, duplicate or premature completion")
     expected_lanes = {lane} if lane else set(LANES)
     records, signatures, active, passed = {}, {}, set(), set()
+    pending = {}
     for e in relevant:
         test, action = e.get("Test"), e.get("Action")
         if action == "run":
             active.add(test)
         if action == "pass":
+            require(not pending.get(test), "test passed with an incomplete output line")
             passed.add(test)
         output = e.get("Output", "")
         require(isinstance(output, str), "invalid Go output")
-        if MARKER not in output:
+        if not output:
             continue
-        require(action == "output" and test in active and test not in passed, "evidence outside running test")
-        require(output.count(MARKER) == 1, "multiple evidence records in output")
-        record = load_json(output.split(MARKER, 1)[1].strip())
-        require(isinstance(record, dict), "invalid lifecycle record")
-        record_lane = record.get("lane")
-        require(isinstance(record_lane, str) and record_lane in expected_lanes and LANES[record_lane] == test, "evidence emitted by wrong test/lane")
-        require(record_lane not in records, "duplicate connected lifecycle evidence")
-        signatures[record_lane] = lifecycle(record, record_lane, run_id)
-        records[record_lane] = record
+        # test2json splits long t.Logf lines into several Output events (even
+        # inside the marker/JSON). Reassemble per owner, never across tests.
+        require(action == "output", "output attached to a non-output event")
+        text = pending.pop(test, "") + output
+        require(len(text) <= 256 * 1024, "oversized Go output line")
+        lines = text.split("\n")
+        pending[test] = lines.pop()
+        for line in lines:
+            if MARKER not in line:
+                continue
+            require(test in active and test not in passed, "evidence outside running test")
+            require(line.count(MARKER) == 1, "multiple evidence records in output")
+            record = load_json(line.split(MARKER, 1)[1].strip())
+            require(isinstance(record, dict), "invalid lifecycle record")
+            record_lane = record.get("lane")
+            require(isinstance(record_lane, str) and record_lane in expected_lanes and LANES[record_lane] == test, "evidence emitted by wrong test/lane")
+            require(record_lane not in records, "duplicate connected lifecycle evidence")
+            signatures[record_lane] = lifecycle(record, record_lane, run_id)
+            records[record_lane] = record
+    require(not any(pending.values()), "incomplete Go output at end of stream")
     require(set(records) == expected_lanes, "missing connected lifecycle evidence")
     if len(records) == 2:
         require(not signatures["same-mint"] & signatures["cross-mint"], "lanes reused a transaction signature")

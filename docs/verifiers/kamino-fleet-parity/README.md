@@ -45,13 +45,20 @@ schema. Production is never migrated by this verifier.
    simulation bytes now execute through the real Squads SBF, SPL Token and local
    Kamino/Jupiter mock SBF in LiteSVM. The narrow local protocol model uses fixed
    prices and does not implement Kamino interest/oracles or AlphaQ pricing/CPI.
-   The in-progress harness also invokes retained Rust execution, confirmation,
-   and reconciliation against the local chain. Its cross-mint path exercises
-   three real signed local legs, ambiguous broadcast, expired reconciliation
-   leases, persisted-wire replay and balance-derived capacity release. The
-   same-mint path is separate. Neither lane qualifies as complete evidence until
-   all assertions and the structured evidence contract below pass. Intentional
-   lifecycle failure guards remain in place while the harness is incomplete.
+   The harness invokes retained Rust execution, confirmation and reconciliation
+   against the local chain. Both lanes interrupt actual signing before durable
+   persistence, restart before broadcast after persistence, reject duplicate
+   execution and stale owners, replay exact wires, and check final balances and
+   telemetry-driven capacity release. Cross-mint covers all three signed legs,
+   including initial withdrawal. Test-only interruption points are absent from
+   production binaries. Real database locks hold live writes across natural
+   lease expiry: same-mint preparation, cross-mint authority acquisition and
+   signed insertion, and cross-mint reconciliation must roll back. The latter
+   probes caught transaction-start `now()` admitting expired cross-mint writes;
+   current-time guards and checked affected-row counts close that boundary.
+   The terminal evidence file is emitted only after every assertion succeeds;
+   the Go owner adds its own publication, revalidation and response-loss evidence.
+   Both lanes still require a fresh successful full audit, not a development run.
 3. **Go route negative tests:** execute validation/preparation functions with
    missing ALTs, oversized packets, simulation errors, and changed identities.
 4. **Actual KLend proxy:** Go invokes the compiled, digest-verified Rust binary
@@ -126,7 +133,9 @@ The runner generates `KAMINO_CONNECTED_RUN_ID` after environment isolation. Each
 owning Go test must emit exactly one single-line JSON record via
 `t.Logf("KAMINO_CONNECTED_EVIDENCE %s", jsonBytes)` **after all real assertions**
 and before the test passes. The checker consumes `go test -json` output, not
-arbitrary stderr or component-verifier PASS statements. Owners:
+arbitrary stderr or component-verifier PASS statements. Long `test2json` output
+is reassembled per owning test; truncated or foreign-test fragments fail closed.
+Owners:
 
 - `same-mint`: `TestConnectedSameMintLifecycle`
 - `cross-mint`: `TestConnectedCrossMintPreflight`
@@ -154,6 +163,9 @@ IDs referencing that record's legs). Exactly one of **every** stage is required:
 | `expired_reconcile_lease_recovered` | Every leg |
 | `stale_reconciler_rejected` | Every leg |
 | `exact_wire_replay_no_effect` | Every leg |
+| `pre_persistence_crash_recovered` | Every leg |
+| `post_persistence_crash_recovered` | Every leg |
+| `expiry_during_signed_write_rejected` | Every leg |
 | `ambiguous_broadcast_recovered` | At least one actually affected leg |
 | `duplicate_work_rejected` | Every leg |
 | `telemetry_capacity_released` | Every leg |
@@ -181,11 +193,52 @@ trace after scratch cleanup. Do not put accounts, wire bytes or secrets in these
 records. Standalone validation requires `--run-id RUN_ID`; optional
 `--development-lane LANE` explicitly narrows scope and labels its result.
 
+## Broader shared-input decision diagnostic
+
+Run `bash scripts/compare-fleet-decisions.sh /absolute/new-output-directory`.
+This clears inherited credentials, disables dependency downloads and sends proxy
+traffic to a closed loopback port. It runs Rust's production capacity-curve
+builder, core wave planner and publication fee guard, and Go's `PlanFleet`, on
+one SHA-256-bound input file. Outputs and a detailed report remain in the new
+private directory. Exit 1 means disagreement; tooling failures also fail closed.
+
+The 129 deterministic scenarios include profitable/unprofitable same-mint and
+cross-mint moves, all six same-mint and 30 directed stablecoin pairs, fee/notional
+thresholds, committed inflows/outflows, shared capacity, alternative targets,
+large reserves, scheduling limits, and 32 seeded repricing cases. Comparison is
+exact, including selected order, route, amount, source/target APY, edge, net gain,
+priority and fee cap. Four comparator controls reject omissions, stale fixtures,
+invalid fields and changed decisions.
+
+**Current result: 124/129 match; five disagree. Handover is blocked.** Input
+SHA-256: `c155e6a6eaf3659a3dbb87bbd53f773d7eeeb7195e2fd5e21e1316f0a08f9cbf`.
+
+| Cases | Rust | Go | Cause |
+| --- | --- | --- | --- |
+| same/cross `alternative-after-capacity` | 3 moves | 2 moves | Go keeps only each vault's initial best target; Rust can choose another after capacity fills |
+| same/cross `large-reserve` | 1 move | 0 moves | Go caps the final band at $4M; Rust uses the reserve's 2% frontier ($20M in the $1B-supply fixture) |
+| `same-tenant-conflict-limit` | 64 moves | 65 moves | Go lacks Rust's wave tenant/conflict limits |
+
+This is a **diagnostic, not a passing gate with accepted mismatches**. The existing
+`--audit-current` covers the fixed-fixture wire/lifecycle contract; its green
+result does not supersede these failures. No planner behavior is changed by the
+diagnostic. Fix and rerun it before proposing handover.
+
+Both producers assume policy-eligible, six-decimal stablecoin reserve sources
+with finalized capabilities already admitted. The small Rust adapter normalizes
+source amounts and recovery anchors; it does not run the SQL observer. It uses
+current-source default wave limits, not downloaded production environment
+settings. This is not a replay of a live shared database/RPC snapshot, does not
+compare rejection explanations or policy admission, and does not include idle
+sources or fresh executable quotes. Passing every case would still not establish
+complete observer/revalidator or production compatibility.
+
 ## Remaining production gates
 
-Until both connected lanes finish with this evidence, connected local handoff
-remains an evidence gap; do not relabel passing component gates as full service
-E2E. Even a completed connected run uses mock Kamino/Jupiter programs and fixed
+Require a current-source audit with both connected records before accepting the
+local handoff. It does not close the separate executable-idle or broad shared-input
+Rust/Go decision-parity gaps, including mixed idle/reserve capacity competition.
+Even a completed connected run uses mock Kamino/Jupiter programs and fixed
 local liquidity/prices, not production KLend interest/oracle behavior, Jupiter
 routing/price discovery/AlphaQ CPI, validator consensus or real RPC finality and
 fault distributions. Signatures and local SPL/Squads execution are real; these

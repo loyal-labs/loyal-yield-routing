@@ -73,6 +73,24 @@ class EvidenceTests(unittest.TestCase):
             self.reject(stream(lane))  # Development never qualifies as the full gate.
             self.reject(stream(), lane=lane)
 
+    def test_test2json_fragmented_output_stays_bound_to_owning_test(self):
+        for size in (1, 17, 1024):
+            fragmented = []
+            for e in stream():
+                if e.get("Action") == "output":
+                    text = e["Output"]
+                    fragmented.extend({**e, "Output": text[i:i+size]} for i in range(0, len(text), size))
+                else:
+                    fragmented.append(e)
+            gate.verify(fragmented, run_id=RUN)
+            outputs = [i for i, e in enumerate(fragmented) if e.get("Action") == "output"]
+            bad = copy.deepcopy(fragmented)
+            bad[outputs[len(outputs)//2]]["Test"] = "ForeignTest"
+            self.reject(bad)
+            bad = copy.deepcopy(fragmented)
+            del bad[outputs[-1]]
+            self.reject(bad)
+
     def test_missing_skipped_failed_duplicate_tests(self):
         good = stream()
         self.reject([])
