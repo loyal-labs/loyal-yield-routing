@@ -16,13 +16,15 @@
 
 ## Operating flow
 
-After the finalized Phase 1 reset and degradation restore, the deployed strategy-two worker observes HXtk, allocates through the approved policies, refreshes and reports NAV, and restores withdrawal liquidity. A user request waits 600 seconds on chain before claim. The worker holds on any unsafe or mismatched observation.
+Deposited USDC first becomes Voltr idle. After the finalized Phase 1 reset and degradation restore, the bound adaptor moves allocatable capital to the exact Squads USDC account, and the deployed strategy-two worker observes HXtk, refreshes and reports NAV, and restores withdrawal liquidity. The serialized Go worker owns the two enabled routes: fixed `PRIME/USDC` and the Phase 2 representative `Maple/syrupUSDC/USDC`. It swaps USDC to the selected collateral, deposits it into Kamino, and attempts leverage only while confirmed reserve and risk limits allow it. Every other catalogued lane fails closed. If capacity or risk blocks a safe action, the worker records a typed durable `HOLD` and sends no risk-increasing transaction.
+
+A withdrawal request immediately stops risk increases. The worker unwinds the required budget, swaps back when necessary, reports NAV through the atomic one-use adaptor ticket, and restores Voltr idle. The user can claim after the onchain 600-second wait.
 
 The one-shot repair policy at seed `140` is retired after the repair. Strategy two uses the next four Settings-derived policies at seeds `141–144`; legacy bridge policies at seeds `62–65` remain installed until replacement readback passes and are then retired. The strategy-one policy catalog at seeds `67–136` is not touched by this release; this release installs `141–144` and retires `62–65` only. Any retirement or simplification of that catalog is a separate later step.
 
 ## Capability boundary
 
-The current live adaptor is v2; the v3.3 upgrade is a separate finalized gate. The strategy-two config and delegated executor are new keypairs, operator-derived offline; only the worker configuration is generated from the shared seed journal. No optimizer, automatic market switching, caller-selected route, consumer Earn Max behavior, or second money-moving executor is part of this handoff. The single hot key stays this week; key separation is required before any third-party money. The joint session uses OUR canary funds unless key separation is completed first.
+The current live adaptor is v2; the v3.3 upgrade is a separate finalized gate. The strategy-two config and delegated executor are new keypairs, operator-derived offline; only the worker configuration is generated from the shared seed journal. There is no optimizer, automatic market switching, caller-selected route, registry, pre-hook, post-hook, consumer Earn Max behavior, or second money-moving executor in this release. The single hot key stays this week; key separation is required before any third-party money. The joint session uses OUR canary funds unless key separation is completed first.
 
 ## Monitoring and recovery
 
