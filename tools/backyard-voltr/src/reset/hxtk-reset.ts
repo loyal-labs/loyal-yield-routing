@@ -2656,6 +2656,86 @@ type AttemptedExpiryProof = Readonly<{
 }>;
 type FinalizedAbsentRead = AttemptedExpiryProof["absentReads"][number];
 
+function provenExpiryProof(value: unknown, label: string): AttemptedExpiryProof {
+  const record = value && typeof value === "object" && !Array.isArray(value)
+    ? value as JsonRecord
+    : null;
+  const absentReads = record?.absentReads;
+  const lastValidBlockHeight = Number(record?.lastValidBlockHeight);
+  const finalizedBlockHeight = Number(record?.finalizedBlockHeight);
+  if (!Number.isSafeInteger(lastValidBlockHeight)
+    || lastValidBlockHeight < 0
+    || !Number.isSafeInteger(finalizedBlockHeight)
+    || finalizedBlockHeight < 0
+    || !Array.isArray(absentReads)
+    || absentReads.length !== 2) {
+    throw new Error(`PROVEN_ATTEMPTED_EXPIRY_RECORD_INVALID: ${label} is missing both expiry heights or absent reads`);
+  }
+  const normalizedReads = absentReads.map((value, index) => {
+    const read = value && typeof value === "object" && !Array.isArray(value)
+      ? value as JsonRecord
+      : null;
+    const poll = Number(read?.poll);
+    const observedAtUnixMs = Number(read?.observedAtUnixMs);
+    if (read?.kind !== "absent"
+      || !Number.isSafeInteger(poll)
+      || poll < 1
+      || !Number.isSafeInteger(observedAtUnixMs)
+      || observedAtUnixMs < 0) {
+      throw new Error(`PROVEN_ATTEMPTED_EXPIRY_RECORD_INVALID: ${label} absent read ${index + 1} is invalid`);
+    }
+    return { kind: "absent" as const, poll, observedAtUnixMs };
+  });
+  return {
+    lastValidBlockHeight,
+    finalizedBlockHeight,
+    absentReads: [normalizedReads[0]!, normalizedReads[1]!],
+  };
+}
+
+function sameProvenExpiryProof(left: AttemptedExpiryProof, right: AttemptedExpiryProof): boolean {
+  return left.lastValidBlockHeight === right.lastValidBlockHeight
+    && left.finalizedBlockHeight === right.finalizedBlockHeight
+    && left.absentReads.every((read, index) => {
+      const expected = right.absentReads[index]!;
+      return read.kind === expected.kind
+        && read.poll === expected.poll
+        && read.observedAtUnixMs === expected.observedAtUnixMs;
+    });
+}
+
+function assertProvenExpiryPublication(
+  state: JsonRecord,
+  artifact: JsonRecord,
+  artifactPath: string,
+  canonicalJournal: string,
+  expectedAttemptToken: string,
+  expectedProof: AttemptedExpiryProof,
+): void {
+  if (state.status !== "aborted-pre-send"
+    || state.abortReason !== PROVEN_ATTEMPTED_EXPIRY_REASON
+    || state.rearmable !== true
+    || String(state.journal ?? "") !== canonicalJournal
+    || String(state.attemptToken ?? "") !== expectedAttemptToken
+    || String(state.abortedJournal ?? "") !== artifactPath) {
+    throw new Error("PROVEN_ATTEMPTED_EXPIRY_RECORD_INVALID: canonical publication is not complete");
+  }
+  const stateProof = provenExpiryProof(state.attemptedExpiryProof, "canonical state");
+  const artifactProof = provenExpiryProof(artifact.attemptedExpiryProof, "abort artifact");
+  if (!sameProvenExpiryProof(stateProof, expectedProof)
+    || !sameProvenExpiryProof(artifactProof, expectedProof)
+    || artifact.abortReason !== PROVEN_ATTEMPTED_EXPIRY_REASON
+    || artifact.broadcast !== "attempted"
+    || artifact.rearmable !== true
+    || String(artifact.attemptToken ?? "") !== expectedAttemptToken
+    || Number(artifact.lastValidBlockHeight) !== expectedProof.lastValidBlockHeight
+    || Number(artifact.finalizedBlockHeight) !== expectedProof.finalizedBlockHeight
+    || Number(artifact.attemptGeneration) !== Number(state.attemptGeneration)
+    || String(artifact.pendingBindingSha256 ?? "") !== String(state.pendingBindingSha256 ?? "")) {
+    throw new Error("PROVEN_ATTEMPTED_EXPIRY_RECORD_INVALID: artifact does not preserve the proven attempt proof");
+  }
+}
+
 type FinalizedWaitResult =
   | Readonly<{ kind: "finalized"; transaction: FinalizedTransaction }>
   | Readonly<{ kind: "expired"; proof: AttemptedExpiryProof }>;
@@ -2781,6 +2861,72 @@ pendingPath?: string): Promise<Readonly<{
   await faultAfterTransitionStep(dependencies, "attempted-expiry-marker");
   return {
     state: readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true })!,
+    generation,
+    abortedJournal: abortedPath,
+  };
+}
+
+async function completeProvenExpiryPublication(input: Readonly<{
+  step: string;
+  canonicalJournal: string;
+  state: JsonRecord;
+  expectedGeneration: number;
+}>, dependencies: JournaledStepDependencies, stateRoot: string): Promise<Readonly<{
+  state: JsonRecord;
+  generation: number;
+  abortedJournal: string;
+}>> {
+  const canonicalJournal = input.canonicalJournal;
+  const state = input.state;
+  const proof = provenExpiryProof(state.attemptedExpiryProof, "canonical state");
+  const pending = recordAt(state.pendingRecord, `${input.step} canonical pendingRecord`);
+  const attemptToken = stringAt(state.attemptToken, `${input.step} proven attemptToken`);
+  if (String(pending.attemptToken ?? "") !== attemptToken) {
+    throw new Error("PROVEN_ATTEMPTED_EXPIRY_RECORD_INVALID: pending record has a different attempt token");
+  }
+  if (String(state.journal ?? "") !== canonicalJournal) {
+    throw new Error("PROVEN_ATTEMPTED_EXPIRY_RECORD_INVALID: canonical journal changed during publication recovery");
+  }
+  const abortedPath = publishAbortArtifact(
+    canonicalJournal,
+    state,
+    pending,
+    PROVEN_ATTEMPTED_EXPIRY_REASON,
+    existsSync(`${canonicalJournal}.pending`) ? `${canonicalJournal}.pending` : undefined,
+    "attempted",
+    {
+      rearmable: true,
+      attemptedExpiryProof: proof,
+      lastValidBlockHeight: proof.lastValidBlockHeight,
+      finalizedBlockHeight: proof.finalizedBlockHeight,
+    },
+  );
+  await faultAfterTransitionStep(dependencies, "attempted-expiry-artifact");
+  const markedState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true })!;
+  const generation = String(markedState.abortedJournal ?? "") === abortedPath
+    ? canonicalStateGeneration(markedState)
+    : markCanonicalLegState(input.step, canonicalJournal, {
+        status: "aborted-pre-send",
+        broadcast: "attempted",
+        abortReason: PROVEN_ATTEMPTED_EXPIRY_REASON,
+        rearmable: true,
+        attemptedExpiryProof: proof,
+        attemptGeneration: Number(state.attemptGeneration ?? state.generation),
+        abortedJournal: abortedPath,
+      }, input.expectedGeneration, stateRoot);
+  await faultAfterTransitionStep(dependencies, "attempted-expiry-marker");
+  const completedState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true })!;
+  const artifact = readBoundJournal(abortedPath).record;
+  assertProvenExpiryPublication(
+    completedState,
+    artifact,
+    abortedPath,
+    canonicalJournal,
+    attemptToken,
+    proof,
+  );
+  return {
+    state: completedState,
     generation,
     abortedJournal: abortedPath,
   };
@@ -3286,7 +3432,7 @@ async function runJournaledStepHeld(input: Readonly<{
     stateRoot,
     mode: input.mode,
   });
-  const sectionState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true });
+  let sectionState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true });
   const staleAbortArtifacts = [...resumed.staleAbortArtifacts];
   let expectedGeneration = stateGeneration(sectionState);
   if (sectionState?.status === "aborted-pre-send" && sectionState.abortReason === ATTEMPTED_EXPIRY_REASON) {
@@ -3434,61 +3580,61 @@ async function runJournaledStepHeld(input: Readonly<{
   if (sectionState?.status === "aborted-pre-send"
     && sectionState.abortReason === PROVEN_ATTEMPTED_EXPIRY_REASON) {
     const canonicalJournal = String(sectionState.journal ?? "");
-    const pendingPath = `${input.journal}.pending`;
-    const proof = sectionState.attemptedExpiryProof as AttemptedExpiryProof | undefined;
     const sameJournal = canonicalJournal === input.journal;
     const recoveryInstruction = provenExpiryRearmInstruction(input.step, canonicalJournal);
-    if (sameJournal
-      && sectionState.abortedJournal === undefined
-      && proof !== undefined) {
-      const pending = recordAt(sectionState.pendingRecord, `${input.step} canonical pendingRecord`);
-      const applied = publishAbortArtifact(
-        input.journal,
-        sectionState,
-        pending,
-        PROVEN_ATTEMPTED_EXPIRY_REASON,
-        existsSync(pendingPath) ? pendingPath : undefined,
-        "attempted",
-        {
+    const completesPreviousAttempt = sameJournal || input.mode === "execute";
+    if (completesPreviousAttempt) {
+      let completed: Readonly<{
+        state: JsonRecord;
+        generation: number;
+        abortedJournal: string;
+      }>;
+      try {
+        completed = await completeProvenExpiryPublication({
+          step: input.step,
+          canonicalJournal,
+          state: sectionState,
+          expectedGeneration: expectedGeneration!,
+        }, dependencies, stateRoot);
+      } catch (error) {
+        if (!sameJournal) {
+          throw new Error(
+            `PROVEN_ATTEMPTED_EXPIRY_PUBLICATION_INCOMPLETE: ${sanitizeError(error)}; `
+            + `reconcile the original journal with ${buildHxtkRecoveryCommand({
+              step: input.step,
+              mode: "reconcile",
+              journal: canonicalJournal,
+              finalized: false,
+            })}`,
+          );
+        }
+        throw error;
+      }
+      if (sameJournal) {
+        if (input.mode === "execute") {
+          throw new Error(
+            `JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN: proven expiry is re-armable only with a new journal; ${recoveryInstruction}`,
+          );
+        }
+        console.log(toJson({
+          schema: input.schema,
+          step: input.step,
+          verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY_PROVEN",
           rearmable: true,
-          attemptedExpiryProof: proof,
-          lastValidBlockHeight: proof.lastValidBlockHeight,
-          finalizedBlockHeight: proof.finalizedBlockHeight,
-        },
-      );
-      await faultAfterTransitionStep(dependencies, "attempted-expiry-artifact");
-      const markedState = readCanonicalLegState(input.step, false, stateRoot, { allowRollForward: true })!;
-      if (String(markedState.abortedJournal ?? "") !== applied) {
-        expectedGeneration = markCanonicalLegState(input.step, input.journal, {
-          status: "aborted-pre-send",
-          broadcast: "attempted",
           abortReason: PROVEN_ATTEMPTED_EXPIRY_REASON,
-          rearmable: true,
-          attemptedExpiryProof: proof,
-          attemptGeneration: Number(sectionState.attemptGeneration ?? sectionState.generation),
-          abortedJournal: applied,
-        }, expectedGeneration, stateRoot);
+          attemptedExpiryProof: sectionState.attemptedExpiryProof,
+          recoveryInstruction,
+          journal: input.journal,
+          canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
+          abortedJournal: completed.abortedJournal,
+          staleAbortArtifacts,
+        }, 2));
+        return 0;
       }
-      await faultAfterTransitionStep(dependencies, "attempted-expiry-marker");
-      if (input.mode === "execute") {
-        throw new Error(
-          `JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN: proven expiry is re-armable only with a new journal; ${recoveryInstruction}`,
-        );
-      }
-      console.log(toJson({
-        schema: input.schema,
-        step: input.step,
-        verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY_PROVEN",
-        rearmable: true,
-        abortReason: PROVEN_ATTEMPTED_EXPIRY_REASON,
-        attemptedExpiryProof: proof,
-        recoveryInstruction,
-        journal: input.journal,
-        canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
-        abortedJournal: applied,
-        staleAbortArtifacts,
-      }, 2));
-      return 0;
+      // A new attempt may be elected only after the old proven record is fully
+      // published and verified under this claim.
+      sectionState = completed.state;
+      expectedGeneration = completed.generation;
     }
     if (sameJournal && input.mode === "reconcile") {
       console.log(toJson({
@@ -3497,7 +3643,7 @@ async function runJournaledStepHeld(input: Readonly<{
         verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY_PROVEN",
         rearmable: true,
         abortReason: PROVEN_ATTEMPTED_EXPIRY_REASON,
-        attemptedExpiryProof: proof ?? null,
+        attemptedExpiryProof: sectionState.attemptedExpiryProof ?? null,
         recoveryInstruction,
         journal: input.journal,
         canonicalState: canonicalLegStatePath(input.step, false, stateRoot),
