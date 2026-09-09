@@ -35,6 +35,7 @@ import {
   buildRepairRecoveryCommands,
   resumeInterruptedTransition,
   runJournaledStepForTest,
+  reportTicketFingerprint,
   simulatedPostAccount,
   type JournalTransitionStep,
   type RawAccount,
@@ -1914,5 +1915,31 @@ describe("HXtk simulated post-account reads", () => {
     expect(simulatedPostAccount([closedOther, live], receipt)).toBe(live);
     const funded: RawAccount = { address: receipt, owner: systemProgram, lamports: 890880, data: new Uint8Array(0) };
     expect(simulatedPostAccount([funded], receipt)).toBe(funded);
+  });
+});
+
+describe("HXtk report ticket comparison", () => {
+  test("the journal projection and the live decode of the same ticket compare equal", () => {
+    const journalProjection = {
+      version: 1,
+      armed: false,
+      lastConsumedSequence: "445678843",
+      activeSequence: "0",
+      activeHashIsZero: true,
+    };
+    const liveDecode = {
+      version: 1,
+      bump: 254,
+      armed: false,
+      strategy: "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+      lastConsumedSequence: 445678843n,
+      activeSequence: 0n,
+      activeHashIsZero: true,
+    };
+    expect(reportTicketFingerprint(journalProjection)).toBe(reportTicketFingerprint(liveDecode));
+    expect(reportTicketFingerprint({ ...liveDecode, lastConsumedSequence: 445678844n }))
+      .not.toBe(reportTicketFingerprint(journalProjection));
+    expect(reportTicketFingerprint({ ...liveDecode, armed: true })).not.toBe(reportTicketFingerprint(journalProjection));
+    expect(reportTicketFingerprint(null)).toBeNull();
   });
 });

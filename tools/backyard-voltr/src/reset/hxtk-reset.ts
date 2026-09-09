@@ -7787,6 +7787,23 @@ type ClaimPostObservation = Readonly<{
   reportTicket: ReturnType<typeof decodeReportTicket>;
 }>;
 
+/**
+ * The journal stores the report ticket as the five-field summary projection
+ * (string sequences, no strategy or bump) while a live read is the full decode.
+ * Compare the projected fields only, so the same on-chain ticket never reads as changed.
+ */
+export function reportTicketFingerprint(ticket: unknown): string | null {
+  if (!ticket || typeof ticket !== "object") return null;
+  const value = ticket as Record<string, unknown>;
+  return JSON.stringify({
+    version: Number(value.version),
+    armed: value.armed === true,
+    lastConsumedSequence: String(value.lastConsumedSequence),
+    activeSequence: String(value.activeSequence),
+    activeHashIsZero: value.activeHashIsZero === true,
+  });
+}
+
 function claimReconciliationFromObservations(
   before: ClaimBeforeObservation,
   post: ClaimPostObservation,
@@ -7804,9 +7821,8 @@ function claimReconciliationFromObservations(
   const lpBurned = before.lpSupply === null || post.lpSupply === null
     ? null
     : before.lpSupply - post.lpSupply;
-  const ticketUnchanged = before.reportTicket !== null
-    && post.reportTicket !== null
-    && toJson(before.reportTicket) === toJson(post.reportTicket);
+  const ticketUnchanged = reportTicketFingerprint(before.reportTicket) !== null
+    && reportTicketFingerprint(before.reportTicket) === reportTicketFingerprint(post.reportTicket);
   const checks = [
     checkRow("payout balance delta is available", payout !== null, "non-null", payout?.toString() ?? null),
     checkRow("payout is positive", payout !== null && payout >= 1n, ">= 1", payout?.toString() ?? null),
