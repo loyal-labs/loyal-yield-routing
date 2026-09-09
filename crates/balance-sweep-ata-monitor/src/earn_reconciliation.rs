@@ -1041,20 +1041,23 @@ fn autodeposit_snapshot_config(minimum_slot: u64) -> RpcAccountInfoConfig {
     }
 }
 
+fn is_policy_deletion(update: &NormalizedEarnUpdate, vault: &EarnVaultWatch) -> bool {
+    update.event_kind == "account_deleted"
+        && update.account_pubkey.as_deref().is_some_and(|pubkey| {
+            vault
+                .accounts
+                .iter()
+                .any(|account| account.role == "policy" && account.pubkey == pubkey)
+        })
+}
+
 fn resolve_rpc_mutation(
     rpc: &RpcClient,
     update: &NormalizedEarnUpdate,
     vault: &EarnVaultWatch,
     context: loyal_yield_store::EarnReconciliationContext,
 ) -> Result<EarnDirectMutation> {
-    let is_policy_deletion = update.event_kind == "account_deleted"
-        && update.account_pubkey.as_deref().is_some_and(|pubkey| {
-            vault
-                .accounts
-                .iter()
-                .any(|account| account.role == "policy" && account.pubkey == pubkey)
-        });
-    if is_policy_deletion {
+    if is_policy_deletion(update, vault) {
         let signature = update
             .signature
             .as_deref()
@@ -2396,7 +2399,9 @@ fn durable_earn_event_key(update: &NormalizedEarnUpdate, affected: &[&EarnVaultW
     let policy_discovery_filter = update.filters.iter().any(|filter| {
         filter == EARN_SMART_ACCOUNTS || filter == EARN_POLICY_ACCOUNTS || filter == EARN_WALLETS
     });
-    if policy_discovery_account && policy_discovery_filter {
+    // A wallet/settings update can arrive first in a close transaction. Keep
+    // deletions distinct so its discovery job cannot consume the cleanup proof.
+    if policy_discovery_account && policy_discovery_filter && update.event_kind != "account_deleted" {
         if let Some(signature) = update.signature.as_deref() {
             return format!("policy-discovery:{}:{signature}", update.slot);
         }
@@ -2766,7 +2771,10 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
             }
         }
     };
-    let mutation = if policy_reconciled {
+    // Policy removal updates catalog state, not position accounting. A legacy
+    // policy deletion still needs the zero-balance/closed-policy proof below.
+    let needs_cleanup_proof = !vault.earn_max && is_policy_deletion(&update, &vault);
+    let mutation = if policy_reconciled && !needs_cleanup_proof {
         Ok(EarnDirectMutation::Noop)
     } else {
         chain.mutation_for(&update, &vault).await
@@ -3699,6 +3707,28 @@ mod tests {
             &[&vault],
         );
         assert_ne!(wallet_key, obligation_key);
+    }
+
+    #[test]
+    fn policy_close_keeps_a_durable_job_after_wallet_discovery() {
+        let vault = test_vault("policy", "policy-account");
+        let mut wallet = test_update("account", &vault.wallet, "close-signature", 500);
+        wallet.filters = vec![EARN_WALLETS.to_owned()];
+        let mut deletion =
+            test_update("account_deleted", "policy-account", "close-signature", 500);
+        deletion.filters = vec![EARN_POLICY_ACCOUNTS.to_owned()];
+
+        // These are distinct persisted jobs even when discovery arrives first;
+        // a repeated policy deletion still has the same idempotency identity.
+        assert_ne!(
+            durable_earn_event_key(&wallet, &[&vault]),
+            durable_earn_event_key(&deletion, &[&vault])
+        );
+        let key = durable_earn_event_key(&deletion, &[&vault]);
+        deletion.event_key = Some(key.clone());
+        assert_eq!(key, durable_earn_event_key(&deletion, &[&vault]));
+        assert!(is_policy_deletion(&deletion, &vault));
+        assert!(!is_policy_deletion(&wallet, &vault));
     }
 
     fn token_balance(index: u64, owner: &str, mint: &str, amount: u64) -> Value {
