@@ -306,7 +306,7 @@ async function readConfirmedSlot(): Promise<number> {
 
 // ---- account decoding --------------------------------------------------------
 
-type RawAccount = Readonly<{
+export type RawAccount = Readonly<{
   address: Address;
   owner: string;
   lamports: number;
@@ -1237,8 +1237,20 @@ async function simulate(
   };
 }
 
+/**
+ * simulateTransaction reports an account closed inside the simulated transaction as a
+ * zero-lamport, system-owned, empty record instead of null. Reading fields out of that
+ * record silently yields zeros, so a closed account is normalised to absent here.
+ */
+export function simulatedPostAccount(postAccounts: readonly RawAccount[], target: Address): RawAccount {
+  const account = postAccounts.find((entry) => entry?.address === target) ?? null;
+  if (account === null) return null;
+  const closed = account.lamports === 0 && account.owner === SYS_PROGRAM && account.data.length === 0;
+  return closed ? null : account;
+}
+
 function postAccount(postAccounts: readonly RawAccount[], target: Address): RawAccount {
-  return postAccounts.find((account) => account?.address === target) ?? null;
+  return simulatedPostAccount(postAccounts, target);
 }
 
 // ---- output ------------------------------------------------------------------

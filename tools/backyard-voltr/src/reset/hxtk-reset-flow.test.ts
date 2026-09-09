@@ -2,7 +2,7 @@ import { existsSync, linkSync, lstatSync, mkdtempSync, readdirSync, readFileSync
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { createKeyPairSignerFromBytes } from "@solana/kit";
+import { address, createKeyPairSignerFromBytes } from "@solana/kit";
 import { Connection, Keypair, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 
@@ -35,7 +35,9 @@ import {
   buildRepairRecoveryCommands,
   resumeInterruptedTransition,
   runJournaledStepForTest,
+  simulatedPostAccount,
   type JournalTransitionStep,
+  type RawAccount,
 } from "./hxtk-reset.js";
 import { parseHxtkCli } from "./hxtk-cli.js";
 import { resolveCanonicalStateRoot } from "./hxtk-fence.js";
@@ -1859,5 +1861,32 @@ describe("HXtk journaled flow", () => {
       expect(existsSync(join(stateRoot, "race-test.claim"))).toBe(false);
       expect(existsSync(join(stateRoot, "race-test.claim.break-lease"))).toBe(false);
     }
+  });
+});
+
+describe("HXtk simulated post-account reads", () => {
+  const receipt = address("8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e");
+  const other = address("HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA");
+  const systemProgram = "11111111111111111111111111111111";
+
+  test("a receipt closed inside the simulated transaction reads as absent, not as zeros", () => {
+    // simulateTransaction reports a closed account as this record rather than null.
+    const closed: RawAccount = { address: receipt, owner: systemProgram, lamports: 0, data: new Uint8Array(0) };
+    expect(simulatedPostAccount([closed], receipt)).toBeNull();
+    expect(simulatedPostAccount([null, closed], receipt)).toBeNull();
+    expect(simulatedPostAccount([], receipt)).toBeNull();
+  });
+
+  test("a live account keeps its bytes even when zero-filled or unrelated accounts are closed", () => {
+    const live: RawAccount = {
+      address: receipt,
+      owner: "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      lamports: 1,
+      data: new Uint8Array(120),
+    };
+    const closedOther: RawAccount = { address: other, owner: systemProgram, lamports: 0, data: new Uint8Array(0) };
+    expect(simulatedPostAccount([closedOther, live], receipt)).toBe(live);
+    const funded: RawAccount = { address: receipt, owner: systemProgram, lamports: 890880, data: new Uint8Array(0) };
+    expect(simulatedPostAccount([funded], receipt)).toBe(funded);
   });
 });
