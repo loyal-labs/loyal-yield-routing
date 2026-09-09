@@ -682,6 +682,11 @@ remains `OPERATOR CONFIRMATION REQUIRED` and unchanged.
   preserves the verifier/operator boundary and records the signing follow-up
   without treating an unsigned proof commit as release proof.
 
+### 2026-09-08 — v1.5 consistency notes
+
+- **P2.11 final `tv` requirement:** the effective pass condition is `tv == pre-canary tv + 1,000,000 − payoutRaw`, with the actual finalized `payoutRaw` recorded in the canary evidence; this implements the canary runbook’s conservation equation and preserves the residual when payout is below the deposit.
+- **P1.7 timing:** the effective requirement is that the finalized degradation restore occurs at least 24 h after the repair signature and before any 1 USDC canary, tester, or third-party deposit; this implements the ordering correction in `docs/runbooks/operator-checklist-2026-09-08.md` and `docs/runbooks/strategy-two-canary-2026-09-08.md`.
+
 ### 2026-09-08 — v1.4 NAV-pinned one-shot policy, spending-limit proof, latch generation
 
 This amendment strengthens P1.2, P2.3, and P2.8 throughout without editing a

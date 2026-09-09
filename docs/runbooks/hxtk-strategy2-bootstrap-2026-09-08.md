@@ -424,15 +424,13 @@ op run --env-file=.env.1password -- sh -c 'SOLANA_RPC_URL="$SOLANA_RPC_URL" \
    transaction-wide privileges (config must be writable in wire A and readonly in
    wire B), matching the LiteSVM proof's split-transaction sequence. The execute
    path above sends three separate wires exactly as listed.
-2. **Spending-limit behavioural follow-up**: the packet-level and compile-level
-   tests above prove the stage policy carries the daily limit and that a second
-   stage transfer in the same period draws the same budget down. A LiteSVM proof
-   that a duplicated stage pair in ONE delegated execution is rejected once the
-   300_000_000 period budget is exhausted belongs in
-   `crates/squads-test-harness` (execute two stage withdrawals back-to-back under
-   one delegated execution and assert the second fails with the Squads
-   spending-limit error). Tracked as follow-up; until it lands, the residual risk
-   is the documented NAV-report surface above, which moves no USDC.
+2. **Spending-limit behavioural proof**: the LiteSVM proof now exists at
+   `crates/squads-test-harness/tests/program_interaction_daily_limit.rs`. It
+   exercises the production daily-spending-limit seam and proves that excess
+   packed outflow is rejected with Squads
+   `ProgramInteractionInsufficientTokenAllowance` (`6073`). Amendment v1.4 of
+   `docs/plans/backyard-rwa-strategy2-activation-verifier.md` records this proof
+   and the production binding; this is no longer a follow-up.
 3. Locked-profit degradation is re-enabled ≥24 h after the repair report; this
    runbook does not schedule it.
 4. Fees stay 0 at launch; `initialize_config`/vault fees are unchanged by

@@ -90,7 +90,7 @@ per-checkout `target/backyard-voltr-compilers`, then follow
    start gates. Keep the service suspended until every canary precondition is
    verified.
 
-6. **Run the canary.** Use [`strategy-two-canary-2026-09-08.md`](strategy-two-canary-2026-09-08.md): 1 USDC deposit, worker allocation, refresh/restore, user withdrawal request, finalized 600-second wait, then claim. Capture
+6. **Run the canary only after step 7.** Use [`strategy-two-canary-2026-09-08.md`](strategy-two-canary-2026-09-08.md): after the finalized degradation restore at least 24 h after the repair signature, run the 1 USDC deposit, worker allocation, refresh/restore, user withdrawal request, finalized 600-second wait, then claim. Capture
    `docs/evidence/backyard-rwa-strategy2/phase2-canary.json`. The existing
    generic user CLI is for `AdwK…`; use the deployed HXtk strategy-two wallet
    flow and record its exact finalized signatures. Do not treat
@@ -98,7 +98,7 @@ per-checkout `target/backyard-voltr-compilers`, then follow
    Render deployment/resumption with `POLICY_KEYPAIR` provisioned after all
    preconditions pass. A worker send before then is an abort condition.
 
-7. **Restore degradation only after the repair.** Do not restore before the
+7. **Restore degradation only after the repair, before step 6.** Do not restore before the
    finalized repair transaction plus `86,400` seconds and a finalized closed
    claim/request state. Use the guarded command from the reset runbook:
 
