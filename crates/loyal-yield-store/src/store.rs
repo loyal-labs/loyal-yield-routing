@@ -994,6 +994,7 @@ impl NeonSqlClient {
             )),
             EarnDirectMutation::PolicyOnly(_) | EarnDirectMutation::Noop => None,
         };
+        let mut primary_claimed = true;
         if let Some((kind, signature, settings, vault_index, vault_pubkey, slot)) = identity {
             let claimed = sqlx::query(
                 r#"
@@ -1012,7 +1013,11 @@ impl NeonSqlClient {
             .bind(to_i64_slot(slot)?)
             .execute(&mut *tx)
             .await?;
-            if claimed.rows_affected() == 0 {
+            primary_claimed = claimed.rows_affected() != 0;
+            // Rent accounting and position cleanup have independent identities.
+            if !primary_claimed
+                && !matches!(mutation, EarnDirectMutation::Refund(refund) if refund.full_cleanup)
+            {
                 tx.commit().await?;
                 return Ok(EarnReconciliationCompletionOutcome {
                     applied_mutations: 0,
@@ -1037,8 +1042,32 @@ impl NeonSqlClient {
                 1
             }
             EarnDirectMutation::Refund(refund) => {
-                apply_earn_refund(&mut tx, refund).await?;
-                if refund.full_cleanup {
+                if primary_claimed {
+                    apply_earn_refund(&mut tx, refund).await?;
+                }
+                let cleanup_claimed = if refund.full_cleanup {
+                    sqlx::query(
+                        r#"
+                        INSERT INTO loyal_yield.earn_chain_mutations (
+                            mutation_kind, chain_signature, settings, vault_index,
+                            vault_pubkey, confirmed_slot, created_at
+                        ) VALUES ('cleanup', $1, $2, $3, $4, $5, now())
+                        ON CONFLICT (mutation_kind, chain_signature, vault_pubkey) DO NOTHING
+                        "#,
+                    )
+                    .bind(&refund.refund_signature)
+                    .bind(&refund.settings)
+                    .bind(i16::from(refund.vault_index))
+                    .bind(&refund.vault_pubkey)
+                    .bind(to_i64_slot(refund.confirmed_slot)?)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected()
+                        != 0
+                } else {
+                    false
+                };
+                if cleanup_claimed {
                     apply_earn_cleanup(
                         &mut tx,
                         &EarnCleanupMutation {
@@ -1052,7 +1081,7 @@ impl NeonSqlClient {
                     )
                     .await?;
                 }
-                1
+                usize::from(primary_claimed || cleanup_claimed)
             }
             EarnDirectMutation::Noop => 0,
         };
@@ -1149,7 +1178,9 @@ impl NeonSqlClient {
                        job.vault_index,
                        job.vault_pubkey,
                        FALSE AS completed,
-                       TRUE AS pending
+                       TRUE AS pending,
+                       FALSE AS refund,
+                       FALSE AS other_mutation
                 FROM loyal_yield.earn_reconciliation_jobs job
                 WHERE job.consumer_name = $1
                   AND job.durable_slot BETWEEN $2 AND $3
@@ -1161,13 +1192,16 @@ impl NeonSqlClient {
                        mutation.vault_index,
                        mutation.vault_pubkey,
                        TRUE AS completed,
-                       FALSE AS pending
+                       FALSE AS pending,
+                       mutation.mutation_kind = 'refund' AS refund,
+                       mutation.mutation_kind <> 'refund' AS other_mutation
                 FROM loyal_yield.earn_chain_mutations mutation
                 WHERE mutation.confirmed_slot BETWEEN $2 AND $3
             )
             SELECT signature, settings, vault_index, vault_pubkey,
                    BOOL_OR(completed) AS completed,
-                   BOOL_OR(pending) AS pending
+                   BOOL_OR(pending) AS pending,
+                   BOOL_OR(refund) AND NOT BOOL_OR(other_mutation) AS refund_only
             FROM coverage
             GROUP BY signature, settings, vault_index, vault_pubkey
             "#,
@@ -1190,6 +1224,7 @@ impl NeonSqlClient {
                     vault_pubkey: row.get("vault_pubkey"),
                     completed: row.get("completed"),
                     pending: row.get("pending"),
+                    refund_only: row.get("refund_only"),
                 })
             })
             .collect()
@@ -6465,8 +6500,7 @@ async fn apply_earn_withdrawal(
     conn: &mut PgConnection,
     mutation: &EarnWithdrawalMutation,
 ) -> Result<(), OrchestratorError> {
-    let route = upsert_policy(conn, &mutation.route_policy).await?;
-    let vault = upsert_vault(conn, route.id, &mutation.route_policy).await?;
+    // Withdrawals must not reactivate a retired policy during historical replay.
     let confirmed_slot = to_i64_slot(mutation.confirmed_slot)?;
     let observed_slot = to_i64_slot(mutation.observed_slot)?;
     let withdrawn_amount = to_i64_amount(mutation.withdrawn_amount_raw)?;
@@ -6475,19 +6509,54 @@ async fn apply_earn_withdrawal(
 
     let position = sqlx::query(
         r#"
-        SELECT id, principal_amount_raw, current_amount_raw, current_observed_slot
-        FROM loyal_yield.user_yield_positions
-        WHERE settings = $1 AND vault_index = $2 AND wallet_address = $3
-          AND vault_pubkey = $4 AND status = 'active'::loyal_yield.yield_position_status
-        ORDER BY updated_at DESC, id DESC
+        SELECT position.id, position.principal_amount_raw, position.current_amount_raw,
+               position.current_observed_slot, position.status::text AS status,
+               owning_deposit.policy_id, owning_deposit.policy_account, owning_deposit.policy_seed,
+               EXISTS (
+                   SELECT 1 FROM loyal_yield.user_yield_position_holding_events boundary
+                   WHERE boundary.position_id = position.id
+                     AND boundary.observed_slot >= $5 AND boundary.amount_raw = 0
+                     AND boundary.event_type::text IN ('snapshot_reconciled', 'withdrawal_full')
+               ) AS historically_settled,
+               EXISTS (
+                   SELECT 1 FROM loyal_yield.user_yield_position_deposits later_deposit
+                   WHERE later_deposit.settings = position.settings
+                     AND later_deposit.vault_index = position.vault_index
+                     AND later_deposit.vault_pubkey = position.vault_pubkey
+                     AND later_deposit.wallet_address = position.wallet_address
+                     AND later_deposit.confirmed_slot >= $5
+               ) AS has_later_deposits
+        FROM loyal_yield.user_yield_positions position
+        JOIN loyal_yield.user_yield_position_deposits first_deposit
+          ON first_deposit.deposit_signature = position.first_deposit_signature
+         AND first_deposit.settings = position.settings
+         AND first_deposit.vault_index = position.vault_index
+         AND first_deposit.vault_pubkey = position.vault_pubkey
+         AND first_deposit.wallet_address = position.wallet_address
+        JOIN LATERAL (
+            SELECT deposit.policy_id, deposit.policy_account, deposit.policy_seed
+            FROM loyal_yield.user_yield_position_deposits deposit
+            WHERE deposit.settings = position.settings
+              AND deposit.vault_index = position.vault_index
+              AND deposit.vault_pubkey = position.vault_pubkey
+              AND deposit.wallet_address = position.wallet_address
+              AND deposit.confirmed_slot <= $5
+            ORDER BY deposit.confirmed_slot DESC, deposit.id DESC
+            LIMIT 1
+        ) owning_deposit ON TRUE
+        WHERE position.settings = $1 AND position.vault_index = $2
+          AND position.wallet_address = $3 AND position.vault_pubkey = $4
+          AND first_deposit.confirmed_slot <= $5
+        ORDER BY first_deposit.confirmed_slot DESC, position.id DESC
         LIMIT 1
-        FOR UPDATE
+        FOR UPDATE OF position
         "#,
     )
     .bind(&mutation.route_policy.settings)
     .bind(i16::from(mutation.route_policy.vault_index))
     .bind(&mutation.wallet)
     .bind(&mutation.vault_pubkey)
+    .bind(confirmed_slot)
     .fetch_optional(&mut *conn)
     .await?;
     let Some(position) = position else {
@@ -6501,10 +6570,18 @@ async fn apply_earn_withdrawal(
             return Ok(());
         }
         return Err(OrchestratorError::StoreInvariant(format!(
-            "confirmed Earn withdrawal {} has no active projected position",
+            "confirmed Earn withdrawal {} has no projected lifecycle at its slot",
             mutation.withdrawal_signature
         )));
     };
+    let history_only = position.try_get::<String, _>("status")? != "active"
+        || position.try_get::<bool, _>("historically_settled")?;
+    if !history_only && position.try_get::<bool, _>("has_later_deposits")? {
+        return Err(OrchestratorError::StoreInvariant(format!(
+            "historical Earn withdrawal {} has later deposits without a proven settlement boundary",
+            mutation.withdrawal_signature
+        )));
+    }
     let position_id: i64 = position.try_get("id")?;
     let principal: i64 = position.try_get("principal_amount_raw")?;
     let previous_amount: i64 = position.try_get("current_amount_raw")?;
@@ -6538,9 +6615,9 @@ async fn apply_earn_withdrawal(
     .bind(&mutation.route_policy.settings)
     .bind(i16::from(mutation.route_policy.vault_index))
     .bind(&mutation.vault_pubkey)
-    .bind(route.id.as_i64())
-    .bind(&mutation.route_policy.policy_account)
-    .bind(to_i64_policy_seed(mutation.route_policy.policy_seed)?)
+    .bind(position.try_get::<i64, _>("policy_id")?)
+    .bind(position.try_get::<String, _>("policy_account")?)
+    .bind(position.try_get::<i64, _>("policy_seed")?)
     .bind(&mutation.target_reserve)
     .bind(&mutation.market)
     .bind(&mutation.liquidity_mint)
@@ -6553,6 +6630,22 @@ async fn apply_earn_withdrawal(
         return Ok(());
     };
 
+    // The product reuses a position row when the user deposits again. A later
+    // zero-balance boundary has already settled the old principal, even if that
+    // row is active again now. Only backfill history before such a boundary.
+    if history_only {
+        return Ok(());
+    }
+    let vault = managed_vault_from_row(
+        sqlx::query_as::<_, ManagedVaultRow>(
+            "SELECT id, settings, vault_index, vault_pubkey, active_policy_id, active, first_seen_at, last_seen_at FROM loyal_yield.managed_vaults WHERE settings = $1 AND vault_index = $2 AND vault_pubkey = $3",
+        )
+        .bind(&mutation.route_policy.settings)
+        .bind(i16::from(mutation.route_policy.vault_index))
+        .bind(&mutation.vault_pubkey)
+        .fetch_one(&mut *conn)
+        .await?,
+    );
     let principal_delta = -principal.min(withdrawn_amount);
     let next_principal = principal.saturating_sub(withdrawn_amount);
     let snapshot_is_current = observed_slot >= previous_observed_slot;
@@ -6705,6 +6798,34 @@ async fn apply_earn_cleanup(
     let vault_id: i64 = vault_row.try_get("id")?;
     let active_policy_id: i64 = vault_row.try_get("active_policy_id")?;
     let setup_policy_id: Option<i64> = vault_row.try_get("setup_policy_id")?;
+
+    // A historical close must never close a replacement policy or a later
+    // deposit. Recording its identity is still safe; current state is newer.
+    let superseded: bool = sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM loyal_yield.route_policies
+            WHERE (id = $1 OR id = $2) AND last_seen_slot > $3
+        ) OR EXISTS (
+            SELECT 1 FROM loyal_yield.user_yield_positions
+            WHERE settings = $4 AND vault_index = $5 AND vault_pubkey = $6
+              AND status::text = 'active'
+              AND (last_confirmed_slot > $3
+                   OR (current_observed_slot > $3 AND current_amount_raw > 0))
+        )
+        "#,
+    )
+    .bind(active_policy_id)
+    .bind(setup_policy_id)
+    .bind(slot)
+    .bind(&mutation.settings)
+    .bind(i16::from(mutation.vault_index))
+    .bind(&mutation.vault_pubkey)
+    .fetch_one(&mut *conn)
+    .await?;
+    if superseded {
+        return Ok(());
+    }
 
     sqlx::query(
         r#"
@@ -7915,6 +8036,10 @@ fn same_mint_result_from_confirmed_decision(
 }
 
 #[allow(clippy::items_after_test_module)]
+#[cfg(test)]
+#[path = "earn_replay_tests.rs"]
+mod earn_replay_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1119,18 +1119,36 @@ fn resolve_rpc_mutation(
         .iter()
         .map(|asset| asset.mint.to_string())
         .collect::<Vec<_>>();
-    let Some(cash_flow) = classify_transaction_cash_flow(
-        &transaction,
-        &vault.wallet,
-        supported_mints.iter().map(String::as_str),
-        update,
-        vault,
-    )?
-    else {
+    let cash_flow = if update.event_kind == "refund_cleanup_repair" {
+        let credit = transaction_owner_lamport_credit(&transaction, &vault.wallet)?;
+        if credit == 0 || !transaction_has_earn_anchor(&transaction, vault) {
+            bail!("refund cleanup repair has no anchored wallet refund proof");
+        }
+        Some(CashFlowEvidence {
+            kind: CashFlowKind::Refund,
+            mint: String::new(),
+            amount_raw: credit,
+            refund_kind: Some("account".to_owned()),
+        })
+    } else {
+        classify_transaction_cash_flow(
+            &transaction,
+            &vault.wallet,
+            supported_mints.iter().map(String::as_str),
+            update,
+            vault,
+        )?
+    };
+    let Some(cash_flow) = cash_flow else {
         return Ok(EarnDirectMutation::Noop);
     };
     if cash_flow.kind == CashFlowKind::Refund {
         let proof = read_cleanup_proof(rpc, vault, update.slot)?;
+        if update.event_kind == "refund_cleanup_repair"
+            && !(proof.balances_zero && proof.policies_closed)
+        {
+            bail!("refund cleanup repair cannot prove zero balances and closed policies");
+        }
         return Ok(EarnDirectMutation::Refund(EarnRefundMutation {
             cluster: vault.environment.clone(),
             full_cleanup: proof.balances_zero && proof.policies_closed,
@@ -1737,6 +1755,30 @@ fn transaction_instructions(transaction: &Value) -> Vec<&Value> {
     instructions
 }
 
+fn transaction_closed_account(transaction: &Value, address: &str) -> bool {
+    let Some(keys) = transaction
+        .pointer("/transaction/message/accountKeys")
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    let Some(index) = keys.iter().position(|key| {
+        key.as_str()
+            .or_else(|| key.get("pubkey").and_then(Value::as_str))
+            == Some(address)
+    }) else {
+        return false;
+    };
+    transaction
+        .pointer(&format!("/meta/preBalances/{index}"))
+        .and_then(Value::as_u64)
+        .is_some_and(|balance| balance > 0)
+        && transaction
+            .pointer(&format!("/meta/postBalances/{index}"))
+            .and_then(Value::as_u64)
+            == Some(0)
+}
+
 fn read_drained_obligation_withdraw_target(
     rpc: &RpcClient,
     update: &NormalizedEarnUpdate,
@@ -1834,7 +1876,12 @@ fn read_drained_obligation_withdraw_target(
     let [obligation_account, reserve_account] = response.value.as_slice() else {
         bail!("full-withdraw proof did not return the obligation and reserve");
     };
-    if let Some(account) = obligation_account {
+    // The same PDA may have been funded again since this finalized withdrawal.
+    // Its later state cannot invalidate the transaction's own account-close proof.
+    if let Some(account) = obligation_account
+        .as_ref()
+        .filter(|_| !transaction_closed_account(transaction, &obligation.to_string()))
+    {
         if account.owner != KLEND_PROGRAM_ID {
             bail!(
                 "full-withdraw obligation {obligation} has unexpected owner {}",
@@ -2485,6 +2532,9 @@ pub async fn reconcile_targeted_policy_vault_update(
     update: &NormalizedEarnUpdate,
     vault: &EarnVaultWatch,
 ) -> Result<bool> {
+    if update.event_kind == "refund_cleanup_repair" {
+        return Ok(false);
+    }
     if !update.filters.iter().any(|filter| {
         filter == EARN_SMART_ACCOUNTS || filter == EARN_POLICY_ACCOUNTS || filter == EARN_WALLETS
     }) {
@@ -3438,6 +3488,22 @@ mod tests {
         },
         state::{Account as Token2022Account, AccountState as Token2022AccountState},
     };
+
+    #[test]
+    fn historical_account_close_requires_explicit_pre_and_post_evidence() {
+        let mut transaction = json!({
+            "transaction": {"message": {"accountKeys": [{"pubkey": "payer"}, {"pubkey": "obligation"}]}},
+            "meta": {"preBalances": [10, 20], "postBalances": [10, 0]}
+        });
+        assert!(transaction_closed_account(&transaction, "obligation"));
+        assert!(!transaction_closed_account(&transaction, "payer"));
+        assert!(!transaction_closed_account(&transaction, "unwatched"));
+        transaction["meta"]["postBalances"] = json!([10]);
+        assert!(!transaction_closed_account(&transaction, "obligation"));
+        transaction["meta"]["postBalances"] = json!([10, 0]);
+        transaction["meta"]["preBalances"] = json!([10, 0]);
+        assert!(!transaction_closed_account(&transaction, "obligation"));
+    }
 
     #[test]
     fn earn_max_transaction_proof_availability_contract() {
