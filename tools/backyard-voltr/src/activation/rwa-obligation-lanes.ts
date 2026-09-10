@@ -48,3 +48,32 @@ export function assertJournalLaneFilter(journal: Json, filter: LaneFilter, label
   if (!keys) throw new Error(`${label} has no laneFilter array; refusing to resume a journal written before ${LANE_FILTER_ENV} existed`);
   if (render(keys) !== render(filter.keys)) throw new Error(`${label} laneFilter ${render(keys)} does not match the current ${LANE_FILTER_ENV} ${render(filter.keys)}; refusing to resume across a lane-filter change`);
 }
+
+export const JOURNAL_TAG_ENV = "RWA_OBLIGATION_JOURNAL_TAG";
+const JOURNAL_TAG_PATTERN = /^[A-Za-z0-9._-]+$/;
+const JOURNAL_TAG_MAX_LENGTH = 40;
+const JOURNAL_TAG_RESERVED = "v1";
+
+/**
+ * Parses the optional per-run journal tag.  Returns null when the variable is
+ * unset so the caller keeps the default v1 journal path, and refuses a value
+ * that is empty, not filename-safe, longer than 40 characters, or the reserved
+ * "v1", so callers can fail before any RPC call.
+ */
+export function parseJournalTag(rawValue: string | undefined): string | null {
+  if (rawValue === undefined) return null;
+  const tag = rawValue.trim();
+  if (tag.length === 0) throw new Error(`${JOURNAL_TAG_ENV} is set but empty; unset it to use the default v1 journal path`);
+  if (!JOURNAL_TAG_PATTERN.test(tag)) throw new Error(`${JOURNAL_TAG_ENV} ${render(tag)} may only contain letters, digits, ".", "_", and "-"`);
+  if (tag.length > JOURNAL_TAG_MAX_LENGTH) throw new Error(`${JOURNAL_TAG_ENV} ${render(tag)} exceeds ${JOURNAL_TAG_MAX_LENGTH} characters`);
+  if (tag === JOURNAL_TAG_RESERVED) throw new Error(`${JOURNAL_TAG_ENV} ${render(tag)} is reserved for the existing journal; pick a fresh tag`);
+  return tag;
+}
+
+/** Rewrites the `*-v1.json` journal path to the tagged `*-<tag>.json` path. */
+export function journalPathForTag(defaultPath: string, tag: string | null): string {
+  if (tag === null) return defaultPath;
+  if (!defaultPath.endsWith(".json")) throw new Error(`default journal path ${render(defaultPath)} does not end in .json`);
+  const stem = defaultPath.slice(0, -".json".length).replace(/-v1$/, "");
+  return `${stem}-${tag}.json`;
+}

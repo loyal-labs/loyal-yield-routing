@@ -4,11 +4,12 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "bun:test";
 
-import { assertJournalLaneFilter, LANE_FILTER_ENV, parseLaneFilter, selectLanes } from "./rwa-obligation-lanes.js";
+import { assertJournalLaneFilter, journalPathForTag, LANE_FILTER_ENV, JOURNAL_TAG_ENV, parseJournalTag, parseLaneFilter, selectLanes } from "./rwa-obligation-lanes.js";
 
 const ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const LANE_KEYS = ["Maple/syrupUSDC/USDC", "Prime/PRIME/USDC", "OnRe/ONyc/USDC", "AUTO/AUTO/PYUSD"] as const;
 const LANES = LANE_KEYS.map((key) => ({ key, resolved: { obligation: `obligation-${key}` } }));
+const DEFAULT_JOURNAL = "docs/evidence/backyard-rwa-go/policy-phase2-obligation-init-v1.json";
 
 describe("parseLaneFilter", () => {
   test("accepts listed lanes, trims surrounding whitespace, and preserves operator order", () => {
@@ -72,6 +73,57 @@ describe("assertJournalLaneFilter", () => {
       .toThrow(/no laneFilter array/);
     expect(() => assertJournalLaneFilter({ laneFilter: ["Maple/syrupUSDC/USDC", 7] }, filter, "pending obligation journal"))
       .toThrow(/no laneFilter array/);
+  });
+});
+
+describe("parseJournalTag", () => {
+  test("accepts a filename-safe tag", () => {
+    expect(parseJournalTag("maple-prime_2026.09.09")).toBe("maple-prime_2026.09.09");
+    expect(parseJournalTag("Tag.09_x-Y")).toBe("Tag.09_x-Y");
+  });
+
+  test("keeps the default v1 journal when unset", () => {
+    expect(parseJournalTag(undefined)).toBe(null);
+  });
+
+  test("refuses a blank value instead of silently falling back to v1", () => {
+    for (const value of ["", "   ", "\n\t"]) {
+      expect(() => parseJournalTag(value)).toThrow(new RegExp(`^${JOURNAL_TAG_ENV} is set but empty`));
+    }
+  });
+
+  test("refuses characters outside letters, digits, dot, underscore, and dash", () => {
+    for (const value of ["maple/prime", "bad tag", "../escape", "tag:v1", "tag\\x"]) {
+      expect(() => parseJournalTag(value)).toThrow(/may only contain letters, digits/);
+    }
+    let message = "";
+    try { parseJournalTag("maple/prime"); } catch (error) { message = (error as Error).message; }
+    expect(message).toContain(`RWA_OBLIGATION_JOURNAL_TAG "maple/prime"`);
+  });
+
+  test("refuses a tag longer than 40 characters", () => {
+    expect(parseJournalTag("a".repeat(40))).toBe("a".repeat(40));
+    expect(() => parseJournalTag("a".repeat(41))).toThrow(new RegExp(`^${JOURNAL_TAG_ENV} "a{41}" exceeds 40 characters`));
+  });
+
+  test("refuses the reserved v1 tag", () => {
+    expect(() => parseJournalTag("v1")).toThrow(new RegExp(`^${JOURNAL_TAG_ENV} "v1" is reserved for the existing journal`));
+  });
+});
+
+describe("journalPathForTag", () => {
+  test("keeps the committed v1 journal path when the tag is unset", () => {
+    expect(journalPathForTag(DEFAULT_JOURNAL, null)).toBe(DEFAULT_JOURNAL);
+  });
+
+  test("derives the tagged journal path and its pending path", () => {
+    const journalPath = journalPathForTag(DEFAULT_JOURNAL, parseJournalTag("maple-prime-2026-09-09"));
+    expect(journalPath).toBe("docs/evidence/backyard-rwa-go/policy-phase2-obligation-init-maple-prime-2026-09-09.json");
+    expect(`${journalPath}.pending`).toBe("docs/evidence/backyard-rwa-go/policy-phase2-obligation-init-maple-prime-2026-09-09.json.pending");
+  });
+
+  test("never retargets onto the committed v1 journal", () => {
+    expect(journalPathForTag(DEFAULT_JOURNAL, parseJournalTag("v1-2026-09-09"))).not.toBe(DEFAULT_JOURNAL);
   });
 });
 
