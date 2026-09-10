@@ -24,12 +24,29 @@ func jupiterLookupAddresses(r JupiterSwapRequest) []string {
 	return nil
 }
 
+// basicSwapLaneEdge reports the two approved basic-policy swap directions. Only
+// those legs may carry lookup hints; every other basic action keeps dropping
+// them.
+func basicSwapLaneEdge(action Action) bool {
+	switch action {
+	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep:
+		return true
+	}
+	return false
+}
+
 func acceptsJupiterLookupHints(lane string, action Action) bool {
 	if lane == "Ethena/USDe/PYUSD" && action == SwapCollateralToDebtStep {
 		return true
 	}
 	if !catalogJupiterRoute(lane) {
-		return false
+		// The basic policy lanes swap through the same validated inner
+		// instruction wrapped in the same Squads execute. Their oversized legacy
+		// packets therefore use the identical v0 escape hatch: hints still come
+		// only from the fresh quote, are resolved from chain, and are pinned to
+		// the persisted request identities.
+		route, err := runtimeRoute(lane)
+		return err == nil && route.BasicPolicy && basicSwapLaneEdge(action)
 	}
 	b, err := catalogJupiterBindingForRoute(action, lane)
 	return err == nil && (b.fixedPrefixV2() || lane == primePRIMEPYUSD.Lane || lane == primePRIMEUSDS.Lane)
