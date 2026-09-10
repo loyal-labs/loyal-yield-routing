@@ -1,0 +1,624 @@
+{
+  "broadcast": false,
+  "install": [
+    {
+      "accountDataBytes": 1203,
+      "accountDataSha256": "c222e61866686b64264447284750e138e2d2b0974f6714a49de91bfe3ca1cb8f",
+      "computeUnits": 54105,
+      "instructionDataSha256": "bd75abb8acb28180e2fbcd66814e21d32267a447cf3dac50c928d2d2cc0dcc83",
+      "payloadProjection": {
+        "constraints": [
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 0,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 1,
+                "kind": {
+                  "constraints": [
+                    {
+                      "offset": 64,
+                      "operator": "Equals",
+                      "value": {
+                        "kind": "U8Slice",
+                        "value": "068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa"
+                      }
+                    }
+                  ],
+                  "kind": "AccountData",
+                  "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+                }
+              },
+              {
+                "accountIndex": 4,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+                    "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+                    "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+                    "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "d8e0bf1bcc9766af"
+                }
+              }
+            ],
+            "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+          },
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 0,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 1,
+                "kind": {
+                  "constraints": [
+                    {
+                      "offset": 64,
+                      "operator": "Equals",
+                      "value": {
+                        "kind": "U8Slice",
+                        "value": "068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa"
+                      }
+                    }
+                  ],
+                  "kind": "AccountData",
+                  "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+                }
+              },
+              {
+                "accountIndex": 4,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+                    "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+                    "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+                    "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "eb34779895c51407"
+                }
+              }
+            ],
+            "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+          }
+        ],
+        "delegatedSigner": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+        "policy": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+        "pubkeyTable": [],
+        "seed": 141,
+        "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+        "spendingLimits": 0,
+        "threshold": 1,
+        "vaultIndex": 0
+      },
+      "policy": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "proof": "decoded payload projection; account envelope adds Squads metadata",
+      "seed": "141"
+    },
+    {
+      "accountDataBytes": 1203,
+      "accountDataSha256": "b068a1d30558d814730ad6a0ae147ed53e7f97eeeff9bd5ddb35e0b5efd56dd6",
+      "computeUnits": 51105,
+      "instructionDataSha256": "d49cd14712056de39fb06c6fea3120dc851bf0f5b0bfa0d87413697457b30479",
+      "payloadProjection": {
+        "constraints": [
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 0,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 1,
+                "kind": {
+                  "constraints": [
+                    {
+                      "offset": 64,
+                      "operator": "Equals",
+                      "value": {
+                        "kind": "U8Slice",
+                        "value": "068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa"
+                      }
+                    }
+                  ],
+                  "kind": "AccountData",
+                  "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+                }
+              },
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+                    "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+                    "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 8,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV",
+                    "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "a1808ff5abc7c206"
+                }
+              }
+            ],
+            "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+          },
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 0,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 1,
+                "kind": {
+                  "constraints": [
+                    {
+                      "offset": 64,
+                      "operator": "Equals",
+                      "value": {
+                        "kind": "U8Slice",
+                        "value": "068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa"
+                      }
+                    }
+                  ],
+                  "kind": "AccountData",
+                  "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+                }
+              },
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+                    "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+                    "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 6,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV",
+                    "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "74aed54cb435d290"
+                }
+              }
+            ],
+            "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+          }
+        ],
+        "delegatedSigner": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+        "policy": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+        "pubkeyTable": [],
+        "seed": 142,
+        "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+        "spendingLimits": 0,
+        "threshold": 1,
+        "vaultIndex": 0
+      },
+      "policy": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "proof": "decoded payload projection; account envelope adds Squads metadata",
+      "seed": "142"
+    },
+    {
+      "accountDataBytes": 877,
+      "accountDataSha256": "98a651c8994771158b6268b7523b684df3979d3721f275200e46754e7c6ee286",
+      "computeUnits": 38747,
+      "instructionDataSha256": "e56888dd2b3ac821c16933e59ae31ec3f6fc38a0770dd79905933dde9885fe22",
+      "payloadProjection": {
+        "constraints": [
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 3,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 6,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U16Le",
+                  "value": 8385
+                }
+              }
+            ],
+            "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+          },
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 3,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 6,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+                    "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U16Le",
+                  "value": 8385
+                }
+              }
+            ],
+            "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+          }
+        ],
+        "delegatedSigner": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+        "policy": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+        "pubkeyTable": [],
+        "seed": 143,
+        "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+        "spendingLimits": 0,
+        "threshold": 1,
+        "vaultIndex": 0
+      },
+      "policy": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "proof": "decoded payload projection; account envelope adds Squads metadata",
+      "seed": "143"
+    },
+    {
+      "accountDataBytes": 877,
+      "accountDataSha256": "82707874427d149217c94271efe2452cd2680325708dcdcd739144cb2b209088",
+      "computeUnits": 40247,
+      "instructionDataSha256": "44e8beecf05e6032df92878685d10521c30fb3a4d3df28c561fd45d6e92fcab7",
+      "payloadProjection": {
+        "constraints": [
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 3,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 6,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U16Le",
+                  "value": 8385
+                }
+              }
+            ],
+            "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+          },
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 3,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+                    "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 6,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U16Le",
+                  "value": 8385
+                }
+              }
+            ],
+            "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+          }
+        ],
+        "delegatedSigner": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+        "policy": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+        "pubkeyTable": [],
+        "seed": 144,
+        "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+        "spendingLimits": 0,
+        "threshold": 1,
+        "vaultIndex": 0
+      },
+      "policy": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+      "proof": "decoded payload projection; account envelope adds Squads metadata",
+      "seed": "144"
+    }
+  ],
+  "negativeMutationMatrix": [
+    {
+      "case": "foreign obligation",
+      "computeUnits": 32417,
+      "error": "InstructionError(0, Custom(6064))",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "foreign reserve",
+      "computeUnits": 32515,
+      "error": "InstructionError(0, Custom(6069))",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "foreign custody",
+      "computeUnits": 32515,
+      "error": "InstructionError(0, Custom(6069))",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "wrong discriminator",
+      "computeUnits": 32515,
+      "error": "InstructionError(0, Custom(6069))",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "forbidden swap pair ONyc -> PYUSD",
+      "computeUnits": 21009,
+      "error": "InstructionError(0, Custom(6069))",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "non-vault authority",
+      "computeUnits": 20947,
+      "error": "InstructionError(0, Custom(6069))",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "Ethena lane not in catalog",
+      "computeUnits": 21009,
+      "error": "InstructionError(0, Custom(6069))",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    }
+  ],
+  "positiveLegs": [
+    {
+      "leg": "Maple/syrupUSDC/USDC deposit",
+      "reason": "BLOCKED: docs/evidence/backyard-rwa-basic/go-messages-v1.json is absent",
+      "status": "BLOCKED"
+    },
+    {
+      "leg": "Maple/syrupUSDC/USDC borrow",
+      "reason": "BLOCKED: docs/evidence/backyard-rwa-basic/go-messages-v1.json is absent",
+      "status": "BLOCKED"
+    },
+    {
+      "leg": "Maple/syrupUSDC/USDC repay",
+      "reason": "BLOCKED: docs/evidence/backyard-rwa-basic/go-messages-v1.json is absent",
+      "status": "BLOCKED"
+    },
+    {
+      "leg": "Maple/syrupUSDC/USDC withdraw",
+      "reason": "BLOCKED: docs/evidence/backyard-rwa-basic/go-messages-v1.json is absent",
+      "status": "BLOCKED"
+    },
+    {
+      "leg": "OnRe/ONyc/USDC deposit",
+      "reason": "BLOCKED: docs/evidence/backyard-rwa-basic/go-messages-v1.json is absent",
+      "status": "BLOCKED"
+    },
+    {
+      "leg": "OnRe/ONyc/USDC borrow",
+      "reason": "BLOCKED: docs/evidence/backyard-rwa-basic/go-messages-v1.json is absent",
+      "status": "BLOCKED"
+    },
+    {
+      "leg": "OnRe/ONyc/USDC repay",
+      "reason": "BLOCKED: docs/evidence/backyard-rwa-basic/go-messages-v1.json is absent",
+      "status": "BLOCKED"
+    },
+    {
+      "leg": "OnRe/ONyc/USDC withdraw",
+      "reason": "BLOCKED: docs/evidence/backyard-rwa-basic/go-messages-v1.json is absent",
+      "status": "BLOCKED"
+    },
+    {
+      "leg": "stable -> RWA swap",
+      "reason": "BLOCKED: docs/evidence/backyard-rwa-basic/go-messages-v1.json is absent",
+      "status": "BLOCKED"
+    },
+    {
+      "leg": "RWA -> stable swap",
+      "reason": "BLOCKED: docs/evidence/backyard-rwa-basic/go-messages-v1.json is absent",
+      "status": "BLOCKED"
+    }
+  ],
+  "schema": "loyal-backyard-rwa-basic-policy-litesvm-proof/v1",
+  "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+  "settingsPolicySeedAfter": 144,
+  "settingsPolicySeedBefore": 140
+}
