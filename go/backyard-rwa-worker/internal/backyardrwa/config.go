@@ -15,7 +15,7 @@ const (
 	// Phase 2 freezes one additional installed representative. This is a
 	// compile-time lane, never caller input or runtime route selection.
 	SelectedRouteID   = "Maple/syrupUSDC/USDC"
-	RuntimeRouteCount = 2
+	RuntimeRouteCount = 3
 	// The Phase 2 authorization envelope permits at most 1 USDC-equivalent per
 	// money-moving transaction. Selected-lane decisions are clamped before they
 	// are journaled, quoted, signed, or broadcast.

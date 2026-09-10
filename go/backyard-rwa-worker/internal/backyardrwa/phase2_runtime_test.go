@@ -96,13 +96,14 @@ func TestPhase2UnsupportedLaneFailsClosed(t *testing.T) {
 	}
 }
 
-func TestPhase2RuntimeActivationIsExactlyTwoRoutes(t *testing.T) {
+func TestPhase2RuntimeActivationIncludesBasicRoutes(t *testing.T) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if manifest.RuntimeActivation.SelectedLane != SelectedRouteID || len(manifest.RuntimeActivation.RuntimeRoutes) != RuntimeRouteCount ||
-		manifest.RuntimeActivation.RuntimeRoutes[0] != PhaseOneLaneID || manifest.RuntimeActivation.RuntimeRoutes[1] != SelectedRouteID {
+		manifest.RuntimeActivation.RuntimeRoutes[0].Lane != PhaseOneLaneID || manifest.RuntimeActivation.RuntimeRoutes[1].Lane != SelectedRouteID ||
+		manifest.RuntimeActivation.RuntimeRoutes[2].Lane != "OnRe/ONyc/USDC" {
 		t.Fatalf("unexpected runtime activation: %+v", manifest.RuntimeActivation)
 	}
 	route, err := manifest.activeRuntimeRoute()

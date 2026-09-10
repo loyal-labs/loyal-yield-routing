@@ -10,19 +10,19 @@ import (
 )
 
 func TestEmbeddedManifestIsExactCheckedInManifest(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "docs", "manifests", "backyard-rwa-v1.json"))
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "docs", "manifests", "backyard-rwa-v2.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(source, embeddedBackyardManifest) {
-		t.Fatal("embedded runtime manifest drifted from docs/manifests/backyard-rwa-v1.json")
+		t.Fatal("embedded runtime manifest drifted from docs/manifests/backyard-rwa-v2.json")
 	}
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.executionBlocker() != nil {
-		t.Fatal("installed Phase 1 manifest remained blocked")
+	if manifest.executionBlocker() == nil {
+		t.Fatal("v2 manifest must remain blocked until policy install readback")
 	}
 }
 

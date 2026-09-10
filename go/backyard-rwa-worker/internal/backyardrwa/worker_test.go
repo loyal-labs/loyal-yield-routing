@@ -12,6 +12,7 @@ import (
 
 func readyWorkerManifest(t *testing.T) RouteManifest {
 	t.Helper()
+	stringPtr := func(value string) *string { return &value }
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -21,7 +22,17 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 	manifest.PolicyCatalog.AddressesResolved = true
 	packing := int64(8)
 	manifest.PolicyCatalog.PackingRung = &packing
-	manifest.PolicyCatalog.PolicyAccounts = []string{bridgeAllocationPolicy}
+	manifest.PolicyCatalog.SHA256 = stringPtr(strings.Repeat("c", 64))
+	manifest.PolicyCatalog.PolicyAccounts = []string{
+		"2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+		"BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+		"9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+		"Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+	}
+	for index := range manifest.PolicyCatalog.Policies {
+		hash := strings.Repeat(string("def0"[index]), 64)
+		manifest.PolicyCatalog.Policies[index].DataSHA256 = &hash
+	}
 	commit := strings.Repeat("1", 40)
 	digest := "sha256:" + strings.Repeat("2", 64)
 	service := "loyal-backyard-rwa-worker"
@@ -32,6 +43,10 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 		hash := strings.Repeat(string(rune('a'+index)), 64)
 		manifest.RuntimeBindings.BridgePolicies[index].DataSHA256 = &hash
 	}
+	manifest.RuntimeBindings.CollateralLifecycle.DataSHA256 = stringPtr(strings.Repeat("e", 64))
+	manifest.RuntimeBindings.DebtLifecycle.DataSHA256 = stringPtr(strings.Repeat("f", 64))
+	manifest.RuntimeBindings.SwapRoutesA.DataSHA256 = stringPtr(strings.Repeat("0", 64))
+	manifest.RuntimeBindings.SwapRoutesB.DataSHA256 = stringPtr(strings.Repeat("1", 64))
 	manifest.RuntimeBindings.PrimeUSDC.Packets = make([]struct {
 		Action                  Action                  `json:"action"`
 		Policy                  string                  `json:"policy"`
@@ -126,6 +141,8 @@ func TestTickPreservesHoldJournalWhileManifestIsBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	policyCatalogHash := strings.Repeat("c", 64)
+	manifest.PolicyCatalog.SHA256 = &policyCatalogHash
 	observation := tickObservation(Snapshot{ObservationID: "hold", Slot: 10, RouteKind: RouteKind, Fresh: true})
 	recorded := false
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{

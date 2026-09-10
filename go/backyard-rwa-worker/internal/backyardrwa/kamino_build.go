@@ -295,7 +295,7 @@ func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route Runtim
 	if !ok {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet is not an approved PRIME/USDC lifecycle step")
 	}
-	if request.PolicyConstraintIndex != kaminoConstraintIndex(leg) {
+	if request.PolicyConstraintIndex != kaminoConstraintIndexForRoute(route, leg) {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet uses the wrong fixed lane constraint index")
 	}
 	if route.Lane != RouteID {
@@ -307,15 +307,22 @@ func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route Runtim
 	return compiledInstruction{program: mustKey(kaminoPrimeUSDCProgram), accounts: accounts, data: append([]byte(nil), request.Data...)}, leg, nil
 }
 
-func kaminoConstraintIndex(leg kaminoPrimeUSDCLeg) byte {
-	switch leg {
-	case kaminoLegDeposit, kaminoLegWithdraw, kaminoLegBorrow, kaminoLegRepay:
-		// Phase 1 installs one physical policy per Kamino mutation. Every one of
-		// those split policies contains exactly one constraint at index zero.
+func kaminoConstraintIndexForRoute(route RuntimeRoute, leg kaminoPrimeUSDCLeg) byte {
+	// Retained split-policy routes still have one constraint at index zero. The
+	// four-policy basic set uses the family indexes above; Phase 2 attaches that
+	// model to the three runtime lanes.
+	if route.Lane == RouteID || len(route.KaminoPolicies) > 0 {
 		return 0
-	default:
+	}
+	return kaminoConstraintIndex(leg)
+}
+
+func kaminoConstraintIndex(leg kaminoPrimeUSDCLeg) byte {
+	index := basicPolicyConstraintIndex(leg)
+	if index == 0xff {
 		return math.MaxUint8
 	}
+	return index
 }
 
 func matchesKaminoStep(action Action, discriminator []byte, accounts []accountMeta) (kaminoPrimeUSDCLeg, bool) {

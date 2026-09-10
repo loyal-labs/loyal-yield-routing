@@ -767,10 +767,17 @@ func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kamino
 	// discriminator | vault | signer count | policy kind | interaction kind |
 	// Some(constraint indexes) | vec len | index | sync tx | inner vault |
 	// compact payload len | compact payload.
+	if lane == "" {
+		lane = RouteID
+	}
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return false
+	}
 	if len(outer.accounts) < 4 || len(outer.data) < 27 ||
 		!bytes.Equal(outer.data[:8], squadsExecuteSyncDiscriminator) ||
 		!bytes.Equal(outer.data[8:13], []byte{0, 1, 1, 1, 1}) ||
-		readU32LE(outer.data[13:17]) != 1 || outer.data[17] != kaminoConstraintIndex(leg) ||
+		readU32LE(outer.data[13:17]) != 1 || outer.data[17] != kaminoConstraintIndexForRoute(route, leg) ||
 		!bytes.Equal(outer.data[18:20], []byte{1, 0}) {
 		return false
 	}

@@ -37,7 +37,7 @@ func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoPrimeUSDCReq
 	data = appendU64(data, 1_000_000)
 	return KaminoPrimeUSDCRequest{
 		Action: action, AmountRaw: 1_000_000, Policy: bridgeAllocationPolicy,
-		PolicyConstraintIndex: kaminoConstraintIndex(leg), PolicyAccountDataSHA256: hex.EncodeToString(bytes.Repeat([]byte{1}, 32)),
+		PolicyConstraintIndex: 0, PolicyAccountDataSHA256: hex.EncodeToString(bytes.Repeat([]byte{1}, 32)),
 		Accounts: manifestAccounts(metas), Data: data, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 	}
 }
