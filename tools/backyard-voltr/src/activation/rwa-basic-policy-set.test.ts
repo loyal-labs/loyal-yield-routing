@@ -16,6 +16,7 @@ import {
   assertPolicyMatchesArtifact,
   assertPolicyPayloadMatchesArtifact,
   acquireInstallLock,
+  canonicalPolicyBump,
   classifyInstallStart,
   classifyJournalDrift,
   classifyJournalLeg,
@@ -30,7 +31,7 @@ import {
 
 const artifact = parseArtifact(JSON.parse(readFileSync(BASIC_POLICY_ARTIFACT, "utf8")) as unknown);
 const PROGRAM = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG";
-const SIGNATURE = "1".repeat(87);
+const SIGNATURE = "1".repeat(64);
 const ARTIFACT_SHA256 = "b".repeat(64);
 
 const artifactRow = (seed: string) => {
@@ -217,11 +218,33 @@ test("journal accepts an abandoned leg only when a same-seed retry follows it", 
     }],
   };
   assert.doesNotThrow(() => validateInstallJournal(resumed));
-
-  assert.throws(() => validateInstallJournal(journalFixture([legFixture("141"), legFixture("141")])), /abandoned-seed retry/);
+  // blocked and planned attempts may follow abandoned attempts, in any count.
+  assert.doesNotThrow(() => validateInstallJournal(journalFixture([abandoned, {
+    ...legFixture("141"),
+    state: "blocked",
+    preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: "BlockhashNotFound" },
+  }])));
+  assert.doesNotThrow(() => validateInstallJournal(journalFixture([
+    abandoned,
+    { ...legFixture("141"), state: "abandoned", abandonReason: "never landed; blockhash expired again" },
+    legFixture("141"),
+  ])));
+  // A second unbroken attempt is not a retry.
+  assert.throws(() => validateInstallJournal(journalFixture([legFixture("141"), legFixture("141")])), /second unbroken attempt/);
+  assert.throws(() => validateInstallJournal(journalFixture([
+    abandoned,
+    legFixture("141"),
+    { ...legFixture("141"), state: "blocked", preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: "BlockhashNotFound" } },
+  ])), /second unbroken attempt/);
+  // Nothing follows a finalized leg.
   assert.throws(
-    () => validateInstallJournal(journalFixture([abandoned, { ...legFixture("141"), state: "abandoned", abandonReason: "x" }])),
-    /retry after an abandoned leg/,
+    () => validateInstallJournal(journalFixture([{ ...legFixture("141"), state: "finalized", readback: finalizedReadback("141") }, legFixture("141")])),
+    /already finalized/,
+  );
+  // Seeds never repeat after the chain moved on, and no seed is skipped.
+  assert.throws(
+    () => validateInstallJournal(journalFixture([legFixture("141"), legFixture("143", { account: artifactRow("143").account, family: artifactRow("143").family })])),
+    /not the next policy seed/,
   );
   assert.throws(
     () => validateInstallJournal({ ...resumed, reconciliations: [{ at: "2026-09-09T00:00:00.000Z", finalizedSlot: 1_000, livePolicySeed: "140", verdicts: [{}] }] }),
@@ -249,10 +272,30 @@ test("journal enforces per-state required fields and leg identity", () => {
   assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, state: "abandoned" }]), artifact), /abandonReason/);
   assert.doesNotThrow(() => validateInstallJournal(journalFixture([{ ...planned, state: "abandoned", abandonReason: "blockhash expired" }]), artifact));
 
-  const finalized = { ...planned, state: "finalized", readback: { seed: "141", account: planned.account, dataSha256: "c".repeat(64), finalizedSlot: 900 } };
+  const finalized = { ...planned, state: "finalized", readback: finalizedReadback("141") };
   assert.doesNotThrow(() => validateInstallJournal(journalFixture([finalized]), artifact));
   assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, state: "finalized" }]), artifact), /readback/);
-  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, state: "finalized", readback: { finalizedSlot: "900" } }]), artifact), /readback slot/);
+  // Every field the readback writes is required, and the recorded hash must be the artifact's.
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, state: "finalized", readback: { finalizedSlot: "900" } }]), artifact), /readback seed drifted/);
+  assert.throws(
+    () => validateInstallJournal(journalFixture([{ ...planned, state: "finalized", readback: { ...finalizedReadback("141"), accountDataSha256: undefined } }]), artifact),
+    /readback account hash is invalid/,
+  );
+  assert.throws(
+    () => validateInstallJournal(journalFixture([{ ...planned, state: "finalized", readback: { ...finalizedReadback("141"), dataSha256: "c".repeat(64) } }]), artifact),
+    /readback data hash drifted from the artifact/,
+  );
+
+  // Slots are nonnegative integers.
+  assert.throws(
+    () => validateInstallJournal(journalFixture([{ ...planned, preSendSimulation: { contextSlot: -1, unitsConsumed: 789, err: null } }]), artifact),
+    /simulation slot is invalid/,
+  );
+  assert.throws(
+    () => validateInstallJournal(journalFixture([{ ...planned, state: "finalized", readback: { ...finalizedReadback("141"), finalizedSlot: -5 } }]), artifact),
+    /readback slot is invalid/,
+  );
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, lastValidBlockHeight: 0 }]), artifact), /block height is invalid/);
 });
 
 test("install lock is exclusive and leaves no file behind on release", () => {
@@ -307,6 +350,10 @@ test("full policy readback refuses any altered on-chain field", () => {
   assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.fields[0].spendingLimits = [{}]; })), /spending limits, but the artifact sets none/);
   assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.fields[0].accountIndex = 1; })), /account index 1 does not match the artifact 0/);
   assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.__kind = "SpendingLimit"; })), /policy kind/);
+  // Fresh-install account state: the canonical PDA bump and zeroed transaction counters.
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.bump = (d.bump + 1) % 256; })), /does not match the canonical PDA bump/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.transactionIndex = 1n; })), /transaction index 1\/0 is not the fresh-install zero state/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.staleTransactionIndex = 1n; })), /transaction index 0\/1 is not the fresh-install zero state/);
 });
 
 test("payload check accepts the artifact constraints and rejects any other lane", () => {
@@ -484,6 +531,90 @@ test("reconcile re-simulates a blocked leg before retrying it", async () => {
   assert.equal(verdict.resimulated, true);
 });
 
+test("reconcile re-verifies a recorded abandoned leg and refuses a still-replayable wire", async () => {
+  const abandoned = { ...legFixture("141"), state: "abandoned", abandonReason: "never landed; blockhash expired" };
+  const replayable = await reconcileInstallJournal({
+    connection: fakeConnection({ liveSeed: "140", present: [], blockhashValid: true }),
+    artifact,
+    journal: journalFixture([abandoned, legFixture("141")]),
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(replayable.status, "refused");
+  assert.match(replayable.reason ?? "", /abandoned leg 141 attempt 1 is still replayable; manual review/);
+  assert.deepEqual(replayable.pendingSeeds, []);
+  const verdict = replayable.reconciliation?.verdicts[0] as Record<string, unknown>;
+  assert.equal(verdict.attempt, 1);
+  assert.equal(verdict.verdict, "refuse");
+  assert.equal(verdict.blockhashValid, true);
+
+  const landed = await reconcileInstallJournal({
+    connection: fakeConnection({
+      liveSeed: "140",
+      present: [],
+      signatures: { [SIGNATURE]: { err: null, confirmationStatus: "confirmed", slot: 500 } },
+    }),
+    artifact,
+    journal: journalFixture([abandoned, legFixture("141")]),
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(landed.status, "refused");
+  assert.match(landed.reason ?? "", /abandoned leg 141 attempt 1 is still replayable; manual review/);
+});
+
+test("reconcile keeps an abandoned leg only with a finalized error or an expired blockhash", async () => {
+  const abandoned = { ...legFixture("141"), state: "abandoned", abandonReason: "never landed; blockhash expired" };
+  const finalizedFailure = await reconcileInstallJournal({
+    connection: fakeConnection({
+      liveSeed: "140",
+      present: [],
+      blockhashValid: true,
+      signatures: { [SIGNATURE]: { err: "AccountInUse", confirmationStatus: "finalized", slot: 500 } },
+    }),
+    artifact,
+    journal: journalFixture([abandoned, legFixture("141")]),
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(finalizedFailure.status, "reconciled");
+  assert.deepEqual(finalizedFailure.pendingSeeds, [...POLICY_SEEDS]);
+  const verdict = finalizedFailure.reconciliation?.verdicts[0] as Record<string, unknown>;
+  assert.equal(verdict.attempt, 1);
+  assert.equal(verdict.verdict, "skipped");
+  assert.equal(verdict.signatureStatus, "failed");
+
+  const expired = await reconcileInstallJournal({
+    connection: fakeConnection({ liveSeed: "140", present: [], blockhashValid: false }),
+    artifact,
+    journal: journalFixture([abandoned, legFixture("141")]),
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(expired.status, "reconciled");
+  assert.deepEqual(expired.pendingSeeds, [...POLICY_SEEDS]);
+});
+
+test("reconcile re-verifies every abandoned attempt per seed and numbers them", async () => {
+  // Attempt 1 provably failed at finalized; attempt 2 still holds a live blockhash.
+  const first = { ...legFixture("141"), state: "abandoned", abandonReason: "failed at finalized", signature: "2".repeat(64) };
+  const second = { ...legFixture("141"), state: "abandoned", abandonReason: "never landed; blockhash expired" };
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({
+      liveSeed: "140",
+      present: [],
+      blockhashValid: true,
+      signatures: { ["2".repeat(64)]: { err: "AccountInUse", confirmationStatus: "finalized", slot: 500 } },
+    }),
+    artifact,
+    journal: journalFixture([first, second, legFixture("141")]),
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "refused");
+  assert.match(outcome.reason ?? "", /abandoned leg 141 attempt 2 is still replayable; manual review/);
+  const verdicts = outcome.reconciliation?.verdicts as Array<Record<string, unknown>>;
+  assert.equal(verdicts[0].attempt, 1);
+  assert.equal(verdicts[0].verdict, "skipped");
+  assert.equal(verdicts[1].attempt, 2);
+  assert.equal(verdicts[1].verdict, "refuse");
+});
+
 test("reconcile promotes a planned leg and verifies its full payload against the artifact", async () => {
   const journal = journalFixture([legFixture("141")]);
   const outcome = await reconcileInstallJournal({
@@ -500,6 +631,21 @@ test("reconcile promotes a planned leg and verifies its full payload against the
   assert.equal(readback.dataSha256, artifactRow("141").dataSha256);
   assert.equal(readback.accountDataSha256, sha256(policyAccount("141", policyExpectationFromArtifact(artifactRow("141")).constraints)));
   assert.deepEqual(outcome.pendingSeeds, ["142", "143", "144"]);
+});
+
+test("reconcile refuses a policy account whose discriminator does not match the generated codec", async () => {
+  const corrupted = policyAccount("141", decodeConstraints("141"));
+  corrupted[3] ^= 0xff;
+  const journal = journalFixture([legFixture("141", { state: "finalized", readback: finalizedReadback("141") })]);
+  await assert.rejects(
+    () => reconcileInstallJournal({
+      connection: fakeConnection({ liveSeed: "141", present: ["141"], policyData: () => corrupted }),
+      artifact,
+      journal,
+      artifactSha256: ARTIFACT_SHA256,
+    }),
+    /account discriminator does not match the generated Policy discriminator/,
+  );
 });
 
 test("reconcile refuses an on-chain policy payload that the artifact does not specify", async () => {
@@ -551,6 +697,17 @@ function journalLeg(journal: Record<string, unknown>, index: number): Record<str
   return (journal.legs as Array<Record<string, unknown>>)[index] as Record<string, unknown>;
 }
 
+/** The readback exactly as `finalizedPolicyReadback` records it for a fixture policy account. */
+function finalizedReadback(seed: string): Record<string, unknown> {
+  return {
+    seed,
+    account: artifactRow(seed).account,
+    dataSha256: artifactRow(seed).dataSha256,
+    accountDataSha256: sha256(policyAccount(seed, decodeConstraints(seed))),
+    finalizedSlot: 900,
+  };
+}
+
 type StructBeet = { serialize(args: Record<string, unknown>): [Buffer, number] };
 type ConstraintBeet = {
   toFixedFromData(data: Buffer, offset: number): { read(data: Buffer, offset: number): unknown; byteSize: number };
@@ -598,7 +755,7 @@ function policyAccount(seed: string, constraints: readonly unknown[]): Buffer {
     accountDiscriminator: (generated as unknown as { policyDiscriminator: number[] }).policyDiscriminator,
     settings: new PublicKey(expected.settings),
     seed: BigInt(expected.seed),
-    bump: 254,
+    bump: canonicalPolicyBump(artifact.settings, seed),
     transactionIndex: 0n,
     staleTransactionIndex: 0n,
     signers: expected.signers.map((signer) => ({ key: new PublicKey(signer.key), permissions: { mask: signer.permissionsMask } })),

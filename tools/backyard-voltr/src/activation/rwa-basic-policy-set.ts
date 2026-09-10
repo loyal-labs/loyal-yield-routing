@@ -25,6 +25,9 @@ type SettingsState = { policySeed: { toString(): string } | null };
 type PolicyState = {
   settings: PublicKey;
   seed: { toString(): string };
+  bump: number;
+  transactionIndex: { toString(): string };
+  staleTransactionIndex: { toString(): string };
   signers: readonly { key: PublicKey; permissions: { mask: number } }[];
   threshold: number;
   timeLock: number;
@@ -82,6 +85,7 @@ const Settings = (squadsGenerated as unknown as {
 const Policy = (squadsGenerated as unknown as {
   Policy: { fromAccountInfo(info: AccountInfo<Buffer>): readonly [PolicyState, number] };
 }).Policy;
+const policyDiscriminator = (squadsGenerated as unknown as { policyDiscriminator: readonly number[] }).policyDiscriminator;
 
 function invariant(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -122,6 +126,16 @@ export function derivePolicyAddress(settings: string | PublicKey, seed: string |
     [Buffer.from("smart_account"), Buffer.from("policy"), new PublicKey(settings).toBuffer(), seedBytes],
     new PublicKey(RWA_MULTIPLY_ROUTE.squads.program),
   )[0].toBase58();
+}
+
+/** The bump the program itself derives for a Policy PDA, from the same seeds as `derivePolicyAddress`. */
+export function canonicalPolicyBump(settings: string, seed: string): number {
+  const seedBytes = Buffer.alloc(8);
+  seedBytes.writeBigUInt64LE(BigInt(seed));
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("smart_account"), Buffer.from("policy"), new PublicKey(settings).toBuffer(), seedBytes],
+    new PublicKey(RWA_MULTIPLY_ROUTE.squads.program),
+  )[1];
 }
 
 function decodeData(encoded: string, label: string): Buffer {
@@ -233,6 +247,7 @@ export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArt
   if (journal.reconciliations !== undefined) validateReconciliations(journal.reconciliations);
   let priorSeed = 140n;
   let priorState: string | null = null;
+  let finalizedAttempt = false;
   for (const [index, rawLeg] of journal.legs.entries()) {
     const label = `basic policy install journal leg ${index}`;
     const leg = object(rawLeg, label);
@@ -244,24 +259,39 @@ export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArt
     const state = stringField(leg, "state", label);
     invariant(state === "planned" || state === "finalized" || state === "blocked" || state === "abandoned",
       `basic policy install journal leg ${seed} state drifted`);
-    const retry = priorState === "abandoned" && seedValue === priorSeed;
-    invariant(retry || seedValue === priorSeed + 1n, `${label} is not the next policy seed or an abandoned-seed retry`);
-    invariant(!retry || state === "planned" || state === "finalized",
-      `basic policy install journal leg ${seed} retry after an abandoned leg must be planned or finalized`);
+    if (seedValue === priorSeed && priorState !== null) {
+      // Repeated attempts at one seed: a run of abandoned attempts followed by
+      // at most one planned/blocked/finalized attempt, where that planned or
+      // blocked attempt may itself later become abandoned. Anything else - a
+      // second unbroken attempt, or any attempt after finalized - is invalid.
+      invariant(!finalizedAttempt, `basic policy install journal leg ${seed} retries a seed whose leg is already finalized`);
+      invariant(state === "abandoned" || priorState === "abandoned",
+        `basic policy install journal leg ${seed} is a second unbroken attempt at the same seed; only an abandoned attempt may be retried`);
+    } else {
+      invariant(seedValue === priorSeed + 1n, `${label} is not the next policy seed or an abandoned-seed retry`);
+      finalizedAttempt = false;
+    }
+    if (state === "finalized") finalizedAttempt = true;
     const wireSha256 = stringField(leg, "wireSha256", label);
     invariant(/^[0-9a-f]{64}$/.test(wireSha256), `basic policy install journal leg ${seed} wire hash is invalid`);
     stringField(leg, "blockhash", label);
     const lastValidBlockHeight = leg.lastValidBlockHeight;
-    invariant(typeof lastValidBlockHeight === "number" && Number.isSafeInteger(lastValidBlockHeight),
+    invariant(typeof lastValidBlockHeight === "number" && Number.isSafeInteger(lastValidBlockHeight) && lastValidBlockHeight > 0,
       `basic policy install journal leg ${seed} block height is invalid`);
     const packetBytes = leg.packetBytes;
     invariant(typeof packetBytes === "number" && Number.isSafeInteger(packetBytes) && packetBytes > 0 && packetBytes <= PACKET_LIMIT,
       `basic policy install journal leg ${seed} packet size is invalid`);
     const signature = stringField(leg, "signature", label);
-    invariant(/^[1-9A-HJ-NP-Za-km-z]{32,128}$/.test(signature), `basic policy install journal leg ${seed} signature is not base58`);
+    let signatureBytes: Uint8Array;
+    try {
+      signatureBytes = bs58.decode(signature);
+    } catch {
+      throw new Error(`basic policy install journal leg ${seed} signature is not base58`);
+    }
+    invariant(signatureBytes.length === 64, `basic policy install journal leg ${seed} signature is not a 64-byte ed25519 signature`);
     const preSendSimulation = object(leg.preSendSimulation, `basic policy install journal leg ${seed} pre-send simulation`);
     const simulationSlot = preSendSimulation.contextSlot;
-    invariant((typeof simulationSlot === "number" && Number.isSafeInteger(simulationSlot)) || simulationSlot === null,
+    invariant((typeof simulationSlot === "number" && Number.isSafeInteger(simulationSlot) && simulationSlot >= 0) || simulationSlot === null,
       `basic policy install journal leg ${seed} simulation slot is invalid`);
     const simulationUnits = preSendSimulation.unitsConsumed;
     invariant((typeof simulationUnits === "number" && Number.isFinite(simulationUnits) && simulationUnits >= 0) || simulationUnits === null,
@@ -275,8 +305,16 @@ export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArt
       stringField(leg, "abandonReason", label);
     } else {
       const readback = object(leg.readback, `basic policy install journal leg ${seed} readback`);
+      invariant(readback.seed === seed, `basic policy install journal leg ${seed} readback seed drifted`);
+      invariant(readback.account === leg.account, `basic policy install journal leg ${seed} readback account drifted`);
+      invariant(typeof readback.dataSha256 === "string" && /^[0-9a-f]{64}$/.test(readback.dataSha256),
+        `basic policy install journal leg ${seed} readback data hash is invalid`);
+      if (artifact !== undefined) invariant(readback.dataSha256 === artifactPolicy(artifact, seed).dataSha256,
+        `basic policy install journal leg ${seed} readback data hash drifted from the artifact`);
+      invariant(typeof readback.accountDataSha256 === "string" && /^[0-9a-f]{64}$/.test(readback.accountDataSha256),
+        `basic policy install journal leg ${seed} readback account hash is invalid`);
       const finalizedSlot = readback.finalizedSlot;
-      invariant(typeof finalizedSlot === "number" && Number.isSafeInteger(finalizedSlot),
+      invariant(typeof finalizedSlot === "number" && Number.isSafeInteger(finalizedSlot) && finalizedSlot >= 0,
         `basic policy install journal leg ${seed} readback slot is invalid`);
     }
     priorSeed = seedValue;
@@ -564,7 +602,7 @@ export function policyExpectationFromArtifact(policy: BasicPolicyRow): PolicyExp
   const body = object(action.policyCreationPayload.fields?.[0], `basic policy ${policy.seed} payload body`);
   invariant(Array.isArray(body.instructionsConstraints), `basic policy ${policy.seed} payload has no constraint vector`);
   invariant(typeof body.accountIndex === "number", `basic policy ${policy.seed} payload account index is invalid`);
-  invariant(Array.isArray(body.spendingLimits), `basic policy ${policy.seed} payload spending limits are invalid`);
+  invariant(Array.isArray(body.spendingLimits) && body.spendingLimits.length === 0, `basic policy ${policy.seed} payload sets spending limits, which this installer never creates`);
   invariant(body.preHook === null && body.postHook === null, `basic policy ${policy.seed} payload sets hooks, which this installer never creates`);
   invariant(action.startTimestamp === null || action.startTimestamp === undefined, `basic policy ${policy.seed} sets an unsupported start timestamp`);
   invariant(action.expirationArgs === null || action.expirationArgs === undefined, `basic policy ${policy.seed} sets an unsupported expiration`);
@@ -634,6 +672,10 @@ export function assertPolicyMatchesArtifact(policy: BasicPolicyRow, decoded: Pol
     `policy ${seed} on-chain settings ${decoded.settings.toBase58()} does not match the artifact ${expected.settings}`);
   invariant(decoded.seed.toString() === expected.seed,
     `policy ${seed} on-chain seed ${decoded.seed.toString()} does not match the artifact ${expected.seed}`);
+  invariant(decoded.bump === canonicalPolicyBump(expected.settings, expected.seed),
+    `policy ${seed} on-chain bump ${decoded.bump} does not match the canonical PDA bump`);
+  invariant(decoded.transactionIndex.toString() === "0" && decoded.staleTransactionIndex.toString() === "0",
+    `policy ${seed} on-chain transaction index ${decoded.transactionIndex}/${decoded.staleTransactionIndex} is not the fresh-install zero state`);
   invariant(decoded.signers.length === expected.signers.length,
     `policy ${seed} on-chain signer count ${decoded.signers.length} does not match the artifact ${expected.signers.length}`);
   for (const [index, signer] of decoded.signers.entries()) {
@@ -671,6 +713,10 @@ async function finalizedPolicyReadback(connection: ReconcileConnection, artifact
   const policy = artifactPolicy(artifact, seed);
   const response = await connection.getAccountInfoAndContext(new PublicKey(policy.account), "finalized");
   invariant(response.value?.owner.toBase58() === RWA_MULTIPLY_ROUTE.squads.program, `policy ${policy.seed} readback is absent or has wrong owner`);
+  // The generated decoder drops the account discriminator, so it is checked
+  // against the raw bytes before anything else is trusted.
+  invariant(response.value.data.subarray(0, policyDiscriminator.length).equals(Buffer.from(policyDiscriminator)),
+    `policy ${policy.seed} on-chain account discriminator does not match the generated Policy discriminator`);
   const decoded = Policy.fromAccountInfo(response.value)[0];
   assertPolicyMatchesArtifact(policy, decoded);
   return {
@@ -775,12 +821,17 @@ async function installSeeds(runtime: InstallRuntime, seeds: readonly string[]): 
  * reconcile of the same journal) refuses instead of racing the first.
  */
 export function acquireInstallLock(path: string = BASIC_POLICY_INSTALL_LOCK, now: () => string = (): string => new Date().toISOString()): void {
+  let created = false;
   try {
     writeFileSync(path, `${JSON.stringify({ pid: process.pid, startedAt: now() })}\n`, { flag: "wx", mode: 0o600 });
-  } catch {
-    throw new Error(`basic policy install lock already exists at ${path}; another install process is active`);
+    created = true;
+    chmodSync(path, 0o600);
+  } catch (error) {
+    // Never leave a half-created lock behind: a failed chmod would otherwise
+    // block every later run even though no other installer is active.
+    if (created) rmSync(path, { force: true });
+    throw new Error(`basic policy install lock already exists at ${path}; another install process is active. Remove docs/evidence/backyard-rwa-basic/policy-install.lock only after confirming no installer process is running: pgrep -fl rwa-basic-policy-set (${String(error)})`);
   }
-  chmodSync(path, 0o600);
 }
 
 export function releaseInstallLock(path: string = BASIC_POLICY_INSTALL_LOCK): void {
@@ -861,11 +912,35 @@ export async function reconcileInstallJournal(input: Readonly<{
   const context = { at: (input.now ?? ((): string => new Date().toISOString()))(), finalizedSlot: Math.max(live.contextSlot, presence.contextSlot), livePolicySeed: live.seed };
   const readbacks = new Map<string, JsonObject>();
   const verdicts: JsonObject[] = [];
+  const abandonedAttempts = new Map<string, number>();
   for (const rawLeg of journal.legs as JsonObject[]) {
     const seed = stringField(rawLeg, "seed", "basic policy install journal leg");
     const state = stringField(rawLeg, "state", "basic policy install journal leg");
     if (state === "abandoned") {
-      verdicts.push({ seed, recordedState: state, verdict: "skipped" });
+      // A recorded abandon is a claim, not evidence: every abandoned leg -
+      // historical attempts included - is re-verified against finalized chain
+      // state before any retry at that seed is authorized. Only a finalized
+      // error or an expired blockhash proves the wire can never land.
+      const attempt = (abandonedAttempts.get(seed) ?? 0) + 1;
+      abandonedAttempts.set(seed, attempt);
+      const evidence = await resolveUnsentLegEvidence(connection, seed, rawLeg);
+      const stillReplayable = evidence.signatureStatus === "landed" ||
+        (evidence.signatureStatus !== "failed" && evidence.blockhashValid !== false);
+      if (stillReplayable) {
+        const reason = `abandoned leg ${seed} attempt ${attempt} is still replayable; manual review`;
+        return {
+          status: "refused",
+          reason,
+          readbacks,
+          pendingSeeds: [],
+          reconciliation: {
+            ...context,
+            verdicts: [...verdicts, { seed, attempt, recordedState: state, verdict: "refuse", reason, ...verdictEvidence(evidence) }],
+            refusal: reason,
+          },
+        };
+      }
+      verdicts.push({ seed, attempt, recordedState: state, verdict: "skipped", ...verdictEvidence(evidence) });
       continue;
     }
     let pdaPresent = presence.present.get(seed) === true;
@@ -956,7 +1031,7 @@ async function writeInstallReadback(connection: Connection, artifact: BasicPolic
   atomic(BASIC_POLICY_READBACK, result);
 }
 
-async function execute(rpc: string, artifact: BasicPolicyArtifact): Promise<void> {
+async function execute(rpc: string): Promise<void> {
   assertExecuteAuthorization(process.env);
   acquireInstallLock();
   try {
@@ -965,6 +1040,10 @@ async function execute(rpc: string, artifact: BasicPolicyArtifact): Promise<void
       readbackExists: existsSync(BASIC_POLICY_READBACK),
     });
     invariant(start !== "complete", "basic policy install readback already exists; this install is complete");
+    // Exactly one read of the artifact bytes, under the lock: the parsed
+    // instructions and the journal's drift hash both come from those bytes, so
+    // a file rewritten between two reads can never split the run in half.
+    const { artifact, artifactSha256 } = loadArtifactWithSha256();
     const connection = new Connection(rpc, "finalized");
     invariant(await connection.getGenesisHash() === RWA_MULTIPLY_ROUTE.genesisHash, "RPC is not mainnet-beta");
     const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
@@ -974,7 +1053,7 @@ async function execute(rpc: string, artifact: BasicPolicyArtifact): Promise<void
       const journal: JsonObject = {
         schema: "loyal-backyard-rwa-basic-policy-install-journal/v1",
         broadcast: true,
-        artifactSha256: sha256(readFileSync(BASIC_POLICY_ARTIFACT)),
+        artifactSha256,
         settings: artifact.settings,
         authority: artifact.authority,
         legs: [],
@@ -991,7 +1070,7 @@ async function execute(rpc: string, artifact: BasicPolicyArtifact): Promise<void
       connection,
       artifact,
       journal,
-      artifactSha256: sha256(readFileSync(BASIC_POLICY_ARTIFACT)),
+      artifactSha256,
     });
     if (reconciled.reconciliation !== null) {
       recordReconciliation(journal, reconciled.reconciliation);
@@ -1011,20 +1090,28 @@ function readArtifact(): BasicPolicyArtifact {
   return parseArtifact(JSON.parse(readFileSync(BASIC_POLICY_ARTIFACT, "utf8")) as unknown);
 }
 
+/** One read of the artifact file; the parsed artifact and its hash share those exact bytes. */
+function loadArtifactWithSha256(): { artifact: BasicPolicyArtifact; artifactSha256: string } {
+  const bytes = readFileSync(BASIC_POLICY_ARTIFACT);
+  return {
+    artifact: parseArtifact(JSON.parse(bytes.toString("utf8")) as unknown),
+    artifactSha256: sha256(bytes),
+  };
+}
+
 async function main(): Promise<void> {
   const simulateMode = process.argv.includes("--simulate");
   const executeMode = process.argv.includes("--execute");
   invariant(simulateMode !== executeMode, "choose exactly one of --simulate or --execute");
   const rpc = process.env.SOLANA_RPC_URL?.trim();
   invariant(rpc, "SOLANA_RPC_URL is required");
-  const artifact = readArtifact();
   if (simulateMode) {
-    const result = await simulate(rpc, artifact);
+    const result = await simulate(rpc, readArtifact());
     atomic(BASIC_POLICY_SIMULATION, result);
     console.log(JSON.stringify({ verdict: result.verdict, broadcast: false, contextSlot: result.contextSlot, policies: (result.policies as PolicySimulationRow[]).map((policy) => ({ seed: policy.seed, err: policy.err, unitsConsumed: policy.unitsConsumed })) }));
     return;
   }
-  await execute(rpc, artifact);
+  await execute(rpc);
   console.log(JSON.stringify({ verdict: "PASS", broadcast: true }));
 }
 
