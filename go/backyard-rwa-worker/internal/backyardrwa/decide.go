@@ -40,6 +40,19 @@ func custodyResidueHold(s Snapshot) (Decision, bool) {
 		StrategyKey:    strategyKey}, true
 }
 
+// installedDecisionLane reports whether a confirmed observation frozen on
+// this lane may be resolved by Decide: the pinned legacy Prime route plus the
+// basic policy lanes. The remaining runtimeRoute catalog entries stay
+// observation-only, so they keep failing closed here instead of reusing the
+// legacy Prime decision path.
+func installedDecisionLane(lane string) bool {
+	if lane == RouteID {
+		return true
+	}
+	route, err := runtimeRoute(lane)
+	return err == nil && route.BasicPolicy
+}
+
 // Decide resolves the already-frozen lane carried by the confirmed
 // observation. It does not choose a lane; observations for any lane outside
 // the registered routes fail closed. Registration does not enable the live
@@ -105,7 +118,7 @@ func Decide(s Snapshot) Decision {
 		decision.StrategyKey = SelectedRouteID
 		return decision
 	}
-	if s.RouteLane != "" && s.RouteLane != RouteID {
+	if s.RouteLane != "" && !installedDecisionLane(s.RouteLane) {
 		return Decision{Action: HoldManualRecovery, Reason: "unsupported_runtime_lane", AmountRaw: 0,
 			IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "unsupported_runtime_lane"), StrategyKey: s.RouteLane}
 	}
@@ -117,6 +130,9 @@ func Decide(s Snapshot) Decision {
 	}
 	decision := decideFixed(s)
 	decision.StrategyKey = RouteID
+	if s.RouteLane != "" {
+		decision.StrategyKey = s.RouteLane
+	}
 	return decision
 }
 

@@ -109,9 +109,13 @@ func TestPhase2UnsupportedLaneFailsClosed(t *testing.T) {
 	if _, err := runtimeRoute("OnRe/ONyc/USDC"); err != nil {
 		t.Fatal(err)
 	}
-	decision := Decide(Snapshot{ObservationID: "other", Slot: 1, RouteKind: RouteKind, RouteLane: "unknown/asset/debt", Fresh: true})
-	if decision.Action != HoldManualRecovery || decision.Reason != "unsupported_runtime_lane" {
-		t.Fatalf("unsupported lane was not held: %+v", decision)
+	// The OnRe sibling shares the phase 3 budget family but no runtime
+	// install, so it must hold exactly like a fully unknown lane.
+	for _, lane := range []string{"unknown/asset/debt", "OnRe/ONyc/USDG"} {
+		decision := Decide(Snapshot{ObservationID: "other", Slot: 1, RouteKind: RouteKind, RouteLane: lane, Fresh: true})
+		if decision.Action != HoldManualRecovery || decision.Reason != "unsupported_runtime_lane" || decision.StrategyKey != lane {
+			t.Fatalf("unsupported lane was not held: %+v", decision)
+		}
 	}
 }
 
