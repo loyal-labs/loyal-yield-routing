@@ -21,8 +21,11 @@ func TestEmbeddedManifestIsExactCheckedInManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.executionBlocker() == nil {
-		t.Fatal("v2 manifest must remain blocked until policy install readback")
+	// The basic policy set (seeds 141-144) is installed on mainnet and its
+	// readback is pinned into the manifest, so the v2 manifest must be
+	// executable: any blocker here means a hash or unresolved entry regressed.
+	if blocker := manifest.executionBlocker(); blocker != nil {
+		t.Fatalf("v2 manifest is blocked after the policy install readback: %v", blocker)
 	}
 }
 
