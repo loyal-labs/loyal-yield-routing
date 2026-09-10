@@ -190,6 +190,9 @@ func fixedRouteAction(action Action, lane string) (Action, error) {
 	if lane == RouteID || lane == "" {
 		return action, nil
 	}
+	if lane == PhaseOneLaneID || lane == "OnRe/ONyc/USDC" {
+		return action, nil
+	}
 	if lane != SelectedRouteID {
 		return "", fmt.Errorf("runtime lane %q is not installed", lane)
 	}

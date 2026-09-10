@@ -188,6 +188,9 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 		if err != nil || !route.BasicPolicy {
 			t.Fatalf("%s is not a basic runtime route: %+v, %v", lane, route, err)
 		}
+		if _, err := fixedRouteAction(OpenRouteStep, lane); err != nil {
+			t.Fatalf("%s lifecycle action was not dispatchable: %v", lane, err)
+		}
 		for _, test := range []struct {
 			leg    kaminoPrimeUSDCLeg
 			action Action
