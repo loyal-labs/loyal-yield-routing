@@ -8,6 +8,9 @@ import {
   PACKET_LIMIT,
   POLICY_SEEDS,
   assertExecuteAuthorization,
+  classifyInstallStart,
+  classifyJournalDrift,
+  classifyJournalLeg,
   createPolicyInstruction,
   derivePolicyAddress,
   parseArtifact,
@@ -70,4 +73,96 @@ test("fails closed on execute authorization and validates the pre-send journal s
   };
   assert.doesNotThrow(() => validateInstallJournal(journal));
   assert.throws(() => validateInstallJournal({ ...journal, legs: [{ ...journal.legs[0], seed: "143" }] }), /next policy seed/);
+});
+
+test("reconcile classifier verifies a finalized leg only with its PDA present", () => {
+  const present = classifyJournalLeg({ state: "finalized", seed: "141", livePolicySeed: "141", pdaPresent: true });
+  assert.equal(present.action, "verify-finalized");
+  assert.equal(present.resimulate, false);
+
+  assert.equal(classifyJournalLeg({ state: "finalized", seed: "141", livePolicySeed: "140", pdaPresent: false }).action, "refuse");
+  assert.equal(classifyJournalLeg({ state: "finalized", seed: "141", livePolicySeed: "140", pdaPresent: true }).action, "refuse");
+});
+
+test("reconcile classifier promotes a planned leg whose PDA landed on chain", () => {
+  const decision = classifyJournalLeg({ state: "planned", seed: "142", livePolicySeed: "142", pdaPresent: true });
+  assert.equal(decision.action, "promote-finalized");
+  assert.equal(decision.resimulate, false);
+});
+
+test("reconcile classifier retries a planned leg that never landed from the same seed", () => {
+  const decision = classifyJournalLeg({ state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false });
+  assert.equal(decision.action, "abandon-and-retry");
+  assert.equal(decision.resimulate, false);
+});
+
+test("reconcile classifier refuses a planned seed consumed elsewhere or ahead of the chain", () => {
+  const consumed = classifyJournalLeg({ state: "planned", seed: "142", livePolicySeed: "142", pdaPresent: false });
+  assert.equal(consumed.action, "refuse");
+  assert.match(consumed.reason, /manual review/);
+
+  assert.equal(classifyJournalLeg({ state: "planned", seed: "143", livePolicySeed: "141", pdaPresent: false }).action, "refuse");
+});
+
+test("reconcile classifier re-simulates a blocked leg before retrying it", () => {
+  const retry = classifyJournalLeg({ state: "blocked", seed: "143", livePolicySeed: "142", pdaPresent: false });
+  assert.equal(retry.action, "abandon-and-retry");
+  assert.equal(retry.resimulate, true);
+
+  assert.equal(classifyJournalLeg({ state: "blocked", seed: "143", livePolicySeed: "142", pdaPresent: true }).action, "refuse");
+  assert.equal(classifyJournalLeg({ state: "blocked", seed: "143", livePolicySeed: "143", pdaPresent: false }).action, "refuse");
+});
+
+test("start gate resumes a journal, refuses a completed install, and starts only a clean slate", () => {
+  assert.equal(classifyInstallStart({ journalExists: false, readbackExists: false }), "fresh");
+  assert.equal(classifyInstallStart({ journalExists: true, readbackExists: false }), "reconcile");
+  assert.equal(classifyInstallStart({ journalExists: false, readbackExists: true }), "complete");
+  assert.equal(classifyInstallStart({ journalExists: true, readbackExists: true }), "complete");
+});
+
+test("start gate refuses a journal drifted from the current artifact", () => {
+  const artifactSha256 = "b".repeat(64);
+  const base = {
+    journalArtifactSha256: artifactSha256,
+    journalSettings: artifact.settings,
+    journalAuthority: artifact.authority,
+    artifactSha256,
+    settings: artifact.settings,
+    authority: artifact.authority,
+  };
+  assert.equal(classifyJournalDrift(base), "match");
+  assert.equal(classifyJournalDrift({ ...base, journalSettings: undefined, journalAuthority: undefined }), "match");
+  assert.equal(classifyJournalDrift({ ...base, journalArtifactSha256: "c".repeat(64) }), "drift");
+  assert.equal(classifyJournalDrift({ ...base, journalSettings: "other-settings" }), "drift");
+  assert.equal(classifyJournalDrift({ ...base, journalAuthority: "other-authority" }), "drift");
+});
+
+test("journal accepts an abandoned leg only when a same-seed retry follows it", () => {
+  const leg = {
+    seed: "141",
+    account: artifact.policies[0]!.account,
+    state: "planned",
+    wireSha256: "a".repeat(64),
+    blockhash: "test-blockhash",
+    lastValidBlockHeight: 123,
+    packetBytes: 1136,
+    signature: "test-signature",
+    preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: null },
+  };
+  const resumed = {
+    schema: "loyal-backyard-rwa-basic-policy-install-journal/v1",
+    broadcast: true,
+    legs: [{ ...leg, state: "abandoned" }, leg],
+    reconciliations: [{
+      at: "2026-09-09T00:00:00.000Z",
+      finalizedSlot: 1_000,
+      livePolicySeed: "140",
+      verdicts: [{ seed: "141", recordedState: "planned", verdict: "abandon-and-retry" }],
+    }],
+  };
+  assert.doesNotThrow(() => validateInstallJournal(resumed));
+
+  assert.throws(() => validateInstallJournal({ ...resumed, legs: [leg, { ...leg, seed: "141" }] }), /abandoned-seed retry/);
+  assert.throws(() => validateInstallJournal({ ...resumed, legs: [{ ...leg, state: "abandoned" }, { ...leg, state: "abandoned" }] }), /retry after an abandoned leg/);
+  assert.throws(() => validateInstallJournal({ ...resumed, reconciliations: [{ at: "2026-09-09T00:00:00.000Z", finalizedSlot: 1_000, livePolicySeed: "140", verdicts: [{}] }] }), /verdict/);
 });
