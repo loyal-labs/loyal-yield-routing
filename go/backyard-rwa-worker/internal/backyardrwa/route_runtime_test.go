@@ -53,34 +53,39 @@ func TestBasicRuntimeRoutePinnedAddressesDecode(t *testing.T) {
 // runtime lane with the independently captured SDK/reserve table. Every
 // constant here decodes to 32 bytes by the test above, so agreement with that
 // capture is the guard against a well-formed address typo.
+// basicLanePinnedFields projects the pinned OnRe constants that must agree
+// between the installed runtime lane and the captured SDK/reserve table:
+// market graph, custodies, supply vaults, receipt mints, fee receiver, token
+// programs, and farms.
+func basicLanePinnedFields(route RuntimeRoute) any {
+	return struct {
+		Protocol, CollateralSymbol, DebtSymbol         string
+		Kamino                                         KaminoObservationConfig
+		CollateralCustody, DebtCustody                 string
+		CollateralLiquiditySupply                      string
+		CollateralReceiptMint, CollateralReceiptSupply string
+		DebtLiquiditySupply, DebtFeeReceiver           string
+		CollateralTokenProgram, DebtTokenProgram       string
+		DebtFarm, ObligationDebtFarm                   string
+	}{
+		route.Protocol, route.CollateralSymbol, route.DebtSymbol,
+		route.Kamino,
+		route.CollateralCustody, route.DebtCustody,
+		route.CollateralLiquiditySupply,
+		route.CollateralReceiptMint, route.CollateralReceiptSupply,
+		route.DebtLiquiditySupply, route.DebtFeeReceiver,
+		route.CollateralTokenProgram, route.DebtTokenProgram,
+		route.DebtFarm, route.ObligationDebtFarm,
+	}
+}
+
 func TestOnReRuntimeLaneMatchesCapturedParityTable(t *testing.T) {
 	installed, err := runtimeRoute("OnRe/ONyc/USDC")
 	if err != nil {
 		t.Fatal(err)
 	}
 	captured := onreLendingParityRoute()
-	pinned := func(route RuntimeRoute) any {
-		return struct {
-			Protocol, CollateralSymbol, DebtSymbol         string
-			Kamino                                         KaminoObservationConfig
-			CollateralCustody, DebtCustody                 string
-			CollateralLiquiditySupply                      string
-			CollateralReceiptMint, CollateralReceiptSupply string
-			DebtLiquiditySupply, DebtFeeReceiver           string
-			CollateralTokenProgram, DebtTokenProgram       string
-			DebtFarm, ObligationDebtFarm                   string
-		}{
-			route.Protocol, route.CollateralSymbol, route.DebtSymbol,
-			route.Kamino,
-			route.CollateralCustody, route.DebtCustody,
-			route.CollateralLiquiditySupply,
-			route.CollateralReceiptMint, route.CollateralReceiptSupply,
-			route.DebtLiquiditySupply, route.DebtFeeReceiver,
-			route.CollateralTokenProgram, route.DebtTokenProgram,
-			route.DebtFarm, route.ObligationDebtFarm,
-		}
-	}
-	if !reflect.DeepEqual(pinned(installed), pinned(captured)) {
-		t.Fatalf("installed OnRe runtime lane drifted from the captured SDK/reserve table:\ninstalled %+v\ncaptured  %+v", pinned(installed), pinned(captured))
+	if !reflect.DeepEqual(basicLanePinnedFields(installed), basicLanePinnedFields(captured)) {
+		t.Fatalf("installed OnRe runtime lane drifted from the captured SDK/reserve table:\ninstalled %+v\ncaptured  %+v", basicLanePinnedFields(installed), basicLanePinnedFields(captured))
 	}
 }

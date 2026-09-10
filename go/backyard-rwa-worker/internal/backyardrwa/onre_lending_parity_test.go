@@ -216,8 +216,12 @@ func TestOnReConnectedLendingMatchesGoWithoutRegistration(t *testing.T) {
 			}
 		})
 	}
-	if _, err := runtimeRoute(route.Lane); err == nil {
-		t.Fatal("test installed OnRe")
+	installed, err := runtimeRoute(route.Lane)
+	if err != nil || !installed.BasicPolicy {
+		t.Fatalf("OnRe is an installed basic runtime lane: %+v, %v", installed, err)
+	}
+	if !reflect.DeepEqual(basicLanePinnedFields(installed), basicLanePinnedFields(route)) {
+		t.Fatal("connected probe executed against a lane that drifted from the captured parity table")
 	}
 }
 
