@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { generated as squadsGenerated } from "@loyal-labs/loyal-smart-accounts-core";
-import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction, type AccountInfo } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, Transaction, TransactionMessage, TransactionInstruction, VersionedTransaction, type AccountInfo } from "@solana/web3.js";
 import bs58 from "bs58";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
@@ -253,13 +253,12 @@ async function simulatePolicy(
   blockhash: string,
 ): Promise<PolicySimulationRow> {
   try {
-    const transaction = new Transaction({ feePayer: new PublicKey(RWA_MULTIPLY_ROUTE.setupAdmin), recentBlockhash: blockhash })
-      .add(createPolicyInstruction(policy));
-    const simulateTransaction = connection.simulateTransaction as unknown as (
-      transaction: Transaction,
-      config: { commitment: "finalized"; sigVerify: boolean; replaceRecentBlockhash: boolean },
-    ) => Promise<{ context: { slot: number }; value: { err: unknown; logs: string[] | null; unitsConsumed: number | null }}>;
-    const simulation = await simulateTransaction(transaction, {
+    const transaction = new VersionedTransaction(new TransactionMessage({
+      payerKey: new PublicKey(RWA_MULTIPLY_ROUTE.setupAdmin),
+      recentBlockhash: blockhash,
+      instructions: [createPolicyInstruction(policy)],
+    }).compileToV0Message());
+    const simulation = await connection.simulateTransaction(transaction, {
       commitment: "finalized",
       sigVerify: false,
       replaceRecentBlockhash: true,
