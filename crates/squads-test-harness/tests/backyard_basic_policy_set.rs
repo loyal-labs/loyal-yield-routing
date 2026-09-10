@@ -50,7 +50,8 @@ const MAPLE_OBLIGATION: &str = "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT";
 const LANE_OBLIGATIONS: [&str; 3] = [PRIME_OBLIGATION, MAPLE_OBLIGATION, ONRE_OBLIGATION];
 const ONYC_CUSTODY: &str = "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3";
 const USDC_CUSTODY: &str = "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe";
-const PYUSD_CUSTODY: &str = "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV";
+const USDS_CUSTODY: &str = "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV";
+const PYUSD_CUSTODY: &str = "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn";
 
 /// The two sysvars the Go messages reference; both come from the runtime.
 const RUNTIME_PROVIDED: [&Pubkey; 2] = [
@@ -460,8 +461,8 @@ fn seed_negative_accounts(svm: &mut LiteSVM) {
         key(TOKEN),
         key(ONYC_CUSTODY),
         key(USDC_CUSTODY),
+        key(USDS_CUSTODY),
         key(PYUSD_CUSTODY),
-        key("J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"),
         key("DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"),
         key("CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"),
     ] {
@@ -737,6 +738,7 @@ fn backyard_basic_policy_set() {
             lending_accounts(foreign_obligation, valid_reserve, valid_custody),
             vec![216, 224, 191, 27, 204, 151, 102, 175],
             KLEND,
+            None,
         ),
         (
             "foreign reserve",
@@ -745,6 +747,7 @@ fn backyard_basic_policy_set() {
             lending_accounts(key(ONRE_OBLIGATION), foreign_reserve, valid_custody),
             vec![216, 224, 191, 27, 204, 151, 102, 175],
             KLEND,
+            None,
         ),
         (
             "foreign custody",
@@ -753,6 +756,7 @@ fn backyard_basic_policy_set() {
             lending_accounts(key(ONRE_OBLIGATION), valid_reserve, foreign_custody),
             vec![216, 224, 191, 27, 204, 151, 102, 175],
             KLEND,
+            None,
         ),
         (
             "wrong discriminator",
@@ -761,14 +765,16 @@ fn backyard_basic_policy_set() {
             lending_accounts(key(ONRE_OBLIGATION), valid_reserve, valid_custody),
             vec![0, 224, 191, 27, 204, 151, 102, 175],
             KLEND,
+            None,
         ),
         (
-            "forbidden swap pair ONyc -> PYUSD (syrupUSDC lane constraint)",
+            "covered-lane control ONyc -> USDS",
             key(POLICY_PDA[3]),
-            1,
-            swap_accounts(key(ONYC_CUSTODY), key(PYUSD_CUSTODY), key(VAULT)),
+            0,
+            swap_accounts(key(ONYC_CUSTODY), key(USDS_CUSTODY), key(VAULT)),
             vec![193, 32, 0],
             JUPITER,
+            Some("OnRe/ONyc/USDS"),
         ),
         (
             "forbidden swap pair ONyc -> PYUSD (ONyc lane constraint)",
@@ -777,6 +783,16 @@ fn backyard_basic_policy_set() {
             swap_accounts(key(ONYC_CUSTODY), key(PYUSD_CUSTODY), key(VAULT)),
             vec![193, 32, 0],
             JUPITER,
+            None,
+        ),
+        (
+            "forbidden swap pair ONyc -> PYUSD (syrupUSDC lane constraint)",
+            key(POLICY_PDA[3]),
+            1,
+            swap_accounts(key(ONYC_CUSTODY), key(PYUSD_CUSTODY), key(VAULT)),
+            vec![193, 32, 0],
+            JUPITER,
+            None,
         ),
         (
             "non-vault authority",
@@ -785,6 +801,7 @@ fn backyard_basic_policy_set() {
             swap_accounts(key(USDC_CUSTODY), key(ONYC_CUSTODY), key(AUTHORITY)),
             vec![193, 32, 0],
             JUPITER,
+            None,
         ),
         (
             "Ethena lane not in catalog",
@@ -793,11 +810,13 @@ fn backyard_basic_policy_set() {
             swap_accounts(filler(246), filler(247), key(VAULT)),
             vec![193, 32, 0],
             JUPITER,
+            None,
         ),
     ];
     let mut mutations = Vec::new();
     let mut policy_gaps = Vec::new();
-    for (label, policy, constraint_index, accounts, data, protocol) in negative_cases {
+    for (label, policy, constraint_index, accounts, data, protocol, covered_lane) in negative_cases
+    {
         let result = execute_probe(&mut svm, policy, constraint_index, accounts, data);
         let rejected = rejected_before_protocol(&result, protocol);
         let seed = 141
@@ -805,27 +824,29 @@ fn backyard_basic_policy_set() {
                 .iter()
                 .position(|address| key(address) == policy)
                 .expect("mutation targets an installed policy") as u64;
-        if !rejected {
+        match covered_lane {
+            // A lane the catalog covers: the policy has to let it through.
+            Some(_lane) => assert!(
+                !rejected,
+                "covered-lane control {label} was rejected by Squads: {result:?}"
+            ),
+            None => assert!(
+                rejected,
+                "mutation {label} was not rejected by Squads first: {result:?}"
+            ),
+        }
+        if covered_lane.is_none() && !rejected {
             policy_gaps.push(format!("{label} (seed {seed} constraint {constraint_index})"));
         }
         mutations.push(json!({
             "case": label,
-            "result": if rejected { "rejected" } else { "ACCEPTED_BY_POLICY" },
+            "result": if rejected { "rejected" } else { "accepted" },
             "policySeed": seed.to_string(),
             "constraintIndex": constraint_index,
+            "coveredLane": covered_lane,
             "computeUnits": result.1,
             "error": result.0,
             "protocolInvokeObserved": !rejected,
-            "finding": if rejected {
-                None
-            } else {
-                // The biclique inside seed 144 pairs sources {ONyc custody, PRIME
-                // custody} with destinations {USDC custody, PYUSD custody} as two
-                // independent axes of one constraint, so the cross pair satisfies
-                // it although no Go message ever pairs them.  Recorded, not
-                // asserted away.
-                Some("installed constraint admits a swap pair that no Go message uses")
-            },
         }));
     }
 
@@ -867,9 +888,8 @@ fn backyard_basic_policy_set() {
     );
     assert_eq!(
         policy_gaps.len(),
-        1,
-        "the mutation matrix moved; re-check the known gap and the evidence:\n  {}",
+        0,
+        "a mutation the catalog forbids was accepted:\n  {}",
         policy_gaps.join("\n  ")
     );
-    eprintln!("Backyard policy gap: {}", policy_gaps[0]);
 }

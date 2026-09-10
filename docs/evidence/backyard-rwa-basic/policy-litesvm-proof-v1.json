@@ -557,8 +557,8 @@
       "case": "foreign obligation",
       "computeUnits": 32416,
       "constraintIndex": 0,
+      "coveredLane": null,
       "error": "InstructionError(0, Custom(6064))",
-      "finding": null,
       "policySeed": "141",
       "protocolInvokeObserved": false,
       "result": "rejected"
@@ -567,8 +567,8 @@
       "case": "foreign reserve",
       "computeUnits": 32514,
       "constraintIndex": 0,
+      "coveredLane": null,
       "error": "InstructionError(0, Custom(6069))",
-      "finding": null,
       "policySeed": "141",
       "protocolInvokeObserved": false,
       "result": "rejected"
@@ -577,8 +577,8 @@
       "case": "foreign custody",
       "computeUnits": 32514,
       "constraintIndex": 0,
+      "coveredLane": null,
       "error": "InstructionError(0, Custom(6069))",
-      "finding": null,
       "policySeed": "141",
       "protocolInvokeObserved": false,
       "result": "rejected"
@@ -587,9 +587,29 @@
       "case": "wrong discriminator",
       "computeUnits": 32514,
       "constraintIndex": 0,
+      "coveredLane": null,
       "error": "InstructionError(0, Custom(6069))",
-      "finding": null,
       "policySeed": "141",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "covered-lane control ONyc -> USDS",
+      "computeUnits": 38867,
+      "constraintIndex": 0,
+      "coveredLane": "OnRe/ONyc/USDS",
+      "error": null,
+      "policySeed": "144",
+      "protocolInvokeObserved": true,
+      "result": "accepted"
+    },
+    {
+      "case": "forbidden swap pair ONyc -> PYUSD (ONyc lane constraint)",
+      "computeUnits": 22560,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6069))",
+      "policySeed": "144",
       "protocolInvokeObserved": false,
       "result": "rejected"
     },
@@ -597,28 +617,18 @@
       "case": "forbidden swap pair ONyc -> PYUSD (syrupUSDC lane constraint)",
       "computeUnits": 22508,
       "constraintIndex": 1,
+      "coveredLane": null,
       "error": "InstructionError(0, Custom(6069))",
-      "finding": null,
       "policySeed": "144",
       "protocolInvokeObserved": false,
       "result": "rejected"
     },
     {
-      "case": "forbidden swap pair ONyc -> PYUSD (ONyc lane constraint)",
-      "computeUnits": 38867,
-      "constraintIndex": 0,
-      "error": null,
-      "finding": "installed constraint admits a swap pair that no Go message uses",
-      "policySeed": "144",
-      "protocolInvokeObserved": true,
-      "result": "ACCEPTED_BY_POLICY"
-    },
-    {
       "case": "non-vault authority",
       "computeUnits": 20946,
       "constraintIndex": 0,
+      "coveredLane": null,
       "error": "InstructionError(0, Custom(6069))",
-      "finding": null,
       "policySeed": "143",
       "protocolInvokeObserved": false,
       "result": "rejected"
@@ -627,8 +637,8 @@
       "case": "Ethena lane not in catalog",
       "computeUnits": 21008,
       "constraintIndex": 0,
+      "coveredLane": null,
       "error": "InstructionError(0, Custom(6069))",
-      "finding": null,
       "policySeed": "143",
       "protocolInvokeObserved": false,
       "result": "rejected"
