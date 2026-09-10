@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { test } from "bun:test";
 import { generated, Policy } from "@loyal-labs/loyal-smart-accounts-core";
@@ -33,6 +34,12 @@ const artifact = parseArtifact(JSON.parse(readFileSync(BASIC_POLICY_ARTIFACT, "u
 const PROGRAM = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG";
 const SIGNATURE = "1".repeat(64);
 const ARTIFACT_SHA256 = "b".repeat(64);
+/** Program-assigned start of the real finalized seed 141 policy; also the landing block time of synthetic accounts. */
+const LANDING_BLOCK_TIME = 1_789_016_967;
+/** The real finalized seed 141 Policy account, captured after the mainnet install landed. */
+const finalizedPolicy141 = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./fixtures/basic-policy-141-account-finalized.json", import.meta.url)), "utf8"),
+) as { address: string; slot: number; owner: string; lamports: number; dataBase64: string };
 
 const artifactRow = (seed: string) => {
   const row = artifact.policies.find((policy) => policy.seed === seed);
@@ -295,6 +302,18 @@ test("journal enforces per-state required fields and leg identity", () => {
     () => validateInstallJournal(journalFixture([{ ...planned, state: "finalized", readback: { ...finalizedReadback("141"), finalizedSlot: -5 } }]), artifact),
     /readback slot is invalid/,
   );
+  assert.throws(
+    () => validateInstallJournal(journalFixture([{ ...planned, state: "finalized", readback: { ...finalizedReadback("141"), blockTime: -1 } }]), artifact),
+    /readback block time is invalid/,
+  );
+  // A recorded block time requires the program-assigned start it pinned.
+  assert.throws(
+    () => validateInstallJournal(journalFixture([{ ...planned, state: "finalized", readback: { ...finalizedReadback("141"), blockTime: 1_000 } }]), artifact),
+    /readback start is invalid/,
+  );
+  assert.doesNotThrow(
+    () => validateInstallJournal(journalFixture([{ ...planned, state: "finalized", readback: { ...finalizedReadback("141"), blockTime: 1_000, start: LANDING_BLOCK_TIME } }]), artifact),
+  );
   assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, lastValidBlockHeight: 0 }]), artifact), /block height is invalid/);
 });
 
@@ -321,10 +340,11 @@ test("full policy readback matches the artifact instruction field by field", () 
     assert.deepEqual(expected.signers, [{ key: artifact.delegate, permissionsMask: 7 }]);
     assert.equal(expected.threshold, 1);
     assert.equal(expected.timeLock, 0);
-    assert.equal(expected.start, "0");
-    assert.equal(expected.rentCollector, PublicKey.default.toBase58());
+    // PolicyCreate sets no rent collector, so the program assigns the paying authority.
+    assert.equal(expected.rentCollector, artifact.authority);
     assert.equal(expected.accountIndex, 0);
-    assert.doesNotThrow(() => assertPolicyMatchesArtifact(row, decodePolicyAccount(policyAccount(row.seed, expected.constraints))));
+    const decoded = decodePolicyAccount(policyAccount(row.seed, expected.constraints));
+    assert.doesNotThrow(() => assertPolicyMatchesArtifact(row, decoded, { blockTime: LANDING_BLOCK_TIME }));
     assert.doesNotThrow(() => assertPolicyPayloadMatchesArtifact(row, expected.constraints));
   }
 });
@@ -337,23 +357,44 @@ test("full policy readback refuses any altered on-chain field", () => {
     apply(decoded);
     return decoded;
   };
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.timeLock = 5; })), /time lock 5 does not match the artifact 0/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.threshold = 2; })), /threshold 2 does not match the artifact 1/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.start = 7n; })), /on-chain start 7 does not match the artifact 0/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.expiration = { __kind: "Timestamp", fields: [123n] }; })), /expires, but the artifact sets no expiration/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.rentCollector = Keypair.generate().publicKey; })), /rent collector/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.signers[0].key = Keypair.generate().publicKey; })), /delegated signer/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.signers[0].permissions.mask = 3; })), /permissions 3 do not match the artifact 7/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.seed = 142n; })), /on-chain seed 142 does not match the artifact 141/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.fields[0].preHook = { __kind: "Hook" }; })), /hooks, but the artifact sets none/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.fields[0].postHook = { __kind: "Hook" }; })), /hooks, but the artifact sets none/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.fields[0].spendingLimits = [{}]; })), /spending limits, but the artifact sets none/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.fields[0].accountIndex = 1; })), /account index 1 does not match the artifact 0/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.__kind = "SpendingLimit"; })), /policy kind/);
+  const check = (decoded: DecodedPolicy): void => assertPolicyMatchesArtifact(row, decoded, { blockTime: LANDING_BLOCK_TIME });
+  assert.throws(() => check(mutate((d) => { d.timeLock = 5; })), /time lock 5 does not match the artifact 0/);
+  assert.throws(() => check(mutate((d) => { d.threshold = 2; })), /threshold 2 does not match the artifact 1/);
+  assert.throws(() => check(mutate((d) => { d.start = 7n; })), /on-chain start 7 is not within 120s of the landing block time/);
+  assert.throws(() => check(mutate((d) => { d.expiration = { __kind: "Timestamp", fields: [123n] }; })), /expires, but the artifact sets no expiration/);
+  assert.throws(() => check(mutate((d) => { d.rentCollector = Keypair.generate().publicKey; })), /rent collector/);
+  assert.throws(() => check(mutate((d) => { d.signers[0].key = Keypair.generate().publicKey; })), /delegated signer/);
+  assert.throws(() => check(mutate((d) => { d.signers[0].permissions.mask = 3; })), /permissions 3 do not match the artifact 7/);
+  assert.throws(() => check(mutate((d) => { d.seed = 142n; })), /on-chain seed 142 does not match the artifact 141/);
+  assert.throws(() => check(mutate((d) => { d.policyState.fields[0].preHook = { __kind: "Hook" }; })), /hooks, but the artifact sets none/);
+  assert.throws(() => check(mutate((d) => { d.policyState.fields[0].postHook = { __kind: "Hook" }; })), /hooks, but the artifact sets none/);
+  assert.throws(() => check(mutate((d) => { d.policyState.fields[0].spendingLimits = [{}]; })), /spending limits, but the artifact sets none/);
+  assert.throws(() => check(mutate((d) => { d.policyState.fields[0].accountIndex = 1; })), /account index 1 does not match the artifact 0/);
+  assert.throws(() => check(mutate((d) => { d.policyState.__kind = "SpendingLimit"; })), /policy kind/);
   // Fresh-install account state: the canonical PDA bump and zeroed transaction counters.
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.bump = (d.bump + 1) % 256; })), /does not match the canonical PDA bump/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.transactionIndex = 1n; })), /transaction index 1\/0 is not the fresh-install zero state/);
-  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.staleTransactionIndex = 1n; })), /transaction index 0\/1 is not the fresh-install zero state/);
+  assert.throws(() => check(mutate((d) => { d.bump = (d.bump + 1) % 256; })), /does not match the canonical PDA bump/);
+  assert.throws(() => check(mutate((d) => { d.transactionIndex = 1n; })), /transaction index 1\/0 is not the fresh-install zero state/);
+  assert.throws(() => check(mutate((d) => { d.staleTransactionIndex = 1n; })), /transaction index 0\/1 is not the fresh-install zero state/);
+});
+
+test("readback accepts the real finalized seed 141 account at its landing block time", () => {
+  const row = artifactRow("141");
+  const decoded = decodePolicyAccount(Buffer.from(finalizedPolicy141.dataBase64, "base64"));
+  assert.equal(finalizedPolicy141.address, row.account);
+  assert.equal(decoded.bump, 250);
+  // The program assigned start itself: the clock unix timestamp at execution.
+  assert.equal(Number(decoded.start), LANDING_BLOCK_TIME);
+  // And it filled the unset rent collector with the paying authority.
+  assert.equal(decoded.rentCollector.toBase58(), artifact.authority);
+  const landing = { blockTime: LANDING_BLOCK_TIME };
+  assert.doesNotThrow(() => assertPolicyMatchesArtifact(row, decoded, landing));
+  assert.throws(() => assertPolicyMatchesArtifact(row, decoded, { blockTime: LANDING_BLOCK_TIME + 3_600 }),
+    /on-chain start 1789016967 is not within 120s of the landing block time 1789020567/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, { ...decoded, rentCollector: Keypair.generate().publicKey }, landing), /rent collector/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, { ...decoded, start: 0n }, landing),
+    /on-chain start 0 is not within 120s of the landing block time/);
+  // Without a block time the fallback rule still refuses a zero start.
+  assert.throws(() => assertPolicyMatchesArtifact(row, { ...decoded, start: 0n }), /on-chain start 0 is not a positive timestamp within 120s of now/);
 });
 
 test("payload check accepts the artifact constraints and rejects any other lane", () => {
@@ -618,7 +659,12 @@ test("reconcile re-verifies every abandoned attempt per seed and numbers them", 
 test("reconcile promotes a planned leg and verifies its full payload against the artifact", async () => {
   const journal = journalFixture([legFixture("141")]);
   const outcome = await reconcileInstallJournal({
-    connection: fakeConnection({ liveSeed: "141", present: ["141"] }),
+    connection: fakeConnection({
+      liveSeed: "141",
+      present: ["141"],
+      signatures: { [SIGNATURE]: { err: null, confirmationStatus: "finalized", slot: 500 } },
+      blockTimes: { 500: LANDING_BLOCK_TIME },
+    }),
     artifact,
     journal,
     artifactSha256: ARTIFACT_SHA256,
@@ -628,6 +674,8 @@ test("reconcile promotes a planned leg and verifies its full payload against the
   assert.equal(leg.state, "finalized");
   const readback = leg.readback as Record<string, unknown>;
   assert.equal(readback.finalizedSlot, 900);
+  assert.equal(readback.blockTime, LANDING_BLOCK_TIME);
+  assert.equal(readback.start, LANDING_BLOCK_TIME);
   assert.equal(readback.dataSha256, artifactRow("141").dataSha256);
   assert.equal(readback.accountDataSha256, sha256(policyAccount("141", policyExpectationFromArtifact(artifactRow("141")).constraints)));
   assert.deepEqual(outcome.pendingSeeds, ["142", "143", "144"]);
@@ -656,7 +704,13 @@ test("reconcile refuses an on-chain policy payload that the artifact does not sp
   })]);
   await assert.rejects(
     () => reconcileInstallJournal({
-      connection: fakeConnection({ liveSeed: "141", present: ["141"], policyData: () => mismatched }),
+      connection: fakeConnection({
+        liveSeed: "141",
+        present: ["141"],
+        policyData: () => mismatched,
+        signatures: { [SIGNATURE]: { err: null, confirmationStatus: "finalized", slot: 500 } },
+        blockTimes: { 500: LANDING_BLOCK_TIME },
+      }),
       artifact,
       journal,
       artifactSha256: ARTIFACT_SHA256,
@@ -697,7 +751,7 @@ function journalLeg(journal: Record<string, unknown>, index: number): Record<str
   return (journal.legs as Array<Record<string, unknown>>)[index] as Record<string, unknown>;
 }
 
-/** The readback exactly as `finalizedPolicyReadback` records it for a fixture policy account. */
+/** The readback `finalizedPolicyReadback` records with no landing block time available. */
 function finalizedReadback(seed: string): Record<string, unknown> {
   return {
     seed,
@@ -705,6 +759,7 @@ function finalizedReadback(seed: string): Record<string, unknown> {
     dataSha256: artifactRow(seed).dataSha256,
     accountDataSha256: sha256(policyAccount(seed, decodeConstraints(seed))),
     finalizedSlot: 900,
+    blockTime: null,
   };
 }
 
@@ -749,7 +804,7 @@ function tamperAccountConstraint(seed: string): readonly unknown[] {
   });
 }
 
-function policyAccount(seed: string, constraints: readonly unknown[]): Buffer {
+function policyAccount(seed: string, constraints: readonly unknown[], start: bigint = BigInt(LANDING_BLOCK_TIME)): Buffer {
   const expected = policyExpectationFromArtifact(artifactRow(seed));
   const [data] = policyBeet.serialize({
     accountDiscriminator: (generated as unknown as { policyDiscriminator: number[] }).policyDiscriminator,
@@ -765,7 +820,7 @@ function policyAccount(seed: string, constraints: readonly unknown[]): Buffer {
       __kind: expected.policyKind,
       fields: [{ accountIndex: expected.accountIndex, instructionsConstraints: constraints, preHook: null, postHook: null, spendingLimits: [] }],
     },
-    start: BigInt(expected.start),
+    start,
     expiration: null,
     rentCollector: new PublicKey(expected.rentCollector),
   });
@@ -805,6 +860,7 @@ function fakeConnection(input: Readonly<{
   present: readonly string[];
   policyData?: (seed: string) => Buffer | null;
   signatures?: Record<string, { err: unknown; confirmationStatus: string; slot: number } | null>;
+  blockTimes?: Record<number, number>;
   blockhashValid?: boolean;
   slot?: number;
 }>) {
@@ -835,6 +891,7 @@ function fakeConnection(input: Readonly<{
       value: signatures.map((signature) => input.signatures?.[signature] ?? null),
     }),
     isBlockhashValid: async () => ({ context: { slot }, value: input.blockhashValid === true }),
+    getBlockTime: async (blockTimeSlot: number) => input.blockTimes?.[blockTimeSlot] ?? null,
     simulateTransaction: async () => ({ context: { slot }, value: { err: null, logs: [], unitsConsumed: 1_000n } }),
     getLatestBlockhashAndContext: async () => ({ context: { slot }, value: { blockhash: "fake-blockhash", lastValidBlockHeight: 4_242 } }),
   } as unknown as Parameters<typeof reconcileInstallJournal>[0]["connection"];

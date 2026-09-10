@@ -316,6 +316,12 @@ export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArt
       const finalizedSlot = readback.finalizedSlot;
       invariant(typeof finalizedSlot === "number" && Number.isSafeInteger(finalizedSlot) && finalizedSlot >= 0,
         `basic policy install journal leg ${seed} readback slot is invalid`);
+      const readbackBlockTime = readback.blockTime;
+      invariant(readbackBlockTime === null || (typeof readbackBlockTime === "number" && Number.isSafeInteger(readbackBlockTime) && readbackBlockTime >= 0),
+        `basic policy install journal leg ${seed} readback block time is invalid`);
+      const readbackStart = readback.start;
+      invariant(readbackBlockTime === null ? readbackStart === undefined : (typeof readbackStart === "number" && Number.isSafeInteger(readbackStart) && readbackStart > 0),
+        `basic policy install journal leg ${seed} readback start is invalid`);
     }
     priorSeed = seedValue;
     priorState = state;
@@ -329,6 +335,7 @@ export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArt
 export type ReconcileConnection = Pick<Connection,
   "getAccountInfo" |
   "getAccountInfoAndContext" |
+  "getBlockTime" |
   "getMultipleAccountsInfoAndContext" |
   "getSignatureStatuses" |
   "isBlockhashValid" |
@@ -571,7 +578,6 @@ export type PolicyExpectation = Readonly<{
   signers: readonly { key: string; permissionsMask: number }[];
   threshold: number;
   timeLock: number;
-  start: string;
   rentCollector: string;
   policyKind: string;
   accountIndex: number;
@@ -583,7 +589,10 @@ export type PolicyExpectation = Readonly<{
  * produce. Every expected value is read out of the artifact instruction
  * itself - the settings account meta and the decoded PolicyCreate action -
  * so a readback is accepted only when the chain holds exactly what this
- * installer specified, field by field.
+ * installer specified, field by field. The two fields PolicyCreate leaves to
+ * the program are handled explicitly: rentCollector is the paying authority,
+ * and start is the program-assigned landing timestamp verified against the
+ * leg's block time by `assertPolicyMatchesArtifact`.
  */
 export function policyExpectationFromArtifact(policy: BasicPolicyRow): PolicyExpectation {
   const data = decodeData(policy.instruction.dataBase64, `basic policy ${policy.seed} instruction data`);
@@ -617,11 +626,12 @@ export function policyExpectationFromArtifact(policy: BasicPolicyRow): PolicyExp
     })),
     threshold: action.threshold,
     timeLock: action.timeLock,
-    // No start timestamp and no expiration: the program stores start = 0.
-    start: "0",
-    // PolicyCreate never sets a rent collector, so the program stores the
-    // unset (zero) pubkey.
-    rentCollector: PublicKey.default.toBase58(),
+    // PolicyCreate sets no rent collector, so the program fills it with the
+    // paying authority: the instruction fee payer, which parseArtifact pins to
+    // the artifact authority. start is likewise program-assigned - the clock
+    // unix timestamp at execution - so it is checked against the leg's landing
+    // block time instead of a literal from the artifact.
+    rentCollector: RWA_MULTIPLY_ROUTE.setupAdmin,
     policyKind: "ProgramInteraction",
     accountIndex: body.accountIndex,
     constraints: body.instructionsConstraints,
@@ -662,10 +672,13 @@ export function assertPolicyPayloadMatchesArtifact(policy: BasicPolicyRow, const
  * Full policy identity check. The on-chain Policy account is decoded with the
  * generated Squads decoder and every field the PolicyCreate instruction sets
  * is compared against the value derived from the artifact instruction; the
- * constraint vector is additionally verified byte-exactly. Any difference
- * refuses.
+ * constraint vector is additionally verified byte-exactly. Because the program
+ * assigns `start` itself, it is only accepted when it sits within 120 seconds
+ * of the landing block time; without a block time the fallback rule accepts
+ * any positive timestamp no further than 120 seconds in the future. Any
+ * difference refuses.
  */
-export function assertPolicyMatchesArtifact(policy: BasicPolicyRow, decoded: PolicyState): void {
+export function assertPolicyMatchesArtifact(policy: BasicPolicyRow, decoded: PolicyState, landing?: Readonly<{ blockTime: number }>): void {
   const expected = policyExpectationFromArtifact(policy);
   const seed = policy.seed;
   invariant(decoded.settings.toBase58() === expected.settings,
@@ -689,12 +702,17 @@ export function assertPolicyMatchesArtifact(policy: BasicPolicyRow, decoded: Pol
     `policy ${seed} on-chain threshold ${decoded.threshold} does not match the artifact ${expected.threshold}`);
   invariant(decoded.timeLock === expected.timeLock,
     `policy ${seed} on-chain time lock ${decoded.timeLock} does not match the artifact ${expected.timeLock}`);
-  invariant(String(decoded.start) === expected.start,
-    `policy ${seed} on-chain start ${String(decoded.start)} does not match the artifact ${expected.start}`);
+  const start = Number(decoded.start.toString());
+  invariant(landing === undefined
+    ? start > 0 && start <= Math.floor(Date.now() / 1000) + 120
+    : Math.abs(start - landing.blockTime) <= 120,
+    landing === undefined
+      ? `policy ${seed} on-chain start ${start} is not a positive timestamp within 120s of now`
+      : `policy ${seed} on-chain start ${start} is not within 120s of the landing block time ${landing.blockTime}`);
   invariant(policyExpirationUnset(decoded.expiration),
     `policy ${seed} on-chain policy expires, but the artifact sets no expiration`);
   invariant(decoded.rentCollector.toBase58() === expected.rentCollector,
-    `policy ${seed} on-chain rent collector ${decoded.rentCollector.toBase58()} does not match the unset artifact value ${expected.rentCollector}`);
+    `policy ${seed} on-chain rent collector ${decoded.rentCollector.toBase58()} does not match the paying authority ${expected.rentCollector}`);
   invariant(decoded.policyState.__kind === expected.policyKind,
     `policy ${seed} on-chain policy kind ${decoded.policyState.__kind} does not match the artifact ${expected.policyKind}`);
   const body = object(decoded.policyState.fields?.[0], `policy ${seed} on-chain policy state`);
@@ -709,7 +727,29 @@ export function assertPolicyMatchesArtifact(policy: BasicPolicyRow, decoded: Pol
   assertPolicyPayloadMatchesArtifact(policy, body.instructionsConstraints);
 }
 
-async function finalizedPolicyReadback(connection: ReconcileConnection, artifact: BasicPolicyArtifact, seed: string): Promise<{ seed: string; account: string; dataSha256: string; accountDataSha256: string; finalizedSlot: number }> {
+export type PolicyReadback = Readonly<{
+  seed: string;
+  account: string;
+  dataSha256: string;
+  accountDataSha256: string;
+  finalizedSlot: number;
+  blockTime: number | null;
+  start?: number;
+}>;
+
+/**
+ * The slot that landed a leg's wire, resolved from its recorded signature: the
+ * block time of this slot is what the program-assigned policy start is checked
+ * against. Null when the signature has no status, in which case the readback
+ * falls back to the no-block-time rule.
+ */
+async function finalizedLandingSlot(connection: ReconcileConnection, leg: JsonObject): Promise<number | null> {
+  const signature = stringField(leg, "signature", "basic policy install journal leg");
+  const status = (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
+  return status?.err === null && typeof status.slot === "number" ? status.slot : null;
+}
+
+async function finalizedPolicyReadback(connection: ReconcileConnection, artifact: BasicPolicyArtifact, seed: string, landingSlot: number | null): Promise<PolicyReadback> {
   const policy = artifactPolicy(artifact, seed);
   const response = await connection.getAccountInfoAndContext(new PublicKey(policy.account), "finalized");
   invariant(response.value?.owner.toBase58() === RWA_MULTIPLY_ROUTE.squads.program, `policy ${policy.seed} readback is absent or has wrong owner`);
@@ -718,13 +758,17 @@ async function finalizedPolicyReadback(connection: ReconcileConnection, artifact
   invariant(response.value.data.subarray(0, policyDiscriminator.length).equals(Buffer.from(policyDiscriminator)),
     `policy ${policy.seed} on-chain account discriminator does not match the generated Policy discriminator`);
   const decoded = Policy.fromAccountInfo(response.value)[0];
-  assertPolicyMatchesArtifact(policy, decoded);
+  const rawBlockTime = landingSlot === null ? null : await connection.getBlockTime(landingSlot);
+  const blockTime = typeof rawBlockTime === "number" ? rawBlockTime : null;
+  assertPolicyMatchesArtifact(policy, decoded, ...(blockTime === null ? [] : [{ blockTime }]));
   return {
     seed: policy.seed,
     account: policy.account,
     dataSha256: policy.dataSha256,
     accountDataSha256: sha256(response.value.data),
     finalizedSlot: response.context.slot,
+    blockTime,
+    ...(blockTime === null ? {} : { start: Number(decoded.start.toString()) }),
   };
 }
 
@@ -800,7 +844,8 @@ async function installSeedLeg(runtime: InstallRuntime, policy: BasicPolicyRow): 
   invariant(confirmation.value.err === null, `policy ${policy.seed} finalized with an error`);
   const status = (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
   invariant(status?.err === null && status.confirmationStatus === "finalized", `policy ${policy.seed} did not reach finalized status`);
-  const readback = await finalizedPolicyReadback(connection, runtime.artifact, policy.seed);
+  const readback = await finalizedPolicyReadback(connection, runtime.artifact, policy.seed,
+    typeof status.slot === "number" ? status.slot : null);
   Object.assign(leg, { state: "finalized", finalizedSlot: status.slot, readback });
   validateInstallJournal(journal, runtime.artifact);
   atomic(BASIC_POLICY_JOURNAL, journal);
@@ -970,7 +1015,7 @@ export async function reconcileInstallJournal(input: Readonly<{
       };
     }
     if (decision.action === "verify-finalized" || decision.action === "promote-finalized") {
-      const readback = await finalizedPolicyReadback(connection, artifact, seed);
+      const readback = await finalizedPolicyReadback(connection, artifact, seed, await finalizedLandingSlot(connection, rawLeg));
       if (decision.action === "promote-finalized") Object.assign(rawLeg, { state: "finalized", finalizedSlot: readback.finalizedSlot, readback });
       verdicts.push({ seed, recordedState: state, verdict: decision.action, ...verdictEvidence(evidence) });
       readbacks.set(seed, readback);
@@ -1117,8 +1162,8 @@ async function main(): Promise<void> {
 
 const INVOKED = process.argv[1] !== undefined && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 if (INVOKED) {
-  main().catch(() => {
-    console.error("basic policy installer failed");
+  main().catch((error: unknown) => {
+    console.error(`basic policy installer failed: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   });
 }
