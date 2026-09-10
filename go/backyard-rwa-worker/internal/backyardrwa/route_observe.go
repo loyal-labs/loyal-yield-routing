@@ -391,7 +391,11 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	for _, address := range route.PolicyAccounts {
 		addressSet[address] = struct{}{}
 	}
-	if route.Lane == SelectedRouteID {
+	if route.BasicPolicy {
+		for _, address := range manifest.PolicyCatalog.PolicyAccounts {
+			addressSet[address] = struct{}{}
+		}
+	} else if route.Lane == SelectedRouteID {
 		for _, address := range mapleKaminoPolicyAccounts() {
 			addressSet[address] = struct{}{}
 		}
@@ -420,6 +424,21 @@ func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, acco
 	}
 	if route.Lane == RouteID {
 		return manifest.livePrimeUSDCPolicyReadiness(accounts)
+	}
+	if route.BasicPolicy {
+		families := []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB}
+		ready := true
+		for _, family := range families {
+			binding, hash, err := manifest.basicPolicyBinding(family)
+			if err != nil {
+				return false, false
+			}
+			account := accountAt(accounts, binding.Policy)
+			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+				ready = false
+			}
+		}
+		return ready, ready
 	}
 	for action, address := range route.PolicyAccounts {
 		account := accountAt(accounts, address)

@@ -128,10 +128,8 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 }
 
 func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := basicPolicyFixtureManifest(t)
+	var err error
 	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
@@ -167,10 +165,8 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 }
 
 func TestKaminoWithdrawWireAcceptsDebtBearingObligationTopology(t *testing.T) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := basicPolicyFixtureManifest(t)
+	var err error
 	request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)

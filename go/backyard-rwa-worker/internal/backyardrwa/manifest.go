@@ -1,6 +1,7 @@
 package backyardrwa
 
 import (
+	"bytes"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
@@ -210,6 +211,7 @@ type SelectedLaneBinding struct {
 
 type JupiterPolicyBinding struct {
 	CatalogLane             string                     `json:"catalogLane,omitempty"`
+	BasicPolicy             bool                       `json:"-"`
 	Action                  Action                     `json:"action"`
 	Policy                  string                     `json:"policy"`
 	PolicyAccountDataSHA256 string                     `json:"policyAccountDataSha256"`
@@ -265,37 +267,51 @@ func (m RouteManifest) jupiterPolicyForRoute(action Action, lane string) (Jupite
 		return JupiterPolicyBinding{CatalogLane: lane, Action: action, Policy: b.Policy, PolicyAccountDataSHA256: b.PolicySHA256,
 			PolicyConstraintIndex: b.ConstraintIndex, InstructionDataLength: dataLength, AmountOffset: b.AmountOffset}, nil
 	}
-	if lane != "" && lane != RouteID && lane != PhaseOneLaneID && lane != SelectedRouteID {
+	if lane == PhaseOneLaneID || lane == SelectedRouteID || lane == "OnRe/ONyc/USDC" {
+		_, _, sourceCustody, destinationCustody, err := jupiterEdgeForRoute(action, lane)
+		if err != nil {
+			return JupiterPolicyBinding{}, err
+		}
+		basic, index, err := resolveBasicSwapPolicy(sourceCustody, destinationCustody)
+		if err != nil {
+			return JupiterPolicyBinding{}, err
+		}
+		_, hash, err := m.basicPolicyBinding(basic.Family)
+		if err != nil {
+			return JupiterPolicyBinding{}, err
+		}
+		return JupiterPolicyBinding{BasicPolicy: true, Action: action, Policy: basic.Policy,
+			PolicyAccountDataSHA256: hash, PolicyConstraintIndex: index, AmountOffset: 18}, nil
+	}
+	if lane != "" && lane != RouteID {
 		return JupiterPolicyBinding{}, fmt.Errorf("unregistered Jupiter policy lane")
 	}
-	if lane == SelectedRouteID {
-		mapped := action
-		if action == SwapStableToCollateralStep {
-			mapped = SwapUSDCToPrimeStep
-		} else if action == SwapCollateralToStableStep {
-			mapped = SwapPrimeToUSDCStep
-		}
-		if mapped != SwapUSDCToPrimeStep && mapped != SwapPrimeToUSDCStep {
-			return JupiterPolicyBinding{}, fmt.Errorf("action %s is not a Maple swap", action)
-		}
-		neutral := action
-		if action == SwapUSDCToPrimeStep {
-			neutral = SwapStableToCollateralStep
-		} else if action == SwapPrimeToUSDCStep {
-			neutral = SwapCollateralToStableStep
-		}
-		policy := mapleSyrupUSDCUSDC.PolicyAccounts[neutral]
-		hash := mapleSyrupUSDCUSDC.PolicyHashes[neutral]
-		if policy == "" || !validSHA256(hash) {
-			return JupiterPolicyBinding{}, ErrBridgePrerequisitesUnavailable
-		}
-		prefix := "01010000007400640001"
-		if neutral == SwapCollateralToStableStep {
-			prefix = "02010000007400640001"
-		}
-		return JupiterPolicyBinding{Action: mapped, Policy: policy, PolicyAccountDataSHA256: hash, PolicyConstraintIndex: 0, InstructionDataLength: 37, AmountOffset: 18, ConstraintBindings: []JupiterConstraintBinding{{RoutePlanPrefixHex: prefix, PolicyConstraintIndex: 0}}}, nil
-	}
 	return m.jupiterPolicy(action)
+}
+
+func (m RouteManifest) basicPolicyBinding(family BasicPolicyFamily) (BasicPolicyBinding, string, error) {
+	binding, err := basicPolicyBinding(family)
+	if err != nil {
+		return BasicPolicyBinding{}, "", err
+	}
+	var policy string
+	var hash *string
+	switch family {
+	case BasicCollateralLifecycle:
+		policy, hash = m.RuntimeBindings.CollateralLifecycle.Policy, m.RuntimeBindings.CollateralLifecycle.DataSHA256
+	case BasicDebtLifecycle:
+		policy, hash = m.RuntimeBindings.DebtLifecycle.Policy, m.RuntimeBindings.DebtLifecycle.DataSHA256
+	case BasicSwapRoutesA:
+		policy, hash = m.RuntimeBindings.SwapRoutesA.Policy, m.RuntimeBindings.SwapRoutesA.DataSHA256
+	case BasicSwapRoutesB:
+		policy, hash = m.RuntimeBindings.SwapRoutesB.Policy, m.RuntimeBindings.SwapRoutesB.DataSHA256
+	default:
+		return BasicPolicyBinding{}, "", fmt.Errorf("unknown basic policy family %q", family)
+	}
+	if policy != binding.Policy || hash == nil || !validSHA256(*hash) {
+		return BasicPolicyBinding{}, "", ErrBridgePrerequisitesUnavailable
+	}
+	return binding, *hash, nil
 }
 
 func (b JupiterPolicyBinding) constraintIndex(instruction JupiterSwapInstruction) (byte, error) {
@@ -309,6 +325,12 @@ func (b JupiterPolicyBinding) constraintIndex(instruction JupiterSwapInstruction
 			return 0, fmt.Errorf("Jupiter catalog policy changed")
 		}
 		return bound.ConstraintIndex, nil
+	}
+	if b.BasicPolicy {
+		if len(data) < 28 || (!bytes.Equal(data[:8], jupiterSharedAccountsRoute) && !bytes.Equal(data[:8], jupiterSharedAccountsRouteV2)) {
+			return 0, fmt.Errorf("fresh Jupiter header does not match the basic policy binding")
+		}
+		return b.PolicyConstraintIndex, nil
 	}
 	if len(data) != b.InstructionDataLength || b.AmountOffset != len(data)-19 {
 		return 0, fmt.Errorf("fresh Jupiter header does not match the manifest binding")
@@ -607,7 +629,7 @@ func (m RouteManifest) primeUSDCPacket(action Action, leg kaminoPrimeUSDCLeg, am
 }
 
 func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash, lane string) (KaminoPrimeUSDCRequest, error) {
-	if lane == "" || lane == RouteID || lane == PhaseOneLaneID {
+	if lane == "" || lane == RouteID {
 		request, err := m.primeUSDCPacket(action, leg, amount, blockhash)
 		if err == nil {
 			request.RouteLane = lane
@@ -621,7 +643,15 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	if err != nil {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
-	policies := route.KaminoPolicies
+	var policy, policyHash string
+	if route.BasicPolicy {
+		family := basicPolicyFamilyForKaminoLeg(leg)
+		binding, hash, err := m.basicPolicyBinding(family)
+		if err != nil {
+			return KaminoPrimeUSDCRequest{}, err
+		}
+		policy, policyHash = binding.Policy, hash
+	}
 	metaSets := func() []KaminoPrimeUSDCAccounts {
 		deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 		convert := func(input []accountMeta) KaminoPrimeUSDCAccounts {
@@ -642,9 +672,12 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	if index < 0 || index >= len(sets) {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
-	entry, ok := policies[leg]
-	if !ok {
-		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
+	if !route.BasicPolicy {
+		entry, ok := route.KaminoPolicies[leg]
+		if !ok {
+			return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
+		}
+		policy, policyHash = entry.Policy, entry.DataSHA256
 	}
 	discriminators := map[kaminoPrimeUSDCLeg][]byte{kaminoLegDeposit: kaminoDepositCollateral, kaminoLegBorrow: kaminoBorrowUSDC, kaminoLegRepay: kaminoRepayUSDC, kaminoLegWithdraw: kaminoWithdrawCollateral}
 	data := make([]byte, 16)
@@ -652,7 +685,7 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	for i := 0; i < 8; i++ {
 		data[8+i] = byte(amount >> (8 * i))
 	}
-	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: entry.Policy, PolicyAccountDataSHA256: entry.DataSHA256, PolicyConstraintIndex: kaminoConstraintIndexForRoute(route, leg), Accounts: sets[index], Data: data, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
+	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: policy, PolicyAccountDataSHA256: policyHash, PolicyConstraintIndex: kaminoConstraintIndexForRoute(route, leg), Accounts: sets[index], Data: data, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
 	if _, observedLeg, err := kaminoRouteInstruction(request, lane); err != nil || observedLeg != leg {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}

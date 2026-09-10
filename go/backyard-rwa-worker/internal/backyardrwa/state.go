@@ -177,13 +177,15 @@ func (d Decision) Validate() error {
 	}
 	neutral := d.Action == SwapStableToCollateralStep || d.Action == SwapCollateralToStableStep || d.Action == OpenRouteStep || d.Action == DeleverRouteStep
 	catalog := false
+	basic := false
 	if route, err := runtimeRoute(d.StrategyKey); err == nil {
 		catalog = route.Kamino.DebtMint != bridgeUSDC && len(route.KaminoPolicies) == 4
+		basic = route.BasicPolicy
 	}
-	if neutral && d.StrategyKey != SelectedRouteID && !catalog {
+	if neutral && d.StrategyKey != SelectedRouteID && !catalog && !basic {
 		return fmt.Errorf("route-neutral action requires the selected Phase 2 strategy")
 	}
-	if d.StrategyKey != "" && d.StrategyKey != RouteID && d.StrategyKey != PhaseOneLaneID && d.StrategyKey != SelectedRouteID && !catalog && d.Action != HoldManualRecovery {
+	if d.StrategyKey != "" && d.StrategyKey != RouteID && d.StrategyKey != PhaseOneLaneID && d.StrategyKey != SelectedRouteID && !basic && !catalog && d.Action != HoldManualRecovery {
 		return fmt.Errorf("decision strategy is not installed")
 	}
 	if d.Action == SwapDebtToCollateralStep || d.Action == SwapCollateralToDebtStep || d.Action == SwapUSDCToDebtStep || d.Action == SwapDebtToUSDCStep {

@@ -712,7 +712,7 @@ func isExactKaminoTransaction(instructions []decodedLegacyInstruction) bool {
 	if len(instructions) != 4 {
 		return false
 	}
-	for _, lane := range []string{RouteID, SelectedRouteID} {
+	for _, lane := range []string{RouteID, PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
 		route, err := runtimeRoute(lane)
 		if err != nil {
 			continue
@@ -831,6 +831,21 @@ func kaminoLegMetas(leg kaminoPrimeUSDCLeg) []accountMeta {
 }
 
 func kaminoLegMetasForRoute(leg kaminoPrimeUSDCLeg, lane string) []accountMeta {
+	if lane != RouteID && lane != "" {
+		if route, err := runtimeRoute(lane); err == nil && route.BasicPolicy {
+			deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
+			switch leg {
+			case kaminoLegDeposit:
+				return deposit
+			case kaminoLegBorrow:
+				return borrow
+			case kaminoLegRepay:
+				return repay
+			case kaminoLegWithdraw:
+				return withdraw
+			}
+		}
+	}
 	if lane == SelectedRouteID {
 		deposit, borrow, repay, withdraw := mapleKaminoMetas()
 		switch leg {

@@ -111,17 +111,21 @@ func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMin
 		b, err := catalogJupiterBindingForRoute(action, lane)
 		return b.SourceMint, b.DestinationMint, b.SourceCustody, b.DestinationCustody, err
 	}
-	if lane != RouteID && lane != PhaseOneLaneID && lane != SelectedRouteID {
+	if lane != RouteID && lane != PhaseOneLaneID && lane != SelectedRouteID && lane != "OnRe/ONyc/USDC" {
 		return "", "", "", "", fmt.Errorf("unregistered Jupiter lane")
 	}
-	if lane == SelectedRouteID {
+	if lane == PhaseOneLaneID || lane == SelectedRouteID || lane == "OnRe/ONyc/USDC" {
+		route, err := runtimeRoute(lane)
+		if err != nil {
+			return "", "", "", "", err
+		}
 		switch action {
 		case SwapStableToCollateralStep, SwapUSDCToPrimeStep:
-			return bridgeUSDC, mapleSyrupUSDCUSDC.Kamino.CollateralMint, bridgeSquadsATA, mapleSyrupUSDCUSDC.CollateralCustody, nil
+			return bridgeUSDC, route.Kamino.CollateralMint, bridgeSquadsATA, route.CollateralCustody, nil
 		case SwapCollateralToStableStep, SwapPrimeToUSDCStep:
-			return mapleSyrupUSDCUSDC.Kamino.CollateralMint, bridgeUSDC, mapleSyrupUSDCUSDC.CollateralCustody, bridgeSquadsATA, nil
+			return route.Kamino.CollateralMint, bridgeUSDC, route.CollateralCustody, bridgeSquadsATA, nil
 		default:
-			return "", "", "", "", fmt.Errorf("action %s is not an approved Maple Jupiter edge", action)
+			return "", "", "", "", fmt.Errorf("action %s is not an approved basic Jupiter edge", action)
 		}
 	}
 	switch action {
@@ -297,18 +301,6 @@ func validateJupiterQuoteForRoute(quote JupiterQuote, action Action, amount uint
 		len(quote.RoutePlan) == 0 || len(quote.RoutePlan) > jupiterMaxRoutePlanLeg || !jsonNull(quote.PlatformFee) {
 		return 0, 0, fmt.Errorf("Jupiter quote identity or economics drifted")
 	}
-	if lane == SelectedRouteID {
-		for _, raw := range quote.RoutePlan {
-			var step struct {
-				SwapInfo struct {
-					Label string `json:"label"`
-				} `json:"swapInfo"`
-			}
-			if json.Unmarshal(raw, &step) != nil || step.SwapInfo.Label != "Manifest" {
-				return 0, 0, fmt.Errorf("selected Jupiter venue drifted")
-			}
-		}
-	}
 	return out, minimum, nil
 }
 
@@ -408,8 +400,20 @@ func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publi
 		if err != nil || request.Policy != b.Policy || request.PolicyAccountDataSHA256 != b.PolicySHA256 || request.PolicyConstraintIndex != b.ConstraintIndex {
 			return nil, fmt.Errorf("Jupiter policy does not match catalog edge")
 		}
-	} else if err = validateInstalledJupiterHeader(request.Action, request.Instruction); err != nil {
-		return nil, err
+	} else if request.RouteLane == PhaseOneLaneID || request.RouteLane == SelectedRouteID || request.RouteLane == "OnRe/ONyc/USDC" {
+		_, _, sourceCustody, destinationCustody, err := jupiterEdgeForRoute(request.Action, request.RouteLane)
+		if err != nil {
+			return nil, err
+		}
+		binding, index, err := resolveBasicSwapPolicy(sourceCustody, destinationCustody)
+		if err != nil || request.Policy != binding.Policy || request.PolicyConstraintIndex != index {
+			return nil, fmt.Errorf("Jupiter policy does not match the basic swap family")
+		}
+	} else if request.RouteLane != PhaseOneLaneID && request.RouteLane != SelectedRouteID && request.RouteLane != "OnRe/ONyc/USDC" && err == nil {
+		err = validateInstalledJupiterHeader(request.Action, request.Instruction)
+		if err != nil {
+			return nil, err
+		}
 	}
 	policy, err := decodeKey(request.Policy)
 	if err != nil || policy == (publicKey{}) {

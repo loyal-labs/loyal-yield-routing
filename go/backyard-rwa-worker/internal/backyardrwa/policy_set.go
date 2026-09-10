@@ -102,6 +102,17 @@ func basicPolicyConstraintIndex(leg kaminoPrimeUSDCLeg) byte {
 	}
 }
 
+func basicPolicyFamilyForKaminoLeg(leg kaminoPrimeUSDCLeg) BasicPolicyFamily {
+	switch leg {
+	case kaminoLegDeposit, kaminoLegWithdraw:
+		return BasicCollateralLifecycle
+	case kaminoLegBorrow, kaminoLegRepay:
+		return BasicDebtLifecycle
+	default:
+		return ""
+	}
+}
+
 // resolveBasicSwapPolicy is deliberately an exact custody-pair allowlist.
 // The policy constraints are bicliques, but the worker still resolves the
 // selected route by its concrete custody pair before constructing a packet.

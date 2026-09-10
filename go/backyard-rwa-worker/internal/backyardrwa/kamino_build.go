@@ -271,8 +271,8 @@ func kaminoRouteInstruction(request KaminoPrimeUSDCRequest, lane string) (compil
 
 func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route RuntimeRoute) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
 	lane := request.RouteLane
-	if lane == "" || lane == PhaseOneLaneID {
-		lane = RouteID
+	if lane == "" {
+		lane = route.Lane
 	}
 	if lane != route.Lane {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino request does not match resolved lane")
@@ -298,7 +298,13 @@ func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route Runtim
 	if request.PolicyConstraintIndex != kaminoConstraintIndexForRoute(route, leg) {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet uses the wrong fixed lane constraint index")
 	}
-	if route.Lane != RouteID {
+	if route.BasicPolicy {
+		family := basicPolicyFamilyForKaminoLeg(leg)
+		binding, err := basicPolicyBinding(family)
+		if err != nil || request.Policy != binding.Policy {
+			return compiledInstruction{}, 0, fmt.Errorf("Kamino policy does not match the basic family binding")
+		}
+	} else if route.Lane != RouteID {
 		binding, ok := route.KaminoPolicies[leg]
 		if !ok || request.Policy != binding.Policy || request.PolicyAccountDataSHA256 != binding.DataSHA256 {
 			return compiledInstruction{}, 0, fmt.Errorf("Kamino policy does not match the exact route leg binding")
@@ -311,7 +317,7 @@ func kaminoConstraintIndexForRoute(route RuntimeRoute, leg kaminoPrimeUSDCLeg) b
 	// Retained split-policy routes still have one constraint at index zero. The
 	// four-policy basic set uses the family indexes above; Phase 2 attaches that
 	// model to the three runtime lanes.
-	if route.Lane == RouteID || len(route.KaminoPolicies) > 0 {
+	if !route.BasicPolicy && (route.Lane == RouteID || len(route.KaminoPolicies) > 0) {
 		return 0
 	}
 	return kaminoConstraintIndex(leg)
