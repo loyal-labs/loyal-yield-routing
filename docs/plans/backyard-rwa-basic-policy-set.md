@@ -79,6 +79,9 @@ ALLOW Jupiter sharedAccountsRoute IF account[2] == vault AND
   (account[3] ∈ {USDC, PYUSD}            AND account[6] ∈ {PRIME, syrupUSDC})
   (account[3] ∈ {ONyc, PRIME}            AND account[6] ∈ {USDC, USDS})
   (account[3] ∈ {PRIME, syrupUSDC}       AND account[6] ∈ {USDC, PYUSD})
+  AND data[0..8] == c1209b3341d69c81 (full SharedAccountsRoute discriminator,
+  not just its c120 prefix) AND account[9] == the Jupiter program id, the
+  platform_fee_account sentinel, so no fee can be routed to a foreign account
 ```
 
 Covered lanes: ONyc/USDC, ONyc/USDS, PRIME/USDC, PRIME/PYUSD, PRIME/USDS,

@@ -9,7 +9,8 @@ use crate::{
     create_deployed_semantic_program_interaction_policy_instruction, derive_action_account,
     derive_associated_token_account, derive_kamino_obligation, derive_squads_vault,
     earn_max_policy_constraints, swap_constraint, EarnMaxPolicyBoundary, EarnMaxPolicyFamily,
-    EarnMaxPolicyLane, SemanticProgramInteractionConstraint as Constraint,
+    EarnMaxPolicyLane, EARN_MAX_SHARED_ACCOUNTS_ROUTE,
+    SemanticProgramInteractionConstraint as Constraint,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -395,7 +396,10 @@ fn summarize_constraints(
                     hex_bytes(if index == 0 { BORROW_DEBT } else { REPAY_DEBT })
                 )],
                 BasicPolicyFamily::SwapRoutesA | BasicPolicyFamily::SwapRoutesB => {
-                    vec!["data[0..2] equals c120 (SharedAccountsRoute)".to_owned()]
+                    vec![format!(
+                        "data[0..8] equals {} (SharedAccountsRoute)",
+                        hex_bytes(EARN_MAX_SHARED_ACCOUNTS_ROUTE)
+                    )]
                 }
             };
             PolicyConstraintSummary {
@@ -506,7 +510,7 @@ mod tests {
                 .iter()
                 .map(|plan| plan.signed_packet_bytes)
                 .collect::<Vec<_>>(),
-            [1136, 1136, 818, 818]
+            [1136, 1136, 916, 916]
         );
         assert_eq!(
             plans
@@ -516,8 +520,8 @@ mod tests {
             [
                 "9ea2f745123519ecb3a5f080dffd409408924d6f1f0b28c0a71994855e37f0b7",
                 "0630789eb9294d4bcb49df0271fb2e8af995c03824c4912ad86498761935ff11",
-                "e68c4766a4d01c4b7c670edf7ba99b62a812979849beead9884ef0bd1122ea5a",
-                "f6e2073afaefd976b96c4ad89ed4e660c8e06d5bbf5a686206109e2f128693da",
+                "a5b356277a427638bdabd80b015ecbc4c852a8c8cced59df23db754213f7cdb9",
+                "0d319b3e37f7c88b1c1ff453bbc519dcd6eeb8a1f71a3cfd3241e24997df7f43",
             ]
         );
     }

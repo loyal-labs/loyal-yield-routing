@@ -208,10 +208,14 @@
             {
               "accountIndex": 6,
               "condition": "one of {AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3, DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct}"
+            },
+            {
+              "accountIndex": 9,
+              "condition": "equals JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
             }
           ],
           "dataConditions": [
-            "data[0..2] equals c120 (SharedAccountsRoute)"
+            "data[0..8] equals c1209b3341d69c81 (SharedAccountsRoute)"
           ],
           "instruction": "sharedAccountsRoute",
           "program": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
@@ -229,16 +233,20 @@
             {
               "accountIndex": 6,
               "condition": "one of {DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct, CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN}"
+            },
+            {
+              "accountIndex": 9,
+              "condition": "equals JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
             }
           ],
           "dataConditions": [
-            "data[0..2] equals c120 (SharedAccountsRoute)"
+            "data[0..8] equals c1209b3341d69c81 (SharedAccountsRoute)"
           ],
           "instruction": "sharedAccountsRoute",
           "program": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
         }
       ],
-      "dataSha256": "e56888dd2b3ac821c16933e59ae31ec3f6fc38a0770dd79905933dde9885fe22",
+      "dataSha256": "ff7b27cab93ec1d02c3e645b78af5725b8e5616dcb1799c7c527939286c63484",
       "family": "SwapRoutesA",
       "instruction": {
         "accounts": [
@@ -273,10 +281,10 @@
             "writable": true
           }
         ],
-        "dataBase64": "itFAo09D6UwBAQAAAAePAAAAAAAAAAMAAgAAAAR51VvyMcBu7nTFbs5oFQf9sbLeo/SOUQKxzaJWvBOPAwAAAAIAAQAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAMAAgAAAMPIu24JRQYWWO0SQdEPNiW4G/Cvih/KaZBwnuzJ/kQFQGgUQ87k1uYpna0Jt/vMYay5MZ3rrfLzox3YRJHCW6oABgACAAAAjQeKYBqKTXSJs9igbJn6uEnEmcOVzSPIQOsVgklYiFC935LsGhNbQJXpcI5O/zeP6AgtSF4FAykNOo2J7hS7xQABAAAAAAAAAAAAAAABwSAABHnVW/IxwG7udMVuzmgVB/2xst6j9I5RArHNola8E48DAAAAAgABAAAABoUTxIzyOBqoO0cYLJhBqR8PM30Dzx+IfBwwjBZTwvoAAwACAAAAw8i7bglFBhZY7RJB0Q82Jbgb8K+KH8ppkHCe7Mn+RAX9fsDDblKTgN5tEw1xXYbKnWtp3jFCTWh5jHT+AClKCQAGAAIAAAC935LsGhNbQJXpcI5O/zeP6AgtSF4FAykNOo2J7hS7xaufAnFtq+OyrkGJahejXcaKJV4d6qDqbh2aHi40+IT7AAEAAAAAAAAAAAAAAAHBIAAAAAAAAAABAAAASp+fVOhyZm18PY3W4G3mfsX4lTwMZGH9WTVT1I1I+0AHAQAAAAAAAAAA",
+        "dataBase64": "itFAo09D6UwBAQAAAAePAAAAAAAAAAMAAgAAAAR51VvyMcBu7nTFbs5oFQf9sbLeo/SOUQKxzaJWvBOPBAAAAAIAAQAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAMAAgAAAMPIu24JRQYWWO0SQdEPNiW4G/Cvih/KaZBwnuzJ/kQFQGgUQ87k1uYpna0Jt/vMYay5MZ3rrfLzox3YRJHCW6oABgACAAAAjQeKYBqKTXSJs9igbJn6uEnEmcOVzSPIQOsVgklYiFC935LsGhNbQJXpcI5O/zeP6AgtSF4FAykNOo2J7hS7xQAJAAEAAAAEedVb8jHAbu50xW7OaBUH/bGy3qP0jlECsc2iVrwTjwABAAAAAAAAAAAAAAAFCAAAAMEgmzNB1pyBAAR51VvyMcBu7nTFbs5oFQf9sbLeo/SOUQKxzaJWvBOPBAAAAAIAAQAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAMAAgAAAMPIu24JRQYWWO0SQdEPNiW4G/Cvih/KaZBwnuzJ/kQF/X7Aw25Sk4DebRMNcV2Gyp1rad4xQk1oeYx0/gApSgkABgACAAAAvd+S7BoTW0CV6XCOTv83j+gILUheBQMpDTqNie4Uu8WrnwJxbavjsq5BiWoXo13GiiVeHeqg6m4dmh4uNPiE+wAJAAEAAAAEedVb8jHAbu50xW7OaBUH/bGy3qP0jlECsc2iVrwTjwABAAAAAAAAAAAAAAAFCAAAAMEgmzNB1pyBAAAAAAAAAAEAAABKn59U6HJmbXw9jdbgbeZ+xfiVPAxkYf1ZNVPUjUj7QAcBAAAAAAAAAAA=",
         "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
       },
-      "legacyPacketBytes": 818,
+      "legacyPacketBytes": 916,
       "seed": "143"
     },
     {
@@ -295,10 +303,14 @@
             {
               "accountIndex": 6,
               "condition": "one of {EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe, 5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV}"
+            },
+            {
+              "accountIndex": 9,
+              "condition": "equals JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
             }
           ],
           "dataConditions": [
-            "data[0..2] equals c120 (SharedAccountsRoute)"
+            "data[0..8] equals c1209b3341d69c81 (SharedAccountsRoute)"
           ],
           "instruction": "sharedAccountsRoute",
           "program": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
@@ -316,16 +328,20 @@
             {
               "accountIndex": 6,
               "condition": "one of {EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe, J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn}"
+            },
+            {
+              "accountIndex": 9,
+              "condition": "equals JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
             }
           ],
           "dataConditions": [
-            "data[0..2] equals c120 (SharedAccountsRoute)"
+            "data[0..8] equals c1209b3341d69c81 (SharedAccountsRoute)"
           ],
           "instruction": "sharedAccountsRoute",
           "program": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
         }
       ],
-      "dataSha256": "44e8beecf05e6032df92878685d10521c30fb3a4d3df28c561fd45d6e92fcab7",
+      "dataSha256": "dec1b2b9f3e69265eed238e281688c167b8d3a732ddb1e5e02ec6d302472968e",
       "family": "SwapRoutesB",
       "instruction": {
         "accounts": [
@@ -360,10 +376,10 @@
             "writable": true
           }
         ],
-        "dataBase64": "itFAo09D6UwBAQAAAAeQAAAAAAAAAAMAAgAAAAR51VvyMcBu7nTFbs5oFQf9sbLeo/SOUQKxzaJWvBOPAwAAAAIAAQAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAMAAgAAAI0HimAaik10ibPYoGyZ+rhJxJnDlc0jyEDrFYJJWIhQvd+S7BoTW0CV6XCOTv83j+gILUheBQMpDTqNie4Uu8UABgACAAAAw8i7bglFBhZY7RJB0Q82Jbgb8K+KH8ppkHCe7Mn+RAVAaBRDzuTW5imdrQm3+8xhrLkxneut8vOjHdhEkcJbqgABAAAAAAAAAAAAAAABwSAABHnVW/IxwG7udMVuzmgVB/2xst6j9I5RArHNola8E48DAAAAAgABAAAABoUTxIzyOBqoO0cYLJhBqR8PM30Dzx+IfBwwjBZTwvoAAwACAAAAvd+S7BoTW0CV6XCOTv83j+gILUheBQMpDTqNie4Uu8WrnwJxbavjsq5BiWoXo13GiiVeHeqg6m4dmh4uNPiE+wAGAAIAAADDyLtuCUUGFljtEkHRDzYluBvwr4ofymmQcJ7syf5EBf1+wMNuUpOA3m0TDXFdhsqda2neMUJNaHmMdP4AKUoJAAEAAAAAAAAAAAAAAAHBIAAAAAAAAAABAAAASp+fVOhyZm18PY3W4G3mfsX4lTwMZGH9WTVT1I1I+0AHAQAAAAAAAAAA",
+        "dataBase64": "itFAo09D6UwBAQAAAAeQAAAAAAAAAAMAAgAAAAR51VvyMcBu7nTFbs5oFQf9sbLeo/SOUQKxzaJWvBOPBAAAAAIAAQAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAMAAgAAAI0HimAaik10ibPYoGyZ+rhJxJnDlc0jyEDrFYJJWIhQvd+S7BoTW0CV6XCOTv83j+gILUheBQMpDTqNie4Uu8UABgACAAAAw8i7bglFBhZY7RJB0Q82Jbgb8K+KH8ppkHCe7Mn+RAVAaBRDzuTW5imdrQm3+8xhrLkxneut8vOjHdhEkcJbqgAJAAEAAAAEedVb8jHAbu50xW7OaBUH/bGy3qP0jlECsc2iVrwTjwABAAAAAAAAAAAAAAAFCAAAAMEgmzNB1pyBAAR51VvyMcBu7nTFbs5oFQf9sbLeo/SOUQKxzaJWvBOPBAAAAAIAAQAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAMAAgAAAL3fkuwaE1tAlelwjk7/N4/oCC1IXgUDKQ06jYnuFLvFq58CcW2r47KuQYlqF6NdxoolXh3qoOpuHZoeLjT4hPsABgACAAAAw8i7bglFBhZY7RJB0Q82Jbgb8K+KH8ppkHCe7Mn+RAX9fsDDblKTgN5tEw1xXYbKnWtp3jFCTWh5jHT+AClKCQAJAAEAAAAEedVb8jHAbu50xW7OaBUH/bGy3qP0jlECsc2iVrwTjwABAAAAAAAAAAAAAAAFCAAAAMEgmzNB1pyBAAAAAAAAAAEAAABKn59U6HJmbXw9jdbgbeZ+xfiVPAxkYf1ZNVPUjUj7QAcBAAAAAAAAAAA=",
         "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
       },
-      "legacyPacketBytes": 818,
+      "legacyPacketBytes": 916,
       "seed": "144"
     }
   ],

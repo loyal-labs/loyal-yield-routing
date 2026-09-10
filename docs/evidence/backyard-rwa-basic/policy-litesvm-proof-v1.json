@@ -334,10 +334,10 @@
       "seed": "142"
     },
     {
-      "accountDataBytes": 877,
-      "accountDataSha256": "98a651c8994771158b6268b7523b684df3979d3721f275200e46754e7c6ee286",
-      "computeUnits": 38747,
-      "instructionDataSha256": "e56888dd2b3ac821c16933e59ae31ec3f6fc38a0770dd79905933dde9885fe22",
+      "accountDataBytes": 1047,
+      "accountDataSha256": "39eb2dae3af9cc533643738b81aa4779599cc9010d3479bf071d04ffa12c72f0",
+      "computeUnits": 42218,
+      "instructionDataSha256": "ff7b27cab93ec1d02c3e645b78af5725b8e5616dcb1799c7c527939286c63484",
       "payloadProjection": {
         "constraints": [
           {
@@ -370,6 +370,15 @@
                     "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"
                   ]
                 }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+                  ]
+                }
               }
             ],
             "dataConstraints": [
@@ -377,8 +386,8 @@
                 "offset": 0,
                 "operator": "Equals",
                 "value": {
-                  "kind": "U16Le",
-                  "value": 8385
+                  "kind": "U8Slice",
+                  "value": "c1209b3341d69c81"
                 }
               }
             ],
@@ -414,6 +423,15 @@
                     "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"
                   ]
                 }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+                  ]
+                }
               }
             ],
             "dataConstraints": [
@@ -421,8 +439,8 @@
                 "offset": 0,
                 "operator": "Equals",
                 "value": {
-                  "kind": "U16Le",
-                  "value": 8385
+                  "kind": "U8Slice",
+                  "value": "c1209b3341d69c81"
                 }
               }
             ],
@@ -443,10 +461,10 @@
       "seed": "143"
     },
     {
-      "accountDataBytes": 877,
-      "accountDataSha256": "82707874427d149217c94271efe2452cd2680325708dcdcd739144cb2b209088",
-      "computeUnits": 40247,
-      "instructionDataSha256": "44e8beecf05e6032df92878685d10521c30fb3a4d3df28c561fd45d6e92fcab7",
+      "accountDataBytes": 1047,
+      "accountDataSha256": "831e95ebd013b93e47f3d80a3e708d1fcbc30fd28dc416a26caff46d4c4c5d02",
+      "computeUnits": 43718,
+      "instructionDataSha256": "dec1b2b9f3e69265eed238e281688c167b8d3a732ddb1e5e02ec6d302472968e",
       "payloadProjection": {
         "constraints": [
           {
@@ -479,6 +497,15 @@
                     "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV"
                   ]
                 }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+                  ]
+                }
               }
             ],
             "dataConstraints": [
@@ -486,8 +513,8 @@
                 "offset": 0,
                 "operator": "Equals",
                 "value": {
-                  "kind": "U16Le",
-                  "value": 8385
+                  "kind": "U8Slice",
+                  "value": "c1209b3341d69c81"
                 }
               }
             ],
@@ -523,6 +550,15 @@
                     "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
                   ]
                 }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+                  ]
+                }
               }
             ],
             "dataConstraints": [
@@ -530,8 +566,8 @@
                 "offset": 0,
                 "operator": "Equals",
                 "value": {
-                  "kind": "U16Le",
-                  "value": 8385
+                  "kind": "U8Slice",
+                  "value": "c1209b3341d69c81"
                 }
               }
             ],
@@ -554,7 +590,17 @@
   ],
   "negativeMutationMatrix": [
     {
-      "case": "foreign obligation",
+      "case": "passing deposit control: OnRe ONyc lane with the approved reserve",
+      "computeUnits": 52671,
+      "constraintIndex": 0,
+      "coveredLane": "OnRe/ONyc collateral deposit",
+      "error": null,
+      "policySeed": "141",
+      "protocolInvokeObserved": true,
+      "result": "accepted"
+    },
+    {
+      "case": "foreign obligation owner",
       "computeUnits": 32416,
       "constraintIndex": 0,
       "coveredLane": null,
@@ -575,7 +621,7 @@
     },
     {
       "case": "foreign custody",
-      "computeUnits": 32514,
+      "computeUnits": 32566,
       "constraintIndex": 0,
       "coveredLane": null,
       "error": "InstructionError(0, Custom(6069))",
@@ -585,17 +631,47 @@
     },
     {
       "case": "wrong discriminator",
-      "computeUnits": 32514,
+      "computeUnits": 32626,
       "constraintIndex": 0,
       "coveredLane": null,
-      "error": "InstructionError(0, Custom(6069))",
+      "error": "InstructionError(0, Custom(6064))",
       "policySeed": "141",
       "protocolInvokeObserved": false,
       "result": "rejected"
     },
     {
+      "case": "passing swap control: real Go USDC -> ONyc message on seed 143",
+      "computeUnits": 55218,
+      "constraintIndex": 0,
+      "coveredLane": "OnRe/ONyc/USDC USDC->ONyc",
+      "error": null,
+      "policySeed": "143",
+      "protocolInvokeObserved": true,
+      "result": "accepted"
+    },
+    {
+      "case": "platform fee account 9 moved to a foreign token account",
+      "computeUnits": 27305,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6069))",
+      "policySeed": "143",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "discriminator suffix swapped past the c120 prefix",
+      "computeUnits": 27237,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6064))",
+      "policySeed": "143",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
       "case": "covered-lane control ONyc -> USDS",
-      "computeUnits": 38867,
+      "computeUnits": 43299,
       "constraintIndex": 0,
       "coveredLane": "OnRe/ONyc/USDS",
       "error": null,
@@ -605,7 +681,7 @@
     },
     {
       "case": "forbidden swap pair ONyc -> PYUSD (ONyc lane constraint)",
-      "computeUnits": 22560,
+      "computeUnits": 24521,
       "constraintIndex": 0,
       "coveredLane": null,
       "error": "InstructionError(0, Custom(6069))",
@@ -615,7 +691,7 @@
     },
     {
       "case": "forbidden swap pair ONyc -> PYUSD (syrupUSDC lane constraint)",
-      "computeUnits": 22508,
+      "computeUnits": 24469,
       "constraintIndex": 1,
       "coveredLane": null,
       "error": "InstructionError(0, Custom(6069))",
@@ -625,7 +701,7 @@
     },
     {
       "case": "non-vault authority",
-      "computeUnits": 20946,
+      "computeUnits": 22907,
       "constraintIndex": 0,
       "coveredLane": null,
       "error": "InstructionError(0, Custom(6069))",
@@ -634,8 +710,8 @@
       "result": "rejected"
     },
     {
-      "case": "Ethena lane not in catalog",
-      "computeUnits": 21008,
+      "case": "Ethena lane destination not in catalog",
+      "computeUnits": 23021,
       "constraintIndex": 0,
       "coveredLane": null,
       "error": "InstructionError(0, Custom(6069))",
@@ -731,7 +807,7 @@
       "syntheticAccounts": []
     },
     {
-      "computeUnits": 67262,
+      "computeUnits": 70036,
       "constraintIndex": 0,
       "error": null,
       "kind": "jupiter",
@@ -769,7 +845,7 @@
       ]
     },
     {
-      "computeUnits": 54490,
+      "computeUnits": 57264,
       "constraintIndex": 0,
       "error": null,
       "kind": "jupiter",
@@ -885,7 +961,7 @@
       "syntheticAccounts": []
     },
     {
-      "computeUnits": 47674,
+      "computeUnits": 50448,
       "constraintIndex": 1,
       "error": null,
       "kind": "jupiter",
@@ -909,7 +985,7 @@
       ]
     },
     {
-      "computeUnits": 67446,
+      "computeUnits": 70220,
       "constraintIndex": 1,
       "error": null,
       "kind": "jupiter",
@@ -1028,7 +1104,7 @@
       "syntheticAccounts": []
     },
     {
-      "computeUnits": 49880,
+      "computeUnits": 52654,
       "constraintIndex": 0,
       "error": null,
       "kind": "jupiter",
@@ -1056,7 +1132,7 @@
       ]
     },
     {
-      "computeUnits": 69273,
+      "computeUnits": 72047,
       "constraintIndex": 0,
       "error": null,
       "kind": "jupiter",

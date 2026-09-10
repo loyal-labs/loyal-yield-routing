@@ -49,6 +49,9 @@ const ONRE_OBLIGATION: &str = "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei";
 const MAPLE_OBLIGATION: &str = "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT";
 const LANE_OBLIGATIONS: [&str; 3] = [PRIME_OBLIGATION, MAPLE_OBLIGATION, ONRE_OBLIGATION];
 const ONYC_CUSTODY: &str = "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3";
+/// The approved OnRe ONyc collateral reserve: the passing control and every
+/// lending mutation below use it so only the mutated predicate can reject.
+const ONYC_COLLATERAL_RESERVE: &str = "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ";
 const USDC_CUSTODY: &str = "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe";
 const USDS_CUSTODY: &str = "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV";
 const PYUSD_CUSTODY: &str = "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn";
@@ -132,6 +135,26 @@ fn set_obligation(svm: &mut LiteSVM, address: Pubkey, owner_field: Pubkey) {
         },
     )
     .expect("seed obligation account");
+}
+
+/// Seeds a real SPL token account owned by somebody other than the vault, so a
+/// redirected platform-fee account is a plausible token destination that the
+/// policy still has to refuse.
+fn set_foreign_token_account(svm: &mut LiteSVM, address: Pubkey, owner: Pubkey, mint: Pubkey) {
+    let mut data = vec![0u8; 165];
+    data[0..32].copy_from_slice(mint.as_ref());
+    data[32..64].copy_from_slice(owner.as_ref());
+    svm.set_account(
+        address,
+        Account {
+            lamports: 1_000_000,
+            data,
+            owner: key(TOKEN),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .expect("seed foreign token account");
 }
 
 // Protocol programs are not replayed here: every instruction is accepted so a
@@ -354,6 +377,48 @@ fn protocol_invoke_observed(logs: &[String], protocol: &str) -> bool {
         .any(|log| log.contains(protocol) && log.contains("invoke [2]"))
 }
 
+/// Lifts one exported Go Jupiter leg into the inner-instruction shape the Squads
+/// execute probe takes: the exported account list verbatim, plus the Jupiter
+/// program account appended last for the execute wrapper. The leg's
+/// `accountsToLoad` are seeded first so the control runs on the same state the
+/// positive legs use.
+fn go_jupiter_leg(
+    svm: &mut LiteSVM,
+    messages: &[Value],
+    lane: &str,
+    leg: &str,
+) -> (Vec<AccountMeta>, Vec<u8>) {
+    let entry = messages
+        .iter()
+        .find(|entry| entry["lane"] == lane && entry["leg"] == leg && entry["kind"] == "jupiter")
+        .unwrap_or_else(|| panic!("Go export carries the {lane} {leg} Jupiter leg"));
+    let inner = entry["instructions"]
+        .as_array()
+        .expect("exported instruction list")
+        .last()
+        .expect("export carries an inner instruction");
+    let program = key(inner["programId"].as_str().expect("inner program id"));
+    assert_eq!(program, key(JUPITER), "{lane} {leg} inner program is Jupiter");
+    load_message_accounts(svm, &export_addresses(entry));
+    let accounts = inner["accounts"]
+        .as_array()
+        .expect("inner account list")
+        .iter()
+        .map(|account| AccountMeta {
+            pubkey: key(account["pubkey"].as_str().expect("inner account pubkey")),
+            is_signer: account["isSigner"].as_bool().expect("inner signer flag"),
+            is_writable: account["isWritable"]
+                .as_bool()
+                .expect("inner writable flag"),
+        })
+        .chain(std::iter::once(AccountMeta::new_readonly(program, false)))
+        .collect::<Vec<_>>();
+    let data = STANDARD
+        .decode(inner["dataBase64"].as_str().expect("inner data base64"))
+        .expect("inner data is base64");
+    (accounts, data)
+}
+
 fn referenced_obligation(accounts_to_load: &[String], label: &str) -> Pubkey {
     let obligations: Vec<Pubkey> = LANE_OBLIGATIONS.iter().map(|address| key(address)).collect();
     let referenced: Vec<Pubkey> = accounts_to_load
@@ -463,6 +528,7 @@ fn seed_negative_accounts(svm: &mut LiteSVM) {
         key(USDC_CUSTODY),
         key(USDS_CUSTODY),
         key(PYUSD_CUSTODY),
+        key(ONYC_COLLATERAL_RESERVE),
         key("DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"),
         key("CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"),
     ] {
@@ -471,7 +537,15 @@ fn seed_negative_accounts(svm: &mut LiteSVM) {
     set_obligation(svm, key(ONRE_OBLIGATION), key(VAULT));
     set_obligation(svm, key(MAPLE_OBLIGATION), key(VAULT));
     set_obligation(svm, filler(241), key(VAULT));
-    set_obligation(svm, filler(242), filler(242));
+    // A KLend-owned obligation whose collateral belongs to a stranger, so only
+    // the obligation-owned-by-vault predicate differs from the control.
+    set_obligation(svm, filler(242), filler(249));
+    set_foreign_token_account(
+        svm,
+        filler(245),
+        filler(246),
+        key("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+    );
 }
 
 fn lending_accounts(obligation: Pubkey, reserve: Pubkey, custody: Pubkey) -> Vec<AccountMeta> {
@@ -497,6 +571,9 @@ fn lending_accounts(obligation: Pubkey, reserve: Pubkey, custody: Pubkey) -> Vec
 }
 
 fn swap_accounts(source: Pubkey, destination: Pubkey, authority: Pubkey) -> Vec<AccountMeta> {
+    // Index 9 is the legacy platform-fee sentinel the swap policies pin, and the
+    // deployed program indexes the message by constraint position, so the probe
+    // has to carry an account at every pinned index.
     [
         filler(20),
         filler(21),
@@ -505,6 +582,9 @@ fn swap_accounts(source: Pubkey, destination: Pubkey, authority: Pubkey) -> Vec<
         filler(22),
         filler(23),
         destination,
+        filler(24),
+        filler(25),
+        key(JUPITER),
     ]
     .into_iter()
     .map(|address| AccountMeta::new(address, false))
@@ -725,18 +805,59 @@ fn backyard_basic_policy_set() {
     }
 
     seed_negative_accounts(&mut svm);
-    let valid_reserve = filler(30);
-    let valid_custody = key(ONYC_CUSTODY);
+    // The passing deposit control: real approved reserve, real custody, real
+    // discriminator, obligation owned by the vault. Every synthetic mutation on
+    // this policy differs from it by exactly one predicate, so a rejection
+    // names the predicate it claims to test.
+    let approved_reserve = key(ONYC_COLLATERAL_RESERVE);
+    let approved_custody = key(ONYC_CUSTODY);
+    let approved_discriminator = vec![216, 224, 191, 27, 204, 151, 102, 175];
     let foreign_obligation = filler(242);
     let foreign_reserve = filler(243);
     let foreign_custody = filler(244);
+    let foreign_fee_account = filler(245);
+    let approved_swap_discriminator = loyal_actions::EARN_MAX_SHARED_ACCOUNTS_ROUTE.to_vec();
+
+    // The real Go USDC -> ONyc message, lifted verbatim, is the passing swap
+    // control; both Jupiter mutations below flip exactly one predicate of it.
+    let (real_swap_accounts, real_swap_data) =
+        go_jupiter_leg(&mut svm, &go_messages, "OnRe/ONyc/USDC", "USDC->ONyc");
+    assert_eq!(
+        real_swap_data[0..2],
+        [0xc1, 0x20],
+        "swap control keeps the c120 prefix"
+    );
+    assert_eq!(
+        real_swap_accounts[9].pubkey,
+        key(JUPITER),
+        "swap control carries the Jupiter platform-fee sentinel at account 9"
+    );
+    let mut fee_redirected_accounts = real_swap_accounts.clone();
+    fee_redirected_accounts[9] = AccountMeta::new_readonly(foreign_fee_account, false);
+    let mut swapped_discriminator_suffix = real_swap_data.clone();
+    swapped_discriminator_suffix[4] ^= 0xff;
+    assert_eq!(
+        swapped_discriminator_suffix[0..2],
+        real_swap_data[0..2],
+        "discriminator mutation keeps the c120 prefix the previous rule pinned"
+    );
+
     let negative_cases = [
         (
-            "foreign obligation",
+            "passing deposit control: OnRe ONyc lane with the approved reserve",
             key(POLICY_PDA[0]),
             0,
-            lending_accounts(foreign_obligation, valid_reserve, valid_custody),
-            vec![216, 224, 191, 27, 204, 151, 102, 175],
+            lending_accounts(key(ONRE_OBLIGATION), approved_reserve, approved_custody),
+            approved_discriminator.clone(),
+            KLEND,
+            Some("OnRe/ONyc collateral deposit"),
+        ),
+        (
+            "foreign obligation owner",
+            key(POLICY_PDA[0]),
+            0,
+            lending_accounts(foreign_obligation, approved_reserve, approved_custody),
+            approved_discriminator.clone(),
             KLEND,
             None,
         ),
@@ -744,8 +865,8 @@ fn backyard_basic_policy_set() {
             "foreign reserve",
             key(POLICY_PDA[0]),
             0,
-            lending_accounts(key(ONRE_OBLIGATION), foreign_reserve, valid_custody),
-            vec![216, 224, 191, 27, 204, 151, 102, 175],
+            lending_accounts(key(ONRE_OBLIGATION), foreign_reserve, approved_custody),
+            approved_discriminator.clone(),
             KLEND,
             None,
         ),
@@ -753,8 +874,8 @@ fn backyard_basic_policy_set() {
             "foreign custody",
             key(POLICY_PDA[0]),
             0,
-            lending_accounts(key(ONRE_OBLIGATION), valid_reserve, foreign_custody),
-            vec![216, 224, 191, 27, 204, 151, 102, 175],
+            lending_accounts(key(ONRE_OBLIGATION), approved_reserve, foreign_custody),
+            approved_discriminator.clone(),
             KLEND,
             None,
         ),
@@ -762,9 +883,36 @@ fn backyard_basic_policy_set() {
             "wrong discriminator",
             key(POLICY_PDA[0]),
             0,
-            lending_accounts(key(ONRE_OBLIGATION), valid_reserve, valid_custody),
+            lending_accounts(key(ONRE_OBLIGATION), approved_reserve, approved_custody),
             vec![0, 224, 191, 27, 204, 151, 102, 175],
             KLEND,
+            None,
+        ),
+        (
+            "passing swap control: real Go USDC -> ONyc message on seed 143",
+            key(POLICY_PDA[2]),
+            0,
+            real_swap_accounts.clone(),
+            real_swap_data.clone(),
+            JUPITER,
+            Some("OnRe/ONyc/USDC USDC->ONyc"),
+        ),
+        (
+            "platform fee account 9 moved to a foreign token account",
+            key(POLICY_PDA[2]),
+            0,
+            fee_redirected_accounts,
+            real_swap_data.clone(),
+            JUPITER,
+            None,
+        ),
+        (
+            "discriminator suffix swapped past the c120 prefix",
+            key(POLICY_PDA[2]),
+            0,
+            real_swap_accounts.clone(),
+            swapped_discriminator_suffix,
+            JUPITER,
             None,
         ),
         (
@@ -772,7 +920,7 @@ fn backyard_basic_policy_set() {
             key(POLICY_PDA[3]),
             0,
             swap_accounts(key(ONYC_CUSTODY), key(USDS_CUSTODY), key(VAULT)),
-            vec![193, 32, 0],
+            approved_swap_discriminator.clone(),
             JUPITER,
             Some("OnRe/ONyc/USDS"),
         ),
@@ -781,7 +929,7 @@ fn backyard_basic_policy_set() {
             key(POLICY_PDA[3]),
             0,
             swap_accounts(key(ONYC_CUSTODY), key(PYUSD_CUSTODY), key(VAULT)),
-            vec![193, 32, 0],
+            approved_swap_discriminator.clone(),
             JUPITER,
             None,
         ),
@@ -790,7 +938,7 @@ fn backyard_basic_policy_set() {
             key(POLICY_PDA[3]),
             1,
             swap_accounts(key(ONYC_CUSTODY), key(PYUSD_CUSTODY), key(VAULT)),
-            vec![193, 32, 0],
+            approved_swap_discriminator.clone(),
             JUPITER,
             None,
         ),
@@ -799,16 +947,16 @@ fn backyard_basic_policy_set() {
             key(POLICY_PDA[2]),
             0,
             swap_accounts(key(USDC_CUSTODY), key(ONYC_CUSTODY), key(AUTHORITY)),
-            vec![193, 32, 0],
+            approved_swap_discriminator.clone(),
             JUPITER,
             None,
         ),
         (
-            "Ethena lane not in catalog",
+            "Ethena lane destination not in catalog",
             key(POLICY_PDA[2]),
             0,
-            swap_accounts(filler(246), filler(247), key(VAULT)),
-            vec![193, 32, 0],
+            swap_accounts(key(USDC_CUSTODY), filler(247), key(VAULT)),
+            approved_swap_discriminator,
             JUPITER,
             None,
         ),
