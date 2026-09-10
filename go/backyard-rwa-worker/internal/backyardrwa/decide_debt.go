@@ -151,6 +151,12 @@ func decideNonUSDC(s Snapshot) Decision {
 		}
 		return d(ReportNAV, "nav_due", 0)
 	}
+	// Same prerequisite as the fixed lane: a deposit into a missing obligation
+	// is refused, so no allocation, swap, or deposit is constructed. Reports and
+	// withdrawal legs above stay live.
+	if hold, absent := obligationPrerequisiteHold(s); absent {
+		return hold
+	}
 	if !s.PolicyReady || !s.ExitBuildable {
 		return d(Hold, "policy_or_exit_not_ready", 0)
 	}

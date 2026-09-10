@@ -76,13 +76,21 @@ type Snapshot struct {
 	DebtIdleRaw int64
 	// PayoffDebtRaw includes the current finite interest window for non-USDC
 	// debt. Observation and final-send validation independently recompute it.
-	PayoffDebtRaw              int64
-	RouteLane                  string
-	StrategyKey                string
-	CutoverDrain               bool
-	VoltrStrategyIdleRaw       int64
-	VoltrIdleRaw               int64
-	HasPosition                bool
+	PayoffDebtRaw        int64
+	RouteLane            string
+	StrategyKey          string
+	CutoverDrain         bool
+	VoltrStrategyIdleRaw int64
+	VoltrIdleRaw         int64
+	HasPosition          bool
+	// ObligationPresent is the observed existence of the lane's Kamino
+	// obligation account, and ObligationPresenceKnown is set only by the
+	// production observe path, so hand-built unit snapshots keep their existing
+	// decisions. A missing obligation cannot receive a deposit: entry planning
+	// holds on it instead of allocating or swapping collateral into a deposit
+	// Kamino would refuse.
+	ObligationPresent          bool
+	ObligationPresenceKnown    bool
 	PositionCollateralRaw      int64
 	PositionDebtRaw            int64
 	PositionCollateralValueRaw int64

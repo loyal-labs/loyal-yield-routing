@@ -136,6 +136,24 @@ func Decide(s Snapshot) Decision {
 	return decision
 }
 
+// obligationAbsentHoldReason marks an observed prerequisite, never a policy
+// failure and never unexplained NAV drift: the lane's Kamino obligation account
+// does not exist, so Kamino refuses the deposit entry planning would fund. It
+// is a plain hold that clears by itself once the account exists.
+const obligationAbsentHoldReason = "obligation_absent"
+
+func obligationPrerequisiteHold(s Snapshot) (Decision, bool) {
+	if !s.ObligationPresenceKnown || s.ObligationPresent {
+		return Decision{}, false
+	}
+	strategyKey := s.RouteLane
+	if strategyKey == "" {
+		strategyKey = RouteID
+	}
+	return Decision{Action: Hold, Reason: obligationAbsentHoldReason, AmountRaw: 0, StrategyKey: strategyKey,
+		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, obligationAbsentHoldReason, 0)}, true
+}
+
 func decideFixed(s Snapshot) Decision {
 	decision := func(action Action, reason string, amount int64) Decision {
 		return Decision{
@@ -261,6 +279,13 @@ func decideFixed(s Snapshot) Decision {
 			return hold
 		}
 		return decision(ReportNAV, "nav_due", 0)
+	}
+	// Entry planning funds a Kamino deposit. Without the obligation account that
+	// deposit is refused and the funded capital strands in custody, so no
+	// allocation, swap, or deposit is constructed. Withdrawal and reporting legs
+	// above stay live.
+	if hold, absent := obligationPrerequisiteHold(s); absent {
+		return hold
 	}
 	if s.VoltrIdleRaw > 0 {
 		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", s.VoltrIdleRaw)
