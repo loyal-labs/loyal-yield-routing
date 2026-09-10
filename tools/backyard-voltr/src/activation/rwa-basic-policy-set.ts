@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -15,6 +15,7 @@ export const BASIC_POLICY_ARTIFACT = resolve(ROOT, "docs/evidence/backyard-rwa-b
 export const BASIC_POLICY_SIMULATION = resolve(ROOT, "docs/evidence/backyard-rwa-basic/policy-simulation-v1.json");
 export const BASIC_POLICY_JOURNAL = resolve(ROOT, "docs/evidence/backyard-rwa-basic/policy-install-journal-v1.json");
 export const BASIC_POLICY_READBACK = resolve(ROOT, "docs/evidence/backyard-rwa-basic/policy-install-readback-v1.json");
+export const BASIC_POLICY_INSTALL_LOCK = resolve(ROOT, "docs/evidence/backyard-rwa-basic/policy-install.lock");
 export const POLICY_SEED_BEFORE = "140";
 export const POLICY_SEEDS = ["141", "142", "143", "144"] as const;
 export const PACKET_LIMIT = 1_232;
@@ -218,7 +219,7 @@ function validateReconciliations(value: unknown): void {
   }
 }
 
-export function validateInstallJournal(value: unknown): void {
+export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArtifact): void {
   const journal = object(value, "basic policy install journal");
   invariant(journal.schema === "loyal-backyard-rwa-basic-policy-install-journal/v1", "basic policy install journal schema drifted");
   invariant(journal.broadcast === true && Array.isArray(journal.legs), "basic policy install journal broadcast or legs drifted");
@@ -228,27 +229,31 @@ export function validateInstallJournal(value: unknown): void {
   let priorSeed = 140n;
   let priorState: string | null = null;
   for (const [index, rawLeg] of journal.legs.entries()) {
-    const leg = object(rawLeg, `basic policy install journal leg ${index}`);
-    const seed = stringField(leg, "seed", `basic policy install journal leg ${index}`);
-    invariant(POLICY_SEEDS.includes(seed as typeof POLICY_SEEDS[number]), `basic policy install journal leg ${index} is not a basic policy seed`);
+    const label = `basic policy install journal leg ${index}`;
+    const leg = object(rawLeg, label);
+    const seed = stringField(leg, "seed", label);
+    invariant(POLICY_SEEDS.includes(seed as typeof POLICY_SEEDS[number]), `${label} is not a basic policy seed`);
+    invariant(leg.account === derivePolicyAddress(RWA_MULTIPLY_ROUTE.squads.settings, seed), `basic policy install journal leg ${seed} PDA drifted`);
+    if (artifact !== undefined) invariant(leg.family === artifactPolicy(artifact, seed).family, `basic policy install journal leg ${seed} family drifted`);
     const seedValue = BigInt(seed);
-    const state = stringField(leg, "state", `basic policy install journal leg ${index}`);
+    const state = stringField(leg, "state", label);
     invariant(state === "planned" || state === "finalized" || state === "blocked" || state === "abandoned",
       `basic policy install journal leg ${seed} state drifted`);
     const retry = priorState === "abandoned" && seedValue === priorSeed;
-    invariant(retry || seedValue === priorSeed + 1n, `basic policy install journal leg ${index} is not the next policy seed or an abandoned-seed retry`);
+    invariant(retry || seedValue === priorSeed + 1n, `${label} is not the next policy seed or an abandoned-seed retry`);
     invariant(!retry || state === "planned" || state === "finalized",
       `basic policy install journal leg ${seed} retry after an abandoned leg must be planned or finalized`);
-    const wireSha256 = stringField(leg, "wireSha256", `basic policy install journal leg ${index}`);
+    const wireSha256 = stringField(leg, "wireSha256", label);
     invariant(/^[0-9a-f]{64}$/.test(wireSha256), `basic policy install journal leg ${seed} wire hash is invalid`);
-    stringField(leg, "blockhash", `basic policy install journal leg ${index}`);
+    stringField(leg, "blockhash", label);
     const lastValidBlockHeight = leg.lastValidBlockHeight;
     invariant(typeof lastValidBlockHeight === "number" && Number.isSafeInteger(lastValidBlockHeight),
       `basic policy install journal leg ${seed} block height is invalid`);
     const packetBytes = leg.packetBytes;
     invariant(typeof packetBytes === "number" && Number.isSafeInteger(packetBytes) && packetBytes > 0 && packetBytes <= PACKET_LIMIT,
       `basic policy install journal leg ${seed} packet size is invalid`);
-    stringField(leg, "signature", `basic policy install journal leg ${index}`);
+    const signature = stringField(leg, "signature", label);
+    invariant(/^[1-9A-HJ-NP-Za-km-z]{32,128}$/.test(signature), `basic policy install journal leg ${seed} signature is not base58`);
     const preSendSimulation = object(leg.preSendSimulation, `basic policy install journal leg ${seed} pre-send simulation`);
     const simulationSlot = preSendSimulation.contextSlot;
     invariant((typeof simulationSlot === "number" && Number.isSafeInteger(simulationSlot)) || simulationSlot === null,
@@ -256,19 +261,45 @@ export function validateInstallJournal(value: unknown): void {
     const simulationUnits = preSendSimulation.unitsConsumed;
     invariant((typeof simulationUnits === "number" && Number.isFinite(simulationUnits) && simulationUnits >= 0) || simulationUnits === null,
       `basic policy install journal leg ${seed} simulation units are invalid`);
+    if (state === "planned") {
+      invariant(preSendSimulation.err === null && preSendSimulation.err !== undefined,
+        `basic policy install journal leg ${seed} is planned without a passing pre-send simulation`);
+    } else if (state === "blocked") {
+      invariant(preSendSimulation.err !== null, `basic policy install journal leg ${seed} is blocked without a pre-send simulation error`);
+    } else if (state === "abandoned") {
+      stringField(leg, "abandonReason", label);
+    } else {
+      const readback = object(leg.readback, `basic policy install journal leg ${seed} readback`);
+      const finalizedSlot = readback.finalizedSlot;
+      invariant(typeof finalizedSlot === "number" && Number.isSafeInteger(finalizedSlot),
+        `basic policy install journal leg ${seed} readback slot is invalid`);
+    }
     priorSeed = seedValue;
     priorState = state;
   }
 }
 
-async function finalizedSettings(connection: Connection): Promise<{ seed: string; contextSlot: number }> {
+/**
+ * Read-only chain surface used by reconcile. It deliberately exposes no send
+ * method: reconcile can only read, journal, and decide.
+ */
+export type ReconcileConnection = Pick<Connection,
+  "getAccountInfo" |
+  "getAccountInfoAndContext" |
+  "getMultipleAccountsInfoAndContext" |
+  "getSignatureStatuses" |
+  "isBlockhashValid" |
+  "simulateTransaction" |
+  "getLatestBlockhashAndContext">;
+
+async function finalizedSettings(connection: ReconcileConnection): Promise<{ seed: string; contextSlot: number }> {
   const response = await connection.getAccountInfoAndContext(new PublicKey(RWA_MULTIPLY_ROUTE.squads.settings), "finalized");
   invariant(response.value?.owner.toBase58() === RWA_MULTIPLY_ROUTE.squads.program, "finalized Settings account is absent or has wrong owner");
   const settings = Settings.fromAccountInfo(response.value)[0];
   return { seed: settings.policySeed?.toString() ?? "0", contextSlot: response.context.slot };
 }
 
-async function readFinalizedPolicyPresence(connection: Connection, artifact: BasicPolicyArtifact): Promise<{ contextSlot: number; present: ReadonlyMap<string, boolean> }> {
+async function readFinalizedPolicyPresence(connection: ReconcileConnection, artifact: BasicPolicyArtifact): Promise<{ contextSlot: number; present: ReadonlyMap<string, boolean> }> {
   const response = await connection.getMultipleAccountsInfoAndContext(
     artifact.policies.map((policy) => new PublicKey(policy.account)),
     { commitment: "finalized" },
@@ -278,7 +309,7 @@ async function readFinalizedPolicyPresence(connection: Connection, artifact: Bas
   return { contextSlot: response.context.slot, present };
 }
 
-async function finalizedPolicyPresence(connection: Connection, artifact: BasicPolicyArtifact): Promise<{ contextSlot: number; exists: readonly boolean[] }> {
+async function finalizedPolicyPresence(connection: ReconcileConnection, artifact: BasicPolicyArtifact): Promise<{ contextSlot: number; exists: readonly boolean[] }> {
   const presence = await readFinalizedPolicyPresence(connection, artifact);
   invariant([...presence.present.values()].every((exists) => !exists), "one or more basic policy PDAs already exist at finalized commitment");
   return { contextSlot: presence.contextSlot, exists: artifact.policies.map((policy) => presence.present.get(policy.seed) === true) };
@@ -316,6 +347,12 @@ export function classifyJournalDrift(input: Readonly<{
 
 export type ReconcileAction = "verify-finalized" | "promote-finalized" | "abandon-and-retry" | "refuse";
 
+export type UnsentLegEvidence = Readonly<{
+  signatureStatus: "landed" | "failed" | "unknown";
+  blockhashValid: boolean | null;
+  statusSlot: number | null;
+}>;
+
 export type ReconcileLegDecision = Readonly<{
   action: ReconcileAction;
   reason: string;
@@ -327,15 +364,16 @@ export type ReconcileLegDecision = Readonly<{
  *
  * The live settings policy seed is the seed of the last installed policy, so
  * the seed this chain will accept next is `livePolicySeed + 1`. A leg whose
- * PDA is absent is only retryable from its own seed while that seed is still
- * exactly the next one; anything else means the seed moved without this
- * journal and needs manual review.
+ * PDA is absent is only retryable once its recorded signature provably failed
+ * on chain or its blockhash has expired; anything else means the wire may
+ * still land, or the seed moved without this journal, and needs manual review.
  */
 export function classifyJournalLeg(input: Readonly<{
   state: string;
   seed: string;
   livePolicySeed: string;
   pdaPresent: boolean;
+  evidence?: UnsentLegEvidence;
 }>): ReconcileLegDecision {
   const nextInstallSeed = BigInt(input.livePolicySeed) + 1n;
   const legSeed = BigInt(input.seed);
@@ -350,17 +388,23 @@ export function classifyJournalLeg(input: Readonly<{
       if (input.state === "blocked") return refuse(`basic policy ${input.seed} is blocked and was never sent, yet its PDA exists`);
       return { action: "promote-finalized", reason: `basic policy ${input.seed} planned leg PDA is present on chain`, resimulate: false };
     }
-    if (nextInstallSeed === legSeed) {
-      return {
-        action: "abandon-and-retry",
-        reason: input.state === "blocked"
-          ? `basic policy ${input.seed} blocked leg was never sent; re-simulate before retrying from this seed`
-          : `basic policy ${input.seed} planned leg never landed; retrying from this seed`,
-        resimulate: input.state === "blocked",
-      };
+    if (nextInstallSeed !== legSeed) {
+      if (nextInstallSeed > legSeed) return refuse(`basic policy ${input.seed} PDA is absent but the live policy seed ${input.livePolicySeed} is already beyond it; manual review required`);
+      return refuse(`basic policy ${input.seed} PDA is absent and the live policy seed ${input.livePolicySeed} is behind it; the journal is ahead of the chain`);
     }
-    if (nextInstallSeed > legSeed) return refuse(`basic policy ${input.seed} PDA is absent but the live policy seed ${input.livePolicySeed} is already beyond it; manual review required`);
-    return refuse(`basic policy ${input.seed} PDA is absent and the live policy seed ${input.livePolicySeed} is behind it; the journal is ahead of the chain`);
+    const evidence = input.evidence;
+    if (evidence === undefined) return refuse(`basic policy ${input.seed} has no signature or blockhash evidence; refusing to force past an unknown leg`);
+    if (evidence.signatureStatus === "landed") return refuse(`basic policy ${input.seed} signature landed but its PDA is absent at finalized commitment; manual review required`);
+    if (evidence.signatureStatus === "unknown" && evidence.blockhashValid !== false) {
+      return refuse(`leg ${input.seed} may still land; re-run reconcile after the blockhash expires`);
+    }
+    return {
+      action: "abandon-and-retry",
+      reason: evidence.signatureStatus === "failed"
+        ? `basic policy ${input.seed} failed on chain; retrying from this seed`
+        : `basic policy ${input.seed} never landed and its blockhash expired; retrying from this seed`,
+      resimulate: input.state === "blocked",
+    };
   }
   return refuse(`basic policy install journal leg ${input.seed} has unreconcilable state ${input.state}`);
 }
@@ -370,7 +414,7 @@ function simulationError(error: unknown): string {
 }
 
 async function simulatePolicy(
-  connection: Connection,
+  connection: ReconcileConnection,
   policy: BasicPolicyRow,
   blockhash: string,
 ): Promise<PolicySimulationRow> {
@@ -436,7 +480,40 @@ async function simulate(rpc: string, artifact: BasicPolicyArtifact): Promise<Jso
   };
 }
 
-async function finalizedPolicyReadback(connection: Connection, policy: BasicPolicyRow): Promise<{ seed: string; account: string; dataSha256: string; finalizedSlot: number }> {
+type ConstraintBeet = {
+  toFixedFromData(data: Buffer, offset: number): { read(data: Buffer, offset: number): unknown; byteSize: number };
+  toFixedFromValue(value: unknown): { write(buffer: Buffer, offset: number, value: unknown): void; byteSize: number };
+};
+
+const instructionConstraintBeet = (squadsGenerated as unknown as { instructionConstraintBeet: ConstraintBeet }).instructionConstraintBeet;
+
+/**
+ * Byte-exact payload identity. The on-chain constraints are re-encoded with the
+ * generated codec and must appear verbatim, exactly once, inside the artifact
+ * instruction data. Since parseArtifact pins sha256 of those bytes to
+ * `dataSha256`, containment proves the on-chain program ids, account
+ * conditions, and data conditions are exactly the ones the artifact hashed.
+ */
+export function assertPolicyPayloadMatchesArtifact(policy: BasicPolicyRow, constraints: readonly unknown[]): void {
+  const expected = decodeData(policy.instruction.dataBase64, `basic policy ${policy.seed} instruction data`);
+  invariant(sha256(expected) === policy.dataSha256, `basic policy ${policy.seed} instruction data hash drifted`);
+  const chunks: Buffer[] = [];
+  let length = 0;
+  for (const constraint of constraints) {
+    const fixed = instructionConstraintBeet.toFixedFromValue(constraint);
+    const chunk = Buffer.alloc(fixed.byteSize);
+    fixed.write(chunk, 0, constraint);
+    chunks.push(chunk);
+    length += chunk.byteLength;
+  }
+  const encoded = Buffer.concat(chunks, length);
+  invariant(encoded.length > 0, `policy ${policy.seed} readback has no constraints to verify`);
+  const first = expected.indexOf(encoded);
+  invariant(first >= 0 && expected.lastIndexOf(encoded) === first, `policy ${policy.seed} on-chain constraints do not match the artifact payload`);
+}
+
+async function finalizedPolicyReadback(connection: ReconcileConnection, artifact: BasicPolicyArtifact, seed: string): Promise<{ seed: string; account: string; dataSha256: string; finalizedSlot: number }> {
+  const policy = artifactPolicy(artifact, seed);
   const response = await connection.getAccountInfoAndContext(new PublicKey(policy.account), "finalized");
   invariant(response.value?.owner.toBase58() === RWA_MULTIPLY_ROUTE.squads.program, `policy ${policy.seed} readback is absent or has wrong owner`);
   const decoded = Policy.fromAccountInfo(response.value)[0];
@@ -447,6 +524,7 @@ async function finalizedPolicyReadback(connection: Connection, policy: BasicPoli
   const body = object(decoded.policyState.fields?.[0], `policy ${policy.seed} readback state`);
   invariant(Array.isArray(body.instructionsConstraints) && body.instructionsConstraints.length === policy.constraints.length,
     `policy ${policy.seed} readback constraint count drifted`);
+  assertPolicyPayloadMatchesArtifact(policy, body.instructionsConstraints);
   return { seed: policy.seed, account: policy.account, dataSha256: sha256(response.value.data), finalizedSlot: response.context.slot };
 }
 
@@ -463,9 +541,9 @@ function artifactPolicy(artifact: BasicPolicyArtifact, seed: string): BasicPolic
   return policy;
 }
 
-function loadInstallJournal(): JsonObject {
+function loadInstallJournal(artifact: BasicPolicyArtifact): JsonObject {
   const journal = object(JSON.parse(readFileSync(BASIC_POLICY_JOURNAL, "utf8")) as unknown, "basic policy install journal");
-  validateInstallJournal(journal);
+  validateInstallJournal(journal, artifact);
   return journal;
 }
 
@@ -513,7 +591,7 @@ async function installSeedLeg(runtime: InstallRuntime, policy: BasicPolicyRow): 
   };
   if (preSendSimulation.err !== null) leg.state = "blocked";
   (journal.legs as JsonObject[]).push(leg);
-  validateInstallJournal(journal);
+  validateInstallJournal(journal, runtime.artifact);
   atomic(BASIC_POLICY_JOURNAL, journal);
   invariant(preSendSimulation.err === null, `policy ${policy.seed} pre-send simulation failed`);
   const returned = await connection.sendRawTransaction(wire, { skipPreflight: false, preflightCommitment: "finalized", maxRetries: 0, minContextSlot: latest.context.slot });
@@ -522,9 +600,9 @@ async function installSeedLeg(runtime: InstallRuntime, policy: BasicPolicyRow): 
   invariant(confirmation.value.err === null, `policy ${policy.seed} finalized with an error`);
   const status = (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
   invariant(status?.err === null && status.confirmationStatus === "finalized", `policy ${policy.seed} did not reach finalized status`);
-  const readback = await finalizedPolicyReadback(connection, policy);
+  const readback = await finalizedPolicyReadback(connection, runtime.artifact, policy.seed);
   Object.assign(leg, { state: "finalized", finalizedSlot: status.slot, readback });
-  validateInstallJournal(journal);
+  validateInstallJournal(journal, runtime.artifact);
   atomic(BASIC_POLICY_JOURNAL, journal);
   return readback;
 }
@@ -538,27 +616,89 @@ async function installSeeds(runtime: InstallRuntime, seeds: readonly string[]): 
 }
 
 /**
- * Reconcile an existing journal against finalized chain state before any
- * resume: every leg is classified from the live policy seed and its PDA
- * presence, the journal records the verdicts, and only then are the seeds that
- * still need installing handed back.
+ * One process per run. The lock is created exclusively before any
+ * classification or journal write, so a second installer (or a second
+ * reconcile of the same journal) refuses instead of racing the first.
  */
-async function reconcileJournal(runtime: InstallRuntime): Promise<Readonly<{ readbacks: Map<string, JsonObject>; pendingSeeds: readonly string[] }>> {
-  const { connection, artifact, journal } = runtime;
+export function acquireInstallLock(path: string = BASIC_POLICY_INSTALL_LOCK, now: () => string = (): string => new Date().toISOString()): void {
+  try {
+    writeFileSync(path, `${JSON.stringify({ pid: process.pid, startedAt: now() })}\n`, { flag: "wx", mode: 0o600 });
+  } catch {
+    throw new Error(`basic policy install lock already exists at ${path}; another install process is active`);
+  }
+  chmodSync(path, 0o600);
+}
+
+export function releaseInstallLock(path: string = BASIC_POLICY_INSTALL_LOCK): void {
+  rmSync(path, { force: true });
+}
+
+/** The first journal is created, never overwritten: an existing journal is a resume. */
+function createInstallJournalFile(journal: JsonObject): void {
+  writeFileSync(BASIC_POLICY_JOURNAL, `${JSON.stringify(journal, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  chmodSync(BASIC_POLICY_JOURNAL, 0o600);
+}
+
+/**
+ * Resolve whether an unsent leg's recorded wire can still land: a confirmed or
+ * finalized signature means it did land, an on-chain error means it cannot,
+ * and an unknown signature is only safe to abandon once its blockhash has
+ * expired.
+ */
+async function resolveUnsentLegEvidence(connection: ReconcileConnection, seed: string, leg: JsonObject): Promise<UnsentLegEvidence> {
+  const signature = stringField(leg, "signature", "basic policy install journal leg");
+  const status = (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
+  if (status && status.err === null && (status.confirmationStatus === "finalized" || status.confirmationStatus === "confirmed")) {
+    return { signatureStatus: "landed", blockhashValid: null, statusSlot: status.slot };
+  }
+  if (status && status.err !== null) return { signatureStatus: "failed", blockhashValid: null, statusSlot: status.slot };
+  const blockhash = stringField(leg, "blockhash", "basic policy install journal leg");
+  const validity = await connection.isBlockhashValid(blockhash, { commitment: "finalized" });
+  return { signatureStatus: "unknown", blockhashValid: validity.value === true, statusSlot: null };
+}
+
+export type ReconcileOutcome = Readonly<{
+  status: "reconciled" | "refused";
+  reason: string | null;
+  readbacks: ReadonlyMap<string, JsonObject>;
+  pendingSeeds: readonly string[];
+  /** Null only when the journal is refused before any chain state is read. */
+  reconciliation: JsonObject | null;
+}>;
+
+/**
+ * Reconcile an existing journal against finalized chain state before any
+ * resume: every leg is classified from the live policy seed, its PDA presence,
+ * and its signature/blockhash evidence, the journal legs are updated in place,
+ * and the seeds that still need installing are handed back. This reads and
+ * journals only; it never sends, and it refuses rather than force past a leg
+ * whose on-chain state is unknown.
+ */
+export async function reconcileInstallJournal(input: Readonly<{
+  connection: ReconcileConnection;
+  artifact: BasicPolicyArtifact;
+  journal: JsonObject;
+  artifactSha256: string;
+  now?: () => string;
+}>): Promise<ReconcileOutcome> {
+  const { connection, artifact, journal } = input;
   const drift = classifyJournalDrift({
     journalArtifactSha256: journal.artifactSha256,
     journalSettings: journal.settings,
     journalAuthority: journal.authority,
-    artifactSha256: sha256(readFileSync(BASIC_POLICY_ARTIFACT)),
+    artifactSha256: input.artifactSha256,
     settings: artifact.settings,
     authority: artifact.authority,
   });
-  invariant(drift === "match", "basic policy install journal drifted from the current artifact; refusing to resume");
+  if (drift !== "match") {
+    const reason = "basic policy install journal drifted from the current artifact; refusing to resume";
+    return { status: "refused", reason, readbacks: new Map(), pendingSeeds: [], reconciliation: null };
+  }
   const live = await finalizedSettings(connection);
   const presence = await readFinalizedPolicyPresence(connection, artifact);
+  const context = { at: (input.now ?? ((): string => new Date().toISOString()))(), finalizedSlot: Math.max(live.contextSlot, presence.contextSlot), livePolicySeed: live.seed };
   const readbacks = new Map<string, JsonObject>();
   const verdicts: JsonObject[] = [];
-  let refusal: string | null = null;
   for (const rawLeg of journal.legs as JsonObject[]) {
     const seed = stringField(rawLeg, "seed", "basic policy install journal leg");
     const state = stringField(rawLeg, "state", "basic policy install journal leg");
@@ -566,16 +706,36 @@ async function reconcileJournal(runtime: InstallRuntime): Promise<Readonly<{ rea
       verdicts.push({ seed, recordedState: state, verdict: "skipped" });
       continue;
     }
-    const decision = classifyJournalLeg({ state, seed, livePolicySeed: live.seed, pdaPresent: presence.present.get(seed) === true });
+    let pdaPresent = presence.present.get(seed) === true;
+    let evidence: UnsentLegEvidence | undefined;
+    if (!pdaPresent) {
+      evidence = await resolveUnsentLegEvidence(connection, seed, rawLeg);
+      if (evidence.signatureStatus === "landed") {
+        const landed = await connection.getAccountInfo(new PublicKey(artifactPolicy(artifact, seed).account), "finalized");
+        if (landed !== null) {
+          pdaPresent = true;
+          evidence = undefined;
+        }
+      }
+    }
+    const decision = classifyJournalLeg({ state, seed, livePolicySeed: live.seed, pdaPresent, ...(evidence === undefined ? {} : { evidence }) });
     if (decision.action === "refuse") {
-      verdicts.push({ seed, recordedState: state, verdict: "refuse", reason: decision.reason });
-      refusal = decision.reason;
-      break;
+      return {
+        status: "refused",
+        reason: decision.reason,
+        readbacks,
+        pendingSeeds: [],
+        reconciliation: {
+          ...context,
+          verdicts: [...verdicts, { seed, recordedState: state, verdict: "refuse", reason: decision.reason, ...verdictEvidence(evidence) }],
+          refusal: decision.reason,
+        },
+      };
     }
     if (decision.action === "verify-finalized" || decision.action === "promote-finalized") {
-      const readback = await finalizedPolicyReadback(connection, artifactPolicy(artifact, seed));
+      const readback = await finalizedPolicyReadback(connection, artifact, seed);
       if (decision.action === "promote-finalized") Object.assign(rawLeg, { state: "finalized", finalizedSlot: readback.finalizedSlot, readback });
-      verdicts.push({ seed, recordedState: state, verdict: decision.action });
+      verdicts.push({ seed, recordedState: state, verdict: decision.action, ...verdictEvidence(evidence) });
       readbacks.set(seed, readback);
       continue;
     }
@@ -584,22 +744,23 @@ async function reconcileJournal(runtime: InstallRuntime): Promise<Readonly<{ rea
       const simulation = await simulatePolicy(connection, artifactPolicy(artifact, seed), latest.value.blockhash);
       invariant(simulation.err === null, `basic policy ${seed} blocked leg re-simulation still fails; refusing to force past it`);
     }
-    rawLeg.state = "abandoned";
-    verdicts.push({ seed, recordedState: state, verdict: "abandon-and-retry", resimulated: decision.resimulate });
+    Object.assign(rawLeg, { state: "abandoned", abandonReason: decision.reason });
+    verdicts.push({ seed, recordedState: state, verdict: "abandon-and-retry", reason: decision.reason, resimulated: decision.resimulate, ...verdictEvidence(evidence) });
   }
-  recordReconciliation(journal, {
-    at: new Date().toISOString(),
-    finalizedSlot: Math.max(live.contextSlot, presence.contextSlot),
-    livePolicySeed: live.seed,
-    verdicts,
-  });
-  validateInstallJournal(journal);
-  atomic(BASIC_POLICY_JOURNAL, journal);
-  invariant(refusal === null, refusal ?? "basic policy install journal could not be reconciled");
   const finalizedSeeds = new Set((journal.legs as JsonObject[])
     .filter((leg) => leg.state === "finalized")
     .map((leg) => String(leg.seed)));
-  return { readbacks, pendingSeeds: artifact.policies.map((policy) => policy.seed).filter((seed) => !finalizedSeeds.has(seed)) };
+  return {
+    status: "reconciled",
+    reason: null,
+    readbacks,
+    pendingSeeds: artifact.policies.map((policy) => policy.seed).filter((seed) => !finalizedSeeds.has(seed)),
+    reconciliation: { ...context, verdicts },
+  };
+}
+
+function verdictEvidence(evidence: UnsentLegEvidence | undefined): JsonObject {
+  return evidence === undefined ? {} : { signatureStatus: evidence.signatureStatus, blockhashValid: evidence.blockhashValid, statusSlot: evidence.statusSlot };
 }
 
 async function writeInstallReadback(connection: Connection, artifact: BasicPolicyArtifact, readbacks: ReadonlyMap<string, JsonObject>): Promise<void> {
@@ -629,36 +790,53 @@ async function writeInstallReadback(connection: Connection, artifact: BasicPolic
 
 async function execute(rpc: string, artifact: BasicPolicyArtifact): Promise<void> {
   assertExecuteAuthorization(process.env);
-  const start = classifyInstallStart({
-    journalExists: existsSync(BASIC_POLICY_JOURNAL),
-    readbackExists: existsSync(BASIC_POLICY_READBACK),
-  });
-  invariant(start !== "complete", "basic policy install readback already exists; this install is complete");
-  const connection = new Connection(rpc, "finalized");
-  invariant(await connection.getGenesisHash() === RWA_MULTIPLY_ROUTE.genesisHash, "RPC is not mainnet-beta");
-  const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
-  invariant(admin.signer.address === RWA_MULTIPLY_ROUTE.setupAdmin, "setup admin signer drifted");
-  const adminKeypair = Keypair.fromSecretKey(admin.secretKey);
-  if (start === "fresh") {
-    const journal: JsonObject = {
-      schema: "loyal-backyard-rwa-basic-policy-install-journal/v1",
-      broadcast: true,
-      artifactSha256: sha256(readFileSync(BASIC_POLICY_ARTIFACT)),
-      settings: artifact.settings,
-      authority: artifact.authority,
-      legs: [],
-    };
-    validateInstallJournal(journal);
-    atomic(BASIC_POLICY_JOURNAL, journal);
+  acquireInstallLock();
+  try {
+    const start = classifyInstallStart({
+      journalExists: existsSync(BASIC_POLICY_JOURNAL),
+      readbackExists: existsSync(BASIC_POLICY_READBACK),
+    });
+    invariant(start !== "complete", "basic policy install readback already exists; this install is complete");
+    const connection = new Connection(rpc, "finalized");
+    invariant(await connection.getGenesisHash() === RWA_MULTIPLY_ROUTE.genesisHash, "RPC is not mainnet-beta");
+    const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
+    invariant(admin.signer.address === RWA_MULTIPLY_ROUTE.setupAdmin, "setup admin signer drifted");
+    const adminKeypair = Keypair.fromSecretKey(admin.secretKey);
+    if (start === "fresh") {
+      const journal: JsonObject = {
+        schema: "loyal-backyard-rwa-basic-policy-install-journal/v1",
+        broadcast: true,
+        artifactSha256: sha256(readFileSync(BASIC_POLICY_ARTIFACT)),
+        settings: artifact.settings,
+        authority: artifact.authority,
+        legs: [],
+      };
+      validateInstallJournal(journal, artifact);
+      createInstallJournalFile(journal);
+      const runtime: InstallRuntime = { connection, artifact, adminKeypair, journal };
+      await writeInstallReadback(connection, artifact, await installSeeds(runtime, artifact.policies.map((policy) => policy.seed)));
+      return;
+    }
+    const journal = loadInstallJournal(artifact);
     const runtime: InstallRuntime = { connection, artifact, adminKeypair, journal };
-    await writeInstallReadback(connection, artifact, await installSeeds(runtime, artifact.policies.map((policy) => policy.seed)));
-    return;
+    const reconciled = await reconcileInstallJournal({
+      connection,
+      artifact,
+      journal,
+      artifactSha256: sha256(readFileSync(BASIC_POLICY_ARTIFACT)),
+    });
+    if (reconciled.reconciliation !== null) {
+      recordReconciliation(journal, reconciled.reconciliation);
+      validateInstallJournal(journal, artifact);
+      atomic(BASIC_POLICY_JOURNAL, journal);
+    }
+    invariant(reconciled.status !== "refused", reconciled.reason ?? "basic policy install journal could not be reconciled");
+    const readbacks = await installSeeds(runtime, reconciled.pendingSeeds);
+    for (const [seed, readback] of reconciled.readbacks) readbacks.set(seed, readback);
+    await writeInstallReadback(connection, artifact, readbacks);
+  } finally {
+    releaseInstallLock();
   }
-  const runtime: InstallRuntime = { connection, artifact, adminKeypair, journal: loadInstallJournal() };
-  const reconciled = await reconcileJournal(runtime);
-  const readbacks = await installSeeds(runtime, reconciled.pendingSeeds);
-  for (const [seed, readback] of reconciled.readbacks) readbacks.set(seed, readback);
-  await writeInstallReadback(connection, artifact, readbacks);
 }
 
 function readArtifact(): BasicPolicyArtifact {

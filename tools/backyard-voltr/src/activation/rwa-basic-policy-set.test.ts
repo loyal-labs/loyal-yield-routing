@@ -1,39 +1,74 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
 import { test } from "bun:test";
+import { generated } from "@loyal-labs/loyal-smart-accounts-core";
+import { PublicKey, Transaction } from "@solana/web3.js";
 
+import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import {
   BASIC_POLICY_ARTIFACT,
   PACKET_LIMIT,
   POLICY_SEEDS,
   assertExecuteAuthorization,
+  assertPolicyPayloadMatchesArtifact,
+  acquireInstallLock,
   classifyInstallStart,
   classifyJournalDrift,
   classifyJournalLeg,
   createPolicyInstruction,
   derivePolicyAddress,
   parseArtifact,
+  releaseInstallLock,
+  reconcileInstallJournal,
+  validateInstallJournal,
+} from "../domain/rwa-multiply-route-spec.js";
+import {
+  BASIC_POLICY_ARTIFACT,
+  PACKET_LIMIT,
+  POLICY_SEEDS,
+  assertExecuteAuthorization,
+  assertPolicyPayloadMatchesArtifact,
+  acquireInstallLock,
+  classifyInstallStart,
+  classifyJournalDrift,
+  classifyJournalLeg,
+  createPolicyInstruction,
+  derivePolicyAddress,
+  parseArtifact,
+  releaseInstallLock,
+  reconcileInstallJournal,
   validateInstallJournal,
 } from "./rwa-basic-policy-set.js";
 
 const artifact = parseArtifact(JSON.parse(readFileSync(BASIC_POLICY_ARTIFACT, "utf8")) as unknown);
+const PROGRAM = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG";
+const SIGNATURE = "1".repeat(87);
+const ARTIFACT_SHA256 = "b".repeat(64);
+
+const artifactRow = (seed: string) => {
+  const row = artifact.policies.find((policy) => policy.seed === seed);
+  assert.ok(row !== undefined, `artifact has no policy ${seed}`);
+  return row;
+};
+
+const sha256 = (value: Uint8Array | string): string => createHash("sha256").update(value).digest("hex");
 
 test("parses the four-policy artifact and preserves stable fingerprints", () => {
   assert.deepEqual(artifact.policies.map((policy) => policy.seed), [...POLICY_SEEDS]);
-  assert.deepEqual(artifact.policies.map((policy) => policy.account), [
-    "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
-    "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
-    "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
-    "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
-  ]);
-  assert.deepEqual(artifact.policies.map((policy) => policy.legacyPacketBytes), [1136, 1136, 818, 818]);
-  assert.deepEqual(artifact.policies.map((policy) => policy.dataSha256), [
-    "bd75abb8acb28180e2fbcd66814e21d32267a447cf3dac50c928d2d2cc0dcc83",
-    "d49cd14712056de39fb06c6fea3120dc851bf0f5b0bfa0d87413697457b30479",
-    "e56888dd2b3ac821c16933e59ae31ec3f6fc38a0770dd79905933dde9885fe22",
-    "44e8beecf05e6032df92878685d10521c30fb3a4d3df28c561fd45d6e92fcab7",
-  ]);
+  assert.deepEqual(artifact.policies.map((policy) => policy.account), artifact.policies.map((policy) => derivePolicyAddress(artifact.settings, policy.seed)));
+  for (const row of artifact.policies) {
+    const data = Buffer.from(row.instruction.dataBase64, "base64");
+    // dataSha256 digests the PolicyCreate instruction data, not the policy account data.
+    assert.equal(sha256(data), row.dataSha256);
+    // legacyPacketBytes is the serialized legacy wire length for one fee-payer signature.
+    const wire = new Transaction({ feePayer: new PublicKey(artifact.authority), recentBlockhash: PublicKey.default.toBase58() })
+      .add(createPolicyInstruction(row));
+    assert.equal(wire.serialize({ requireAllSignatures: false, verifySignatures: false }).length, row.legacyPacketBytes);
+    assert.equal(row.legacyPacketBytes <= PACKET_LIMIT, true);
+  }
 });
 
 test("derives every policy PDA from the settings and consecutive seed", () => {
@@ -43,7 +78,7 @@ test("derives every policy PDA from the settings and consecutive seed", () => {
 test("builds legacy PolicyCreate instructions within the packet limit", () => {
   for (const policy of artifact.policies) {
     const instruction = createPolicyInstruction(policy);
-    assert.equal(instruction.programId.toBase58(), "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG");
+    assert.equal(instruction.programId.toBase58(), PROGRAM);
     assert.equal(instruction.data.length > 0, true);
     assert.equal(policy.legacyPacketBytes <= PACKET_LIMIT, true);
     assert.equal(instruction.keys.length, 6);
@@ -55,24 +90,11 @@ test("fails closed on execute authorization and validates the pre-send journal s
   assert.throws(() => assertExecuteAuthorization({}), /CONFIRM_MAINNET/);
   assert.throws(() => assertExecuteAuthorization({ CONFIRM_MAINNET: "1" }), /SOLANA_TESTING_PK/);
   assert.doesNotThrow(() => assertExecuteAuthorization({ CONFIRM_MAINNET: "1", SOLANA_TESTING_PK: "test-keypair" }));
-
-  const journal = {
-    schema: "loyal-backyard-rwa-basic-policy-install-journal/v1",
-    broadcast: true,
-    legs: [{
-      seed: "141",
-      account: artifact.policies[0]!.account,
-      state: "planned",
-      wireSha256: "a".repeat(64),
-      blockhash: "test-blockhash",
-      lastValidBlockHeight: 123,
-      packetBytes: 1136,
-      signature: "test-signature",
-      preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: null },
-    }],
-  };
-  assert.doesNotThrow(() => validateInstallJournal(journal));
-  assert.throws(() => validateInstallJournal({ ...journal, legs: [{ ...journal.legs[0], seed: "143" }] }), /next policy seed/);
+  assert.doesNotThrow(() => validateInstallJournal({ ...journalFixture([legFixture("141")]) }));
+  assert.throws(
+    () => validateInstallJournal(journalFixture([{ ...legFixture("141"), seed: "143", account: artifactRow("143").account, family: artifactRow("143").family }])),
+    /next policy seed/,
+  );
 });
 
 test("reconcile classifier verifies a finalized leg only with its PDA present", () => {
@@ -90,27 +112,73 @@ test("reconcile classifier promotes a planned leg whose PDA landed on chain", ()
   assert.equal(decision.resimulate, false);
 });
 
-test("reconcile classifier retries a planned leg that never landed from the same seed", () => {
-  const decision = classifyJournalLeg({ state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false });
-  assert.equal(decision.action, "abandon-and-retry");
-  assert.equal(decision.resimulate, false);
+test("reconcile classifier retries a planned leg that never landed only once the wire cannot land", () => {
+  const failed = classifyJournalLeg({
+    state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false,
+    evidence: { signatureStatus: "failed", blockhashValid: null, statusSlot: 500 },
+  });
+  assert.equal(failed.action, "abandon-and-retry");
+  assert.equal(failed.resimulate, false);
+
+  const expired = classifyJournalLeg({
+    state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false,
+    evidence: { signatureStatus: "unknown", blockhashValid: false, statusSlot: null },
+  });
+  assert.equal(expired.action, "abandon-and-retry");
+
+  assert.equal(classifyJournalLeg({ state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false }).action, "refuse");
+});
+
+test("reconcile classifier refuses a leg that may still land or landed without a PDA", () => {
+  const inFlight = classifyJournalLeg({
+    state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false,
+    evidence: { signatureStatus: "unknown", blockhashValid: true, statusSlot: null },
+  });
+  assert.equal(inFlight.action, "refuse");
+  assert.match(inFlight.reason, /leg 142 may still land; re-run reconcile after the blockhash expires/);
+
+  const landed = classifyJournalLeg({
+    state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false,
+    evidence: { signatureStatus: "landed", blockhashValid: null, statusSlot: 500 },
+  });
+  assert.equal(landed.action, "refuse");
+  assert.match(landed.reason, /landed but its PDA is absent/);
 });
 
 test("reconcile classifier refuses a planned seed consumed elsewhere or ahead of the chain", () => {
-  const consumed = classifyJournalLeg({ state: "planned", seed: "142", livePolicySeed: "142", pdaPresent: false });
+  const consumed = classifyJournalLeg({
+    state: "planned", seed: "142", livePolicySeed: "142", pdaPresent: false,
+    evidence: { signatureStatus: "unknown", blockhashValid: false, statusSlot: null },
+  });
   assert.equal(consumed.action, "refuse");
   assert.match(consumed.reason, /manual review/);
 
-  assert.equal(classifyJournalLeg({ state: "planned", seed: "143", livePolicySeed: "141", pdaPresent: false }).action, "refuse");
+  assert.equal(classifyJournalLeg({
+    state: "planned", seed: "143", livePolicySeed: "141", pdaPresent: false,
+    evidence: { signatureStatus: "failed", blockhashValid: null, statusSlot: 500 },
+  }).action, "refuse");
 });
 
 test("reconcile classifier re-simulates a blocked leg before retrying it", () => {
-  const retry = classifyJournalLeg({ state: "blocked", seed: "143", livePolicySeed: "142", pdaPresent: false });
+  const retry = classifyJournalLeg({
+    state: "blocked", seed: "143", livePolicySeed: "142", pdaPresent: false,
+    evidence: { signatureStatus: "failed", blockhashValid: null, statusSlot: 500 },
+  });
   assert.equal(retry.action, "abandon-and-retry");
   assert.equal(retry.resimulate, true);
 
-  assert.equal(classifyJournalLeg({ state: "blocked", seed: "143", livePolicySeed: "142", pdaPresent: true }).action, "refuse");
-  assert.equal(classifyJournalLeg({ state: "blocked", seed: "143", livePolicySeed: "143", pdaPresent: false }).action, "refuse");
+  const blockedButLive = classifyJournalLeg({
+    state: "blocked", seed: "143", livePolicySeed: "142", pdaPresent: false,
+    evidence: { signatureStatus: "unknown", blockhashValid: true, statusSlot: null },
+  });
+  assert.equal(blockedButLive.action, "refuse");
+  assert.equal(classifyJournalLeg({
+    state: "blocked", seed: "143", livePolicySeed: "142", pdaPresent: true,
+  }).action, "refuse");
+  assert.equal(classifyJournalLeg({
+    state: "blocked", seed: "143", livePolicySeed: "143", pdaPresent: false,
+    evidence: { signatureStatus: "failed", blockhashValid: null, statusSlot: 500 },
+  }).action, "refuse");
 });
 
 test("start gate resumes a journal, refuses a completed install, and starts only a clean slate", () => {
@@ -121,12 +189,11 @@ test("start gate resumes a journal, refuses a completed install, and starts only
 });
 
 test("start gate refuses a journal drifted from the current artifact", () => {
-  const artifactSha256 = "b".repeat(64);
   const base = {
-    journalArtifactSha256: artifactSha256,
+    journalArtifactSha256: ARTIFACT_SHA256,
     journalSettings: artifact.settings,
     journalAuthority: artifact.authority,
-    artifactSha256,
+    artifactSha256: ARTIFACT_SHA256,
     settings: artifact.settings,
     authority: artifact.authority,
   };
@@ -138,21 +205,9 @@ test("start gate refuses a journal drifted from the current artifact", () => {
 });
 
 test("journal accepts an abandoned leg only when a same-seed retry follows it", () => {
-  const leg = {
-    seed: "141",
-    account: artifact.policies[0]!.account,
-    state: "planned",
-    wireSha256: "a".repeat(64),
-    blockhash: "test-blockhash",
-    lastValidBlockHeight: 123,
-    packetBytes: 1136,
-    signature: "test-signature",
-    preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: null },
-  };
+  const abandoned = { ...legFixture("141"), state: "abandoned", abandonReason: "never landed; blockhash expired" };
   const resumed = {
-    schema: "loyal-backyard-rwa-basic-policy-install-journal/v1",
-    broadcast: true,
-    legs: [{ ...leg, state: "abandoned" }, leg],
+    ...journalFixture([abandoned, legFixture("141")]),
     reconciliations: [{
       at: "2026-09-09T00:00:00.000Z",
       finalizedSlot: 1_000,
@@ -162,7 +217,341 @@ test("journal accepts an abandoned leg only when a same-seed retry follows it", 
   };
   assert.doesNotThrow(() => validateInstallJournal(resumed));
 
-  assert.throws(() => validateInstallJournal({ ...resumed, legs: [leg, { ...leg, seed: "141" }] }), /abandoned-seed retry/);
-  assert.throws(() => validateInstallJournal({ ...resumed, legs: [{ ...leg, state: "abandoned" }, { ...leg, state: "abandoned" }] }), /retry after an abandoned leg/);
-  assert.throws(() => validateInstallJournal({ ...resumed, reconciliations: [{ at: "2026-09-09T00:00:00.000Z", finalizedSlot: 1_000, livePolicySeed: "140", verdicts: [{}] }] }), /verdict/);
+  assert.throws(() => validateInstallJournal(journalFixture([legFixture("141"), legFixture("141")])), /abandoned-seed retry/);
+  assert.throws(
+    () => validateInstallJournal(journalFixture([abandoned, { ...legFixture("141"), state: "abandoned", abandonReason: "x" }])),
+    /retry after an abandoned leg/,
+  );
+  assert.throws(
+    () => validateInstallJournal({ ...resumed, reconciliations: [{ at: "2026-09-09T00:00:00.000Z", finalizedSlot: 1_000, livePolicySeed: "140", verdicts: [{}] }] }),
+    /verdict/,
+  );
 });
+
+test("journal enforces per-state required fields and leg identity", () => {
+  const planned = legFixture("141");
+  assert.doesNotThrow(() => validateInstallJournal(journalFixture([planned]), artifact));
+  assert.doesNotThrow(() => validateInstallJournal(journalFixture([planned])));
+
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, account: artifactRow("142").account }]), artifact), /PDA drifted/);
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, family: "SomeoneElse" }]), artifact), /family drifted/);
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, signature: "test-signature" }]), artifact), /signature is not base58/);
+  assert.throws(
+    () => validateInstallJournal(journalFixture([{ ...planned, preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: "BlockhashNotFound" } }]), artifact),
+    /planned without a passing pre-send simulation/,
+  );
+
+  const blocked = { ...planned, state: "blocked", preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: "BlockhashNotFound" } };
+  assert.doesNotThrow(() => validateInstallJournal(journalFixture([blocked]), artifact));
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, state: "blocked" }]), artifact), /blocked without a pre-send simulation error/);
+
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, state: "abandoned" }]), artifact), /abandonReason/);
+  assert.doesNotThrow(() => validateInstallJournal(journalFixture([{ ...planned, state: "abandoned", abandonReason: "blockhash expired" }]), artifact));
+
+  const finalized = { ...planned, state: "finalized", readback: { seed: "141", account: planned.account, dataSha256: "c".repeat(64), finalizedSlot: 900 } };
+  assert.doesNotThrow(() => validateInstallJournal(journalFixture([finalized]), artifact));
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, state: "finalized" }]), artifact), /readback/);
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, state: "finalized", readback: { finalizedSlot: "900" } }]), artifact), /readback slot/);
+});
+
+test("install lock is exclusive and leaves no file behind on release", () => {
+  const directory = mkdtempSync("/tmp/rwa-basic-policy-lock-");
+  const lock = join(directory, "policy-install.lock");
+  try {
+    acquireInstallLock(lock, () => "2026-09-09T00:00:00.000Z");
+    const recorded = JSON.parse(readFileSync(lock, "utf8")) as { pid: unknown; startedAt: unknown };
+    assert.equal(typeof recorded.pid, "number");
+    assert.equal(recorded.startedAt, "2026-09-09T00:00:00.000Z");
+    assert.throws(() => acquireInstallLock(lock), /already exists/);
+    releaseInstallLock(lock);
+    assert.equal(existsSync(lock), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("payload check accepts the artifact constraints and rejects any other lane", () => {
+  for (const row of artifact.policies) {
+    assert.doesNotThrow(() => assertPolicyPayloadMatchesArtifact(row, decodeConstraints(row.seed)));
+  }
+  assert.throws(() => assertPolicyPayloadMatchesArtifact(artifactRow("141"), decodeConstraints("142")), /do not match the artifact payload/);
+  assert.throws(() => assertPolicyPayloadMatchesArtifact(artifactRow("141"), tamperAccountConstraint("141")), /do not match the artifact payload/);
+});
+
+test("reconcile refuses a drifted journal before reading any chain state", async () => {
+  const journal = journalFixture([legFixture("141")]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({ liveSeed: "140", present: [] }),
+    artifact,
+    journal,
+    artifactSha256: "c".repeat(64),
+  });
+  assert.equal(outcome.status, "refused");
+  assert.match(outcome.reason ?? "", /drifted from the current artifact/);
+  assert.equal(outcome.reconciliation, null);
+});
+
+test("reconcile refuses an unsent leg while its blockhash can still land", async () => {
+  const journal = journalFixture([legFixture("141")]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({ liveSeed: "140", present: [], blockhashValid: true }),
+    artifact,
+    journal,
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "refused");
+  assert.match(outcome.reason ?? "", /leg 141 may still land; re-run reconcile after the blockhash expires/);
+  assert.equal((journalLeg(journal, 0).state as string), "planned");
+  assert.deepEqual(outcome.pendingSeeds, []);
+  const verdict = outcome.reconciliation?.verdicts[0] as Record<string, unknown>;
+  assert.equal(verdict.signatureStatus, "unknown");
+  assert.equal(verdict.blockhashValid, true);
+});
+
+test("reconcile refuses a leg whose signature landed but whose PDA is still absent", async () => {
+  const journal = journalFixture([legFixture("141")]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({
+      liveSeed: "140",
+      present: [],
+      signatures: { [SIGNATURE]: { err: null, confirmationStatus: "confirmed", slot: 500 } },
+    }),
+    artifact,
+    journal,
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "refused");
+  assert.match(outcome.reason ?? "", /landed but its PDA is absent/);
+});
+
+test("reconcile abandons a planned leg once its send failed on chain", async () => {
+  const journal = journalFixture([legFixture("141")]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({
+      liveSeed: "140",
+      present: [],
+      signatures: { [SIGNATURE]: { err: "AccountInUse", confirmationStatus: "finalized", slot: 500 } },
+    }),
+    artifact,
+    journal,
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "reconciled");
+  const leg = journalLeg(journal, 0);
+  assert.equal(leg.state, "abandoned");
+  assert.equal(leg.signature, SIGNATURE);
+  assert.match(leg.abandonReason as string, /failed on chain/);
+  assert.deepEqual(outcome.pendingSeeds, [...POLICY_SEEDS]);
+  const verdict = outcome.reconciliation?.verdicts[0] as Record<string, unknown>;
+  assert.equal(verdict.signatureStatus, "failed");
+  assert.equal(verdict.statusSlot, 500);
+  assert.deepEqual(outcome.reconciliation?.livePolicySeed, "140");
+});
+
+test("reconcile re-simulates a blocked leg before retrying it", async () => {
+  const journal = journalFixture([legFixture("141", {
+    state: "blocked",
+    preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: "BlockhashNotFound" },
+  })]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({
+      liveSeed: "140",
+      present: [],
+      signatures: { [SIGNATURE]: { err: "BlockhashNotFound", confirmationStatus: "finalized", slot: 500 } },
+    }),
+    artifact,
+    journal,
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "reconciled");
+  assert.equal(journalLeg(journal, 0).state, "abandoned");
+  const verdict = outcome.reconciliation?.verdicts[0] as Record<string, unknown>;
+  assert.equal(verdict.resimulated, true);
+});
+
+test("reconcile promotes a planned leg and verifies its full payload against the artifact", async () => {
+  const journal = journalFixture([legFixture("141")]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({ liveSeed: "141", present: ["141"] }),
+    artifact,
+    journal,
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "reconciled");
+  const leg = journalLeg(journal, 0);
+  assert.equal(leg.state, "finalized");
+  assert.equal((leg.readback as Record<string, unknown>).finalizedSlot, 900);
+  assert.deepEqual(outcome.pendingSeeds, ["142", "143", "144"]);
+});
+
+test("reconcile refuses an on-chain policy payload that the artifact does not specify", async () => {
+  const mismatched = policyAccount("141", decodeConstraints("142"));
+  const journal = journalFixture([legFixture("141", {
+    state: "finalized",
+    readback: { seed: "141", account: artifactRow("141").account, dataSha256: "c".repeat(64), finalizedSlot: 800 },
+  })]);
+  await assert.rejects(
+    () => reconcileInstallJournal({
+      connection: fakeConnection({ liveSeed: "141", present: ["141"], policyData: () => mismatched }),
+      artifact,
+      journal,
+      artifactSha256: ARTIFACT_SHA256,
+    }),
+    /do not match the artifact payload/,
+  );
+});
+
+function legFixture(seed: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const row = artifactRow(seed);
+  return {
+    seed,
+    account: row.account,
+    family: row.family,
+    state: "planned",
+    wireSha256: "a".repeat(64),
+    blockhash: "test-blockhash",
+    lastValidBlockHeight: 123,
+    packetBytes: row.legacyPacketBytes,
+    signature: SIGNATURE,
+    preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: null },
+    ...overrides,
+  };
+}
+
+function journalFixture(legs: readonly unknown[]): Record<string, unknown> {
+  return {
+    schema: "loyal-backyard-rwa-basic-policy-install-journal/v1",
+    broadcast: true,
+    artifactSha256: ARTIFACT_SHA256,
+    settings: artifact.settings,
+    authority: artifact.authority,
+    legs: [...legs],
+  };
+}
+
+function journalLeg(journal: Record<string, unknown>, index: number): Record<string, unknown> {
+  return (journal.legs as Array<Record<string, unknown>>)[index] as Record<string, unknown>;
+}
+
+type StructBeet = { serialize(args: Record<string, unknown>): [Buffer, number] };
+type ConstraintBeet = {
+  toFixedFromData(data: Buffer, offset: number): { read(data: Buffer, offset: number): unknown; byteSize: number };
+  toFixedFromValue(value: unknown): { write(buffer: Buffer, offset: number, value: unknown): void; byteSize: number };
+};
+
+const { settingsBeet, policyBeet, instructionConstraintBeet } = generated as unknown as {
+  settingsBeet: StructBeet;
+  policyBeet: StructBeet;
+  instructionConstraintBeet: ConstraintBeet;
+};
+
+/** Legacy PolicyCreate payload: the ProgramInteraction constraint vector starts at this fixed offset. */
+const CONSTRAINTS_OFFSET = 28;
+
+function decodeConstraints(seed: string): readonly unknown[] {
+  const row = artifactRow(seed);
+  const data = Buffer.from(row.instruction.dataBase64, "base64");
+  const constraints: unknown[] = [];
+  let offset = CONSTRAINTS_OFFSET;
+  for (let index = 0; index < row.constraints.length; index += 1) {
+    const fixed = instructionConstraintBeet.toFixedFromData(data, offset);
+    constraints.push(fixed.read(data, offset));
+    offset += fixed.byteSize;
+  }
+  return constraints;
+}
+
+function tamperAccountConstraint(seed: string): readonly unknown[] {
+  return (decodeConstraints(seed) as Array<Record<string, unknown>>).map((constraint, index) => {
+    if (index !== 0) return constraint;
+    const accountConstraints = constraint.accountConstraints as Array<Record<string, unknown>>;
+    return {
+      ...constraint,
+      accountConstraints: accountConstraints.map((entry, entryIndex) => entryIndex === 1
+        ? { ...entry, accountConstraint: { __kind: "Pubkey", fields: [[PublicKey.default]] } }
+        : entry),
+    };
+  });
+}
+
+function policyAccount(seed: string, constraints: readonly unknown[]): Buffer {
+  const [data] = policyBeet.serialize({
+    accountDiscriminator: (generated as unknown as { policyDiscriminator: number[] }).policyDiscriminator,
+    settings: new PublicKey(artifact.settings),
+    seed: BigInt(seed),
+    bump: 254,
+    transactionIndex: 0n,
+    staleTransactionIndex: 0n,
+    signers: [{ key: new PublicKey(artifact.delegate), permissions: { mask: 3 } }],
+    threshold: 1,
+    timeLock: 0,
+    policyState: {
+      __kind: "ProgramInteraction",
+      fields: [{ accountIndex: 0, instructionsConstraints: constraints, preHook: null, postHook: null, spendingLimits: [] }],
+    },
+    start: 0n,
+    expiration: null,
+    rentCollector: PublicKey.default,
+  });
+  return data;
+}
+
+function settingsAccount(policySeed: string): Buffer {
+  const [data] = settingsBeet.serialize({
+    accountDiscriminator: (generated as unknown as { settingsDiscriminator: number[] }).settingsDiscriminator,
+    seed: 140n,
+    settingsAuthority: new PublicKey(artifact.authority),
+    threshold: 1,
+    timeLock: 0,
+    transactionIndex: 0n,
+    staleTransactionIndex: 0n,
+    archivalAuthority: null,
+    archivableAfter: 0n,
+    bump: 255,
+    signers: [{ key: new PublicKey(artifact.delegate), permissions: { mask: 3 } }],
+    accountUtilization: 0,
+    policySeed: BigInt(policySeed),
+    reserved2: 0,
+  });
+  return data;
+}
+
+function fakeConnection(input: Readonly<{
+  liveSeed: string;
+  present: readonly string[];
+  policyData?: (seed: string) => Buffer | null;
+  signatures?: Record<string, { err: unknown; confirmationStatus: string; slot: number } | null>;
+  blockhashValid?: boolean;
+  slot?: number;
+}>) {
+  const slot = input.slot ?? 900;
+  const settingsInfo = () => ({ owner: new PublicKey(PROGRAM), data: settingsAccount(input.liveSeed), lamports: 1, executable: false, rentEpoch: 0 });
+  const account = (address: string | PublicKey) => {
+    const key = typeof address === "string" ? address : address.toBase58();
+    if (key === RWA_MULTIPLY_ROUTE.squads.settings) return settingsInfo();
+    const row = artifact.policies.find((policy) => policy.account === key);
+    if (row === undefined) return null;
+    const data = input.policyData !== undefined
+      ? input.policyData(row.seed)
+      : input.present.includes(row.seed) ? policyAccount(row.seed, decodeConstraints(row.seed)) : null;
+    return data === null ? null : { owner: new PublicKey(PROGRAM), data, lamports: 1, executable: false, rentEpoch: 0 };
+  };
+  return {
+    getAccountInfoAndContext: async (address: string) => ({
+      context: { slot },
+      value: account(address),
+    }),
+    getAccountInfo: async (address: string) => account(address),
+    getMultipleAccountsInfoAndContext: async (addresses: readonly string[]) => ({
+      context: { slot },
+      value: addresses.map((address) => account(address)),
+    }),
+    getSignatureStatuses: async (signatures: readonly string[]) => ({
+      context: { slot },
+      value: signatures.map((signature) => input.signatures?.[signature] ?? null),
+    }),
+    isBlockhashValid: async () => ({ context: { slot }, value: input.blockhashValid === true }),
+    simulateTransaction: async () => ({ context: { slot }, value: { err: null, logs: [], unitsConsumed: 1_000n } }),
+    getLatestBlockhashAndContext: async () => ({ context: { slot }, value: { blockhash: "fake-blockhash", lastValidBlockHeight: 4_242 } }),
+  } as unknown as Parameters<typeof reconcileInstallJournal>[0]["connection"];
+}
