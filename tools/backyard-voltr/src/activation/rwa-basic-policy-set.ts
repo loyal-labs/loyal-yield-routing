@@ -25,8 +25,13 @@ type SettingsState = { policySeed: { toString(): string } | null };
 type PolicyState = {
   settings: PublicKey;
   seed: { toString(): string };
-  signers: readonly { key: PublicKey }[];
+  signers: readonly { key: PublicKey; permissions: { mask: number } }[];
+  threshold: number;
+  timeLock: number;
   policyState: { __kind: string; fields?: readonly unknown[] };
+  start: { toString(): string };
+  expiration: unknown;
+  rentCollector: PublicKey;
 };
 
 export type BasicPolicyInstructionAccount = Readonly<{
@@ -348,9 +353,10 @@ export function classifyJournalDrift(input: Readonly<{
 export type ReconcileAction = "verify-finalized" | "promote-finalized" | "abandon-and-retry" | "refuse";
 
 export type UnsentLegEvidence = Readonly<{
-  signatureStatus: "landed" | "failed" | "unknown";
+  signatureStatus: "landed" | "failed" | "replayable-failure" | "unknown";
   blockhashValid: boolean | null;
   statusSlot: number | null;
+  confirmationStatus?: string | null;
 }>;
 
 export type ReconcileLegDecision = Readonly<{
@@ -395,13 +401,27 @@ export function classifyJournalLeg(input: Readonly<{
     const evidence = input.evidence;
     if (evidence === undefined) return refuse(`basic policy ${input.seed} has no signature or blockhash evidence; refusing to force past an unknown leg`);
     if (evidence.signatureStatus === "landed") return refuse(`basic policy ${input.seed} signature landed but its PDA is absent at finalized commitment; manual review required`);
-    if (evidence.signatureStatus === "unknown" && evidence.blockhashValid !== false) {
-      return refuse(`leg ${input.seed} may still land; re-run reconcile after the blockhash expires`);
+    if (evidence.signatureStatus === "failed") {
+      // The only on-chain verdict that can never be reversed: a finalized
+      // transaction with an error cannot land afterwards.
+      return {
+        action: "abandon-and-retry",
+        reason: `basic policy ${input.seed} failed on chain at finalized; retrying from this seed`,
+        resimulate: input.state === "blocked",
+      };
+    }
+    if (evidence.blockhashValid !== false) {
+      // A wire that errored before finalized commitment can still be replayed
+      // by anyone holding it until its blockhash expires, so it is never a
+      // safe abandon.
+      return refuse(evidence.signatureStatus === "replayable-failure"
+        ? `leg ${input.seed} failed at ${evidence.confirmationStatus ?? "an unconfirmed commitment"} but may still be replayed; re-run reconcile after the blockhash expires`
+        : `leg ${input.seed} may still land; re-run reconcile after the blockhash expires`);
     }
     return {
       action: "abandon-and-retry",
-      reason: evidence.signatureStatus === "failed"
-        ? `basic policy ${input.seed} failed on chain; retrying from this seed`
+      reason: evidence.signatureStatus === "replayable-failure"
+        ? `basic policy ${input.seed} failed at ${evidence.confirmationStatus ?? "an unconfirmed commitment"} without finalizing and its blockhash expired; retrying from this seed`
         : `basic policy ${input.seed} never landed and its blockhash expired; retrying from this seed`,
       resimulate: input.state === "blocked",
     };
@@ -487,6 +507,94 @@ type ConstraintBeet = {
 
 const instructionConstraintBeet = (squadsGenerated as unknown as { instructionConstraintBeet: ConstraintBeet }).instructionConstraintBeet;
 
+type SettingsActionArgs = {
+  numSigners: unknown;
+  actions: ReadonlyArray<{
+    __kind: string;
+    seed: { toString(): string };
+    policyCreationPayload: { __kind: string; fields?: readonly unknown[] };
+    signers: readonly { key: PublicKey; permissions: { mask: number } }[];
+    threshold: number;
+    timeLock: number;
+    startTimestamp: unknown;
+    expirationArgs: unknown;
+  }>;
+};
+
+const syncSettingsTransactionArgsBeet = (squadsGenerated as unknown as {
+  syncSettingsTransactionArgsBeet: {
+    toFixedFromData(data: Buffer, offset: number): { read(data: Buffer, offset: number): unknown; byteSize: number };
+  };
+}).syncSettingsTransactionArgsBeet;
+
+export type PolicyExpectation = Readonly<{
+  settings: string;
+  seed: string;
+  signers: readonly { key: string; permissionsMask: number }[];
+  threshold: number;
+  timeLock: number;
+  start: string;
+  rentCollector: string;
+  policyKind: string;
+  accountIndex: number;
+  constraints: readonly unknown[];
+}>;
+
+/**
+ * Derive the complete on-chain Policy identity the artifact instruction must
+ * produce. Every expected value is read out of the artifact instruction
+ * itself - the settings account meta and the decoded PolicyCreate action -
+ * so a readback is accepted only when the chain holds exactly what this
+ * installer specified, field by field.
+ */
+export function policyExpectationFromArtifact(policy: BasicPolicyRow): PolicyExpectation {
+  const data = decodeData(policy.instruction.dataBase64, `basic policy ${policy.seed} instruction data`);
+  invariant(sha256(data) === policy.dataSha256, `basic policy ${policy.seed} instruction data hash drifted`);
+  const fixed = syncSettingsTransactionArgsBeet.toFixedFromData(data, 8);
+  const args = fixed.read(data, 8) as Partial<SettingsActionArgs> | null;
+  invariant(args !== null && typeof args === "object", `basic policy ${policy.seed} instruction does not decode to settings actions`);
+  invariant(data.length === 8 + fixed.byteSize, `basic policy ${policy.seed} instruction data has trailing bytes`);
+  invariant(args.numSigners === 1 && Array.isArray(args.actions) && args.actions.length === 1,
+    `basic policy ${policy.seed} instruction is not exactly one settings action`);
+  const action = args.actions[0];
+  invariant(action !== undefined && typeof action === "object" && action.__kind !== undefined,
+    `basic policy ${policy.seed} settings action is malformed`);
+  invariant(action.__kind === "PolicyCreate", `basic policy ${policy.seed} action is not PolicyCreate`);
+  invariant(action.policyCreationPayload.__kind === "ProgramInteraction", `basic policy ${policy.seed} payload is not ProgramInteraction`);
+  const body = object(action.policyCreationPayload.fields?.[0], `basic policy ${policy.seed} payload body`);
+  invariant(Array.isArray(body.instructionsConstraints), `basic policy ${policy.seed} payload has no constraint vector`);
+  invariant(typeof body.accountIndex === "number", `basic policy ${policy.seed} payload account index is invalid`);
+  invariant(Array.isArray(body.spendingLimits), `basic policy ${policy.seed} payload spending limits are invalid`);
+  invariant(body.preHook === null && body.postHook === null, `basic policy ${policy.seed} payload sets hooks, which this installer never creates`);
+  invariant(action.startTimestamp === null || action.startTimestamp === undefined, `basic policy ${policy.seed} sets an unsupported start timestamp`);
+  invariant(action.expirationArgs === null || action.expirationArgs === undefined, `basic policy ${policy.seed} sets an unsupported expiration`);
+  const settings = policy.instruction.accounts[0]?.address;
+  invariant(typeof settings === "string" && settings.length > 0, `basic policy ${policy.seed} instruction has no settings account`);
+  return {
+    settings,
+    seed: action.seed.toString(),
+    signers: action.signers.map((signer: { key: PublicKey; permissions: { mask: number } }) => ({
+      key: signer.key.toBase58(),
+      permissionsMask: signer.permissions.mask,
+    })),
+    threshold: action.threshold,
+    timeLock: action.timeLock,
+    // No start timestamp and no expiration: the program stores start = 0.
+    start: "0",
+    // PolicyCreate never sets a rent collector, so the program stores the
+    // unset (zero) pubkey.
+    rentCollector: PublicKey.default.toBase58(),
+    policyKind: "ProgramInteraction",
+    accountIndex: body.accountIndex,
+    constraints: body.instructionsConstraints,
+  };
+}
+
+function policyExpirationUnset(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  return typeof value === "object" && (value as { __kind?: unknown }).__kind === "None";
+}
+
 /**
  * Byte-exact payload identity. The on-chain constraints are re-encoded with the
  * generated codec and must appear verbatim, exactly once, inside the artifact
@@ -512,20 +620,66 @@ export function assertPolicyPayloadMatchesArtifact(policy: BasicPolicyRow, const
   invariant(first >= 0 && expected.lastIndexOf(encoded) === first, `policy ${policy.seed} on-chain constraints do not match the artifact payload`);
 }
 
-async function finalizedPolicyReadback(connection: ReconcileConnection, artifact: BasicPolicyArtifact, seed: string): Promise<{ seed: string; account: string; dataSha256: string; finalizedSlot: number }> {
+/**
+ * Full policy identity check. The on-chain Policy account is decoded with the
+ * generated Squads decoder and every field the PolicyCreate instruction sets
+ * is compared against the value derived from the artifact instruction; the
+ * constraint vector is additionally verified byte-exactly. Any difference
+ * refuses.
+ */
+export function assertPolicyMatchesArtifact(policy: BasicPolicyRow, decoded: PolicyState): void {
+  const expected = policyExpectationFromArtifact(policy);
+  const seed = policy.seed;
+  invariant(decoded.settings.toBase58() === expected.settings,
+    `policy ${seed} on-chain settings ${decoded.settings.toBase58()} does not match the artifact ${expected.settings}`);
+  invariant(decoded.seed.toString() === expected.seed,
+    `policy ${seed} on-chain seed ${decoded.seed.toString()} does not match the artifact ${expected.seed}`);
+  invariant(decoded.signers.length === expected.signers.length,
+    `policy ${seed} on-chain signer count ${decoded.signers.length} does not match the artifact ${expected.signers.length}`);
+  for (const [index, signer] of decoded.signers.entries()) {
+    const want = expected.signers[index];
+    invariant(want !== undefined && signer.key.toBase58() === want.key,
+      `policy ${seed} on-chain delegated signer ${signer.key.toBase58()} does not match the artifact ${want?.key ?? "none"}`);
+    invariant(want !== undefined && signer.permissions.mask === want.permissionsMask,
+      `policy ${seed} on-chain signer permissions ${signer.permissions.mask} do not match the artifact ${want?.permissionsMask}`);
+  }
+  invariant(decoded.threshold === expected.threshold,
+    `policy ${seed} on-chain threshold ${decoded.threshold} does not match the artifact ${expected.threshold}`);
+  invariant(decoded.timeLock === expected.timeLock,
+    `policy ${seed} on-chain time lock ${decoded.timeLock} does not match the artifact ${expected.timeLock}`);
+  invariant(String(decoded.start) === expected.start,
+    `policy ${seed} on-chain start ${String(decoded.start)} does not match the artifact ${expected.start}`);
+  invariant(policyExpirationUnset(decoded.expiration),
+    `policy ${seed} on-chain policy expires, but the artifact sets no expiration`);
+  invariant(decoded.rentCollector.toBase58() === expected.rentCollector,
+    `policy ${seed} on-chain rent collector ${decoded.rentCollector.toBase58()} does not match the unset artifact value ${expected.rentCollector}`);
+  invariant(decoded.policyState.__kind === expected.policyKind,
+    `policy ${seed} on-chain policy kind ${decoded.policyState.__kind} does not match the artifact ${expected.policyKind}`);
+  const body = object(decoded.policyState.fields?.[0], `policy ${seed} on-chain policy state`);
+  invariant(body.accountIndex === expected.accountIndex,
+    `policy ${seed} on-chain account index ${String(body.accountIndex)} does not match the artifact ${expected.accountIndex}`);
+  invariant(body.preHook === null && body.postHook === null,
+    `policy ${seed} on-chain policy has hooks, but the artifact sets none`);
+  invariant(Array.isArray(body.spendingLimits) && body.spendingLimits.length === 0,
+    `policy ${seed} on-chain policy has spending limits, but the artifact sets none`);
+  invariant(Array.isArray(body.instructionsConstraints) && body.instructionsConstraints.length === expected.constraints.length,
+    `policy ${seed} on-chain constraint count ${String(body.instructionsConstraints)} does not match the artifact ${expected.constraints.length}`);
+  assertPolicyPayloadMatchesArtifact(policy, body.instructionsConstraints);
+}
+
+async function finalizedPolicyReadback(connection: ReconcileConnection, artifact: BasicPolicyArtifact, seed: string): Promise<{ seed: string; account: string; dataSha256: string; accountDataSha256: string; finalizedSlot: number }> {
   const policy = artifactPolicy(artifact, seed);
   const response = await connection.getAccountInfoAndContext(new PublicKey(policy.account), "finalized");
   invariant(response.value?.owner.toBase58() === RWA_MULTIPLY_ROUTE.squads.program, `policy ${policy.seed} readback is absent or has wrong owner`);
   const decoded = Policy.fromAccountInfo(response.value)[0];
-  invariant(decoded.settings.toBase58() === RWA_MULTIPLY_ROUTE.squads.settings && decoded.seed.toString() === policy.seed,
-    `policy ${policy.seed} readback identity drifted`);
-  invariant(decoded.signers.length === 1 && decoded.signers[0]?.key.toBase58() === RWA_MULTIPLY_ROUTE.squads.delegatedExecutor, `policy ${policy.seed} delegated signer drifted`);
-  invariant(decoded.policyState.__kind === "ProgramInteraction", `policy ${policy.seed} readback is not ProgramInteraction`);
-  const body = object(decoded.policyState.fields?.[0], `policy ${policy.seed} readback state`);
-  invariant(Array.isArray(body.instructionsConstraints) && body.instructionsConstraints.length === policy.constraints.length,
-    `policy ${policy.seed} readback constraint count drifted`);
-  assertPolicyPayloadMatchesArtifact(policy, body.instructionsConstraints);
-  return { seed: policy.seed, account: policy.account, dataSha256: sha256(response.value.data), finalizedSlot: response.context.slot };
+  assertPolicyMatchesArtifact(policy, decoded);
+  return {
+    seed: policy.seed,
+    account: policy.account,
+    dataSha256: policy.dataSha256,
+    accountDataSha256: sha256(response.value.data),
+    finalizedSlot: response.context.slot,
+  };
 }
 
 type InstallRuntime = Readonly<{
@@ -641,9 +795,9 @@ function createInstallJournalFile(journal: JsonObject): void {
 
 /**
  * Resolve whether an unsent leg's recorded wire can still land: a confirmed or
- * finalized signature means it did land, an on-chain error means it cannot,
- * and an unknown signature is only safe to abandon once its blockhash has
- * expired.
+ * finalized success means it did land, only a *finalized* error means it
+ * cannot, and any other outcome (no status, or an error below finalized) can
+ * still be replayed while its blockhash is valid.
  */
 async function resolveUnsentLegEvidence(connection: ReconcileConnection, seed: string, leg: JsonObject): Promise<UnsentLegEvidence> {
   const signature = stringField(leg, "signature", "basic policy install journal leg");
@@ -651,10 +805,18 @@ async function resolveUnsentLegEvidence(connection: ReconcileConnection, seed: s
   if (status && status.err === null && (status.confirmationStatus === "finalized" || status.confirmationStatus === "confirmed")) {
     return { signatureStatus: "landed", blockhashValid: null, statusSlot: status.slot };
   }
-  if (status && status.err !== null) return { signatureStatus: "failed", blockhashValid: null, statusSlot: status.slot };
+  if (status && status.err !== null && status.confirmationStatus === "finalized") {
+    return { signatureStatus: "failed", blockhashValid: null, statusSlot: status.slot };
+  }
   const blockhash = stringField(leg, "blockhash", "basic policy install journal leg");
   const validity = await connection.isBlockhashValid(blockhash, { commitment: "finalized" });
-  return { signatureStatus: "unknown", blockhashValid: validity.value === true, statusSlot: null };
+  const replayableFailure = Boolean(status && status.err !== null);
+  return {
+    signatureStatus: replayableFailure ? "replayable-failure" : "unknown",
+    blockhashValid: validity.value === true,
+    statusSlot: status ? status.slot : null,
+    ...(replayableFailure && typeof status?.confirmationStatus === "string" ? { confirmationStatus: status.confirmationStatus } : {}),
+  };
 }
 
 export type ReconcileOutcome = Readonly<{
@@ -760,7 +922,13 @@ export async function reconcileInstallJournal(input: Readonly<{
 }
 
 function verdictEvidence(evidence: UnsentLegEvidence | undefined): JsonObject {
-  return evidence === undefined ? {} : { signatureStatus: evidence.signatureStatus, blockhashValid: evidence.blockhashValid, statusSlot: evidence.statusSlot };
+  if (evidence === undefined) return {};
+  return {
+    signatureStatus: evidence.signatureStatus,
+    blockhashValid: evidence.blockhashValid,
+    statusSlot: evidence.statusSlot,
+    ...(evidence.confirmationStatus === undefined || evidence.confirmationStatus === null ? {} : { confirmationStatus: evidence.confirmationStatus }),
+  };
 }
 
 async function writeInstallReadback(connection: Connection, artifact: BasicPolicyArtifact, readbacks: ReadonlyMap<string, JsonObject>): Promise<void> {

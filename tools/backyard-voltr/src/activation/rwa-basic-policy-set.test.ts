@@ -4,8 +4,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { test } from "bun:test";
-import { generated } from "@loyal-labs/loyal-smart-accounts-core";
-import { PublicKey, Transaction } from "@solana/web3.js";
+import { generated, Policy } from "@loyal-labs/loyal-smart-accounts-core";
+import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import {
@@ -13,6 +13,7 @@ import {
   PACKET_LIMIT,
   POLICY_SEEDS,
   assertExecuteAuthorization,
+  assertPolicyMatchesArtifact,
   assertPolicyPayloadMatchesArtifact,
   acquireInstallLock,
   classifyInstallStart,
@@ -21,23 +22,7 @@ import {
   createPolicyInstruction,
   derivePolicyAddress,
   parseArtifact,
-  releaseInstallLock,
-  reconcileInstallJournal,
-  validateInstallJournal,
-} from "../domain/rwa-multiply-route-spec.js";
-import {
-  BASIC_POLICY_ARTIFACT,
-  PACKET_LIMIT,
-  POLICY_SEEDS,
-  assertExecuteAuthorization,
-  assertPolicyPayloadMatchesArtifact,
-  acquireInstallLock,
-  classifyInstallStart,
-  classifyJournalDrift,
-  classifyJournalLeg,
-  createPolicyInstruction,
-  derivePolicyAddress,
-  parseArtifact,
+  policyExpectationFromArtifact,
   releaseInstallLock,
   reconcileInstallJournal,
   validateInstallJournal,
@@ -143,6 +128,22 @@ test("reconcile classifier refuses a leg that may still land or landed without a
   });
   assert.equal(landed.action, "refuse");
   assert.match(landed.reason, /landed but its PDA is absent/);
+});
+
+test("reconcile classifier treats a non-finalized error as replayable until the blockhash expires", () => {
+  const live = classifyJournalLeg({
+    state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false,
+    evidence: { signatureStatus: "replayable-failure", blockhashValid: true, statusSlot: 500, confirmationStatus: "confirmed" },
+  });
+  assert.equal(live.action, "refuse");
+  assert.match(live.reason, /leg 142 failed at confirmed but may still be replayed; re-run reconcile after the blockhash expires/);
+
+  const expired = classifyJournalLeg({
+    state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false,
+    evidence: { signatureStatus: "replayable-failure", blockhashValid: false, statusSlot: 500, confirmationStatus: "processed" },
+  });
+  assert.equal(expired.action, "abandon-and-retry");
+  assert.match(expired.reason, /leg 142|failed at processed without finalizing/);
 });
 
 test("reconcile classifier refuses a planned seed consumed elsewhere or ahead of the chain", () => {
@@ -270,6 +271,44 @@ test("install lock is exclusive and leaves no file behind on release", () => {
   }
 });
 
+test("full policy readback matches the artifact instruction field by field", () => {
+  for (const row of artifact.policies) {
+    const expected = policyExpectationFromArtifact(row);
+    assert.equal(expected.settings, artifact.settings);
+    assert.deepEqual(expected.signers, [{ key: artifact.delegate, permissionsMask: 7 }]);
+    assert.equal(expected.threshold, 1);
+    assert.equal(expected.timeLock, 0);
+    assert.equal(expected.start, "0");
+    assert.equal(expected.rentCollector, PublicKey.default.toBase58());
+    assert.equal(expected.accountIndex, 0);
+    assert.doesNotThrow(() => assertPolicyMatchesArtifact(row, decodePolicyAccount(policyAccount(row.seed, expected.constraints))));
+    assert.doesNotThrow(() => assertPolicyPayloadMatchesArtifact(row, expected.constraints));
+  }
+});
+
+test("full policy readback refuses any altered on-chain field", () => {
+  const row = artifactRow("141");
+  const constraints = policyExpectationFromArtifact(row).constraints;
+  const mutate = (apply: (decoded: DecodedPolicy) => void): DecodedPolicy => {
+    const decoded = decodePolicyAccount(policyAccount("141", constraints));
+    apply(decoded);
+    return decoded;
+  };
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.timeLock = 5; })), /time lock 5 does not match the artifact 0/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.threshold = 2; })), /threshold 2 does not match the artifact 1/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.start = 7n; })), /on-chain start 7 does not match the artifact 0/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.expiration = { __kind: "Timestamp", fields: [123n] }; })), /expires, but the artifact sets no expiration/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.rentCollector = Keypair.generate().publicKey; })), /rent collector/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.signers[0].key = Keypair.generate().publicKey; })), /delegated signer/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.signers[0].permissions.mask = 3; })), /permissions 3 do not match the artifact 7/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.seed = 142n; })), /on-chain seed 142 does not match the artifact 141/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.fields[0].preHook = { __kind: "Hook" }; })), /hooks, but the artifact sets none/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.fields[0].postHook = { __kind: "Hook" }; })), /hooks, but the artifact sets none/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.fields[0].spendingLimits = [{}]; })), /spending limits, but the artifact sets none/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.fields[0].accountIndex = 1; })), /account index 1 does not match the artifact 0/);
+  assert.throws(() => assertPolicyMatchesArtifact(row, mutate((d) => { d.policyState.__kind = "SpendingLimit"; })), /policy kind/);
+});
+
 test("payload check accepts the artifact constraints and rejects any other lane", () => {
   for (const row of artifact.policies) {
     assert.doesNotThrow(() => assertPolicyPayloadMatchesArtifact(row, decodeConstraints(row.seed)));
@@ -324,6 +363,44 @@ test("reconcile refuses a leg whose signature landed but whose PDA is still abse
   assert.match(outcome.reason ?? "", /landed but its PDA is absent/);
 });
 
+test("reconcile refuses a confirmed failure while its blockhash can still be replayed", async () => {
+  const journal = journalFixture([legFixture("141")]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({
+      liveSeed: "140",
+      present: [],
+      blockhashValid: true,
+      signatures: { [SIGNATURE]: { err: "BlockhashNotFound", confirmationStatus: "confirmed", slot: 500 } },
+    }),
+    artifact,
+    journal,
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "refused");
+  assert.match(outcome.reason ?? "", /leg 141 failed at confirmed but may still be replayed; re-run reconcile after the blockhash expires/);
+  assert.equal(journalLeg(journal, 0).state, "planned");
+  const verdict = outcome.reconciliation?.verdicts[0] as Record<string, unknown>;
+  assert.equal(verdict.signatureStatus, "replayable-failure");
+  assert.equal(verdict.blockhashValid, true);
+});
+
+test("reconcile refuses a processed failure while its blockhash can still be replayed", async () => {
+  const journal = journalFixture([legFixture("141")]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({
+      liveSeed: "140",
+      present: [],
+      blockhashValid: true,
+      signatures: { [SIGNATURE]: { err: "AccountInUse", confirmationStatus: "processed", slot: 500 } },
+    }),
+    artifact,
+    journal,
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "refused");
+  assert.match(outcome.reason ?? "", /leg 141 failed at processed but may still be replayed/);
+});
+
 test("reconcile abandons a planned leg once its send failed on chain", async () => {
   const journal = journalFixture([legFixture("141")]);
   const outcome = await reconcileInstallJournal({
@@ -340,12 +417,50 @@ test("reconcile abandons a planned leg once its send failed on chain", async () 
   const leg = journalLeg(journal, 0);
   assert.equal(leg.state, "abandoned");
   assert.equal(leg.signature, SIGNATURE);
-  assert.match(leg.abandonReason as string, /failed on chain/);
+  assert.match(leg.abandonReason as string, /failed on chain at finalized/);
   assert.deepEqual(outcome.pendingSeeds, [...POLICY_SEEDS]);
   const verdict = outcome.reconciliation?.verdicts[0] as Record<string, unknown>;
   assert.equal(verdict.signatureStatus, "failed");
   assert.equal(verdict.statusSlot, 500);
   assert.deepEqual(outcome.reconciliation?.livePolicySeed, "140");
+});
+
+test("reconcile abandons an unseen leg only after its blockhash expires", async () => {
+  const journal = journalFixture([legFixture("141")]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({ liveSeed: "140", present: [], blockhashValid: false }),
+    artifact,
+    journal,
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "reconciled");
+  const leg = journalLeg(journal, 0);
+  assert.equal(leg.state, "abandoned");
+  assert.match(leg.abandonReason as string, /never landed and its blockhash expired/);
+  assert.deepEqual(outcome.pendingSeeds, [...POLICY_SEEDS]);
+});
+
+test("reconcile abandons a processed failure only after its blockhash expires", async () => {
+  const journal = journalFixture([legFixture("141")]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({
+      liveSeed: "140",
+      present: [],
+      blockhashValid: false,
+      signatures: { [SIGNATURE]: { err: "AccountInUse", confirmationStatus: "processed", slot: 500 } },
+    }),
+    artifact,
+    journal,
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "reconciled");
+  const leg = journalLeg(journal, 0);
+  assert.equal(leg.state, "abandoned");
+  assert.match(leg.abandonReason as string, /failed at processed without finalizing and its blockhash expired/);
+  const verdict = outcome.reconciliation?.verdicts[0] as Record<string, unknown>;
+  assert.equal(verdict.signatureStatus, "replayable-failure");
+  assert.equal(verdict.confirmationStatus, "processed");
+  assert.equal(verdict.blockhashValid, false);
 });
 
 test("reconcile re-simulates a blocked leg before retrying it", async () => {
@@ -380,7 +495,10 @@ test("reconcile promotes a planned leg and verifies its full payload against the
   assert.equal(outcome.status, "reconciled");
   const leg = journalLeg(journal, 0);
   assert.equal(leg.state, "finalized");
-  assert.equal((leg.readback as Record<string, unknown>).finalizedSlot, 900);
+  const readback = leg.readback as Record<string, unknown>;
+  assert.equal(readback.finalizedSlot, 900);
+  assert.equal(readback.dataSha256, artifactRow("141").dataSha256);
+  assert.equal(readback.accountDataSha256, sha256(policyAccount("141", policyExpectationFromArtifact(artifactRow("141")).constraints)));
   assert.deepEqual(outcome.pendingSeeds, ["142", "143", "144"]);
 });
 
@@ -475,25 +593,34 @@ function tamperAccountConstraint(seed: string): readonly unknown[] {
 }
 
 function policyAccount(seed: string, constraints: readonly unknown[]): Buffer {
+  const expected = policyExpectationFromArtifact(artifactRow(seed));
   const [data] = policyBeet.serialize({
     accountDiscriminator: (generated as unknown as { policyDiscriminator: number[] }).policyDiscriminator,
-    settings: new PublicKey(artifact.settings),
-    seed: BigInt(seed),
+    settings: new PublicKey(expected.settings),
+    seed: BigInt(expected.seed),
     bump: 254,
     transactionIndex: 0n,
     staleTransactionIndex: 0n,
-    signers: [{ key: new PublicKey(artifact.delegate), permissions: { mask: 3 } }],
-    threshold: 1,
-    timeLock: 0,
+    signers: expected.signers.map((signer) => ({ key: new PublicKey(signer.key), permissions: { mask: signer.permissionsMask } })),
+    threshold: expected.threshold,
+    timeLock: expected.timeLock,
     policyState: {
-      __kind: "ProgramInteraction",
-      fields: [{ accountIndex: 0, instructionsConstraints: constraints, preHook: null, postHook: null, spendingLimits: [] }],
+      __kind: expected.policyKind,
+      fields: [{ accountIndex: expected.accountIndex, instructionsConstraints: constraints, preHook: null, postHook: null, spendingLimits: [] }],
     },
-    start: 0n,
+    start: BigInt(expected.start),
     expiration: null,
-    rentCollector: PublicKey.default,
+    rentCollector: new PublicKey(expected.rentCollector),
   });
   return data;
+}
+
+type DecodedPolicy = Record<string, any>;
+
+function decodePolicyAccount(data: Buffer): DecodedPolicy {
+  return (Policy as unknown as {
+    fromAccountInfo(info: { owner: PublicKey; data: Buffer; lamports: number; executable: boolean; rentEpoch: number }): readonly [DecodedPolicy, number];
+  }).fromAccountInfo({ owner: new PublicKey(PROGRAM), data, lamports: 1, executable: false, rentEpoch: 0 })[0];
 }
 
 function settingsAccount(policySeed: string): Buffer {
