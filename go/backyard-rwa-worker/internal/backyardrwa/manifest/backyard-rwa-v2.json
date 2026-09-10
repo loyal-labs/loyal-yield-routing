@@ -35,7 +35,7 @@
   ],
   "policyCatalog": {
     "schema": "loyal-backyard-rwa-policy-catalog/v2",
-    "sha256": null,
+    "sha256": "1a91e42894e4248deef16812882a0e73f577bd2cbed4b0ee1c89cc3ac2695e7f",
     "addressesResolved": true,
     "packingRung": null,
     "policyAccounts": [
