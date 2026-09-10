@@ -219,6 +219,13 @@ export function assertExecuteAuthorization(env: Readonly<Record<string, string |
     "execute mode requires SOLANA_TESTING_PK");
 }
 
+/** A recorded slot, when recorded at all: null is allowed, a negative or fractional slot never is. */
+function optionalSlot(value: JsonObject, key: string, label: string): void {
+  const slot = value[key];
+  if (slot === undefined) return;
+  invariant(slot === null || (typeof slot === "number" && Number.isSafeInteger(slot) && slot >= 0), `${label}.${key} is invalid`);
+}
+
 function validateReconciliations(value: unknown): void {
   invariant(Array.isArray(value), "basic policy install journal reconciliations drifted");
   for (const [index, rawEntry] of value.entries()) {
@@ -226,7 +233,7 @@ function validateReconciliations(value: unknown): void {
     const entry = object(rawEntry, label);
     stringField(entry, "at", label);
     const finalizedSlot = entry.finalizedSlot;
-    invariant(typeof finalizedSlot === "number" && Number.isSafeInteger(finalizedSlot), `${label} finalized slot is invalid`);
+    invariant(typeof finalizedSlot === "number" && Number.isSafeInteger(finalizedSlot) && finalizedSlot >= 0, `${label} finalized slot is invalid`);
     stringField(entry, "livePolicySeed", label);
     invariant(Array.isArray(entry.verdicts), `${label} verdicts drifted`);
     for (const [verdictIndex, rawVerdict] of entry.verdicts.entries()) {
@@ -234,6 +241,9 @@ function validateReconciliations(value: unknown): void {
       const verdict = object(rawVerdict, verdictLabel);
       stringField(verdict, "seed", verdictLabel);
       stringField(verdict, "verdict", verdictLabel);
+      optionalSlot(verdict, "statusSlot", verdictLabel);
+      optionalSlot(verdict, "validityContextSlot", verdictLabel);
+      optionalSlot(verdict, "finalizedBlockHeight", verdictLabel);
     }
   }
 }
@@ -246,8 +256,7 @@ export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArt
   if (journal.authority !== undefined) invariant(journal.authority === RWA_MULTIPLY_ROUTE.setupAdmin, "basic policy install journal authority drifted");
   if (journal.reconciliations !== undefined) validateReconciliations(journal.reconciliations);
   let priorSeed = 140n;
-  let priorState: string | null = null;
-  let finalizedAttempt = false;
+  const attempts = new Map<string, string[]>();
   for (const [index, rawLeg] of journal.legs.entries()) {
     const label = `basic policy install journal leg ${index}`;
     const leg = object(rawLeg, label);
@@ -259,19 +268,9 @@ export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArt
     const state = stringField(leg, "state", label);
     invariant(state === "planned" || state === "finalized" || state === "blocked" || state === "abandoned",
       `basic policy install journal leg ${seed} state drifted`);
-    if (seedValue === priorSeed && priorState !== null) {
-      // Repeated attempts at one seed: a run of abandoned attempts followed by
-      // at most one planned/blocked/finalized attempt, where that planned or
-      // blocked attempt may itself later become abandoned. Anything else - a
-      // second unbroken attempt, or any attempt after finalized - is invalid.
-      invariant(!finalizedAttempt, `basic policy install journal leg ${seed} retries a seed whose leg is already finalized`);
-      invariant(state === "abandoned" || priorState === "abandoned",
-        `basic policy install journal leg ${seed} is a second unbroken attempt at the same seed; only an abandoned attempt may be retried`);
-    } else {
-      invariant(seedValue === priorSeed + 1n, `${label} is not the next policy seed or an abandoned-seed retry`);
-      finalizedAttempt = false;
-    }
-    if (state === "finalized") finalizedAttempt = true;
+    invariant(seedValue === priorSeed || seedValue === priorSeed + 1n, `${label} is not the next policy seed or an abandoned-seed retry`);
+    invariant(leg.finalizedSlot === undefined || (typeof leg.finalizedSlot === "number" && Number.isSafeInteger(leg.finalizedSlot) && leg.finalizedSlot >= 0),
+      `basic policy install journal leg ${seed} finalized slot is invalid`);
     const wireSha256 = stringField(leg, "wireSha256", label);
     invariant(/^[0-9a-f]{64}$/.test(wireSha256), `basic policy install journal leg ${seed} wire hash is invalid`);
     stringField(leg, "blockhash", label);
@@ -289,6 +288,7 @@ export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArt
       throw new Error(`basic policy install journal leg ${seed} signature is not base58`);
     }
     invariant(signatureBytes.length === 64, `basic policy install journal leg ${seed} signature is not a 64-byte ed25519 signature`);
+    assertLegWireBound(leg, seed, label, artifact);
     const preSendSimulation = object(leg.preSendSimulation, `basic policy install journal leg ${seed} pre-send simulation`);
     const simulationSlot = preSendSimulation.contextSlot;
     invariant((typeof simulationSlot === "number" && Number.isSafeInteger(simulationSlot) && simulationSlot >= 0) || simulationSlot === null,
@@ -300,7 +300,8 @@ export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArt
       invariant(preSendSimulation.err === null && preSendSimulation.err !== undefined,
         `basic policy install journal leg ${seed} is planned without a passing pre-send simulation`);
     } else if (state === "blocked") {
-      invariant(preSendSimulation.err !== null, `basic policy install journal leg ${seed} is blocked without a pre-send simulation error`);
+      invariant(preSendSimulation.err !== undefined && preSendSimulation.err !== null,
+        `basic policy install journal leg ${seed} is blocked without a pre-send simulation error`);
     } else if (state === "abandoned") {
       stringField(leg, "abandonReason", label);
     } else {
@@ -323,9 +324,56 @@ export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArt
       invariant(readbackBlockTime === null ? readbackStart === undefined : (typeof readbackStart === "number" && Number.isSafeInteger(readbackStart) && readbackStart > 0),
         `basic policy install journal leg ${seed} readback start is invalid`);
     }
+    attempts.set(seed, [...(attempts.get(seed) ?? []), state]);
     priorSeed = seedValue;
-    priorState = state;
   }
+  // Repeated attempts at one seed: every attempt before the last must be
+  // abandoned, so an unbroken attempt can never be retried and nothing follows
+  // a finalized leg. The next seed may only open once the previous seed's last
+  // attempt is finalized, since that is what moves the live policy seed.
+  let priorOrderSeed: bigint | null = null;
+  let priorLastState: string | null = null;
+  for (const [seed, states] of attempts) {
+    for (const state of states.slice(0, -1)) {
+      invariant(state === "abandoned", state === "finalized"
+        ? `basic policy install journal leg ${seed} retries a seed whose leg is already finalized`
+        : `basic policy install journal leg ${seed} is a second unbroken attempt at the same seed; only an abandoned attempt may be retried`);
+    }
+    const lastState = states.at(-1);
+    invariant(lastState !== undefined, `basic policy install journal leg ${seed} has no recorded attempts`);
+    invariant(priorLastState === null || priorOrderSeed === null || priorLastState === "finalized",
+      `basic policy install journal leg ${seed} cannot follow seed ${priorOrderSeed}, whose last attempt is ${priorLastState}, not finalized`);
+    priorOrderSeed = BigInt(seed);
+    priorLastState = lastState;
+  }
+}
+
+/**
+ * Byte-level binding between a journal leg and the wire it claims was signed:
+ * the recorded wire is deserialized and every field reconcile or a resume
+ * relies on - its hash, its signature, its blockhash, its fee payer, and its
+ * single instruction - is proven against the leg's own records and the
+ * artifact. A leg without the wire is an older journal and refuses.
+ */
+function assertLegWireBound(leg: JsonObject, seed: string, label: string, artifact?: BasicPolicyArtifact): void {
+  const wire = decodeData(stringField(leg, "wire", label), `${label} wire`);
+  invariant(sha256(wire) === stringField(leg, "wireSha256", label), `basic policy install journal leg ${seed} wire hash does not match its recorded wire`);
+  let parsed: Transaction;
+  try {
+    parsed = Transaction.from(wire);
+  } catch (error) {
+    throw new Error(`basic policy install journal leg ${seed} wire is not a legacy Solana transaction (${String(error)})`);
+  }
+  invariant(parsed.recentBlockhash === stringField(leg, "blockhash", label), `basic policy install journal leg ${seed} wire recent blockhash does not match its recorded blockhash`);
+  invariant(parsed.feePayer?.toBase58() === RWA_MULTIPLY_ROUTE.setupAdmin, `basic policy install journal leg ${seed} wire fee payer is not the artifact authority`);
+  invariant(parsed.signatures.length === 1, `basic policy install journal leg ${seed} wire does not carry exactly one signature`);
+  const wireSignature = parsed.signatures[0]?.signature;
+  invariant(wireSignature !== undefined && wireSignature !== null, `basic policy install journal leg ${seed} wire carries no signature`);
+  invariant(bs58.encode(wireSignature) === stringField(leg, "signature", label), `basic policy install journal leg ${seed} wire signature does not match its recorded signature`);
+  invariant(parsed.instructions.length === 1, `basic policy install journal leg ${seed} wire does not carry exactly one instruction`);
+  if (artifact === undefined) return;
+  const expected = decodeData(artifactPolicy(artifact, seed).instruction.dataBase64, `basic policy ${seed} instruction data`);
+  invariant(parsed.instructions[0]?.data.equals(expected), `basic policy install journal leg ${seed} wire instruction data does not match the artifact instruction data`);
 }
 
 /**
@@ -335,6 +383,7 @@ export function validateInstallJournal(value: unknown, artifact?: BasicPolicyArt
 export type ReconcileConnection = Pick<Connection,
   "getAccountInfo" |
   "getAccountInfoAndContext" |
+  "getBlockHeight" |
   "getBlockTime" |
   "getMultipleAccountsInfoAndContext" |
   "getSignatureStatuses" |
@@ -400,9 +449,67 @@ export type ReconcileAction = "verify-finalized" | "promote-finalized" | "abando
 export type UnsentLegEvidence = Readonly<{
   signatureStatus: "landed" | "failed" | "replayable-failure" | "unknown";
   blockhashValid: boolean | null;
+  /** Slot the validity answer was produced at, null when no validity answer was taken. */
+  validityContextSlot: number | null;
+  /** Finalized block height sampled with the validity answer, null when it could not be read. */
+  finalizedBlockHeight: number | null;
   statusSlot: number | null;
   confirmationStatus?: string | null;
 }>;
+
+/**
+ * The blockhash context a leg recorded when it was planned: the slot its
+ * pre-send simulation ran at and the height its blockhash was valid to. An
+ * expiry claim is only as good as these recorded anchors.
+ */
+export type LegBlockhashAnchor = Readonly<{
+  simulationContextSlot: number | null;
+  lastValidBlockHeight: number | null;
+}>;
+
+/** The recorded anchors of one journal leg, null where the leg records nothing usable. */
+function legBlockhashAnchor(leg: JsonObject): LegBlockhashAnchor {
+  const simulation = object(leg.preSendSimulation, "basic policy install journal leg pre-send simulation");
+  const slot = simulation.contextSlot;
+  const height = leg.lastValidBlockHeight;
+  return {
+    simulationContextSlot: typeof slot === "number" && Number.isSafeInteger(slot) && slot >= 0 ? slot : null,
+    lastValidBlockHeight: typeof height === "number" && Number.isSafeInteger(height) && height > 0 ? height : null,
+  };
+}
+
+/**
+ * Whether a `false` from `isBlockhashValid` proves the leg's blockhash expired.
+ * It only does when the answer was produced no earlier than the leg's own
+ * pre-send simulation slot and the finalized block height has passed the
+ * height the blockhash was valid to; a lagging or missing context is stale
+ * evidence and never an abandon.
+ */
+function blockhashExpiryVerdict(seed: string, evidence: UnsentLegEvidence, anchor: LegBlockhashAnchor): Readonly<{ proven: boolean; reason: string | null }> {
+  if (evidence.blockhashValid !== false) return { proven: false, reason: null };
+  if (anchor.lastValidBlockHeight === null) {
+    return { proven: false, reason: `basic policy ${seed} records no lastValidBlockHeight, so its expiry is ambiguous; blockhash expiry evidence is stale; re-run reconcile` };
+  }
+  if (anchor.simulationContextSlot === null) {
+    return { proven: false, reason: `basic policy ${seed} records no pre-send simulation context slot; blockhash expiry evidence is stale; re-run reconcile` };
+  }
+  if (evidence.validityContextSlot === null || evidence.finalizedBlockHeight === null) {
+    return { proven: false, reason: `basic policy ${seed} blockhash validity carries no context slot or finalized block height; blockhash expiry evidence is stale; re-run reconcile` };
+  }
+  if (evidence.validityContextSlot < anchor.simulationContextSlot) {
+    return {
+      proven: false,
+      reason: `basic policy ${seed} blockhash validity was answered at slot ${evidence.validityContextSlot}, before the leg's pre-send simulation slot ${anchor.simulationContextSlot}; blockhash expiry evidence is stale; re-run reconcile`,
+    };
+  }
+  if (evidence.finalizedBlockHeight <= anchor.lastValidBlockHeight) {
+    return {
+      proven: false,
+      reason: `basic policy ${seed} finalized block height ${evidence.finalizedBlockHeight} has not passed its lastValidBlockHeight ${anchor.lastValidBlockHeight}; blockhash expiry evidence is stale; re-run reconcile`,
+    };
+  }
+  return { proven: true, reason: null };
+}
 
 export type ReconcileLegDecision = Readonly<{
   action: ReconcileAction;
@@ -424,6 +531,8 @@ export function classifyJournalLeg(input: Readonly<{
   seed: string;
   livePolicySeed: string;
   pdaPresent: boolean;
+  /** The leg's recorded blockhash context, read straight out of the journal. */
+  anchor?: LegBlockhashAnchor;
   evidence?: UnsentLegEvidence;
 }>): ReconcileLegDecision {
   const nextInstallSeed = BigInt(input.livePolicySeed) + 1n;
@@ -463,6 +572,8 @@ export function classifyJournalLeg(input: Readonly<{
         ? `leg ${input.seed} failed at ${evidence.confirmationStatus ?? "an unconfirmed commitment"} but may still be replayed; re-run reconcile after the blockhash expires`
         : `leg ${input.seed} may still land; re-run reconcile after the blockhash expires`);
     }
+    const expiry = blockhashExpiryVerdict(input.seed, evidence, input.anchor ?? { simulationContextSlot: null, lastValidBlockHeight: null });
+    if (!expiry.proven) return refuse(expiry.reason ?? `leg ${input.seed} blockhash expiry is unproven; re-run reconcile`);
     return {
       action: "abandon-and-retry",
       reason: evidence.signatureStatus === "replayable-failure"
@@ -822,6 +933,7 @@ async function installSeedLeg(runtime: InstallRuntime, policy: BasicPolicyRow): 
     account: policy.account,
     family: policy.family,
     state: "planned",
+    wire: wire.toString("base64"),
     wireSha256: sha256(wire),
     blockhash: latest.value.blockhash,
     lastValidBlockHeight: latest.value.lastValidBlockHeight,
@@ -899,17 +1011,23 @@ async function resolveUnsentLegEvidence(connection: ReconcileConnection, seed: s
   const signature = stringField(leg, "signature", "basic policy install journal leg");
   const status = (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
   if (status && status.err === null && (status.confirmationStatus === "finalized" || status.confirmationStatus === "confirmed")) {
-    return { signatureStatus: "landed", blockhashValid: null, statusSlot: status.slot };
+    return { signatureStatus: "landed", blockhashValid: null, validityContextSlot: null, finalizedBlockHeight: null, statusSlot: status.slot };
   }
   if (status && status.err !== null && status.confirmationStatus === "finalized") {
-    return { signatureStatus: "failed", blockhashValid: null, statusSlot: status.slot };
+    return { signatureStatus: "failed", blockhashValid: null, validityContextSlot: null, finalizedBlockHeight: null, statusSlot: status.slot };
   }
   const blockhash = stringField(leg, "blockhash", "basic policy install journal leg");
+  // Sampled in this order on purpose: the block height is read after the
+  // validity answer, so it can only be at least as advanced as the slot the
+  // answer describes.
   const validity = await connection.isBlockhashValid(blockhash, { commitment: "finalized" });
+  const blockHeight = await connection.getBlockHeight("finalized");
   const replayableFailure = Boolean(status && status.err !== null);
   return {
     signatureStatus: replayableFailure ? "replayable-failure" : "unknown",
     blockhashValid: validity.value === true,
+    validityContextSlot: validity.context.slot,
+    finalizedBlockHeight: blockHeight,
     statusSlot: status ? status.slot : null,
     ...(replayableFailure && typeof status?.confirmationStatus === "string" ? { confirmationStatus: status.confirmationStatus } : {}),
   };
@@ -958,21 +1076,27 @@ export async function reconcileInstallJournal(input: Readonly<{
   const readbacks = new Map<string, JsonObject>();
   const verdicts: JsonObject[] = [];
   const abandonedAttempts = new Map<string, number>();
-  for (const rawLeg of journal.legs as JsonObject[]) {
+  for (const [index, rawLeg] of (journal.legs as JsonObject[]).entries()) {
     const seed = stringField(rawLeg, "seed", "basic policy install journal leg");
+    // Every leg - recorded abandons included - must still bind to the wire it
+    // claims was signed, or the evidence below describes a transaction nobody
+    // can account for.
+    assertLegWireBound(rawLeg, seed, `basic policy install journal leg ${index}`, artifact);
+    const anchor = legBlockhashAnchor(rawLeg);
     const state = stringField(rawLeg, "state", "basic policy install journal leg");
     if (state === "abandoned") {
       // A recorded abandon is a claim, not evidence: every abandoned leg -
       // historical attempts included - is re-verified against finalized chain
       // state before any retry at that seed is authorized. Only a finalized
-      // error or an expired blockhash proves the wire can never land.
+      // error or a proven expired blockhash means the wire can never land.
       const attempt = (abandonedAttempts.get(seed) ?? 0) + 1;
       abandonedAttempts.set(seed, attempt);
       const evidence = await resolveUnsentLegEvidence(connection, seed, rawLeg);
+      const expiry = blockhashExpiryVerdict(seed, evidence, anchor);
       const stillReplayable = evidence.signatureStatus === "landed" ||
-        (evidence.signatureStatus !== "failed" && evidence.blockhashValid !== false);
+        (evidence.signatureStatus !== "failed" && !expiry.proven);
       if (stillReplayable) {
-        const reason = `abandoned leg ${seed} attempt ${attempt} is still replayable; manual review`;
+        const reason = expiry.reason ?? `abandoned leg ${seed} attempt ${attempt} is still replayable; manual review`;
         return {
           status: "refused",
           reason,
@@ -1000,7 +1124,7 @@ export async function reconcileInstallJournal(input: Readonly<{
         }
       }
     }
-    const decision = classifyJournalLeg({ state, seed, livePolicySeed: live.seed, pdaPresent, ...(evidence === undefined ? {} : { evidence }) });
+    const decision = classifyJournalLeg({ state, seed, livePolicySeed: live.seed, pdaPresent, anchor, ...(evidence === undefined ? {} : { evidence }) });
     if (decision.action === "refuse") {
       return {
         status: "refused",
@@ -1046,6 +1170,8 @@ function verdictEvidence(evidence: UnsentLegEvidence | undefined): JsonObject {
   return {
     signatureStatus: evidence.signatureStatus,
     blockhashValid: evidence.blockhashValid,
+    validityContextSlot: evidence.validityContextSlot,
+    finalizedBlockHeight: evidence.finalizedBlockHeight,
     statusSlot: evidence.statusSlot,
     ...(evidence.confirmationStatus === undefined || evidence.confirmationStatus === null ? {} : { confirmationStatus: evidence.confirmationStatus }),
   };

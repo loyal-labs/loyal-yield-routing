@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "bun:test";
 import { generated, Policy } from "@loyal-labs/loyal-smart-accounts-core";
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
+import bs58 from "bs58";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import {
@@ -28,11 +29,19 @@ import {
   releaseInstallLock,
   reconcileInstallJournal,
   validateInstallJournal,
+  type LegBlockhashAnchor,
+  type ReconcileLegDecision,
+  type UnsentLegEvidence,
 } from "./rwa-basic-policy-set.js";
 
 const artifact = parseArtifact(JSON.parse(readFileSync(BASIC_POLICY_ARTIFACT, "utf8")) as unknown);
 const PROGRAM = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG";
-const SIGNATURE = "1".repeat(64);
+/** Fixture signatures are 64 nonzero bytes, so a deserialized wire keeps them as signatures. */
+const SIGNATURE = bs58.encode(Buffer.alloc(64, 1));
+const ALT_SIGNATURE = bs58.encode(Buffer.alloc(64, 2));
+const LEG_BLOCKHASH = PublicKey.default.toBase58();
+const LEG_LAST_VALID_BLOCK_HEIGHT = 123;
+const LEG_SIMULATION_SLOT = 456;
 const ARTIFACT_SHA256 = "b".repeat(64);
 /** Program-assigned start of the real finalized seed 141 policy; also the landing block time of synthetic accounts. */
 const LANDING_BLOCK_TIME = 1_789_016_967;
@@ -115,7 +124,8 @@ test("reconcile classifier retries a planned leg that never landed only once the
 
   const expired = classifyJournalLeg({
     state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false,
-    evidence: { signatureStatus: "unknown", blockhashValid: false, statusSlot: null },
+    anchor: { simulationContextSlot: LEG_SIMULATION_SLOT, lastValidBlockHeight: LEG_LAST_VALID_BLOCK_HEIGHT },
+    evidence: { signatureStatus: "unknown", blockhashValid: false, validityContextSlot: 900, finalizedBlockHeight: 4_243, statusSlot: null },
   });
   assert.equal(expired.action, "abandon-and-retry");
 
@@ -148,10 +158,36 @@ test("reconcile classifier treats a non-finalized error as replayable until the 
 
   const expired = classifyJournalLeg({
     state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false,
-    evidence: { signatureStatus: "replayable-failure", blockhashValid: false, statusSlot: 500, confirmationStatus: "processed" },
+    anchor: { simulationContextSlot: LEG_SIMULATION_SLOT, lastValidBlockHeight: LEG_LAST_VALID_BLOCK_HEIGHT },
+    evidence: { signatureStatus: "replayable-failure", blockhashValid: false, validityContextSlot: 900, finalizedBlockHeight: 4_243, statusSlot: 500, confirmationStatus: "processed" },
   });
   assert.equal(expired.action, "abandon-and-retry");
   assert.match(expired.reason, /leg 142|failed at processed without finalizing/);
+});
+
+test("blockhash expiry needs recent context and a finalized height past lastValidBlockHeight", () => {
+  const anchor = { simulationContextSlot: LEG_SIMULATION_SLOT, lastValidBlockHeight: LEG_LAST_VALID_BLOCK_HEIGHT };
+  const expiredEvidence = (overrides: Partial<UnsentLegEvidence> = {}): UnsentLegEvidence => ({
+    signatureStatus: "unknown", blockhashValid: false, validityContextSlot: 900, finalizedBlockHeight: 4_243, statusSlot: null, ...overrides,
+  });
+  const decide = (evidence: UnsentLegEvidence, anchorOverrides: Partial<LegBlockhashAnchor> = {}): ReconcileLegDecision =>
+    classifyJournalLeg({ state: "planned", seed: "142", livePolicySeed: "141", pdaPresent: false, anchor: { ...anchor, ...anchorOverrides }, evidence });
+
+  // A lagging validity answer is stale evidence, never an abandon.
+  const lagging = decide(expiredEvidence({ validityContextSlot: LEG_SIMULATION_SLOT - 1 }));
+  assert.equal(lagging.action, "refuse");
+  assert.match(lagging.reason, /before the leg's pre-send simulation slot 456; blockhash expiry evidence is stale; re-run reconcile/);
+  // So are a missing validity context, a missing height, a height short of the
+  // recorded validity, and a leg that recorded no anchors at all.
+  assert.match(decide(expiredEvidence({ validityContextSlot: null })).reason, /blockhash expiry evidence is stale/);
+  assert.match(decide(expiredEvidence({ finalizedBlockHeight: null })).reason, /blockhash expiry evidence is stale/);
+  const short = decide(expiredEvidence({ finalizedBlockHeight: LEG_LAST_VALID_BLOCK_HEIGHT }));
+  assert.equal(short.action, "refuse");
+  assert.match(short.reason, /finalized block height 123 has not passed its lastValidBlockHeight 123/);
+  const unanchored = decide(expiredEvidence(), { lastValidBlockHeight: null });
+  assert.equal(unanchored.action, "refuse");
+  assert.match(unanchored.reason, /records no lastValidBlockHeight, so its expiry is ambiguous/);
+  assert.match(decide(expiredEvidence(), { simulationContextSlot: null }).reason, /records no pre-send simulation context slot/);
 });
 
 test("reconcile classifier refuses a planned seed consumed elsewhere or ahead of the chain", () => {
@@ -188,6 +224,48 @@ test("reconcile classifier re-simulates a blocked leg before retrying it", () =>
     state: "blocked", seed: "143", livePolicySeed: "143", pdaPresent: false,
     evidence: { signatureStatus: "failed", blockhashValid: null, statusSlot: 500 },
   }).action, "refuse");
+});
+
+test("reconcile refuses a blockhash-expiry verdict taken from lagging context", async () => {
+  const journal = journalFixture([legFixture("141")]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({
+      liveSeed: "140",
+      present: [],
+      blockhashValid: false,
+      validitySlot: LEG_SIMULATION_SLOT - 1,
+    }),
+    artifact,
+    journal,
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "refused");
+  assert.match(outcome.reason ?? "", /blockhash expiry evidence is stale; re-run reconcile/);
+  assert.equal(journalLeg(journal, 0).state, "planned");
+  const verdict = outcome.reconciliation?.verdicts[0] as Record<string, unknown>;
+  assert.equal(verdict.blockhashValid, false);
+  assert.equal(verdict.validityContextSlot, LEG_SIMULATION_SLOT - 1);
+  assert.equal(verdict.finalizedBlockHeight, 4_243);
+});
+
+test("reconcile refuses a recorded abandoned leg whose expiry evidence is stale", async () => {
+  const abandoned = { ...legFixture("141"), state: "abandoned", abandonReason: "never landed; blockhash expired" };
+  const journal = journalFixture([abandoned, legFixture("141")]);
+  const outcome = await reconcileInstallJournal({
+    connection: fakeConnection({
+      liveSeed: "140",
+      present: [],
+      blockhashValid: false,
+      blockHeight: LEG_LAST_VALID_BLOCK_HEIGHT,
+    }),
+    artifact,
+    journal,
+    artifactSha256: ARTIFACT_SHA256,
+  });
+  assert.equal(outcome.status, "refused");
+  assert.match(outcome.reason ?? "", /has not passed its lastValidBlockHeight 123; blockhash expiry evidence is stale/);
+  assert.equal(journalLeg(journal, 0).state, "abandoned");
+  assert.equal(journalLeg(journal, 1).state, "planned");
 });
 
 test("start gate resumes a journal, refuses a completed install, and starts only a clean slate", () => {
@@ -315,6 +393,100 @@ test("journal enforces per-state required fields and leg identity", () => {
     () => validateInstallJournal(journalFixture([{ ...planned, state: "finalized", readback: { ...finalizedReadback("141"), blockTime: 1_000, start: LANDING_BLOCK_TIME } }]), artifact),
   );
   assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, lastValidBlockHeight: 0 }]), artifact), /block height is invalid/);
+});
+
+test("journal refuses a leg whose recorded wire does not bind to its evidence", () => {
+  const planned = legFixture("141");
+  const otherSeedWire = legWire("142");
+  const strangerWire = legWire("141", SIGNATURE, Keypair.generate().publicKey);
+  const unwired = { ...planned };
+  delete unwired.wire;
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, wire: Buffer.from("tampered").toString("base64") }])), /wire hash does not match its recorded wire/);
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, wireSha256: "d".repeat(64) }])), /wire hash does not match its recorded wire/);
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, signature: ALT_SIGNATURE }])), /wire signature does not match its recorded signature/);
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, blockhash: bs58.encode(Buffer.alloc(32, 5)) }])), /wire recent blockhash does not match its recorded blockhash/);
+  assert.throws(
+    () => validateInstallJournal(journalFixture([{ ...planned, wire: strangerWire.wire, wireSha256: strangerWire.wireSha256 }]), artifact),
+    /wire fee payer is not the artifact authority/,
+  );
+  assert.throws(
+    () => validateInstallJournal(journalFixture([{ ...planned, wire: otherSeedWire.wire, wireSha256: otherSeedWire.wireSha256 }]), artifact),
+    /wire instruction data does not match the artifact instruction data/,
+  );
+  // An older journal without the wire cannot be resumed.
+  assert.throws(() => validateInstallJournal(journalFixture([unwired])), /\.wire is not a non-empty string/);
+  assert.throws(() => validateInstallJournal(journalFixture([unwired]), artifact), /\.wire is not a non-empty string/);
+  assert.doesNotThrow(() => validateInstallJournal(journalFixture([legFixture("141")])));
+});
+
+test("reconcile refuses a journal whose legs no longer bind to their recorded wires", async () => {
+  const journal = journalFixture([{ ...legFixture("141"), wireSha256: "d".repeat(64) }]);
+  await assert.rejects(
+    () => reconcileInstallJournal({
+      connection: fakeConnection({ liveSeed: "140", present: [], blockhashValid: false }),
+      artifact,
+      journal,
+      artifactSha256: ARTIFACT_SHA256,
+    }),
+    /wire hash does not match its recorded wire/,
+  );
+});
+
+test("journal rejects a same-seed retry after an unbroken attempt", () => {
+  const abandoned = { ...legFixture("141"), state: "abandoned", abandonReason: "never landed; blockhash expired" };
+  const blocked = { ...legFixture("141"), state: "blocked", preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: "BlockhashNotFound" } };
+  assert.throws(() => validateInstallJournal(journalFixture([legFixture("141"), abandoned, legFixture("141")])), /second unbroken attempt/);
+  assert.throws(() => validateInstallJournal(journalFixture([blocked, abandoned, blocked])), /second unbroken attempt/);
+  assert.doesNotThrow(() => validateInstallJournal(journalFixture([abandoned, { ...abandoned, abandonReason: "expired again" }, legFixture("141")])));
+});
+
+test("journal only advances to the next seed after a finalized attempt", () => {
+  const abandoned = { ...legFixture("141"), state: "abandoned", abandonReason: "never landed; blockhash expired" };
+  const next = { account: artifactRow("142").account, family: artifactRow("142").family };
+  assert.throws(
+    () => validateInstallJournal(journalFixture([abandoned, legFixture("142", next)])),
+    /cannot follow seed 141, whose last attempt is abandoned, not finalized/,
+  );
+  assert.throws(
+    () => validateInstallJournal(journalFixture([legFixture("141"), legFixture("142", next)])),
+    /cannot follow seed 141, whose last attempt is planned, not finalized/,
+  );
+  const altWire = legWire("141", ALT_SIGNATURE);
+  const finalized = {
+    ...legFixture("141", { signature: ALT_SIGNATURE, wire: altWire.wire, wireSha256: altWire.wireSha256 }),
+    state: "finalized",
+    readback: finalizedReadback("141"),
+  };
+  assert.doesNotThrow(() => validateInstallJournal(journalFixture([finalized, legFixture("142", next)])));
+});
+
+test("journal refuses a blocked leg whose pre-send simulation recorded no error", () => {
+  const planned = legFixture("141");
+  assert.throws(
+    () => validateInstallJournal(journalFixture([{ ...planned, state: "blocked", preSendSimulation: { contextSlot: 456, unitsConsumed: 789 } }])),
+    /blocked without a pre-send simulation error/,
+  );
+});
+
+test("journal refuses negative or fractional recorded slots", () => {
+  const planned = legFixture("141");
+  const reconciled = (verdicts: unknown[], finalizedSlot: number): Record<string, unknown> => ({
+    ...journalFixture([planned]),
+    reconciliations: [{ at: "2026-09-09T00:00:00.000Z", finalizedSlot, livePolicySeed: "140", verdicts }],
+  });
+  assert.throws(() => validateInstallJournal(reconciled([], -1)), /finalized slot is invalid/);
+  assert.throws(
+    () => validateInstallJournal(reconciled([{ seed: "141", verdict: "abandon-and-retry", statusSlot: -1 }], 1_000)),
+    /statusSlot is invalid/,
+  );
+  assert.throws(
+    () => validateInstallJournal(reconciled([{ seed: "141", verdict: "abandon-and-retry", finalizedBlockHeight: -4_243 }], 1_000)),
+    /finalizedBlockHeight is invalid/,
+  );
+  assert.throws(() => validateInstallJournal(journalFixture([{ ...planned, finalizedSlot: -1 }])), /leg 141 finalized slot is invalid/);
+  assert.doesNotThrow(
+    () => validateInstallJournal(reconciled([{ seed: "141", verdict: "abandon-and-retry", statusSlot: null, validityContextSlot: 4 }], 1_000)),
+  );
 });
 
 test("install lock is exclusive and leaves no file behind on release", () => {
@@ -634,14 +806,19 @@ test("reconcile keeps an abandoned leg only with a finalized error or an expired
 
 test("reconcile re-verifies every abandoned attempt per seed and numbers them", async () => {
   // Attempt 1 provably failed at finalized; attempt 2 still holds a live blockhash.
-  const first = { ...legFixture("141"), state: "abandoned", abandonReason: "failed at finalized", signature: "2".repeat(64) };
+  const altWire = legWire("141", ALT_SIGNATURE);
+  const first = {
+    ...legFixture("141", { signature: ALT_SIGNATURE, wire: altWire.wire, wireSha256: altWire.wireSha256 }),
+    state: "abandoned",
+    abandonReason: "failed at finalized",
+  };
   const second = { ...legFixture("141"), state: "abandoned", abandonReason: "never landed; blockhash expired" };
   const outcome = await reconcileInstallJournal({
     connection: fakeConnection({
       liveSeed: "140",
       present: [],
       blockhashValid: true,
-      signatures: { ["2".repeat(64)]: { err: "AccountInUse", confirmationStatus: "finalized", slot: 500 } },
+      signatures: { [ALT_SIGNATURE]: { err: "AccountInUse", confirmationStatus: "finalized", slot: 500 } },
     }),
     artifact,
     journal: journalFixture([first, second, legFixture("141")]),
@@ -719,19 +896,33 @@ test("reconcile refuses an on-chain policy payload that the artifact does not sp
   );
 });
 
+/**
+ * A legacy wire for one seed, signed-looking the way `installSeedLeg` builds
+ * one: fee payer is the artifact authority, one instruction, one signature.
+ */
+function legWire(seed: string, signature: string = SIGNATURE, feePayer: PublicKey = new PublicKey(artifact.authority)): { wire: string; wireSha256: string } {
+  const transaction = new Transaction({ feePayer, recentBlockhash: LEG_BLOCKHASH })
+    .add(createPolicyInstruction(artifactRow(seed)));
+  transaction.addSignature(feePayer, bs58.decode(signature));
+  const wire = transaction.serialize({ verifySignatures: false });
+  return { wire: wire.toString("base64"), wireSha256: sha256(wire) };
+}
+
 function legFixture(seed: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const row = artifactRow(seed);
+  const wire = legWire(seed);
   return {
     seed,
     account: row.account,
     family: row.family,
     state: "planned",
-    wireSha256: "a".repeat(64),
-    blockhash: "test-blockhash",
-    lastValidBlockHeight: 123,
-    packetBytes: row.legacyPacketBytes,
+    wire: wire.wire,
+    wireSha256: wire.wireSha256,
+    blockhash: LEG_BLOCKHASH,
+    lastValidBlockHeight: LEG_LAST_VALID_BLOCK_HEIGHT,
+    packetBytes: Buffer.from(wire.wire, "base64").length,
     signature: SIGNATURE,
-    preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: null },
+    preSendSimulation: { contextSlot: LEG_SIMULATION_SLOT, unitsConsumed: 789, err: null },
     ...overrides,
   };
 }
@@ -862,6 +1053,10 @@ function fakeConnection(input: Readonly<{
   signatures?: Record<string, { err: unknown; confirmationStatus: string; slot: number } | null>;
   blockTimes?: Record<number, number>;
   blockhashValid?: boolean;
+  /** Slot the blockhash validity answer is produced at. */
+  validitySlot?: number;
+  /** Finalized block height sampled with the validity answer. */
+  blockHeight?: number;
   slot?: number;
 }>) {
   const slot = input.slot ?? 900;
@@ -890,7 +1085,8 @@ function fakeConnection(input: Readonly<{
       context: { slot },
       value: signatures.map((signature) => input.signatures?.[signature] ?? null),
     }),
-    isBlockhashValid: async () => ({ context: { slot }, value: input.blockhashValid === true }),
+    isBlockhashValid: async () => ({ context: { slot: input.validitySlot ?? slot }, value: input.blockhashValid === true }),
+    getBlockHeight: async () => input.blockHeight ?? 4_243,
     getBlockTime: async (blockTimeSlot: number) => input.blockTimes?.[blockTimeSlot] ?? null,
     simulateTransaction: async () => ({ context: { slot }, value: { err: null, logs: [], unitsConsumed: 1_000n } }),
     getLatestBlockhashAndContext: async () => ({ context: { slot }, value: { blockhash: "fake-blockhash", lastValidBlockHeight: 4_242 } }),
