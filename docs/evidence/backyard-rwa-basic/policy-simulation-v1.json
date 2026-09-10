@@ -1,0 +1,135 @@
+{
+  "schema": "loyal-backyard-rwa-basic-policy-simulation/v1",
+  "verdict": "FAIL",
+  "broadcast": false,
+  "cluster": "mainnet-beta",
+  "commitment": "finalized",
+  "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "settings": {
+    "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+    "policySeedBefore": "140",
+    "contextSlot": 445759742
+  },
+  "preflight": {
+    "contextSlot": 445759742,
+    "policies": [
+      {
+        "seed": "141",
+        "account": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+        "exists": false
+      },
+      {
+        "seed": "142",
+        "account": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+        "exists": false
+      },
+      {
+        "seed": "143",
+        "account": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+        "exists": false
+      },
+      {
+        "seed": "144",
+        "account": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+        "exists": false
+      }
+    ]
+  },
+  "policies": [
+    {
+      "seed": "141",
+      "account": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "family": "CollateralLifecycle",
+      "packetBytes": 1136,
+      "contextSlot": 445759742,
+      "err": null,
+      "logs": [
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]",
+        "Program log: Instruction: ExecuteSettingsTransactionSync",
+        "Program 11111111111111111111111111111111 invoke [2]",
+        "Program 11111111111111111111111111111111 success",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [2]",
+        "Program log: Instruction: LogEvent",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 1048 of 157016 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [2]",
+        "Program log: Instruction: LogEvent",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 1048 of 148420 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 53943 of 200000 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success"
+      ],
+      "unitsConsumed": 53943
+    },
+    {
+      "seed": "142",
+      "account": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "family": "DebtLifecycle",
+      "packetBytes": 1136,
+      "contextSlot": 445759742,
+      "err": {
+        "InstructionError": [
+          0,
+          {
+            "Custom": 6024
+          }
+        ]
+      },
+      "logs": [
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]",
+        "Program log: Instruction: ExecuteSettingsTransactionSync",
+        "Program log: AnchorError occurred. Error Code: MissingAccount. Error Number: 6024. Error Message: Missing account.",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 27152 of 200000 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x1788"
+      ],
+      "unitsConsumed": 27152
+    },
+    {
+      "seed": "143",
+      "account": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "family": "SwapRoutesA",
+      "packetBytes": 818,
+      "contextSlot": 445759742,
+      "err": {
+        "InstructionError": [
+          0,
+          {
+            "Custom": 6024
+          }
+        ]
+      },
+      "logs": [
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]",
+        "Program log: Instruction: ExecuteSettingsTransactionSync",
+        "Program log: AnchorError occurred. Error Code: MissingAccount. Error Number: 6024. Error Message: Missing account.",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 23880 of 200000 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x1788"
+      ],
+      "unitsConsumed": 23880
+    },
+    {
+      "seed": "144",
+      "account": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+      "family": "SwapRoutesB",
+      "packetBytes": 818,
+      "contextSlot": 445759742,
+      "err": {
+        "InstructionError": [
+          0,
+          {
+            "Custom": 6024
+          }
+        ]
+      },
+      "logs": [
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]",
+        "Program log: Instruction: ExecuteSettingsTransactionSync",
+        "Program log: AnchorError occurred. Error Code: MissingAccount. Error Number: 6024. Error Message: Missing account.",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 23880 of 200000 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x1788"
+      ],
+      "unitsConsumed": 23880
+    }
+  ],
+  "contextSlot": 445759742
+}
