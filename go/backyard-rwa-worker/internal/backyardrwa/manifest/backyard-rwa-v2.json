@@ -45,10 +45,10 @@
       "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz"
     ],
     "policies": [
-      {"family":"CollateralLifecycle","seed":141,"account":"2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh","dataSha256":null},
-      {"family":"DebtLifecycle","seed":142,"account":"BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA","dataSha256":null},
-      {"family":"SwapRoutesA","seed":143,"account":"9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA","dataSha256":null},
-      {"family":"SwapRoutesB","seed":144,"account":"Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz","dataSha256":null}
+      {"family":"CollateralLifecycle","seed":141,"account":"2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh","dataSha256":"c716c948bb6f20c4bf951386ea9d49b43b933a6009778518fa04263be0df0ae9"},
+      {"family":"DebtLifecycle","seed":142,"account":"BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA","dataSha256":"bb42c52b1f5641e8105a7b04607a35fe92034d71ad87b3e528d7914edd38e704"},
+      {"family":"SwapRoutesA","seed":143,"account":"9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA","dataSha256":"7058ac2cc0db6befa76c4e10cd8558f52ccb9814532970241d6cfd0038f79f3f"},
+      {"family":"SwapRoutesB","seed":144,"account":"Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz","dataSha256":"43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a"}
     ]
   },
   "runtimeBindings": {
@@ -58,10 +58,10 @@
       {"action":"STAGE_SQUADS_TO_VOLTR","account":"ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY","dataSha256":"ef8c231497fb2620b5930cfe5d329c871f103db6512781eb5487534db8b1291b"},
       {"action":"VOLTR_RESTORE_IDLE","account":"DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t","dataSha256":"84e8f6f881758cff1714ef743603c016024104f9834392c6fba693c3651b719c"}
     ],
-    "collateralLifecycle":{"policy":"2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh","dataSha256":null,"constraintIndices":{"deposit":0,"withdraw":1}},
-    "debtLifecycle":{"policy":"BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA","dataSha256":null,"constraintIndices":{"borrow":0,"repay":1}},
-    "swapRoutesA":{"policy":"9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA","dataSha256":null,"constraintIndices":{"route0":0,"route1":1}},
-    "swapRoutesB":{"policy":"Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz","dataSha256":null,"constraintIndices":{"route0":0,"route1":1}}
+    "collateralLifecycle":{"policy":"2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh","dataSha256":"c716c948bb6f20c4bf951386ea9d49b43b933a6009778518fa04263be0df0ae9","constraintIndices":{"deposit":0,"withdraw":1}},
+    "debtLifecycle":{"policy":"BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA","dataSha256":"bb42c52b1f5641e8105a7b04607a35fe92034d71ad87b3e528d7914edd38e704","constraintIndices":{"borrow":0,"repay":1}},
+    "swapRoutesA":{"policy":"9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA","dataSha256":"7058ac2cc0db6befa76c4e10cd8558f52ccb9814532970241d6cfd0038f79f3f","constraintIndices":{"route0":0,"route1":1}},
+    "swapRoutesB":{"policy":"Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz","dataSha256":"43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a","constraintIndices":{"route0":0,"route1":1}}
   },
   "runtimeActivation": {
     "schema": "loyal-backyard-rwa-runtime-activation/v2",
