@@ -76,7 +76,7 @@ func basicRuntimeRoute(lane string) (RuntimeRoute, error) {
 		base.CollateralLiquiditySupply = "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG"
 		base.CollateralReceiptMint = "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd"
 		base.CollateralReceiptSupply = "2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo"
-		base.DebtLiquiditySupply, base.DebtFeeReceiver = "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB", "5iLRav31Y7DJwM6bZ7s92jqvVzd1wZMcp4mYeKXh8cj"
+		base.DebtLiquiditySupply, base.DebtFeeReceiver = "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB", "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj"
 		base.DebtFarm, base.ObligationDebtFarm = onreDebtFarmState, "nMqFZFPQsNwot49QAD1B76LxNV7qRG1tnbkXyTjbUAD"
 	default:
 		return RuntimeRoute{}, fmt.Errorf("runtime lane %q is not installed", lane)
