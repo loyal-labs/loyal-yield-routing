@@ -65,6 +65,7 @@ test("fails closed on execute authorization and validates the pre-send journal s
       lastValidBlockHeight: 123,
       packetBytes: 1136,
       signature: "test-signature",
+      preSendSimulation: { contextSlot: 456, unitsConsumed: 789, err: null },
     }],
   };
   assert.doesNotThrow(() => validateInstallJournal(journal));

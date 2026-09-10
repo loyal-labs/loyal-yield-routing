@@ -211,7 +211,7 @@ export function validateInstallJournal(value: unknown): void {
       `basic policy install journal leg ${index} is not the next policy seed`);
     invariant(leg.account === derivePolicyAddress(RWA_MULTIPLY_ROUTE.squads.settings, seed), `basic policy install journal leg ${seed} PDA drifted`);
     const state = stringField(leg, "state", `basic policy install journal leg ${index}`);
-    invariant(state === "planned" || state === "finalized", `basic policy install journal leg ${seed} state drifted`);
+    invariant(state === "planned" || state === "finalized" || state === "blocked", `basic policy install journal leg ${seed} state drifted`);
     const wireSha256 = stringField(leg, "wireSha256", `basic policy install journal leg ${index}`);
     invariant(/^[0-9a-f]{64}$/.test(wireSha256), `basic policy install journal leg ${seed} wire hash is invalid`);
     stringField(leg, "blockhash", `basic policy install journal leg ${index}`);
@@ -222,6 +222,13 @@ export function validateInstallJournal(value: unknown): void {
     invariant(typeof packetBytes === "number" && Number.isSafeInteger(packetBytes) && packetBytes > 0 && packetBytes <= PACKET_LIMIT,
       `basic policy install journal leg ${seed} packet size is invalid`);
     stringField(leg, "signature", `basic policy install journal leg ${index}`);
+    const preSendSimulation = object(leg.preSendSimulation, `basic policy install journal leg ${seed} pre-send simulation`);
+    const simulationSlot = preSendSimulation.contextSlot;
+    invariant((typeof simulationSlot === "number" && Number.isSafeInteger(simulationSlot)) || simulationSlot === null,
+      `basic policy install journal leg ${seed} simulation slot is invalid`);
+    const simulationUnits = preSendSimulation.unitsConsumed;
+    invariant((typeof simulationUnits === "number" && Number.isFinite(simulationUnits) && simulationUnits >= 0) || simulationUnits === null,
+      `basic policy install journal leg ${seed} simulation units are invalid`);
     priorSeed = BigInt(seed);
   }
 }
@@ -358,6 +365,7 @@ async function execute(rpc: string, artifact: BasicPolicyArtifact): Promise<void
     const signatureBytes = transaction.signatures[0]?.signature;
     invariant(signatureBytes, `policy ${policy.seed} signature is absent`);
     const signature = bs58.encode(signatureBytes);
+    const preSendSimulation = await simulatePolicy(connection, policy, latest.value.blockhash);
     const leg: JsonObject = {
       seed: policy.seed,
       account: policy.account,
@@ -368,10 +376,17 @@ async function execute(rpc: string, artifact: BasicPolicyArtifact): Promise<void
       lastValidBlockHeight: latest.value.lastValidBlockHeight,
       packetBytes: wire.length,
       signature,
+      preSendSimulation: {
+        contextSlot: preSendSimulation.contextSlot,
+        unitsConsumed: preSendSimulation.unitsConsumed,
+        err: preSendSimulation.err,
+      },
     };
+    if (preSendSimulation.err !== null) leg.state = "blocked";
     (journal.legs as JsonObject[]).push(leg);
     validateInstallJournal(journal);
     atomic(BASIC_POLICY_JOURNAL, journal);
+    invariant(preSendSimulation.err === null, `policy ${policy.seed} pre-send simulation failed`);
     const returned = await connection.sendRawTransaction(wire, { skipPreflight: false, preflightCommitment: "finalized", maxRetries: 0, minContextSlot: latest.context.slot });
     invariant(returned === signature, `policy ${policy.seed} RPC signature mismatch`);
     const confirmation = await connection.confirmTransaction({ signature, blockhash: latest.value.blockhash, lastValidBlockHeight: latest.value.lastValidBlockHeight }, "finalized");
