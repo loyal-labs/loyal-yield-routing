@@ -37,7 +37,7 @@ func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoPrimeUSDCReq
 	data = appendU64(data, 1_000_000)
 	return KaminoPrimeUSDCRequest{
 		Action: action, AmountRaw: 1_000_000, Policy: bridgeAllocationPolicy,
-		PolicyConstraintIndex: kaminoConstraintIndex(leg), PolicyAccountDataSHA256: hex.EncodeToString(bytes.Repeat([]byte{1}, 32)),
+		PolicyConstraintIndex: 0, PolicyAccountDataSHA256: hex.EncodeToString(bytes.Repeat([]byte{1}, 32)),
 		Accounts: manifestAccounts(metas), Data: data, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 	}
 }
@@ -128,10 +128,8 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 }
 
 func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := basicPolicyFixtureManifest(t)
+	var err error
 	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
@@ -167,10 +165,8 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 }
 
 func TestKaminoWithdrawWireAcceptsDebtBearingObligationTopology(t *testing.T) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := basicPolicyFixtureManifest(t)
+	var err error
 	request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)

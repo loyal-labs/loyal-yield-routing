@@ -282,6 +282,15 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base.Snapshot.CutoverDrain = cutoverDrain
 		base.Snapshot.TicketLastConsumedSequenceRaw = int64(ticket.LastConsumedSequence)
 		base.Snapshot.HasPosition = position.HasPosition
+		// The position view and the NAV view decode the obligation independently
+		// out of the same confirmed batch; they must agree on whether the account
+		// even exists. An absent obligation is carried forward explicitly instead
+		// of being silently folded into a flat position.
+		if position.ObligationPresent != nav.ObligationPresent {
+			return Observation{}, nil, fmt.Errorf("route NAV and position disagree on the obligation account")
+		}
+		base.Snapshot.ObligationPresent = position.ObligationPresent
+		base.Snapshot.ObligationPresenceKnown = true
 		base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
 		base.Snapshot.PositionDebtRaw = int64(position.DebtRaw)
 		if route.Kamino.DebtMint != bridgeUSDC && position.DebtRaw > 0 {
@@ -391,7 +400,11 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	for _, address := range route.PolicyAccounts {
 		addressSet[address] = struct{}{}
 	}
-	if route.Lane == SelectedRouteID {
+	if route.BasicPolicy {
+		for _, address := range manifest.PolicyCatalog.PolicyAccounts {
+			addressSet[address] = struct{}{}
+		}
+	} else if route.Lane == SelectedRouteID {
 		for _, address := range mapleKaminoPolicyAccounts() {
 			addressSet[address] = struct{}{}
 		}
@@ -420,6 +433,21 @@ func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, acco
 	}
 	if route.Lane == RouteID {
 		return manifest.livePrimeUSDCPolicyReadiness(accounts)
+	}
+	if route.BasicPolicy {
+		families := []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB}
+		ready := true
+		for _, family := range families {
+			binding, hash, err := manifest.basicPolicyBinding(family)
+			if err != nil {
+				return false, false
+			}
+			account := accountAt(accounts, binding.Policy)
+			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+				ready = false
+			}
+		}
+		return ready, ready
 	}
 	for action, address := range route.PolicyAccounts {
 		account := accountAt(accounts, address)
@@ -512,7 +540,7 @@ func observeKaminoFromFixedAccounts(ctx context.Context, accountsReader func(con
 	if err != nil {
 		return KaminoPosition{}, err
 	}
-	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
+	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, ObligationPresent: obligationAccount.Lamports != 0, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
 }
 
 // Capacity is originally debt-denominated. The entry planner spends bridge

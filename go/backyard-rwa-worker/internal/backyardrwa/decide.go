@@ -40,6 +40,19 @@ func custodyResidueHold(s Snapshot) (Decision, bool) {
 		StrategyKey:    strategyKey}, true
 }
 
+// installedDecisionLane reports whether a confirmed observation frozen on
+// this lane may be resolved by Decide: the pinned legacy Prime route plus the
+// basic policy lanes. The remaining runtimeRoute catalog entries stay
+// observation-only, so they keep failing closed here instead of reusing the
+// legacy Prime decision path.
+func installedDecisionLane(lane string) bool {
+	if lane == RouteID {
+		return true
+	}
+	route, err := runtimeRoute(lane)
+	return err == nil && route.BasicPolicy
+}
+
 // Decide resolves the already-frozen lane carried by the confirmed
 // observation. It does not choose a lane; observations for any lane outside
 // the registered routes fail closed. Registration does not enable the live
@@ -105,7 +118,7 @@ func Decide(s Snapshot) Decision {
 		decision.StrategyKey = SelectedRouteID
 		return decision
 	}
-	if s.RouteLane != "" && s.RouteLane != RouteID {
+	if s.RouteLane != "" && !installedDecisionLane(s.RouteLane) {
 		return Decision{Action: HoldManualRecovery, Reason: "unsupported_runtime_lane", AmountRaw: 0,
 			IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "unsupported_runtime_lane"), StrategyKey: s.RouteLane}
 	}
@@ -117,7 +130,28 @@ func Decide(s Snapshot) Decision {
 	}
 	decision := decideFixed(s)
 	decision.StrategyKey = RouteID
+	if s.RouteLane != "" {
+		decision.StrategyKey = s.RouteLane
+	}
 	return decision
+}
+
+// obligationAbsentHoldReason marks an observed prerequisite, never a policy
+// failure and never unexplained NAV drift: the lane's Kamino obligation account
+// does not exist, so Kamino refuses the deposit entry planning would fund. It
+// is a plain hold that clears by itself once the account exists.
+const obligationAbsentHoldReason = "obligation_absent"
+
+func obligationPrerequisiteHold(s Snapshot) (Decision, bool) {
+	if !s.ObligationPresenceKnown || s.ObligationPresent {
+		return Decision{}, false
+	}
+	strategyKey := s.RouteLane
+	if strategyKey == "" {
+		strategyKey = RouteID
+	}
+	return Decision{Action: Hold, Reason: obligationAbsentHoldReason, AmountRaw: 0, StrategyKey: strategyKey,
+		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, obligationAbsentHoldReason, 0)}, true
 }
 
 func decideFixed(s Snapshot) Decision {
@@ -245,6 +279,13 @@ func decideFixed(s Snapshot) Decision {
 			return hold
 		}
 		return decision(ReportNAV, "nav_due", 0)
+	}
+	// Entry planning funds a Kamino deposit. Without the obligation account that
+	// deposit is refused and the funded capital strands in custody, so no
+	// allocation, swap, or deposit is constructed. Withdrawal and reporting legs
+	// above stay live.
+	if hold, absent := obligationPrerequisiteHold(s); absent {
+		return hold
 	}
 	if s.VoltrIdleRaw > 0 {
 		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", s.VoltrIdleRaw)

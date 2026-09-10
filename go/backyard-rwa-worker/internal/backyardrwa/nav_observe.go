@@ -134,11 +134,15 @@ type RouteNAVSnapshot struct {
 	DebtIdleValueRaw        uint64
 	PositionCollateralValue uint64
 	PositionDebtValue       uint64
-	Receipt                 StrategyReceipt
-	Voltr                   VoltrVaultBook
-	LPSupplyRaw             uint64
-	SnapshotDigest          string
-	Report                  BridgeReport
+	// ObligationPresent reports whether the obligation account existed in this
+	// confirmed batch. Zero position values from a missing account are an
+	// observed absence, never a silently decoded flat position.
+	ObligationPresent bool
+	Receipt           StrategyReceipt
+	Voltr             VoltrVaultBook
+	LPSupplyRaw       uint64
+	SnapshotDigest    string
+	Report            BridgeReport
 }
 
 func pinnedRouteNAVAddresses() []string {
@@ -530,8 +534,9 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 		TotalVaultNAVRaw: custodies.VoltrIdleRaw + uint64(nav.Raw), PriorReportedNAVRaw: receipt.PositionValueRaw,
 		PriorReportUpdatedTS: receipt.LastUpdatedTS,
 		PrimeIdleValueRaw:    primeIdleValue, PositionCollateralValue: collateralValue, PositionDebtValue: debtValue,
-		DebtIdleValueRaw: debtIdleValue,
-		Receipt:          receipt, Voltr: vault, LPSupplyRaw: lpSupply,
+		DebtIdleValueRaw:  debtIdleValue,
+		ObligationPresent: obligationAccount.Lamports != 0,
+		Receipt:           receipt, Voltr: vault, LPSupplyRaw: lpSupply,
 		SnapshotDigest: nav.SnapshotDigest,
 		Report:         BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
 	}, nil

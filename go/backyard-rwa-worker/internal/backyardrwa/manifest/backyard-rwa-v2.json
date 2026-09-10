@@ -1,0 +1,77 @@
+{
+  "schema": "loyal-backyard-rwa-manifest/v2",
+  "status": "ready",
+  "cluster": "mainnet-beta",
+  "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "commitment": "confirmed",
+  "mvpRoute": "PRIME/USDC",
+  "targetLtvBps": 5000,
+  "hardLtvRule": "min(6000, liquidationThresholdBps - 1500)",
+  "withdrawalWaitSeconds": 600,
+  "navMaxAgeSeconds": 60,
+  "vaultCapRaw": "1000000000000",
+  "identities": {
+    "voltrProgram": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+    "voltrVault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+    "adaptorProgram": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+    "v2StrategyConfig": "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj",
+    "reportTicket": "C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5",
+    "reportTicketBump": 254,
+    "reportTicketStateLength": 96,
+    "squadsProgram": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+    "squadsSettings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+    "squadsVaultIndex": 0,
+    "squadsVault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+    "delegatedExecutor": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+    "squadsUsdcAta": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+    "usdcMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "classicTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "token2022Program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+  },
+  "supportedLanes": [
+    "Prime/PRIME/USDC",
+    "Maple/syrupUSDC/USDC",
+    "OnRe/ONyc/USDC"
+  ],
+  "policyCatalog": {
+    "schema": "loyal-backyard-rwa-policy-catalog/v2",
+    "sha256": "1a91e42894e4248deef16812882a0e73f577bd2cbed4b0ee1c89cc3ac2695e7f",
+    "addressesResolved": true,
+    "packingRung": null,
+    "policyAccounts": [
+      "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz"
+    ],
+    "policies": [
+      {"family":"CollateralLifecycle","seed":141,"account":"2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh","dataSha256":"c716c948bb6f20c4bf951386ea9d49b43b933a6009778518fa04263be0df0ae9"},
+      {"family":"DebtLifecycle","seed":142,"account":"BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA","dataSha256":"bb42c52b1f5641e8105a7b04607a35fe92034d71ad87b3e528d7914edd38e704"},
+      {"family":"SwapRoutesA","seed":143,"account":"9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA","dataSha256":"7058ac2cc0db6befa76c4e10cd8558f52ccb9814532970241d6cfd0038f79f3f"},
+      {"family":"SwapRoutesB","seed":144,"account":"Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz","dataSha256":"43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a"}
+    ]
+  },
+  "runtimeBindings": {
+    "bridgePolicies": [
+      {"action":"VOLTR_ALLOCATE_TO_SQUADS","account":"HoDV7mtsb2u1VARZLYuGByW7cCsGWL9NFxHZs7WHjdzz","dataSha256":"bda72932f474064fa3cd60ce91633acba35b2730e86b82f4352aa96a6738e2f4"},
+      {"action":"REPORT_NAV","account":"41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP","dataSha256":"bf34a3e9c9c635c79a0d30e096b639a86d52e300ad113c81161e3486832d97ca"},
+      {"action":"STAGE_SQUADS_TO_VOLTR","account":"ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY","dataSha256":"ef8c231497fb2620b5930cfe5d329c871f103db6512781eb5487534db8b1291b"},
+      {"action":"VOLTR_RESTORE_IDLE","account":"DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t","dataSha256":"84e8f6f881758cff1714ef743603c016024104f9834392c6fba693c3651b719c"}
+    ],
+    "collateralLifecycle":{"policy":"2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh","dataSha256":"c716c948bb6f20c4bf951386ea9d49b43b933a6009778518fa04263be0df0ae9","constraintIndices":{"deposit":0,"withdraw":1}},
+    "debtLifecycle":{"policy":"BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA","dataSha256":"bb42c52b1f5641e8105a7b04607a35fe92034d71ad87b3e528d7914edd38e704","constraintIndices":{"borrow":0,"repay":1}},
+    "swapRoutesA":{"policy":"9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA","dataSha256":"7058ac2cc0db6befa76c4e10cd8558f52ccb9814532970241d6cfd0038f79f3f","constraintIndices":{"route0":0,"route1":1}},
+    "swapRoutesB":{"policy":"Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz","dataSha256":"43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a","constraintIndices":{"route0":0,"route1":1}}
+  },
+  "runtimeActivation": {
+    "schema": "loyal-backyard-rwa-runtime-activation/v2",
+    "selectedLane": "Maple/syrupUSDC/USDC",
+    "runtimeRoutes": [
+      {"lane":"Prime/PRIME/USDC","protocol":"Prime","collateralSymbol":"PRIME","debtSymbol":"USDC","graph":{"klendProgram":"KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD","vault":"ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh","market":"CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA","marketAuthority":"9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM","collateralReserve":"BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh","collateralMint":"3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7","collateralLiquiditySupply":"FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352","collateralReceiptMint":"FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW","collateralReceiptSupply":"Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN","collateralCustody":"DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct","debtReserve":"9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu","debtMint":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","debtTokenProgram":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","debtLiquiditySupply":"H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC","debtFeeReceiver":"BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6","debtCustody":"EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe","obligation":"9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv","collateralFarmState":"","collateralFarmUserState":"","debtFarmState":"","debtFarmUserState":""}},
+      {"lane":"Maple/syrupUSDC/USDC","protocol":"Maple","collateralSymbol":"syrupUSDC","debtSymbol":"USDC","graph":{"klendProgram":"KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD","vault":"ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh","market":"6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y","marketAuthority":"6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g","collateralReserve":"AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY","collateralMint":"AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj","collateralLiquiditySupply":"8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i","collateralReceiptMint":"9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu","collateralReceiptSupply":"21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58","collateralCustody":"CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN","debtReserve":"Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo","debtMint":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","debtTokenProgram":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","debtLiquiditySupply":"BBcwMNSMyhhBnYE9pevEvkxKHGzTafMP9v3j7Kk7nAWM","debtFeeReceiver":"HH7GLnRcGHJrdkEueVVj7mccNUjnSeWobDmtu9cHLkJV","debtCustody":"EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe","obligation":"Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT","collateralFarmState":"","collateralFarmUserState":"","debtFarmState":"87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y","debtFarmUserState":"CcUorNoacydFVu7SHmhsA1qi9CcEu8K5YFvuS8unAzgr"}},
+      {"lane":"OnRe/ONyc/USDC","protocol":"OnRe","collateralSymbol":"ONyc","debtSymbol":"USDC","graph":{"klendProgram":"KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD","vault":"ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh","market":"47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8","marketAuthority":"FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss","collateralReserve":"6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ","collateralMint":"5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5","collateralLiquiditySupply":"9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG","collateralReceiptMint":"CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd","collateralReceiptSupply":"2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo","collateralCustody":"AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3","debtReserve":"AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z","debtMint":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v","debtTokenProgram":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","debtLiquiditySupply":"8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB","debtFeeReceiver":"5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj","debtCustody":"EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe","obligation":"4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei","collateralFarmState":"","collateralFarmUserState":"","debtFarmState":"7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF","debtFarmUserState":"nMqFZFPQsNwot49QAD1B76LxNV7qRG1tnbkXyTjbUAD"}}
+    ]
+  },
+  "deployment": {"sourceCommit":null,"imageDigest":null,"singleWriterService":null},
+  "unresolved": []
+}

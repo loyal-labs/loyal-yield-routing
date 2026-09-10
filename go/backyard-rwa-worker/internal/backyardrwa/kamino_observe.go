@@ -110,8 +110,12 @@ func pinnedKaminoObservationConfig() (KaminoObservationConfig, error) {
 }
 
 type KaminoPosition struct {
-	Slot, RefreshedSlot      int64
-	HasPosition              bool
+	Slot, RefreshedSlot int64
+	HasPosition         bool
+	// ObligationPresent is false only when the observer saw the lane's
+	// obligation account absent from its confirmed batch. A flat decode of a
+	// missing account must never be mistaken for an observed flat position.
+	ObligationPresent        bool
 	CollateralDepositedRaw   uint64
 	DebtRaw                  uint64
 	RedeemablePrimeRaw       uint64
@@ -212,6 +216,9 @@ func (c *RPCClient) observeKaminoPrimeUSDC(ctx context.Context, config KaminoObs
 		}
 		return KaminoPosition{
 			Slot: baseSlot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition,
+			// decodeKaminoObligation refuses an absent obligation envelope, so a
+			// returned position always observed the account on chain.
+			ObligationPresent:      true,
 			CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw,
 			RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF,
 			DebtPriceSF: debt.marketPriceSF, Oracles: oracles,

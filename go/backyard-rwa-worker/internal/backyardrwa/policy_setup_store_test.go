@@ -47,11 +47,19 @@ func TestPolicySetupIntentRejectsUnpricedOrChangedPlan(t *testing.T) {
 	if _, err := validatePolicySetupPlan(plan); err != nil {
 		t.Fatal(err)
 	}
+	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
+		route, err := runtimeRoute(lane)
+		if err != nil || !route.BasicPolicy {
+			t.Fatalf("basic lane %q is not an installed basic runtime lane: %+v, %v", lane, route, err)
+		}
+	}
 	d := Decision{Action: PolicySetupPrefund, StrategyKey: "OnRe/ONyc/USDC", Reason: "phase3_policy_setup", AmountRaw: 1, IdempotencyKey: "setup"}
 	if err := d.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtimeRoute(d.StrategyKey); err == nil {
+	// A prefund decision is journal identity only: it must never activate a
+	// lane the runtime has not installed, even a sibling of a basic lane.
+	if _, err := runtimeRoute("OnRe/ONyc/USDG"); err == nil {
 		t.Fatal("setup metadata activated the rejected runtime lane")
 	}
 	_, err := (&Database{}).RecordDecision(context.Background(), "route", Observation{}, d, "", "")

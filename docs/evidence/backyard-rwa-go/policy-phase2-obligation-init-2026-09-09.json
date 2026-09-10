@@ -1,0 +1,52 @@
+{
+  "schema": "loyal-backyard-rwa-phase2-obligation-init/v1",
+  "verdict": "CONFIRMED_RECONCILED",
+  "broadcast": true,
+  "commitment": "confirmed",
+  "resolutionSha256": "ee77830646e34291f38f0da46d63c4686344b68847c3794c6bde3c7418a55296",
+  "laneFilter": [
+    "Prime/PRIME/USDC",
+    "Maple/syrupUSDC/USDC"
+  ],
+  "skippedLaneCount": 9,
+  "settings": {
+    "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+    "contextSlot": 445790697,
+    "policySeed": "140"
+  },
+  "operations": [
+    {
+      "lane": "Prime/PRIME/USDC",
+      "action": "init-obligation",
+      "signature": "Xq1swnRb8hPB1N6b8wYdPj1DkeZbNJZXXg6PTstXqKBwbAmS8Y64J5VmULa62ERQ9JVVR4AcS9vEUm8G1v1uaRt",
+      "confirmedSlot": 445790701,
+      "policyChanges": 0,
+      "packetBytes": 594,
+      "fundingLamports": 0,
+      "beforeObligationAbsent": true,
+      "after": {
+        "tag": 1,
+        "owner": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "market": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+        "dataSha256": "9aa6534f151a218424b5a38379aae04c728f3444a72aaf48d62f7d99a7459176"
+      }
+    },
+    {
+      "lane": "Maple/syrupUSDC/USDC",
+      "action": "init-obligation",
+      "signature": "2C7on7gLMqFcq7zt3BAUHPJMXBQQbV7FmfgdtuYdWHvfKPYqaEMxWnVsrtw7JzvD8zMYQ7s8wYHn3Xsf1myAh9To",
+      "confirmedSlot": 445790705,
+      "policyChanges": 0,
+      "packetBytes": 594,
+      "fundingLamports": 0,
+      "beforeObligationAbsent": true,
+      "after": {
+        "tag": 1,
+        "owner": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "market": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+        "dataSha256": "5cbd5d7984edcf069fb2ae09dbbb489a60e3f57de206a9badeba3c4b4aa968fa"
+      }
+    }
+  ],
+  "unchangedPolicySurface": true
+}
