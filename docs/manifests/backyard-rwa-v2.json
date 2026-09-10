@@ -73,7 +73,5 @@
     ]
   },
   "deployment": {"sourceCommit":null,"imageDigest":null,"singleWriterService":null},
-  "unresolved": [
-    {"code":"BASIC_POLICY_INSTALL_READBACK_PENDING","resumeCondition":"Install seeds 141-144 and record each finalized policy account dataSha256 before enabling the Go worker."}
-  ]
+  "unresolved": []
 }
