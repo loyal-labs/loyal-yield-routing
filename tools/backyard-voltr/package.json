@@ -39,6 +39,7 @@
     "probe:rwa-multiply-phase2-families": "bun src/verify/generate-rwa-phase2-family-probes.ts",
     "probe:rwa-multiply-phase2-kamino": "bun src/verify/generate-rwa-phase2-kamino-family-probes.ts",
     "compile:rwa-multiply-phase2-kamino": "bun src/verify/generate-rwa-phase2-kamino-policy-artifacts.ts",
+    "compile:rwa-basic-policy-set": "cargo run -p loyal-actions --bin compile-backyard-basic-policy-set",
     "resolve:rwa-multiply-phase2-jupiter": "bun src/verify/generate-rwa-phase2-jupiter-headers.ts",
     "diagnose:rwa-multiply-phase2-jupiter-rejected": "bun src/verify/generate-rwa-phase2-jupiter-rejected-shape.ts",
     "probe:rwa-multiply-phase2-atomic-topology": "bun src/verify/generate-rwa-phase2-atomic-topology-probe.ts",

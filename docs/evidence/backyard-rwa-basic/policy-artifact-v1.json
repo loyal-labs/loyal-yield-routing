@@ -1,0 +1,373 @@
+{
+  "authority": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+  "delegate": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+  "policies": [
+    {
+      "account": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "constraints": [
+        {
+          "accountConditions": [
+            {
+              "accountIndex": 0,
+              "condition": "equals ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 1,
+              "condition": "owner KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD and data[64..96] equals vault ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 4,
+              "condition": "one of {6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ, BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh, AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY}"
+            },
+            {
+              "accountIndex": 9,
+              "condition": "one of {AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3, DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct, CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN}"
+            }
+          ],
+          "dataConditions": [
+            "data[0..8] equals d8e0bf1bcc9766af"
+          ],
+          "instruction": "depositReserveLiquidityAndObligationCollateralV2",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accountConditions": [
+            {
+              "accountIndex": 0,
+              "condition": "equals ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 1,
+              "condition": "owner KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD and data[64..96] equals vault ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 4,
+              "condition": "one of {6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ, BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh, AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY}"
+            },
+            {
+              "accountIndex": 9,
+              "condition": "one of {AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3, DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct, CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN}"
+            }
+          ],
+          "dataConditions": [
+            "data[0..8] equals eb34779895c51407"
+          ],
+          "instruction": "withdrawObligationCollateralAndRedeemReserveCollateralV2",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        }
+      ],
+      "dataSha256": "bd75abb8acb28180e2fbcd66814e21d32267a447cf3dac50c928d2d2cc0dcc83",
+      "family": "CollateralLifecycle",
+      "instruction": {
+        "accounts": [
+          {
+            "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": "11111111111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+            "signer": true,
+            "writable": false
+          },
+          {
+            "address": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+            "signer": false,
+            "writable": true
+          }
+        ],
+        "dataBase64": "itFAo09D6UwBAQAAAAeNAAAAAAAAAAMAAgAAAASyrLESWMzjaCxBi6hy/z35EQJxLxWvEra+abNDWwAIBAAAAAAAAQAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAEBAQAAAEAAAAAAAAAABSAAAAAGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+gABBLKssRJYzONoLEGLqHL/PfkRAnEvFa8Str5ps0NbAAgEAAMAAABSvA0O5CYrKgJ8rZqto3oaAW+csl2myzGBxtn7tRPzXZudXOWHvOVYbGXJaSktz6rNSFzxaO3FeyqpKIl6PRx+k5wUTZQRVXmQ++jUj3660XemUH3vj3TN4funUlEDcCMACQADAAAAjQeKYBqKTXSJs9igbJn6uEnEmcOVzSPIQOsVgklYiFC935LsGhNbQJXpcI5O/zeP6AgtSF4FAykNOo2J7hS7xaufAnFtq+OyrkGJahejXcaKJV4d6qDqbh2aHi40+IT7AAEAAAAAAAAAAAAAAAUIAAAA2OC/G8yXZq8ABLKssRJYzONoLEGLqHL/PfkRAnEvFa8Str5ps0NbAAgEAAAAAAABAAAABoUTxIzyOBqoO0cYLJhBqR8PM30Dzx+IfBwwjBZTwvoAAQEBAAAAQAAAAAAAAAAFIAAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAEEsqyxEljM42gsQYuocv89+RECcS8VrxK2vmmzQ1sACAQAAwAAAFK8DQ7kJisqAnytmq2jehoBb5yyXabLMYHG2fu1E/Ndm51c5Ye85VhsZclpKS3Pqs1IXPFo7cV7KqkoiXo9HH6TnBRNlBFVeZD76NSPfrrRd6ZQfe+PdM3h+6dSUQNwIwAJAAMAAACNB4pgGopNdImz2KBsmfq4ScSZw5XNI8hA6xWCSViIUL3fkuwaE1tAlelwjk7/N4/oCC1IXgUDKQ06jYnuFLvFq58CcW2r47KuQYlqF6NdxoolXh3qoOpuHZoeLjT4hPsAAQAAAAAAAAAAAAAABQgAAADrNHeYlcUUBwAAAAAAAAABAAAASp+fVOhyZm18PY3W4G3mfsX4lTwMZGH9WTVT1I1I+0AHAQAAAAAAAAAA",
+        "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "legacyPacketBytes": 1136,
+      "seed": "141"
+    },
+    {
+      "account": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "constraints": [
+        {
+          "accountConditions": [
+            {
+              "accountIndex": 0,
+              "condition": "equals ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 1,
+              "condition": "owner KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD and data[64..96] equals vault ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 2,
+              "condition": "one of {47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8, CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA, 6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y}"
+            },
+            {
+              "accountIndex": 8,
+              "condition": "one of {EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe, 5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV, J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn}"
+            }
+          ],
+          "dataConditions": [
+            "data[0..8] equals a1808ff5abc7c206"
+          ],
+          "instruction": "borrowObligationLiquidityV2",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accountConditions": [
+            {
+              "accountIndex": 0,
+              "condition": "equals ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 1,
+              "condition": "owner KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD and data[64..96] equals vault ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 2,
+              "condition": "one of {47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8, CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA, 6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y}"
+            },
+            {
+              "accountIndex": 6,
+              "condition": "one of {EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe, 5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV, J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn}"
+            }
+          ],
+          "dataConditions": [
+            "data[0..8] equals 74aed54cb435d290"
+          ],
+          "instruction": "repayObligationLiquidityV2",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        }
+      ],
+      "dataSha256": "d49cd14712056de39fb06c6fea3120dc851bf0f5b0bfa0d87413697457b30479",
+      "family": "DebtLifecycle",
+      "instruction": {
+        "accounts": [
+          {
+            "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": "11111111111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+            "signer": true,
+            "writable": false
+          },
+          {
+            "address": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+            "signer": false,
+            "writable": true
+          }
+        ],
+        "dataBase64": "itFAo09D6UwBAQAAAAeOAAAAAAAAAAMAAgAAAASyrLESWMzjaCxBi6hy/z35EQJxLxWvEra+abNDWwAIBAAAAAAAAQAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAEBAQAAAEAAAAAAAAAABSAAAAAGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+gABBLKssRJYzONoLEGLqHL/PfkRAnEvFa8Str5ps0NbAAgCAAMAAAAuVviiDGDq0RZajYLFWMh7TxWYRUyHcwTi+I1q4xl1na/Hg8rvgVuzvsyiJ5vCuDDtE3tgWJGlodENbDlObIlpUcdIXCmleuqByufYGa3LgRahvP+IBRpOwdi2/C1SKMQACAADAAAAw8i7bglFBhZY7RJB0Q82Jbgb8K+KH8ppkHCe7Mn+RAVAaBRDzuTW5imdrQm3+8xhrLkxneut8vOjHdhEkcJbqv1+wMNuUpOA3m0TDXFdhsqda2neMUJNaHmMdP4AKUoJAAEAAAAAAAAAAAAAAAUIAAAAoYCP9avHwgYABLKssRJYzONoLEGLqHL/PfkRAnEvFa8Str5ps0NbAAgEAAAAAAABAAAABoUTxIzyOBqoO0cYLJhBqR8PM30Dzx+IfBwwjBZTwvoAAQEBAAAAQAAAAAAAAAAFIAAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAEEsqyxEljM42gsQYuocv89+RECcS8VrxK2vmmzQ1sACAIAAwAAAC5W+KIMYOrRFlqNgsVYyHtPFZhFTIdzBOL4jWrjGXWdr8eDyu+BW7O+zKInm8K4MO0Te2BYkaWh0Q1sOU5siWlRx0hcKaV66oHK59gZrcuBFqG8/4gFGk7B2Lb8LVIoxAAGAAMAAADDyLtuCUUGFljtEkHRDzYluBvwr4ofymmQcJ7syf5EBUBoFEPO5NbmKZ2tCbf7zGGsuTGd663y86Md2ESRwluq/X7Aw25Sk4DebRMNcV2Gyp1rad4xQk1oeYx0/gApSgkAAQAAAAAAAAAAAAAABQgAAAB0rtVMtDXSkAAAAAAAAAABAAAASp+fVOhyZm18PY3W4G3mfsX4lTwMZGH9WTVT1I1I+0AHAQAAAAAAAAAA",
+        "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "legacyPacketBytes": 1136,
+      "seed": "142"
+    },
+    {
+      "account": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "constraints": [
+        {
+          "accountConditions": [
+            {
+              "accountIndex": 2,
+              "condition": "equals ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 3,
+              "condition": "one of {EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe, 5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV}"
+            },
+            {
+              "accountIndex": 6,
+              "condition": "one of {AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3, DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct}"
+            }
+          ],
+          "dataConditions": [
+            "data[0..2] equals c120 (SharedAccountsRoute)"
+          ],
+          "instruction": "sharedAccountsRoute",
+          "program": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+        },
+        {
+          "accountConditions": [
+            {
+              "accountIndex": 2,
+              "condition": "equals ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 3,
+              "condition": "one of {EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe, J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn}"
+            },
+            {
+              "accountIndex": 6,
+              "condition": "one of {DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct, CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN}"
+            }
+          ],
+          "dataConditions": [
+            "data[0..2] equals c120 (SharedAccountsRoute)"
+          ],
+          "instruction": "sharedAccountsRoute",
+          "program": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+        }
+      ],
+      "dataSha256": "e56888dd2b3ac821c16933e59ae31ec3f6fc38a0770dd79905933dde9885fe22",
+      "family": "SwapRoutesA",
+      "instruction": {
+        "accounts": [
+          {
+            "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": "11111111111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+            "signer": true,
+            "writable": false
+          },
+          {
+            "address": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+            "signer": false,
+            "writable": true
+          }
+        ],
+        "dataBase64": "itFAo09D6UwBAQAAAAePAAAAAAAAAAMAAgAAAAR51VvyMcBu7nTFbs5oFQf9sbLeo/SOUQKxzaJWvBOPAwAAAAIAAQAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAMAAgAAAMPIu24JRQYWWO0SQdEPNiW4G/Cvih/KaZBwnuzJ/kQFQGgUQ87k1uYpna0Jt/vMYay5MZ3rrfLzox3YRJHCW6oABgACAAAAjQeKYBqKTXSJs9igbJn6uEnEmcOVzSPIQOsVgklYiFC935LsGhNbQJXpcI5O/zeP6AgtSF4FAykNOo2J7hS7xQABAAAAAAAAAAAAAAABwSAABHnVW/IxwG7udMVuzmgVB/2xst6j9I5RArHNola8E48DAAAAAgABAAAABoUTxIzyOBqoO0cYLJhBqR8PM30Dzx+IfBwwjBZTwvoAAwACAAAAw8i7bglFBhZY7RJB0Q82Jbgb8K+KH8ppkHCe7Mn+RAX9fsDDblKTgN5tEw1xXYbKnWtp3jFCTWh5jHT+AClKCQAGAAIAAAC935LsGhNbQJXpcI5O/zeP6AgtSF4FAykNOo2J7hS7xaufAnFtq+OyrkGJahejXcaKJV4d6qDqbh2aHi40+IT7AAEAAAAAAAAAAAAAAAHBIAAAAAAAAAABAAAASp+fVOhyZm18PY3W4G3mfsX4lTwMZGH9WTVT1I1I+0AHAQAAAAAAAAAA",
+        "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "legacyPacketBytes": 818,
+      "seed": "143"
+    },
+    {
+      "account": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+      "constraints": [
+        {
+          "accountConditions": [
+            {
+              "accountIndex": 2,
+              "condition": "equals ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 3,
+              "condition": "one of {AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3, DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct}"
+            },
+            {
+              "accountIndex": 6,
+              "condition": "one of {EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe, 5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV}"
+            }
+          ],
+          "dataConditions": [
+            "data[0..2] equals c120 (SharedAccountsRoute)"
+          ],
+          "instruction": "sharedAccountsRoute",
+          "program": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+        },
+        {
+          "accountConditions": [
+            {
+              "accountIndex": 2,
+              "condition": "equals ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+            },
+            {
+              "accountIndex": 3,
+              "condition": "one of {DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct, CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN}"
+            },
+            {
+              "accountIndex": 6,
+              "condition": "one of {EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe, J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn}"
+            }
+          ],
+          "dataConditions": [
+            "data[0..2] equals c120 (SharedAccountsRoute)"
+          ],
+          "instruction": "sharedAccountsRoute",
+          "program": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+        }
+      ],
+      "dataSha256": "44e8beecf05e6032df92878685d10521c30fb3a4d3df28c561fd45d6e92fcab7",
+      "family": "SwapRoutesB",
+      "instruction": {
+        "accounts": [
+          {
+            "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": "11111111111111111111111111111111",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+            "signer": true,
+            "writable": false
+          },
+          {
+            "address": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+            "signer": false,
+            "writable": true
+          }
+        ],
+        "dataBase64": "itFAo09D6UwBAQAAAAeQAAAAAAAAAAMAAgAAAAR51VvyMcBu7nTFbs5oFQf9sbLeo/SOUQKxzaJWvBOPAwAAAAIAAQAAAAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AAMAAgAAAI0HimAaik10ibPYoGyZ+rhJxJnDlc0jyEDrFYJJWIhQvd+S7BoTW0CV6XCOTv83j+gILUheBQMpDTqNie4Uu8UABgACAAAAw8i7bglFBhZY7RJB0Q82Jbgb8K+KH8ppkHCe7Mn+RAVAaBRDzuTW5imdrQm3+8xhrLkxneut8vOjHdhEkcJbqgABAAAAAAAAAAAAAAABwSAABHnVW/IxwG7udMVuzmgVB/2xst6j9I5RArHNola8E48DAAAAAgABAAAABoUTxIzyOBqoO0cYLJhBqR8PM30Dzx+IfBwwjBZTwvoAAwACAAAAvd+S7BoTW0CV6XCOTv83j+gILUheBQMpDTqNie4Uu8WrnwJxbavjsq5BiWoXo13GiiVeHeqg6m4dmh4uNPiE+wAGAAIAAADDyLtuCUUGFljtEkHRDzYluBvwr4ofymmQcJ7syf5EBf1+wMNuUpOA3m0TDXFdhsqda2neMUJNaHmMdP4AKUoJAAEAAAAAAAAAAAAAAAHBIAAAAAAAAAABAAAASp+fVOhyZm18PY3W4G3mfsX4lTwMZGH9WTVT1I1I+0AHAQAAAAAAAAAA",
+        "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "legacyPacketBytes": 818,
+      "seed": "144"
+    }
+  ],
+  "policySeedBefore": "140",
+  "schema": "loyal-backyard-rwa-basic-policy-artifact/v1",
+  "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
+}

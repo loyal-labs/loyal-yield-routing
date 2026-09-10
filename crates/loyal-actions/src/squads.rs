@@ -367,7 +367,7 @@ pub fn update_exact_program_interaction_policy_instruction(
     })
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticProgramInteractionConstraint {
     pub program_id: Pubkey,
     pub account_pubkeys: Vec<(u8, Vec<Pubkey>)>,
@@ -375,14 +375,14 @@ pub struct SemanticProgramInteractionConstraint {
     pub data: Vec<SemanticProgramInteractionDataConstraint>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticProgramInteractionAccountDataConstraint {
     pub account_index: u8,
     pub owner: Option<Pubkey>,
     pub data: Vec<SemanticProgramInteractionDataConstraint>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SemanticProgramInteractionDataConstraint {
     SliceEquals { offset: u64, value: Vec<u8> },
     U8Equals { offset: u64, value: u8 },

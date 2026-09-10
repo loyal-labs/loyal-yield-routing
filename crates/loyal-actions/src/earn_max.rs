@@ -305,7 +305,7 @@ fn obligation_owned_by_vault(boundary: &EarnMaxPolicyBoundary) -> AccountDataCon
     }
 }
 
-fn swap_constraint(
+pub(crate) fn swap_constraint(
     boundary: &EarnMaxPolicyBoundary,
     sources: Vec<Pubkey>,
     destinations: Vec<Pubkey>,
