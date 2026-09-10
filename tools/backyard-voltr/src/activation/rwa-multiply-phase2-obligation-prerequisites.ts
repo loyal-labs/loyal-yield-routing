@@ -3,6 +3,13 @@
  * Squads Settings authority.  Every write is independently signed, simulated,
  * persisted before send, confirmed, and decoded back.  It never installs or
  * changes a policy.
+ *
+ * RWA_OBLIGATION_LANES (required, no default) scopes the run to a
+ * comma-separated list of resolution `lane.key` values.  Unlisted lanes are
+ * never created and never reported as missing (skipped by count only); listed
+ * lanes that already exist on-chain are still decoded and reported.  The filter
+ * is recorded as the journal's `laneFilter`, and a pending journal written
+ * under a different filter refuses to resume.
  */
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -18,6 +25,7 @@ import bs58 from "bs58";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import { resolutionLanes } from "../policies/rwa-multiply-phase2-kamino.js";
+import { assertJournalLaneFilter, LANE_FILTER_ENV, parseLaneFilter, selectLanes } from "./rwa-obligation-lanes.js";
 
 type Json = Record<string, unknown>;
 type SettingsState = Readonly<{ policySeed: { toString(): string } | null; threshold: number; timeLock: number; signers: readonly Readonly<{ key: PublicKey; permissions: Readonly<{ mask: number }> }>[] }>;
@@ -67,17 +75,23 @@ function obligationState(info: AccountInfo<Buffer> | null, lane: ReturnType<type
 async function main() {
   invariant(process.env.CONFIRM_MAINNET === "1", "CONFIRM_MAINNET=1 is required");
   invariant(!existsSync(JOURNAL_PATH), `final journal already exists at ${JOURNAL_PATH}`);
-  const rpcUrl = process.env.SOLANA_RPC_URL?.trim(); invariant(rpcUrl, "SOLANA_RPC_URL is required");
-  const connection = new Connection(rpcUrl, "confirmed"); invariant(await connection.getGenesisHash() === RWA_MULTIPLY_ROUTE.genesisHash, "RPC is not mainnet-beta");
-  const admin = loadAdmin();
   const resolutionBytes = readFileSync(RESOLUTION_PATH); const resolution = object(JSON.parse(resolutionBytes.toString("utf8")), "Phase-2 resolution");
   invariant(resolution.schema === "loyal-backyard-rwa-policy-resolution/v1" && resolution.commitment === "confirmed" && resolution.laneGraphExact === true, "exact confirmed Phase-2 resolution is absent");
   const lanes = resolutionLanes(resolution); invariant(lanes.length === 11, "resolution does not contain 11 exact lanes");
+  const laneFilter = parseLaneFilter(process.env.RWA_OBLIGATION_LANES, lanes.map((lane) => lane.key));
+  const selected = selectLanes(lanes, laneFilter);
+  const skippedLaneCount = lanes.length - selected.length;
+  if (skippedLaneCount > 0) console.error(`${LANE_FILTER_ENV} skips ${skippedLaneCount} of ${lanes.length} resolved lanes; only ${JSON.stringify(laneFilter.keys)} are considered`);
+  const rpcUrl = process.env.SOLANA_RPC_URL?.trim(); invariant(rpcUrl, "SOLANA_RPC_URL is required");
+  const connection = new Connection(rpcUrl, "confirmed"); invariant(await connection.getGenesisHash() === RWA_MULTIPLY_ROUTE.genesisHash, "RPC is not mainnet-beta");
+  const admin = loadAdmin();
   const recovered: Json[] = [];
   const pendingPath = `${JOURNAL_PATH}.pending`;
   if (existsSync(pendingPath)) {
     const pending = object(JSON.parse(readFileSync(pendingPath, "utf8")), "pending obligation journal");
+    assertJournalLaneFilter(pending, laneFilter, "pending obligation journal");
     const lane = lanes.find((candidate) => candidate.key === pending.lane);
+    invariant(lane !== undefined && selected.includes(lane), "pending journal names a lane outside the current lane filter");
     const operation = object(pending.operation, "pending obligation operation");
     const signature = String(operation.expectedSignature ?? "");
     invariant(lane && signature.length > 0 && operation.obligation === lane.resolved.obligation, "pending journal does not bind one exact resolved obligation");
@@ -92,11 +106,11 @@ async function main() {
   invariant(settingsRead.value?.owner.toBase58() === RWA_MULTIPLY_ROUTE.squads.program, "Squads Settings is absent or wrong owner");
   const [settings] = Settings.fromAccountInfo(settingsRead.value);
   invariant(settings.threshold === 1 && settings.timeLock === 0 && settings.signers.length === 1 && settings.signers[0]?.key.toBase58() === admin.publicKey.toBase58() && settings.signers[0]?.permissions.mask === 7, "current Settings authority boundary drifted");
-  const addresses = lanes.map((lane) => new PublicKey(lane.resolved.obligation));
+  const addresses = selected.map((lane) => new PublicKey(lane.resolved.obligation));
   const existing = await readMultipleAtMinSlot(connection, addresses, settingsRead.context.slot);
-  const missing = lanes.filter((lane, index) => existing.value[index] === null);
-  const present = lanes.filter((lane, index) => existing.value[index] !== null).map((lane, index) => ({ lane: lane.key, state: obligationState(existing.value[lanes.findIndex((candidate) => candidate.key === lane.key)] ?? null, lane) }));
-  if (missing.length === 0) { writePrivate(JOURNAL_PATH, { schema: "loyal-backyard-rwa-phase2-obligation-init/v1", verdict: "PASS_ALREADY_RECONCILED", broadcast: false, commitment: "confirmed", resolutionSha256: sha256(resolutionBytes), settings: RWA_MULTIPLY_ROUTE.squads.settings, present }, "wx"); console.log(JSON.stringify({ verdict: "PASS_ALREADY_RECONCILED", journal: JOURNAL_PATH })); return; }
+  const missing = selected.filter((lane, index) => existing.value[index] === null);
+  const present = selected.filter((lane, index) => existing.value[index] !== null).map((lane) => ({ lane: lane.key, state: obligationState(existing.value[selected.findIndex((candidate) => candidate.key === lane.key)] ?? null, lane) }));
+  if (missing.length === 0) { writePrivate(JOURNAL_PATH, { schema: "loyal-backyard-rwa-phase2-obligation-init/v1", verdict: "PASS_ALREADY_RECONCILED", broadcast: false, commitment: "confirmed", resolutionSha256: sha256(resolutionBytes), laneFilter: [...laneFilter.keys], skippedLaneCount, settings: RWA_MULTIPLY_ROUTE.squads.settings, present }, "wx"); console.log(JSON.stringify({ verdict: "PASS_ALREADY_RECONCILED", journal: JOURNAL_PATH, skippedLanes: skippedLaneCount })); return; }
   const [metadataAddress] = await userMetadataPda(address(RWA_MULTIPLY_ROUTE.squads.vault), address(RWA_MULTIPLY_ROUTE.kamino.program));
   const metadata = new PublicKey(metadataAddress); const metadataInfo = await connection.getAccountInfo(metadata, "confirmed"); invariant(metadataInfo?.owner.toBase58() === RWA_MULTIPLY_ROUTE.kamino.program, "Kamino user metadata is absent or wrong owner");
   const rent = await connection.getMinimumBalanceForRentExemption(OBLIGATION_BYTES, "confirmed");
@@ -115,15 +129,15 @@ async function main() {
     const before = await readMultipleAtMinSlot(connection, [new PublicKey(lane.resolved.obligation), new PublicKey(RWA_MULTIPLY_ROUTE.squads.vault)], latest.context.slot); invariant(before.value[0] === null, `${lane.key} obligation appeared before the bounded send`);
     const simulation = await connection.simulateTransaction(VersionedTransaction.deserialize(wire), { commitment: "confirmed", sigVerify: true, replaceRecentBlockhash: false, minContextSlot: before.context.slot, accounts: { encoding: "base64", addresses: [lane.resolved.obligation, RWA_MULTIPLY_ROUTE.squads.vault] } });
     invariant(simulation.value.err === null, `${lane.key} signed initializer simulation failed: ${JSON.stringify(simulation.value.err)}`);
-    writePrivate(`${JOURNAL_PATH}.pending`, { schema: "loyal-backyard-rwa-phase2-obligation-init/v1", verdict: "SIGNED_SIMULATION_PASS_PENDING_SEND", broadcast: true, commitment: "confirmed", resolutionSha256: sha256(resolutionBytes), lane: lane.key, policyChanges: 0, operation: { obligation: lane.resolved.obligation, packetBytes: wire.length, expectedSignature: signature, wireSha256: sha256(wire), fundingLamports, innerInstructionCount: 1, unitsConsumed: simulation.value.unitsConsumed ?? null, signedWireBase64: Buffer.from(wire).toString("base64") } }, "wx");
+    writePrivate(`${JOURNAL_PATH}.pending`, { schema: "loyal-backyard-rwa-phase2-obligation-init/v1", verdict: "SIGNED_SIMULATION_PASS_PENDING_SEND", broadcast: true, commitment: "confirmed", resolutionSha256: sha256(resolutionBytes), laneFilter: [...laneFilter.keys], skippedLaneCount, lane: lane.key, policyChanges: 0, operation: { obligation: lane.resolved.obligation, packetBytes: wire.length, expectedSignature: signature, wireSha256: sha256(wire), fundingLamports, innerInstructionCount: 1, unitsConsumed: simulation.value.unitsConsumed ?? null, signedWireBase64: Buffer.from(wire).toString("base64") } }, "wx");
     const sent = await connection.sendRawTransaction(wire, { skipPreflight: true, maxRetries: 0 }); invariant(sent === signature, `${lane.key} RPC returned a different signature than the signed wire`);
     const confirmation = await connection.confirmTransaction({ signature: sent, blockhash: latest.value.blockhash, lastValidBlockHeight: latest.value.lastValidBlockHeight }, "confirmed"); invariant(confirmation.value.err === null, `${lane.key} initializer confirmed with error: ${JSON.stringify(confirmation.value.err)}`);
     const after = await readMultipleAtMinSlot(connection, [new PublicKey(lane.resolved.obligation)], confirmation.context.slot); const state = obligationState(after.value[0] ?? null, lane); invariant(state !== null, `${lane.key} obligation is absent after confirmed initializer`);
     operations.push({ lane: lane.key, action: "init-obligation", signature: sent, confirmedSlot: after.context.slot, policyChanges: 0, packetBytes: wire.length, fundingLamports, beforeObligationAbsent: true, after: state });
     renameSync(`${JOURNAL_PATH}.pending`, `${JOURNAL_PATH}.${lane.key.replaceAll("/", "-")}.sent-wire`);
   }
-  writePrivate(JOURNAL_PATH, { schema: "loyal-backyard-rwa-phase2-obligation-init/v1", verdict: "CONFIRMED_RECONCILED", broadcast: true, commitment: "confirmed", resolutionSha256: sha256(resolutionBytes), settings: { address: RWA_MULTIPLY_ROUTE.squads.settings, contextSlot: settingsRead.context.slot, policySeed: settings.policySeed?.toString() ?? null }, operations, unchangedPolicySurface: true }, "wx");
-  console.log(JSON.stringify({ verdict: "CONFIRMED_RECONCILED", journal: JOURNAL_PATH, initialized: operations.map((entry) => ({ lane: entry.lane, signature: entry.signature })) }));
+  writePrivate(JOURNAL_PATH, { schema: "loyal-backyard-rwa-phase2-obligation-init/v1", verdict: "CONFIRMED_RECONCILED", broadcast: true, commitment: "confirmed", resolutionSha256: sha256(resolutionBytes), laneFilter: [...laneFilter.keys], skippedLaneCount, settings: { address: RWA_MULTIPLY_ROUTE.squads.settings, contextSlot: settingsRead.context.slot, policySeed: settings.policySeed?.toString() ?? null }, operations, unchangedPolicySurface: true }, "wx");
+  console.log(JSON.stringify({ verdict: "CONFIRMED_RECONCILED", journal: JOURNAL_PATH, skippedLanes: skippedLaneCount, initialized: operations.map((entry) => ({ lane: entry.lane, signature: entry.signature })) }));
 }
 
 main().catch((error) => { const rpcUrl = process.env.SOLANA_RPC_URL?.trim(); const message = error instanceof Error ? error.message : String(error); console.error(rpcUrl ? message.replaceAll(rpcUrl, "<rpc>") : message); process.exitCode = 1; });
