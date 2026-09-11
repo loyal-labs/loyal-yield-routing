@@ -26,6 +26,7 @@ import {
   assertStrategyTwoFirstInvocation,
   parseStrategyTwoSeed,
   readStrategyTwoSeedExpectation,
+  strategyTwoAnchorObservationFloor,
   strategyTwoSeedStrings,
   STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
   STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE,
@@ -161,17 +162,6 @@ async function finalizedLandingBlockTime(connection: Connection, signature: stri
   return blockTime;
 }
 
-/**
- * Floor for a program-assigned window start when no landing time is known:
- * the block time of the seed journal's anchor observation slot. No policy
- * derived from that observation can have landed before it. Null when the RPC
- * no longer serves the slot's timestamp.
- */
-async function anchorObservationBlockTime(connection: Connection, slot: number): Promise<number | null> {
-  const blockTime = await connection.getBlockTime(slot);
-  return typeof blockTime === "number" ? blockTime : null;
-}
-
 type PendingCustomPolicyJournal = Readonly<{
   operation?: unknown;
   mutation?: unknown;
@@ -284,7 +274,7 @@ async function main() {
     ? null
     : await finalizedLandingBlockTime(connection, String(pendingReconcile.transaction?.expectedSignature ?? ""));
   const observationFloor = strategyTwo && seedExpectation !== null
-    ? await anchorObservationBlockTime(connection, seedExpectation.observationSlot)
+    ? await strategyTwoAnchorObservationFloor(connection, seedExpectation.observationSlot)
     : null;
   const before = await verifyInstalledCustomPolicies(connection, installTarget, {
     ...(landingBlockTime === null ? {} : { landingBlockTime }),

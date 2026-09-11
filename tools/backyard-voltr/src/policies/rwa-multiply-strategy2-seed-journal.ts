@@ -249,3 +249,20 @@ export function assertStrategyTwoAnchorObservation(
     "live anchor policy bytes differ from the seed-144 install readback");
   return { observed: "pass" };
 }
+
+/**
+ * Floor for a program-assigned spending-limit window start when no landing
+ * wire is known: the block time of the seed journal's anchor observation slot.
+ * No policy derived from that observation can have landed before it. This
+ * refuses instead of returning null so a read-only readback can never drop
+ * the floor silently and accept an arbitrarily old start.
+ */
+export async function strategyTwoAnchorObservationFloor(
+  connection: Pick<Connection, "getBlockTime">,
+  observationSlot: number,
+): Promise<number> {
+  const blockTime = await connection.getBlockTime(observationSlot);
+  invariant(typeof blockTime === "number",
+    `strategy-two seed journal anchor observation slot ${observationSlot} has no resolvable block time; refusing to read back the installed policies without a window-start floor`);
+  return blockTime;
+}

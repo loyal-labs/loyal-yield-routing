@@ -183,7 +183,10 @@ function integerString(value: unknown): string | null {
  * observation that derived its seed) and the start may never sit further than
  * 120 seconds in the future. `requireUntouchedUsage` additionally refuses a
  * spending limit that has already been charged (install-specific: a freshly
- * created limit must be full and never reset).
+ * created limit must be full and never reset). It is a no-op for a target
+ * compiled without an embedded limit (`dailySpendingLimit: null`, e.g. the v2
+ * set): there is nothing to be untouched, so the uncapped install path keeps
+ * passing with an empty spendingLimits array.
  */
 export type InstalledReadbackOptions = Readonly<{
   landingBlockTime?: number | null;
@@ -265,6 +268,20 @@ function untouchedSpendingLimitUsage(limits: readonly unknown[]): boolean {
   return shaped?.usage !== undefined && maxPerPeriod !== null
     && integerString(shaped.usage.remainingInPeriod) === maxPerPeriod
     && integerString(shaped.usage.lastReset) === integerString(shaped.timeConstraints?.start);
+}
+
+/**
+ * The install-time untouched-usage requirement, applied only where it means
+ * something: a policy compiled WITHOUT an embedded spending limit
+ * (`expectedLimit === null`, e.g. the uncapped v2 set) has nothing to be
+ * untouched, so an empty limits array stays acceptable there.
+ */
+export function spendingLimitUsageIsUntouched(
+  limits: readonly unknown[],
+  expectedLimit: CustomPolicySpendingLimit | null,
+  requireUntouchedUsage: boolean,
+): boolean {
+  return !requireUntouchedUsage || expectedLimit === null || untouchedSpendingLimitUsage(limits);
 }
 
 /**
@@ -657,8 +674,8 @@ export function installedPolicyRow(input: Readonly<{
     ? null
     : input.target.caps.dailySpendingLimit;
   const spendingLimitsPass = spendingLimitsMatch(body?.spendingLimits ?? [], expectedLimit, input.expectations)
-    && (input.expectations.requireUntouchedUsage !== true
-      || untouchedSpendingLimitUsage(body?.spendingLimits ?? []));
+    && spendingLimitUsageIsUntouched(body?.spendingLimits ?? [], expectedLimit,
+      input.expectations.requireUntouchedUsage === true);
   const pass = Boolean(authorityBoundaryPass
     && policy.policyState.__kind === "ProgramInteraction"
     && body?.accountIndex === route.squads.vaultIndex

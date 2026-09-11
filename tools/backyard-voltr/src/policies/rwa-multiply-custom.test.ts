@@ -13,9 +13,11 @@ import {
   type StrategyTwoIdentity,
 } from "../domain/rwa-multiply-strategy2-route-spec.js";
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import { strategyTwoAnchorObservationFloor } from "./rwa-multiply-strategy2-seed-journal.js";
 import {
   buildInstalledRowExpectations,
   installedPolicyRow,
+  spendingLimitUsageIsUntouched,
   type InstalledReadbackOptions,
   selectCustomPolicyMutation,
   spendingLimitsMatch,
@@ -124,8 +126,7 @@ test("finalized Policy account decoding verifies the nested daily spending limit
   const target = await rwaMultiplyStrategyTwoTarget(identity, 144n);
   const policy = (squadsGenerated as unknown as {
     Policy: {
-      fromArgs(args: Record<string, unknown>): { serialize(): [Buffer, number] };
-      fromAccountInfo(account: {
+        fromAccountInfo(account: {
         data: Buffer;
         executable: boolean;
         lamports: number;
@@ -347,4 +348,23 @@ test("the finalized seed-145 strategy-two row passes with its program-assigned l
   assert.equal((await chargedRowFor({
     landingBlockTime: LIVE_SEED_145_START, requireUntouchedUsage: true,
   })).reason, "inexact policy payload");
+
+  // The usage gate is a no-op where there is no embedded limit to be untouched
+  // (the uncapped v2 set carries an empty spendingLimits array), refuses an
+  // already charged limit under the install-time check, and leaves the charged
+  // limit acceptable for a routine readback with the check off.
+  assert.equal(spendingLimitUsageIsUntouched([], null, true), true);
+  assert.equal(spendingLimitUsageIsUntouched([], null, false), true);
+  assert.equal(spendingLimitUsageIsUntouched([decodeLimit(data)], target.caps.dailySpendingLimit, true), true);
+  assert.equal(spendingLimitUsageIsUntouched([chargedLimit], target.caps.dailySpendingLimit, true), false);
+  assert.equal(spendingLimitUsageIsUntouched([chargedLimit], target.caps.dailySpendingLimit, false), true);
+});
+
+test("the strategy-two anchor floor fails closed without a resolvable block time", async () => {
+  assert.equal(await strategyTwoAnchorObservationFloor(
+    { getBlockTime: async () => 1789110276 }, 446095685), 1789110276);
+  await assert.rejects(
+    strategyTwoAnchorObservationFloor({ getBlockTime: async () => null }, 446095685),
+    /no resolvable block time/,
+  );
 });
