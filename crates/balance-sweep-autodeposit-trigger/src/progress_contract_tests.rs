@@ -226,6 +226,31 @@ async fn overdue_query_uses_owned_work_and_repeated_actionable_idle_evidence() -
             .await?;
         assert_eq!(marked.len(), expected_count);
     }
+    // Retry backoff is not completion progress. Changing only eligibility must
+    // preserve the overdue marker, while ordinary future work stays quiet.
+    sqlx::query("UPDATE loyal_yield.balance_sweep_scheduled_slots SET eligible_after = now() + interval '5 minutes' WHERE id IN (10, 12)")
+        .execute(&mut *tx).await?;
+    let backed_off = sqlx::query(OVERDUE_AUTODEPOSIT_WORK_SQL)
+        .bind("USDC")
+        .fetch_all(&mut *tx)
+        .await?;
+    let idle = backed_off
+        .iter()
+        .find(|row| row.get::<i64, _>("target_id") == 10)
+        .expect("durably overdue idle work must stay visible during retry backoff");
+    assert_eq!(
+        idle.get::<String, _>("owning_stage"),
+        "preflight_idle_drain"
+    );
+    assert_eq!(idle.get::<i64, _>("overdue_stage_target_count"), 1);
+    assert!(idle.get::<i64, _>("age_seconds") >= 7199);
+    assert!(
+        !backed_off
+            .iter()
+            .any(|row| row.get::<i64, _>("target_id") == 12),
+        "ordinary future scheduled work without an idle marker must stay quiet"
+    );
+    assert_eq!(backed_off.len(), 4);
     // A large backlog still emits only one oldest representative per stage,
     // while exposing the full distinct affected-target count.
     sqlx::raw_sql(r#"

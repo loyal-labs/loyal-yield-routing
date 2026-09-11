@@ -711,7 +711,8 @@ const OVERDUE_AUTODEPOSIT_WORK_SQL: &str = r#"
             LIMIT 1
         ) AS slot
         WHERE slot.status IN ('scheduled', 'requested')
-          AND slot.token_mint = $1 AND slot.eligible_after <= now()
+          -- Retry backoff must not hide durably overdue work from monitoring.
+          AND slot.token_mint = $1
           AND slot.last_error LIKE 'existing idle vault balance must drain before direct autodeposit:%'
     ), selected_work AS (
         SELECT slot.target_id, slot.id AS scheduled_slot_id,
