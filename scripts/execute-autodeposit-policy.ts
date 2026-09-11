@@ -2108,14 +2108,82 @@ async function getTokenBalanceRaw(
   }
 }
 
+export class AutodepositIdleVaultBalanceError extends Error {
+  constructor(readonly vaultBalanceRaw: bigint) {
+    super(
+      `existing idle vault balance must drain before direct autodeposit: ${vaultBalanceRaw}`
+    );
+    this.name = "AutodepositIdleVaultBalanceError";
+  }
+}
+
 export function assertEmptyVaultBeforeDirectAutodeposit(
   vaultBalanceRaw: bigint
 ): void {
   if (vaultBalanceRaw > BigInt(0)) {
-    throw new Error(
-      `existing idle vault balance must drain before direct autodeposit: ${vaultBalanceRaw}`
-    );
+    throw new AutodepositIdleVaultBalanceError(vaultBalanceRaw);
   }
+}
+
+/**
+ * Idle custody belongs to the fleet drain, not to a new subscription pull. Defer
+ * before claiming lots: claim/release creates residual slots on every retry.
+ * Only unclaimed scheduled work may move its deadline here; selected claims and
+ * persisted transactions must retain their existing recovery path and ownership.
+ */
+export async function deferIdleVaultScheduledSlot(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  targetId: bigint;
+  scheduledSlotId: bigint;
+  vaultBalanceRaw: bigint;
+}): Promise<boolean> {
+  if (args.vaultBalanceRaw <= BigInt(0)) {
+    return false;
+  }
+  const sql = args.neon(args.databaseUrl);
+  const error = new AutodepositIdleVaultBalanceError(args.vaultBalanceRaw);
+  // Keep first-blocked age across same-slot retries without a schema change.
+  // Anchored, bounded numeric captures reject malformed/unrelated error history.
+  const sincePattern = String.raw`^existing idle vault balance must drain before direct autodeposit: [0-9]+ \[idle_blocked_since=([0-9]{1,12}); idle_deferrals=[0-9]{1,7}\]$`;
+  const countPattern = String.raw`^existing idle vault balance must drain before direct autodeposit: [0-9]+ \[idle_blocked_since=[0-9]{1,12}; idle_deferrals=([0-9]{1,7})\]$`;
+  const rows = await sql`
+    UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+    SET eligible_after = now() + (${PRE_SEND_FAILURE_RETRY_DELAY_SECONDS} * interval '1 second'),
+        last_error = ${error.message} || ' [idle_blocked_since=' ||
+          COALESCE(
+            substring(slot.last_error FROM ${sincePattern})::bigint,
+            extract(epoch FROM now())::bigint
+          )::text || '; idle_deferrals=' ||
+          LEAST(
+            COALESCE(substring(slot.last_error FROM ${countPattern})::bigint, 0) + 1,
+            1000000
+          )::text || ']',
+        updated_at = now()
+    WHERE slot.id = ${args.scheduledSlotId.toString()}
+      AND slot.target_id = ${args.targetId.toString()}
+      AND slot.token_mint = ${USDC_MINT_ADDRESS}
+      AND slot.status IN ('scheduled', 'requested')
+      AND slot.claim_token IS NULL
+      AND slot.execution_id IS NULL
+      AND slot.eligible_after <= now()
+      AND EXISTS (
+        SELECT 1 FROM loyal_yield.balance_sweep_surplus_lots AS lot
+        WHERE lot.scheduled_slot_id = slot.id
+          AND lot.target_id = slot.target_id
+          AND lot.status = 'open'
+          AND lot.remaining_amount_raw > 0
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
+        WHERE attempt.scheduled_slot_id = slot.id
+          AND attempt.attempt_state IN (
+            'prepared', 'submitted', 'confirmed', 'unknown', 'ambiguous'
+          )
+      )
+    RETURNING slot.id
+  `;
+  return rows.length === 1;
 }
 
 async function ensureVaultTokenAccountBeforePull(args: {
@@ -5134,6 +5202,37 @@ async function main(
     );
   }
 
+  if (
+    options.execute &&
+    options.requireLotClaim &&
+    options.claimToken !== null &&
+    options.scheduledSlotId !== null &&
+    sweepDecision.kind === "sweep" &&
+    (await deferIdleVaultScheduledSlot({
+      neon: appModules.neon,
+      databaseUrl,
+      targetId: target.id,
+      scheduledSlotId: options.scheduledSlotId,
+      vaultBalanceRaw: vaultPreBalanceRaw,
+    }))
+  ) {
+    console.log(
+      JSON.stringify({
+        status: "autodeposit_preflight_retry_pending",
+        targetId: target.id.toString(),
+        scheduledSlotId: options.scheduledSlotId.toString(),
+        reason: "existing_idle_vault_balance",
+        recoveryOwner: "fleet_idle_vault_deposit",
+        vaultBalanceRaw: vaultPreBalanceRaw.toString(),
+        retryable: true,
+        alert: null,
+        error: new AutodepositIdleVaultBalanceError(vaultPreBalanceRaw).message,
+      })
+    );
+    setAutodepositExecutorOutcome("deferred");
+    return;
+  }
+
   let lotClaim: LotClaimResult | null = null;
   let executionAmountRaw =
     sweepDecision.kind === "sweep" ? sweepDecision.amountRaw : BigInt(0);
@@ -5709,10 +5808,16 @@ async function main(
       disposition.failureCode !== "fee_payer_exhausted" &&
       !missingTokenDelegate
     ) {
-      process.exitCode = 0;
       console.log(
         JSON.stringify({
           status: "autodeposit_preflight_retry_pending",
+          ...(error instanceof AutodepositIdleVaultBalanceError
+            ? {
+                reason: "existing_idle_vault_balance",
+                recoveryOwner: "fleet_idle_vault_deposit",
+                vaultBalanceRaw: error.vaultBalanceRaw.toString(),
+              }
+            : {}),
           targetId: target.id.toString(),
           scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
           retryable: true,
@@ -5720,6 +5825,7 @@ async function main(
           error: error instanceof Error ? error.message : String(error),
         })
       );
+      setAutodepositExecutorOutcome("deferred");
       return;
     }
     throw error;
