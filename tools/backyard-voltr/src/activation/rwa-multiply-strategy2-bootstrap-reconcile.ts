@@ -5,6 +5,11 @@ import { Connection, PublicKey } from "@solana/web3.js";
 
 import type { RwaMultiplyRouteSpec } from "../domain/rwa-multiply-route-spec.js";
 import type { RwaMultiplyVoltrAccounts } from "../integrations/rwa-multiply-voltr.js";
+import {
+  decodeVaultNeutralityView,
+  vaultNeutralityVerdict,
+  type VaultNeutralityView,
+} from "./rwa-multiply-strategy2-vault-neutrality.js";
 
 export type StrategyTwoBootstrapPhase = "A" | "B" | "C";
 
@@ -36,7 +41,8 @@ export function assertStrategyTwoBootstrapPoststate(input: Readonly<{
   route: RwaMultiplyRouteSpec;
   finalized: readonly FinalizedAccount[];
   expectedConfigSha256?: string | null;
-  expectedVaultSha256?: string | null;
+  /** Decoded wire C prestate: the gate is state-neutrality minus lastUpdatedTs, not raw bytes. */
+  expectedVault?: Readonly<{ before: VaultNeutralityView; expectedManager: string }> | null;
 }>): void {
   const [config, ticket, custody, vault] = input.finalized;
   if (input.phase === "A") {
@@ -62,9 +68,13 @@ export function assertStrategyTwoBootstrapPoststate(input: Readonly<{
     invariant(vault !== null && vault !== undefined
       && ownerOf(vault) === input.route.programs.voltr,
     "finalized wire C left no active Voltr vault");
-    invariant(input.expectedVaultSha256 !== null
-      && input.expectedVaultSha256 !== undefined
-      && sha256(vault.data) === input.expectedVaultSha256,
+    invariant(input.expectedVault != null,
+      "finalized wire C has no decoded vault prestate to compare against");
+    invariant(vaultNeutralityVerdict({
+      before: input.expectedVault.before,
+      after: decodeVaultNeutralityView(vault.data),
+      expectedManager: input.expectedVault.expectedManager,
+    }).neutral,
     "finalized wire C changed the Voltr vault: wire C must be state-neutral");
   }
 }
@@ -101,6 +111,11 @@ export async function reconcileStrategyTwoBootstrap(
       wireSha256?: unknown;
       configSha256Before?: unknown;
       vaultSha256Before?: unknown;
+      vaultNeutralityBefore?: {
+        stateJson?: unknown;
+        manager?: unknown;
+        lastUpdatedTs?: unknown;
+      } | null;
     };
   };
   invariant(pending.phase === input.phase, "pending journal records a different bootstrap wire");
@@ -120,6 +135,10 @@ export async function reconcileStrategyTwoBootstrap(
     new PublicKey(input.accounts.strategyAssetAta),
     new PublicKey(input.route.vault.address),
   ], "finalized");
+  const journaledNeutrality = pending.transaction?.vaultNeutralityBefore;
+  invariant(input.phase !== "C" || (journaledNeutrality != null
+      && typeof journaledNeutrality.stateJson === "string" && journaledNeutrality.stateJson.length > 0),
+    "pending journal lacks the decoded wire C vault prestate");
   assertStrategyTwoBootstrapPoststate({
     phase: input.phase,
     route: input.route,
@@ -127,8 +146,15 @@ export async function reconcileStrategyTwoBootstrap(
     expectedConfigSha256: input.phase === "B"
       ? String(pending.transaction?.configSha256Before ?? "")
       : null,
-    expectedVaultSha256: input.phase === "C"
-      ? String(pending.transaction?.vaultSha256Before ?? "")
+    expectedVault: input.phase === "C"
+      ? {
+        before: {
+          stateJson: String(journaledNeutrality?.stateJson),
+          manager: String(journaledNeutrality?.manager),
+          lastUpdatedTs: String(journaledNeutrality?.lastUpdatedTs ?? "0"),
+        },
+        expectedManager: input.route.squads.vault,
+      }
       : null,
   });
   writePrivate(input.journal, { ...pending, verdict: "FINALIZED_RECONCILED", signature,

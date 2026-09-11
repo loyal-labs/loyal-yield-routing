@@ -28,6 +28,11 @@ import {
   reconcileStrategyTwoBootstrap,
 } from "./rwa-multiply-strategy2-bootstrap-reconcile.js";
 import { buildBootstrapWires } from "./rwa-multiply-strategy2-bootstrap-wires.js";
+import {
+  decodeVaultNeutralityView,
+  VAULT_NEUTRALITY_IGNORED_FIELDS,
+  vaultNeutralityVerdict,
+} from "./rwa-multiply-strategy2-vault-neutrality.js";
 
 const PACKET_LIMIT = 1_232;
 /**
@@ -115,9 +120,13 @@ async function assertWirePreconditions(
   }
   invariant(vault !== null && vault.owner.toBase58() === route.programs.voltr,
     "active Voltr vault is absent or inexact");
+  // Wire C's neutrality gate is decoded state minus lastUpdatedTs (Voltr stamps
+  // it on every config write), so the decoded prestate is captured here.
+  const vaultNeutralityBefore = phase === "C" ? decodeVaultNeutralityView(vault.data) : null;
   return {
     configSha256: config === null ? null : sha256(config.data),
     vaultSha256: sha256(vault.data),
+    vaultNeutralityBefore,
     /** Re-derived over finalized state after the wire lands (send and reconcile). */
     assertFinalized: (
       finalized: readonly ({ owner: { toBase58(): string }; data: Uint8Array } | null)[],
@@ -127,7 +136,9 @@ async function assertWirePreconditions(
         route,
         finalized,
         expectedConfigSha256: phase === "B" && config !== null ? sha256(config.data) : null,
-        expectedVaultSha256: phase === "C" && vault !== null ? sha256(vault.data) : null,
+        expectedVault: vaultNeutralityBefore !== null
+          ? { before: vaultNeutralityBefore, expectedManager: route.squads.vault }
+          : null,
       });
     },
   };
@@ -242,8 +253,15 @@ async function runOperatorWire() {
     "signed wire B simulation changed the adaptor config");
   } else {
     invariant(custodyPost !== null, "signed wire C simulation did not project the custody ATA");
-    invariant(vaultPost !== null && sha256(vaultPost.data) === chainGates.vaultSha256,
-      "signed wire C simulation changed the Voltr vault: wire C must be state-neutral");
+    invariant(chainGates.vaultNeutralityBefore !== null,
+      "wire C prestate did not decode as a Voltr vault");
+    const verdict = vaultNeutralityVerdict({
+      before: chainGates.vaultNeutralityBefore,
+      after: decodeVaultNeutralityView(vaultPost?.data),
+      expectedManager: route.squads.vault,
+    });
+    invariant(vaultPost !== null && verdict.neutral,
+      `signed wire C simulation changed the Voltr vault: wire C must be state-neutral (${verdict.reason})`);
   }
   const plan = {
     schema: "loyal-rwa-multiply-strategy-two-bootstrap-wire/v1",
@@ -265,6 +283,9 @@ async function runOperatorWire() {
       wireSha256: sha256(prepared.serializedTransaction),
       configSha256Before: chainGates.configSha256,
       vaultSha256Before: chainGates.vaultSha256,
+      vaultSha256AfterSimulation: phase === "C" && vaultPost !== null ? sha256(vaultPost.data) : null,
+      vaultNeutralityIgnoredFields: VAULT_NEUTRALITY_IGNORED_FIELDS,
+      vaultNeutralityBefore: phase === "C" ? chainGates.vaultNeutralityBefore : null,
       latestBlockhash: prepared.latestBlockhash,
     },
   };

@@ -229,3 +229,28 @@ test("the bootstrap rehearsal seed base is pinned to the seed-journal constant",
     anchorPolicyDataSha256: null,
   }), /basic policy anchor at seed 144/);
 });
+
+/**
+ * Wire C must be state-neutral in the runbook sense — manager restored to the
+ * Squads vault and no economic/config field changed — not byte-identical:
+ * Voltr stamps lastUpdatedTs on every config write, so a raw sha256 equality
+ * could never hold and would deadlock the install.
+ */
+test("wire C state neutrality is decided on decoded vault fields, not raw bytes", () => {
+  const bootstrap = readFileSync(
+    new URL("../activation/rwa-multiply-strategy2-bootstrap.ts", import.meta.url), "utf8");
+  const reconcile = readFileSync(
+    new URL("../activation/rwa-multiply-strategy2-bootstrap-reconcile.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(bootstrap, /sha256\(vaultPost\.data\) === chainGates\.vaultSha256/);
+  assert.doesNotMatch(reconcile, /sha256\(vault\.data\) === input\.expectedVaultSha256/);
+  assert.match(bootstrap, /vaultNeutralityVerdict\(/);
+  assert.match(reconcile, /vaultNeutralityVerdict\(/);
+  // The relaxation and the simulated post-state are journaled explicitly.
+  assert.match(bootstrap, /vaultSha256Before: chainGates\.vaultSha256/);
+  assert.match(bootstrap, /vaultSha256AfterSimulation:/);
+  assert.match(bootstrap, /vaultNeutralityIgnoredFields: VAULT_NEUTRALITY_IGNORED_FIELDS/);
+  assert.match(bootstrap, /vaultNeutralityBefore: phase === "C" \? chainGates\.vaultNeutralityBefore : null/);
+  // Reconciliation replays the same decoded rule from the journaled prestate.
+  assert.match(reconcile, /pending journal lacks the decoded wire C vault prestate/);
+  assert.match(reconcile, /expectedManager: input\.route\.squads\.vault/);
+});
