@@ -4,6 +4,9 @@ const MAX_ATTEMPTS = 3;
 const TOTAL_BUDGET_MS = 8_000;
 const RETRY_DELAY_MS = 250;
 
+// Inject only the HTTP call signature, not Bun's optional runtime extensions.
+export type AutodepositRpcFetch = (...args: Parameters<FetchFn>) => ReturnType<FetchFn>;
+
 export type AutodepositRpcReadContext = {
   executorStage: "read_wallet_balance" | "read_vault_balance";
   targetId: string;
@@ -52,7 +55,7 @@ export async function readAutodepositPreSendBalance(args: {
   context: AutodepositRpcReadContext;
   read: (connection: Connection) => Promise<bigint>;
 }, options: {
-  fetch?: FetchFn;
+  fetch?: AutodepositRpcFetch;
   totalBudgetMs?: number;
   retryDelayMs?: number;
 } = {}): Promise<bigint> {
@@ -77,13 +80,13 @@ export async function readAutodepositPreSendBalance(args: {
     elapsedMs: Math.round(performance.now() - startedAt),
     deadlineExceeded,
   });
-  const fetchRpc = options.fetch ?? (globalThis.fetch as FetchFn);
+  const fetchRpc = options.fetch ?? globalThis.fetch;
   const connection = new Connection(args.rpcUrl, {
     commitment: "confirmed",
     // web3's otherwise-hidden 429 retry loop must not extend our deadline or
     // retry errors outside the explicit transient-server allowlist.
     disableRetryOnRateLimit: true,
-    fetch: async (url, init) => {
+    fetch: Object.assign(async (...[url, init]: Parameters<FetchFn>) => {
       if (expired()) throw failure(true);
       const response = await fetchRpc(url, { ...init, signal: controller.signal });
       httpStatus = response.status;
@@ -93,7 +96,11 @@ export async function readAutodepositPreSendBalance(args: {
         throw failure();
       }
       return response;
-    },
+    }, {
+      // Bun's FetchFn includes preconnect. Never open speculative connections
+      // outside this read's deadline; web3 itself uses only the call signature.
+      preconnect: () => {},
+    }),
   });
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   let backoffTimer: ReturnType<typeof setTimeout> | undefined;

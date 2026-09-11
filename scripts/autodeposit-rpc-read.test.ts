@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { PublicKey, type Connection, type FetchFn } from "@solana/web3.js";
+import { PublicKey, type Connection } from "@solana/web3.js";
 import {
   AutodepositRpcReadError,
   readAutodepositPreSendBalance,
+  type AutodepositRpcFetch,
 } from "./autodeposit-rpc-read";
 import { runAutodepositExecutorWithFailureBoundary } from "./execute-autodeposit-policy";
 
@@ -23,7 +24,7 @@ const args = {
 
 function replies(statuses: number[]) {
   let calls = 0;
-  const fetch: FetchFn = async (_url, init) => {
+  const fetch: AutodepositRpcFetch = async (_url, init) => {
     const request = JSON.parse(String(init?.body));
     // This test exercises the actual web3 RPC request, never a transaction send.
     expect(request.method).toBe("getTokenAccountBalance");
