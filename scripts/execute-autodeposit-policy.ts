@@ -1789,7 +1789,6 @@ export async function runAutodepositExecutorWithFailureBoundary(
     setExitCode(exitCode);
     reportFailure({
       status: "error",
-      executorStage: stage,
       failureCode: disposition.failureCode ?? "unknown",
       exitCode,
       errorKind:
@@ -1805,6 +1804,10 @@ export async function runAutodepositExecutorWithFailureBoundary(
         : disposition.failureCode === "dependency_unavailable"
           ? { httpStatus: autodepositDependencyHttpStatus(error) }
           : {}),
+      // The read's captured stage takes precedence over the outer stage tracker.
+      executorStage: error instanceof AutodepositRpcReadError
+        ? error.diagnostics.executorStage
+        : stage,
     });
   }
 }
