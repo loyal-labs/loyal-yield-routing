@@ -5,6 +5,120 @@
   "sent": false,
   "signed": false,
   "broadcast": false,
-  "verdict": "PENDING_FINALIZED_REPAIR_AND_CLAIM",
-  "reason": "--repair-journal and --claim-journal are required before restoring degradation"
+  "verdict": "SIMULATION_PASS_UNSENT",
+  "repairJournal": "/Users/user/loyal/hxtk-journals-2026-09-08/hxtk-repair.json",
+  "claimJournal": "/Users/user/loyal/hxtk-journals-2026-09-08/hxtk-claim.json",
+  "repairBlockTime": 1788978394,
+  "eligibleAt": 1789064794,
+  "before": {
+    "contextSlot": 446033356,
+    "epoch": null,
+    "totalValue": "23",
+    "idleBalance": "23",
+    "custody1Balance": "0",
+    "receipt1PositionValue": "3793536",
+    "receipt1CustodyTracked": "0",
+    "lpSupply": "0",
+    "deadWeight": "1000",
+    "feeAccumulatedLpManager": "0",
+    "feeAccumulatedLpAdmin": "0",
+    "feeAccumulatedLpProtocol": "0",
+    "lockedProfitDegradationDuration": "0",
+    "withdrawalWaitingPeriod": "600",
+    "adminPerformanceFeeBps": 0,
+    "managerPerformanceFeeBps": 0,
+    "maxCap": "1000000000000",
+    "lastUpdatedLockedProfit": "1000119",
+    "lockedProfitLastReport": "1788978394",
+    "highWaterMarkBits": "6473924464345",
+    "managerLpBalance": "0",
+    "adminLpBalance": "0",
+    "treasuryLpBalance": "0",
+    "requestEscrowLpBalance": "0",
+    "adminUsdcBalance": "6816024",
+    "squadsUsdcBalance": "0",
+    "requestReceipt": null,
+    "reportTicket": {
+      "version": 1,
+      "armed": false,
+      "lastConsumedSequence": "445678843",
+      "activeSequence": "0",
+      "activeHashIsZero": true
+    },
+    "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+    "tvEqualsIdle": true
+  },
+  "transaction": {
+    "packetBytes": 332,
+    "unitsConsumed": 5617,
+    "instructions": [
+      "updateVaultConfig(LockedProfitDegradationDuration, u64 86400)"
+    ],
+    "signer": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+    "signerEnvVar": "SOLANA_TESTING_PK",
+    "executeCommand": "op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk restore-degradation --repair-journal /absolute/path/hxtk-repair.json --claim-journal /absolute/path/hxtk-claim.json --execute --journal /absolute/path/hxtk-restore-degradation.json"
+  },
+  "checks": [
+    {
+      "check": "simulation succeeds",
+      "pass": true,
+      "expected": null,
+      "actual": null
+    },
+    {
+      "check": "post-claim request receipt is closed",
+      "pass": true,
+      "expected": null,
+      "actual": null
+    },
+    {
+      "check": "post-claim request escrow is drained",
+      "pass": true,
+      "expected": "0",
+      "actual": "0"
+    },
+    {
+      "check": "post-claim residual tv == idle == 23",
+      "pass": true,
+      "expected": "23/23",
+      "actual": "23/23"
+    },
+    {
+      "check": "strategy-one receipt remains 3,793,536",
+      "pass": true,
+      "expected": "3793536",
+      "actual": "3793536"
+    },
+    {
+      "check": "degradation -> 86,400",
+      "pass": true,
+      "expected": "86400",
+      "actual": "86400"
+    },
+    {
+      "check": "admin performance fee remains 0",
+      "pass": true,
+      "expected": 0,
+      "actual": 0
+    },
+    {
+      "check": "waiting period remains 600",
+      "pass": true,
+      "expected": "600",
+      "actual": "600"
+    },
+    {
+      "check": "packet <= 1,232 bytes",
+      "pass": true,
+      "expected": "<= 1232",
+      "actual": 332
+    }
+  ],
+  "postState": {
+    "lockedProfitDegradationDuration": "86400",
+    "adminPerformanceFeeBps": 0,
+    "totalValue": "23",
+    "admin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+    "manager": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+  }
 }
