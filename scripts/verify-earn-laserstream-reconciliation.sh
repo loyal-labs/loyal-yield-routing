@@ -707,15 +707,18 @@ assert_scalar "3" \
 echo "== Finalized failed transaction does not starve later vault work"
 run_fixture "$fixture_root/phase-3-finalized-failure.ndjson" \
   "$fixture_root/chain-finalized-failure.json"
-assert_scalar "2:2:0" \
+assert_scalar "3:3:0" \
   "SELECT count(*) || ':' || count(*) FILTER (WHERE completed_at IS NOT NULL) || ':' || count(*) FILTER (WHERE last_error IS NOT NULL) FROM loyal_yield.earn_reconciliation_jobs WHERE event_payload->>'signature' IN ('sig-finalized-failed', 'sig-after-finalized-failure')" \
-  "finalized failed transaction and later vault work both complete without retry evidence"
-assert_scalar "2" \
+  "failed discovery, failed policy deletion, and later vault work complete without retry evidence"
+assert_scalar "3" \
   "SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE event_payload->>'signature' IN ('sig-finalized-failed', 'sig-after-finalized-failure') AND attempt_count = 1" \
-  "finalized failure no-op and later work each run exactly once"
+  "failed discovery and deletion no-ops and later work each run exactly once"
 assert_scalar "0" \
   "SELECT count(*) FROM loyal_yield.user_yield_position_holding_events WHERE observed_slot IN (140, 141)" \
-  "finalized failure no-op and later no-op write no Earn mutation"
+  "finalized failure no-op and later no-op write no Earn holding event"
+assert_scalar "0:0" \
+  "SELECT (SELECT count(*) FROM loyal_yield.earn_chain_mutations WHERE chain_signature IN ('sig-finalized-failed', 'sig-after-finalized-failure')) || ':' || (SELECT count(*) FROM loyal_yield.earn_chain_refund_events WHERE refund_signature IN ('sig-finalized-failed', 'sig-after-finalized-failure'))" \
+  "failed discovery and deletion write no mutation or refund markers"
 
 echo "== Run focused production checks"
 (

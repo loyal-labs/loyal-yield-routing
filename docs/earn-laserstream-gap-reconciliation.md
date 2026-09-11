@@ -29,6 +29,12 @@ Execution enqueues only candidates classified as `missing`; existing completed c
 
 Use `--live-targets-only` to audit exactly the identities currently returned to the monitor. The default also includes historical identities so closed or retired vaults can be recovered.
 
+## Live policy deletion ordering
+
+Policy deletions retain distinct durable job identities from wallet/settings policy-discovery updates in the same transaction. Otherwise a wallet update arriving first can consume the only job, leaving catalog state inactive while the position stays active. For legacy Earn, successful policy-removal reconciliation must still run the existing zero-balance/closed-policy cleanup proof; updating the policy catalog alone does not settle positions. Earn Max keeps its existing policy-monitor ownership.
+
+This change does not modify financial projection rules or replay safeguards. Deploy the monitor before replaying affected history; previously completed jobs are not reopened automatically. Verify policy-close processing, withdrawal and cleanup markers, position state, and worker/autodeposit/rebalance processing freshness after deployment. The app symptom was “This Earn policy is no longer active. Refresh Earn before withdrawing.” despite a completed on-chain full exit.
+
 ## Previously recorded refunds without cleanup
 
 Deploy the updated monitor and gap tool before requesting a repair. Audit each wallet and bounded slot range, verify finalized withdrawal/cleanup signatures, zero holdings and closed policies, and inspect later deposits and holding-event history. Recover missing withdrawals first, then audit refund-only cleanup separately; never resend the on-chain transaction or delete refund history.

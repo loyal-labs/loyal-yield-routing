@@ -1041,20 +1041,23 @@ fn autodeposit_snapshot_config(minimum_slot: u64) -> RpcAccountInfoConfig {
     }
 }
 
+fn is_policy_deletion(update: &NormalizedEarnUpdate, vault: &EarnVaultWatch) -> bool {
+    update.event_kind == "account_deleted"
+        && update.account_pubkey.as_deref().is_some_and(|pubkey| {
+            vault
+                .accounts
+                .iter()
+                .any(|account| account.role == "policy" && account.pubkey == pubkey)
+        })
+}
+
 fn resolve_rpc_mutation(
     rpc: &RpcClient,
     update: &NormalizedEarnUpdate,
     vault: &EarnVaultWatch,
     context: loyal_yield_store::EarnReconciliationContext,
 ) -> Result<EarnDirectMutation> {
-    let is_policy_deletion = update.event_kind == "account_deleted"
-        && update.account_pubkey.as_deref().is_some_and(|pubkey| {
-            vault
-                .accounts
-                .iter()
-                .any(|account| account.role == "policy" && account.pubkey == pubkey)
-        });
-    if is_policy_deletion {
+    if is_policy_deletion(update, vault) {
         let signature = update
             .signature
             .as_deref()
@@ -2396,7 +2399,10 @@ fn durable_earn_event_key(update: &NormalizedEarnUpdate, affected: &[&EarnVaultW
     let policy_discovery_filter = update.filters.iter().any(|filter| {
         filter == EARN_SMART_ACCOUNTS || filter == EARN_POLICY_ACCOUNTS || filter == EARN_WALLETS
     });
-    if policy_discovery_account && policy_discovery_filter {
+    // A wallet/settings update can arrive first in a close transaction. Keep
+    // deletions distinct so its discovery job cannot consume the cleanup proof.
+    if policy_discovery_account && policy_discovery_filter && update.event_kind != "account_deleted"
+    {
         if let Some(signature) = update.signature.as_deref() {
             return format!("policy-discovery:{}:{signature}", update.slot);
         }
@@ -2525,6 +2531,13 @@ pub(crate) fn should_emit_reconciliation_retry_alert(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetedPolicyReconciliation {
+    NotReconciled,
+    Reconciled,
+    NoStateChange,
+}
+
 pub async fn reconcile_targeted_policy_vault_update(
     store: &OrchestratorStore,
     chain: &dyn EarnChainReader,
@@ -2532,16 +2545,30 @@ pub async fn reconcile_targeted_policy_vault_update(
     update: &NormalizedEarnUpdate,
     vault: &EarnVaultWatch,
 ) -> Result<bool> {
+    Ok(
+        reconcile_targeted_policy_vault_update_outcome(store, chain, policy_monitor, update, vault)
+            .await?
+            != TargetedPolicyReconciliation::NotReconciled,
+    )
+}
+
+async fn reconcile_targeted_policy_vault_update_outcome(
+    store: &OrchestratorStore,
+    chain: &dyn EarnChainReader,
+    policy_monitor: Option<&Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
+    update: &NormalizedEarnUpdate,
+    vault: &EarnVaultWatch,
+) -> Result<TargetedPolicyReconciliation> {
     if update.event_kind == "refund_cleanup_repair" {
-        return Ok(false);
+        return Ok(TargetedPolicyReconciliation::NotReconciled);
     }
     if !update.filters.iter().any(|filter| {
         filter == EARN_SMART_ACCOUNTS || filter == EARN_POLICY_ACCOUNTS || filter == EARN_WALLETS
     }) {
-        return Ok(false);
+        return Ok(TargetedPolicyReconciliation::NotReconciled);
     }
     let Some(account_pubkey) = update.account_pubkey.as_deref() else {
-        return Ok(false);
+        return Ok(TargetedPolicyReconciliation::NotReconciled);
     };
     if account_pubkey != vault.settings
         && account_pubkey != vault.wallet
@@ -2550,16 +2577,16 @@ pub async fn reconcile_targeted_policy_vault_update(
                 && (account.role == "smart_account" || account.role == "policy")
         })
     {
-        return Ok(false);
+        return Ok(TargetedPolicyReconciliation::NotReconciled);
     }
     let Some(transaction) = chain.policy_transaction_for(update).await? else {
-        return Ok(false);
+        return Ok(TargetedPolicyReconciliation::NotReconciled);
     };
     let EarnPolicyTransactionRead::Transaction(transaction) = transaction else {
-        return Ok(true);
+        return Ok(TargetedPolicyReconciliation::NoStateChange);
     };
     let Some(policy_monitor) = policy_monitor else {
-        return Ok(false);
+        return Ok(TargetedPolicyReconciliation::NotReconciled);
     };
     let settings = Pubkey::from_str(&vault.settings)?;
     let instructions = transaction
@@ -2671,7 +2698,13 @@ pub async fn reconcile_targeted_policy_vault_update(
             .await?;
         subscription_control_observed = true;
     }
-    Ok(intent_reconciled || policy_reconciled || subscription_control_observed)
+    Ok(
+        if intent_reconciled || policy_reconciled || subscription_control_observed {
+            TargetedPolicyReconciliation::Reconciled
+        } else {
+            TargetedPolicyReconciliation::NotReconciled
+        },
+    )
 }
 
 pub async fn process_next_earn_reconciliation_job(
@@ -2733,9 +2766,9 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
             .await;
         }
     };
-    let policy_reconciled = if vault.earn_max {
+    let policy_outcome = if vault.earn_max {
         match chain.project_earn_max_update(&update, &vault).await {
-            Ok(()) => true,
+            Ok(()) => TargetedPolicyReconciliation::Reconciled,
             Err(error) => {
                 return defer_earn_reconciliation_job(
                     store,
@@ -2749,8 +2782,14 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
             }
         }
     } else {
-        match reconcile_targeted_policy_vault_update(store, chain, policy_monitor, &update, &vault)
-            .await
+        match reconcile_targeted_policy_vault_update_outcome(
+            store,
+            chain,
+            policy_monitor,
+            &update,
+            &vault,
+        )
+        .await
         {
             Ok(reconciled) => reconciled,
             Err(error) => {
@@ -2766,10 +2805,17 @@ pub async fn process_next_earn_reconciliation_job_with_policy_monitor(
             }
         }
     };
-    let mutation = if policy_reconciled {
-        Ok(EarnDirectMutation::Noop)
-    } else {
-        chain.mutation_for(&update, &vault).await
+    // Policy removal updates catalog state, not position accounting. A legacy
+    // policy deletion still needs the zero-balance/closed-policy proof below.
+    let needs_cleanup_proof = !vault.earn_max && is_policy_deletion(&update, &vault);
+    let mutation = match policy_outcome {
+        // Failed transaction proof is terminal even for a deletion hint: no
+        // catalog or financial state changed on the selected fork.
+        TargetedPolicyReconciliation::NoStateChange => Ok(EarnDirectMutation::Noop),
+        TargetedPolicyReconciliation::Reconciled if !needs_cleanup_proof => {
+            Ok(EarnDirectMutation::Noop)
+        }
+        _ => chain.mutation_for(&update, &vault).await,
     };
     match mutation {
         Ok(mutation) => match store
@@ -3699,6 +3745,27 @@ mod tests {
             &[&vault],
         );
         assert_ne!(wallet_key, obligation_key);
+    }
+
+    #[test]
+    fn policy_close_keeps_a_durable_job_after_wallet_discovery() {
+        let vault = test_vault("policy", "policy-account");
+        let mut wallet = test_update("account", &vault.wallet, "close-signature", 500);
+        wallet.filters = vec![EARN_WALLETS.to_owned()];
+        let mut deletion = test_update("account_deleted", "policy-account", "close-signature", 500);
+        deletion.filters = vec![EARN_POLICY_ACCOUNTS.to_owned()];
+
+        // These are distinct persisted jobs even when discovery arrives first;
+        // a repeated policy deletion still has the same idempotency identity.
+        assert_ne!(
+            durable_earn_event_key(&wallet, &[&vault]),
+            durable_earn_event_key(&deletion, &[&vault])
+        );
+        let key = durable_earn_event_key(&deletion, &[&vault]);
+        deletion.event_key = Some(key.clone());
+        assert_eq!(key, durable_earn_event_key(&deletion, &[&vault]));
+        assert!(is_policy_deletion(&deletion, &vault));
+        assert!(!is_policy_deletion(&wallet, &vault));
     }
 
     fn token_balance(index: u64, owner: &str, mint: &str, amount: u64) -> Value {
