@@ -36,6 +36,14 @@ import {
   type DurableAutodepositAttempt,
 } from "./durable-autodeposit-confirmation";
 
+import {
+  AccountedAutodepositConflictError,
+  reconcileAccountedAutodeposit,
+  setAutodepositExecutorOutcome,
+} from "./autodeposit-accounted-recovery";
+
+export { setAutodepositExecutorOutcome } from "./autodeposit-accounted-recovery";
+
 type PreparedOperation = {
   operation: string;
   payer: PublicKey;
@@ -4591,7 +4599,7 @@ async function completeAutodepositClaim(args: {
     );
   }
 }
-async function resumeDirectKaminoDeposit(args: {
+export async function resumeDirectKaminoDeposit(args: {
   attempt: DurableAutodepositAttempt;
   claimToken: string;
   connection: Connection;
@@ -4607,6 +4615,40 @@ async function resumeDirectKaminoDeposit(args: {
     throw new Error(
       `Confirmed autodeposit pull ${args.attempt.id} has no confirmed slot.`
     );
+  }
+  // Accounting may already have projected this deposit and a later withdrawal.
+  // Complete its durable links before touching possibly closed token accounts;
+  // never reactivate that historical position through the normal finalizer.
+  const recoverySql = args.neon(args.databaseUrl);
+  const accounted = await reconcileAccountedAutodeposit({
+    sql: async (strings, ...values) => {
+      const results = await recoverySql.transaction([
+        recoverySql`SET LOCAL statement_timeout = '20s'`,
+        recoverySql(strings, ...values),
+      ]);
+      return results[1] ?? [];
+    },
+    claimToken: args.claimToken,
+    leaseToken: args.leaseToken,
+    targetId: args.target.id,
+    scheduledSlotId: args.scheduledSlotId,
+    pullAttemptId: args.attempt.id,
+  }).catch((error: unknown) => {
+    if (error instanceof AccountedAutodepositConflictError) {
+      throw new AutodepositYieldPersistenceError(error.message);
+    }
+    throw error;
+  });
+  if (accounted) {
+    return {
+      status: "completed" as const,
+      recoverySource: "persisted_accounted_deposit" as const,
+      deposit: { signature: accounted.signature, confirmedSlot: accounted.confirmedSlot },
+      executionRecord: { executionId: accounted.executionId, dedupeKey: accounted.dedupeKey },
+      // Historical execution evidence, not a fabricated current missing-account balance.
+      walletPostPullRaw: accounted.walletPostPullRaw,
+      vaultObservation: { amountRaw: accounted.vaultPostPullRaw, observedSlot: args.attempt.confirmedSlot },
+    };
   }
   const walletPostPullRaw = await getTokenBalanceRaw(
     args.connection,
@@ -4772,6 +4814,7 @@ async function recoverAutodepositClaim(args: {
         reason: "claim_owned_by_another_executor",
       })
     );
+    setAutodepositExecutorOutcome("recovery_pending");
     return;
   }
   try {
@@ -4827,6 +4870,10 @@ async function recoverAutodepositClaim(args: {
           process.exitCode = autodepositExecutorFailureExitCode(
             "transaction_effect_ambiguous"
           );
+        } else {
+          setAutodepositExecutorOutcome(
+            attemptAllowsSafeRequeue(pullSend.attempt.state) ? "deferred" : "recovery_pending"
+          );
         }
         return;
       }
@@ -4851,7 +4898,8 @@ async function recoverAutodepositClaim(args: {
             result.status === "completed"
               ? "autodeposit_completed"
               : "autodeposit_deposit_pending",
-          recoverySource: "persisted_confirmed_pull",
+          recoverySource: result.status === "completed" && "recoverySource" in result
+            ? result.recoverySource : "persisted_confirmed_pull",
           targetId: args.context.target.id.toString(),
           scheduledSlotId: args.scheduledSlotId.toString(),
           signatures: {
@@ -4868,6 +4916,7 @@ async function recoverAutodepositClaim(args: {
         2
       )
     );
+    setAutodepositExecutorOutcome(result.status === "completed" ? "completed" : "recovery_pending");
   } catch (error) {
     await releaseAutodepositClaimLease({
       neon: args.neon,
@@ -4887,6 +4936,7 @@ async function recoverAutodepositClaim(args: {
           reason: "claim_owned_by_another_executor",
         })
       );
+      setAutodepositExecutorOutcome("recovery_pending");
       return;
     }
     if (error instanceof AutodepositEffectAmbiguousError) {
@@ -4912,6 +4962,7 @@ async function recoverAutodepositClaim(args: {
         error: error instanceof Error ? error.message : String(error),
       })
     );
+    setAutodepositExecutorOutcome("recovery_pending");
   }
 }
 
@@ -5015,6 +5066,7 @@ async function main(
         2
       )
     );
+    setAutodepositExecutorOutcome("noop");
     return;
   }
 
@@ -5132,6 +5184,7 @@ async function main(
             2
           )
         );
+        setAutodepositExecutorOutcome("noop");
         return;
       }
       executionAmountRaw = lotClaim.amountRaw;
@@ -5165,6 +5218,7 @@ async function main(
         2
       )
     );
+    setAutodepositExecutorOutcome("noop");
     return;
   }
 
@@ -5193,6 +5247,7 @@ async function main(
             alert: null,
           })
         );
+        setAutodepositExecutorOutcome("recovery_pending");
         return;
       }
     }
@@ -5434,6 +5489,10 @@ async function main(
         process.exitCode = autodepositExecutorFailureExitCode(
           "transaction_effect_ambiguous"
         );
+      } else {
+        setAutodepositExecutorOutcome(
+          attemptAllowsSafeRequeue(durablePullSend.attempt.state) ? "deferred" : "recovery_pending"
+        );
       }
       return;
     }
@@ -5482,6 +5541,7 @@ async function main(
           2
         )
       );
+      setAutodepositExecutorOutcome(result.status === "completed" ? "completed" : "recovery_pending");
     } catch (error) {
       await releaseAutodepositClaimLease({
         neon: appModules.neon,
@@ -5500,6 +5560,7 @@ async function main(
             reason: "claim_owned_by_another_executor",
           })
         );
+        setAutodepositExecutorOutcome("recovery_pending");
         return;
       }
       if (error instanceof AutodepositYieldPersistenceError) {
@@ -5520,6 +5581,7 @@ async function main(
             error: error instanceof Error ? error.message : String(error),
           })
         );
+        setAutodepositExecutorOutcome("recovery_pending");
         return;
       }
       process.exitCode = autodepositExecutorFailureExitCode(
