@@ -38,16 +38,20 @@ import {
   deriveRwaMultiplyStrategySigningMaterial,
   signingMaterialFromEnvironment,
 } from "../integrations/signer.js";
-import { compileCustomPolicyArtifact } from "../policies/rwa-multiply-custom.js";
+import { compileCustomPolicyArtifact, readFinalizedCustomPolicySeed } from "../policies/rwa-multiply-custom.js";
 import { customPolicyAddress } from "../policies/rwa-multiply-legacy-retirement.js";
+import { STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE } from "../policies/rwa-multiply-strategy2-seed-journal.js";
 import {
   assertStrategyTwoBootstrapPoststate,
   reconcileStrategyTwoBootstrap,
 } from "./rwa-multiply-strategy2-bootstrap-reconcile.js";
 
 const PACKET_LIMIT = 1_232;
-/** Rehearsal assumes the one-shot repair PolicyCreate consumed seed 140. */
-const SIMULATED_POLICY_SEED_BEFORE = 140n;
+/**
+ * The rehearsal compiles the same seed set the installer journals: the base is
+ * the pinned seed-journal constant, never an independent literal.
+ */
+const SIMULATED_POLICY_SEED_BEFORE = STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE;
 /** Read-only fallback endpoint for unsigned preflight simulations; never logged. */
 const PUBLIC_MAINNET_RPC = "https://api.mainnet-beta.solana.com";
 
@@ -397,6 +401,9 @@ async function main() {
   const connection = new Connection(rpcUrl, "finalized");
   invariant(await connection.getGenesisHash() === route.genesisHash, "RPC is not mainnet-beta");
   await sleep(400);
+  // The rehearsal never sends, but its readback must still state whether the
+  // live Settings counter still sits on the pinned seed base.
+  const liveSeed = await readFinalizedCustomPolicySeed(connection);
 
   const { accounts, wireA, wireB, wireC } = await buildBootstrapWires(route);
   const instructions: readonly Instruction[] = [...wireA, ...wireB, ...wireC];
@@ -531,6 +538,8 @@ async function main() {
     },
     replacementPolicies: {
       policySeedBefore: SIMULATED_POLICY_SEED_BEFORE.toString(),
+      observedSettingsPolicySeedBefore: liveSeed.policySeedBefore.toString(),
+      seedBaseMatchesLiveCounter: liveSeed.policySeedBefore === SIMULATED_POLICY_SEED_BEFORE,
       seeds: Object.values(expectedSeeds).map(String),
       policies: Object.values(expectedSeeds).map((seed) => customPolicyAddress(seed)),
       caps: {
@@ -579,6 +588,8 @@ async function main() {
     config, strategyInitReceipt: accounts.strategyInitReceipt, strategyAuth: accounts.strategyAuth,
     strategyAssetAta: accounts.strategyAssetAta, reportTicket: accounts.reportTicket,
     policySeedBefore: SIMULATED_POLICY_SEED_BEFORE.toString(),
+    observedSettingsPolicySeedBefore: liveSeed.policySeedBefore.toString(),
+    seedBaseMatchesLiveCounter: liveSeed.policySeedBefore === SIMULATED_POLICY_SEED_BEFORE,
     policySeeds: Object.values(expectedSeeds).map(String),
     evidence }, null, 2));
 }

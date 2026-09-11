@@ -34,14 +34,18 @@ tests.
 | strategy-two delegated executor | the v2 executor `62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5` this week (owner decision, one hot key) |
 | Derivation domain | `loyal-rwa-multiply-mainnet-v3` (`STRATEGY_TWO_DERIVATION_DOMAIN`) |
 
-The real keypairs never enter the repo or chat. The operator derives them from the
-setup-admin seed via the existing domain signer
+The real keypairs never enter the repo or chat. Only the strategy-two **config**
+is derived this week: the operator derives it from the setup-admin seed via the
+existing domain signer
 (`tools/backyard-voltr/src/integrations/signer.ts`,
 `deriveRwaMultiplyStrategySigningMaterial` over `STRATEGY_TWO_DERIVATION_DOMAIN`)
 under `op run --env-file=tools/backyard-voltr/.env.1password -- …`, and supplies
-only the resulting **addresses** to every command below (`--config`,
-`--delegated-signer`). The bootstrap tool derives the same keypair from the admin
-seed and refuses `--config` values that do not match that derivation.
+only the resulting **address** to every command below (`--config`). The
+delegated signer is NOT derived: it is the existing v2 executor
+`62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5` (owner decision, one hot key),
+passed wherever `--delegated` / `--delegated-signer` appears. The bootstrap tool
+derives the same config keypair from the admin seed and refuses `--config`
+values that do not match that derivation.
 
 Derived per config key (compute with
 `src/domain/rwa-multiply-strategy2-route-spec.ts::deriveStrategyTwoVoltrAccounts`):
@@ -162,9 +166,12 @@ order; do not run the new image until step 7.
      Squads) → `updateVaultConfig(Manager = ST999)`. The round-trip must stay in
      one transaction so the manager is always restored; it must leave the vault
      state byte-identical (the execute path asserts this).
-3. **Compile and install the next four policies signed by the NEW delegated
-   signer** (`--target strategy-two --config <config2> --delegated
-   <executor2>`), **one seed per invocation, in derived seed order, one
+3. **Compile and install the next four policies signed by the delegated
+   executor** — the existing v2 executor
+   `62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5` this week, not a derived key
+   (`--target strategy-two --config <config2> --delegated
+   62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5`), **one seed per invocation,
+   in derived seed order, one
    transaction journal path each, and one shared seed-expectation journal**.
    Legacy policies 62–65 are expected to coexist during this install; their
    presence is not an installer failure. The installer reads the seed journal,

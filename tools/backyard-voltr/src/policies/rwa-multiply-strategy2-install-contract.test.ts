@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
@@ -16,6 +16,7 @@ import {
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import {
   assertStrategyTwoSeedJournalAnchor,
+  assertStrategyTwoAnchorObservation,
   assertStrategyTwoFirstInvocation,
   STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
   STRATEGY_TWO_ANCHOR_POLICY_DATA_SHA256,
@@ -195,7 +196,36 @@ test("worker bindings derive their policy set from the seed journal", async () =
       artifact.policies.map(({ seed, policy }) => ({ seed, policy })));
     assert.equal(worker.source.policySeedBefore, "144");
     assert.deepEqual(worker.legacyGate.policySeeds, ["62", "63", "64", "65"]);
+    assert.deepEqual(worker.anchorGate, {
+      seed: "144",
+      policy: STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
+      dataSha256: STRATEGY_TWO_ANCHOR_POLICY_DATA_SHA256,
+      observed: "skipped-no-connection",
+    });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("the bootstrap rehearsal seed base is pinned to the seed-journal constant", async () => {
+  // The rehearsal tool must compile the exact seed set the installer journals,
+  // so it may not carry its own seed-base literal that can drift from 144.
+  const source = readFileSync(
+    new URL("../activation/rwa-multiply-strategy2-bootstrap.ts", import.meta.url), "utf8");
+  assert.match(source,
+    /const SIMULATED_POLICY_SEED_BEFORE = STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE;/);
+  assert.doesNotMatch(source, /SIMULATED_POLICY_SEED_BEFORE = \d+n/);
+  // The shared live-anchor gate skips loudly when no connection is available
+  // and rejects drifted anchor bytes otherwise.
+  assert.deepEqual(assertStrategyTwoAnchorObservation(null), { observed: "skipped-no-connection" });
+  assert.throws(() => assertStrategyTwoAnchorObservation({
+    anchorPolicyPresent: true,
+    anchorPolicyOwnerMatches: true,
+    anchorPolicyDataSha256: "b".repeat(64),
+  }), /anchor policy bytes differ from the seed-144 install readback/);
+  assert.throws(() => assertStrategyTwoAnchorObservation({
+    anchorPolicyPresent: false,
+    anchorPolicyOwnerMatches: false,
+    anchorPolicyDataSha256: null,
+  }), /basic policy anchor at seed 144/);
 });

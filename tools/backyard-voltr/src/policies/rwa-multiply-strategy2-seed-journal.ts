@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+
+import { PublicKey, type Connection } from "@solana/web3.js";
 
 import { type CustomPolicySeeds } from "../domain/custom-policy-target.js";
 import { deriveStrategyTwoPolicySeeds } from "../domain/rwa-multiply-strategy2-route-spec.js";
@@ -203,4 +206,46 @@ export function assertStrategyTwoFirstInvocation(
     `first strategy-two install requires finalized Settings counter ${STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE}; observed ${policySeedBefore}`);
   invariant(anchorPolicyPresent,
     `basic policy anchor at seed ${STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE} (${STRATEGY_TWO_ANCHOR_POLICY_ADDRESS}) is absent; refusing strategy-two install`);
+}
+
+export type StrategyTwoLiveAnchorObservation = Readonly<{
+  anchorPolicyPresent: boolean;
+  anchorPolicyOwnerMatches: boolean;
+  anchorPolicyDataSha256: string | null;
+}>;
+
+/**
+ * Re-observe the pinned seed-144 anchor on live finalized state so journal
+ * consumers can confirm the account bytes still match the install readback.
+ * Callers with no connection in scope pass `null` to
+ * `assertStrategyTwoAnchorObservation` instead and must say so in their output.
+ */
+export async function observeStrategyTwoSeedAnchor(
+  connection: Connection,
+  squadsProgram: string,
+): Promise<StrategyTwoLiveAnchorObservation> {
+  const info = await connection.getAccountInfo(
+    new PublicKey(STRATEGY_TWO_ANCHOR_POLICY_ADDRESS), "finalized");
+  return {
+    anchorPolicyPresent: info !== null,
+    anchorPolicyOwnerMatches: info !== null && info.owner.toBase58() === squadsProgram,
+    anchorPolicyDataSha256: info === null
+      ? null
+      : createHash("sha256").update(info.data).digest("hex"),
+  };
+}
+
+/**
+ * Shared anchor gate. `null` means the caller had no connection available: the
+ * gate is skipped and reported as such rather than silently passing.
+ */
+export function assertStrategyTwoAnchorObservation(
+  observed: StrategyTwoLiveAnchorObservation | null,
+): Readonly<{ observed: "pass" | "skipped-no-connection" }> {
+  if (observed === null) return { observed: "skipped-no-connection" };
+  invariant(observed.anchorPolicyPresent && observed.anchorPolicyOwnerMatches,
+    `basic policy anchor at seed ${STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE} (${STRATEGY_TWO_ANCHOR_POLICY_ADDRESS}) is absent or has the wrong owner`);
+  invariant(observed.anchorPolicyDataSha256 === STRATEGY_TWO_ANCHOR_POLICY_DATA_SHA256,
+    "live anchor policy bytes differ from the seed-144 install readback");
+  return { observed: "pass" };
 }

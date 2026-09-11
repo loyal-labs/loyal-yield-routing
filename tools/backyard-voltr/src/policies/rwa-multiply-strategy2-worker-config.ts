@@ -1,4 +1,11 @@
-import { readStrategyTwoSeedExpectation } from "./rwa-multiply-strategy2-seed-journal.js";
+import {
+  assertStrategyTwoAnchorObservation,
+  readStrategyTwoSeedExpectation,
+  STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
+  STRATEGY_TWO_ANCHOR_POLICY_DATA_SHA256,
+  STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE,
+  type StrategyTwoLiveAnchorObservation,
+} from "./rwa-multiply-strategy2-seed-journal.js";
 import {
   deriveStrategyTwoVoltrAccounts,
   rwaMultiplyStrategyTwoTarget,
@@ -29,16 +36,28 @@ export type StrategyTwoWorkerPolicyConfig = Readonly<{
     policySeeds: readonly string[];
     requirement: "absent-before-worker-start";
   }>;
+  anchorGate: Readonly<{
+    seed: string;
+    policy: string;
+    dataSha256: string;
+    observed: "pass" | "skipped-no-connection";
+  }>;
 }>;
 
 /**
  * Render the strategy-two worker bindings from the durable seed journal. The
  * worker handoff never derives a seed from a live counter or a source-code
  * literal; changing the journal changes every generated policy binding.
+ *
+ * Callers with an RPC connection in scope should pass the observation from
+ * `observeStrategyTwoSeedAnchor` so the pinned seed-144 anchor is re-checked
+ * against the finalized install readback; passing `null` (the default) skips
+ * that re-observation and the rendered `anchorGate` says so explicitly.
  */
 export async function buildStrategyTwoWorkerPolicyConfig(
   seedJournal: string,
   identity: StrategyTwoIdentity,
+  liveAnchor: StrategyTwoLiveAnchorObservation | null = null,
 ): Promise<StrategyTwoWorkerPolicyConfig> {
   const expectation = readStrategyTwoSeedExpectation(seedJournal);
   const target = await rwaMultiplyStrategyTwoTarget(identity, expectation.policySeedBefore);
@@ -67,6 +86,12 @@ export async function buildStrategyTwoWorkerPolicyConfig(
     legacyGate: {
       policySeeds: [62n, 63n, 64n, 65n].map(String),
       requirement: "absent-before-worker-start",
+    },
+    anchorGate: {
+      seed: STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE.toString(),
+      policy: STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
+      dataSha256: STRATEGY_TWO_ANCHOR_POLICY_DATA_SHA256,
+      ...assertStrategyTwoAnchorObservation(liveAnchor),
     },
   };
 }

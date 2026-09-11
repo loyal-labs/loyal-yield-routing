@@ -33,11 +33,14 @@ async function main(): Promise<void> {
   chmodSync(output, 0o600);
   // Only report paths and derived public identities; the seed journal itself
   // contains no key material and no secret values are loaded by this tool.
+  // This generator is keyless and opens no RPC connection, so the anchor gate
+  // is rendered as skipped rather than re-observed here.
   console.log(JSON.stringify({
     verdict: "PASS_STRATEGY_TWO_WORKER_CONFIG_GENERATED",
     output,
     source: rendered.source,
     policySeeds: rendered.policies.map(({ seed }) => seed),
+    anchorGate: rendered.anchorGate,
   }, null, 2));
 }
 

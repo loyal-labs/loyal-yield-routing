@@ -27,7 +27,11 @@ import {
   readFinalizedCustomPolicySeed,
   verifyInstalledCustomPolicies,
 } from "../policies/rwa-multiply-custom.js";
-import { readStrategyTwoSeedExpectation } from "../policies/rwa-multiply-strategy2-seed-journal.js";
+import {
+  assertStrategyTwoAnchorObservation,
+  observeStrategyTwoSeedAnchor,
+  readStrategyTwoSeedExpectation,
+} from "../policies/rwa-multiply-strategy2-seed-journal.js";
 
 const PACKET_LIMIT = 1_232;
 /** Read-only fallback endpoint for unsigned preflight simulations; never logged. */
@@ -273,6 +277,7 @@ async function runPreflight(
   connection: Connection,
   route: typeof RWA_MULTIPLY_ROUTE,
   policySeedBefore: bigint,
+  anchorObserved: "pass" | "skipped-no-connection",
 ) {
   const evidence = cliValue("--evidence");
   invariant(evidence.endsWith(".json") && existsSync(dirname(evidence)),
@@ -372,6 +377,7 @@ async function runPreflight(
       policySeedBefore: policySeedBefore.toString(),
       expectedSeeds: seedStrings(policySeedBefore),
       expectedPolicies: seedStrings(policySeedBefore).map((seed) => customPolicyAddress(BigInt(seed))),
+      anchorReobserved: anchorObserved,
     },
     transaction: {
       instructionCount: 1,
@@ -426,9 +432,13 @@ async function main() {
   const finalizedSeed = await readFinalizedCustomPolicySeed(connection);
   invariant(finalizedSeed.policySeedBefore === policySeedBefore + 4n,
     `finalized Settings counter ${finalizedSeed.policySeedBefore} does not show all four journaled strategy-two PolicyCreate seeds ${policySeedBefore + 1n}-${policySeedBefore + 4n}`);
+  // A connection is in scope here, so the journaled anchor is re-observed on
+  // live finalized state before the retirement wire is built.
+  const anchorGate = assertStrategyTwoAnchorObservation(
+    await observeStrategyTwoSeedAnchor(connection, route.squads.program));
 
   if (preflight) {
-    await runPreflight(connection, route, policySeedBefore);
+    await runPreflight(connection, route, policySeedBefore, anchorGate.observed);
     return;
   }
 
