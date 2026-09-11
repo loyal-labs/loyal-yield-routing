@@ -3547,7 +3547,8 @@ async function verifyFinalizedClaimJournal(
     || reconciliation.requestReceiptClosed !== true
     || reconciliation.escrowLpBalanceAfter !== "0"
     || reconciliation.ticketUnchanged !== true
-    || toJson(beforeTicket) !== toJson(finalizedTicket)
+    || reportTicketFingerprint(beforeTicket) === null
+    || reportTicketFingerprint(beforeTicket) !== reportTicketFingerprint(finalizedTicket)
     || events.length !== 1
     || event?.user?.toString() !== ADMIN
     || event.userAmountAssetWithdrawn !== CLAIM_EXPECTED_PAYOUT_RAW
