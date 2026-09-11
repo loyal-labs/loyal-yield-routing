@@ -1316,27 +1316,39 @@ impl NeonSqlClient {
                 .fetch_one(&self.pool)
                 .await?;
         if managed_vaults_exist {
+            // Production app identities live in a separate database. Keep closed
+            // vault identities watched for later setup/deposit transactions, but
+            // omit their closed policy bindings and historical replay floor.
             let rows = sqlx::query(
                 r#"
                 SELECT active_policy.authority AS wallet,
                        vault.settings,
                        vault.vault_index,
                        vault.vault_pubkey,
-                       active_policy.policy_account,
-                       setup_policy.policy_account AS setup_policy_account,
+                       CASE WHEN vault.active AND active_policy.active
+                           THEN active_policy.policy_account
+                       END AS policy_account,
+                       CASE WHEN vault.active AND active_policy.active AND setup_policy.active
+                           THEN setup_policy.policy_account
+                       END AS setup_policy_account,
                        active_policy.kamino_markets,
-                       LEAST(
+                       CASE WHEN vault.active AND active_policy.active THEN LEAST(
                            active_policy.last_seen_slot,
                            setup_policy.last_seen_slot
-                       ) AS observation_start_slot
+                       ) END AS observation_start_slot
                 FROM loyal_yield.managed_vaults vault
                 JOIN loyal_yield.route_policies active_policy
                   ON active_policy.id = vault.active_policy_id
                 LEFT JOIN loyal_yield.route_policies setup_policy
                   ON setup_policy.id = vault.setup_policy_id
-                WHERE vault.active AND active_policy.active
+                WHERE (vault.active AND active_policy.active)
+                   OR CASE WHEN $1 IN ('mainnet', 'mainnet-beta')
+                       THEN active_policy.cluster IN ('mainnet', 'mainnet-beta')
+                       ELSE active_policy.cluster = $1
+                   END
                 "#,
             )
+            .bind(environment)
             .fetch_all(&self.pool)
             .await?;
             for row in rows {
