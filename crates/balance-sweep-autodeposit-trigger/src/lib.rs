@@ -29,6 +29,57 @@ pub const AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE_ENV: &str =
     "AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE";
 pub const AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE: i32 = 27;
 
+// Explicit child-process outcome protocol. Unmarked exit zero is only process
+// success: legacy executors also return zero while funds are still pending.
+pub const AUTODEPOSIT_COMPLETED_EXIT_CODE_ENV: &str = "AUTODEPOSIT_COMPLETED_EXIT_CODE";
+pub const AUTODEPOSIT_COMPLETED_EXIT_CODE: i32 = 28;
+pub const AUTODEPOSIT_DEFERRED_EXIT_CODE_ENV: &str = "AUTODEPOSIT_DEFERRED_EXIT_CODE";
+pub const AUTODEPOSIT_DEFERRED_EXIT_CODE: i32 = 29;
+pub const AUTODEPOSIT_RECOVERY_PENDING_EXIT_CODE_ENV: &str =
+    "AUTODEPOSIT_RECOVERY_PENDING_EXIT_CODE";
+pub const AUTODEPOSIT_RECOVERY_PENDING_EXIT_CODE: i32 = 30;
+pub const AUTODEPOSIT_NOOP_EXIT_CODE_ENV: &str = "AUTODEPOSIT_NOOP_EXIT_CODE";
+pub const AUTODEPOSIT_NOOP_EXIT_CODE: i32 = 31;
+
+pub const EXECUTOR_OUTCOME_ENV: [(&str, i32); 4] = [
+    (
+        AUTODEPOSIT_COMPLETED_EXIT_CODE_ENV,
+        AUTODEPOSIT_COMPLETED_EXIT_CODE,
+    ),
+    (
+        AUTODEPOSIT_DEFERRED_EXIT_CODE_ENV,
+        AUTODEPOSIT_DEFERRED_EXIT_CODE,
+    ),
+    (
+        AUTODEPOSIT_RECOVERY_PENDING_EXIT_CODE_ENV,
+        AUTODEPOSIT_RECOVERY_PENDING_EXIT_CODE,
+    ),
+    (AUTODEPOSIT_NOOP_EXIT_CODE_ENV, AUTODEPOSIT_NOOP_EXIT_CODE),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutorResult {
+    Completed,
+    Deferred,
+    RecoveryPending,
+    NotActionable,
+    Noop,
+    ProcessSuccessUnclassified,
+    Failed,
+}
+
+pub fn executor_result(exit_code: Option<i32>) -> ExecutorResult {
+    match exit_code {
+        Some(AUTODEPOSIT_COMPLETED_EXIT_CODE) => ExecutorResult::Completed,
+        Some(AUTODEPOSIT_DEFERRED_EXIT_CODE) => ExecutorResult::Deferred,
+        Some(AUTODEPOSIT_RECOVERY_PENDING_EXIT_CODE) => ExecutorResult::RecoveryPending,
+        Some(AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE) => ExecutorResult::NotActionable,
+        Some(AUTODEPOSIT_NOOP_EXIT_CODE) => ExecutorResult::Noop,
+        Some(0) => ExecutorResult::ProcessSuccessUnclassified,
+        _ => ExecutorResult::Failed,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecutorFailureAlert {
     pub code: &'static str,
@@ -94,7 +145,14 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
                 "autodeposit dependency returned a transient server error; execution will retry",
             retryable: true,
         }),
-        Some(AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE) => None,
+        Some(
+            0
+            | AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE
+            | AUTODEPOSIT_COMPLETED_EXIT_CODE
+            | AUTODEPOSIT_DEFERRED_EXIT_CODE
+            | AUTODEPOSIT_RECOVERY_PENDING_EXIT_CODE
+            | AUTODEPOSIT_NOOP_EXIT_CODE,
+        ) => None,
         _ => Some(ExecutorFailureAlert {
             code: "autodeposit_executor_failed",
             operation: "execute_eligible_autodeposit_target",

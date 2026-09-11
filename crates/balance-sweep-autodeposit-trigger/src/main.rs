@@ -7,9 +7,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use balance_sweep_autodeposit_trigger::{
-    compute_sweep_amount, executor_failure_alert, initial_surplus_amount,
+    compute_sweep_amount, executor_failure_alert, executor_result, initial_surplus_amount,
     positive_delta_surplus_amount, scheduled_eligible_after, surplus_lot_classification_db_value,
-    ExecutorFailureAlert, SweepAmountDecision, SweepCaps,
+    ExecutorFailureAlert, ExecutorResult, SweepAmountDecision, SweepCaps,
     AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE, AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE_ENV,
     AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE, AUTODEPOSIT_FEE_PAYER_EXHAUSTED_EXIT_CODE_ENV,
     AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE, AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE_ENV,
@@ -19,7 +19,7 @@ use balance_sweep_autodeposit_trigger::{
     AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE,
     AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE_ENV,
     AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE,
-    AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV,
+    AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE_ENV, EXECUTOR_OUTCOME_ENV,
 };
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -133,24 +133,33 @@ struct TriggerOutcome {
 struct ExecutorOutcome {
     targets_scanned: usize,
     executions_attempted: usize,
-    executions_succeeded: usize,
+    executions_completed: usize,
+    executions_deferred: usize,
+    executions_recovery_pending: usize,
+    executions_noop: usize,
+    executions_process_success_unclassified: usize,
     executions_failed: usize,
     executions_not_actionable: usize,
     stale_requested_slots_failed: i64,
     stale_claims_released: i64,
 }
 
-fn record_unsuccessful_executor_exit(
+fn record_executor_exit(
     outcome: &mut ExecutorOutcome,
     exit_code: Option<i32>,
 ) -> Option<ExecutorFailureAlert> {
-    let alert = executor_failure_alert(exit_code);
-    if alert.is_some() {
-        outcome.executions_failed += 1;
-    } else {
-        outcome.executions_not_actionable += 1;
+    match executor_result(exit_code) {
+        ExecutorResult::Completed => outcome.executions_completed += 1,
+        ExecutorResult::Deferred => outcome.executions_deferred += 1,
+        ExecutorResult::RecoveryPending => outcome.executions_recovery_pending += 1,
+        ExecutorResult::NotActionable => outcome.executions_not_actionable += 1,
+        ExecutorResult::Noop => outcome.executions_noop += 1,
+        ExecutorResult::ProcessSuccessUnclassified => {
+            outcome.executions_process_success_unclassified += 1;
+        }
+        ExecutorResult::Failed => outcome.executions_failed += 1,
     }
-    alert
+    executor_failure_alert(exit_code)
 }
 
 #[cfg(unix)]
@@ -308,7 +317,32 @@ async fn main() -> Result<()> {
         ))
     });
     let mut pending_slot_hints = SlotHintQueue::new(args.realtime_hint_queue_capacity);
+    let mut next_progress_check = time::Instant::now();
     loop {
+        // Run independently of executable-target selection: ambiguous and otherwise
+        // unrecoverable selected claims must remain visible even when not retried.
+        if args.execute_eligible && time::Instant::now() >= next_progress_check {
+            if !matches!(
+                time::timeout(
+                    Duration::from_secs(30),
+                    alert_overdue_autodeposit_work(&pool)
+                )
+                .await,
+                Ok(Ok(()))
+            ) {
+                OperationalError::new(
+                    "autodeposit_progress_check_failed",
+                    "check_autodeposit_progress",
+                    "autodeposit overdue-work check failed; completion health is unknown",
+                )
+                .retryable(true)
+                .recovery_required(true)
+                .emit();
+            }
+            // Fixed bounded reminder cadence, not a page on each idle scan. A restart
+            // checks immediately; repeat reads/lease renewals never reset durable age.
+            next_progress_check = time::Instant::now() + Duration::from_secs(15 * 60);
+        }
         drain_available_slot_hints(&mut realtime_hint_receiver, &mut pending_slot_hints);
         let outcome = project_surplus_lots_once(&pool, args.batch_limit)
             .await
@@ -376,7 +410,13 @@ async fn main() -> Result<()> {
             tracing::info!(
                 targets_scanned = execution_outcome.targets_scanned,
                 executions_attempted = execution_outcome.executions_attempted,
-                executions_succeeded = execution_outcome.executions_succeeded,
+                executions_completed = execution_outcome.executions_completed,
+                executions_deferred = execution_outcome.executions_deferred,
+                executions_recovery_pending = execution_outcome.executions_recovery_pending,
+                executions_not_actionable = execution_outcome.executions_not_actionable,
+                executions_noop = execution_outcome.executions_noop,
+                executions_process_success_unclassified =
+                    execution_outcome.executions_process_success_unclassified,
                 executions_failed = execution_outcome.executions_failed,
                 stale_requested_slots_failed = execution_outcome.stale_requested_slots_failed,
                 stale_claims_released = execution_outcome.stale_claims_released,
@@ -604,6 +644,7 @@ async fn execute_eligible_targets_once(
                 AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE_ENV,
                 AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE.to_string(),
             )
+            .envs(EXECUTOR_OUTCOME_ENV.map(|(key, value)| (key, value.to_string())))
             .status()
             .with_context(|| format!("spawn autodeposit executor for target {}", target.target_id))
             .inspect_err(|_| {
@@ -618,33 +659,206 @@ async fn execute_eligible_targets_once(
             })?;
         let executor_exit_code = status.code();
         let executor_signal = executor_termination_signal(&status);
-        if status.success() {
-            outcome.executions_succeeded += 1;
-        } else if let Some(alert) =
-            record_unsuccessful_executor_exit(&mut outcome, executor_exit_code)
-        {
-            tracing::warn!(
+        if let Some(alert) = record_executor_exit(&mut outcome, executor_exit_code) {
+            // Keep stable target/slot context on the exported error itself;
+            // a companion local warning is not exported by the OTLP filter.
+            tracing::error!(
+                name: "loyal.operational_error",
+                target: "loyal.observability.operational_error",
+                error_code = alert.code,
+                loyal.error.code = alert.code,
+                operation = alert.operation,
+                retryable = alert.retryable,
+                recovery_required = true,
+                target_id = target.target_id,
+                scheduled_slot_id = target.scheduled_slot_id,
                 executor_exit_code,
                 executor_signal,
-                executor_failure_code = alert.code,
-                "autodeposit executor exited unsuccessfully"
+                message = alert.summary,
             );
-            OperationalError::new(alert.code, alert.operation, alert.summary)
-                .retryable(alert.retryable)
-                .recovery_required(true)
-                .emit();
         } else {
-            // Counted apart from failures: the executor decided correctly that this
-            // target has nothing to deposit into, so folding it into the failure count
-            // would keep an operator hunting for a fault that does not exist.
             tracing::info!(
+                target_id = target.target_id,
+                scheduled_slot_id = target.scheduled_slot_id,
                 executor_exit_code,
                 executor_signal,
-                "autodeposit target is not actionable and was backed off without alerting"
+                executor_outcome = ?executor_result(executor_exit_code),
+                "autodeposit executor reported a non-failure outcome"
             );
         }
     }
     Ok(outcome)
+}
+
+// Only owned work or proven repeated idle-drain failures qualify. Slot/claim
+// updated_at and eligible_after are intentionally NOT progress clocks: retries
+// and executor lease renewal update them even when nothing completes.
+const OVERDUE_AUTODEPOSIT_WORK_SQL: &str = r#"
+    WITH open_slots AS MATERIALIZED (
+        -- Start with live lots, not the historical empty-slot amplification backlog.
+        SELECT DISTINCT scheduled_slot_id
+        FROM loyal_yield.balance_sweep_surplus_lots
+        WHERE status = 'open' AND remaining_amount_raw > 0
+          AND scheduled_slot_id IS NOT NULL
+    ), live_idle_slots AS MATERIALIZED (
+        -- Fence join reordering: otherwise the planner visits every historical
+        -- idle-error slot via target/status before applying the live-lot filter.
+        SELECT slot.* FROM open_slots
+        CROSS JOIN LATERAL (
+            SELECT id, target_id, token_mint, status, eligible_after, last_error
+            FROM loyal_yield.balance_sweep_scheduled_slots
+            WHERE id = open_slots.scheduled_slot_id
+            LIMIT 1
+        ) AS slot
+        WHERE slot.status IN ('scheduled', 'requested')
+          AND slot.token_mint = $1 AND slot.eligible_after <= now()
+          AND slot.last_error LIKE 'existing idle vault balance must drain before direct autodeposit:%'
+    ), selected_work AS (
+        SELECT slot.target_id, slot.id AS scheduled_slot_id,
+               claim.created_at AS pending_since,
+               CASE
+                 WHEN top_up.attempt_state = 'confirmed' THEN 'finalize_deposit'
+                 WHEN pull.attempt_state = 'confirmed' THEN 'deposit_to_kamino'
+                 WHEN pull.attempt_state IS NOT NULL THEN 'reconcile_pull'
+                 ELSE 'selected_claim'
+               END AS owning_stage
+        FROM loyal_yield.balance_sweep_lot_claims AS claim
+        JOIN loyal_yield.balance_sweep_scheduled_slots AS slot
+          ON slot.claim_token = claim.claim_token AND slot.target_id = claim.target_id
+        LEFT JOIN LATERAL (
+            SELECT attempt_state
+            FROM loyal_yield.balance_sweep_transaction_attempts
+            WHERE claim_token = claim.claim_token AND operation_kind = 'pull'
+            ORDER BY attempt_number DESC LIMIT 1
+        ) AS pull ON true
+        LEFT JOIN LATERAL (
+            SELECT attempt_state
+            FROM loyal_yield.balance_sweep_transaction_attempts
+            WHERE claim_token = claim.claim_token AND operation_kind = 'top_up'
+            ORDER BY attempt_number DESC LIMIT 1
+        ) AS top_up ON true
+        WHERE claim.status = 'selected'
+          AND slot.token_mint = $1
+          AND claim.created_at < now() - interval '15 minutes'
+    ), idle_drain_work AS (
+        SELECT slot.target_id, slot.id AS scheduled_slot_id,
+               COALESCE(to_timestamp(marker.blocked_epoch::double precision), history.first_attempt_at) AS pending_since,
+               'preflight_idle_drain'::text AS owning_stage
+        FROM live_idle_slots AS slot
+        JOIN loyal_yield.balance_sweep_targets AS target ON target.id = slot.target_id
+        JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
+          ON balance.target_id = target.id AND balance.mint = target.token_mint
+        CROSS JOIN LATERAL (
+            SELECT substring(slot.last_error FROM '^existing idle vault balance must drain before direct autodeposit: [0-9]+ \[idle_blocked_since=([0-9]{1,12}); idle_deferrals=[0-9]{1,7}\]$') AS blocked_epoch,
+                   substring(slot.last_error FROM '^existing idle vault balance must drain before direct autodeposit: [0-9]+ \[idle_blocked_since=[0-9]{1,12}; idle_deferrals=([0-9]{1,7})\]$')::bigint AS deferrals
+        ) AS marker
+        LEFT JOIN LATERAL (
+            SELECT MIN(claim.created_at) AS first_attempt_at,
+                   COUNT(DISTINCT claim.claim_token) AS attempts
+            FROM loyal_yield.balance_sweep_surplus_lots AS lot
+            JOIN loyal_yield.balance_sweep_lot_claim_items AS item ON item.lot_id = lot.id
+            JOIN loyal_yield.balance_sweep_lot_claims AS claim
+              ON claim.claim_token = item.claim_token AND claim.target_id = slot.target_id
+            WHERE marker.blocked_epoch IS NULL
+              AND lot.scheduled_slot_id = slot.id
+              AND lot.target_id = target.id
+              AND lot.status = 'open' AND lot.remaining_amount_raw > 0
+              AND claim.status = 'released'
+        ) AS history ON true
+        WHERE target.token_mint = $1
+          AND COALESCE(marker.deferrals, history.attempts) >= 3
+          AND COALESCE(to_timestamp(marker.blocked_epoch::double precision), history.first_attempt_at)
+                < now() - interval '1 hour'
+          AND target.desired_active AND target.chain_status = 'active'
+          AND target.wallet_balance_floor_raw IS NOT NULL
+          AND balance.amount_raw > target.wallet_balance_floor_raw
+          AND NOT EXISTS (
+              SELECT 1 FROM loyal_yield.balance_sweep_lot_claims AS owned
+              WHERE owned.target_id = target.id AND owned.status = 'selected'
+          )
+          AND EXISTS (
+              SELECT 1 FROM loyal_yield.managed_vaults AS managed
+              JOIN loyal_yield.route_policies AS policy ON policy.id = managed.active_policy_id
+                AND policy.active AND policy.authority = target.authority
+                AND policy.settings = target.settings AND policy.vault_index = target.vault_index
+                AND policy.vault_pubkey = target.vault_pubkey
+                AND 'same_mint_kamino' = ANY(policy.route_modes)
+              WHERE managed.active AND managed.settings = target.settings
+                AND managed.vault_index = target.vault_index
+                AND managed.vault_pubkey = target.vault_pubkey
+          )
+    ), work AS (
+        SELECT * FROM selected_work
+        UNION ALL
+        SELECT * FROM idle_drain_work
+    ), per_target AS (
+        SELECT DISTINCT ON (target_id, owning_stage) * FROM work
+        ORDER BY target_id, owning_stage, pending_since, scheduled_slot_id
+    ), ranked AS (
+        SELECT *, COUNT(*) OVER () AS overdue_target_stage_count,
+               COUNT(*) OVER (PARTITION BY owning_stage) AS overdue_stage_target_count,
+               ROW_NUMBER() OVER (
+                   PARTITION BY owning_stage ORDER BY pending_since, target_id, scheduled_slot_id
+               ) AS stage_rank
+        FROM per_target
+    )
+    SELECT *, EXTRACT(EPOCH FROM (now() - pending_since))::bigint AS age_seconds
+    FROM ranked WHERE stage_rank = 1
+    ORDER BY pending_since, target_id, scheduled_slot_id
+    LIMIT 5
+"#;
+
+async fn alert_overdue_autodeposit_work(pool: &PgPool) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET TRANSACTION READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SET LOCAL statement_timeout = '20s'")
+        .execute(&mut *tx)
+        .await?;
+    let rows = sqlx::query(OVERDUE_AUTODEPOSIT_WORK_SQL)
+        .bind(USDC_MINT_ADDRESS)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.rollback().await?;
+    for row in &rows {
+        let target_id: i64 = row.try_get("target_id")?;
+        let scheduled_slot_id: i64 = row.try_get("scheduled_slot_id")?;
+        let owning_stage: &str = row.try_get("owning_stage")?;
+        let age_seconds: i64 = row.try_get("age_seconds")?;
+        let overdue_target_stage_count: i64 = row.try_get("overdue_target_stage_count")?;
+        let overdue_stage_target_count: i64 = row.try_get("overdue_stage_target_count")?;
+        let summary = if owning_stage == "preflight_idle_drain" {
+            "autodeposit idle drain is overdue; inspect fleet economic eligibility without bypassing the vault balance guard"
+        } else {
+            "autodeposit owned work is overdue; reconcile the owning stage before retrying funds movement"
+        };
+        // Use the OperationalError export target, with IDs ON the event (not
+        // merely a local warning/span). No claim tokens or raw last_error text.
+        tracing::error!(
+            name: "loyal.operational_error",
+            target: "loyal.observability.operational_error",
+            error_code = "autodeposit_progress_overdue",
+            loyal.error.code = "autodeposit_progress_overdue",
+            operation = "check_autodeposit_progress",
+            retryable = true,
+            recovery_required = true,
+            target_id,
+            scheduled_slot_id,
+            owning_stage,
+            age_seconds,
+            overdue_target_stage_count,
+            overdue_stage_target_count,
+            // Only the oldest representative per stage pages; never one per slot.
+            sampled_target_stage_count = rows.len(),
+            message = summary,
+        );
+    }
+    tracing::info!(
+        overdue_sample_count = rows.len(),
+        "checked durable autodeposit progress (not a global completion-health assertion)"
+    );
+    Ok(())
 }
 
 fn emit_claim_transition_failed() {
@@ -1961,6 +2175,10 @@ async fn advance_projection_offset(
 }
 
 #[cfg(test)]
+#[path = "progress_contract_tests.rs"]
+mod progress_contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2081,15 +2299,12 @@ mod tests {
     fn executor_failure_alert_counts_non_actionable_separately() {
         let mut outcome = ExecutorOutcome::default();
 
-        let alert = record_unsuccessful_executor_exit(
-            &mut outcome,
-            Some(AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE),
-        );
+        let alert = record_executor_exit(&mut outcome, Some(AUTODEPOSIT_NOT_ACTIONABLE_EXIT_CODE));
         assert_eq!(alert, None);
         assert_eq!(outcome.executions_not_actionable, 1);
         assert_eq!(outcome.executions_failed, 0);
 
-        let alert = record_unsuccessful_executor_exit(&mut outcome, Some(1));
+        let alert = record_executor_exit(&mut outcome, Some(1));
         assert_eq!(
             alert.expect("generic executor failure must alert").code,
             "autodeposit_executor_failed"
