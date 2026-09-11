@@ -17,6 +17,13 @@ import {
 import bs58 from "bs58";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import {
+  AutodepositRpcReadError,
+  autodepositDependencyHttpStatus,
+  isTransientRpcHttpStatus,
+  readAutodepositPreSendBalance,
+  type AutodepositRpcReadDiagnostics,
+} from "./autodeposit-rpc-read";
 
 import {
   attemptAllowsSafeRequeue,
@@ -1608,9 +1615,9 @@ export function isFeePayerExhaustedFailure(error: unknown): boolean {
 export function isAutodepositDependencyUnavailableFailure(
   error: unknown
 ): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /\b(?:500 Internal Server Error|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout)\b/i.test(
-    message
+  return (
+    (error instanceof AutodepositRpcReadError && error.diagnostics.deadlineExceeded) ||
+    isTransientRpcHttpStatus(autodepositDependencyHttpStatus(error))
   );
 }
 
@@ -1656,7 +1663,7 @@ type AutodepositExecutorFailureRecord = {
   failureCode: AutodepositExecutorFailureCode | "unknown";
   exitCode: number;
   errorKind: string;
-};
+} & Partial<Omit<AutodepositRpcReadDiagnostics, "executorStage">>;
 
 type AutodepositExecutorFailureBoundaryOptions = {
   environment?: Record<string, string | undefined>;
@@ -1778,11 +1785,18 @@ export async function runAutodepositExecutorWithFailureBoundary(
       failureCode: disposition.failureCode ?? "unknown",
       exitCode,
       errorKind:
-        disposition.failureCode === "dependency_unavailable"
-          ? "retryable_http_server_error"
-          : error instanceof Error
-            ? error.name
-            : typeof error,
+        error instanceof AutodepositRpcReadError && error.diagnostics.deadlineExceeded
+          ? "rpc_read_deadline_exceeded"
+          : disposition.failureCode === "dependency_unavailable"
+            ? "retryable_http_server_error"
+            : error instanceof Error
+              ? error.name
+              : typeof error,
+      ...(error instanceof AutodepositRpcReadError
+        ? error.diagnostics
+        : disposition.failureCode === "dependency_unavailable"
+          ? { httpStatus: autodepositDependencyHttpStatus(error) }
+          : {}),
     });
   }
 }
@@ -5007,9 +5021,25 @@ async function main(
   const walletUsdcAta = new PublicKeyCtor(target.walletUsdcAta);
   const vaultUsdcAta = new PublicKeyCtor(target.vaultUsdcAta);
   recordStage("read_wallet_balance");
-  const walletBalanceRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
+  const walletBalanceRaw = await readAutodepositPreSendBalance({
+    rpcUrl,
+    context: {
+      executorStage: "read_wallet_balance",
+      targetId: target.id.toString(),
+      scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
+    },
+    read: (readConnection) => getTokenBalanceRaw(readConnection, walletUsdcAta),
+  });
   recordStage("read_vault_balance");
-  const vaultPreBalanceRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
+  const vaultPreBalanceRaw = await readAutodepositPreSendBalance({
+    rpcUrl,
+    context: {
+      executorStage: "read_vault_balance",
+      targetId: target.id.toString(),
+      scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
+    },
+    read: (readConnection) => getTokenBalanceRaw(readConnection, vaultUsdcAta),
+  });
   recordStage("read_delegation_allowance");
   const allowance = await loadRecurringDelegationAllowance({
     appModules,
