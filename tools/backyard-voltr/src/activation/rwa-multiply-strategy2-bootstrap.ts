@@ -2,21 +2,8 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-import {
-  AccountRole,
-  address,
-  createNoopSigner,
-  getAddressEncoder,
-  type Address,
-  type Instruction,
-} from "@solana/kit";
-import { getCreateAssociatedTokenIdempotentInstructionAsync } from "@solana-program/token";
+import { AccountRole, address, type Instruction } from "@solana/kit";
 import { Connection, Keypair, PublicKey, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import {
-  getInitializeStrategyInstructionAsync,
-  getUpdateVaultConfigInstructionAsync,
-  VaultConfigField,
-} from "@voltr/vault-sdk";
 
 import {
   deriveStrategyTwoVoltrAccounts,
@@ -27,12 +14,7 @@ import {
   type StrategyTwoIdentity,
 } from "../domain/rwa-multiply-strategy2-route-spec.js";
 import type { RwaMultiplyRouteSpec } from "../domain/rwa-multiply-route-spec.js";
-import {
-  deriveRwaMultiplyVoltrAccounts,
-  initializeRwaAdaptorConfigInstruction,
-  initializeRwaAdaptorReportTicketInstruction,
-  RWA_ADAPTOR_DISCRIMINATORS,
-} from "../integrations/rwa-multiply-voltr.js";
+import { deriveRwaMultiplyVoltrAccounts } from "../integrations/rwa-multiply-voltr.js";
 import { prepareSignedV0Transaction, sendPreparedOnce } from "../integrations/solana-compat.js";
 import {
   deriveRwaMultiplyStrategySigningMaterial,
@@ -45,6 +27,7 @@ import {
   assertStrategyTwoBootstrapPoststate,
   reconcileStrategyTwoBootstrap,
 } from "./rwa-multiply-strategy2-bootstrap-reconcile.js";
+import { buildBootstrapWires } from "./rwa-multiply-strategy2-bootstrap-wires.js";
 
 const PACKET_LIMIT = 1_232;
 /**
@@ -92,72 +75,6 @@ function accountRow(label: string, expected: "created" | "absent-authority", acc
     dataBytes: account?.data.length ?? 0,
     stateSha256: account == null ? null : sha256(account.data),
   };
-}
-
-/**
- * The three ordered bootstrap wires. Account privileges are message-wide, so
- * initializeConfig (config WRITABLE_SIGNER) can never share a transaction with
- * initializeReportTicket (config READONLY), and wire C is the custody ATA plus
- * the manager round-trip (BAqg -> initializeStrategy -> ST999). Every signer is
- * a no-op signer: address/role shape is what matters here, never key material.
- */
-async function buildBootstrapWires(route: RwaMultiplyRouteSpec) {
-  const admin = createNoopSigner(route.setupAdmin);
-  const configKeypair = createNoopSigner(route.customAdaptor.strategyConfig);
-  const settingsSigner = createNoopSigner(route.customAdaptor.settingsSigner);
-  const accounts = await deriveRwaMultiplyVoltrAccounts(route);
-  const strategyAccounts = await deriveStrategyTwoVoltrAccounts(route.customAdaptor.strategyConfig);
-  invariant(strategyAccounts.reportTicket === accounts.reportTicket
-    && strategyAccounts.strategyAuth === accounts.strategyAuth
-    && strategyAccounts.strategyInitReceipt === accounts.strategyInitReceipt,
-  "strategy-two derivation drifted from the route-derived Voltr accounts");
-
-  const addressEncoder = getAddressEncoder();
-  const initializeStrategy = appendAccounts(await getInitializeStrategyInstructionAsync({
-    payer: admin,
-    manager: settingsSigner,
-    vault: route.vault.address,
-    strategy: route.customAdaptor.strategyConfig,
-    adaptorAddReceipt: accounts.adaptorAddReceipt,
-    strategyInitReceipt: accounts.strategyInitReceipt,
-    vaultStrategyAuth: accounts.strategyAuth,
-    adaptorProgram: route.customAdaptor.program,
-    instructionDiscriminator: RWA_ADAPTOR_DISCRIMINATORS.initialize,
-    additionalArgs: null,
-  }, { programAddress: route.programs.voltr }), [
-    { address: route.squads.settings, role: AccountRole.READONLY },
-    { address: route.squads.vault, role: AccountRole.READONLY_SIGNER },
-    { address: route.assets.assetMint, role: AccountRole.READONLY },
-    { address: route.assets.tokenProgram, role: AccountRole.READONLY },
-    { address: route.squads.assetAta, role: AccountRole.READONLY },
-    { address: route.squads.program, role: AccountRole.READONLY },
-  ]);
-  const custodyAta = await getCreateAssociatedTokenIdempotentInstructionAsync({
-    payer: admin,
-    ata: accounts.strategyAssetAta,
-    owner: accounts.strategyAuth,
-    mint: route.assets.assetMint,
-    systemProgram: route.programs.system,
-    tokenProgram: route.assets.tokenProgram,
-  }, { programAddress: route.assets.associatedTokenProgram });
-  const handoffToSettingsSigner = await getUpdateVaultConfigInstructionAsync({
-    admin,
-    vault: route.vault.address,
-    field: VaultConfigField.Manager,
-    data: addressEncoder.encode(route.customAdaptor.settingsSigner),
-  }, { programAddress: route.programs.voltr });
-  const restoreManager = await getUpdateVaultConfigInstructionAsync({
-    admin,
-    vault: route.vault.address,
-    field: VaultConfigField.Manager,
-    data: addressEncoder.encode(route.squads.vault),
-  }, { programAddress: route.programs.voltr });
-  return {
-    accounts,
-    wireA: [initializeRwaAdaptorConfigInstruction(admin, configKeypair, accounts, route)],
-    wireB: [await initializeRwaAdaptorReportTicketInstruction(admin, route)],
-    wireC: [custodyAta, handoffToSettingsSigner, initializeStrategy, restoreManager],
-  } as const;
 }
 
 function writePrivate(path: string, value: Record<string, unknown>, flag: "w" | "wx") {
@@ -592,13 +509,6 @@ async function main() {
     seedBaseMatchesLiveCounter: liveSeed.policySeedBefore === SIMULATED_POLICY_SEED_BEFORE,
     policySeeds: Object.values(expectedSeeds).map(String),
     evidence }, null, 2));
-}
-
-function appendAccounts(
-  instruction: Instruction,
-  accounts: readonly Readonly<{ address: Address; role: AccountRole }>[],
-): Instruction {
-  return { ...instruction, accounts: [...(instruction.accounts ?? []), ...accounts] };
 }
 
 try {
