@@ -173,6 +173,25 @@ function integerString(value: unknown): string | null {
 }
 
 /**
+ * How precisely the program-assigned spending-limit window start is pinned.
+ * `landingBlockTime` is the block time of the finalized wire that created the
+ * policy: the readback then requires the on-chain start to be that timestamp
+ * (within the program's clock-vs-slot jitter of at most 2 seconds), which is
+ * exact. Without a landing time - the plain read-only readback of an already
+ * installed seed - `earliestStart` bounds the start from below (the seed
+ * journal's anchor observation time: no policy can have landed before the
+ * observation that derived its seed) and the start may never sit further than
+ * 120 seconds in the future. `requireUntouchedUsage` additionally refuses a
+ * spending limit that has already been charged (install-specific: a freshly
+ * created limit must be full and never reset).
+ */
+export type InstalledReadbackOptions = Readonly<{
+  landingBlockTime?: number | null;
+  earliestStart?: number | null;
+  requireUntouchedUsage?: boolean;
+}>;
+
+/**
  * Compare the generated SDK's finalized SpendingLimitV2 shape with the
  * install target. The period is nested under timeConstraints in account
  * state; accepting a top-level period would let a failed reconciliation pass
@@ -181,14 +200,14 @@ function integerString(value: unknown): string | null {
  * PolicyCreate leaves the window start to the program, which stamps the
  * landing block time into it (mirroring the policy-level start the basic-set
  * readback normalizes in `assertPolicyMatchesArtifact`), so an expected start
- * of 0 accepts any positive timestamp no further than 120 seconds in the
- * future rather than a literal from the target. A non-zero expected start is
- * still compared literally, and the mint, expiration, period, accumulate flag,
- * and per-period amount stay exact.
+ * of 0 is compared against the readback options instead of a literal from the
+ * target. A non-zero expected start is still compared literally, and the mint,
+ * expiration, period, accumulate flag, and per-period amount stay exact.
  */
 export function spendingLimitsMatch(
   limits: readonly unknown[],
   expected: CustomPolicySpendingLimit | null,
+  options: InstalledReadbackOptions = {},
 ): boolean {
   if (expected === null) return limits.length === 0;
   if (limits.length !== 1) return false;
@@ -205,9 +224,13 @@ export function spendingLimitsMatch(
   const timeConstraints = shaped.timeConstraints;
   const observedStart = integerString(timeConstraints?.start);
   const startTimestamp = observedStart === null ? null : Number(observedStart);
+  const landingBlockTime = options.landingBlockTime;
   const startPass = observedStart !== null && startTimestamp !== null && Number.isSafeInteger(startTimestamp)
     && (expected.start === 0n
-      ? startTimestamp > 0 && startTimestamp <= Math.floor(Date.now() / 1000) + 120
+      ? landingBlockTime != null
+        ? Math.abs(startTimestamp - landingBlockTime) <= 2
+        : startTimestamp > 0 && startTimestamp <= Math.floor(Date.now() / 1000) + 120
+          && (options.earliestStart == null || startTimestamp >= options.earliestStart)
       : observedStart === expected.start.toString());
   const observedExpiration = timeConstraints?.expiration === null
     ? null
@@ -224,6 +247,24 @@ export function spendingLimitsMatch(
     && timeConstraints?.period?.__kind === expected.period
     && timeConstraints?.accumulateUnused === expected.accumulateUnused
     && integerString(shaped.quantityConstraints?.maxPerPeriod) === expected.maxPerPeriodRaw.toString();
+}
+
+/**
+ * A spending limit that has never been charged: the full per-period amount is
+ * still available and the reset stamp still equals the window start. Only the
+ * install-time checks (post-send, --reconcile) require this - an older seed's
+ * routine readback must keep accepting a limit the account has drawn on.
+ */
+function untouchedSpendingLimitUsage(limits: readonly unknown[]): boolean {
+  const shaped = limits[0] as {
+    timeConstraints?: { start?: unknown };
+    quantityConstraints?: { maxPerPeriod?: unknown };
+    usage?: { remainingInPeriod?: unknown; lastReset?: unknown };
+  } | undefined;
+  const maxPerPeriod = integerString(shaped?.quantityConstraints?.maxPerPeriod);
+  return shaped?.usage !== undefined && maxPerPeriod !== null
+    && integerString(shaped.usage.remainingInPeriod) === maxPerPeriod
+    && integerString(shaped.usage.lastReset) === integerString(shaped.timeConstraints?.start);
 }
 
 /**
@@ -470,7 +511,10 @@ type ExpectedConstraintData = Readonly<{
  * be evaluated without a connection (the live-bytes fixture test drives this
  * with the finalized account bytes directly).
  */
-export async function buildInstalledRowExpectations(target: CustomPolicyTarget) {
+export async function buildInstalledRowExpectations(
+  target: CustomPolicyTarget,
+  options: InstalledReadbackOptions = {},
+) {
   const route = target.route;
   const manager = createNoopSigner(route.squads.vault);
   const report = {
@@ -512,6 +556,7 @@ export async function buildInstalledRowExpectations(target: CustomPolicyTarget) 
       [expectedData("stage-withdrawal", target.caps)],
       [expectedArmData("withdraw", target.caps), expectedData("withdraw", target.caps)],
     ],
+    ...options,
   };
 }
 
@@ -611,7 +656,9 @@ export function installedPolicyRow(input: Readonly<{
   const expectedLimit = input.target.caps.dailySpendingLimit === null
     ? null
     : input.target.caps.dailySpendingLimit;
-  const spendingLimitsPass = spendingLimitsMatch(body?.spendingLimits ?? [], expectedLimit);
+  const spendingLimitsPass = spendingLimitsMatch(body?.spendingLimits ?? [], expectedLimit, input.expectations)
+    && (input.expectations.requireUntouchedUsage !== true
+      || untouchedSpendingLimitUsage(body?.spendingLimits ?? []));
   const pass = Boolean(authorityBoundaryPass
     && policy.policyState.__kind === "ProgramInteraction"
     && body?.accountIndex === route.squads.vaultIndex
@@ -636,9 +683,10 @@ export function installedPolicyRow(input: Readonly<{
 export async function verifyInstalledCustomPolicies(
   connection: Connection,
   target: CustomPolicyTarget = V2_CUSTOM_POLICY_TARGET,
+  options: InstalledReadbackOptions = {},
 ) {
   const compiled = await compileCurrentCustomPolicyArtifact(connection, target);
-  const expectations = await buildInstalledRowExpectations(target);
+  const expectations = await buildInstalledRowExpectations(target, options);
   const response = await connection.getMultipleAccountsInfoAndContext(
     compiled.artifact.policies.map(({ policy }) => new PublicKey(policy)),
     { commitment: "finalized", minContextSlot: compiled.contextSlot },

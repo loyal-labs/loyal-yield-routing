@@ -145,6 +145,50 @@ async function assertLegacyRetired(connection: Connection, target: CustomPolicyT
   };
 }
 
+/**
+ * The block time of the finalized wire that created a policy, resolved from
+ * its signature (slot via getSignatureStatuses, then getBlockTime) the way the
+ * basic-set readback resolves a leg's landing slot. The Squads program stamps
+ * this timestamp into a created policy's spending-limit window start, so the
+ * install-time checks can require the exact value rather than a window.
+ */
+async function finalizedLandingBlockTime(connection: Connection, signature: string): Promise<number> {
+  invariant(signature.length > 0, "cannot resolve a landing block time without a signature");
+  const status = (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
+  invariant(status?.err === null && typeof status.slot === "number", "pending signature is not finalized successfully");
+  const blockTime = await connection.getBlockTime(status.slot);
+  invariant(typeof blockTime === "number", `landing slot ${status.slot} block time is unavailable`);
+  return blockTime;
+}
+
+/**
+ * Floor for a program-assigned window start when no landing time is known:
+ * the block time of the seed journal's anchor observation slot. No policy
+ * derived from that observation can have landed before it. Null when the RPC
+ * no longer serves the slot's timestamp.
+ */
+async function anchorObservationBlockTime(connection: Connection, slot: number): Promise<number | null> {
+  const blockTime = await connection.getBlockTime(slot);
+  return typeof blockTime === "number" ? blockTime : null;
+}
+
+type PendingCustomPolicyJournal = Readonly<{
+  operation?: unknown;
+  mutation?: unknown;
+  seed?: unknown;
+  policy?: unknown;
+  transaction?: {
+    expectedSignature?: unknown;
+    projectedPolicyDataSha256?: unknown;
+    projectedSettingsDataSha256?: unknown;
+    protectedPreviousVaultSha256?: unknown;
+    protectedVoltrVaultSha256?: unknown;
+  };
+  policySeedBefore?: unknown;
+  expectedPolicySeeds?: unknown;
+  seedExpectationJournal?: unknown;
+}>;
+
 async function main() {
   const execute = process.argv.includes("--execute");
   const reconcile = process.argv.includes("--reconcile");
@@ -230,24 +274,26 @@ async function main() {
   const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
   invariant(admin.signer.address === route.setupAdmin, "setup admin signer drifted");
 
-  const before = await verifyInstalledCustomPolicies(connection, installTarget);
+  // Install-time readbacks pin the program-assigned window start exactly: a
+  // reconcile replays the recorded wire's landing block time, while the plain
+  // read-only readback falls back to the journal's anchor observation floor.
+  const pendingReconcile = reconcile
+    ? JSON.parse(readFileSync(`${journal}.pending`, "utf8")) as PendingCustomPolicyJournal
+    : null;
+  const landingBlockTime = pendingReconcile === null
+    ? null
+    : await finalizedLandingBlockTime(connection, String(pendingReconcile.transaction?.expectedSignature ?? ""));
+  const observationFloor = strategyTwo && seedExpectation !== null
+    ? await anchorObservationBlockTime(connection, seedExpectation.observationSlot)
+    : null;
+  const before = await verifyInstalledCustomPolicies(connection, installTarget, {
+    ...(landingBlockTime === null ? {} : { landingBlockTime }),
+    ...(landingBlockTime === null && observationFloor !== null ? { earliestStart: observationFloor } : {}),
+    ...(reconcile ? { requireUntouchedUsage: true } : {}),
+  });
   if (reconcile) {
-    const pending = JSON.parse(readFileSync(`${journal}.pending`, "utf8")) as {
-      operation?: unknown;
-      mutation?: unknown;
-      seed?: unknown;
-      policy?: unknown;
-      transaction?: {
-        expectedSignature?: unknown;
-        projectedPolicyDataSha256?: unknown;
-        projectedSettingsDataSha256?: unknown;
-        protectedPreviousVaultSha256?: unknown;
-        protectedVoltrVaultSha256?: unknown;
-      };
-      policySeedBefore?: unknown;
-      expectedPolicySeeds?: unknown;
-      seedExpectationJournal?: unknown;
-    };
+    invariant(pendingReconcile !== null, "reconcile without a pending journal");
+    const pending = pendingReconcile;
     const signature = String(pending.transaction?.expectedSignature ?? "");
     const policyAddress = String(pending.policy ?? "");
     invariant(pending.mutation === "create", "pending journal lacks the create-only mutation kind");
@@ -431,7 +477,10 @@ async function main() {
   invariant(returned === prepared.expectedSignature, "RPC returned a signature different from the persisted wire");
   const confirmation = await connection.confirmTransaction({ signature: returned, ...prepared.latestBlockhash }, "finalized");
   invariant(confirmation.value.err === null, `policy transaction finalized with ${JSON.stringify(confirmation.value.err)}`);
-  const after = await verifyInstalledCustomPolicies(connection, installTarget);
+  const after = await verifyInstalledCustomPolicies(connection, installTarget, {
+    landingBlockTime: await finalizedLandingBlockTime(connection, returned),
+    requireUntouchedUsage: true,
+  });
   const installed = after.rows[targetIndex];
   invariant(installed?.pass === true, `finalized custom ${target.operation} policy did not reconcile exactly`);
   const [finalizedPolicy, finalizedSettings, finalizedPrevious, finalizedVoltr] =
