@@ -177,6 +177,14 @@ function integerString(value: unknown): string | null {
  * install target. The period is nested under timeConstraints in account
  * state; accepting a top-level period would let a failed reconciliation pass
  * while the ordered policy journal advances.
+ *
+ * PolicyCreate leaves the window start to the program, which stamps the
+ * landing block time into it (mirroring the policy-level start the basic-set
+ * readback normalizes in `assertPolicyMatchesArtifact`), so an expected start
+ * of 0 accepts any positive timestamp no further than 120 seconds in the
+ * future rather than a literal from the target. A non-zero expected start is
+ * still compared literally, and the mint, expiration, period, accumulate flag,
+ * and per-period amount stay exact.
  */
 export function spendingLimitsMatch(
   limits: readonly unknown[],
@@ -195,6 +203,12 @@ export function spendingLimitsMatch(
     quantityConstraints?: { maxPerPeriod?: unknown };
   };
   const timeConstraints = shaped.timeConstraints;
+  const observedStart = integerString(timeConstraints?.start);
+  const startTimestamp = observedStart === null ? null : Number(observedStart);
+  const startPass = observedStart !== null && startTimestamp !== null && Number.isSafeInteger(startTimestamp)
+    && (expected.start === 0n
+      ? startTimestamp > 0 && startTimestamp <= Math.floor(Date.now() / 1000) + 120
+      : observedStart === expected.start.toString());
   const observedExpiration = timeConstraints?.expiration === null
     ? null
     : timeConstraints?.expiration === undefined
@@ -204,7 +218,7 @@ export function spendingLimitsMatch(
     ? null
     : expected.expiration.toString();
   return shaped.mint?.toBase58?.() === expected.mint
-    && integerString(timeConstraints?.start) === expected.start.toString()
+    && startPass
     && observedExpiration !== undefined
     && observedExpiration === expectedExpiration
     && timeConstraints?.period?.__kind === expected.period
@@ -444,11 +458,19 @@ export async function compileCurrentCustomPolicyArtifact(
   };
 }
 
-export async function verifyInstalledCustomPolicies(
-  connection: Connection,
-  target: CustomPolicyTarget = V2_CUSTOM_POLICY_TARGET,
-) {
-  const compiled = await compileCurrentCustomPolicyArtifact(connection, target);
+type ExpectedConstraintData = Readonly<{
+  offset: string;
+  operator: string;
+  kind: string;
+  value: string;
+}>;
+
+/**
+ * Per-row expectation material that depends only on the target, so a row can
+ * be evaluated without a connection (the live-bytes fixture test drives this
+ * with the finalized account bytes directly).
+ */
+export async function buildInstalledRowExpectations(target: CustomPolicyTarget) {
   const route = target.route;
   const manager = createNoopSigner(route.squads.vault);
   const report = {
@@ -465,130 +487,164 @@ export async function verifyInstalledCustomPolicies(
     buildRwaMultiplyArmReportInstruction(manager, "deposit", 0n, report, route),
     buildRwaMultiplyArmReportInstruction(manager, "withdraw", route.vault.proofAmountRaw, report, route),
   ]);
-  const templates = [
-    [allocationArm, positive.deposit],
-    [navRefreshArm, zero.deposit],
-    [stage],
-    [withdrawArm, positive.withdraw],
-  ] as const;
-  const selectedIndexes = [
-    [[0, 1], [0, 2, 3, 8, 11, 12, 13, 14, 15, 16, 17]],
-    [[0, 1], [0, 2, 3, 8, 11, 12, 13, 14, 15, 16, 17]],
-    [[0, 1, 2, 3]],
-    [[0, 1], [0, 2, 5, 6, 9, 12, 13, 14, 15, 16, 17]],
-  ] as const;
-  const expectedPrograms = [
-    [route.customAdaptor.program, route.programs.voltr],
-    [route.customAdaptor.program, route.programs.voltr],
-    [route.assets.tokenProgram],
-    [route.customAdaptor.program, route.programs.voltr],
-  ] as const;
-  const expectedDataSets = [
-    [expectedArmData("allocation", target.caps), expectedData("allocation", target.caps)],
-    [expectedArmData("nav-refresh", target.caps), expectedData("nav-refresh", target.caps)],
-    [expectedData("stage-withdrawal", target.caps)],
-    [expectedArmData("withdraw", target.caps), expectedData("withdraw", target.caps)],
-  ] as const;
-  const response = await connection.getMultipleAccountsInfoAndContext(
-    compiled.artifact.policies.map(({ policy }) => new PublicKey(policy)),
-    { commitment: "finalized", minContextSlot: compiled.contextSlot },
-  );
-  const rows = compiled.artifact.policies.map((expected, index) => {
-    const info = response.value[index];
-    if (!info) return {
-      operation: expected.operation,
-      seed: expected.seed,
-      policy: expected.policy,
-      pass: false,
-      reason: "absent",
-    } satisfies CustomPolicyVerificationRow;
-    if (!info.owner.equals(new PublicKey(route.squads.program))) {
-      return {
-        operation: expected.operation,
-        seed: expected.seed,
-        policy: expected.policy,
-        pass: false,
-        reason: "wrong owner",
-        dataSha256: createHash("sha256").update(info.data).digest("hex"),
-      } satisfies CustomPolicyVerificationRow;
-    }
-    let policy: PolicyState;
-    try {
-      [policy] = Policy.fromAccountInfo(info);
-    } catch {
-      return {
-        operation: expected.operation,
-        seed: expected.seed,
-        policy: expected.policy,
-        pass: false,
-        reason: "undecodable policy account",
-        dataSha256: createHash("sha256").update(info.data).digest("hex"),
-      } satisfies CustomPolicyVerificationRow;
-    }
-    const body = policy.policyState.fields?.[0] as {
-      accountIndex?: number;
-      preHook?: unknown;
-      postHook?: unknown;
-      spendingLimits?: readonly unknown[];
-      instructionsConstraints?: readonly Readonly<{
-        programId: PublicKey;
-        accountConstraints?: readonly unknown[];
-        dataConstraints?: readonly unknown[];
-      }>[];
-    } | undefined;
-    const observedConstraints = expected.constraintIndices.map((constraintIndex, innerIndex) => {
-      const constraint = body?.instructionsConstraints?.[constraintIndex];
-      const template = templates[index]![innerIndex]!;
-      const expectedAccounts = selectedIndexes[index]![innerIndex]!.map((accountIndex) => ({
-        index: accountIndex,
-        kind: "Pubkey",
-        keys: [template.accounts?.[accountIndex]?.address ?? ""],
-      }));
-      const observedAccounts = constraint?.accountConstraints?.map(decodedConstraint) ?? [];
-      const observedData = constraint?.dataConstraints?.map(decodedConstraint) ?? [];
-      return {
-        pass: Boolean(constraint?.programId.equals(new PublicKey(expectedPrograms[index]![innerIndex]!))
-          && JSON.stringify(observedAccounts) === JSON.stringify(expectedAccounts)
-          && JSON.stringify(observedData) === JSON.stringify(expectedDataSets[index]![innerIndex])),
-        program: constraint?.programId.toBase58() ?? null,
-        accountConstraints: observedAccounts,
-        dataConstraints: observedData,
-      };
-    });
-    const authorityBoundaryPass = Boolean(policy.settings.equals(new PublicKey(route.squads.settings))
-      && policy.seed.toString() === expected.seed
-      && policy.threshold === 1
-      && policy.timeLock === 0
-      && policy.signers.length === 1
-      && policy.signers[0]?.key.equals(new PublicKey(route.squads.delegatedExecutor))
-      && policy.signers[0]?.permissions.mask === 7);
-    // Every policy in a limited set must carry exactly the configured daily
-    // limit (Squads charges it only on decreases, so deposit-side lanes are
-    // unaffected); the uncapped v2 set must carry none.
-    const expectedLimit = target.caps.dailySpendingLimit === null
-      ? null
-      : target.caps.dailySpendingLimit;
-    const spendingLimitsPass = spendingLimitsMatch(body?.spendingLimits ?? [], expectedLimit);
-    const pass = Boolean(authorityBoundaryPass
-      && policy.policyState.__kind === "ProgramInteraction"
-      && body?.accountIndex === route.squads.vaultIndex
-      && body.preHook == null
-      && body.postHook == null
-      && spendingLimitsPass
-      && body.instructionsConstraints?.length === expected.constraintIndices.length
-      && observedConstraints.every(({ pass }) => pass));
+  return {
+    templates: [
+      [allocationArm, positive.deposit],
+      [navRefreshArm, zero.deposit],
+      [stage],
+      [withdrawArm, positive.withdraw],
+    ],
+    selectedIndexes: [
+      [[0, 1], [0, 2, 3, 8, 11, 12, 13, 14, 15, 16, 17]],
+      [[0, 1], [0, 2, 3, 8, 11, 12, 13, 14, 15, 16, 17]],
+      [[0, 1, 2, 3]],
+      [[0, 1], [0, 2, 5, 6, 9, 12, 13, 14, 15, 16, 17]],
+    ],
+    expectedPrograms: [
+      [route.customAdaptor.program, route.programs.voltr],
+      [route.customAdaptor.program, route.programs.voltr],
+      [route.assets.tokenProgram],
+      [route.customAdaptor.program, route.programs.voltr],
+    ],
+    expectedDataSets: [
+      [expectedArmData("allocation", target.caps), expectedData("allocation", target.caps)],
+      [expectedArmData("nav-refresh", target.caps), expectedData("nav-refresh", target.caps)],
+      [expectedData("stage-withdrawal", target.caps)],
+      [expectedArmData("withdraw", target.caps), expectedData("withdraw", target.caps)],
+    ],
+  };
+}
+
+export type InstalledRowExpectations = Awaited<ReturnType<typeof buildInstalledRowExpectations>>;
+
+export type InstalledPolicyRow = CustomPolicyVerificationRow & Readonly<{
+  owner?: string;
+  accountIndex?: number | null;
+  constraints?: ReadonlyArray<Readonly<{
+    pass: boolean;
+    program: string | null;
+    accountConstraints: ReadonlyArray<ReturnType<typeof decodedConstraint>>;
+    dataConstraints: ReadonlyArray<ReturnType<typeof decodedConstraint>>;
+  }>>;
+}>;
+
+export function installedPolicyRow(input: Readonly<{
+  target: CustomPolicyTarget;
+  expected: CustomPolicyArtifact["policies"][number];
+  index: number;
+  info: Readonly<{ owner: PublicKey; data: Uint8Array }> | null;
+  expectations: InstalledRowExpectations;
+}>): InstalledPolicyRow {
+  const route = input.target.route;
+  const expected = input.expected;
+  const info = input.info;
+  if (!info) return {
+    operation: expected.operation,
+    seed: expected.seed,
+    policy: expected.policy,
+    pass: false,
+    reason: "absent",
+  };
+  if (!info.owner.equals(new PublicKey(route.squads.program))) {
     return {
       operation: expected.operation,
       seed: expected.seed,
       policy: expected.policy,
-      pass,
-      ...(pass ? {} : { reason: authorityBoundaryPass ? "inexact policy payload" : "authority boundary mismatch" }),
+      pass: false,
+      reason: "wrong owner",
       dataSha256: createHash("sha256").update(info.data).digest("hex"),
-      owner: info.owner.toBase58(),
-      accountIndex: body?.accountIndex ?? null,
-      constraints: observedConstraints,
+    };
+  }
+  let policy: PolicyState;
+  try {
+    [policy] = Policy.fromAccountInfo(info as Parameters<typeof Policy.fromAccountInfo>[0]);
+  } catch {
+    return {
+      operation: expected.operation,
+      seed: expected.seed,
+      policy: expected.policy,
+      pass: false,
+      reason: "undecodable policy account",
+      dataSha256: createHash("sha256").update(info.data).digest("hex"),
+    };
+  }
+  const body = policy.policyState.fields?.[0] as {
+    accountIndex?: number;
+    preHook?: unknown;
+    postHook?: unknown;
+    spendingLimits?: readonly unknown[];
+    instructionsConstraints?: readonly Readonly<{
+      programId: PublicKey;
+      accountConstraints?: readonly unknown[];
+      dataConstraints?: readonly unknown[];
+    }>[];
+  } | undefined;
+  const observedConstraints = expected.constraintIndices.map((constraintIndex, innerIndex) => {
+    const constraint = body?.instructionsConstraints?.[constraintIndex];
+    const template = input.expectations.templates[input.index]![innerIndex]!;
+    const expectedAccounts = input.expectations.selectedIndexes[input.index]![innerIndex]!.map((accountIndex) => ({
+      index: accountIndex,
+      kind: "Pubkey",
+      keys: [template.accounts?.[accountIndex]?.address ?? ""],
+    }));
+    const observedAccounts = constraint?.accountConstraints?.map(decodedConstraint) ?? [];
+    const observedData = constraint?.dataConstraints?.map(decodedConstraint) ?? [];
+    return {
+      pass: Boolean(constraint?.programId.equals(new PublicKey(input.expectations.expectedPrograms[input.index]![innerIndex]!))
+        && JSON.stringify(observedAccounts) === JSON.stringify(expectedAccounts)
+        && JSON.stringify(observedData) === JSON.stringify(input.expectations.expectedDataSets[input.index]![innerIndex])),
+      program: constraint?.programId.toBase58() ?? null,
+      accountConstraints: observedAccounts,
+      dataConstraints: observedData,
     };
   });
+  const authorityBoundaryPass = Boolean(policy.settings.equals(new PublicKey(route.squads.settings))
+    && policy.seed.toString() === expected.seed
+    && policy.threshold === 1
+    && policy.timeLock === 0
+    && policy.signers.length === 1
+    && policy.signers[0]?.key.equals(new PublicKey(route.squads.delegatedExecutor))
+    && policy.signers[0]?.permissions.mask === 7);
+  // Every policy in a limited set must carry exactly the configured daily
+  // limit (Squads charges it only on decreases, so deposit-side lanes are
+  // unaffected); the uncapped v2 set must carry none.
+  const expectedLimit = input.target.caps.dailySpendingLimit === null
+    ? null
+    : input.target.caps.dailySpendingLimit;
+  const spendingLimitsPass = spendingLimitsMatch(body?.spendingLimits ?? [], expectedLimit);
+  const pass = Boolean(authorityBoundaryPass
+    && policy.policyState.__kind === "ProgramInteraction"
+    && body?.accountIndex === route.squads.vaultIndex
+    && body.preHook == null
+    && body.postHook == null
+    && spendingLimitsPass
+    && body.instructionsConstraints?.length === expected.constraintIndices.length
+    && observedConstraints.every(({ pass }) => pass));
+  return {
+    operation: expected.operation,
+    seed: expected.seed,
+    policy: expected.policy,
+    pass,
+    ...(pass ? {} : { reason: authorityBoundaryPass ? "inexact policy payload" : "authority boundary mismatch" }),
+    dataSha256: createHash("sha256").update(info.data).digest("hex"),
+    owner: info.owner.toBase58(),
+    accountIndex: body?.accountIndex ?? null,
+    constraints: observedConstraints,
+  };
+}
+
+export async function verifyInstalledCustomPolicies(
+  connection: Connection,
+  target: CustomPolicyTarget = V2_CUSTOM_POLICY_TARGET,
+) {
+  const compiled = await compileCurrentCustomPolicyArtifact(connection, target);
+  const expectations = await buildInstalledRowExpectations(target);
+  const response = await connection.getMultipleAccountsInfoAndContext(
+    compiled.artifact.policies.map(({ policy }) => new PublicKey(policy)),
+    { commitment: "finalized", minContextSlot: compiled.contextSlot },
+  );
+  const rows = compiled.artifact.policies.map((expected, index) =>
+    installedPolicyRow({ target, expected, index, info: response.value[index] ?? null, expectations }));
   return {
     contextSlot: response.context.slot,
     policySeedBefore: compiled.policySeedBefore,
