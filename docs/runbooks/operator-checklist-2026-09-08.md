@@ -46,7 +46,9 @@ operator signer and the guarded command shown in the linked runbook.
 per-checkout `target/backyard-voltr-compilers`, then follow
    [`hxtk-strategy2-bootstrap-2026-09-08.md`](hxtk-strategy2-bootstrap-2026-09-08.md)
    in order: rehearsal, bootstrap phases A/B/C, then one policy per transaction
-   at the Settings-derived seeds `141, 142, 143, 144`. Generate the worker
+   at the Settings-derived seeds `145, 146, 147, 148`. The strategy-two
+   delegated executor reuses the v2 executor this week (owner decision, one
+   hot key); the adaptor config must still be fresh. Generate the worker
    binding from the shared seed journal:
 
    ```sh
@@ -55,11 +57,11 @@ per-checkout `target/backyard-voltr-compilers`, then follow
    ```
 
 4. **Cut over and retire 62–65.** Keep old policies installed while seeds
-   `141–144` are individually finalized and verified. Stop the old worker,
+   `145–148` are individually finalized and verified. Stop the old worker,
    run the retirement preflight, execute the four-policy retirement only after
    replacement readback passes, and finish with the keyless
-   `--assert-legacy-retired` gate. Do not reuse seed 140 or run the new worker
-   before 62–65 are absent at finalized commitment.
+   `--assert-legacy-retired` gate. Do not reuse seeds 141–144 or run the new
+   worker before 62–65 are absent at finalized commitment.
 
 5. **Build and deploy the worker image.** The Go image is published by the
    integrated tree’s `.github/workflows/backyard-rwa-worker-image.yml` on a
@@ -109,4 +111,5 @@ per-checkout `target/backyard-voltr-compilers`, then follow
 
 8. **Operator decisions still open.** Keep the settings-graph relaxation (P3.1
    (g)) as `OPERATOR CONFIRMATION REQUIRED`; keep the single hot key for this
-   week. Key separation is required before third-party money.
+   week, so the strategy-two delegated executor reuses the v2 executor. Key
+   separation is required before third-party money.

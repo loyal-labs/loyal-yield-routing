@@ -25,8 +25,8 @@ function throwawayIdentity(): StrategyTwoIdentity {
 }
 
 test("strategy-two seeds derive from the finalized Settings counter", () => {
-  assert.deepEqual(deriveStrategyTwoPolicySeeds(140n), {
-    allocation: 141n, navRefresh: 142n, stageWithdrawal: 143n, withdraw: 144n,
+  assert.deepEqual(deriveStrategyTwoPolicySeeds(144n), {
+    allocation: 145n, navRefresh: 146n, stageWithdrawal: 147n, withdraw: 148n,
   });
   assert.equal(STRATEGY_TWO_OPERATIONAL_AMOUNT_CAP_RAW, 100_000_000n);
   assert.equal(STRATEGY_TWO_REPORT_NAV_CAP_RAW, RWA_MULTIPLY_ROUTE.vault.capRaw);
@@ -50,17 +50,19 @@ test("strategy-two route swaps only the rotated identities", () => {
     ...identity,
     config: RWA_MULTIPLY_ROUTE.customAdaptor.strategyConfig,
   }), /must not reuse the v2 adaptor config/);
-  assert.throws(() => rwaMultiplyStrategyTwoRoute({
+  // One hot key this week by owner decision: the v2 executor is an accepted
+  // strategy-two delegated signer; only the adaptor config must be fresh.
+  assert.doesNotThrow(() => rwaMultiplyStrategyTwoRoute({
     ...identity,
     delegatedSigner: RWA_MULTIPLY_ROUTE.squads.delegatedExecutor,
-  }), /must not reuse the v2 executor/);
+  }));
 });
 
 test("strategy-two target moves the policy and Voltr surface off v2", async () => {
   const identity = throwawayIdentity();
-  const target = await rwaMultiplyStrategyTwoTarget(identity, 140n);
+  const target = await rwaMultiplyStrategyTwoTarget(identity, 144n);
   assert.equal(target.route.squads.delegatedExecutor, identity.delegatedSigner);
-  assert.deepEqual(target.seeds, deriveStrategyTwoPolicySeeds(140n));
+  assert.deepEqual(target.seeds, deriveStrategyTwoPolicySeeds(144n));
   assert.deepEqual(target.caps, {
     amountRaw: STRATEGY_TWO_OPERATIONAL_AMOUNT_CAP_RAW,
     reportNavRaw: STRATEGY_TWO_REPORT_NAV_CAP_RAW,

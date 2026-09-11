@@ -112,7 +112,7 @@ test("finalized Policy account decoding verifies the nested daily spending limit
     config: Keypair.generate().publicKey.toBase58() as StrategyTwoIdentity["config"],
     delegatedSigner: Keypair.generate().publicKey.toBase58() as StrategyTwoIdentity["delegatedSigner"],
   };
-  const target = await rwaMultiplyStrategyTwoTarget(identity, 140n);
+  const target = await rwaMultiplyStrategyTwoTarget(identity, 144n);
   const policy = (squadsGenerated as unknown as {
     Policy: {
       fromArgs(args: Record<string, unknown>): { serialize(): [Buffer, number] };
@@ -127,7 +127,7 @@ test("finalized Policy account decoding verifies the nested daily spending limit
   }).Policy;
   const policyData = policy.fromArgs({
     settings: new PublicKey(RWA_MULTIPLY_ROUTE.squads.settings),
-    seed: 143n,
+    seed: 147n,
     bump: 1,
     transactionIndex: 0n,
     staleTransactionIndex: 0n,

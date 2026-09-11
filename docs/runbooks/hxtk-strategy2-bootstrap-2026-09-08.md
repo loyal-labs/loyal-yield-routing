@@ -4,10 +4,15 @@ Repair path for Voltr vault `HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA` and t
 custom NAV adaptor `FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW` after the
 strategy-one receipt orphaning (see
 `docs/plans/backyard-rwa-adaptor-strategy2-audit-2026-09-08.md`). Strategy two is
-a fresh adaptor config keypair on the SAME vault/adaptor/Settings, fresh delegated
+a fresh adaptor config keypair on the SAME vault/adaptor/Settings, a delegated
 executor, and four policies at fresh seeds. Everything in this runbook is
 unsigned-by-default: every rehearsal below loads no key material and never sets
 `CONFIRM_MAINNET`.
+
+> Cutover week note (owner decision, 2026-09-10): ONE hot key is in play, so the
+> strategy-two delegated executor reuses the v2 executor
+> `62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5`. Only the adaptor config must
+> be fresh; key separation is required before third-party money.
 
 ### Compiler build hygiene
 
@@ -26,7 +31,7 @@ tests.
 | Squads Settings | unchanged; manager `ST999…` (vault), settings signer `BAqg…` |
 | v2 strategy config (retired) | old adaptor config key (stays on chain until step 6) |
 | strategy-two config | NEW keypair, operator-derived offline (below) |
-| strategy-two delegated executor | NEW keypair, operator-derived offline (below) |
+| strategy-two delegated executor | the v2 executor `62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5` this week (owner decision, one hot key) |
 | Derivation domain | `loyal-rwa-multiply-mainnet-v3` (`STRATEGY_TWO_DERIVATION_DOMAIN`) |
 
 The real keypairs never enter the repo or chat. The operator derives them from the
@@ -50,10 +55,12 @@ Derived per config key (compute with
 ## Policy seeds and caps
 
 - The first strategy-two installer invocation requires the finalized Squads
-  Settings `policy_seed` counter to be exactly `140` and requires the finalized
-  repair-policy PDA at seed `140` (`7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR`)
-  to exist. Install **the next four seeds (expected 141–144 after the repair
-  policy at 140)** (allocation / nav-refresh / stage-withdrawal / withdraw).
+  Settings `policy_seed` counter to be exactly `144` and requires the finalized
+  basic policy anchor at seed `144`
+  (`Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz`, the withdraw policy of the
+  installed basic set) to exist. Install **the next four seeds (expected
+  145–148 after the basic set installed at 141–144)** (allocation /
+  nav-refresh / stage-withdrawal / withdraw).
   The installer records this expectation in the shared `--seed-journal`; every
   later invocation reads that journal and refuses a different seed set.
 
@@ -61,41 +68,40 @@ Derived per config key (compute with
 
   ```json
   {
-    "policySeedBefore": "140",
-    "expectedSeeds": ["141", "142", "143", "144"],
+    "policySeedBefore": "144",
+    "expectedSeeds": ["145", "146", "147", "148"],
     "settingsAddress": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
     "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
     "strategyTwoConfig": "<config2-addr>",
-    "delegatedSigner": "<executor2-addr>",
-    "repairPolicy": "7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR",
-    "repairPolicyDataSha256": "<recorded repairPolicyDataSha256 from the finalized seed/creation journal>",
+    "delegatedSigner": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+    "anchorPolicy": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+    "anchorPolicyDataSha256": "43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a",
     "observationSlot": "<finalized-observation-slot>"
   }
   ```
 
-  The config, delegated signer, and observation slot above illustrate the
-  finalized readback shape; the installer writes the real operator-derived
-  identities and observed slot. The repair hash is dynamic: use the
-  `repairPolicyDataSha256` field recorded in the finalized seed/creation
-  journal at
-  `docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-policy-seeds.journal.json`.
-  The continuity pin compares the live policy bytes with that recorded hash
-  and also runs the decoded constraint and identity checks. Do not paste a
-  static hash into this runbook; every later invocation must match the
-  journaled value.
+  The config and observation slot above illustrate the finalized readback
+  shape; the installer writes the real operator-derived config and observed
+  slot. The anchor hash is NOT dynamic: it is pinned to the finalized basic
+  install readback — field `accountDataSha256` for seed `144` in
+  `docs/evidence/backyard-rwa-basic/policy-install-readback-v1.json` — and the
+  installer refuses any live anchor bytes that hash differently. The one-shot
+  repair policy at seed `140` was consumed and removed, so it can no longer
+  serve as an anchor.
   Every invocation revalidates the Settings counter, genesis, Settings
-  identity, strategy-two identities, repair PDA ownership/presence, repair
-  account hash, and finalized observation before it proceeds.
+  identity, strategy-two identities, anchor policy ownership/presence, anchor
+  account hash against that readback, and the finalized observation before it
+  proceeds.
 
   The no-execute installer readback prints the same `expectedPolicySeeds` and
   the current finalized Settings counter; before the first create those values
-  are `141–144` and `140`, respectively. Immediately before every send the
+  are `145–148` and `144`, respectively. Immediately before every send the
   installer re-reads finalized Settings and aborts if the operation's journaled
   counter no longer matches.
 - Amount cap **100_000_000 raw (100 USDC)** per instruction; raising it is a seed
   rollover, never an edit.
 - **Daily USDC spending limit on EVERY policy: 300_000_000 raw (3 × operational
-  cap) per 1-day period.** Every 141–144 create attaches the identical
+  cap) per 1-day period.** Every 145–148 create attaches the identical
   USDC/Daily/300_000_000 limit. Squads charges a spending limit only against
   balance *decreases*, so the limit is inert on the allocation and nav-refresh
   lanes (the adaptor's deposit path moves custody INTO the Squads ATA there) and
@@ -112,10 +118,10 @@ Derived per config key (compute with
 
   | Policy | Seed | Packet bytes |
   | --- | --- | --- |
-  | allocation | 141 | 1_195 |
-  | nav refresh | 142 | 1_159 |
-  | stage withdrawal | 143 | 656 |
-  | withdraw | 144 | 1_195 |
+  | allocation | 145 | 1_195 |
+  | nav refresh | 146 | 1_159 |
+  | stage withdrawal | 147 | 656 |
+  | withdraw | 148 | 1_195 |
 - **What remains unbounded:** repeated arm/capital pairs are NAV *reports*, not
   USDC outflow. They are bounded by the reported-NAV cap
   (1_000_000_000_000 raw = the vault maxCap, closing audit finding U3, pinned at
@@ -180,7 +186,7 @@ order; do not run the new image until step 7.
 5. **Retire v2 policies 62–65**: `--preflight` first, then the signed
    `--execute` path, which refuses to run until
    `verifyInstalledCustomPolicies` passes for the strategy-two target at the
-   derived seeds 141–144.
+   derived seeds 145–148.
 6. **Verify 62–65 are absent at finalized commitment**: re-run the retirement
    tool's preflight and expect every legacy row `present:false`
    (`PASS_ALREADY_RETIRED`), then the installer's keyless
@@ -266,7 +272,7 @@ bun run generate:rwa-multiply-strategy2-worker-config -- \
 ```
 
 The generated readback must report `policySeeds` equal to the journal's
-`expectedSeeds` (`141–144` for the planned repair boundary), and the file is
+`expectedSeeds` (`145–148` for the basic-set boundary at counter `144`), and the file is
 the reviewed input for the strategy-two worker manifest/config update. The
 worker's independent startup gate remains hard-coded to the legacy retirement
 set 62–65 and must stay unchanged.
@@ -323,50 +329,51 @@ op run --env-file=.env.1password -- sh -c 'SOLANA_RPC_URL="$SOLANA_RPC_URL" CONF
   bun run src/activation/rwa-multiply-strategy2-bootstrap.ts --phase C --execute \
   --config <config2-addr> --delegated-signer <executor2-addr> \
   --journal ../../docs/evidence/hxtk-strategy2-2026-09-08/bootstrap-wire-c.journal.json'
-# Step 3 — install the next four seeds (expected 141–144 after the repair policy
-# at 140) under the NEW delegated signer: one seed per invocation, in
+# Step 3 — install the next four seeds (expected 145–148 after the basic set
+# at 141–144) under the delegated executor, reused from v2 this week by owner
+# decision: one seed per invocation, in
 # this order, one transaction journal path each, and one shared seed journal.
 # The installer re-reads finalized Settings immediately before each send and
 # aborts if its counter differs from the pending journal expectation.
-# 3a. allocation (seed 141)
+# 3a. allocation (seed 145)
 op run --env-file=.env.1password -- sh -c 'SOLANA_RPC_URL="$SOLANA_RPC_URL" CONFIRM_MAINNET=1 \
   bun run src/activation/rwa-multiply-custom-policies.ts --target strategy-two \
   --config <config2-addr> --delegated <executor2-addr> --execute \
   --seed-journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-policy-seeds.journal.json \
-  --journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-install-141-allocation.journal.json'
+  --journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-install-145-allocation.journal.json'
 # 3a readback (no --execute; inspect finalized rows and seed expectation)
 op run --env-file=.env.1password -- sh -c 'SOLANA_RPC_URL="$SOLANA_RPC_URL" \
   bun run src/activation/rwa-multiply-custom-policies.ts --target strategy-two \
   --config <config2-addr> --delegated <executor2-addr> \
   --seed-journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-policy-seeds.journal.json'
-# 3b. nav refresh (seed 142)
+# 3b. nav refresh (seed 146)
 op run --env-file=.env.1password -- sh -c 'SOLANA_RPC_URL="$SOLANA_RPC_URL" CONFIRM_MAINNET=1 \
   bun run src/activation/rwa-multiply-custom-policies.ts --target strategy-two \
   --config <config2-addr> --delegated <executor2-addr> --execute \
   --seed-journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-policy-seeds.journal.json \
-  --journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-install-142-nav-refresh.journal.json'
+  --journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-install-146-nav-refresh.journal.json'
 # 3b readback (no --execute; inspect finalized rows and seed expectation)
 op run --env-file=.env.1password -- sh -c 'SOLANA_RPC_URL="$SOLANA_RPC_URL" \
   bun run src/activation/rwa-multiply-custom-policies.ts --target strategy-two \
   --config <config2-addr> --delegated <executor2-addr> \
   --seed-journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-policy-seeds.journal.json'
-# 3c. stage withdrawal (seed 143 — the spending-limited outflow lane)
+# 3c. stage withdrawal (seed 147 — the spending-limited outflow lane)
 op run --env-file=.env.1password -- sh -c 'SOLANA_RPC_URL="$SOLANA_RPC_URL" CONFIRM_MAINNET=1 \
   bun run src/activation/rwa-multiply-custom-policies.ts --target strategy-two \
   --config <config2-addr> --delegated <executor2-addr> --execute \
   --seed-journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-policy-seeds.journal.json \
-  --journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-install-143-stage-withdrawal.journal.json'
+  --journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-install-147-stage-withdrawal.journal.json'
 # 3c readback (no --execute; inspect finalized rows and seed expectation)
 op run --env-file=.env.1password -- sh -c 'SOLANA_RPC_URL="$SOLANA_RPC_URL" \
   bun run src/activation/rwa-multiply-custom-policies.ts --target strategy-two \
   --config <config2-addr> --delegated <executor2-addr> \
   --seed-journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-policy-seeds.journal.json'
-# 3d. withdraw (seed 144)
+# 3d. withdraw (seed 148)
 op run --env-file=.env.1password -- sh -c 'SOLANA_RPC_URL="$SOLANA_RPC_URL" CONFIRM_MAINNET=1 \
   bun run src/activation/rwa-multiply-custom-policies.ts --target strategy-two \
   --config <config2-addr> --delegated <executor2-addr> --execute \
   --seed-journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-policy-seeds.journal.json \
-  --journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-install-144-withdraw.journal.json'
+  --journal ../../docs/evidence/hxtk-strategy2-2026-09-08/strategy-two-install-148-withdraw.journal.json'
 # 3d readback (no --execute; expect PASS_ALREADY_FINALIZED with all four rows pass:true)
 op run --env-file=.env.1password -- sh -c 'SOLANA_RPC_URL="$SOLANA_RPC_URL" \
   bun run src/activation/rwa-multiply-custom-policies.ts --target strategy-two \

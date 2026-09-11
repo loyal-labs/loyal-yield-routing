@@ -10,8 +10,9 @@ complete.
 
 The target is vault `HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA`, using the
 custom adaptor `FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW`. The strategy-two
-config and delegated executor are operator-derived values; they must be
-supplied as public addresses and never as key material. Do not use the generic
+config is an operator-derived value; the delegated executor is the v2 executor
+`62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5` this week (owner decision, one
+hot key). Both must be supplied as public addresses and never as key material. Do not use the generic
 `runtime simulate-user-*` commands in `tools/backyard-voltr`: those commands
 target the unrelated `AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK` route.
 
@@ -45,11 +46,14 @@ authorization to send.
 3. The fresh strategy-two config, report ticket, strategy receipt, and custody
    ATA are initialized and read back at finalized commitment with receipt and
    custody both zero. The four replacement policies are finalized at the
-   Settings-derived seeds `141–144`; the one-shot repair policy at seed `140`
-   is finalized and retired; seeds `62–65` are absent.
+   Settings-derived seeds `145–148`; the basic policy set occupies `141–144`
+   and its seed-`144` policy is the journal's anchor; the one-shot repair
+   policy at `140` is finalized and removed; seeds `62–65` are absent.
 4. The shared seed journal is identity-bound to the Settings address, mainnet
-   genesis hash, strategy-two config, delegated signer, seed-140 repair PDA,
-   finalized observation slot, and the recorded repair-policy data hash. Run
+   genesis hash, strategy-two config, delegated signer, the seed-144 basic
+   policy anchor `Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz`, finalized
+   observation slot, and the anchor data hash pinned to the basic install
+   readback (`43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a`). Run
    the keyless start gate and expect `PASS_LEGACY_RETIRED`:
 
    ```sh

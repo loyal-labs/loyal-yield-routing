@@ -36,13 +36,16 @@ test("legacy data hashes are frozen before the removal wire can be built", () =>
 });
 
 test("strategy-two replacement seeds land past every installed policy", () => {
-  const seeds = deriveStrategyTwoReplacementSeeds(140n);
-  assert.deepEqual(seeds, [141n, 142n, 143n, 144n]);
+  const seeds = deriveStrategyTwoReplacementSeeds(144n);
+  assert.deepEqual(seeds, [145n, 146n, 147n, 148n]);
   const legacy = new Set(LEGACY_CUSTOM_POLICY_ADDRESSES);
   for (const seed of seeds) {
     const policy = customPolicyAddress(seed);
     assert.ok(!legacy.has(policy), `replacement seed ${seed} collides with a legacy policy`);
     assert.ok(!LEGACY_CUSTOM_POLICY_SEEDS.includes(seed));
+    // The installed basic set consumed seeds 141-144, so the replacements must
+    // land strictly past it.
+    assert.ok(seed > 144n, `replacement seed ${seed} does not clear the installed basic set`);
   }
 });
 
@@ -57,7 +60,7 @@ test("strategy-two installation permits legacy 62-65 to coexist", () => {
 });
 
 test("legacy retirement refuses without all four finalized replacements", () => {
-  const expected = deriveStrategyTwoReplacementSeeds(140n);
+  const expected = deriveStrategyTwoReplacementSeeds(144n);
   assert.throws(() => assertStrategyTwoReplacementPoliciesFinalized({ pass: false, rows: [] }, expected),
     /four finalized strategy-two replacement policies/);
   assert.doesNotThrow(() => assertStrategyTwoReplacementPoliciesFinalized({

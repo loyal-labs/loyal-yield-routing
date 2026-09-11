@@ -2,18 +2,29 @@ import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 
 import { type CustomPolicySeeds } from "../domain/custom-policy-target.js";
 import { deriveStrategyTwoPolicySeeds } from "../domain/rwa-multiply-strategy2-route-spec.js";
+import { customPolicyAddress } from "./rwa-multiply-legacy-retirement.js";
 
-/** The one-shot repair PolicyCreate must have consumed this counter value. */
-export const STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE = 140n;
-export const STRATEGY_TWO_REPAIR_POLICY_ADDRESS = "7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR";
+/** The installed basic policy set must have consumed this counter value. */
+export const STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE = 144n;
+
+/**
+ * The continuity anchor is the last basic policy of the installed set, at the
+ * seed the Settings counter stopped on. `docs/evidence/backyard-rwa-basic/
+ * policy-install-readback-v1.json` records its finalized address and
+ * `accountDataSha256`; the installer compares the live account bytes against
+ * that readback instead of the removed one-shot repair policy.
+ */
+export const STRATEGY_TWO_ANCHOR_POLICY_ADDRESS = customPolicyAddress(STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE);
+export const STRATEGY_TWO_ANCHOR_POLICY_DATA_SHA256 =
+  "43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a";
 
 type StrategyTwoSeedJournalIdentity = Readonly<{
   settingsAddress: string;
   genesisHash: string;
   strategyTwoConfig: string;
   delegatedSigner: string;
-  repairPolicy: string;
-  repairPolicyDataSha256: string;
+  anchorPolicy: string;
+  anchorPolicyDataSha256: string;
   observationSlot: number;
 }>;
 
@@ -27,9 +38,9 @@ export type StrategyTwoSeedAnchorObservation = Readonly<{
   genesisHash: string;
   strategyTwoConfig: string;
   delegatedSigner: string;
-  repairPolicy: string;
-  repairPolicyPresent: boolean;
-  repairPolicyDataSha256: string | null;
+  anchorPolicy: string;
+  anchorPolicyPresent: boolean;
+  anchorPolicyDataSha256: string | null;
   observationSlot: number;
   policySeedBefore: bigint;
 }>;
@@ -61,8 +72,8 @@ function parseJournalIdentity(value: {
   genesisHash?: unknown;
   strategyTwoConfig?: unknown;
   delegatedSigner?: unknown;
-  repairPolicy?: unknown;
-  repairPolicyDataSha256?: unknown;
+  anchorPolicy?: unknown;
+  anchorPolicyDataSha256?: unknown;
   observationSlot?: unknown;
 }): StrategyTwoSeedJournalIdentity {
   const identity = {
@@ -70,18 +81,18 @@ function parseJournalIdentity(value: {
     genesisHash: String(value.genesisHash ?? ""),
     strategyTwoConfig: String(value.strategyTwoConfig ?? ""),
     delegatedSigner: String(value.delegatedSigner ?? ""),
-    repairPolicy: String(value.repairPolicy ?? ""),
-    repairPolicyDataSha256: String(value.repairPolicyDataSha256 ?? ""),
+    anchorPolicy: String(value.anchorPolicy ?? ""),
+    anchorPolicyDataSha256: String(value.anchorPolicyDataSha256 ?? ""),
     observationSlot: parseObservationSlot(value.observationSlot),
   };
   invariant(identity.settingsAddress.length > 0
     && identity.genesisHash.length > 0
     && identity.strategyTwoConfig.length > 0
     && identity.delegatedSigner.length > 0
-    && identity.repairPolicy === STRATEGY_TWO_REPAIR_POLICY_ADDRESS,
-  "strategy-two seed journal anchor identities are incomplete or not pinned to the repair PDA");
-  invariant(/^[0-9a-f]{64}$/.test(identity.repairPolicyDataSha256),
-    "strategy-two seed journal repair policy data hash is invalid");
+    && identity.anchorPolicy === STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
+  "strategy-two seed journal anchor identities are incomplete or not pinned to the seed-144 basic policy");
+  invariant(identity.anchorPolicyDataSha256 === STRATEGY_TWO_ANCHOR_POLICY_DATA_SHA256,
+    "strategy-two seed journal anchor policy data hash is not the finalized seed-144 install readback");
   return identity;
 }
 
@@ -95,8 +106,8 @@ export function readStrategyTwoSeedExpectation(path: string): StrategyTwoSeedExp
     genesisHash?: unknown;
     strategyTwoConfig?: unknown;
     delegatedSigner?: unknown;
-    repairPolicy?: unknown;
-    repairPolicyDataSha256?: unknown;
+    anchorPolicy?: unknown;
+    anchorPolicyDataSha256?: unknown;
     observationSlot?: unknown;
   };
   invariant(value.schema === "loyal-rwa-multiply-strategy-two-seed-expectation/v1",
@@ -134,8 +145,8 @@ export function writeStrategyTwoSeedExpectation(
     genesisHash: expectation.genesisHash,
     strategyTwoConfig: expectation.strategyTwoConfig,
     delegatedSigner: expectation.delegatedSigner,
-    repairPolicy: expectation.repairPolicy,
-    repairPolicyDataSha256: expectation.repairPolicyDataSha256,
+    anchorPolicy: expectation.anchorPolicy,
+    anchorPolicyDataSha256: expectation.anchorPolicyDataSha256,
     observationSlot: expectation.observationSlot,
     note: "The four PolicyCreate wires must consume these fresh sequential seeds; never reuse this expectation after the Settings counter advances beyond the set.",
   }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
@@ -145,9 +156,9 @@ export function writeStrategyTwoSeedExpectation(
 /**
  * Revalidate the durable journal against the current finalized cluster anchor.
  * The current counter may advance through the four replacement creates, but
- * the Settings identity, cluster, rotated identities, repair PDA, and repair
- * account bytes must remain exactly the values observed when the journal was
- * created.
+ * the Settings identity, cluster, rotated identities, seed-144 basic policy
+ * anchor, and its install-readback bytes must remain exactly the pinned
+ * values.
  */
 export function assertStrategyTwoSeedJournalAnchor(
   expectation: StrategyTwoSeedExpectation,
@@ -164,13 +175,15 @@ export function assertStrategyTwoSeedJournalAnchor(
     "strategy-two config identity differs from the seed journal");
   invariant(observation.delegatedSigner === expectation.delegatedSigner,
     "strategy-two delegated signer differs from the seed journal");
-  invariant(observation.repairPolicy === expectation.repairPolicy
-    && expectation.repairPolicy === STRATEGY_TWO_REPAIR_POLICY_ADDRESS,
-  "strategy-two repair policy PDA differs from the seed journal");
-  invariant(observation.repairPolicyPresent,
-    `one-shot repair policy at ${STRATEGY_TWO_REPAIR_POLICY_ADDRESS} is absent or has the wrong owner; refusing strategy-two invocation`);
-  invariant(observation.repairPolicyDataSha256 === expectation.repairPolicyDataSha256,
-    "finalized repair policy data hash differs from the strategy-two seed journal");
+  invariant(observation.anchorPolicy === expectation.anchorPolicy
+    && expectation.anchorPolicy === STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
+  "strategy-two anchor policy account differs from the seed journal");
+  invariant(observation.anchorPolicyPresent,
+    `basic policy anchor at seed ${STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE} (${STRATEGY_TWO_ANCHOR_POLICY_ADDRESS}) is absent or has the wrong owner; refusing strategy-two invocation`);
+  invariant(observation.anchorPolicyDataSha256 === expectation.anchorPolicyDataSha256,
+    "finalized anchor policy data hash differs from the strategy-two seed journal");
+  invariant(observation.anchorPolicyDataSha256 === STRATEGY_TWO_ANCHOR_POLICY_DATA_SHA256,
+    "finalized anchor policy bytes differ from the seed-144 install readback");
   invariant(observation.observationSlot >= expectation.observationSlot,
     "finalized strategy-two anchor observation moved behind the seed journal");
   invariant(Number.isSafeInteger(observation.observationSlot) && observation.observationSlot > 0,
@@ -178,15 +191,16 @@ export function assertStrategyTwoSeedJournalAnchor(
 }
 
 /**
- * The first installer invocation is pinned to the repair boundary. A missing
- * repair account or a counter drift is an abort, not a new seed allocation.
+ * The first installer invocation is pinned to the basic policy set boundary. A
+ * missing anchor account or a counter drift is an abort, not a new seed
+ * allocation.
  */
 export function assertStrategyTwoFirstInvocation(
   policySeedBefore: bigint,
-  repairPolicyPresent: boolean,
+  anchorPolicyPresent: boolean,
 ): void {
   invariant(policySeedBefore === STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE,
     `first strategy-two install requires finalized Settings counter ${STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE}; observed ${policySeedBefore}`);
-  invariant(repairPolicyPresent,
-    `one-shot repair policy at seed ${STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE} (${STRATEGY_TWO_REPAIR_POLICY_ADDRESS}) is absent; refusing strategy-two install`);
+  invariant(anchorPolicyPresent,
+    `basic policy anchor at seed ${STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE} (${STRATEGY_TWO_ANCHOR_POLICY_ADDRESS}) is absent; refusing strategy-two install`);
 }

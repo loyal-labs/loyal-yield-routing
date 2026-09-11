@@ -17,8 +17,9 @@ import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import {
   assertStrategyTwoSeedJournalAnchor,
   assertStrategyTwoFirstInvocation,
+  STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
+  STRATEGY_TWO_ANCHOR_POLICY_DATA_SHA256,
   STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE,
-  STRATEGY_TWO_REPAIR_POLICY_ADDRESS,
   readStrategyTwoSeedExpectation,
   type StrategyTwoSeedExpectation,
   type StrategyTwoSeedAnchorObservation,
@@ -52,8 +53,8 @@ function carriesBudget(data: Buffer, maxPerPeriodRaw: bigint): boolean {
 /**
  * The installer and the verifier both derive their expectations from
  * `compileCustomPolicyArtifact(seedBefore, target)`, so this pins the exact
- * seam an operator install at seeds 141-144 relies on: a derived base seed of
- * 140 produces the exact four expected seeds in the compiler output. The test
+ * seam an operator install at seeds 145-148 relies on: a derived base seed of
+ * 144 produces the exact four expected seeds in the compiler output. The test
  * uses a throwaway identity because the authoritative config keypair only
  * exists in the operator's derivation step and never in this repository.
  */
@@ -98,18 +99,21 @@ test("strategy-two install expectations equal the compiler output for a throwawa
   }
 });
 
-test("the first installer invocation is pinned to repair seed 140", () => {
-  assert.equal(customPolicyAddress(STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE), STRATEGY_TWO_REPAIR_POLICY_ADDRESS);
+test("the first installer invocation is pinned to the basic policy anchor at seed 144", () => {
+  // The anchor is the seed-144 policy of the installed basic set, as recorded
+  // in docs/evidence/backyard-rwa-basic/policy-install-readback-v1.json.
+  assert.equal(STRATEGY_TWO_ANCHOR_POLICY_ADDRESS, "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz");
+  assert.equal(customPolicyAddress(STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE), STRATEGY_TWO_ANCHOR_POLICY_ADDRESS);
   assert.doesNotThrow(() => assertStrategyTwoFirstInvocation(
     STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE, true));
-  assert.throws(() => assertStrategyTwoFirstInvocation(139n, true),
-    /requires finalized Settings counter 140/);
+  assert.throws(() => assertStrategyTwoFirstInvocation(143n, true),
+    /requires finalized Settings counter 144/);
   assert.throws(() => assertStrategyTwoFirstInvocation(
     STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE, false),
-  new RegExp(`one-shot repair policy at seed 140.*${STRATEGY_TWO_REPAIR_POLICY_ADDRESS}`));
+  new RegExp(`basic policy anchor at seed 144.*${STRATEGY_TWO_ANCHOR_POLICY_ADDRESS}`));
 });
 
-test("seed journal identity and repair hash are revalidated against the live anchor", () => {
+test("seed journal identity and anchor hash are revalidated against the live anchor", () => {
   const identity = throwawayIdentity();
   const expectation: StrategyTwoSeedExpectation = {
     policySeedBefore: STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE,
@@ -118,8 +122,8 @@ test("seed journal identity and repair hash are revalidated against the live anc
     genesisHash: RWA_MULTIPLY_ROUTE.genesisHash,
     strategyTwoConfig: identity.config,
     delegatedSigner: identity.delegatedSigner,
-    repairPolicy: STRATEGY_TWO_REPAIR_POLICY_ADDRESS,
-    repairPolicyDataSha256: "a".repeat(64),
+    anchorPolicy: STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
+    anchorPolicyDataSha256: STRATEGY_TWO_ANCHOR_POLICY_DATA_SHA256,
     observationSlot: 1,
   };
   const directory = mkdtempSync("/tmp/rwa-multiply-seed-journal-");
@@ -129,23 +133,36 @@ test("seed journal identity and repair hash are revalidated against the live anc
     const journaled = readStrategyTwoSeedExpectation(journal);
     const observation: StrategyTwoSeedAnchorObservation = {
       ...journaled,
-      repairPolicyPresent: true,
+      anchorPolicyPresent: true,
     };
     assert.doesNotThrow(() => assertStrategyTwoSeedJournalAnchor(journaled, observation));
-    for (const [field, value] of [
-      ["settingsAddress", "different-settings"],
-      ["genesisHash", "different-genesis"],
-      ["repairPolicyDataSha256", "b".repeat(64)],
+    for (const [field, value, message] of [
+      ["settingsAddress", "different-settings", "Settings address"],
+      ["genesisHash", "different-genesis", "genesis"],
+      ["anchorPolicyDataSha256", "b".repeat(64), "anchor policy data hash differs"],
     ] as const) {
       assert.throws(() => assertStrategyTwoSeedJournalAnchor(journaled, {
         ...observation,
         [field]: value,
-      }), new RegExp(field === "repairPolicyDataSha256" ? "data hash" : field === "genesisHash" ? "genesis" : "Settings address"));
+      }), new RegExp(message));
     }
     assert.throws(() => assertStrategyTwoSeedJournalAnchor(journaled, {
       ...observation,
-      repairPolicyPresent: false,
-    }), /repair policy/);
+      anchorPolicyPresent: false,
+    }), /basic policy anchor/);
+    // Anchor bytes are pinned to the finalized install readback, so a journal
+    // claiming any other hash is rejected when it is written or read.
+    assert.throws(() => writeStrategyTwoSeedExpectation(journal, {
+      ...expectation,
+      anchorPolicyDataSha256: "b".repeat(64),
+    }), /anchor policy data hash is not the finalized seed-144 install readback/);
+    // First-invocation shape: the expectation is built from the live anchor
+    // observation, so matching-but-drifted bytes still fail the readback pin.
+    assert.throws(() => assertStrategyTwoSeedJournalAnchor({
+      ...journaled,
+      anchorPolicyDataSha256: "b".repeat(64),
+    }, { ...observation, anchorPolicyDataSha256: "b".repeat(64) }),
+    /anchor policy bytes differ from the seed-144 install readback/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -165,8 +182,8 @@ test("worker bindings derive their policy set from the seed journal", async () =
       genesisHash: RWA_MULTIPLY_ROUTE.genesisHash,
       strategyTwoConfig: identity.config,
       delegatedSigner: identity.delegatedSigner,
-      repairPolicy: STRATEGY_TWO_REPAIR_POLICY_ADDRESS,
-      repairPolicyDataSha256: "a".repeat(64),
+      anchorPolicy: STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
+      anchorPolicyDataSha256: STRATEGY_TWO_ANCHOR_POLICY_DATA_SHA256,
       observationSlot: 1,
     }));
     const worker = await buildStrategyTwoWorkerPolicyConfig(journal, identity);
@@ -176,7 +193,7 @@ test("worker bindings derive their policy set from the seed journal", async () =
     );
     assert.deepEqual(worker.policies.map(({ seed, policy }) => ({ seed, policy })),
       artifact.policies.map(({ seed, policy }) => ({ seed, policy })));
-    assert.equal(worker.source.policySeedBefore, "140");
+    assert.equal(worker.source.policySeedBefore, "144");
     assert.deepEqual(worker.legacyGate.policySeeds, ["62", "63", "64", "65"]);
   } finally {
     rmSync(directory, { recursive: true, force: true });

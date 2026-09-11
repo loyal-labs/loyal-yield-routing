@@ -27,8 +27,8 @@ import {
   parseStrategyTwoSeed,
   readStrategyTwoSeedExpectation,
   strategyTwoSeedStrings,
+  STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
   STRATEGY_TWO_FIRST_POLICY_SEED_BEFORE,
-  STRATEGY_TWO_REPAIR_POLICY_ADDRESS,
   writeStrategyTwoSeedExpectation,
   type StrategyTwoSeedAnchorObservation,
   type StrategyTwoSeedExpectation,
@@ -84,20 +84,20 @@ async function readStrategyTwoSeedAnchor(
   genesisHash: string,
 ): Promise<StrategyTwoSeedAnchorObservation> {
   const response = await connection.getAccountInfoAndContext(
-    new PublicKey(STRATEGY_TWO_REPAIR_POLICY_ADDRESS),
+    new PublicKey(STRATEGY_TWO_ANCHOR_POLICY_ADDRESS),
     { commitment: "finalized", minContextSlot: settingsAtStart.contextSlot },
   );
-  const repair = response.value;
+  const anchor = response.value;
   return {
     settingsAddress: target.route.squads.settings,
     genesisHash,
     strategyTwoConfig: target.route.customAdaptor.strategyConfig,
     delegatedSigner: target.route.squads.delegatedExecutor,
-    repairPolicy: STRATEGY_TWO_REPAIR_POLICY_ADDRESS,
-    repairPolicyPresent: repair !== null
-      && repair.owner.toBase58() === target.route.squads.program
-      && repair.data.length > 0,
-    repairPolicyDataSha256: repair === null ? null : sha256(repair.data),
+    anchorPolicy: STRATEGY_TWO_ANCHOR_POLICY_ADDRESS,
+    anchorPolicyPresent: anchor !== null
+      && anchor.owner.toBase58() === target.route.squads.program
+      && anchor.data.length > 0,
+    anchorPolicyDataSha256: anchor === null ? null : sha256(anchor.data),
     observationSlot: Math.max(settingsAtStart.contextSlot, response.context.slot),
     policySeedBefore: settingsAtStart.policySeedBefore,
   };
@@ -188,10 +188,10 @@ async function main() {
     if (seedExpectation === null) {
       assertStrategyTwoFirstInvocation(
         settingsAtStart.policySeedBefore,
-        liveAnchor.repairPolicyPresent,
+        liveAnchor.anchorPolicyPresent,
       );
-      invariant(liveAnchor.repairPolicyDataSha256 !== null,
-        "first strategy-two invocation could not read the finalized repair policy bytes");
+      invariant(liveAnchor.anchorPolicyDataSha256 !== null,
+        "first strategy-two invocation could not read the finalized seed-144 anchor policy bytes");
       seedExpectation = {
         policySeedBefore: settingsAtStart.policySeedBefore,
         expectedSeeds: Object.values(deriveStrategyTwoPolicySeeds(settingsAtStart.policySeedBefore)),
@@ -199,8 +199,8 @@ async function main() {
         genesisHash: liveAnchor.genesisHash,
         strategyTwoConfig: liveAnchor.strategyTwoConfig,
         delegatedSigner: liveAnchor.delegatedSigner,
-        repairPolicy: liveAnchor.repairPolicy,
-        repairPolicyDataSha256: liveAnchor.repairPolicyDataSha256,
+        anchorPolicy: liveAnchor.anchorPolicy,
+        anchorPolicyDataSha256: liveAnchor.anchorPolicyDataSha256,
         observationSlot: liveAnchor.observationSlot,
       };
     }

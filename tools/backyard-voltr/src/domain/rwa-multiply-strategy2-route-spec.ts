@@ -12,7 +12,8 @@ import { RWA_MULTIPLY_ROUTE, type RwaMultiplyRouteSpec } from "./rwa-multiply-ro
 /**
  * Strategy two runs on the same vault, custom adaptor, and Squads Settings as
  * v2, but with a fresh adaptor config keypair (its key IS the Voltr strategy
- * key), a fresh delegated signer, and policies installed at fresh seeds. The
+ * key), a delegated signer (the v2 executor is permitted by owner decision for
+ * the single-hot-key week), and policies installed at fresh seeds. The
  * config keypair itself never lives in this repository: it is derived offline
  * by the operator from the setup admin over the derivation domain below (see
  * `tools/backyard-voltr/src/integrations/signer.ts`), so every address here is
@@ -109,9 +110,8 @@ export function rwaMultiplyStrategyTwoRoute(
   if (identity.config === RWA_MULTIPLY_ROUTE.customAdaptor.strategyConfig) {
     throw new Error("strategy-two config must not reuse the v2 adaptor config");
   }
-  if (identity.delegatedSigner === RWA_MULTIPLY_ROUTE.squads.delegatedExecutor) {
-    throw new Error("strategy-two delegated signer must not reuse the v2 executor");
-  }
+  // Owner decision for this cutover week: one hot key, so the delegated
+  // executor MAY equal the v2 executor. Only the adaptor config must be fresh.
   return {
     ...RWA_MULTIPLY_ROUTE,
     squads: {
