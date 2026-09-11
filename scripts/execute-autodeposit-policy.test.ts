@@ -912,6 +912,7 @@ describe("autodepositFailureDisposition", () => {
       failureCode: "dependency_unavailable",
       exitCode: 27,
       errorKind: "retryable_http_server_error",
+      httpStatus: 500,
     });
   });
 

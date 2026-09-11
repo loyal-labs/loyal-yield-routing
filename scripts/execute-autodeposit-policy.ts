@@ -17,6 +17,13 @@ import {
 import bs58 from "bs58";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import {
+  AutodepositRpcReadError,
+  autodepositDependencyHttpStatus,
+  isTransientRpcHttpStatus,
+  readAutodepositPreSendBalance,
+  type AutodepositRpcReadDiagnostics,
+} from "./autodeposit-rpc-read";
 
 import {
   attemptAllowsSafeRequeue,
@@ -28,6 +35,14 @@ import {
   type AutodepositOperationKind,
   type DurableAutodepositAttempt,
 } from "./durable-autodeposit-confirmation";
+
+import {
+  AccountedAutodepositConflictError,
+  reconcileAccountedAutodeposit,
+  setAutodepositExecutorOutcome,
+} from "./autodeposit-accounted-recovery";
+
+export { setAutodepositExecutorOutcome } from "./autodeposit-accounted-recovery";
 
 type PreparedOperation = {
   operation: string;
@@ -1608,9 +1623,9 @@ export function isFeePayerExhaustedFailure(error: unknown): boolean {
 export function isAutodepositDependencyUnavailableFailure(
   error: unknown
 ): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /\b(?:500 Internal Server Error|502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout)\b/i.test(
-    message
+  return (
+    (error instanceof AutodepositRpcReadError && error.diagnostics.deadlineExceeded) ||
+    isTransientRpcHttpStatus(autodepositDependencyHttpStatus(error))
   );
 }
 
@@ -1656,7 +1671,7 @@ type AutodepositExecutorFailureRecord = {
   failureCode: AutodepositExecutorFailureCode | "unknown";
   exitCode: number;
   errorKind: string;
-};
+} & Partial<Omit<AutodepositRpcReadDiagnostics, "executorStage">>;
 
 type AutodepositExecutorFailureBoundaryOptions = {
   environment?: Record<string, string | undefined>;
@@ -1774,15 +1789,25 @@ export async function runAutodepositExecutorWithFailureBoundary(
     setExitCode(exitCode);
     reportFailure({
       status: "error",
-      executorStage: stage,
       failureCode: disposition.failureCode ?? "unknown",
       exitCode,
       errorKind:
-        disposition.failureCode === "dependency_unavailable"
-          ? "retryable_http_server_error"
-          : error instanceof Error
-            ? error.name
-            : typeof error,
+        error instanceof AutodepositRpcReadError && error.diagnostics.deadlineExceeded
+          ? "rpc_read_deadline_exceeded"
+          : disposition.failureCode === "dependency_unavailable"
+            ? "retryable_http_server_error"
+            : error instanceof Error
+              ? error.name
+              : typeof error,
+      ...(error instanceof AutodepositRpcReadError
+        ? error.diagnostics
+        : disposition.failureCode === "dependency_unavailable"
+          ? { httpStatus: autodepositDependencyHttpStatus(error) }
+          : {}),
+      // The read's captured stage takes precedence over the outer stage tracker.
+      executorStage: error instanceof AutodepositRpcReadError
+        ? error.diagnostics.executorStage
+        : stage,
     });
   }
 }
@@ -2086,14 +2111,82 @@ async function getTokenBalanceRaw(
   }
 }
 
+export class AutodepositIdleVaultBalanceError extends Error {
+  constructor(readonly vaultBalanceRaw: bigint) {
+    super(
+      `existing idle vault balance must drain before direct autodeposit: ${vaultBalanceRaw}`
+    );
+    this.name = "AutodepositIdleVaultBalanceError";
+  }
+}
+
 export function assertEmptyVaultBeforeDirectAutodeposit(
   vaultBalanceRaw: bigint
 ): void {
   if (vaultBalanceRaw > BigInt(0)) {
-    throw new Error(
-      `existing idle vault balance must drain before direct autodeposit: ${vaultBalanceRaw}`
-    );
+    throw new AutodepositIdleVaultBalanceError(vaultBalanceRaw);
   }
+}
+
+/**
+ * Idle custody belongs to the fleet drain, not to a new subscription pull. Defer
+ * before claiming lots: claim/release creates residual slots on every retry.
+ * Only unclaimed scheduled work may move its deadline here; selected claims and
+ * persisted transactions must retain their existing recovery path and ownership.
+ */
+export async function deferIdleVaultScheduledSlot(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  targetId: bigint;
+  scheduledSlotId: bigint;
+  vaultBalanceRaw: bigint;
+}): Promise<boolean> {
+  if (args.vaultBalanceRaw <= BigInt(0)) {
+    return false;
+  }
+  const sql = args.neon(args.databaseUrl);
+  const error = new AutodepositIdleVaultBalanceError(args.vaultBalanceRaw);
+  // Keep first-blocked age across same-slot retries without a schema change.
+  // Anchored, bounded numeric captures reject malformed/unrelated error history.
+  const sincePattern = String.raw`^existing idle vault balance must drain before direct autodeposit: [0-9]+ \[idle_blocked_since=([0-9]{1,12}); idle_deferrals=[0-9]{1,7}\]$`;
+  const countPattern = String.raw`^existing idle vault balance must drain before direct autodeposit: [0-9]+ \[idle_blocked_since=[0-9]{1,12}; idle_deferrals=([0-9]{1,7})\]$`;
+  const rows = await sql`
+    UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+    SET eligible_after = now() + (${PRE_SEND_FAILURE_RETRY_DELAY_SECONDS} * interval '1 second'),
+        last_error = ${error.message} || ' [idle_blocked_since=' ||
+          COALESCE(
+            substring(slot.last_error FROM ${sincePattern})::bigint,
+            extract(epoch FROM now())::bigint
+          )::text || '; idle_deferrals=' ||
+          LEAST(
+            COALESCE(substring(slot.last_error FROM ${countPattern})::bigint, 0) + 1,
+            1000000
+          )::text || ']',
+        updated_at = now()
+    WHERE slot.id = ${args.scheduledSlotId.toString()}
+      AND slot.target_id = ${args.targetId.toString()}
+      AND slot.token_mint = ${USDC_MINT_ADDRESS}
+      AND slot.status IN ('scheduled', 'requested')
+      AND slot.claim_token IS NULL
+      AND slot.execution_id IS NULL
+      AND slot.eligible_after <= now()
+      AND EXISTS (
+        SELECT 1 FROM loyal_yield.balance_sweep_surplus_lots AS lot
+        WHERE lot.scheduled_slot_id = slot.id
+          AND lot.target_id = slot.target_id
+          AND lot.status = 'open'
+          AND lot.remaining_amount_raw > 0
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
+        WHERE attempt.scheduled_slot_id = slot.id
+          AND attempt.attempt_state IN (
+            'prepared', 'submitted', 'confirmed', 'unknown', 'ambiguous'
+          )
+      )
+    RETURNING slot.id
+  `;
+  return rows.length === 1;
 }
 
 async function ensureVaultTokenAccountBeforePull(args: {
@@ -4577,7 +4670,7 @@ async function completeAutodepositClaim(args: {
     );
   }
 }
-async function resumeDirectKaminoDeposit(args: {
+export async function resumeDirectKaminoDeposit(args: {
   attempt: DurableAutodepositAttempt;
   claimToken: string;
   connection: Connection;
@@ -4593,6 +4686,40 @@ async function resumeDirectKaminoDeposit(args: {
     throw new Error(
       `Confirmed autodeposit pull ${args.attempt.id} has no confirmed slot.`
     );
+  }
+  // Accounting may already have projected this deposit and a later withdrawal.
+  // Complete its durable links before touching possibly closed token accounts;
+  // never reactivate that historical position through the normal finalizer.
+  const recoverySql = args.neon(args.databaseUrl);
+  const accounted = await reconcileAccountedAutodeposit({
+    sql: async (strings, ...values) => {
+      const results = await recoverySql.transaction([
+        recoverySql`SET LOCAL statement_timeout = '20s'`,
+        recoverySql(strings, ...values),
+      ]);
+      return results[1] ?? [];
+    },
+    claimToken: args.claimToken,
+    leaseToken: args.leaseToken,
+    targetId: args.target.id,
+    scheduledSlotId: args.scheduledSlotId,
+    pullAttemptId: args.attempt.id,
+  }).catch((error: unknown) => {
+    if (error instanceof AccountedAutodepositConflictError) {
+      throw new AutodepositYieldPersistenceError(error.message);
+    }
+    throw error;
+  });
+  if (accounted) {
+    return {
+      status: "completed" as const,
+      recoverySource: "persisted_accounted_deposit" as const,
+      deposit: { signature: accounted.signature, confirmedSlot: accounted.confirmedSlot },
+      executionRecord: { executionId: accounted.executionId, dedupeKey: accounted.dedupeKey },
+      // Historical execution evidence, not a fabricated current missing-account balance.
+      walletPostPullRaw: accounted.walletPostPullRaw,
+      vaultObservation: { amountRaw: accounted.vaultPostPullRaw, observedSlot: args.attempt.confirmedSlot },
+    };
   }
   const walletPostPullRaw = await getTokenBalanceRaw(
     args.connection,
@@ -4758,6 +4885,7 @@ async function recoverAutodepositClaim(args: {
         reason: "claim_owned_by_another_executor",
       })
     );
+    setAutodepositExecutorOutcome("recovery_pending");
     return;
   }
   try {
@@ -4813,6 +4941,10 @@ async function recoverAutodepositClaim(args: {
           process.exitCode = autodepositExecutorFailureExitCode(
             "transaction_effect_ambiguous"
           );
+        } else {
+          setAutodepositExecutorOutcome(
+            attemptAllowsSafeRequeue(pullSend.attempt.state) ? "deferred" : "recovery_pending"
+          );
         }
         return;
       }
@@ -4837,7 +4969,8 @@ async function recoverAutodepositClaim(args: {
             result.status === "completed"
               ? "autodeposit_completed"
               : "autodeposit_deposit_pending",
-          recoverySource: "persisted_confirmed_pull",
+          recoverySource: result.status === "completed" && "recoverySource" in result
+            ? result.recoverySource : "persisted_confirmed_pull",
           targetId: args.context.target.id.toString(),
           scheduledSlotId: args.scheduledSlotId.toString(),
           signatures: {
@@ -4854,6 +4987,7 @@ async function recoverAutodepositClaim(args: {
         2
       )
     );
+    setAutodepositExecutorOutcome(result.status === "completed" ? "completed" : "recovery_pending");
   } catch (error) {
     await releaseAutodepositClaimLease({
       neon: args.neon,
@@ -4873,6 +5007,7 @@ async function recoverAutodepositClaim(args: {
           reason: "claim_owned_by_another_executor",
         })
       );
+      setAutodepositExecutorOutcome("recovery_pending");
       return;
     }
     if (error instanceof AutodepositEffectAmbiguousError) {
@@ -4898,6 +5033,7 @@ async function recoverAutodepositClaim(args: {
         error: error instanceof Error ? error.message : String(error),
       })
     );
+    setAutodepositExecutorOutcome("recovery_pending");
   }
 }
 
@@ -5001,15 +5137,32 @@ async function main(
         2
       )
     );
+    setAutodepositExecutorOutcome("noop");
     return;
   }
 
   const walletUsdcAta = new PublicKeyCtor(target.walletUsdcAta);
   const vaultUsdcAta = new PublicKeyCtor(target.vaultUsdcAta);
   recordStage("read_wallet_balance");
-  const walletBalanceRaw = await getTokenBalanceRaw(connection, walletUsdcAta);
+  const walletBalanceRaw = await readAutodepositPreSendBalance({
+    rpcUrl,
+    context: {
+      executorStage: "read_wallet_balance",
+      targetId: target.id.toString(),
+      scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
+    },
+    read: (readConnection) => getTokenBalanceRaw(readConnection, walletUsdcAta),
+  });
   recordStage("read_vault_balance");
-  const vaultPreBalanceRaw = await getTokenBalanceRaw(connection, vaultUsdcAta);
+  const vaultPreBalanceRaw = await readAutodepositPreSendBalance({
+    rpcUrl,
+    context: {
+      executorStage: "read_vault_balance",
+      targetId: target.id.toString(),
+      scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
+    },
+    read: (readConnection) => getTokenBalanceRaw(readConnection, vaultUsdcAta),
+  });
   recordStage("read_delegation_allowance");
   const allowance = await loadRecurringDelegationAllowance({
     appModules,
@@ -5050,6 +5203,37 @@ async function main(
     throw new Error(
       `Autodeposit target ${target.id} is not linked to an active managed vault.`
     );
+  }
+
+  if (
+    options.execute &&
+    options.requireLotClaim &&
+    options.claimToken !== null &&
+    options.scheduledSlotId !== null &&
+    sweepDecision.kind === "sweep" &&
+    (await deferIdleVaultScheduledSlot({
+      neon: appModules.neon,
+      databaseUrl,
+      targetId: target.id,
+      scheduledSlotId: options.scheduledSlotId,
+      vaultBalanceRaw: vaultPreBalanceRaw,
+    }))
+  ) {
+    console.log(
+      JSON.stringify({
+        status: "autodeposit_preflight_retry_pending",
+        targetId: target.id.toString(),
+        scheduledSlotId: options.scheduledSlotId.toString(),
+        reason: "existing_idle_vault_balance",
+        recoveryOwner: "fleet_idle_vault_deposit",
+        vaultBalanceRaw: vaultPreBalanceRaw.toString(),
+        retryable: true,
+        alert: null,
+        error: new AutodepositIdleVaultBalanceError(vaultPreBalanceRaw).message,
+      })
+    );
+    setAutodepositExecutorOutcome("deferred");
+    return;
   }
 
   let lotClaim: LotClaimResult | null = null;
@@ -5102,6 +5286,7 @@ async function main(
             2
           )
         );
+        setAutodepositExecutorOutcome("noop");
         return;
       }
       executionAmountRaw = lotClaim.amountRaw;
@@ -5135,6 +5320,7 @@ async function main(
         2
       )
     );
+    setAutodepositExecutorOutcome("noop");
     return;
   }
 
@@ -5163,6 +5349,7 @@ async function main(
             alert: null,
           })
         );
+        setAutodepositExecutorOutcome("recovery_pending");
         return;
       }
     }
@@ -5404,6 +5591,10 @@ async function main(
         process.exitCode = autodepositExecutorFailureExitCode(
           "transaction_effect_ambiguous"
         );
+      } else {
+        setAutodepositExecutorOutcome(
+          attemptAllowsSafeRequeue(durablePullSend.attempt.state) ? "deferred" : "recovery_pending"
+        );
       }
       return;
     }
@@ -5452,6 +5643,7 @@ async function main(
           2
         )
       );
+      setAutodepositExecutorOutcome(result.status === "completed" ? "completed" : "recovery_pending");
     } catch (error) {
       await releaseAutodepositClaimLease({
         neon: appModules.neon,
@@ -5470,6 +5662,7 @@ async function main(
             reason: "claim_owned_by_another_executor",
           })
         );
+        setAutodepositExecutorOutcome("recovery_pending");
         return;
       }
       if (error instanceof AutodepositYieldPersistenceError) {
@@ -5490,6 +5683,7 @@ async function main(
             error: error instanceof Error ? error.message : String(error),
           })
         );
+        setAutodepositExecutorOutcome("recovery_pending");
         return;
       }
       process.exitCode = autodepositExecutorFailureExitCode(
@@ -5617,10 +5811,16 @@ async function main(
       disposition.failureCode !== "fee_payer_exhausted" &&
       !missingTokenDelegate
     ) {
-      process.exitCode = 0;
       console.log(
         JSON.stringify({
           status: "autodeposit_preflight_retry_pending",
+          ...(error instanceof AutodepositIdleVaultBalanceError
+            ? {
+                reason: "existing_idle_vault_balance",
+                recoveryOwner: "fleet_idle_vault_deposit",
+                vaultBalanceRaw: error.vaultBalanceRaw.toString(),
+              }
+            : {}),
           targetId: target.id.toString(),
           scheduledSlotId: options.scheduledSlotId?.toString() ?? null,
           retryable: true,
@@ -5628,6 +5828,7 @@ async function main(
           error: error instanceof Error ? error.message : String(error),
         })
       );
+      setAutodepositExecutorOutcome("deferred");
       return;
     }
     throw error;

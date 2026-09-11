@@ -1,5 +1,6 @@
 mod cross_mint;
 pub mod multiply;
+mod same_mint_reconciliation;
 mod voltr;
 mod voltr_reconciliation;
 
@@ -6160,8 +6161,36 @@ async fn reconcile_reserve_submission_effect(
         false,
     )
     .await?;
-    let post_state = chain_preview_reconciled_state(&post_preview)?;
-    ensure_post_confirm_chain_reconcile_state(&decision, &post_state)?;
+    let mut post_state = chain_preview_reconciled_state(&post_preview)?;
+    let source_residual = post_state
+        .positions
+        .iter()
+        .find(|position| position.reserve == decision.source_reserve)
+        .map(|position| position.amount_raw)
+        .filter(|amount| *amount != 0);
+    let finalized_route = if source_residual.is_some() {
+        Some(same_mint_reconciliation::verify_finalized_signed_route(
+            runtime.rpc.as_ref(),
+            lease,
+        )?)
+    } else {
+        None
+    };
+    ensure_post_confirm_chain_reconcile_state(
+        &decision,
+        &post_state,
+        finalized_route.as_ref(),
+    )?;
+    if finalized_route.is_some() {
+        // Keep the real residual in the snapshot. The receipt proves this
+        // route's atomic effects, not that later deposits must be erased.
+        post_state.context["finalized_signed_route"] = json!({
+            "submission_id": submission.id,
+            "decision_id": decision_id.as_i64(),
+            "finalized_slot": confirmed_slot,
+            "source_residual_amount_raw": source_residual,
+        });
+    }
     let snapshot = runtime
         .client
         .apply_reconciliation_patch(decision.vault_id, post_state, lease)
@@ -16606,6 +16635,7 @@ fn chain_preview_reconciled_state(
 fn ensure_post_confirm_chain_reconcile_state(
     decision: &PreparedSameMintDecision,
     state: &ReconciledVaultState,
+    finalized_route: Option<&same_mint_reconciliation::FinalizedSameMintRouteProof>,
 ) -> Result<(), Box<dyn Error>> {
     let mut saw_source = false;
     let mut saw_target = false;
@@ -16620,7 +16650,9 @@ fn ensure_post_confirm_chain_reconcile_state(
                 )
                 .into());
             }
-            if position.amount_raw != 0 {
+            if position.amount_raw != 0
+                && !finalized_route.is_some_and(|proof| proof.covers(decision.id, state.observed_slot))
+            {
                 return Err(format!(
                     "post-confirm source reserve {} remains nonzero in chain reconcile: {}",
                     decision.source_reserve, position.amount_raw
@@ -19673,7 +19705,7 @@ async fn execute_prepared_same_mint_route_inner(
         Some(u64::try_from(confirmed_slot)?),
     )?;
     let post_reconcile_state = chain_preview_reconciled_state(&post_reconcile_preview)?;
-    ensure_post_confirm_chain_reconcile_state(decision, &post_reconcile_state)?;
+    ensure_post_confirm_chain_reconcile_state(decision, &post_reconcile_state, None)?;
     let post_snapshot = client
         .apply_observed_patch(decision.vault_id, post_reconcile_state)
         .await?;
