@@ -95,6 +95,20 @@ async fn refund_cleanup_and_historical_withdrawal_replay() {
     )
     .await
     .unwrap();
+    // Legacy active policies with unknown cluster were already observed. The
+    // closed-identity filter must not remove those existing watch bindings.
+    sqlx::query("UPDATE loyal_yield.route_policies SET cluster='unknown' WHERE policy_account='replay-policy-90'")
+        .execute(store.pool()).await.unwrap();
+    let legacy = store
+        .load_earn_subscription_targets("mainnet")
+        .await
+        .unwrap();
+    assert!(legacy.iter().any(|target| target
+        .policy_accounts
+        .iter()
+        .any(|account| account == "replay-policy-90")));
+    sqlx::query("UPDATE loyal_yield.route_policies SET cluster='mainnet-beta' WHERE policy_account='replay-policy-90'")
+        .execute(store.pool()).await.unwrap();
     let mut refund = EarnRefundMutation {
         cluster: "mainnet".into(),
         full_cleanup: false,
@@ -146,6 +160,36 @@ async fn refund_cleanup_and_historical_withdrawal_replay() {
     assert_eq!(refund_rows, 1);
     let cleanup_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM loyal_yield.earn_chain_mutations WHERE chain_signature='refund-old' AND mutation_kind='cleanup'").fetch_one(store.pool()).await.unwrap();
     assert_eq!(cleanup_rows, 1);
+
+    // Closing Earn must retain discovery when app tables live in another DB.
+    let watched = store
+        .load_earn_subscription_targets("mainnet")
+        .await
+        .unwrap();
+    let closed_identity = watched
+        .iter()
+        .find(|target| target.settings == "replay-settings")
+        .expect("closed Earn identity must remain watched without app tables");
+    assert_eq!(closed_identity.wallet, "replay-wallet");
+    assert!(closed_identity.policy_accounts.is_empty());
+    assert!(closed_identity.observation_start_slot.is_none());
+    let other_cluster = store
+        .load_earn_subscription_targets("devnet")
+        .await
+        .unwrap();
+    assert!(!other_cluster
+        .iter()
+        .any(|target| target.settings == "replay-settings"));
+    let remains_closed: bool = sqlx::query_scalar(
+        "SELECT NOT active FROM loyal_yield.managed_vaults WHERE settings='replay-settings'",
+    )
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert!(
+        remains_closed,
+        "watch discovery must not reactivate a closed vault"
+    );
 
     complete(
         &store,
