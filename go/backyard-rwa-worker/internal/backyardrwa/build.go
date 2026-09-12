@@ -98,22 +98,27 @@ const (
 	bridgeSettingsSigner   = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
 	bridgeVault            = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
 	bridgeDelegate         = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
-	bridgeAllocationPolicy = "HoDV7mtsb2u1VARZLYuGByW7cCsGWL9NFxHZs7WHjdzz"
-	bridgeNAVPolicy        = "41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP"
-	bridgeStagePolicy      = "ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY"
-	bridgeWithdrawPolicy   = "DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t"
+	// Strategy-two bridge policies installed at fresh Squads seeds 145-148.
+	// The retired 62-65 set stays asserted absent by legacyPolicyGate.
+	bridgeAllocationPolicy = "8Nd646MD6H6hQrXZuP6utG5QZjRZ44GrRmdZJGShmhnh" // seed 145, VOLTR_ALLOCATE_TO_SQUADS
+	bridgeNAVPolicy        = "AyymPJEAEN5YFySuEDVkdU9PTjBarj2y2UJxQ4rznjXr" // seed 146, REPORT_NAV
+	bridgeStagePolicy      = "E2TZ5UJ3uyqTqiuKX3GK7t7wgeNBSGy2pV2BXPMpaVDr" // seed 147, STAGE_SQUADS_TO_VOLTR
+	bridgeWithdrawPolicy   = "AsqfqCCDf2tWoZxtj3CZ4XSYcAxRuSfgq8oYtdAQ9eCU" // seed 148, VOLTR_RESTORE_IDLE
 	bridgeVoltrProgram     = "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
 	bridgeVoltrVault       = "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"
-	bridgeStrategy         = "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj"
+	// Strategy-two adaptor config: its key IS the Voltr strategy key, derived
+	// offline from the setup admin over domain loyal-rwa-multiply-mainnet-v3.
+	// It replaces the retired v2 config 9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj.
+	bridgeStrategy         = "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY"
 	bridgeProtocol         = "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y"
 	bridgeAdaptorReceipt   = "AsfkxMdVYjMnr2fdTBMUXhq81hgi2hbENXCy9WhUQF7u"
-	bridgeStrategyReceipt  = "3GHLmyTTGH9ZfQqb3YCo9xKjpPhMLvHsq2JSYzCnk9U6"
+	bridgeStrategyReceipt  = "5bw4VYzpZXsk9SUNyWwJkb4fEx1DS8eNMFB6Qb4MUfhE"
 	bridgeIdleAuthority    = "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb"
-	bridgeStrategyAuth     = "8fLTf2ufePttZW3Es1xVoW3ows3WjXcuHQkkBCVvHsdH"
+	bridgeStrategyAuth     = "5r74AE7yewacfRzoGAjXx5X3gM9LUoLU29eHzdjiLrJo"
 	bridgeUSDC             = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	bridgeLPMint           = "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb"
 	bridgeIdleATA          = "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh"
-	bridgeStrategyATA      = "FTDWN5Ay8tzYPJBJT4s2oZaHRQ7jKPo8XP2ZRWb5GP3M"
+	bridgeStrategyATA      = "EPCVCLY5wfumf6yPvqu7zuEB4WnnXbnPsy7JrKoAWcqC"
 	bridgeSquadsATA        = "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"
 	bridgeTokenProgram     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 	bridgeAdaptorProgram   = "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"
@@ -127,9 +132,20 @@ var (
 	squadsExecuteSyncDiscriminator = []byte{90, 81, 187, 81, 39, 70, 128, 78}
 )
 
+// bridgeCapRaw stays the whole-vault bound used by the Kamino basic policies
+// and Voltr withdrawal-receipt admission. bridgeMaxNAV is the strategy-two
+// adaptor config's max reported NAV (the vault maxCap) decoded from confirmed
+// config state. strategyTwoBridgeLegCapRaw is the per-execution operational
+// bound installed on bridge policies 145-148 (100 USDC): every bridge capital
+// leg is built against it. strategyTwoDailyAllocationCapRaw mirrors the daily
+// USDC spending limit embedded in the strategy-two policies (300 USDC), which
+// Squads enforces on chain across outflow legs.
 const (
 	bridgeCapRaw uint64 = 1_000_000_000_000
-	bridgeMaxNAV uint64 = 2_000_000_000_000
+	bridgeMaxNAV uint64 = 1_000_000_000_000
+
+	strategyTwoBridgeLegCapRaw       uint64 = 100_000_000
+	strategyTwoDailyAllocationCapRaw uint64 = 300_000_000
 )
 
 // BuildAndSignBridgeTransaction builds exactly one policy-wrapped bridge
@@ -215,7 +231,7 @@ func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, execut
 func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, publicKey, byte, error) {
 	switch request.Action {
 	case VoltrAllocateToSquads:
-		if request.AmountRaw == 0 || request.AmountRaw > bridgeCapRaw {
+		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid allocation amount")
 		}
 		data, err := voltrStrategyData(voltrDepositDiscriminator, adaptorDepositDiscriminator, request.AmountRaw, request.Report)
@@ -233,7 +249,7 @@ func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, publicK
 		}
 		return voltrDepositInstruction(data), mustKey(bridgeNAVPolicy), 0, nil
 	case VoltrRestoreIdle:
-		if request.AmountRaw == 0 || request.AmountRaw > bridgeCapRaw {
+		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid Voltr restore amount")
 		}
 		data, err := voltrStrategyData(voltrWithdrawDiscriminator, adaptorWithdrawDiscriminator, request.AmountRaw, request.Report)
@@ -242,7 +258,7 @@ func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, publicK
 		}
 		return voltrWithdrawInstruction(data), mustKey(bridgeWithdrawPolicy), 0, nil
 	case StageSquadsToVoltr:
-		if request.AmountRaw == 0 || request.AmountRaw > bridgeCapRaw {
+		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid staging amount")
 		}
 		return stageInstruction(request.AmountRaw), mustKey(bridgeStagePolicy), 0, nil

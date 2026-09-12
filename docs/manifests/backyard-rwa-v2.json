@@ -1,6 +1,7 @@
 {
   "schema": "loyal-backyard-rwa-manifest/v2",
   "status": "ready",
+  "statusNote": "strategy-two cutover: adaptor config DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY, report ticket 8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq (bump 255, disarmed, sequences 0), bridge policies at Squads seeds 145-148. The v2 config/ticket and the 62-65 bridge policies are retired; identities verified against finalized mainnet slot 446295496.",
   "cluster": "mainnet-beta",
   "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
   "commitment": "confirmed",
@@ -14,9 +15,10 @@
     "voltrProgram": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
     "voltrVault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
     "adaptorProgram": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
-    "v2StrategyConfig": "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj",
-    "reportTicket": "C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5",
-    "reportTicketBump": 254,
+    "v2StrategyConfig": "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY",
+    "v2StrategyConfigNote": "strategy-two adaptor config (its key is the Voltr strategy key, domain loyal-rwa-multiply-mainnet-v3); replaces the retired 9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj. Key kept as v2StrategyConfig because the Go loader field and its invariant read it.",
+    "reportTicket": "8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq",
+    "reportTicketBump": 255,
     "reportTicketStateLength": 96,
     "squadsProgram": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
     "squadsSettings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
@@ -53,10 +55,10 @@
   },
   "runtimeBindings": {
     "bridgePolicies": [
-      {"action":"VOLTR_ALLOCATE_TO_SQUADS","account":"HoDV7mtsb2u1VARZLYuGByW7cCsGWL9NFxHZs7WHjdzz","dataSha256":"bda72932f474064fa3cd60ce91633acba35b2730e86b82f4352aa96a6738e2f4"},
-      {"action":"REPORT_NAV","account":"41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP","dataSha256":"bf34a3e9c9c635c79a0d30e096b639a86d52e300ad113c81161e3486832d97ca"},
-      {"action":"STAGE_SQUADS_TO_VOLTR","account":"ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY","dataSha256":"ef8c231497fb2620b5930cfe5d329c871f103db6512781eb5487534db8b1291b"},
-      {"action":"VOLTR_RESTORE_IDLE","account":"DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t","dataSha256":"84e8f6f881758cff1714ef743603c016024104f9834392c6fba693c3651b719c"}
+      {"action":"VOLTR_ALLOCATE_TO_SQUADS","seed":145,"account":"8Nd646MD6H6hQrXZuP6utG5QZjRZ44GrRmdZJGShmhnh","dataSha256":"e89bdc6e5b09922c0c32078d579c3263020e6796d8415b804dd1b5ed263a7b55"},
+      {"action":"REPORT_NAV","seed":146,"account":"AyymPJEAEN5YFySuEDVkdU9PTjBarj2y2UJxQ4rznjXr","dataSha256":"76dd46b2f1f1aca2ce37afcb5eca045cb9921de4f99d46075fe6d9bd0ea04997"},
+      {"action":"STAGE_SQUADS_TO_VOLTR","seed":147,"account":"E2TZ5UJ3uyqTqiuKX3GK7t7wgeNBSGy2pV2BXPMpaVDr","dataSha256":"9e12f4584396defdf46ac8a297e696c9a47caf83a5e45bf8a58c4e9a1fd2d868"},
+      {"action":"VOLTR_RESTORE_IDLE","seed":148,"account":"AsqfqCCDf2tWoZxtj3CZ4XSYcAxRuSfgq8oYtdAQ9eCU","dataSha256":"917c849c16fed466039f7b562b670c9253636aabb683a0e58d72c3723c3d0998"}
     ],
     "collateralLifecycle":{"policy":"2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh","dataSha256":"c716c948bb6f20c4bf951386ea9d49b43b933a6009778518fa04263be0df0ae9","constraintIndices":{"deposit":0,"withdraw":1}},
     "debtLifecycle":{"policy":"BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA","dataSha256":"bb42c52b1f5641e8105a7b04607a35fe92034d71ad87b3e528d7914edd38e704","constraintIndices":{"borrow":0,"repay":1}},

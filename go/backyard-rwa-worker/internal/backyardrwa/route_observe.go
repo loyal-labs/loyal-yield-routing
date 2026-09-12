@@ -317,7 +317,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base.Snapshot.CapacityRaw = int64(entryUSDC)
 		base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
 		base.Snapshot.BorrowUtilizationBlocked = position.BorrowUtilizationBlocked
-		base.Snapshot.PolicyLimitRaw = int64(bridgeCapRaw)
+		base.Snapshot.PolicyLimitRaw = int64(strategyTwoBridgeLegCapRaw)
 		base.Snapshot.PolicyReady = ready
 		base.Snapshot.ExitBuildable = exit
 		observedAt := runtime.now()
