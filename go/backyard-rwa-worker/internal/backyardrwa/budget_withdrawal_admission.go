@@ -25,31 +25,38 @@ func withdrawalUSDCExitEstimate(quoted uint64) (uint64, error) {
 }
 
 func observeWithdrawalExitPolicies(ctx context.Context, rpc *RPCClient, manifest RouteManifest, lane string, slot int64, conversions []Action) (int64, error) {
-	hashes := map[string]string{}
+	// Pins are masked digests: the bridge policies carry their volatile
+	// spending-limit spans, and policies without a mask compare as the raw
+	// account digest.
+	type observedPolicyPin struct {
+		digest string
+		mask   [][2]int64
+	}
+	pins := map[string]observedPolicyPin{}
 	addresses := []string{reportTicketPDA}
 	for _, action := range conversions {
 		binding, err := manifest.jupiterPolicyForRoute(action, lane)
 		if err != nil {
 			return 0, err
 		}
-		hashes[binding.Policy] = binding.PolicyAccountDataSHA256
+		pins[binding.Policy] = observedPolicyPin{digest: binding.PolicyAccountDataSHA256}
 		addresses = append(addresses, binding.Policy)
 	}
 	for _, action := range []Action{StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
-		address, hash, err := manifest.bridgePolicy(action)
+		binding, err := manifest.bridgePolicy(action)
 		if err != nil {
 			return 0, err
 		}
-		hashes[address] = hash
-		addresses = append(addresses, address)
+		pins[binding.Account] = observedPolicyPin{digest: binding.NormalizedDigest, mask: binding.MaskedByteRanges}
+		addresses = append(addresses, binding.Account)
 	}
 	observed, accounts, err := rpc.GetMultipleAccounts(ctx, addresses, slot)
 	if err != nil {
 		return 0, budgetHold("withdrawal_exit_policy_observation_unavailable")
 	}
-	for address, hash := range hashes {
+	for address, pin := range pins {
 		a := accountAt(accounts, address)
-		if a.Owner != bridgeSquadsProgram || a.Executable || a.Lamports == 0 || sha256Bytes(a.Data) != hash {
+		if a.Owner != bridgeSquadsProgram || a.Executable || a.Lamports == 0 || !maskedPolicyDigestMatches(a.Data, pin.mask, pin.digest) {
 			return 0, budgetHold("withdrawal_exit_policy_drift")
 		}
 	}

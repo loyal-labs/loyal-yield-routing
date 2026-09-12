@@ -56,10 +56,10 @@ func catalogRoutePolicyHashes(route RuntimeRoute, manifest RouteManifest) (map[s
 		}
 	}
 	for _, b := range manifest.RuntimeBindings.BridgePolicies {
-		if b.DataSHA256 == nil {
+		if b.NormalizedDigest == "" {
 			return nil, fmt.Errorf("unbound bridge policy")
 		}
-		if err := add(b.Account, *b.DataSHA256); err != nil {
+		if err := add(b.Account, b.NormalizedDigest); err != nil {
 			return nil, err
 		}
 	}

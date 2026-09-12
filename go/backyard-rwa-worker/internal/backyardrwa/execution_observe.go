@@ -57,7 +57,7 @@ func observeConfirmedBridgeExecutionEvidenceWithEnrichment(
 	if rpc == nil || enrich == nil {
 		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("RPC client is required")
 	}
-	policy, policyHash, err := manifest.bridgePolicy(decision.Action)
+	policyPin, err := manifest.bridgePolicy(decision.Action)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
@@ -87,19 +87,20 @@ func observeConfirmedBridgeExecutionEvidenceWithEnrichment(
 			// this same confirmed snapshot; admission cannot authorize setup.
 			ticketRequired = true
 			for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
-				address, hash, err := manifest.bridgePolicy(action)
+				binding, err := manifest.bridgePolicy(action)
 				if err != nil {
 					return Observation{}, BridgeExecutionEvidence{}, err
 				}
-				account := accountAt(accounts, address)
-				if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+				account := accountAt(accounts, binding.Account)
+				if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 ||
+					!maskedPolicyDigestMatches(account.Data, binding.MaskedByteRanges, binding.NormalizedDigest) {
 					return Observation{}, BridgeExecutionEvidence{}, budgetHold("bridge_exit_policy_unavailable")
 				}
 			}
 		}
-		policyAccount := accountAt(accounts, policy)
+		policyAccount := accountAt(accounts, policyPin.Account)
 		if policyAccount.Owner != bridgeSquadsProgram || policyAccount.Executable ||
-			policyAccount.Lamports == 0 || sha256Bytes(policyAccount.Data) != policyHash {
+			policyAccount.Lamports == 0 || !maskedPolicyDigestMatches(policyAccount.Data, policyPin.MaskedByteRanges, policyPin.NormalizedDigest) {
 			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("bridge policy bytes or owner drifted")
 		}
 		var ticket observedReportTicket

@@ -29,6 +29,7 @@ type startupLeaseHandoffRuntime struct {
 }
 
 type tickRuntime struct {
+	allocationSentWindow             func(context.Context, string) (uint64, error)
 	loadNonterminal                  func(context.Context, string) (*PersistedOperation, error)
 	advance                          func(context.Context, PersistedOperation) error
 	observe                          func(context.Context) (Observation, error)
@@ -164,8 +165,9 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		prepareJupiter: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, JupiterExecutionEvidence, error) {
 			return observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, productionJupiterClient(), state.enrich)
 		},
-		recordDecision:   database.RecordDecision,
-		recordBudgetHold: database.RecordPhase3BudgetHold,
+		allocationSentWindow: database.AllocationSentRawTrailingWindow,
+		recordDecision:       database.RecordDecision,
+		recordBudgetHold:     database.RecordPhase3BudgetHold,
 		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
 			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionDebtRaw > 0 && catalogJupiterRoute(observation.Snapshot.RouteLane) {
 				return database.admitPhase3Funding(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
@@ -290,6 +292,29 @@ func (w *Worker) Tick(ctx context.Context) error {
 		return ErrBridgePrerequisitesUnavailable
 	}
 	policyHash := *w.manifest.PolicyCatalog.SHA256
+	if executionDecision, err := fixedRouteAction(decision.Action, decision.StrategyKey); err == nil &&
+		executionDecision == VoltrAllocateToSquads && w.runtime.allocationSentWindow != nil {
+		// The strategy-two allocation policy's daily window is enforced on
+		// chain, but a wire that only fails at landing still burned the
+		// attempt. Guard the journal too: what this worker already sent in
+		// the trailing 24h plus the next amount must stay inside the bound.
+		sentRaw, err := w.runtime.allocationSentWindow(ctx, w.routeKey)
+		if err != nil {
+			return err
+		}
+		if err := evaluateAllocationDailyLimit(sentRaw, uint64(decision.AmountRaw)); err != nil {
+			var hold *BudgetHold
+			if !errors.As(err, &hold) {
+				return err
+			}
+			decision.Action = Hold
+			decision.Reason = hold.Reason
+			decision.AmountRaw = 0
+			if err := decision.Validate(); err != nil {
+				return err
+			}
+		}
+	}
 	if decision.Action == Hold || decision.Action == HoldManualRecovery {
 		if decision.Action == HoldManualRecovery {
 			return w.recordManualRecoveryDecision(ctx, observation, decision, policyHash)

@@ -43,7 +43,9 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 		p := &manifest.RuntimeBindings.BridgePolicies[i]
 		data := []byte("controlled-bridge-policy:" + string(p.Action))
 		hash := sha256Bytes(data)
-		p.DataSHA256 = &hash
+		p.NormalizedDigest = hash
+		p.MaskedByteRanges = nil
+		p.DataSHA256Raw = hash
 		extra = append(extra, ConfirmedAccount{Address: p.Account, Owner: bridgeSquadsProgram, Lamports: 1, Data: data})
 	}
 	binding, err := catalogJupiterBindingForRoute(SwapCollateralToStableStep, route.Lane)
@@ -176,7 +178,8 @@ func TestWithdrawalAdmissionRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 		for i := range manifest.RuntimeBindings.BridgePolicies {
 			if manifest.RuntimeBindings.BridgePolicies[i].Action == ReportNAV {
 				hash := sha256Bytes([]byte("different policy"))
-				manifest.RuntimeBindings.BridgePolicies[i].DataSHA256 = &hash
+				manifest.RuntimeBindings.BridgePolicies[i].NormalizedDigest = hash
+				manifest.RuntimeBindings.BridgePolicies[i].DataSHA256Raw = hash
 			}
 		}
 		_, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, o, d, evidence)

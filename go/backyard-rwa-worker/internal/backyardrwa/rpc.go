@@ -502,6 +502,9 @@ func (c *RPCClient) SimulateSignedTransaction(ctx context.Context, signedWire []
 		if len(logTail) > 8 {
 			logTail = logTail[len(logTail)-8:]
 		}
+		if squadsSpendingLimitExceeded(result.Value.Err, result.Value.Logs) {
+			return SimulationResult{}, &SquadsSpendingLimitError{Slot: result.Context.Slot, Err: append([]byte(nil), result.Value.Err...)}
+		}
 		return SimulationResult{}, fmt.Errorf("signed transaction simulation failed: slot=%d err=%s log_tail=%q", result.Context.Slot, string(result.Value.Err), strings.Join(logTail, " | "))
 	}
 	return SimulationResult{Slot: result.Context.Slot, UnitsConsumed: result.Value.UnitsConsumed, Logs: append([]string(nil), result.Value.Logs...)}, nil
@@ -509,6 +512,19 @@ func (c *RPCClient) SimulateSignedTransaction(ctx context.Context, signedWire []
 
 // SendSignedTransactionOnce submits exactly the persisted wire with RPC retries
 // disabled. Callers must durably record broadcast_intent before invoking it.
+// SquadsSpendingLimitError marks a simulation the pinned Squads program
+// refused with its spending-limit-exceeded custom error (6073). It is a
+// specific, non-retryable pre-broadcast refusal, never a generic simulation
+// failure.
+type SquadsSpendingLimitError struct {
+	Slot int64
+	Err  json.RawMessage
+}
+
+func (e *SquadsSpendingLimitError) Error() string {
+	return fmt.Sprintf("squads spending limit exceeded: slot=%d err=%s", e.Slot, string(e.Err))
+}
+
 func (c *RPCClient) SendSignedTransactionOnce(ctx context.Context, signedWire []byte, expectedSignature string) (string, error) {
 	if len(signedWire) == 0 || expectedSignature == "" {
 		return "", fmt.Errorf("persisted signed wire and signature are required")

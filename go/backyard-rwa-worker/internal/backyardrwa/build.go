@@ -93,11 +93,11 @@ func (s SignedBridgeTransaction) BuildResult(simulationSlot int64) (BuildResult,
 // They are not configurable: a different key is a different reviewed manifest,
 // not an environment override.
 const (
-	bridgeSquadsProgram    = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
-	bridgeSettings         = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
-	bridgeSettingsSigner   = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
-	bridgeVault            = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
-	bridgeDelegate         = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
+	bridgeSquadsProgram  = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+	bridgeSettings       = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
+	bridgeSettingsSigner = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+	bridgeVault          = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+	bridgeDelegate       = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
 	// Strategy-two bridge policies installed at fresh Squads seeds 145-148.
 	// The retired 62-65 set stays asserted absent by legacyPolicyGate.
 	bridgeAllocationPolicy = "8Nd646MD6H6hQrXZuP6utG5QZjRZ44GrRmdZJGShmhnh" // seed 145, VOLTR_ALLOCATE_TO_SQUADS
@@ -109,19 +109,19 @@ const (
 	// Strategy-two adaptor config: its key IS the Voltr strategy key, derived
 	// offline from the setup admin over domain loyal-rwa-multiply-mainnet-v3.
 	// It replaces the retired v2 config 9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj.
-	bridgeStrategy         = "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY"
-	bridgeProtocol         = "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y"
-	bridgeAdaptorReceipt   = "AsfkxMdVYjMnr2fdTBMUXhq81hgi2hbENXCy9WhUQF7u"
-	bridgeStrategyReceipt  = "5bw4VYzpZXsk9SUNyWwJkb4fEx1DS8eNMFB6Qb4MUfhE"
-	bridgeIdleAuthority    = "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb"
-	bridgeStrategyAuth     = "5r74AE7yewacfRzoGAjXx5X3gM9LUoLU29eHzdjiLrJo"
-	bridgeUSDC             = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-	bridgeLPMint           = "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb"
-	bridgeIdleATA          = "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh"
-	bridgeStrategyATA      = "EPCVCLY5wfumf6yPvqu7zuEB4WnnXbnPsy7JrKoAWcqC"
-	bridgeSquadsATA        = "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"
-	bridgeTokenProgram     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	bridgeAdaptorProgram   = "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"
+	bridgeStrategy        = "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY"
+	bridgeProtocol        = "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y"
+	bridgeAdaptorReceipt  = "AsfkxMdVYjMnr2fdTBMUXhq81hgi2hbENXCy9WhUQF7u"
+	bridgeStrategyReceipt = "5bw4VYzpZXsk9SUNyWwJkb4fEx1DS8eNMFB6Qb4MUfhE"
+	bridgeIdleAuthority   = "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb"
+	bridgeStrategyAuth    = "5r74AE7yewacfRzoGAjXx5X3gM9LUoLU29eHzdjiLrJo"
+	bridgeUSDC            = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	bridgeLPMint          = "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb"
+	bridgeIdleATA         = "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh"
+	bridgeStrategyATA     = "EPCVCLY5wfumf6yPvqu7zuEB4WnnXbnPsy7JrKoAWcqC"
+	bridgeSquadsATA       = "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"
+	bridgeTokenProgram    = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	bridgeAdaptorProgram  = "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"
 )
 
 var (

@@ -38,7 +38,7 @@ func TestExportOnReBridgeProbe(t *testing.T) {
 	}
 	policies := map[string]string{}
 	for _, p := range manifest.RuntimeBindings.BridgePolicies {
-		policies[p.Account] = *p.DataSHA256
+		policies[p.Account] = p.NormalizedDigest
 	}
 	actions := []Action{in.Action}
 	if in.Discover {

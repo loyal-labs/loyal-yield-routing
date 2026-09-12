@@ -68,9 +68,11 @@ type RouteManifest struct {
 	} `json:"policyCatalog"`
 	RuntimeBindings struct {
 		BridgePolicies []struct {
-			Action     Action  `json:"action"`
-			Account    string  `json:"account"`
-			DataSHA256 *string `json:"dataSha256"`
+			Action           Action     `json:"action"`
+			Account          string     `json:"account"`
+			NormalizedDigest string     `json:"normalizedDigest"`
+			MaskedByteRanges [][2]int64 `json:"maskedByteRanges"`
+			DataSHA256Raw    string     `json:"dataSha256Raw"`
 		} `json:"bridgePolicies"`
 		CollateralLifecycle struct {
 			Policy            string          `json:"policy"`
@@ -423,6 +425,12 @@ func (m RouteManifest) validateBindings() error {
 		if expectedBridgePolicies[binding.Action] != binding.Account || seen[binding.Action] {
 			return fmt.Errorf("embedded Backyard manifest has a drifted bridge policy identity")
 		}
+		if !sha256Pattern.MatchString(binding.NormalizedDigest) || !sha256Pattern.MatchString(binding.DataSHA256Raw) {
+			return fmt.Errorf("embedded Backyard manifest has a malformed bridge policy digest for %s", binding.Action)
+		}
+		if err := validatePolicyByteMask(binding.MaskedByteRanges); err != nil {
+			return fmt.Errorf("embedded Backyard manifest has an invalid bridge policy mask for %s: %w", binding.Action, err)
+		}
 		seen[binding.Action] = true
 	}
 	return nil
@@ -572,17 +580,26 @@ func (m RouteManifest) validateSelectedLaneBinding() error {
 	return nil
 }
 
-func (m RouteManifest) bridgePolicy(action Action) (string, string, error) {
+// BridgePolicyPin is the manifest-pinned identity of one bridge policy: the
+// account, the masked normalized digest its bytes must hash to, and the byte
+// ranges the mask excludes.
+type BridgePolicyPin struct {
+	Account          string
+	NormalizedDigest string
+	MaskedByteRanges [][2]int64
+}
+
+func (m RouteManifest) bridgePolicy(action Action) (BridgePolicyPin, error) {
 	for _, binding := range m.RuntimeBindings.BridgePolicies {
 		if binding.Action != action {
 			continue
 		}
-		if binding.DataSHA256 == nil || !sha256Pattern.MatchString(*binding.DataSHA256) {
-			return "", "", ErrBridgePrerequisitesUnavailable
+		if !sha256Pattern.MatchString(binding.NormalizedDigest) {
+			return BridgePolicyPin{}, ErrBridgePrerequisitesUnavailable
 		}
-		return binding.Account, *binding.DataSHA256, nil
+		return BridgePolicyPin{Account: binding.Account, NormalizedDigest: binding.NormalizedDigest, MaskedByteRanges: binding.MaskedByteRanges}, nil
 	}
-	return "", "", fmt.Errorf("action %s has no fixed bridge policy", action)
+	return BridgePolicyPin{}, fmt.Errorf("action %s has no fixed bridge policy", action)
 }
 
 func (m RouteManifest) primeUSDCPacket(action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash) (KaminoPrimeUSDCRequest, error) {
@@ -704,7 +721,7 @@ func (m RouteManifest) executionBlocker() *RuntimeBlocker {
 		}
 	}
 	for _, binding := range m.RuntimeBindings.BridgePolicies {
-		if binding.DataSHA256 == nil || !sha256Pattern.MatchString(*binding.DataSHA256) {
+		if !sha256Pattern.MatchString(binding.NormalizedDigest) || !sha256Pattern.MatchString(binding.DataSHA256Raw) {
 			return ErrBridgePrerequisitesUnavailable
 		}
 	}

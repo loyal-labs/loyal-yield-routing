@@ -26,6 +26,19 @@ const (
 	adaptorErrorTicketReplay uint32 = 18
 )
 
+const (
+	// squadsErrorSpendingLimitExceeded is the pinned Squads smart-account
+	// program's custom error for a policy spending limit refused at
+	// execution time.
+	squadsErrorSpendingLimitExceeded uint32 = 6073
+
+	// squadsSpendingLimitReason marks that refusal: a specific,
+	// non-retryable HOLD reason - never a generic simulation failure and
+	// never manual recovery, because nothing moved and the limit self-heals
+	// at its next period boundary.
+	squadsSpendingLimitReason = "squads_spending_limit_exceeded"
+)
+
 // adaptorMaxReportAgeSlots is the deployed adaptor config's max report age.
 // reportFreshnessMarginSlots keeps the send fence inside that window: a wire
 // refused at observed+28 can never land as an on-chain ReportSlot failure.
@@ -196,7 +209,23 @@ func ClassifyConfirmedReportFailure(rawErr json.RawMessage, logs []string) Confi
 			return ConfirmedFailureClassification{Retryable: true, Reason: "adaptor_report_ticket_replayed"}
 		}
 	}
+	if squadsSpendingLimitExceeded(rawErr, logs) {
+		// The policy refused the wire without moving capital, so the row
+		// terminates in `failed` with its own reason instead of a generic
+		// confirmed error or a capital stop.
+		return ConfirmedFailureClassification{Retryable: true, Reason: squadsSpendingLimitReason}
+	}
 	return ConfirmedFailureClassification{Reason: "confirmed_transaction_error"}
+}
+
+// squadsSpendingLimitExceeded reports whether a failed transaction was
+// refused by the pinned Squads program because the policy's embedded
+// spending limit is exhausted for its current period. Attribution reuses the
+// same log-stack walk as the adaptor errors: an unattributed 6073 stays a
+// capital stop.
+func squadsSpendingLimitExceeded(rawErr json.RawMessage, logs []string) bool {
+	code, ok := decodeInstructionErrorCustom(rawErr)
+	return ok && code == squadsErrorSpendingLimitExceeded && failingProgramFromLogs(logs) == bridgeSquadsProgram
 }
 
 // ReportExpiredAtLanding reports whether the landing slot is already past the

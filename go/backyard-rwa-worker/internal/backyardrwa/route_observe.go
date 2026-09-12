@@ -394,7 +394,7 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
 		addressSet[address] = struct{}{}
 	}
-	for address := range manifest.requiredPrimeUSDCPolicyHashes() {
+	for address := range manifest.runtimePolicyObservationSet() {
 		addressSet[address] = struct{}{}
 	}
 	for _, address := range route.PolicyAccounts {
@@ -646,12 +646,24 @@ func decodePinnedPrime(account ConfirmedAccount) (DecodedTokenCustody, error) {
 	return DecodeTokenCustody(account.Owner, account.Data, mint, authority)
 }
 
-func (m RouteManifest) requiredPrimeUSDCPolicyHashes() map[string]string {
+// runtimePolicyObservationSet lists the policy accounts whose presence the
+// runtime observation must request, regardless of digest.
+func (m RouteManifest) runtimePolicyObservationSet() map[string]string {
+	wanted, _ := m.requiredPrimeUSDCPolicyHashes()
+	return wanted
+}
+
+// requiredPrimeUSDCPolicyHashes maps each policy account to the digest its
+// bytes must hash to, plus the masked-byte spans that digest excludes. Only
+// the bridge policies carry a mask; the rest compare as the raw digest.
+func (m RouteManifest) requiredPrimeUSDCPolicyHashes() (map[string]string, map[string][][2]int64) {
 	wanted := map[string]string{}
+	masks := map[string][][2]int64{}
 	for _, binding := range m.RuntimeBindings.BridgePolicies {
-		if binding.DataSHA256 != nil && validSHA256(*binding.DataSHA256) {
-			if prior, exists := wanted[binding.Account]; !exists || prior == *binding.DataSHA256 {
-				wanted[binding.Account] = *binding.DataSHA256
+		if validSHA256(binding.NormalizedDigest) {
+			if prior, exists := wanted[binding.Account]; !exists || prior == binding.NormalizedDigest {
+				wanted[binding.Account] = binding.NormalizedDigest
+				masks[binding.Account] = binding.MaskedByteRanges
 			} else {
 				wanted[binding.Account] = ""
 			}
@@ -675,19 +687,20 @@ func (m RouteManifest) requiredPrimeUSDCPolicyHashes() map[string]string {
 			}
 		}
 	}
-	return wanted
+	return wanted, masks
 }
 
 func (m RouteManifest) livePrimeUSDCPolicyReadiness(accounts []ConfirmedAccount) (bool, bool) {
+	wanted, masks := m.requiredPrimeUSDCPolicyHashes()
 	installed := map[string]bool{}
-	for address, hash := range m.requiredPrimeUSDCPolicyHashes() {
+	for address, hash := range wanted {
 		account := accountAt(accounts, address)
-		installed[address] = hash != "" && account.Address == address && account.Owner == bridgeSquadsProgram && !account.Executable && account.Lamports > 0 && sha256Bytes(account.Data) == hash
+		installed[address] = hash != "" && account.Address == address && account.Owner == bridgeSquadsProgram && !account.Executable && account.Lamports > 0 && maskedPolicyDigestMatches(account.Data, masks[address], hash)
 	}
 	kaminoReady := len(m.RuntimeBindings.PrimeUSDC.Packets) == 4
 	bridgeReady := len(m.RuntimeBindings.BridgePolicies) == 4
 	for _, binding := range m.RuntimeBindings.BridgePolicies {
-		if binding.DataSHA256 == nil || !installed[binding.Account] {
+		if !installed[binding.Account] {
 			bridgeReady = false
 		}
 	}

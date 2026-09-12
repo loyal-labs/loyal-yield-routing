@@ -2,6 +2,7 @@ package backyardrwa
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -54,6 +55,17 @@ func BuildSimulateAndPersistBridge(
 	}
 	simulation, err := rpc.SimulateSignedTransaction(ctx, signed.signedWire)
 	if err != nil {
+		var limitErr *SquadsSpendingLimitError
+		if errors.As(err, &limitErr) {
+			// The Squads policy refused the wire before broadcast because its
+			// embedded spending limit is exhausted: nothing moved, the limit
+			// self-heals at its period boundary, so the row terminates with a
+			// specific non-retryable reason instead of looping on a generic
+			// simulation failure or parking in manual recovery.
+			if markErr := database.MarkPreBroadcastFailed(ctx, operationID, Built, squadsSpendingLimitReason); markErr != nil {
+				return errors.Join(err, markErr)
+			}
+		}
 		return err
 	}
 	if err := database.MarkSimulated(ctx, operationID, simulation); err != nil {

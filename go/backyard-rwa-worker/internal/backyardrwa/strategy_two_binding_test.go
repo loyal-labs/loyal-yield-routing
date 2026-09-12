@@ -6,15 +6,25 @@ import (
 	"testing"
 )
 
-// strategyTwoBridgePolicyDigests are the finalized raw account data digests of
-// the four strategy-two Squads bridge policies (seeds 145-148), verified
-// against mainnet at finalized slot 446295496. The worker refuses to build
-// against drifted policy bytes.
-var strategyTwoBridgePolicyDigests = map[Action]string{
+// strategyTwoBridgePolicyDigests are the finalized digests of the four
+// strategy-two Squads bridge policies (seeds 145-148), verified against
+// mainnet at finalized commitment. The raw digests pin the exact account
+// bytes as captured; the normalized digests are what the worker pins at
+// runtime: the sha256 of the account bytes with the embedded limit's volatile
+// region (timeConstraints.start, usage.remainingInPeriod, usage.lastReset)
+// zeroed, so the program's own charging and re-windowing never breaks the pin.
+var strategyTwoBridgePolicyRawDigests = map[Action]string{
 	VoltrAllocateToSquads: "e89bdc6e5b09922c0c32078d579c3263020e6796d8415b804dd1b5ed263a7b55",
 	ReportNAV:             "76dd46b2f1f1aca2ce37afcb5eca045cb9921de4f99d46075fe6d9bd0ea04997",
 	StageSquadsToVoltr:    "9e12f4584396defdf46ac8a297e696c9a47caf83a5e45bf8a58c4e9a1fd2d868",
 	VoltrRestoreIdle:      "917c849c16fed466039f7b562b670c9253636aabb683a0e58d72c3723c3d0998",
+}
+
+var strategyTwoBridgePolicyNormalizedDigests = map[Action]string{
+	VoltrAllocateToSquads: "c8cbd2102d8c8e0ea1b1bbf5b78038aab7ac080c96d5010052730a6c5c6b9eb8",
+	ReportNAV:             "b13612430ffc513f4b167df7cb0cccd13a206cd7386533565d924a830a713535",
+	StageSquadsToVoltr:    "f3d90be6ba6b4136bc4546fb8abcc0b9e8530d2162c35d5ae7c2450f74e6fb9b",
+	VoltrRestoreIdle:      "21273e22338de41b4601d2731b9fc8a0a259a8e42d6c298612ab91b21db3d092",
 }
 
 func TestManifestBridgeBindingsMatchStrategyTwoPolicies(t *testing.T) {
@@ -42,19 +52,32 @@ func TestManifestBridgeBindingsMatchStrategyTwoPolicies(t *testing.T) {
 		if binding.Account != expectedAccounts[binding.Action] {
 			t.Fatalf("bridge policy for %s drifted: %s", binding.Action, binding.Account)
 		}
-		digest := *binding.DataSHA256
-		if len(digest) != 64 || strings.ToLower(digest) != digest {
-			t.Fatalf("bridge policy digest for %s is not 64 lowercase hex chars: %q", binding.Action, digest)
+		for name, digest := range map[string]string{
+			"normalizedDigest": binding.NormalizedDigest,
+			"dataSha256Raw":    binding.DataSHA256Raw,
+		} {
+			if len(digest) != 64 || strings.ToLower(digest) != digest {
+				t.Fatalf("bridge policy %s for %s is not 64 lowercase hex chars: %q", name, binding.Action, digest)
+			}
+			if _, err := hex.DecodeString(digest); err != nil {
+				t.Fatalf("bridge policy %s for %s is not hex: %v", name, binding.Action, err)
+			}
 		}
-		if _, err := hex.DecodeString(digest); err != nil {
-			t.Fatalf("bridge policy digest for %s is not hex: %v", binding.Action, err)
+		if binding.NormalizedDigest != strategyTwoBridgePolicyNormalizedDigests[binding.Action] {
+			t.Fatalf("bridge policy normalized digest for %s does not match the finalized strategy-two policy", binding.Action)
 		}
-		if seenDigests[digest] {
-			t.Fatalf("bridge policy digest for %s is not distinct", binding.Action)
+		if binding.DataSHA256Raw != strategyTwoBridgePolicyRawDigests[binding.Action] {
+			t.Fatalf("bridge policy raw digest for %s does not match the finalized strategy-two policy", binding.Action)
 		}
-		seenDigests[digest] = true
-		if digest != strategyTwoBridgePolicyDigests[binding.Action] {
-			t.Fatalf("bridge policy digest for %s does not match the finalized strategy-two policy: %s", binding.Action, digest)
+		if seenDigests[binding.NormalizedDigest] {
+			t.Fatalf("bridge policy normalized digest for %s is not distinct", binding.Action)
+		}
+		seenDigests[binding.NormalizedDigest] = true
+		if err := validatePolicyByteMask(binding.MaskedByteRanges); err != nil {
+			t.Fatalf("bridge policy mask for %s is invalid: %v", binding.Action, err)
+		}
+		if len(binding.MaskedByteRanges) == 0 {
+			t.Fatalf("bridge policy for %s has an empty mask but every strategy-two policy embeds a spending limit", binding.Action)
 		}
 	}
 }
@@ -65,7 +88,7 @@ func TestStrategyTwoBridgeLegsRespectPerExecutionCap(t *testing.T) {
 	request := func(action Action, amountRaw uint64) BridgeBuildRequest {
 		return BridgeBuildRequest{
 			Action: action, AmountRaw: amountRaw,
-			Report: BridgeReport{Sequence: 100, ObservedSlot: 100, NAVAfterRaw: 1_000_000, SnapshotDigest: hex.EncodeToString(digest)},
+			Report:        BridgeReport{Sequence: 100, ObservedSlot: 100, NAVAfterRaw: 1_000_000, SnapshotDigest: hex.EncodeToString(digest)},
 			AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
 			RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 		}

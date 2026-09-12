@@ -41,7 +41,8 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 	manifest.Deployment.SingleWriterService = &service
 	for index := range manifest.RuntimeBindings.BridgePolicies {
 		hash := strings.Repeat(string(rune('a'+index)), 64)
-		manifest.RuntimeBindings.BridgePolicies[index].DataSHA256 = &hash
+		manifest.RuntimeBindings.BridgePolicies[index].NormalizedDigest = hash
+		manifest.RuntimeBindings.BridgePolicies[index].DataSHA256Raw = hash
 	}
 	manifest.RuntimeBindings.CollateralLifecycle.DataSHA256 = stringPtr(strings.Repeat("e", 64))
 	manifest.RuntimeBindings.DebtLifecycle.DataSHA256 = stringPtr(strings.Repeat("f", 64))
