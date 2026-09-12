@@ -1937,6 +1937,24 @@ fn read_drained_obligation_withdraw_target(
     }))
 }
 
+fn transaction_has_kamino_withdraw(transaction: &Value) -> bool {
+    let expected_program = KLEND_PROGRAM_ID.to_string();
+    transaction_instructions(transaction)
+        .into_iter()
+        .any(|instruction| {
+            instruction.get("programId").and_then(Value::as_str) == Some(expected_program.as_str())
+                && instruction
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .and_then(|data| bs58::decode(data).into_vec().ok())
+                    .is_some_and(|data| {
+                        data.starts_with(
+                            &WITHDRAW_OBLIGATION_COLLATERAL_AND_REDEEM_RESERVE_COLLATERAL_V2,
+                        )
+                    })
+        })
+}
+
 fn read_cash_flow_proof(
     rpc: &RpcClient,
     update: &NormalizedEarnUpdate,
@@ -1974,6 +1992,19 @@ fn read_cash_flow_proof(
     };
     let Some(target) = target else {
         if cash_flow.kind == CashFlowKind::Withdrawal {
+            // A wallet credit with no Kamino withdraw instruction is an idle
+            // vault balance sweep (full-exit cleanup returning dust), not a
+            // reserve withdrawal. Retrying can never prove a target, and one
+            // such job blocks every later job for the vault (wallet 8p6b…,
+            // cleanup 5Nhh7oat…, 409 retries before the Sep 11 deposit).
+            if !transaction_has_kamino_withdraw(&transaction) {
+                tracing::info!(
+                    signature,
+                    amount_raw = cash_flow.amount_raw,
+                    "withdrawal cash flow is an idle vault sweep without a Kamino target; recording no-op"
+                );
+                return Ok(EarnDirectMutation::Noop);
+            }
             bail!("withdrawal cash flow {signature} has no provable Kamino target");
         }
         return Ok(EarnDirectMutation::Noop);
@@ -3534,6 +3565,35 @@ mod tests {
         },
         state::{Account as Token2022Account, AccountState as Token2022AccountState},
     };
+
+    #[test]
+    fn idle_sweep_without_kamino_withdraw_is_not_a_reserve_withdrawal() {
+        // Shape of mainnet cleanup 5Nhh7oat… (wallet 8p6b…): smart-account
+        // program moves idle vault dust to the wallet ATA; no Kamino instruction.
+        let klend = KLEND_PROGRAM_ID.to_string();
+        let withdraw_data =
+            bs58::encode(&WITHDRAW_OBLIGATION_COLLATERAL_AND_REDEEM_RESERVE_COLLATERAL_V2)
+                .into_string();
+        let sweep = json!({
+            "transaction": {"message": {"instructions": [
+                {"programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG", "data": "1111"}
+            ]}},
+            "meta": {"innerInstructions": [{"index": 0, "instructions": [
+                {"programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "data": "1111"}
+            ]}]}
+        });
+        assert!(!transaction_has_kamino_withdraw(&sweep));
+
+        let withdrawal = json!({
+            "transaction": {"message": {"instructions": [
+                {"programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG", "data": "1111"}
+            ]}},
+            "meta": {"innerInstructions": [{"index": 0, "instructions": [
+                {"programId": klend, "data": withdraw_data}
+            ]}]}
+        });
+        assert!(transaction_has_kamino_withdraw(&withdrawal));
+    }
 
     #[test]
     fn historical_account_close_requires_explicit_pre_and_post_evidence() {
