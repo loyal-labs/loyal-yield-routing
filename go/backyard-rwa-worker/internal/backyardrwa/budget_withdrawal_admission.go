@@ -28,10 +28,6 @@ func observeWithdrawalExitPolicies(ctx context.Context, rpc *RPCClient, manifest
 	// Pins are masked digests: the bridge policies carry their volatile
 	// spending-limit spans, and policies without a mask compare as the raw
 	// account digest.
-	type observedPolicyPin struct {
-		digest string
-		mask   [][2]int64
-	}
 	pins := map[string]observedPolicyPin{}
 	addresses := []string{reportTicketPDA}
 	for _, action := range conversions {

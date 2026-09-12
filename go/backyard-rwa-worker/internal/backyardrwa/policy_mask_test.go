@@ -1,10 +1,12 @@
 package backyardrwa
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
 // liveSquadsPolicy145Hex is the exact finalized mainnet account data of the
@@ -170,5 +172,84 @@ func TestSquadsSpendingLimitExceededClassification(t *testing.T) {
 	}
 	if squadsSpendingLimitExceeded(rawErr, logs[:2]) {
 		t.Fatal("truncated logs without a failing frame were classified")
+	}
+}
+
+func TestSpendingLimitRefusalIsANamedHoldThatKeepsTheLoopRunning(t *testing.T) {
+	if !spendingLimitRefusalHold(budgetHold(squadsSpendingLimitReason)) {
+		t.Fatal("the journaled spending-limit refusal was not recognized as a recoverable hold")
+	}
+	for _, other := range []error{budgetHold("bridge_admission_unavailable"), budgetHold(allocationDailyLimitReason), errConfirmedObservationUnavailable, nil} {
+		if spendingLimitRefusalHold(other) {
+			t.Fatalf("non-spending-limit error was treated as the spending-limit hold: %v", other)
+		}
+	}
+	// The run loop must skip the held leg and retry on the next interval
+	// instead of tearing the worker down mid-refusal.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	worker := &Worker{interval: time.Millisecond}
+	ticks := 0
+	err := worker.runTicks(ctx, make(chan error, 1), func(context.Context) error {
+		ticks++
+		if ticks == 1 {
+			return budgetHold(squadsSpendingLimitReason)
+		}
+		return nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("run loop exited on the spending-limit hold: %v", err)
+	}
+	if ticks < 3 {
+		t.Fatalf("run loop stopped after the hold: %d ticks", ticks)
+	}
+	// Any other tick error still stops the worker.
+	if stopErr := worker.runTicks(context.Background(), make(chan error, 1), func(context.Context) error {
+		return errors.New("incoherent observation")
+	}); stopErr == nil || spendingLimitRefusalHold(stopErr) {
+		t.Fatalf("unrelated tick error did not stop the worker: %v", stopErr)
+	}
+}
+
+func TestCatalogReadinessAcceptsChargedStrategyTwoPolicy(t *testing.T) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The installed catalog lanes share the bridge policy bindings with the
+	// active lane, so exercise the real catalog readiness set directly.
+	route, err := runtimeRoute("AUTO/AUTO/PYUSD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !catalogJupiterRoute(route.Lane) {
+		t.Fatalf("%s did not resolve to a Jupiter catalog lane", route.Lane)
+	}
+	pins, err := catalogRoutePolicyPins(route, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := manifest.bridgePolicy(VoltrAllocateToSquads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin, ok := pins[binding.Account]
+	if !ok || pin.digest != binding.NormalizedDigest || len(pin.mask) == 0 {
+		t.Fatalf("catalog readiness set lost the masked bridge pin: %+v", pin)
+	}
+	// Charge the limit to the floor and re-stamp its window over the live
+	// account: exactly the healthy post-allocation state a raw sha256 compare
+	// used to reject as drift.
+	charged := liveSquadsPolicy145Bytes(t)
+	for _, bounds := range binding.MaskedByteRanges {
+		for offset := int(bounds[0]); offset < int(bounds[1]); offset++ {
+			charged[offset] = 0x7f
+		}
+	}
+	if sha256Bytes(charged) == pin.digest {
+		t.Fatal("charged fixture unexpectedly matched the pin before masking")
+	}
+	if !maskedPolicyDigestMatches(charged, pin.mask, pin.digest) {
+		t.Fatal("catalog readiness comparator rejected a charged strategy-two policy")
 	}
 }

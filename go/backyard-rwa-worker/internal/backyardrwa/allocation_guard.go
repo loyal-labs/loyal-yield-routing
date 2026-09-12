@@ -32,19 +32,24 @@ func evaluateAllocationDailyLimit(sentRaw, nextRaw uint64) error {
 
 // allocationCountedStatuses are the operation states that prove a broadcast
 // happened: everything from the broadcast intent onward, including failed
-// landings (a refused wire still consumed the attempt window).
+// landings and manual_recovery rows (a refused wire still consumed the attempt
+// window, and a parked row was broadcast and was never proven to have failed
+// before broadcast). Only pre-broadcast states are excluded.
 var allocationCountedStatuses = []string{
 	string(BroadcastIntent), string(Submitted), string(Confirmed),
-	string(Reconciling), string(Reconciled), string(Failed),
+	string(Reconciling), string(Reconciled), string(ManualRecovery), string(Failed),
 }
 
 const allocationSentWindowSQL = `SELECT COALESCE(SUM((expected_effects->'decision'->>'amountRaw')::bigint), 0)::bigint
 FROM loyal_yield.multiply_operations
 WHERE route_key = $1 AND action = 'VOLTR_ALLOCATE_TO_SQUADS'
-  AND status = ANY($2) AND updated_at >= $3`
+  AND status = ANY($2) AND COALESCE(broadcast_intent_at, created_at) >= $3`
 
 // AllocationSentRawTrailingWindow sums the allocation amounts this worker's
-// journal recorded as sent inside the trailing daily window.
+// journal recorded as sent inside the trailing daily window. The window is
+// keyed on the broadcast intent stamp (falling back to the immutable row
+// creation time when it is missing) and never on updated_at, which
+// reconciliation retries and status refreshes keep moving forward.
 func (d *Database) AllocationSentRawTrailingWindow(ctx context.Context, routeKey string) (uint64, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return 0, fmt.Errorf("database is not configured")

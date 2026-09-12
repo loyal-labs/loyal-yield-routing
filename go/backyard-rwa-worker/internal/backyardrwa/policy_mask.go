@@ -13,6 +13,15 @@ import (
 // unpinning policy semantics rather than program-owned counters.
 const maxMaskedPolicyBytes = 64
 
+// observedPolicyPin is one pinned policy account: the digest to compare and
+// the volatile byte span excluded from it. Bridge policies carry their masked
+// digest and the manifest's byte mask; policies without a mask compare as the
+// raw account digest.
+type observedPolicyPin struct {
+	digest string
+	mask   [][2]int64
+}
+
 // maskedPolicyDigestMatches reports whether live policy account bytes match
 // the manifest's normalized digest: the sha256 of the raw account data with
 // every masked byte range zeroed. The ranges are derived offline from the

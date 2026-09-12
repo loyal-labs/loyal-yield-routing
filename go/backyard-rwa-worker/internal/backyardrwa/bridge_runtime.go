@@ -58,13 +58,15 @@ func BuildSimulateAndPersistBridge(
 		var limitErr *SquadsSpendingLimitError
 		if errors.As(err, &limitErr) {
 			// The Squads policy refused the wire before broadcast because its
-			// embedded spending limit is exhausted: nothing moved, the limit
-			// self-heals at its period boundary, so the row terminates with a
-			// specific non-retryable reason instead of looping on a generic
-			// simulation failure or parking in manual recovery.
+			// embedded spending limit is exhausted: nothing moved, and the
+			// limit self-heals at its period boundary. Journal the refusal
+			// under its own reason and hand the tick a named hold so the leg
+			// is skipped and retried after the interval instead of failing
+			// the process on a generic simulation error.
 			if markErr := database.MarkPreBroadcastFailed(ctx, operationID, Built, squadsSpendingLimitReason); markErr != nil {
 				return errors.Join(err, markErr)
 			}
+			return budgetHold(squadsSpendingLimitReason)
 		}
 		return err
 	}

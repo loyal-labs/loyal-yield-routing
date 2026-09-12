@@ -35,23 +35,27 @@ func catalogJupiterRoute(lane string) bool {
 
 // Policy availability only. Quotes, packet/compute fit, setup and reserved
 // exits must still be established by production admission before signing.
-func catalogRoutePolicyHashes(route RuntimeRoute, manifest RouteManifest) (map[string]string, error) {
-	wanted := map[string]string{}
-	add := func(address, hash string) error {
+// Bridge policies are pinned by their masked digest, so their entries carry
+// the manifest's byte mask and readiness compares through the same masked
+// comparator the send path uses; every other entry has an empty mask and
+// compares as a raw account digest.
+func catalogRoutePolicyPins(route RuntimeRoute, manifest RouteManifest) (map[string]observedPolicyPin, error) {
+	wanted := map[string]observedPolicyPin{}
+	add := func(address, hash string, mask [][2]int64) error {
 		if _, err := decodeKey(address); err != nil || !validSHA256(hash) {
 			return fmt.Errorf("invalid catalog policy identity")
 		}
-		if old, ok := wanted[address]; ok && old != hash {
+		if old, ok := wanted[address]; ok && old.digest != hash {
 			return fmt.Errorf("conflicting catalog policy hashes")
 		}
-		wanted[address] = hash
+		wanted[address] = observedPolicyPin{digest: hash, mask: mask}
 		return nil
 	}
 	if len(route.KaminoPolicies) != 4 || len(manifest.RuntimeBindings.BridgePolicies) != 4 {
 		return nil, fmt.Errorf("incomplete catalog policy graph")
 	}
 	for _, b := range route.KaminoPolicies {
-		if err := add(b.Policy, b.DataSHA256); err != nil {
+		if err := add(b.Policy, b.DataSHA256, nil); err != nil {
 			return nil, err
 		}
 	}
@@ -59,7 +63,7 @@ func catalogRoutePolicyHashes(route RuntimeRoute, manifest RouteManifest) (map[s
 		if b.NormalizedDigest == "" {
 			return nil, fmt.Errorf("unbound bridge policy")
 		}
-		if err := add(b.Account, b.NormalizedDigest); err != nil {
+		if err := add(b.Account, b.NormalizedDigest, b.MaskedByteRanges); err != nil {
 			return nil, err
 		}
 	}
@@ -68,7 +72,7 @@ func catalogRoutePolicyHashes(route RuntimeRoute, manifest RouteManifest) (map[s
 		if err != nil {
 			return nil, err
 		}
-		if err = add(b.Policy, b.PolicySHA256); err != nil {
+		if err = add(b.Policy, b.PolicySHA256, nil); err != nil {
 			return nil, err
 		}
 	}

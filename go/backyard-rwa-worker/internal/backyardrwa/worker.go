@@ -546,15 +546,27 @@ func (r startupLeaseHandoffRuntime) acquire(ctx context.Context, leases routeLea
 	}
 }
 
-func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error) error {
+// spendingLimitRefusalHold reports whether a tick ended in the named Squads
+// spending-limit hold. The refusal is already journaled on the operation row
+// under squadsSpendingLimitReason and self-heals at the limit's period
+// boundary, so exiting the process would only restart into the same refusal.
+func spendingLimitRefusalHold(err error) bool {
+	var hold *BudgetHold
+	return errors.As(err, &hold) && hold.Reason == squadsSpendingLimitReason
+}
+
+func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick func(context.Context) error) error {
 	for {
-		if err := w.Tick(ctx); err != nil {
+		if err := tick(ctx); err != nil {
 			select {
 			case leaseErr := <-leaseErrors:
 				return leaseErr
 			default:
 			}
-			if !errors.Is(err, errConfirmedObservationUnavailable) {
+			// Confirmed-observation gaps and journaled spending-limit holds
+			// skip this tick's leg and retry on the next interval; anything
+			// else is a process fault and stops the worker.
+			if !errors.Is(err, errConfirmedObservationUnavailable) && !spendingLimitRefusalHold(err) {
 				return err
 			}
 		}
@@ -619,7 +631,7 @@ func (w *Worker) Run(ctx context.Context, leases routeLeaser, owner string, conf
 			}
 		}
 	}()
-	runErr = w.runTicks(runCtx, leaseErrors)
+	runErr = w.runTicks(runCtx, leaseErrors, w.Tick)
 	cancel()
 	<-refreshStopped
 	select {

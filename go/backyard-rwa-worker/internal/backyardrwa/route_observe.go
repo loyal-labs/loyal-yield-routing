@@ -377,11 +377,11 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	}
 	addressSet[route.DebtFeeReceiver] = struct{}{}
 	if catalogJupiterRoute(route.Lane) {
-		policies, err := catalogRoutePolicyHashes(route, manifest)
+		pins, err := catalogRoutePolicyPins(route, manifest)
 		if err != nil {
 			return nil
 		}
-		for address := range policies {
+		for address := range pins {
 			addressSet[address] = struct{}{}
 		}
 		addressSet[route.CollateralLiquiditySupply] = struct{}{}
@@ -419,13 +419,14 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 
 func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount) (bool, bool) {
 	if catalogJupiterRoute(route.Lane) {
-		policies, err := catalogRoutePolicyHashes(route, manifest)
+		pins, err := catalogRoutePolicyPins(route, manifest)
 		if err != nil {
 			return false, false
 		}
-		for address, hash := range policies {
+		for address, pin := range pins {
 			account := accountAt(accounts, address)
-			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 ||
+				!maskedPolicyDigestMatches(account.Data, pin.mask, pin.digest) {
 				return false, false
 			}
 		}

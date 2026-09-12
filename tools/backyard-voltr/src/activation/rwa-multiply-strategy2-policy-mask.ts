@@ -49,7 +49,7 @@ const policyDiscriminator = (squadsGenerated as unknown as { policyDiscriminator
  */
 const MASK_PATTERNS = [new BN("5555555555555555", 16), new BN("aaaaaaaaaaaaaaaa", 16)] as const;
 
-type BridgeBinding = { action: string; seed: number; account: string; dataSha256: string };
+type BridgeBinding = { action: string; seed: number; account: string; normalizedDigest: string; dataSha256Raw: string };
 
 function manifestBindings(): BridgeBinding[] {
   const path = new URL("../../../../go/backyard-rwa-worker/internal/backyardrwa/manifest/backyard-rwa-v2.json", import.meta.url);
@@ -209,8 +209,10 @@ async function main(): Promise<void> {
     for (const [start, end] of maskedByteRanges) masked.fill(0, start, end);
     const normalizedDigest = sha256(masked);
     const rawDigest = sha256(raw);
-    if (rawDigest !== binding.dataSha256) {
-      throw new Error(`policy ${binding.seed} raw digest ${rawDigest} does not match the manifest pin ${binding.dataSha256}`);
+    // The raw digest drifts as the program charges the limit; the masked
+    // normalized digest is the pin and must reproduce exactly.
+    if (normalizedDigest !== binding.normalizedDigest) {
+      throw new Error(`policy ${binding.seed} normalized digest ${normalizedDigest} does not match the manifest pin ${binding.normalizedDigest}`);
     }
     report.push({
       policy: binding.action,
