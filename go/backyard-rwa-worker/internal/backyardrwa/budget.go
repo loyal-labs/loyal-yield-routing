@@ -17,10 +17,22 @@ const (
 type BudgetHold struct {
 	Reason  string            `json:"reason"`
 	Details map[string]string `json:"details,omitempty"`
+	// alreadyJournaled marks a hold that its own send path already recorded
+	// durably on the operation row (the pre-broadcast spending-limit
+	// refusal). The tick tail must not journal it a second time: the row is
+	// already failed, so the store would reject the transition and joining
+	// that rejection into the hold would mask it.
+	alreadyJournaled bool
 }
 
 func (h *BudgetHold) Error() string  { return "HOLD: " + h.Reason }
 func budgetHold(reason string) error { return &BudgetHold{Reason: reason} }
+
+// journaledBudgetHold constructs a hold whose named reason is already durable
+// on the operation row.
+func journaledBudgetHold(reason string) error {
+	return &BudgetHold{Reason: reason, alreadyJournaled: true}
+}
 
 // BudgetReservation belongs to one immutable economic intent. UpperMicros
 // includes every source debit and fee, not merely the planner's requested size.

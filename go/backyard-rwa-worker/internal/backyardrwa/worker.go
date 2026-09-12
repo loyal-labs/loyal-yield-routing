@@ -404,11 +404,22 @@ func (w *Worker) Tick(ctx context.Context) error {
 	default:
 		return fmt.Errorf("prepared evidence no longer matches an actionable decision")
 	}
+	return w.journalTickError(ctx, record.OperationID, err)
+}
+
+// journalTickError journals an admission hold for the tick's operation once.
+// A hold already recorded durably by its own send path - the pre-broadcast
+// spending-limit refusal - must not be journaled again: the operation row is
+// already failed, so the store would reject the transition, and joining that
+// rejection into the hold would let the run loop treat the whole thing as a
+// pure hold and mask the store failure.
+func (w *Worker) journalTickError(ctx context.Context, operationID string, err error) error {
 	var hold *BudgetHold
-	if errors.As(err, &hold) && w.runtime.recordBudgetHold != nil {
-		if journalErr := w.runtime.recordBudgetHold(ctx, record.OperationID, hold); journalErr != nil {
-			return errors.Join(err, journalErr)
-		}
+	if !errors.As(err, &hold) || hold.alreadyJournaled || w.runtime.recordBudgetHold == nil {
+		return err
+	}
+	if journalErr := w.runtime.recordBudgetHold(ctx, operationID, hold); journalErr != nil {
+		return errors.Join(err, journalErr)
 	}
 	return err
 }
@@ -546,13 +557,31 @@ func (r startupLeaseHandoffRuntime) acquire(ctx context.Context, leases routeLea
 	}
 }
 
-// spendingLimitRefusalHold reports whether a tick ended in the named Squads
-// spending-limit hold. The refusal is already journaled on the operation row
-// under squadsSpendingLimitReason and self-heals at the limit's period
-// boundary, so exiting the process would only restart into the same refusal.
-func spendingLimitRefusalHold(err error) bool {
+// isPureHold reports whether a tick ended in exactly the journaled
+// spending-limit hold and nothing else. The refusal is already recorded on
+// the operation row under squadsSpendingLimitReason and self-heals at the
+// limit's period boundary, so exiting the process would only restart into the
+// same refusal. A hold joined or wrapped together with any other fault - a
+// store rejection, a wire error - is a real fault: continuing would suppress
+// the accompanying error, so only a pure hold skips the leg.
+func isPureHold(err error) bool {
 	var hold *BudgetHold
-	return errors.As(err, &hold) && hold.Reason == squadsSpendingLimitReason
+	if !errors.As(err, &hold) || hold.Reason != squadsSpendingLimitReason {
+		return false
+	}
+	switch unwrappable := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, member := range unwrappable.Unwrap() {
+			if !isPureHold(member) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		return isPureHold(unwrappable.Unwrap())
+	default:
+		return true
+	}
 }
 
 func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick func(context.Context) error) error {
@@ -563,10 +592,11 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 				return leaseErr
 			default:
 			}
-			// Confirmed-observation gaps and journaled spending-limit holds
-			// skip this tick's leg and retry on the next interval; anything
-			// else is a process fault and stops the worker.
-			if !errors.Is(err, errConfirmedObservationUnavailable) && !spendingLimitRefusalHold(err) {
+			// Confirmed-observation gaps and pure journaled spending-limit
+			// holds skip this tick's leg and retry on the next interval;
+			// anything else - including a hold joined with a store error -
+			// is a process fault and stops the worker.
+			if !errors.Is(err, errConfirmedObservationUnavailable) && !isPureHold(err) {
 				return err
 			}
 		}

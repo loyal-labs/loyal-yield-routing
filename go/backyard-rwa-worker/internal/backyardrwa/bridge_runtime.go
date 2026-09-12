@@ -66,7 +66,7 @@ func BuildSimulateAndPersistBridge(
 			if markErr := database.MarkPreBroadcastFailed(ctx, operationID, Built, squadsSpendingLimitReason); markErr != nil {
 				return errors.Join(err, markErr)
 			}
-			return budgetHold(squadsSpendingLimitReason)
+			return journaledBudgetHold(squadsSpendingLimitReason)
 		}
 		return err
 	}

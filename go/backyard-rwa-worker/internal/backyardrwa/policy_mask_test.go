@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -176,13 +177,34 @@ func TestSquadsSpendingLimitExceededClassification(t *testing.T) {
 }
 
 func TestSpendingLimitRefusalIsANamedHoldThatKeepsTheLoopRunning(t *testing.T) {
-	if !spendingLimitRefusalHold(budgetHold(squadsSpendingLimitReason)) {
+	if !isPureHold(budgetHold(squadsSpendingLimitReason)) {
 		t.Fatal("the journaled spending-limit refusal was not recognized as a recoverable hold")
 	}
-	for _, other := range []error{budgetHold("bridge_admission_unavailable"), budgetHold(allocationDailyLimitReason), errConfirmedObservationUnavailable, nil} {
-		if spendingLimitRefusalHold(other) {
-			t.Fatalf("non-spending-limit error was treated as the spending-limit hold: %v", other)
+	for name, other := range map[string]error{
+		"otherHold":   budgetHold("bridge_admission_unavailable"),
+		"allocation":  budgetHold(allocationDailyLimitReason),
+		"observation": errConfirmedObservationUnavailable,
+		"plain":       errors.New("incoherent observation"),
+	} {
+		if isPureHold(other) {
+			t.Fatalf("%s was treated as the pure spending-limit hold: %v", name, other)
 		}
+	}
+	if isPureHold(nil) {
+		t.Fatal("a nil error was treated as the pure spending-limit hold")
+	}
+	if !isPureHold(fmt.Errorf("bridge build: %w", budgetHold(squadsSpendingLimitReason))) {
+		t.Fatal("a transparently wrapped pure hold stopped being recoverable")
+	}
+	// A hold joined with any other fault is a real fault: continuing would
+	// loop on the hold while the store or wire error goes unseen.
+	joined := errors.Join(budgetHold(squadsSpendingLimitReason), errors.New("persist failed"))
+	var hold *BudgetHold
+	if isPureHold(joined) || !errors.As(joined, &hold) {
+		t.Fatalf("joined hold/store error misclassified: pure=%t asHold=%t", isPureHold(joined), errors.As(joined, &hold))
+	}
+	if !isPureHold(errors.Join(journaledBudgetHold(squadsSpendingLimitReason), journaledBudgetHold(squadsSpendingLimitReason))) {
+		t.Fatal("two members of the same journaled refusal were treated as a foreign fault")
 	}
 	// The run loop must skip the held leg and retry on the next interval
 	// instead of tearing the worker down mid-refusal.
@@ -193,7 +215,7 @@ func TestSpendingLimitRefusalIsANamedHoldThatKeepsTheLoopRunning(t *testing.T) {
 	err := worker.runTicks(ctx, make(chan error, 1), func(context.Context) error {
 		ticks++
 		if ticks == 1 {
-			return budgetHold(squadsSpendingLimitReason)
+			return journaledBudgetHold(squadsSpendingLimitReason)
 		}
 		return nil
 	})
@@ -203,11 +225,55 @@ func TestSpendingLimitRefusalIsANamedHoldThatKeepsTheLoopRunning(t *testing.T) {
 	if ticks < 3 {
 		t.Fatalf("run loop stopped after the hold: %d ticks", ticks)
 	}
+	// A hold joined with a store failure stops the worker on the first tick
+	// with both faults intact.
+	joinedTicks := 0
+	stopErr := worker.runTicks(context.Background(), make(chan error, 1), func(context.Context) error {
+		joinedTicks++
+		return errors.Join(budgetHold(squadsSpendingLimitReason), errors.New("persist failed"))
+	})
+	if joinedTicks != 1 || stopErr == nil || isPureHold(stopErr) || !errors.As(stopErr, &hold) {
+		t.Fatalf("joined hold did not stop the worker exactly once: ticks=%d err=%v", joinedTicks, stopErr)
+	}
 	// Any other tick error still stops the worker.
-	if stopErr := worker.runTicks(context.Background(), make(chan error, 1), func(context.Context) error {
+	if plainErr := worker.runTicks(context.Background(), make(chan error, 1), func(context.Context) error {
 		return errors.New("incoherent observation")
-	}); stopErr == nil || spendingLimitRefusalHold(stopErr) {
-		t.Fatalf("unrelated tick error did not stop the worker: %v", stopErr)
+	}); plainErr == nil || isPureHold(plainErr) {
+		t.Fatalf("unrelated tick error did not stop the worker: %v", plainErr)
+	}
+}
+
+func TestAlreadyJournaledHoldIsNeverWrittenTwice(t *testing.T) {
+	writes := 0
+	worker := &Worker{runtime: tickRuntime{recordBudgetHold: func(context.Context, string, *BudgetHold) error {
+		writes++
+		return nil
+	}}}
+	// A fresh hold is journaled under the tick's operation exactly once.
+	if err := worker.journalTickError(context.Background(), "op-1", budgetHold("bridge_admission_unavailable")); err == nil {
+		t.Fatal("fresh hold was dropped")
+	}
+	if writes != 1 {
+		t.Fatalf("fresh hold was journaled %d times, want 1", writes)
+	}
+	// The pre-broadcast refusal was already recorded by MarkPreBroadcastFailed:
+	// the operation row is failed, so a second write would be rejected by the
+	// store's never-submitted transition and the join would mask the hold.
+	refusal := journaledBudgetHold(squadsSpendingLimitReason)
+	if err := worker.journalTickError(context.Background(), "op-2", refusal); !errors.Is(err, refusal) {
+		t.Fatalf("already-journaled hold was altered: %v", err)
+	}
+	if writes != 1 {
+		t.Fatalf("already-journaled hold produced %d extra writes", writes-1)
+	}
+	// A refusal joined with a store failure is returned untouched so the run
+	// loop sees both members, and it is not journaled a second time either.
+	joined := errors.Join(refusal, errors.New("persist failed"))
+	if err := worker.journalTickError(context.Background(), "op-2", joined); !errors.Is(err, joined) {
+		t.Fatalf("joined error was rewritten: %v", err)
+	}
+	if writes != 1 {
+		t.Fatalf("joined error produced %d extra writes", writes-1)
 	}
 }
 
