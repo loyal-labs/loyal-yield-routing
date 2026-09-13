@@ -152,8 +152,10 @@ parallel and publishes all three immutable Rust image families plus the Go
 Kamino planner image.
 The family-scoped Cargo target caches retain compatible fingerprints and record the source revision
 that produced them; CI marks only paths changed since that revision as newer before rebuilding.
-The scheduled cache refresh rolls them forward once per UTC day. Main-branch image publication restores
-those snapshots but never uploads multi-gigabyte Cargo state, so deployable images are not held behind cache compression.
+Those snapshots are keyed by Rust source content, so a commit that touches no Rust restores an exact match and
+recompiles nothing. Whichever trusted `main` build first misses a snapshot uploads it, so no later commit inherits
+a stale one; pull requests restore these snapshots but never write them. The scheduled refresh remains a safety net
+for evicted snapshots and quiet periods. Cache uploads are non-fatal, so image publication is never failed by one.
 The compiled family artifacts use low-level compression to reduce the handoff to the runtime-image jobs.
 Publishing these images does not deploy them.
 Deployment selects an already-published immutable SHA tag or digest; it never rebuilds Rust.

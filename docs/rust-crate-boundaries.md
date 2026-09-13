@@ -88,7 +88,8 @@ Main pushes compile the three Rust image-family inventories in parallel and
 publish immutable SHA tags for all three Rust families and the Go planner.
 Each matrix entry stages only the binaries its Dockerfile packages, so the slowest family—not the
 sum of all 22 executable links—sets the build latency.
-Family target snapshots roll forward daily so GitHub's immutable caches do not become permanently stale.
+Family target snapshots are keyed by Rust source content, so a commit that changes no Rust reuses the
+previous snapshot exactly and a commit that does change Rust recompiles only its own delta.
 
 Manual deployment selects an already-published immutable image tag or digest and never rebuilds Rust.
 Publishing remains separate from deployment because Render services keep their

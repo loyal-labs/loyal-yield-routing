@@ -69,20 +69,26 @@ jobs:
           restore-keys: |
             ${{ env.CARGO_DEPENDENCY_CACHE_PREFIX }}-
 
-      - name: Select Cargo target cache generation
-        id: cargo-target-generation
-        run: echo "utc-date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
-
       # Each family keeps its own feature-compatible target snapshot. The
       # revision marker below makes only source paths changed since that
-      # snapshot newer than Cargo's restored fingerprints. A daily generation
-      # bounds snapshot drift without uploading target state on every commit.
+      # snapshot newer than Cargo's restored fingerprints, so a snapshot taken
+      # at an older revision costs exactly the Rust delta since that revision.
+      # Keying on Rust source content instead of a calendar day keeps that
+      # delta at zero for commits that change no Rust, and bounds it to one
+      # commit for the rest. Restore keys fall back to the manifest-compatible
+      # prefix so a miss still starts from the nearest usable snapshot.
+      #
+      # The key also covers the build script because that is where each family's
+      # package and binary lists live. Moving a binary between families changes
+      # what belongs in this snapshot without changing any crate source, and an
+      # exact hit suppresses the save below, so a snapshot missing that binary
+      # would otherwise never be repaired.
       - name: Restore trusted Cargo target state
         id: cargo-target-cache
         uses: actions/cache/restore@v4
         with:
           path: target
-          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-${{ steps.cargo-target-generation.outputs.utc-date }}
+          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**', '.sqlx/**', 'scripts/build-rust-image-binaries.sh') }}
           restore-keys: |
             ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-
             ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-
@@ -119,17 +125,22 @@ jobs:
           # a few seconds before the package jobs download them.
           compression-level: 1
 
-      # The scheduled default-branch refresh owns these multi-gigabyte uploads,
-      # so publishing a main commit never waits for cache compression.
+      # A snapshot that does not exist yet is filled by whichever trusted build
+      # first misses it, so no commit inherits a stale snapshot from an earlier
+      # one. Pull requests can restore default-branch state but never write it.
+      # These uploads are multi-gigabyte and run before the packaging jobs, so
+      # they must never be the reason a publication fails.
       - name: Save trusted Cargo target state
-        if: inputs.save-caches && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.cargo-target-cache.outputs.cache-hit != 'true'
+        if: inputs.save-caches && github.ref == 'refs/heads/main' && steps.cargo-target-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: target
-          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-${{ steps.cargo-target-generation.outputs.utc-date }}
+          key: ${{ env.RUST_TARGET_CACHE_PREFIX }}-${{ matrix.family }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/*/Cargo.toml') }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml', 'crates/**', '.sqlx/**', 'scripts/build-rust-image-binaries.sh') }}
 
       - name: Save trusted Cargo dependency state
-        if: inputs.save-caches && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && matrix.family == 'light-workers' && steps.cargo-dependency-cache.outputs.cache-hit != 'true'
+        if: inputs.save-caches && github.ref == 'refs/heads/main' && matrix.family == 'light-workers' && steps.cargo-dependency-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: |
