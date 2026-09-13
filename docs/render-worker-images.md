@@ -1,5 +1,18 @@
 # Render worker and realtime image deployment
 
+## Combined Go LaserStream candidate
+
+`Dockerfile.go-laserstream-worker` packages the candidate combined ingestion
+service as
+`ghcr.io/loyal-labs/loyal-yield-routing/go-laserstream-worker:sha-<commit>`.
+The dedicated `go-laserstream-worker` workflow verifies the Go race suite,
+real-schema PostgreSQL/Timescale persistence, the supervised Earn domain bridge,
+and the runtime image before publishing on trusted `main` pushes. The image is
+not yet referenced by `render.yaml`; do not replace either production Rust
+monitor until a staging shadow proves filter, cursor, reconciliation, Kamino
+verification, and alert parity. During cutover, keep the last Rust
+`laserstream-workers` image pinned for immediate rollback.
+
 The worker/realtime deployment boundary is intentionally split into two Render
 projects/environments:
 

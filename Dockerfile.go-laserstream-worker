@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1.7
+
+# Compilation happens once in go-laserstream-worker.yml. This Dockerfile only
+# assembles the runtime image from the workflow artifact.
+FROM debian:bookworm-slim AS runtime
+ARG LOYAL_IMAGE_VERSION
+ENV LOYAL_IMAGE_VERSION=${LOYAL_IMAGE_VERSION} \
+    EARN_DOMAIN_BRIDGE_BINARY=/usr/local/bin/earn-domain-bridge \
+    PORT=10000
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home loyal
+COPY --chmod=0755 build-artifacts/go-laserstream-worker/loyal-laserstream-worker /usr/local/bin/loyal-laserstream-worker
+COPY --chmod=0755 build-artifacts/go-laserstream-worker/earn-domain-bridge /usr/local/bin/earn-domain-bridge
+USER loyal
+EXPOSE 10000
+ENTRYPOINT ["/usr/local/bin/loyal-laserstream-worker"]
