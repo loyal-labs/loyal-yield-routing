@@ -313,12 +313,25 @@ const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
 /**
- * Idle vault balance the direct path tolerates instead of deferring. Mirrors the
- * fleet planner's `minimum_notional_usd_micros` ($1): below it no fleet drain will
- * ever run, so waiting for one deadlocks the target (ASK-2164). The dust stays in
- * the vault ATA; the top-up only deposits the pulled amount.
+ * Idle vault balance the direct path tolerates instead of deferring.
+ *
+ * Deferring hands idle custody to the fleet drain, but that drain is shadow-only
+ * and has never executed: `Publish` rejects it ("idle shadow candidates cannot be
+ * published", go/kamino-fleet-planner/internal/fleet/store.go), the revalidator
+ * refuses idle sources, and the worker reports `executableIdleEnabled: false`.
+ * Measured 2026-09-14: 0 of 842 `idle_allocation` opportunities ever completed,
+ * while the legacy same-mint monitor stays suspended. So nothing drains idle and
+ * every deferral above the tolerance deadlocks the target forever (ASK-2164).
+ *
+ * $25 clears every real balance with margin (fleet-wide maximum idle was $21.36,
+ * nothing above $25) while keeping the deferral as a tripwire for a genuinely
+ * unexplained balance. The residual stays in the vault ATA; the top-up still
+ * deposits only the pulled amount, so deposit accounting is unchanged.
+ *
+ * RE-TIGHTEN THIS when executable idle draining ships: once the fleet can move
+ * idle funds, a large tolerance lets both systems act on the same vault ATA.
  */
-const DIRECT_AUTODEPOSIT_IDLE_TOLERANCE_RAW = BigInt(1_000_000);
+const DIRECT_AUTODEPOSIT_IDLE_TOLERANCE_RAW = BigInt(25_000_000);
 /**
  * Backoff for a target that is correct but has nothing to act on. The five-minute
  * failure cadence exists to recover from transient faults; applying it to a vault the
