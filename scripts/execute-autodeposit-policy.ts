@@ -313,6 +313,13 @@ const USDC_MINT_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDC_DECIMALS = 6;
 const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
 /**
+ * Idle vault balance the direct path tolerates instead of deferring. Mirrors the
+ * fleet planner's `minimum_notional_usd_micros` ($1): below it no fleet drain will
+ * ever run, so waiting for one deadlocks the target (ASK-2164). The dust stays in
+ * the vault ATA; the top-up only deposits the pulled amount.
+ */
+const DIRECT_AUTODEPOSIT_IDLE_TOLERANCE_RAW = BigInt(1_000_000);
+/**
  * Backoff for a target that is correct but has nothing to act on. The five-minute
  * failure cadence exists to recover from transient faults; applying it to a vault the
  * user emptied burns a slot every five minutes forever. The lots stay claimable so a new
@@ -2120,10 +2127,16 @@ export class AutodepositIdleVaultBalanceError extends Error {
   }
 }
 
+export function idleVaultBalanceBlocksDirectAutodeposit(
+  vaultBalanceRaw: bigint
+): boolean {
+  return vaultBalanceRaw > DIRECT_AUTODEPOSIT_IDLE_TOLERANCE_RAW;
+}
+
 export function assertEmptyVaultBeforeDirectAutodeposit(
   vaultBalanceRaw: bigint
 ): void {
-  if (vaultBalanceRaw > BigInt(0)) {
+  if (idleVaultBalanceBlocksDirectAutodeposit(vaultBalanceRaw)) {
     throw new AutodepositIdleVaultBalanceError(vaultBalanceRaw);
   }
 }
@@ -2141,7 +2154,7 @@ export async function deferIdleVaultScheduledSlot(args: {
   scheduledSlotId: bigint;
   vaultBalanceRaw: bigint;
 }): Promise<boolean> {
-  if (args.vaultBalanceRaw <= BigInt(0)) {
+  if (!idleVaultBalanceBlocksDirectAutodeposit(args.vaultBalanceRaw)) {
     return false;
   }
   const sql = args.neon(args.databaseUrl);
