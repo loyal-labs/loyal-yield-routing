@@ -8,7 +8,7 @@ import {
 
 const usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
-for (const amount of [1n, 3n, 91989n, 305209n, 1486522n, 1582740n, 5885005n]) {
+for (const amount of [1000001n, 1486522n, 1582740n, 5885005n]) {
   test(`idle custody remains guarded at ${amount} raw`, () => {
     expect(() => assertEmptyVaultBeforeDirectAutodeposit(amount)).toThrow(
       AutodepositIdleVaultBalanceError
@@ -16,15 +16,17 @@ for (const amount of [1n, 3n, 91989n, 305209n, 1486522n, 1582740n, 5885005n]) {
   });
 }
 
-test("an empty vault does not touch the scheduled slot", async () => {
-  expect(await deferIdleVaultScheduledSlot({
-    neon: (() => { throw new Error("must not query"); }) as never,
-    databaseUrl: "unused",
-    targetId: 7068n,
-    scheduledSlotId: 1n,
-    vaultBalanceRaw: 0n,
-  })).toBe(false);
-});
+for (const amount of [0n, 1n, 3n, 91989n, 305209n, 1000000n]) {
+  test(`dust below the fleet floor (${amount} raw) does not touch the scheduled slot`, async () => {
+    expect(await deferIdleVaultScheduledSlot({
+      neon: (() => { throw new Error("must not query"); }) as never,
+      databaseUrl: "unused",
+      targetId: 7068n,
+      scheduledSlotId: 1n,
+      vaultBalanceRaw: amount,
+    })).toBe(false);
+  });
+}
 
 // Explicit disposable LOCAL database only; never point fixture DDL at production.
 const databaseUrl = process.env.AUTODEPOSIT_IDLE_TEST_DATABASE_URL;
@@ -70,7 +72,7 @@ describe.skipIf(!databaseUrl)("idle deferral PostgreSQL contract", () => {
     vaultBalanceRaw: amount,
   });
 
-  for (const amount of [1n, 3n, 1582740n, 5885005n]) {
+  for (const amount of [1000001n, 1582740n, 5885005n]) {
     test(`retries ${amount} raw on the same slot without creating a claim`, async () => {
       let firstBlocked: string | undefined;
       for (let retry = 0; retry < 3; retry++) {
@@ -104,10 +106,10 @@ describe.skipIf(!databaseUrl)("idle deferral PostgreSQL contract", () => {
 
   test("durable idle age survives balance changes and caps the count", async () => {
     await sql`UPDATE loyal_yield.balance_sweep_scheduled_slots
-      SET last_error='existing idle vault balance must drain before direct autodeposit: 3 [idle_blocked_since=1700000000; idle_deferrals=1000000]'`;
-    expect(await defer(1n)).toBe(true);
+      SET last_error='existing idle vault balance must drain before direct autodeposit: 3000000 [idle_blocked_since=1700000000; idle_deferrals=1000000]'`;
+    expect(await defer(1000001n)).toBe(true);
     const [row] = await sql`SELECT last_error FROM loyal_yield.balance_sweep_scheduled_slots`;
-    expect(row.last_error).toBe('existing idle vault balance must drain before direct autodeposit: 1 [idle_blocked_since=1700000000; idle_deferrals=1000000]');
+    expect(row.last_error).toBe('existing idle vault balance must drain before direct autodeposit: 1000001 [idle_blocked_since=1700000000; idle_deferrals=1000000]');
   });
 
   for (const previous of [

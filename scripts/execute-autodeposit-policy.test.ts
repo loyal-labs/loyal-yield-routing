@@ -116,13 +116,16 @@ describe("computeSweepAmount", () => {
 });
 
 describe("direct autodeposit vault ownership", () => {
-  test("defers a pull until pre-existing idle funds drain", () => {
-    expect(() => assertEmptyVaultBeforeDirectAutodeposit(BigInt(1))).toThrow(
-      "existing idle vault balance must drain before direct autodeposit"
-    );
+  test("defers a pull until pre-existing idle funds above the fleet floor drain", () => {
     expect(() =>
-      assertEmptyVaultBeforeDirectAutodeposit(BigInt(0))
-    ).not.toThrow();
+      assertEmptyVaultBeforeDirectAutodeposit(BigInt(1_000_001))
+    ).toThrow("existing idle vault balance must drain before direct autodeposit");
+    // Dust the fleet planner never drains (< $1) must not deadlock the target.
+    for (const tolerated of [BigInt(0), BigInt(1), BigInt(1_000_000)]) {
+      expect(() =>
+        assertEmptyVaultBeforeDirectAutodeposit(tolerated)
+      ).not.toThrow();
+    }
   });
 });
 
