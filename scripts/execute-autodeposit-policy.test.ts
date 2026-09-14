@@ -116,12 +116,19 @@ describe("computeSweepAmount", () => {
 });
 
 describe("direct autodeposit vault ownership", () => {
-  test("defers a pull until pre-existing idle funds above the fleet floor drain", () => {
+  test("defers a pull only above the idle tolerance", () => {
     expect(() =>
-      assertEmptyVaultBeforeDirectAutodeposit(BigInt(1_000_001))
+      assertEmptyVaultBeforeDirectAutodeposit(BigInt(25_000_001))
     ).toThrow("existing idle vault balance must drain before direct autodeposit");
-    // Dust the fleet planner never drains (< $1) must not deadlock the target.
-    for (const tolerated of [BigInt(0), BigInt(1), BigInt(1_000_000)]) {
+    // No system drains idle today, so tolerated balances must not deadlock the
+    // target. 10_336_170 is the largest live blocked balance seen 2026-09-14.
+    for (const tolerated of [
+      BigInt(0),
+      BigInt(1),
+      BigInt(1_000_000),
+      BigInt(10_336_170),
+      BigInt(25_000_000),
+    ]) {
       expect(() =>
         assertEmptyVaultBeforeDirectAutodeposit(tolerated)
       ).not.toThrow();
