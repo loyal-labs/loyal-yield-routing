@@ -1197,6 +1197,15 @@ fn prioritize_executable_targets(
                 .unwrap_or(usize::MAX),
         )
     });
+    // One spawn per target per scan. The SQL guard against a `selected` claim is
+    // evaluated once, before any executor runs, so a target with several eligible
+    // slots would otherwise spawn one executor per slot. Each exits right after
+    // submitting its pull, leaving several pulls in flight against one vault and
+    // breaking the exclusive-custody assumption in the deposit recovery check.
+    // The sort is stable and recovery rows sort first, so the row kept is the
+    // highest-priority one for that target.
+    let mut seen_targets = HashSet::with_capacity(targets.len());
+    targets.retain(|target| seen_targets.insert(target.target_id));
     targets.truncate(limit);
     targets
 }
@@ -2233,6 +2242,35 @@ mod tests {
         assert!(ordered
             .iter()
             .all(|candidate| candidate.scheduled_slot_id != 999));
+    }
+
+    #[test]
+    fn one_spawn_per_target_per_scan_keeps_highest_priority_slot() {
+        let ordered = prioritize_executable_targets(
+            vec![
+                target(7068, 870640),
+                target(7068, 870641),
+                target(7068, 870642),
+                target(2, 102),
+            ],
+            &[870641],
+            10,
+        );
+
+        // The hinted slot wins for 7068; its sibling slots must not spawn.
+        assert_eq!(ordered, vec![target(7068, 870641), target(2, 102)]);
+    }
+
+    #[test]
+    fn recovery_row_wins_over_fresh_slot_on_same_target() {
+        let recovery = recovery_target(7068, 870640, "existing-claim");
+        let ordered = prioritize_executable_targets(
+            vec![target(7068, 870641), recovery.clone(), target(3, 103)],
+            &[870641],
+            10,
+        );
+
+        assert_eq!(ordered, vec![recovery, target(3, 103)]);
     }
 
     #[test]
