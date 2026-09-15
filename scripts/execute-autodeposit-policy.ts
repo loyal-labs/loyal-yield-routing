@@ -4814,13 +4814,43 @@ export async function resumeDirectKaminoDeposit(args: {
       amountRaw: args.plan.amountRaw,
       sourcePreBalanceRaw:
         existingTopUpAttempt?.sourcePreBalanceRaw ?? vaultObservation.amountRaw,
-      prepare: () =>
-        prepareSameMintReserveTopUp({
-          amountRaw: args.plan.amountRaw,
+      prepare: async () => {
+        const refreshTopUp = () =>
+          prepareSameMintReserveTopUp({
+            amountRaw: args.plan.amountRaw,
+            reserve: args.plan.reserve,
+            rpcUrl: args.rpcUrl,
+            target: args.target,
+          });
+        // The plan's reserve is immutable, but its obligation is not: the fleet can
+        // close it between the pull confirming and this deposit. The fresh-pull path
+        // recreates a missing obligation before pulling; a resumed deposit must do
+        // the same or it loops on `deposit_pending` with the user's funds idle in
+        // the vault. The setup transaction does not touch the pulled balance, so
+        // running it after the pull is safe; every other blocker still fails.
+        const recovered = await recoverMissingObligationBeforePull({
+          dryRun: await refreshTopUp(),
+          execute: true,
           reserve: args.plan.reserve,
-          rpcUrl: args.rpcUrl,
-          target: args.target,
-        }),
+          pollIntervalMs: readEnvInteger(
+            AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS_ENV,
+            AUTODEPOSIT_ALT_READINESS_POLL_INTERVAL_MS
+          ),
+          timeoutMs: readEnvInteger(
+            AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS_ENV,
+            AUTODEPOSIT_ALT_READINESS_TIMEOUT_MS
+          ),
+          runSetup: (execute) =>
+            runMissingObligationSetup({
+              execute,
+              reserve: args.plan.reserve,
+              rpcUrl: args.rpcUrl,
+              target: args.target,
+            }),
+          refreshTopUp,
+        });
+        return recovered.topUpDryRun;
+      },
     });
   } catch (error) {
     if (error instanceof AutodepositOwnershipLostError) {
