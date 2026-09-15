@@ -86,7 +86,11 @@ async fn overdue_query_uses_owned_work_and_repeated_actionable_idle_evidence() -
         );
         CREATE TABLE loyal_yield.balance_sweep_lot_claim_items (lot_id bigint, claim_token text);
         CREATE TABLE loyal_yield.managed_vaults (
-            active_policy_id bigint, active bool, settings text, vault_index bigint, vault_pubkey text
+            active_policy_id bigint, active bool, settings text, vault_index bigint, vault_pubkey text,
+            id bigint
+        );
+        CREATE TABLE loyal_yield.vault_idle_token_balances_current (
+            vault_id bigint, mint text, amount_raw bigint
         );
         CREATE TABLE loyal_yield.route_policies (
             id bigint, active bool, authority text, settings text, vault_index bigint,
@@ -109,34 +113,41 @@ async fn overdue_query_uses_owned_work_and_repeated_actionable_idle_evidence() -
             ('ambiguous', 'pull', 'ambiguous', 1);
         INSERT INTO loyal_yield.balance_sweep_targets
             SELECT id, 'USDC', true, 'active', 100, 'a', 's', 0, 'v'
-            FROM generate_series(10, 17) AS id;
+            FROM generate_series(10, 18) AS id;
         INSERT INTO loyal_yield.balance_sweep_wallet_balances_current
             SELECT id, 'USDC', CASE WHEN id = 11 THEN 100 ELSE 1000 END
-            FROM generate_series(10, 17) AS id;
-        INSERT INTO loyal_yield.managed_vaults VALUES (1, true, 's', 0, 'v');
-        INSERT INTO loyal_yield.route_policies VALUES (1, true, 'a', 's', 0, 'v', ARRAY['same_mint_kamino']);
+            FROM generate_series(10, 18) AS id;
+        INSERT INTO loyal_yield.managed_vaults VALUES (1, true, 's', 0, 'v', 1), (1, true, 's-low-idle', 0, 'v', 2);
+        INSERT INTO loyal_yield.route_policies VALUES
+            (1, true, 'a', 's', 0, 'v', ARRAY['same_mint_kamino']),
+            (1, true, 'a', 's-low-idle', 0, 'v', ARRAY['same_mint_kamino']);
+        -- Vault 1 holds idle above the tolerance bound below; vault 2 holds dust the
+        -- executor deposits over, so its stale marker is not overdue work.
+        INSERT INTO loyal_yield.vault_idle_token_balances_current VALUES (1, 'USDC', 30000000), (2, 'USDC', 5);
         INSERT INTO loyal_yield.balance_sweep_scheduled_slots
             (id, target_id, token_mint, status, eligible_after, last_error, created_at)
             SELECT id, id, 'USDC', 'scheduled', now() - interval '1 minute',
                    CASE WHEN id = 12 THEN NULL ELSE
                        'existing idle vault balance must drain before direct autodeposit: 1' END,
                    now() - interval '10 days'
-            FROM generate_series(10, 17) AS id;
+            FROM generate_series(10, 18) AS id;
         INSERT INTO loyal_yield.balance_sweep_surplus_lots
             SELECT id, id, id, 'open', CASE WHEN id = 13 THEN 0 ELSE 900 END
-            FROM generate_series(10, 17) AS id;
+            FROM generate_series(10, 18) AS id;
         INSERT INTO loyal_yield.balance_sweep_lot_claims (claim_token, target_id, status, created_at)
             SELECT id || ':' || n, id, 'released',
                    now() - CASE WHEN id = 16 THEN interval '1 minute' ELSE interval '2 hours' END
-            FROM generate_series(10, 17) AS id CROSS JOIN generate_series(1, 3) AS n
+            FROM generate_series(10, 18) AS id CROSS JOIN generate_series(1, 3) AS n
             WHERE id != 14 OR n = 1;
         INSERT INTO loyal_yield.balance_sweep_lot_claim_items
             SELECT target_id, claim_token FROM loyal_yield.balance_sweep_lot_claims WHERE status = 'released';
         UPDATE loyal_yield.balance_sweep_targets SET desired_active = false WHERE id = 15;
         UPDATE loyal_yield.balance_sweep_targets SET settings = 'no-live-policy' WHERE id = 17;
+        UPDATE loyal_yield.balance_sweep_targets SET settings = 's-low-idle' WHERE id = 18;
     "#).execute(&mut *tx).await?;
     let rows = sqlx::query(OVERDUE_AUTODEPOSIT_WORK_SQL)
         .bind("USDC")
+        .bind(25_000_000_i64)
         .fetch_all(&mut *tx)
         .await?;
     let actual = rows
@@ -166,6 +177,7 @@ async fn overdue_query_uses_owned_work_and_repeated_actionable_idle_evidence() -
         .await?;
     let repeated = sqlx::query(OVERDUE_AUTODEPOSIT_WORK_SQL)
         .bind("USDC")
+        .bind(25_000_000_i64)
         .fetch_all(&mut *tx)
         .await?;
     assert_eq!(repeated.len(), 4);
@@ -222,6 +234,7 @@ async fn overdue_query_uses_owned_work_and_repeated_actionable_idle_evidence() -
             .bind(error).execute(&mut *tx).await?;
         let marked = sqlx::query(OVERDUE_AUTODEPOSIT_WORK_SQL)
             .bind("USDC")
+            .bind(25_000_000_i64)
             .fetch_all(&mut *tx)
             .await?;
         assert_eq!(marked.len(), expected_count);
@@ -232,6 +245,7 @@ async fn overdue_query_uses_owned_work_and_repeated_actionable_idle_evidence() -
         .execute(&mut *tx).await?;
     let backed_off = sqlx::query(OVERDUE_AUTODEPOSIT_WORK_SQL)
         .bind("USDC")
+        .bind(25_000_000_i64)
         .fetch_all(&mut *tx)
         .await?;
     let idle = backed_off
@@ -267,6 +281,7 @@ async fn overdue_query_uses_owned_work_and_repeated_actionable_idle_evidence() -
     "#).execute(&mut *tx).await?;
     let backlog = sqlx::query(OVERDUE_AUTODEPOSIT_WORK_SQL)
         .bind("USDC")
+        .bind(25_000_000_i64)
         .fetch_all(&mut *tx)
         .await?;
     assert_eq!(backlog.len(), 4);
@@ -278,6 +293,7 @@ async fn overdue_query_uses_owned_work_and_repeated_actionable_idle_evidence() -
         .execute(&mut *tx).await?;
     assert!(sqlx::query(OVERDUE_AUTODEPOSIT_WORK_SQL)
         .bind("USDC")
+        .bind(25_000_000_i64)
         .fetch_all(&mut *tx)
         .await?
         .is_empty());

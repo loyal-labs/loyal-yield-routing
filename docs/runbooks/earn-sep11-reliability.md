@@ -29,6 +29,16 @@ Main's cleanup reconciliation fix #232 does not address these causes. Go shadow
 planner changes in #233 do not prove the active Rust planner drains small idle
 balances. Keep the legacy same-mint monitor suspended.
 
+## Idle tolerance
+
+`AUTODEPOSIT_IDLE_TOLERANCE_RAW` (raw USDC units, default 25000000 = $25) is read by
+both the executor (`scripts/execute-autodeposit-policy.ts`, direct-deposit idle guard)
+and the trigger (`crates/balance-sweep-autodeposit-trigger`, overdue-idle check). Set
+it once on the Render service; the trigger passes its environment to the executor it
+spawns. The overdue alert only reports vaults whose live idle exceeds this value, so
+stale deferral markers on historical slots do not page. Re-tighten it here, not in
+code, once executable fleet idle draining ships (ASK-2274).
+
 ## Safety boundaries
 
 Initial wallet/vault balance reads have at most three HTTP attempts and an

@@ -47,6 +47,15 @@ const AUTOMATIC_PULL_RECOVERY_STATES: &[&str] = &["prepared", "submitted", "conf
 struct Args {
     #[arg(long, env = "NEON_DATABASE_URL")]
     postgres_url: String,
+    /// Idle vault balance (raw units) the direct deposit path tolerates. Must match the
+    /// executor, which reads the same variable: the overdue check only reports idle that
+    /// the executor would actually refuse to deposit over.
+    #[arg(
+        long,
+        env = "AUTODEPOSIT_IDLE_TOLERANCE_RAW",
+        default_value_t = 25_000_000
+    )]
+    idle_tolerance_raw: i64,
     #[arg(long, default_value_t = 1000)]
     batch_limit: i64,
     #[arg(long, default_value_t = 10)]
@@ -325,7 +334,7 @@ async fn main() -> Result<()> {
             if !matches!(
                 time::timeout(
                     Duration::from_secs(30),
-                    alert_overdue_autodeposit_work(&pool)
+                    alert_overdue_autodeposit_work(&pool, args.idle_tolerance_raw)
                 )
                 .await,
                 Ok(Ok(()))
@@ -777,6 +786,18 @@ const OVERDUE_AUTODEPOSIT_WORK_SQL: &str = r#"
               SELECT 1 FROM loyal_yield.balance_sweep_lot_claims AS owned
               WHERE owned.target_id = target.id AND owned.status = 'selected'
           )
+          -- The deferral marker is historical text on the slot; it survives long after
+          -- the vault drained or the tolerance changed. Only idle the executor would
+          -- refuse to deposit over right now is overdue work.
+          AND EXISTS (
+              SELECT 1 FROM loyal_yield.managed_vaults AS vault
+              JOIN loyal_yield.vault_idle_token_balances_current AS idle
+                ON idle.vault_id = vault.id AND idle.mint = target.token_mint
+              WHERE vault.active AND vault.settings = target.settings
+                AND vault.vault_index = target.vault_index
+                AND vault.vault_pubkey = target.vault_pubkey
+                AND idle.amount_raw > $2
+          )
           AND EXISTS (
               SELECT 1 FROM loyal_yield.managed_vaults AS managed
               JOIN loyal_yield.route_policies AS policy ON policy.id = managed.active_policy_id
@@ -809,7 +830,7 @@ const OVERDUE_AUTODEPOSIT_WORK_SQL: &str = r#"
     LIMIT 5
 "#;
 
-async fn alert_overdue_autodeposit_work(pool: &PgPool) -> Result<()> {
+async fn alert_overdue_autodeposit_work(pool: &PgPool, idle_tolerance_raw: i64) -> Result<()> {
     let mut tx = pool.begin().await?;
     sqlx::query("SET TRANSACTION READ ONLY")
         .execute(&mut *tx)
@@ -819,6 +840,7 @@ async fn alert_overdue_autodeposit_work(pool: &PgPool) -> Result<()> {
         .await?;
     let rows = sqlx::query(OVERDUE_AUTODEPOSIT_WORK_SQL)
         .bind(USDC_MINT_ADDRESS)
+        .bind(idle_tolerance_raw)
         .fetch_all(&mut *tx)
         .await?;
     tx.rollback().await?;
