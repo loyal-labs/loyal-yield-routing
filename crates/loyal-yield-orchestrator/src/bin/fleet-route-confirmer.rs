@@ -52,6 +52,8 @@ use tokio::{
 };
 
 const DATABASE_URL_ENV: &str = "NEON_DATABASE_URL";
+/// A single failed poll retries itself; only an unbroken run of failures pages.
+const POLL_STALL_PAGE_AFTER: Duration = Duration::from_secs(10 * 60);
 const RPC_URL_ENV: &str = "SOLANA_RPC_URL";
 const WEBSOCKET_URL_ENV: &str = "SOLANA_WS_URL";
 const CLUSTER_ENV: &str = "YIELD_ROUTE_CLUSTER";
@@ -681,6 +683,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
         DurablePgWakeupListener::new("loyal_yield_route_confirmation_wakeup")?;
     let broadcast_limit = Arc::new(Semaphore::new(options.broadcast_concurrency));
     let mut poll_error_reported = false;
+    let mut poll_failing_since: Option<Instant> = None;
+    let mut poll_stall_reported = false;
     let mut retry_alert_state = RetryAlertState::default();
 
     loop {
@@ -698,6 +702,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
         {
             Ok(mut health) => {
                 poll_error_reported = false;
+                poll_failing_since = None;
+                poll_stall_reported = false;
                 if retry_alert_state.observe_poll(
                     Instant::now(),
                     health.claimed,
@@ -719,15 +725,34 @@ async fn run() -> Result<(), Box<dyn Error>> {
             }
             Err(error) => {
                 if !options.once && !poll_error_reported {
+                    // The next poll retries on its own; a single failure is not an
+                    // operator condition. A run of them is: see the escalation below.
                     OperationalError::new(
                         "fleet_route_confirmer_poll_failed",
                         "poll_signed_route_submissions",
                         "Fleet route confirmer poll failed",
                     )
                     .retryable(true)
-                    .recovery_required(true)
+                    .recovery_required(false)
+                    .warning()
                     .emit();
                     poll_error_reported = true;
+                    poll_failing_since = Some(Instant::now());
+                }
+                if !options.once
+                    && !poll_stall_reported
+                    && poll_failing_since
+                        .is_some_and(|since| since.elapsed() >= POLL_STALL_PAGE_AFTER)
+                {
+                    OperationalError::new(
+                        "fleet_route_confirmer_poll_stalled",
+                        "poll_signed_route_submissions",
+                        "Fleet route confirmer polls have failed continuously for 10 minutes",
+                    )
+                    .retryable(true)
+                    .recovery_required(true)
+                    .emit();
+                    poll_stall_reported = true;
                 }
                 println!(
                     "{}",

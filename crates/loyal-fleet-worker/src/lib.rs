@@ -2585,13 +2585,34 @@ const SAME_MINT_ROUTE_POLICY_MISSING_EXIT_CODE: i32 = 23;
 #[derive(Debug, PartialEq, Eq)]
 enum SameMintProcessFailureDisposition {
     RoutePolicyMissing { policy_account: String },
+    /// A dependency (database pool, RPC, HTTP) failed in a way that the next attempt
+    /// is expected to clear: a caller retry for a one-shot run, a supervisor restart
+    /// for a long-running lane. Not an operator condition.
+    TransientDependency,
     Fatal,
+}
+
+/// Matches the exact error texts observed in production for transient dependency
+/// failures. Kept narrow on purpose: anything not listed stays fatal.
+fn is_transient_dependency_error(error: &str) -> bool {
+    [
+        "pool timed out while waiting for an open connection",
+        "error sending request",
+        "connection reset by peer",
+        "connection refused",
+        "broken pipe",
+    ]
+    .iter()
+    .any(|marker| error.contains(marker))
 }
 
 fn same_mint_process_failure_disposition(
     args: &[String],
     error: &str,
 ) -> SameMintProcessFailureDisposition {
+    if is_transient_dependency_error(error) {
+        return SameMintProcessFailureDisposition::TransientDependency;
+    }
     if !args.iter().any(|arg| arg == "--deposit-reserve") {
         return SameMintProcessFailureDisposition::Fatal;
     }
@@ -2647,6 +2668,22 @@ pub async fn run_main() {
                 );
                 let _ = observability.force_flush();
                 std::process::exit(SAME_MINT_ROUTE_POLICY_MISSING_EXIT_CODE);
+            }
+            SameMintProcessFailureDisposition::TransientDependency => {
+                // Exit code 1 is kept: the autodeposit executor already treats it as a
+                // retryable preflight outcome, and Render restarts a long-running lane.
+                OperationalError::new(
+                    "same_mint_route_worker_dependency_unavailable",
+                    "run_same_mint_route_worker",
+                    "same-mint route worker stopped on a transient dependency failure; retry or restart recovers it",
+                )
+                .retryable(true)
+                .recovery_required(false)
+                .warning()
+                .emit();
+                eprintln!("{}", same_mint_transient_error_payload(error.as_ref()));
+                let _ = observability.force_flush();
+                std::process::exit(1);
             }
             SameMintProcessFailureDisposition::Fatal => {
                 OperationalError::new(
@@ -3397,8 +3434,12 @@ async fn run_fleet_worker(
         .saturating_mul(3)
         .saturating_add(4)
         .min(128);
+    // Neon has slow spells (statement warnings on every worker); the default 5 s
+    // acquire timeout turned each one into a fatal exit for a long-running lane.
     let client = NeonSqlClient::connect(
-        NeonSqlConfig::new(database_url).with_max_connections(max_connections),
+        NeonSqlConfig::new(database_url)
+            .with_max_connections(max_connections)
+            .with_acquire_timeout(Duration::from_secs(30)),
     )
     .await?;
     client
@@ -4137,8 +4178,12 @@ async fn run_fleet_reconciler(
         .saturating_mul(2)
         .saturating_add(4)
         .min(128);
+    // Neon has slow spells (statement warnings on every worker); the default 5 s
+    // acquire timeout turned each one into a fatal exit for a long-running lane.
     let client = NeonSqlClient::connect(
-        NeonSqlConfig::new(database_url).with_max_connections(max_connections),
+        NeonSqlConfig::new(database_url)
+            .with_max_connections(max_connections)
+            .with_acquire_timeout(Duration::from_secs(30)),
     )
     .await?;
     client
@@ -14159,6 +14204,13 @@ fn same_mint_fatal_error_payload(error: &dyn std::fmt::Display) -> Value {
     })
 }
 
+fn same_mint_transient_error_payload(error: &dyn std::fmt::Display) -> Value {
+    json!({
+        "event": "same_mint_route_worker_dependency_unavailable",
+        "error": safe_same_mint_operational_error(error),
+    })
+}
+
 fn same_mint_decision_failure_reason(stable_code: &str, error: &dyn std::fmt::Display) -> String {
     safe_same_mint_operational_error_with_context(stable_code, error)
 }
@@ -23066,6 +23118,38 @@ mod tests {
             repaired_position_holding(25_000_000, false, 110_000_000).unwrap(),
             (110_000_000, None)
         );
+    }
+
+    #[test]
+    fn transient_dependency_failures_are_not_fatal() {
+        // Verbatim production errors: revalidator crashes 2026-09-14 00:53 and 18:30,
+        // and the autodeposit executor's child on 2026-09-15.
+        for error in [
+            "database error: pool timed out while waiting for an open connection",
+            "error sending request for url [redacted-external-endpoint]",
+        ] {
+            assert_eq!(
+                same_mint_process_failure_disposition(&[], error),
+                SameMintProcessFailureDisposition::TransientDependency,
+                "{error}"
+            );
+            assert_eq!(
+                same_mint_process_failure_disposition(&["--deposit-reserve".to_owned()], error),
+                SameMintProcessFailureDisposition::TransientDependency,
+                "{error}"
+            );
+        }
+        // Anything not on the narrow list stays fatal.
+        assert_eq!(
+            same_mint_process_failure_disposition(&[], "database error: relation does not exist"),
+            SameMintProcessFailureDisposition::Fatal
+        );
+        let payload = same_mint_transient_error_payload(&CREDENTIAL_BEARING_RPC_ERROR);
+        assert_eq!(
+            payload["event"],
+            "same_mint_route_worker_dependency_unavailable"
+        );
+        assert_safe_operational_error(payload["error"].as_str().unwrap());
     }
 
     #[test]

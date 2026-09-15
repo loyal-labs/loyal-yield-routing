@@ -86,6 +86,9 @@ pub struct ExecutorFailureAlert {
     pub operation: &'static str,
     pub summary: &'static str,
     pub retryable: bool,
+    /// The executor already scheduled its own retry and no operator action exists,
+    /// so the record is logged at WARN: visible, not paging.
+    pub self_recovering: bool,
 }
 
 /// Returns the alert an executor exit deserves, or `None` when the exit reports a
@@ -102,12 +105,14 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
             operation: "top_up_autodeposit_to_kamino",
             summary: "autodeposit pull succeeded but Kamino top-up failed",
             retryable: false,
+            self_recovering: false,
         }),
         Some(AUTODEPOSIT_YIELD_PERSISTENCE_FAILED_EXIT_CODE) => Some(ExecutorFailureAlert {
             code: "yield_persistence_failed",
             operation: "persist_autodeposit_yield_position",
             summary: "autodeposit top-up succeeded but yield persistence failed",
             retryable: false,
+            self_recovering: false,
         }),
         // The route itself is unexecutable and no funds moved. Waiting cannot clear it,
         // so it must not page as a lookup-table or top-up fault.
@@ -116,6 +121,7 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
             operation: "preflight_autodeposit_route",
             summary: "autodeposit route preflight blocked before any funds moved",
             retryable: true,
+            self_recovering: false,
         }),
         // Names the remedy rather than the symptom. This failure stops every target at
         // once and no code change can clear it, so an operator reading the alert should
@@ -125,18 +131,21 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
             operation: "fund_autodeposit_fee_payer",
             summary: "autodeposit fee payer is out of SOL; top up the delegated signer",
             retryable: true,
+            self_recovering: false,
         }),
         Some(AUTODEPOSIT_TRANSACTION_EFFECT_AMBIGUOUS_EXIT_CODE) => Some(ExecutorFailureAlert {
             code: "autodeposit_transaction_effect_ambiguous",
             operation: "reconcile_autodeposit_transaction",
             summary: "autodeposit transaction effect remains ambiguous after blockhash expiry",
             retryable: false,
+            self_recovering: false,
         }),
         Some(AUTODEPOSIT_IDLE_HANDOFF_FAILED_EXIT_CODE) => Some(ExecutorFailureAlert {
             code: "autodeposit_idle_handoff_failed",
             operation: "publish_autodeposit_idle_vault_balance",
             summary: "confirmed autodeposit pull could not be published to idle-vault recovery",
             retryable: true,
+            self_recovering: false,
         }),
         Some(AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE) => Some(ExecutorFailureAlert {
             code: "autodeposit_dependency_unavailable",
@@ -144,6 +153,7 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
             summary:
                 "autodeposit dependency returned a transient server error; execution will retry",
             retryable: true,
+            self_recovering: true,
         }),
         Some(
             0
@@ -158,6 +168,7 @@ pub fn executor_failure_alert(exit_code: Option<i32>) -> Option<ExecutorFailureA
             operation: "execute_eligible_autodeposit_target",
             summary: "autodeposit executor exited unsuccessfully",
             retryable: true,
+            self_recovering: false,
         }),
     }
 }
@@ -554,6 +565,7 @@ mod tests {
                     operation: "execute_eligible_autodeposit_target",
                     summary: "autodeposit executor exited unsuccessfully",
                     retryable: true,
+                    self_recovering: false,
                 })
             );
         }
