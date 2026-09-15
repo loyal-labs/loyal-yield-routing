@@ -219,6 +219,14 @@ export function classifyDirectTopUpRecovery(args: {
   vaultAmountRaw: bigint;
   plannedAmountRaw: bigint;
   persistedSourcePreBalanceRaw: bigint | null;
+  /**
+   * Deposits by sibling claims on the same vault that confirmed after the persisted
+   * attempt was created. The persisted snapshot was read before that attempt's row
+   * existed, and a later sibling's deposit lands after its own row exists, so none of
+   * this amount can already be inside the snapshot: subtracting it cannot hide a real
+   * landing, it only stops a sibling's confirmed withdrawal reading as ours.
+   */
+  confirmedSiblingDepositsSinceRaw?: bigint;
 }): DirectTopUpRecoveryAction {
   if (
     args.existingAttemptState !== null &&
@@ -226,16 +234,47 @@ export function classifyDirectTopUpRecovery(args: {
   ) {
     return "reconcile_persisted";
   }
+  const siblingsRaw = args.confirmedSiblingDepositsSinceRaw ?? BigInt(0);
+  const expectedIfNotLandedRaw =
+    args.persistedSourcePreBalanceRaw === null
+      ? null
+      : args.persistedSourcePreBalanceRaw - siblingsRaw;
   if (
     args.vaultAmountRaw < args.plannedAmountRaw ||
     (args.existingAttemptState !== null &&
       attemptAllowsSafeRequeue(args.existingAttemptState) &&
-      args.persistedSourcePreBalanceRaw !== null &&
-      args.vaultAmountRaw < args.persistedSourcePreBalanceRaw)
+      expectedIfNotLandedRaw !== null &&
+      args.vaultAmountRaw < expectedIfNotLandedRaw)
   ) {
     return "effect_ambiguous";
   }
   return "prepare_or_requeue";
+}
+
+/**
+ * Sum of sibling top-ups on the same target that confirmed after the given attempt
+ * row was created (ids are monotonic). Used to discount the persisted vault snapshot.
+ */
+async function loadConfirmedSiblingTopUpsSince(args: {
+  neon: AppModules["neon"];
+  databaseUrl: string;
+  targetId: bigint;
+  claimToken: string;
+  afterAttemptId: string;
+}): Promise<bigint> {
+  const sql = args.neon(args.databaseUrl);
+  const rows = await sql`
+    SELECT COALESCE(SUM(amount_raw), 0)::text AS total_raw
+    FROM loyal_yield.balance_sweep_transaction_attempts
+    WHERE target_id = ${args.targetId.toString()}::bigint
+      AND operation_kind = 'top_up'
+      AND attempt_state = 'confirmed'
+      AND claim_token <> ${args.claimToken}
+      AND id > ${args.afterAttemptId}::bigint
+  `;
+  return BigInt(
+    readRequiredString((rows[0] as Record<string, unknown>).total_raw, "total_raw")
+  );
 }
 
 export function throwIfAutodepositAttemptRequiresOperator(
@@ -4782,12 +4821,22 @@ export async function resumeDirectKaminoDeposit(args: {
     claimToken: args.claimToken,
     operationKind: "top_up",
   });
+  const confirmedSiblingDepositsSinceRaw = existingTopUpAttempt
+    ? await loadConfirmedSiblingTopUpsSince({
+        neon: args.neon,
+        databaseUrl: args.databaseUrl,
+        targetId: args.target.id,
+        claimToken: args.claimToken,
+        afterAttemptId: existingTopUpAttempt.id,
+      })
+    : BigInt(0);
   const topUpRecovery = classifyDirectTopUpRecovery({
     existingAttemptState: existingTopUpAttempt?.state ?? null,
     vaultAmountRaw: vaultObservation.amountRaw,
     plannedAmountRaw: args.plan.amountRaw,
     persistedSourcePreBalanceRaw:
       existingTopUpAttempt?.sourcePreBalanceRaw ?? null,
+    confirmedSiblingDepositsSinceRaw,
   });
   if (topUpRecovery === "effect_ambiguous") {
     await releaseAutodepositClaimLease({
