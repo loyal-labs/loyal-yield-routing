@@ -1603,6 +1603,8 @@ export async function reconcileClosedRoutePolicyFailure(args: {
 }
 
 const CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS = 900;
+const CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS_ENV =
+  "AUTODEPOSIT_CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS";
 const UNRESOLVED_CURRENT_RESERVE_MARKER =
   "Autodeposit target reserve could not be resolved against chain truth";
 
@@ -5447,6 +5449,50 @@ async function main(
           logs: ["persisted signed pull is reconciled instead of rebuilt"],
           unitsConsumed: null,
         };
+    // The stored pointer can outlive the position it names: a fleet rebalance moves
+    // every lot to another reserve without updating it, and depositing into the stale
+    // reserve recreates an obligation the fleet then drains again (ASK-2051). This
+    // check was dropped by #58 on the assumption the fleet would place pulled funds;
+    // fleet idle placement is shadow-only, so the direct deposit restored by #65 must
+    // resolve the destination against observed holdings before any funds move.
+    // Only a fresh pull may redirect: a persisted pull already has an immutable plan.
+    let depositTarget = target;
+    if (!existingDurablePullAttempt && target.currentReserve) {
+      const currentReserveResolution = resolveCurrentReserve({
+        maxProjectionAgeSeconds: readEnvInteger(
+          CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS_ENV,
+          CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS
+        ),
+        positions: await loadLiveVaultPositions({
+          databaseUrl,
+          neon: appModules.neon,
+          target,
+        }),
+        target,
+      });
+      assertResolvedCurrentReserve(currentReserveResolution);
+      if (currentReserveResolution.status === "reconciled") {
+        if (options.execute) {
+          assertReconciliationPersisted({
+            from: currentReserveResolution.from,
+            persistedPositionIds: await persistReconciledCurrentReserve({
+              databaseUrl,
+              from: currentReserveResolution.from,
+              neon: appModules.neon,
+              target,
+              to: currentReserveResolution.to,
+            }),
+            to: currentReserveResolution.to.reserve,
+          });
+        }
+        depositTarget = {
+          ...target,
+          currentReserve: currentReserveResolution.to.reserve,
+          currentMarket: currentReserveResolution.to.market,
+          currentLiquidityMint: currentReserveResolution.to.liquidityMint,
+        };
+      }
+    }
     const depositPreflight = await preflightDurableKaminoDeposit({
       amountRaw: executionAmountRaw,
       execute: options.execute,
@@ -5454,7 +5500,7 @@ async function main(
       defaultReserve: defaultEarnTarget.reserve.toBase58(),
       defaultLiquidityMint: defaultEarnTarget.liquidityMint.toBase58(),
       rpcUrl,
-      target,
+      target: depositTarget,
     });
     const topUpFeePayer = new PublicKeyCtor(
       readRequiredString(
