@@ -130,6 +130,7 @@ pub struct OperationalError {
     summary: &'static str,
     retryable: bool,
     recovery_required: bool,
+    level: Level,
     wallet_address: Option<ObservabilityWalletAddress>,
 }
 
@@ -142,8 +143,19 @@ impl OperationalError {
             summary,
             retryable: false,
             recovery_required: false,
+            level: Level::ERROR,
             wallet_address: None,
         }
+    }
+
+    /// Records the error at WARN instead of ERROR.
+    ///
+    /// For conditions the process already recovers from on its own (a transient
+    /// dependency failure that is retried, a supervisor restart). The record is still
+    /// exported and searchable; it just does not page as if an operator were needed.
+    pub const fn warning(mut self) -> Self {
+        self.level = Level::WARN;
+        self
     }
 
     /// Marks whether retrying the failed operation is expected to be safe.
@@ -166,32 +178,46 @@ impl OperationalError {
 
     /// Emits this record to local logs and, when enabled, the filtered OTLP layer.
     pub fn emit(self) {
-        if let Some(wallet_address) = self.wallet_address {
-            tracing::event!(
-                name: "loyal.operational_error",
-                target: OPERATIONAL_ERROR_TARGET,
-                Level::ERROR,
-                {
-                    loyal.wallet.address = wallet_address.as_str(),
-                    error_code = self.code,
-                    loyal.error.code = self.code,
-                    operation = self.operation,
-                    retryable = self.retryable,
-                    recovery_required = self.recovery_required,
-                    message = self.summary,
+        // `tracing::event!` needs a const level alongside `name:`/`target:`, so the
+        // field list is written once and the level chosen by branch.
+        macro_rules! emit_at {
+            ($level:expr) => {
+                if let Some(wallet_address) = self.wallet_address {
+                    tracing::event!(
+                        name: "loyal.operational_error",
+                        target: OPERATIONAL_ERROR_TARGET,
+                        $level,
+                        {
+                            loyal.wallet.address = wallet_address.as_str(),
+                            error_code = self.code,
+                            loyal.error.code = self.code,
+                            operation = self.operation,
+                            retryable = self.retryable,
+                            recovery_required = self.recovery_required,
+                            message = self.summary,
+                        }
+                    );
+                } else {
+                    tracing::event!(
+                        name: "loyal.operational_error",
+                        target: OPERATIONAL_ERROR_TARGET,
+                        $level,
+                        {
+                            error_code = self.code,
+                            loyal.error.code = self.code,
+                            operation = self.operation,
+                            retryable = self.retryable,
+                            recovery_required = self.recovery_required,
+                            message = self.summary,
+                        }
+                    );
                 }
-            );
+            };
+        }
+        if self.level == Level::WARN {
+            emit_at!(Level::WARN);
         } else {
-            tracing::error!(
-                name: "loyal.operational_error",
-                target: OPERATIONAL_ERROR_TARGET,
-                error_code = self.code,
-                loyal.error.code = self.code,
-                operation = self.operation,
-                retryable = self.retryable,
-                recovery_required = self.recovery_required,
-                message = self.summary,
-            );
+            emit_at!(Level::ERROR);
         }
     }
 }
@@ -373,8 +399,10 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
         tracer: Some(tracer_provider),
     };
 
+    // WARN-level operational errors are exported too: they must stay visible for
+    // dashboards and repeat-count alerts, they just must not page as errors.
     let operational_errors_only = filter::filter_fn(|metadata| {
-        metadata.target() == OPERATIONAL_ERROR_TARGET && *metadata.level() == Level::ERROR
+        metadata.target() == OPERATIONAL_ERROR_TARGET && *metadata.level() <= Level::WARN
     });
     let log_layer = OpenTelemetryTracingBridge::new(
         providers

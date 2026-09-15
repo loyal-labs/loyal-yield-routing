@@ -669,22 +669,35 @@ async fn execute_eligible_targets_once(
         let executor_exit_code = status.code();
         let executor_signal = executor_termination_signal(&status);
         if let Some(alert) = record_executor_exit(&mut outcome, executor_exit_code) {
-            // Keep stable target/slot context on the exported error itself;
-            // a companion local warning is not exported by the OTLP filter.
-            tracing::error!(
-                name: "loyal.operational_error",
-                target: "loyal.observability.operational_error",
-                error_code = alert.code,
-                loyal.error.code = alert.code,
-                operation = alert.operation,
-                retryable = alert.retryable,
-                recovery_required = true,
-                target_id = target.target_id,
-                scheduled_slot_id = target.scheduled_slot_id,
-                executor_exit_code,
-                executor_signal,
-                message = alert.summary,
-            );
+            // Keep stable target/slot context on the exported error itself. A
+            // self-recovering exit (the executor already scheduled its retry) is
+            // exported at WARN so it stays visible without paging.
+            macro_rules! emit_executor_alert {
+                ($level:expr, $recovery_required:expr) => {
+                    tracing::event!(
+                        name: "loyal.operational_error",
+                        target: "loyal.observability.operational_error",
+                        $level,
+                        {
+                            error_code = alert.code,
+                            loyal.error.code = alert.code,
+                            operation = alert.operation,
+                            retryable = alert.retryable,
+                            recovery_required = $recovery_required,
+                            target_id = target.target_id,
+                            scheduled_slot_id = target.scheduled_slot_id,
+                            executor_exit_code,
+                            executor_signal,
+                            message = alert.summary,
+                        }
+                    );
+                };
+            }
+            if alert.self_recovering {
+                emit_executor_alert!(tracing::Level::WARN, false);
+            } else {
+                emit_executor_alert!(tracing::Level::ERROR, true);
+            }
         } else {
             tracing::info!(
                 target_id = target.target_id,
