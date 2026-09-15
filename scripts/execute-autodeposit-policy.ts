@@ -369,8 +369,12 @@ const PRE_SEND_FAILURE_RETRY_DELAY_SECONDS = 5 * 60;
  *
  * RE-TIGHTEN THIS when executable idle draining ships: once the fleet can move
  * idle funds, a large tolerance lets both systems act on the same vault ATA.
+ * Shared with the trigger's overdue-idle check through the same variable, so the
+ * alert only reports idle this path would actually refuse to deposit over.
  */
-const DIRECT_AUTODEPOSIT_IDLE_TOLERANCE_RAW = BigInt(25_000_000);
+const DIRECT_AUTODEPOSIT_IDLE_TOLERANCE_RAW = BigInt(
+  readEnvInteger("AUTODEPOSIT_IDLE_TOLERANCE_RAW", 25_000_000)
+);
 /**
  * Backoff for a target that is correct but has nothing to act on. The five-minute
  * failure cadence exists to recover from transient faults; applying it to a vault the
