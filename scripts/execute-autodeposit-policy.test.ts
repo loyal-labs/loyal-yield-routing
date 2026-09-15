@@ -8,6 +8,7 @@ import {
   autodepositFailureDisposition,
   autodepositExecutorFailureExitCode,
   buildDirectDepositPositionReconciliationCommand,
+  classifyDirectTopUpRecovery,
   computeSweepAmount,
   isMissingAutodepositTokenDelegateFailure,
   parseKeypairSecret,
@@ -112,6 +113,57 @@ describe("computeSweepAmount", () => {
       excessRaw: BigInt(150),
       remainingAllowanceRaw: BigInt(0),
     });
+  });
+});
+
+describe("classifyDirectTopUpRecovery", () => {
+  // Production case, target 7068 / slot 870640, 2026-09-14: the expired deposit never
+  // landed (signature absent from history), yet the vault read below the persisted
+  // snapshot because a sibling claim's deposit confirmed in between. Exact raw units.
+  const production = {
+    existingAttemptState: "expired" as const,
+    vaultAmountRaw: BigInt(1_603_874),
+    plannedAmountRaw: BigInt(21_133),
+    persistedSourcePreBalanceRaw: BigInt(1_645_845),
+  };
+
+  test("a sibling's confirmed deposit no longer reads as our own landing", () => {
+    expect(
+      classifyDirectTopUpRecovery({
+        ...production,
+        confirmedSiblingDepositsSinceRaw: BigInt(41_971),
+      })
+    ).toBe("prepare_or_requeue");
+  });
+
+  test("without a sibling to explain the drop it still refuses", () => {
+    expect(classifyDirectTopUpRecovery(production)).toBe("effect_ambiguous");
+    expect(
+      classifyDirectTopUpRecovery({
+        ...production,
+        confirmedSiblingDepositsSinceRaw: BigInt(41_970),
+      })
+    ).toBe("effect_ambiguous");
+  });
+
+  test("a vault below the planned amount is ambiguous regardless of siblings", () => {
+    expect(
+      classifyDirectTopUpRecovery({
+        ...production,
+        vaultAmountRaw: BigInt(21_132),
+        confirmedSiblingDepositsSinceRaw: BigInt(10_000_000),
+      })
+    ).toBe("effect_ambiguous");
+  });
+
+  test("a claim-holding attempt is reconciled, never re-prepared", () => {
+    expect(
+      classifyDirectTopUpRecovery({
+        ...production,
+        existingAttemptState: "confirmed",
+        confirmedSiblingDepositsSinceRaw: BigInt(41_971),
+      })
+    ).toBe("reconcile_persisted");
   });
 });
 
