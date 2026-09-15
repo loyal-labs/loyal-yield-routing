@@ -1197,15 +1197,22 @@ fn prioritize_executable_targets(
                 .unwrap_or(usize::MAX),
         )
     });
-    // One spawn per target per scan. The SQL guard against a `selected` claim is
-    // evaluated once, before any executor runs, so a target with several eligible
-    // slots would otherwise spawn one executor per slot. Each exits right after
-    // submitting its pull, leaving several pulls in flight against one vault and
-    // breaking the exclusive-custody assumption in the deposit recovery check.
-    // The sort is stable and recovery rows sort first, so the row kept is the
-    // highest-priority one for that target.
-    let mut seen_targets = HashSet::with_capacity(targets.len());
-    targets.retain(|target| seen_targets.insert(target.target_id));
+    // One fresh spawn per target per scan. The SQL guard against a `selected`
+    // claim is evaluated once, before any executor runs, so a target with several
+    // eligible slots would otherwise spawn one executor per slot. Each exits right
+    // after submitting its pull, leaving several pulls in flight against one vault
+    // and breaking the exclusive-custody assumption in the deposit recovery check.
+    //
+    // Recovery rows are never dropped: each is an existing claim whose pull already
+    // moved funds, and skipping one would starve it forever because the sort order
+    // is fixed. They sort first, so seeding the seen-set with them also makes a
+    // fresh slot lose to a recovery claim on the same target.
+    let mut seen_targets = targets
+        .iter()
+        .filter(|target| target.claim_token.is_some())
+        .map(|target| target.target_id)
+        .collect::<HashSet<_>>();
+    targets.retain(|target| target.claim_token.is_some() || seen_targets.insert(target.target_id));
     targets.truncate(limit);
     targets
 }
@@ -2259,6 +2266,20 @@ mod tests {
 
         // The hinted slot wins for 7068; its sibling slots must not spawn.
         assert_eq!(ordered, vec![target(7068, 870641), target(2, 102)]);
+    }
+
+    #[test]
+    fn every_recovery_claim_on_a_target_is_dispatched() {
+        // Two stuck claims on one target: dropping either would starve it forever.
+        let first = recovery_target(7068, 870640, "claim-a");
+        let second = recovery_target(7068, 870641, "claim-b");
+        let ordered = prioritize_executable_targets(
+            vec![first.clone(), target(7068, 870642), second.clone()],
+            &[],
+            10,
+        );
+
+        assert_eq!(ordered, vec![first, second]);
     }
 
     #[test]
