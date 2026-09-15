@@ -1,0 +1,39 @@
+{
+  "serviceId": "srv-dabkt0ojo6nc7381o9fg",
+  "serviceName": "loyal-backyard-rwa-worker",
+  "preState": {
+    "id": "srv-dabkt0ojo6nc7381o9fg",
+    "name": "loyal-backyard-rwa-worker",
+    "type": "background_worker",
+    "suspended": "not_suspended",
+    "suspenders": [],
+    "updatedAt": "2026-09-04T07:23:35.390081Z"
+  },
+  "suspendHttpStatus": 202,
+  "suspendResponseBody": null,
+  "postState": {
+    "id": "srv-dabkt0ojo6nc7381o9fg",
+    "name": "loyal-backyard-rwa-worker",
+    "type": "background_worker",
+    "suspended": "suspended",
+    "suspenders": [
+      "user"
+    ],
+    "updatedAt": "2026-09-09T01:59:27.932798Z"
+  },
+  "readbacks": {
+    "services": [
+      {
+        "id": "srv-dabkt0ojo6nc7381o9fg",
+        "name": "loyal-backyard-rwa-worker",
+        "suspended": "suspended"
+      }
+    ],
+    "instances": []
+  },
+  "suspendedAtUtc": "2026-09-09T01:59:46.825396Z",
+  "suspendedAtUtcSource": "UTC timestamp of API verification",
+  "performedBy": "agent on operator instruction",
+  "checklistStep": 0,
+  "date": "2026-09-08"
+}

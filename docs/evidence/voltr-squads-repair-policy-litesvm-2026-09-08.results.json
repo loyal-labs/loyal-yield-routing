@@ -1,0 +1,511 @@
+{
+  "broadcast": false,
+  "cases": {
+    "R-policy-create": {
+      "after": {
+        "custodyAta": 0,
+        "feeStateAccumulatedLpAdminFees": 89601150,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLpBits": "5633268378698",
+        "idleAta": 3793417,
+        "lpSupply": 99941522,
+        "receiptPositionValue": 2793417,
+        "squadsUsdcAta": 0,
+        "vaultTotalValue": 2793298
+      },
+      "before": {
+        "custodyAta": 0,
+        "feeStateAccumulatedLpAdminFees": 89601150,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLpBits": "5633268378698",
+        "idleAta": 3793417,
+        "lpSupply": 99941522,
+        "receiptPositionValue": 2793417,
+        "squadsUsdcAta": 0,
+        "vaultTotalValue": 2793298
+      },
+      "computeUnits": 52437,
+      "logsTail": [
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 1048 of 159660 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [2]",
+        "Program log: Instruction: LogEvent",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 1048 of 149926 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 52437 of 200000 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success"
+      ],
+      "packetBytes": 1109,
+      "packetFits": true,
+      "verdict": "PASS"
+    },
+    "R-policy-execute-sync": {
+      "after": {
+        "custodyAta": 0,
+        "feeStateAccumulatedLpAdminFees": 89601200,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLpBits": "5633275270012",
+        "idleAta": 3793417,
+        "lpSupply": 99941522,
+        "receiptPositionValue": 3793536,
+        "squadsUsdcAta": 0,
+        "vaultTotalValue": 3793417
+      },
+      "before": {
+        "custodyAta": 0,
+        "feeStateAccumulatedLpAdminFees": 89601150,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLpBits": "5633268378698",
+        "idleAta": 3793417,
+        "lpSupply": 99941522,
+        "receiptPositionValue": 2793417,
+        "squadsUsdcAta": 0,
+        "vaultTotalValue": 2793298
+      },
+      "computeUnits": 145042,
+      "logsTail": [
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 1052 of 1267941 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [2]",
+        "Program log: Instruction: LogEvent",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 1052 of 1263467 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 144892 of 1399850 compute units",
+        "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success"
+      ],
+      "packetBytes": 1067,
+      "packetFits": true,
+      "verdict": "PASS"
+    },
+    "R-policy-remove": {
+      "accountAfter": null,
+      "policyClosed": true,
+      "transaction": {
+        "after": {
+          "custodyAta": 0,
+          "feeStateAccumulatedLpAdminFees": 89601200,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLpBits": "5633275270012",
+          "idleAta": 3793417,
+          "lpSupply": 99941522,
+          "receiptPositionValue": 3793536,
+          "squadsUsdcAta": 0,
+          "vaultTotalValue": 3793417
+        },
+        "before": {
+          "custodyAta": 0,
+          "feeStateAccumulatedLpAdminFees": 89601200,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLpBits": "5633275270012",
+          "idleAta": 3793417,
+          "lpSupply": 99941522,
+          "receiptPositionValue": 3793536,
+          "squadsUsdcAta": 0,
+          "vaultTotalValue": 3793417
+        },
+        "computeUnits": 26960,
+        "logsTail": [
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 1346 of 179649 compute units",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [2]",
+          "Program log: Instruction: LogEvent",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 1048 of 175377 compute units",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 26960 of 200000 compute units",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success"
+        ],
+        "packetBytes": 318,
+        "packetFits": true,
+        "verdict": "PASS"
+      }
+    }
+  },
+  "cluster": "mainnet-beta (accounts + program binaries cloned read-only)",
+  "codeExpectationNote": {
+    "note": "The exact wires policy uses Equals U64Le constraints. The cloned deployed Squads binary rejects NAV mismatches with its numeric-value error 6064, not 6069; 6069 is not observed for this exact policy/data path.",
+    "observedNavConstraintErrorCode": 6064,
+    "observedNavConstraintErrorName": "ProgramInteractionInvalidNumericValue",
+    "observedSequenceSlotMismatchErrorCode": 8,
+    "taskRequestedNavConstraintErrorCode": 6069
+  },
+  "delegatedExecutor": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+  "dumpSlot": 445235325,
+  "generatedBy": "crates/squads-test-harness/tests/voltr_repair_paths.rs",
+  "negativeCases": {
+    "R-policy-execute-nav-too-high": {
+      "expectedErrorCode": 6064,
+      "name": "R-policy-execute-nav-too-high",
+      "observedSlot": 445667325,
+      "rejectionLayer": "Squads ProgramInteraction data constraint",
+      "reportedNav": 3793537,
+      "sequence": 445667325,
+      "sequenceEqualsObservedSlot": true,
+      "taskRequestedErrorCode": 6069,
+      "transaction": {
+        "after": {
+          "custodyAta": 0,
+          "feeStateAccumulatedLpAdminFees": 89601150,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLpBits": "5633268378698",
+          "idleAta": 3793417,
+          "lpSupply": 99941522,
+          "receiptPositionValue": 2793417,
+          "squadsUsdcAta": 0,
+          "vaultTotalValue": 2793298
+        },
+        "before": {
+          "custodyAta": 0,
+          "feeStateAccumulatedLpAdminFees": 89601150,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLpBits": "5633268378698",
+          "idleAta": 3793417,
+          "lpSupply": 99941522,
+          "receiptPositionValue": 2793417,
+          "squadsUsdcAta": 0,
+          "vaultTotalValue": 2793298
+        },
+        "computeUnits": 30435,
+        "error": "InstructionError(1, Custom(6064))",
+        "errorCode": 6064,
+        "logsTail": [
+          "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+          "Program ComputeBudget111111111111111111111111111111 success",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]",
+          "Program log: Instruction: ExecuteTransactionSyncV2",
+          "Program log: AnchorError occurred. Error Code: ProgramInteractionInvalidNumericValue. Error Number: 6064. Error Message: Program interaction data constraint failed: invalid numeric value.",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 30285 of 1399850 compute units",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x17b0"
+        ],
+        "packetBytes": 1067,
+        "packetFits": true,
+        "verdict": "REJECTED"
+      }
+    },
+    "R-policy-execute-nav-too-low": {
+      "expectedErrorCode": 6064,
+      "name": "R-policy-execute-nav-too-low",
+      "observedSlot": 445667325,
+      "rejectionLayer": "Squads ProgramInteraction data constraint",
+      "reportedNav": 3793535,
+      "sequence": 445667325,
+      "sequenceEqualsObservedSlot": true,
+      "taskRequestedErrorCode": 6069,
+      "transaction": {
+        "after": {
+          "custodyAta": 0,
+          "feeStateAccumulatedLpAdminFees": 89601150,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLpBits": "5633268378698",
+          "idleAta": 3793417,
+          "lpSupply": 99941522,
+          "receiptPositionValue": 2793417,
+          "squadsUsdcAta": 0,
+          "vaultTotalValue": 2793298
+        },
+        "before": {
+          "custodyAta": 0,
+          "feeStateAccumulatedLpAdminFees": 89601150,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLpBits": "5633268378698",
+          "idleAta": 3793417,
+          "lpSupply": 99941522,
+          "receiptPositionValue": 2793417,
+          "squadsUsdcAta": 0,
+          "vaultTotalValue": 2793298
+        },
+        "computeUnits": 30435,
+        "error": "InstructionError(1, Custom(6064))",
+        "errorCode": 6064,
+        "logsTail": [
+          "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+          "Program ComputeBudget111111111111111111111111111111 success",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]",
+          "Program log: Instruction: ExecuteTransactionSyncV2",
+          "Program log: AnchorError occurred. Error Code: ProgramInteractionInvalidNumericValue. Error Number: 6064. Error Message: Program interaction data constraint failed: invalid numeric value.",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 30285 of 1399850 compute units",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x17b0"
+        ],
+        "packetBytes": 1067,
+        "packetFits": true,
+        "verdict": "REJECTED"
+      }
+    },
+    "R-policy-execute-sequence-slot-mismatch": {
+      "expectedErrorCode": 8,
+      "name": "R-policy-execute-sequence-slot-mismatch",
+      "observedSlot": 445667326,
+      "rejectionLayer": "custom adaptor ReportSlot",
+      "reportedNav": 3793536,
+      "sequence": 445667325,
+      "sequenceEqualsObservedSlot": false,
+      "transaction": {
+        "after": {
+          "custodyAta": 0,
+          "feeStateAccumulatedLpAdminFees": 89601150,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLpBits": "5633268378698",
+          "idleAta": 3793417,
+          "lpSupply": 99941522,
+          "receiptPositionValue": 2793417,
+          "squadsUsdcAta": 0,
+          "vaultTotalValue": 2793298
+        },
+        "before": {
+          "custodyAta": 0,
+          "feeStateAccumulatedLpAdminFees": 89601150,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLpBits": "5633268378698",
+          "idleAta": 3793417,
+          "lpSupply": 99941522,
+          "receiptPositionValue": 2793417,
+          "squadsUsdcAta": 0,
+          "vaultTotalValue": 2793298
+        },
+        "computeUnits": 45587,
+        "error": "InstructionError(1, Custom(8))",
+        "errorCode": 8,
+        "logsTail": [
+          "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+          "Program ComputeBudget111111111111111111111111111111 success",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]",
+          "Program log: Instruction: ExecuteTransactionSyncV2",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 5680 of 1360093 compute units",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW failed: custom program error: 0x8",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 45437 of 1399850 compute units",
+          "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x8"
+        ],
+        "packetBytes": 1067,
+        "packetFits": true,
+        "verdict": "REJECTED"
+      }
+    }
+  },
+  "packetLimitBytes": 1232,
+  "policy": {
+    "address": "7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR",
+    "bump": 254,
+    "createDataBytes": 837,
+    "createDataMatchesWires": true,
+    "createDataSha256": "796624dfef068d71db889913de3527f36c23e19e11aafc9e370f021b649f153e",
+    "encoding": "LegacyProgramInteraction",
+    "installed": {
+      "constraints": [
+        {
+          "accountConstraints": [
+            {
+              "index": 0,
+              "keys": [
+                "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            },
+            {
+              "index": 1,
+              "keys": [
+                "C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            }
+          ],
+          "dataConstraints": [
+            {
+              "kind": "U8Slice",
+              "offset": "0",
+              "operator": "Equals",
+              "value": "a4aff629b28c230300"
+            },
+            {
+              "kind": "U64Le",
+              "offset": "9",
+              "operator": "Equals",
+              "value": "0"
+            },
+            {
+              "kind": "U64Le",
+              "offset": "39",
+              "operator": "Equals",
+              "value": "3793536"
+            },
+            {
+              "kind": "U8Slice",
+              "offset": "17",
+              "operator": "Equals",
+              "value": "013900000001"
+            }
+          ],
+          "programId": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"
+        },
+        {
+          "accountConstraints": [
+            {
+              "index": 0,
+              "keys": [
+                "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            },
+            {
+              "index": 2,
+              "keys": [
+                "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            },
+            {
+              "index": 3,
+              "keys": [
+                "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            },
+            {
+              "index": 8,
+              "keys": [
+                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            },
+            {
+              "index": 11,
+              "keys": [
+                "FTDWN5Ay8tzYPJBJT4s2oZaHRQ7jKPo8XP2ZRWb5GP3M"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            },
+            {
+              "index": 12,
+              "keys": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            },
+            {
+              "index": 13,
+              "keys": [
+                "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            },
+            {
+              "index": 14,
+              "keys": [
+                "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            },
+            {
+              "index": 15,
+              "keys": [
+                "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            },
+            {
+              "index": 16,
+              "keys": [
+                "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            },
+            {
+              "index": 17,
+              "keys": [
+                "C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5"
+              ],
+              "kind": "Pubkey",
+              "owner": null
+            }
+          ],
+          "dataConstraints": [
+            {
+              "kind": "U8Slice",
+              "offset": "0",
+              "operator": "Equals",
+              "value": "f65239e283defdf9"
+            },
+            {
+              "kind": "U64Le",
+              "offset": "8",
+              "operator": "Equals",
+              "value": "0"
+            },
+            {
+              "kind": "U64Le",
+              "offset": "51",
+              "operator": "Equals",
+              "value": "3793536"
+            },
+            {
+              "kind": "U8Slice",
+              "offset": "16",
+              "operator": "Equals",
+              "value": "0108000000f223c68952e1f2b6013900000001"
+            }
+          ],
+          "programId": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+        }
+      ],
+      "delegatedSigner": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+      "policy": "7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR",
+      "pubkeyTable": [],
+      "seed": 140,
+      "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+      "spendingLimits": 0,
+      "threshold": 1,
+      "vaultIndex": 0
+    },
+    "policyAccountDataBytes": 1420,
+    "policyAccountDataSha256": "8eb6899b722be23bd0c702c0668313f6bde9382736d27e236b384bc6f72515c8",
+    "seed": 140,
+    "threshold": 1,
+    "timeLock": 0,
+    "wireCreateDataBytes": 837,
+    "wireCreateDataSha256": "796624dfef068d71db889913de3527f36c23e19e11aafc9e370f021b649f153e"
+  },
+  "programs": {
+    "adaptor": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+    "squadsSmartAccount": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+    "voltr": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+  },
+  "repair": {
+    "reportedNav": 3793536,
+    "sequence": 445667325,
+    "sequenceEqualsClockSlot": true,
+    "ticketLastConsumedSequence": 445667325
+  },
+  "schema": "voltr-squads-repair-policy-litesvm/v1",
+  "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+  "settingsPolicySeedAfter": 140,
+  "settingsPolicySeedBefore": 139,
+  "settingsSigner": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+  "signatureProof": false,
+  "squadsPolicyExecutionProof": true,
+  "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "vaultIndex": 0,
+  "verdict": "PASS"
+}

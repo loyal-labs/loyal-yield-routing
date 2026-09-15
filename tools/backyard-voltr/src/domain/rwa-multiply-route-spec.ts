@@ -51,7 +51,8 @@ export type RwaMultiplyRouteSpec = Readonly<{
     strategyConfig: Address;
     strategyDerivationDomain: string;
     settingsSigner: Address;
-    maxReportedNavRaw: 2_000_000_000_000n;
+    /** Reported-NAV bound of the live adaptor config; strategy two rotates it. */
+    maxReportedNavRaw: bigint;
     maxReportAgeSlots: 32n;
   }>;
   voltrAdmission: Readonly<{

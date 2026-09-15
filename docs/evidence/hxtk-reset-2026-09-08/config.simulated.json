@@ -1,0 +1,135 @@
+{
+  "canonicalStateRoot": "/Users/user/.loyal/hxtk-reset/HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "schema": "loyal-voltr-hxtk-reset-step/v1",
+  "step": "config",
+  "sent": false,
+  "verdict": "SIMULATION_PASS_UNSENT",
+  "broadcast": false,
+  "before": {
+    "contextSlot": 445472112,
+    "epoch": 1031,
+    "totalValue": "2793298",
+    "idleBalance": "3793417",
+    "custody1Balance": "0",
+    "receipt1PositionValue": "2793417",
+    "receipt1CustodyTracked": "0",
+    "lpSupply": "99941522",
+    "deadWeight": "1000",
+    "feeAccumulatedLpManager": "0",
+    "feeAccumulatedLpAdmin": "89601150",
+    "feeAccumulatedLpProtocol": "0",
+    "lockedProfitDegradationDuration": "86400",
+    "withdrawalWaitingPeriod": "600",
+    "adminPerformanceFeeBps": 500,
+    "managerPerformanceFeeBps": 0,
+    "maxCap": "1000000000000",
+    "lastUpdatedLockedProfit": "0",
+    "lockedProfitLastReport": "1788497414",
+    "highWaterMarkBits": "5633268378698",
+    "managerLpBalance": null,
+    "adminLpBalance": "0",
+    "treasuryLpBalance": null,
+    "requestEscrowLpBalance": "99941522",
+    "adminUsdcBalance": "3022630",
+    "squadsUsdcBalance": "0",
+    "requestReceipt": {
+      "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+      "userTransferAuthority": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "amountLpEscrowed": "99941522",
+      "amountAssetBits": "497586472129346763441",
+      "amountAssetToWithdrawRaw": "1767782",
+      "withdrawableFromTs": "1788493649",
+      "bump": 255
+    },
+    "reportTicket": {
+      "version": 1,
+      "armed": false,
+      "lastConsumedSequence": "444157930",
+      "activeSequence": "0",
+      "activeHashIsZero": true
+    },
+    "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+    "tvEqualsIdle": false
+  },
+  "transaction": {
+    "packetBytes": 354,
+    "unitsConsumed": 10973,
+    "instructions": [
+      "updateVaultConfig(LockedProfitDegradationDuration, u64 0)",
+      "updateVaultConfig(AdminPerformanceFee, u16 0)"
+    ],
+    "accounts": {
+      "admin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "protocol": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+      "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+      "rent": "SysvarRent111111111111111111111111111111111"
+    },
+    "signer": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+    "signerEnvVar": "SOLANA_TESTING_PK",
+    "executeCommand": "op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk config --execute --journal /absolute/path/hxtk-config.json"
+  },
+  "checks": [
+    {
+      "check": "simulation succeeds",
+      "pass": true,
+      "expected": null,
+      "actual": null
+    },
+    {
+      "check": "lockedProfitDegradationDuration -> 0",
+      "pass": true,
+      "expected": "0",
+      "actual": "0"
+    },
+    {
+      "check": "adminPerformanceFeeBps -> 0",
+      "pass": true,
+      "expected": 0,
+      "actual": 0
+    },
+    {
+      "check": "books untouched (tv, idle, lp supply, receipt1, custody1)",
+      "pass": true,
+      "expected": "2793298",
+      "actual": "2793298"
+    },
+    {
+      "check": "event 1: LockedProfitDegradationDuration 86400 -> 0",
+      "pass": true,
+      "expected": "86400 -> 0",
+      "actual": "86400 -> 0"
+    },
+    {
+      "check": "event 2: AdminPerformanceFee 500 -> 0",
+      "pass": true,
+      "expected": "500 -> 0",
+      "actual": "500 -> 0"
+    }
+  ],
+  "events": [
+    {
+      "admin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+      "field": "LockedProfitDegradationDuration",
+      "oldValue": "86400",
+      "newValue": "0",
+      "updatedTs": "1788912941"
+    },
+    {
+      "admin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+      "field": "AdminPerformanceFee",
+      "oldValue": "500",
+      "newValue": "0",
+      "updatedTs": "1788912941"
+    }
+  ],
+  "postState": {
+    "lockedProfitDegradationDuration": "0",
+    "adminPerformanceFeeBps": 0,
+    "totalValue": "2793298",
+    "admin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+    "manager": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+  },
+  "signed": false
+}

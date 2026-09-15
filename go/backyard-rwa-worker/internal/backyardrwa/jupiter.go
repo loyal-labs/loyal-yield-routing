@@ -41,6 +41,9 @@ type JupiterSwapInstruction struct {
 	ProgramID string                      `json:"programId"`
 	Accounts  []JupiterInstructionAccount `json:"accounts"`
 	Data      string                      `json:"data"`
+	// Quote metadata, not instruction bytes or authority. Tables must be read
+	// from chain and may only encode accounts already present above.
+	LookupTableAddresses []string `json:"lookupTableAddresses,omitempty"`
 }
 
 type JupiterQuote struct {
@@ -67,6 +70,10 @@ type JupiterSwapRequest struct {
 	RecentBlockhash         string
 	LastValidBlockHeight    int64
 	RouteLane               string
+	LookupTables            []LookupTableSnapshot `json:",omitempty"`
+	FullPayoffFunding       bool                  `json:"fullPayoffFunding,omitempty"`
+	EntryReturnReserved     bool                  `json:"entryReturnReserved,omitempty"`
+	PositionReturnReserved  bool                  `json:"positionReturnReserved,omitempty"`
 }
 
 type JupiterExecutionEvidence struct {
@@ -100,14 +107,25 @@ func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMin
 	if lane == "" {
 		lane = RouteID
 	}
-	if lane == SelectedRouteID {
+	if catalogJupiterRoute(lane) {
+		b, err := catalogJupiterBindingForRoute(action, lane)
+		return b.SourceMint, b.DestinationMint, b.SourceCustody, b.DestinationCustody, err
+	}
+	if lane != RouteID && lane != PhaseOneLaneID && lane != SelectedRouteID && lane != "OnRe/ONyc/USDC" {
+		return "", "", "", "", fmt.Errorf("unregistered Jupiter lane")
+	}
+	if lane == PhaseOneLaneID || lane == SelectedRouteID || lane == "OnRe/ONyc/USDC" {
+		route, err := runtimeRoute(lane)
+		if err != nil {
+			return "", "", "", "", err
+		}
 		switch action {
 		case SwapStableToCollateralStep, SwapUSDCToPrimeStep:
-			return bridgeUSDC, mapleSyrupUSDCUSDC.Kamino.CollateralMint, bridgeSquadsATA, mapleSyrupUSDCUSDC.CollateralCustody, nil
+			return bridgeUSDC, route.Kamino.CollateralMint, bridgeSquadsATA, route.CollateralCustody, nil
 		case SwapCollateralToStableStep, SwapPrimeToUSDCStep:
-			return mapleSyrupUSDCUSDC.Kamino.CollateralMint, bridgeUSDC, mapleSyrupUSDCUSDC.CollateralCustody, bridgeSquadsATA, nil
+			return route.Kamino.CollateralMint, bridgeUSDC, route.CollateralCustody, bridgeSquadsATA, nil
 		default:
-			return "", "", "", "", fmt.Errorf("action %s is not an approved Maple Jupiter edge", action)
+			return "", "", "", "", fmt.Errorf("action %s is not an approved basic Jupiter edge", action)
 		}
 	}
 	switch action {
@@ -137,6 +155,15 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 		"amount": {strconv.FormatUint(amount, 10)}, "slippageBps": {strconv.Itoa(int(jupiterMaxSlippageBPS))},
 		"swapMode": {"ExactIn"}, "maxAccounts": {"32"},
 	}
+	if catalogJupiterRoute(lane) {
+		binding, err := catalogJupiterBindingForRoute(action, lane)
+		if err != nil {
+			return JupiterQuote{}, JupiterSwapInstruction{}, err
+		}
+		if binding.fixedPrefixV2() {
+			query.Set("instructionVersion", "V2")
+		}
+	}
 	if lane == SelectedRouteID {
 		// The selected RWA representative was reviewed against Manifest. Keep
 		// Jupiter's optimizer inside that one venue family instead of accepting
@@ -159,9 +186,17 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 	if err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
 	}
+	useSharedAccounts := true
+	if catalogJupiterRoute(lane) {
+		binding, err := catalogJupiterBindingForRoute(action, lane)
+		if err != nil {
+			return JupiterQuote{}, JupiterSwapInstruction{}, err
+		}
+		useSharedAccounts = binding.DiscriminatorHex == "c1209b3341d69c81" || binding.fixedPrefixV2()
+	}
 	body, err := json.Marshal(map[string]any{
 		"userPublicKey": bridgeVault, "quoteResponse": json.RawMessage(quoteRaw),
-		"wrapAndUnwrapSol": false, "useSharedAccounts": true, "dynamicComputeUnitLimit": false,
+		"wrapAndUnwrapSol": false, "useSharedAccounts": useSharedAccounts, "dynamicComputeUnitLimit": false,
 	})
 	if err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
@@ -176,11 +211,12 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
 	}
 	var response struct {
-		SetupInstructions      []json.RawMessage      `json:"setupInstructions"`
-		OtherInstructions      []json.RawMessage      `json:"otherInstructions"`
-		CleanupInstruction     json.RawMessage        `json:"cleanupInstruction"`
-		TokenLedgerInstruction json.RawMessage        `json:"tokenLedgerInstruction"`
-		SwapInstruction        JupiterSwapInstruction `json:"swapInstruction"`
+		AddressLookupTableAddresses []string               `json:"addressLookupTableAddresses"`
+		SetupInstructions           []json.RawMessage      `json:"setupInstructions"`
+		OtherInstructions           []json.RawMessage      `json:"otherInstructions"`
+		CleanupInstruction          json.RawMessage        `json:"cleanupInstruction"`
+		TokenLedgerInstruction      json.RawMessage        `json:"tokenLedgerInstruction"`
+		SwapInstruction             JupiterSwapInstruction `json:"swapInstruction"`
 	}
 	if err := json.Unmarshal(responseRaw, &response); err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, fmt.Errorf("decode Jupiter instructions: %w", err)
@@ -191,8 +227,16 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 	if _, err := validateJupiterInstructionForRoute(response.SwapInstruction, action, amount, out, minimum, lane); err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
 	}
-	if err := validateInstalledJupiterHeader(action, response.SwapInstruction); err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, err
+	if !catalogJupiterRoute(lane) {
+		if err := validateInstalledJupiterHeader(action, response.SwapInstruction); err != nil {
+			return JupiterQuote{}, JupiterSwapInstruction{}, err
+		}
+	}
+	if acceptsJupiterLookupHints(lane, action) {
+		response.SwapInstruction.LookupTableAddresses = response.AddressLookupTableAddresses
+		if err := validateJupiterLookupCandidates(response.AddressLookupTableAddresses); err != nil {
+			return JupiterQuote{}, JupiterSwapInstruction{}, err
+		}
 	}
 	return quote, response.SwapInstruction, nil
 }
@@ -257,18 +301,6 @@ func validateJupiterQuoteForRoute(quote JupiterQuote, action Action, amount uint
 		len(quote.RoutePlan) == 0 || len(quote.RoutePlan) > jupiterMaxRoutePlanLeg || !jsonNull(quote.PlatformFee) {
 		return 0, 0, fmt.Errorf("Jupiter quote identity or economics drifted")
 	}
-	if lane == SelectedRouteID {
-		for _, raw := range quote.RoutePlan {
-			var step struct {
-				SwapInfo struct {
-					Label string `json:"label"`
-				} `json:"swapInfo"`
-			}
-			if json.Unmarshal(raw, &step) != nil || step.SwapInfo.Label != "Manifest" {
-				return 0, 0, fmt.Errorf("selected Jupiter venue drifted")
-			}
-		}
-	}
 	return out, minimum, nil
 }
 
@@ -277,6 +309,9 @@ func validateJupiterInstruction(value JupiterSwapInstruction, action Action, amo
 }
 
 func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Action, amount, out, minimum uint64, lane string) (compiledInstruction, error) {
+	if catalogJupiterRoute(lane) {
+		return validateCatalogJupiterInstruction(value, action, amount, out, minimum, lane)
+	}
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(action, lane)
 	if err != nil {
 		return compiledInstruction{}, err
@@ -344,6 +379,65 @@ func BuildAndSignJupiterTransaction(request JupiterSwapRequest, executor ed25519
 	return buildAndSignJupiterTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
 }
 
+func CompileJupiterMessage(request JupiterSwapRequest) ([]byte, error) {
+	return compileJupiterMessageForDelegate(request, mustKey(bridgeDelegate))
+}
+
+func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publicKey) ([]byte, error) {
+	if request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 || !validSHA256(request.PolicyAccountDataSHA256) {
+		return nil, fmt.Errorf("invalid Jupiter request")
+	}
+	blockhash, err := decodeKey(request.RecentBlockhash)
+	if err != nil {
+		return nil, err
+	}
+	inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
+	if err != nil {
+		return nil, err
+	}
+	if catalogJupiterRoute(request.RouteLane) {
+		b, err := catalogJupiterBindingForRoute(request.Action, request.RouteLane)
+		if err != nil || request.Policy != b.Policy || request.PolicyAccountDataSHA256 != b.PolicySHA256 || request.PolicyConstraintIndex != b.ConstraintIndex {
+			return nil, fmt.Errorf("Jupiter policy does not match catalog edge")
+		}
+	} else if request.RouteLane == PhaseOneLaneID || request.RouteLane == SelectedRouteID || request.RouteLane == "OnRe/ONyc/USDC" {
+		_, _, sourceCustody, destinationCustody, err := jupiterEdgeForRoute(request.Action, request.RouteLane)
+		if err != nil {
+			return nil, err
+		}
+		binding, index, err := resolveBasicSwapPolicy(sourceCustody, destinationCustody)
+		if err != nil || request.Policy != binding.Policy || request.PolicyConstraintIndex != index {
+			return nil, fmt.Errorf("Jupiter policy does not match the basic swap family")
+		}
+	} else if request.RouteLane != PhaseOneLaneID && request.RouteLane != SelectedRouteID && request.RouteLane != "OnRe/ONyc/USDC" && err == nil {
+		err = validateInstalledJupiterHeader(request.Action, request.Instruction)
+		if err != nil {
+			return nil, err
+		}
+	}
+	policy, err := decodeKey(request.Policy)
+	if err != nil || policy == (publicKey{}) {
+		return nil, fmt.Errorf("invalid Jupiter policy binding")
+	}
+	outer, err := wrapSquadsJupiterPolicy(policy, delegate, delegate, request.PolicyConstraintIndex, inner)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateJupiterLookupIdentities(request); err != nil {
+		return nil, err
+	}
+	var message []byte
+	if len(request.LookupTables) > 0 {
+		message, err = compileV0Message(delegate, blockhash, []compiledInstruction{outer}, request.LookupTables)
+	} else {
+		message, err = compileLegacyMessage(delegate, blockhash, []compiledInstruction{outer})
+	}
+	if err != nil {
+		return nil, err
+	}
+	return checkedUnsignedMessage(message)
+}
+
 func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedJupiterTransaction, error) {
 	if len(executor) != ed25519.PrivateKeySize || request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 || !validSHA256(request.PolicyAccountDataSHA256) {
 		return SignedJupiterTransaction{}, fmt.Errorf("invalid Jupiter signing material")
@@ -352,26 +446,7 @@ func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, execu
 	if feePayer != expectedDelegate {
 		return SignedJupiterTransaction{}, fmt.Errorf("executor is not the pinned Squads delegate")
 	}
-	blockhash, err := decodeKey(request.RecentBlockhash)
-	if err != nil {
-		return SignedJupiterTransaction{}, fmt.Errorf("invalid confirmed blockhash")
-	}
-	inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
-	if err != nil {
-		return SignedJupiterTransaction{}, err
-	}
-	if err := validateInstalledJupiterHeader(request.Action, request.Instruction); err != nil {
-		return SignedJupiterTransaction{}, err
-	}
-	policy, err := decodeKey(request.Policy)
-	if err != nil || policy == (publicKey{}) {
-		return SignedJupiterTransaction{}, fmt.Errorf("invalid Jupiter policy binding")
-	}
-	outer, err := wrapSquadsJupiterPolicy(policy, feePayer, expectedDelegate, request.PolicyConstraintIndex, inner)
-	if err != nil {
-		return SignedJupiterTransaction{}, err
-	}
-	message, err := compileLegacyMessage(feePayer, blockhash, []compiledInstruction{outer})
+	message, err := compileJupiterMessageForDelegate(request, expectedDelegate)
 	if err != nil {
 		return SignedJupiterTransaction{}, err
 	}
@@ -432,6 +507,9 @@ func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc
 		return err
 	}
 	if _, err := DecodeExpectedEffects(effects); err != nil {
+		return err
+	}
+	if err := authorizePhase3ProductionBuild(ctx, database, rpc, operationID, evidence.Request, evidence.ExpectedEffects, effects); err != nil {
 		return err
 	}
 	signer, err := loadPinnedPolicySigner()

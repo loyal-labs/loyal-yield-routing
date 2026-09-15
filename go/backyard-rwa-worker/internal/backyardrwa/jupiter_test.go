@@ -70,6 +70,10 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		unsigned, err := compileJupiterMessageForDelegate(request, delegate)
+		if err != nil || !bytes.Equal(unsigned, signed.message) {
+			t.Fatalf("unsigned Jupiter fee message differs: %v", err)
+		}
 		if len(signed.signedWire) > solanaPacketBytes || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:65]) {
 			t.Fatalf("%s wire is not a signed bounded packet", test.action)
 		}

@@ -73,6 +73,14 @@ const MIGRATION_0072: &str =
     include_str!("../migrations/0072_backyard_rwa_phase2_route_neutral_actions.sql");
 const MIGRATION_0073: &str =
     include_str!("../migrations/0073_backyard_rwa_expired_absent_failure.sql");
+const MIGRATION_0074: &str =
+    include_str!("../migrations/0074_backyard_rwa_phase3_journal_actions.sql");
+const MIGRATION_0075: &str =
+    include_str!("../migrations/0075_backyard_rwa_setup_pre_simulation_wire.sql");
+const MIGRATION_0076: &str =
+    include_str!("../migrations/0076_backyard_rwa_manual_recovery_latch.sql");
+const MIGRATION_0077: &str =
+    include_str!("../migrations/0077_backyard_rwa_manual_recovery_generation.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -623,6 +631,30 @@ impl NeonSqlClient {
                 version: 73,
                 name: "backyard_rwa_expired_absent_failure",
                 sql: MIGRATION_0073,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 74,
+                name: "backyard_rwa_phase3_journal_actions",
+                sql: MIGRATION_0074,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 75,
+                name: "backyard_rwa_setup_pre_simulation_wire",
+                sql: MIGRATION_0075,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 76,
+                name: "backyard_rwa_manual_recovery_latch",
+                sql: MIGRATION_0076,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 77,
+                name: "backyard_rwa_manual_recovery_generation",
+                sql: MIGRATION_0077,
                 expected_checksum: None,
             },
         ] {

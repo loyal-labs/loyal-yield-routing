@@ -24,3 +24,23 @@ test("K-Lend null oracle sentinel is omitted rather than passed to RefreshReserv
   assert.equal(hasConfiguredKaminoOracle("11111111111111111111111111111111"), false);
   assert.equal(hasConfiguredKaminoOracle("3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH"), true);
 });
+
+test("explicit debt farms change only the borrow and repay farm positions",()=>{
+  const root=resolve(fileURLToPath(new URL("../../../..",import.meta.url)));
+  const resolution=JSON.parse(readFileSync(resolve(root,"docs/evidence/backyard-rwa-go/policy-resolution-v1.json"),"utf8"));
+  const lane=resolutionLanes(resolution).find(l=>l.key==="Maple/syrupUSDC/USDC");
+  assert.ok(lane);
+  const debt={farm:"87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y",user:"CcUorNoacydFVu7SHmhsA1qi9CcEu8K5YFvuS8unAzgr"};
+  const original=buildPhaseTwoKaminoLaneOperations(lane,9n);
+  const current=buildPhaseTwoKaminoLaneOperations(lane,9n,{debt});
+  for (let i=0;i<current.length;i++) {
+    const before=original[i]!,after=current[i]!;
+    assert.equal(after.dataBase64,before.dataBase64);
+    const changed=after.accounts.flatMap((a,index)=>a.address!==before.accounts[index]?.address?[index]:[]);
+    assert.deepEqual(changed,after.operation==="borrow"?[12,13]:after.operation==="repay"?[9,10]:[]);
+    if (changed.length) {
+      assert.equal(after.accounts[changed[0]!]!.address,debt.user);
+      assert.equal(after.accounts[changed[1]!]!.address,debt.farm);
+    }
+  }
+});

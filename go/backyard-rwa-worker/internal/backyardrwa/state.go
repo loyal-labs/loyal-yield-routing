@@ -22,10 +22,16 @@ const (
 	SwapCollateralToStableStep Action = "SWAP_COLLATERAL_TO_STABLE_STEP"
 	OpenRouteStep              Action = "OPEN_ROUTE_STEP"
 	DeleverRouteStep           Action = "DELEVER_ROUTE_STEP"
+	SwapDebtToCollateralStep   Action = "SWAP_DEBT_TO_COLLATERAL_STEP"
+	SwapCollateralToDebtStep   Action = "SWAP_COLLATERAL_TO_DEBT_STEP"
+	SwapUSDCToDebtStep         Action = "SWAP_USDC_TO_DEBT_STEP"
+	SwapDebtToUSDCStep         Action = "SWAP_DEBT_TO_USDC_STEP"
 	StageSquadsToVoltr         Action = "STAGE_SQUADS_TO_VOLTR"
 	VoltrRestoreIdle           Action = "VOLTR_RESTORE_IDLE"
 	ReportNAV                  Action = "REPORT_NAV"
 	HoldManualRecovery         Action = "HOLD_MANUAL_RECOVERY"
+	PolicySetupPrefund         Action = "POLICY_SETUP_PREFUND"
+	PolicySetupCreate          Action = "POLICY_SETUP_CREATE"
 )
 
 type OperationStatus string
@@ -58,13 +64,33 @@ type Snapshot struct {
 	// CollateralIdleRaw is the selected lane's idle collateral amount. For the
 	// PRIME route it is deliberately left unset and PrimeIdleRaw remains the
 	// compatibility field.
-	CollateralIdleRaw          int64
-	RouteLane                  string
-	StrategyKey                string
-	CutoverDrain               bool
-	VoltrStrategyIdleRaw       int64
-	VoltrIdleRaw               int64
-	HasPosition                bool
+	CollateralIdleRaw int64
+	// Same-batch, rounded-down bridge-USDC NAV value, used only to select a
+	// plausible funding source. The executable quote minimum remains the gate.
+	CollateralIdleValueRaw int64
+	// Smallest input admitted by the current reserve-derived rounding bound.
+	// Remainders below this stay in custody for exit, not repeated deposits.
+	MinimumCollateralDepositRaw int64
+	// DebtIdleRaw is in the selected debt mint's raw units. SquadsIdleRaw
+	// remains bridge USDC, even when the lane borrows PYUSD/USDG/USDS.
+	DebtIdleRaw int64
+	// PayoffDebtRaw includes the current finite interest window for non-USDC
+	// debt. Observation and final-send validation independently recompute it.
+	PayoffDebtRaw        int64
+	RouteLane            string
+	StrategyKey          string
+	CutoverDrain         bool
+	VoltrStrategyIdleRaw int64
+	VoltrIdleRaw         int64
+	HasPosition          bool
+	// ObligationPresent is the observed existence of the lane's Kamino
+	// obligation account, and ObligationPresenceKnown is set only by the
+	// production observe path, so hand-built unit snapshots keep their existing
+	// decisions. A missing obligation cannot receive a deposit: entry planning
+	// holds on it instead of allocating or swapping collateral into a deposit
+	// Kamino would refuse.
+	ObligationPresent          bool
+	ObligationPresenceKnown    bool
 	PositionCollateralRaw      int64
 	PositionDebtRaw            int64
 	PositionCollateralValueRaw int64
@@ -75,18 +101,68 @@ type Snapshot struct {
 	PriorReportUpdatedUnix     int64
 	ReportSequence             int64
 	ReportSnapshotDigest       string
-	LTVBPS                     int64
-	LiquidationThresholdBPS    int64
-	Fresh                      bool
-	CapacityRaw                int64
-	PolicyLimitRaw             int64
-	MaxTargetLTVEntryRaw       int64
-	BorrowUtilizationBlocked   bool
-	PolicyReady                bool
-	ExitBuildable              bool
-	CapitalMutated             bool
-	PostMutationNAVRequired    bool
-	LastReportAgeSeconds       int64
+	// Voltr book reads from the same confirmed batch. VoltrTotalValueRaw closes
+	// the M1 identity together with the custody Voltr books itself
+	// (VoltrReceiptCustodyTrackedRaw, receipt offset 128); the observed strategy
+	// custody ATA balance (VoltrStrategyIdleRaw) is deliberately absent from
+	// that identity because a stage in flight moves Squads cash into the ATA
+	// without invoking Voltr.
+	VoltrTotalValueRaw             int64
+	VoltrReceiptCustodyTrackedRaw  int64
+	LockedProfitDegradationSeconds int64
+	LastUpdatedLockedProfitRaw     int64
+	LastLockedProfitReportUnix     int64
+	// FeeAccumulatorRaw is the un-harvested LP fee Voltr has accrued, and
+	// LPSupplyInclFeesRaw is the supply those fees are bounded against. The
+	// performance-fee terms must both stay zero until they are calibrated.
+	FeeAccumulatorRaw        int64
+	LPSupplyInclFeesRaw      int64
+	ManagerPerformanceFeeBPS int64
+	AdminPerformanceFeeBPS   int64
+	// StagedAmountRaw is the amount of the most recent reconciled
+	// STAGE_SQUADS_TO_VOLTR operation for this route, with StagedAmountKnown
+	// false when the journal has no such operation. A restore must debit
+	// exactly this amount out of custody; anything else is a custody mismatch.
+	StagedAmountRaw   int64
+	StagedAmountKnown bool
+	// Phase 2 monitor inputs. MonitorsArmed is set only when the serialized
+	// worker merged a coherent confirmed route NAV batch, so hand-built unit
+	// snapshots keep their existing decisions. The journal, ticket, and
+	// program-identity fields are filled by the production observe path.
+	MonitorsArmed                 bool
+	TicketLastConsumedSequenceRaw int64
+	JournalSequenceKnown          bool
+	JournalReconciledSequenceRaw  int64
+	JournalArmedNAVKnown          bool
+	JournalArmedNAVRaw            int64
+	// JournalArmedNAVReturnDataMissing and JournalArmedNAVMalformed record a
+	// reconciled ticket-consuming operation that carries no usable adaptor
+	// return data: both are durable holds, never a silent disarm.
+	JournalArmedNAVReturnDataMissing bool
+	JournalArmedNAVMalformed         bool
+	// StageTransient is true when a reconciled stage is newer than the last
+	// ticket-consuming operation, so nonzero custody is the expected stage leg.
+	StageTransient bool
+	// StrategyReceiptIntegrityFault records a confirmed batch whose strategy
+	// receipt is absent, foreign-owned, or the wrong length: an observed
+	// integrity failure that holds durably instead of failing the tick before
+	// any decision exists.
+	StrategyReceiptIntegrityFault bool
+	ProgramIdentityKnown          bool
+	VoltrProgramDeploySlot        int64
+	AdaptorProgramDeploySlot      int64
+	LTVBPS                        int64
+	LiquidationThresholdBPS       int64
+	Fresh                         bool
+	CapacityRaw                   int64
+	PolicyLimitRaw                int64
+	MaxTargetLTVEntryRaw          int64
+	BorrowUtilizationBlocked      bool
+	PolicyReady                   bool
+	ExitBuildable                 bool
+	CapitalMutated                bool
+	PostMutationNAVRequired       bool
+	LastReportAgeSeconds          int64
 }
 
 type Decision struct {
@@ -101,12 +177,30 @@ func (d Decision) Validate() error {
 	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 {
 		return fmt.Errorf("incomplete decision")
 	}
+	if isPolicySetupAction(d.Action) {
+		if d.StrategyKey != "OnRe/ONyc/USDC" || d.Reason != "phase3_policy_setup" || d.AmountRaw <= 0 {
+			return fmt.Errorf("invalid policy setup decision")
+		}
+		return nil // Journal identity only; not a runtime lane registration.
+	}
 	neutral := d.Action == SwapStableToCollateralStep || d.Action == SwapCollateralToStableStep || d.Action == OpenRouteStep || d.Action == DeleverRouteStep
-	if neutral && d.StrategyKey != SelectedRouteID {
+	catalog := false
+	basic := false
+	if route, err := runtimeRoute(d.StrategyKey); err == nil {
+		catalog = route.Kamino.DebtMint != bridgeUSDC && len(route.KaminoPolicies) == 4
+		basic = route.BasicPolicy
+	}
+	if neutral && d.StrategyKey != SelectedRouteID && !catalog && !basic {
 		return fmt.Errorf("route-neutral action requires the selected Phase 2 strategy")
 	}
-	if d.StrategyKey != "" && d.StrategyKey != RouteID && d.StrategyKey != PhaseOneLaneID && d.StrategyKey != SelectedRouteID && d.Action != HoldManualRecovery {
+	if d.StrategyKey != "" && d.StrategyKey != RouteID && d.StrategyKey != PhaseOneLaneID && d.StrategyKey != SelectedRouteID && !basic && !catalog && d.Action != HoldManualRecovery {
 		return fmt.Errorf("decision strategy is not installed")
+	}
+	if d.Action == SwapDebtToCollateralStep || d.Action == SwapCollateralToDebtStep || d.Action == SwapUSDCToDebtStep || d.Action == SwapDebtToUSDCStep {
+		if !catalog {
+			return fmt.Errorf("debt conversion requires an exact non-USDC runtime binding")
+		}
+		return nil
 	}
 	switch d.Action {
 	case Hold, RecoverTransaction, VoltrAllocateToSquads, SwapUSDCToPrimeStep,
@@ -182,6 +276,12 @@ type SimulationResult struct {
 type SignatureObservation struct {
 	Found            bool
 	Confirmed        bool
+	Finalized        bool
+	Settled          bool
+	ProcessedOnly    bool
 	ConfirmationSlot int64
-	Failed           bool
+	// Failed is true only for a settled (confirmed/finalized) on-chain error.
+	// A processed-only failure is never reported here: it can still be forked
+	// away, so it stays an observation, not a transition.
+	Failed bool
 }

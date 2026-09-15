@@ -1,0 +1,458 @@
+{
+  "broadcast": false,
+  "cluster": "mainnet-beta (accounts + program binaries cloned read-only)",
+  "deficit": 119,
+  "delegatedExecutor": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+  "dumpGenesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "dumpSlot": 445235325,
+  "generatedBy": "crates/squads-test-harness/tests/voltr_repair_paths.rs",
+  "initialState": {
+    "custodyAta": 0,
+    "feeStateAccumulatedLpAdminFees": 89601150,
+    "feeStateAccumulatedLpManagerFees": 0,
+    "feeStateAccumulatedLpProtocolFees": 0,
+    "highWaterMarkAssetPerLpBits": "5633268378698",
+    "idleAta": 3793417,
+    "lpSupply": 99941522,
+    "receiptPositionValue": 2793417,
+    "squadsUsdcAta": 0,
+    "vaultTotalValue": 2793298
+  },
+  "programs": {
+    "adaptor": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+    "squadsSmartAccount": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+    "voltr": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+  },
+  "schema": "voltr-repair-litesvm/v1",
+  "signatureProof": false,
+  "signerOverridesAndCaveats": [
+    "LiteSVM built with with_sigverify(false) + with_blockhash_check(false); all transactions carry default (zero) signatures.",
+    "The Squads vault PDA (ST999…, = vault.manager) is marked a transaction signer directly for the arm_report + deposit_strategy/withdraw_strategy crank, replicating the privilege the Squads smart-account program's CPI grants after the installed REPORT_NAV / allocation / withdraw policies authorise it. The real Squads policy execution is NOT performed; it is instead verified structurally (see policyCheck).",
+    "The v2 adaptor config (9hDH…) has NO delegate field; arming is authorised by the Squads vault signer, so no delegate override was needed.",
+    "T2 fake-signs the LP holder wallet (8eufrx…, userTransferAuthority) — sigverify disabled.",
+    "T4/T6 fake-sign the vault admin (BAqgb…) / manager (ST999…); admin lamports are airdropped locally as fee payer.",
+    "T3 pre-stages the Squads USDC ATA and the strategy custody ATA to model the external OnRe allocate/sweep legs, which are not present in LiteSVM (token-balance overrides only; no policy/authority/program changes).",
+    "T5 pre-seeds a synthetic LP token account for a fresh user."
+  ],
+  "squadsPolicyCheck": {
+    "armAmountOffset9IsZero": true,
+    "armReportTagOffset17Matches": true,
+    "conclusion": "The T1 repair crank reports amount=0 (satisfying the zero-amount refresh constraint) and carries the repair NAV in the policy-unconstrained ReportV1 body, so it passes the installed seed-63 nav_refresh ProgramInteraction policy. The adaptor (not the policy) bounds NAV to max_report_nav_raw = 2_000_000_000_000, which 3_793_536 satisfies.",
+    "depositAmountOffset8IsZero": true,
+    "depositEnvelopeOffset16Matches": true,
+    "installedNavRefreshPolicyAccount": "41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP",
+    "name": "Squads seed-63 nav_refresh policy — would the T1 crank pass the installed policy?",
+    "navValueLocation": {
+      "constrainedByPolicy": false,
+      "offsetInDepositData": 51,
+      "reason": "policy pins offsets 0..8 (disc), 8..16 (amount==0) and 16..30 (adaptor envelope); the ReportV1 body (version@34, sequence@35, observed_slot@43, nav@51, digest@59) is deliberately unconstrained",
+      "value": 3793536
+    },
+    "quotedConstraint": "voltr_custom.rs refresh_constraint = voltr_constraint(refresh, VOLTR_DEPOSIT, CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR, vec![SquadsDataConstraint{ data_offset: 8, data_value: U64Le(0), operator: Equals }], DEPOSIT_BOUND_ACCOUNT_INDEXES); validate_envelope comment: \"Only the report version is static; the sequence, slot, NAV, and digest are deliberately left unconstrained for the adaptor to authenticate and order.\"",
+    "wouldPass": true
+  },
+  "squadsPolicyExecutionProof": false,
+  "tests": {
+    "T0_calibration": {
+      "cases": [
+        {
+          "error": "InstructionError(2, Custom(6004))",
+          "execution": {
+            "after": {
+              "custodyAta": 0,
+              "feeStateAccumulatedLpAdminFees": 89601150,
+              "feeStateAccumulatedLpManagerFees": 0,
+              "feeStateAccumulatedLpProtocolFees": 0,
+              "highWaterMarkAssetPerLpBits": "5633268378698",
+              "idleAta": 3793417,
+              "lpSupply": 99941522,
+              "receiptPositionValue": 2793417,
+              "squadsUsdcAta": 0,
+              "vaultTotalValue": 2793298
+            },
+            "amount": 0,
+            "before": {
+              "custodyAta": 0,
+              "feeStateAccumulatedLpAdminFees": 89601150,
+              "feeStateAccumulatedLpManagerFees": 0,
+              "feeStateAccumulatedLpProtocolFees": 0,
+              "highWaterMarkAssetPerLpBits": "5633268378698",
+              "idleAta": 3793417,
+              "lpSupply": 99941522,
+              "receiptPositionValue": 2793417,
+              "squadsUsdcAta": 0,
+              "vaultTotalValue": 2793298
+            },
+            "error": "InstructionError(2, Custom(6004))",
+            "logsTail": [
+              "Program log: Instruction: DepositStrategy",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 23352 of 1357158 compute units",
+              "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW AAAAAAAAAAA=",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program log: Math error thrown at programs/voltr-vault/src/state/vault.rs:603",
+              "Program log: AnchorError occurred. Error Code: MathOverflow. Error Number: 6004. Error Message: Math overflow..",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 62744 of 1389945 compute units",
+              "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 AAAAAAAAAAA=",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 failed: custom program error: 0x1774"
+            ],
+            "ok": false,
+            "reportedNav": 0,
+            "seq": 445667325
+          },
+          "expectSucceed": false,
+          "reportedNav": 0,
+          "resultReceipt": 2793417,
+          "resultTv": 2793298,
+          "succeeded": false,
+          "verdict": "PASS"
+        },
+        {
+          "error": "InstructionError(2, Custom(6004))",
+          "execution": {
+            "after": {
+              "custodyAta": 0,
+              "feeStateAccumulatedLpAdminFees": 89601150,
+              "feeStateAccumulatedLpManagerFees": 0,
+              "feeStateAccumulatedLpProtocolFees": 0,
+              "highWaterMarkAssetPerLpBits": "5633268378698",
+              "idleAta": 3793417,
+              "lpSupply": 99941522,
+              "receiptPositionValue": 2793417,
+              "squadsUsdcAta": 0,
+              "vaultTotalValue": 2793298
+            },
+            "amount": 0,
+            "before": {
+              "custodyAta": 0,
+              "feeStateAccumulatedLpAdminFees": 89601150,
+              "feeStateAccumulatedLpManagerFees": 0,
+              "feeStateAccumulatedLpProtocolFees": 0,
+              "highWaterMarkAssetPerLpBits": "5633268378698",
+              "idleAta": 3793417,
+              "lpSupply": 99941522,
+              "receiptPositionValue": 2793417,
+              "squadsUsdcAta": 0,
+              "vaultTotalValue": 2793298
+            },
+            "error": "InstructionError(2, Custom(6004))",
+            "logsTail": [
+              "Program log: Instruction: DepositStrategy",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 23352 of 1357158 compute units",
+              "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW dgAAAAAAAAA=",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program log: Math error thrown at programs/voltr-vault/src/state/vault.rs:603",
+              "Program log: AnchorError occurred. Error Code: MathOverflow. Error Number: 6004. Error Message: Math overflow..",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 62744 of 1389945 compute units",
+              "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 dgAAAAAAAAA=",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 failed: custom program error: 0x1774"
+            ],
+            "ok": false,
+            "reportedNav": 118,
+            "seq": 445667325
+          },
+          "expectSucceed": false,
+          "reportedNav": 118,
+          "resultReceipt": 2793417,
+          "resultTv": 2793298,
+          "succeeded": false,
+          "verdict": "PASS"
+        },
+        {
+          "error": null,
+          "execution": {
+            "after": {
+              "custodyAta": 0,
+              "feeStateAccumulatedLpAdminFees": 89601150,
+              "feeStateAccumulatedLpManagerFees": 0,
+              "feeStateAccumulatedLpProtocolFees": 0,
+              "highWaterMarkAssetPerLpBits": "5633268378698",
+              "idleAta": 3793417,
+              "lpSupply": 99941522,
+              "receiptPositionValue": 119,
+              "squadsUsdcAta": 0,
+              "vaultTotalValue": 0
+            },
+            "amount": 0,
+            "before": {
+              "custodyAta": 0,
+              "feeStateAccumulatedLpAdminFees": 89601150,
+              "feeStateAccumulatedLpManagerFees": 0,
+              "feeStateAccumulatedLpProtocolFees": 0,
+              "highWaterMarkAssetPerLpBits": "5633268378698",
+              "idleAta": 3793417,
+              "lpSupply": 99941522,
+              "receiptPositionValue": 2793417,
+              "squadsUsdcAta": 0,
+              "vaultTotalValue": 2793298
+            },
+            "computeUnits": 73422,
+            "logsTail": [
+              "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW dwAAAAAAAAA=",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program data: ysl2MR20dKoGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XgSqb/ZrTVqBtcAAuyTl0bg43PpY6L1OPk/YebYVBjZohoZARa4sV1yvCtciErlebcy4bd+7MoTUV6v5ozLgua9aapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEAAAAAAAAAAFKfKgAAAAAAAAAAAAAAAAD4NEwLAAAAAPg0TAsAAAAASuz1mB8FAAAAAAAAAAAAAErs9ZgfBQAAAAAAAAAAAAAJ4jkAAAAAAAniOQAAAAAAyZ8qAAAAAAB3AAAAAAAAABUjomoAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 63367 of 1389945 compute units",
+              "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 dwAAAAAAAAA=",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true,
+            "reportedNav": 119,
+            "seq": 445667325
+          },
+          "expectSucceed": true,
+          "reportedNav": 119,
+          "resultReceipt": 119,
+          "resultTv": 0,
+          "succeeded": true,
+          "verdict": "PASS"
+        }
+      ],
+      "name": "T0 calibration (nav boundary)"
+    },
+    "T1_repair": {
+      "actual": {
+        "receipt": 3793536,
+        "tv": 3793417
+      },
+      "execution": {
+        "after": {
+          "custodyAta": 0,
+          "feeStateAccumulatedLpAdminFees": 89601200,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLpBits": "5633275270012",
+          "idleAta": 3793417,
+          "lpSupply": 99941522,
+          "receiptPositionValue": 3793536,
+          "squadsUsdcAta": 0,
+          "vaultTotalValue": 3793417
+        },
+        "amount": 0,
+        "before": {
+          "custodyAta": 0,
+          "feeStateAccumulatedLpAdminFees": 89601150,
+          "feeStateAccumulatedLpManagerFees": 0,
+          "feeStateAccumulatedLpProtocolFees": 0,
+          "highWaterMarkAssetPerLpBits": "5633268378698",
+          "idleAta": 3793417,
+          "lpSupply": 99941522,
+          "receiptPositionValue": 2793417,
+          "squadsUsdcAta": 0,
+          "vaultTotalValue": 2793298
+        },
+        "computeUnits": 77528,
+        "logsTail": [
+          "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW gOI5AAAAAAA=",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+          "Program data: ysl2MR20dKoGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XgSqb/ZrTVqBtcAAuyTl0bg43PpY6L1OPk/YebYVBjZohoZARa4sV1yvCtciErlebcy4bd+7MoTUV6v5ozLgua9aapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEAAAAAAAAAAFKfKgAAAAAACeI5AAAAAAD4NEwLAAAAACo1TAsAAAAASuz1mB8FAAAAAAAAAAAAAHwTX5kfBQAAAAAAAAAAAAAJ4jkAAAAAAAniOQAAAAAAyZ8qAAAAAACA4jkAAAAAABUjomoAAAAA",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 67473 of 1389945 compute units",
+          "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 gOI5AAAAAAA=",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+        ],
+        "ok": true,
+        "reportedNav": 3793536,
+        "seq": 445667325
+      },
+      "expected": {
+        "receipt": 3793536,
+        "tv": 3793417
+      },
+      "feeAndHwmSideEffects": {
+        "feeStateAdminDelta": "50",
+        "feeStateManagerDelta": "0",
+        "hwmAfter": "5633275270012",
+        "hwmBefore": "5633268378698",
+        "hwmChanged": true,
+        "lpSupplyDelta": "0",
+        "performanceFeeFired": true
+      },
+      "name": "T1 THE REPAIR (deposit_strategy(0) report nav = idle + deficit)",
+      "reportedNav": 3793536,
+      "verdict": "PASS"
+    },
+    "T2_fair_drain": {
+      "claim": {
+        "computeUnits": 54415,
+        "logs": [
+          "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+          "Program ComputeBudget111111111111111111111111111111 success",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 invoke [1]",
+          "Program log: Instruction: WithdrawVault",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+          "Program log: Instruction: Burn",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4707 of 1365214 compute units",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+          "Program log: Instruction: TransferChecked",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6200 of 1357729 compute units",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program data: xHtP1wTWFMVxt9pEOkiznnOjXn3At2gT8yLSSpZNtFgcwBu1xo553SuFHgAAAAAAkvz0BQAAAAD1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV8b6evO+2606PWXzaqvJdDGxu+TC0vbg5HymAgNFL11hCeI5AAAAAAAJ4jkAAAAAAN5cGwAAAAAAKjVMCwAAAACYOFcFAAAAALA0VwUAAAAAsDRXBQAAAADoAwAAAAAAAOgDAAAAAAAAfBNfmR8FAAAAAAAAAAAAADBCYpkfBQAAAAAAAAAAAACSxqlqAAAAAA==",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 54265 of 1399850 compute units",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+        ],
+        "ok": true
+      },
+      "escrowedLp": 99941522,
+      "expectedFairPayout": 3793417,
+      "idleAfterClaim": 1793246,
+      "idleBeforeClaim": 3793417,
+      "lockedProfit": {
+        "afterClockAdvance": {
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "afterRepair": {
+          "lastReport": 1789010709,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "degradationSeconds": 86400,
+        "repairClockTs": 1789010709,
+        "requestClockTs": 1789510709
+      },
+      "lpAmountBurned": 99941522,
+      "lpShareBps": 10000,
+      "lpSupplyAfter": 0,
+      "lpSupplyBefore": 99941522,
+      "name": "T2 fair drain after repair (requestWithdrawVault -> wait -> withdrawVault)",
+      "noUnderflow": true,
+      "payoutRaw": 2000171,
+      "receiptAmountAssetToWithdrawInt": 30,
+      "repairedTv": 3793417,
+      "request": {
+        "computeUnits": 40872,
+        "escrowLpAfter": 99941522,
+        "logs": [
+          "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+          "Program ComputeBudget111111111111111111111111111111 success",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 invoke [1]",
+          "Program log: Instruction: RequestWithdrawVault",
+          "Program 11111111111111111111111111111111 invoke [2]",
+          "Program 11111111111111111111111111111111 success",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+          "Program log: Instruction: TransferChecked",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6173 of 1366764 compute units",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program data: O14aJi+DnqL1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV3G32kQ6SLOec6NefcC3aBPzItJKlk20WBzAG7XGjnndkvz0BQAAAAABAbuImaazX1rOaTBO7Zjc5aj8n5OgV083aO2t5HBIOGPvkvz0BQAAAABi8CcT/xArhR4AAAAAAAAAjcapagAAAADG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQniOQAAAAAACeI5AAAAAAAqNUwLAAAAADXEqWoAAAAA",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 40722 of 1399850 compute units",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+        ],
+        "ok": true,
+        "userLpAfter": 0
+      },
+      "verdict": "PARTIAL"
+    },
+    "T3_continued_operation": {
+      "name": "T3 continued operation after repair (offset discipline)",
+      "note": "external OnRe RWA leg is not present in LiteSVM; allocation is modeled by pre-staging the Squads USDC ATA and custody, exactly as the production bridge stages funds. Voltr books deposit as tv' = tv - old + new - amount and withdraw as tv' = tv - old + new + swept_custody, so a truthful nav (old +/- amount) keeps tv unchanged on both legs.",
+      "steps": [
+        {
+          "error": null,
+          "expectedTv": 4793417,
+          "idle": 4793417,
+          "ok": true,
+          "receipt": 3793536,
+          "step": "A deposit_vault(1_000_000)",
+          "tv": 4793417,
+          "userLpMinted": 49966487,
+          "verdict": "PASS"
+        },
+        {
+          "custody": 0,
+          "error": null,
+          "expectedTv": 4793417,
+          "idle": 4293417,
+          "ok": true,
+          "receipt": 4293536,
+          "reportedNav": 4293536,
+          "squadsUsdc": 1000000,
+          "step": "B allocation deposit_strategy(500_000) nav=old_receipt+500_000",
+          "tv": 4793417,
+          "verdict": "PASS"
+        },
+        {
+          "custody": 0,
+          "error": null,
+          "expectedTv": 4793417,
+          "idle": 4493417,
+          "ok": true,
+          "receipt": 4093536,
+          "reportedNav": 4093536,
+          "squadsUsdc": 1000000,
+          "step": "C withdraw_strategy(200_000) nav=old_receipt-200_000",
+          "tv": 4793417,
+          "verdict": "PASS"
+        }
+      ],
+      "verdict": "PASS"
+    },
+    "T4_close_strategy": {
+      "closeSucceeded": false,
+      "error": "InstructionError(1, Custom(2003))",
+      "logsTail": [
+        "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+        "Program ComputeBudget111111111111111111111111111111 success",
+        "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 invoke [1]",
+        "Program log: Instruction: CloseStrategy",
+        "Program log: AnchorError caused by account: strategy_init_receipt. Error Code: ConstraintRaw. Error Number: 2003. Error Message: A raw constraint was violated.",
+        "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 8048 of 1399850 compute units",
+        "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 failed: custom program error: 0x7d3"
+      ],
+      "name": "T4 closeStrategy on CURRENT (unrepaired) state",
+      "note": "If close is rejected because positionValue != 0, that is the blocker; re-initializeStrategy + refresh is only reachable after a successful close.",
+      "receiptPositionValueBefore": 2793417,
+      "receiptStillPresent": true,
+      "tvAfter": 2793298,
+      "tvBefore": 2793298,
+      "tvUntouched": true,
+      "vaultAdmin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "vaultManager": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+      "verdict": "CLOSE_REJECTED"
+    },
+    "T5_tolerance_withdrawals": {
+      "custodyBefore": 0,
+      "error": "InstructionError(1, Custom(102))",
+      "executed": false,
+      "logsTail": [
+        "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+        "Program ComputeBudget111111111111111111111111111111 success",
+        "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 invoke [1]",
+        "Program log: Instruction: InstantWithdrawStrategy",
+        "Program log: AnchorError occurred. Error Code: InstructionDidNotDeserialize. Error Number: 102. Error Message: The program could not deserialize the given instruction.",
+        "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 7788 of 1399850 compute units",
+        "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 failed: custom program error: 0x66"
+      ],
+      "name": "T5 instant/direct strategy withdrawal (tolerance) probe on current state",
+      "note": "instantWithdrawStrategy / directWithdrawStrategy (and their WithTolerance variants) CPI the same custom adaptor withdraw path; with empty custody (0) they cannot reduce the receipt without the same underflow, and the adaptor additionally requires an armed one-use ticket authorised by the Squads vault. Exact observed error above.",
+      "receiptAfter": 2793417,
+      "receiptBefore": 2793417,
+      "tvAfter": 2793298,
+      "tvBefore": 2793298
+    },
+    "T6_remove_adaptor_update_policy": {
+      "name": "T6 removeAdaptor / updateVaultAdaptorPolicy",
+      "note": "Neither instruction rewrites asset.totalValue or receipt.positionValue, so neither reconciles the 119 discrepancy on its own.",
+      "removeAdaptor": {
+        "error": null,
+        "executed": true,
+        "receiptAfter": 2793417,
+        "receiptBefore": 2793417,
+        "touchesBooks": false,
+        "tvAfter": 2793298,
+        "tvBefore": 2793298
+      },
+      "updateVaultAdaptorPolicy": {
+        "error": "InstructionError(1, Custom(2001))",
+        "executed": false,
+        "receiptAfter": 2793417,
+        "receiptBefore": 2793417,
+        "touchesBooks": false,
+        "tvAfter": 2793298,
+        "tvBefore": 2793298
+      },
+      "usefulAsRepair": false
+    }
+  },
+  "vaultAdmin": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+  "vaultManager": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+}

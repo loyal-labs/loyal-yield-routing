@@ -99,7 +99,7 @@ func TestExpectedAdaptorReturnDataIsExactNAVLittleEndian(t *testing.T) {
 }
 
 func TestKaminoLegSelectionAdvancesOneReviewedStateTransition(t *testing.T) {
-	borrowPosition := KaminoPosition{CollateralDepositedRaw: 9, RedeemablePrimeRaw: 8}
+	borrowPosition := KaminoPosition{CollateralDepositedRaw: 9, RedeemablePrimeRaw: 8, CollateralDecimals: 6, DebtDecimals: 6}
 	binary.LittleEndian.PutUint64(borrowPosition.CollateralPriceSF[:8], uint64(1)<<60)
 	binary.LittleEndian.PutUint64(borrowPosition.DebtPriceSF[:8], uint64(1)<<60)
 	tests := []struct {

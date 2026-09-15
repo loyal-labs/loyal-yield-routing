@@ -239,7 +239,13 @@ export function encodeRwaReportV1(report: RwaReportV1): Uint8Array {
   ]);
 }
 
-function initializeRemainingAccounts(route: RwaMultiplyRouteSpec) {
+/**
+ * The six adaptor remaining accounts every Voltr initializeStrategy appends, in
+ * order, all read-only: the adaptor's initialize handler validates these by key
+ * only and requires just the manager (accounts[1]) to sign, so none of them —
+ * including the Squads vault PDA — may be a signer.
+ */
+export function initializeRemainingAccounts(route: RwaMultiplyRouteSpec) {
   return [
     readonly(route.squads.settings),
     readonly(route.squads.vault),

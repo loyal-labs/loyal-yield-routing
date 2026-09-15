@@ -1,0 +1,279 @@
+{
+  "schema": "loyal-backyard-rwa-manifest/v2",
+  "status": "ready",
+  "statusNote": "strategy-two cutover: adaptor config DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY, report ticket 8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq (bump 255, disarmed, sequences 0), bridge policies at Squads seeds 145-148. The v2 config/ticket and the 62-65 bridge policies are retired; identities verified against finalized mainnet slot 446295496. runtimeBindings.bridgePolicies[].normalizedDigest is the masked policy digest: the sha256 of the account bytes with each maskedByteRanges span zeroed, derived offline with the generated Squads layout by tools/backyard-voltr/src/activation/rwa-multiply-strategy2-policy-mask.ts (decode, byte-exact re-encode round-trip, 0x55/0xAA sentinel diff). The spans cover only the bytes the program rewrites in normal operation - each embedded SpendingLimitV2 timeConstraints.start, usage.remainingInPeriod, and usage.lastReset, 24 bytes per policy - while constraints, programs, executor, mint, period, maxPerPeriod, expiration, and the trailing rent padding stay byte-pinned; dataSha256Raw records the unmasked raw digest verified at finalized slot 446295496. Every policy embeds exactly one Daily 300M spending limit today, so each mask is [[start,start+8),[usage_start,usage_start+16)).",
+  "cluster": "mainnet-beta",
+  "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "commitment": "confirmed",
+  "mvpRoute": "PRIME/USDC",
+  "targetLtvBps": 5000,
+  "hardLtvRule": "min(6000, liquidationThresholdBps - 1500)",
+  "withdrawalWaitSeconds": 600,
+  "navMaxAgeSeconds": 60,
+  "vaultCapRaw": "1000000000000",
+  "identities": {
+    "voltrProgram": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+    "voltrVault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+    "adaptorProgram": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+    "v2StrategyConfig": "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY",
+    "v2StrategyConfigNote": "strategy-two adaptor config (its key is the Voltr strategy key, domain loyal-rwa-multiply-mainnet-v3); replaces the retired 9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj. Key kept as v2StrategyConfig because the Go loader field and its invariant read it.",
+    "reportTicket": "8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq",
+    "reportTicketBump": 255,
+    "reportTicketStateLength": 96,
+    "squadsProgram": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+    "squadsSettings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+    "squadsVaultIndex": 0,
+    "squadsVault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+    "delegatedExecutor": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+    "squadsUsdcAta": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+    "usdcMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "classicTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "token2022Program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+  },
+  "supportedLanes": [
+    "Prime/PRIME/USDC",
+    "Maple/syrupUSDC/USDC",
+    "OnRe/ONyc/USDC"
+  ],
+  "policyCatalog": {
+    "schema": "loyal-backyard-rwa-policy-catalog/v2",
+    "sha256": "1a91e42894e4248deef16812882a0e73f577bd2cbed4b0ee1c89cc3ac2695e7f",
+    "addressesResolved": true,
+    "packingRung": null,
+    "policyAccounts": [
+      "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz"
+    ],
+    "policies": [
+      {
+        "family": "CollateralLifecycle",
+        "seed": 141,
+        "account": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+        "dataSha256": "c716c948bb6f20c4bf951386ea9d49b43b933a6009778518fa04263be0df0ae9"
+      },
+      {
+        "family": "DebtLifecycle",
+        "seed": 142,
+        "account": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+        "dataSha256": "bb42c52b1f5641e8105a7b04607a35fe92034d71ad87b3e528d7914edd38e704"
+      },
+      {
+        "family": "SwapRoutesA",
+        "seed": 143,
+        "account": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+        "dataSha256": "7058ac2cc0db6befa76c4e10cd8558f52ccb9814532970241d6cfd0038f79f3f"
+      },
+      {
+        "family": "SwapRoutesB",
+        "seed": 144,
+        "account": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+        "dataSha256": "43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a"
+      }
+    ]
+  },
+  "runtimeBindings": {
+    "bridgePolicies": [
+      {
+        "action": "VOLTR_ALLOCATE_TO_SQUADS",
+        "seed": 145,
+        "account": "8Nd646MD6H6hQrXZuP6utG5QZjRZ44GrRmdZJGShmhnh",
+        "normalizedDigest": "c8cbd2102d8c8e0ea1b1bbf5b78038aab7ac080c96d5010052730a6c5c6b9eb8",
+        "maskedByteRanges": [
+          [
+            945,
+            953
+          ],
+          [
+            973,
+            989
+          ]
+        ],
+        "dataSha256Raw": "e89bdc6e5b09922c0c32078d579c3263020e6796d8415b804dd1b5ed263a7b55"
+      },
+      {
+        "action": "REPORT_NAV",
+        "seed": 146,
+        "account": "AyymPJEAEN5YFySuEDVkdU9PTjBarj2y2UJxQ4rznjXr",
+        "normalizedDigest": "b13612430ffc513f4b167df7cb0cccd13a206cd7386533565d924a830a713535",
+        "maskedByteRanges": [
+          [
+            909,
+            917
+          ],
+          [
+            937,
+            953
+          ]
+        ],
+        "dataSha256Raw": "76dd46b2f1f1aca2ce37afcb5eca045cb9921de4f99d46075fe6d9bd0ea04997"
+      },
+      {
+        "action": "STAGE_SQUADS_TO_VOLTR",
+        "seed": 147,
+        "account": "E2TZ5UJ3uyqTqiuKX3GK7t7wgeNBSGy2pV2BXPMpaVDr",
+        "normalizedDigest": "f3d90be6ba6b4136bc4546fb8abcc0b9e8530d2162c35d5ae7c2450f74e6fb9b",
+        "maskedByteRanges": [
+          [
+            406,
+            414
+          ],
+          [
+            434,
+            450
+          ]
+        ],
+        "dataSha256Raw": "9e12f4584396defdf46ac8a297e696c9a47caf83a5e45bf8a58c4e9a1fd2d868"
+      },
+      {
+        "action": "VOLTR_RESTORE_IDLE",
+        "seed": 148,
+        "account": "AsqfqCCDf2tWoZxtj3CZ4XSYcAxRuSfgq8oYtdAQ9eCU",
+        "normalizedDigest": "21273e22338de41b4601d2731b9fc8a0a259a8e42d6c298612ab91b21db3d092",
+        "maskedByteRanges": [
+          [
+            945,
+            953
+          ],
+          [
+            973,
+            989
+          ]
+        ],
+        "dataSha256Raw": "917c849c16fed466039f7b562b670c9253636aabb683a0e58d72c3723c3d0998"
+      }
+    ],
+    "collateralLifecycle": {
+      "policy": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "dataSha256": "c716c948bb6f20c4bf951386ea9d49b43b933a6009778518fa04263be0df0ae9",
+      "constraintIndices": {
+        "deposit": 0,
+        "withdraw": 1
+      }
+    },
+    "debtLifecycle": {
+      "policy": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "dataSha256": "bb42c52b1f5641e8105a7b04607a35fe92034d71ad87b3e528d7914edd38e704",
+      "constraintIndices": {
+        "borrow": 0,
+        "repay": 1
+      }
+    },
+    "swapRoutesA": {
+      "policy": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "dataSha256": "7058ac2cc0db6befa76c4e10cd8558f52ccb9814532970241d6cfd0038f79f3f",
+      "constraintIndices": {
+        "route0": 0,
+        "route1": 1
+      }
+    },
+    "swapRoutesB": {
+      "policy": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+      "dataSha256": "43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a",
+      "constraintIndices": {
+        "route0": 0,
+        "route1": 1
+      }
+    }
+  },
+  "runtimeActivation": {
+    "schema": "loyal-backyard-rwa-runtime-activation/v2",
+    "selectedLane": "Maple/syrupUSDC/USDC",
+    "runtimeRoutes": [
+      {
+        "lane": "Prime/PRIME/USDC",
+        "protocol": "Prime",
+        "collateralSymbol": "PRIME",
+        "debtSymbol": "USDC",
+        "graph": {
+          "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "market": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+          "marketAuthority": "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+          "collateralReserve": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+          "collateralMint": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+          "collateralLiquiditySupply": "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352",
+          "collateralReceiptMint": "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
+          "collateralReceiptSupply": "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN",
+          "collateralCustody": "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+          "debtReserve": "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+          "debtMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "debtTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "debtLiquiditySupply": "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC",
+          "debtFeeReceiver": "BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6",
+          "debtCustody": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "obligation": "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
+          "collateralFarmState": "",
+          "collateralFarmUserState": "",
+          "debtFarmState": "",
+          "debtFarmUserState": ""
+        }
+      },
+      {
+        "lane": "Maple/syrupUSDC/USDC",
+        "protocol": "Maple",
+        "collateralSymbol": "syrupUSDC",
+        "debtSymbol": "USDC",
+        "graph": {
+          "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "market": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+          "marketAuthority": "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
+          "collateralReserve": "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+          "collateralMint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "collateralLiquiditySupply": "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i",
+          "collateralReceiptMint": "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu",
+          "collateralReceiptSupply": "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58",
+          "collateralCustody": "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN",
+          "debtReserve": "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+          "debtMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "debtTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "debtLiquiditySupply": "BBcwMNSMyhhBnYE9pevEvkxKHGzTafMP9v3j7Kk7nAWM",
+          "debtFeeReceiver": "HH7GLnRcGHJrdkEueVVj7mccNUjnSeWobDmtu9cHLkJV",
+          "debtCustody": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "obligation": "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT",
+          "collateralFarmState": "",
+          "collateralFarmUserState": "",
+          "debtFarmState": "87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y",
+          "debtFarmUserState": "CcUorNoacydFVu7SHmhsA1qi9CcEu8K5YFvuS8unAzgr"
+        }
+      },
+      {
+        "lane": "OnRe/ONyc/USDC",
+        "protocol": "OnRe",
+        "collateralSymbol": "ONyc",
+        "debtSymbol": "USDC",
+        "graph": {
+          "klendProgram": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "vault": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "market": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+          "marketAuthority": "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
+          "collateralReserve": "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+          "collateralMint": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+          "collateralLiquiditySupply": "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG",
+          "collateralReceiptMint": "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd",
+          "collateralReceiptSupply": "2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo",
+          "collateralCustody": "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+          "debtReserve": "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+          "debtMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "debtTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "debtLiquiditySupply": "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+          "debtFeeReceiver": "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+          "debtCustody": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "obligation": "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+          "collateralFarmState": "",
+          "collateralFarmUserState": "",
+          "debtFarmState": "7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF",
+          "debtFarmUserState": "nMqFZFPQsNwot49QAD1B76LxNV7qRG1tnbkXyTjbUAD"
+        }
+      }
+    ]
+  },
+  "deployment": {
+    "sourceCommit": null,
+    "imageDigest": null,
+    "singleWriterService": null
+  },
+  "unresolved": []
+}
