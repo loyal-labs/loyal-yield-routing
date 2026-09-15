@@ -5008,6 +5008,10 @@ async function recoverAutodepositClaim(args: {
           vaultPostPullRaw: result.vaultObservation.amountRaw.toString(),
           retryable: result.status === "deposit_pending",
           alert: null,
+          claimToken: pullAttempt.claimToken,
+          // The deposit step already reports why it could not finish; without
+          // this a claim can loop on recovery for hours with no visible cause.
+          error: result.status === "deposit_pending" ? result.error : null,
         },
         null,
         2
