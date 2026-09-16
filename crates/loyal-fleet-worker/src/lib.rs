@@ -2598,6 +2598,8 @@ fn is_transient_dependency_error(error: &str) -> bool {
     [
         "pool timed out while waiting for an open connection",
         "error sending request",
+        // reqwest's `error_for_status` text for any 5xx (RPC / Kamino API).
+        "HTTP status server error (5",
         "connection reset by peer",
         "connection refused",
         "broken pipe",
@@ -23123,10 +23125,12 @@ mod tests {
     #[test]
     fn transient_dependency_failures_are_not_fatal() {
         // Verbatim production errors: revalidator crashes 2026-09-14 00:53 and 18:30,
-        // and the autodeposit executor's child on 2026-09-15.
+        // the autodeposit executor's child on 2026-09-15, and its 8 upstream-500
+        // crashes on 2026-09-15/16 that paged as fatal.
         for error in [
             "database error: pool timed out while waiting for an open connection",
             "error sending request for url [redacted-external-endpoint]",
+            "HTTP status server error (500 Internal Server Error) for url [redacted-external-endpoint]",
         ] {
             assert_eq!(
                 same_mint_process_failure_disposition(&[], error),
