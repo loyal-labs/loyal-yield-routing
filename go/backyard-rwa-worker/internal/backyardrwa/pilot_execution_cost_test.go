@@ -126,7 +126,7 @@ func TestPilotMeasuredAdmissionPersistsCostAndRejectsChangedBuildAndSend(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{authority, previous, flat}})
+	state, _ := json.Marshal(map[string]any{"generation": 2, "selectorEntry": selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 10_000_000), "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{authority, previous, flat}})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, state); err != nil {
 		t.Fatal(err)
 	}
@@ -183,6 +183,16 @@ func TestPilotMeasuredAdmissionPersistsCostAndRejectsChangedBuildAndSend(t *test
 	if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, e.Request, e.ExpectedEffects, auth.BuildInput.Effects); err != nil {
 		t.Fatal(err)
 	}
+	// Expiry after admission cannot sneak through a delayed build. Returning
+	// custody and settling a sent transaction do not use this entry gate.
+	expiredEntry := selectorEntryFixture(time.Now().UTC().Add(-time.Minute), SelectedRouteID, 10_000_000)
+	expiredEntry.AllocationOperationID = id
+	storeTestSelectorEntry(t, ctx, db, key, expiredEntry)
+	assertBudgetHold(t, db.admitPhase3Bridge(ctx, rpc, id, o, d, e), "selector_entry_quote_expired")
+	assertBudgetHold(t, authorizePhase3ProductionBuild(ctx, db, rpc, id, e.Request, e.ExpectedEffects, auth.BuildInput.Effects), "selector_entry_quote_expired")
+	currentEntry := selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 10_000_000)
+	currentEntry.AllocationOperationID = id
+	storeTestSelectorEntry(t, ctx, db, key, currentEntry)
 	// Keep the gross debit within its reservation while simulating corruption of
 	// only the expense allowance. Both actual production gates must reject it.
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,ARRAY['phase3','reservations',$2,'executionCostUpperMicros'],'1'::jsonb) WHERE route_key=$1`, key, id); err != nil {
@@ -211,6 +221,28 @@ func TestPilotMeasuredAdmissionPersistsCostAndRejectsChangedBuildAndSend(t *test
 	}
 	defer tx.Rollback(ctx)
 	assertBudgetHold(t, db.authorizePhase3SendTx(ctx, tx, id, auth.IntentSHA256, hash, cost), "fresh_execution_cost_exceeds_reservation")
+	_ = tx.Rollback(ctx)
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,ARRAY['phase3','reservations',$2,'executionCostUpperMicros'],to_jsonb($3::bigint)) WHERE route_key=$1`, key, id, reservation.ExecutionCostUpperMicros); err != nil {
+		t.Fatal(err)
+	}
+	// A valid quote reaches the production send authorization. Expiring just
+	// that quote then holds the exact same signed wire without rewriting it.
+	for _, expired := range []bool{false, true} {
+		if expired {
+			storeTestSelectorEntry(t, ctx, db, key, expiredEntry)
+		}
+		tx, err = db.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = db.authorizePhase3SendTx(ctx, tx, id, auth.IntentSHA256, hash, cost)
+		_ = tx.Rollback(ctx)
+		if expired {
+			assertBudgetHold(t, err, "selector_entry_quote_expired")
+		} else if err != nil {
+			t.Fatal("current entry refused final send", err)
+		}
+	}
 }
 
 func TestPilotProtocolCostIncludesBorrowFeeAndRounding(t *testing.T) {

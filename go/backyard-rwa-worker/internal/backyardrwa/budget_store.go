@@ -312,6 +312,9 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	if slot < plan.CurrentCost.ObservationSlot || slot > plan.ValidThroughSlot {
 		return budgetHold("stale_bridge_admission_snapshot")
 	}
+	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, true); err != nil {
+		return err
+	}
 	if auth.GoalID != "" {
 		// Retry preserves all prior authorization and wire identity.
 		if auth.GoalID != Phase3GoalID || auth.IntentSHA256 != intent || auth.BridgeAdmission == nil || auth.ReservationReleased {
@@ -468,6 +471,9 @@ func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, ope
 			return budgetHold("stale_bridge_admission_snapshot")
 		}
 	}
+	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, false); err != nil {
+		return err
+	}
 	auth.BuildInput, err = encodePhase3BuildInput(request, effects)
 	if err != nil {
 		return err
@@ -540,6 +546,15 @@ func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operati
 			return err
 		}
 		if err = validateReservedExecutionCost(budget, budget.Reservations[operationID], request, effects, cost); err != nil {
+			return err
+		}
+	}
+	if auth.BuildInput != nil {
+		request, _, _, err := auth.BuildInput.decode()
+		if err != nil {
+			return err
+		}
+		if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, false); err != nil {
 			return err
 		}
 	}

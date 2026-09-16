@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,10 @@ func initializationPlanningFixture(lane string) Observation {
 	s.InitializationPolicyReady = true
 	s.ObligationPresenceKnown = true
 	s.VoltrIdleRaw = 1_000_000
+	s.SelectorEntryEquityRaw = 1_000_000
+	s.CapacityRaw = 1_000_000
+	s.PolicyLimitRaw = 1_000_000
+	s.MaxTargetLTVEntryRaw = 1_000_000
 	return tickObservation(s)
 }
 func TestInitializationDecisionPreservesRecoveryWithdrawalAndEntryGuards(t *testing.T) {
@@ -143,7 +148,7 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, _ := json.Marshal(map[string]any{"generation": 2, "phase3": b, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}})
+	state, _ := json.Marshal(map[string]any{"generation": 2, "selectorEntry": selectorEntryFixture(time.Now().UTC(), template.RouteLane, o.Snapshot.SelectorEntryEquityRaw), "phase3": b, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, state); err != nil {
 		t.Fatal(err)
 	}
@@ -176,6 +181,89 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 	}
 	if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, r, ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}, auth.BuildInput.Effects); err != nil {
 		t.Fatal("pre-signing authorization", err)
+	}
+	// Local unsigned wire fixture tests recovery only. No signer or send RPC
+	// exists in this transport. Quote expiry must retain it until expiry and
+	// a subsequent signature-absence observation prove it cannot land.
+	_, _, message, err := auth.BuildInput.decode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := append(make([]byte, 65), message...)
+	wire[0] = 1
+	hash := sha256Bytes(wire)
+	auth.SignedWireSHA256 = hash
+	encodedAuth, _ = json.Marshal(auth)
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',signed_wire=$2,expected_effects=jsonb_set(expected_effects,'{phase3}',$3) WHERE operation_id=$1`, id, wire, encodedAuth); err != nil {
+		t.Fatal(err)
+	}
+	op := PersistedOperation{Operation: Operation{ID: id, Decision: d}, Status: Signed, SignedWire: wire, SignedWireSHA256: hash, TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
+	storeTestSelectorEntry(t, ctx, db, key, selectorEntryFixture(time.Now().UTC().Add(-time.Minute), r.RouteLane, o.Snapshot.SelectorEntryEquityRaw))
+	err = db.RevalueAndMarkBroadcastIntent(ctx, rpc, op)
+	var validated *validatedSignedBudgetHold
+	if !errors.As(err, &validated) {
+		t.Fatal("quote expiry lost validated signed recovery", err)
+	}
+	assertBudgetHold(t, err, "selector_entry_quote_expired")
+	baseTransport := rpc.client.Transport
+	finalizedExpired, expiryRead, absenceRead := false, false, false
+	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		raw, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		req.Body = io.NopCloser(bytes.NewReader(raw))
+		var body struct {
+			Method string
+			Params []json.RawMessage
+			ID     any
+		}
+		if err = json.Unmarshal(raw, &body); err != nil {
+			return nil, err
+		}
+		var result any
+		switch body.Method {
+		case "getBlockHeight":
+			var config map[string]string
+			if len(body.Params) > 0 {
+				_ = json.Unmarshal(body.Params[0], &config)
+			}
+			if config["commitment"] != "finalized" {
+				return baseTransport.RoundTrip(req)
+			}
+			expiryRead = finalizedExpired
+			result = r.LastValidBlockHeight
+			if finalizedExpired {
+				result = r.LastValidBlockHeight + 1
+			}
+		case "getSignatureStatuses":
+			if !expiryRead {
+				t.Fatal("checked absence before finalized expiry")
+			}
+			absenceRead = true
+			result = map[string]any{"context": map[string]int{"slot": 42}, "value": []any{nil}}
+		default:
+			return baseTransport.RoundTrip(req)
+		}
+		out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": result})
+		return response(string(out)), nil
+	})
+	assertBudgetHold(t, AdvanceNonterminal(ctx, db, rpc, op), "selector_entry_quote_expired")
+	var status string
+	if err = db.pool.QueryRow(ctx, `SELECT status FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&status); err != nil || status != "signed" || absenceRead {
+		t.Fatal("unexpired wire retired", err, status)
+	}
+	finalizedExpired = true
+	if err = AdvanceNonterminal(ctx, db, rpc, op); err != nil {
+		t.Fatal("expired absent wire not retired", err)
+	}
+	var storedWire []byte
+	if err = db.pool.QueryRow(ctx, `SELECT o.status,o.signed_wire,s.state->'phase3' FROM loyal_yield.multiply_operations o JOIN loyal_yield.multiply_route_states s USING(route_key) WHERE operation_id=$1`, id).Scan(&status, &storedWire, &encodedBudget); err != nil {
+		t.Fatal(err)
+	}
+	b = Phase3Budget{} // JSON unmarshalling reuses existing maps; read the stored state afresh.
+	if json.Unmarshal(encodedBudget, &b) != nil || status != "failed" || !absenceRead || !bytes.Equal(storedWire, wire) || len(b.Reservations) != 0 || b.Families["Maple"].SpentMicros != 0 {
+		t.Fatalf("expiry retirement: status=%s absence=%t wireEqual=%t reservations=%d spent=%d", status, absenceRead, bytes.Equal(storedWire, wire), len(b.Reservations), b.Families["Maple"].SpentMicros)
 	}
 }
 

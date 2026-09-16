@@ -85,10 +85,12 @@ type Snapshot struct {
 	InitializationPolicyReady bool
 	PilotActive               bool
 	SelectorEntryPaused       bool
-	CutoverDrain              bool
-	VoltrStrategyIdleRaw      int64
-	VoltrIdleRaw              int64
-	HasPosition               bool
+	// Exact equity authorized by a current durable selector quote.
+	SelectorEntryEquityRaw int64
+	CutoverDrain           bool
+	VoltrStrategyIdleRaw   int64
+	VoltrIdleRaw           int64
+	HasPosition            bool
 	// ObligationPresent is the observed existence of the lane's Kamino
 	// obligation account, and ObligationPresenceKnown is set only by the
 	// production observe path, so hand-built unit snapshots keep their existing

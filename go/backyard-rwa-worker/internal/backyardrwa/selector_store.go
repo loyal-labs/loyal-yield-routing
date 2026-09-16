@@ -74,6 +74,22 @@ func (d *Database) RecordSelectorShadow(ctx context.Context, routeKey string, ob
 }
 
 func manifestForUnwind(ctx context.Context, database *Database, manifest RouteManifest) (RouteManifest, error) {
+	pilot, err := database.PilotRuntimeEnabled(ctx, productionRouteKey)
+	if err != nil {
+		return manifest, err
+	}
+	if pilot {
+		// Observe all pilot ownership accounts, including during ordinary entry.
+		// Actual exposure always wins over the preferred next destination.
+		manifest.selectorObservation = true
+		entry, err := database.LoadSelectorEntry(ctx, productionRouteKey)
+		if err != nil {
+			return manifest, err
+		}
+		if entry != nil {
+			manifest.observationLane = entry.Lane
+		}
+	}
 	intent, err := database.LoadUnwindIntent(ctx, productionRouteKey)
 	if err != nil {
 		return manifest, err

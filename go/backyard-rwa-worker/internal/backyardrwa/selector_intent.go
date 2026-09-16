@@ -95,20 +95,26 @@ func (d *Database) CommitUnwindIntent(ctx context.Context, routeKey string, inte
 		return err
 	}
 	var state struct {
-		Budget Phase3Budget  `json:"phase3"`
-		Unwind *UnwindIntent `json:"selectorUnwind"`
+		Budget     Phase3Budget    `json:"phase3"`
+		Activation json.RawMessage `json:"pilotBudgetActivation"`
+		Unwind     *UnwindIntent   `json:"selectorUnwind"`
 	}
 	if err = json.Unmarshal(raw, &state); err != nil {
 		return err
+	}
+	if err = state.Budget.validate(); err != nil {
+		return err
+	}
+	if state.Budget.Pilot != nil {
+		if _, err = validatePersistedPilotActivation(state.Budget, state.Activation, version); err != nil {
+			return err
+		}
 	}
 	if state.Unwind != nil {
 		if !sameUnwindIntent(*state.Unwind, intent) {
 			return budgetHold("another_unwind_is_committed")
 		}
 		return tx.Commit(ctx)
-	}
-	if err = state.Budget.validate(); err != nil {
-		return err
 	}
 	if state.Budget.GoalID != intent.BudgetScope || state.Budget.Closed || len(state.Budget.Reservations) != 0 || state.Budget.Families[intent.BudgetFamily].ExitMicros < intent.CostBoundRaw {
 		return budgetHold("unwind_requires_existing_exit_reservation")
@@ -140,7 +146,7 @@ func (d *Database) writeUnwindTx(ctx context.Context, tx pgx.Tx, routeKey string
 	if lease.RouteKey != routeKey {
 		return fmt.Errorf("unwind_route_lease_mismatch")
 	}
-	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(jsonb_set(CASE WHEN $5::jsonb='null'::jsonb THEN jsonb_set(state,'{selectorEntryPaused}','true'::jsonb,true) ELSE state END,'{selectorUnwind}',$5::jsonb,true),'{generation}',to_jsonb(state_version+1),true),state_version=state_version+1,updated_at=clock_timestamp() WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp()`, routeKey, lease.Owner, lease.FencingToken, version, string(encoded))
+	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(jsonb_set(CASE WHEN $5::jsonb='null'::jsonb THEN jsonb_set(jsonb_set(state,'{selectorEntryPaused}','true'::jsonb,true),'{selectorEntry}','null'::jsonb,true) ELSE state END,'{selectorUnwind}',$5::jsonb,true),'{generation}',to_jsonb(state_version+1),true),state_version=state_version+1,updated_at=clock_timestamp() WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp()`, routeKey, lease.Owner, lease.FencingToken, version, string(encoded))
 	if err != nil {
 		return err
 	}

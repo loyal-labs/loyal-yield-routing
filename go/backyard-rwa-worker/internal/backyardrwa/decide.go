@@ -304,7 +304,14 @@ func decideUSDC(s Snapshot) Decision {
 		if !s.PolicyReady || !s.ExitBuildable || s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
 			return decision(Hold, "insufficient_reviewed_entry_capacity", 0)
 		}
-		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw, workingTrancheCap(s)))
+		amount := min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw, workingTrancheCap(s))
+		if s.PilotActive {
+			if s.SelectorEntryEquityRaw <= 0 || s.SelectorEntryEquityRaw > amount {
+				return decision(Hold, "selector_entry_amount_requires_fresh_quote", 0)
+			}
+			amount = s.SelectorEntryEquityRaw
+		}
+		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", amount)
 	}
 	if (s.SquadsIdleRaw > 0 || s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) && s.PolicyReady && s.ExitBuildable &&
 		(s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {

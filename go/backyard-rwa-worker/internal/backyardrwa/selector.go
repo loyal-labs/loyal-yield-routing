@@ -191,6 +191,9 @@ type SelectorResult struct {
 	KeepGainRaw     float64             `json:"keepGainRaw"`
 	Candidates      []CandidateForecast `json:"candidates"`
 	State           SelectorState       `json:"state"`
+	// The exact quote selected for ENTER/SWITCH, copied from the validated
+	// candidate. Net equity alone cannot identify its gross input or costs.
+	SelectedQuote *MoveQuote `json:"selectedQuote,omitempty"`
 }
 
 func forecastGain(collateral, supplied, debt float64, e LaneEconomics, borrowAPR, years float64) float64 {
@@ -262,6 +265,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 	}
 	out.State.Advantages = map[string]AdvantageWindow{}
 	best := -1
+	quotes := make(map[string]MoveQuote)
 	for _, lane := range lanes {
 		m := markets[lane]
 		c := CandidateForecast{Lane: lane}
@@ -343,6 +347,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
+		quotes[lane] = *quote
 		c.CostsKnown = true
 		c.InvestedRaw = amount - quote.CostRaw
 		c.IdleRaw = s.TotalVaultNAVRaw - amount
@@ -381,6 +386,8 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		out.Reason = "advantage_not_yet_persistent"
 		return out
 	}
+	quote := quotes[chosen.Lane]
+	out.SelectedQuote = &quote
 	out.Action = "ENTER"
 	out.Reason = "persistent_net_benefit"
 	if exposed {

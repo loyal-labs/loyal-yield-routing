@@ -174,6 +174,17 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 		}
 		observation.Snapshot.SelectorEntryPaused = paused
 	}
+	if reader, ok := p.journal.(interface {
+		LoadSelectorEntry(context.Context, string) (*SelectorEntry, error)
+	}); ok {
+		entry, err := reader.LoadSelectorEntry(ctx, p.routeKey)
+		if err != nil {
+			return err
+		}
+		if err = applySelectorEntry(&observation.Snapshot, entry, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

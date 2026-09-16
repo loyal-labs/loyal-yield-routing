@@ -237,7 +237,7 @@ func (d *Database) RevalueAndMarkBroadcastIntent(ctx context.Context, rpc *RPCCl
 	}
 	err = d.markBroadcastIntent(ctx, operation.ID, rpc, auth.IntentSHA256, sha256Bytes(operation.SignedWire), cost)
 	var hold *BudgetHold
-	if errors.As(err, &hold) && (hold.Reason == "fresh_execution_cost_exceeds_reservation" || hold.Reason == "fresh_send_cost_exceeds_reservation" || hold.Reason == "send_valuation_expired" || hold.Reason == "send_valuation_slot_unavailable") {
+	if errors.As(err, &hold) && (hold.Reason == "fresh_execution_cost_exceeds_reservation" || hold.Reason == "fresh_send_cost_exceeds_reservation" || hold.Reason == "send_valuation_expired" || hold.Reason == "send_valuation_slot_unavailable" || hold.Reason == "selector_entry_quote_expired") {
 		return &validatedSignedBudgetHold{hold}
 	}
 	return err

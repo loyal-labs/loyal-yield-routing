@@ -17,7 +17,7 @@ func TestSelectorUnwindDurabilityAndBudgetContinuity(t *testing.T) {
 	key := fmt.Sprintf("selector-intent-%d", time.Now().UnixNano())
 	budget := emptyTestBudget()
 	budget.Families["Maple"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 3_000_000}
-	state, _ := json.Marshal(map[string]any{"generation": 1, "phase3": budget})
+	state, _ := json.Marshal(map[string]any{"generation": 1, "phase3": budget, "selectorEntry": selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 1_000_000)})
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,$2)`, key, state); err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +66,9 @@ func TestSelectorUnwindDurabilityAndBudgetContinuity(t *testing.T) {
 	paused, err := restarted.SelectorEntryPaused(ctx, key)
 	if err != nil || !paused {
 		t.Fatal("completed exit allowed stale entry")
+	}
+	if entry, err := restarted.LoadSelectorEntry(ctx, key); err != nil || entry != nil {
+		t.Fatal("unwind completion retained old destination choice", err)
 	}
 	var storedBudget []byte
 	var version, generation int64

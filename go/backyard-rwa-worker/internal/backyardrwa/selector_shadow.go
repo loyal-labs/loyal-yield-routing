@@ -142,3 +142,7 @@ func runSelectorSamples(ctx context.Context, interval time.Duration, sample func
 		}
 	}
 }
+
+func (r shadowJournal) LoadSelectorEntry(ctx context.Context, key string) (*SelectorEntry, error) {
+	return r.db.LoadSelectorEntry(ctx, key)
+}

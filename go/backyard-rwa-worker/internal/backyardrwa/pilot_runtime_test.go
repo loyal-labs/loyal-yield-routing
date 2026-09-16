@@ -14,6 +14,7 @@ func TestPilotPlannerSizesOneTrancheAndPreservesExitPriority(t *testing.T) {
 		s.RouteLane = lane
 		s.StrategyKey = lane
 		s.PilotActive = true
+		s.SelectorEntryEquityRaw = PilotWorkingTrancheCapRaw
 		s.VoltrIdleRaw = 100_000_000
 		s.CapacityRaw = 100_000_000
 		s.PolicyLimitRaw = 100_000_000
@@ -28,6 +29,10 @@ func TestPilotPlannerSizesOneTrancheAndPreservesExitPriority(t *testing.T) {
 		}
 		s.PilotActive = true
 		s.CapacityRaw = 3_000_000
+		if stale := Decide(s); stale.Action != Hold {
+			t.Fatalf("shrinking capacity reused larger quote: %+v", stale)
+		}
+		s.SelectorEntryEquityRaw = 3_000_000
 		if sized := Decide(s); sized.AmountRaw != 3_000_000 {
 			t.Fatalf("capacity ignored: %+v", sized)
 		}
