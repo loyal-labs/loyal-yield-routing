@@ -30,6 +30,9 @@ type startupLeaseHandoffRuntime struct {
 }
 
 type tickRuntime struct {
+	prepareInitialization            func(context.Context, RouteManifest, Decision) (Observation, KaminoInitializationRequest, error)
+	admitInitialization              func(context.Context, string, Observation, Decision, KaminoInitializationRequest) error
+	buildInitialization              func(context.Context, string, KaminoInitializationRequest) error
 	completeUnwind                   func(context.Context, Observation) (bool, error)
 	allocationSentWindow             func(context.Context, string) (uint64, error)
 	loadNonterminal                  func(context.Context, string) (*PersistedOperation, error)
@@ -65,6 +68,7 @@ type productionJournal interface {
 // pinned program identity. productionTickRuntime wires all three to the real
 // database, RPC client, and chain; tests stub them to drive the same merge.
 type productionObserveState struct {
+	manifest RouteManifest
 	routeKey string
 	journal  productionJournal
 	batch    func(context.Context) (Observation, error)
@@ -106,6 +110,11 @@ func (p productionObserveState) enrich(ctx context.Context, observation *Observa
 		return err
 	}
 	applyProgramIdentityObservation(observation, identity)
+	observation.Snapshot.InitializationPolicyReady = false
+	if observation.Snapshot.PilotActive {
+		_, bindingErr := p.manifest.initializerBinding(observation.Snapshot.RouteLane)
+		observation.Snapshot.InitializationPolicyReady = bindingErr == nil
+	}
 	return nil
 }
 
@@ -170,8 +179,8 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 
 func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteManifest) tickRuntime {
 	state := productionObserveState{
-		routeKey: productionRouteKey,
-		journal:  database,
+		manifest: manifest, routeKey: productionRouteKey,
+		journal: database,
 		batch: func(ctx context.Context) (Observation, error) {
 			observedManifest, err := manifestForUnwind(ctx, database, manifest)
 			if err != nil {
@@ -182,6 +191,15 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		identity: newProgramIdentityWatcher(rpc).observe,
 	}
 	return tickRuntime{
+		prepareInitialization: func(ctx context.Context, m RouteManifest, d Decision) (Observation, KaminoInitializationRequest, error) {
+			return prepareKaminoInitialization(ctx, rpc, m, d, state.observe)
+		},
+		admitInitialization: func(ctx context.Context, id string, o Observation, d Decision, r KaminoInitializationRequest) error {
+			return database.admitKaminoInitialization(ctx, rpc, manifest, id, o, d, r)
+		},
+		buildInitialization: func(ctx context.Context, id string, r KaminoInitializationRequest) error {
+			return BuildSimulateAndPersistKaminoInitialization(ctx, database, rpc, id, manifest, r)
+		},
 		completeUnwind: func(ctx context.Context, observation Observation) (bool, error) {
 			if !observation.Snapshot.Unwind || !unwindComplete(observation.Snapshot) {
 				return false, nil
@@ -395,6 +413,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if blocker := w.manifest.executionBlocker(); blocker != nil {
 		return blocker
 	}
+	var initializationRequest KaminoInitializationRequest
 	var bridgeEvidence BridgeExecutionEvidence
 	var kaminoEvidence KaminoExecutionEvidence
 	var jupiterEvidence JupiterExecutionEvidence
@@ -406,6 +425,11 @@ func (w *Worker) Tick(ctx context.Context) error {
 	wireDecision := decision
 	wireDecision.Action = executionDecision
 	switch executionDecision {
+	case InitializeKaminoObligation:
+		if w.runtime.prepareInitialization == nil {
+			return budgetHold("initializer_preparation_unavailable")
+		}
+		observation, initializationRequest, err = w.runtime.prepareInitialization(ctx, w.manifest, wireDecision)
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 		observation, bridgeEvidence, err = w.runtime.prepareBridge(ctx, w.manifest, wireDecision)
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
@@ -442,6 +466,15 @@ func (w *Worker) Tick(ctx context.Context) error {
 		return fmt.Errorf("actionable decision was not durably recorded as decided")
 	}
 	switch executionDecision {
+	case InitializeKaminoObligation:
+		if w.runtime.admitInitialization == nil || w.runtime.buildInitialization == nil {
+			err = budgetHold("initializer_admission_unavailable")
+		} else {
+			err = w.runtime.admitInitialization(ctx, record.OperationID, observation, decision, initializationRequest)
+			if err == nil {
+				err = w.runtime.buildInitialization(ctx, record.OperationID, initializationRequest)
+			}
+		}
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 		if w.runtime.admitBridge == nil {
 			err = budgetHold("bridge_admission_unavailable")

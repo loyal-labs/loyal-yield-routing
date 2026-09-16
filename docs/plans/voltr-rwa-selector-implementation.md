@@ -281,9 +281,10 @@ The SDK oracle and capture evidence remain separately described above.
 
 Manifest schema and the build/sign/simulate/persist function now enforce reviewed
 initializer pins before signer access; the embedded manifest deliberately has no
-initializer pins yet. Still required before initializer dispatch: actual installed
-policy evidence, metadata/farm prerequisites in route admission, the production
-funding envelope, exact full-move admission, and worker preparation/dispatch.
+initializer pins yet. Still required before live initializer activation: actual installed policy
+evidence, fresh whole-loop entry admission, remaining native exit-fee liquidity
+and the controlled release. Worker preparation/admission/dispatch is now connected
+as described in the pilot runtime section below.
 The initial partner/user deposit cap decision was subsequently delegated to the agent (see below). The
 hot-admin continuation is approved; no cold-key condition is reintroduced.
 
@@ -328,6 +329,12 @@ Recovered finalized strategy-two bootstrap at slot 446086069 and captured the ex
 
 ### Pilot accounting and activation boundary
 
-Implemented versioned pilot authority in the existing budget, preserving cumulative gross history while accounting for reusable principal and separately bounded execution costs. Chosen gross authorization ceilings are 20 USDC per transaction, 100 USDC per family and 150 USDC total; the 100-USDC vault cap and 10-USDC equity tranche remain separate. New entries stop at 5 USDC in cumulative execution costs while existing reserved recovery stays available. Limits cannot change with an outstanding exit. Activation checks both physical and journal-derived stops, validates archived budget identity and inherited history on every pilot budget read, and requires finalized flat state for all eight configured current/historical lanes. Local PostgreSQL, repeated-rotation, restart, and exact native settlement checks pass. Pilot activation remains disabled. The measured execution-cost producer is now connected to admission, retries, build and send; current-limit enforcement now uses the locked durable budget for the current transaction and every exit step. Planning now projects verified persisted pilot authority, sizes at most 10 USDC equity and preserves full exit amounts. Initializer/selector runtime wiring and activation are still required.
+Implemented versioned pilot authority in the existing budget, preserving cumulative gross history while accounting for reusable principal and separately bounded execution costs. Chosen gross authorization ceilings are 20 USDC per transaction, 100 USDC per family and 150 USDC total; the 100-USDC vault cap and 10-USDC equity tranche remain separate. New entries stop at 5 USDC in cumulative execution costs while existing reserved recovery stays available. Limits cannot change with an outstanding exit. Activation checks both physical and journal-derived stops, validates archived budget identity and inherited history on every pilot budget read, and requires finalized flat state for all eight configured current/historical lanes. Local PostgreSQL, repeated-rotation, restart, and exact native settlement checks pass. Pilot activation remains disabled. The measured execution-cost producer is now connected to admission, retries, build and send; current-limit enforcement now uses the locked durable budget for the current transaction and every exit step. Planning now projects verified persisted pilot authority, sizes at most 10 USDC equity and preserves full exit amounts. Initializer preparation/admission/dispatch is connected; actual initializer policy pins, selector switching orchestration and activation are still required.
 
 The expanded live read found 0.214898 PYUSD in the historical shared debt custody, despite the three pilot lanes being flat. This remains visible and blocks activation. A read-only quote for conversion to USDC succeeds; actual conversion/return and reconciliation remain required. Evidence and precise limitations: `docs/evidence/voltr-selector-2026-09-16/pilot-budget-validation.md`.
+
+### Pilot initializer runtime
+
+The worker now dispatches `INITIALIZE_KAMINO_OBLIGATION` through the existing prepare → record decision → measured admission → build/simulate/persist → exact recovery/finality path. It can select initialization only under verified pilot authority, a complete initializer manifest binding, an absent obligation, an otherwise ready entry market, and no token position/custody, withdrawal demand, unwind, or outstanding transaction. Preparation measures current rent and the exact-message fee, and revalidates policy, metadata, native balances, market and account absence. Shared locked admission reserves rent plus fee, records only the measured fee as execution expense and refuses to consume an existing exit reservation.
+
+Local tests cover all three lane decisions, prerequisite/priority rejection, account-appearance and withdrawal races during preparation, production measured PostgreSQL admission/retry/pre-signing authorization, and journal-before-build dispatch with refusal propagation. Full worker/database suite and Go vet pass. Fable's read-only review found no new blocker. A withdrawal arriving after preparation can still precede the native initializer on chain; initialization moves no user principal, and the following worker observation resolves withdrawal priority. Embedded initializer bindings remain empty, so live initialization is still disabled pending installation evidence and release.

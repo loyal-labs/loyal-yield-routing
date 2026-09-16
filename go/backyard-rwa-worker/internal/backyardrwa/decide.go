@@ -112,6 +112,10 @@ func obligationPrerequisiteHold(s Snapshot) (Decision, bool) {
 	if strategyKey == "" {
 		strategyKey = RouteID
 	}
+	if initializationSnapshotReady(s) {
+		return Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: strategyKey,
+			IdempotencyKey: fmt.Sprintf("%s:initialize:%s", s.ObservationID, strategyKey)}, true
+	}
 	return Decision{Action: Hold, Reason: obligationAbsentHoldReason, AmountRaw: 0, StrategyKey: strategyKey,
 		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, obligationAbsentHoldReason, 0)}, true
 }

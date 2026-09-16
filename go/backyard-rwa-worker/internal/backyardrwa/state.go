@@ -82,12 +82,13 @@ type Snapshot struct {
 	Unwind bool
 	// PilotActive comes only from validated persisted budget authority.
 	// Transaction admission rechecks that authority under the route lock.
-	PilotActive          bool
-	SelectorEntryPaused  bool
-	CutoverDrain         bool
-	VoltrStrategyIdleRaw int64
-	VoltrIdleRaw         int64
-	HasPosition          bool
+	InitializationPolicyReady bool
+	PilotActive               bool
+	SelectorEntryPaused       bool
+	CutoverDrain              bool
+	VoltrStrategyIdleRaw      int64
+	VoltrIdleRaw              int64
+	HasPosition               bool
 	// ObligationPresent is the observed existence of the lane's Kamino
 	// obligation account, and ObligationPresenceKnown is set only by the
 	// production observe path, so hand-built unit snapshots keep their existing

@@ -330,6 +330,13 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 		}
 	}
 	recovery := decision.Action != VoltrAllocateToSquads
+	if decision.Action == InitializeKaminoObligation {
+		r, ok := request.(KaminoInitializationRequest)
+		if budget.Pilot == nil || !ok || r.RouteLane != lane || !initializationSnapshotReady(observation.Snapshot) || !decisionsEqual(Decide(observation.Snapshot), decision) || budget.Families[family].ExitMicros != 0 || plan.ExitAfterMicros != 0 || len(plan.Exit) != 0 {
+			return budgetHold("initializer_requires_flat_pilot_admission")
+		}
+		recovery = false
+	}
 	if decision.Action == SwapDebtToCollateralStep {
 		entry, ok := request.(JupiterSwapRequest)
 		if !ok || !entry.PositionReturnReserved || plan.LeverageProjection == nil || plan.Payoff == nil || budget.Families[family].ExitMicros == 0 {
