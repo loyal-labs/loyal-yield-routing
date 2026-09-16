@@ -97,6 +97,10 @@ func (r shadowJournal) SelectorEntryPaused(ctx context.Context, key string) (boo
 	return r.db.SelectorEntryPaused(ctx, key)
 }
 
+func (r shadowJournal) PilotRuntimeEnabled(ctx context.Context, key string) (bool, error) {
+	return r.db.PilotRuntimeEnabled(ctx, key)
+}
+
 // This observer enriches a separate snapshot without projecting NAV or taking
 // an execution lease. Broader ownership failures stay confined to shadow output.
 func observeSelectorShadow(ctx context.Context, database *Database, rpc *RPCClient, manifest RouteManifest, identity func(context.Context) (programIdentityObservation, error)) (Observation, error) {
@@ -105,7 +109,7 @@ func observeSelectorShadow(ctx context.Context, database *Database, rpc *RPCClie
 	if err != nil {
 		return Observation{}, fmt.Errorf("shadow confirmed observation unavailable: %w", err)
 	}
-	state := productionObserveState{routeKey: productionRouteKey, journal: shadowJournal{database}, identity: identity}
+	state := productionObserveState{routeKey: productionRouteKey, journal: shadowJournal{database}, identity: identity, manifest: manifest}
 	if err = state.enrich(ctx, &observation); err != nil {
 		return Observation{}, fmt.Errorf("shadow journal or identity unavailable: %w", err)
 	}

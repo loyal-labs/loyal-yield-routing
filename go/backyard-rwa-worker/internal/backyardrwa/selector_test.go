@@ -313,3 +313,65 @@ func TestTypedUSDCRepaymentUsesCanonicalExecutionContract(t *testing.T) {
 		}
 	}
 }
+
+func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *testing.T) {
+	in := selectorFixture()
+	in.Snapshot.PilotActive = true
+	in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = 100_000_000, 100_000_000
+	in.Quotes[0].EquityRaw = 10_000_000
+	in.Quotes[0].CostRaw = 100
+	in.Policy.IdleBufferRaw = 2_000_000
+	got := SelectOpportunity(in, SelectorState{})
+	c := got.Candidates[0]
+	if !c.CostsKnown || c.InvestedRaw != 9_999_900 || c.IdleRaw != 90_000_000 {
+		t.Fatal("forecast did not conserve actual deployment, cost and idle principal", got)
+	}
+	// More idle capital cannot increase productive collateral, borrowing, or
+	// modeled destination income. Keep uses the actual source holdings instead.
+	in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = 20_000_000, 20_000_000
+	smaller := SelectOpportunity(in, SelectorState{}).Candidates[0]
+	if c.GrossGainRaw != smaller.GrossGainRaw || c.GainRaw != smaller.GainRaw || c.BorrowAPR != smaller.BorrowAPR || smaller.IdleRaw != 10_000_000 {
+		t.Fatal(c, smaller)
+	}
+	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 3_000_000}
+	in.Quotes[0].EquityRaw = 3_000_000
+	partial := SelectOpportunity(in, SelectorState{}).Candidates[0]
+	if !partial.CostsKnown || partial.InvestedRaw != 2_999_900 || partial.IdleRaw != 17_000_000 || partial.GainRaw >= c.GainRaw {
+		t.Fatal("partial capacity did not reduce deployment", partial)
+	}
+	in.Policy.IdleBufferRaw = 19_000_000
+	in.Quotes[0].EquityRaw = 1_000_000
+	buffered := SelectOpportunity(in, SelectorState{}).Candidates[0]
+	if !buffered.CostsKnown || buffered.InvestedRaw != 999_900 || buffered.IdleRaw != 19_000_000 {
+		t.Fatal("idle buffer omitted from whole-vault forecast", buffered)
+	}
+	in.Quotes[0].EquityRaw = 20_000_000
+	if wrong := SelectOpportunity(in, SelectorState{}).Candidates[0]; wrong.CostsKnown || wrong.BlockedReason != "bounded_move_cost_unavailable" {
+		t.Fatal("accepted quote for unexecutable full-vault amount", wrong)
+	}
+}
+
+func TestPilotSelectorKeepsActualSourceIncomeWhenCandidateTrancheIsSmaller(t *testing.T) {
+	in := selectorFixture()
+	in.Snapshot.PilotActive = true
+	in.Snapshot.VoltrIdleRaw = 0
+	in.Snapshot.HasPosition = true
+	in.Snapshot.PositionCollateralRaw, in.Snapshot.PositionCollateralValueRaw = 150_000_000, 150_000_000
+	in.Snapshot.PositionDebtRaw, in.Snapshot.PositionDebtValueRaw = 50_000_000, 50_000_000
+	in.Snapshot.StrategyNAVRaw, in.Snapshot.PriorReportedNAVRaw, in.Snapshot.TotalVaultNAVRaw = 100_000_000, 100_000_000, 100_000_000
+	in.Snapshot.LTVBPS = 3334
+	current := in.Markets[0]
+	current.Lane = in.Snapshot.RouteLane
+	current.EntryCapacity = Capacity{Known: true}
+	in.Markets = append(in.Markets, current)
+	in.Quotes[0].EquityRaw, in.Quotes[0].CostRaw = 10_000_000, 100
+	got := SelectOpportunity(in, SelectorState{})
+	if got.Action != "KEEP" || got.KeepGainRaw <= 0 {
+		t.Fatal(got)
+	}
+	for _, c := range got.Candidates {
+		if c.Lane != current.Lane && (!c.CostsKnown || c.BenefitRaw >= 0 || c.GainRaw >= got.KeepGainRaw) {
+			t.Fatal("source income was clipped to candidate tranche", c, got.KeepGainRaw)
+		}
+	}
+}

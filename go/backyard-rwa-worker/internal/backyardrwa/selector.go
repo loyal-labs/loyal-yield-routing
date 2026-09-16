@@ -223,6 +223,15 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		return hold("no_investable_equity")
 	}
 	out.EquityRaw = equity
+	// Pilot execution deploys one bounded tranche. Forecast the same amount;
+	// idle vault principal must not earn the destination's modeled yield.
+	allocation := equity
+	if s.PilotActive {
+		if !selectorLane(s.RouteLane) {
+			return hold("pilot_lane_unavailable")
+		}
+		allocation = min(allocation, workingTrancheCap(s))
+	}
 	markets := map[string]LaneEconomics{}
 	for _, m := range in.Markets {
 		if _, ok := markets[m.Lane]; ok {
@@ -272,8 +281,8 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		// Positive pair capacity determines the feasible size. During an entry
 		// closure, assess at available debt liquidity without claiming entry is
 		// possible. Idle remainder contributes zero to the whole-vault forecast.
-		amount, known := m.EntryCapacity.amount(equity)
-		economicAmount := math.Min(float64(equity), (m.DebtSupplyRaw-m.DebtBorrowRaw)/(singlePassLeverage-1))
+		amount, known := m.EntryCapacity.amount(allocation)
+		economicAmount := math.Min(float64(allocation), (m.DebtSupplyRaw-m.DebtBorrowRaw)/(singlePassLeverage-1))
 		if known && amount > 0 {
 			economicAmount = math.Min(economicAmount, float64(amount))
 		}
@@ -292,7 +301,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		}
 		displayAmount := amount
 		if !known {
-			displayAmount = equity
+			displayAmount = allocation
 		}
 		if displayAmount > 0 {
 			apr, err := projectedBorrowAPR(m, float64(displayAmount)*(singlePassLeverage-1))
@@ -336,7 +345,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		}
 		c.CostsKnown = true
 		c.InvestedRaw = amount - quote.CostRaw
-		c.IdleRaw = equity - amount
+		c.IdleRaw = s.TotalVaultNAVRaw - amount
 		// This pilot switches to another reserve; it does not lever existing debt twice.
 		debt := float64(c.InvestedRaw) * (singlePassLeverage - 1)
 		apr, err := projectedBorrowAPR(m, debt)
