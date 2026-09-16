@@ -64,14 +64,14 @@ func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 	}
 }
 
-func TestSelectedRouteAcceptedTerminalRestoreDoesNotCreateNewExposure(t *testing.T) {
+func TestSelectedRouteCoveredWithdrawalUsesOrdinaryHold(t *testing.T) {
 	s := base()
 	s.RouteLane = SelectedRouteID
 	s.WithdrawalDemandRaw = 1
 	s.VoltrIdleRaw = 10
 	s.PriorReportedNAVRaw = 9
-	if got := Decide(s); got.Action != Hold || got.AmountRaw != 0 || got.Reason != "withdrawal_covered_terminal_restore_accepted" {
-		t.Fatalf("accepted terminal restore created new exposure: %+v", got)
+	if got := Decide(s); got.Action != Hold || got.AmountRaw != 0 || got.Reason != "withdrawal_covered" {
+		t.Fatalf("covered withdrawal created new exposure: %+v", got)
 	}
 }
 

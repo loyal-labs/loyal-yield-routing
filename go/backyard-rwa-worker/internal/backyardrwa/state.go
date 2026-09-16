@@ -15,9 +15,8 @@ const (
 	SwapPrimeToUSDCStep   Action = "SWAP_PRIME_TO_USDC_STEP"
 	OpenPrimeUSDCStep     Action = "OPEN_PRIME_USDC_STEP"
 	DeleverPrimeUSDCStep  Action = "DELEVER_PRIME_USDC_STEP"
-	// The route-neutral actions are used only by the frozen Phase 2
-	// representative. The PRIME names above remain wire-compatible aliases for
-	// the Phase 1 route and are intentionally not removed.
+	// Typed routes use these canonical actions. The PRIME names above remain
+	// accepted for historical journal and signed-wire recovery.
 	SwapStableToCollateralStep Action = "SWAP_STABLE_TO_COLLATERAL_STEP"
 	SwapCollateralToStableStep Action = "SWAP_COLLATERAL_TO_STABLE_STEP"
 	OpenRouteStep              Action = "OPEN_ROUTE_STEP"
@@ -61,9 +60,8 @@ type Snapshot struct {
 	WithdrawalDemandRaw    int64
 	SquadsIdleRaw          int64
 	PrimeIdleRaw           int64
-	// CollateralIdleRaw is the selected lane's idle collateral amount. For the
-	// PRIME route it is deliberately left unset and PrimeIdleRaw remains the
-	// compatibility field.
+	// CollateralIdleRaw is the observed lane's idle collateral amount.
+	// PrimeIdleRaw is retained for historical snapshot compatibility.
 	CollateralIdleRaw int64
 	// Same-batch, rounded-down bridge-USDC NAV value, used only to select a
 	// plausible funding source. The executable quote minimum remains the gate.
@@ -76,9 +74,12 @@ type Snapshot struct {
 	DebtIdleRaw int64
 	// PayoffDebtRaw includes the current finite interest window for non-USDC
 	// debt. Observation and final-send validation independently recompute it.
-	PayoffDebtRaw        int64
-	RouteLane            string
-	StrategyKey          string
+	PayoffDebtRaw int64
+	RouteLane     string
+	StrategyKey   string
+	// Unwind is an admitted full exit, independent of the user's claim amount.
+	Unwind               bool
+	SelectorEntryPaused  bool
 	CutoverDrain         bool
 	VoltrStrategyIdleRaw int64
 	VoltrIdleRaw         int64

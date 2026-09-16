@@ -183,31 +183,36 @@ func neutralizeRouteAction(decision Decision) Decision {
 	return decision
 }
 
-func fixedRouteAction(action Action, lane string) (Action, error) {
-	if catalogJupiterRoute(lane) {
-		return action, nil
-	}
-	if lane == RouteID || lane == "" {
-		return action, nil
-	}
-	if lane == PhaseOneLaneID || lane == "OnRe/ONyc/USDC" {
-		return action, nil
-	}
-	if lane != SelectedRouteID {
-		return "", fmt.Errorf("runtime lane %q is not installed", lane)
-	}
+// legacyUSDCAction preserves the proven basic-USDC executor wire contract.
+// Typed planner actions remain canonical; shared-custody admission must be
+// implemented before replacing this compatibility boundary.
+func legacyUSDCAction(action Action) Action {
 	switch action {
 	case SwapStableToCollateralStep:
-		return SwapUSDCToPrimeStep, nil
+		return SwapUSDCToPrimeStep
 	case SwapCollateralToStableStep:
-		return SwapPrimeToUSDCStep, nil
+		return SwapPrimeToUSDCStep
 	case OpenRouteStep:
-		return OpenPrimeUSDCStep, nil
+		return OpenPrimeUSDCStep
 	case DeleverRouteStep:
-		return DeleverPrimeUSDCStep, nil
+		return DeleverPrimeUSDCStep
 	default:
-		return action, nil
+		return action
 	}
+}
+
+func fixedRouteAction(action Action, lane string) (Action, error) {
+	if lane == "" || lane == RouteID {
+		return legacyUSDCAction(action), nil
+	}
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return "", err
+	}
+	if route.BasicPolicy && route.Kamino.DebtMint == bridgeUSDC {
+		return legacyUSDCAction(action), nil
+	}
+	return neutralizeRouteAction(Decision{Action: action}).Action, nil
 }
 
 func decisionsEqual(left, right Decision) bool {

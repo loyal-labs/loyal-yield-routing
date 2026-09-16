@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"time"
 )
@@ -29,6 +30,7 @@ type startupLeaseHandoffRuntime struct {
 }
 
 type tickRuntime struct {
+	completeUnwind                   func(context.Context, Observation) (bool, error)
 	allocationSentWindow             func(context.Context, string) (uint64, error)
 	loadNonterminal                  func(context.Context, string) (*PersistedOperation, error)
 	advance                          func(context.Context, PersistedOperation) error
@@ -80,10 +82,9 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 	if err := p.enrich(ctx, &observation); err != nil {
 		return Observation{}, err
 	}
-	// A receipt-integrity observation carries no decodable book, so there is no
-	// coherent position projection to record; the strategy_receipt_integrity
-	// hold decision is itself the durable record of that tick.
-	if observation.Snapshot.StrategyReceiptIntegrityFault {
+	// Integrity or health failures carry no decodable valuation. Preserve the
+	// last good position projection; the hold decision is the durable record.
+	if observation.Snapshot.StrategyReceiptIntegrityFault || observation.Snapshot.ManualReason != "" {
 		return observation, nil
 	}
 	if err := p.journal.RecordPositionSnapshot(ctx, p.routeKey, observation); err != nil {
@@ -135,6 +136,26 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	observation.Snapshot.StagedAmountKnown = journal.StagedAmountKnown
 	observation.Snapshot.StageTransient = journal.StageAfterTicket
 	observation.Snapshot.CapitalMutated = journal.MutationAfterReport
+	if reader, ok := p.journal.(interface {
+		LoadUnwindIntent(context.Context, string) (*UnwindIntent, error)
+	}); ok {
+		intent, err := reader.LoadUnwindIntent(ctx, p.routeKey)
+		if err != nil {
+			return err
+		}
+		if err := applyUnwindIntent(&observation.Snapshot, intent); err != nil {
+			observation.Snapshot.ManualReason = err.Error()
+		}
+	}
+	if reader, ok := p.journal.(interface {
+		SelectorEntryPaused(context.Context, string) (bool, error)
+	}); ok {
+		paused, err := reader.SelectorEntryPaused(ctx, p.routeKey)
+		if err != nil {
+			return err
+		}
+		observation.Snapshot.SelectorEntryPaused = paused
+	}
 	return nil
 }
 
@@ -143,11 +164,28 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		routeKey: productionRouteKey,
 		journal:  database,
 		batch: func(ctx context.Context) (Observation, error) {
-			return ObserveConfirmedRouteSnapshot(ctx, rpc, manifest)
+			observedManifest, err := manifestForUnwind(ctx, database, manifest)
+			if err != nil {
+				return Observation{}, err
+			}
+			return ObserveConfirmedRouteSnapshot(ctx, rpc, observedManifest)
 		},
 		identity: newProgramIdentityWatcher(rpc).observe,
 	}
 	return tickRuntime{
+		completeUnwind: func(ctx context.Context, observation Observation) (bool, error) {
+			if !observation.Snapshot.Unwind || !unwindComplete(observation.Snapshot) {
+				return false, nil
+			}
+			intent, err := database.LoadUnwindIntent(ctx, productionRouteKey)
+			if err != nil {
+				return false, err
+			}
+			if intent == nil {
+				return false, fmt.Errorf("unwind disappeared before completion")
+			}
+			return true, database.CompleteUnwindIntent(ctx, productionRouteKey, *intent, observation.Snapshot)
+		},
 		loadNonterminal: database.LoadNonterminal,
 		advance: func(ctx context.Context, operation PersistedOperation) error {
 			return AdvanceNonterminal(ctx, database, rpc, operation)
@@ -157,12 +195,24 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		recordManualRecovery:             database.RecordManualRecovery,
 		recordManualRecoveryAtGeneration: database.RecordManualRecoveryAtGeneration,
 		prepareBridge: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, BridgeExecutionEvidence, error) {
+			manifest, err := manifestForUnwind(ctx, database, manifest)
+			if err != nil {
+				return Observation{}, BridgeExecutionEvidence{}, err
+			}
 			return observeConfirmedBridgeExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, state.enrich)
 		},
 		prepareKamino: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, KaminoExecutionEvidence, error) {
+			manifest, err := manifestForUnwind(ctx, database, manifest)
+			if err != nil {
+				return Observation{}, KaminoExecutionEvidence{}, err
+			}
 			return observeConfirmedKaminoExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, state.enrich)
 		},
 		prepareJupiter: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, JupiterExecutionEvidence, error) {
+			manifest, err := manifestForUnwind(ctx, database, manifest)
+			if err != nil {
+				return Observation{}, JupiterExecutionEvidence{}, err
+			}
 			return observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, productionJupiterClient(), state.enrich)
 		},
 		allocationSentWindow: database.AllocationSentRawTrailingWindow,
@@ -277,6 +327,15 @@ func (w *Worker) Tick(ctx context.Context) error {
 	observation, err := w.runtime.observe(ctx)
 	if err != nil {
 		return err
+	}
+	if w.runtime.completeUnwind != nil {
+		completed, err := w.runtime.completeUnwind(ctx, observation)
+		if err != nil {
+			return err
+		}
+		if completed {
+			return nil
+		}
 	}
 	decision := Decide(observation.Snapshot)
 	// Decide maps every observation-level hold to one generic reason. The
@@ -706,6 +765,33 @@ func Run(ctx context.Context, out io.Writer) error {
 	worker, err := NewWorker(database, rpc, runtimeConfig.RouteKey, DefaultConfig())
 	if err != nil {
 		return err
+	}
+	shadowMode := os.Getenv("BACKYARD_RWA_SELECTOR_SHADOW")
+	if shadowMode != "" && shadowMode != "0" && shadowMode != "1" {
+		return fmt.Errorf("BACKYARD_RWA_SELECTOR_SHADOW must be 0 or 1")
+	}
+	if shadowMode == "1" {
+		feed, err := NewEconomicFeed(ctx, os.Getenv("TIMESCALEDB_URL"))
+		if err != nil {
+			return err
+		}
+		feedCtx, cancelFeed := context.WithCancel(ctx)
+		feedDone := make(chan struct{})
+		shadowIdentity := newProgramIdentityWatcher(rpc).observe
+		// Shadow has its own observer and bounded background schedule. It never
+		// changes the execution manifest, decisions, or transaction tick.
+		go func() {
+			defer close(feedDone)
+			runSelectorSamples(feedCtx, time.Minute, func(ctx context.Context) {
+				_ = feed.Refresh(ctx)
+				observation, err := observeSelectorShadow(ctx, database, rpc, worker.manifest, shadowIdentity)
+				if err == nil {
+					markets, _ := feed.Snapshot()
+					_, _ = database.RecordSelectorShadow(ctx, worker.routeKey, observation, markets)
+				}
+			})
+		}()
+		defer func() { cancelFeed(); <-feedDone; feed.Close() }()
 	}
 	if _, err := fmt.Fprintf(out,
 		"backyard-rwa-worker: starting serialized confirmed lifecycle route=%s image=%s lease_owner=%s manifest_sha256=%s\n",

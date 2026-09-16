@@ -24,6 +24,9 @@ var embeddedBackyardManifest []byte
 var embeddedLegacyBackyardManifest []byte
 
 type RouteManifest struct {
+	// Runtime observation scope; does not alter the signed manifest or admit entry.
+	selectorObservation   bool
+	observationLane       string
 	Schema                string `json:"schema"`
 	Status                string `json:"status"`
 	Cluster               string `json:"cluster"`
@@ -750,6 +753,12 @@ func (m RouteManifest) hasPhaseOneUnresolved() bool {
 }
 
 func (m RouteManifest) activeRuntimeRoute() (RuntimeRoute, error) {
+	if m.observationLane != "" {
+		if !m.selectorObservation || !selectorLane(m.observationLane) {
+			return RuntimeRoute{}, fmt.Errorf("unadmitted observation lane")
+		}
+		return runtimeRoute(m.observationLane)
+	}
 	lane := PhaseOneLaneID
 	if m.RuntimeActivation.SelectedLane != "" {
 		lane = m.RuntimeActivation.SelectedLane

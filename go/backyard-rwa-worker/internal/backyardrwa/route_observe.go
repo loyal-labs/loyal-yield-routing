@@ -101,7 +101,7 @@ func optionalLifecycleObligations(addresses []string) []string {
 			break
 		}
 	}
-	for _, obligation := range []string{autoAUTOPYUSD.Kamino.Obligation, ethenaUSDePYUSD.Kamino.Obligation, primePRIMEPYUSD.Kamino.Obligation, primePRIMEUSDS.Kamino.Obligation} {
+	for _, obligation := range []string{"4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei", autoAUTOPYUSD.Kamino.Obligation, ethenaUSDePYUSD.Kamino.Obligation, primePRIMEPYUSD.Kamino.Obligation, primePRIMEUSDS.Kamino.Obligation} {
 		for _, candidate := range addresses {
 			if candidate == obligation {
 				optional = append(optional, obligation)
@@ -175,7 +175,12 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			return integrity, accounts, nil
 		}
 		cutoverDrain := false
-		if route.Lane == SelectedRouteID {
+		if manifest.selectorObservation {
+			route, err = observedSelectorRoute(accounts, selectedRoute.Lane)
+			if err != nil {
+				return Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: sha256Bytes([]byte(fmt.Sprintf("selector-ownership:%d:%s", slot, err.Error()))), Slot: slot, RouteKind: RouteKind, RouteLane: selectedRoute.Lane, ManualReason: err.Error()}}, accounts, nil
+			}
+		} else if route.Lane == SelectedRouteID {
 			legacyPosition, legacyErr := observePrimeUSDCFromFixedAccounts(ctx, runtime.accounts, slot, accounts)
 			if legacyErr != nil {
 				return Observation{}, nil, fmt.Errorf("verify legacy PRIME cutover state: %w", legacyErr)
@@ -366,6 +371,18 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 		return nil
 	}
 	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
+	if manifest.selectorObservation {
+		for _, lane := range selectorLanes {
+			other, _ := runtimeRoute(lane)
+			for _, address := range pinnedRouteNAVAddressesForRoute(other) {
+				addressSet[address] = struct{}{}
+			}
+			for _, address := range []string{other.Kamino.Market, other.CollateralLiquiditySupply, other.DebtLiquiditySupply, other.DebtFeeReceiver, other.Kamino.Obligation, other.CollateralCustody} {
+				addressSet[address] = struct{}{}
+			}
+		}
+	}
+
 	// All deposit rounding bounds use the Clock from the same custody/reserve
 	// batch, including retained PRIME/Maple consumers.
 	addressSet[budgetClockAddress] = struct{}{}

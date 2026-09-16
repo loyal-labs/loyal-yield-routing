@@ -57,6 +57,7 @@ type FamilyBudget struct {
 // reload this same goal identity. Database callers serialize changes with the
 // existing route-row lock; this pure reducer does not itself provide durability.
 type Phase3Budget struct {
+	Limits       *DeploymentLimits            `json:"limits,omitempty"`
 	GoalID       string                       `json:"goalId"`
 	Closed       bool                         `json:"closed"`
 	Families     map[string]FamilyBudget      `json:"families"`
@@ -103,6 +104,9 @@ func budgetSum(values ...int64) (int64, error) {
 }
 
 func (b Phase3Budget) validate() error {
+	if err := b.deploymentLimits().validate(); err != nil {
+		return err
+	}
 	if b.GoalID != Phase3GoalID || len(b.Families) < 3 || len(b.Families) > 4 || b.Reservations == nil {
 		return budgetHold("missing_or_mismatched_goal_budget")
 	}
@@ -113,7 +117,7 @@ func (b Phase3Budget) validate() error {
 	}
 	for id, r := range b.Reservations {
 		if id == "" || r.OperationID != id || !phase3Family(r.Family) || !sha256Pattern.MatchString(r.IntentSHA256) ||
-			r.UpperMicros <= 0 || r.UpperMicros > Phase3TransactionCapMicros || r.ExitAfterMicros < 0 || r.ExitBeforeMicros < 0 {
+			r.UpperMicros <= 0 || r.UpperMicros > b.deploymentLimits().TransactionMicros || r.ExitAfterMicros < 0 || r.ExitBeforeMicros < 0 {
 			return budgetHold("invalid_persisted_reservation")
 		}
 	}
@@ -166,7 +170,7 @@ func (b *Phase3Budget) Admit(r BudgetReservation) error {
 	if !phase3Family(r.Family) || r.OperationID == "" || !sha256Pattern.MatchString(r.IntentSHA256) || r.UpperMicros <= 0 || r.ExitAfterMicros < 0 {
 		return budgetHold("invalid_budget_intent")
 	}
-	if r.UpperMicros > Phase3TransactionCapMicros {
+	if r.UpperMicros > b.deploymentLimits().TransactionMicros {
 		return budgetHold("transaction_cap_exceeded")
 	}
 	if old, ok := b.Reservations[r.OperationID]; ok {
@@ -213,10 +217,10 @@ func (b *Phase3Budget) Admit(r BudgetReservation) error {
 	if err != nil {
 		return err
 	}
-	if family > Phase3FamilyCapMicros {
+	if family > b.deploymentLimits().FamilyMicros {
 		return budgetHold("family_cap_exceeded")
 	}
-	if goal > Phase3GoalCapMicros {
+	if goal > b.deploymentLimits().TotalMicros {
 		return budgetHold("goal_cap_exceeded")
 	}
 	row.ExitMicros = r.ExitAfterMicros
@@ -292,7 +296,7 @@ func (b Phase3Budget) AuthorizeIntent(operationID, intentSHA256 string) error {
 	if err != nil {
 		return err
 	}
-	if family > Phase3FamilyCapMicros || goal > Phase3GoalCapMicros {
+	if family > b.deploymentLimits().FamilyMicros || goal > b.deploymentLimits().TotalMicros {
 		return budgetHold("persisted_budget_exceeds_cap")
 	}
 	return nil

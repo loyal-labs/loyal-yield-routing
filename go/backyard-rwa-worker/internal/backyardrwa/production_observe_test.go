@@ -452,3 +452,21 @@ func TestProgramDataImageVerificationChecksOwnerDiscriminatorSlotAndHash(t *test
 		t.Fatal("a truncated ProgramData header was accepted")
 	}
 }
+
+func TestProductionHealthHoldPreservesLastGoodPositionProjection(t *testing.T) {
+	journal := &stubProductionJournal{}
+	state := productionObserveState{routeKey: productionRouteKey, journal: journal, identity: pinnedIdentityObservation, batch: func(context.Context) (Observation, error) {
+		held, ok := KaminoHealthHoldObservation(errKaminoReserveStale, 42, time.Now().UTC())
+		if !ok {
+			t.Fatal("health hold unavailable")
+		}
+		return held, nil
+	}}
+	observation, err := state.observe(context.Background())
+	if err != nil || observation.Snapshot.ManualReason != "kamino_stale" || journal.positionSnapshotWrites != 0 {
+		t.Fatalf("unpriced hold tried to overwrite holdings: %+v %v", observation, err)
+	}
+	if got := Decide(observation.Snapshot); got.Action != HoldManualRecovery {
+		t.Fatal(got)
+	}
+}

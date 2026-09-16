@@ -110,23 +110,23 @@ func TestRestoreAmountEqualsJournaledStagedAmount(t *testing.T) {
 	}
 }
 
-// TestRefreshRequiresEmptyStrategyCustody covers the custody_residue HOLD: a
-// report moves no capital, so it must observe the strategy custody empty.
+// Reports require empty custody; journal-explained staged USDC must first
+// complete its existing restore even after the original request disappears.
 func TestRefreshRequiresEmptyStrategyCustody(t *testing.T) {
 	s := base()
 	s.CapitalMutated = true
 	s.LastReportAgeSeconds = 60
 	s.VoltrStrategyIdleRaw = 5
 	s.StagedAmountKnown, s.StagedAmountRaw = true, 5
-	if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "custody_residue" || got.AmountRaw != 0 {
-		t.Fatalf("refresh ignored a strategy custody residue: %+v", got)
+	if got := Decide(s); got.Action != VoltrRestoreIdle || got.Reason != "withdrawal_staged" || got.AmountRaw != 5 {
+		t.Fatalf("journaled stage was not restored before refresh: %+v", got)
 	}
 	resolved := s
 	resolved.VoltrStrategyIdleRaw = 0
 	if got := Decide(resolved); got.Action != ReportNAV || got.Reason != "nav_due" {
 		t.Fatalf("empty custody was blocked from reporting: %+v", got)
 	}
-	// The non-USDC lane carries the same residue rule.
+	// The existing non-USDC path retains its residue hold.
 	canary := s
 	canary.RouteLane = "AUTO/AUTO/PYUSD"
 	if got := Decide(canary); got.Action != HoldManualRecovery || got.Reason != "custody_residue" {
