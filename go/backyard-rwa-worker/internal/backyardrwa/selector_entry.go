@@ -87,8 +87,9 @@ func (d *Database) LoadSelectorEntry(ctx context.Context, routeKey string) (*Sel
 // ranking. It re-evaluates persistence under the same route lock as execution.
 // expectedVersion must be read before collecting the account observation and
 // quotes; completing an intervening operation invalidates the entire sample.
-// ENTER opens only a flat, reconciled lane; SWITCH remains a result for the
-// separately bounded existing unwind commitment. This writes no transaction.
+// ENTER opens only a flat, reconciled lane. SWITCH commits the bounded source
+// unwind in this same transaction, using only existing reserved exit spending.
+// Neither action writes an executable transaction.
 func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string, input SelectorInput, confirmedSlot, expectedVersion int64) (SelectorResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
@@ -202,6 +203,20 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 			return result, budgetHold("selector_entry_cash_changed")
 		}
 	}
+	var unwind *UnwindIntent
+	if result.Action == "SWITCH" {
+		q, s := result.SelectedQuote, input.Snapshot
+		if q == nil || q.SourceExit == nil || q.SourceLane != s.RouteLane || q.ObservationID != s.ObservationID || !sha256Pattern.MatchString(q.EvidenceID) || q.SourceExit.MaxCollateralRaw != s.PositionCollateralRaw || q.SourceExit.MaxDebtRaw < s.PositionDebtRaw || s.PositionDebtRaw < 0 || s.PositionCollateralRaw < 0 {
+			return result, budgetHold("selector_unwind_quote_missing")
+		}
+		unwind = &UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: s.ObservationID, MaxCollateralRaw: q.SourceExit.MaxCollateralRaw, MaxDebtRaw: q.SourceExit.MaxDebtRaw, CostBoundRaw: q.SourceExit.GrossMicros, BudgetScope: state.Budget.GoalID, BudgetFamily: phase3BudgetFamilyForLane(s.RouteLane), EvidenceID: q.EvidenceID, CreatedAt: now}
+		if err = unwind.validate(); err != nil {
+			return result, err
+		}
+		if state.Budget.Families[unwind.BudgetFamily].ExitMicros < unwind.CostBoundRaw {
+			return result, budgetHold("unwind_requires_existing_exit_reservation")
+		}
+	}
 	encoded, err := json.Marshal(map[string]any{"mode": "live", "observationId": input.Snapshot.ObservationID, "slot": input.Snapshot.Slot, "result": result})
 	if err != nil {
 		return result, err
@@ -210,7 +225,35 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 	if err != nil {
 		return result, err
 	}
-	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(CASE WHEN $6::jsonb='null'::jsonb THEN state ELSE jsonb_set(jsonb_set(jsonb_set(state,'{selectorEntry}',$6::jsonb,true),'{selectorEntryPaused}','false'::jsonb,true),'{generation}',to_jsonb(state_version+1),true) END,'{selector}',$5::jsonb,true),state_version=state_version+CASE WHEN $6::jsonb='null'::jsonb THEN 0 ELSE 1 END,updated_at=clock_timestamp() WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp()`, routeKey, lease.Owner, lease.FencingToken, version, string(encoded), string(entryJSON))
+	// Change the selected authority and its result under one route fence. A
+	// switch clears entry permission; destination selection starts afresh only
+	// after the source has reconciled flat.
+	var updated map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &updated); err != nil {
+		return result, err
+	}
+	updated["selector"] = encoded
+	nextVersion := version
+	if entry != nil || unwind != nil {
+		nextVersion++
+		updated["generation"], _ = json.Marshal(nextVersion)
+		if entry != nil {
+			updated["selectorEntry"] = entryJSON
+			updated["selectorEntryPaused"] = json.RawMessage("false")
+		} else {
+			updated["selectorUnwind"], err = json.Marshal(unwind)
+			if err != nil {
+				return result, err
+			}
+			updated["selectorEntry"] = json.RawMessage("null")
+			updated["selectorEntryPaused"] = json.RawMessage("true")
+		}
+	}
+	stateJSON, err := json.Marshal(updated)
+	if err != nil {
+		return result, err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=$5::jsonb,state_version=$6,updated_at=clock_timestamp() WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp()`, routeKey, lease.Owner, lease.FencingToken, version, string(stateJSON), nextVersion)
 	if err != nil {
 		return result, err
 	}

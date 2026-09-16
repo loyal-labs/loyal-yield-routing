@@ -10,10 +10,11 @@ import (
 // Source forecasts reuse the finite production exit graph. They do not commit
 // an unwind, reserve a budget or assert that prospective balances exist.
 type selectorSourceQuote struct {
-	Lane           string         `json:"lane"`
-	ObservationID  string         `json:"observationId"`
-	MinimumIdleRaw uint64         `json:"minimumIdleRaw"`
-	Recipe         selectorRecipe `json:"recipe"`
+	Lane           string             `json:"lane"`
+	ObservationID  string             `json:"observationId"`
+	MinimumIdleRaw uint64             `json:"minimumIdleRaw"`
+	Recipe         selectorRecipe     `json:"recipe"`
+	ExitBound      *selectorExitBound `json:"exitBound,omitempty"`
 }
 
 func observeSelectorSource(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation) (selectorSourceQuote, error) {
@@ -177,13 +178,38 @@ func priceSelectorSourcePlan(ctx context.Context, rpc *RPCClient, plan phase3Bri
 		return out, err
 	}
 	out.MinimumIdleRaw = cash
+	out.ExitBound = &selectorExitBound{MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: s.PositionDebtRaw}
+	if plan.Payoff != nil {
+		if plan.Payoff.UpperDebtRaw > math.MaxInt64 {
+			return out, budgetHold("selector_source_debt_overflow")
+		}
+		out.ExitBound.MaxDebtRaw = int64(plan.Payoff.UpperDebtRaw)
+	}
 	var err error
 	out.Recipe, err = priceSelectorRecipeWithFloor(ctx, rpc, s.RouteLane, inputs, s.Slot, observationFloor)
 	if err != nil {
 		return out, err
 	}
 	out.Recipe.ValidThroughSlot = min(out.Recipe.ValidThroughSlot, plan.ValidThroughSlot)
-	for _, cost := range out.Recipe.Costs {
+	for i, cost := range out.Recipe.Costs {
+		// The producer starts from a cost-only NAV anchor. When NAV is already
+		// settled, that extra report is conservative economic expense, not a
+		// remaining exit debit in the durable reservation.
+		anchorOnly := false
+		if i == 0 && Decide(s).Action != ReportNAV {
+			request, _, _, decodeErr := inputs[i].decode()
+			if decodeErr != nil {
+				return out, decodeErr
+			}
+			r, ok := request.(BridgeBuildRequest)
+			anchorOnly = ok && r.Action == ReportNAV
+		}
+		if !anchorOnly {
+			out.ExitBound.GrossMicros, err = budgetSum(out.ExitBound.GrossMicros, cost.TotalMicros)
+			if err != nil {
+				return out, err
+			}
+		}
 		observationFloor = max(observationFloor, cost.ObservationSlot)
 	}
 	slot, err := rpc.ConfirmedSlot(ctx)

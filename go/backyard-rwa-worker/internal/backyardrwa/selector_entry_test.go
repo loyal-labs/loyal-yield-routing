@@ -434,3 +434,118 @@ func TestSelectorBorrowAuthorizationPersistsAcrossRestart(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
+	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 30*time.Second)
+	defer cancel()
+	defer db.Close()
+	key := fmt.Sprintf("selector-switch-%d", time.Now().UnixNano())
+	prior := emptyTestBudget()
+	previous, _ := json.Marshal(prior)
+	flat := pilotFlatFixture(t)
+	flatJSON, _ := json.Marshal(flat)
+	a := pilotTestAuthority(prior)
+	a.Generation, a.FinalizedSlot, a.FlatEvidenceSHA256 = 2, flat.Slot, sha256Bytes(flatJSON)
+	budget, err := activatePilotBudget(prior, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	family := budget.Families["Maple"]
+	family.ExitMicros = 10_000_000
+	budget.Families["Maple"] = family
+	in := selectorFixture()
+	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
+	s := &in.Snapshot
+	s.PilotActive, s.HasPosition = true, true
+	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 90_000_000, 100_000_000
+	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 15_000_000, 15_000_000
+	s.PositionDebtRaw, s.PositionDebtValueRaw = 5_000_000, 5_000_000
+	s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.LTVBPS = 10_000_000, 10_000_000, 3334
+	current := in.Markets[0]
+	current.Lane, current.NativeAPY = s.RouteLane, .01
+	in.Markets = append(in.Markets, current)
+	q := &in.Quotes[0]
+	q.EquityRaw, q.BorrowReceiveRaw, q.MinimumIdleRaw = 10_000_000, 5_000_000, 99_900_000
+	q.EvidenceID = sha256Bytes([]byte("complete-switch-recipe"))
+	q.SourceExit = &selectorExitBound{MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: 5_001_000, GrossMicros: 10_000_000}
+	history := SelectorResult{State: SelectorState{SourceLane: s.RouteLane, Advantages: map[string]AdvantageWindow{in.Markets[0].Lane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
+	entry := selectorEntryFixture(in.Now, s.RouteLane, 10_000_000)
+	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}, "selector": map[string]any{"result": history}, "selectorEntry": entry})
+	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AcquireRouteLease(ctx, key, "switch-a", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"missing", "underfunded", "holdings_changed", "version_changed"} {
+		bad := in
+		bad.Quotes = append([]MoveQuote(nil), in.Quotes...)
+		bound := *q.SourceExit
+		bad.Quotes[0].SourceExit = &bound
+		expected := int64(2)
+		switch kind {
+		case "missing":
+			bad.Quotes[0].SourceExit = nil
+		case "underfunded":
+			bound.GrossMicros++
+		case "holdings_changed":
+			bound.MaxDebtRaw = s.PositionDebtRaw - 1
+		case "version_changed":
+			expected--
+		}
+		advanceSelectorFixture(&bad, time.Now().UTC().Sub(bad.Now))
+		if _, err = db.RecordSelectorEvaluation(ctx, key, bad, s.Slot, expected); err == nil {
+			t.Fatal("accepted invalid switch", kind)
+		}
+		var got []byte
+		var version int64
+		if err = db.pool.QueryRow(ctx, `SELECT state,state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&got, &version); err != nil {
+			t.Fatal(err)
+		}
+		var before, after any
+		_ = json.Unmarshal(raw, &before)
+		_ = json.Unmarshal(got, &after)
+		canonicalBefore, _ := json.Marshal(before)
+		canonicalAfter, _ := json.Marshal(after)
+		if version != 2 || !bytes.Equal(canonicalBefore, canonicalAfter) {
+			t.Fatal("rejected evaluation mutated route", kind)
+		}
+	}
+	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
+	result, err := db.RecordSelectorEvaluation(ctx, key, in, s.Slot, 2)
+	if err != nil || result.Action != "SWITCH" {
+		t.Fatal("switch failed", err, result)
+	}
+	if _, err = db.ReleaseRouteLease(ctx); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := OpenDatabase(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	intent, err := restarted.LoadUnwindIntent(ctx, key)
+	if err != nil || intent == nil || intent.MaxDebtRaw != q.SourceExit.MaxDebtRaw || intent.CostBoundRaw != q.SourceExit.GrossMicros || intent.ObservationID != s.ObservationID || intent.EvidenceID != q.EvidenceID {
+		t.Fatal("lost unwind after restart", err, intent)
+	}
+	savedEntry, err := restarted.LoadSelectorEntry(ctx, key)
+	if err != nil || savedEntry != nil {
+		t.Fatal("switch retained entry", err)
+	}
+	var storedBudget, storedResult []byte
+	var version int64
+	var paused bool
+	if err = restarted.pool.QueryRow(ctx, `SELECT state->'phase3',state->'selector'->'result',state_version,(state->>'selectorEntryPaused')::boolean FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&storedBudget, &storedResult, &version, &paused); err != nil {
+		t.Fatal(err)
+	}
+	var after Phase3Budget
+	var savedResult SelectorResult
+	if json.Unmarshal(storedBudget, &after) != nil || json.Unmarshal(storedResult, &savedResult) != nil {
+		t.Fatal("decode")
+	}
+	beforeJSON, _ := json.Marshal(budget)
+	afterJSON, _ := json.Marshal(after)
+	if version != 3 || !paused || savedResult.Action != "SWITCH" || !bytes.Equal(beforeJSON, afterJSON) {
+		t.Fatal("switch changed spending or omitted atomic state", version, paused, savedResult.Action)
+	}
+}

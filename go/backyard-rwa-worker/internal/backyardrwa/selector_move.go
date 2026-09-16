@@ -37,7 +37,7 @@ func observeSelectorMove(ctx context.Context, rpc *RPCClient, client *jupiterCli
 
 func composeSelectorMove(ctx context.Context, rpc *RPCClient, o Observation, source selectorSourceQuote, destination selectorDestinationQuote) (MoveQuote, error) {
 	s := o.Snapshot
-	q := MoveQuote{SourceLane: source.Lane, DestinationLane: destination.Lane, ObservationID: s.ObservationID, ObservedAt: o.ObservedAt, SampleSlot: s.Slot,
+	q := MoveQuote{SourceExit: source.ExitBound, SourceLane: source.Lane, DestinationLane: destination.Lane, ObservationID: s.ObservationID, ObservedAt: o.ObservedAt, SampleSlot: s.Slot,
 		BorrowReceiveRaw: destination.BorrowReceiveRaw, BorrowFeeRaw: destination.BorrowFeeRaw, MinimumIdleRaw: source.MinimumIdleRaw,
 		ValidThroughSlot: min(source.Recipe.ValidThroughSlot, destination.Recipe.ValidThroughSlot)}
 	if rpc == nil || !s.PilotActive || source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || !selectorLane(destination.Lane) || destination.EquityRaw == 0 || destination.EquityRaw > uint64(PilotWorkingTrancheCapRaw) || destination.EquityRaw > source.MinimumIdleRaw || source.MinimumIdleRaw > math.MaxInt64 || !sha256Pattern.MatchString(source.Recipe.EvidenceID) || !sha256Pattern.MatchString(destination.Recipe.EvidenceID) || !q.currentAtSlot(s.Slot) || o.ObservedAt.IsZero() {

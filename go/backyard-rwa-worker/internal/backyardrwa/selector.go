@@ -141,7 +141,16 @@ func (p SelectorPolicy) validate() error {
 // Returned principal is not a cost: the budget separately counts gross debits.
 // It is bound to actual equity, source state, destination and exact policy set.
 // Remaining exit spending belongs to the existing budget, not this quote.
+// selectorExitBound refers to gross debits in the existing exit reservation.
+// It is separate from movement expense and creates no new spending authority.
+type selectorExitBound struct {
+	MaxCollateralRaw int64 `json:"maxCollateralRaw"`
+	MaxDebtRaw       int64 `json:"maxDebtRaw"`
+	GrossMicros      int64 `json:"grossMicros"`
+}
+
 type MoveQuote struct {
+	SourceExit *selectorExitBound `json:"sourceExit,omitempty"`
 	// Whole-vault USDC available after the source exit at enforced swap minima.
 	MinimumIdleRaw uint64 `json:"minimumIdleRaw"`
 	// Exact one-pass borrow sized from conservative initial collateral. Execution

@@ -453,3 +453,35 @@ live execution receipts.
 The complete producer has no live caller yet. Atomic economic unwind handoff,
 background live evaluation and all deployment/lifecycle release gates remain
 open. No production funds or deployment changed.
+
+### Atomic economic switch commitment
+
+`RecordSelectorEvaluation` now commits SWITCH and its bounded unwind intent in
+one transaction under the pre-observation route version and current lease. The
+selected movement quote carries the source receipt bound, full-payoff debt
+ceiling and gross remaining exit debit. Acceptance requires that debit to fit
+the existing source-family exit reservation; it never adds spending authority.
+The same write stores the decision, clears entry permission and advances the
+generation once. Destination entry must be selected afresh after reconciliation.
+
+The source recipe's initial cost-only NAV anchor remains conservative economic
+expense. If accounting is already current, that anchor is excluded from the
+remaining gross exit commitment: the previously settled NAV consumed its own
+reservation already. Required NAV work still takes priority over selection and
+preserves economic persistence. A controlled budget admission/settlement test
+proves that unchanged return pricing fits exactly the remaining reservation.
+PostgreSQL tests prove rejected missing/underfunded/mismatched/stale decisions
+leave state unchanged, and accepted switches retain their result and unwind
+across restart without changing the budget. These are local accounting and
+journal tests, not protocol lifecycle proof. The background live evaluator and
+all previously listed release gates remain outstanding.
+
+Validation: full Go/PostgreSQL suite passes (20.204 seconds), as do Go vet,
+worker build and whitespace checks. Fable identified the extra NAV reservation
+mismatch and reviewed its correction. Before enabling the evaluator, automatic
+unwind recovery still needs a fresh, bounded same-source admission after a
+prolonged interruption exceeds the original payoff-interest window. The current
+intent rejects holdings beyond its envelope; the new runtime must renew that
+envelope against current protocol evidence and existing reserved exit spending
+under the route lock, without silently enlarging it. This is an outstanding
+release requirement, not evidence that restart recovery is complete.
