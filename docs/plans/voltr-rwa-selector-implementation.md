@@ -284,5 +284,44 @@ initializer pins before signer access; the embedded manifest deliberately has no
 initializer pins yet. Still required before initializer dispatch: actual installed
 policy evidence, metadata/farm prerequisites in route admission, the production
 funding envelope, exact full-move admission, and worker preparation/dispatch.
-The initial partner/user deposit cap is awaiting the operator's answer. The
+The initial partner/user deposit cap decision was subsequently delegated to the agent (see below). The
 hot-admin continuation is approved; no cold-key condition is reintroduced.
+
+
+## Goal contract: delegated pilot completion (September 16)
+
+The operator instructed: "choose whatever works ... finish testing ... set a goal
+and go implement whatever we are still missing." This grants the remaining
+routine pilot configuration choices and supersedes the pending cap question.
+The prior hot-admin approval remains in force. This amendment governs the pilot
+release alongside the unchanged accounting/protocol requirements above and the
+strategy-two activation contract; historical canary limits remain historical.
+
+- **Objective:** deployed user/partner deposit access to the HXtk vault, with one
+  active reviewed USDC Multiply loop plus idle cash, automatic eligible-opportunity
+  selection, and working withdrawal/claim and transaction recovery.
+- **Pilot choices:** 100 USDC total vault deposit cap; at most 10 USDC working
+  equity per allocation; start lifecycle tests at 1 USDC or the smallest fully
+  executable route amount established by actual quotes. PRIME, syrupUSDC and ONyc
+  USDC lanes only. Existing hot admin and delegated executor remain pinned.
+- **Invariants:** confirmed/finalized evidence as appropriate; no duplicate send;
+  no unexplained custody or fabricated NAV; closed destination capacity means
+  keep or idle; withdrawal and risk recovery precede economic optimization.
+  Existing spent/reserved history survives the production envelope transition.
+- **Verification:** one current release assessment in this document, backed by the
+  existing worker/protocol/app verifiers and structured authoritative receipts.
+  PASS requires current identities, database/policy readback, release-image
+  deposit/allocation, A-to-B-to-A with close/recreation, liquidity restoration,
+  request/wait/claim, and failure/restart/capacity-race coverage. Fixture-only
+  cases must be identified. Local tests or a deployed process alone cannot pass.
+- **Delivery:** scoped release from the isolated selector worktree, immutable
+  GHCR worker image pinned on Render, compatible user access surface, verified
+  deposit cap, healthy service and live readiness readback. Do not resume the
+  old pinned image or merge unrelated fleet changes by accident.
+- **Current verdict:** FAIL (implementation and release work remains). No
+  additional cap or cold-admin approval is pending. Record a real external
+  dependency only if encountered; continue independent implementation meanwhile.
+
+### Audited journal association implementation
+
+Recovered finalized strategy-two bootstrap at slot 446086069 and captured the exact 1717-row strategy-one journal inventory. Migration 80 and a shared accounting CTE now separate that audited retired history from the current receipt without changing statuses, signatures, wires, effects, timestamps, failure history or accounting values. New decisions stamp their current strategy config. Unknown/copied/mutated metadata remains visible; migration refuses unexpected inventory or concurrent work. Local PostgreSQL inventory replay, worker suite and store compile pass. Evidence: `docs/evidence/voltr-selector-2026-09-16/strategy-journal-association.md`. Production application remains part of the controlled release.

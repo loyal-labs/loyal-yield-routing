@@ -34,7 +34,28 @@ const AssertRouteLeaseSQL = `SELECT lease_expires_at FROM loyal_yield.multiply_r
 
 const OperationRouteForLeaseSQL = `SELECT operation.route_key FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key = operation.route_key WHERE operation.operation_id = $1 AND route.lease_owner = $2 AND route.fencing_token = $3 AND route.lease_expires_at > clock_timestamp() FOR UPDATE OF route`
 
-const PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
+// ActiveStrategyJournalCTE excludes only individually bound, reviewed records
+// from the retired strategy. Unknown/unscoped records remain visible and can
+// still trip accounting monitors. It never scopes by deployment or manifest.
+const ActiveStrategyJournalCTE = `WITH strategy_journal AS (
+ SELECT * FROM loyal_yield.multiply_operations WHERE route_key = $1 AND NOT COALESCE(
+   route_key = 'rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh'
+   AND engine_version = 'backyard_rwa_v1'
+   AND confirmed_slot BETWEEN 1 AND 444157954
+   AND expected_effects->>'journalStrategyConfig' = '9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj'
+   AND expected_effects->'journalAssociation'->>'schema' = 'backyard-strategy-association/v1'
+   AND expected_effects->'journalAssociation'->>'operationId' = operation_id
+   AND expected_effects->'journalAssociation'->>'routeKey' = route_key
+   AND expected_effects->'journalAssociation'->>'confirmedSlot' = confirmed_slot::text
+   AND expected_effects->'journalAssociation'->>'signature' = transaction_signature
+   AND expected_effects->'journalAssociation'->>'action' = action
+   AND expected_effects->'journalAssociation'->>'status' = status
+   AND expected_effects->'journalAssociation'->>'currentStrategyConfig' = 'DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY'
+   AND expected_effects->'journalAssociation'->>'bootstrapSlot' = '446086069'
+   AND expected_effects->'journalAssociation'->>'evidenceSha256' = '3319db2f57baf743be2471d72a1e9d34168a81ebc0378071f7a7f28e1d968a64', false)
+) `
+
+const PostMutationNAVRequiredSQL = ActiveStrategyJournalCTE + `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') FROM strategy_journal WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
 
 // LatestDecisionEpochSQL advances after a fully reconciled mutation or an
 // explicitly terminal pre-broadcast failure. A confirmed report-only operation
@@ -627,9 +648,10 @@ func (d *Database) recordDecisionTx(
 		return DecisionRecord{}, fmt.Errorf("one nonterminal operation already exists")
 	}
 	expected, err := json.Marshal(map[string]any{
-		"schema":          "loyal-backyard-rwa-operation-evidence/v1",
-		"decision":        newDecisionEvidence(observation, decision, manifestSHA256, policyCatalogSHA256),
-		"expectedEffects": nil,
+		"schema":                "loyal-backyard-rwa-operation-evidence/v1",
+		"journalStrategyConfig": bridgeStrategy,
+		"decision":              newDecisionEvidence(observation, decision, manifestSHA256, policyCatalogSHA256),
+		"expectedEffects":       nil,
 	})
 	if err != nil {
 		return DecisionRecord{}, err
@@ -740,58 +762,58 @@ type ReconciledBridgeJournalState struct {
 // subquery shares one ordering so "after" means the same thing everywhere. The
 // ordering rows additionally return their tie-break columns so the Go side can
 // compare a composite identity (see journalOrderKey) instead of a bare slot.
-const ReconciledBridgeJournalSQL = `SELECT
- (SELECT (expected_effects->'decision'->>'observationSlot')::bigint FROM loyal_yield.multiply_operations
+const ReconciledBridgeJournalSQL = ActiveStrategyJournalCTE + `SELECT
+ (SELECT (expected_effects->'decision'->>'observationSlot')::bigint FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled'
      AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT expected_effects->'expectedEffects'->'returnData'->>'dataBase64' FROM loyal_yield.multiply_operations
+ (SELECT expected_effects->'expectedEffects'->'returnData'->>'dataBase64' FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled'
      AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT (expected_effects->'decision'->>'amountRaw')::bigint FROM loyal_yield.multiply_operations
+ (SELECT (expected_effects->'decision'->>'amountRaw')::bigint FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT confirmed_slot FROM loyal_yield.multiply_operations
+ (SELECT confirmed_slot FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT confirmed_slot FROM loyal_yield.multiply_operations
+ (SELECT confirmed_slot FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled'
      AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT confirmed_slot FROM loyal_yield.multiply_operations
+ (SELECT confirmed_slot FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled'
      AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE')
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT confirmed_slot FROM loyal_yield.multiply_operations
+ (SELECT confirmed_slot FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled' AND action = 'REPORT_NAV'
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT updated_at FROM loyal_yield.multiply_operations
+ (SELECT updated_at FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT operation_id FROM loyal_yield.multiply_operations
+ (SELECT operation_id FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT updated_at FROM loyal_yield.multiply_operations
+ (SELECT updated_at FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled'
      AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT operation_id FROM loyal_yield.multiply_operations
+ (SELECT operation_id FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled'
      AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT updated_at FROM loyal_yield.multiply_operations
+ (SELECT updated_at FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled'
      AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE')
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT operation_id FROM loyal_yield.multiply_operations
+ (SELECT operation_id FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled'
      AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE')
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT updated_at FROM loyal_yield.multiply_operations
+ (SELECT updated_at FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled' AND action = 'REPORT_NAV'
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT operation_id FROM loyal_yield.multiply_operations
+ (SELECT operation_id FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled' AND action = 'REPORT_NAV'
    ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1)`
 
