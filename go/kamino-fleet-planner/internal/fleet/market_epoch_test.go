@@ -84,15 +84,17 @@ func TestImmutableMarketEpochUsesDurableStateIdentityAndCanonicalFingerprint(t *
 	if mismatch == nil {
 		t.Fatal("changed direct account bytes were accepted under old durable evidence")
 	}
-	if !shadowObservationDifference(ModeShadow, mismatch) || shadowObservationDifference(ModePublish, mismatch) {
-		t.Fatal("only shadow may continue planning from the durable epoch after a hash difference")
+	// Rust has no direct-observation fence, so a bare hash difference must not
+	// stop publish planning either; the durable epoch remains the planning input.
+	if !tolerableObservationDifference(mismatch) {
+		t.Fatal("a bare account-hash difference must be tolerated in every mode")
 	}
 	// A hash difference must not mask a fatal error in a later reserve.
 	invalidSource := drifted.Reserves[source.Address]
 	invalidSource.Market = target.Market
 	drifted.Reserves[source.Address] = invalidSource
 	identityErr := epoch.VerifyDirectObservation(drifted, target.Address, source.Address)
-	if identityErr == nil || shadowObservationDifference(ModeShadow, identityErr) {
+	if identityErr == nil || tolerableObservationDifference(identityErr) {
 		t.Fatal("hash mismatch masked later reserve identity failure")
 	}
 	drifted.Reserves[source.Address] = snapshot.Reserves[source.Address]
@@ -100,13 +102,13 @@ func TestImmutableMarketEpochUsesDurableStateIdentityAndCanonicalFingerprint(t *
 	invalidSource.Slot = 1
 	drifted.Reserves[source.Address] = invalidSource
 	slotErr := epoch.VerifyDirectObservation(drifted, target.Address, source.Address)
-	if slotErr == nil || shadowObservationDifference(ModeShadow, slotErr) {
+	if slotErr == nil || tolerableObservationDifference(slotErr) {
 		t.Fatal("hash mismatch masked later reserve slot failure")
 	}
 	drifted.Reserves[source.Address] = snapshot.Reserves[source.Address]
 	drifted.ObservedAt = epoch.OptimizerEnvelopeExpiresAt().Add(time.Second)
 	expiryErr := epoch.VerifyDirectObservation(drifted, target.Address, source.Address)
-	if expiryErr == nil || shadowObservationDifference(ModeShadow, expiryErr) {
+	if expiryErr == nil || tolerableObservationDifference(expiryErr) {
 		t.Fatal("shadow accepted an expired epoch after a hash mismatch")
 	}
 	changedReserves := append([]MarketEpochReserve(nil), epoch.Reserves...)

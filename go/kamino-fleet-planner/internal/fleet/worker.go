@@ -164,13 +164,20 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		return fmt.Errorf("observe complete coherent reserve catalog: %w", err)
 	}
 	slot := direct.Slot
+	observationDifferences := 0
 	if err = epoch.VerifyDirectObservation(direct, addresses...); err != nil {
-		if !shadowObservationDifference(w.config.Mode, err) {
+		if !tolerableObservationDifference(err) {
 			return fmt.Errorf("durable market evidence not converged: %w", err)
 		}
-		// Rust plans from this verified immutable database epoch, not the
-		// subsequent RPC read. Shadow can compare that same epoch while logging
-		// changing account bytes; publish mode retains the strict equality fence.
+		// Rust plans from this verified immutable database epoch and never
+		// re-reads reserve accounts over RPC, so it has no equivalent fence.
+		// A hash difference here only means the reserve account changed after
+		// Timescale captured it, which is the normal state of a busy reserve
+		// (D6q6 differed in 35% of shadow cycles on 2026-09-16); it cannot say
+		// which side is newer. Identity, slot, and expiry failures above stay
+		// fatal in every mode. Route-level freshness is enforced later by
+		// simulation against confirmed chain state before publication.
+		observationDifferences = 1
 		logEvent(map[string]any{"event": "kamino_fleet_planner_observation_difference", "mode": w.config.Mode, "error": err.Error(), "planningEvidence": "durable_verified_epoch"})
 	}
 	snapshot, err := marketSnapshotFromEpoch(epoch, addresses...)
@@ -250,7 +257,7 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		idleSummary["jointSelectedReserveCount"] = len(fleetPlan.Opportunities) - idleSelected
 		logEvent(idleSummary)
 	}
-	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": reserveSourceCount, "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "rejectedVaultCount": len(fleetPlan.Rejections), "rejectionCounts": rejectionCounts(fleetPlan.Rejections)})
+	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": reserveSourceCount, "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "observationDifferenceCount": observationDifferences, "rejectedVaultCount": len(fleetPlan.Rejections), "rejectionCounts": rejectionCounts(fleetPlan.Rejections)})
 	return nil
 }
 
@@ -299,9 +306,11 @@ func rejectionCounts(rejections map[int64]string) map[string]int {
 	return counts
 }
 
-func shadowObservationDifference(mode Mode, err error) bool {
+// tolerableObservationDifference is true only for a bare account-hash
+// difference. Every other VerifyDirectObservation failure is fatal in every mode.
+func tolerableObservationDifference(err error) bool {
 	_, mismatch := err.(*DirectObservationHashMismatch)
-	return mode == ModeShadow && mismatch
+	return mismatch
 }
 
 func logEvent(event map[string]any) {
