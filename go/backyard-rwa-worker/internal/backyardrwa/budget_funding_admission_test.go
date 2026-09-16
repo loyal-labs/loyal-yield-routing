@@ -199,7 +199,7 @@ func TestUSDCFundingRejectsChangedCashUnderfundingAndUnreservedReturn(t *testing
 			putScaledFraction(accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(30_000), 60))
 			o.Snapshot.PositionDebtRaw = 30_000
 		}
-		_, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+		_, err := legacyAdmissionCostCheck(observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects))
 		if output == 20_000 {
 			assertBudgetHold(t, err, "funding_quote_cannot_cover_full_payoff")
 		} else {
@@ -286,7 +286,7 @@ func TestFundingAdmissionRejectsUnderfundingAndFinalSendDrift(t *testing.T) {
 	_, err = observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
 	assertBudgetHold(t, err, "funding_quote_cannot_cover_full_payoff")
 	o, d, e, m, rpc, client, _ = fundingAdmissionFixture(t, 900_000)
-	_, err = observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+	_, err = legacyAdmissionCostCheck(observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects))
 	assertBudgetHold(t, err, "bridge_exit_or_transaction_cap_exceeded")
 }
 

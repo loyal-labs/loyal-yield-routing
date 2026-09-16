@@ -3,7 +3,6 @@ package backyardrwa
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"math"
 	"time"
 )
@@ -221,12 +220,6 @@ func observePhase3BridgeAdmission(ctx context.Context, rpc *RPCClient, observati
 		if err != nil {
 			return plan, err
 		}
-		if cost.TotalMicros > Phase3TransactionCapMicros {
-			return plan, &BudgetHold{Reason: "bridge_exit_or_transaction_cap_exceeded", Details: map[string]string{
-				"action": string(step.Request.Action), "step": fmt.Sprint(i), "upperMicros": fmt.Sprint(cost.TotalMicros),
-				"resume": "reobserve_and_size_the_entire_bridge_return_path_within_existing_caps",
-			}}
-		}
 		plan.ValidThroughSlot = min(plan.ValidThroughSlot, cost.ValidThroughSlot)
 		if i == 0 {
 			plan.CurrentCost = cost
@@ -239,4 +232,36 @@ func observePhase3BridgeAdmission(ctx context.Context, rpc *RPCClient, observati
 		}
 	}
 	return plan, nil
+}
+
+// Measurement does not grant a limit. Enforce every gross transaction in the
+// complete exit under the route lock using the budget read in that transaction.
+// This also prevents a caller from understating ExitAfterMicros independently
+// of its retained step evidence.
+func (b Phase3Budget) validateExitPlanCaps(plan phase3BridgeAdmission) error {
+	cap := b.deploymentLimits().TransactionMicros
+	if plan.CurrentCost.TotalMicros <= 0 {
+		return budgetHold("invalid_current_transaction_cost")
+	}
+	if plan.CurrentCost.TotalMicros > cap {
+		return budgetHold("transaction_cap_exceeded")
+	}
+	var total int64
+	for _, step := range plan.Exit {
+		if step.Cost.TotalMicros <= 0 {
+			return budgetHold("invalid_exit_transaction_cost")
+		}
+		if step.Cost.TotalMicros > cap {
+			return budgetHold("bridge_exit_or_transaction_cap_exceeded")
+		}
+		var err error
+		total, err = budgetSum(total, step.Cost.TotalMicros)
+		if err != nil {
+			return err
+		}
+	}
+	if total != plan.ExitAfterMicros {
+		return budgetHold("exit_cost_sum_mismatch")
+	}
+	return nil
 }

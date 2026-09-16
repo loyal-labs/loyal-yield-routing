@@ -143,6 +143,17 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 		return ValuedTransactionCost{}, budgetHold("persisted_signature_or_expiry_mismatch")
 	}
 	cost, err := observePhase3KnownBuildCost(ctx, rpc, request, effects)
+	if err == nil {
+		// This early signed-HOLD check is not authority. The locked send gate
+		// independently requires the exact persisted budget and reservation.
+		cap := legacyDeploymentLimits().TransactionMicros
+		if auth.PilotAuthorityID == pilotBudgetAuthorityID {
+			cap = pilotDeploymentLimits().TransactionMicros
+		}
+		if cost.TotalMicros > cap {
+			err = budgetHold("transaction_cap_exceeded")
+		}
+	}
 	if err == nil && auth.BridgeAdmission != nil && auth.BridgeAdmission.LeverageProjection != nil {
 		entry, ok := request.(JupiterSwapRequest)
 		if !ok {

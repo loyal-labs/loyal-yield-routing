@@ -2,13 +2,13 @@ package backyardrwa
 
 import (
 	"context"
-	"strconv"
 	"time"
 )
 
 // observePhase3KnownBuildCost revalues the exact executable principal and
 // unsigned-message fee before the production builder can load a signer.
-// It is a rejection/revalidation gate, NOT complete admission: account setup
+// It measures cost without selecting a deployment budget. The locked durable
+// admission/build/send boundaries enforce the current authorized caps. Account setup
 // and the remaining exit graph still require independently bounded funding.
 // Only the typed initializer admits its exact native rent in this gate.
 func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
@@ -140,20 +140,6 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 	}
 	if initializerPrestateSlot > 0 {
 		cost.ValidThroughSlot = min(cost.ValidThroughSlot, initializerPrestateSlot+budgetMaxObservationLagSlots)
-	}
-	if cost.TotalMicros > Phase3TransactionCapMicros {
-		return cost, &BudgetHold{Reason: "transaction_cap_exceeded", Details: map[string]string{
-			"knownCostMicros":       strconv.FormatInt(cost.TotalMicros, 10),
-			"principalMicros":       strconv.FormatInt(cost.PrincipalMicros, 10),
-			"networkFeeMicros":      strconv.FormatInt(cost.NetworkFeeMicros, 10),
-			"setupLamports":         strconv.FormatUint(setupLamports, 10),
-			"transactionCapMicros":  strconv.FormatInt(Phase3TransactionCapMicros, 10),
-			"observationSlot":       strconv.FormatInt(cost.ObservationSlot, 10),
-			"messageSha256":         cost.MessageSHA256,
-			"tokenValuationSha256":  token.EvidenceSHA256,
-			"nativeValuationSha256": sol.EvidenceSHA256,
-			"coverage":              "executable_principal_network_fee_and_explicit_setup_remaining_exit_not_admitted",
-		}}
 	}
 	return cost, nil
 }

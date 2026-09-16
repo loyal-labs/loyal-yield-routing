@@ -25,7 +25,7 @@ Read-only finalized evidence at slot 447431070 fails the strict flat check becau
 
 ## Still disabled / incomplete
 
-No activation command or worker call enables the pilot mode yet. Current-limit propagation, 10-USDC tranche wiring, actual native exit-fee liquidity, residual conversion/return and full release lifecycle remain required. Production database, policies, balances and deployment were not changed in this work.
+No activation command or worker call enables the pilot mode yet. 10-USDC tranche wiring, actual native exit-fee liquidity, residual conversion/return and full release lifecycle remain required. Production database, policies, balances and deployment were not changed in this work.
 
 ## Measured execution-cost producer
 
@@ -35,4 +35,6 @@ Admission records this bound in the existing reservation and operation authoriza
 
 Local regression coverage includes understated/corrupted costs, missing or stale minimum-credit valuation, inverted intervals, borrow fees, receipt/debt rounding, recoverable native rent, wire-preserving repricing, and real PostgreSQL admission/build/send rejection. Fable independently reviewed the arithmetic and checked retained same-ELF withdrawal execution: 92653355 actually burned receipt units release 99999999 raw liquidity, exactly the floor formula. This establishes the rounding assumption; it is not a new live transaction.
 
-The legacy one-USDC observation caps remain until current-limit propagation is completed. The producer is connected to pilot gates, but pilot activation and rollout remain disabled. No production mutation was made.
+Cost observation now measures without choosing a deployment allowance. Under the route lock, admission checks the current cost, every complete-exit step and its summed reservation against the persisted budget limits. Build/send still require the fresh cost to fit the exact reservation. The early signed-cost rejection preserves legacy and pilot maximum caps without granting authority. Local PostgreSQL verification accepts a 10-USDC measured allocation under pilot limits, refuses a narrowed one-USDC durable limit, rejects an oversized exit step and an understated sum, then exercises the real build/send guards. Full worker/database tests and Go vet pass; Fable found no cap bypass in the reviewed production callers.
+
+The producer and current-limit gates are connected, but decision tranche wiring, pilot activation and rollout remain disabled. No production mutation was made.

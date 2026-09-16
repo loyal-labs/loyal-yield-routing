@@ -238,7 +238,7 @@ func TestBorrowFeesRevalidateBeforeSendAndRejectWrongGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertBudgetHold(t, BuildSimulateAndPersistKamino(context.Background(), &Database{}, rpc, "borrow-fee-over-cap", KaminoExecutionEvidence{over, overEffects}), "transaction_cap_exceeded")
+	assertKnownCostExceedsLegacyBudget(t, rpc, over, overEffects)
 	// Minimum, nearest-integer (including half-up), and zero fee semantics.
 	for _, tc := range []struct{ rate, receive, want uint64 }{{0, 1, 0}, {1, 2, 1}, {1 << 52, 1000, 4}, {1 << 51, 1280, 3}} {
 		binary.LittleEndian.PutUint64(reserve.Data[kaminoReserveConfigOffset+40:], tc.rate)

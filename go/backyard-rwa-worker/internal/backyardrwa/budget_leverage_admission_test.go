@@ -164,7 +164,7 @@ func TestLeverageSwapAdmissionRejectsUnsafePoststateFundingAndIntent(t *testing.
 				output = 900_000
 			}
 			o, d, e, m, rpc, client, _ := leverageAdmissionFixture(t, output, variant)
-			_, err := observePhase3LeverageSwapAdmission(context.Background(), rpc, client, m, o, d, e)
+			_, err := legacyAdmissionCostCheck(observePhase3LeverageSwapAdmission(context.Background(), rpc, client, m, o, d, e))
 			if err == nil {
 				t.Fatal("unsafe leverage admitted")
 			}

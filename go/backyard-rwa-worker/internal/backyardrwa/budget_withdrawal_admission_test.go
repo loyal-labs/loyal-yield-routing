@@ -166,7 +166,7 @@ func TestWithdrawalAdmissionRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 		assertBudgetHold(t, err, "complete_position_exit_admission_unavailable")
 	}
 	o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 990_000)
-	_, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, o, d, evidence)
+	_, err := legacyAdmissionCostCheck(observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, o, d, evidence))
 	assertBudgetHold(t, err, "bridge_exit_or_transaction_cap_exceeded")
 	for _, value := range []uint64{0, math.MaxUint64} {
 		if _, err = withdrawalUSDCExitEstimate(value); err == nil {

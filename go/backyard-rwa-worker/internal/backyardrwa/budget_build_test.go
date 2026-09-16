@@ -103,7 +103,7 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 	return rpc
 }
 
-func TestProductionBridgeRejectsFreshOverCapCostBeforeSignerOrDatabase(t *testing.T) {
+func TestProductionBridgeRequiresDurableBudgetBeforeSigner(t *testing.T) {
 	for _, tc := range []struct {
 		action      Action
 		amount, fee uint64
@@ -118,11 +118,12 @@ func TestProductionBridgeRejectsFreshOverCapCostBeforeSignerOrDatabase(t *testin
 				t.Fatal(err)
 			}
 			request := bridgeTestRequest(tc.action, tc.amount)
-			// An uninitialized DB cannot authorize or record a wire. Getting the
-			// typed cap HOLD proves this production path rejected before that
-			// boundary, signer loading and signed simulation/send.
+			// Measurement cannot infer pilot authority or authorize signing.
+			assertKnownCostExceedsLegacyBudget(t, budgetBuildRPC(t, tc.fee, 42), request, effects)
 			err = BuildSimulateAndPersistBridge(context.Background(), &Database{}, budgetBuildRPC(t, tc.fee, 42), "negative-probe", BridgeExecutionEvidence{request, effects})
-			assertBudgetHold(t, err, "transaction_cap_exceeded")
+			if err == nil || err.Error() != "database is not configured" {
+				t.Fatalf("unconfigured builder reached signer: %v", err)
+			}
 		})
 	}
 }
@@ -146,7 +147,7 @@ func TestKnownBuildCostRejectsStaleObservationAndDoesNotGrantAdmission(t *testin
 	}
 }
 
-func TestProductionKaminoAndJupiterRejectFreshOverCapCostBeforeSigner(t *testing.T) {
+func TestProductionKaminoAndJupiterRequireDurableBudgetBeforeSigner(t *testing.T) {
 	t.Run("Kamino", func(t *testing.T) {
 		request := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegBorrow)
 		source, destination := kaminoLegCustodies(kaminoLegBorrow)
@@ -154,8 +155,11 @@ func TestProductionKaminoAndJupiterRejectFreshOverCapCostBeforeSigner(t *testing
 			{Address: source.Address, Owner: classicTokenProgram, Mint: source.Mint, Authority: source.Authority, BeforeRaw: 2_000_000, AfterRaw: 1_000_000},
 			{Address: destination.Address, Owner: classicTokenProgram, Mint: destination.Mint, Authority: destination.Authority, BeforeRaw: 0, AfterRaw: 1_000_000},
 		}}
+		assertKnownCostExceedsLegacyBudget(t, budgetBuildRPC(t, 5_000, 42), request, effects)
 		err := BuildSimulateAndPersistKamino(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), "negative-kamino", KaminoExecutionEvidence{request, effects})
-		assertBudgetHold(t, err, "transaction_cap_exceeded")
+		if err == nil || err.Error() != "database is not configured" {
+			t.Fatalf("unconfigured builder reached signer: %v", err)
+		}
 	})
 	t.Run("Jupiter", func(t *testing.T) {
 		request := JupiterSwapRequest{Action: SwapUSDCToPrimeStep, AmountRaw: 1_000_000, QuotedOutputRaw: 990_000, MinimumOutputRaw: 985_050,
@@ -166,7 +170,22 @@ func TestProductionKaminoAndJupiterRejectFreshOverCapCostBeforeSigner(t *testing
 			{Address: bridgeSquadsATA, Owner: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeVault, BeforeRaw: 1_000_000, AfterRaw: 0},
 			{Address: kaminoPrimeCustody, Owner: classicTokenProgram, Mint: kaminoPrimeMint, Authority: bridgeVault, BeforeRaw: 0, AfterRaw: minimum, MinimumAfterRaw: &minimum},
 		}}
+		assertKnownCostExceedsLegacyBudget(t, budgetBuildRPC(t, 5_000, 42), request, effects)
 		err := BuildSimulateAndPersistJupiter(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), "negative-jupiter", JupiterExecutionEvidence{request, effects})
-		assertBudgetHold(t, err, "transaction_cap_exceeded")
+		if err == nil || err.Error() != "database is not configured" {
+			t.Fatalf("unconfigured builder reached signer: %v", err)
+		}
 	})
+}
+
+func assertKnownCostExceedsLegacyBudget(t *testing.T, rpc *RPCClient, request any, effects ExpectedEffects) {
+	t.Helper()
+	cost, err := observePhase3KnownBuildCost(context.Background(), rpc, request, effects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := emptyTestBudget()
+	r := testReservation()
+	r.UpperMicros = cost.TotalMicros
+	assertBudgetHold(t, b.Admit(r), "transaction_cap_exceeded")
 }

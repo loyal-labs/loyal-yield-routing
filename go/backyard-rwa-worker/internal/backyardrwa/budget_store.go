@@ -276,6 +276,9 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	if err != nil {
 		return err
 	}
+	if err = budget.validateExitPlanCaps(plan); err != nil {
+		return err
+	}
 	if budget.Pilot != nil {
 		plan.CurrentCost, err = observePilotExecutionCost(ctx, rpc, request, effects, plan.CurrentCost)
 		if err != nil {

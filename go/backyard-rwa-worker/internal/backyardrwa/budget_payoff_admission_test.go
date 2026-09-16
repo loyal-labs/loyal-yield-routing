@@ -152,7 +152,7 @@ func TestFundedPayoffRejectsInsufficientInterestAndChangedStateBeforeSigner(t *t
 		}
 	}
 	o, d, e, m, rpc, client, _ := payoffAdmissionFixture(t, 900_000)
-	_, err := observePhase3PayoffAdmission(context.Background(), rpc, client, m, o, d, e)
+	_, err := legacyAdmissionCostCheck(observePhase3PayoffAdmission(context.Background(), rpc, client, m, o, d, e))
 	assertBudgetHold(t, err, "bridge_exit_or_transaction_cap_exceeded")
 	// The same full-payoff condition runs when repricing persisted signed bytes.
 	_, _, e, _, rpc, _, a := payoffAdmissionFixture(t, 20_000)

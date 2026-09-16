@@ -139,7 +139,7 @@ func TestDebtFreeReturnReservesBothCollateralAndDebtResidue(t *testing.T) {
 	}
 	// Aggregate output, not either quote alone, must fit each full restoration.
 	o, d, e, m, rpc, client = debtResidueAdmissionFixture(t, 900_000)
-	_, err = observePhase3WithdrawalAdmission(context.Background(), rpc, client, m, o, d, e)
+	_, err = legacyAdmissionCostCheck(observePhase3WithdrawalAdmission(context.Background(), rpc, client, m, o, d, e))
 	assertBudgetHold(t, err, "bridge_exit_or_transaction_cap_exceeded")
 }
 

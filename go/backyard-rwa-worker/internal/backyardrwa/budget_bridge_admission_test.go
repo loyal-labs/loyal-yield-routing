@@ -65,7 +65,7 @@ func TestBridgeAdmissionRejectsUnpricedExposureAndFullSweepCap(t *testing.T) {
 	})
 	t.Run("small stage cannot hide large full restore", func(t *testing.T) {
 		o, d, evidence := bridgeAdmissionFixture(t, StageSquadsToVoltr, 100_000, 0, 950_000, 100_000)
-		_, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5_000, 42), o, d, evidence)
+		_, err := legacyAdmissionCostCheck(observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5_000, 42), o, d, evidence))
 		assertBudgetHold(t, err, "bridge_exit_or_transaction_cap_exceeded")
 	})
 	t.Run("partial restore", func(t *testing.T) {
@@ -259,4 +259,13 @@ func testProductionBridgeAdmission(t *testing.T, url string) {
 	changed := evidence
 	changed.Request.RecentBlockhash = bridgeSettings
 	assertBudgetHold(t, restarted.admitPhase3Bridge(ctx, budgetBuildRPC(t, 5_000, 42), id, o, d, changed), "reservation_identity_mismatch")
+}
+
+// Mirrors the measured-plan check at the locked production admission boundary.
+// The observer itself has no authority to select a deployment's budget.
+func legacyAdmissionCostCheck(plan phase3BridgeAdmission, err error) (phase3BridgeAdmission, error) {
+	if err == nil {
+		err = emptyTestBudget().validateExitPlanCaps(plan)
+	}
+	return plan, err
 }

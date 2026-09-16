@@ -130,7 +130,7 @@ func TestPilotMeasuredAdmissionPersistsCostAndRejectsChangedBuildAndSend(t *test
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, state); err != nil {
 		t.Fatal(err)
 	}
-	o, d, e := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
+	o, d, e := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 10_000_000, 20_000_000, 0, 0)
 	o.Snapshot.RouteLane = SelectedRouteID
 	o.Snapshot.StrategyKey = SelectedRouteID
 	d.StrategyKey = SelectedRouteID
@@ -143,6 +143,27 @@ func TestPilotMeasuredAdmissionPersistsCostAndRejectsChangedBuildAndSend(t *test
 	}
 	defer db.ReleaseRouteLease(ctx)
 	rpc := budgetBuildRPC(t, 5000, 42)
+	plan, err := observePhase3BridgeAdmission(ctx, rpc, o, d, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBudgetHold(t, emptyTestBudget().validateExitPlanCaps(plan), "transaction_cap_exceeded")
+	// A narrowed durable budget must win over the pilot's maximum envelope.
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{phase3,limits,transactionMicros}','1000000') WHERE route_key=$1`, key); err != nil {
+		t.Fatal(err)
+	}
+	assertBudgetHold(t, db.admitPhase3Bridge(ctx, rpc, id, o, d, e), "transaction_cap_exceeded")
+	// Restore only this disposable fixture before proving the authorized cap.
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{phase3,limits,transactionMicros}','20000000') WHERE route_key=$1`, key); err != nil {
+		t.Fatal(err)
+	}
+	badPlan := plan
+	badPlan.Exit = append([]phase3BridgeExitCost(nil), plan.Exit...)
+	badPlan.Exit[0].Cost.TotalMicros = 20_000_001
+	assertBudgetHold(t, db.persistPhase3ExitAdmission(ctx, rpc, id, o, d, badPlan), "bridge_exit_or_transaction_cap_exceeded")
+	badPlan = plan
+	badPlan.ExitAfterMicros--
+	assertBudgetHold(t, db.persistPhase3ExitAdmission(ctx, rpc, id, o, d, badPlan), "exit_cost_sum_mismatch")
 	if err = db.admitPhase3Bridge(ctx, rpc, id, o, d, e); err != nil {
 		t.Fatal(err)
 	}
