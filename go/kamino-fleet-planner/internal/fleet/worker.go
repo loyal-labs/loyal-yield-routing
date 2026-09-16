@@ -18,6 +18,8 @@ type Worker struct {
 	rpc               *RPCClient
 	marketEvidence    MarketEpochSource
 	revalidator       *Revalidator
+	shadowRevalidator *Revalidator
+	shadowSeen        shadowSeen
 	lastConfirmedSlot int64
 }
 
@@ -42,6 +44,19 @@ func (w *Worker) SetRevalidator(revalidator *Revalidator) error {
 	return nil
 }
 
+// SetShadowRevalidator installs the read-only shadow loop. Shadow mode only:
+// it peeks, prepares, and logs; it never leases or commits.
+func (w *Worker) SetShadowRevalidator(revalidator *Revalidator) error {
+	if revalidator == nil {
+		return fmt.Errorf("revalidator is required")
+	}
+	if w.config.Mode != ModeShadow {
+		return fmt.Errorf("publish mode cannot run the shadow revalidator")
+	}
+	w.shadowRevalidator = revalidator
+	return nil
+}
+
 func (w *Worker) SetMarketEvidence(source MarketEpochSource) error {
 	if source == nil {
 		return fmt.Errorf("market evidence source is required")
@@ -56,7 +71,14 @@ func (w *Worker) Run(ctx context.Context) error {
 	// one-second loop and can never block recovery of already durable work.
 	if w.revalidator != nil {
 		for i := 0; i < w.config.RevalidationConcurrency; i++ {
-			go w.runRevalidator(ctx, i)
+			go w.runRevalidator(ctx, i, "kamino_fleet_revalidation_failed", w.revalidator.Cycle)
+		}
+	}
+	if w.shadowRevalidator != nil {
+		for i := 0; i < w.config.RevalidationConcurrency; i++ {
+			go w.runRevalidator(ctx, i, "kamino_fleet_revalidation_shadow_failed", func(ctx context.Context, cluster string) (bool, error) {
+				return w.shadowRevalidator.ShadowCycle(ctx, cluster, &w.shadowSeen)
+			})
 		}
 	}
 	poll := time.NewTicker(w.config.PollInterval)
@@ -76,7 +98,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-func (w *Worker) runRevalidator(ctx context.Context, index int) {
+func (w *Worker) runRevalidator(ctx context.Context, index int, failureEvent string, cycle func(context.Context, string) (bool, error)) {
 	ticker := time.NewTicker(w.config.RevalidationPollInterval)
 	defer ticker.Stop()
 	for {
@@ -85,9 +107,9 @@ func (w *Worker) runRevalidator(ctx context.Context, index int) {
 			return
 		default:
 		}
-		processed, err := w.revalidator.Cycle(ctx, w.config.Cluster)
+		processed, err := cycle(ctx, w.config.Cluster)
 		if err != nil {
-			logEvent(map[string]any{"event": "kamino_fleet_revalidation_failed", "workerIndex": index, "error": err.Error()})
+			logEvent(map[string]any{"event": failureEvent, "workerIndex": index, "error": err.Error()})
 		}
 		if processed {
 			continue

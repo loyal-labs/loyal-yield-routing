@@ -32,6 +32,7 @@ type Config struct {
 	PollInterval                       time.Duration
 	SlotDuration                       time.Duration
 	RevalidatorEnabled                 bool
+	RevalidatorShadow                  bool
 	KLendProxyPath, KLendProxySHA256   string
 	DelegatedSigner, RevalidationOwner string
 	RevalidationLeaseTTL               time.Duration
@@ -71,7 +72,7 @@ func ConfigFromEnvironment() (Config, error) {
 		EnabledStableMints:       stableMintsOr(os.Getenv("EARN_ROUTER_ENABLED_STABLE_MINTS")),
 		FusedExecute:             boolOr(os.Getenv("KAMINO_FLEET_FUSED_EXECUTE"), false),
 	}
-	for _, name := range []string{"KAMINO_FLEET_REVALIDATOR_ENABLED", "KAMINO_FLEET_FUSED_EXECUTE", "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER"} {
+	for _, name := range []string{"KAMINO_FLEET_REVALIDATOR_ENABLED", "KAMINO_FLEET_REVALIDATOR_SHADOW", "KAMINO_FLEET_FUSED_EXECUTE", "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER"} {
 		if value := os.Getenv(name); value != "" {
 			if _, err := strconv.ParseBool(value); err != nil {
 				return Config{}, fmt.Errorf("%s must be a boolean", name)
@@ -91,6 +92,7 @@ func ConfigFromEnvironment() (Config, error) {
 		}
 	}
 	config.RevalidatorEnabled = boolOr(os.Getenv("KAMINO_FLEET_REVALIDATOR_ENABLED"), config.Mode == ModePublish)
+	config.RevalidatorShadow = boolOr(os.Getenv("KAMINO_FLEET_REVALIDATOR_SHADOW"), false)
 	var err error
 	if configured := os.Getenv("KAMINO_FLEET_SLOT_DURATION"); configured != "" {
 		config.SlotDuration = durationOr(configured, 0)
@@ -185,8 +187,14 @@ func (c Config) Validate() error {
 	if c.RevalidatorEnabled && c.Mode != ModePublish {
 		return fmt.Errorf("shadow mode cannot enable durable revalidation; keep the Rust services running")
 	}
-	if c.RevalidatorEnabled {
-		if c.KLendProxyPath == "" || len(c.KLendProxySHA256) != 64 || !isHex(c.KLendProxySHA256) || c.DelegatedSigner == "" || c.RevalidationOwner == "" || c.RevalidationLeaseTTL < time.Second || c.RevalidationPollInterval <= 0 || c.RevalidationConcurrency <= 0 || c.RevalidationConcurrency > 256 || c.RevalidationComputeLimit == 0 || c.RevalidationComputeLimit > defaultComputeLimit {
+	if c.RevalidatorEnabled && c.RevalidatorShadow {
+		return fmt.Errorf("durable and shadow revalidation are mutually exclusive")
+	}
+	if c.RevalidatorShadow && c.Mode != ModeShadow {
+		return fmt.Errorf("publish mode cannot run the read-only shadow revalidator")
+	}
+	if c.RevalidatorEnabled || c.RevalidatorShadow {
+		if c.KLendProxyPath == "" || len(c.KLendProxySHA256) != 64 || !isHex(c.KLendProxySHA256) || c.DelegatedSigner == "" || c.RevalidationOwner == "" || (c.RevalidatorEnabled && c.RevalidationLeaseTTL < time.Second) || c.RevalidationPollInterval <= 0 || c.RevalidationConcurrency <= 0 || c.RevalidationConcurrency > 256 || c.RevalidationComputeLimit == 0 || c.RevalidationComputeLimit > defaultComputeLimit {
 			return fmt.Errorf("revalidator requires a digest-pinned KLend proxy, delegated signer, owner, valid lease, concurrency, poll interval, and compute limit")
 		}
 		if _, err := decodePublicKey(c.DelegatedSigner); err != nil {
