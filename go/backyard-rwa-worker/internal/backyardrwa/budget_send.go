@@ -194,6 +194,11 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 		}
 	}
 	if err == nil && auth.PilotAuthorityID != "" {
+		var observed int64
+		observed, err = validatePilotProjectedReleaseRisk(ctx, rpc, auth.BridgeAdmission, cost.ObservationSlot)
+		cost.ObservationSlot = max(cost.ObservationSlot, observed)
+	}
+	if err == nil && auth.PilotAuthorityID != "" {
 		cost, err = observePilotExecutionCost(ctx, rpc, request, effects, cost)
 	}
 	if err == nil && auth.BridgeAdmission != nil {

@@ -167,7 +167,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			// NAV -> release -> NAV -> funding -> NAV -> payoff. This is a
 			// future cost template; the release will be rebuilt and admitted
 			// from actual custody after NAV, never signed from this projection.
-			releaseBound, err = decodeKaminoRepaymentReleaseWindow(rows, route, future.ObservedSlot, 6)
+			releaseBound, err = decodeKaminoRepaymentReleaseForMode(rows, route, future.ObservedSlot, 6, s.PilotActive)
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}
@@ -181,6 +181,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			}
 			req.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 			req.RepaymentRelease, req.ReleaseDebtIdleRaw = true, uint64(debtCashRaw(s))
+			req.PilotRepaymentRelease = s.PilotActive
 			source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
 			e, err := exactKaminoTokenEffects(rows, source, destination, releaseBound.LiquidityRaw)
 			if err != nil {

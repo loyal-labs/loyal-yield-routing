@@ -175,7 +175,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	if cash < bound.UpperDebtRaw {
 		// Borrow -> NAV -> release -> NAV -> swap -> NAV -> payoff. Combine
 		// existing residue with the safe release; never require a dust-only swap.
-		limit, err := decodeKaminoRepaymentReleaseWindow(projection.Accounts, route, projection.Slot, 7)
+		limit, err := decodeKaminoRepaymentReleaseForMode(projection.Accounts, route, projection.Slot, 7, s.PilotActive)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}

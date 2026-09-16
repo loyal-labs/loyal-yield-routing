@@ -279,6 +279,12 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	if err = budget.validateExitPlanCaps(plan); err != nil {
 		return err
 	}
+	if err = budget.validatePilotReleaseAuthority(request); err != nil {
+		return err
+	}
+	if plan.Snapshot.PilotActive && budget.Pilot == nil {
+		return budgetHold("pilot_planning_authority_required")
+	}
 	if budget.Pilot != nil {
 		plan.CurrentCost, err = observePilotExecutionCost(ctx, rpc, request, effects, plan.CurrentCost)
 		if err != nil {
@@ -423,9 +429,17 @@ func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, ope
 	if auth.GoalID != Phase3GoalID || auth.IntentSHA256 != intent {
 		return budgetHold("unreserved_build_intent")
 	}
+	if err = budget.validatePilotReleaseAuthority(request); err != nil {
+		return err
+	}
 	if err = budget.AuthorizeIntent(operationID, intent); err != nil {
 		return err
 	}
+	observed, err := validatePilotProjectedReleaseRisk(ctx, rpc, auth.BridgeAdmission, knownCost.ObservationSlot)
+	if err != nil {
+		return err
+	}
+	knownCost.ObservationSlot = max(knownCost.ObservationSlot, observed)
 	reservation := budget.Reservations[operationID]
 	if auth.BridgeAdmission != nil && (knownCost.ObservationSlot < auth.BridgeAdmission.CurrentCost.ObservationSlot || knownCost.ObservationSlot > auth.BridgeAdmission.ValidThroughSlot) {
 		return budgetHold("stale_bridge_admission_snapshot")
@@ -486,6 +500,15 @@ func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operati
 	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
 	if err != nil {
 		return err
+	}
+	if auth.BuildInput != nil {
+		request, _, _, err := auth.BuildInput.decode()
+		if err != nil {
+			return err
+		}
+		if err = budget.validatePilotReleaseAuthority(request); err != nil {
+			return err
+		}
 	}
 	if auth.PolicySetup != nil {
 		if _, err := d.validatePolicySetupReservationTx(ctx, tx, operationID, budget, auth, Signed); err != nil {

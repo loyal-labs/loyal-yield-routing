@@ -4,6 +4,7 @@ const require = createRequire(new URL('../../../../../tools/backyard-voltr/packa
 const {initObligation} = require('@kamino-finance/klend-sdk/dist/@codegen/klend/instructions/initObligation');
 const {Reserve} = require('@kamino-finance/klend-sdk/dist/@codegen/klend/accounts/Reserve');
 const {Obligation} = require('@kamino-finance/klend-sdk/dist/@codegen/klend/accounts/Obligation');
+const {LendingMarket} = require('@kamino-finance/klend-sdk/dist/@codegen/klend/accounts/LendingMarket');
 const {ReserveConfig} = require('@kamino-finance/klend-sdk/dist/@codegen/klend/types/ReserveConfig');
 const {PublicKey} = require('@solana/web3.js');
 const input=JSON.parse(await Bun.stdin.text());
@@ -24,5 +25,7 @@ assert.deepEqual(input.offsets,{
  debtWithdrawalCap:c('debtWithdrawalCap'),borrowFactor:c('borrowFactorPct'),loanToValue:c('loanToValuePct'),
  // Newer program versions use the first trailing padding word for the queue.
  queuedCollateral:r('padding'),
+ globalBorrowValue:8+LendingMarket.layout.offsetOf('globalAllowedBorrowValue'),
+ minimumRemainingValue:8+LendingMarket.layout.offsetOf('minNetValueInObligationSf'),
 });
 console.log('SDK initializer and capacity offsets match');

@@ -19,7 +19,11 @@ type phase3KaminoProjection struct {
 }
 
 func depositProjectionAddresses(route RuntimeRoute) []string {
-	return []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply, route.DebtCustody, budgetClockAddress}
+	addresses := []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply, route.DebtCustody, budgetClockAddress}
+	if selectorLane(route.Lane) {
+		addresses = append(addresses, route.Kamino.Market)
+	}
+	return addresses
 }
 
 func (c *RPCClient) simulateKaminoEntryProjection(ctx context.Context, r KaminoPrimeUSDCRequest, minimumSlot int64) (phase3KaminoProjection, error) {

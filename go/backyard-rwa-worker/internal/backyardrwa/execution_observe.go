@@ -251,19 +251,22 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
-		leg, wireAmount, effectAmount, err := selectKaminoLeg(observation.Snapshot.PilotActive, decision, position)
-		if err != nil {
-			return Observation{}, KaminoExecutionEvidence{}, err
-		}
-		fullPayoff := leg == kaminoLegRepay && decision.Action == DeleverRouteStep && decision.AmountRaw > 0 && uint64(decision.AmountRaw) >= position.DebtRaw
-		repaymentRelease := leg == kaminoLegWithdraw && decision.Action == DeleverRouteStep && decision.Reason == "withdrawal_release_repayment_collateral" && positionReturnRoute(route.Lane)
+		repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && decision.Reason == "withdrawal_release_repayment_collateral" && positionReturnRoute(route.Lane)
+		var leg kaminoPrimeUSDCLeg
+		var wireAmount, effectAmount uint64
 		if repaymentRelease {
-			bound, err := decodeKaminoRepaymentRelease(accounts, route, observation.Snapshot.Slot)
+			bound, err := decodeKaminoRepaymentReleaseForMode(accounts, route, observation.Snapshot.Slot, 5, observation.Snapshot.PilotActive)
 			if err != nil {
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}
-			wireAmount, effectAmount = bound.ReceiptRaw, bound.LiquidityRaw
+			leg, wireAmount, effectAmount = kaminoLegWithdraw, bound.ReceiptRaw, bound.LiquidityRaw
+		} else {
+			leg, wireAmount, effectAmount, err = selectKaminoLeg(observation.Snapshot.PilotActive, decision, position)
+			if err != nil {
+				return Observation{}, KaminoExecutionEvidence{}, err
+			}
 		}
+		fullPayoff := leg == kaminoLegRepay && decision.Action == DeleverRouteStep && decision.AmountRaw > 0 && uint64(decision.AmountRaw) >= position.DebtRaw
 		if fullPayoff {
 			bound, err := decodeKaminoPayoffBound(accounts, route, observation.Snapshot.Slot)
 			if err != nil {
@@ -285,6 +288,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		request.ObligationReserves = []string{}
 		request.FullPayoff = fullPayoff
 		request.RepaymentRelease = repaymentRelease
+		request.PilotRepaymentRelease = repaymentRelease && observation.Snapshot.PilotActive
 		if repaymentRelease {
 			request.ReleaseDebtIdleRaw = uint64(debtCashRaw(observation.Snapshot))
 		}
@@ -413,6 +417,13 @@ func capSelectedWithdrawalEffect(pilotActive bool, decision Decision, position K
 const unwindLTVBPS uint64 = 4_500
 
 func withdrawExcessForRepayment(position KaminoPosition) (uint64, uint64, error) {
+	return withdrawExcessAtLTV(position, unwindLTVBPS)
+}
+
+func withdrawExcessAtLTV(position KaminoPosition, ltvBPS uint64) (uint64, uint64, error) {
+	if ltvBPS == 0 || ltvBPS >= 10_000 {
+		return 0, 0, fmt.Errorf("invalid repayment release LTV")
+	}
 	if position.CollateralDepositedRaw == 0 || position.RedeemablePrimeRaw == 0 || position.DebtRaw == 0 {
 		return 0, 0, fmt.Errorf("position has no withdrawable repayment collateral")
 	}
@@ -421,8 +432,8 @@ func withdrawExcessForRepayment(position KaminoPosition) (uint64, uint64, error)
 		return 0, 0, err
 	}
 	requiredDebtValue := new(big.Int).Mul(new(big.Int).SetUint64(debtValue), big.NewInt(10_000))
-	requiredDebtValue.Add(requiredDebtValue, big.NewInt(int64(unwindLTVBPS-1)))
-	requiredDebtValue.Quo(requiredDebtValue, big.NewInt(int64(unwindLTVBPS)))
+	requiredDebtValue.Add(requiredDebtValue, new(big.Int).SetUint64(ltvBPS-1))
+	requiredDebtValue.Quo(requiredDebtValue, new(big.Int).SetUint64(ltvBPS))
 	if !requiredDebtValue.IsUint64() {
 		return 0, 0, fmt.Errorf("required unwind collateral exceeds u64")
 	}

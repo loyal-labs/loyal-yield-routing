@@ -3,6 +3,7 @@ package backyardrwa
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"math/big"
 )
 
@@ -36,6 +37,10 @@ func decodeKaminoRepaymentRelease(accounts []ConfirmedAccount, route RuntimeRout
 }
 
 func decodeKaminoRepaymentReleaseWindow(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64) (KaminoReleaseBound, error) {
+	return decodeKaminoRepaymentReleaseForMode(accounts, route, slot, steps, false)
+}
+
+func decodeKaminoRepaymentReleaseForMode(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64, pilot bool) (KaminoReleaseBound, error) {
 	var result KaminoReleaseBound
 	bound, err := decodeKaminoPayoffWindow(accounts, route, slot, steps)
 	if err != nil {
@@ -63,6 +68,9 @@ func decodeKaminoRepaymentReleaseWindow(accounts []ConfirmedAccount, route Runti
 	position := KaminoPosition{CollateralDepositedRaw: obligation.collateralDepositedRaw, RedeemablePrimeRaw: total, DebtRaw: bound.UpperDebtRaw,
 		CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF}
 	_, allowance, err := withdrawExcessForRepayment(position)
+	if pilot {
+		allowance, err = pilotRepaymentLiquidityAllowance(accounts, route, position, collateral.liquidationThresholdPct)
+	}
 	if err != nil {
 		return result, budgetHold("no_safe_repayment_collateral_release")
 	}
@@ -98,7 +106,7 @@ func validateRepaymentReleaseRequest(ctx context.Context, rpc *RPCClient, reques
 	if err != nil {
 		return result, nil, err
 	}
-	result, err = decodeKaminoRepaymentRelease(accounts, route, observed.ObservedSlot)
+	result, err = decodeKaminoRepaymentReleaseForMode(accounts, route, observed.ObservedSlot, 5, request.PilotRepaymentRelease)
 	if err != nil {
 		return result, nil, err
 	}
@@ -131,4 +139,225 @@ func validateRepaymentReleaseRequest(ctx context.Context, rpc *RPCClient, reques
 		return result, nil, budgetHold("repayment_release_effects_changed")
 	}
 	return result, accounts, nil
+}
+
+// A single 1.5x pass cannot fund its full payoff at the historical 45% release
+// LTV. Pilot release stays at most 55%, with five percentage points below both
+// the protocol max LTV and the unchanged worker hard stop. It also respects
+// the market cap using current reserve prices, never cached obligation values.
+// Inputs have already passed envelope, topology, refresh and payoff validation.
+func pilotRepaymentLiquidityAllowance(accounts []ConfirmedAccount, route RuntimeRoute, position KaminoPosition, liquidationPct byte) (uint64, error) {
+	if !selectorLane(route.Lane) || route.Kamino.DebtMint != bridgeUSDC {
+		return 0, budgetHold("pilot_release_lane_unreviewed")
+	}
+	market := accountAt(accounts, route.Kamino.Market)
+	if emergency, err := decodeKaminoMarketEmergency(market, route.Kamino); err != nil {
+		return 0, err
+	} else if emergency {
+		return 0, budgetHold("pilot_release_market_emergency")
+	}
+	o := accountAt(accounts, route.Kamino.Obligation).Data
+	c := accountAt(accounts, route.Kamino.CollateralReserve).Data
+	d := accountAt(accounts, route.Kamino.DebtReserve).Data
+	if len(o) != kaminoObligationLength || len(c) != kaminoReserveLength || len(d) != kaminoReserveLength ||
+		o[kaminoObligationElevationGroupOffset] != 0 || max(binary.LittleEndian.Uint64(d[kaminoBorrowFactorOffset:]), 100) != 100 {
+		return 0, budgetHold("pilot_release_risk_model_changed")
+	}
+	maxLTV := int64(c[kaminoLoanToValueOffset]) * 100
+	hard := min(int64(liquidationPct)*100-1500, 6000)
+	ceiling := min(int64(5500), maxLTV-500, hard-500)
+	if maxLTV <= 0 || maxLTV >= int64(liquidationPct)*100 || liquidationPct > 100 || ceiling <= TargetLTVBPS {
+		return 0, budgetHold("pilot_release_risk_margin_unavailable")
+	}
+	_, allowance, err := withdrawExcessAtLTV(position, uint64(ceiling))
+	if err != nil {
+		return 0, err
+	}
+	// Recompute dollar values (scaled by 2^60) from current reserve prices.
+	// Reserves may be newer than the obligation's cached valuation. Round the
+	// finite-window debt up and redeemable collateral down before comparing.
+	futureDebt := new(big.Int).Mul(new(big.Int).SetUint64(position.DebtRaw), littleInt(position.DebtPriceSF[:]))
+	scale := new(big.Int).Exp(big.NewInt(10), new(big.Int).SetUint64(uint64(position.DebtDecimals)), nil)
+	futureDebt.Add(futureDebt, new(big.Int).Sub(new(big.Int).Set(scale), big.NewInt(1))).Quo(futureDebt, scale)
+	price := littleInt(position.CollateralPriceSF[:])
+	if futureDebt.Sign() <= 0 || price.Sign() <= 0 {
+		return 0, budgetHold("pilot_release_protocol_allowance_unavailable")
+	}
+	collateralScale := new(big.Int).Exp(big.NewInt(10), new(big.Int).SetUint64(uint64(position.CollateralDecimals)), nil)
+	// KLend checks the remaining collateral asset against the market minimum
+	// after withdrawal. Round required underlying up, retaining one raw unit
+	// for its fractional receipt-to-liquidity comparison.
+	minimum := new(big.Int).Mul(littleInt(market.Data[kaminoMinRemainingValueOffset:kaminoMinRemainingValueOffset+16]), collateralScale)
+	minimum.Add(minimum, new(big.Int).Sub(new(big.Int).Set(price), big.NewInt(1))).Quo(minimum, price)
+	minimum.Add(minimum, big.NewInt(1))
+	if !minimum.IsUint64() || minimum.Uint64() >= position.RedeemablePrimeRaw {
+		return 0, budgetHold("pilot_release_minimum_collateral_unavailable")
+	}
+	allowance = min(allowance, position.RedeemablePrimeRaw-minimum.Uint64())
+	allowed := new(big.Int).Mul(new(big.Int).SetUint64(position.RedeemablePrimeRaw), price)
+	allowed.Quo(allowed, collateralScale).Mul(allowed, big.NewInt(maxLTV)).Quo(allowed, big.NewInt(10_000))
+	// LendingMarket.globalAllowedBorrowValue is a whole-dollar u64 at 152.
+	global := new(big.Int).Lsh(new(big.Int).SetUint64(binary.LittleEndian.Uint64(market.Data[kaminoGlobalBorrowValueOffset:])), 60)
+	if allowed.Cmp(global) > 0 {
+		allowed = global
+	}
+	room := new(big.Int).Sub(allowed, futureDebt)
+	if room.Sign() <= 0 {
+		return 0, budgetHold("pilot_release_protocol_allowance_unavailable")
+	}
+	// MaxLtv withdrawal: (allowed - adjusted debt) / collateral max LTV.
+	room.Mul(room, big.NewInt(10_000))
+	room.Mul(room, collateralScale)
+	room.Quo(room, new(big.Int).Mul(big.NewInt(maxLTV), price))
+	// One liquidity raw unit absorbs protocol fractional ratio rounding.
+	room.Sub(room, big.NewInt(1))
+	if !room.IsUint64() || room.Sign() <= 0 {
+		return 0, budgetHold("pilot_release_protocol_allowance_unavailable")
+	}
+	return min(allowance, room.Uint64()), nil
+}
+
+const kaminoGlobalBorrowValueOffset = 152
+const kaminoMinRemainingValueOffset = 3224
+
+func (b Phase3Budget) validatePilotReleaseAuthority(request any) error {
+	if r, ok := request.(KaminoPrimeUSDCRequest); ok && r.PilotRepaymentRelease && b.Pilot == nil {
+		return budgetHold("pilot_release_authority_required")
+	}
+	return nil
+}
+
+// An entry which relies on a future release cannot inherit that release after
+// its risk inputs change. Compare the non-mutated inputs of the admitted
+// simulation with one fresh batch before signing and sending. Drift requires
+// a newly quoted complete plan, even when it might be economically favorable.
+func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *RPCClient, plan *phase3BridgeAdmission, slot int64) (int64, error) {
+	if plan == nil || !plan.Snapshot.PilotActive || (plan.FundingRelease == nil && plan.BorrowRelease == nil) {
+		return slot, nil
+	}
+	projection := plan.DepositProjection
+	if projection == nil {
+		projection = plan.BorrowProjection
+	}
+	if projection == nil {
+		projection = plan.LeverageProjection
+	}
+	// Funding/NAV continuation plans use actual release revalidation; only
+	// entry simulations introduce the prospective post-entry position here.
+	if projection == nil {
+		return slot, nil
+	}
+	route, err := runtimeRoute(plan.Snapshot.RouteLane)
+	if err != nil || !selectorLane(route.Lane) || rpc == nil {
+		return 0, budgetHold("pilot_release_projection_unavailable")
+	}
+	if plan.Input == nil {
+		return 0, budgetHold("pilot_release_projection_unavailable")
+	}
+	_, _, message, err := plan.Input.decode()
+	if err != nil || sha256Bytes(message) != projection.MessageSHA256 {
+		return 0, budgetHold("pilot_release_projection_identity_changed")
+	}
+	var addresses []string
+	for _, a := range projection.Accounts {
+		addresses = append(addresses, a.Address)
+	}
+	// The original entry simulation refreshed reserves. Re-simulate the same
+	// unsigned message so prices have equivalent semantics; unrefreshed chain
+	// prices can differ indefinitely even when the oracle has not moved.
+	fresh, err := rpc.simulatePhase3EntryProjection(ctx, message, addresses, slot)
+	if err != nil {
+		return 0, err
+	}
+	if err = validatePilotReleaseProjection(plan, *projection, fresh, route); err != nil {
+		return 0, err
+	}
+	return fresh.Slot, nil
+}
+
+func validatePilotReleaseProjection(plan *phase3BridgeAdmission, projection, fresh phase3KaminoProjection, route RuntimeRoute) error {
+	if fresh.Slot > plan.ValidThroughSlot || fresh.Slot < projection.Slot {
+		return budgetHold("pilot_release_projection_expired")
+	}
+	for _, field := range []struct {
+		address    string
+		start, end int
+	}{
+		{route.Kamino.Market, kaminoMarketEmergencyModeOffset, kaminoMarketEmergencyModeOffset + 1},
+		{route.Kamino.Market, kaminoGlobalBorrowValueOffset, kaminoGlobalBorrowValueOffset + 8},
+		{route.Kamino.Market, kaminoMinRemainingValueOffset, kaminoMinRemainingValueOffset + 16},
+		{route.Kamino.CollateralReserve, kaminoLoanToValueOffset, kaminoLoanToValueOffset + 2},
+		{route.Kamino.CollateralReserve, 248, 264},
+		{route.Kamino.DebtReserve, 248, 264},
+		{route.Kamino.DebtReserve, kaminoBorrowFactorOffset, kaminoBorrowFactorOffset + 8},
+		{route.Kamino.Obligation, kaminoObligationElevationGroupOffset, kaminoObligationElevationGroupOffset + 1},
+	} {
+		before, after := accountAt(projection.Accounts, field.address), accountAt(fresh.Accounts, field.address)
+		if before.Owner != route.Kamino.Program || after.Owner != before.Owner || after.Executable || after.Lamports == 0 ||
+			len(before.Data) != len(after.Data) || len(before.Data) < field.end || !bytes.Equal(before.Data[field.start:field.end], after.Data[field.start:field.end]) {
+			return budgetHold("pilot_release_projection_risk_changed")
+		}
+	}
+	oldReserve, err := decodeKaminoReserve(accountAt(projection.Accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+	if err != nil {
+		return err
+	}
+	newReserve, err := decodeKaminoReserve(accountAt(fresh.Accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+	if err != nil {
+		return err
+	}
+	// Compare normalized backing, not mutable raw pool totals. Normal interest
+	// growth is allowed; a loss in existing receipt backing requires re-admission.
+	left := new(big.Int).Mul(newReserve.totalLiquiditySF, new(big.Int).SetUint64(oldReserve.collateralMintSupply))
+	right := new(big.Int).Mul(oldReserve.totalLiquiditySF, new(big.Int).SetUint64(newReserve.collateralMintSupply))
+	if left.Cmp(right) < 0 {
+		return budgetHold("pilot_release_projection_backing_reduced")
+	}
+	// The current entry has now been simulated, leaving six of the admitted
+	// seven execution windows. Its complete-payoff bound must still fit.
+	bound, err := decodeKaminoRepaymentReleaseForMode(fresh.Accounts, route, fresh.Slot, 6, true)
+	if err != nil {
+		return err
+	}
+	if plan.Payoff == nil || bound.Payoff.UpperDebtRaw > plan.Payoff.UpperDebtRaw || bound.Payoff.ChainUnix < plan.Payoff.ChainUnix || bound.Payoff.ChainUnix > plan.Payoff.ChainUnix+kaminoPayoffWindowSeconds {
+		return budgetHold("pilot_release_projection_payoff_changed")
+	}
+	release := plan.FundingRelease
+	if release == nil {
+		release = plan.BorrowRelease
+	}
+	request, effects, _, err := release.decode()
+	r, ok := request.(KaminoPrimeUSDCRequest)
+	if err != nil || !ok || r.AmountRaw > bound.ReceiptRaw || len(effects.Accounts) != 2 {
+		return budgetHold("pilot_release_projection_funding_changed")
+	}
+	liquidity, err := newReserve.redeemLiquidityRaw(r.AmountRaw)
+	if err != nil || effects.Accounts[1].AfterRaw < effects.Accounts[1].BeforeRaw || liquidity < effects.Accounts[1].AfterRaw-effects.Accounts[1].BeforeRaw {
+		return budgetHold("pilot_release_projection_funding_changed")
+	}
+	oldPosition, err := decodeKaminoObligation(accountAt(projection.Accounts, route.Kamino.Obligation), route.Kamino)
+	if err != nil {
+		return err
+	}
+	newPosition, err := decodeKaminoObligation(accountAt(fresh.Accounts, route.Kamino.Obligation), route.Kamino)
+	if err != nil {
+		return err
+	}
+	oldValue, err := oldReserve.redeemLiquidityRaw(oldPosition.collateralDepositedRaw)
+	if err != nil {
+		return err
+	}
+	newValue, err := newReserve.redeemLiquidityRaw(newPosition.collateralDepositedRaw)
+	if err != nil || newValue < oldValue {
+		return budgetHold("pilot_release_projection_collateral_reduced")
+	}
+	oldCash, newCash := accountAt(projection.Accounts, route.CollateralCustody), accountAt(fresh.Accounts, route.CollateralCustody)
+	mint, _ := decodeBase58PublicKey(route.Kamino.CollateralMint)
+	owner, _ := decodeBase58PublicKey(bridgeVault)
+	oldBalance, oldErr := DecodeTokenCustody(oldCash.Owner, oldCash.Data, mint, owner)
+	newBalance, newErr := DecodeTokenCustody(newCash.Owner, newCash.Data, mint, owner)
+	if oldErr != nil || newErr != nil || newCash.Executable || newCash.Lamports == 0 || newBalance.Raw < oldBalance.Raw {
+		return budgetHold("pilot_release_projection_funding_changed")
+	}
+	return nil
 }

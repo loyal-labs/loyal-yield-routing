@@ -41,6 +41,9 @@ type KaminoPrimeUSDCRequest struct {
 	FullPayoff         bool   `json:"fullPayoff,omitempty"`
 	RepaymentRelease   bool   `json:"repaymentRelease,omitempty"`
 	ReleaseDebtIdleRaw uint64 `json:"releaseDebtIdleRaw,omitempty"`
+	// This selects the reviewed pilot release model, never authority. The
+	// locked budget must authorize pilot mode at admission, build and send.
+	PilotRepaymentRelease bool `json:"pilotRepaymentRelease,omitempty"`
 	// ObligationReserves is the exact confirmed deposit-then-borrow reserve
 	// sequence currently present in the obligation. RefreshObligation requires
 	// this live topology; deriving it from the mutation leg breaks re-deposits.
@@ -126,6 +129,9 @@ func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate pu
 // shared byte builder. Keeping resolution outside permits offline SDK/SBF parity
 // tests without registering candidate routes or changing production authority.
 func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
+	if request.PilotRepaymentRelease && (!request.RepaymentRelease || request.FullPayoff || !selectorLane(request.RouteLane)) {
+		return nil, budgetHold("invalid_pilot_repayment_release")
+	}
 	if request.LastValidBlockHeight <= 0 {
 		return nil, fmt.Errorf("invalid Kamino blockhash lifetime")
 	}
@@ -136,6 +142,9 @@ func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 	inner, leg, err := kaminoResolvedRouteInstruction(request, route)
 	if err != nil {
 		return nil, err
+	}
+	if request.PilotRepaymentRelease && (leg != kaminoLegWithdraw || request.Action != DeleverRouteStep) {
+		return nil, budgetHold("invalid_pilot_repayment_release")
 	}
 	policy, err := decodeKey(request.Policy)
 	if err != nil || policy == (publicKey{}) || !validSHA256(request.PolicyAccountDataSHA256) {

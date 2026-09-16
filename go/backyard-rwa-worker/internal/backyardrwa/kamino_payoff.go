@@ -41,6 +41,9 @@ func observeKaminoPayoffWindowAccounts(ctx context.Context, rpc *RPCClient, rout
 	}
 	addresses := []string{route.Kamino.Obligation, route.Kamino.DebtReserve, route.DebtCustody, route.DebtLiquiditySupply,
 		route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply, budgetClockAddress}
+	if selectorLane(route.Lane) {
+		addresses = append(addresses, route.Kamino.Market)
+	}
 	addresses = append(addresses, additional...)
 	slot, accounts, err := rpc.GetMultipleAccounts(ctx, addresses, minimumSlot)
 	if err != nil {

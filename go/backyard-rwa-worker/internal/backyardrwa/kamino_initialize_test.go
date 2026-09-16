@@ -62,6 +62,8 @@ func TestMultiplyInitializerAndCapacitySDKParity(t *testing.T) {
 		"outsideLimit": kaminoOutsideBorrowLimitOffset, "disableCross": kaminoDisableCrossCollateralOffset,
 		"debtWithdrawalCap": kaminoDebtWithdrawalCapOffset, "borrowFactor": kaminoBorrowFactorOffset,
 		"loanToValue": kaminoLoanToValueOffset, "queuedCollateral": kaminoQueuedCollateralOffset,
+		"globalBorrowValue":     kaminoGlobalBorrowValueOffset,
+		"minimumRemainingValue": kaminoMinRemainingValueOffset,
 	}})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

@@ -40,6 +40,7 @@ func usdcReturnFixture(t *testing.T) (Observation, RouteManifest, *RPCClient, *j
 		{old.CollateralReceiptMint, route.CollateralReceiptMint}, {old.CollateralReceiptSupply, route.CollateralReceiptSupply},
 	}
 	var accounts []ConfirmedAccount
+	accounts = append(accounts, marketFixture(t, route.Kamino.Market))
 	for _, a := range existing {
 		a.Data = append([]byte(nil), a.Data...)
 		for _, p := range pairs {
