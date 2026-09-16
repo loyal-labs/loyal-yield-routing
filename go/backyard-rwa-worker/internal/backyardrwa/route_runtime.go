@@ -183,14 +183,14 @@ func neutralizeRouteAction(decision Decision) Decision {
 	return decision
 }
 
-// legacyUSDCAction preserves the proven basic-USDC executor wire contract.
+// legacyUSDCAction preserves historical PRIME action names wire contract.
 // Typed planner actions remain canonical; shared-custody admission must be
 // implemented before replacing this compatibility boundary.
 func legacyUSDCAction(action Action) Action {
 	switch action {
-	case SwapStableToCollateralStep:
+	case SwapStableToCollateralStep, SwapDebtToCollateralStep:
 		return SwapUSDCToPrimeStep
-	case SwapCollateralToStableStep:
+	case SwapCollateralToStableStep, SwapCollateralToDebtStep:
 		return SwapPrimeToUSDCStep
 	case OpenRouteStep:
 		return OpenPrimeUSDCStep
@@ -209,7 +209,7 @@ func fixedRouteAction(action Action, lane string) (Action, error) {
 	if err != nil {
 		return "", err
 	}
-	if route.BasicPolicy && route.Kamino.DebtMint == bridgeUSDC {
+	if route.Lane == RouteID {
 		return legacyUSDCAction(action), nil
 	}
 	return neutralizeRouteAction(Decision{Action: action}).Action, nil
@@ -226,4 +226,36 @@ func decisionsEqual(left, right Decision) bool {
 	leftAction, leftErr := fixedRouteAction(left.Action, left.StrategyKey)
 	rightAction, rightErr := fixedRouteAction(right.Action, right.StrategyKey)
 	return leftErr == nil && rightErr == nil && leftAction == rightAction
+}
+
+// The basic USDC lanes and catalog debt lanes share the same bounded position
+// return recipe. This does not change Jupiter wire dialects or installed policy
+// authority; each builder still resolves its own exact route binding.
+func positionReturnRoute(lane string) bool {
+	return catalogJupiterRoute(lane) || selectorLane(lane)
+}
+
+func sharedUSDCDebt(lane string) bool {
+	route, err := runtimeRoute(lane)
+	return err == nil && route.Kamino.DebtMint == bridgeUSDC && route.DebtCustody == bridgeSquadsATA
+}
+
+// USDC debt cash and bridge cash are one account. Never copy that balance into
+// DebtIdleRaw: NAV would count it twice. Other debt mints have distinct custody.
+func debtCashRaw(s Snapshot) int64 {
+	if sharedUSDCDebt(s.RouteLane) {
+		if s.DebtIdleRaw != 0 {
+			return -1
+		}
+		return s.SquadsIdleRaw
+	}
+	return s.DebtIdleRaw
+}
+
+func setDebtCashRaw(s *Snapshot, raw int64) {
+	if sharedUSDCDebt(s.RouteLane) {
+		s.SquadsIdleRaw, s.DebtIdleRaw = raw, 0
+	} else {
+		s.DebtIdleRaw = raw
+	}
 }

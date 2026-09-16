@@ -59,7 +59,9 @@ func TestPhase2WithdrawalDemandDrainsEntireSelectedLane(t *testing.T) {
 	}
 
 	decision := Decide(snapshot)
-	if decision.Action != SwapCollateralToStableStep || decision.Reason != "withdrawal_swap_repayment_buffer" || decision.AmountRaw != 250_000 {
+	// This buffer is not proven to cover all debt plus interest; release more
+	// collateral before quoting a bounded full-payoff funding swap.
+	if decision.Action != DeleverRouteStep || decision.Reason != "withdrawal_release_repayment_collateral" || decision.AmountRaw != 1 {
 		t.Fatalf("selected-lane withdrawal did not begin full conservative drain: %+v", decision)
 	}
 	if decision.StrategyKey != SelectedRouteID {
@@ -303,12 +305,13 @@ func mustBasicPolicy(t *testing.T, family BasicPolicyFamily) BasicPolicyBinding 
 	return binding
 }
 
-func TestPhase2DecisionIsClampedToAuthorizedPerTransactionCap(t *testing.T) {
+func TestPhase2AllocationLeavesRoomForCanaryFeesAndLeverage(t *testing.T) {
 	decision := Decide(Snapshot{
 		ObservationID: "cap", Slot: 1, RouteKind: RouteKind, RouteLane: SelectedRouteID,
 		Fresh: true, VoltrIdleRaw: Phase2TransactionCapRaw + 1,
+		PolicyReady: true, ExitBuildable: true, CapacityRaw: Phase2TransactionCapRaw + 1, PolicyLimitRaw: Phase2TransactionCapRaw + 1, MaxTargetLTVEntryRaw: Phase2TransactionCapRaw + 1,
 	})
-	if decision.Action != VoltrAllocateToSquads || decision.AmountRaw != Phase2TransactionCapRaw {
+	if decision.Action != VoltrAllocateToSquads || decision.AmountRaw != 500_000 {
 		t.Fatalf("selected route decision exceeded cap: %+v", decision)
 	}
 }

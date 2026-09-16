@@ -120,9 +120,9 @@ func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMin
 			return "", "", "", "", err
 		}
 		switch action {
-		case SwapStableToCollateralStep, SwapUSDCToPrimeStep:
+		case SwapStableToCollateralStep, SwapUSDCToPrimeStep, SwapDebtToCollateralStep:
 			return bridgeUSDC, route.Kamino.CollateralMint, bridgeSquadsATA, route.CollateralCustody, nil
-		case SwapCollateralToStableStep, SwapPrimeToUSDCStep:
+		case SwapCollateralToStableStep, SwapPrimeToUSDCStep, SwapCollateralToDebtStep:
 			return route.Kamino.CollateralMint, bridgeUSDC, route.CollateralCustody, bridgeSquadsATA, nil
 		default:
 			return "", "", "", "", fmt.Errorf("action %s is not an approved basic Jupiter edge", action)
@@ -227,7 +227,7 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 	if _, err := validateJupiterInstructionForRoute(response.SwapInstruction, action, amount, out, minimum, lane); err != nil {
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
 	}
-	if !catalogJupiterRoute(lane) {
+	if lane == RouteID || lane == "" {
 		if err := validateInstalledJupiterHeader(action, response.SwapInstruction); err != nil {
 			return JupiterQuote{}, JupiterSwapInstruction{}, err
 		}
@@ -324,6 +324,9 @@ func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Act
 		return compiledInstruction{}, fmt.Errorf("Jupiter instruction data is malformed")
 	}
 	legacy, v2 := bytes.Equal(data[:8], jupiterSharedAccountsRoute), bytes.Equal(data[:8], jupiterSharedAccountsRouteV2)
+	if selectorLane(lane) && !legacy {
+		return compiledInstruction{}, fmt.Errorf("basic policy requires legacy sharedAccountsRoute")
+	}
 	if !legacy && !v2 {
 		return compiledInstruction{}, fmt.Errorf("unsupported Jupiter instruction dialect")
 	}
@@ -333,9 +336,12 @@ func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Act
 		signer, writable bool
 	}
 	boundaries := []boundary{}
+	if selectorLane(lane) {
+		boundaries = append(boundaries, boundary{9, jupiterV6Program, false, false})
+	}
 	slippageOffset, feeOffset := len(data)-3, len(data)-1
 	if legacy {
-		boundaries = []boundary{{2, bridgeVault, true, false}, {3, sourceATA, false, true}, {6, destinationATA, false, true}, {7, sourceMint, false, false}, {8, destinationMint, false, false}, {0, bridgeTokenProgram, false, false}}
+		boundaries = append(boundaries, []boundary{{2, bridgeVault, true, false}, {3, sourceATA, false, true}, {6, destinationATA, false, true}, {7, sourceMint, false, false}, {8, destinationMint, false, false}, {0, bridgeTokenProgram, false, false}}...)
 	} else {
 		boundaries = []boundary{{1, bridgeVault, true, false}, {2, sourceATA, false, true}, {5, destinationATA, false, true}, {6, sourceMint, false, false}, {7, destinationMint, false, false}, {8, bridgeTokenProgram, false, false}, {9, bridgeTokenProgram, false, false}}
 		slippageOffset, feeOffset = 25, 27

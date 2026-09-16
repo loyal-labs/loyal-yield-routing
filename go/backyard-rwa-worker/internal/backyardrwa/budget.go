@@ -10,6 +10,11 @@ const (
 	Phase3TransactionCapMicros int64 = 1_000_000
 	Phase3FamilyCapMicros      int64 = 20_000_000
 	Phase3GoalCapMicros        int64 = 60_000_000
+	// Canary equity is deliberately below the $1 total transaction ceiling:
+	// its 1.5x collateral leg is at most $0.75 before fees/price movement.
+	// Exact admission still prices every leg; this is not a fee guarantee or
+	// a production deposit cap.
+	Phase3WorkingTrancheCapRaw int64 = 500_000
 )
 
 // BudgetHold is an admission rejection, never an authorization to sign or

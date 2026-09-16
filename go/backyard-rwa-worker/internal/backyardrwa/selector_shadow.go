@@ -58,6 +58,7 @@ func RunSelectorShadow(ctx context.Context, out io.Writer) error {
 	}
 	report := struct {
 		Mode                string          `json:"mode"`
+		Snapshot            Snapshot        `json:"snapshot"`
 		ObservedAt          time.Time       `json:"observedAt"`
 		Slot                int64           `json:"slot"`
 		ObservationID       string          `json:"observationId"`
@@ -66,7 +67,7 @@ func RunSelectorShadow(ctx context.Context, out io.Writer) error {
 		NextLifecycleAction Decision        `json:"nextLifecycleAction"`
 		Selection           SelectorResult  `json:"selection"`
 		ActivationBlockers  []string        `json:"activationBlockers"`
-	}{"read_only_shadow", observation.ObservedAt, observation.Snapshot.Slot, observation.Snapshot.ObservationID, failure, markets, next, result, []string{"basic_usdc_execution_admission_incomplete", "automatic_obligation_recreation_not_admitted", "complete_move_cost_and_pair_capacity_not_admitted", "current_image_round_trip_canary_required"}}
+	}{"read_only_shadow", observation.Snapshot, observation.ObservedAt, observation.Snapshot.Slot, observation.Snapshot.ObservationID, failure, markets, next, result, []string{"basic_usdc_execution_admission_incomplete", "automatic_obligation_recreation_not_admitted", "complete_move_cost_and_pair_capacity_not_admitted", "current_image_round_trip_canary_required"}}
 	if feedErr != nil {
 		report.FeedFailure = feedErr.Error()
 	}

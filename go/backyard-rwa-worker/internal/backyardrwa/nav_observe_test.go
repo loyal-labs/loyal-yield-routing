@@ -63,7 +63,7 @@ func strategyReceiptWithCustodyFixture(t *testing.T, positionRaw, custodyTracked
 	putKey(t, data[72:104], bridgeAdaptorProgram)
 	binary.LittleEndian.PutUint64(data[104:112], positionRaw)
 	binary.LittleEndian.PutUint64(data[112:120], 1_700_000_000)
-	data[120], data[121], data[122] = 1, 254, 253
+	data[120], data[121], data[122] = 2, 254, 253
 	binary.LittleEndian.PutUint64(data[128:136], custodyTrackedRaw)
 	return ConfirmedAccount{Address: bridgeStrategyReceipt, Owner: bridgeVoltrProgram, Lamports: 1, Data: data}
 }
@@ -405,5 +405,24 @@ func TestObserveConfirmedRouteNAVUsesExactlyOneCoherentBatch(t *testing.T) {
 	reader = &fixtureNAVReader{confirmedSlot: 78, batchSlot: 77, accounts: routeNAVFixture(t, 77)}
 	if _, err := ObserveConfirmedRouteNAV(context.Background(), reader, readyWorkerManifest(t)); err == nil || !strings.Contains(err.Error(), "regressed") {
 		t.Fatalf("mixed/regressed slot accepted: %v", err)
+	}
+}
+
+func TestStrategyTwoReceiptVersionAndTrackedCustody(t *testing.T) {
+	a := strategyReceiptWithCustodyFixture(t, 500, 100)
+	r, err := decodeStrategyReceipt(a)
+	if err != nil || r.PositionValueRaw != 500 || r.CustodyTrackedRaw != 100 {
+		t.Fatalf("version2 custody: %+v %v", r, err)
+	}
+	for _, version := range []byte{0, 1, 3, 255} {
+		a.Data[120] = version
+		if _, err := decodeStrategyReceipt(a); err == nil {
+			t.Fatalf("unreviewed receipt version %d", version)
+		}
+	}
+	a.Data[120] = 2
+	a.Data[136] = 1
+	if _, err := decodeStrategyReceipt(a); err == nil {
+		t.Fatal("unknown reserved field accepted")
 	}
 }

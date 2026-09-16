@@ -109,13 +109,12 @@ establish transaction simulation success, deployment, or a live lifecycle PASS.
 
 ## Remaining implementation and release gates
 
-1. **Finish the USDC execution admissions.** The current implementation is not a
-   proven reusable USDC loop executor. `validateEntrySwap` requires separate
-   debt custody to be empty even when that custody is the source USDC account.
-   Initial borrow, leverage and redeposit admission still require
-   `catalogJupiterRoute`, which excludes the three basic USDC routes. These
-   paths need explicit shared-USDC handling and full exit costing, not merely
-   another allowlist exception.
+1. **Prove the USDC execution lifecycle against deployed protocols.** The local
+   shared-USDC admission changes now use canonical actions and count the common
+   cash account once. Controlled tests cover payoff/entry and partial-capacity
+   planning. Initial swaps consume all working cash; unused capital stays in
+   Voltr. Unsupported partial hard-LTV repayment is a truthful recovery hold,
+   so autonomous partial risk reduction still needs implementation and proof.
 2. **Connect genuine pair capacity and complete economic move quotes.** The
    existing feed and API reserve-wide availability are insufficient for the
    chosen obligation's exact pair caps, withdrawals and swap depth. The shadow
@@ -124,8 +123,10 @@ establish transaction simulation success, deployment, or a live lifecycle PASS.
    from the budget module as an economic fee.
 3. **Admit repeatable obligation recreation.** The existing prerequisite tool
    invokes `executeTransactionSyncV2` using the Squads administrator. The
-   delegated worker cannot claim that authority. A narrow reviewed initializer,
-   bounded rent funding and same-journal recovery are still needed.
+   delegated worker cannot claim that authority. Three exact per-lane initializer
+   policy compilers now pass deployed-Squads boundary tests (767-byte install
+   packets; KLend stubbed). They are not installed. Native rent accounting,
+   same-journal worker execution/recovery and connected KLend proof remain.
 4. **Finish automatic transitions.** Wire a freshly admitted economic result to
    unwind commitment, then freshly admit destination entry after the source is
    flat. The old destination is advisory. When capacity disappears, retain idle
@@ -157,3 +158,47 @@ its program-identity cache.
 Repository-wide Rust formatting was not changed: `rustfmt --check` reports the
 same unrelated formatting differences on the baseline `store.rs`. The targeted
 crate compilation and whitespace diff checks pass.
+
+## Approved rollout continuation: September 16
+
+The service remains suspended. No policy installation, signing, capital movement,
+production journal write or image deployment occurred during this implementation.
+
+Completed locally:
+
+- Canonical USDC repayment/borrow/leverage paths use the shared Squads USDC
+  account once. Legacy persisted-wire recovery retains its original representation.
+- Basic Jupiter routes retain legacy discriminator and exact custody/fee sentinel
+  checks, while accepting the variable-length route data the installed policies
+  already allow. The historical Phase 1 header restriction remains historical.
+- The pilot leaves unused capital in Voltr and finishes one working tranche before
+  another allocation. Changed entry capacity returns flat cash before entry-only
+  LTV/obligation checks. Whole-cash entry admission prevents stranded mixed cash.
+- The canary uses at most 500,000 raw USDC equity per tranche. The 1.5x collateral
+  leg is below the existing $1 total transaction ceiling; exact observed fees and
+  complete exit admission remain authoritative. This is not a production cap.
+- Cash-only NAV remains observable when entry reserves are stale/paused. Nonzero
+  collateral/debt, foreign custody, future refresh slots and exposure-hiding
+  overrides retain their holds.
+- The pinned Voltr binary creates receipt version 2. Its existing custody-donation
+  replay proves byte 128 bookkeeping. The worker accepts exact version 2 and still
+  rejects unknown reserved fields/versions. Historical proof files are preserved.
+
+Fresh read-only evidence at slot **447403766** verifies the pinned Voltr/adaptor
+identities, zero strategy/Squads cash and no withdrawal demand. Voltr holds **23 raw
+USDC**. Observation now reaches the historical **custody_transient_mismatch**:
+last journaled staged amount 793,417 and armed NAV 3,793,417 remain unreconciled.
+Migration 78 is still unapplied; do not clear this hold by changing observations.
+See `cash-observation.json` and `receipt-v2-proof.json` in the evidence directory.
+
+Validation: full Go module tests and vet passed; the deployed-Squads basic-policy
+and initializer positive/negative tests passed. The captured-binary Voltr reset
+sequence passed with an explicit fresh-receipt-version assertion. These checks do
+not prove a live complete RWA lifecycle. Deposit cap/ongoing servicing limits,
+initializer execution, fresh reserve maintenance, exact pair capacity/move costs,
+automatic transitions, partner app integration and release-image canaries remain.
+
+Fable reviewed the continuation. Follow-up findings produced the full-payoff
+interest check, truthful partial-risk hold, whole-working-cash boundary, return
+before entry checks, and smaller measured canary tranche. The requested initial
+user/partner deposit cap is still pending; do not infer it from finite test caps.

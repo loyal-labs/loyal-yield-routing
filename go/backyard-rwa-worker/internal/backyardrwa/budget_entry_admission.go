@@ -10,6 +10,9 @@ import (
 // the persisted current entry against one fresh account batch, also at final
 // send. No entry is allowed to adopt an unaccounted open position or balance.
 func validateEntrySwap(ctx context.Context, rpc *RPCClient, request JupiterSwapRequest, effects ExpectedEffects, slot int64) (int64, error) {
+	if selectorLane(request.RouteLane) && (len(effects.Accounts) == 0 || effects.Accounts[0].BeforeRaw != request.AmountRaw) {
+		return 0, budgetHold("entry_swap_must_consume_working_cash")
+	}
 	if !request.EntryReturnReserved || request.FullPayoffFunding || request.Action != SwapStableToCollateralStep || len(effects.Accounts) != 2 {
 		return 0, budgetHold("entry_swap_intent_mismatch")
 	}
@@ -44,6 +47,9 @@ func validateEntrySwap(ctx context.Context, rpc *RPCClient, request JupiterSwapR
 			return 0, budgetHold("entry_swap_custody_changed")
 		}
 		if i == 2 {
+			if identity.address == source && identity.mint == sourceMint {
+				continue
+			}
 			if custody.Raw != 0 {
 				return 0, budgetHold("entry_swap_debt_custody_changed")
 			}

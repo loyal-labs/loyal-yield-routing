@@ -354,7 +354,7 @@ func TestBasicLaneLookupHintsStayScopedToSwapEdges(t *testing.T) {
 		if !acceptsJupiterLookupHints(lane, SwapStableToCollateralStep) || !acceptsJupiterLookupHints(lane, SwapCollateralToStableStep) {
 			t.Fatalf("basic lane %s lost its swap hint admission", lane)
 		}
-		for _, action := range []Action{OpenRouteStep, DeleverRouteStep, SwapCollateralToDebtStep, HoldManualRecovery} {
+		for _, action := range []Action{OpenRouteStep, DeleverRouteStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep, HoldManualRecovery} {
 			if acceptsJupiterLookupHints(lane, action) {
 				t.Fatalf("basic lane %s admitted hints for %s", lane, action)
 			}

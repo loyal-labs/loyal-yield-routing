@@ -200,9 +200,11 @@ func decodeStrategyReceipt(account ConfirmedAccount) (StrategyReceipt, error) {
 	if !sameKey(account.Data[8:40], bridgeVoltrVault) ||
 		!sameKey(account.Data[40:72], bridgeStrategy) ||
 		!sameKey(account.Data[72:104], bridgeAdaptorProgram) ||
-		account.Data[120] != 1 || !allZero(account.Data[123:128]) || !allZero(account.Data[136:]) {
+		account.Data[120] != 2 || !allZero(account.Data[123:128]) || !allZero(account.Data[136:]) {
 		return StrategyReceipt{}, fmt.Errorf("Voltr strategy receipt binding or reserved bytes drifted")
 	}
+	// Fresh strategy-two receipts are version 2 on the pinned Voltr binary,
+	// proven by the deployed-binary bootstrap in voltr_reset_sequence.
 	// Offset 128 is reserved on the pre-upgrade binary and holds the custody
 	// balance Voltr books for this strategy on the current one. It is decoded
 	// and reported rather than required zero: a nonzero value must surface as a
@@ -407,6 +409,7 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
+	observedCashOnly := custodies.SquadsPRIMEraw == 0 && custodies.SquadsDebtRaw == 0
 	if override != nil {
 		custodies = *override
 	}
@@ -431,15 +434,15 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	// Audit U5 / monitor M5: NAV is never computed from a market in emergency
-	// mode, an inactive reserve, or a reserve whose refresh is outside the
-	// adaptor's report window. Such a batch would keep reporting the previous
-	// valuation, so it fails closed into a HOLD reason instead.
+	// Empty positions and empty non-USDC custodies need no market valuation.
+	// Both the observed and hypothetical poststate must be cash-only; an
+	// override cannot hide exposure to evade the reserve health gate.
+	cashOnly := observedCashOnly && !obligation.hasPosition && custodies.SquadsPRIMEraw == 0 && custodies.SquadsDebtRaw == 0
 	marketEmergency, err := decodeKaminoMarketEmergency(accountAt(accounts, kaminoConfig.Market), kaminoConfig)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, collateralReserve, debtReserve); err != nil {
+	if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, collateralReserve, debtReserve); err != nil && !cashOnly {
 		return RouteNAVSnapshot{}, err
 	}
 	if collateralReserve.refreshedSlot > slot || debtReserve.refreshedSlot > slot || obligation.refreshedSlot > slot {
@@ -458,7 +461,7 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 		if err != nil {
 			return RouteNAVSnapshot{}, fmt.Errorf("decode NAV USDC reference: %w", err)
 		}
-		if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, usdcReserve); err != nil {
+		if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, usdcReserve); err != nil && !cashOnly {
 			return RouteNAVSnapshot{}, err
 		}
 		if usdcReserve.refreshedSlot > slot {
@@ -468,29 +471,32 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if usdcReserve.mintDecimals != 6 {
 		return RouteNAVSnapshot{}, fmt.Errorf("NAV USDC reference decimals drifted")
 	}
-	redeemablePRIME, err := collateralReserve.redeemLiquidityRaw(obligation.collateralDepositedRaw)
-	if err != nil {
-		return RouteNAVSnapshot{}, err
-	}
-	primeIdleValue, err := valueBetweenTokenRaw(custodies.SquadsPRIMEraw, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
-	if err != nil {
-		return RouteNAVSnapshot{}, err
-	}
-	collateralValue, err := valueBetweenTokenRaw(redeemablePRIME, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
-	if err != nil {
-		return RouteNAVSnapshot{}, err
-	}
-	debtRaw, err := obligation.debtAtReserveRate(debtReserve)
-	if err != nil {
-		return RouteNAVSnapshot{}, err
-	}
-	debtValue, err := valueBetweenTokenRaw(debtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, true)
-	if err != nil {
-		return RouteNAVSnapshot{}, err
-	}
-	debtIdleValue, err := valueBetweenTokenRaw(custodies.SquadsDebtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
-	if err != nil {
-		return RouteNAVSnapshot{}, err
+	var primeIdleValue, collateralValue, debtValue, debtIdleValue uint64
+	if !cashOnly {
+		redeemablePRIME, err := collateralReserve.redeemLiquidityRaw(obligation.collateralDepositedRaw)
+		if err != nil {
+			return RouteNAVSnapshot{}, err
+		}
+		primeIdleValue, err = valueBetweenTokenRaw(custodies.SquadsPRIMEraw, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
+		if err != nil {
+			return RouteNAVSnapshot{}, err
+		}
+		collateralValue, err = valueBetweenTokenRaw(redeemablePRIME, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
+		if err != nil {
+			return RouteNAVSnapshot{}, err
+		}
+		debtRaw, err := obligation.debtAtReserveRate(debtReserve)
+		if err != nil {
+			return RouteNAVSnapshot{}, err
+		}
+		debtValue, err = valueBetweenTokenRaw(debtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, true)
+		if err != nil {
+			return RouteNAVSnapshot{}, err
+		}
+		debtIdleValue, err = valueBetweenTokenRaw(custodies.SquadsDebtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
+		if err != nil {
+			return RouteNAVSnapshot{}, err
+		}
 	}
 	values := []uint64{custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw, primeIdleValue, collateralValue, debtValue, debtIdleValue}
 	for _, value := range values {

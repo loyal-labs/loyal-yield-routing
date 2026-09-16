@@ -147,7 +147,7 @@ func TestWithdrawalDemandRemainsTruthfulAcrossTypedLanes(t *testing.T) {
 		s.VoltrIdleRaw = 0
 		s.SquadsIdleRaw = 40
 		got = Decide(s)
-		if got.Action != DeleverRouteStep || got.AmountRaw != 40 || s.WithdrawalDemandRaw != 10 {
+		if got.Action != DeleverRouteStep || got.AmountRaw != 1 || got.Reason != "withdrawal_release_repayment_collateral" || s.WithdrawalDemandRaw != 10 {
 			t.Fatalf("uncovered %s: %+v", lane, got)
 		}
 		s = base()
@@ -299,7 +299,7 @@ func TestStagedRestoreFinishesAfterWithdrawalDemandChanges(t *testing.T) {
 	}
 }
 
-func TestTypedUSDCRepaymentRetainsExecutionContract(t *testing.T) {
+func TestTypedUSDCRepaymentUsesCanonicalExecutionContract(t *testing.T) {
 	for _, lane := range []string{"PRIME/USDC", SelectedRouteID, "OnRe/ONyc/USDC"} {
 		s := base()
 		s.RouteLane = lane
@@ -308,7 +308,7 @@ func TestTypedUSDCRepaymentRetainsExecutionContract(t *testing.T) {
 		s.DebtIdleRaw = 0 // Same USDC account must not be counted twice.
 		d := Decide(s)
 		action, err := fixedRouteAction(d.Action, lane)
-		if err != nil || action != DeleverPrimeUSDCStep || d.AmountRaw != 5 {
+		if err != nil || (lane == RouteID && action != DeleverPrimeUSDCStep) || (lane != RouteID && action != DeleverRouteStep) || d.AmountRaw != 5 {
 			t.Fatal(lane, d, action, err)
 		}
 	}

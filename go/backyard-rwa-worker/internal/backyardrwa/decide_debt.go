@@ -9,10 +9,10 @@ import (
 // already use the NAV's floor(asset)/ceil(liability) rounding; apply the existing
 // two-sided pricing margin too. This is planning, never quote authorization.
 func payoffFundingSource(s Snapshot, upperDebt uint64) (Action, int64) {
-	if s.DebtIdleRaw < 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 || uint64(s.DebtIdleRaw) >= upperDebt {
+	if debtCashRaw(s) < 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 || uint64(debtCashRaw(s)) >= upperDebt {
 		return "", 0
 	}
-	need := new(big.Int).SetUint64(upperDebt - uint64(s.DebtIdleRaw))
+	need := new(big.Int).SetUint64(upperDebt - uint64(debtCashRaw(s)))
 	need.Mul(need, big.NewInt(s.PositionDebtValueRaw))
 	need.Mul(need, big.NewInt(int64(10_000+budgetPriceMarginBPS)))
 	for _, source := range []struct {
@@ -22,6 +22,9 @@ func payoffFundingSource(s Snapshot, upperDebt uint64) (Action, int64) {
 		{SwapCollateralToDebtStep, s.CollateralIdleRaw, s.CollateralIdleValueRaw},
 		{SwapUSDCToDebtStep, s.SquadsIdleRaw, s.SquadsIdleRaw},
 	} {
+		if source.action == SwapUSDCToDebtStep && sharedUSDCDebt(s.RouteLane) {
+			continue
+		}
 		if source.amount <= 0 || source.value <= 0 {
 			continue
 		}

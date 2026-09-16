@@ -1041,3 +1041,96 @@ fn backyard_basic_policy_set() {
         policy_gaps.join("\n  ")
     );
 }
+
+/// Deployed Squads boundary only: KLend is a permissive stub. Every negative
+/// must fail before CPI, independently of protocol-side PDA checks.
+#[test]
+fn backyard_multiply_initializer_exact_lane_boundary() {
+    use loyal_actions::backyard_multiply_initializer::{
+        backyard_multiply_initializers, compile_backyard_multiply_initializer_policies,
+    };
+    let mut svm = build_base();
+    let installs = compile_backyard_multiply_initializer_policies(
+        key(SETTINGS),
+        key(AUTHORITY),
+        key(DELEGATE),
+        141,
+    )
+    .unwrap();
+    for install in installs {
+        let msg = Message::new(&[install.clone()], Some(&key(AUTHORITY)));
+        let packet_bytes = bincode::serialize(&msg).unwrap().len() + 65;
+        assert!(
+            packet_bytes <= 1232,
+            "initializer packet: {packet_bytes} bytes"
+        );
+        eprintln!("exact lane initializer PolicyCreate packet: {packet_bytes} bytes");
+        let (err, _, logs) = send(&mut svm, install, key(AUTHORITY));
+        assert!(
+            err.is_none(),
+            "initializer policy install failed: {err:?} {logs:?}"
+        );
+    }
+    install_stub_protocol(&mut svm, key(KLEND));
+    let initializers = backyard_multiply_initializers(key(SETTINGS)).unwrap();
+    for (index, init) in initializers.iter().enumerate() {
+        let policy = derive_squads_policy(&key(SETTINGS), 141 + index as u64).0;
+        for account in &init.instruction.accounts {
+            if svm.get_account(&account.pubkey).is_none() {
+                set_system_account(&mut svm, account.pubkey);
+            }
+        }
+        let mut accounts = init.instruction.accounts.clone();
+        // The outer instruction must not demand a transaction signature from
+        // the Squads PDA; the policy executor supplies it to the inner CPI.
+        for account in &mut accounts {
+            account.is_signer = false;
+        }
+        accounts.push(AccountMeta::new_readonly(key(KLEND), false));
+        let control = execute_probe(
+            &mut svm,
+            policy,
+            0,
+            accounts.clone(),
+            init.instruction.data.clone(),
+        );
+        assert!(
+            control.0.is_none() && protocol_invoke_observed(&control.2, KLEND),
+            "{}: {control:?}",
+            init.lane
+        );
+        for position in 0..9 {
+            let foreign = Pubkey::new_unique();
+            set_system_account(&mut svm, foreign);
+            let mut bad = accounts.clone();
+            bad[position].pubkey = foreign;
+            let result = execute_probe(&mut svm, policy, 0, bad, init.instruction.data.clone());
+            assert!(
+                rejected_before_protocol(&result, KLEND),
+                "{} foreign account {position}: {result:?}",
+                init.lane
+            );
+        }
+        for offset in [0, 8, 9] {
+            let mut data = init.instruction.data.clone();
+            data[offset] ^= 1;
+            let result = execute_probe(&mut svm, policy, 0, accounts.clone(), data);
+            assert!(
+                rejected_before_protocol(&result, KLEND),
+                "{} data offset {offset}: {result:?}",
+                init.lane
+            );
+        }
+        let wrong_lane = execute_probe(
+            &mut svm,
+            derive_squads_policy(&key(SETTINGS), 141 + ((index + 1) % 3) as u64).0,
+            0,
+            accounts,
+            init.instruction.data.clone(),
+        );
+        assert!(
+            rejected_before_protocol(&wrong_lane, KLEND),
+            "cross-lane mix: {wrong_lane:?}"
+        );
+    }
+}

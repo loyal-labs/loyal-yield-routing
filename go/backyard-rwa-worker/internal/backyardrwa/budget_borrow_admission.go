@@ -19,7 +19,7 @@ func validateInitialBorrowPrestate(ctx context.Context, rpc *RPCClient, route Ru
 	for _, row := range []struct {
 		address, mint string
 		raw           int64
-	}{{route.CollateralCustody, route.Kamino.CollateralMint, s.CollateralIdleRaw}, {route.DebtCustody, route.Kamino.DebtMint, s.DebtIdleRaw}} {
+	}{{route.CollateralCustody, route.Kamino.CollateralMint, s.CollateralIdleRaw}, {route.DebtCustody, route.Kamino.DebtMint, debtCashRaw(s)}} {
 		a := accountAt(accounts, row.address)
 		mint, _ := decodeBase58PublicKey(row.mint)
 		owner, _ := decodeBase58PublicKey(bridgeVault)
@@ -87,7 +87,7 @@ func observePhase3BorrowAdmission(ctx context.Context, rpc *RPCClient, client *j
 	defer cancel()
 	s, r := o.Snapshot, e.Request
 	if rpc == nil || client == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain ||
-		s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !catalogJupiterRoute(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0 || s.DebtIdleRaw != 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || d.Action != OpenRouteStep || r.Action != d.Action || d.AmountRaw <= 0 || e.ExpectedEffects.Kind != "kamino-borrow" {
+		s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !positionReturnRoute(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0 || debtCashRaw(s) != 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || d.Action != OpenRouteStep || r.Action != d.Action || d.AmountRaw <= 0 || e.ExpectedEffects.Kind != "kamino-borrow" {
 		return phase3BridgeAdmission{}, budgetHold("complete_initial_borrow_return_unavailable")
 	}
 	current, err := observePhase3KnownBuildCost(ctx, rpc, r, e.ExpectedEffects)
@@ -300,7 +300,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	post.Snapshot.PositionDebtRaw, post.Snapshot.PositionDebtValueRaw, post.Snapshot.PayoffDebtRaw = 0, 0, 0
 	post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw = s.CollateralIdleRaw, s.PrimeIdleRaw
 	post.Snapshot.PositionCollateralRaw = int64(remaining)
-	post.Snapshot.DebtIdleRaw = int64(upperCash - bound.ObservedDebtRaw)
+	setDebtCashRaw(&post.Snapshot, int64(upperCash-bound.ObservedDebtRaw))
 	if funding != nil {
 		post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw = 0, 0
 	}

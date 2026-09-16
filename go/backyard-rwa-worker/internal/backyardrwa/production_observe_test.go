@@ -283,6 +283,7 @@ func TestProductionUnexplainedDriftHoldsThroughObserve(t *testing.T) {
 		for i := 1208; i < 1272; i++ {
 			obligation.Data[i] = 0
 		}
+		binary.LittleEndian.PutUint64(accountAt(accounts, kaminoPrimeCustody).Data[64:72], 0)
 	}
 	unexplained := func(accounts []ConfirmedAccount) {
 		nonCutover(accounts)

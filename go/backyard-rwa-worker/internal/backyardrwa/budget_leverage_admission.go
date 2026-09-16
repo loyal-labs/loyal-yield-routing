@@ -79,7 +79,7 @@ func observePhase3LeverageSwapAdmission(ctx context.Context, rpc *RPCClient, cli
 	defer cancel()
 	s, r := o.Snapshot, e.Request
 	if rpc == nil || client == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain || s.WithdrawalDemandRaw > 0 ||
-		s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !catalogJupiterRoute(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 || s.DebtIdleRaw <= 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || d.Action != SwapDebtToCollateralStep || d.Action != r.Action || d.AmountRaw != s.DebtIdleRaw || r.AmountRaw != uint64(d.AmountRaw) {
+		s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !positionReturnRoute(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 || debtCashRaw(s) <= 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || d.Action != SwapDebtToCollateralStep || d.Action != r.Action || d.AmountRaw != debtCashRaw(s) || r.AmountRaw != uint64(d.AmountRaw) {
 		return phase3BridgeAdmission{}, budgetHold("complete_leverage_swap_return_unavailable")
 	}
 	current, err := observePhase3KnownBuildCost(ctx, rpc, r, e.ExpectedEffects)

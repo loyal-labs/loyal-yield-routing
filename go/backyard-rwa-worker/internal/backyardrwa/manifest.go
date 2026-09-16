@@ -332,7 +332,7 @@ func (b JupiterPolicyBinding) constraintIndex(instruction JupiterSwapInstruction
 		return bound.ConstraintIndex, nil
 	}
 	if b.BasicPolicy {
-		if len(data) < 28 || (!bytes.Equal(data[:8], jupiterSharedAccountsRoute) && !bytes.Equal(data[:8], jupiterSharedAccountsRouteV2)) {
+		if len(data) < 28 || !bytes.Equal(data[:8], jupiterSharedAccountsRoute) {
 			return 0, fmt.Errorf("fresh Jupiter header does not match the basic policy binding")
 		}
 		return b.PolicyConstraintIndex, nil

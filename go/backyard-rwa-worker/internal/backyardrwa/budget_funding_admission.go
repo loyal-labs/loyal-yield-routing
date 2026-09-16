@@ -1,6 +1,7 @@
 package backyardrwa
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -66,15 +67,29 @@ func validatePayoffFundingAccounts(request JupiterSwapRequest, effects ExpectedE
 	// The legacy wire carries quoted output and slippage, not the JSON
 	// threshold. Derive its lower bound with wide arithmetic. Use a floor for
 	// funding even though Jupiter rounds its actual minimum up.
-	binding, err := catalogJupiterBindingForRoute(request.Action, request.RouteLane)
-	if err != nil {
-		return bound, nil, err
-	}
 	wire, err := base64.StdEncoding.Strict().DecodeString(request.Instruction.Data)
 	if err != nil {
 		return bound, nil, err
 	}
-	slippage := binary.LittleEndian.Uint16(wire[binding.SlippageOffset:])
+	// Compile validates this lane's actual Jupiter dialect and policy boundaries.
+	// Basic USDC edges use the same physical collateral/USDC swap for funding.
+	offset := len(wire) - 3
+	if catalogJupiterRoute(request.RouteLane) {
+		binding, err := catalogJupiterBindingForRoute(request.Action, request.RouteLane)
+		if err != nil {
+			return bound, nil, err
+		}
+		offset = binding.SlippageOffset
+	} else if len(wire) >= 8 && bytes.Equal(wire[:8], jupiterSharedAccountsRouteV2) {
+		offset = 25
+	}
+	if offset < 0 || offset+2 > len(wire) {
+		return bound, nil, budgetHold("funding_slippage_encoding_invalid")
+	}
+	slippage := binary.LittleEndian.Uint16(wire[offset:])
+	if slippage > jupiterMaxSlippageBPS {
+		return bound, nil, budgetHold("funding_slippage_exceeds_policy")
+	}
 	n := new(big.Int).Mul(new(big.Int).SetUint64(request.QuotedOutputRaw), new(big.Int).SetUint64(uint64(10_000-slippage)))
 	floor := new(big.Int).Quo(new(big.Int).Set(n), big.NewInt(10_000)).Uint64()
 	ceiling := n.Add(n, big.NewInt(9_999)).Quo(n, big.NewInt(10_000)).Uint64()
@@ -97,8 +112,8 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	original := s
 	if !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission ||
 		!s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 ||
-		s.RouteLane != s.StrategyKey || s.RouteLane != decision.StrategyKey || !catalogJupiterRoute(s.RouteLane) ||
-		s.CollateralIdleRaw < 0 || s.CollateralIdleValueRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.DebtIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {
+		s.RouteLane != s.StrategyKey || s.RouteLane != decision.StrategyKey || !positionReturnRoute(s.RouteLane) ||
+		s.CollateralIdleRaw < 0 || s.CollateralIdleValueRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || debtCashRaw(s) < 0 || s.VoltrStrategyIdleRaw != 0 || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {
 		return phase3BridgeAdmission{}, budgetHold("complete_funding_return_unavailable")
 	}
 	var funding *JupiterExecutionEvidence
@@ -110,7 +125,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	steps := int64(2) // current NAV -> payoff
 	switch r := request.(type) {
 	case KaminoPrimeUSDCRequest:
-		if !r.RepaymentRelease || r.Action != DeleverRouteStep || decision.Action != r.Action || decision.Reason != "withdrawal_release_repayment_collateral" || r.RouteLane != s.RouteLane || r.AmountRaw >= uint64(s.PositionCollateralRaw) || r.ReleaseDebtIdleRaw != uint64(s.DebtIdleRaw) {
+		if !r.RepaymentRelease || r.Action != DeleverRouteStep || decision.Action != r.Action || decision.Reason != "withdrawal_release_repayment_collateral" || r.RouteLane != s.RouteLane || r.AmountRaw >= uint64(s.PositionCollateralRaw) || r.ReleaseDebtIdleRaw != uint64(debtCashRaw(s)) {
 			return phase3BridgeAdmission{}, budgetHold("release_return_intent_mismatch")
 		}
 		var err error
@@ -148,7 +163,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			return phase3BridgeAdmission{}, err
 		}
 		action, amount := payoffFundingSource(s, future.UpperDebtRaw)
-		if uint64(s.DebtIdleRaw) < future.UpperDebtRaw && amount == 0 {
+		if uint64(debtCashRaw(s)) < future.UpperDebtRaw && amount == 0 {
 			// NAV -> release -> NAV -> funding -> NAV -> payoff. This is a
 			// future cost template; the release will be rebuilt and admitted
 			// from actual custody after NAV, never signed from this projection.
@@ -165,7 +180,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 				return phase3BridgeAdmission{}, err
 			}
 			req.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-			req.RepaymentRelease, req.ReleaseDebtIdleRaw = true, uint64(s.DebtIdleRaw)
+			req.RepaymentRelease, req.ReleaseDebtIdleRaw = true, uint64(debtCashRaw(s))
 			source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
 			e, err := exactKaminoTokenEffects(rows, source, destination, releaseBound.LiquidityRaw)
 			if err != nil {
@@ -174,7 +189,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			release, releaseAccounts, futureRelease, steps = &KaminoExecutionEvidence{req, e}, rows, true, 6
 		}
 		if amount > 0 {
-			quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, Decision{Action: action, AmountRaw: amount, StrategyKey: s.RouteLane}, uint64(amount), uint64(s.DebtIdleRaw), s.Slot)
+			quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, Decision{Action: action, AmountRaw: amount, StrategyKey: s.RouteLane}, uint64(amount), uint64(debtCashRaw(s)), s.Slot)
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}
@@ -195,7 +210,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 		// Cost-only metadata, not a reportable NAV.
 		remainingValue := new(big.Int).Mul(big.NewInt(s.PositionCollateralValueRaw), big.NewInt(s.PositionCollateralRaw))
 		s.PositionCollateralValueRaw = remainingValue.Quo(remainingValue, big.NewInt(original.PositionCollateralRaw)).Int64()
-		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, Decision{Action: SwapCollateralToDebtStep, AmountRaw: s.CollateralIdleRaw, StrategyKey: s.RouteLane}, uint64(s.CollateralIdleRaw), uint64(s.DebtIdleRaw), releaseBound.Payoff.ObservedSlot)
+		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, Decision{Action: SwapCollateralToDebtStep, AmountRaw: s.CollateralIdleRaw, StrategyKey: s.RouteLane}, uint64(s.CollateralIdleRaw), uint64(debtCashRaw(s)), releaseBound.Payoff.ObservedSlot)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -227,7 +242,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	if bound.ObservedDebtRaw != uint64(s.PositionDebtRaw) {
 		return phase3BridgeAdmission{}, budgetHold("funding_debt_snapshot_changed")
 	}
-	upperCash := uint64(s.DebtIdleRaw)
+	upperCash := uint64(debtCashRaw(s))
 	if funding != nil {
 		if funding.ExpectedEffects.Accounts[1].BeforeRaw != upperCash {
 			return phase3BridgeAdmission{}, budgetHold("funding_debt_custody_changed")
@@ -247,7 +262,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	mint, _ := decodeBase58PublicKey(route.Kamino.DebtMint)
 	authority, _ := decodeBase58PublicKey(bridgeVault)
 	custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, authority)
-	if err != nil || a.Executable || a.Lamports == 0 || custody.Raw != uint64(s.DebtIdleRaw) {
+	if err != nil || a.Executable || a.Lamports == 0 || custody.Raw != uint64(debtCashRaw(s)) {
 		return phase3BridgeAdmission{}, budgetHold("funding_debt_custody_changed")
 	}
 	projected := append([]ConfirmedAccount(nil), accounts...)
@@ -291,7 +306,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 		// USDC consumed by funding; the original snapshot/current wire stay intact.
 		post.Snapshot.SquadsIdleRaw = 0
 	}
-	post.Snapshot.DebtIdleRaw = int64(upperCash - bound.ObservedDebtRaw)
+	setDebtCashRaw(&post.Snapshot, int64(upperCash-bound.ObservedDebtRaw))
 	plan, err := pricePhase3PositionReturnAfterFunding(ctx, rpc, client, manifest, post, decision, request, effects, true, funding, release)
 	if err != nil {
 		return plan, err
@@ -353,7 +368,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 		if err != nil {
 			return plan, err
 		}
-		plan.FundingSwap = &phase3QuotedExit{Input: input, QuotedOutputRaw: funding.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperCash - uint64(s.DebtIdleRaw), ProofLevel: "COST_ONLY_FUNDING_AND_RESIDUE_ESTIMATE_NOT_EXECUTION"}
+		plan.FundingSwap = &phase3QuotedExit{Input: input, QuotedOutputRaw: funding.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperCash - uint64(debtCashRaw(s)), ProofLevel: "COST_ONLY_FUNDING_AND_RESIDUE_ESTIMATE_NOT_EXECUTION"}
 		if !currentSwap {
 			prefix = append(prefix, phase3BridgeExitCost{Action: funding.Request.Action, Amount: funding.Request.AmountRaw, Cost: cost})
 		}

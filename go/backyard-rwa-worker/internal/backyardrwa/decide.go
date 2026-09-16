@@ -153,11 +153,24 @@ func decideUSDC(s Snapshot) Decision {
 			return decision(HoldManualRecovery, "invalid_hard_ltv", 0)
 		}
 		if s.LTVBPS >= hard {
+			if selectorLane(s.RouteLane) {
+				payoff := max(s.PositionDebtRaw, s.PayoffDebtRaw)
+				if s.PositionDebtRaw > 0 && debtCashRaw(s) >= payoff {
+					return decision(DeleverRouteStep, "hard_ltv_repay", s.PositionDebtRaw)
+				}
+				if s.PositionDebtRaw > 0 {
+					action, amount := payoffFundingSource(s, uint64(payoff))
+					if amount > 0 {
+						return decision(action, "hard_ltv_buffer_swap", amount)
+					}
+				}
+				return decision(HoldManualRecovery, "hard_ltv_partial_repayment_requires_admission", 0)
+			}
 			if s.PositionDebtRaw > 0 && s.SquadsIdleRaw > 0 {
 				return decision(DeleverRouteStep, "hard_ltv_repay", min(s.PositionDebtRaw, s.SquadsIdleRaw))
 			}
 			if s.PositionDebtRaw > 0 && s.CollateralIdleRaw > 0 {
-				return decision(SwapCollateralToStableStep, "hard_ltv_buffer_swap", s.CollateralIdleRaw)
+				return decision(SwapCollateralToDebtStep, "hard_ltv_buffer_swap", s.CollateralIdleRaw)
 			}
 			return decision(HoldManualRecovery, "hard_ltv_without_repayment_buffer", s.PositionDebtRaw)
 		}
@@ -201,11 +214,21 @@ func decideUSDC(s Snapshot) Decision {
 		// Fully flatten Kamino before any Squads USDC is staged to Voltr. The
 		// single-loop borrowed PRIME is the repayment buffer.
 		if s.PositionDebtRaw > 0 {
+			if selectorLane(s.RouteLane) {
+				if debtCashRaw(s) >= max(s.PositionDebtRaw, s.PayoffDebtRaw) {
+					return decision(DeleverRouteStep, "withdrawal_repay_debt", s.PositionDebtRaw)
+				}
+				action, amount := payoffFundingSource(s, uint64(max(s.PositionDebtRaw, s.PayoffDebtRaw)))
+				if amount > 0 {
+					return decision(action, "withdrawal_swap_repayment_buffer", amount)
+				}
+				return decision(DeleverRouteStep, "withdrawal_release_repayment_collateral", 1)
+			}
 			if s.SquadsIdleRaw > 0 {
 				return decision(DeleverRouteStep, "withdrawal_repay_debt", min(s.PositionDebtRaw, s.SquadsIdleRaw))
 			}
 			if s.CollateralIdleRaw > 0 {
-				return decision(SwapCollateralToStableStep, "withdrawal_swap_repayment_buffer", s.CollateralIdleRaw)
+				return decision(SwapCollateralToDebtStep, "withdrawal_swap_repayment_buffer", s.CollateralIdleRaw)
 			}
 			return decision(DeleverRouteStep, "withdrawal_release_repayment_collateral", 1)
 		}
@@ -252,6 +275,12 @@ func decideUSDC(s Snapshot) Decision {
 		}
 		return decision(ReportNAV, "nav_due", 0)
 	}
+	// Returning flat working cash is an exit. It does not need a usable
+	// entry market, an obligation account, or an entry LTV threshold.
+	if selectorLane(s.RouteLane) && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.CollateralIdleRaw == 0 && s.SquadsIdleRaw > 0 &&
+		(s.CapacityRaw < s.SquadsIdleRaw || s.PolicyLimitRaw < s.SquadsIdleRaw || s.MaxTargetLTVEntryRaw < s.SquadsIdleRaw || s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
+		return decision(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
+	}
 	// Entry planning funds a Kamino deposit. Without the obligation account that
 	// deposit is refused and the funded capital strands in custody, so no
 	// allocation, swap, or deposit is constructed. Withdrawal and reporting legs
@@ -262,8 +291,16 @@ func decideUSDC(s Snapshot) Decision {
 	if hold, absent := obligationPrerequisiteHold(s); absent {
 		return hold
 	}
-	if s.VoltrIdleRaw > 0 {
+	if s.VoltrIdleRaw > 0 && !selectorLane(s.RouteLane) {
 		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", s.VoltrIdleRaw)
+	}
+	// Keep undeployed capital in Voltr. Squads cash is working cash for one
+	// complete tranche, so a later deposit cannot be mistaken for borrowed cash.
+	if selectorLane(s.RouteLane) && s.VoltrIdleRaw > 0 && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.SquadsIdleRaw == 0 && s.CollateralIdleRaw == 0 {
+		if !s.PolicyReady || !s.ExitBuildable || s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
+			return decision(Hold, "insufficient_reviewed_entry_capacity", 0)
+		}
+		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw, Phase3WorkingTrancheCapRaw))
 	}
 	if (s.SquadsIdleRaw > 0 || s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) && s.PolicyReady && s.ExitBuildable &&
 		(s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
@@ -271,23 +308,32 @@ func decideUSDC(s Snapshot) Decision {
 	}
 	if s.PositionDebtRaw > 0 {
 		if s.SquadsIdleRaw > 0 && s.PolicyReady && s.ExitBuildable {
-			return decision(SwapStableToCollateralStep, "borrowed_usdc_requires_prime_buffer", s.SquadsIdleRaw)
+			return decision(SwapDebtToCollateralStep, "borrowed_usdc_requires_prime_buffer", s.SquadsIdleRaw)
 		}
 		if s.CollateralIdleRaw > 0 {
 			return decision(OpenRouteStep, "single_loop_redeposit", s.CollateralIdleRaw)
 		}
 		return decision(Hold, "single_loop_position_ready", 0)
 	}
+	if selectorLane(s.RouteLane) && s.SquadsIdleRaw > 0 && (s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) {
+		return decision(HoldManualRecovery, "entry_tranche_contains_unassigned_cash", 0)
+	}
 	// PRIME is the collateral asset. Fresh USDC is converted before the only
 	// collateral deposit.
 	if s.SquadsIdleRaw > 0 && s.PolicyReady && s.ExitBuildable {
 		if s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
+			if selectorLane(s.RouteLane) {
+				return decision(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
+			}
 			return decision(Hold, "insufficient_reviewed_entry_capacity", 0)
 		}
 		amount := s.SquadsIdleRaw
 		amount = min(amount, s.PolicyLimitRaw)
 		amount = min(amount, s.CapacityRaw)
 		amount = min(amount, s.MaxTargetLTVEntryRaw)
+		if selectorLane(s.RouteLane) && amount != s.SquadsIdleRaw {
+			return decision(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
+		}
 		return decision(SwapStableToCollateralStep, "usdc_requires_prime_collateral", amount)
 	}
 	if s.CollateralIdleRaw > 0 && s.PolicyReady && s.ExitBuildable {

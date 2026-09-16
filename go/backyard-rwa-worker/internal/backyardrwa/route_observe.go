@@ -181,7 +181,11 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 				return Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: sha256Bytes([]byte(fmt.Sprintf("selector-ownership:%d:%s", slot, err.Error()))), Slot: slot, RouteKind: RouteKind, RouteLane: selectedRoute.Lane, ManualReason: err.Error()}}, accounts, nil
 			}
 		} else if route.Lane == SelectedRouteID {
-			legacyPosition, legacyErr := observePrimeUSDCFromFixedAccounts(ctx, runtime.accounts, slot, accounts)
+			legacyRoute, legacyErr := runtimeRoute(RouteID)
+			if legacyErr != nil {
+				return Observation{}, nil, legacyErr
+			}
+			legacyPosition, legacyErr := observeKaminoWithCashFallback(ctx, runtime.accounts, slot, accounts, legacyRoute)
 			if legacyErr != nil {
 				return Observation{}, nil, fmt.Errorf("verify legacy PRIME cutover state: %w", legacyErr)
 			}
@@ -197,7 +201,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 				cutoverDrain = true
 			}
 		}
-		position, err := observeKaminoFromFixedAccounts(ctx, runtime.accounts, slot, accounts, route.Kamino)
+		position, err := observeKaminoWithCashFallback(ctx, runtime.accounts, slot, accounts, route)
 		if err != nil {
 			// A stale, paused, or emergency Kamino state is a decision input,
 			// not a broken observer: the tick holds with the audited reason.
@@ -298,12 +302,15 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base.Snapshot.ObligationPresenceKnown = true
 		base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
 		base.Snapshot.PositionDebtRaw = int64(position.DebtRaw)
-		if route.Kamino.DebtMint != bridgeUSDC && position.DebtRaw > 0 {
+		if positionReturnRoute(route.Lane) && position.DebtRaw > 0 {
 			// Include NAV -> release -> NAV -> funding -> NAV -> payoff in
 			// planning. Each actual wire still has its own short freshness gate.
 			bound, err := decodeKaminoPayoffWindow(accounts, route, slot, 6)
 			if err != nil {
 				return Observation{}, nil, err
+			}
+			if bound.UpperDebtRaw > math.MaxInt64 {
+				return Observation{}, nil, fmt.Errorf("payoff bound exceeds decision range")
 			}
 			base.Snapshot.PayoffDebtRaw = int64(bound.UpperDebtRaw)
 		}
@@ -489,6 +496,50 @@ func observePrimeUSDCFromFixedAccounts(ctx context.Context, accountsReader func(
 		return KaminoPosition{}, err
 	}
 	return observeKaminoFromFixedAccounts(ctx, accountsReader, slot, accounts, config)
+}
+
+// Market unavailability closes entry, but cannot invalidate independently
+// observed USDC. This fallback is restricted to a structurally valid, empty
+// USDC lane. Every nonzero collateral/debt holding retains the original hold.
+func observeKaminoWithCashFallback(ctx context.Context, reader func(context.Context, []string, int64) (int64, []ConfirmedAccount, error), slot int64, accounts []ConfirmedAccount, route RuntimeRoute) (KaminoPosition, error) {
+	position, originalErr := observeKaminoFromFixedAccounts(ctx, reader, slot, accounts, route.Kamino)
+	if originalErr == nil {
+		return position, nil
+	}
+	if _, health := kaminoHealthReason(originalErr); !health || route.Kamino.DebtMint != bridgeUSDC {
+		return KaminoPosition{}, originalErr
+	}
+	custodies, err := decodeRouteNAVCustodiesForRoute(accounts, route)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	if custodies.SquadsPRIMEraw != 0 || custodies.SquadsDebtRaw != 0 {
+		return KaminoPosition{}, originalErr
+	}
+	account := accountAt(accounts, route.Kamino.Obligation)
+	if account.Address != route.Kamino.Obligation {
+		return KaminoPosition{}, fmt.Errorf("cash-only obligation observation missing")
+	}
+	obligation := decodedKaminoObligation{}
+	if account.Lamports != 0 {
+		obligation, err = decodeKaminoObligation(account, route.Kamino)
+		if err != nil {
+			return KaminoPosition{}, err
+		}
+	}
+	if obligation.hasPosition || obligation.refreshedSlot > slot {
+		return KaminoPosition{}, originalErr
+	}
+	for _, binding := range [][2]string{{route.Kamino.CollateralReserve, route.Kamino.CollateralMint}, {route.Kamino.DebtReserve, route.Kamino.DebtMint}} {
+		reserve, err := decodeKaminoReserve(accountAt(accounts, binding[0]), binding[1], route.Kamino)
+		if err != nil {
+			return KaminoPosition{}, err
+		}
+		if reserve.refreshedSlot > slot {
+			return KaminoPosition{}, originalErr
+		}
+	}
+	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, ObligationPresent: account.Lamports != 0, BorrowUtilizationBlocked: true}, nil
 }
 
 func observeKaminoFromFixedAccounts(ctx context.Context, accountsReader func(context.Context, []string, int64) (int64, []ConfirmedAccount, error), slot int64, accounts []ConfirmedAccount, config KaminoObservationConfig) (KaminoPosition, error) {

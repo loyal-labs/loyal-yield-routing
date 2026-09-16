@@ -1,0 +1,983 @@
+{
+  "proof": "captured_deployed_program_LiteSVM",
+  "liveSigning": false,
+  "liveTransactions": false,
+  "voltrProgramDeploySlot": 445223838,
+  "voltrExecutableSHA256": "bf1c1831b3d6350f4340badb942bd2e7bfaca4aa89276cb65e8480aa30d44c56",
+  "sourceTest": "crates/squads-test-harness/tests/voltr_reset_sequence.rs",
+  "steps": [
+    {
+      "after": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1030,
+          "slot": 445235535,
+          "unixTimestamp": 1788839123
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399441055",
+        "idleAta": 24,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1788837913,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "24/1000",
+        "lpSupply": 0,
+        "lpSupplyInclFees": 1000,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": "0",
+        "strategy2CustodyAta": 0,
+        "strategy2ReceiptPositionValue": 0,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": true,
+        "vaultTotalValue": 24,
+        "withdrawalWaitingPeriod": 600
+      },
+      "before": {
+        "adminLpAta": 0,
+        "adminPerformanceFeeBps": 0,
+        "clock": {
+          "epoch": 1030,
+          "slot": 445235535,
+          "unixTimestamp": 1788839123
+        },
+        "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+        "deadWeight": 1000,
+        "feeStateAccumulatedLpAdminFees": 0,
+        "feeStateAccumulatedLpManagerFees": 0,
+        "feeStateAccumulatedLpProtocolFees": 0,
+        "highWaterMarkAssetPerLp": "0.024000",
+        "highWaterMarkAssetPerLpBits": "6755399441055",
+        "idleAta": 24,
+        "lockedProfitDegradationDuration": 0,
+        "lockedProfitState": {
+          "effectiveLockedNow": 0,
+          "lastReport": 1788837913,
+          "lastUpdatedLockedProfit": 1000119
+        },
+        "lpPriceAssetPerLp": "0.024000000",
+        "lpPriceRational": "24/1000",
+        "lpSupply": 0,
+        "lpSupplyInclFees": 1000,
+        "managerPerformanceFeeBps": 0,
+        "squadsUsdcAta": 0,
+        "strategy1CustodyAta": 0,
+        "strategy1ReceiptPositionValue": 3793536,
+        "strategy2BookMinusReal": null,
+        "strategy2CustodyAta": null,
+        "strategy2ReceiptPositionValue": null,
+        "tvEqualsIdle": true,
+        "tvEqualsIdlePlusReceipt2": null,
+        "vaultTotalValue": 24,
+        "withdrawalWaitingPeriod": 600
+      },
+      "checks": [
+        {
+          "check": "adaptor initialize_config executed (new config = new strategy key)",
+          "pass": true
+        },
+        {
+          "check": "adaptor initialize_report_ticket executed",
+          "pass": true
+        },
+        {
+          "check": "Voltr initializeStrategy executed (manager ST999 signer)",
+          "pass": true
+        },
+        {
+          "check": "receipt2.positionValue == 0",
+          "pass": true
+        },
+        {
+          "check": "fresh receipt2 uses reviewed version 2",
+          "pass": true
+        },
+        {
+          "check": "custody2 ATA created",
+          "pass": true
+        },
+        {
+          "check": "books untouched by setup",
+          "pass": true
+        }
+      ],
+      "custodyAtaCreate": {
+        "computeUnits": 23552,
+        "logsTail": [
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 1405 of 184877 compute units",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+          "Program log: Instruction: InitializeAccount3",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 4241 of 180993 compute units",
+          "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+          "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL consumed 23552 of 200000 compute units",
+          "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL success"
+        ],
+        "ok": true
+      },
+      "id": "R5a-setup",
+      "initializeConfig": {
+        "args": {
+          "maxReportAgeSlots": 32,
+          "maxReportNavRaw": 2000000000000,
+          "squadsVaultIndex": 0
+        },
+        "tx": {
+          "computeUnits": 19007,
+          "logsTail": [
+            "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+            "Program ComputeBudget111111111111111111111111111111 success",
+            "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [1]",
+            "Program 11111111111111111111111111111111 invoke [2]",
+            "Program 11111111111111111111111111111111 success",
+            "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 18857 of 1399850 compute units",
+            "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success"
+          ],
+          "ok": true
+        }
+      },
+      "initializeReportTicket": {
+        "computeUnits": 6899,
+        "logsTail": [
+          "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+          "Program ComputeBudget111111111111111111111111111111 success",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [1]",
+          "Program 11111111111111111111111111111111 invoke [2]",
+          "Program 11111111111111111111111111111111 success",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 6749 of 1399850 compute units",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success"
+        ],
+        "ok": true
+      },
+      "name": "second strategy on the same custom adaptor FSj27: initialize_config + initialize_report_ticket + Voltr initializeStrategy",
+      "receiptVersion": 2,
+      "strategy2": {
+        "config": "111fcLTw6cc4kfAF9UhCriFQVbAMbL5WGR2Fn9G5eR",
+        "custodyAta": "GzvcUoQo1NYsnf9axLAe6H3pkeRio5bevL3vPsDuVLek",
+        "reportTicket": "78M8aD1cGyxJQhMBuD9tEehT67fpUAg2jSksbXTuLJnc",
+        "strategyInitReceipt": "8RnBwnKyrUK5eyiSY8fqy9dqhUQtmNXMAwB2EEY7NoMH",
+        "vaultStrategyAuth": "EjovPqer5y3LUxYSwS1BaGZ1ijHpDekB14AFzeg8iYxo"
+      },
+      "verdict": "PASS",
+      "voltrInitializeStrategy": {
+        "computeUnits": 43274,
+        "logsTail": [
+          "Program 11111111111111111111111111111111 invoke [2]",
+          "Program 11111111111111111111111111111111 success",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 12724 of 1370653 compute units",
+          "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+          "Program data: HunT+VO86pgGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XzB9glmw40NoLKkPnOnRcabyqtSEJ4e9wetlHWggL3PgAAAAOqddQPRYJSzYJwA0JYYgnNKiYE8nmb5WBtyzfAm5a18oHes0Ds5Kcen782zjMTmDfL5HK3bAjrxMvhbHY1pql/THt14B8m2YCp04JwinnC8xcYmF0WMozd5PR84fThJ9qAAAAAAA=",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 43124 of 1399850 compute units",
+          "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+        ],
+        "ok": true
+      }
+    },
+    {
+      "cases": [
+        {
+          "after": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1030,
+              "slot": 445235555,
+              "unixTimestamp": 1788839131
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793436",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024002",
+            "highWaterMarkAssetPerLpBits": "6756075072881",
+            "idleAta": 500024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1788839131,
+              "lastUpdatedLockedProfit": 100
+            },
+            "lpPriceAssetPerLp": "0.024002400",
+            "lpPriceRational": "1000124/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "100",
+            "strategy2CustodyAta": 100,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": false,
+            "vaultTotalValue": 1000124,
+            "withdrawalWaitingPeriod": 600
+          },
+          "amount": 0,
+          "before": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1030,
+              "slot": 445235545,
+              "unixTimestamp": 1788839127
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024000",
+            "highWaterMarkAssetPerLpBits": "6755399549139",
+            "idleAta": 500024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1788837913,
+              "lastUpdatedLockedProfit": 1000119
+            },
+            "lpPriceAssetPerLp": "0.024000000",
+            "lpPriceRational": "1000024/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "0",
+            "strategy2CustodyAta": 100,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": true,
+            "vaultTotalValue": 1000024,
+            "withdrawalWaitingPeriod": 600
+          },
+          "bookMinusRealAfter": "100",
+          "case": "T9.a deposit_strategy(0) refresh, nav unchanged 500_000",
+          "creditForResidue": "100",
+          "custody2After": 100,
+          "custody2Before": 100,
+          "deltaIdle": "0",
+          "deltaSquadsUsdc": "0",
+          "deltaTv": "100",
+          "error": null,
+          "expectedBookDeltaWithoutResidue": "0",
+          "receipt2WordsChanged": [
+            {
+              "after": 1788839131,
+              "before": 1788839127,
+              "offset": 112
+            },
+            {
+              "after": 100,
+              "before": 0,
+              "offset": 128
+            }
+          ],
+          "reportedNav": 500000,
+          "residueSweptToIdle": false,
+          "sequence": 445235555,
+          "tx": {
+            "computeUnits": 73409,
+            "logsTail": [
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 21852 of 1358656 compute units",
+              "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW IKEHAAAAAAA=",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program data: ysl2MR20dKoGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XAAAADqnXUD0WCUs2CcANCWGIJzSomBPJ5m+Vgbcs3wJuWtfKB3rNA7OSnHp+/Ns4zE5g3y+Ryt2wI68TL4Wx2Naapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEAAAAAAAAAAFhCDwAAAAAAvEIPAAAAAABSzHsCAAAAAFLMewIAAAAA08Aw3SQGAAAAAAAAAAAAAHFtdAUlBgAAAAAAAAAAAAA4oQcAAAAAADihBwAAAAAAIKEHAAAAAAAgoQcAAAAAANuEn2oAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 64854 of 1391445 compute units",
+              "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 IKEHAAAAAAA=",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          },
+          "vaultWordsChanged": [
+            {
+              "after": 1000124,
+              "before": 1000024,
+              "offset": 168
+            },
+            {
+              "after": 1788839131,
+              "before": 1788837913,
+              "offset": 560
+            },
+            {
+              "after": 6756075072881,
+              "before": 6755399549139,
+              "offset": 624
+            },
+            {
+              "after": 1788839131,
+              "before": 1788839123,
+              "offset": 640
+            },
+            {
+              "after": 1788839131,
+              "before": 1788839127,
+              "offset": 656
+            },
+            {
+              "after": 100,
+              "before": 1000119,
+              "offset": 672
+            },
+            {
+              "after": 1788839131,
+              "before": 1788837913,
+              "offset": 680
+            }
+          ]
+        },
+        {
+          "after": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1030,
+              "slot": 445235555,
+              "unixTimestamp": 1788839131
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793436",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024002",
+            "highWaterMarkAssetPerLpBits": "6756075072881",
+            "idleAta": 300024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1788839131,
+              "lastUpdatedLockedProfit": 100
+            },
+            "lpPriceAssetPerLp": "0.024002400",
+            "lpPriceRational": "1000124/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 700000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "100",
+            "strategy2CustodyAta": 100,
+            "strategy2ReceiptPositionValue": 700000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": false,
+            "vaultTotalValue": 1000124,
+            "withdrawalWaitingPeriod": 600
+          },
+          "amount": 200000,
+          "before": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1030,
+              "slot": 445235545,
+              "unixTimestamp": 1788839127
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024000",
+            "highWaterMarkAssetPerLpBits": "6755399549139",
+            "idleAta": 500024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1788837913,
+              "lastUpdatedLockedProfit": 1000119
+            },
+            "lpPriceAssetPerLp": "0.024000000",
+            "lpPriceRational": "1000024/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "0",
+            "strategy2CustodyAta": 100,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": true,
+            "vaultTotalValue": 1000024,
+            "withdrawalWaitingPeriod": 600
+          },
+          "bookMinusRealAfter": "100",
+          "case": "T9.b deposit_strategy(200_000, nav 700_000)",
+          "creditForResidue": "100",
+          "custody2After": 100,
+          "custody2Before": 100,
+          "deltaIdle": "-200000",
+          "deltaSquadsUsdc": "200000",
+          "deltaTv": "100",
+          "error": null,
+          "expectedBookDeltaWithoutResidue": "0",
+          "receipt2WordsChanged": [
+            {
+              "after": 700000,
+              "before": 500000,
+              "offset": 104
+            },
+            {
+              "after": 1788839131,
+              "before": 1788839127,
+              "offset": 112
+            },
+            {
+              "after": 100,
+              "before": 0,
+              "offset": 128
+            }
+          ],
+          "reportedNav": 700000,
+          "residueSweptToIdle": false,
+          "sequence": 445235555,
+          "tx": {
+            "computeUnits": 90748,
+            "logsTail": [
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 30131 of 1349596 compute units",
+              "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW YK4KAAAAAAA=",
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program data: ysl2MR20dKoGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XAAAADqnXUD0WCUs2CcANCWGIJzSomBPJ5m+Vgbcs3wJuWtfKB3rNA7OSnHp+/Ns4zE5g3y+Ryt2wI68TL4Wx2Naapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWFADQMAAAAAAFhCDwAAAAAAvEIPAAAAAABSzHsCAAAAAFLMewIAAAAA08Aw3SQGAAAAAAAAAAAAAHFtdAUlBgAAAAAAAAAAAAA4oQcAAAAAAPiTBAAAAAAAIKEHAAAAAABgrgoAAAAAANuEn2oAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 82193 of 1391445 compute units",
+              "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 YK4KAAAAAAA=",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          },
+          "vaultWordsChanged": [
+            {
+              "after": 1000124,
+              "before": 1000024,
+              "offset": 168
+            },
+            {
+              "after": 1788839131,
+              "before": 1788837913,
+              "offset": 560
+            },
+            {
+              "after": 6756075072881,
+              "before": 6755399549139,
+              "offset": 624
+            },
+            {
+              "after": 1788839131,
+              "before": 1788839123,
+              "offset": 640
+            },
+            {
+              "after": 1788839131,
+              "before": 1788839127,
+              "offset": 656
+            },
+            {
+              "after": 100,
+              "before": 1000119,
+              "offset": 672
+            },
+            {
+              "after": 1788839131,
+              "before": 1788837913,
+              "offset": 680
+            }
+          ]
+        },
+        {
+          "after": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1030,
+              "slot": 445235555,
+              "unixTimestamp": 1788839131
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024002",
+            "highWaterMarkAssetPerLpBits": "6756075072881",
+            "idleAta": 500124,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1788839131,
+              "lastUpdatedLockedProfit": 100
+            },
+            "lpPriceAssetPerLp": "0.024002400",
+            "lpPriceRational": "1000124/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "0",
+            "strategy2CustodyAta": 0,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": true,
+            "vaultTotalValue": 1000124,
+            "withdrawalWaitingPeriod": 600
+          },
+          "amount": 0,
+          "before": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1030,
+              "slot": 445235545,
+              "unixTimestamp": 1788839127
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024000",
+            "highWaterMarkAssetPerLpBits": "6755399549139",
+            "idleAta": 500024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1788837913,
+              "lastUpdatedLockedProfit": 1000119
+            },
+            "lpPriceAssetPerLp": "0.024000000",
+            "lpPriceRational": "1000024/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "0",
+            "strategy2CustodyAta": 100,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": true,
+            "vaultTotalValue": 1000024,
+            "withdrawalWaitingPeriod": 600
+          },
+          "bookMinusRealAfter": "0",
+          "case": "T9.c withdraw_strategy(0, nav 500_000)",
+          "creditForResidue": "100",
+          "custody2After": 0,
+          "custody2Before": 100,
+          "deltaIdle": "100",
+          "deltaSquadsUsdc": "0",
+          "deltaTv": "100",
+          "error": null,
+          "expectedBookDeltaWithoutResidue": "0",
+          "receipt2WordsChanged": [
+            {
+              "after": 1788839131,
+              "before": 1788839127,
+              "offset": 112
+            }
+          ],
+          "reportedNav": 500000,
+          "residueSweptToIdle": true,
+          "sequence": 445235555,
+          "tx": {
+            "computeUnits": 84266,
+            "logsTail": [
+              "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+              "Program log: Instruction: TransferChecked",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6200 of 1331837 compute units",
+              "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+              "Program data: cC0QrKohFtQGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XAAAADqnXUD0WCUs2CcANCWGIJzSomBPJ5m+Vgbcs3wJuWtfKB3rNA7OSnHp+/Ns4zE5g3y+Ryt2wI68TL4Wx2Naapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEAAAAAAAAAAFhCDwAAAAAAvEIPAAAAAABSzHsCAAAAAFLMewIAAAAA08Aw3SQGAAAAAAAAAAAAAHFtdAUlBgAAAAAAAAAAAAA4oQcAAAAAAJyhBwAAAAAAIKEHAAAAAAAgoQcAAAAAANuEn2oAAAAA",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 75708 of 1391442 compute units",
+              "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+            ],
+            "ok": true
+          },
+          "vaultWordsChanged": [
+            {
+              "after": 1000124,
+              "before": 1000024,
+              "offset": 168
+            },
+            {
+              "after": 1788839131,
+              "before": 1788837913,
+              "offset": 560
+            },
+            {
+              "after": 6756075072881,
+              "before": 6755399549139,
+              "offset": 624
+            },
+            {
+              "after": 1788839131,
+              "before": 1788839123,
+              "offset": 640
+            },
+            {
+              "after": 1788839131,
+              "before": 1788839127,
+              "offset": 656
+            },
+            {
+              "after": 100,
+              "before": 1000119,
+              "offset": 672
+            },
+            {
+              "after": 1788839131,
+              "before": 1788837913,
+              "offset": 680
+            }
+          ]
+        },
+        {
+          "after": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1030,
+              "slot": 445235575,
+              "unixTimestamp": 1788839139
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793436",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024002",
+            "highWaterMarkAssetPerLpBits": "6756075072881",
+            "idleAta": 500024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1788839131,
+              "lastUpdatedLockedProfit": 100
+            },
+            "lpPriceAssetPerLp": "0.024002400",
+            "lpPriceRational": "1000124/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "100",
+            "strategy2CustodyAta": 100,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": false,
+            "vaultTotalValue": 1000124,
+            "withdrawalWaitingPeriod": 600
+          },
+          "before": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1030,
+              "slot": 445235545,
+              "unixTimestamp": 1788839127
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024000",
+            "highWaterMarkAssetPerLpBits": "6755399549139",
+            "idleAta": 500024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1788837913,
+              "lastUpdatedLockedProfit": 1000119
+            },
+            "lpPriceAssetPerLp": "0.024000000",
+            "lpPriceRational": "1000024/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "0",
+            "strategy2CustodyAta": 100,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": true,
+            "vaultTotalValue": 1000024,
+            "withdrawalWaitingPeriod": 600
+          },
+          "bookMinusRealAfter": "100",
+          "case": "T9.d deposit_strategy(0, nav 500_000) three times with the 100 residue never swept",
+          "creditedOnce": true,
+          "perCrankCredit": false,
+          "trail": [
+            {
+              "bookMinusReal": "100",
+              "crank": 1,
+              "custody2": 100,
+              "error": null,
+              "idle": 500024,
+              "ok": true,
+              "receipt2": 500000,
+              "sequence": 445235555,
+              "tv": 1000124
+            },
+            {
+              "bookMinusReal": "100",
+              "crank": 2,
+              "custody2": 100,
+              "error": null,
+              "idle": 500024,
+              "ok": true,
+              "receipt2": 500000,
+              "sequence": 445235565,
+              "tv": 1000124
+            },
+            {
+              "bookMinusReal": "100",
+              "crank": 3,
+              "custody2": 100,
+              "error": null,
+              "idle": 500024,
+              "ok": true,
+              "receipt2": 500000,
+              "sequence": 445235575,
+              "tv": 1000124
+            }
+          ],
+          "tvInflationOverThreeCranks": "100"
+        },
+        {
+          "after": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1030,
+              "slot": 445235565,
+              "unixTimestamp": 1788839135
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024002",
+            "highWaterMarkAssetPerLpBits": "6756075072881",
+            "idleAta": 500124,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1788839131,
+              "lastUpdatedLockedProfit": 100
+            },
+            "lpPriceAssetPerLp": "0.024002400",
+            "lpPriceRational": "1000124/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "0",
+            "strategy2CustodyAta": 0,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": true,
+            "vaultTotalValue": 1000124,
+            "withdrawalWaitingPeriod": 600
+          },
+          "afterRefresh": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1030,
+              "slot": 445235555,
+              "unixTimestamp": 1788839131
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793436",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024002",
+            "highWaterMarkAssetPerLpBits": "6756075072881",
+            "idleAta": 500024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1788839131,
+              "lastUpdatedLockedProfit": 100
+            },
+            "lpPriceAssetPerLp": "0.024002400",
+            "lpPriceRational": "1000124/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "100",
+            "strategy2CustodyAta": 100,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": false,
+            "vaultTotalValue": 1000124,
+            "withdrawalWaitingPeriod": 600
+          },
+          "before": {
+            "adminLpAta": 41666666,
+            "adminPerformanceFeeBps": 0,
+            "clock": {
+              "epoch": 1030,
+              "slot": 445235545,
+              "unixTimestamp": 1788839127
+            },
+            "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+            "deadWeight": 1000,
+            "feeStateAccumulatedLpAdminFees": 0,
+            "feeStateAccumulatedLpManagerFees": 0,
+            "feeStateAccumulatedLpProtocolFees": 0,
+            "highWaterMarkAssetPerLp": "0.024000",
+            "highWaterMarkAssetPerLpBits": "6755399549139",
+            "idleAta": 500024,
+            "lockedProfitDegradationDuration": 0,
+            "lockedProfitState": {
+              "effectiveLockedNow": 0,
+              "lastReport": 1788837913,
+              "lastUpdatedLockedProfit": 1000119
+            },
+            "lpPriceAssetPerLp": "0.024000000",
+            "lpPriceRational": "1000024/41667666",
+            "lpSupply": 41666666,
+            "lpSupplyInclFees": 41667666,
+            "managerPerformanceFeeBps": 0,
+            "squadsUsdcAta": 500000,
+            "strategy1CustodyAta": 0,
+            "strategy1ReceiptPositionValue": 3793536,
+            "strategy2BookMinusReal": "0",
+            "strategy2CustodyAta": 100,
+            "strategy2ReceiptPositionValue": 500000,
+            "tvEqualsIdle": false,
+            "tvEqualsIdlePlusReceipt2": true,
+            "vaultTotalValue": 1000024,
+            "withdrawalWaitingPeriod": 600
+          },
+          "bookMinusRealAfter": "0",
+          "case": "T9.e deposit_strategy(0, nav 500_000) then withdraw_strategy(0, nav 500_000) with the 100 residue",
+          "custody2After": 0,
+          "deltaIdleTotal": "100",
+          "deltaTvTotal": "100",
+          "doubleCredited": false,
+          "refresh": {
+            "sequence": 445235555,
+            "tx": {
+              "computeUnits": 73409,
+              "logsTail": [
+                "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+                "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 21852 of 1358656 compute units",
+                "Program return: FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW IKEHAAAAAAA=",
+                "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+                "Program data: ysl2MR20dKoGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XAAAADqnXUD0WCUs2CcANCWGIJzSomBPJ5m+Vgbcs3wJuWtfKB3rNA7OSnHp+/Ns4zE5g3y+Ryt2wI68TL4Wx2Naapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEAAAAAAAAAAFhCDwAAAAAAvEIPAAAAAABSzHsCAAAAAFLMewIAAAAA08Aw3SQGAAAAAAAAAAAAAHFtdAUlBgAAAAAAAAAAAAA4oQcAAAAAADihBwAAAAAAIKEHAAAAAAAgoQcAAAAAANuEn2oAAAAA",
+                "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 64854 of 1391445 compute units",
+                "Program return: vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 IKEHAAAAAAA=",
+                "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+              ],
+              "ok": true
+            }
+          },
+          "sweep": {
+            "sequence": 445235565,
+            "tx": {
+              "computeUnits": 81650,
+              "logsTail": [
+                "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success",
+                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+                "Program log: Instruction: TransferChecked",
+                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 6200 of 1331837 compute units",
+                "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+                "Program data: cC0QrKohFtQGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+vWk61YY0J/XKPuT9+DNYtJxBNjjytkVxH1bVlgRfW9XAAAADqnXUD0WCUs2CcANCWGIJzSomBPJ5m+Vgbcs3wJuWtfKB3rNA7OSnHp+/Ns4zE5g3y+Ryt2wI68TL4Wx2Naapf0x7deAfJtmAqdOCcIp5wvMXGJhdFjKM3eT0fOHxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEAAAAAAAAAALxCDwAAAAAAvEIPAAAAAABSzHsCAAAAAFLMewIAAAAAcW10BSUGAAAAAAAAAAAAAHFtdAUlBgAAAAAAAAAAAAA4oQcAAAAAAJyhBwAAAAAAIKEHAAAAAAAgoQcAAAAAAN+En2oAAAAA",
+                "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 consumed 73092 of 1391442 compute units",
+                "Program vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8 success"
+              ],
+              "ok": true
+            }
+          }
+        }
+      ],
+      "checks": [
+        {
+          "check": "T9.a deposit_strategy(0) refresh, nav unchanged 500_000: executed",
+          "pass": true
+        },
+        {
+          "check": "T9.b deposit_strategy(200_000, nav 700_000): executed",
+          "pass": true
+        },
+        {
+          "check": "T9.c withdraw_strategy(0, nav 500_000): executed",
+          "pass": true
+        },
+        {
+          "check": "T9.d three refreshes with the dust left in custody: executed",
+          "pass": true
+        },
+        {
+          "check": "T9.e refresh then sweep: executed",
+          "pass": true
+        }
+      ],
+      "id": "T9-residue",
+      "mechanism": "receipt2WordsChanged shows the post-upgrade binary writing the strategy custody ATA balance into the StrategyInitReceipt's IDL-'reserved' area at offset 128 (0 -> 100 after the deposit-path cranks; the withdraw path sweeps custody to 0 first so it stays 0). Book rule consistent with every case here and in T8/R5: tv' = tv - old_receipt + new_receipt - amount + swept_to_idle + (custody_after - receipt[128]); receipt[128] := custody_after. Dust is therefore credited exactly once (T9.d), a later sweep does not double-credit (T9.e), and deposit-path cranks leave the dust in custody counted as vault value until a withdraw-path crank sweeps it.",
+      "name": "CLONE ONLY: 100 raw third-party dust sitting in strategy-2 custody \u2014 swept? credited? left behind?",
+      "reading": "creditForResidue = deltaTv - expected book delta (deposit: nav-old-amount; withdraw: nav-old). residueSweptToIdle says whether the 100 left custody for idle. bookMinusReal = tv - idle - receipt2 (custody excluded), so dust that is credited but not swept shows as +dust.",
+      "verdict": "PASS"
+    }
+  ],
+  "liveReceipt": {
+    "slot": 447400508,
+    "accounts": [
+      {
+        "address": "5bw4VYzpZXsk9SUNyWwJkb4fEx1DS8eNMFB6Qb4MUfhE",
+        "owner": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "lamports": 2026560,
+        "dataBase64": "MwjA/XNOcNb1pOtWGNCf1yj7k/fgzWLScQTY48rZFcR9W1ZYEX1vV7VTPkoRe4enM0mYvHUoVfi1jQBSidOTUnlOOT4jfrbp1pql/THt14B8m2YCp04JwinnC8xcYmF0WMozd5PR84cAAAAAAAAAAC+co2oAAAAAAv3+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      {
+        "address": "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY",
+        "owner": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+        "lamports": 3799800,
+        "dataBase64": "LpoMc8ulx+sCAAAAAAAAAA20WIwAKC45BryQ95DUcGgR6MwkspzKmRtNcNs6pY059aTrVhjQn9co+5P34M1i0nEE2OPK2RXEfVtWWBF9b1e1Uz5KEXuHpzNJmLx1KFX4tY0AUonTk1J5Tjk+I3626UgDDZu6pacVElQHWLsp9WhXi0WygCEt94oyMl+ZOH40Bn6cetpaLSaDyTGDLDKI2lqRSxzzCBZhQvsBAW/0HEFDeeDhNNvSuAqiqoGZc5SWtDeUpBzbsqIhdBHm2O/K5ZcaJGJKF/Wed7NyrW3KxJvGybD8BjcCj1JwIF/Ul3wIBoUTxIzyOBqoO0cYLJhBqR8PM30Dzx+IfBwwjBZTwvrG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpw8i7bglFBhZY7RJB0Q82Jbgb8K+KH8ppkHCe7Mn+RAUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQpdToAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+      },
+      {
+        "address": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+        "owner": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "lamports": 7349760,
+        "dataBase64": "0wjoKwKYdXdMb3lhbCBSV0EgTXVsdGlwbHkgVVNEQwAAAAAAAAAAAFZvbHRyIGFjY291bnRpbmcgb3ZlciBwb2xpY3ktY29uc3RyYWluZWQgU3F1YWRzIFJXQSBNdWx0aXBseQAAAADG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYU8zK+p3aTR18Rw2yz/adosHSTW4pvAKGES9v+iICxYsFwAAAAAAAAD9AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABXc5fSYxDUGLiYgrLVbzXVS4pv7s5FXJiPvPE+drOLmP//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlxokYkoX9Z53s3KtbcrEm8bJsPwGNwKPUnAgX9SXfAgGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+pcaJGJKF/Wed7NyrW3KxJvGybD8BjcCj1JwIF/Ul3wIABCl1OgAAAAAAAAAAAAAAIBRAQAAAAAAWAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADapKFqAAAAANjkoWoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOgDAAAAAAAA2c73U+MFAAAAAAAAAAAAANjkoWoAAAAAAAAAAAAAAAAvnKNqAAAAAAQBAAAAAAAAt0IPAAAAAADapKFqAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+      }
+    ]
+  }
+}

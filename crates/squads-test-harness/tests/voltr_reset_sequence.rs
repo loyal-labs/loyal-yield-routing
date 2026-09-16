@@ -1649,10 +1649,13 @@ fn voltr_reset_sequence() {
         chk(&mut c, "adaptor initialize_report_ticket executed", r_tk.is_ok() && tk_ok);
         chk(&mut c, "Voltr initializeStrategy executed (manager ST999 signer)", r_init.is_ok() && rcpt_ok);
         chk(&mut c, "receipt2.positionValue == 0", after_setup.receipt2 == Some(0));
+        let receipt2_version = account_data(&svm, &s2.receipt).get(120).copied();
+        chk(&mut c, "fresh receipt2 uses reviewed version 2", receipt2_version == Some(2));
         chk(&mut c, "custody2 ATA created", r_cust.is_ok() && account_exists(&svm, &s2.custody));
         chk(&mut c, "books untouched by setup", after_setup.tv == before.tv && after_setup.idle == before.idle);
         s2_live = rec.push("R5a-setup", "second strategy on the same custom adaptor FSj27: initialize_config + initialize_report_ticket + Voltr initializeStrategy", &c, json!({
             "strategy2": strat_json(&s2),
+            "receiptVersion": receipt2_version,
             "initializeConfig": {"tx": tx_json(&r_cfg), "args": {"squadsVaultIndex": 0, "maxReportNavRaw": 2_000_000_000_000u64, "maxReportAgeSlots": 32}},
             "initializeReportTicket": tx_json(&r_tk),
             "voltrInitializeStrategy": tx_json(&r_init),
@@ -1902,8 +1905,9 @@ fn voltr_reset_sequence() {
         "steps": rec.steps,
     });
 
-    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/evidence/voltr-reset-litesvm-2026-09-08.results.json");
+    // Repeated verification must not overwrite the retained historical proof.
+    let out = std::env::var_os("VOLTR_RESET_PROOF_OUTPUT").map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("loyal-voltr-reset-proof.json"));
     fs::write(&out, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     eprintln!("wrote {}", out.display());
     eprintln!("final state: {}", serde_json::to_string_pretty(&report["finalState"]).unwrap());

@@ -17,7 +17,7 @@ func observePhase3PayoffAdmission(ctx context.Context, rpc *RPCClient, client *j
 	s, request := observation.Snapshot, evidence.Request
 	if decision.Action != DeleverRouteStep || request.Action != decision.Action || !request.FullPayoff ||
 		request.RouteLane != s.RouteLane || decision.StrategyKey != s.RouteLane || s.PositionDebtRaw <= 0 ||
-		s.PositionDebtValueRaw <= 0 || s.DebtIdleRaw < 0 || uint64(s.DebtIdleRaw) < request.AmountRaw ||
+		s.PositionDebtValueRaw <= 0 || debtCashRaw(s) < 0 || uint64(debtCashRaw(s)) < request.AmountRaw ||
 		decision.AmountRaw != s.PositionDebtRaw || evidence.ExpectedEffects.Repayment == nil {
 		return phase3BridgeAdmission{}, budgetHold("complete_funded_payoff_admission_unavailable")
 	}
@@ -25,12 +25,12 @@ func observePhase3PayoffAdmission(ctx context.Context, rpc *RPCClient, client *j
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	if bound.ObservedDebtRaw != uint64(s.PositionDebtRaw) || evidence.ExpectedEffects.Accounts[0].BeforeRaw != uint64(s.DebtIdleRaw) {
+	if bound.ObservedDebtRaw != uint64(s.PositionDebtRaw) || evidence.ExpectedEffects.Accounts[0].BeforeRaw != uint64(debtCashRaw(s)) {
 		return phase3BridgeAdmission{}, budgetHold("payoff_admission_snapshot_changed")
 	}
 	post := observation
 	post.Snapshot.PositionDebtRaw, post.Snapshot.PositionDebtValueRaw = 0, 0
-	post.Snapshot.DebtIdleRaw -= int64(evidence.ExpectedEffects.Repayment.MinimumDebitRaw)
+	setDebtCashRaw(&post.Snapshot, debtCashRaw(s)-int64(evidence.ExpectedEffects.Repayment.MinimumDebitRaw))
 	plan, err := pricePhase3PositionReturn(ctx, rpc, client, manifest, post, decision, request, evidence.ExpectedEffects, true)
 	if err != nil {
 		return plan, err
@@ -52,7 +52,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 	if rpc == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" ||
 		s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
 		!s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0 ||
-		s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.DebtIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 ||
+		s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || debtCashRaw(s) < 0 || s.VoltrStrategyIdleRaw != 0 ||
 		s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {
 		return phase3BridgeAdmission{}, budgetHold("complete_post_payoff_return_unavailable")
 	}

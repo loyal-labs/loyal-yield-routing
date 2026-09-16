@@ -29,7 +29,7 @@ func jupiterLookupAddresses(r JupiterSwapRequest) []string {
 // them.
 func basicSwapLaneEdge(action Action) bool {
 	switch action {
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep:
+	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep:
 		return true
 	}
 	return false

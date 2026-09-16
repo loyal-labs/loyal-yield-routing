@@ -7,6 +7,7 @@ mod actions;
 pub mod autonomous_vaults;
 pub mod backyard_policy_catalog;
 pub mod backyard_basic_policy_set;
+pub mod backyard_multiply_initializer;
 mod detection;
 mod earn_max;
 mod ids;

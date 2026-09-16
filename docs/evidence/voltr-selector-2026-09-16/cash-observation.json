@@ -1,0 +1,291 @@
+{
+  "mode": "read_only_shadow",
+  "snapshot": {
+    "ObservationID": "ba1dd2ed36b0da8c9c1870f3d3dbf3ffa97513d215134678ea058d1d05dba441",
+    "Slot": 447403766,
+    "RouteKind": "backyard_rwa_v1",
+    "ManualReason": "",
+    "Nonterminal": "",
+    "HasAmbiguousSubmission": false,
+    "WithdrawalDemandRaw": 0,
+    "SquadsIdleRaw": 0,
+    "PrimeIdleRaw": 0,
+    "CollateralIdleRaw": 0,
+    "CollateralIdleValueRaw": 0,
+    "MinimumCollateralDepositRaw": 0,
+    "DebtIdleRaw": 0,
+    "PayoffDebtRaw": 0,
+    "RouteLane": "Maple/syrupUSDC/USDC",
+    "StrategyKey": "Maple/syrupUSDC/USDC",
+    "Unwind": false,
+    "SelectorEntryPaused": false,
+    "CutoverDrain": false,
+    "VoltrStrategyIdleRaw": 0,
+    "VoltrIdleRaw": 23,
+    "HasPosition": false,
+    "ObligationPresent": true,
+    "ObligationPresenceKnown": true,
+    "PositionCollateralRaw": 0,
+    "PositionDebtRaw": 0,
+    "PositionCollateralValueRaw": 0,
+    "PositionDebtValueRaw": 0,
+    "StrategyNAVRaw": 0,
+    "TotalVaultNAVRaw": 23,
+    "PriorReportedNAVRaw": 0,
+    "PriorReportUpdatedUnix": 1789107247,
+    "ReportSequence": 447403766,
+    "ReportSnapshotDigest": "9a2cc9f2de671d4206f194905944cbe17e7eb57ae4604ecb0d16626bf99a3121",
+    "VoltrTotalValueRaw": 23,
+    "VoltrReceiptCustodyTrackedRaw": 0,
+    "LockedProfitDegradationSeconds": 86400,
+    "LastUpdatedLockedProfitRaw": 1000119,
+    "LastLockedProfitReportUnix": 1788978394,
+    "FeeAccumulatorRaw": 0,
+    "LPSupplyInclFeesRaw": 1000,
+    "ManagerPerformanceFeeBPS": 0,
+    "AdminPerformanceFeeBPS": 0,
+    "StagedAmountRaw": 793417,
+    "StagedAmountKnown": true,
+    "MonitorsArmed": true,
+    "TicketLastConsumedSequenceRaw": 0,
+    "JournalSequenceKnown": true,
+    "JournalReconciledSequenceRaw": 444157438,
+    "JournalArmedNAVKnown": true,
+    "JournalArmedNAVRaw": 3793417,
+    "JournalArmedNAVReturnDataMissing": false,
+    "JournalArmedNAVMalformed": false,
+    "StageTransient": true,
+    "StrategyReceiptIntegrityFault": false,
+    "ProgramIdentityKnown": true,
+    "VoltrProgramDeploySlot": 445223838,
+    "AdaptorProgramDeploySlot": 443528877,
+    "LTVBPS": 0,
+    "LiquidationThresholdBPS": 0,
+    "Fresh": true,
+    "CapacityRaw": 0,
+    "PolicyLimitRaw": 100000000,
+    "MaxTargetLTVEntryRaw": 0,
+    "BorrowUtilizationBlocked": true,
+    "PolicyReady": true,
+    "ExitBuildable": true,
+    "CapitalMutated": true,
+    "PostMutationNAVRequired": false,
+    "LastReportAgeSeconds": 416855
+  },
+  "observedAt": "2026-09-16T02:01:42.141782Z",
+  "slot": 447403766,
+  "observationId": "ba1dd2ed36b0da8c9c1870f3d3dbf3ffa97513d215134678ea058d1d05dba441",
+  "markets": [
+    {
+      "lane": "Prime/PRIME/USDC",
+      "evidenceId": "40c32c6003ac6665ec9ab108f7e73f37d6d5c2ddb9014c3ede42aa879deaded0:230c4f003c2c8e8939fe4c0b70b2ca320e0590301f5cfd123651e0df0c23c608:b1eb6d3268028b79af3a20130d7f032187cc4d19974c46e4e47cd62a1e64f194",
+      "observedAt": "2026-09-16T02:01:13.491498Z",
+      "nativeObservedAt": "2026-09-16T01:00:16.249Z",
+      "nativeApy": 0.062307,
+      "supplyApy": 0,
+      "currentBorrowApy": 0.08661835793162442,
+      "borrowCurve": [
+        {
+          "utilization_rate_bps": 0,
+          "borrow_rate_bps": 463
+        },
+        {
+          "utilization_rate_bps": 8000,
+          "borrow_rate_bps": 494
+        },
+        {
+          "utilization_rate_bps": 9000,
+          "borrow_rate_bps": 494
+        },
+        {
+          "utilization_rate_bps": 9500,
+          "borrow_rate_bps": 544
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 715
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 715
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 715
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 715
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 715
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 715
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 715
+        }
+      ],
+      "hostBorrowBps": 0,
+      "debtSupplyUsdcRaw": 46900817698040050000,
+      "debtBorrowUsdcRaw": 43664907291600585000,
+      "entryCapacity": {
+        "known": false,
+        "unlimited": false,
+        "raw": 0
+      }
+    },
+    {
+      "lane": "Maple/syrupUSDC/USDC",
+      "evidenceId": "16ae7b57d950edf2b9fce204768b5fe96ff65ee02e8ffec7dc2513bbfe9aed68:fa554a8d3577758ec63d66a6c913d8cf4475efdda646ac2baa75acc6e27f7bf3:b1eb6d3268028b79af3a20130d7f032187cc4d19974c46e4e47cd62a1e64f194",
+      "observedAt": "2026-09-16T02:01:13.491498Z",
+      "nativeObservedAt": "2026-09-16T01:00:16.249Z",
+      "nativeApy": 0.04965083163,
+      "supplyApy": 0,
+      "currentBorrowApy": 0.07330423018613286,
+      "borrowCurve": [
+        {
+          "utilization_rate_bps": 0,
+          "borrow_rate_bps": 0
+        },
+        {
+          "utilization_rate_bps": 9000,
+          "borrow_rate_bps": 364
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1075
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1075
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1075
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1075
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1075
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1075
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1075
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1075
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1075
+        }
+      ],
+      "hostBorrowBps": 0,
+      "debtSupplyUsdcRaw": 1158751684318011400,
+      "debtBorrowUsdcRaw": 1056417958787124900,
+      "entryCapacity": {
+        "known": false,
+        "unlimited": false,
+        "raw": 0
+      }
+    },
+    {
+      "lane": "OnRe/ONyc/USDC",
+      "evidenceId": "fc8d836357dc9189915cc25d1875d1f94069e942e53b910856fed90f77efb8ac:117fa8653cfdeba146c4775b33c54dce843f53030aa24b5cb7e3c2f4d10d270d:b1eb6d3268028b79af3a20130d7f032187cc4d19974c46e4e47cd62a1e64f194",
+      "observedAt": "2026-09-16T02:01:13.491498Z",
+      "nativeObservedAt": "2026-09-16T01:00:16.249Z",
+      "nativeApy": 0.115411,
+      "supplyApy": 0,
+      "currentBorrowApy": 0.1379692240132686,
+      "borrowCurve": [
+        {
+          "utilization_rate_bps": 0,
+          "borrow_rate_bps": 0
+        },
+        {
+          "utilization_rate_bps": 8000,
+          "borrow_rate_bps": 721
+        },
+        {
+          "utilization_rate_bps": 9000,
+          "borrow_rate_bps": 721
+        },
+        {
+          "utilization_rate_bps": 9500,
+          "borrow_rate_bps": 848
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1314
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1314
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1314
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1314
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1314
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1314
+        },
+        {
+          "utilization_rate_bps": 10000,
+          "borrow_rate_bps": 1314
+        }
+      ],
+      "hostBorrowBps": 0,
+      "debtSupplyUsdcRaw": 78953187446553250000,
+      "debtBorrowUsdcRaw": 74036651301242030000,
+      "entryCapacity": {
+        "known": false,
+        "unlimited": false,
+        "raw": 0
+      }
+    }
+  ],
+  "nextLifecycleAction": {
+    "Action": "HOLD_MANUAL_RECOVERY",
+    "Reason": "custody_transient_mismatch",
+    "AmountRaw": 0,
+    "IdempotencyKey": "ba1dd2ed36b0da8c9c1870f3d3dbf3ffa97513d215134678ea058d1d05dba441:custody_transient_mismatch:447403766",
+    "StrategyKey": "Maple/syrupUSDC/USDC"
+  },
+  "selection": {
+    "action": "KEEP",
+    "reason": "execution_recovery_or_safety_first",
+    "sourceLane": "Maple/syrupUSDC/USDC",
+    "equityRaw": 0,
+    "keepGainRaw": 0,
+    "candidates": null,
+    "state": {}
+  },
+  "activationBlockers": [
+    "basic_usdc_execution_admission_incomplete",
+    "automatic_obligation_recreation_not_admitted",
+    "complete_move_cost_and_pair_capacity_not_admitted",
+    "current_image_round_trip_canary_required"
+  ]
+}

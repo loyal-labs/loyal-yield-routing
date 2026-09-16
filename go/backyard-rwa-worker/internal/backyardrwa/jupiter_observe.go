@@ -78,12 +78,12 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 		if err == nil && decision.Action == SwapStableToCollateralStep && phase3BudgetFamilyForLane(decision.StrategyKey) != "" {
 			evidence.Request.EntryReturnReserved = true
 		}
-		if err == nil && decision.Action == SwapDebtToCollateralStep && catalogJupiterRoute(decision.StrategyKey) {
+		if err == nil && decision.Action == SwapDebtToCollateralStep && positionReturnRoute(decision.StrategyKey) {
 			evidence.Request.PositionReturnReserved = true
 		}
-		funding := (decision.Action == SwapCollateralToDebtStep && decision.Reason == "withdrawal_swap_repayment_buffer") ||
+		funding := (decision.Action == SwapCollateralToDebtStep && (decision.Reason == "withdrawal_swap_repayment_buffer" || decision.Reason == "hard_ltv_buffer_swap")) ||
 			(decision.Action == SwapUSDCToDebtStep && decision.Reason == "withdrawal_usdc_repayment_buffer")
-		if err == nil && funding && observation.Snapshot.PositionDebtRaw > 0 && catalogJupiterRoute(decision.StrategyKey) {
+		if err == nil && funding && observation.Snapshot.PositionDebtRaw > 0 && positionReturnRoute(decision.StrategyKey) {
 			evidence.Request.FullPayoffFunding = true
 		}
 		return observation, evidence, err

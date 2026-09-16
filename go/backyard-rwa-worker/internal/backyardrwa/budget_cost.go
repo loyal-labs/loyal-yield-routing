@@ -86,7 +86,7 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 			}
 			deposit = true
 		}
-		if r.RepaymentRelease && (r.FullPayoff || r.Action != DeleverRouteStep || leg != kaminoLegWithdraw || !catalogJupiterRoute(lane)) {
+		if r.RepaymentRelease && (r.FullPayoff || r.Action != DeleverRouteStep || leg != kaminoLegWithdraw || !positionReturnRoute(lane)) {
 			return ExecutableDebit{}, budgetHold("invalid_repayment_release_intent")
 		}
 		if r.FullPayoff && (leg != kaminoLegRepay || effects.Repayment == nil) {
