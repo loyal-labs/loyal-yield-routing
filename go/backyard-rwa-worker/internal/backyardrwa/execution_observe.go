@@ -251,7 +251,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
-		leg, wireAmount, effectAmount, err := selectKaminoLeg(decision, position)
+		leg, wireAmount, effectAmount, err := selectKaminoLeg(observation.Snapshot.PilotActive, decision, position)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
@@ -322,7 +322,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 	return Observation{}, KaminoExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("confirmed bridge and Kamino construction reads did not align"))
 }
 
-func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSDCLeg, uint64, uint64, error) {
+func selectKaminoLeg(pilotActive bool, decision Decision, position KaminoPosition) (kaminoPrimeUSDCLeg, uint64, uint64, error) {
 	action := decision.Action
 	if action == OpenRouteStep {
 		action = OpenPrimeUSDCStep
@@ -354,7 +354,7 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 			if err != nil {
 				return 0, 0, 0, err
 			}
-			receiptRaw, primeRaw, err = capSelectedWithdrawalEffect(decision, position, receiptRaw, primeRaw)
+			receiptRaw, primeRaw, err = capSelectedWithdrawalEffect(pilotActive, decision, position, receiptRaw, primeRaw)
 			if err != nil {
 				return 0, 0, 0, err
 			}
@@ -380,7 +380,7 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 			if !primeRaw.IsUint64() || primeRaw.Sign() <= 0 {
 				return 0, 0, 0, fmt.Errorf("partial collateral withdrawal rounds to zero")
 			}
-			cappedReceipt, cappedPrime, err := capSelectedWithdrawalEffect(decision, position, receiptRaw, primeRaw.Uint64())
+			cappedReceipt, cappedPrime, err := capSelectedWithdrawalEffect(pilotActive, decision, position, receiptRaw, primeRaw.Uint64())
 			if err != nil {
 				return 0, 0, 0, err
 			}
@@ -390,8 +390,8 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 	return 0, 0, 0, fmt.Errorf("PRIME/USDC position is not in a supported next-leg state")
 }
 
-func capSelectedWithdrawalEffect(decision Decision, position KaminoPosition, receiptRaw, collateralRaw uint64) (uint64, uint64, error) {
-	if decision.StrategyKey != SelectedRouteID || collateralRaw <= uint64(Phase2TransactionCapRaw) {
+func capSelectedWithdrawalEffect(pilotActive bool, decision Decision, position KaminoPosition, receiptRaw, collateralRaw uint64) (uint64, uint64, error) {
+	if pilotActive || decision.StrategyKey != SelectedRouteID || collateralRaw <= uint64(Phase2TransactionCapRaw) {
 		return receiptRaw, collateralRaw, nil
 	}
 	if position.CollateralDepositedRaw == 0 || position.RedeemablePrimeRaw == 0 {

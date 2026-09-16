@@ -25,7 +25,7 @@ Read-only finalized evidence at slot 447431070 fails the strict flat check becau
 
 ## Still disabled / incomplete
 
-No activation command or worker call enables the pilot mode yet. 10-USDC tranche wiring, actual native exit-fee liquidity, residual conversion/return and full release lifecycle remain required. Production database, policies, balances and deployment were not changed in this work.
+No activation command or worker call enables the pilot mode yet. Actual native exit-fee liquidity, residual conversion/return and full release lifecycle remain required. Production database, policies, balances and deployment were not changed in this work.
 
 ## Measured execution-cost producer
 
@@ -37,4 +37,10 @@ Local regression coverage includes understated/corrupted costs, missing or stale
 
 Cost observation now measures without choosing a deployment allowance. Under the route lock, admission checks the current cost, every complete-exit step and its summed reservation against the persisted budget limits. Build/send still require the fresh cost to fit the exact reservation. The early signed-cost rejection preserves legacy and pilot maximum caps without granting authority. Local PostgreSQL verification accepts a 10-USDC measured allocation under pilot limits, refuses a narrowed one-USDC durable limit, rejects an oversized exit step and an understated sum, then exercises the real build/send guards. Full worker/database tests and Go vet pass; Fable found no cap bypass in the reviewed production callers.
 
-The producer and current-limit gates are connected, but decision tranche wiring, pilot activation and rollout remain disabled. No production mutation was made.
+The producer and current-limit gates are connected, but pilot activation and rollout remain disabled. No production mutation was made.
+
+## Pilot sizing projection
+
+The production observation and construction refresh now read verified pilot authority from the same persisted activation record. Missing, closed or legacy authority cannot enable pilot sizing; malformed authority is an error. Active pilot decisions use at most 10 USDC working equity and still honor capacity/policy/LTV bounds. Full return and collateral-withdrawal amounts are preserved in pilot mode and then priced against the locked gross transaction and complete-exit limits; the historical one-USDC clipping remains for legacy execution.
+
+Local tests cover all three pilot lanes, legacy sizing, reduced capacity, complete cash return after a capacity race, full collateral withdrawal, persisted activation/corruption/closure, and the shared outer/preparation observation merge. This connects planning to authority; it does not activate the pilot, increase on-chain policy limits, or open deposits.

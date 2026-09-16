@@ -84,7 +84,7 @@ func Decide(s Snapshot) Decision {
 	if s.RouteLane == "" || s.RouteLane == RouteID {
 		decision.Action = legacyUSDCAction(decision.Action)
 	}
-	if s.RouteLane == SelectedRouteID && decision.AmountRaw > Phase2TransactionCapRaw {
+	if !s.PilotActive && s.RouteLane == SelectedRouteID && decision.AmountRaw > Phase2TransactionCapRaw {
 		// Restore consumes all staged custody; never conceal its actual effect.
 		if decision.Action == VoltrRestoreIdle {
 			decision.Action, decision.Reason, decision.AmountRaw = HoldManualRecovery, "voltr_restore_actual_effect_exceeds_cap", 0
@@ -300,7 +300,7 @@ func decideUSDC(s Snapshot) Decision {
 		if !s.PolicyReady || !s.ExitBuildable || s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
 			return decision(Hold, "insufficient_reviewed_entry_capacity", 0)
 		}
-		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw, Phase3WorkingTrancheCapRaw))
+		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw, workingTrancheCap(s)))
 	}
 	if (s.SquadsIdleRaw > 0 || s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) && s.PolicyReady && s.ExitBuildable &&
 		(s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {

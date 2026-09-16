@@ -121,6 +121,15 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	if err != nil {
 		return err
 	}
+	if reader, ok := p.journal.(interface {
+		PilotRuntimeEnabled(context.Context, string) (bool, error)
+	}); ok {
+		active, err := reader.PilotRuntimeEnabled(ctx, p.routeKey)
+		if err != nil {
+			return err
+		}
+		observation.Snapshot.PilotActive = active
+	}
 	observation.Snapshot.PostMutationNAVRequired = required
 	journal, err := p.journal.ReconciledBridgeJournal(ctx, p.routeKey)
 	if err != nil {

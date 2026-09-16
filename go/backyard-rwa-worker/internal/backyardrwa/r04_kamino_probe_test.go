@@ -332,7 +332,7 @@ func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 		if err != nil || beforeObligation.debtRaw != 1_000 {
 			t.Fatal("witness did not start from the real borrow poststate", beforeObligation.debtRaw, err)
 		}
-		leg, amount, minimum, err := selectKaminoLeg(Decision{Action: DeleverRouteStep, StrategyKey: route.Lane, AmountRaw: int64(maximum)}, KaminoPosition{DebtRaw: beforeObligation.debtRaw})
+		leg, amount, minimum, err := selectKaminoLeg(false, Decision{Action: DeleverRouteStep, StrategyKey: route.Lane, AmountRaw: int64(maximum)}, KaminoPosition{DebtRaw: beforeObligation.debtRaw})
 		if err != nil || leg != kaminoLegRepay || amount != maximum {
 			t.Fatal("production selected a different repayment", amount, err)
 		}

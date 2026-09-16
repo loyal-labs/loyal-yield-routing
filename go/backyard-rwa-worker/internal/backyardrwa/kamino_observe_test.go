@@ -85,7 +85,7 @@ func TestAccruedDebtFlowsThroughObservationNAVAndRepayment(t *testing.T) {
 	if err != nil || nav.PositionDebtValue != 18 || nav.StrategyNAVRaw != 40 {
 		t.Fatal("interest omitted from NAV", nav, err)
 	}
-	leg, wire, effect, err := selectKaminoLeg(Decision{Action: DeleverRouteStep, Reason: "withdrawal_repay_debt", AmountRaw: 9, StrategyKey: route.Lane}, position)
+	leg, wire, effect, err := selectKaminoLeg(false, Decision{Action: DeleverRouteStep, Reason: "withdrawal_repay_debt", AmountRaw: 9, StrategyKey: route.Lane}, position)
 	if err != nil || leg != kaminoLegRepay || wire != 9 || effect != 9 {
 		t.Fatal("repayment used unaccrued debt", wire, effect, err)
 	}

@@ -164,7 +164,7 @@ func TestBoundedKaminoRepaymentReservesWireMaximumAndRejectsWeakenedEffects(t *t
 	if _, err := MeasureExecutableDebit(request, effects); err == nil {
 		t.Fatal("repayment wire differs from reserved maximum")
 	}
-	leg, wire, minimum, err := selectKaminoLeg(Decision{Action: DeleverRouteStep, AmountRaw: 1_010}, KaminoPosition{DebtRaw: 1_000})
+	leg, wire, minimum, err := selectKaminoLeg(false, Decision{Action: DeleverRouteStep, AmountRaw: 1_010}, KaminoPosition{DebtRaw: 1_000})
 	if err != nil || leg != kaminoLegRepay || wire != 1_010 || minimum != 1_000 {
 		t.Fatal("finite decision limit or refreshed-debt floor lost", wire, minimum, err)
 	}

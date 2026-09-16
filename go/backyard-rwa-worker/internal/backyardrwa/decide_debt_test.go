@@ -186,7 +186,7 @@ func TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity(t *testing
 		t.Fatal("released collateral above the unwind LTV")
 	}
 	position.DebtRaw = 5
-	leg, receipts, collateral, err := selectKaminoLeg(Decision{Action: DeleverRouteStep,
+	leg, receipts, collateral, err := selectKaminoLeg(false, Decision{Action: DeleverRouteStep,
 		StrategyKey: "AUTO/AUTO/PYUSD", Reason: "withdrawal_release_repayment_collateral", AmountRaw: 1}, position)
 	if err != nil || leg != kaminoLegWithdraw || receipts != 2000 || collateral != 4000 {
 		t.Fatalf("cross-decimal exit exceeded safe collateral release: leg=%d receipt=%d collateral=%d err=%v", leg, receipts, collateral, err)

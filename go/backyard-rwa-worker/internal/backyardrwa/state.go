@@ -79,7 +79,10 @@ type Snapshot struct {
 	RouteLane     string
 	StrategyKey   string
 	// Unwind is an admitted full exit, independent of the user's claim amount.
-	Unwind               bool
+	Unwind bool
+	// PilotActive comes only from validated persisted budget authority.
+	// Transaction admission rechecks that authority under the route lock.
+	PilotActive          bool
 	SelectorEntryPaused  bool
 	CutoverDrain         bool
 	VoltrStrategyIdleRaw int64

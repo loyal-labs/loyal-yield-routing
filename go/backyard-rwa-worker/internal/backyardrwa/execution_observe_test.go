@@ -117,13 +117,13 @@ func TestKaminoLegSelectionAdvancesOneReviewedStateTransition(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			leg, wire, effect, err := selectKaminoLeg(test.decision, test.position)
+			leg, wire, effect, err := selectKaminoLeg(false, test.decision, test.position)
 			if err != nil || leg != test.leg || wire != test.wire || effect != test.effect {
 				t.Fatalf("leg=%d wire=%d effect=%d err=%v", leg, wire, effect, err)
 			}
 		})
 	}
-	if _, _, _, err := selectKaminoLeg(Decision{Action: OpenPrimeUSDCStep, Reason: "prime_collateral_ready", AmountRaw: 1}, KaminoPosition{CollateralDepositedRaw: 1, DebtRaw: 1}); err == nil {
+	if _, _, _, err := selectKaminoLeg(false, Decision{Action: OpenPrimeUSDCStep, Reason: "prime_collateral_ready", AmountRaw: 1}, KaminoPosition{CollateralDepositedRaw: 1, DebtRaw: 1}); err == nil {
 		t.Fatal("complete position accepted without the exact one-redeposit reason")
 	}
 }
@@ -136,7 +136,7 @@ func TestUnwindWithdrawsOnlyConservativeCollateralExcess(t *testing.T) {
 	if err != nil || receipt != 38 || prime != 38 {
 		t.Fatalf("receipt=%d prime=%d err=%v", receipt, prime, err)
 	}
-	leg, wire, effect, err := selectKaminoLeg(
+	leg, wire, effect, err := selectKaminoLeg(false,
 		Decision{Action: DeleverPrimeUSDCStep, Reason: "withdrawal_release_repayment_collateral", AmountRaw: 1},
 		position,
 	)
@@ -149,7 +149,7 @@ func TestSelectedUnwindCapsActualCollateralEffect(t *testing.T) {
 	position := KaminoPosition{CollateralDepositedRaw: 3_710_573, RedeemablePrimeRaw: 3_710_573, DebtRaw: 590_720}
 	binary.LittleEndian.PutUint64(position.CollateralPriceSF[:8], uint64(1)<<60)
 	binary.LittleEndian.PutUint64(position.DebtPriceSF[:8], uint64(1)<<60)
-	leg, receipt, collateral, err := selectKaminoLeg(
+	leg, receipt, collateral, err := selectKaminoLeg(false,
 		Decision{Action: DeleverRouteStep, Reason: "withdrawal_release_repayment_collateral", AmountRaw: 1, StrategyKey: SelectedRouteID},
 		position,
 	)
