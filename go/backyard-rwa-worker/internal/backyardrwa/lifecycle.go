@@ -162,7 +162,12 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 		if err != nil {
 			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "invalid_expected_effects")
 		}
-		receipt, err := rpc.FinalizedTransaction(ctx, operation.TransactionSignature)
+		var receipt ConfirmedTransactionEvidence
+		if expected.Initialization != nil {
+			receipt, err = observeFinalizedKaminoInitialization(ctx, rpc, *expected.Initialization, operation)
+		} else {
+			receipt, err = rpc.FinalizedTransaction(ctx, operation.TransactionSignature)
+		}
 		if err != nil {
 			return err
 		}

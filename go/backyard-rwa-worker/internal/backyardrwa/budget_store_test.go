@@ -72,6 +72,8 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	 operation_id text PRIMARY KEY,route_key text NOT NULL REFERENCES loyal_yield.multiply_route_states,
 	 status text NOT NULL,expected_effects jsonb NOT NULL,signed_wire bytea,broadcast_intent_at timestamptz,
 	 updated_at timestamptz NOT NULL DEFAULT now());
+	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS signed_wire bytea;
+	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS signed_wire_sha256 text;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS recovery_reason text;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS action text;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS strategy_key text;

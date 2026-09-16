@@ -1226,7 +1226,8 @@ func (d *Database) MarkReconciled(ctx context.Context, operationID string, recon
 	var signature string
 	var slot int64
 	var expectedBytes []byte
-	if err = tx.QueryRow(ctx, `SELECT transaction_signature,confirmed_slot,expected_effects FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='reconciling'`, operationID).Scan(&signature, &slot, &expectedBytes); err != nil {
+	var signedWireHash string
+	if err = tx.QueryRow(ctx, `SELECT transaction_signature,confirmed_slot,expected_effects,COALESCE(signed_wire_sha256,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='reconciling'`, operationID).Scan(&signature, &slot, &expectedBytes, &signedWireHash); err != nil {
 		return err
 	}
 	if signature != receipt.Signature || slot != receipt.Slot {
@@ -1235,6 +1236,9 @@ func (d *Database) MarkReconciled(ctx context.Context, operationID string, recon
 	expected, err := DecodeExpectedEffects(expectedBytes)
 	if err != nil {
 		return err
+	}
+	if expected.Initialization != nil && (receipt.Initialization == nil || signedWireHash == "" || receipt.Initialization.SignedWireSHA256 != signedWireHash) {
+		return fmt.Errorf("initializer finalized wire does not match journal identity")
 	}
 	checked, checkedEffects, err := ReconcileConfirmedTransaction(expected, receipt)
 	if err != nil || checked != reconciliation || sha256Bytes(checkedEffects) != sha256Bytes(effects) {

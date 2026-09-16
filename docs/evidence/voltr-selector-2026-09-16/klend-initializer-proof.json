@@ -1,32 +1,46 @@
 {
   "broadcast": false,
   "captureSha256": "7089a4bab2e4e091e27e5c8e9b01e6988fb48c61ec7669cafd97e6ef6d74b462",
+  "executionMessageSource": "exact Go compiler export",
+  "goMessageExportSha256": "21bfa8cd9c39342f288780a870d0605d02c8b3ce76b58fc8cc1450e7cb245c59",
   "klendDeploySlot": 440486775,
   "klendElfSha256": "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b",
   "lanes": [
     {
-      "computeUnits": 62570,
+      "computeUnits": 62354,
       "duplicateRejected": true,
+      "goMessageSha256": "beb5146d6c48315249ff8fdea361258637fe42b919855b237d82b8ac56ef9471",
+      "goSingleSignerPacketBytes": 549,
       "lane": "Prime/PRIME/USDC",
       "metadataUnchanged": true,
       "obligation": "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
-      "rentLamports": 17637760
+      "policyAccountUnchanged": true,
+      "rentLamports": 17637760,
+      "returnDataEmpty": true
     },
     {
-      "computeUnits": 61070,
+      "computeUnits": 60854,
       "duplicateRejected": true,
+      "goMessageSha256": "19ef3c540f7bcb220652a8362ba0a46b8b3de5b720521fe995bc3f0e18c9d172",
+      "goSingleSignerPacketBytes": 549,
       "lane": "Maple/syrupUSDC/USDC",
       "metadataUnchanged": true,
       "obligation": "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT",
-      "rentLamports": 17637760
+      "policyAccountUnchanged": true,
+      "rentLamports": 17637760,
+      "returnDataEmpty": true
     },
     {
-      "computeUnits": 53570,
+      "computeUnits": 53354,
       "duplicateRejected": true,
+      "goMessageSha256": "80b20f51c32dcf39fe46c62af3210b8c19cdd32a66d6ff9355068940f2542a95",
+      "goSingleSignerPacketBytes": 549,
       "lane": "OnRe/ONyc/USDC",
       "metadataUnchanged": true,
       "obligation": "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
-      "rentLamports": 17637760
+      "policyAccountUnchanged": true,
+      "rentLamports": 17637760,
+      "returnDataEmpty": true
     }
   ],
   "minimumRentLamports": 17637760,

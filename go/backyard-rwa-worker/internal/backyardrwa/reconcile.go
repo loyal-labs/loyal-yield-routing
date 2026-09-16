@@ -28,13 +28,14 @@ type ExpectedAccountEffect struct {
 }
 
 type ExpectedEffects struct {
-	Schema     string                  `json:"schema"`
-	Kind       string                  `json:"kind,omitempty"`
-	Conserved  bool                    `json:"conserved"`
-	Accounts   []ExpectedAccountEffect `json:"accounts"`
-	ReturnData *ExpectedReturnData     `json:"returnData,omitempty"`
-	Repayment  *ExpectedRepayment      `json:"repayment,omitempty"`
-	Deposit    *ExpectedDeposit        `json:"deposit,omitempty"`
+	Schema         string                       `json:"schema"`
+	Kind           string                       `json:"kind,omitempty"`
+	Conserved      bool                         `json:"conserved"`
+	Accounts       []ExpectedAccountEffect      `json:"accounts"`
+	ReturnData     *ExpectedReturnData          `json:"returnData,omitempty"`
+	Repayment      *ExpectedRepayment           `json:"repayment,omitempty"`
+	Deposit        *ExpectedDeposit             `json:"deposit,omitempty"`
+	Initialization *KaminoInitializationRequest `json:"initialization,omitempty"`
 }
 
 // Deposits round down to whole receipts and may debit less than the requested
@@ -83,6 +84,12 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 	var expected ExpectedEffects
 	if err := json.Unmarshal(data, &expected); err != nil {
 		return ExpectedEffects{}, fmt.Errorf("decode expected effects: %w", err)
+	}
+	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
+		if err := validateInitializationEffects(expected); err != nil {
+			return ExpectedEffects{}, err
+		}
+		return expected, nil
 	}
 	if expected.Schema != "loyal-backyard-rwa-expected-effects/v1" || len(expected.Accounts) == 0 {
 		return ExpectedEffects{}, fmt.Errorf("incomplete expected effects")
@@ -169,6 +176,9 @@ func validateRepaymentEffects(expected ExpectedEffects) error {
 // accepted: unrelated deposits and claims can mutate the same custodies after
 // this transaction confirms.
 func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
+	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
+		return reconcileKaminoInitialization(expected, receipt)
+	}
 	if err := validateRepaymentEffects(expected); err != nil {
 		return Reconciliation{}, nil, err
 	}

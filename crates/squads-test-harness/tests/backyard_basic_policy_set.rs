@@ -1165,6 +1165,14 @@ fn backyard_multiply_initializer_connected_klend() {
     );
     assert_eq!(sha256(elf), capture["elfSha256"]);
     let initializers = backyard_multiply_initializers(key(SETTINGS)).unwrap();
+    let go_bytes = fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/evidence/voltr-selector-2026-09-16/go-initializer-messages.json"),
+    )
+    .unwrap();
+    let go_export: Value = serde_json::from_slice(&go_bytes).unwrap();
+    assert_eq!(go_export["schema"], "selector-go-initializer-messages/v1");
+    assert_eq!(go_export["messages"].as_array().unwrap().len(), 3);
     let mut proofs = Vec::new();
     for (index, init) in initializers.iter().enumerate() {
         let mut svm = build_base();
@@ -1248,17 +1256,39 @@ fn backyard_multiply_initializer_connected_klend() {
         }
         accounts.push(AccountMeta::new_readonly(key(KLEND), false));
         let policy = derive_squads_policy(&key(SETTINGS), 141 + index as u64).0;
-        let result = execute_probe(
-            &mut svm,
-            policy,
-            0,
-            accounts.clone(),
-            init.instruction.data.clone(),
+        let policy_before = svm.get_account(&policy).unwrap();
+        let go_entry = go_export["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["lane"] == init.lane)
+            .unwrap();
+        assert_eq!(go_entry["request"]["policySeed"], 141 + index as u64);
+        assert_eq!(
+            go_entry["request"]["rentLamports"],
+            rent.minimum_balance(3344)
+        );
+        let message = legacy_message(go_entry);
+        assert_eq!(message.header.num_required_signatures, 1);
+        assert_eq!(message.account_keys[0], key(DELEGATE));
+        let result = svm
+            .send_transaction(Transaction {
+                signatures: vec![
+                    Signature::default();
+                    message.header.num_required_signatures as usize
+                ],
+                message,
+            })
+            .expect("connected initializer execution");
+        assert_eq!(
+            svm.get_account(&policy).unwrap(),
+            policy_before,
+            "initializer changed policy account"
         );
         assert!(
-            result.0.is_none(),
-            "{} initialization: {result:?}",
-            init.lane
+            result.return_data.data.is_empty(),
+            "initializer returned unexpected data: {:?}",
+            result.return_data
         );
         let created = svm.get_account(&obligation).unwrap();
         assert_eq!(created.owner, key(KLEND));
@@ -1286,12 +1316,13 @@ fn backyard_multiply_initializer_connected_klend() {
         assert_eq!(svm.get_account(&key(VAULT)).unwrap().lamports, payer_after);
         proofs.push(
             json!({"lane": init.lane, "obligation": obligation.to_string(),
-            "rentLamports": created.lamports, "computeUnits": result.1,
-            "duplicateRejected": true, "metadataUnchanged": true}),
+            "rentLamports": created.lamports, "computeUnits": result.compute_units_consumed,
+            "goMessageSha256": go_entry["messageSha256"], "goSingleSignerPacketBytes": go_entry["singleSignerPacketBytes"],
+            "duplicateRejected": true, "metadataUnchanged": true, "policyAccountUnchanged": true, "returnDataEmpty": true}),
         );
     }
     let proof = json!({"schema":"selector-klend-initializer-proof/v1", "broadcast":false,
-        "signatureVerification":false, "captureSha256":sha256(&raw),
+        "signatureVerification":false, "captureSha256":sha256(&raw), "goMessageExportSha256":sha256(&go_bytes), "executionMessageSource":"exact Go compiler export",
         "rentSource":"captured Rent sysvar and matching RPC minimum", "minimumRentLamports":capture["minimumRentLamports"],
         "slot":capture["slot"], "klendDeploySlot":capture["deploySlot"], "klendElfSha256":capture["elfSha256"],
         "overrides":["absent obligations", "local payer funding", "local candidate policies"], "lanes":proofs});

@@ -88,6 +88,7 @@ type ConfirmedTransactionEvidence struct {
 	PostTokenBalances []TransactionTokenBalance
 	ReturnData        *ProgramReturnData
 	Logs              []string
+	Initialization    *KaminoInitializationReceipt
 }
 
 func NewRPCClient(rpcURL string) (*RPCClient, error) {

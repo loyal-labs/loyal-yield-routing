@@ -70,7 +70,8 @@ type RouteManifest struct {
 		} `json:"policies"`
 	} `json:"policyCatalog"`
 	RuntimeBindings struct {
-		BridgePolicies []struct {
+		MultiplyInitializers []KaminoInitializerBinding `json:"multiplyInitializers,omitempty"`
+		BridgePolicies       []struct {
 			Action           Action     `json:"action"`
 			Account          string     `json:"account"`
 			NormalizedDigest string     `json:"normalizedDigest"`
@@ -386,6 +387,9 @@ func loadEmbeddedRouteManifest() (RouteManifest, error) {
 }
 
 func (m RouteManifest) validateBindings() error {
+	if err := m.validateInitializerBindings(); err != nil {
+		return err
+	}
 	if m.Schema != "loyal-backyard-rwa-manifest/v2" || m.Cluster != "mainnet-beta" ||
 		m.Commitment != "confirmed" || m.MVPRoute != RouteID || m.TargetLTVBPS != TargetLTVBPS ||
 		m.HardLTVRule != "min(6000, liquidationThresholdBps - 1500)" ||

@@ -244,3 +244,45 @@ Fable's follow-up also found the worker rejecting its own borrowed-USDC swap
 decision. Decision validation now admits exact pilot collateral/debt edges and
 continues rejecting USDC-to-USDC conversion actions. The regression exercises
 decision production and validation together.
+
+
+### Native initializer journal contract
+
+The typed initializer now compiles through the existing persisted build input,
+fee/rent valuation and finalized reconciliation path. This is still a foundation,
+not an enabled worker dispatch path. Its confirmed preflight requires the exact
+absent obligation, installed policy hash, hot-admin Settings graph, metadata,
+mints, market, native payer funds and current Rent sysvar. The original preflight
+slot bounds the final send valuation; later fee/oracle reads cannot extend it.
+Missing prerequisites produce a durable budget hold with the existing
+expired-and-absent signed-wire recovery path.
+
+Native rent is priced once as setup, separate from token principal and network
+fees. Finalized reconciliation binds the persisted transaction bytes and checks
+all native account deltas, the exact vault-to-obligation rent transfer, the
+network fee payer, and the created empty Multiply state. Unexpected token effects
+or return data reject reconciliation. PostgreSQL settlement rejects a mismatched
+wire and retains the reservation until accepted finality. No receipt success is
+inferred from account presence alone.
+
+The connected captured-program proof executes the exact exported Go legacy
+messages, bound by `go-initializer-messages.json` and its SHA-256. It also verifies
+that policy account data
+and lamports stay unchanged and returned data is empty on all three initializers.
+Migration 79 adds only the three initializer lanes and the existing OnRe USDC
+route-neutral lifecycle to journal constraints. The actual migration's positive
+and negative engine/lane cases were executed in a disposable PostgreSQL schema.
+It has not been applied to production.
+
+Validation: full Go suite with a fresh disposable PostgreSQL cluster; targeted
+initializer preflight, cost/freshness, native receipt and settlement tests; Go
+vet; `cargo check -p loyal-yield-store`; captured Squads/KLend initializer proof.
+The SDK oracle and capture evidence remain separately described above.
+
+Manifest schema and the build/sign/simulate/persist function now enforce reviewed
+initializer pins before signer access; the embedded manifest deliberately has no
+initializer pins yet. Still required before initializer dispatch: actual installed
+policy evidence, metadata/farm prerequisites in route admission, the production
+funding envelope, exact full-move admission, and worker preparation/dispatch.
+The initial partner/user deposit cap is awaiting the operator's answer. The
+hot-admin continuation is approved; no cold-key condition is reintroduced.

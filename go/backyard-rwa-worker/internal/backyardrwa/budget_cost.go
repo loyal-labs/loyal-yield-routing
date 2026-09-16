@@ -15,6 +15,15 @@ type ExecutableDebit struct {
 // A withdrawal's wire amount may be receipt units: charge its underlying
 // liquidity debit from the checked effect graph, not that receipt amount.
 func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDebit, error) {
+	if effects.Kind == "kamino-initialize" || effects.Initialization != nil {
+		r, ok := request.(KaminoInitializationRequest)
+		if !ok || validateInitializationEffects(effects) != nil || *effects.Initialization != r {
+			return ExecutableDebit{}, budgetHold("initializer_effects_request_mismatch")
+		}
+		// Native creation is priced as SetupLamports, never as zero-cost setup
+		// or a fictional USDC transfer.
+		return ExecutableDebit{}, nil
+	}
 	if effects.Kind == "kamino-borrow" {
 		r, ok := request.(KaminoPrimeUSDCRequest)
 		_, leg, err := kaminoPrimeUSDCInstruction(r)

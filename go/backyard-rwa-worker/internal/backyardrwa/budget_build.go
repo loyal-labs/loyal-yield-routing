@@ -10,7 +10,7 @@ import (
 // unsigned-message fee before the production builder can load a signer.
 // It is a rejection/revalidation gate, NOT complete admission: account setup
 // and the remaining exit graph still require independently bounded funding.
-// In particular, setupLamports=0 here does not certify that setup is free.
+// Only the typed initializer admits its exact native rent in this gate.
 func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -19,6 +19,8 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 		return ValuedTransactionCost{}, err
 	}
 	var message []byte
+	var setupLamports uint64
+	var initializerPrestateSlot int64
 	lane := RouteID
 	switch r := request.(type) {
 	case BridgeBuildRequest:
@@ -26,6 +28,9 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 	case KaminoPrimeUSDCRequest:
 		message, err = CompileKaminoMessage(r)
 		lane = r.RouteLane
+	case KaminoInitializationRequest:
+		message, err = CompileKaminoInitializationMessage(r)
+		lane, setupLamports = r.RouteLane, r.RentLamports
 	case JupiterSwapRequest:
 		message, err = CompileJupiterMessage(r)
 		lane = r.RouteLane
@@ -41,6 +46,13 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 	slot, err := rpc.ConfirmedSlot(ctx)
 	if err != nil {
 		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
+	}
+	if r, ok := request.(KaminoInitializationRequest); ok {
+		slot, err = validateKaminoInitializationPrestate(ctx, rpc, r, slot)
+		initializerPrestateSlot = slot
+		if err != nil {
+			return ValuedTransactionCost{}, err
+		}
 	}
 	if r, ok := request.(KaminoPrimeUSDCRequest); ok && r.FullPayoff {
 		bound, err := validateFullPayoffRequest(ctx, rpc, r, effects, slot)
@@ -101,6 +113,9 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 	if err != nil {
 		return ValuedTransactionCost{}, err
 	}
+	if r, ok := request.(KaminoInitializationRequest); ok && fee.Lamports > r.MaximumFeeLamports {
+		return ValuedTransactionCost{}, budgetHold("initializer_fee_changed")
+	}
 	var token BudgetPrice
 	if debit.Raw > 0 {
 		token, err = ObserveBudgetTokenPrice(ctx, rpc, lane, debit, fee.Slot)
@@ -116,21 +131,28 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 	if err != nil {
 		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
 	}
-	cost, err := ValueTransactionCost(message, debit, fee, 0, token, sol, slot)
+	if initializerPrestateSlot > 0 && (slot < initializerPrestateSlot || slot-initializerPrestateSlot > budgetMaxObservationLagSlots) {
+		return ValuedTransactionCost{}, budgetHold("initializer_prestate_expired")
+	}
+	cost, err := ValueTransactionCost(message, debit, fee, setupLamports, token, sol, slot)
 	if err != nil {
 		return cost, err
+	}
+	if initializerPrestateSlot > 0 {
+		cost.ValidThroughSlot = min(cost.ValidThroughSlot, initializerPrestateSlot+budgetMaxObservationLagSlots)
 	}
 	if cost.TotalMicros > Phase3TransactionCapMicros {
 		return cost, &BudgetHold{Reason: "transaction_cap_exceeded", Details: map[string]string{
 			"knownCostMicros":       strconv.FormatInt(cost.TotalMicros, 10),
 			"principalMicros":       strconv.FormatInt(cost.PrincipalMicros, 10),
 			"networkFeeMicros":      strconv.FormatInt(cost.NetworkFeeMicros, 10),
+			"setupLamports":         strconv.FormatUint(setupLamports, 10),
 			"transactionCapMicros":  strconv.FormatInt(Phase3TransactionCapMicros, 10),
 			"observationSlot":       strconv.FormatInt(cost.ObservationSlot, 10),
 			"messageSha256":         cost.MessageSHA256,
 			"tokenValuationSha256":  token.EvidenceSHA256,
 			"nativeValuationSha256": sol.EvidenceSHA256,
-			"coverage":              "principal_and_network_fee_only_setup_and_exit_not_admitted",
+			"coverage":              "executable_principal_network_fee_and_explicit_setup_remaining_exit_not_admitted",
 		}}
 	}
 	return cost, nil

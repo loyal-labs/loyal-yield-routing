@@ -1,0 +1,52 @@
+{
+  "broadcast": false,
+  "messages": [
+    {
+      "lane": "Prime/PRIME/USDC",
+      "messageBase64": "AQAIDEqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAFnyDNaZMA+dVAHB5WRLrkiy3ByFfsN0GrQY195de42AGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+oPnm+EDW9fs3bGIIAvrqeTajoGAc4O6cEtqVvzAlSbLBn6cetpaLSaDyTGDLDKI2lqRSxzzCBZhQvsBAW/0HEGvx4PK74Fbs77Moiebwrgw7RN7YFiRpaHRDWw5TmyJaSZ1n0YO5fdD7WbSfI8qViO/OdU+1XWVUyBmHm4T4OPaxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWFbGw2+Xj4DTdAB6SlsEjwZ1DRVgmz3t0qS4jKPJp9Xtgan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEsqyxEljM42gsQYuocv89+RECcS8VrxK2vmmzQ1sACAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AQQMAQQAAgMFBgcICQoLMFpRu1EnRoBOAAEBAQEBAAAAAAEAGAAAAAEICQAAAQIDBAUGBwoA+wrnTBsLn2ABAA==",
+      "messageSha256": "beb5146d6c48315249ff8fdea361258637fe42b919855b237d82b8ac56ef9471",
+      "request": {
+        "routeLane": "Prime/PRIME/USDC",
+        "policySeed": 141,
+        "policyAccountDataSha256": "9f689511214aed8f8ab1cde3a734d6739bae8a660c9fecd07b574ad373f9aca1",
+        "recentBlockhash": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lastValidBlockHeight": 100,
+        "rentLamports": 17637760,
+        "maximumFeeLamports": 5000
+      },
+      "singleSignerPacketBytes": 549
+    },
+    {
+      "lane": "Maple/syrupUSDC/USDC",
+      "messageBase64": "AQAIDEqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAn/v9YRKBe/zyKXC35/LmtUWeS3+Z3Tg/ZIuP4KlivTUGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+uwtzWdOY/0YejsQUIWP9rIrtKLL8QJVMQgaxLN81sAYBn6cetpaLSaDyTGDLDKI2lqRSxzzCBZhQvsBAW/0HEFRx0hcKaV66oHK59gZrcuBFqG8/4gFGk7B2Lb8LVIoxJNxxro08DhVGqary8ayNEMFOMzcp6XXKbc8q5IS7H8sxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWFbGw2+Xj4DTdAB6SlsEjwZ1DRVgmz3t0qS4jKPJp9Xtgan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEsqyxEljM42gsQYuocv89+RECcS8VrxK2vmmzQ1sACAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AQQMAQQAAgMFBgcICQoLMFpRu1EnRoBOAAEBAQEBAAAAAAEAGAAAAAEICQAAAQIDBAUGBwoA+wrnTBsLn2ABAA==",
+      "messageSha256": "19ef3c540f7bcb220652a8362ba0a46b8b3de5b720521fe995bc3f0e18c9d172",
+      "request": {
+        "routeLane": "Maple/syrupUSDC/USDC",
+        "policySeed": 142,
+        "policyAccountDataSha256": "9f689511214aed8f8ab1cde3a734d6739bae8a660c9fecd07b574ad373f9aca1",
+        "recentBlockhash": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lastValidBlockHeight": 100,
+        "rentLamports": 17637760,
+        "maximumFeeLamports": 5000
+      },
+      "singleSignerPacketBytes": 549
+    },
+    {
+      "lane": "OnRe/ONyc/USDC",
+      "messageBase64": "AQAIDEqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtAfxnQMhiGVur3ki2HFTU69gOvBlnvBMM/OrbscaydlYsGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+jGkMnwR3RfdugefV93etqk9b9zLLSgKnDckeBDAyMHTBn6cetpaLSaDyTGDLDKI2lqRSxzzCBZhQvsBAW/0HEEuVviiDGDq0RZajYLFWMh7TxWYRUyHcwTi+I1q4xl1nUNoFiav6tQ+huksLT4PpjXVaKG96BuJ8Jjaesbl2fGuxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWFbGw2+Xj4DTdAB6SlsEjwZ1DRVgmz3t0qS4jKPJp9Xtgan1RcZLFxRIYzJTD1K8X9Y2u4Im6H9ROPb2YoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEsqyxEljM42gsQYuocv89+RECcS8VrxK2vmmzQ1sACAaFE8SM8jgaqDtHGCyYQakfDzN9A88fiHwcMIwWU8L6AQQMAQQAAgMFBgcICQoLMFpRu1EnRoBOAAEBAQEBAAAAAAEAGAAAAAEICQAAAQIDBAUGBwoA+wrnTBsLn2ABAA==",
+      "messageSha256": "80b20f51c32dcf39fe46c62af3210b8c19cdd32a66d6ff9355068940f2542a95",
+      "request": {
+        "routeLane": "OnRe/ONyc/USDC",
+        "policySeed": 143,
+        "policyAccountDataSha256": "9f689511214aed8f8ab1cde3a734d6739bae8a660c9fecd07b574ad373f9aca1",
+        "recentBlockhash": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+        "lastValidBlockHeight": 100,
+        "rentLamports": 17637760,
+        "maximumFeeLamports": 5000
+      },
+      "singleSignerPacketBytes": 549
+    }
+  ],
+  "policyProvenance": "synthetic local candidate pins; not production activation",
+  "schema": "selector-go-initializer-messages/v1"
+}

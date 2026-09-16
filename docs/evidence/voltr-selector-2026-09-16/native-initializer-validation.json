@@ -1,0 +1,39 @@
+{
+  "schema": "selector-native-initializer-validation/v1",
+  "scope": "local source and disposable database; no deployment or mainnet submission",
+  "goTests": {
+    "passedIncludingSubtests": 928,
+    "failed": 0,
+    "skipped": [
+      "TestPhase3ReadOnlySOLReferenceDiscovery",
+      "TestPhase3ReadOnlyPricePreflight",
+      "TestPhase3ReturnQuoteCompatibility",
+      "TestPhase3JupiterCandidateMatchesGo",
+      "TestPhase3JupiterReturnMatchesGo",
+      "TestPhase3LinkedLendingMessagesMatchGo",
+      "TestPhase3BorrowFeesMatchProduction",
+      "TestPhase3DepositRoundingMatchesProduction",
+      "TestExportKaminoInitializationMessages",
+      "TestMultiplyInitializerAndCapacitySDKParity",
+      "TestExportPhase3RedepositProbe",
+      "TestPhase3RedepositMatchesProduction",
+      "TestOnReConnectedLendingMatchesGoWithoutRegistration",
+      "TestExportPhase3JupiterControlledProbe",
+      "TestPhase3JupiterProbeMatchesProduction",
+      "TestExportPhase3KaminoReleaseProbe",
+      "TestPhase3KaminoReleaseProbeMatchesProduction",
+      "TestPhase3KaminoRepaymentProbeMatchesProduction",
+      "TestPhase3KaminoProbeMatchesProduction",
+      "TestExportPhase3KaminoControlledProbe",
+      "TestExportOnReBridgeProbe",
+      "TestRouteLeaseAgainstDatabase"
+    ],
+    "database": "fresh isolated PostgreSQL Unix socket; no production credentials"
+  },
+  "goVet": "PASS",
+  "storeCargoCheck": "PASS",
+  "connectedProof": "klend-initializer-proof.json",
+  "workerDispatchEnabled": false,
+  "embeddedInitializerPoliciesActivated": false,
+  "depositCapApproved": false
+}

@@ -31,6 +31,7 @@ const (
 	HoldManualRecovery         Action = "HOLD_MANUAL_RECOVERY"
 	PolicySetupPrefund         Action = "POLICY_SETUP_PREFUND"
 	PolicySetupCreate          Action = "POLICY_SETUP_CREATE"
+	InitializeKaminoObligation Action = "INITIALIZE_KAMINO_OBLIGATION"
 )
 
 type OperationStatus string
@@ -183,6 +184,12 @@ func (d Decision) Validate() error {
 			return fmt.Errorf("invalid policy setup decision")
 		}
 		return nil // Journal identity only; not a runtime lane registration.
+	}
+	if d.Action == InitializeKaminoObligation {
+		if !selectorLane(d.StrategyKey) || d.AmountRaw != 0 || d.Reason != "multiply_obligation_missing" {
+			return fmt.Errorf("invalid Multiply initialization decision")
+		}
+		return nil
 	}
 	neutral := d.Action == SwapStableToCollateralStep || d.Action == SwapCollateralToStableStep || d.Action == OpenRouteStep || d.Action == DeleverRouteStep
 	catalog := false

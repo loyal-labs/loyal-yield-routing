@@ -23,6 +23,8 @@ func encodePhase3BuildInput(request any, effects []byte) (*phase3BuildInput, err
 		input.Kind = "bridge"
 	case KaminoPrimeUSDCRequest:
 		input.Kind = "kamino"
+	case KaminoInitializationRequest:
+		input.Kind = "kamino-initialize"
 	case JupiterSwapRequest:
 		input.Kind = "jupiter"
 	default:
@@ -49,6 +51,8 @@ func (input *phase3BuildInput) decode() (any, ExpectedEffects, []byte, error) {
 		target = &BridgeBuildRequest{}
 	case "kamino":
 		target = &KaminoPrimeUSDCRequest{}
+	case "kamino-initialize":
+		target = &KaminoInitializationRequest{}
 	case "jupiter":
 		target = &JupiterSwapRequest{}
 	default:
@@ -69,6 +73,9 @@ func (input *phase3BuildInput) decode() (any, ExpectedEffects, []byte, error) {
 	case *KaminoPrimeUSDCRequest:
 		request = *r
 		message, err = CompileKaminoMessage(*r)
+	case *KaminoInitializationRequest:
+		request = *r
+		message, err = CompileKaminoInitializationMessage(*r)
 	case *JupiterSwapRequest:
 		request = *r
 		message, err = CompileJupiterMessage(*r)
@@ -123,6 +130,11 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 	case BridgeBuildRequest:
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case KaminoPrimeUSDCRequest:
+		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
+	case KaminoInitializationRequest:
+		if operation.Decision.Action != InitializeKaminoObligation || operation.Decision.StrategyKey != r.RouteLane || operation.Decision.Validate() != nil {
+			return ValuedTransactionCost{}, budgetHold("initializer_journal_identity_mismatch")
+		}
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case JupiterSwapRequest:
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
