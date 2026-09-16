@@ -250,6 +250,16 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 		if d = Decide(s); d.Action != SwapDebtToCollateralStep || d.AmountRaw != 10_000 {
 			t.Fatalf("%s borrowed cash: %+v", lane, d)
 		}
+		if err := d.Validate(); err != nil {
+			t.Fatalf("%s worker rejects its borrowed-cash decision: %v", lane, err)
+		}
+		for _, action := range []Action{SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
+			invalid := d
+			invalid.Action = action
+			if invalid.Validate() == nil {
+				t.Fatal("USDC self-swap admitted", lane, action)
+			}
+		}
 		s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 10_000, 10_000
 		if d = Decide(s); d.Action != OpenRouteStep || d.Reason != "single_loop_redeposit" {
 			t.Fatalf("%s finish redeposit: %+v", lane, d)
@@ -274,6 +284,16 @@ func TestUSDCHardLTVRequiresExecutablePayoff(t *testing.T) {
 			}
 		} else if d.Action != DeleverRouteStep || d.AmountRaw != 100 {
 			t.Fatalf("funded full payoff: %+v", d)
+		}
+	}
+	for _, lane := range selectorLanes {
+		s.RouteLane, s.StrategyKey = lane, lane
+		s.SquadsIdleRaw = 0
+		s.PositionDebtValueRaw = 100
+		s.CollateralIdleRaw, s.CollateralIdleValueRaw = 200, 200
+		d := Decide(s)
+		if d.Action != SwapCollateralToDebtStep || d.Validate() != nil {
+			t.Fatalf("worker rejects admitted risk funding for %s: %+v (%v)", lane, d, d.Validate())
 		}
 	}
 }

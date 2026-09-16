@@ -197,7 +197,13 @@ func (d Decision) Validate() error {
 	if d.StrategyKey != "" && d.StrategyKey != RouteID && d.StrategyKey != PhaseOneLaneID && d.StrategyKey != SelectedRouteID && !basic && !catalog && d.Action != HoldManualRecovery {
 		return fmt.Errorf("decision strategy is not installed")
 	}
-	if d.Action == SwapDebtToCollateralStep || d.Action == SwapCollateralToDebtStep || d.Action == SwapUSDCToDebtStep || d.Action == SwapDebtToUSDCStep {
+	if d.Action == SwapDebtToCollateralStep || d.Action == SwapCollateralToDebtStep {
+		if !catalog && !(basic && selectorLane(d.StrategyKey)) {
+			return fmt.Errorf("collateral/debt conversion requires an exact runtime binding")
+		}
+		return nil
+	}
+	if d.Action == SwapUSDCToDebtStep || d.Action == SwapDebtToUSDCStep {
 		if !catalog {
 			return fmt.Errorf("debt conversion requires an exact non-USDC runtime binding")
 		}

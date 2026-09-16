@@ -27,10 +27,14 @@ func kaminoBorrowFee(accounts []ConfirmedAccount, route RuntimeRoute, receive ui
 	if !allZero(obligation.Data[2288:2320]) {
 		return 0, budgetHold("unsupported_borrow_referrer")
 	}
+	rate := binary.LittleEndian.Uint64(reserve.Data[kaminoReserveConfigOffset+40:])
+	return kaminoBorrowFeeAtRate(rate, receive)
+}
+
+func kaminoBorrowFeeAtRate(rate, receive uint64) (uint64, error) {
 	if receive == 0 || receive > math.MaxInt64 {
 		return 0, budgetHold("invalid_borrow_receive_amount")
 	}
-	rate := binary.LittleEndian.Uint64(reserve.Data[kaminoReserveConfigOffset+40:])
 	if rate == 0 {
 		return 0, nil
 	}

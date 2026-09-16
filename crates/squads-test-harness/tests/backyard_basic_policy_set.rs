@@ -1134,3 +1134,169 @@ fn backyard_multiply_initializer_exact_lane_boundary() {
         );
     }
 }
+
+/// Captured deployed KLend + deployed Squads, with explicitly synthetic empty
+/// obligations and payer funding. This proves recreation and rent conservation;
+/// it is not a live installation, signature or whole lending lifecycle proof.
+#[test]
+#[ignore = "requires SELECTOR_KLEND_CAPTURE public finalized account capture"]
+fn backyard_multiply_initializer_connected_klend() {
+    use loyal_actions::backyard_multiply_initializer::{
+        backyard_multiply_initializers, compile_backyard_multiply_initializer_policies,
+    };
+    let path = std::env::var("SELECTOR_KLEND_CAPTURE").expect("public capture path");
+    let raw = fs::read(path).unwrap();
+    let capture: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(capture["schema"], "selector-klend-initializer-capture/v1");
+    assert_eq!(capture["commitment"], "finalized");
+    assert_eq!(capture["deploySlot"], 440486775u64);
+    let rows = capture["accounts"].as_array().unwrap();
+    let programdata = rows
+        .iter()
+        .find(|a| a["address"] == capture["programdata"])
+        .unwrap();
+    let bytes = STANDARD
+        .decode(programdata["dataBase64"].as_str().unwrap())
+        .unwrap();
+    let elf = &bytes[45..];
+    assert_eq!(
+        sha256(elf),
+        "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+    );
+    assert_eq!(sha256(elf), capture["elfSha256"]);
+    let initializers = backyard_multiply_initializers(key(SETTINGS)).unwrap();
+    let mut proofs = Vec::new();
+    for (index, init) in initializers.iter().enumerate() {
+        let mut svm = build_base();
+        svm.add_program(key(KLEND), elf).unwrap();
+        // Markets, seed mints and metadata retain the exact captured data.
+        // Each branch starts with an absent obligation, as after full closure.
+        for row in rows {
+            let address = key(row["address"].as_str().unwrap());
+            if row["missing"] == true
+                || row["executable"] == true
+                || row["address"] == capture["programdata"]
+                || address == key(VAULT)
+                || address == solana_sdk::sysvar::clock::ID
+                || address == solana_sdk::sysvar::rent::ID
+                || initializers
+                    .iter()
+                    .any(|i| i.instruction.accounts[2].pubkey == address)
+            {
+                continue;
+            }
+            let data = STANDARD
+                .decode(row["dataBase64"].as_str().unwrap())
+                .unwrap();
+            assert_eq!(sha256(&data), row["dataSha256"]);
+            svm.set_account(
+                address,
+                Account {
+                    lamports: row["lamports"].as_u64().unwrap(),
+                    data,
+                    owner: key(row["owner"].as_str().unwrap()),
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .unwrap();
+        }
+        svm.airdrop(&key(VAULT), 100_000_000).unwrap();
+        let mut clock = svm.get_sysvar::<solana_sdk::clock::Clock>();
+        clock.slot = capture["slot"].as_u64().unwrap();
+        let clock_row = rows
+            .iter()
+            .find(|a| a["address"] == solana_sdk::sysvar::clock::ID.to_string())
+            .unwrap();
+        let clock_data = STANDARD
+            .decode(clock_row["dataBase64"].as_str().unwrap())
+            .unwrap();
+        clock.unix_timestamp = i64::from_le_bytes(clock_data[32..40].try_into().unwrap());
+        svm.set_sysvar(&clock);
+        let rent_row = rows
+            .iter()
+            .find(|a| a["address"] == solana_sdk::sysvar::rent::ID.to_string())
+            .unwrap();
+        let rent_data = STANDARD
+            .decode(rent_row["dataBase64"].as_str().unwrap())
+            .unwrap();
+        let rent: solana_sdk::rent::Rent = bincode::deserialize(&rent_data).unwrap();
+        assert_eq!(
+            rent.minimum_balance(3344),
+            capture["minimumRentLamports"].as_u64().unwrap()
+        );
+        svm.set_sysvar(&rent);
+        let installs = compile_backyard_multiply_initializer_policies(
+            key(SETTINGS),
+            key(AUTHORITY),
+            key(DELEGATE),
+            141,
+        )
+        .unwrap();
+        for install in installs {
+            let result = send(&mut svm, install, key(AUTHORITY));
+            assert!(result.0.is_none(), "policy creation: {result:?}");
+        }
+        let obligation = init.instruction.accounts[2].pubkey;
+        assert!(svm.get_account(&obligation).is_none());
+        let payer_before = svm.get_account(&key(VAULT)).unwrap().lamports;
+        let metadata = init.instruction.accounts[6].pubkey;
+        let metadata_before = svm.get_account(&metadata).unwrap();
+        let mut accounts = init.instruction.accounts.clone();
+        for a in &mut accounts {
+            a.is_signer = false;
+        }
+        accounts.push(AccountMeta::new_readonly(key(KLEND), false));
+        let policy = derive_squads_policy(&key(SETTINGS), 141 + index as u64).0;
+        let result = execute_probe(
+            &mut svm,
+            policy,
+            0,
+            accounts.clone(),
+            init.instruction.data.clone(),
+        );
+        assert!(
+            result.0.is_none(),
+            "{} initialization: {result:?}",
+            init.lane
+        );
+        let created = svm.get_account(&obligation).unwrap();
+        assert_eq!(created.owner, key(KLEND));
+        assert_eq!(created.data.len(), 3344);
+        assert_eq!(&created.data[8..16], &1u64.to_le_bytes());
+        assert_eq!(
+            &created.data[32..64],
+            init.instruction.accounts[3].pubkey.as_ref()
+        );
+        assert_eq!(&created.data[64..96], key(VAULT).as_ref());
+        assert!(created.data[96..1184].iter().all(|b| *b == 0));
+        assert!(created.data[1208..2208].iter().all(|b| *b == 0));
+        assert_eq!(created.data[2285], 0);
+        assert!(created.data[2288..2320].iter().all(|b| *b == 0));
+        assert_eq!(created.lamports, rent.minimum_balance(3344));
+        assert_eq!(
+            payer_before - svm.get_account(&key(VAULT)).unwrap().lamports,
+            created.lamports
+        );
+        assert_eq!(svm.get_account(&metadata).unwrap(), metadata_before);
+        let payer_after = svm.get_account(&key(VAULT)).unwrap().lamports;
+        let repeated = execute_probe(&mut svm, policy, 0, accounts, init.instruction.data.clone());
+        assert!(repeated.0.is_some(), "duplicate initializer succeeded");
+        assert_eq!(svm.get_account(&obligation).unwrap(), created);
+        assert_eq!(svm.get_account(&key(VAULT)).unwrap().lamports, payer_after);
+        proofs.push(
+            json!({"lane": init.lane, "obligation": obligation.to_string(),
+            "rentLamports": created.lamports, "computeUnits": result.1,
+            "duplicateRejected": true, "metadataUnchanged": true}),
+        );
+    }
+    let proof = json!({"schema":"selector-klend-initializer-proof/v1", "broadcast":false,
+        "signatureVerification":false, "captureSha256":sha256(&raw),
+        "rentSource":"captured Rent sysvar and matching RPC minimum", "minimumRentLamports":capture["minimumRentLamports"],
+        "slot":capture["slot"], "klendDeploySlot":capture["deploySlot"], "klendElfSha256":capture["elfSha256"],
+        "overrides":["absent obligations", "local payer funding", "local candidate policies"], "lanes":proofs});
+    let output = std::env::var("SELECTOR_KLEND_PROOF_OUTPUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("selector-klend-initializer-proof.json"));
+    fs::write(output, serde_json::to_vec_pretty(&proof).unwrap()).unwrap();
+}

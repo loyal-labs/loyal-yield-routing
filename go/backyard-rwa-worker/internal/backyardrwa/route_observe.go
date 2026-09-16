@@ -617,6 +617,9 @@ func observeKaminoFromFixedAccounts(ctx context.Context, accountsReader func(con
 // The caller has already validated this same batch's NAV/refresh dependencies.
 func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
 	if route.Kamino.DebtMint == bridgeUSDC {
+		if selectorLane(route.Lane) {
+			return kaminoPairEntryCapacity(position, accounts, route)
+		}
 		return position.EntryCapacityRaw, nil
 	}
 	reference, err := pinnedKaminoObservationConfig()

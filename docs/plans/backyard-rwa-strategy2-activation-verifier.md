@@ -369,6 +369,17 @@ date, requirement IDs touched, what changed, and why the change preserves or
 strengthens meaning. Weakening any P0–P3 requirement or a standing rule requires
 the operator.
 
+### 2026-09-16 — operator-approved hot-admin continuation
+
+The operator explicitly directed: "Let's use hot-adminWallet setup for now."
+For the initial user/partner rollout, decision 2 and the U1 pre-third-party
+cold-key gate are superseded by that instruction. Retain the existing
+`BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ` administrator. This is a deliberate
+hot-admin launch configuration; it does not establish cold-key isolation or
+multisig security. The exact settings-graph checks, delegate policy boundaries,
+deposit/servicing limits and all accounting and lifecycle release gates remain
+required. No authority change or on-chain transaction is implied by this entry.
+
 ### 2026-09-08 — v1.1 scope narrowing
 
 Both entries narrow scope and weaken nothing.

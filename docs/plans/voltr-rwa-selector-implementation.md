@@ -202,3 +202,45 @@ Fable reviewed the continuation. Follow-up findings produced the full-payoff
 interest check, truthful partial-risk hold, whole-working-cash boundary, return
 before entry checks, and smaller measured canary tranche. The requested initial
 user/partner deposit cap is still pending; do not infer it from finite test caps.
+
+The operator approved retaining the existing hot administrator for the initial
+user/partner rollout. The activation verifier records the explicit U1/decision-2
+amendment. Cold-key separation is no longer a blocker for this approved scope;
+the deposit cap and the execution/accounting release gates remain outstanding.
+
+### Capacity and initializer continuation
+
+The confirmed USDC route observation now constrains the existing 1.5x reserve
+bound by actual available liquidity, cross-mode allowance, net withdrawal cap,
+utilization and global borrowing caps, and origination fees. Queued liquidity,
+unreviewed elevation/referrer modes and effective borrow factors above 100%
+decline entry. A closed entry does not erase otherwise valid NAV. The bound is
+still a ceiling: admission must validate the actual quoted tranche, including
+minimum fees, collateral receipt rounding and its full return recipe.
+
+Initializer construction matches the installed KLend 7.3.9 SDK's instruction
+bytes, account roles and derived PDAs for all three lanes. The same SDK independently
+checks capacity offsets. The captured KLend binary at deployment slot 440486775
+and the deployed Squads binary execute each initializer successfully in LiteSVM.
+Each creates a 3344-byte obligation with a 17,637,760-lamport vault debit and equal
+obligation credit. Metadata stays unchanged; duplicate creation fails without
+another vault debit. This proof replaces the KLend stub for creation mechanics.
+
+Evidence: `klend-initializer-proof.json` and the reproducible public
+`klend-initializer-capture.json.gz` in `docs/evidence/voltr-selector-2026-09-16/`.
+The capture is finalized at slot 447409473. The test uses the captured Rent sysvar, whose minimum agrees with the fresh RPC rent quote. The test explicitly substitutes absent
+obligations, funds the local vault and installs local candidate policies. It does
+not execute the preceding close/refund, prove production signatures, install live
+policies, or wire the initializer into the worker journal. Existing live obligations
+hold refundable rent; use actual reconciled refunds and native cash when checking
+recreation funding instead of assuming a new top-up is always necessary.
+
+The connected test is `backyard_multiply_initializer_connected_klend` in
+`backyard_basic_policy_set`; set `SELECTOR_KLEND_CAPTURE` to the decompressed
+public capture and run it with `--ignored`. The Go SDK oracle runs with
+`KLEND_SDK_ORACLE=1` after installing `tools/backyard-voltr` dependencies.
+
+Fable's follow-up also found the worker rejecting its own borrowed-USDC swap
+decision. Decision validation now admits exact pilot collateral/debt edges and
+continues rejecting USDC-to-USDC conversion actions. The regression exercises
+decision production and validation together.
