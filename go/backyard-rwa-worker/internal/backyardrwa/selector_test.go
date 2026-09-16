@@ -19,7 +19,7 @@ func selectorFixture() SelectorInput {
 	p.MinimumBenefitRaw = 1
 	p.UncertaintyBPS = 0
 	market := LaneEconomics{Lane: "OnRe/ONyc/USDC", EvidenceID: "rates", ObservedAt: now, NativeObservedAt: now, NativeAPY: .15, SupplyAPY: 0, CurrentBorrowAPY: .04, BorrowCurve: []BorrowCurvePoint{{0, 400}, {8000, 400}, {10000, 10000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, EntryCapacity: Capacity{Known: true, Unlimited: true}}
-	quote := MoveQuote{BorrowReceiveRaw: uint64(s.TotalVaultNAVRaw / 2), SourceLane: s.RouteLane, DestinationLane: market.Lane, ObservationID: s.ObservationID, EquityRaw: s.TotalVaultNAVRaw, CostRaw: 10_000, ObservedAt: now, EvidenceID: "complete-sequence", SampleSlot: s.Slot, ValidThroughSlot: s.Slot + 32}
+	quote := MoveQuote{MinimumIdleRaw: uint64(s.TotalVaultNAVRaw), BorrowReceiveRaw: uint64(s.TotalVaultNAVRaw / 2), SourceLane: s.RouteLane, DestinationLane: market.Lane, ObservationID: s.ObservationID, EquityRaw: s.TotalVaultNAVRaw, CostRaw: 10_000, ObservedAt: now, EvidenceID: "complete-sequence", SampleSlot: s.Slot, ValidThroughSlot: s.Slot + 32}
 	return SelectorInput{Now: now, Snapshot: s, Markets: []LaneEconomics{market}, Quotes: []MoveQuote{quote}, Policy: p}
 }
 func advanceSelectorFixture(in *SelectorInput, d time.Duration) {

@@ -421,3 +421,35 @@ The producer still has no live caller. Source-to-destination composition,
 source-close native refunds, live selector/unwind orchestration and the release
 steps listed above remain required. No deployment or production funds changed;
 release verdict remains FAIL / not activated.
+
+
+### Complete movement forecast and post-exit cash sizing
+
+The source producer now reuses the existing finite payoff/release/withdrawal/
+return graph. Each retained future cost carries its exact unsigned template;
+legacy records without templates remain readable but cannot supply selector
+forecasts. Every message occurrence is priced, including repeated NAV reports.
+The source cash floor starts with actual custody and adds only enforced swap
+minimum outputs, subtracts maximum repayment, and includes existing Voltr idle
+once. Optimistic bridge reservation amounts never become spendable cash.
+
+Composition binds that source evidence to the destination recipe, original
+observation, earliest slot expiry and current native funding. Actual delegate
+fees and vault setup balances must cover the combined recipe. Hypothetical
+source-close rent refunds are not credited before reconciliation. The quote
+retains whole-vault minimum idle after exit; both the producer and selector
+subtract the configured idle buffer from that amount before choosing entry
+size. This prevents pre-exit NAV or anticipated swap gains from overfunding the
+next allocation.
+
+Fable identified stale retained-cost slots and post-exit idle-buffer sizing;
+both are fixed with regression coverage. Controlled tests exercise a fully
+redeposited 10-USDC loop with collateral release, repayment-funding swap,
+maximum payoff, final withdrawal/swap and idle return; missing templates,
+repeated NAV fees, slot expiry, combined native funding and buffered sizing are
+also covered. The full Go/PostgreSQL suite passes (20.022 seconds), as do Go
+vet, worker build and whitespace checks. These are forecast/fixture tests, not
+live execution receipts.
+The complete producer has no live caller yet. Atomic economic unwind handoff,
+background live evaluation and all deployment/lifecycle release gates remain
+open. No production funds or deployment changed.

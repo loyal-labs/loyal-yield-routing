@@ -183,9 +183,9 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 		if len(tail.Exit) == 0 || tail.Exit[0].Action != ReportNAV {
 			return plan, budgetHold("payoff_nav_fee_unavailable")
 		}
-		plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: ReportNAV, Cost: tail.Exit[0].Cost})
+		plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: ReportNAV, Cost: tail.Exit[0].Cost, Template: tail.Exit[0].Template})
 	}
-	plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: withdrawal.AmountRaw, Cost: tail.CurrentCost})
+	plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: withdrawal.AmountRaw, Cost: tail.CurrentCost, Template: tail.Input})
 	plan.Exit = append(plan.Exit, tail.Exit...)
 	plan.ExitAfterMicros = 0
 	for _, step := range plan.Exit {

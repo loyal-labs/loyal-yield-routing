@@ -10,7 +10,7 @@ import (
 )
 
 func selectorEntryFixture(now time.Time, lane string, amount int64) SelectorEntry {
-	q := MoveQuote{BorrowReceiveRaw: uint64(amount / 2), SourceLane: SelectedRouteID, DestinationLane: lane, ObservationID: "quoted-source", EquityRaw: amount, CostRaw: 1, ObservedAt: now.Add(-time.Second), EvidenceID: sha256Bytes([]byte("complete-recipe")), SampleSlot: 42, ValidThroughSlot: 74}
+	q := MoveQuote{MinimumIdleRaw: uint64(amount), BorrowReceiveRaw: uint64(amount / 2), SourceLane: SelectedRouteID, DestinationLane: lane, ObservationID: "quoted-source", EquityRaw: amount, CostRaw: 1, ObservedAt: now.Add(-time.Second), EvidenceID: sha256Bytes([]byte("complete-recipe")), SampleSlot: 42, ValidThroughSlot: 74}
 	return SelectorEntry{Lane: lane, EquityRaw: amount, ObservationID: q.ObservationID, Quote: q, AcceptedAt: now, ExpiresAt: q.ObservedAt.Add(30 * time.Second)}
 }
 

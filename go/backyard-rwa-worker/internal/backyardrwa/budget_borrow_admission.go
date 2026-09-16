@@ -329,7 +329,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	if err != nil {
 		return plan, err
 	}
-	nav := phase3BridgeExitCost{Action: ReportNAV, Cost: tail.Exit[0].Cost}
+	nav := phase3BridgeExitCost{Action: ReportNAV, Cost: tail.Exit[0].Cost, Template: tail.Exit[0].Template}
 	prefix := []phase3BridgeExitCost{nav}
 	if funding != nil {
 		plan.BorrowRelease, err = encode(release.Request, release.ExpectedEffects)
@@ -341,9 +341,9 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 			return plan, err
 		}
 		plan.FundingSwap = &phase3QuotedExit{Input: input, QuotedOutputRaw: funding.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperCash - cash, ProofLevel: "COST_ONLY_BORROW_RETURN_NOT_EXECUTED_FUNDING"}
-		prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: releaseCost}, nav, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: funding.Request.AmountRaw, Cost: fundingCost}, nav)
+		prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: releaseCost, Template: plan.BorrowRelease}, nav, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: funding.Request.AmountRaw, Cost: fundingCost, Template: input}, nav)
 	}
-	prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: payoff.AmountRaw, Cost: payoffCost}, nav, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: withdrawal.AmountRaw, Cost: tail.CurrentCost})
+	prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: payoff.AmountRaw, Cost: payoffCost, Template: plan.PayoffRepayment}, nav, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: withdrawal.AmountRaw, Cost: tail.CurrentCost, Template: tail.Input})
 	plan.Exit = append(prefix, tail.Exit...)
 	plan.ExitAfterMicros = 0
 	plan.ValidThroughSlot = min(current.ValidThroughSlot, tail.ValidThroughSlot, projection.Slot+budgetMaxObservationLagSlots)

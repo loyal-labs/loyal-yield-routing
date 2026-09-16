@@ -14,6 +14,8 @@ type phase3BridgeExitCost struct {
 	Action Action                `json:"action"`
 	Amount uint64                `json:"amountRaw"`
 	Cost   ValuedTransactionCost `json:"cost"`
+	// Cost-only compiled template; never an executable future operation.
+	Template *phase3BuildInput `json:"template,omitempty"`
 }
 
 type phase3BridgeAdmission struct {
@@ -224,7 +226,15 @@ func observePhase3BridgeAdmission(ctx context.Context, rpc *RPCClient, observati
 		if i == 0 {
 			plan.CurrentCost = cost
 		} else {
-			plan.Exit = append(plan.Exit, phase3BridgeExitCost{step.Request.Action, step.Request.AmountRaw, cost})
+			raw, err := jsonMarshalExpectedEffects(step.ExpectedEffects)
+			if err != nil {
+				return plan, err
+			}
+			template, err := encodePhase3BuildInput(step.Request, raw)
+			if err != nil {
+				return plan, err
+			}
+			plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: step.Request.Action, Amount: step.Request.AmountRaw, Cost: cost, Template: template})
 			plan.ExitAfterMicros, err = budgetSum(plan.ExitAfterMicros, cost.TotalMicros)
 			if err != nil {
 				return plan, err

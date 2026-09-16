@@ -27,7 +27,7 @@ type SelectorEntry struct {
 func (e SelectorEntry) validate() error {
 	if !selectorLane(e.Lane) || e.ObservationID == "" || e.EquityRaw <= 0 || e.EquityRaw > PilotWorkingTrancheCapRaw ||
 		e.Quote.DestinationLane != e.Lane || !selectorLane(e.Quote.SourceLane) || e.Quote.ObservationID != e.ObservationID || e.Quote.EquityRaw != e.EquityRaw || e.Quote.CostRaw < 0 || e.Quote.CostRaw >= e.EquityRaw || !sha256Pattern.MatchString(e.Quote.EvidenceID) ||
-		!e.Quote.validBorrow() || !e.Quote.currentAtSlot(e.Quote.SampleSlot) || e.AcceptedAt.IsZero() || e.Quote.ObservedAt.IsZero() || e.Quote.ObservedAt.After(e.AcceptedAt) || !e.ExpiresAt.After(e.AcceptedAt) || e.ExpiresAt.After(e.Quote.ObservedAt.Add(30*time.Second)) {
+		e.Quote.MinimumIdleRaw < uint64(e.EquityRaw) || !e.Quote.validBorrow() || !e.Quote.currentAtSlot(e.Quote.SampleSlot) || e.AcceptedAt.IsZero() || e.Quote.ObservedAt.IsZero() || e.Quote.ObservedAt.After(e.AcceptedAt) || !e.ExpiresAt.After(e.AcceptedAt) || e.ExpiresAt.After(e.Quote.ObservedAt.Add(30*time.Second)) {
 		return fmt.Errorf("invalid_selector_entry")
 	}
 	return nil

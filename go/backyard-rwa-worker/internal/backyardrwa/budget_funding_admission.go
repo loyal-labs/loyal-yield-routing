@@ -340,10 +340,10 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 				return plan, err
 			}
 			plan.FundingRelease = input
-			prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: cost})
+			prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: cost, Template: input})
 			plan.ValidThroughSlot = min(plan.ValidThroughSlot, cost.ValidThroughSlot)
 		}
-		prefix = append(prefix, phase3BridgeExitCost{Action: ReportNAV, Cost: plan.Exit[0].Cost})
+		prefix = append(prefix, phase3BridgeExitCost{Action: ReportNAV, Cost: plan.Exit[0].Cost, Template: plan.Exit[0].Template})
 	}
 	if funding != nil {
 		policySlot, err := observeWithdrawalExitPolicies(ctx, rpc, manifest, s.RouteLane, s.Slot, []Action{funding.Request.Action})
@@ -371,15 +371,15 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 		}
 		plan.FundingSwap = &phase3QuotedExit{Input: input, QuotedOutputRaw: funding.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperCash - uint64(debtCashRaw(s)), ProofLevel: "COST_ONLY_FUNDING_AND_RESIDUE_ESTIMATE_NOT_EXECUTION"}
 		if !currentSwap {
-			prefix = append(prefix, phase3BridgeExitCost{Action: funding.Request.Action, Amount: funding.Request.AmountRaw, Cost: cost})
+			prefix = append(prefix, phase3BridgeExitCost{Action: funding.Request.Action, Amount: funding.Request.AmountRaw, Cost: cost, Template: input})
 		}
-		prefix = append(prefix, phase3BridgeExitCost{Action: ReportNAV, Cost: plan.Exit[0].Cost})
+		prefix = append(prefix, phase3BridgeExitCost{Action: ReportNAV, Cost: plan.Exit[0].Cost, Template: plan.Exit[0].Template})
 		plan.ValidThroughSlot = min(plan.ValidThroughSlot, cost.ValidThroughSlot)
 		if policySlot > plan.ValidThroughSlot {
 			return plan, budgetHold("stale_funding_exit_admission")
 		}
 	}
-	prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: payoff.AmountRaw, Cost: payoffCost})
+	prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: payoff.AmountRaw, Cost: payoffCost, Template: plan.PayoffRepayment})
 	plan.Exit = append(prefix, plan.Exit...)
 	plan.ExitAfterMicros = 0
 	for _, step := range plan.Exit {

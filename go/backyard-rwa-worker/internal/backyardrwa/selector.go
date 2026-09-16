@@ -142,6 +142,8 @@ func (p SelectorPolicy) validate() error {
 // It is bound to actual equity, source state, destination and exact policy set.
 // Remaining exit spending belongs to the existing budget, not this quote.
 type MoveQuote struct {
+	// Whole-vault USDC available after the source exit at enforced swap minima.
+	MinimumIdleRaw uint64 `json:"minimumIdleRaw"`
 	// Exact one-pass borrow sized from conservative initial collateral. Execution
 	// may receive more collateral, but may not silently increase this borrow.
 	BorrowReceiveRaw uint64    `json:"borrowReceiveRaw"`
@@ -344,7 +346,14 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		var quote *MoveQuote
 		for i := range in.Quotes {
 			q := &in.Quotes[i]
-			if q.SourceLane == s.RouteLane && q.DestinationLane == lane && q.EquityRaw == amount && q.ObservationID == s.ObservationID && freshAt(in.Now, q.ObservedAt, p.QuoteMaxAge) && q.currentAtSlot(s.Slot) && q.CostRaw >= 0 && q.EvidenceID != "" {
+			quoteAmount := amount
+			if s.PilotActive {
+				if q.MinimumIdleRaw == 0 || q.MinimumIdleRaw > math.MaxInt64 {
+					continue
+				}
+				quoteAmount = min(amount, max(int64(0), int64(q.MinimumIdleRaw)-p.IdleBufferRaw))
+			}
+			if q.SourceLane == s.RouteLane && q.DestinationLane == lane && q.EquityRaw == quoteAmount && q.ObservationID == s.ObservationID && freshAt(in.Now, q.ObservedAt, p.QuoteMaxAge) && q.currentAtSlot(s.Slot) && q.CostRaw >= 0 && q.EvidenceID != "" {
 				if quote != nil {
 					return hold("duplicate_move_quote")
 				}
@@ -356,6 +365,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
+		amount = quote.EquityRaw
 		if quote.CostRaw >= amount {
 			c.BlockedReason = "cost_exceeds_allocation"
 			out.Candidates = append(out.Candidates, c)

@@ -258,7 +258,7 @@ func observePhase3DepositAdmission(ctx context.Context, rpc *RPCClient, client *
 	plan := tail
 	plan.Snapshot, plan.Decision, plan.Input, plan.CurrentCost = s, decision, input, current
 	plan.DepositProjection, plan.PayoffWithdrawal = &projection, tail.Input
-	plan.Exit = append([]phase3BridgeExitCost{{Action: ReportNAV, Cost: tail.Exit[0].Cost}, {Action: DeleverRouteStep, Amount: receipts, Cost: tail.CurrentCost}}, tail.Exit...)
+	plan.Exit = append([]phase3BridgeExitCost{{Action: ReportNAV, Cost: tail.Exit[0].Cost, Template: tail.Exit[0].Template}, {Action: DeleverRouteStep, Amount: receipts, Cost: tail.CurrentCost, Template: tail.Input}}, tail.Exit...)
 	plan.ExitAfterMicros = 0
 	for _, step := range plan.Exit {
 		plan.ExitAfterMicros, err = budgetSum(plan.ExitAfterMicros, step.Cost.TotalMicros)

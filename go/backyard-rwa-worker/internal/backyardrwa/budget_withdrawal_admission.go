@@ -264,7 +264,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *ju
 	// NAV's compiled account graph and fixed-width payload have the same fee
 	// before and after the swap. This is fee equivalence, not a NAV value proof.
 	if reportBeforeSwap {
-		plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: ReportNAV, Cost: tail.CurrentCost})
+		plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: ReportNAV, Cost: tail.CurrentCost, Template: tail.Input})
 	}
 	plan.ValidThroughSlot = min(tail.ValidThroughSlot, current.ValidThroughSlot)
 	for i, swap := range swaps {
@@ -287,9 +287,9 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *ju
 			plan.AdditionalQuotedExits = append(plan.AdditionalQuotedExits, quoted)
 		}
 		if currentSwap == nil || currentSwap.Request.Action != swap.Request.Action {
-			plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: swap.Request.Action, Amount: swap.Request.AmountRaw, Cost: swapCost})
+			plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: swap.Request.Action, Amount: swap.Request.AmountRaw, Cost: swapCost, Template: swapInput})
 		}
-		plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: ReportNAV, Cost: tail.CurrentCost})
+		plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: ReportNAV, Cost: tail.CurrentCost, Template: tail.Input})
 		plan.ValidThroughSlot = min(plan.ValidThroughSlot, swapCost.ValidThroughSlot)
 	}
 	plan.Exit = append(plan.Exit, tail.Exit...)
