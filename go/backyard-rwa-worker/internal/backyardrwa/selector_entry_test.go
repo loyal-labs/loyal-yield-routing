@@ -10,7 +10,7 @@ import (
 )
 
 func selectorEntryFixture(now time.Time, lane string, amount int64) SelectorEntry {
-	q := MoveQuote{SourceLane: SelectedRouteID, DestinationLane: lane, ObservationID: "quoted-source", EquityRaw: amount, CostRaw: 1, ObservedAt: now.Add(-time.Second), EvidenceID: sha256Bytes([]byte("complete-recipe"))}
+	q := MoveQuote{SourceLane: SelectedRouteID, DestinationLane: lane, ObservationID: "quoted-source", EquityRaw: amount, CostRaw: 1, ObservedAt: now.Add(-time.Second), EvidenceID: sha256Bytes([]byte("complete-recipe")), SampleSlot: 42, ValidThroughSlot: 74}
 	return SelectorEntry{Lane: lane, EquityRaw: amount, ObservationID: q.ObservationID, Quote: q, AcceptedAt: now, ExpiresAt: q.ObservedAt.Add(30 * time.Second)}
 }
 
@@ -19,6 +19,7 @@ func TestSelectorEntryExpiryAndCapacityPreserveLifecycle(t *testing.T) {
 	for _, lane := range selectorLanes {
 		entry := selectorEntryFixture(now, lane, 3_000_000)
 		original := base()
+		original.Slot = 42
 		original.PilotActive = true
 		original.RouteLane, original.StrategyKey = lane, lane
 		original.VoltrIdleRaw = 100_000_000
@@ -53,6 +54,17 @@ func TestSelectorEntryExpiryAndCapacityPreserveLifecycle(t *testing.T) {
 		consumed.AllocationOperationID = "first-attempt"
 		if err := applySelectorEntry(&s, &consumed, now); err != nil || Decide(s).Action != Hold {
 			t.Fatal("returned attempt reused entry", err)
+		}
+		s = original
+		s.Slot = entry.Quote.ValidThroughSlot + 1
+		if err := applySelectorEntry(&s, &entry, now); err != nil || Decide(s).Action != Hold {
+			t.Fatal("slot-expired choice allocated despite fresh timestamp", err)
+		}
+		s = original
+		s.Slot = entry.Quote.ValidThroughSlot + 1
+		s.SquadsIdleRaw = entry.EquityRaw
+		if err := applySelectorEntry(&s, &entry, now); err != nil || Decide(s).Action != SwapStableToCollateralStep {
+			t.Fatal("slot expiry stranded allocated tranche", err)
 		}
 		s = original
 		s.CapacityRaw = entry.EquityRaw - 1
@@ -105,7 +117,7 @@ func TestSelectorEntryEnrichesPreparationAndRefusesCorruptState(t *testing.T) {
 	entry := selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 1_000_000)
 	j := &selectorEntryJournal{pilotPlanningJournal: pilotPlanningJournal{active: true}, entry: &entry}
 	state := productionObserveState{routeKey: "fixture", journal: j}
-	o := Observation{Snapshot: Snapshot{RouteLane: SelectedRouteID}}
+	o := Observation{Snapshot: Snapshot{RouteLane: SelectedRouteID, Slot: 42}}
 	if err := state.mergeJournal(context.Background(), &o); err != nil || o.Snapshot.SelectorEntryEquityRaw != entry.EquityRaw {
 		t.Fatal("planning omitted quote", err)
 	}
@@ -185,6 +197,19 @@ func TestSelectorEvaluationDurabilityFencesAndBudgetContinuity(t *testing.T) {
 	}
 	if e, err := db.LoadSelectorEntry(ctx, key); err != nil || e != nil {
 		t.Fatal("quote-free choice persisted", err)
+	}
+	refresh()
+	oldQuote := in
+	oldQuote.Quotes = append([]MoveQuote(nil), in.Quotes...)
+	for i := range oldQuote.Quotes {
+		oldQuote.Quotes[i].ValidThroughSlot = in.Snapshot.Slot
+	}
+	result, err = db.RecordSelectorEvaluation(ctx, key, oldQuote, in.Snapshot.Slot+1, 2)
+	if err != nil || result.Action != "KEEP" || result.SelectedQuote != nil {
+		t.Fatal("final collection slot outlived source quote", err, result)
+	}
+	if e, err := db.LoadSelectorEntry(ctx, key); err != nil || e != nil {
+		t.Fatal("slot-expired choice persisted", err)
 	}
 	refresh()
 	result, err = db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 2)
@@ -279,7 +304,7 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 			_ = tx.Rollback(ctx)
 			t.Fatal(err)
 		}
-		err = db.authorizeSelectorEntryTx(ctx, tx, tc.id, budget, request, tc.admission)
+		err = db.authorizeSelectorEntryTx(ctx, tx, tc.id, budget, request, 42, tc.admission)
 		if tc.want != "" {
 			assertBudgetHold(t, err, tc.want)
 		} else if err != nil {
@@ -298,5 +323,17 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 	got, err := db.LoadSelectorEntry(ctx, key)
 	if err != nil || got.AllocationOperationID != key+"-second" {
 		t.Fatal("allocation association not durable", err, got)
+	}
+	for _, admission := range []bool{true, false} {
+		tx, err := db.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = db.lockOperationLease(ctx, tx, key+"-second"); err != nil {
+			t.Fatal(err)
+		}
+		err = db.authorizeSelectorEntryTx(ctx, tx, key+"-second", budget, request, entry.Quote.ValidThroughSlot+1, admission)
+		_ = tx.Rollback(ctx)
+		assertBudgetHold(t, err, "selector_entry_quote_expired")
 	}
 }

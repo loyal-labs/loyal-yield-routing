@@ -30,7 +30,7 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 	snapshot := Snapshot{
 		ObservationID: "maple-state", Slot: 42, RouteKind: RouteKind, RouteLane: SelectedRouteID,
 		StrategyKey: SelectedRouteID, Fresh: true, SquadsIdleRaw: 100,
-		CollateralIdleRaw: 0, PolicyReady: true, ExitBuildable: true,
+		CollateralIdleRaw: 0, MinimumCollateralDepositRaw: 1, PolicyReady: true, ExitBuildable: true,
 		CapacityRaw: 100, PolicyLimitRaw: 100, MaxTargetLTVEntryRaw: 100,
 		LiquidationThresholdBPS: 9000,
 	}

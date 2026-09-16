@@ -198,6 +198,16 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 		t.Fatal(err)
 	}
 	op := PersistedOperation{Operation: Operation{ID: id, Decision: d}, Status: Signed, SignedWire: wire, SignedWireSHA256: hash, TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
+	// A fresh wall clock must not revive a recipe whose slot window ended.
+	slotExpired := selectorEntryFixture(time.Now().UTC(), r.RouteLane, o.Snapshot.SelectorEntryEquityRaw)
+	slotExpired.Quote.SampleSlot, slotExpired.Quote.ValidThroughSlot = 9, 41
+	storeTestSelectorEntry(t, ctx, db, key, slotExpired)
+	err = db.RevalueAndMarkBroadcastIntent(ctx, rpc, op)
+	var slotValidated *validatedSignedBudgetHold
+	if !errors.As(err, &slotValidated) {
+		t.Fatal("slot expiry lost exact signed recovery", err)
+	}
+	assertBudgetHold(t, err, "selector_entry_quote_expired")
 	storeTestSelectorEntry(t, ctx, db, key, selectorEntryFixture(time.Now().UTC().Add(-time.Minute), r.RouteLane, o.Snapshot.SelectorEntryEquityRaw))
 	err = db.RevalueAndMarkBroadcastIntent(ctx, rpc, op)
 	var validated *validatedSignedBudgetHold

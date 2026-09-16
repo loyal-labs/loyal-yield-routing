@@ -1,10 +1,48 @@
 package backyardrwa
 
 import (
+	"context"
+	"encoding/binary"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestPilotUSDCObservationBoundsDepositRemainderWithoutLosingNAV(t *testing.T) {
+	m := readyWorkerManifest(t)
+	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	var previous string
+	for _, valid := range []bool{true, false} {
+		observe := productionConfirmedBatchForManifest(t, m, 77, func(accounts []ConfirmedAccount) {
+			// Keep the real production decoders; replace only controlled chain
+			// bytes. A collateral-only obligation avoids a separate debt window.
+			clear(accountAt(accounts, kaminoPrimeUSDCObligation).Data[1208:2208])
+			binary.LittleEndian.PutUint64(accountAt(accounts, budgetClockAddress).Data[:8], 77)
+			reserve := accountAt(accounts, kaminoCollateralReserve).Data
+			for i := 1; i < 11; i++ {
+				binary.LittleEndian.PutUint32(reserve[kaminoReserveConfigOffset+64+i*8:], 10_000)
+			}
+			if !valid {
+				reserve[kaminoReserveConfigOffset+7] = 1
+			}
+		})
+		o, err := observe(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := o.Snapshot
+		if s.RouteLane != PhaseOneLaneID || s.CollateralIdleRaw != 3 || s.StrategyNAVRaw != 40 || s.PositionCollateralRaw != 10 {
+			t.Fatal("deposit bound changed custody or NAV", s)
+		}
+		if valid && s.MinimumCollateralDepositRaw != 3 || !valid && s.MinimumCollateralDepositRaw != 0 {
+			t.Fatal("production observation omitted reserve rounding bound", s.MinimumCollateralDepositRaw)
+		}
+		if !valid && s.ObservationID == previous {
+			t.Fatal("changed rounding evidence reused observation identity")
+		}
+		previous = s.ObservationID
+	}
+}
 
 func cadenceNAV(slot, current, reported uint64, lastUpdated time.Time) RouteNAVSnapshot {
 	digest := strings.Repeat("a", 64)

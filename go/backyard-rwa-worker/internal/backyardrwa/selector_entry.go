@@ -27,7 +27,7 @@ type SelectorEntry struct {
 func (e SelectorEntry) validate() error {
 	if !selectorLane(e.Lane) || e.ObservationID == "" || e.EquityRaw <= 0 || e.EquityRaw > PilotWorkingTrancheCapRaw ||
 		e.Quote.DestinationLane != e.Lane || !selectorLane(e.Quote.SourceLane) || e.Quote.ObservationID != e.ObservationID || e.Quote.EquityRaw != e.EquityRaw || e.Quote.CostRaw < 0 || e.Quote.CostRaw >= e.EquityRaw || !sha256Pattern.MatchString(e.Quote.EvidenceID) ||
-		e.AcceptedAt.IsZero() || e.Quote.ObservedAt.IsZero() || e.Quote.ObservedAt.After(e.AcceptedAt) || !e.ExpiresAt.After(e.AcceptedAt) || e.ExpiresAt.After(e.Quote.ObservedAt.Add(30*time.Second)) {
+		!e.Quote.currentAtSlot(e.Quote.SampleSlot) || e.AcceptedAt.IsZero() || e.Quote.ObservedAt.IsZero() || e.Quote.ObservedAt.After(e.AcceptedAt) || !e.ExpiresAt.After(e.AcceptedAt) || e.ExpiresAt.After(e.Quote.ObservedAt.Add(30*time.Second)) {
 		return fmt.Errorf("invalid_selector_entry")
 	}
 	return nil
@@ -55,7 +55,7 @@ func applySelectorEntry(s *Snapshot, entry *SelectorEntry, now time.Time) error 
 	}
 	// Expiry stops a new allocation, never interrupts the already allocated
 	// tranche. Risk, withdrawals and return-to-idle retain their earlier priority.
-	if !hasWorkingCapital(*s) && (entry.AllocationOperationID != "" || now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt)) {
+	if !hasWorkingCapital(*s) && (entry.AllocationOperationID != "" || !entry.Quote.currentAtSlot(s.Slot) || now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt)) {
 		s.SelectorEntryPaused = true
 		return nil
 	}
@@ -166,6 +166,16 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 		return result, budgetHold("selector_evaluation_not_current")
 	}
 	input.Now = now
+	// The source observation may precede the final fee/price collection. Use
+	// the caller's latest confirmed slot as well as that source slot; a fresh
+	// timestamp alone cannot extend any component of the economic recipe.
+	currentQuotes := make([]MoveQuote, 0, len(input.Quotes))
+	for _, q := range input.Quotes {
+		if q.currentAtSlot(confirmedSlot) {
+			currentQuotes = append(currentQuotes, q)
+		}
+	}
+	input.Quotes = currentQuotes
 	result = SelectOpportunity(input, state.Selector.Result.State)
 	var entry *SelectorEntry
 	if result.Action == "ENTER" {
@@ -211,7 +221,7 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 // Called under the existing operation/route lock at admission, build and send.
 // Expiry only closes a new allocation or account setup; completion and exits
 // never depend on a still-current economic forecast.
-func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, operationID string, budget Phase3Budget, request any, admission bool) error {
+func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, operationID string, budget Phase3Budget, request any, slot int64, admission bool) error {
 	if budget.Pilot == nil {
 		return nil
 	}
@@ -239,7 +249,7 @@ func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, oper
 		return budgetHold("selector_entry_authority_mismatch")
 	}
 	now := time.Now().UTC()
-	if now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt) {
+	if !entry.Quote.currentAtSlot(slot) || now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt) {
 		return budgetHold("selector_entry_quote_expired")
 	}
 	if requestedLane != "" {

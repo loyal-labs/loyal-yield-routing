@@ -149,6 +149,16 @@ type MoveQuote struct {
 	CostRaw         int64     `json:"costRaw"`
 	ObservedAt      time.Time `json:"observedAt"`
 	EvidenceID      string    `json:"evidenceId"`
+	// SampleSlot is captured before constructing any recipe input. Fresh fee
+	// observations cannot extend older quote/reserve evidence past this window.
+	SampleSlot       int64 `json:"sampleSlot"`
+	ValidThroughSlot int64 `json:"validThroughSlot"`
+}
+
+func (q MoveQuote) currentAtSlot(slot int64) bool {
+	return q.SampleSlot > 0 && q.ValidThroughSlot >= q.SampleSlot &&
+		q.ValidThroughSlot-q.SampleSlot <= budgetMaxObservationLagSlots &&
+		slot >= q.SampleSlot && slot <= q.ValidThroughSlot
 }
 
 type SelectorInput struct {
@@ -330,7 +340,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		var quote *MoveQuote
 		for i := range in.Quotes {
 			q := &in.Quotes[i]
-			if q.SourceLane == s.RouteLane && q.DestinationLane == lane && q.EquityRaw == amount && q.ObservationID == s.ObservationID && freshAt(in.Now, q.ObservedAt, p.QuoteMaxAge) && q.CostRaw >= 0 && q.EvidenceID != "" {
+			if q.SourceLane == s.RouteLane && q.DestinationLane == lane && q.EquityRaw == amount && q.ObservationID == s.ObservationID && freshAt(in.Now, q.ObservedAt, p.QuoteMaxAge) && q.currentAtSlot(s.Slot) && q.CostRaw >= 0 && q.EvidenceID != "" {
 				if quote != nil {
 					return hold("duplicate_move_quote")
 				}

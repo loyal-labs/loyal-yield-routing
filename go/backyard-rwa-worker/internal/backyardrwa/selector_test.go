@@ -19,7 +19,7 @@ func selectorFixture() SelectorInput {
 	p.MinimumBenefitRaw = 1
 	p.UncertaintyBPS = 0
 	market := LaneEconomics{Lane: "OnRe/ONyc/USDC", EvidenceID: "rates", ObservedAt: now, NativeObservedAt: now, NativeAPY: .15, SupplyAPY: 0, CurrentBorrowAPY: .04, BorrowCurve: []BorrowCurvePoint{{0, 400}, {8000, 400}, {10000, 10000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, EntryCapacity: Capacity{Known: true, Unlimited: true}}
-	quote := MoveQuote{SourceLane: s.RouteLane, DestinationLane: market.Lane, ObservationID: s.ObservationID, EquityRaw: s.TotalVaultNAVRaw, CostRaw: 10_000, ObservedAt: now, EvidenceID: "complete-sequence"}
+	quote := MoveQuote{SourceLane: s.RouteLane, DestinationLane: market.Lane, ObservationID: s.ObservationID, EquityRaw: s.TotalVaultNAVRaw, CostRaw: 10_000, ObservedAt: now, EvidenceID: "complete-sequence", SampleSlot: s.Slot, ValidThroughSlot: s.Slot + 32}
 	return SelectorInput{Now: now, Snapshot: s, Markets: []LaneEconomics{market}, Quotes: []MoveQuote{quote}, Policy: p}
 }
 func advanceSelectorFixture(in *SelectorInput, d time.Duration) {
@@ -30,6 +30,30 @@ func advanceSelectorFixture(in *SelectorInput, d time.Duration) {
 	}
 	for i := range in.Quotes {
 		in.Quotes[i].ObservedAt = in.Now
+	}
+}
+
+func TestSelectorDoesNotRefreshOldRecipeWithFreshTimestamp(t *testing.T) {
+	for _, kind := range []string{"expired", "future", "unbounded", "missing"} {
+		t.Run(kind, func(t *testing.T) {
+			in := selectorFixture()
+			first := SelectOpportunity(in, SelectorState{})
+			advanceSelectorFixture(&in, time.Minute)
+			switch kind {
+			case "expired":
+				in.Snapshot.Slot = in.Quotes[0].ValidThroughSlot + 1
+			case "future":
+				in.Quotes[0].SampleSlot = in.Snapshot.Slot + 1
+			case "unbounded":
+				in.Quotes[0].ValidThroughSlot++
+			case "missing":
+				in.Quotes[0].SampleSlot = 0
+			}
+			got := SelectOpportunity(in, first.State)
+			if got.Action == "ENTER" || got.Action == "SWITCH" || got.SelectedQuote != nil {
+				t.Fatal("timestamp refreshed invalid recipe evidence", got)
+			}
+		})
 	}
 }
 func TestSelectorPersistenceSurvivesCapacityClosureAndJSONRestart(t *testing.T) {

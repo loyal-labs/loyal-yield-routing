@@ -275,7 +275,7 @@ func testPolicySetupPaymentAuthorization(t *testing.T, ctx context.Context, db *
 			if mode == "higher fresh cost" {
 				cost.TotalMicros++
 			}
-			err = db.authorizePhase3SendTx(ctx, tx, id, auth.IntentSHA256, op.SignedWireSHA256, cost)
+			err = db.authorizePhase3SendTx(ctx, tx, id, auth.IntentSHA256, op.SignedWireSHA256, cost, cost.ObservationSlot)
 			if mode == "valid DB reservation" {
 				if err != nil {
 					t.Fatal(err)

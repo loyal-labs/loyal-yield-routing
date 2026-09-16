@@ -183,6 +183,22 @@ func TestPilotMeasuredAdmissionPersistsCostAndRejectsChangedBuildAndSend(t *test
 	if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, e.Request, e.ExpectedEffects, auth.BuildInput.Effects); err != nil {
 		t.Fatal(err)
 	}
+	// Fresh prices can outlive the original complete exit admission. Advance
+	// only the final locked RPC read, keeping every earlier cost current.
+	validThrough := auth.BridgeAdmission.ValidThroughSlot
+	auth.BridgeAdmission.ValidThroughSlot = 42
+	narrowedAuth, _ := json.Marshal(auth)
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=jsonb_set(expected_effects,'{phase3}',$2) WHERE operation_id=$1`, id, narrowedAuth); err != nil {
+		t.Fatal(err)
+	}
+	advancedRPC := budgetBuildRPC(t, 5000, 43)
+	_, _ = advancedRPC.ConfirmedSlot(ctx)
+	assertBudgetHold(t, db.authorizePhase3Build(ctx, advancedRPC, id, e.Request, auth.BuildInput.Effects, auth.BridgeAdmission.CurrentCost), "stale_bridge_admission_snapshot")
+	auth.BridgeAdmission.ValidThroughSlot = validThrough
+	restoredAuth, _ := json.Marshal(auth)
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=jsonb_set(expected_effects,'{phase3}',$2) WHERE operation_id=$1`, id, restoredAuth); err != nil {
+		t.Fatal(err)
+	}
 	// Expiry after admission cannot sneak through a delayed build. Returning
 	// custody and settling a sent transaction do not use this entry gate.
 	expiredEntry := selectorEntryFixture(time.Now().UTC().Add(-time.Minute), SelectedRouteID, 10_000_000)
@@ -220,7 +236,7 @@ func TestPilotMeasuredAdmissionPersistsCostAndRejectsChangedBuildAndSend(t *test
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	assertBudgetHold(t, db.authorizePhase3SendTx(ctx, tx, id, auth.IntentSHA256, hash, cost), "fresh_execution_cost_exceeds_reservation")
+	assertBudgetHold(t, db.authorizePhase3SendTx(ctx, tx, id, auth.IntentSHA256, hash, cost, 42), "fresh_execution_cost_exceeds_reservation")
 	_ = tx.Rollback(ctx)
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,ARRAY['phase3','reservations',$2,'executionCostUpperMicros'],to_jsonb($3::bigint)) WHERE route_key=$1`, key, id, reservation.ExecutionCostUpperMicros); err != nil {
 		t.Fatal(err)
@@ -235,7 +251,7 @@ func TestPilotMeasuredAdmissionPersistsCostAndRejectsChangedBuildAndSend(t *test
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = db.authorizePhase3SendTx(ctx, tx, id, auth.IntentSHA256, hash, cost)
+		err = db.authorizePhase3SendTx(ctx, tx, id, auth.IntentSHA256, hash, cost, 42)
 		_ = tx.Rollback(ctx)
 		if expired {
 			assertBudgetHold(t, err, "selector_entry_quote_expired")

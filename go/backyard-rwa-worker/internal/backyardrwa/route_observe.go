@@ -279,12 +279,16 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: beforeDemand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw)}}
 		base.Snapshot.PrimeIdleRaw = int64(prime.Raw)
 		base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
-		if route.Kamino.DebtMint != bridgeUSDC && prime.Raw > 0 && !cutoverDrain && beforeDemand == 0 {
+		if (route.Kamino.DebtMint != bridgeUSDC || selectorLane(route.Lane)) && prime.Raw > 0 && !cutoverDrain && beforeDemand == 0 {
 			minimum, err := kaminoDepositMinimum(accounts, route, slot, math.MaxInt64)
-			if err != nil {
+			if err != nil && !selectorLane(route.Lane) {
 				return Observation{}, nil, err
 			}
-			base.Snapshot.MinimumCollateralDepositRaw = math.MaxInt64 - int64(minimum) + 1
+			// A missing pilot entry bound must not suppress accounting or a
+			// risk/unwind observation. Zero explicitly holds only new deposits.
+			if err == nil {
+				base.Snapshot.MinimumCollateralDepositRaw = math.MaxInt64 - int64(minimum) + 1
+			}
 		}
 		base.Snapshot.RouteLane = route.Lane
 		base.Snapshot.StrategyKey = route.Lane
@@ -341,7 +345,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			ready, exit, position.BorrowUtilizationBlocked,
 			nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, entryUSDC,
 		)
-		if route.Kamino.DebtMint != bridgeUSDC {
+		if route.Kamino.DebtMint != bridgeUSDC || selectorLane(route.Lane) {
 			digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d|payoff-debt:%d|idle-collateral-value:%d|position-debt-value:%d|minimum-deposit:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw, base.Snapshot.PayoffDebtRaw, base.Snapshot.CollateralIdleValueRaw, base.Snapshot.PositionDebtValueRaw, base.Snapshot.MinimumCollateralDepositRaw)))
 			base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
 		}

@@ -317,11 +317,21 @@ func decideUSDC(s Snapshot) Decision {
 		(s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
 		return decision(HoldManualRecovery, "invalid_entry_ltv", 0)
 	}
+	depositReady := s.CollateralIdleRaw > 0
+	if selectorLane(s.RouteLane) && depositReady {
+		if s.MinimumCollateralDepositRaw <= 0 {
+			return decision(Hold, "deposit_rounding_window_unavailable", 0)
+		}
+		// KLend may leave less than one receipt's liquidity in custody. Keep
+		// that value in NAV and the exit graph, but do not retry an input the
+		// same reserve-derived builder bound already refuses.
+		depositReady = s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw
+	}
 	if s.PositionDebtRaw > 0 {
 		if s.SquadsIdleRaw > 0 && s.PolicyReady && s.ExitBuildable {
 			return decision(SwapDebtToCollateralStep, "borrowed_usdc_requires_prime_buffer", s.SquadsIdleRaw)
 		}
-		if s.CollateralIdleRaw > 0 {
+		if depositReady {
 			return decision(OpenRouteStep, "single_loop_redeposit", s.CollateralIdleRaw)
 		}
 		return decision(Hold, "single_loop_position_ready", 0)
@@ -347,7 +357,7 @@ func decideUSDC(s Snapshot) Decision {
 		}
 		return decision(SwapStableToCollateralStep, "usdc_requires_prime_collateral", amount)
 	}
-	if s.CollateralIdleRaw > 0 && s.PolicyReady && s.ExitBuildable {
+	if depositReady && s.PolicyReady && s.ExitBuildable {
 		return decision(OpenRouteStep, "prime_collateral_ready", s.CollateralIdleRaw)
 	}
 	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.BorrowUtilizationBlocked {

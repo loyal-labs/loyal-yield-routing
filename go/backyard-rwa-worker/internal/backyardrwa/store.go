@@ -1181,7 +1181,7 @@ func (d *Database) markBroadcastIntent(ctx context.Context, operationID string, 
 	if slot < cost.ObservationSlot || slot > cost.ValidThroughSlot {
 		return budgetHold("send_valuation_expired")
 	}
-	if err := d.authorizePhase3SendTx(ctx, tx, operationID, intent, wireHash, cost); err != nil {
+	if err := d.authorizePhase3SendTx(ctx, tx, operationID, intent, wireHash, cost, slot); err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx, PersistBroadcastIntentUpdate, operationID)

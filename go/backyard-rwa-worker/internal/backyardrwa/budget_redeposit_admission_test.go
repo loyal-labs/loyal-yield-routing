@@ -122,3 +122,45 @@ func TestRedepositAdmissionRejectsChangedDebtReceiptsAndConservation(t *testing.
 	_, err := observePhase3DepositAdmission(context.Background(), rpc, client, m, o, d, e)
 	assertBudgetHold(t, err, "complete_redeposit_return_unavailable")
 }
+
+func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {
+	for _, lane := range selectorLanes {
+		t.Run(lane, func(t *testing.T) {
+			s := base()
+			s.RouteLane, s.StrategyKey = lane, lane
+			s.PilotActive = true
+			s.MinimumCollateralDepositRaw = 3
+			s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 10_000_000, 10_000_000
+			s.CollateralIdleRaw, s.PrimeIdleRaw = 1, 1
+			s.PostMutationNAVRequired = true
+			if got := Decide(s); got.Action != ReportNAV {
+				t.Fatal("remainder bypassed required NAV", got)
+			}
+			s.PostMutationNAVRequired = false
+			if got := Decide(s); got.Action != OpenRouteStep || got.Reason != "prime_collateral_requires_borrow" {
+				t.Fatal("deposit remainder blocked borrowing", got)
+			}
+			s.PositionDebtRaw, s.PositionDebtValueRaw, s.SquadsIdleRaw = 5_000_000, 5_000_000, 5_000_000
+			if got := Decide(s); got.Action != SwapDebtToCollateralStep {
+				t.Fatal("remainder stranded borrowed cash", got)
+			}
+			s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 5_000_001, 5_000_001
+			if got := Decide(s); got.Action != OpenRouteStep || got.Reason != "single_loop_redeposit" {
+				t.Fatal("redeposit buffer skipped", got)
+			}
+			s.CollateralIdleRaw, s.PrimeIdleRaw = 1, 1
+			if got := Decide(s); got.Action != Hold || got.Reason != "single_loop_position_ready" {
+				t.Fatal("remainder restarted finished loop", got)
+			}
+			s.Unwind = true
+			if got := Decide(s); got.Action != DeleverRouteStep {
+				t.Fatal("rounding threshold blocked exit", got)
+			}
+			s.Unwind = false
+			s.MinimumCollateralDepositRaw = 0
+			if got := Decide(s); got.Action != Hold || got.Reason != "deposit_rounding_window_unavailable" {
+				t.Fatal("missing threshold treated as dust", got)
+			}
+		})
+	}
+}

@@ -312,7 +312,7 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	if slot < plan.CurrentCost.ObservationSlot || slot > plan.ValidThroughSlot {
 		return budgetHold("stale_bridge_admission_snapshot")
 	}
-	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, true); err != nil {
+	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, slot, true); err != nil {
 		return err
 	}
 	if auth.GoalID != "" {
@@ -471,7 +471,21 @@ func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, ope
 			return budgetHold("stale_bridge_admission_snapshot")
 		}
 	}
-	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, false); err != nil {
+	entrySlot := knownCost.ObservationSlot
+	if budget.Pilot != nil {
+		entrySlot, err = rpc.ConfirmedSlot(ctx)
+		if err != nil {
+			return err
+		}
+		validThrough := knownCost.ValidThroughSlot
+		if auth.BridgeAdmission != nil {
+			validThrough = min(validThrough, auth.BridgeAdmission.ValidThroughSlot)
+		}
+		if entrySlot < knownCost.ObservationSlot || entrySlot > validThrough {
+			return budgetHold("stale_bridge_admission_snapshot")
+		}
+	}
+	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, entrySlot, false); err != nil {
 		return err
 	}
 	auth.BuildInput, err = encodePhase3BuildInput(request, effects)
@@ -502,7 +516,7 @@ func (d *Database) bindPhase3WireTx(ctx context.Context, tx pgx.Tx, operationID,
 	return d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth)
 }
 
-func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operationID, intent, wireHash string, cost ValuedTransactionCost) error {
+func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operationID, intent, wireHash string, cost ValuedTransactionCost, confirmedSlot int64) error {
 	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
 	if err != nil {
 		return err
@@ -554,7 +568,7 @@ func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operati
 		if err != nil {
 			return err
 		}
-		if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, false); err != nil {
+		if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, confirmedSlot, false); err != nil {
 			return err
 		}
 	}
