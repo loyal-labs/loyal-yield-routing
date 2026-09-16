@@ -43,18 +43,20 @@ func journaledBudgetHold(reason string) error {
 // includes every source debit and fee, not merely the planner's requested size.
 // ExitAfterMicros is the complete remaining exit graph after this transaction.
 type BudgetReservation struct {
-	OperationID      string `json:"operationId"`
-	Family           string `json:"family"`
-	IntentSHA256     string `json:"intentSha256"`
-	UpperMicros      int64  `json:"upperMicros"`
-	ExitAfterMicros  int64  `json:"exitAfterMicros"`
-	ExitBeforeMicros int64  `json:"exitBeforeMicros"`
-	Recovery         bool   `json:"recovery"`
+	OperationID              string `json:"operationId"`
+	ExecutionCostUpperMicros int64  `json:"executionCostUpperMicros,omitempty"`
+	Family                   string `json:"family"`
+	IntentSHA256             string `json:"intentSha256"`
+	UpperMicros              int64  `json:"upperMicros"`
+	ExitAfterMicros          int64  `json:"exitAfterMicros"`
+	ExitBeforeMicros         int64  `json:"exitBeforeMicros"`
+	Recovery                 bool   `json:"recovery"`
 }
 
 type FamilyBudget struct {
-	SpentMicros int64 `json:"spentMicros"`
-	ExitMicros  int64 `json:"exitMicros"`
+	SpentMicros              int64 `json:"spentMicros"`
+	ExecutionCostSpentMicros int64 `json:"executionCostSpentMicros,omitempty"`
+	ExitMicros               int64 `json:"exitMicros"`
 }
 
 // Phase3Budget is persisted in the existing route state. There is deliberately
@@ -62,6 +64,7 @@ type FamilyBudget struct {
 // reload this same goal identity. Database callers serialize changes with the
 // existing route-row lock; this pure reducer does not itself provide durability.
 type Phase3Budget struct {
+	Pilot        *pilotBudgetAuthority        `json:"pilot,omitempty"`
 	Limits       *DeploymentLimits            `json:"limits,omitempty"`
 	GoalID       string                       `json:"goalId"`
 	Closed       bool                         `json:"closed"`
@@ -87,6 +90,8 @@ func phase3BudgetFamilyForLane(lane string) string {
 		return "AUTO"
 	case "Ethena/USDe/PYUSD":
 		return "Ethena"
+	case "Prime/PRIME/USDC":
+		return "Prime"
 	case SelectedRouteID:
 		// The manifest-selected lane is part of the funded program. Without it
 		// every decision cycled decided -> failed on an unavailable admission
@@ -109,21 +114,31 @@ func budgetSum(values ...int64) (int64, error) {
 }
 
 func (b Phase3Budget) validate() error {
-	if err := b.deploymentLimits().validate(); err != nil {
+	if err := b.deploymentLimits().validateWithin(b.budgetCeiling()); err != nil {
 		return err
 	}
-	if b.GoalID != Phase3GoalID || len(b.Families) < 3 || len(b.Families) > 4 || b.Reservations == nil {
+	if b.Pilot != nil && b.Pilot.validate() != nil {
+		return budgetHold("invalid_pilot_authority")
+	}
+	maxFamilies := 4
+	if b.Pilot != nil {
+		maxFamilies = 5
+	}
+	if b.GoalID != Phase3GoalID || len(b.Families) < 3 || len(b.Families) > maxFamilies || b.Reservations == nil {
 		return budgetHold("missing_or_mismatched_goal_budget")
 	}
 	for family, row := range b.Families {
-		if !phase3Family(family) || row.SpentMicros < 0 || row.ExitMicros < 0 {
+		if !b.budgetFamily(family) || row.SpentMicros < 0 || row.ExitMicros < 0 || row.ExecutionCostSpentMicros < 0 || row.ExecutionCostSpentMicros > row.SpentMicros || (b.Pilot == nil && row.ExecutionCostSpentMicros != 0) {
 			return budgetHold("invalid_family_budget")
 		}
 	}
 	for id, r := range b.Reservations {
-		if id == "" || r.OperationID != id || !phase3Family(r.Family) || !sha256Pattern.MatchString(r.IntentSHA256) ||
+		if id == "" || r.OperationID != id || !b.budgetFamily(r.Family) || !sha256Pattern.MatchString(r.IntentSHA256) ||
 			r.UpperMicros <= 0 || r.UpperMicros > b.deploymentLimits().TransactionMicros || r.ExitAfterMicros < 0 || r.ExitBeforeMicros < 0 {
 			return budgetHold("invalid_persisted_reservation")
+		}
+		if err := b.validateExecutionCost(r); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -132,7 +147,11 @@ func (b Phase3Budget) validate() error {
 func (b Phase3Budget) totals(family string) (int64, int64, error) {
 	var familyTotal, goalTotal int64
 	for name, row := range b.Families {
-		total, err := budgetSum(row.SpentMicros, row.ExitMicros)
+		committedSpend := row.SpentMicros
+		if b.Pilot != nil {
+			committedSpend = row.ExecutionCostSpentMicros
+		}
+		total, err := budgetSum(committedSpend, row.ExitMicros)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -172,8 +191,11 @@ func (b *Phase3Budget) Admit(r BudgetReservation) error {
 	if b.Closed {
 		return budgetHold("goal_envelope_expired")
 	}
-	if !phase3Family(r.Family) || r.OperationID == "" || !sha256Pattern.MatchString(r.IntentSHA256) || r.UpperMicros <= 0 || r.ExitAfterMicros < 0 {
+	if !b.entryFamily(r.Family) || r.OperationID == "" || !sha256Pattern.MatchString(r.IntentSHA256) || r.UpperMicros <= 0 || r.ExitAfterMicros < 0 {
 		return budgetHold("invalid_budget_intent")
+	}
+	if err := b.validateExecutionCost(r); err != nil {
+		return err
 	}
 	if r.UpperMicros > b.deploymentLimits().TransactionMicros {
 		return budgetHold("transaction_cap_exceeded")
@@ -188,6 +210,19 @@ func (b *Phase3Budget) Admit(r BudgetReservation) error {
 	}
 	if len(b.Reservations) != 0 {
 		return budgetHold("unresolved_submission_reservation")
+	}
+	if b.Pilot != nil && !r.Recovery {
+		spent, err := b.executionCostSpent()
+		if err != nil {
+			return err
+		}
+		next, err := budgetSum(spent, r.ExecutionCostUpperMicros)
+		if err != nil {
+			return err
+		}
+		if next > PilotEntryExecutionCostCapMicros {
+			return budgetHold("pilot_entry_execution_cost_cap_exhausted")
+		}
 	}
 	row := b.Families[r.Family]
 	if r.ExitBeforeMicros != 0 {
@@ -255,6 +290,16 @@ func (b *Phase3Budget) Settle(operationID, intentSHA256 string, actualMicros int
 	spent, err := budgetSum(row.SpentMicros, actualMicros)
 	if err != nil {
 		return err
+	}
+	if b.Pilot != nil {
+		if actualMicros != r.UpperMicros {
+			return budgetHold("pilot_settlement_requires_full_admitted_bound")
+		}
+		expense, err := budgetSum(row.ExecutionCostSpentMicros, r.ExecutionCostUpperMicros)
+		if err != nil {
+			return err
+		}
+		row.ExecutionCostSpentMicros = expense
 	}
 	row.SpentMicros = spent
 	b.Families[r.Family] = row

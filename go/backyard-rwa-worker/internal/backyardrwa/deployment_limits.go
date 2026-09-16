@@ -16,7 +16,9 @@ func legacyDeploymentLimits() DeploymentLimits {
 	return DeploymentLimits{Phase3TransactionCapMicros, Phase3FamilyCapMicros, Phase3GoalCapMicros}
 }
 func (l DeploymentLimits) validate() error {
-	ceiling := legacyDeploymentLimits()
+	return l.validateWithin(legacyDeploymentLimits())
+}
+func (l DeploymentLimits) validateWithin(ceiling DeploymentLimits) error {
 	if l.TransactionMicros <= 0 || l.FamilyMicros < l.TransactionMicros || l.TotalMicros < l.FamilyMicros || l.TransactionMicros > ceiling.TransactionMicros || l.FamilyMicros > ceiling.FamilyMicros || l.TotalMicros > ceiling.TotalMicros {
 		return fmt.Errorf("deployment_limits_exceed_reviewed_envelope")
 	}
@@ -38,7 +40,7 @@ func (b *Phase3Budget) ConstrainLimits(l DeploymentLimits) error {
 	if err := b.validate(); err != nil {
 		return err
 	}
-	if err := l.validate(); err != nil {
+	if err := l.validateWithin(b.budgetCeiling()); err != nil {
 		return err
 	}
 	old := b.deploymentLimits()
@@ -47,6 +49,11 @@ func (b *Phase3Budget) ConstrainLimits(l DeploymentLimits) error {
 	}
 	if len(b.Reservations) != 0 {
 		return budgetHold("deployment_limits_have_unresolved_reservations")
+	}
+	for _, row := range b.Families {
+		if row.ExitMicros != 0 && l != old {
+			return budgetHold("deployment_limits_have_reserved_exits")
+		}
 	}
 	for family := range b.Families {
 		used, total, err := b.totals(family)

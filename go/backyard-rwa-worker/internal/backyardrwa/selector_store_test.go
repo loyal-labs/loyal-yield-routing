@@ -133,7 +133,7 @@ func TestIncidentResolutionMigrationPreservesFailureAndBindsDisposition(t *testi
 }
 func TestDeploymentLimitsCannotResetOrIncreaseBudget(t *testing.T) {
 	b := emptyTestBudget()
-	b.Families["OnRe"] = FamilyBudget{SpentMicros: 4_000_000, ExitMicros: 2_000_000}
+	b.Families["OnRe"] = FamilyBudget{SpentMicros: 4_000_000}
 	limits := DeploymentLimits{500_000, 10_000_000, 30_000_000}
 	if err := b.ConstrainLimits(limits); err != nil {
 		t.Fatal(err)
@@ -149,6 +149,7 @@ func TestDeploymentLimitsCannotResetOrIncreaseBudget(t *testing.T) {
 	if err := restarted.ConstrainLimits(legacyDeploymentLimits()); err == nil {
 		t.Fatal("limits increased")
 	}
+	restarted.Families["OnRe"] = FamilyBudget{SpentMicros: 4_000_000, ExitMicros: 2_000_000}
 	before, _ := json.Marshal(restarted)
 	if err := restarted.ConstrainLimits(DeploymentLimits{100_000, 5_000_000, 20_000_000}); err == nil {
 		t.Fatal("limits consumed reserved exit")

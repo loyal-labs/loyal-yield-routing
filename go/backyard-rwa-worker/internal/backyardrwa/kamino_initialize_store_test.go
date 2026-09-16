@@ -11,6 +11,11 @@ import (
 )
 
 func TestInitializationDatabaseSettlementBindsWireAndPreservesReservation(t *testing.T) {
+	for _, pilot := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pilot=%t", pilot), func(t *testing.T) { testInitializationDatabaseSettlement(t, pilot) })
+	}
+}
+func testInitializationDatabaseSettlement(t *testing.T, pilot bool) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 20*time.Second)
 	defer cancel()
 	defer db.Close()
@@ -26,8 +31,28 @@ func TestInitializationDatabaseSettlementBindsWireAndPreservesReservation(t *tes
 	id := key + "-op"
 	budget := emptyTestBudget()
 	budget.Families["Maple"] = FamilyBudget{}
-	state, _ := json.Marshal(map[string]any{"generation": 1, "phase3": budget})
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,$2)`, key, state); err != nil {
+	stateValue := map[string]any{"generation": 1, "phase3": budget}
+	version := int64(1)
+	if pilot {
+		flat := pilotFlatFixture(t)
+		flatJSON, _ := json.Marshal(flat)
+		previous, _ := json.Marshal(budget)
+		authority := pilotTestAuthority(budget)
+		authority.Generation = 2
+		authority.FinalizedSlot = flat.Slot
+		authority.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
+		var err error
+		budget, err = activatePilotBudget(budget, authority)
+		if err != nil {
+			t.Fatal(err)
+		}
+		version = 2
+		stateValue["generation"] = version
+		stateValue["phase3"] = budget
+		stateValue["pilotBudgetActivation"] = pilotBudgetActivation{authority, previous, flat}
+	}
+	state, _ := json.Marshal(stateValue)
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,$3)`, key, state, version); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.AcquireRouteLease(ctx, key, "initializer-test", time.Minute); err != nil {
@@ -53,6 +78,9 @@ func TestInitializationDatabaseSettlementBindsWireAndPreservesReservation(t *tes
 		t.Fatal(err)
 	}
 	reservation := BudgetReservation{OperationID: id, Family: "Maple", IntentSHA256: digest, UpperMicros: 900000}
+	if pilot {
+		reservation.ExecutionCostUpperMicros = 1000
+	}
 	if err = db.ReservePhase3(ctx, reservation); err != nil {
 		t.Fatal(err)
 	}
@@ -99,11 +127,24 @@ func TestInitializationDatabaseSettlementBindsWireAndPreservesReservation(t *tes
 			t.Fatal("budget decode")
 		}
 		if drift != "" {
-			if status != "reconciling" || len(after.Reservations) != 1 || after.Families["Maple"].SpentMicros != 0 {
+			if status != "reconciling" || len(after.Reservations) != 1 || after.Families["Maple"].SpentMicros != 0 || after.Families["Maple"].ExecutionCostSpentMicros != 0 {
 				t.Fatal("invalid receipt released reservation")
 			}
-		} else if status != "reconciled" || len(after.Reservations) != 0 || after.Families["Maple"].SpentMicros != reservation.UpperMicros {
+		} else if status != "reconciled" || len(after.Reservations) != 0 || after.Families["Maple"].SpentMicros != reservation.UpperMicros || after.Families["Maple"].ExecutionCostSpentMicros != reservation.ExecutionCostUpperMicros {
 			t.Fatal("native finality did not settle exactly once")
+		}
+		if drift == "" {
+			var authJSON []byte
+			if err = db.pool.QueryRow(ctx, `SELECT expected_effects->'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&authJSON); err != nil {
+				t.Fatal(err)
+			}
+			var auth phase3OperationAuthorization
+			if json.Unmarshal(authJSON, &auth) != nil || auth.BookedSpentMicros != reservation.UpperMicros || auth.BookedExecutionCostMicros != reservation.ExecutionCostUpperMicros {
+				t.Fatal("journal settlement lost gross or expense bound")
+			}
+			if pilot && auth.PilotAuthorityID != pilotBudgetAuthorityID {
+				t.Fatal("settlement lost pilot authority")
+			}
 		}
 	}
 }

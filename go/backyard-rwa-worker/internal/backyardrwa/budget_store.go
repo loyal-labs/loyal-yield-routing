@@ -10,18 +10,20 @@ import (
 )
 
 type phase3OperationAuthorization struct {
-	GoalID                string                  `json:"goalId"`
-	IntentSHA256          string                  `json:"intentSha256"`
-	SignedWireSHA256      string                  `json:"signedWireSha256,omitempty"`
-	ReservationReleased   bool                    `json:"reservationReleased,omitempty"`
-	BookedSpentMicros     int64                   `json:"bookedSpentMicros,omitempty"`
-	BuildInput            *phase3BuildInput       `json:"buildInput,omitempty"`
-	SendKnownCost         *ValuedTransactionCost  `json:"sendKnownCost,omitempty"`
-	BridgeAdmission       *phase3BridgeAdmission  `json:"bridgeAdmission,omitempty"`
-	PolicySetup           *policySetupObservation `json:"policySetup,omitempty"`
-	PolicySetupCompletion *policySetupCompletion  `json:"policySetupCompletion,omitempty"`
-	SetupBuildCost        *ValuedTransactionCost  `json:"setupBuildCost,omitempty"`
-	SetupCompletionCost   *ValuedTransactionCost  `json:"setupCompletionCost,omitempty"`
+	PilotAuthorityID          string                  `json:"pilotAuthorityId,omitempty"`
+	BookedExecutionCostMicros int64                   `json:"bookedExecutionCostMicros,omitempty"`
+	GoalID                    string                  `json:"goalId"`
+	IntentSHA256              string                  `json:"intentSha256"`
+	SignedWireSHA256          string                  `json:"signedWireSha256,omitempty"`
+	ReservationReleased       bool                    `json:"reservationReleased,omitempty"`
+	BookedSpentMicros         int64                   `json:"bookedSpentMicros,omitempty"`
+	BuildInput                *phase3BuildInput       `json:"buildInput,omitempty"`
+	SendKnownCost             *ValuedTransactionCost  `json:"sendKnownCost,omitempty"`
+	BridgeAdmission           *phase3BridgeAdmission  `json:"bridgeAdmission,omitempty"`
+	PolicySetup               *policySetupObservation `json:"policySetup,omitempty"`
+	PolicySetupCompletion     *policySetupCompletion  `json:"policySetupCompletion,omitempty"`
+	SetupBuildCost            *ValuedTransactionCost  `json:"setupBuildCost,omitempty"`
+	SetupCompletionCost       *ValuedTransactionCost  `json:"setupCompletionCost,omitempty"`
 }
 
 // Preserve an admission failure before restart recovery can replace it with a
@@ -71,6 +73,7 @@ func (d *Database) settlePhase3ReservationTx(ctx context.Context, tx pgx.Tx, ope
 		return err
 	}
 	auth.BookedSpentMicros = reservation.UpperMicros
+	auth.BookedExecutionCostMicros = reservation.ExecutionCostUpperMicros
 	return d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth)
 }
 
@@ -128,11 +131,12 @@ func (d *Database) readPhase3BudgetTx(ctx context.Context, tx pgx.Tx, operationI
 	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
 		return Phase3Budget{}, phase3OperationAuthorization{}, err
 	}
-	var budgetBytes, authBytes []byte
+	var budgetBytes, authBytes, activationBytes []byte
+	var stateVersion int64
 	var lane string
-	err := tx.QueryRow(ctx, `SELECT COALESCE(route.state->'phase3','null'::jsonb), COALESCE(operation.expected_effects->'phase3','null'::jsonb),COALESCE(operation.strategy_key,'')
+	err := tx.QueryRow(ctx, `SELECT COALESCE(route.state->'phase3','null'::jsonb), COALESCE(operation.expected_effects->'phase3','null'::jsonb),COALESCE(operation.strategy_key,''),COALESCE(route.state->'pilotBudgetActivation','null'::jsonb),route.state_version
 		FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key=operation.route_key
-		WHERE operation.operation_id=$1`, operationID).Scan(&budgetBytes, &authBytes, &lane)
+		WHERE operation.operation_id=$1`, operationID).Scan(&budgetBytes, &authBytes, &lane, &activationBytes, &stateVersion)
 	if err != nil {
 		return Phase3Budget{}, phase3OperationAuthorization{}, err
 	}
@@ -143,6 +147,16 @@ func (d *Database) readPhase3BudgetTx(ctx context.Context, tx pgx.Tx, operationI
 	}
 	if err := budget.validate(); err != nil {
 		return budget, auth, err
+	}
+	if budget.Pilot != nil {
+		if _, err := validatePersistedPilotActivation(budget, activationBytes, stateVersion); err != nil {
+			return budget, auth, err
+		}
+		if auth.GoalID != "" && auth.PilotAuthorityID != budget.Pilot.AuthorityID {
+			return budget, auth, budgetHold("pilot_operation_authority_mismatch")
+		}
+	} else if auth.PilotAuthorityID != "" || auth.BookedExecutionCostMicros != 0 {
+		return budget, auth, budgetHold("pilot_operation_without_authority")
 	}
 	if reservation, exists := budget.Reservations[operationID]; exists &&
 		phase3BudgetFamilyForLane(lane) != reservation.Family {
@@ -215,6 +229,9 @@ func (d *Database) ReservePhase3(ctx context.Context, r BudgetReservation) error
 		return err
 	}
 	auth = phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: r.IntentSHA256}
+	if budget.Pilot != nil {
+		auth.PilotAuthorityID = budget.Pilot.AuthorityID
+	}
 	if err = d.writePhase3BudgetTx(ctx, tx, r.OperationID, budget, auth); err != nil {
 		return err
 	}
@@ -349,6 +366,9 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 		return err
 	}
 	auth = phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: intent, BuildInput: plan.Input, BridgeAdmission: &plan}
+	if budget.Pilot != nil {
+		auth.PilotAuthorityID = budget.Pilot.AuthorityID
+	}
 	if err = d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth); err != nil {
 		return err
 	}
