@@ -372,3 +372,52 @@ Move quotes now carry the starting chain slot and earliest expiry slot, bounded 
 Fable's source review identified the need to preserve quote slot validity and the final build/admission intersection; both are implemented. The full Go/PostgreSQL suite passes (20.072 seconds), as do Go vet, worker build and whitespace validation. These are local controlled tests, not live protocol lifecycle proof. No production service or funds changed.
 
 The destination producer still must verify the pinned Maple/OnRe farm user accounts; policy readiness alone does not inspect them and the obligation initializer does not create them. Its entry recipe includes optional initialization, allocation, initial swap/deposit, borrow, leverage swap/redeposit and all required NAV reports. Budgeting an extra report after allocation is conservative because allocation already reports NAV. Missing setup or incomplete economic evidence must leave that candidate unavailable. Source exit pricing must reuse the existing finite exit templates while excluding returned principal from expense; `ExitAfterMicros` is gross movement, not move cost. All release gates above remain open.
+
+### Destination recipe and exact borrow sizing
+
+The destination forecast now reads the actual empty obligation, reserve/market,
+policy, adaptor/ticket, mint/custody and required farm accounts. It refuses
+missing farm registration, changed reserve bindings, unavailable pair capacity
+or native funding. It builds and prices optional initialization, allocation,
+initial swap/deposit, a single borrow, leverage swap/redeposit and NAV reports.
+These are explicitly hypothetical amounts passed through the existing unsigned
+compilers and expense classifier; no fabricated account images are simulated,
+no operations are inserted and no transaction is signed or sent.
+
+A separate exact reverse-swap quote checks that the prospective completed loop
+can fund full repayment. The shared scalar release calculation preserves actual
+protocol global borrow allowance, minimum retained collateral and the reviewed
+release ceiling. Actual execution retains the preexisting receipt conversion
+floors. Forecast debt covers eleven borrow-to-payoff windows; receipt backing
+covers eighteen sample-to-payoff windows, including allocation and optional
+initialization. Two deposits' sub-unit backing rounding is added before maximum
+rate compounding. Both release conversions are rounded conservatively. Exit
+feasibility evidence is retained separately and is not charged as entry expense.
+Every retained lookup-table slot, including the reverse quote's, advances the
+observation floor without extending the original 32-slot validity window.
+
+The selected quote now records exact borrow principal and its origination fee
+ceiling. Execution may receive more initial collateral, but cannot silently
+increase the forecast borrow/swap size. If the reviewed principal exceeds the
+current target, construction holds. Admission, build and send validate the
+conserved borrow effects and enforce both the exact principal and fee ceiling.
+Lower fees are allowed. A funded tranche can finish after quote expiry while
+current protocol, execution-cost and exit-reservation checks remain required.
+Candidate income now uses the quoted borrow plus fee, rather than assuming a
+fixed leverage amount after costs.
+
+Validation: full Go/PostgreSQL suite passes (20.396 seconds), as do Go vet,
+worker build, formatting and whitespace checks. Controlled tests exercise
+1-USDC and 10-USDC destination recipes, repayment quote shortfall, global-market
+capacity, insufficient release margin, minimum collateral, missing/drifted farm
+and custody accounts, a lookup read beyond quote expiry, pre-borrow interest
+crossing a receipt-rounding boundary, and durable exact principal/fee binding
+across restart. The Maple lookup fixture uses the existing documented offline
+reconstruction; this is not chain-executed proof. Fable reviewed and confirmed
+fixes for principal sizing, fee drift, protocol release limits, initializer/ALT
+freshness and the longer collateral interest horizon.
+
+The producer still has no live caller. Source-to-destination composition,
+source-close native refunds, live selector/unwind orchestration and the release
+steps listed above remain required. No deployment or production funds changed;
+release verdict remains FAIL / not activated.

@@ -27,7 +27,7 @@ type SelectorEntry struct {
 func (e SelectorEntry) validate() error {
 	if !selectorLane(e.Lane) || e.ObservationID == "" || e.EquityRaw <= 0 || e.EquityRaw > PilotWorkingTrancheCapRaw ||
 		e.Quote.DestinationLane != e.Lane || !selectorLane(e.Quote.SourceLane) || e.Quote.ObservationID != e.ObservationID || e.Quote.EquityRaw != e.EquityRaw || e.Quote.CostRaw < 0 || e.Quote.CostRaw >= e.EquityRaw || !sha256Pattern.MatchString(e.Quote.EvidenceID) ||
-		!e.Quote.currentAtSlot(e.Quote.SampleSlot) || e.AcceptedAt.IsZero() || e.Quote.ObservedAt.IsZero() || e.Quote.ObservedAt.After(e.AcceptedAt) || !e.ExpiresAt.After(e.AcceptedAt) || e.ExpiresAt.After(e.Quote.ObservedAt.Add(30*time.Second)) {
+		!e.Quote.validBorrow() || !e.Quote.currentAtSlot(e.Quote.SampleSlot) || e.AcceptedAt.IsZero() || e.Quote.ObservedAt.IsZero() || e.Quote.ObservedAt.After(e.AcceptedAt) || !e.ExpiresAt.After(e.AcceptedAt) || e.ExpiresAt.After(e.Quote.ObservedAt.Add(30*time.Second)) {
 		return fmt.Errorf("invalid_selector_entry")
 	}
 	return nil
@@ -39,6 +39,7 @@ func hasWorkingCapital(s Snapshot) bool {
 
 func applySelectorEntry(s *Snapshot, entry *SelectorEntry, now time.Time) error {
 	s.SelectorEntryEquityRaw = 0
+	s.SelectorBorrowRaw = 0
 	if !s.PilotActive {
 		return nil
 	}
@@ -60,6 +61,7 @@ func applySelectorEntry(s *Snapshot, entry *SelectorEntry, now time.Time) error 
 		return nil
 	}
 	s.SelectorEntryEquityRaw = entry.EquityRaw
+	s.SelectorBorrowRaw = entry.Quote.BorrowReceiveRaw
 	return nil
 }
 
@@ -221,12 +223,13 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 // Called under the existing operation/route lock at admission, build and send.
 // Expiry only closes a new allocation or account setup; completion and exits
 // never depend on a still-current economic forecast.
-func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, operationID string, budget Phase3Budget, request any, slot int64, admission bool) error {
+func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, operationID string, budget Phase3Budget, request any, effects ExpectedEffects, slot int64, admission bool) error {
 	if budget.Pilot == nil {
 		return nil
 	}
 	var amount uint64
 	var requestedLane string
+	borrow := false
 	switch r := request.(type) {
 	case BridgeBuildRequest:
 		if r.Action != VoltrAllocateToSquads {
@@ -235,6 +238,15 @@ func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, oper
 		amount = r.AmountRaw
 	case KaminoInitializationRequest:
 		requestedLane = r.RouteLane
+	case KaminoPrimeUSDCRequest:
+		_, leg, err := kaminoPrimeUSDCInstruction(r)
+		if err != nil {
+			return err
+		}
+		if leg != kaminoLegBorrow {
+			return nil
+		}
+		requestedLane, amount, borrow = r.RouteLane, r.AmountRaw, true
 	default:
 		return nil
 	}
@@ -247,6 +259,21 @@ func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, oper
 	var entry SelectorEntry
 	if len(raw) == 0 || json.Unmarshal(raw, &entry) != nil || entry.validate() != nil || paused || unwinding || lane != entry.Lane || (requestedLane != "" && requestedLane != lane) || (requestedLane == "" && amount != uint64(entry.EquityRaw)) {
 		return budgetHold("selector_entry_authority_mismatch")
+	}
+	if borrow {
+		if entry.AllocationOperationID == "" || amount != entry.Quote.BorrowReceiveRaw {
+			return budgetHold("selector_entry_borrow_mismatch")
+		}
+		debit, err := MeasureExecutableDebit(request, effects)
+		if err != nil {
+			return err
+		}
+		if debit.Raw < amount || debit.Raw-amount > entry.Quote.BorrowFeeRaw {
+			return budgetHold("selector_entry_borrow_fee_exceeded")
+		}
+		// The tranche is funded. Time/slot expiry closes new allocation, not
+		// completion; current position, risk and costs are still checked per leg.
+		return nil
 	}
 	now := time.Now().UTC()
 	if !entry.Quote.currentAtSlot(slot) || now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt) {
@@ -276,4 +303,16 @@ func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, oper
 		}
 	}
 	return nil
+}
+
+// Hold when the reviewed amount is no longer supportable. Do not silently
+// change the swap input or origination fee used by the complete move forecast.
+func selectorBorrowAmount(s Snapshot, currentTarget uint64) (uint64, error) {
+	if !s.PilotActive {
+		return currentTarget, nil
+	}
+	if s.SelectorBorrowRaw == 0 || s.SelectorBorrowRaw > currentTarget || s.SelectorEntryPaused || s.Unwind || s.CutoverDrain || s.WithdrawalDemandRaw > 0 {
+		return 0, budgetHold("selector_entry_borrow_unavailable")
+	}
+	return s.SelectorBorrowRaw, nil
 }

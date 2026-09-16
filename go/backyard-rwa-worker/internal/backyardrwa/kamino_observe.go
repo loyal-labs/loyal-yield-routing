@@ -528,21 +528,27 @@ func (p KaminoPosition) targetLTVBorrowRaw() (uint64, error) {
 	if p.CollateralDepositedRaw == 0 || p.RedeemablePrimeRaw == 0 {
 		return 0, fmt.Errorf("Kamino collateral value is unavailable")
 	}
-	collateralPrice := littleInt(p.CollateralPriceSF[:])
-	debtPrice := littleInt(p.DebtPriceSF[:])
+	return targetBorrowForCollateralRaw(p.RedeemablePrimeRaw, p.CollateralDecimals, p.DebtDecimals, p.CollateralPriceSF, p.DebtPriceSF)
+}
+
+// Shared integer sizing for an observed position or an explicitly hypothetical
+// entry amount. Forecasting does not manufacture a position/account to use it.
+func targetBorrowForCollateralRaw(underlying uint64, collateralDecimals, debtDecimals uint8, collateralPriceSF, debtPriceSF [16]byte) (uint64, error) {
+	collateralPrice := littleInt(collateralPriceSF[:])
+	debtPrice := littleInt(debtPriceSF[:])
 	if collateralPrice.Sign() <= 0 || debtPrice.Sign() <= 0 {
 		return 0, fmt.Errorf("Kamino market price is zero")
 	}
-	if p.CollateralDecimals > 18 || p.DebtDecimals > 18 {
+	if collateralDecimals > 18 || debtDecimals > 18 {
 		return 0, fmt.Errorf("Kamino mint decimals exceed supported scale")
 	}
 	// Preserve the existing conservative KLend scaled-fraction rounding at
 	// each step, replacing only the former implicit six-decimal scales.
-	valueSF := new(big.Int).Mul(new(big.Int).SetUint64(p.RedeemablePrimeRaw), collateralPrice)
-	valueSF.Div(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(p.CollateralDecimals)), nil))
+	valueSF := new(big.Int).Mul(new(big.Int).SetUint64(underlying), collateralPrice)
+	valueSF.Div(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(collateralDecimals)), nil))
 	valueSF.Mul(valueSF, big.NewInt(TargetLTVBPS))
 	valueSF.Div(valueSF, big.NewInt(10_000))
-	valueSF.Mul(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(p.DebtDecimals)), nil))
+	valueSF.Mul(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(debtDecimals)), nil))
 	raw := valueSF.Div(valueSF, debtPrice)
 	if !raw.IsUint64() || raw.Sign() <= 0 {
 		return 0, fmt.Errorf("Kamino target-LTV borrow is outside u64")

@@ -10,7 +10,7 @@ import (
 )
 
 func selectorEntryFixture(now time.Time, lane string, amount int64) SelectorEntry {
-	q := MoveQuote{SourceLane: SelectedRouteID, DestinationLane: lane, ObservationID: "quoted-source", EquityRaw: amount, CostRaw: 1, ObservedAt: now.Add(-time.Second), EvidenceID: sha256Bytes([]byte("complete-recipe")), SampleSlot: 42, ValidThroughSlot: 74}
+	q := MoveQuote{BorrowReceiveRaw: uint64(amount / 2), SourceLane: SelectedRouteID, DestinationLane: lane, ObservationID: "quoted-source", EquityRaw: amount, CostRaw: 1, ObservedAt: now.Add(-time.Second), EvidenceID: sha256Bytes([]byte("complete-recipe")), SampleSlot: 42, ValidThroughSlot: 74}
 	return SelectorEntry{Lane: lane, EquityRaw: amount, ObservationID: q.ObservationID, Quote: q, AcceptedAt: now, ExpiresAt: q.ObservedAt.Add(30 * time.Second)}
 }
 
@@ -148,6 +148,7 @@ func TestSelectorEvaluationDurabilityFencesAndBudgetContinuity(t *testing.T) {
 	in.Snapshot.PilotActive = true
 	in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = 100_000_000, 100_000_000
 	in.Quotes[0].EquityRaw = PilotWorkingTrancheCapRaw
+	in.Quotes[0].BorrowReceiveRaw = uint64(PilotWorkingTrancheCapRaw / 2)
 	in.Quotes[0].EvidenceID = sha256Bytes([]byte("complete-exit-entry"))
 	// Equal net equity does not make two gross-input quotes interchangeable.
 	other := in.Quotes[0]
@@ -304,7 +305,7 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 			_ = tx.Rollback(ctx)
 			t.Fatal(err)
 		}
-		err = db.authorizeSelectorEntryTx(ctx, tx, tc.id, budget, request, 42, tc.admission)
+		err = db.authorizeSelectorEntryTx(ctx, tx, tc.id, budget, request, ExpectedEffects{}, 42, tc.admission)
 		if tc.want != "" {
 			assertBudgetHold(t, err, tc.want)
 		} else if err != nil {
@@ -332,8 +333,104 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 		if err = db.lockOperationLease(ctx, tx, key+"-second"); err != nil {
 			t.Fatal(err)
 		}
-		err = db.authorizeSelectorEntryTx(ctx, tx, key+"-second", budget, request, entry.Quote.ValidThroughSlot+1, admission)
+		err = db.authorizeSelectorEntryTx(ctx, tx, key+"-second", budget, request, ExpectedEffects{}, entry.Quote.ValidThroughSlot+1, admission)
 		_ = tx.Rollback(ctx)
 		assertBudgetHold(t, err, "selector_entry_quote_expired")
+	}
+}
+
+func TestSelectorBorrowUsesReviewedAmountAfterQuoteExpiry(t *testing.T) {
+	entry := selectorEntryFixture(time.Now().Add(-time.Minute), SelectedRouteID, 1_000_000)
+	entry.AllocationOperationID = "funded"
+	s := Snapshot{PilotActive: true, RouteLane: entry.Lane, HasPosition: true, PositionCollateralRaw: 1_000_000, Slot: 1000}
+	if err := applySelectorEntry(&s, &entry, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := selectorBorrowAmount(s, 600_000)
+	if err != nil || got != 500_000 {
+		t.Fatal("borrow silently grew with actual collateral", got, err)
+	}
+	_, err = selectorBorrowAmount(s, 499_999)
+	assertBudgetHold(t, err, "selector_entry_borrow_unavailable")
+	for _, change := range []func(*Snapshot){
+		func(s *Snapshot) { s.SelectorBorrowRaw = 0 }, func(s *Snapshot) { s.SelectorEntryPaused = true },
+		func(s *Snapshot) { s.Unwind = true }, func(s *Snapshot) { s.WithdrawalDemandRaw = 1 },
+	} {
+		changed := s
+		change(&changed)
+		_, err = selectorBorrowAmount(changed, 600_000)
+		assertBudgetHold(t, err, "selector_entry_borrow_unavailable")
+	}
+	s.PilotActive = false
+	if got, err = selectorBorrowAmount(s, 600_000); err != nil || got != 600_000 {
+		t.Fatal("historical execution changed", got, err)
+	}
+}
+
+func TestSelectorBorrowAuthorizationPersistsAcrossRestart(t *testing.T) {
+	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 20*time.Second)
+	defer cancel()
+	defer db.Close()
+	key := fmt.Sprintf("selector-borrow-%d", time.Now().UnixNano())
+	entry := selectorEntryFixture(time.Now().Add(-time.Minute), SelectedRouteID, 1_000_000)
+	entry.AllocationOperationID = key + "-allocation"
+	entry.Quote.BorrowFeeRaw = 1
+	raw, _ := json.Marshal(map[string]any{"selectorEntry": entry})
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,$2)`, key, raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects) VALUES($1,$2,'failed','OPEN_ROUTE_STEP',$3,'{}')`, key+"-borrow", key, SelectedRouteID); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := OpenDatabase(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if _, err = restarted.AcquireRouteLease(ctx, key, "borrow-after-restart", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.ReleaseRouteLease(ctx)
+	for _, tc := range []struct {
+		amount uint64
+		fee    uint64
+		bind   bool
+		want   string
+	}{
+		{500_000, 0, true, ""}, {500_000, 1, true, ""}, {500_000, 2, true, "selector_entry_borrow_fee_exceeded"}, {500_001, 0, true, "selector_entry_borrow_mismatch"}, {499_999, 0, true, "selector_entry_borrow_mismatch"}, {500_000, 0, false, "selector_entry_borrow_mismatch"},
+	} {
+		stored := entry
+		if !tc.bind {
+			stored.AllocationOperationID = ""
+		}
+		storeTestSelectorEntry(t, ctx, restarted, key, stored)
+		r, err := basicPolicyFixtureManifest(t).kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, tc.amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, _, accounts := selectorDestinationFixture(t)
+		route, _ := runtimeRoute(SelectedRouteID)
+		effects, err := kaminoBorrowEffects(accounts, route, tc.amount)
+		if err != nil {
+			t.Fatal(err)
+		}
+		effects.Accounts[0].AfterRaw -= tc.fee
+		effects.Accounts[2].AfterRaw += tc.fee
+		for _, admission := range []bool{true, false} {
+			tx, err := restarted.pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = restarted.lockOperationLease(ctx, tx, key+"-borrow"); err != nil {
+				t.Fatal(err)
+			}
+			err = restarted.authorizeSelectorEntryTx(ctx, tx, key+"-borrow", Phase3Budget{Pilot: &pilotBudgetAuthority{}}, r, effects, 1000, admission)
+			_ = tx.Rollback(ctx)
+			if tc.want != "" {
+				assertBudgetHold(t, err, tc.want)
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }

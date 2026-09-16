@@ -312,7 +312,7 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	if slot < plan.CurrentCost.ObservationSlot || slot > plan.ValidThroughSlot {
 		return budgetHold("stale_bridge_admission_snapshot")
 	}
-	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, slot, true); err != nil {
+	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, effects, slot, true); err != nil {
 		return err
 	}
 	if auth.GoalID != "" {
@@ -455,11 +455,13 @@ func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, ope
 			"messageSha256":       knownCost.MessageSHA256,
 		}}
 	}
+	var selectorEffects ExpectedEffects
 	if budget.Pilot != nil {
 		decoded, decodeErr := DecodeExpectedEffects(effects)
 		if decodeErr != nil {
 			return decodeErr
 		}
+		selectorEffects = decoded
 		knownCost, err = observePilotExecutionCost(ctx, rpc, request, decoded, knownCost)
 		if err != nil {
 			return err
@@ -485,7 +487,7 @@ func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, ope
 			return budgetHold("stale_bridge_admission_snapshot")
 		}
 	}
-	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, entrySlot, false); err != nil {
+	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, selectorEffects, entrySlot, false); err != nil {
 		return err
 	}
 	auth.BuildInput, err = encodePhase3BuildInput(request, effects)
@@ -564,11 +566,11 @@ func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operati
 		}
 	}
 	if auth.BuildInput != nil {
-		request, _, _, err := auth.BuildInput.decode()
+		request, effects, _, err := auth.BuildInput.decode()
 		if err != nil {
 			return err
 		}
-		if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, confirmedSlot, false); err != nil {
+		if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, effects, confirmedSlot, false); err != nil {
 			return err
 		}
 	}

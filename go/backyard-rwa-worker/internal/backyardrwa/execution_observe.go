@@ -266,6 +266,13 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}
 		}
+		if leg == kaminoLegBorrow {
+			wireAmount, err = selectorBorrowAmount(observation.Snapshot, wireAmount)
+			if err != nil {
+				return Observation{}, KaminoExecutionEvidence{}, err
+			}
+			effectAmount = wireAmount
+		}
 		fullPayoff := leg == kaminoLegRepay && decision.Action == DeleverRouteStep && decision.AmountRaw > 0 && uint64(decision.AmountRaw) >= position.DebtRaw
 		if fullPayoff {
 			bound, err := decodeKaminoPayoffBound(accounts, route, observation.Snapshot.Slot)
@@ -427,24 +434,10 @@ func withdrawExcessAtLTV(position KaminoPosition, ltvBPS uint64) (uint64, uint64
 	if position.CollateralDepositedRaw == 0 || position.RedeemablePrimeRaw == 0 || position.DebtRaw == 0 {
 		return 0, 0, fmt.Errorf("position has no withdrawable repayment collateral")
 	}
-	debtValue, err := valueBetweenTokenRaw(position.DebtRaw, position.DebtDecimals, position.DebtDecimals, position.DebtPriceSF, position.DebtPriceSF, true)
+	excessPrime, err := withdrawableUnderlyingAtLTV(releaseValuesForPosition(position), ltvBPS)
 	if err != nil {
 		return 0, 0, err
 	}
-	requiredDebtValue := new(big.Int).Mul(new(big.Int).SetUint64(debtValue), big.NewInt(10_000))
-	requiredDebtValue.Add(requiredDebtValue, new(big.Int).SetUint64(ltvBPS-1))
-	requiredDebtValue.Quo(requiredDebtValue, new(big.Int).SetUint64(ltvBPS))
-	if !requiredDebtValue.IsUint64() {
-		return 0, 0, fmt.Errorf("required unwind collateral exceeds u64")
-	}
-	requiredPrime, err := valueBetweenTokenRaw(requiredDebtValue.Uint64(), position.DebtDecimals, position.CollateralDecimals, position.DebtPriceSF, position.CollateralPriceSF, true)
-	if err != nil {
-		return 0, 0, err
-	}
-	if requiredPrime >= position.RedeemablePrimeRaw {
-		return 0, 0, fmt.Errorf("no collateral excess is safely withdrawable at unwind LTV")
-	}
-	excessPrime := position.RedeemablePrimeRaw - requiredPrime
 	receipt := new(big.Int).Mul(new(big.Int).SetUint64(excessPrime), new(big.Int).SetUint64(position.CollateralDepositedRaw))
 	receipt.Quo(receipt, new(big.Int).SetUint64(position.RedeemablePrimeRaw))
 	if !receipt.IsUint64() || receipt.Sign() <= 0 {
@@ -456,6 +449,35 @@ func withdrawExcessAtLTV(position KaminoPosition, ltvBPS uint64) (uint64, uint64
 		return 0, 0, fmt.Errorf("withdrawable PRIME amount is invalid")
 	}
 	return receipt.Uint64(), prime.Uint64(), nil
+}
+
+// Work in underlying token units before any receipt conversion. A forecast
+// can use bounded scalar holdings without inventing an obligation or receipts.
+func withdrawableUnderlyingAtLTV(values kaminoReleaseValues, ltvBPS uint64) (uint64, error) {
+	if ltvBPS == 0 || ltvBPS >= 10_000 {
+		return 0, fmt.Errorf("invalid repayment release LTV")
+	}
+	if values.CollateralRaw == 0 || values.DebtRaw == 0 {
+		return 0, fmt.Errorf("position has no withdrawable repayment collateral")
+	}
+	debtValue, err := valueBetweenTokenRaw(values.DebtRaw, values.DebtDecimals, values.DebtDecimals, values.DebtPriceSF, values.DebtPriceSF, true)
+	if err != nil {
+		return 0, err
+	}
+	requiredDebtValue := new(big.Int).Mul(new(big.Int).SetUint64(debtValue), big.NewInt(10_000))
+	requiredDebtValue.Add(requiredDebtValue, new(big.Int).SetUint64(ltvBPS-1))
+	requiredDebtValue.Quo(requiredDebtValue, new(big.Int).SetUint64(ltvBPS))
+	if !requiredDebtValue.IsUint64() {
+		return 0, fmt.Errorf("required unwind collateral exceeds u64")
+	}
+	requiredCollateral, err := valueBetweenTokenRaw(requiredDebtValue.Uint64(), values.DebtDecimals, values.CollateralDecimals, values.DebtPriceSF, values.CollateralPriceSF, true)
+	if err != nil {
+		return 0, err
+	}
+	if requiredCollateral >= values.CollateralRaw {
+		return 0, fmt.Errorf("no collateral excess is safely withdrawable at unwind LTV")
+	}
+	return values.CollateralRaw - requiredCollateral, nil
 }
 
 type kaminoCustodyBoundary struct {

@@ -25,8 +25,14 @@ type selectorRecipe struct {
 // observed prices within this bounded sample; fees still bind exact messages.
 // The production build/send path keeps its actual custody/prestate validators.
 func priceSelectorRecipe(ctx context.Context, rpc *RPCClient, lane string, inputs []*phase3BuildInput, minimumSlot int64) (selectorRecipe, error) {
+	return priceSelectorRecipeWithFloor(ctx, rpc, lane, inputs, minimumSlot, minimumSlot)
+}
+
+// Keep the sample start fixed while later prerequisites advance the minimum
+// slot accepted for fees/prices and final collection.
+func priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
 	out := selectorRecipe{Inputs: inputs}
-	if rpc == nil || !selectorLane(lane) || len(inputs) == 0 || len(inputs) > 32 || minimumSlot <= 0 || minimumSlot > math.MaxInt64-budgetMaxObservationLagSlots {
+	if rpc == nil || !selectorLane(lane) || len(inputs) == 0 || len(inputs) > 32 || minimumSlot <= 0 || minimumSlot > math.MaxInt64-budgetMaxObservationLagSlots || observationFloor < minimumSlot || observationFloor-minimumSlot > budgetMaxObservationLagSlots {
 		return out, budgetHold("invalid_selector_recipe")
 	}
 	type step struct {
@@ -41,7 +47,7 @@ func priceSelectorRecipe(ctx context.Context, rpc *RPCClient, lane string, input
 	prices := map[string]BudgetPrice{}
 	sources := map[string]ExecutableDebit{}
 	key := func(d ExecutableDebit) string { return d.Mint + ":" + d.TokenProgram }
-	slot := minimumSlot
+	slot := observationFloor
 	out.ValidThroughSlot = minimumSlot + budgetMaxObservationLagSlots
 	for i, input := range inputs {
 		request, effects, message, err := input.decode()
@@ -65,6 +71,10 @@ func priceSelectorRecipe(ctx context.Context, rpc *RPCClient, lane string, input
 		case JupiterSwapRequest:
 			if r.RouteLane != lane || len(effects.Accounts) != 2 {
 				return out, budgetHold("selector_recipe_lane_mismatch")
+			}
+			slot, err = selectorSwapObservationFloor(r, minimumSlot, slot)
+			if err != nil {
+				return out, err
 			}
 			dst := effects.Accounts[1]
 			credit := ExecutableDebit{Source: dst.Address, Mint: dst.Mint, TokenProgram: dst.Owner, Raw: r.MinimumOutputRaw}
@@ -160,4 +170,20 @@ func priceSelectorRecipe(ctx context.Context, rpc *RPCClient, lane string, input
 	}
 	out.EvidenceID = sha256Bytes(raw)
 	return out, nil
+}
+
+func selectorSwapObservationFloor(r JupiterSwapRequest, sampleSlot, floor int64) (int64, error) {
+	if sampleSlot <= 0 || sampleSlot > math.MaxInt64-budgetMaxObservationLagSlots || floor < sampleSlot {
+		return 0, budgetHold("selector_recipe_observation_expired")
+	}
+	for _, table := range r.LookupTables {
+		if table.ObservedSlot < sampleSlot {
+			return 0, budgetHold("selector_recipe_observation_expired")
+		}
+		floor = max(floor, table.ObservedSlot)
+	}
+	if floor > sampleSlot+budgetMaxObservationLagSlots {
+		return 0, budgetHold("selector_recipe_observation_expired")
+	}
+	return floor, nil
 }

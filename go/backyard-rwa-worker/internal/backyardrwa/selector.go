@@ -142,13 +142,17 @@ func (p SelectorPolicy) validate() error {
 // It is bound to actual equity, source state, destination and exact policy set.
 // Remaining exit spending belongs to the existing budget, not this quote.
 type MoveQuote struct {
-	SourceLane      string    `json:"sourceLane"`
-	DestinationLane string    `json:"destinationLane"`
-	ObservationID   string    `json:"observationId"`
-	EquityRaw       int64     `json:"equityRaw"`
-	CostRaw         int64     `json:"costRaw"`
-	ObservedAt      time.Time `json:"observedAt"`
-	EvidenceID      string    `json:"evidenceId"`
+	// Exact one-pass borrow sized from conservative initial collateral. Execution
+	// may receive more collateral, but may not silently increase this borrow.
+	BorrowReceiveRaw uint64    `json:"borrowReceiveRaw"`
+	BorrowFeeRaw     uint64    `json:"borrowFeeRaw"`
+	SourceLane       string    `json:"sourceLane"`
+	DestinationLane  string    `json:"destinationLane"`
+	ObservationID    string    `json:"observationId"`
+	EquityRaw        int64     `json:"equityRaw"`
+	CostRaw          int64     `json:"costRaw"`
+	ObservedAt       time.Time `json:"observedAt"`
+	EvidenceID       string    `json:"evidenceId"`
 	// SampleSlot is captured before constructing any recipe input. Fresh fee
 	// observations cannot extend older quote/reserve evidence past this window.
 	SampleSlot       int64 `json:"sampleSlot"`
@@ -357,12 +361,20 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
+		if s.PilotActive && !quote.validBorrow() {
+			c.BlockedReason = "bounded_borrow_unavailable"
+			out.Candidates = append(out.Candidates, c)
+			continue
+		}
 		quotes[lane] = *quote
 		c.CostsKnown = true
 		c.InvestedRaw = amount - quote.CostRaw
 		c.IdleRaw = s.TotalVaultNAVRaw - amount
 		// This pilot switches to another reserve; it does not lever existing debt twice.
 		debt := float64(c.InvestedRaw) * (singlePassLeverage - 1)
+		if s.PilotActive {
+			debt = float64(quote.BorrowReceiveRaw) + float64(quote.BorrowFeeRaw)
+		}
 		apr, err := projectedBorrowAPR(m, debt)
 		if err != nil {
 			c.BlockedReason = err.Error()
@@ -370,7 +382,8 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			continue
 		}
 		c.BorrowAPR = apr
-		c.GainRaw = forecastGain(float64(c.InvestedRaw)*singlePassLeverage, float64(c.InvestedRaw)*singlePassLeverage, debt, m, apr, years) - float64(quote.CostRaw)
+		collateral := float64(c.InvestedRaw) + debt
+		c.GainRaw = forecastGain(collateral, collateral, debt, m, apr, years) - float64(quote.CostRaw)
 		c.BenefitRaw = c.GainRaw - out.KeepGainRaw - float64(equity)*float64(p.UncertaintyBPS)/10_000
 		if !finite(c.GainRaw) || !finite(c.BenefitRaw) {
 			c.BlockedReason = "invalid_candidate_forecast"
@@ -404,4 +417,8 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		out.Action = "SWITCH"
 	}
 	return out
+}
+
+func (q MoveQuote) validBorrow() bool {
+	return q.EquityRaw > 0 && q.BorrowReceiveRaw > 0 && q.BorrowReceiveRaw <= uint64(q.EquityRaw) && q.BorrowFeeRaw <= uint64(q.EquityRaw)-q.BorrowReceiveRaw
 }

@@ -14,6 +14,43 @@ type KaminoReleaseBound struct {
 	RemainingReceiptRaw uint64            `json:"remainingReceiptRaw"`
 }
 
+// These values contain no receipt count or account image. Callers supply a
+// conservative underlying collateral amount and a finite-window debt bound.
+type kaminoReleaseValues struct {
+	CollateralRaw      uint64
+	DebtRaw            uint64
+	CollateralDecimals uint8
+	DebtDecimals       uint8
+	CollateralPriceSF  [16]byte
+	DebtPriceSF        [16]byte
+}
+
+// Limits come from validated market/reserve settings. Group zero, effective
+// borrow factor 100 and non-emergency mode are caller prerequisites; this pure
+// arithmetic helper does not confer execution authority or validate accounts.
+type kaminoPilotReleaseLimits struct {
+	MaxLTVPct                byte
+	LiquidationPct           byte
+	GlobalAllowedBorrowValue uint64
+	MinimumRemainingValueSF  [16]byte
+}
+
+func releaseValuesForPosition(position KaminoPosition) kaminoReleaseValues {
+	return kaminoReleaseValues{CollateralRaw: position.RedeemablePrimeRaw, DebtRaw: position.DebtRaw,
+		CollateralDecimals: position.CollateralDecimals, DebtDecimals: position.DebtDecimals,
+		CollateralPriceSF: position.CollateralPriceSF, DebtPriceSF: position.DebtPriceSF}
+}
+
+func (limits kaminoPilotReleaseLimits) ceilingBPS() (uint64, error) {
+	maxLTV := int64(limits.MaxLTVPct) * 100
+	hard := min(int64(limits.LiquidationPct)*100-1500, 6000)
+	ceiling := min(int64(5500), maxLTV-500, hard-500)
+	if maxLTV <= 0 || maxLTV >= int64(limits.LiquidationPct)*100 || limits.LiquidationPct > 100 || ceiling <= TargetLTVBPS {
+		return 0, budgetHold("pilot_release_risk_margin_unavailable")
+	}
+	return uint64(ceiling), nil
+}
+
 // Exact cost-only pool transition: burn receipt supply and debit released
 // liquidity. Tested against the deployed program's actual post-release reserve.
 func projectKaminoReleaseReserve(reserve decodedKaminoReserve, receipts, liquidity uint64) (decodedKaminoReserve, error) {
@@ -163,41 +200,61 @@ func pilotRepaymentLiquidityAllowance(accounts []ConfirmedAccount, route Runtime
 		o[kaminoObligationElevationGroupOffset] != 0 || max(binary.LittleEndian.Uint64(d[kaminoBorrowFactorOffset:]), 100) != 100 {
 		return 0, budgetHold("pilot_release_risk_model_changed")
 	}
-	maxLTV := int64(c[kaminoLoanToValueOffset]) * 100
-	hard := min(int64(liquidationPct)*100-1500, 6000)
-	ceiling := min(int64(5500), maxLTV-500, hard-500)
-	if maxLTV <= 0 || maxLTV >= int64(liquidationPct)*100 || liquidationPct > 100 || ceiling <= TargetLTVBPS {
-		return 0, budgetHold("pilot_release_risk_margin_unavailable")
+	limits := kaminoPilotReleaseLimits{MaxLTVPct: c[kaminoLoanToValueOffset], LiquidationPct: liquidationPct,
+		GlobalAllowedBorrowValue: binary.LittleEndian.Uint64(market.Data[kaminoGlobalBorrowValueOffset:])}
+	copy(limits.MinimumRemainingValueSF[:], market.Data[kaminoMinRemainingValueOffset:kaminoMinRemainingValueOffset+16])
+	ceiling, err := limits.ceilingBPS()
+	if err != nil {
+		return 0, err
 	}
-	_, allowance, err := withdrawExcessAtLTV(position, uint64(ceiling))
+	// Preserve the runtime's existing receipt-ratio floors. Scalar forecasts
+	// have no receipts; actual execution must still retain this tighter bound.
+	_, roundedAllowance, err := withdrawExcessAtLTV(position, ceiling)
+	if err != nil {
+		return 0, err
+	}
+	allowance, err := pilotRepaymentLiquidityAllowanceForValues(releaseValuesForPosition(position), limits)
+	return min(roundedAllowance, allowance), err
+}
+
+// Bound protocol/risk room in underlying units. A positive result alone does
+// not establish DEX liquidity or a full-payoff quote. Actual execution converts
+// this allowance through the observed receipt exchange rate before release.
+func pilotRepaymentLiquidityAllowanceForValues(values kaminoReleaseValues, limits kaminoPilotReleaseLimits) (uint64, error) {
+	ceiling, err := limits.ceilingBPS()
+	if err != nil {
+		return 0, err
+	}
+	allowance, err := withdrawableUnderlyingAtLTV(values, ceiling)
 	if err != nil {
 		return 0, err
 	}
 	// Recompute dollar values (scaled by 2^60) from current reserve prices.
 	// Reserves may be newer than the obligation's cached valuation. Round the
 	// finite-window debt up and redeemable collateral down before comparing.
-	futureDebt := new(big.Int).Mul(new(big.Int).SetUint64(position.DebtRaw), littleInt(position.DebtPriceSF[:]))
-	scale := new(big.Int).Exp(big.NewInt(10), new(big.Int).SetUint64(uint64(position.DebtDecimals)), nil)
+	futureDebt := new(big.Int).Mul(new(big.Int).SetUint64(values.DebtRaw), littleInt(values.DebtPriceSF[:]))
+	scale := new(big.Int).Exp(big.NewInt(10), new(big.Int).SetUint64(uint64(values.DebtDecimals)), nil)
 	futureDebt.Add(futureDebt, new(big.Int).Sub(new(big.Int).Set(scale), big.NewInt(1))).Quo(futureDebt, scale)
-	price := littleInt(position.CollateralPriceSF[:])
+	price := littleInt(values.CollateralPriceSF[:])
 	if futureDebt.Sign() <= 0 || price.Sign() <= 0 {
 		return 0, budgetHold("pilot_release_protocol_allowance_unavailable")
 	}
-	collateralScale := new(big.Int).Exp(big.NewInt(10), new(big.Int).SetUint64(uint64(position.CollateralDecimals)), nil)
+	collateralScale := new(big.Int).Exp(big.NewInt(10), new(big.Int).SetUint64(uint64(values.CollateralDecimals)), nil)
 	// KLend checks the remaining collateral asset against the market minimum
 	// after withdrawal. Round required underlying up, retaining one raw unit
 	// for its fractional receipt-to-liquidity comparison.
-	minimum := new(big.Int).Mul(littleInt(market.Data[kaminoMinRemainingValueOffset:kaminoMinRemainingValueOffset+16]), collateralScale)
+	minimum := new(big.Int).Mul(littleInt(limits.MinimumRemainingValueSF[:]), collateralScale)
 	minimum.Add(minimum, new(big.Int).Sub(new(big.Int).Set(price), big.NewInt(1))).Quo(minimum, price)
 	minimum.Add(minimum, big.NewInt(1))
-	if !minimum.IsUint64() || minimum.Uint64() >= position.RedeemablePrimeRaw {
+	if !minimum.IsUint64() || minimum.Uint64() >= values.CollateralRaw {
 		return 0, budgetHold("pilot_release_minimum_collateral_unavailable")
 	}
-	allowance = min(allowance, position.RedeemablePrimeRaw-minimum.Uint64())
-	allowed := new(big.Int).Mul(new(big.Int).SetUint64(position.RedeemablePrimeRaw), price)
+	allowance = min(allowance, values.CollateralRaw-minimum.Uint64())
+	maxLTV := int64(limits.MaxLTVPct) * 100
+	allowed := new(big.Int).Mul(new(big.Int).SetUint64(values.CollateralRaw), price)
 	allowed.Quo(allowed, collateralScale).Mul(allowed, big.NewInt(maxLTV)).Quo(allowed, big.NewInt(10_000))
 	// LendingMarket.globalAllowedBorrowValue is a whole-dollar u64 at 152.
-	global := new(big.Int).Lsh(new(big.Int).SetUint64(binary.LittleEndian.Uint64(market.Data[kaminoGlobalBorrowValueOffset:])), 60)
+	global := new(big.Int).Lsh(new(big.Int).SetUint64(limits.GlobalAllowedBorrowValue), 60)
 	if allowed.Cmp(global) > 0 {
 		allowed = global
 	}

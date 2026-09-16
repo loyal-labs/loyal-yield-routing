@@ -106,3 +106,14 @@ func TestSelectorRecipeValuesActualBasicSwapMinimum(t *testing.T) {
 		t.Fatal("unenforced optimistic credit admitted")
 	}
 }
+
+func TestSelectorRecipePreservesPrerequisiteObservationFloor(t *testing.T) {
+	_, _, report := bridgeAdmissionFixture(t, ReportNAV, 0, 0, 0, 1_000_000)
+	input := selectorRecipeInput(t, report.Request, report.ExpectedEffects)
+	_, err := priceSelectorRecipeWithFloor(context.Background(), budgetBuildRPC(t, 5000, 42), SelectedRouteID, []*phase3BuildInput{input}, 42, 60)
+	if err == nil {
+		t.Fatal("later prerequisite accepted with lagging fee/price/final slot")
+	}
+	_, err = priceSelectorRecipeWithFloor(context.Background(), budgetBuildRPC(t, 5000, 42), SelectedRouteID, []*phase3BuildInput{input}, 42, 75)
+	assertBudgetHold(t, err, "invalid_selector_recipe")
+}

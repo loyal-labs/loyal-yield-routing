@@ -87,6 +87,7 @@ type Snapshot struct {
 	SelectorEntryPaused       bool
 	// Exact equity authorized by a current durable selector quote.
 	SelectorEntryEquityRaw int64
+	SelectorBorrowRaw      uint64
 	CutoverDrain           bool
 	VoltrStrategyIdleRaw   int64
 	VoltrIdleRaw           int64
