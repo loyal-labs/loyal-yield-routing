@@ -115,5 +115,16 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 			return BudgetPrice{}, err
 		}
 	}
-	return BudgetPrice{Source: "confirmed-chain-accounts", Mint: debit.Mint, TokenProgram: mint.Owner, Decimals: token.mintDecimals, TokenUpperSF: upper, USDCLowerSF: lower, ObservedSlot: slot, ValidThroughSlot: slot + budgetMaxObservationLagSlots, EvidenceSHA256: hashConfirmedAccounts(accounts)}, nil
+	tokenLower, usdcUpper := token.marketPriceSF, usdc.marketPriceSF
+	if debit.Mint != bridgeUSDC {
+		tokenLower, err = lowerPriceMargin(tokenLower, budgetPriceMarginBPS)
+		if err != nil {
+			return BudgetPrice{}, err
+		}
+		usdcUpper, err = UpperPriceMargin(usdcUpper, budgetPriceMarginBPS)
+		if err != nil {
+			return BudgetPrice{}, err
+		}
+	}
+	return BudgetPrice{Credit: &BudgetCreditBounds{tokenLower, usdcUpper}, Source: "confirmed-chain-accounts", Mint: debit.Mint, TokenProgram: mint.Owner, Decimals: token.mintDecimals, TokenUpperSF: upper, USDCLowerSF: lower, ObservedSlot: slot, ValidThroughSlot: slot + budgetMaxObservationLagSlots, EvidenceSHA256: hashConfirmedAccounts(accounts)}, nil
 }

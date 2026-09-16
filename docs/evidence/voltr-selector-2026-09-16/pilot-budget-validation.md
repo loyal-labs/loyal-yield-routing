@@ -25,4 +25,14 @@ Read-only finalized evidence at slot 447431070 fails the strict flat check becau
 
 ## Still disabled / incomplete
 
-No activation command or worker call enables the pilot mode yet. The complete execution-cost producer (swap loss bounds, borrow fees, protocol rounding, initializer native asset accounting), current-limit propagation, 10-USDC tranche wiring, actual native exit-fee liquidity, residual conversion/return and full release lifecycle remain required. Production database, policies, balances and deployment were not changed in this work.
+No activation command or worker call enables the pilot mode yet. Current-limit propagation, 10-USDC tranche wiring, actual native exit-fee liquidity, residual conversion/return and full release lifecycle remain required. Production database, policies, balances and deployment were not changed in this work.
+
+## Measured execution-cost producer
+
+Pilot admission now derives its execution-cost bound from the compiled message, exact measured debit, observed fee, and retained token/native price evidence. A swap values its enforced minimum output with lower token/upper USDC prices; missing, stale or inverted credit intervals reject admission. Borrow costs include origination fees; deposit and full repayment costs include their independently bounded rounding windows. Withdrawal books one raw liquidity unit for the pinned KLend floor conversion. Native initializer rent remains a recoverable asset under its exact finalized native-balance reconciler. All expense counters book admitted conservative upper bounds, not claimed realized P&L.
+
+Admission records this bound in the existing reservation and operation authorization. Generic numeric pilot reservations are refused. Retries, pre-signing builds and the final locked send fence recompute the classification and reject an increased expense even when the gross debit still fits. Signed repricing leaves the original wire unchanged; a validated fresh-cost HOLD retains it and its reservation for the existing proven-absence recovery path.
+
+Local regression coverage includes understated/corrupted costs, missing or stale minimum-credit valuation, inverted intervals, borrow fees, receipt/debt rounding, recoverable native rent, wire-preserving repricing, and real PostgreSQL admission/build/send rejection. Fable independently reviewed the arithmetic and checked retained same-ELF withdrawal execution: 92653355 actually burned receipt units release 99999999 raw liquidity, exactly the floor formula. This establishes the rounding assumption; it is not a new live transaction.
+
+The legacy one-USDC observation caps remain until current-limit propagation is completed. The producer is connected to pilot gates, but pilot activation and rollout remain disabled. No production mutation was made.

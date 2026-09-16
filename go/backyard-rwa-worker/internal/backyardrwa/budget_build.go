@@ -165,5 +165,5 @@ func authorizePhase3ProductionBuild(ctx context.Context, database *Database, rpc
 	if err != nil {
 		return err
 	}
-	return database.authorizePhase3Build(ctx, operationID, request, encodedEffects, cost)
+	return database.authorizePhase3Build(ctx, rpc, operationID, request, encodedEffects, cost)
 }

@@ -182,6 +182,9 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 			}
 		}
 	}
+	if err == nil && auth.PilotAuthorityID != "" {
+		cost, err = observePilotExecutionCost(ctx, rpc, request, effects, cost)
+	}
 	if err == nil && auth.BridgeAdmission != nil {
 		// Fresh principal pricing cannot extend the earlier complete exit
 		// estimate. The locked send fence checks this reduced window again.
@@ -218,7 +221,7 @@ func (d *Database) RevalueAndMarkBroadcastIntent(ctx context.Context, rpc *RPCCl
 	}
 	err = d.markBroadcastIntent(ctx, operation.ID, rpc, auth.IntentSHA256, sha256Bytes(operation.SignedWire), cost)
 	var hold *BudgetHold
-	if errors.As(err, &hold) && (hold.Reason == "fresh_send_cost_exceeds_reservation" || hold.Reason == "send_valuation_expired" || hold.Reason == "send_valuation_slot_unavailable") {
+	if errors.As(err, &hold) && (hold.Reason == "fresh_execution_cost_exceeds_reservation" || hold.Reason == "fresh_send_cost_exceeds_reservation" || hold.Reason == "send_valuation_expired" || hold.Reason == "send_valuation_slot_unavailable") {
 		return &validatedSignedBudgetHold{hold}
 	}
 	return err

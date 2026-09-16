@@ -81,7 +81,33 @@ func testInitializationDatabaseSettlement(t *testing.T, pilot bool) {
 	if pilot {
 		reservation.ExecutionCostUpperMicros = 1000
 	}
-	if err = db.ReservePhase3(ctx, reservation); err != nil {
+	if pilot {
+		assertBudgetHold(t, db.ReservePhase3(ctx, reservation), "pilot_requires_measured_execution_admission")
+		// Synthetic admitted state isolates finality/settlement from the
+		// separately tested live-observation admission producer.
+		if err = budget.Admit(reservation); err != nil {
+			t.Fatal(err)
+		}
+		input, e := encodePhase3BuildInput(*expected.Initialization, raw)
+		if e != nil {
+			t.Fatal(e)
+		}
+		auth := phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: digest, PilotAuthorityID: pilotBudgetAuthorityID, BuildInput: input}
+		seed, e := db.pool.Begin(ctx)
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer seed.Rollback(ctx)
+		if e = db.lockOperationLease(ctx, seed, id); e != nil {
+			t.Fatal(e)
+		}
+		if e = db.writePhase3BudgetTx(ctx, seed, id, budget, auth); e != nil {
+			t.Fatal(e)
+		}
+		if e = seed.Commit(ctx); e != nil {
+			t.Fatal(e)
+		}
+	} else if err = db.ReservePhase3(ctx, reservation); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := db.pool.Begin(ctx)

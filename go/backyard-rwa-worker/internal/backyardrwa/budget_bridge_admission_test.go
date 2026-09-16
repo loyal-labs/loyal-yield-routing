@@ -232,7 +232,7 @@ func testProductionBridgeAdmission(t *testing.T, url string) {
 	}
 	staleCost := auth.BridgeAdmission.CurrentCost
 	staleCost.ObservationSlot = auth.BridgeAdmission.ValidThroughSlot + 1
-	assertBudgetHold(t, db.authorizePhase3Build(ctx, id, evidence.Request, auth.BuildInput.Effects, staleCost), "stale_bridge_admission_snapshot")
+	assertBudgetHold(t, db.authorizePhase3Build(ctx, nil, id, evidence.Request, auth.BuildInput.Effects, staleCost), "stale_bridge_admission_snapshot")
 	// Restart under a new fence retains producer evidence and exactly one
 	// reservation; an old process cannot admit or release its successor's work.
 	if _, err = db.ReleaseRouteLease(ctx); err != nil {

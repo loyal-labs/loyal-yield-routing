@@ -212,6 +212,9 @@ func (d *Database) ReservePhase3(ctx context.Context, r BudgetReservation) error
 	if err != nil {
 		return err
 	}
+	if budget.Pilot != nil {
+		return budgetHold("pilot_requires_measured_execution_admission")
+	}
 	var status, lane string
 	if err = tx.QueryRow(ctx, `SELECT status,COALESCE(strategy_key,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, r.OperationID).Scan(&status, &lane); err != nil {
 		return err
@@ -256,7 +259,7 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	if d == nil || d.pool == nil {
 		return budgetHold("bridge_admission_database_unavailable")
 	}
-	request, _, _, err := plan.Input.decode()
+	request, effects, _, err := plan.Input.decode()
 	if err != nil {
 		return err
 	}
@@ -272,6 +275,13 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
 	if err != nil {
 		return err
+	}
+	if budget.Pilot != nil {
+		plan.CurrentCost, err = observePilotExecutionCost(ctx, rpc, request, effects, plan.CurrentCost)
+		if err != nil {
+			return err
+		}
+		plan.ValidThroughSlot = min(plan.ValidThroughSlot, plan.CurrentCost.ValidThroughSlot)
 	}
 	var status, lane, action string
 	var decisionBytes []byte
@@ -304,6 +314,9 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 		reserved := budget.Reservations[operationID]
 		if plan.CurrentCost.TotalMicros > reserved.UpperMicros || plan.ExitAfterMicros > reserved.ExitAfterMicros {
 			return budgetHold("fresh_bridge_cost_exceeds_reservation")
+		}
+		if err = validateReservedExecutionCost(budget, reserved, request, effects, plan.CurrentCost); err != nil {
+			return err
 		}
 		return tx.Commit(ctx)
 	}
@@ -362,6 +375,9 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	}
 	r := BudgetReservation{OperationID: operationID, Family: family, IntentSHA256: intent,
 		UpperMicros: plan.CurrentCost.TotalMicros, ExitAfterMicros: plan.ExitAfterMicros, Recovery: recovery}
+	if budget.Pilot != nil {
+		r.ExecutionCostUpperMicros = plan.CurrentCost.ExecutionCost.TotalMicros
+	}
 	if err = budget.Admit(r); err != nil {
 		return err
 	}
@@ -377,7 +393,7 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 
 // Called only after the production cost observation, before signer access.
 // A fresh known debit cannot inherit a smaller durable reservation.
-func (d *Database) authorizePhase3Build(ctx context.Context, operationID string, request any, effects []byte, knownCost ValuedTransactionCost) error {
+func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, operationID string, request any, effects []byte, knownCost ValuedTransactionCost) error {
 	intent, err := Phase3IntentDigest(request, effects)
 	if err != nil {
 		return err
@@ -411,6 +427,22 @@ func (d *Database) authorizePhase3Build(ctx context.Context, operationID string,
 			"observationSlot":     strconv.FormatInt(knownCost.ObservationSlot, 10),
 			"messageSha256":       knownCost.MessageSHA256,
 		}}
+	}
+	if budget.Pilot != nil {
+		decoded, decodeErr := DecodeExpectedEffects(effects)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		knownCost, err = observePilotExecutionCost(ctx, rpc, request, decoded, knownCost)
+		if err != nil {
+			return err
+		}
+		if err = validateReservedExecutionCost(budget, reservation, request, decoded, knownCost); err != nil {
+			return err
+		}
+		if auth.BridgeAdmission != nil && knownCost.ObservationSlot > auth.BridgeAdmission.ValidThroughSlot {
+			return budgetHold("stale_bridge_admission_snapshot")
+		}
 	}
 	auth.BuildInput, err = encodePhase3BuildInput(request, effects)
 	if err != nil {
@@ -468,6 +500,15 @@ func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operati
 	}
 	if cost.TotalMicros <= 0 || cost.TotalMicros > budget.Reservations[operationID].UpperMicros {
 		return budgetHold("fresh_send_cost_exceeds_reservation")
+	}
+	if budget.Pilot != nil {
+		request, effects, _, err := auth.BuildInput.decode()
+		if err != nil {
+			return err
+		}
+		if err = validateReservedExecutionCost(budget, budget.Reservations[operationID], request, effects, cost); err != nil {
+			return err
+		}
 	}
 	auth.SendKnownCost = &cost
 	return d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth)

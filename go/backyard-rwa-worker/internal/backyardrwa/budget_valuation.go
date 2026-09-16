@@ -10,16 +10,22 @@ const budgetMaxObservationLagSlots int64 = 32
 // BudgetPrice is an observation, not an assumed stablecoin peg. The producer
 // must bind the mint/program/decimals and reserve/oracle account hashes to its
 // coherent chain read. Upper and lower prices share the oracle quote unit.
+type BudgetCreditBounds struct {
+	TokenLowerSF [16]byte `json:"tokenLowerSf"`
+	USDCUpperSF  [16]byte `json:"usdcUpperSf"`
+}
+
 type BudgetPrice struct {
-	Source           string   `json:"source"`
-	Mint             string   `json:"mint"`
-	TokenProgram     string   `json:"tokenProgram"`
-	Decimals         uint8    `json:"decimals"`
-	TokenUpperSF     [16]byte `json:"tokenUpperSf"`
-	USDCLowerSF      [16]byte `json:"usdcLowerSf"`
-	ObservedSlot     int64    `json:"observedSlot"`
-	ValidThroughSlot int64    `json:"validThroughSlot"`
-	EvidenceSHA256   string   `json:"evidenceSha256"`
+	Credit           *BudgetCreditBounds `json:"credit,omitempty"`
+	Source           string              `json:"source"`
+	Mint             string              `json:"mint"`
+	TokenProgram     string              `json:"tokenProgram"`
+	Decimals         uint8               `json:"decimals"`
+	TokenUpperSF     [16]byte            `json:"tokenUpperSf"`
+	USDCLowerSF      [16]byte            `json:"usdcLowerSf"`
+	ObservedSlot     int64               `json:"observedSlot"`
+	ValidThroughSlot int64               `json:"validThroughSlot"`
+	EvidenceSHA256   string              `json:"evidenceSha256"`
 }
 
 func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (int64, error) {
@@ -33,9 +39,30 @@ func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (i
 	return int64(value), nil
 }
 
+// A guaranteed output is valued downwards, using the other side of the same
+// independently observed price interval. An upper debit quote is not a lower
+// bound on what a swap receives.
+func (p BudgetPrice) valueLower(raw uint64, mint, program string, slot int64) (int64, error) {
+	if _, err := p.valueUpper(0, mint, program, slot); err != nil {
+		return 0, err
+	}
+	if p.Credit == nil {
+		return 0, budgetHold("missing_credit_valuation_bounds")
+	}
+	if littleInt(p.Credit.TokenLowerSF[:]).Cmp(littleInt(p.TokenUpperSF[:])) > 0 || littleInt(p.Credit.USDCUpperSF[:]).Cmp(littleInt(p.USDCLowerSF[:])) < 0 {
+		return 0, budgetHold("invalid_credit_valuation_interval")
+	}
+	value, err := valueBetweenTokenRaw(raw, p.Decimals, 6, p.Credit.TokenLowerSF, p.Credit.USDCUpperSF, false)
+	if err != nil || value > math.MaxInt64 {
+		return 0, budgetHold("invalid_credit_valuation")
+	}
+	return int64(value), nil
+}
+
 const nativeSOLBudgetAsset = "native:SOL"
 
 type ValuedTransactionCost struct {
+	ExecutionCost       *PilotExecutionCost   `json:"executionCost,omitempty"`
 	Debit               ExecutableDebit       `json:"debit"`
 	Fee                 MessageFeeObservation `json:"fee"`
 	SetupLamports       uint64                `json:"setupLamports"`
