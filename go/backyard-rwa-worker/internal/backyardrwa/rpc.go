@@ -27,11 +27,16 @@ type RPCClient struct {
 const readOnlyRPCAttempts = 5
 
 type ConfirmedAccount struct {
-	Address    string
-	Owner      string
-	Lamports   uint64
-	Data       []byte
-	Executable bool
+	// Empty source denotes an ordinary confirmed read. A valuation capture
+	// tags every account with its bank slot; only closed reserve refreshes
+	// may mutate account data inside that capture.
+	ValuationSource string
+	ValuationSlot   int64
+	Address         string
+	Owner           string
+	Lamports        uint64
+	Data            []byte
+	Executable      bool
 }
 
 type LatestBlockhash struct {

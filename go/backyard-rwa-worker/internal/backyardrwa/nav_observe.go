@@ -346,11 +346,21 @@ func navInputFingerprintForRoute(slot int64, accounts []ConfirmedAccount, custod
 		}
 		byAddress[account.Address] = account
 	}
+	source, valuationSlot := accounts[0].ValuationSource, accounts[0].ValuationSlot
+	if source != "" && (source != routeRefreshValuationSource || valuationSlot != slot) || source == "" && valuationSlot != 0 {
+		return "", fmt.Errorf("NAV valuation provenance is invalid")
+	}
 	parts := make([]string, 0, len(pinnedRouteNAVAddressesForRoute(route))+1)
+	if source != "" {
+		parts = append(parts, fmt.Sprintf("valuation:%s:%d", source, valuationSlot))
+	}
 	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
 		account, ok := byAddress[address]
 		if !ok {
 			return "", fmt.Errorf("NAV account %s is absent", address)
+		}
+		if account.ValuationSource != source || account.ValuationSlot != valuationSlot {
+			return "", fmt.Errorf("NAV mixes valuation sources or slots")
 		}
 		hash := sha256.Sum256(account.Data)
 		parts = append(parts, fmt.Sprintf("%s:%s:%d:%t:%x", address, account.Owner, account.Lamports, account.Executable, hash[:]))

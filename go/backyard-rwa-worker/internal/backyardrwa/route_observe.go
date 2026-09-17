@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -44,6 +45,7 @@ func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *RPCC
 			}
 			return rpc.GetMultipleAccounts(ctx, addresses, minSlot)
 		},
+		refreshValuation: rpc.simulateRouteValuationRefresh,
 		finalizedReceipt: rpc.strategyReceiptFinalized,
 		now:              func() time.Time { return time.Now().UTC() },
 	})
@@ -113,6 +115,7 @@ func optionalLifecycleObligations(addresses []string) []string {
 }
 
 type routeObservationRuntime struct {
+	refreshValuation func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error)
 	confirmedSlot    func(context.Context) (int64, error)
 	receipts         func(context.Context, int64) (int64, []programAccount, error)
 	accounts         func(context.Context, []string, int64) (int64, []ConfirmedAccount, error)
@@ -201,7 +204,42 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 				cutoverDrain = true
 			}
 		}
-		position, err := observeKaminoWithCashFallback(ctx, runtime.accounts, slot, accounts, route)
+		// Reserve refresh changes valuation inputs only. Capture the complete
+		// bank again so custody, obligations, receipts and Clock are coherent
+		// with those refreshed inputs, including after a landed swap.
+		position, reserveErr := observeKaminoFromFixedAccounts(ctx, runtime.accounts, slot, accounts, route.Kamino)
+		if errors.Is(reserveErr, errKaminoReserveStale) && runtime.refreshValuation != nil {
+			captureAddresses := addresses
+			if manifest.selectorObservation {
+				captureAddresses = selectorValuationPolicyAddresses(manifest, route, selectorValuationAddresses(route, addresses))
+			}
+			refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, route, captureAddresses, slot)
+			if refreshErr == nil {
+				if err := validateRouteValuationCapture(refreshedSlot, refreshedAccounts, captureAddresses, slot); err != nil {
+					return Observation{}, nil, err
+				}
+				if strategyReceiptIntegrityFault(accountAt(refreshedAccounts, bridgeStrategyReceipt)) {
+					// Restart through the established confirmed/finalized receipt
+					// classifier rather than promoting a simulated absence.
+					minimumSlot = refreshedSlot
+					continue
+				}
+				if manifest.selectorObservation {
+					freshRoute, routeErr := observedSelectorRoute(refreshedAccounts, selectedRoute.Lane)
+					if routeErr != nil || freshRoute.Lane != route.Lane {
+						minimumSlot = refreshedSlot
+						continue
+					}
+				}
+				slot, accounts = refreshedSlot, refreshedAccounts
+			}
+			// On unavailable refresh, cash-only accounting still works. Any
+			// noncash exposure retains the original fail-closed health hold.
+		}
+		err = reserveErr
+		if err != nil {
+			position, err = observeKaminoWithCashFallback(ctx, runtime.accounts, slot, accounts, route)
+		}
 		if err != nil {
 			// A stale, paused, or emergency Kamino state is a decision input,
 			// not a broken observer: the tick holds with the audited reason.
@@ -350,6 +388,14 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
 		}
 		base.ObservedAt = observedAt
+		base.ValuationSource, base.ValuationSlot = "confirmed", slot
+		if len(accounts) > 0 && accounts[0].ValuationSource != "" {
+			base.ValuationSource, base.ValuationSlot = accounts[0].ValuationSource, accounts[0].ValuationSlot
+		}
+		base.Snapshot.ValuationSource, base.Snapshot.ValuationSlot = base.ValuationSource, base.ValuationSlot
+		if base.ValuationSource != "confirmed" {
+			base.Snapshot.ObservationID = sha256Bytes([]byte(fmt.Sprintf("%s|valuation:%s|liquidation:%d", base.Snapshot.ObservationID, base.ValuationSource, base.Snapshot.LiquidationThresholdBPS)))
+		}
 		return base, accounts, nil
 	}
 	return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("confirmed receipt fence did not stabilize around fixed account batch"))

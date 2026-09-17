@@ -52,6 +52,8 @@ const (
 )
 
 type Snapshot struct {
+	ValuationSource        string
+	ValuationSlot          int64
 	ObservationID          string
 	Slot                   int64
 	RouteKind              string
@@ -249,11 +251,13 @@ func (d Decision) Validate() error {
 	}
 }
 
-// Observation is one coherent confirmed read. All balances and position values
-// in Snapshot must come from this slot.
+// Observation is one coherent bank read. Principal is chain state; reserve
+// valuations may use the explicitly identified unsigned refresh source.
 type Observation struct {
-	Snapshot   Snapshot
-	ObservedAt time.Time
+	ValuationSource string
+	ValuationSlot   int64
+	Snapshot        Snapshot
+	ObservedAt      time.Time
 }
 
 // Operation is the durable journal identity created before transaction work.

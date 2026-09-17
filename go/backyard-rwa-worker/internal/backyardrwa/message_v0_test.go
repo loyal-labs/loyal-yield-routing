@@ -52,7 +52,7 @@ func readRetainedJupiterLookups(t *testing.T, name string, count int) []LookupTa
 	return tables
 }
 
-func assertV0SDKParity(t *testing.T, payer, blockhash publicKey, instructions []compiledInstruction, tables []LookupTableSnapshot, message []byte) {
+func assertV0SDKParity(t *testing.T, payer, blockhash publicKey, instructions []compiledInstruction, tables []LookupTableSnapshot, message []byte, capture ...publicKey) {
 	t.Helper()
 	ixs := []any{}
 	for _, ix := range instructions {
@@ -66,7 +66,11 @@ func assertV0SDKParity(t *testing.T, payer, blockhash publicKey, instructions []
 	for _, s := range tables {
 		luts = append(luts, map[string]any{"address": s.Address, "data": base64.StdEncoding.EncodeToString(s.Data)})
 	}
-	input, err := json.Marshal(map[string]any{"payer": encodeBase58(payer[:]), "blockhash": encodeBase58(blockhash[:]), "instructions": ixs, "tables": luts})
+	captureKeys := []string{}
+	for _, key := range capture {
+		captureKeys = append(captureKeys, encodeBase58(key[:]))
+	}
+	input, err := json.Marshal(map[string]any{"capture": captureKeys, "payer": encodeBase58(payer[:]), "blockhash": encodeBase58(blockhash[:]), "instructions": ixs, "tables": luts})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,4 +139,20 @@ func TestVersionedMessageMatchesSDKAndRejectsInvalidLookupAccounts(t *testing.T)
 			t.Fatal("invalid message header accepted")
 		}
 	}
+}
+
+func TestVersionedCaptureMatchesSDKWithoutExtraInstructionsOrPrivileges(t *testing.T) {
+	tables := retainedJupiterLookups(t)
+	table, _ := decodeMessageLookupTable(tables[0])
+	payer, program := mustKey(bridgeDelegate), mustKey(kaminoProgram)
+	ix := compiledInstruction{program: program, accounts: []accountMeta{{key: table.addresses[2], writable: true}}, data: []byte{1, 2, 3}}
+	capture := []publicKey{table.addresses[5], mustKey(bridgeVoltrVault), table.addresses[2], table.addresses[5], payer, program}
+	message, err := compileV0Message(payer, mustKey(bridgeUSDC), []compiledInstruction{ix}, tables, capture...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = checkedUnsignedMessage(message); err != nil {
+		t.Fatal(err)
+	}
+	assertV0SDKParity(t, payer, mustKey(bridgeUSDC), []compiledInstruction{ix}, tables, message, capture...)
 }

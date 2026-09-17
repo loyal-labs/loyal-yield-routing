@@ -1,0 +1,39 @@
+{
+  "proofLevel": "READ_ONLY_UNSIGNED_VALUATION_NOT_FINANCED_LIFECYCLE",
+  "capturedSlots": {
+    "Prime/PRIME/USDC": 447916035,
+    "Maple/syrupUSDC/USDC": 447916035,
+    "OnRe/ONyc/USDC": 447916036
+  },
+  "captureAccountsPerLane": 29,
+  "source": "unsigned-reserve-refresh-simulation",
+  "existingLookupTable": "HSmmBwB7ZRWEsWf4q47w65hXfmqNrfP67KDtpuVrHK7T",
+  "v0WireBytes": {
+    "Prime/PRIME/USDC": 948,
+    "Maple/syrupUSDC/USDC": 892,
+    "OnRe/ONyc/USDC": 1078
+  },
+  "packetLimitBytes": 1232,
+  "sharedObserver": {
+    "slot": 447916037,
+    "source": "unsigned-reserve-refresh-simulation",
+    "lane": "Maple/syrupUSDC/USDC",
+    "vaultIdleRaw": 1214944,
+    "entryCapacityRaw": 2642030602,
+    "liquidationThresholdBps": 9000,
+    "manualReason": ""
+  },
+  "signedTransactions": 0,
+  "broadcasts": 0,
+  "databaseWrites": 0,
+  "limitsChanged": false,
+  "controlledChecks": [
+    "new-bank custody retained with refreshed reserve accrual",
+    "populated obligation and idle collateral valued coherently",
+    "genuinely stale oracle still held",
+    "NAV recomputation preserves source and slot digest",
+    "mixed-bank provenance and fee-payer capture rejected",
+    "active policy and all-lane ownership retained",
+    "v0 capture matches installed Solana SDK with no added instructions"
+  ]
+}

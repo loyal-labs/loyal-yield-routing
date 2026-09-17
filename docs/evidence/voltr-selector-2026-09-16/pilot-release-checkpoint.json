@@ -1,22 +1,21 @@
 {
   "proofLevel": "USER_DEPOSIT_FINALIZED_NOT_FINANCED_LIFECYCLE",
-  "workerCommit": "41c139514ecc77b1f69848e328b01794fb2985e1",
-  "actionsRun": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/35279644311",
+  "workerCommit": "d2228dbf0ed3d55b96407f4d3b2f3129ffe53c17",
+  "actionsRun": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/35282738875",
   "actionsConclusion": "success",
-  "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-41c139514ecc77b1f69848e328b01794fb2985e1",
-  "imageDigest": "sha256:14f36dbc639dd4ff8b95862ca522d1ec5859e214c5b8a963b130fbde778ed920",
+  "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-d2228dbf0ed3d55b96407f4d3b2f3129ffe53c17",
+  "imageDigest": "sha256:b2f35129a1540439173a65847335bfb23c05329c80a6a0ef6bcf1daba65fb337",
   "service": "srv-dalootgae00c73c4qhag",
-  "deploy": "dep-dam668jm8hqs73ckmi10",
-  "deployLiveAt": "2026-09-17T22:01:30.593929Z",
+  "deploy": "dep-dam6rluk1f9s73ef4rig",
   "currentState": "active",
-  "reason": "financed_lifecycle_and_rotation_pending",
+  "reason": "execution_observation_reserve_refresh_blocks_financed_lifecycle",
   "oldService": "srv-dabkt0ojo6nc7381o9fg",
   "oldServiceSuspended": true,
   "pilotActivated": true,
   "frontendCommit": "0b23bb5f",
   "externalDepositsEnabled": false,
-  "frontendDeployment": "dpl_AqAJ3BPt6tNWawCMYE9r2KScpmxm",
-  "frontendUrl": "https://loyal-vault-pilot-rfntb9t2v-loyals-projects-4b3ed656.vercel.app",
+  "frontendDeployment": "dpl_DchRzi7xogFRG1PzUo9M15uPvrGK",
+  "frontendUrl": "https://loyal-vault-pilot-p0zupdzaq-loyals-projects-4b3ed656.vercel.app",
   "frontendApi": {
     "path": "/api/vault",
     "status": 200,
@@ -28,7 +27,7 @@
     "navFreshness": "unknown"
   },
   "remainingGates": [
-    "real feasible entry quote after reserve refresh",
+    "coherent refreshed execution valuation and capacity",
     "current-release financed deposit-to-claim proof",
     "current-release rotation and recreation proof",
     "enable capped deposits only after acceptance"
@@ -149,5 +148,17 @@
     "feeLamports": 5000,
     "workerImage": "sha-41c139514ecc77b1f69848e328b01794fb2985e1",
     "servedReconciliation": "finalized-reconciled"
+  },
+  "canaryEntry": {
+    "requestID": "05b08ae3ac1e2e4b0459ed2b1688b05df1b4232ea98ed742e714cd2ccdb8c25b",
+    "lane": "Maple/syrupUSDC/USDC",
+    "equityRaw": "1000000",
+    "consumedAt": "2026-09-17T22:48:45.616770128Z",
+    "outcome": "held_before_allocation",
+    "holdReason": "insufficient_reviewed_entry_capacity",
+    "operationID": "f22e320e78385d3f45b20fb0e3186d81424d65660765fa63d1a5b1de64063dc7",
+    "observationSlot": 447912536,
+    "signature": null,
+    "note": "One-use receipt retained. No allocation or subsequent financial action occurred; deposited funds remain idle."
   }
 }

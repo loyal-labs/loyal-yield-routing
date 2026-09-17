@@ -49,7 +49,7 @@ func decodeMessageLookupTable(s LookupTableSnapshot) (messageLookupTable, error)
 // stable role ordering, table-order writable extraction then readonly extraction,
 // and static + all loaded writable + all loaded readonly account indices.
 // Only address representation changes; signers and invoked programs stay static.
-func compileV0Message(payer, blockhash publicKey, instructions []compiledInstruction, snapshots []LookupTableSnapshot) ([]byte, error) {
+func compileV0Message(payer, blockhash publicKey, instructions []compiledInstruction, snapshots []LookupTableSnapshot, capture ...publicKey) ([]byte, error) {
 	if len(instructions) == 0 || len(instructions) > 255 || len(snapshots) == 0 || len(snapshots) > 256 {
 		return nil, fmt.Errorf("invalid versioned message inputs")
 	}
@@ -61,6 +61,9 @@ func compileV0Message(payer, blockhash publicKey, instructions []compiledInstruc
 		for _, a := range ix.accounts {
 			pushOrMergeMeta(&accounts, a)
 		}
+	}
+	for _, key := range capture {
+		pushOrMergeMeta(&accounts, accountMeta{key: key})
 	}
 	if len(accounts) > 256 {
 		return nil, fmt.Errorf("versioned message exceeds account index space")

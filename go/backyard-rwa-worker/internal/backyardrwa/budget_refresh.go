@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 )
 
+const routeValuationLookupTable = "HSmmBwB7ZRWEsWf4q47w65hXfmqNrfP67KDtpuVrHK7T"
+
 // budgetReserveRefreshInstructions pins the closed instruction set: the lane's
 // two refreshes plus the Prime USDC reference refresh, deduplicated.
 func budgetReserveRefreshInstructions(lane string) ([]compiledInstruction, error) {
@@ -100,7 +102,20 @@ func (c *RPCClient) simulateBudgetRefreshInstructionsWithOptional(ctx context.Co
 		return 0, nil, err
 	}
 	if _, err = checkedUnsignedMessage(message); err != nil {
-		return 0, nil, err
+		// Reuse the existing partner lookup table only as an address encoding
+		// hint. The compiler resolves exact keys from this closed refresh and
+		// capture set; table contents cannot introduce an instruction or signer.
+		tables, _, lookupErr := observeJupiterLookupTables(ctx, c, []string{routeValuationLookupTable}, minimumSlot)
+		if lookupErr != nil {
+			return 0, nil, budgetHold("price_refresh_lookup_unavailable")
+		}
+		message, err = compileV0Message(feePayer, hash, instructions, tables, capture...)
+		if err != nil {
+			return 0, nil, err
+		}
+		if _, err = checkedUnsignedMessage(message); err != nil {
+			return 0, nil, err
+		}
 	}
 	// All-zero placeholder signature; sigVerify is explicitly false. These
 	// bytes cannot be broadcast successfully and are never persisted as signed.

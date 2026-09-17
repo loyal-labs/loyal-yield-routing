@@ -12,6 +12,12 @@
 4. **Prove rotation on the same release.** A → B → A, including closure/recreation when required, with the other reviewed lane covered. Verify destination-capacity loss, risk/withdrawal priority, restart/ambiguous-submit recovery and complete economic move costs. Controlled race tests supplement the released live flow; they do not substitute for it.
 5. **Open the capped user/partner surface.** Finish current worker/reconciliation readiness integration, deploy the compatible frontend, verify a real wallet journey against that release, then enable deposits within the already installed cap. Declare ready only after all gates below pass.
 
+### Immediate blocker and next acceptance attempt
+
+The 1-USDC user deposit is finalized and remains idle. The one-use Maple acceptance request was consumed, then execution held before allocation (`insufficient_reviewed_entry_capacity`, operation `f22e320e78385d3f45b20fb0e3186d81424d65660765fa63d1a5b1de64063dc7`). A real complete entry quote succeeded, but execution still observed zero capacity from the stale reserve cache. The same observer would also hold noncash NAV after buying collateral.
+
+Fix the shared observation seam once: obtain reserve accrual/prices with a closed unsigned refresh, capture custody/obligation/receipt/Clock together, retain all-lane ownership checks, and label simulation valuation provenance in the NAV digest. Keep signed effects/reconciliation grounded in actual chain state. Verify packet limits and stale-oracle rejection before deploying. The narrower capacity-only hook was discarded because it left the noncash deadlock unresolved. Preserve the consumed request; a subsequent bounded acceptance attempt uses a distinct ID only after this fix passes review.
+
 ### Current implementation ownership
 
 - Coordinator: current goal, production state, review, credentials, deployment, budget and all financial actions. Pilot budget generation 819 is activated after finalized cleanup; the current worker owns the fenced route lease and reconciles NAV reports.
@@ -24,13 +30,13 @@
 | Gate | Current evidence | What closes it |
 |---|---|---|
 | Access | Admin/delegate public identities verified from mounted environment; Git SSH signature cryptographically verified | Cleared for current session; verify deployment credentials during release |
-| Release scope | Worker `41c1395` passed Actions 35279644311 and is live as `dep-dam668jm8hqs73ckmi10`; frontend `f9df7346` is Ready as `dpl_5rimbPT1amGHD11bo6g5a8TwSghg` with matching worker pin | Complete funded acceptance on the final candidate |
+| Release scope | Worker `d2228db` passed Actions 35282738875 and is live as `dep-dam6rluk1f9s73ef4rig`; frontend `0b23bb5f` is Ready as `dpl_DchRzi7xogFRG1PzUo9M15uPvrGK` with matching worker pin | Complete funded acceptance on the final candidate |
 | Chain/database activation | 100-USDC cap finalized at 447724467; policies 149–151 finalized and pinned; migrations 74–80 applied and validated | Cleared: return finalized at 447899062; pilot budget generation 819 activated at 447899153 |
 | Financed money flow | 1-USDC deposit finalized and deployed app independently reconciled it | Full released deposit-to-claim receipt set |
 | Automatic routing | Selector/transition code and controlled tests exist | Same-release rotation with current capacity/cost evidence |
 | Public access | Client gate now checks current release lease, pilot authority, pending work, report identity, NAV/custody, freshness and cap; default remains closed; hosted APIs verify the expected vault and 100-USDC cap at slot 447890790, plus inactive worker state; typecheck/lint and 33 controlled service cases pass | Complete real wallet journey, then enable |
 
-**Current runtime and client:** worker `41c1395` is live on replacement service `srv-dalootgae00c73c4qhag`; historical service remains suspended. The manifest hash is `54dfdce596a237ef0c3726f20aa999ffd61152fdc3dcfb30608227fd975d68b0`. The first production NAV report reconciled at slot 447903813, signature `4cmpa767RLTZwJwB11XHjN4b9QnQCN3bmY1ktn2a9BWUBU3PauitSRpz9kWBJuwfwRBsXZ14yWetnR1ntcZbxDBa`. The deployed client worker API returns HTTP 200 with a fresh active lease and reconciled report. Deposits remain disabled.
+**Current runtime and client:** worker `d2228db` is live on replacement service `srv-dalootgae00c73c4qhag`; historical service remains suspended. The manifest hash is `54dfdce596a237ef0c3726f20aa999ffd61152fdc3dcfb30608227fd975d68b0`. The first production NAV report reconciled at slot 447903813, signature `4cmpa767RLTZwJwB11XHjN4b9QnQCN3bmY1ktn2a9BWUBU3PauitSRpz9kWBJuwfwRBsXZ14yWetnR1ntcZbxDBa`. The deployed client worker API returns HTTP 200 with a fresh active lease and reconciled report. Deposits remain disabled.
 
 **Reviewed implementation candidate:** frontend `8859a01aa94e6c051afa172f6cb91fe432cd96e3` contains both GLM patches and coordinator corrections and is pushed. Typecheck/lint pass; 33 deposit-service and 107 consumed-report cases pass. The sole verifier accepts one coherent open-deposit row and rejects 37 altered variants; its fast-tier overall verdict remains FAIL with missing live acceptance evidence. Production SQL validation was rolled back: only the three pilot views were selectable, unrelated routes returned zero rows, and base-table access, writes and schema creation were denied. The rollback test preceded the approved installation described below.
 
