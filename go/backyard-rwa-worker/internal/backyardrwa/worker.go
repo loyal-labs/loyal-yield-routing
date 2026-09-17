@@ -131,7 +131,27 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	if err != nil {
 		return err
 	}
+	// The extended read is preferred so production and shadow each make one
+	// database read and still carry the activation baseline into the snapshot;
+	// the bool-only reader stays for journals that predate the baseline. The
+	// baseline fields are cleared first: mergeJournal runs on reused
+	// observations, so a stale baseline from a previous merge must never
+	// survive into this snapshot.
+	observation.Snapshot.PilotBaselineKnown = false
+	observation.Snapshot.PilotBaselineTicketSequenceRaw = 0
 	if reader, ok := p.journal.(interface {
+		PilotRuntimeState(context.Context, string) (bool, *pilotActivationBaseline, error)
+	}); ok {
+		active, baseline, err := reader.PilotRuntimeState(ctx, p.routeKey)
+		if err != nil {
+			return err
+		}
+		observation.Snapshot.PilotActive = active
+		if active && baseline != nil {
+			observation.Snapshot.PilotBaselineKnown = true
+			observation.Snapshot.PilotBaselineTicketSequenceRaw = baseline.TicketLastConsumedSequenceRaw
+		}
+	} else if reader, ok := p.journal.(interface {
 		PilotRuntimeEnabled(context.Context, string) (bool, error)
 	}); ok {
 		active, err := reader.PilotRuntimeEnabled(ctx, p.routeKey)

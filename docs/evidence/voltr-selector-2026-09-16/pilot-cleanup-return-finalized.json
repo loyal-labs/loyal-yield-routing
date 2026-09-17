@@ -1,0 +1,52 @@
+{
+  "proofLevel": "FINALIZED_CLEANUP_AND_PILOT_AUTHORITY_NOT_DEPOSIT_READINESS",
+  "steps": [
+    {
+      "verdict": "CLEANUP_BRIDGE_FINALIZED",
+      "action": "REPORT_NAV",
+      "signature": "3JLnsTrZSTz9VsmJEG3VbJrfcPRieKMrueVk6oTQZv3jTgn5tSJq2ZfNW5YWHoFvvxsXvUSLV2eb8FsPq8cx2AjG",
+      "slot": 447898878,
+      "postIdleRaw": 23,
+      "postStrategyRaw": 0,
+      "postSquadsRaw": 214921,
+      "reportedNAVRaw": 214921,
+      "feeLamports": 5000
+    },
+    {
+      "verdict": "CLEANUP_BRIDGE_FINALIZED",
+      "action": "STAGE_SQUADS_TO_VOLTR",
+      "signature": "KYHx9CwX3gSHb5W5U2YUzEUPKucov4eu1uNTEK2ztjMHGCjKdoEk3pNL1vynAhc8d33rpUN9td7gzkb9QpoZawc",
+      "slot": 447898969,
+      "postIdleRaw": 23,
+      "postStrategyRaw": 214921,
+      "postSquadsRaw": 0,
+      "reportedNAVRaw": 214921,
+      "feeLamports": 5000
+    },
+    {
+      "verdict": "CLEANUP_BRIDGE_FINALIZED",
+      "action": "VOLTR_RESTORE_IDLE",
+      "signature": "448uxR1aB9ayxLaxXkhyGasgmvqJgLDgzEhEvt8NUDFaVoxktGibUfozsj8GPKfQV9GpfH7JQNr3XRKkgc1XNyfd",
+      "slot": 447899062,
+      "postIdleRaw": 214944,
+      "postStrategyRaw": 0,
+      "postSquadsRaw": 0,
+      "reportedNAVRaw": 0,
+      "feeLamports": 5000
+    }
+  ],
+  "activationAuthority": {
+    "schema": "voltr-rwa-pilot-budget/v1",
+    "authorityId": "01a0a776-cb66-7333-99eb-7e6927c1e114",
+    "previousBudgetWasAbsent": true,
+    "previousBudgetSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "generation": 819,
+    "finalizedSlot": 447899153,
+    "flatEvidenceSha256": "03c41286d5837fdaeb2cb02c4d8ee27374818b241732bcf672c17a768fa78239"
+  },
+  "idleAndBookRaw": 214944,
+  "managerCashRaw": 0,
+  "strategyCashRaw": 0,
+  "reportedNAVRaw": 0,
+  "externalDepositsEnabled": false
+}

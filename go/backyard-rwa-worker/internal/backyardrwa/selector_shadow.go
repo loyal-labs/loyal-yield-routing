@@ -101,6 +101,13 @@ func (r shadowJournal) PilotRuntimeEnabled(ctx context.Context, key string) (boo
 	return r.db.PilotRuntimeEnabled(ctx, key)
 }
 
+// The shadow observation carries the same validated activation baseline into
+// its snapshot through one delegated read, so M8's baseline explanation is
+// identical in shadow and production.
+func (r shadowJournal) PilotRuntimeState(ctx context.Context, key string) (bool, *pilotActivationBaseline, error) {
+	return r.db.PilotRuntimeState(ctx, key)
+}
+
 // This observer enriches a separate snapshot without projecting NAV or taking
 // an execution lease. Broader ownership failures stay confined to shadow output.
 func observeSelectorShadow(ctx context.Context, database *Database, rpc *RPCClient, manifest RouteManifest, identity func(context.Context) (programIdentityObservation, error)) (Observation, error) {

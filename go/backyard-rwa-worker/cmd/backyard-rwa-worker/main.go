@@ -24,6 +24,14 @@ func main() {
 			}
 			return
 		}
+		if os.Args[1] == "--prepare-pilot-cleanup" && len(os.Args) == 2 {
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			if err := backyardrwa.CompilePilotCleanupWire(ctx, os.Getenv("SOLANA_RPC_URL"), os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
 		if os.Args[1] == "--selector-shadow" && len(os.Args) == 2 {
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
@@ -84,7 +92,7 @@ func main() {
 			return
 		}
 		if os.Args[1] != "--inspect-phase3" || len(os.Args) < 3 {
-			log.Fatal("usage: backyard-rwa-worker [--inspect-pilot-flat-state | --activate-pilot-budget | --selector-shadow | --inspect-phase3 lane ... | --inspect-phase3-setup-rent | --initialize-phase3-budget | clear-hold --route <route key> --reason \"<text>\"]")
+			log.Fatal("usage: backyard-rwa-worker [--prepare-pilot-cleanup | --inspect-pilot-flat-state | --activate-pilot-budget | --selector-shadow | --inspect-phase3 lane ... | --inspect-phase3-setup-rent | --initialize-phase3-budget | clear-hold --route <route key> --reason \"<text>\"]")
 		}
 		result, err := backyardrwa.InspectPhase3Runtime(os.Args[2:])
 		if err != nil {

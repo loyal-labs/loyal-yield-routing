@@ -71,9 +71,21 @@ func bridgeMonitorHold(s Snapshot) (Decision, bool) {
 		return monitorHold(s, "performance_fee_enabled"), true
 	}
 	// M8: the report ticket may only ever be consumed by this worker's own
-	// reconciled bridge operation.
+	// reconciled bridge operation. A reconciled journal sequence always takes
+	// precedence. Only while the journal has no reconciled ticket-consuming
+	// operation at all may an active validated pilot activation baseline
+	// explain the ticket: the approved operator cleanup finished consuming it to reach the archived flat baseline, so an active baseline explains
+	// exactly its own archived sequence — compared exactly, so a reset back to
+	// zero after a consumed baseline holds like any other out-of-band move.
+	// Without an active baseline, any nonzero consumed sequence holds. The
+	// baseline is bookkeeping evidence, not a journal row, and carries no NAV.
 	if !s.JournalSequenceKnown {
-		if s.TicketLastConsumedSequenceRaw != 0 {
+		switch {
+		case s.PilotActive && s.PilotBaselineKnown:
+			if s.TicketLastConsumedSequenceRaw != s.PilotBaselineTicketSequenceRaw {
+				return monitorHold(s, "out_of_band_crank"), true
+			}
+		case s.TicketLastConsumedSequenceRaw != 0:
 			return monitorHold(s, "out_of_band_crank"), true
 		}
 	} else if uint64(s.JournalReconciledSequenceRaw) != uint64(s.TicketLastConsumedSequenceRaw) {

@@ -86,7 +86,18 @@ type Snapshot struct {
 	// Transaction admission rechecks that authority under the route lock.
 	InitializationPolicyReady bool
 	PilotActive               bool
-	SelectorEntryPaused       bool
+	// PilotBaselineKnown marks a validated pilot activation whose archived
+	// finalized flat evidence explains the ticket's consumed sequence before
+	// this worker's journal has any reconciled ticket-consuming operation: the
+	// approved operator cleanup consumed the report ticket to reach the flat
+	// baseline. M8 requires PilotActive alongside this flag and then compares
+	// the ticket exactly against PilotBaselineTicketSequenceRaw — the sequence
+	// archived in that evidence. It is a bookkeeping fact, not a journal row:
+	// it carries no NAV, arms nothing, and never explains any sequence other
+	// than its own.
+	PilotBaselineKnown             bool
+	PilotBaselineTicketSequenceRaw int64
+	SelectorEntryPaused            bool
 	// Exact equity authorized by a current durable selector quote.
 	SelectorEntryEquityRaw int64
 	SelectorBorrowRaw      uint64

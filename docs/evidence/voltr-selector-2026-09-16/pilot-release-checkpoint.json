@@ -9,29 +9,27 @@
   "deploy": "dep-dalootoae00c73c4qiag",
   "deployLiveAt": "2026-09-17T06:45:26.178478Z",
   "currentState": "suspended",
-  "reason": "missing_or_mismatched_goal_budget",
+  "reason": "awaiting_worker_baseline_release_and_funded_acceptance",
   "oldService": "srv-dabkt0ojo6nc7381o9fg",
   "oldServiceSuspended": true,
   "pendingOperationsAfterSuspension": 0,
-  "pilotActivated": false,
-  "frontendCommit": "14ab1dd575637776b68b224a3059c1cdd31bbf56",
+  "pilotActivated": true,
+  "frontendCommit": "368575fe9a71e2f35ab2d478122d5ee1315069ad",
   "externalDepositsEnabled": false,
-  "frontendDeployment": "dpl_BhB3AqEbJ8dJCdvumqV5aenwzhJk",
-  "frontendUrl": "https://loyal-vault-pilot-o9rf52pmv-loyals-projects-4b3ed656.vercel.app",
+  "frontendDeployment": "dpl_8CzMsfnytBUwuEivcrJkzbd4rAQR",
+  "frontendUrl": "https://loyal-vault-pilot-of93wxffq-loyals-projects-4b3ed656.vercel.app",
   "frontendApi": {
     "path": "/api/vault",
     "status": 200,
-    "observedAt": "2026-09-17T07:16:52.000Z",
-    "slot": 447736158,
+    "observedAt": "2026-09-17T20:53:44.000Z",
+    "slot": 447890790,
     "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
     "maxCapRaw": "100000000",
     "deposits": "unavailable",
     "navFreshness": "unknown"
   },
   "remainingGates": [
-    "attribute and reconcile historical shared PYUSD custody",
-    "activate history-preserving pilot budget",
-    "provision least-privilege frontend observation access",
+    "deploy reviewed activation-baseline worker release",
     "current-release financed deposit-to-claim proof",
     "current-release rotation and recreation proof",
     "enable capped deposits only after acceptance"
@@ -39,7 +37,7 @@
   "frontendCandidate": {
     "commit": "8859a01aa94e6c051afa172f6cb91fe432cd96e3",
     "pushed": true,
-    "deployed": false,
+    "deployed": true,
     "glmAccessTask": 607,
     "glmVerifierTask": 608,
     "typecheck": "pass",
@@ -50,16 +48,16 @@
     "openDepositControlledRejected": 37,
     "releaseVerdict": "FAIL",
     "readerSqlProductionRollbackTest": "pass",
-    "readerInstalled": false,
-    "credentialDelivered": false,
-    "provisioningGate": "explicit approval required after automatic approval review rejection",
+    "readerInstalled": true,
+    "credentialDelivered": true,
+    "provisioningGate": "approved and completed",
     "workerImageAndServicePinsConfigured": true,
     "persistentDepositsEnabledSetting": "0"
   },
   "localFollowUp": {
     "commit": "3d15b413",
-    "pushed": false,
-    "deployed": false,
+    "pushed": true,
+    "deployed": true,
     "glmVerifierTask": 613,
     "browserRecoveryGate": "PASS",
     "browserRecoveryScenarios": 14,
@@ -87,12 +85,50 @@
     "conversionAndReturnToHXtkApproved": true,
     "amountRaw": "214898",
     "finalizedCustodySlot": 447889670,
-    "executed": false
+    "executed": true,
+    "swapFinalized": {
+      "verdict": "PYUSD_SWAP_FINALIZED_NOT_PILOT_ACTIVATION",
+      "signature": "cwfxqEcmbXGH8FsodAUPVf6TU6uV85fmDYFzLkoadUMUhEYhA49gP77yYkcReUQX1aJGCSM36vs62WekWaxn11r",
+      "slot": 447894118,
+      "sourceRaw": "0",
+      "outputRaw": "214921",
+      "feeLamports": 5000
+    },
+    "returnToHXtkComplete": false
   },
   "publicationApproved": true,
-  "pendingFrontendDeployment": {
-    "commit": "368575fe",
-    "id": "dpl_8CzMsfnytBUwuEivcrJkzbd4rAQR",
-    "url": "https://loyal-vault-pilot-of93wxffq-loyals-projects-4b3ed656.vercel.app"
+  "frontendWorkerApi": {
+    "path": "/api/worker",
+    "status": 200,
+    "source": "yield-worker-journal",
+    "leaseActive": false,
+    "freshness": "stale",
+    "operation": {
+      "action": "REPORT_NAV",
+      "status": "failed",
+      "updatedAt": "2026-09-17 06:46:05.866279+00"
+    }
+  },
+  "frontendDepositPreparation": {
+    "path": "/api/transactions/prepare",
+    "status": 409,
+    "action": "deposit",
+    "amountRaw": "1000000",
+    "reason": "Pilot deposits are not open yet.",
+    "broadcast": false
+  },
+  "cleanupReturn": {
+    "evidence": "pilot-cleanup-return-finalized.json",
+    "finalizedSlot": 447899062,
+    "idleAndBookRaw": 214944
+  },
+  "pilotActivationAuthority": {
+    "schema": "voltr-rwa-pilot-budget/v1",
+    "authorityId": "01a0a776-cb66-7333-99eb-7e6927c1e114",
+    "previousBudgetWasAbsent": true,
+    "previousBudgetSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+    "generation": 819,
+    "finalizedSlot": 447899153,
+    "flatEvidenceSha256": "03c41286d5837fdaeb2cb02c4d8ee27374818b241732bcf672c17a768fa78239"
   }
 }

@@ -1,0 +1,8 @@
+{
+  "verdict": "PYUSD_SWAP_FINALIZED_NOT_PILOT_ACTIVATION",
+  "signature": "cwfxqEcmbXGH8FsodAUPVf6TU6uV85fmDYFzLkoadUMUhEYhA49gP77yYkcReUQX1aJGCSM36vs62WekWaxn11r",
+  "slot": 447894118,
+  "sourceRaw": "0",
+  "outputRaw": "214921",
+  "feeLamports": 5000
+}
