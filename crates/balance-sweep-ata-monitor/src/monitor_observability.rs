@@ -6,6 +6,7 @@ use opentelemetry::{
 };
 
 pub const EARN_RECONCILIATION_JOB_FAILED: &str = "earn_reconciliation_job_failed";
+pub const EARN_RECONCILIATION_JOB_DEAD_LETTERED: &str = "earn_reconciliation_job_dead_lettered";
 pub const EARN_RECONCILIATION_CONSUMER_FAILED: &str = "earn_reconciliation_consumer_failed";
 pub const EARN_RECONCILIATION_HEALTH_SNAPSHOT_FAILED: &str =
     "earn_reconciliation_health_snapshot_failed";
@@ -87,6 +88,17 @@ pub fn emit_earn_reconciliation_job_failed() {
     )
     .retryable(true)
     .recovery_required(false)
+    .emit();
+}
+
+pub fn emit_earn_reconciliation_job_dead_lettered() {
+    OperationalError::new(
+        EARN_RECONCILIATION_JOB_DEAD_LETTERED,
+        "process_earn_reconciliation_job",
+        "Earn reconciliation job exhausted retries and was dead-lettered",
+    )
+    .retryable(false)
+    .recovery_required(true)
     .emit();
 }
 
@@ -198,6 +210,10 @@ mod tests {
         assert_eq!(
             EARN_RECONCILIATION_JOB_FAILED,
             "earn_reconciliation_job_failed"
+        );
+        assert_eq!(
+            EARN_RECONCILIATION_JOB_DEAD_LETTERED,
+            "earn_reconciliation_job_dead_lettered"
         );
         assert_eq!(
             EARN_RECONCILIATION_CONSUMER_FAILED,

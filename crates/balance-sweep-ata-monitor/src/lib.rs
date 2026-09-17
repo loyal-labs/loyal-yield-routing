@@ -64,7 +64,8 @@ pub use monitor_observability::{
     emit_autodeposit_reconciliation_consumer_failed,
     emit_autodeposit_reconciliation_request_failed, emit_autodeposit_reconciliation_rpc_behind,
     emit_earn_reconciliation_consumer_failed, emit_earn_reconciliation_health_snapshot_failed,
-    emit_earn_reconciliation_job_failed, EarnMonitorMetrics,
+    emit_earn_reconciliation_job_dead_lettered, emit_earn_reconciliation_job_failed,
+    EarnMonitorMetrics,
 };
 pub use smart_account::{
     build_multi_channel_subscribe_request, normalize_laserstream_update, subscribe_request_json,

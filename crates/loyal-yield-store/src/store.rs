@@ -964,6 +964,36 @@ impl NeonSqlClient {
         Ok(())
     }
 
+    /// Parks a job whose error is terminal so the per-vault queue can advance.
+    /// The row stays in place with `completed_at` set and a `dead_letter:` error;
+    /// clearing `completed_at` requeues it.
+    pub async fn dead_letter_earn_reconciliation_job(
+        &self,
+        job_id: i64,
+        claim_owner: &str,
+        error: &str,
+    ) -> Result<(), OrchestratorError> {
+        let updated = sqlx::query(
+            r#"
+            UPDATE loyal_yield.earn_reconciliation_jobs
+            SET completed_at = NOW(), claim_owner = NULL, claim_expires_at = NULL,
+                last_error = 'dead_letter: ' || $3, updated_at = NOW()
+            WHERE id = $1 AND claim_owner = $2 AND completed_at IS NULL
+            "#,
+        )
+        .bind(job_id)
+        .bind(claim_owner)
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(OrchestratorError::StoreInvariant(format!(
+                "Earn reconciliation job {job_id} lost claim before dead-letter"
+            )));
+        }
+        Ok(())
+    }
+
     pub async fn complete_earn_reconciliation_job(
         &self,
         job_id: i64,
