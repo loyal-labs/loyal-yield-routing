@@ -703,3 +703,58 @@ func TestRuntimeLeaseOwnerUsesExactRenderAndImmutableImageIdentity(t *testing.T)
 		}
 	}
 }
+
+func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
+	for _, after := range []OperationStatus{Signed, BroadcastIntent} {
+		t.Run(string(after), func(t *testing.T) {
+			o := tickObservation(Snapshot{ObservationID: "report", Slot: 10, RouteKind: RouteKind, Fresh: true, LastReportAgeSeconds: 1000})
+			d := Decide(o.Snapshot)
+			if d.Action != ReportNAV {
+				t.Fatalf("expected report fixture: %+v", d)
+			}
+			var persisted *PersistedOperation
+			advanced := 0
+			w := &Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{
+				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return persisted, nil },
+				observe:         func(context.Context) (Observation, error) { return o, nil },
+				prepareBridge: func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error) {
+					return o, BridgeExecutionEvidence{}, nil
+				},
+				recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+					return DecisionRecord{OperationID: "report-op", Status: Decided}, nil
+				},
+				admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return nil },
+				buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
+					persisted = &PersistedOperation{Operation: Operation{ID: "report-op"}, Status: after, SignedWire: []byte{1, 2, 3}}
+					return nil
+				},
+				advance: func(_ context.Context, op PersistedOperation) error {
+					if op.ID != "report-op" || string(op.SignedWire) != string([]byte{1, 2, 3}) {
+						t.Fatal("lost durable wire")
+					}
+					if op.Status == Signed {
+						advanced++
+						persisted.Status = Submitted
+					}
+					return nil
+				},
+			}}
+			if err := w.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if after == Signed {
+				want = 1
+			}
+			if advanced != want {
+				t.Fatalf("advanced %d times, want %d", advanced, want)
+			}
+			if err := w.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if advanced != want {
+				t.Fatal("recovery tried a second signed send")
+			}
+		})
+	}
+}

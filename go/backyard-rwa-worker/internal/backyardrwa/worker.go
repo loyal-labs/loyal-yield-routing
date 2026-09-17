@@ -552,7 +552,35 @@ func (w *Worker) Tick(ctx context.Context) error {
 	default:
 		return fmt.Errorf("prepared evidence no longer matches an actionable decision")
 	}
-	return w.journalTickError(ctx, record.OperationID, err)
+	if err != nil {
+		return w.journalTickError(ctx, record.OperationID, err)
+	}
+	// A newly signed report has only 32 slots to land. Persisting the wire is
+	// the recovery boundary; waiting a polling interval adds no safety and
+	// can expire it. Reload durable state and use the normal send/recovery
+	// path immediately, with the same fresh manual-stop check as a new tick.
+	if w.runtime.loadLatch != nil {
+		latch, latched, err := w.runtime.loadLatch(ctx, w.routeKey)
+		if err != nil {
+			return err
+		}
+		if latched {
+			return w.recordLatchedHold(ctx, latch)
+		}
+	}
+	pending, err := w.runtime.loadNonterminal(ctx, w.routeKey)
+	if err != nil {
+		return err
+	}
+	if pending != nil {
+		if pending.ID != record.OperationID {
+			return fmt.Errorf("operation changed after durable build")
+		}
+		if pending.Status == Signed {
+			return w.runtime.advance(ctx, *pending)
+		}
+	}
+	return nil
 }
 
 // journalTickError journals an admission hold for the tick's operation once.
