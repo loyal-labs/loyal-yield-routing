@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -73,15 +74,15 @@ func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	zero := 0
 	no := false
 	schema := 2
-	supply := 1000.0
-	borrow := 500.0
+	supply := 1_000_000_000_000.0
+	borrow := 500_000_000_000.0
 	c := verifiedEconomicReserve{Reserve: r.Kamino.CollateralReserve, Market: r.Kamino.Market, Mint: r.Kamino.CollateralMint, ObservedAt: now, Slot: 42, Hash: strings.Repeat("a", 64), Commitment: "confirmed", Schema: &schema, Status: &zero, Emergency: &no, SupplyAPY: &f.SupplyAPY}
 	d := c
 	d.Reserve = r.Kamino.DebtReserve
 	d.Mint = bridgeUSDC
 	d.BorrowAPY = &f.CurrentBorrowAPY
-	d.SupplyTokens = &supply
-	d.BorrowTokens = &borrow
+	d.SupplyRaw = &supply
+	d.BorrowRaw = &borrow
 	d.HostBPS = &f.HostBorrowBPS
 	// Real collector padding from the September 16 read-only response.
 	if err := json.Unmarshal([]byte(`[{"utilization_rate_bps":0,"borrow_rate_bps":0},{"utilization_rate_bps":9000,"borrow_rate_bps":364},{"utilization_rate_bps":10000,"borrow_rate_bps":1075},{"utilization_rate_bps":10000,"borrow_rate_bps":1075}]`), &d.Curve); err != nil {
@@ -89,9 +90,16 @@ func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	}
 	rows := map[string]verifiedEconomicReserve{c.Reserve: c, d.Reserve: d}
 	got := combineEconomics([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy())
-	if len(got) != 1 || got[0].EntryCapacity.Known || got[0].DebtSupplyRaw != 1_000_000_000 {
+	if len(got) != 1 || got[0].EntryCapacity.Known || got[0].DebtSupplyRaw != supply || got[0].DebtBorrowRaw != borrow {
 		t.Fatalf("feed: %+v", got)
 	}
+	projected := got[0]
+	projected.BorrowCurve = []BorrowCurvePoint{{0, 0}, {10000, 1000}}
+	apr, err := projectedBorrowAPR(projected, 100_000_000_000)
+	if err != nil || math.Abs(apr-(0.06+projected.HostBorrowBPS/10000)) > 1e-12 {
+		t.Fatalf("raw-unit borrow should raise utilization from 50 to 60 percent: %v %v", apr, err)
+	}
+
 	d.Mint = "wrong"
 	rows[d.Reserve] = d
 	if len(combineEconomics([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy())) != 0 {

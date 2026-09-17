@@ -23,7 +23,7 @@ const selectorReserveSQL = `SELECT jsonb_build_object(
  'reserve',v.reserve,'market',v.market,'mint',v.liquidity_mint,
  'observedAt',v.verified_at,'slot',v.verified_slot,'hash',v.account_data_hash,
  'commitment',v.verification_commitment,'supplyApy',v.supply_apy,'borrowApy',v.borrow_apy,
- 'debtSupplyTokens',v.total_supply_amount,'debtBorrowTokens',v.borrowed_amount,
+ 'debtSupplyRaw',v.total_supply_amount,'debtBorrowRaw',v.borrowed_amount,
  'status',v.reserve_status,'emergency',v.emergency_mode,'curve',v.borrow_rate_curve,
  'hostBps',s.snapshot->'host_fixed_interest_rate_bps',
  'schema',s.snapshot->'observation_schema_version')
@@ -32,22 +32,22 @@ const selectorReserveSQL = `SELECT jsonb_build_object(
  WHERE v.reserve=ANY($1::text[])`
 
 type verifiedEconomicReserve struct {
-	Reserve      string             `json:"reserve"`
-	Market       string             `json:"market"`
-	Mint         string             `json:"mint"`
-	ObservedAt   time.Time          `json:"observedAt"`
-	Slot         int64              `json:"slot"`
-	Hash         string             `json:"hash"`
-	Commitment   string             `json:"commitment"`
-	SupplyAPY    *float64           `json:"supplyApy"`
-	BorrowAPY    *float64           `json:"borrowApy"`
-	SupplyTokens *float64           `json:"debtSupplyTokens"`
-	BorrowTokens *float64           `json:"debtBorrowTokens"`
-	Status       *int               `json:"status"`
-	Emergency    *bool              `json:"emergency"`
-	Curve        []BorrowCurvePoint `json:"curve"`
-	HostBPS      *float64           `json:"hostBps"`
-	Schema       *int               `json:"schema"`
+	Reserve    string             `json:"reserve"`
+	Market     string             `json:"market"`
+	Mint       string             `json:"mint"`
+	ObservedAt time.Time          `json:"observedAt"`
+	Slot       int64              `json:"slot"`
+	Hash       string             `json:"hash"`
+	Commitment string             `json:"commitment"`
+	SupplyAPY  *float64           `json:"supplyApy"`
+	BorrowAPY  *float64           `json:"borrowApy"`
+	SupplyRaw  *float64           `json:"debtSupplyRaw"`
+	BorrowRaw  *float64           `json:"debtBorrowRaw"`
+	Status     *int               `json:"status"`
+	Emergency  *bool              `json:"emergency"`
+	Curve      []BorrowCurvePoint `json:"curve"`
+	HostBPS    *float64           `json:"hostBps"`
+	Schema     *int               `json:"schema"`
 }
 
 type nativeYield struct {
@@ -168,10 +168,12 @@ func combineEconomics(routes []RuntimeRoute, reserves map[string]verifiedEconomi
 	for _, route := range routes {
 		c, d := reserves[route.Kamino.CollateralReserve], reserves[route.Kamino.DebtReserve]
 		y, ok := yields[route.Lane]
-		if !ok || !valid(c, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, route.Kamino.Market) || !valid(d, route.Kamino.DebtReserve, bridgeUSDC, route.Kamino.Market) || c.SupplyAPY == nil || d.BorrowAPY == nil || d.SupplyTokens == nil || d.BorrowTokens == nil || d.HostBPS == nil {
+		if !ok || !valid(c, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, route.Kamino.Market) || !valid(d, route.Kamino.DebtReserve, bridgeUSDC, route.Kamino.Market) || c.SupplyAPY == nil || d.BorrowAPY == nil || d.SupplyRaw == nil || d.BorrowRaw == nil || d.HostBPS == nil {
 			continue
 		}
-		e := LaneEconomics{Lane: route.Lane, EvidenceID: c.Hash + ":" + d.Hash + ":" + y.EvidenceID, ObservedAt: c.ObservedAt, NativeObservedAt: y.ObservedAt, NativeAPY: y.APY, SupplyAPY: *c.SupplyAPY, CurrentBorrowAPY: *d.BorrowAPY, BorrowCurve: d.Curve, HostBorrowBPS: *d.HostBPS, DebtSupplyRaw: *d.SupplyTokens * 1e6, DebtBorrowRaw: *d.BorrowTokens * 1e6}
+		// loyal-kamino-codec emits reserve supply and borrowed amounts in raw
+		// token units. These USDC-only debt lanes need no decimal conversion.
+		e := LaneEconomics{Lane: route.Lane, EvidenceID: c.Hash + ":" + d.Hash + ":" + y.EvidenceID, ObservedAt: c.ObservedAt, NativeObservedAt: y.ObservedAt, NativeAPY: y.APY, SupplyAPY: *c.SupplyAPY, CurrentBorrowAPY: *d.BorrowAPY, BorrowCurve: d.Curve, HostBorrowBPS: *d.HostBPS, DebtSupplyRaw: *d.SupplyRaw, DebtBorrowRaw: *d.BorrowRaw}
 		if d.ObservedAt.Before(e.ObservedAt) {
 			e.ObservedAt = d.ObservedAt
 		}
