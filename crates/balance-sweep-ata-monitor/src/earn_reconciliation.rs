@@ -77,7 +77,7 @@ use crate::{
     emit_autodeposit_reconciliation_consumer_failed,
     emit_autodeposit_reconciliation_request_failed, emit_autodeposit_reconciliation_rpc_behind,
     emit_earn_reconciliation_consumer_failed, emit_earn_reconciliation_health_snapshot_failed,
-    emit_earn_reconciliation_job_failed,
+    emit_earn_reconciliation_job_dead_lettered, emit_earn_reconciliation_job_failed,
     monitor_observability::EarnMonitorMetrics,
     smart_account::{
         EarnVaultWatch, NormalizedEarnUpdate, SubscriptionWatchSet, EARN_IDLE_TOKEN_ACCOUNTS,
@@ -93,6 +93,9 @@ const TRANSACTION_PROOF_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(10),
 ];
 const TRANSACTION_PROOF_STALE_ATTEMPT: i32 = 6;
+/// Terminal (`Failure`) errors are retried this many times before the job is
+/// dead-lettered so later events for the same vault can be reconciled.
+const EARN_RECONCILIATION_DEAD_LETTER_ATTEMPT: i32 = 50;
 
 #[derive(Debug, Clone)]
 pub struct EarnPolicyTransaction {
@@ -2529,6 +2532,19 @@ pub enum EarnReconciliationProcessOutcome {
         kind: EarnReconciliationDeferralKind,
         error: String,
     },
+    DeadLettered {
+        job_id: i64,
+        attempt_count: i32,
+        error: String,
+    },
+}
+
+pub(crate) fn should_dead_letter_reconciliation_job(
+    kind: EarnReconciliationDeferralKind,
+    attempt_count: i32,
+) -> bool {
+    kind == EarnReconciliationDeferralKind::Failure
+        && attempt_count >= EARN_RECONCILIATION_DEAD_LETTER_ATTEMPT
 }
 
 fn reconciliation_deferral_kind(error: &anyhow::Error) -> EarnReconciliationDeferralKind {
@@ -2893,6 +2909,16 @@ async fn defer_earn_reconciliation_job(
 ) -> Result<EarnReconciliationProcessOutcome> {
     let kind = reconciliation_deferral_kind(&error);
     let error = format!("{error:#}");
+    if should_dead_letter_reconciliation_job(kind, attempt_count) {
+        store
+            .dead_letter_earn_reconciliation_job(job_id, claim_owner, &error)
+            .await?;
+        return Ok(EarnReconciliationProcessOutcome::DeadLettered {
+            job_id,
+            attempt_count,
+            error,
+        });
+    }
     store
         .retry_earn_reconciliation_job(job_id, claim_owner, &error, retry_after_seconds)
         .await?;
@@ -3002,6 +3028,19 @@ pub async fn run_earn_reconciliation_consumer(
                         ),
                     }
                 }
+            }
+            Ok(EarnReconciliationProcessOutcome::DeadLettered {
+                job_id,
+                attempt_count,
+                error,
+            }) => {
+                tracing::error!(
+                    job_id,
+                    attempt_count,
+                    error,
+                    "Earn reconciliation job exhausted retries and was dead-lettered"
+                );
+                emit_earn_reconciliation_job_dead_lettered();
             }
             Ok(EarnReconciliationProcessOutcome::Idle) => {
                 tokio::select! {
@@ -3667,6 +3706,16 @@ mod tests {
             EarnReconciliationDeferralKind::Failure,
             1
         ));
+    }
+
+    #[test]
+    fn only_terminal_failures_dead_letter_after_the_retry_ceiling() {
+        use EarnReconciliationDeferralKind::*;
+        assert!(!should_dead_letter_reconciliation_job(Failure, 49));
+        assert!(should_dead_letter_reconciliation_job(Failure, 50));
+        assert!(should_dead_letter_reconciliation_job(Failure, 1_318));
+        assert!(!should_dead_letter_reconciliation_job(ProofPending, 1_318));
+        assert!(!should_dead_letter_reconciliation_job(RpcBehind, 1_318));
     }
 
     #[test]

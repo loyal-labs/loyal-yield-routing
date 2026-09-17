@@ -124,7 +124,8 @@ async fn main() -> Result<()> {
         {
             EarnReconciliationProcessOutcome::Idle => break,
             EarnReconciliationProcessOutcome::Completed { .. }
-            | EarnReconciliationProcessOutcome::Deferred { .. } => {}
+            | EarnReconciliationProcessOutcome::Deferred { .. }
+            | EarnReconciliationProcessOutcome::DeadLettered { .. } => {}
         }
     }
     Ok(())
