@@ -85,7 +85,7 @@ const PersistBroadcastIntentUpdate = `UPDATE loyal_yield.multiply_operations SET
 
 const RouteProjectionUpdate = `UPDATE loyal_yield.multiply_route_states SET state = jsonb_set(state, '{observation}', $4::jsonb, true), updated_at = clock_timestamp() WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() AND (state -> 'observation' ->> 'observedSlot' IS NULL OR (state -> 'observation' ->> 'observedSlot')::bigint <= $5)`
 
-const PositionSnapshotInsert = `INSERT INTO loyal_yield.multiply_position_snapshots (route_key, generation, observed_slot, observed_at, strategy_key, claim_raw, collateral_raw, debt_raw, equity_usd_micros, collateral_value_usd_micros, debt_value_usd_micros, ltv_bps, forecast_apy_bps, valuation_source, valuation_slot, valuation_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'backyard_rwa_v1_onchain_route', $3, $4) ON CONFLICT (route_key, observed_slot) DO NOTHING`
+const PositionSnapshotInsert = `INSERT INTO loyal_yield.multiply_position_snapshots (route_key, generation, observed_slot, observed_at, strategy_key, claim_raw, collateral_raw, debt_raw, equity_usd_micros, collateral_value_usd_micros, debt_value_usd_micros, ltv_bps, forecast_apy_bps, valuation_source, valuation_slot, valuation_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $4) ON CONFLICT (route_key, observed_slot) DO NOTHING`
 
 func PersistedForSend(status OperationStatus) bool {
 	return status == BroadcastIntent
@@ -289,6 +289,8 @@ func durableDecisionIdempotencyKey(routeKey, operationEpoch string, decision Dec
 }
 
 type decisionEvidence struct {
+	ValuationSource     string `json:"valuationSource,omitempty"`
+	ValuationSlot       int64  `json:"valuationSlot,omitempty"`
 	AmountRaw           int64  `json:"amountRaw"`
 	Reason              string `json:"reason"`
 	ObservationID       string `json:"observationId"`
@@ -319,7 +321,9 @@ func restorePersistedDecision(expectedEffects []byte, action Action, idempotency
 }
 
 func newDecisionEvidence(observation Observation, decision Decision, manifestSHA256, policyCatalogSHA256 string) decisionEvidence {
+	source, slot, _ := persistedValuationMetadata(observation)
 	return decisionEvidence{
+		ValuationSource: source, ValuationSlot: slot,
 		AmountRaw: decision.AmountRaw, Reason: decision.Reason,
 		ObservationID: observation.Snapshot.ObservationID, ObservationSlot: observation.Snapshot.Slot,
 		ManifestSHA256: manifestSHA256, PolicyCatalogSHA256: policyCatalogSHA256,
@@ -370,6 +374,39 @@ func (d *Database) RecordDecision(
 	return record, nil
 }
 
+// Provenance is optional for historical confirmed evidence. Empty and explicit
+// confirmed sources serialize identically; projected valuations remain explicit.
+func persistedValuationMetadata(o Observation) (string, int64, error) {
+	source, slot := o.Snapshot.ValuationSource, o.Snapshot.ValuationSlot
+	if source == "" && slot == 0 {
+		source, slot = o.ValuationSource, o.ValuationSlot
+	} else if (o.ValuationSource != "" || o.ValuationSlot != 0) && (o.ValuationSource != source || o.ValuationSlot != slot) {
+		return "", 0, fmt.Errorf("observation valuation provenance disagrees with snapshot")
+	}
+	if source == "" && slot == 0 {
+		return "", 0, nil
+	}
+	if (source != "confirmed" && source != routeRefreshValuationSource) || slot <= 0 || slot != o.Snapshot.Slot {
+		return "", 0, fmt.Errorf("observation valuation provenance is invalid")
+	}
+	if source == "confirmed" {
+		return "", 0, nil
+	}
+	return source, slot, nil
+}
+
+// Keep the first persisted slot when the same economic decision is observed
+// again. Old rows did not record provenance: their economic identity remains
+// authoritative, and they must not be rewritten or made unrecoverable.
+func sameDecisionEvidence(existing, candidate decisionEvidence) bool {
+	candidate.ObservationSlot = existing.ObservationSlot
+	candidate.ValuationSlot = existing.ValuationSlot
+	if existing.ValuationSource == "" {
+		candidate.ValuationSource = ""
+	}
+	return existing == candidate
+}
+
 func validateDecisionPersistence(
 	d *Database,
 	routeKey string,
@@ -388,6 +425,9 @@ func validateDecisionPersistence(
 		return fmt.Errorf("database is not configured")
 	}
 	if err := observation.Validate(); err != nil {
+		return err
+	}
+	if _, _, err := persistedValuationMetadata(observation); err != nil {
 		return err
 	}
 	if decision.Action != Hold && decision.Action != HoldManualRecovery &&
@@ -627,8 +667,7 @@ func (d *Database) recordDecisionTx(
 		// An identical economic state may be confirmed again at a later slot.
 		// Preserve the first durable observation slot while treating the later
 		// read as the same decision identity.
-		candidate.ObservationSlot = existingEnvelope.Decision.ObservationSlot
-		if existingEnvelope.Decision != candidate {
+		if !sameDecisionEvidence(existingEnvelope.Decision, candidate) {
 			return DecisionRecord{}, fmt.Errorf("idempotency identity has different decision evidence")
 		}
 		return existing, nil
@@ -916,6 +955,8 @@ func (d *Database) readReconciledBridgeJournal(ctx context.Context, routeKey str
 }
 
 type routeObservationProjection struct {
+	ValuationSource             string `json:"valuationSource,omitempty"`
+	ValuationSlot               int64  `json:"valuationSlot,omitempty"`
 	ObservedSlot                int64  `json:"observedSlot"`
 	ObservedAt                  string `json:"observedAt"`
 	RouteStatus                 string `json:"routeStatus"`
@@ -940,6 +981,10 @@ type routeObservationProjection struct {
 }
 
 func newRouteObservationProjection(observation Observation) (routeObservationProjection, error) {
+	source, valuationSlot, err := persistedValuationMetadata(observation)
+	if err != nil {
+		return routeObservationProjection{}, err
+	}
 	snapshot := observation.Snapshot
 	if snapshot.VoltrIdleRaw < 0 || snapshot.VoltrStrategyIdleRaw < 0 || snapshot.SquadsIdleRaw < 0 || snapshot.DebtIdleRaw < 0 || snapshot.PayoffDebtRaw < 0 ||
 		snapshot.PositionCollateralRaw < 0 || snapshot.PositionDebtRaw < 0 || snapshot.CollateralIdleValueRaw < 0 || snapshot.MinimumCollateralDepositRaw < 0 ||
@@ -974,6 +1019,7 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 		status = "withdrawal_pending"
 	}
 	return routeObservationProjection{
+		ValuationSource: source, ValuationSlot: valuationSlot,
 		ObservedSlot: snapshot.Slot, ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano), RouteStatus: status,
 		VoltrIdleRaw: fmt.Sprint(snapshot.VoltrIdleRaw), VoltrStrategyIdleRaw: fmt.Sprint(snapshot.VoltrStrategyIdleRaw),
 		SquadsIdleRaw: fmt.Sprint(snapshot.SquadsIdleRaw), DebtIdleRaw: fmt.Sprint(snapshot.DebtIdleRaw), AUMRaw: fmt.Sprint(snapshot.TotalVaultNAVRaw),
@@ -1050,10 +1096,14 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 		zero := int64(0)
 		forecastAPYBPS = &zero
 	}
+	valuationSource, valuationSlot := projection.ValuationSource, projection.ValuationSlot
+	if valuationSource == "" {
+		valuationSource, valuationSlot = "backyard_rwa_v1_onchain_route", snapshot.Slot
+	}
 	if _, err := tx.Exec(ctx, PositionSnapshotInsert,
 		routeKey, generation, snapshot.Slot, observation.ObservedAt.UTC(), strategyKey, claimRaw,
 		snapshot.PositionCollateralRaw, snapshot.PositionDebtRaw, snapshot.StrategyNAVRaw,
-		snapshot.PositionCollateralValueRaw, snapshot.PositionDebtValueRaw, snapshot.LTVBPS, forecastAPYBPS,
+		snapshot.PositionCollateralValueRaw, snapshot.PositionDebtValueRaw, snapshot.LTVBPS, forecastAPYBPS, valuationSource, valuationSlot,
 	); err != nil {
 		return fmt.Errorf("persist route position snapshot: %w", err)
 	}

@@ -16,6 +16,8 @@
 
 The 1-USDC user deposit is finalized and remains idle. The one-use Maple acceptance request was consumed, then execution held before allocation (`insufficient_reviewed_entry_capacity`, operation `f22e320e78385d3f45b20fb0e3186d81424d65660765fa63d1a5b1de64063dc7`). A real complete entry quote succeeded, but execution still observed zero capacity from the stale reserve cache. The same observer would also hold noncash NAV after buying collateral.
 
+The shared observer fix passed full tests and all three live unsigned captures, but its first deployment exposed a historical JSON compatibility defect: absent metadata changed the archived activation digest. The follow-up omits absent metadata and validates the existing activation read-only without rewriting authority or history.
+
 Fix the shared observation seam once: obtain reserve accrual/prices with a closed unsigned refresh, capture custody/obligation/receipt/Clock together, retain all-lane ownership checks, and label simulation valuation provenance in the NAV digest. Keep signed effects/reconciliation grounded in actual chain state. Verify packet limits and stale-oracle rejection before deploying. The narrower capacity-only hook was discarded because it left the noncash deadlock unresolved. Preserve the consumed request; a subsequent bounded acceptance attempt uses a distinct ID only after this fix passes review.
 
 ### Current implementation ownership

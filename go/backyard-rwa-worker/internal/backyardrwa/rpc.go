@@ -30,8 +30,8 @@ type ConfirmedAccount struct {
 	// Empty source denotes an ordinary confirmed read. A valuation capture
 	// tags every account with its bank slot; only closed reserve refreshes
 	// may mutate account data inside that capture.
-	ValuationSource string
-	ValuationSlot   int64
+	ValuationSource string `json:",omitempty"`
+	ValuationSlot   int64  `json:",omitempty"`
 	Address         string
 	Owner           string
 	Lamports        uint64

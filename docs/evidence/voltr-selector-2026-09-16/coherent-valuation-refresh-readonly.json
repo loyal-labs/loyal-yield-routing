@@ -35,5 +35,12 @@
     "mixed-bank provenance and fee-payer capture rejected",
     "active policy and all-lane ownership retained",
     "v0 capture matches installed Solana SDK with no added instructions"
-  ]
+  ],
+  "archivedActivationRegression": {
+    "verifiedReadOnly": true,
+    "finalizedSlot": 447899153,
+    "ticketLastConsumedSequence": 447899053,
+    "authorityRewritten": false,
+    "fix": "Omit absent valuation metadata when encoding historical confirmed accounts; preserve archived evidence hash"
+  }
 }

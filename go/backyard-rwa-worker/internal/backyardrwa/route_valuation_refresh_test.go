@@ -3,6 +3,7 @@ package backyardrwa
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -158,5 +159,26 @@ func TestSelectorValuationCaptureRetainsNAVPoliciesAndOwnership(t *testing.T) {
 				t.Fatal("lost lane ownership", lane, otherLane)
 			}
 		}
+	}
+}
+
+// Archived pilot activation hashes include this exact pre-valuation account
+// encoding. New optional metadata must not change old zero-source bytes.
+func TestConfirmedAccountPreservesArchivedJSONEncoding(t *testing.T) {
+	a := ConfirmedAccount{Address: "fixed", Owner: "owner", Lamports: 7, Data: []byte{1, 2}, Executable: false}
+	b, err := json.Marshal(a)
+	const archived = `{"Address":"fixed","Owner":"owner","Lamports":7,"Data":"AQI=","Executable":false}`
+	if err != nil || string(b) != archived {
+		t.Fatalf("archived activation encoding changed: %s %v", b, err)
+	}
+	a.ValuationSource = routeRefreshValuationSource
+	a.ValuationSlot = 78
+	b, err = json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored ConfirmedAccount
+	if json.Unmarshal(b, &restored) != nil || restored.ValuationSource != a.ValuationSource || restored.ValuationSlot != 78 {
+		t.Fatal("explicit provenance was dropped")
 	}
 }

@@ -52,8 +52,8 @@ const (
 )
 
 type Snapshot struct {
-	ValuationSource        string
-	ValuationSlot          int64
+	ValuationSource        string `json:",omitempty"`
+	ValuationSlot          int64  `json:",omitempty"`
 	ObservationID          string
 	Slot                   int64
 	RouteKind              string
@@ -254,8 +254,8 @@ func (d Decision) Validate() error {
 // Observation is one coherent bank read. Principal is chain state; reserve
 // valuations may use the explicitly identified unsigned refresh source.
 type Observation struct {
-	ValuationSource string
-	ValuationSlot   int64
+	ValuationSource string `json:",omitempty"`
+	ValuationSlot   int64  `json:",omitempty"`
 	Snapshot        Snapshot
 	ObservedAt      time.Time
 }
