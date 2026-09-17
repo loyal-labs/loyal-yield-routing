@@ -144,6 +144,111 @@ LEFT JOIN loyal_yield.route_policies withdraw_policy
 	return &l, nil
 }
 
+// PeekRevalidation is the read-only shadow twin of ClaimRevalidation: the same
+// candidate predicate, a plain SELECT with no lock, no lease, and no UPDATE.
+// It also admits rows the durable revalidator has already leased or prepared
+// (lease_kind='revalidate'), because Rust claims a row within ~250ms and the
+// shadow only reads; each (id, fencing_token) revision is returned once.
+// Owner is "shadow" and FencingToken is the row's current token, so the result
+// can never satisfy CommitRevalidation.
+func (s *Store) PeekRevalidation(ctx context.Context, cluster, signer string, crossMintEnabled bool, seenIDs, seenTokens []int64) (*RevalidationLease, error) {
+	if s == nil || s.pool == nil || cluster == "" || len(seenIDs) != len(seenTokens) {
+		return nil, errors.New("invalid revalidation peek")
+	}
+	if seenIDs == nil {
+		seenIDs, seenTokens = []int64{}, []int64{}
+	}
+	var l RevalidationLease
+	l.Cluster = cluster
+	l.Owner = "shadow"
+	err := s.pool.QueryRow(ctx, `
+WITH candidate AS (
+ SELECT o.id FROM loyal_yield.rebalance_opportunities o
+ JOIN loyal_yield.optimizer_epochs e ON e.id=o.optimizer_epoch_id AND e.cluster=o.cluster
+ JOIN loyal_yield.managed_vaults candidate_vault ON candidate_vault.id=o.vault_id AND candidate_vault.active
+ JOIN loyal_yield.route_policies candidate_policy ON candidate_policy.id=candidate_vault.active_policy_id AND candidate_policy.active
+ LEFT JOIN loyal_yield.route_policies bound_withdraw_policy
+   ON o.execution_plan->>'route_kind'='cross_mint_jupiter'
+  AND bound_withdraw_policy.policy_account=o.execution_plan#>>'{policy_bindings,withdraw,policy_account}'
+  AND bound_withdraw_policy.active
+  AND bound_withdraw_policy.cluster=$1
+  AND bound_withdraw_policy.source_commitment='finalized'
+  AND bound_withdraw_policy.finalized_eligible
+  AND bound_withdraw_policy.settings=candidate_vault.settings
+  AND bound_withdraw_policy.vault_index=candidate_vault.vault_index
+  AND bound_withdraw_policy.vault_pubkey=candidate_vault.vault_pubkey
+  AND 'same_mint_kamino'=ANY(bound_withdraw_policy.route_modes)
+  AND ($2='' OR $2=ANY(bound_withdraw_policy.delegated_signers))
+ WHERE o.cluster=$1 AND o.available_at<=clock_timestamp()
+   AND o.execution_plan->>'route_kind' IN ('same_mint','cross_mint_jupiter')
+   AND o.execution_plan->>'source_kind'='reserve_position'
+   AND (($3 AND o.execution_plan->>'route_kind'='cross_mint_jupiter'
+         AND bound_withdraw_policy.id IS NOT NULL
+         AND ($2='' OR o.execution_plan#>>'{policy_bindings,delegated_signer}'=$2))
+     OR (o.execution_plan->>'route_kind'='same_mint'
+         AND 'same_mint_kamino'=ANY(candidate_policy.route_modes)
+         AND ($2='' OR (candidate_policy.cluster=$1
+              AND candidate_policy.source_commitment='finalized'
+              AND candidate_policy.finalized_eligible
+              AND $2=ANY(candidate_policy.delegated_signers)))))
+   AND o.source_reserve IS NOT NULL
+   AND o.liquidity_mint=o.target_liquidity_mint
+   AND ((o.execution_plan->>'route_kind'='same_mint'
+         AND o.source_liquidity_mint=o.target_liquidity_mint)
+     OR (o.execution_plan->>'route_kind'='cross_mint_jupiter'
+         AND o.source_liquidity_mint<>o.target_liquidity_mint))
+   AND o.expires_at>clock_timestamp()+interval '60 seconds'
+   AND e.expires_at>clock_timestamp()+interval '60 seconds'
+   AND (o.opportunity_state='revalidate'
+        OR (o.opportunity_state IN ('leased','ready') AND o.lease_kind='revalidate'))
+   AND NOT EXISTS (SELECT 1 FROM unnest($4::bigint[], $5::bigint[]) AS seen(id, token)
+                   WHERE seen.id=o.id AND seen.token=o.fencing_token)
+ ORDER BY o.updated_at DESC LIMIT 1
+)
+SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fencing_token,
+       claimed.expires_at,claimed.vault_id,vault.vault_pubkey,vault.vault_index,
+       CASE WHEN claimed.execution_plan->>'route_kind'='cross_mint_jupiter'
+            THEN withdraw_policy.policy_account ELSE policy.policy_account END,
+       CASE WHEN claimed.execution_plan->>'route_kind'='cross_mint_jupiter'
+            THEN withdraw_policy.delegated_signers ELSE policy.delegated_signers END,
+       claimed.source_reserve,
+       claimed.target_reserve,claimed.liquidity_mint,
+       claimed.source_liquidity_mint,claimed.target_liquidity_mint,
+       claimed.execution_plan->>'route_kind',claimed.amount_raw,
+       COALESCE((claimed.execution_plan->>'source_collateral_amount_raw')::bigint,0),
+       claimed.principal_usd_micros,claimed.source_apy_bps,claimed.target_apy_bps,
+       claimed.estimated_edge_bps,claimed.expected_net_gain_usd_micros,
+       claimed.estimated_cost_lamports,epoch.epoch_key,claimed.execution_plan
+FROM loyal_yield.rebalance_opportunities claimed
+JOIN candidate ON candidate.id=claimed.id
+JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=claimed.optimizer_epoch_id
+JOIN loyal_yield.managed_vaults vault ON vault.id=claimed.vault_id AND vault.active
+JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id AND policy.active
+LEFT JOIN loyal_yield.route_policies withdraw_policy
+  ON claimed.execution_plan->>'route_kind'='cross_mint_jupiter'
+ AND withdraw_policy.policy_account=claimed.execution_plan#>>'{policy_bindings,withdraw,policy_account}'
+ AND withdraw_policy.active AND withdraw_policy.cluster=claimed.cluster
+ AND withdraw_policy.source_commitment='finalized' AND withdraw_policy.finalized_eligible
+ AND withdraw_policy.settings=vault.settings AND withdraw_policy.vault_index=vault.vault_index
+ AND withdraw_policy.vault_pubkey=vault.vault_pubkey
+ AND 'same_mint_kamino'=ANY(withdraw_policy.route_modes)
+ AND ($2='' OR $2=ANY(withdraw_policy.delegated_signers))`, cluster, signer, crossMintEnabled, seenIDs, seenTokens).Scan(
+		&l.OpportunityID, &l.OptimizerEpochID, &l.IdempotencyKey, &l.FencingToken,
+		&l.ExpiresAt, &l.VaultID, &l.VaultPubkey, &l.VaultIndex, &l.PolicyAccount,
+		&l.DelegatedSigners, &l.SourceReserve, &l.TargetReserve, &l.LiquidityMint,
+		&l.SourceLiquidityMint, &l.TargetLiquidityMint, &l.RouteKind,
+		&l.LiquidityAmountRaw, &l.SourceCollateralRaw, &l.PrincipalUSDMicros,
+		&l.SourceAPYBPS, &l.TargetAPYBPS, &l.EdgeBPS, &l.NetGainUSDMicros,
+		&l.FeeCapLamports, &l.OptimizerEpochKey, &l.ExecutionPlan)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("peek revalidation: %w", err)
+	}
+	return &l, nil
+}
+
 func (s *Store) CheckRevalidationLease(ctx context.Context, lease RevalidationLease) error {
 	if s == nil || s.pool == nil || lease.OpportunityID <= 0 {
 		return errors.New("invalid revalidation lease check")

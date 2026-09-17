@@ -6,6 +6,7 @@ import (
 	"log"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/kamino-fleet-planner/internal/fleet"
 )
@@ -37,16 +38,25 @@ func main() {
 	if err := worker.SetMarketEvidence(marketEvidence); err != nil {
 		log.Fatal(err)
 	}
-	if config.RevalidatorEnabled {
+	if config.RevalidatorEnabled || config.RevalidatorShadow {
 		proxy, err := fleet.NewKLendProxy(config.KLendProxyPath, config.KLendProxySHA256)
 		if err != nil {
 			log.Fatal(err)
 		}
-		revalidator, err := fleet.NewRevalidator(store, fleet.NewRPCClient(config.RPCURL), proxy, fleet.RevalidatorConfig{Owner: config.RevalidationOwner, DelegatedSigner: config.DelegatedSigner, LeaseTTL: config.RevalidationLeaseTTL, ComputeLimit: config.RevalidationComputeLimit, SlotDuration: config.SlotDuration, FusedExecute: config.FusedExecute, CrossMintEnabled: config.CrossMintEnabled, CrossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, JupiterBuildURL: config.JupiterBuildURL, JupiterAPIKey: config.JupiterAPIKey})
+		leaseTTL := config.RevalidationLeaseTTL
+		if config.RevalidatorShadow && leaseTTL < time.Second {
+			leaseTTL = time.Second // unused: the shadow never leases
+		}
+		revalidator, err := fleet.NewRevalidator(store, fleet.NewRPCClient(config.RPCURL), proxy, fleet.RevalidatorConfig{Owner: config.RevalidationOwner, DelegatedSigner: config.DelegatedSigner, LeaseTTL: leaseTTL, ComputeLimit: config.RevalidationComputeLimit, SlotDuration: config.SlotDuration, FusedExecute: config.FusedExecute, CrossMintEnabled: config.CrossMintEnabled, CrossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, JupiterBuildURL: config.JupiterBuildURL, JupiterAPIKey: config.JupiterAPIKey})
 		if err != nil {
 			log.Fatal(err)
 		}
-		if err := worker.SetRevalidator(revalidator); err != nil {
+		if config.RevalidatorShadow {
+			err = worker.SetShadowRevalidator(revalidator)
+		} else {
+			err = worker.SetRevalidator(revalidator)
+		}
+		if err != nil {
 			log.Fatal(err)
 		}
 	}

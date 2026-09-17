@@ -75,3 +75,27 @@ func TestFetchKaminoSlotDurationMatchesMonitorInput(t *testing.T) {
 		t.Fatalf("unexpected duration %s", duration)
 	}
 }
+
+func TestConfigShadowRevalidatorFlag(t *testing.T) {
+	config := Config{
+		DatabaseURL: "postgres://example", TimescaleURL: "postgres://evidence", TimescaleSchema: "kamino", RPCURL: "https://rpc.example", Cluster: "mainnet-beta",
+		Mode: ModeShadow, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond,
+		RevalidatorShadow: true, KLendProxyPath: "/proxy", KLendProxySHA256: strings.Repeat("a", 64), DelegatedSigner: testIdentity(9),
+		RevalidationOwner: "go", RevalidationPollInterval: time.Second, RevalidationConcurrency: 1, RevalidationComputeLimit: defaultComputeLimit,
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("shadow revalidator rejected in shadow mode: %v", err)
+	}
+	config.Mode = ModePublish
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "publish mode cannot run the read-only shadow revalidator") {
+		t.Fatalf("shadow revalidator accepted in publish mode: %v", err)
+	}
+	config.RevalidatorEnabled, config.RevalidationLeaseTTL = true, time.Minute
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("both revalidator flags accepted: %v", err)
+	}
+	config.Mode, config.RevalidatorEnabled, config.KLendProxyPath = ModeShadow, false, ""
+	if err := config.Validate(); err == nil {
+		t.Fatal("shadow revalidator accepted without a pinned proxy")
+	}
+}

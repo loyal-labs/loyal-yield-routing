@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"sync"
 	"time"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -21,8 +22,19 @@ const (
 	altProgram   = "AddressLookupTab1e1111111111111111111111111"
 )
 
+// revalidationStore is the narrow durable surface Cycle/ShadowCycle use. The
+// shadow path must only ever call the read methods (Peek, LoadReusableLookupTables).
+type revalidationStore interface {
+	ClaimRevalidation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady, crossMintEnabled bool, delegatedSigner ...string) (*RevalidationLease, error)
+	PeekRevalidation(ctx context.Context, cluster, signer string, crossMintEnabled bool, seenIDs, seenTokens []int64) (*RevalidationLease, error)
+	CheckRevalidationLease(ctx context.Context, lease RevalidationLease) error
+	RefreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64) error
+	LoadReusableLookupTables(ctx context.Context, cluster string, vaultID, minimumSlot int64, requiredAddresses []string) ([]LookupTable, error)
+	CommitRevalidation(ctx context.Context, lease RevalidationLease, input RevalidationCommit) error
+}
+
 type Revalidator struct {
-	store                    *Store
+	store                    revalidationStore
 	rpc                      *RPCClient
 	proxy                    *KLendProxy
 	owner                    string
@@ -51,6 +63,10 @@ type RevalidatorConfig struct {
 }
 
 func NewRevalidator(store *Store, rpc *RPCClient, proxy *KLendProxy, config RevalidatorConfig) (*Revalidator, error) {
+	return newRevalidator(store, rpc, proxy, config)
+}
+
+func newRevalidator(store revalidationStore, rpc *RPCClient, proxy *KLendProxy, config RevalidatorConfig) (*Revalidator, error) {
 	if store == nil || rpc == nil || proxy == nil || config.Owner == "" || config.DelegatedSigner == "" || config.LeaseTTL < time.Second {
 		return nil, errors.New("store, RPC, proxy, owner, signer, and lease TTL are required")
 	}
@@ -94,82 +110,125 @@ func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
 	if lease.RouteKind == "cross_mint_jupiter" {
 		return true, r.cycleCrossMint(ctx, *lease)
 	}
-	input, evidence, err := r.loadFreshRoute(ctx, *lease)
+	prepared, _, err := r.prepareSameMint(ctx, cluster, *lease, func(evidence FreshRouteEvidence) error {
+		if r.fusedExecute {
+			if err := r.store.RefreshTargetCapacity(ctx, cluster, lease.TargetReserve, lease.LiquidityMint, evidence.TargetObservedSupplyUSDMicros, evidence.Slot); err != nil {
+				return fmt.Errorf("refresh fused target capacity: %w", err)
+			}
+		}
+		return r.store.CheckRevalidationLease(ctx, *lease)
+	})
 	if err != nil {
 		return true, err
 	}
-	if r.fusedExecute {
-		if err := r.store.RefreshTargetCapacity(ctx, cluster, lease.TargetReserve, lease.LiquidityMint, evidence.TargetObservedSupplyUSDMicros, evidence.Slot); err != nil {
-			return true, fmt.Errorf("refresh fused target capacity: %w", err)
-		}
+	if prepared.WaitingALT {
+		return true, r.store.CommitRevalidation(ctx, *lease, RevalidationCommit{Disposition: "waiting_alt", Preparation: &prepared.Preparation, MissingAddresses: prepared.Missing, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey})
 	}
-	if err := r.store.CheckRevalidationLease(ctx, *lease); err != nil {
-		return true, err
+	evidence := prepared.Evidence
+	disposition := "ready"
+	if r.fusedExecute {
+		disposition = "fused_execute"
+	}
+	return true, r.store.CommitRevalidation(ctx, *lease, RevalidationCommit{Disposition: disposition, Preparation: &prepared.Preparation, ConflictKeys: prepared.Preparation.Transaction.WritableAccounts, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: evidence.ObservedSourceAPYBPS, ObservedTargetAPYBPS: evidence.ObservedTargetAPYBPS, TargetObservedSupplyUSDMicros: evidence.TargetObservedSupplyUSDMicros, TargetObservedSlot: evidence.Slot})
+}
+
+// sameMintPreparation is everything Cycle needs to commit and ShadowCycle
+// needs to log. Both paths run prepareSameMint so they cannot drift.
+type sameMintPreparation struct {
+	Evidence     FreshRouteEvidence
+	Preparation  RoutePreparation
+	WaitingALT   bool
+	Missing      []string
+	Compute      uint64
+	Fee          uint64
+	PriorityFee  uint64
+	Tables       []LookupTable
+	Instructions []RouteInstruction
+}
+
+// prepareSameMint runs the read-only same-mint preparation from fresh chain
+// evidence through the final simulated route. afterEvidence runs once between
+// loadFreshRoute and proxy build; the durable path uses it for the fused
+// capacity refresh and lease check. The returned stage names the failing step.
+func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease RevalidationLease, afterEvidence func(FreshRouteEvidence) error) (sameMintPreparation, string, error) {
+	var out sameMintPreparation
+	input, evidence, err := r.loadFreshRoute(ctx, lease)
+	if err != nil {
+		return out, "load_fresh_route", err
+	}
+	out.Evidence = evidence
+	if afterEvidence != nil {
+		if err := afterEvidence(evidence); err != nil {
+			return out, "lease_check", err
+		}
 	}
 	route, err := r.proxy.Build(ctx, input)
 	if err != nil {
-		return true, err
+		return out, "proxy_build", err
 	}
 	policy, err := ValidateFreshRouteEvidence(evidence, time.Now().UTC(), lease.IdempotencyKey, lease.OptimizerEpochKey, r.signer, route.Protected)
 	if err != nil {
-		return true, err
+		return out, "validate_evidence", err
 	}
 	if policy.AccountIndex != lease.VaultIndex {
-		return true, errors.New("fresh policy account index differs from managed vault index")
+		return out, "validate_evidence", errors.New("fresh policy account index differs from managed vault index")
 	}
 	wrapped := make([]RouteInstruction, len(route.Protected))
 	for i := range route.Protected {
 		wrapped[i], err = wrapSquadsPolicy(lease.PolicyAccount, r.signer, lease.VaultIndex, []uint8{policy.AllowedIndexes[i]}, []RouteInstruction{route.Protected[i]})
 		if err != nil {
-			return true, err
+			return out, "wrap_policy", err
 		}
 	}
 	instructions, err := interleaveMatureSameMintRoute(route.Public, wrapped)
 	if err != nil {
-		return true, err
+		return out, "wrap_policy", err
 	}
 	requiredAddresses := requiredLookupTableAddresses(instructions)
 	tables, err := r.store.LoadReusableLookupTables(ctx, cluster, lease.VaultID, evidence.Slot, requiredAddresses)
 	if err != nil {
-		return true, err
+		return out, "lookup_tables", err
 	}
 	tables, err = r.verifyLookupTables(ctx, tables, evidence.Slot)
 	if err != nil {
-		return true, err
+		return out, "lookup_tables", err
 	}
+	out.Tables = tables
 	blockhash, _, err := r.rpc.LatestBlockhash(ctx, evidence.Slot)
 	if err != nil {
-		return true, err
+		return out, "blockhash", err
 	}
 	preview, missing, err := compileV0Transaction(r.signer, blockhash, instructions, tables, 1, r.computeLimit)
 	if err != nil {
-		return true, err
+		return out, "compile", err
 	}
 	if len(missing) > 0 || len(preview.LookupTables) == 0 {
 		preparation := waitingALTPreparation(route, missing, r.computeLimit)
 		if err := preserveCanonicalPlan(lease.ExecutionPlan, &preparation, "alt_readiness"); err != nil {
-			return true, err
+			return out, "compile", err
 		}
-		return true, r.store.CommitRevalidation(ctx, *lease, RevalidationCommit{Disposition: "waiting_alt", Preparation: &preparation, MissingAddresses: missing, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey})
+		out.WaitingALT, out.Missing, out.Preparation = true, missing, preparation
+		return out, "", nil
 	}
 	baselineSimulation, err := r.rpc.SimulateExactTransaction(ctx, preview.UnsignedWire, evidence.Slot)
 	if err != nil {
-		return true, fmt.Errorf("baseline exact simulation failed: %w", err)
+		return out, "baseline_simulation", fmt.Errorf("baseline exact simulation failed: %w", err)
 	}
 	if !baselineSimulation.Succeeded {
-		return true, fmt.Errorf("baseline exact simulation failed: %s", baselineSimulation.Error)
+		return out, "baseline_simulation", fmt.Errorf("baseline exact simulation failed: %s", baselineSimulation.Error)
 	}
 	compute := paddedComputeUnits(baselineSimulation.UnitsConsumed)
 	if compute > r.computeLimit {
-		return true, fmt.Errorf("measured compute requirement %d exceeds configured limit %d", compute, r.computeLimit)
+		return out, "baseline_simulation", fmt.Errorf("measured compute requirement %d exceeds configured limit %d", compute, r.computeLimit)
 	}
+	out.Compute = compute
 	baselineFee, err := r.rpc.FeeForMessage(ctx, preview.Message, evidence.Slot)
 	if err != nil {
-		return true, err
+		return out, "fee", err
 	}
 	recentPriority, err := r.rpc.RecentPriorityFee(ctx, preview.WritableAccounts)
 	if err != nil {
-		return true, err
+		return out, "fee", err
 	}
 	remaining := uint64(0)
 	if baselineFee < uint64(lease.FeeCapLamports) {
@@ -184,51 +243,129 @@ func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
 	if recentPriority > cappedPriority {
 		recentPriority = cappedPriority
 	}
+	out.PriorityFee = recentPriority
 	budgeted := route
 	budgeted.Public = append(computeBudgetInstructions(uint32(compute), recentPriority), route.Public...)
 	budgetWrapped := make([]RouteInstruction, len(budgeted.Protected))
 	for i := range budgeted.Protected {
 		budgetWrapped[i], err = wrapSquadsPolicy(lease.PolicyAccount, r.signer, lease.VaultIndex, []uint8{policy.AllowedIndexes[i]}, []RouteInstruction{budgeted.Protected[i]})
 		if err != nil {
-			return true, err
+			return out, "budgeted_compile", err
 		}
 	}
 	budgetInstructions, err := interleaveMatureSameMintRoute(budgeted.Public, budgetWrapped)
 	if err != nil {
-		return true, err
+		return out, "budgeted_compile", err
 	}
+	out.Instructions = budgetInstructions
 	budgetPreview, missing, err := compileV0Transaction(r.signer, blockhash, budgetInstructions, tables, 1, compute)
 	if err != nil {
-		return true, fmt.Errorf("budgeted transaction compilation: %w", err)
+		return out, "budgeted_compile", fmt.Errorf("budgeted transaction compilation: %w", err)
 	}
 	if len(missing) > 0 {
-		return true, fmt.Errorf("budgeted ALT compilation changed coverage: %v", missing)
+		return out, "budgeted_compile", fmt.Errorf("budgeted ALT compilation changed coverage: %v", missing)
 	}
 	fee, err := r.rpc.FeeForMessage(ctx, budgetPreview.Message, evidence.Slot)
 	if err != nil {
-		return true, err
+		return out, "fee", err
 	}
 	if fee > uint64(lease.FeeCapLamports) {
-		return true, fmt.Errorf("budgeted fee %d exceeds opportunity cap %d", fee, lease.FeeCapLamports)
+		return out, "fee", fmt.Errorf("budgeted fee %d exceeds opportunity cap %d", fee, lease.FeeCapLamports)
 	}
+	out.Fee = fee
 	preparation, err := PrepareRoute(budgeted, lease.PolicyAccount, r.signer, lease.VaultIndex, policy.AllowedIndexes, tables, blockhash, fee, compute, func(wire []byte) (SimulationEvidence, error) {
 		return r.rpc.SimulateExactTransaction(ctx, wire, evidence.Slot)
 	})
 	if err == nil {
-		preparation.RouteFingerprint = retainedSameMintRouteFingerprint(*lease)
+		preparation.RouteFingerprint = retainedSameMintRouteFingerprint(lease)
 		preparation.RequirementsFingerprint, err = retainedSameMintRequirementsFingerprint(input, lease.PolicyAccount, r.signer, instructions)
 	}
 	if err != nil {
-		return true, err
+		return out, "prepare_route", err
 	}
 	if err := preserveCanonicalPlan(lease.ExecutionPlan, &preparation, "prepared_transaction"); err != nil {
-		return true, err
+		return out, "prepare_route", err
 	}
-	disposition := "ready"
-	if r.fusedExecute {
-		disposition = "fused_execute"
+	out.Preparation = preparation
+	return out, "", nil
+}
+
+// shadowSeen remembers (opportunity, fencing_token) pairs the shadow already
+// observed so each row is prepared once per durable revision.
+type shadowSeen struct {
+	mu   sync.Mutex
+	seen map[int64]int64
+}
+
+const shadowSeenLimit = 10_000
+
+func (s *shadowSeen) mark(id, token int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.seen == nil {
+		s.seen = map[int64]int64{}
 	}
-	return true, r.store.CommitRevalidation(ctx, *lease, RevalidationCommit{Disposition: disposition, Preparation: &preparation, ConflictKeys: preparation.Transaction.WritableAccounts, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: evidence.ObservedSourceAPYBPS, ObservedTargetAPYBPS: evidence.ObservedTargetAPYBPS, TargetObservedSupplyUSDMicros: evidence.TargetObservedSupplyUSDMicros, TargetObservedSlot: evidence.Slot})
+	if len(s.seen) >= shadowSeenLimit {
+		// ponytail: drop everything at the cap; an LRU is overkill for a log-only shadow.
+		s.seen = map[int64]int64{}
+	}
+	s.seen[id] = token
+}
+
+func (s *shadowSeen) pairs() (ids, tokens []int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids, tokens = make([]int64, 0, len(s.seen)), make([]int64, 0, len(s.seen))
+	for id, token := range s.seen {
+		ids, tokens = append(ids, id), append(tokens, token)
+	}
+	return ids, tokens
+}
+
+// ShadowCycle peeks one unseen revalidate row and runs the same read-only
+// preparation as Cycle, logging the outcome instead of committing. It never
+// claims, checks, refreshes, or commits anything and never returns an error
+// for a single bad row.
+func (r *Revalidator) ShadowCycle(ctx context.Context, cluster string, seen *shadowSeen) (bool, error) {
+	seenIDs, seenTokens := seen.pairs()
+	lease, err := r.store.PeekRevalidation(ctx, cluster, r.signer, r.crossMintEnabled, seenIDs, seenTokens)
+	if err != nil || lease == nil {
+		return false, err
+	}
+	seen.mark(lease.OpportunityID, lease.FencingToken)
+	event := map[string]any{"event": "kamino_fleet_revalidation_shadow", "mode": "shadow", "opportunityId": lease.OpportunityID, "fencingToken": lease.FencingToken, "vaultId": lease.VaultID, "sourceReserve": lease.SourceReserve, "targetReserve": lease.TargetReserve, "optimizerEpochId": lease.OptimizerEpochID}
+	if lease.RouteKind == "cross_mint_jupiter" {
+		event["disposition"] = "skipped_cross_mint"
+		logEvent(event)
+		return true, nil
+	}
+	prepared, stage, err := r.prepareSameMint(ctx, cluster, *lease, nil)
+	switch {
+	case err != nil:
+		event["disposition"], event["stage"], event["error"] = "error", stage, err.Error()
+	case prepared.WaitingALT:
+		event["disposition"], event["missingAddressCount"] = "waiting_alt", len(prepared.Missing)
+	default:
+		programs := make([]string, len(prepared.Instructions))
+		for i, instruction := range prepared.Instructions {
+			programs[i] = instruction.Program
+		}
+		event["disposition"] = "ready"
+		event["simulationSucceeded"] = prepared.Preparation.Simulation.Succeeded
+		event["computeUnits"] = prepared.Compute
+		event["feeLamports"] = prepared.Fee
+		event["feeCapLamports"] = lease.FeeCapLamports
+		event["priorityFeeMicroLamports"] = prepared.PriorityFee
+		event["lookupTableCount"] = len(prepared.Preparation.Transaction.LookupTables)
+		event["instructionPrograms"] = programs
+		event["routeFingerprint"] = prepared.Preparation.RouteFingerprint
+		event["requirementsFingerprint"] = prepared.Preparation.RequirementsFingerprint
+		event["observedSourceApyBps"] = prepared.Evidence.ObservedSourceAPYBPS
+		event["observedTargetApyBps"] = prepared.Evidence.ObservedTargetAPYBPS
+		event["targetObservedSlot"] = prepared.Evidence.Slot
+	}
+	logEvent(event)
+	return true, nil
 }
 
 func preserveCanonicalPlan(original json.RawMessage, preparation *RoutePreparation, evidenceField string) error {
