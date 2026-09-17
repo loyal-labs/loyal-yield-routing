@@ -1,0 +1,19 @@
+{
+  "proofLevel": "DEPLOYED_STARTUP_NOT_FUNDED_LIFECYCLE",
+  "workerCommit": "bdd173a650bb18496522e233cf9689de64f5cc6e",
+  "actionsRun": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/35190543782",
+  "actionsConclusion": "success",
+  "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-bdd173a650bb18496522e233cf9689de64f5cc6e",
+  "imageDigest": "sha256:abc2ea9952ab44267ea81c41d322c2493a848336e43a43fe0c1259153bf16067",
+  "service": "srv-dalootgae00c73c4qhag",
+  "deploy": "dep-dalootoae00c73c4qiag",
+  "deployLiveAt": "2026-09-17T06:45:26.178478Z",
+  "currentState": "suspended",
+  "reason": "missing_or_mismatched_goal_budget",
+  "oldService": "srv-dabkt0ojo6nc7381o9fg",
+  "oldServiceSuspended": true,
+  "pendingOperationsAfterSuspension": 0,
+  "pilotActivated": false,
+  "frontendCommit": "efc99662",
+  "externalDepositsEnabled": false
+}

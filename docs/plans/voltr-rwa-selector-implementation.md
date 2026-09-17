@@ -17,13 +17,15 @@
 | Gate | Current evidence | What closes it |
 |---|---|---|
 | Access | Admin/delegate public identities verified from mounted environment; Git SSH signature cryptographically verified | Cleared for current session; verify deployment credentials during release |
-| Release scope | Signed worker checkpoint `897f867`; candidate branch has fleet ancestry; frontend separate | Build the existing Go-only worker image from the exact candidate SHA via GitHub Actions; do not merge fleet ancestry; verify immutable worker/frontend identities |
+| Release scope | Worker `bdd173a` published by passing Actions run 35190543782 and deployed to replacement `srv-dalootgae00c73c4qhag`; frontend committed as `efc99662` | Restart the current image after budget activation; deploy and verify the compatible frontend |
 | Chain/database activation | 100-USDC cap finalized at 447724467; policies 149–151 finalized and pinned; migrations 74–80 applied and validated | Attribute and reconcile 214898 raw historical shared PYUSD, then history-preserving budget activation |
 | Financed money flow | Captured protocol legs and local admission pass | Full released deposit-to-claim receipt set |
 | Automatic routing | Selector/transition code and controlled tests exist | Same-release rotation with current capacity/cost evidence |
-| Public access | Client deposit gate closed; report/account readers partly integrated | Current service/accounting readiness plus real wallet journey |
+| Public access | Client gate now checks current release lease, pilot authority, pending work, report identity, NAV/custody, freshness and cap; default remains closed; typecheck/lint and controlled rejection cases pass | Provision least-privilege observation access, deploy frontend, complete real wallet journey, then enable |
 
-**Current blocker:** finalized slot 447728105 confirms 214898 raw PYUSD in shared manager custody. Other shared-wallet tokens exist; establish ownership before moving this balance. Post-migration selector observation at slot 447728142 reaches `REPORT_NAV` instead of the former historical custody mismatch. No pilot activation or external deposit enablement has occurred.
+**Runtime startup result:** the replacement image loaded the pinned manifest (`54dfdce596a237ef0c3726f20aa999ffd61152fdc3dcfb30608227fd975d68b0`) and acquired the correct fenced route lease, then refused NAV admission because the goal budget is absent. The worker retired the unsigned attempts; no signature, broadcast or pending operation remains. Both Render services are suspended. Activate the budget before restarting the new service; do not resume the historical service.
+
+**Current blocker:** finalized slot 447728105 confirms 214898 raw PYUSD in shared manager custody. Other shared-wallet tokens exist; establish ownership before moving this balance. Post-migration selector observation at slot 447728142 reaches `REPORT_NAV` instead of the former historical custody mismatch. Public history traces the residue to admin/delegate-signed transactions ending at slot 441053364; ownership/return attribution is awaiting clarification. No pilot activation or external deposit enablement has occurred.
 
 **Latest live evidence:** `docs/evidence/voltr-selector-2026-09-16/pilot-cap-finalized-result.json` and `initializer-finalized-installations.json`. The first initializer attempt expired unspent; its signed wire and finalized absence proof are retained. Installation now uses consistent confirmed prestate/simulation/fee/preflight with finalized terminal recovery. Existing legacy-manifest tests explicitly omit installed pins; release pins are shared byte-for-byte with `docs/manifests/backyard-rwa-v2.json`.
 
