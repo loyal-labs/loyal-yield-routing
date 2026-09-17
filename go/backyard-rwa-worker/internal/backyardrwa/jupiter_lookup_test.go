@@ -71,12 +71,21 @@ func lookupRPC(t *testing.T, tables []LookupTableSnapshot, mutate func(*LookupTa
 		case "getSlot":
 			result = tables[0].ObservedSlot + 1
 		case "getMultipleAccounts":
-			reads++
 			var addresses []string
 			var config struct{ MinContextSlot int64 }
 			if json.Unmarshal(body.Params[0], &addresses) != nil || json.Unmarshal(body.Params[1], &config) != nil || config.MinContextSlot < tables[0].ObservedSlot {
 				t.Fatal("lookup read dropped minimum slot")
 			}
+			if len(addresses) > 0 && addresses[0] != tables[0].Address {
+				// After lookup validation, fee and price reads now run together.
+				// This fixture refuses prices as well as the exact-message fee;
+				// neither can reach signer access. Count only actual table reads.
+				if !allowFee {
+					t.Fatal("invalid lookup reached price valuation")
+				}
+				return response(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"fixture price unavailable"}}`), nil
+			}
+			reads++
 			values := []any{}
 			for i, address := range addresses {
 				if i >= len(tables) || address != tables[i].Address {

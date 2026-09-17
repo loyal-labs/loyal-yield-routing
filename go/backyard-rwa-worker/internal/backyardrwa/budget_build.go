@@ -2,6 +2,7 @@ package backyardrwa
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -109,22 +110,30 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 			return ValuedTransactionCost{}, err
 		}
 	}
-	fee, err := rpc.ObserveMessageFee(ctx, message, slot)
-	if err != nil {
-		return ValuedTransactionCost{}, err
+	// Prices and the exact-message fee are independent reads. Preserve each
+	// source slot and expiry, then validate all three against one final slot.
+	var fee MessageFeeObservation
+	var token, sol BudgetPrice
+	var feeErr, tokenErr, solErr error
+	var reads sync.WaitGroup
+	reads.Add(2)
+	go func() { defer reads.Done(); fee, feeErr = rpc.ObserveMessageFee(ctx, message, slot) }()
+	go func() { defer reads.Done(); sol, solErr = ObserveNativeSOLBudgetPrice(ctx, rpc, slot) }()
+	if debit.Raw > 0 {
+		reads.Add(1)
+		go func() { defer reads.Done(); token, tokenErr = ObserveBudgetTokenPrice(ctx, rpc, lane, debit, slot) }()
+	}
+	reads.Wait()
+	if feeErr != nil {
+		return ValuedTransactionCost{}, feeErr
 	}
 	if r, ok := request.(KaminoInitializationRequest); ok && fee.Lamports > r.MaximumFeeLamports {
 		return ValuedTransactionCost{}, budgetHold("initializer_fee_changed")
 	}
-	var token BudgetPrice
-	if debit.Raw > 0 {
-		token, err = ObserveBudgetTokenPrice(ctx, rpc, lane, debit, fee.Slot)
-		if err != nil {
-			return ValuedTransactionCost{}, budgetHold("build_token_valuation_unavailable")
-		}
+	if tokenErr != nil {
+		return ValuedTransactionCost{}, budgetHold("build_token_valuation_unavailable")
 	}
-	sol, err := ObserveNativeSOLBudgetPrice(ctx, rpc, max(fee.Slot, token.ObservedSlot))
-	if err != nil {
+	if solErr != nil {
 		return ValuedTransactionCost{}, budgetHold("build_native_valuation_unavailable")
 	}
 	slot, err = rpc.ConfirmedSlot(ctx)

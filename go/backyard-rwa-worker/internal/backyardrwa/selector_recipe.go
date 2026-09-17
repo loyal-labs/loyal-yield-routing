@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"sort"
+	"sync"
 )
 
 // A recipe is an economic forecast of a sequence, not an execution admission.
@@ -93,37 +94,48 @@ func priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane stri
 		if debit.Raw > 0 {
 			sources[key(debit)] = debit
 		}
-		fee, err := rpc.ObserveMessageFee(ctx, message, slot)
-		if err != nil {
-			return out, err
-		}
-		if r, ok := request.(KaminoInitializationRequest); ok && fee.Lamports > r.MaximumFeeLamports {
-			return out, budgetHold("initializer_fee_changed")
-		}
-		if rent > math.MaxUint64-out.SetupLamports || fee.Lamports > math.MaxUint64-out.NetworkLamports {
-			return out, budgetHold("selector_recipe_native_overflow")
-		}
-		out.SetupLamports += rent
-		out.NetworkLamports += fee.Lamports
-		steps[i] = step{request, effects, message, debit, fee, rent}
-		slot = max(slot, fee.Slot)
+		steps[i] = step{request: request, effects: effects, message: message, debit: debit, rent: rent}
 	}
 	keys := make([]string, 0, len(sources))
 	for k := range sources {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	for _, k := range keys {
-		p, err := ObserveBudgetTokenPrice(ctx, rpc, lane, sources[k], slot)
-		if err != nil {
-			return out, err
+	// Compile and validate the entire recipe before starting any read. All
+	// exact-message fees and independent prices use the prerequisite floor;
+	// retain their individual slots and validate them at the final slot.
+	// Four reads per recipe bounds fanout even when all three lanes quote.
+	floor := slot
+	tokenPrices := make([]BudgetPrice, len(keys))
+	var sol BudgetPrice
+	if err := selectorRecipeReads(len(steps)+len(keys)+1, func(i int) (err error) {
+		switch {
+		case i < len(steps):
+			steps[i].fee, err = rpc.ObserveMessageFee(ctx, steps[i].message, floor)
+		case i < len(steps)+len(keys):
+			j := i - len(steps)
+			tokenPrices[j], err = ObserveBudgetTokenPrice(ctx, rpc, lane, sources[keys[j]], floor)
+		default:
+			sol, err = ObserveNativeSOLBudgetPrice(ctx, rpc, floor)
 		}
-		prices[k] = p
-		slot = max(slot, p.ObservedSlot)
-	}
-	sol, err := ObserveNativeSOLBudgetPrice(ctx, rpc, slot)
-	if err != nil {
+		return err
+	}); err != nil {
 		return out, err
+	}
+	for _, s := range steps {
+		if r, ok := s.request.(KaminoInitializationRequest); ok && s.fee.Lamports > r.MaximumFeeLamports {
+			return out, budgetHold("initializer_fee_changed")
+		}
+		if s.rent > math.MaxUint64-out.SetupLamports || s.fee.Lamports > math.MaxUint64-out.NetworkLamports {
+			return out, budgetHold("selector_recipe_native_overflow")
+		}
+		out.SetupLamports += s.rent
+		out.NetworkLamports += s.fee.Lamports
+		slot = max(slot, s.fee.Slot)
+	}
+	for i, k := range keys {
+		prices[k] = tokenPrices[i]
+		slot = max(slot, tokenPrices[i].ObservedSlot)
 	}
 	slot = max(slot, sol.ObservedSlot)
 	nowSlot, err := rpc.ConfirmedSlot(ctx)
@@ -186,4 +198,28 @@ func selectorSwapObservationFloor(r JupiterSwapRequest, sampleSlot, floor int64)
 		return 0, budgetHold("selector_recipe_observation_expired")
 	}
 	return floor, nil
+}
+
+// Each worker owns disjoint result indexes. Join every read, then return the
+// first error in recipe order, so completion order cannot hide a failed input.
+func selectorRecipeReads(count int, read func(int) error) error {
+	errs := make([]error, count)
+	workers := min(4, count)
+	var wg sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := worker; i < count; i += workers {
+				errs[i] = read(i)
+			}
+		}(worker)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

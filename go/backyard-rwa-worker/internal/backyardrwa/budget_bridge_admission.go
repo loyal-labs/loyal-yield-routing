@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"math"
+	"sync"
 	"time"
 )
 
@@ -183,7 +184,7 @@ func observePhase3BridgeAdmission(ctx context.Context, rpc *RPCClient, observati
 	debits := make([]ExecutableDebit, len(steps))
 	messages := make([][]byte, len(steps))
 	fees := make([]MessageFeeObservation, len(steps))
-	var token BudgetPrice
+	firstDebit := -1
 	for i, step := range steps {
 		debits[i], err = MeasureExecutableDebit(step.Request, step.ExpectedEffects)
 		if err != nil {
@@ -193,21 +194,48 @@ func observePhase3BridgeAdmission(ctx context.Context, rpc *RPCClient, observati
 		if err != nil {
 			return plan, err
 		}
-		fees[i], err = rpc.ObserveMessageFee(ctx, messages[i], max(slot, observation.Snapshot.Slot))
-		if err != nil {
-			return plan, err
-		}
-		slot = max(slot, fees[i].Slot)
-		if debits[i].Raw > 0 && token.Mint == "" {
-			token, err = ObserveBudgetTokenPrice(ctx, rpc, RouteID, debits[i], slot)
-			if err != nil {
-				return plan, budgetHold("bridge_admission_token_valuation_unavailable")
-			}
-			slot = max(slot, token.ObservedSlot)
+		if debits[i].Raw > 0 && firstDebit < 0 {
+			firstDebit = i
 		}
 	}
-	sol, err := ObserveNativeSOLBudgetPrice(ctx, rpc, slot)
-	if err != nil {
+	// These valuation reads have no dependency on one another. The closed
+	// cash-return graph has at most six fee messages and two prices. Give
+	// every read the same confirmed floor, then validate every result against
+	// a final confirmed slot; an earlier response never extends freshness.
+	minimumSlot := max(slot, observation.Snapshot.Slot)
+	feeErrors := make([]error, len(steps))
+	var token, sol BudgetPrice
+	var tokenErr, solErr error
+	var reads sync.WaitGroup
+	for i := range steps {
+		reads.Add(1)
+		go func(i int) {
+			defer reads.Done()
+			fees[i], feeErrors[i] = rpc.ObserveMessageFee(ctx, messages[i], minimumSlot)
+		}(i)
+	}
+	if firstDebit >= 0 {
+		reads.Add(1)
+		go func() {
+			defer reads.Done()
+			token, tokenErr = ObserveBudgetTokenPrice(ctx, rpc, RouteID, debits[firstDebit], minimumSlot)
+		}()
+	}
+	reads.Add(1)
+	go func() {
+		defer reads.Done()
+		sol, solErr = ObserveNativeSOLBudgetPrice(ctx, rpc, minimumSlot)
+	}()
+	reads.Wait()
+	for _, feeErr := range feeErrors {
+		if feeErr != nil {
+			return plan, feeErr
+		}
+	}
+	if tokenErr != nil {
+		return plan, budgetHold("bridge_admission_token_valuation_unavailable")
+	}
+	if solErr != nil {
 		return plan, budgetHold("bridge_admission_native_valuation_unavailable")
 	}
 	slot, err = rpc.ConfirmedSlot(ctx)

@@ -1,21 +1,21 @@
 {
   "proofLevel": "USER_DEPOSIT_FINALIZED_NOT_FINANCED_LIFECYCLE",
-  "workerCommit": "5e8d759944d14a2d10264d8ab4c4eeb47ca110d5",
-  "actionsRun": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/35286388331",
+  "workerCommit": "f46e9d36f6604940156442d4e290796b53fa4c5f",
+  "actionsRun": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/35287527358",
   "actionsConclusion": "success",
-  "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-5e8d759944d14a2d10264d8ab4c4eeb47ca110d5",
-  "imageDigest": "sha256:60850b5c3ae017ef195403fff8a63f846061783112a953c00932bfa1751659fe",
+  "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-f46e9d36f6604940156442d4e290796b53fa4c5f",
+  "imageDigest": "sha256:0e4121368febdaf65378ba89a234af0d3fcce9e1c8641fa5f1abbf56431c97dc",
   "service": "srv-dalootgae00c73c4qhag",
-  "deploy": "dep-dam7ccqjnfac73e31r9g",
+  "deploy": "dep-dam7jr2jnfac73e3tql0",
   "currentState": "active",
-  "reason": "quote_freshness_expires_between_acceptance_and_allocation_construction",
+  "reason": "quote_freshness_expires_during_unsigned_build_after_allocation_admission",
   "oldService": "srv-dabkt0ojo6nc7381o9fg",
   "oldServiceSuspended": true,
   "pilotActivated": true,
   "frontendCommit": "0b23bb5f",
   "externalDepositsEnabled": false,
-  "frontendDeployment": "dpl_DWhZuun8zr6erjMVCi6cCwUXFN6S",
-  "frontendUrl": "https://loyal-vault-pilot-ngw2a3bhw-loyals-projects-4b3ed656.vercel.app",
+  "frontendDeployment": "dpl_GNmezyKsQbEKev8rVSZNhoGyDuzH",
+  "frontendUrl": "https://loyal-vault-pilot-mg2myxujf-loyals-projects-4b3ed656.vercel.app",
   "frontendApi": {
     "path": "/api/vault",
     "status": 200,
@@ -27,7 +27,7 @@
     "navFreshness": "unknown"
   },
   "remainingGates": [
-    "remove avoidable quote-to-construction delays without extending freshness",
+    "bounded parallel independent fee and price reads without extending freshness",
     "current-release financed deposit-to-claim proof",
     "current-release rotation and recreation proof",
     "enable capped deposits only after acceptance"
@@ -174,6 +174,18 @@
       "holdReason": "selector_entry_requires_fresh_admission",
       "operationID": "f0df74316a13f13b1d32bfb7c20dd69d2bbc3eb8fb7227de8847a9d4889456d6",
       "signature": null
+    },
+    {
+      "requestID": "d2b169bed1f28ffe89fdbef35b29e52316e37ec034398e2b670d472023c9535e",
+      "lane": "Maple/syrupUSDC/USDC",
+      "equityRaw": "1000000",
+      "consumedAt": "2026-09-17T23:39:34.873759355Z",
+      "quoteSampleSlot": 447922127,
+      "quoteValidThroughSlot": 447922159,
+      "outcome": "admitted_then_failed_before_signing",
+      "holdReason": "selector_entry_quote_expired",
+      "operationID": "c55aa0895380d40f43dd4d9531a33d44b4a568b7613a805fca86e6b079f3263e",
+      "signature": null
     }
   ],
   "currentReleaseNav": {
@@ -181,5 +193,6 @@
     "slot": 447918956,
     "status": "reconciled",
     "valuationSource": "unsigned-reserve-refresh-simulation"
-  }
+  },
+  "imageVersionSource": "baked immutable image ENV; service override removed"
 }

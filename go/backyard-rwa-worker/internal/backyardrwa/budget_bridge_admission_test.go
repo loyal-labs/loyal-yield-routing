@@ -1,11 +1,15 @@
 package backyardrwa
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -268,4 +272,133 @@ func legacyAdmissionCostCheck(plan phase3BridgeAdmission, err error) (phase3Brid
 		err = emptyTestBudget().validateExitPlanCaps(plan)
 	}
 	return plan, err
+}
+
+// Hold all eight independent valuation reads at a barrier. A serialized
+// implementation cannot finish; no timing threshold or live RPC is involved.
+func TestBridgeAdmissionReadsIndependentValuationsTogether(t *testing.T) {
+	o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
+	rpc := budgetBuildRPC(t, 5_000, 42)
+	base := rpc.client.Transport
+	var started atomic.Int32
+	ready := make(chan struct{})
+	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		request.Body = io.NopCloser(bytes.NewReader(body))
+		var call struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(body, &call); err != nil {
+			return nil, err
+		}
+		if call.Method == "getFeeForMessage" || call.Method == "getMultipleAccounts" {
+			var options struct {
+				MinimumSlot int64 `json:"minContextSlot"`
+			}
+			if err := json.Unmarshal(call.Params[1], &options); err != nil {
+				return nil, err
+			}
+			if options.MinimumSlot != 42 {
+				return nil, fmt.Errorf("unexpected minimum slot %d", options.MinimumSlot)
+			}
+			if started.Add(1) == 8 {
+				close(ready)
+			}
+			select {
+			case <-ready:
+			case <-request.Context().Done():
+				return nil, request.Context().Err()
+			}
+		}
+		return base.RoundTrip(request)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	plan, err := observePhase3BridgeAdmission(ctx, rpc, o, d, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Load() != 8 || len(plan.Exit) != 5 || plan.ValidThroughSlot != 74 {
+		t.Fatalf("incomplete concurrent admission: reads=%d exits=%d validity=%d", started.Load(), len(plan.Exit), plan.ValidThroughSlot)
+	}
+}
+
+func TestBridgeAdmissionConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
+	for _, tc := range []struct {
+		name                          string
+		feeSlot, priceSlot, finalSlot int64
+		nullFee                       bool
+		hold                          string
+	}{
+		{"different fresh slots retain oldest fee", 42, 70, 74, false, ""},
+		{"future fee rejected", 70, 42, 60, false, "fee_message_or_slot_mismatch"},
+		{"future price rejected", 42, 70, 60, false, "missing_stale_or_mismatched_usdc_valuation"},
+		{"expired snapshot rejected", 42, 70, 75, false, "stale_bridge_admission_snapshot"},
+		{"null fee rejected", 42, 42, 42, true, "network_fee_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
+			rpc := budgetBuildRPC(t, 5_000, tc.finalSlot)
+			base := rpc.client.Transport
+			rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				body, err := io.ReadAll(request.Body)
+				if err != nil {
+					return nil, err
+				}
+				request.Body = io.NopCloser(bytes.NewReader(body))
+				var call struct {
+					Method string `json:"method"`
+				}
+				if err := json.Unmarshal(body, &call); err != nil {
+					return nil, err
+				}
+				res, err := base.RoundTrip(request)
+				if err != nil {
+					return nil, err
+				}
+				if call.Method != "getFeeForMessage" && call.Method != "getMultipleAccounts" {
+					return res, nil
+				}
+				defer res.Body.Close()
+				var payload map[string]any
+				if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+					return nil, err
+				}
+				result := payload["result"].(map[string]any)
+				slot := tc.priceSlot
+				if call.Method == "getFeeForMessage" {
+					slot = tc.feeSlot
+					if tc.nullFee {
+						result["value"] = nil
+					}
+				}
+				result["context"].(map[string]any)["slot"] = slot
+				encoded, err := json.Marshal(payload)
+				if err != nil {
+					return nil, err
+				}
+				return response(string(encoded)), nil
+			})
+			plan, err := observePhase3BridgeAdmission(context.Background(), rpc, o, d, evidence)
+			if tc.hold != "" {
+				assertBudgetHold(t, err, tc.hold)
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.ValidThroughSlot != 74 {
+				t.Fatalf("newer price extended old fee validity: %d", plan.ValidThroughSlot)
+			}
+			for _, cost := range append([]phase3BridgeExitCost{{Cost: plan.CurrentCost}}, plan.Exit...) {
+				if cost.Cost.ObservationSlot != tc.finalSlot || cost.Cost.Fee.Slot != tc.feeSlot || cost.Cost.NativePrice.ObservedSlot != tc.priceSlot || cost.Cost.ValidThroughSlot != 74 {
+					t.Fatalf("lost independently observed slot: %+v", cost.Cost)
+				}
+			}
+		})
+	}
 }
