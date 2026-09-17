@@ -17,6 +17,7 @@ var immutableRenderLeaseOwnerPattern = regexp.MustCompile(`^render:srv-[a-z0-9]+
 var errConfirmedObservationUnavailable = errors.New("confirmed route observation is temporarily unavailable")
 
 type Worker struct {
+	wake         chan struct{}
 	routeKey     string
 	interval     time.Duration
 	manifest     RouteManifest
@@ -43,7 +44,7 @@ type tickRuntime struct {
 	recordManualRecovery             func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
 	recordManualRecoveryAtGeneration func(context.Context, string, Observation, Decision, string, string, int64) (DecisionRecord, error)
 	beforeRecordLatchedHold          func(context.Context, ManualRecoveryLatch) error
-	prepareBridge                    func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error)
+	prepareBridge                    func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error)
 	prepareKamino                    func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
 	prepareJupiter                   func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
 	recordDecision                   func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
@@ -256,12 +257,8 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		loadLatch:                        database.ManualRecoveryLatch,
 		recordManualRecovery:             database.RecordManualRecovery,
 		recordManualRecoveryAtGeneration: database.RecordManualRecoveryAtGeneration,
-		prepareBridge: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, BridgeExecutionEvidence, error) {
-			manifest, err := manifestForUnwind(ctx, database, manifest)
-			if err != nil {
-				return Observation{}, BridgeExecutionEvidence{}, err
-			}
-			return observeConfirmedBridgeExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, state.enrich)
+		prepareBridge: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
+			return prepareBridgeFromTickObservation(ctx, rpc, manifest, decision, observation)
 		},
 		prepareKamino: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, KaminoExecutionEvidence, error) {
 			manifest, err := manifestForUnwind(ctx, database, manifest)
@@ -344,7 +341,7 @@ func NewWorker(database *Database, rpc *RPCClient, routeKey string, config Confi
 	if err != nil {
 		return nil, err
 	}
-	return &Worker{routeKey: routeKey, interval: config.PollInterval, manifest: manifest, runtime: productionTickRuntime(database, rpc, manifest)}, nil
+	return &Worker{wake: make(chan struct{}, 1), routeKey: routeKey, interval: config.PollInterval, manifest: manifest, runtime: productionTickRuntime(database, rpc, manifest)}, nil
 }
 
 func (w *Worker) Tick(ctx context.Context) error {
@@ -478,7 +475,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		}
 		observation, initializationRequest, err = w.runtime.prepareInitialization(ctx, w.manifest, wireDecision)
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		observation, bridgeEvidence, err = w.runtime.prepareBridge(ctx, w.manifest, wireDecision)
+		observation, bridgeEvidence, err = w.runtime.prepareBridge(ctx, w.manifest, wireDecision, observation)
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
 		observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, wireDecision)
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
@@ -760,6 +757,18 @@ func isPureHold(err error) bool {
 	}
 }
 
+// notifySelectorCommit requests another serialized tick; never execute a
+// transaction from the collector. A queued wake survives an active tick.
+func (w *Worker) notifySelectorCommit(action string) {
+	if action != "ENTER" && action != "CANARY_ENTER" && action != "SWITCH" {
+		return
+	}
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+}
+
 func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick func(context.Context) error) error {
 	for {
 		if err := tick(ctx); err != nil {
@@ -784,6 +793,8 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
+		case <-w.wake:
+			timer.Stop()
 		case <-timer.C:
 		}
 	}
@@ -919,7 +930,8 @@ func Run(ctx context.Context, out io.Writer) error {
 					if err != nil {
 						// Avoid emitting RPC/DB errors that may contain service URLs.
 						_, _ = fmt.Fprintln(out, "backyard-rwa-worker: selector sample unavailable; retaining current authority")
-					} else if result.Action == "ENTER" || result.Action == "SWITCH" {
+					} else if result.Action == "ENTER" || result.Action == "CANARY_ENTER" || result.Action == "SWITCH" {
+						worker.notifySelectorCommit(result.Action)
 						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector action=%s source=%s destination=%s\n", result.Action, result.SourceLane, result.DestinationLane)
 					}
 					return

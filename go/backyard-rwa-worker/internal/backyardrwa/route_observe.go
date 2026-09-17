@@ -114,6 +114,13 @@ func optionalLifecycleObligations(addresses []string) []string {
 	return optional
 }
 
+type routeObservationBatch struct {
+	Slot           int64
+	ObservationID  string
+	ManifestSHA256 string
+	Accounts       []ConfirmedAccount
+}
+
 type routeObservationRuntime struct {
 	refreshValuation func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error)
 	confirmedSlot    func(context.Context) (int64, error)
@@ -396,6 +403,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if base.ValuationSource != "confirmed" {
 			base.Snapshot.ObservationID = sha256Bytes([]byte(fmt.Sprintf("%s|valuation:%s|liquidation:%d", base.Snapshot.ObservationID, base.ValuationSource, base.Snapshot.LiquidationThresholdBPS)))
 		}
+		base.routeBatch = &routeObservationBatch{Slot: slot, ObservationID: base.Snapshot.ObservationID, ManifestSHA256: manifest.SHA256, Accounts: accounts}
 		return base, accounts, nil
 	}
 	return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("confirmed receipt fence did not stabilize around fixed account batch"))

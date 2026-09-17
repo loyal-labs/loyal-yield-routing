@@ -81,7 +81,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return observation, nil },
-		prepareBridge: func(_ context.Context, _ RouteManifest, got Decision) (Observation, BridgeExecutionEvidence, error) {
+		prepareBridge: func(_ context.Context, _ RouteManifest, got Decision, _ Observation) (Observation, BridgeExecutionEvidence, error) {
 			order = append(order, "prepare")
 			if got != decision {
 				t.Fatalf("prepared wrong decision: %+v", got)
@@ -434,7 +434,7 @@ func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 			observations++
 			return tickObservation(actionable), nil
 		},
-		prepareBridge: func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error) {
+		prepareBridge: func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error) {
 			preparations++
 			if preparations == 1 {
 				return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(errors.New("confirmed reads advanced"))
@@ -717,7 +717,7 @@ func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
 			w := &Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{
 				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return persisted, nil },
 				observe:         func(context.Context) (Observation, error) { return o, nil },
-				prepareBridge: func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error) {
+				prepareBridge: func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error) {
 					return o, BridgeExecutionEvidence{}, nil
 				},
 				recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"time"
 )
 
 const adaptorConfigLength = 472
@@ -47,124 +48,137 @@ func decodeObservedAdaptorConfig(account ConfirmedAccount) (observedAdaptorConfi
 	return observedAdaptorConfig{}, nil
 }
 
-func observeConfirmedBridgeExecutionEvidenceWithEnrichment(
-	ctx context.Context,
-	rpc *RPCClient,
-	manifest RouteManifest,
-	decision Decision,
-	enrich func(context.Context, *Observation) error,
-) (Observation, BridgeExecutionEvidence, error) {
+func observeConfirmedBridgeExecutionEvidenceWithEnrichment(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, enrich func(context.Context, *Observation) error) (Observation, BridgeExecutionEvidence, error) {
 	if rpc == nil || enrich == nil {
 		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("RPC client is required")
 	}
+	observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(ctx, rpc, manifest, enrich)
+	if err != nil {
+		return Observation{}, BridgeExecutionEvidence{}, err
+	}
+	return prepareBridgeFromObservedAccounts(ctx, rpc, manifest, decision, observation, accounts)
+}
+
+// Reuse the enriched, receipt-fenced bank owned by this Tick. Only the current
+// slot and blockhash need new RPC reads; admission, signing simulation, durable
+// authority binding and final send revalidation still run unchanged.
+func prepareBridgeFromTickObservation(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
+	batch := observation.routeBatch
+	if rpc == nil || batch == nil || batch.Slot != observation.Snapshot.Slot || batch.ObservationID != observation.Snapshot.ObservationID || batch.ManifestSHA256 != manifest.SHA256 || observation.Validate() != nil || !freshAt(time.Now().UTC(), observation.ObservedAt, 30*time.Second) {
+		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation is missing or stale"))
+	}
+	slot, err := rpc.ConfirmedSlot(ctx)
+	if err != nil {
+		return Observation{}, BridgeExecutionEvidence{}, err
+	}
+	if slot < batch.Slot || slot-batch.Slot > budgetMaxObservationLagSlots {
+		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation exceeded slot freshness"))
+	}
+	return prepareBridgeFromObservedAccounts(ctx, rpc, manifest, decision, observation, batch.Accounts)
+}
+
+func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, observation Observation, accounts []ConfirmedAccount) (Observation, BridgeExecutionEvidence, error) {
 	policyPin, err := manifest.bridgePolicy(decision.Action)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(ctx, rpc, manifest, enrich)
-		if err != nil {
-			return Observation{}, BridgeExecutionEvidence{}, err
-		}
-		refreshedDecision := Decide(observation.Snapshot)
-		if refreshedDecision.Action == HoldManualRecovery {
-			// The refresh itself discovered a safety fault. Return the coherent
-			// observation so Worker.Tick can durably record the hold and latch it;
-			// treating this as ordinary drift would discard the stop.
-			return observation, BridgeExecutionEvidence{}, nil
-		}
-		if !decisionsEqual(refreshedDecision, decision) {
-			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("actionable decision changed before construction")
-		}
-		route, err := runtimeRoute(decision.StrategyKey)
-		if err != nil {
-			return Observation{}, BridgeExecutionEvidence{}, err
-		}
-		ticketRequired := decision.Action != StageSquadsToVoltr
-		if phase3BudgetFamilyForLane(route.Lane) != "" {
-			// Reserve the entire bridge exit, including a report after staging.
-			// Every required policy and the existing ticket must be present in
-			// this same confirmed snapshot; admission cannot authorize setup.
-			ticketRequired = true
-			for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
-				binding, err := manifest.bridgePolicy(action)
-				if err != nil {
-					return Observation{}, BridgeExecutionEvidence{}, err
-				}
-				account := accountAt(accounts, binding.Account)
-				if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 ||
-					!maskedPolicyDigestMatches(account.Data, binding.MaskedByteRanges, binding.NormalizedDigest) {
-					return Observation{}, BridgeExecutionEvidence{}, budgetHold("bridge_exit_policy_unavailable")
-				}
-			}
-		}
-		policyAccount := accountAt(accounts, policyPin.Account)
-		if policyAccount.Owner != bridgeSquadsProgram || policyAccount.Executable ||
-			policyAccount.Lamports == 0 || !maskedPolicyDigestMatches(policyAccount.Data, policyPin.MaskedByteRanges, policyPin.NormalizedDigest) {
-			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("bridge policy bytes or owner drifted")
-		}
-		var ticket observedReportTicket
-		if ticketRequired {
-			ticket, err = decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
+	refreshedDecision := Decide(observation.Snapshot)
+	if refreshedDecision.Action == HoldManualRecovery {
+		// The refresh itself discovered a safety fault. Return the coherent
+		// observation so Worker.Tick can durably record the hold and latch it;
+		// treating this as ordinary drift would discard the stop.
+		return observation, BridgeExecutionEvidence{}, nil
+	}
+	if !decisionsEqual(refreshedDecision, decision) {
+		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("actionable decision changed before construction"))
+	}
+	route, err := runtimeRoute(decision.StrategyKey)
+	if err != nil {
+		return Observation{}, BridgeExecutionEvidence{}, err
+	}
+	ticketRequired := decision.Action != StageSquadsToVoltr
+	if phase3BudgetFamilyForLane(route.Lane) != "" {
+		// Reserve the entire bridge exit, including a report after staging.
+		// Every required policy and the existing ticket must be present in
+		// this same confirmed snapshot; admission cannot authorize setup.
+		ticketRequired = true
+		for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
+			binding, err := manifest.bridgePolicy(action)
 			if err != nil {
 				return Observation{}, BridgeExecutionEvidence{}, err
 			}
-			if ticket.Armed {
-				return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("report ticket is already armed")
+			account := accountAt(accounts, binding.Account)
+			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 ||
+				!maskedPolicyDigestMatches(account.Data, binding.MaskedByteRanges, binding.NormalizedDigest) {
+				return Observation{}, BridgeExecutionEvidence{}, budgetHold("bridge_exit_policy_unavailable")
 			}
 		}
-		custodies, err := decodeRouteNAVCustodiesForRoute(accounts, route)
-		if err != nil {
-			return Observation{}, BridgeExecutionEvidence{}, err
-		}
-		if uint64(observation.Snapshot.VoltrIdleRaw) != custodies.VoltrIdleRaw ||
-			uint64(observation.Snapshot.VoltrStrategyIdleRaw) != custodies.StrategyUSDCraw ||
-			uint64(observation.Snapshot.SquadsIdleRaw) != custodies.SquadsUSDCraw {
-			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("bridge custody changed inside confirmed construction snapshot")
-		}
-		effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(decision, custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw)
-		if err != nil {
-			return Observation{}, BridgeExecutionEvidence{}, err
-		}
-		postCustodies := custodies
-		postCustodies.StrategyUSDCraw = strategyAfter
-		postCustodies.SquadsUSDCraw = squadsAfter
-		switch decision.Action {
-		case VoltrAllocateToSquads:
-			postCustodies.VoltrIdleRaw -= uint64(decision.AmountRaw)
-		case VoltrRestoreIdle:
-			postCustodies.VoltrIdleRaw += uint64(decision.AmountRaw)
-		}
-		navAccounts, err := selectRouteNAVAccountsForRoute(accounts, route)
-		if err != nil {
-			return Observation{}, BridgeExecutionEvidence{}, err
-		}
-		nav, err := ComputeRouteNAVForRoute(observation.Snapshot.Slot, navAccounts, manifest, &postCustodies, route)
-		if err != nil {
-			return Observation{}, BridgeExecutionEvidence{}, err
-		}
-		if ticketRequired && nav.Report.Sequence <= ticket.LastConsumedSequence {
-			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("report ticket sequence is not fresh")
-		}
-		effects.Kind = "bridge"
-		if decision.Action != StageSquadsToVoltr {
-			effects.ReturnData = expectedAdaptorReturnData(nav.Report.NAVAfterRaw)
-		}
-		blockhash, err := rpc.LatestBlockhash(ctx)
-		if err != nil {
-			return Observation{}, BridgeExecutionEvidence{}, err
-		}
-		return observation, BridgeExecutionEvidence{
-			Request: BridgeBuildRequest{
-				Action: decision.Action, AmountRaw: uint64(decision.AmountRaw),
-				Report:        nav.Report,
-				AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
-				RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
-			},
-			ExpectedEffects: effects,
-		}, nil
 	}
-	return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("confirmed bridge execution inputs did not align"))
+	policyAccount := accountAt(accounts, policyPin.Account)
+	if policyAccount.Owner != bridgeSquadsProgram || policyAccount.Executable ||
+		policyAccount.Lamports == 0 || !maskedPolicyDigestMatches(policyAccount.Data, policyPin.MaskedByteRanges, policyPin.NormalizedDigest) {
+		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("bridge policy bytes or owner drifted")
+	}
+	var ticket observedReportTicket
+	if ticketRequired {
+		ticket, err = decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
+		if err != nil {
+			return Observation{}, BridgeExecutionEvidence{}, err
+		}
+		if ticket.Armed {
+			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("report ticket is already armed")
+		}
+	}
+	custodies, err := decodeRouteNAVCustodiesForRoute(accounts, route)
+	if err != nil {
+		return Observation{}, BridgeExecutionEvidence{}, err
+	}
+	if uint64(observation.Snapshot.VoltrIdleRaw) != custodies.VoltrIdleRaw ||
+		uint64(observation.Snapshot.VoltrStrategyIdleRaw) != custodies.StrategyUSDCraw ||
+		uint64(observation.Snapshot.SquadsIdleRaw) != custodies.SquadsUSDCraw {
+		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("bridge custody changed inside confirmed construction snapshot")
+	}
+	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(decision, custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw)
+	if err != nil {
+		return Observation{}, BridgeExecutionEvidence{}, err
+	}
+	postCustodies := custodies
+	postCustodies.StrategyUSDCraw = strategyAfter
+	postCustodies.SquadsUSDCraw = squadsAfter
+	switch decision.Action {
+	case VoltrAllocateToSquads:
+		postCustodies.VoltrIdleRaw -= uint64(decision.AmountRaw)
+	case VoltrRestoreIdle:
+		postCustodies.VoltrIdleRaw += uint64(decision.AmountRaw)
+	}
+	navAccounts, err := selectRouteNAVAccountsForRoute(accounts, route)
+	if err != nil {
+		return Observation{}, BridgeExecutionEvidence{}, err
+	}
+	nav, err := ComputeRouteNAVForRoute(observation.Snapshot.Slot, navAccounts, manifest, &postCustodies, route)
+	if err != nil {
+		return Observation{}, BridgeExecutionEvidence{}, err
+	}
+	if ticketRequired && nav.Report.Sequence <= ticket.LastConsumedSequence {
+		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("report ticket sequence is not fresh")
+	}
+	effects.Kind = "bridge"
+	if decision.Action != StageSquadsToVoltr {
+		effects.ReturnData = expectedAdaptorReturnData(nav.Report.NAVAfterRaw)
+	}
+	blockhash, err := rpc.LatestBlockhash(ctx)
+	if err != nil {
+		return Observation{}, BridgeExecutionEvidence{}, err
+	}
+	return observation, BridgeExecutionEvidence{
+		Request: BridgeBuildRequest{
+			Action: decision.Action, AmountRaw: uint64(decision.AmountRaw),
+			Report:        nav.Report,
+			AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
+			RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
+		},
+		ExpectedEffects: effects,
+	}, nil
 }
 
 func expectedAdaptorReturnData(navAfterRaw uint64) *ExpectedReturnData {

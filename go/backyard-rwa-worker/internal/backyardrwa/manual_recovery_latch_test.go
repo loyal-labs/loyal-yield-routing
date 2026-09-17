@@ -83,7 +83,7 @@ func TestManualRecoveryLatchLifecycleAgainstDatabase(t *testing.T) {
 			recorded = append(recorded, decision)
 			return db.RecordManualRecovery(ctx, key, observation, decision, manifestHash, policyHash)
 		},
-		prepareBridge: func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error) {
+		prepareBridge: func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error) {
 			preparedCalls++
 			return Observation{}, BridgeExecutionEvidence{}, errExecutionResumed
 		},
@@ -573,7 +573,7 @@ func TestManualRecoveryConstructionRefreshPersistsHoldBeforeDispatch(t *testing.
 			return initial, nil
 		},
 		recordManualRecovery: db.RecordManualRecovery,
-		prepareBridge: func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error) {
+		prepareBridge: func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error) {
 			prepareCalls++
 			return refreshed, BridgeExecutionEvidence{}, nil
 		},
@@ -671,7 +671,7 @@ func TestManualRecoveryClearBetweenLatchReadAndRerecordDoesNotRearm(t *testing.T
 	worker.runtime.recordDecision = func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
 		return DecisionRecord{OperationID: "generation-race-operation", Cycle: 1, Status: Decided}, nil
 	}
-	worker.runtime.prepareBridge = func(_ context.Context, _ RouteManifest, decision Decision) (Observation, BridgeExecutionEvidence, error) {
+	worker.runtime.prepareBridge = func(_ context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, BridgeExecutionEvidence, error) {
 		if decision.Action != VoltrAllocateToSquads {
 			t.Fatalf("the cleared tick chose %s instead of the healthy bridge action", decision.Action)
 		}
@@ -723,7 +723,7 @@ func TestManualRecoveryVerifiedConstructionRefreshBuildsThroughProductionPath(t 
 			t.Fatal("a verified construction refresh produced a manual-recovery hold")
 			return DecisionRecord{}, nil
 		},
-		prepareBridge: func(ctx context.Context, _ RouteManifest, decision Decision) (Observation, BridgeExecutionEvidence, error) {
+		prepareBridge: func(ctx context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, BridgeExecutionEvidence, error) {
 			prepareCalls++
 			if err := state.enrich(ctx, &refreshed); err != nil {
 				return Observation{}, BridgeExecutionEvidence{}, err
@@ -786,7 +786,7 @@ func TestManualRecoveryUnverifiedConstructionRefreshLatchesThroughProductionPath
 		loadLatch:       db.ManualRecoveryLatch,
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         state.observe,
-		prepareBridge: func(ctx context.Context, _ RouteManifest, decision Decision) (Observation, BridgeExecutionEvidence, error) {
+		prepareBridge: func(ctx context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, BridgeExecutionEvidence, error) {
 			prepareCalls++
 			if err := state.enrich(ctx, &refreshed); err != nil {
 				return Observation{}, BridgeExecutionEvidence{}, err
