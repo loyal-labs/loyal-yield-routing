@@ -14,6 +14,26 @@
   "oldServiceSuspended": true,
   "pendingOperationsAfterSuspension": 0,
   "pilotActivated": false,
-  "frontendCommit": "efc99662",
-  "externalDepositsEnabled": false
+  "frontendCommit": "14ab1dd575637776b68b224a3059c1cdd31bbf56",
+  "externalDepositsEnabled": false,
+  "frontendDeployment": "dpl_BhB3AqEbJ8dJCdvumqV5aenwzhJk",
+  "frontendUrl": "https://loyal-vault-pilot-o9rf52pmv-loyals-projects-4b3ed656.vercel.app",
+  "frontendApi": {
+    "path": "/api/vault",
+    "status": 200,
+    "observedAt": "2026-09-17T07:16:52.000Z",
+    "slot": 447736158,
+    "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+    "maxCapRaw": "100000000",
+    "deposits": "unavailable",
+    "navFreshness": "unknown"
+  },
+  "remainingGates": [
+    "attribute and reconcile historical shared PYUSD custody",
+    "activate history-preserving pilot budget",
+    "provision least-privilege frontend observation access",
+    "current-release financed deposit-to-claim proof",
+    "current-release rotation and recreation proof",
+    "enable capped deposits only after acceptance"
+  ]
 }

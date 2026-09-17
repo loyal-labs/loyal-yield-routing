@@ -2,7 +2,7 @@
 
 ## Current critical path — replaces earlier status summaries
 
-**Not ready for external deposits.** Substantial runtime and client code exists locally; current-release money-flow proof and deployment remain incomplete. Historical entries below retain evidence but do not define the current execution order. Existing hot-admin approval, 100-USDC vault cap, 10-USDC working equity, three reviewed USDC lanes, preserved spending history and full release acceptance remain unchanged.
+**Not ready for external deposits.** The worker image has passed CI and deployed successfully; the compatible frontend is deployed and its live vault API is verified. Current-release funded money-flow and rotation proofs remain incomplete. Historical entries below retain evidence but do not define the current execution order. Existing hot-admin approval, 100-USDC vault cap, 10-USDC working equity, three reviewed USDC lanes, preserved spending history and full release acceptance remain unchanged.
 
 ### Delivery order
 
@@ -12,18 +12,27 @@
 4. **Prove rotation on the same release.** A → B → A, including closure/recreation when required, with the other reviewed lane covered. Verify destination-capacity loss, risk/withdrawal priority, restart/ambiguous-submit recovery and complete economic move costs. Controlled race tests supplement the released live flow; they do not substitute for it.
 5. **Open the capped user/partner surface.** Finish current worker/reconciliation readiness integration, deploy the compatible frontend, verify a real wallet journey against that release, then enable deposits within the already installed cap. Declare ready only after all gates below pass.
 
+### Current implementation ownership
+
+- Coordinator: current goal, production state, review, credentials, deployment, budget and all financial actions. Fresh production read confirms no lease, pending operation or latch; budget remains absent.
+- GLM Flash task 602: route-scoped, least-privilege client observation access and focused validation.
+- GLM Flash task 603: repair the release verifier so fully evidenced open deposits can pass; retain missing funded-flow and rotation proof as blockers.
+- Both agents use `glm-5.3-flash` through the installed external-subagents runner, with separate file ownership and no secret access, deployment or financial authority. Coordinator reviews actual diffs and checks before release.
+
 ### Acceptance board
 
 | Gate | Current evidence | What closes it |
 |---|---|---|
 | Access | Admin/delegate public identities verified from mounted environment; Git SSH signature cryptographically verified | Cleared for current session; verify deployment credentials during release |
-| Release scope | Worker `bdd173a` published by passing Actions run 35190543782 and deployed to replacement `srv-dalootgae00c73c4qhag`; frontend committed as `efc99662` | Restart the current image after budget activation; deploy and verify the compatible frontend |
+| Release scope | Worker `bdd173a` published by passing Actions run 35190543782 and deployed to replacement `srv-dalootgae00c73c4qhag`; frontend `14ab1dd5` deployed as `dpl_BhB3AqEbJ8dJCdvumqV5aenwzhJk`, live API HTTP 200 | Restart the current image after budget activation; complete funded acceptance |
 | Chain/database activation | 100-USDC cap finalized at 447724467; policies 149–151 finalized and pinned; migrations 74–80 applied and validated | Attribute and reconcile 214898 raw historical shared PYUSD, then history-preserving budget activation |
 | Financed money flow | Captured protocol legs and local admission pass | Full released deposit-to-claim receipt set |
 | Automatic routing | Selector/transition code and controlled tests exist | Same-release rotation with current capacity/cost evidence |
-| Public access | Client gate now checks current release lease, pilot authority, pending work, report identity, NAV/custody, freshness and cap; default remains closed; typecheck/lint and controlled rejection cases pass | Provision least-privilege observation access, deploy frontend, complete real wallet journey, then enable |
+| Public access | Client gate now checks current release lease, pilot authority, pending work, report identity, NAV/custody, freshness and cap; default remains closed; hosted API verifies the expected vault and 100-USDC cap at slot 447736158; typecheck/lint and 33 controlled service cases pass | Provision least-privilege observation access, complete real wallet journey, then enable |
 
 **Runtime startup result:** the replacement image loaded the pinned manifest (`54dfdce596a237ef0c3726f20aa999ffd61152fdc3dcfb30608227fd975d68b0`) and acquired the correct fenced route lease, then refused NAV admission because the goal budget is absent. The worker retired the unsigned attempts; no signature, broadcast or pending operation remains. Both Render services are suspended. Activate the budget before restarting the new service; do not resume the historical service.
+
+**Client deployment result:** release `14ab1dd575637776b68b224a3059c1cdd31bbf56` serves `/api/vault` with HTTP 200 at `https://loyal-vault-pilot-o9rf52pmv-loyals-projects-4b3ed656.vercel.app`. The first hosted runtime exposed a missing `ws` dependency; the corrected release declares it directly and builds Next.js with Node. Server-only RPC is configured. Deposits are explicitly disabled, consumed NAV evidence is still unavailable, and least-privilege database observation access remains to be provisioned. A successful API read is not a funded wallet-flow proof.
 
 **Current blocker:** finalized slot 447728105 confirms 214898 raw PYUSD in shared manager custody. Other shared-wallet tokens exist; establish ownership before moving this balance. Post-migration selector observation at slot 447728142 reaches `REPORT_NAV` instead of the former historical custody mismatch. Public history traces the residue to admin/delegate-signed transactions ending at slot 441053364; ownership/return attribution is awaiting clarification. No pilot activation or external deposit enablement has occurred.
 
