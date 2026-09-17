@@ -9,7 +9,7 @@ import (
 
 // collectSelectorQuotes prices a source once, then at most three independent
 // destinations. Nothing here writes a journal row or signs a transaction.
-func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy) ([]LaneEconomics, []MoveQuote, error) {
+func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
 	defer cancel()
 	if err := policy.validate(); err != nil {
@@ -38,6 +38,9 @@ func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterC
 		return out, nil, budgetHold("selector_move_has_no_entry_cash")
 	}
 	maximum := min(uint64(PilotWorkingTrancheCapRaw), uint64(s.TotalVaultNAVRaw-policy.IdleBufferRaw), source.MinimumIdleRaw-uint64(policy.IdleBufferRaw))
+	if len(canaryMaximum) > 0 {
+		maximum = min(maximum, canaryMaximum[0])
+	}
 	quotes := make([]*MoveQuote, len(out))
 	var wg sync.WaitGroup
 	for i := range out {
@@ -98,7 +101,15 @@ func (d *Database) evaluateSelector(ctx context.Context, rpc *RPCClient, manifes
 	if !o.Snapshot.PilotActive {
 		return SelectorResult{}, budgetHold("selector_requires_active_pilot")
 	}
-	enriched, quotes, quoteErr := collectSelectorQuotes(ctx, rpc, productionJupiterClient(), manifest, o, markets, policy)
+	request, err := readPilotCanaryEntryRequest(time.Now().UTC())
+	if err != nil {
+		return SelectorResult{}, err
+	}
+	var maximum []uint64
+	if request != nil {
+		maximum = []uint64{uint64(request.EquityRaw)}
+	}
+	enriched, quotes, quoteErr := collectSelectorQuotes(ctx, rpc, productionJupiterClient(), manifest, o, markets, policy, maximum...)
 	if quoteErr != nil {
 		// No fabricated executable capacity on an outage. Current economic evidence
 		// can still maintain persistence, while pure selection cannot enter/switch.
@@ -111,5 +122,5 @@ func (d *Database) evaluateSelector(ctx context.Context, rpc *RPCClient, manifes
 	if err != nil {
 		return SelectorResult{}, err
 	}
-	return d.RecordSelectorEvaluation(ctx, productionRouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy}, slot, version)
+	return d.RecordSelectorEvaluation(ctx, productionRouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request}, slot, version)
 }

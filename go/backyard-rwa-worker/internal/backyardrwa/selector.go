@@ -177,11 +177,12 @@ func (q MoveQuote) currentAtSlot(slot int64) bool {
 }
 
 type SelectorInput struct {
-	Now      time.Time
-	Snapshot Snapshot
-	Markets  []LaneEconomics
-	Quotes   []MoveQuote
-	Policy   SelectorPolicy
+	canaryRequest *pilotCanaryEntryRequest
+	Now           time.Time
+	Snapshot      Snapshot
+	Markets       []LaneEconomics
+	Quotes        []MoveQuote
+	Policy        SelectorPolicy
 }
 
 // Only economic persistence lives here. A source exit is committed by the

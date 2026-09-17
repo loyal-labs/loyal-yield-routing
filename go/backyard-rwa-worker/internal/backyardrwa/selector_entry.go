@@ -123,10 +123,11 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 		return result, budgetHold("selector_state_changed_during_quote")
 	}
 	var state struct {
-		Budget     Phase3Budget    `json:"phase3"`
-		Activation json.RawMessage `json:"pilotBudgetActivation"`
-		Unwind     *UnwindIntent   `json:"selectorUnwind"`
-		Selector   struct {
+		Budget        Phase3Budget                       `json:"phase3"`
+		Activation    json.RawMessage                    `json:"pilotBudgetActivation"`
+		Unwind        *UnwindIntent                      `json:"selectorUnwind"`
+		CanaryHistory map[string]pilotCanaryEntryReceipt `json:"pilotCanaryEntries"`
+		Selector      struct {
 			Result SelectorResult `json:"result"`
 		} `json:"selector"`
 	}
@@ -180,8 +181,12 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 	}
 	input.Quotes = currentQuotes
 	result = SelectOpportunity(input, state.Selector.Result.State)
+	result, canaryReceipt, err := selectPilotCanaryEntry(input, result, state.CanaryHistory)
+	if err != nil {
+		return result, err
+	}
 	var entry *SelectorEntry
-	if result.Action == "ENTER" {
+	if result.Action == "ENTER" || result.Action == "CANARY_ENTER" {
 		s := input.Snapshot
 		if !unwindComplete(s) || s.WithdrawalDemandRaw != 0 || s.Unwind || s.CutoverDrain || s.VoltrIdleRaw <= 0 {
 			return result, budgetHold("selector_entry_requires_reconciled_idle")
@@ -196,6 +201,9 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 			return result, budgetHold("selector_entry_quote_missing")
 		}
 		entry = &SelectorEntry{Lane: result.DestinationLane, EquityRaw: q.EquityRaw, ObservationID: s.ObservationID, Quote: *q, AcceptedAt: now, ExpiresAt: q.ObservedAt.Add(min(input.Policy.QuoteMaxAge, 30*time.Second))}
+		if canaryReceipt != nil && canaryReceipt.Request.ExpiresAt.Before(entry.ExpiresAt) {
+			entry.ExpiresAt = canaryReceipt.Request.ExpiresAt
+		}
 		if err = entry.validate(); err != nil {
 			return result, err
 		}
@@ -233,6 +241,16 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 		return result, err
 	}
 	updated["selector"] = encoded
+	if canaryReceipt != nil {
+		if state.CanaryHistory == nil {
+			state.CanaryHistory = make(map[string]pilotCanaryEntryReceipt)
+		}
+		state.CanaryHistory[canaryReceipt.Request.ID] = *canaryReceipt
+		updated["pilotCanaryEntries"], err = json.Marshal(state.CanaryHistory)
+		if err != nil {
+			return result, err
+		}
+	}
 	nextVersion := version
 	if entry != nil || unwind != nil {
 		nextVersion++

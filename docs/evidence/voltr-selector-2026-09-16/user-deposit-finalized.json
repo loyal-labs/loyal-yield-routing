@@ -1,0 +1,12 @@
+{
+  "verdict": "USER_DEPOSIT_FINALIZED",
+  "signature": "2PruLGsNs5ioNbS2uFmVMRNf593B4Em9cknZ9EP1gqHN4Dr1JQcg4fMNA3kTJafDdqMtScTxtcGpsuQtbTFKoP2Z",
+  "slot": 447907948,
+  "wallet": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+  "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "usdcDebitRaw": "1000000",
+  "vaultIdleCreditRaw": "1000000",
+  "lpMintedRaw": "4652",
+  "feeLamports": 5000,
+  "workerImage": "sha-41c139514ecc77b1f69848e328b01794fb2985e1"
+}

@@ -6,19 +6,18 @@ import (
 	"encoding/json"
 )
 
-// This price-only simulation has no signer or send boundary. Its instruction
-// set is closed over the same permissionless reserve refreshes already in the
-// production transaction prefix. Account overrides are not used.
-func (c *RPCClient) simulateBudgetReserveRefresh(ctx context.Context, lane string, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+// budgetReserveRefreshInstructions pins the closed instruction set: the lane's
+// two refreshes plus the Prime USDC reference refresh, deduplicated.
+func budgetReserveRefreshInstructions(lane string) ([]compiledInstruction, error) {
 	if _, err := runtimeRoute(lane); err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	seen := map[publicKey]bool{}
 	var instructions []compiledInstruction
 	for _, id := range []string{lane, RouteID} {
 		prefix := kaminoPrimeUSDCRefreshInstructionsForRoute(kaminoLegDeposit, id)
 		if len(prefix) != 3 {
-			return 0, nil, budgetHold("price_refresh_binding_unavailable")
+			return nil, budgetHold("price_refresh_binding_unavailable")
 		}
 		for _, instruction := range prefix[:2] {
 			reserve := instruction.accounts[0].key
@@ -28,10 +27,43 @@ func (c *RPCClient) simulateBudgetReserveRefresh(ctx context.Context, lane strin
 			}
 		}
 	}
+	return instructions, nil
+}
+
+// This price-only simulation has no signer or send boundary. Its instruction
+// set is closed over the same permissionless reserve refreshes already in the
+// production transaction prefix. Account overrides are not used.
+func (c *RPCClient) simulateBudgetReserveRefresh(ctx context.Context, lane string, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+	instructions, err := budgetReserveRefreshInstructions(lane)
+	if err != nil {
+		return 0, nil, err
+	}
 	return c.simulateBudgetRefreshInstructions(ctx, instructions, addresses, minimumSlot)
 }
 
+// simulateBudgetReserveRefreshOptional mirrors simulateBudgetReserveRefresh for
+// batch observers whose pinned address set explicitly allows absent accounts,
+// such as an unopened obligation or farm user state. A null capture for such an
+// address stays absent — the same zero-value shape GetMultipleAccountsWithOptional
+// returns — instead of failing the whole capture; every other address must
+// still resolve, and the simulated snapshot remains unsigned evidence only.
+func (c *RPCClient) simulateBudgetReserveRefreshOptional(ctx context.Context, lane string, addresses, optional []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+	instructions, err := budgetReserveRefreshInstructions(lane)
+	if err != nil {
+		return 0, nil, err
+	}
+	allowed := make(map[string]struct{}, len(optional))
+	for _, address := range optional {
+		allowed[address] = struct{}{}
+	}
+	return c.simulateBudgetRefreshInstructionsWithOptional(ctx, instructions, addresses, allowed, minimumSlot)
+}
+
 func (c *RPCClient) simulateBudgetRefreshInstructions(ctx context.Context, instructions []compiledInstruction, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+	return c.simulateBudgetRefreshInstructionsWithOptional(ctx, instructions, addresses, nil, minimumSlot)
+}
+
+func (c *RPCClient) simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, instructions []compiledInstruction, addresses []string, optional map[string]struct{}, minimumSlot int64) (int64, []ConfirmedAccount, error) {
 	for _, instruction := range instructions {
 		if instruction.program != mustKey(kaminoProgram) || !bytesEqual(instruction.data, kaminoRefreshReserve) || len(instruction.accounts) != 6 {
 			return 0, nil, budgetHold("invalid_price_refresh_instruction")
@@ -45,7 +77,25 @@ func (c *RPCClient) simulateBudgetRefreshInstructions(ctx context.Context, instr
 	if err != nil {
 		return 0, nil, err
 	}
-	message, err := encodeLegacyMessage(mustKey(bridgeDelegate), hash, instructions)
+	// The RPC only returns accounts named in the message, so every requested
+	// capture address rides along as a read-only static key. The fee payer is
+	// already a message key; capture adds no signer, no write permission, and
+	// no new instruction.
+	feePayer := mustKey(bridgeDelegate)
+	capture := make([]publicKey, 0, len(addresses))
+	seenCapture := map[publicKey]bool{}
+	for _, address := range addresses {
+		key, err := decodeKey(address)
+		if err != nil {
+			return 0, nil, err
+		}
+		if key == feePayer || seenCapture[key] {
+			continue
+		}
+		seenCapture[key] = true
+		capture = append(capture, key)
+	}
+	message, err := encodeLegacyMessage(feePayer, hash, instructions, capture...)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -81,7 +131,15 @@ func (c *RPCClient) simulateBudgetRefreshInstructions(ctx context.Context, instr
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for i, a := range result.Value.Accounts {
-		if a == nil || len(a.Data) != 2 || a.Data[1] != "base64" {
+		if a == nil {
+			// Only an explicitly optional pinned address may stay absent.
+			if _, permitted := optional[addresses[i]]; permitted {
+				accounts[i] = ConfirmedAccount{Address: addresses[i]}
+				continue
+			}
+			return 0, nil, budgetHold("price_refresh_capture_incomplete")
+		}
+		if len(a.Data) != 2 || a.Data[1] != "base64" {
 			return 0, nil, budgetHold("price_refresh_capture_incomplete")
 		}
 		data, err := base64.StdEncoding.Strict().DecodeString(a.Data[0])

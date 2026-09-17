@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"math"
 	"math/big"
 	"time"
@@ -76,6 +77,21 @@ func selectorDestinationAccounts(ctx context.Context, rpc *RPCClient, m RouteMan
 		return 0, nil, empty, err
 	}
 	position, err := observeKaminoFromFixedAccounts(ctx, rpc.GetMultipleAccounts, slot, accounts, route.Kamino)
+	if errors.Is(err, errKaminoReserveStale) {
+		// Idle reserves only advance through the permissionless refresh the
+		// production prefix already carries, so re-observe against its closed
+		// unsigned simulation — never a broadcast — over the full original
+		// batch. bridgeDelegate's captured lamports differ by the simulated
+		// fee; this snapshot is unsigned evidence, and every freshness,
+		// ownership, capacity and funding check below still runs fail-closed
+		// on it as-is.
+		simulatedSlot, simulatedAccounts, refreshErr := rpc.simulateBudgetReserveRefreshOptional(ctx, route.Lane, uniqueNonzero(addresses), optional, slot)
+		if refreshErr != nil {
+			return 0, nil, empty, refreshErr
+		}
+		slot, accounts = simulatedSlot, simulatedAccounts
+		position, err = observeKaminoFromFixedAccounts(ctx, rpc.GetMultipleAccounts, slot, accounts, route.Kamino)
+	}
 	if err != nil {
 		return 0, nil, empty, err
 	}

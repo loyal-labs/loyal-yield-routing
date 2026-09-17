@@ -384,11 +384,17 @@ func compileLegacyMessage(feePayer, blockhash publicKey, instructions []compiled
 
 // Encoding is separate from each caller's closed instruction-set validation.
 // The bridge/signing boundary above still permits exactly one instruction.
-func encodeLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
+// Optional capture keys ride along as read-only non-signing static accounts so
+// one unsigned simulation can return a full observed batch; merging through the
+// same table means an instruction's required privileges are never lowered.
+func encodeLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction, capture ...publicKey) ([]byte, error) {
 	if len(instructions) == 0 || len(instructions) > 4 {
 		return nil, fmt.Errorf("unsupported legacy instruction count")
 	}
 	accounts := []accountMeta{{key: feePayer, signer: true, writable: true}}
+	for _, key := range capture {
+		pushOrMergeMeta(&accounts, accountMeta{key: key})
+	}
 	for _, instruction := range instructions {
 		for _, account := range instruction.accounts {
 			pushOrMergeMeta(&accounts, account)

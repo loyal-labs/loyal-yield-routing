@@ -1,23 +1,22 @@
 {
-  "proofLevel": "DEPLOYED_STARTUP_NOT_FUNDED_LIFECYCLE",
-  "workerCommit": "bdd173a650bb18496522e233cf9689de64f5cc6e",
-  "actionsRun": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/35190543782",
+  "proofLevel": "USER_DEPOSIT_FINALIZED_NOT_FINANCED_LIFECYCLE",
+  "workerCommit": "41c139514ecc77b1f69848e328b01794fb2985e1",
+  "actionsRun": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/35279644311",
   "actionsConclusion": "success",
-  "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-bdd173a650bb18496522e233cf9689de64f5cc6e",
-  "imageDigest": "sha256:abc2ea9952ab44267ea81c41d322c2493a848336e43a43fe0c1259153bf16067",
+  "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-41c139514ecc77b1f69848e328b01794fb2985e1",
+  "imageDigest": "sha256:14f36dbc639dd4ff8b95862ca522d1ec5859e214c5b8a963b130fbde778ed920",
   "service": "srv-dalootgae00c73c4qhag",
-  "deploy": "dep-dalootoae00c73c4qiag",
-  "deployLiveAt": "2026-09-17T06:45:26.178478Z",
-  "currentState": "suspended",
-  "reason": "awaiting_worker_baseline_release_and_funded_acceptance",
+  "deploy": "dep-dam668jm8hqs73ckmi10",
+  "deployLiveAt": "2026-09-17T22:01:30.593929Z",
+  "currentState": "active",
+  "reason": "financed_lifecycle_and_rotation_pending",
   "oldService": "srv-dabkt0ojo6nc7381o9fg",
   "oldServiceSuspended": true,
-  "pendingOperationsAfterSuspension": 0,
   "pilotActivated": true,
-  "frontendCommit": "368575fe9a71e2f35ab2d478122d5ee1315069ad",
+  "frontendCommit": "0b23bb5f",
   "externalDepositsEnabled": false,
-  "frontendDeployment": "dpl_8CzMsfnytBUwuEivcrJkzbd4rAQR",
-  "frontendUrl": "https://loyal-vault-pilot-of93wxffq-loyals-projects-4b3ed656.vercel.app",
+  "frontendDeployment": "dpl_AqAJ3BPt6tNWawCMYE9r2KScpmxm",
+  "frontendUrl": "https://loyal-vault-pilot-rfntb9t2v-loyals-projects-4b3ed656.vercel.app",
   "frontendApi": {
     "path": "/api/vault",
     "status": 200,
@@ -29,7 +28,7 @@
     "navFreshness": "unknown"
   },
   "remainingGates": [
-    "deploy reviewed activation-baseline worker release",
+    "real feasible entry quote after reserve refresh",
     "current-release financed deposit-to-claim proof",
     "current-release rotation and recreation proof",
     "enable capped deposits only after acceptance"
@@ -94,19 +93,22 @@
       "outputRaw": "214921",
       "feeLamports": 5000
     },
-    "returnToHXtkComplete": false
+    "returnToHXtkComplete": true
   },
   "publicationApproved": true,
   "frontendWorkerApi": {
     "path": "/api/worker",
     "status": 200,
     "source": "yield-worker-journal",
-    "leaseActive": false,
-    "freshness": "stale",
+    "observedAt": "2026-09-17T22:12:58.321547483Z",
+    "observedSlot": "447905750",
+    "leaseActive": true,
+    "freshness": "fresh",
+    "routeStatus": "idle",
     "operation": {
       "action": "REPORT_NAV",
-      "status": "failed",
-      "updatedAt": "2026-09-17 06:46:05.866279+00"
+      "status": "reconciled",
+      "updatedAt": "2026-09-17 22:12:35.140245+00"
     }
   },
   "frontendDepositPreparation": {
@@ -130,5 +132,22 @@
     "generation": 819,
     "finalizedSlot": 447899153,
     "flatEvidenceSha256": "03c41286d5837fdaeb2cb02c4d8ee27374818b241732bcf672c17a768fa78239"
+  },
+  "firstReconciledNAV": {
+    "signature": "4cmpa767RLTZwJwB11XHjN4b9QnQCN3bmY1ktn2a9BWUBU3PauitSRpz9kWBJuwfwRBsXZ14yWetnR1ntcZbxDBa",
+    "slot": 447903813
+  },
+  "userDeposit": {
+    "verdict": "USER_DEPOSIT_FINALIZED",
+    "signature": "2PruLGsNs5ioNbS2uFmVMRNf593B4Em9cknZ9EP1gqHN4Dr1JQcg4fMNA3kTJafDdqMtScTxtcGpsuQtbTFKoP2Z",
+    "slot": 447907948,
+    "wallet": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+    "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+    "usdcDebitRaw": "1000000",
+    "vaultIdleCreditRaw": "1000000",
+    "lpMintedRaw": "4652",
+    "feeLamports": 5000,
+    "workerImage": "sha-41c139514ecc77b1f69848e328b01794fb2985e1",
+    "servedReconciliation": "finalized-reconciled"
   }
 }
