@@ -35,5 +35,64 @@
     "current-release financed deposit-to-claim proof",
     "current-release rotation and recreation proof",
     "enable capped deposits only after acceptance"
-  ]
+  ],
+  "frontendCandidate": {
+    "commit": "8859a01aa94e6c051afa172f6cb91fe432cd96e3",
+    "pushed": true,
+    "deployed": false,
+    "glmAccessTask": 607,
+    "glmVerifierTask": 608,
+    "typecheck": "pass",
+    "lint": "pass",
+    "depositServiceControlledChecks": 33,
+    "consumedReportControlledChecks": 107,
+    "openDepositControlledAccepted": 1,
+    "openDepositControlledRejected": 37,
+    "releaseVerdict": "FAIL",
+    "readerSqlProductionRollbackTest": "pass",
+    "readerInstalled": false,
+    "credentialDelivered": false,
+    "provisioningGate": "explicit approval required after automatic approval review rejection",
+    "workerImageAndServicePinsConfigured": true,
+    "persistentDepositsEnabledSetting": "0"
+  },
+  "localFollowUp": {
+    "commit": "3d15b413",
+    "pushed": false,
+    "deployed": false,
+    "glmVerifierTask": 613,
+    "browserRecoveryGate": "PASS",
+    "browserRecoveryScenarios": 14,
+    "networkSubmissions": 0,
+    "readBudget": "PASS",
+    "windowMilliseconds": 11000,
+    "windowRpcRequests": 2,
+    "overallReleaseVerdict": "FAIL",
+    "r00Reason": "No disarmed consumed-report ticket is available at this slot",
+    "report": "/private/tmp/voltr-pilot-browser-fixed.json"
+  },
+  "readerProvisioning": {
+    "approved": true,
+    "installed": true,
+    "role": "loyal_vault_demo_observation",
+    "actualLoginVerified": true,
+    "baseTableAccess": false,
+    "defaultTransactionReadOnly": true,
+    "statementTimeout": "5s",
+    "credentialDeliveredTo": "loyal-vault-pilot Production and Preview server-only setting",
+    "plaintextCredentialFileCreated": false
+  },
+  "pyusdCleanup": {
+    "ownershipConfirmedByUser": true,
+    "conversionAndReturnToHXtkApproved": true,
+    "amountRaw": "214898",
+    "finalizedCustodySlot": 447889670,
+    "executed": false
+  },
+  "publicationApproved": true,
+  "pendingFrontendDeployment": {
+    "commit": "368575fe",
+    "id": "dpl_8CzMsfnytBUwuEivcrJkzbd4rAQR",
+    "url": "https://loyal-vault-pilot-of93wxffq-loyals-projects-4b3ed656.vercel.app"
+  }
 }
