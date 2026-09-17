@@ -221,6 +221,16 @@ type SelectorResult struct {
 	SelectedQuote *MoveQuote `json:"selectedQuote,omitempty"`
 }
 
+// A funded entry must finish before its temporary holdings become an economic
+// KEEP baseline. Safety and withdrawal handling remain separate priorities.
+func selectorTrancheInProgress(s Snapshot) bool {
+	if !s.PilotActive || !hasWorkingCapital(s) {
+		return false
+	}
+	return s.PositionDebtRaw <= 0 || s.SquadsIdleRaw > 0 || s.DebtIdleRaw > 0 ||
+		(s.CollateralIdleRaw > 0 && (s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw))
+}
+
 func forecastGain(collateral, supplied, debt float64, e LaneEconomics, borrowAPR, years float64) float64 {
 	// Native yield on all owned collateral; lending yield only on supplied units.
 	return (collateral-supplied)*math.Expm1(math.Log1p(e.NativeAPY)*years) + supplied*math.Expm1((math.Log1p(e.NativeAPY)+math.Log1p(e.SupplyAPY))*years) - debt*math.Expm1(borrowAPR*years)
@@ -411,6 +421,10 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) && (best < 0 || c.BenefitRaw > out.Candidates[best].BenefitRaw) {
 			best = len(out.Candidates) - 1
 		}
+	}
+	if selectorTrancheInProgress(s) {
+		out.Reason = "complete_current_tranche_first"
+		return out
 	}
 	if base.Action == ReportNAV {
 		out.Reason = "accounting_first"

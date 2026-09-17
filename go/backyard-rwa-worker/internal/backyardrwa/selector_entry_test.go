@@ -548,4 +548,60 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	if version != 3 || !paused || savedResult.Action != "SWITCH" || !bytes.Equal(beforeJSON, afterJSON) {
 		t.Fatal("switch changed spending or omitted atomic state", version, paused, savedResult.Action)
 	}
+
+	// Restart after ordinary interest exceeds the original payoff window.
+	// Renewal retains the same source and reservation; it creates no operation.
+	if _, err = restarted.AcquireRouteLease(ctx, key, "switch-restarted", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	fresh := in.Snapshot
+	fresh.PositionDebtRaw = intent.MaxDebtRaw + 10
+	fresh.ObservationID = "new-source-after-downtime"
+	if err = applyUnwindIntent(&fresh, intent); err != nil || !fresh.UnwindRefreshRequired {
+		t.Fatal(err)
+	}
+	o := tickObservation(fresh)
+	o.ObservedAt = time.Now().UTC()
+	source := selectorSourceQuote{Lane: fresh.RouteLane, ObservationID: fresh.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: fresh.PositionCollateralRaw, MaxDebtRaw: fresh.PositionDebtRaw + 1000, GrossMicros: intent.CostBoundRaw}, Recipe: selectorRecipe{Costs: []ValuedTransactionCost{{ObservationSlot: fresh.Slot, TotalMicros: intent.CostBoundRaw}}, EvidenceID: sha256Bytes([]byte("fresh-full-exit")), ValidThroughSlot: fresh.Slot + 32}}
+	lagging := source
+	lagging.Recipe.Costs = []ValuedTransactionCost{{ObservationSlot: fresh.Slot + 1, TotalMicros: intent.CostBoundRaw}}
+	assertBudgetHold(t, restarted.renewSelectorUnwind(ctx, key, 3, *intent, o, lagging, fresh.Slot), "unwind_refresh_evidence_unavailable")
+	empty := source
+	empty.Recipe.Costs = nil
+	assertBudgetHold(t, restarted.renewSelectorUnwind(ctx, key, 3, *intent, o, empty, fresh.Slot), "unwind_refresh_evidence_unavailable")
+	if err = restarted.renewSelectorUnwind(ctx, key, 2, *intent, o, source, fresh.Slot); err == nil {
+		t.Fatal("renewed stale route version")
+	}
+	unfunded := source
+	bound := *source.ExitBound
+	bound.GrossMicros++
+	unfunded.ExitBound = &bound
+	assertBudgetHold(t, restarted.renewSelectorUnwind(ctx, key, 3, *intent, o, unfunded, fresh.Slot), "unwind_requires_existing_exit_reservation")
+	if _, err = restarted.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects) VALUES($1,$2,'signed','OPEN_ROUTE_STEP','{}')`, key+"-pending", key); err != nil {
+		t.Fatal(err)
+	}
+	assertBudgetHold(t, restarted.renewSelectorUnwind(ctx, key, 3, *intent, o, source, fresh.Slot), "unwind_refresh_recovery_first")
+	if _, err = restarted.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled' WHERE operation_id=$1`, key+"-pending"); err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.renewSelectorUnwind(ctx, key, 3, *intent, o, source, fresh.Slot); err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := restarted.LoadUnwindIntent(ctx, key)
+	if err != nil || renewed == nil || renewed.MaxDebtRaw != source.ExitBound.MaxDebtRaw || renewed.BudgetScope != intent.BudgetScope || renewed.Reason != intent.Reason {
+		t.Fatal("renewal lost identity", err, renewed)
+	}
+	if err = applyUnwindIntent(&fresh, renewed); err != nil || fresh.UnwindRefreshRequired || !fresh.Unwind {
+		t.Fatal("renewed unwind did not resume", err)
+	}
+	if err = restarted.pool.QueryRow(ctx, `SELECT state->'phase3',state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&storedBudget, &version); err != nil {
+		t.Fatal(err)
+	}
+	if json.Unmarshal(storedBudget, &after) != nil {
+		t.Fatal("budget decode")
+	}
+	afterJSON, _ = json.Marshal(after)
+	if version != 4 || !bytes.Equal(beforeJSON, afterJSON) {
+		t.Fatal("renewal changed budget", version)
+	}
 }

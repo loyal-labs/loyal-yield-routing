@@ -1,3 +1,4 @@
+import { simulatePilotCap, updatePilotCap } from "./activation/pilot-cap.js";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -317,6 +318,10 @@ async function main() {
     const commitment = valueAfter("--commitment") ?? "confirmed";
     if (commitment !== "confirmed") throw new Error("verify testing-handoff requires --commitment confirmed");
     result = await verifyBackyardTestingHandoff();
+  } else if (group === "activation" && operation === "simulate-pilot-cap") {
+    result = await simulatePilotCap();
+  } else if (group === "activation" && operation === "execute-pilot-cap") {
+    result = await updatePilotCap(true, valueAfter("--journal"));
   } else if (group === "activation" && operation === "simulate-vault-config") {
     result = await simulateVaultConfigActivation();
   } else if (group === "activation" && operation === "execute-vault-config") {
@@ -592,6 +597,10 @@ async function main() {
   } else {
     throw new Error(`unsupported command ${group ?? "<missing>"} ${operation ?? "<missing>"}`);
   }
+  if ((operation === "execute-pilot-cap" || operation === "simulate-pilot-cap") && result && typeof result === "object") {
+    const verdict = (result as { verdict?: string }).verdict;
+    if (verdict === "PILOT_CAP_PENDING_RECONCILIATION" || verdict === "PILOT_CAP_ATTEMPT_FAILED" || verdict === "PILOT_CAP_UNSIGNED_SIMULATION_FAIL") process.exitCode = 1;
+  }
   try {
     const serialized = json(result);
     const out = valueAfter("--out");
@@ -623,9 +632,11 @@ async function main() {
 }
 
 main().catch((error: unknown) => {
+  const pilotCapExecution = process.argv.includes("execute-pilot-cap");
   process.stderr.write(json({
     verdict: "ERROR",
-    broadcast: false,
+    broadcast: pilotCapExecution ? null : false,
+    ...(pilotCapExecution ? { recoveryInstruction: "Retain --journal and rerun the same command to reconcile; do not remove it or use a new journal." } : {}),
     error: error instanceof Error ? error.message : String(error),
   }));
   process.exitCode = 1;

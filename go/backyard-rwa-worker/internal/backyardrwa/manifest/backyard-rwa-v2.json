@@ -175,7 +175,27 @@
         "route0": 0,
         "route1": 1
       }
-    }
+    },
+    "multiplyInitializers": [
+      {
+        "lane": "Prime/PRIME/USDC",
+        "policySeed": 149,
+        "policy": "ChdpvLcYi3cWGZEKGc5e8A9k2g1cQbeKUYHVuaQJuCEV",
+        "accountDataSha256": "ab0b698dcc89180462318595fdbaafd48dd6da41f1979c369d15f9b3f03f0b28"
+      },
+      {
+        "lane": "Maple/syrupUSDC/USDC",
+        "policySeed": 150,
+        "policy": "2cfywGhD1iVgZBthmCBNcattYWSPidJ1MxmsEnFm2U7E",
+        "accountDataSha256": "cad37ac825f5e454e9b7a4525bc54b787d01b56b772da8fd3ea851c3ac61b5e0"
+      },
+      {
+        "lane": "OnRe/ONyc/USDC",
+        "policySeed": 151,
+        "policy": "CbtyAVtdWfr6sVrHayN1cZQXbdPxYHFoQgzQXJkhrtXt",
+        "accountDataSha256": "d9b39f6df13b67532f7d28b1e67bb933d4ae929b6bfa76872e01b9617c47cb7e"
+      }
+    ]
   },
   "runtimeActivation": {
     "schema": "loyal-backyard-rwa-runtime-activation/v2",

@@ -35,7 +35,7 @@ type PolicyLike = {
 };
 
 const Policy = (squadsGenerated as unknown as {
-  Policy: { fromAccountInfo(info: { data: Buffer; owner: PublicKey; lamports: number; executable: boolean; rentEpoch: number }): readonly [PolicyLike, number] };
+  Policy: { deserialize(data: Buffer): readonly [PolicyLike, number] };
 }).Policy;
 const PolicyBeet = (squadsGenerated as unknown as {
   policyBeet: { toFixedFromValue(value: unknown): { serialize(instance: unknown, byteSize: number): readonly [Buffer, number] } };
@@ -162,7 +162,7 @@ async function main(): Promise<void> {
       throw new Error(`policy ${binding.seed} discriminator does not match the generated Policy discriminator`);
     }
     const raw = Buffer.from(info.data);
-    const [decoded] = Policy.fromAccountInfo({ data: raw, owner: info.owner, lamports: info.lamports, executable: info.executable, rentEpoch: info.rentEpoch });
+    const [decoded] = Policy.deserialize(raw);
 
     // The SDK layout must reproduce the on-chain bytes exactly, or every mask
     // derived below would be a guess instead of a fact. The live accounts are

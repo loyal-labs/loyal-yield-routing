@@ -321,6 +321,8 @@ func (d *Database) admitPhase3Withdrawal(ctx context.Context, rpc *RPCClient, cl
 		plan, err = observePhase3FundingAdmission(ctx, rpc, client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects)
 	} else if evidence.Request.FullPayoff {
 		plan, err = observePhase3PayoffAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
+	} else if decision.Reason == "hard_ltv_partial_repay" {
+		plan, err = observePhase3PartialRepaymentAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
 	} else {
 		plan, err = observePhase3WithdrawalAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
 	}

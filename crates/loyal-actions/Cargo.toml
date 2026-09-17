@@ -36,6 +36,10 @@ path = "src/bin/compile_backyard_rwa_maple_exit_policy.rs"
 name = "compile-backyard-basic-policy-set"
 path = "src/bin/compile_backyard_basic_policy_set.rs"
 
+[[bin]]
+name = "compile-backyard-multiply-initializers"
+path = "src/bin/compile_backyard_multiply_initializers.rs"
+
 [dependencies]
 base64.workspace = true
 bincode = "1.3"

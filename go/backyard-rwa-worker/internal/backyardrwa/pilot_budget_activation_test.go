@@ -198,8 +198,17 @@ func TestPilotBudgetActivationDurableAndIdempotent(t *testing.T) {
 			if _, err = db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_operations WHERE operation_id='pilot-derived-hold'`); err != nil {
 				t.Fatal(err)
 			}
-			first, err := db.activatePilotBudget(ctx, rpc)
+			_, err = RunPilotBudgetActivation(ctx, url, server.URL, productionRouteKey)
+			assertBudgetHold(t, err, "pilot_activation_lease_unavailable")
+			if _, err = db.ReleaseRouteLease(ctx); err != nil {
+				t.Fatal(err)
+			}
+			activated, err := RunPilotBudgetActivation(ctx, url, server.URL, productionRouteKey)
 			if err != nil {
+				t.Fatal(err)
+			}
+			first := activated.Activation
+			if _, err = db.AcquireRouteLease(ctx, productionRouteKey, "pilot-activation-test", time.Minute); err != nil {
 				t.Fatal(err)
 			}
 			beforeRequests := requests
@@ -281,6 +290,14 @@ func TestPilotBudgetActivationDurableAndIdempotent(t *testing.T) {
 			}
 			if _, err = reopened.ReleaseRouteLease(ctx); err != nil {
 				t.Fatal(err)
+			}
+			command, commandErr := RunPilotBudgetActivation(ctx, url, server.URL, productionRouteKey)
+			if commandErr != nil || command.Activation.Authority != first.Authority || command.ProofLevel != "PILOT_BUDGET_AUTHORITY_NOT_DEPOSIT_READINESS" || requests != beforeRequests {
+				t.Fatal("operator retry changed authority", commandErr, command.ProofLevel)
+			}
+			var held bool
+			if err = db.pool.QueryRow(ctx, `SELECT lease_owner IS NOT NULL AND lease_expires_at>clock_timestamp() FROM loyal_yield.multiply_route_states WHERE route_key=$1`, productionRouteKey).Scan(&held); err != nil || held {
+				t.Fatal("operator command left lease held", err)
 			}
 			if _, err = db.AcquireRouteLease(ctx, productionRouteKey, "pilot-activation-test", time.Minute); err != nil {
 				t.Fatal(err)

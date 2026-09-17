@@ -1,11 +1,39 @@
-# Voltr RWA selector implementation status
+# Voltr RWA pilot implementation and release plan
 
-**Status: local shadow implementation and safety fixes. Autonomous rotation is
-not complete and this branch is not ready for partner capital.**
+## Current critical path — replaces earlier status summaries
 
-Base: `fleet/integration` at `0058abf5ce6e386a3e5245231b99b11a4fce595e`.
-Work is isolated on `feat/voltr-rwa-selector`; the older dirty checkout and the
-suspended production worker were not changed.
+**Not ready for external deposits.** Substantial runtime and client code exists locally; current-release money-flow proof and deployment remain incomplete. Historical entries below retain evidence but do not define the current execution order. Existing hot-admin approval, 100-USDC vault cap, 10-USDC working equity, three reviewed USDC lanes, preserved spending history and full release acceptance remain unchanged.
+
+### Delivery order
+
+1. **Resolve execution access and freeze one release candidate.** Verify the existing admin/delegate signing path, database access, Git signing and deployment credentials without exposing secrets. Consolidate only Voltr prerequisites and selector work; the selector branch includes unrelated fleet ancestry and must not be merged wholesale. Freeze feature scope. Do not add standalone tools or tests unless a concrete failure on the next milestone requires them.
+2. **Prepare the actual runtime.** Freshly reconcile current holdings and pending operations; resolve historical residue with existing approved policies. Install the 100-USDC on-chain cap and three exact initializer policies, apply reviewed migrations, activate the pilot budget without resetting history, and pin finalized policy identities in the release manifest. Keep the client closed during these steps.
+3. **Deploy a uniquely identified candidate and complete one financed round trip.** Build the immutable GHCR worker image, pin it on Render and verify environment/database/program compatibility. Use the smallest fully executable authorized tranche (up to 10 USDC). Prove actual user deposit → allocation → swap/collateral deposit → borrow/redeposit → NAV → withdrawal request → repay/unwind → return → claim. Reconcile exact signed transactions and final balances. Fix only failures that block this journey.
+4. **Prove rotation on the same release.** A → B → A, including closure/recreation when required, with the other reviewed lane covered. Verify destination-capacity loss, risk/withdrawal priority, restart/ambiguous-submit recovery and complete economic move costs. Controlled race tests supplement the released live flow; they do not substitute for it.
+5. **Open the capped user/partner surface.** Finish current worker/reconciliation readiness integration, deploy the compatible frontend, verify a real wallet journey against that release, then enable deposits within the already installed cap. Declare ready only after all gates below pass.
+
+### Acceptance board
+
+| Gate | Current evidence | What closes it |
+|---|---|---|
+| Access | Admin/delegate public identities verified from mounted environment; Git SSH signature cryptographically verified | Cleared for current session; verify deployment credentials during release |
+| Release scope | Local selector changes; branch has fleet ancestry; frontend separate | Reviewed scoped commit(s), successful checks, immutable image/frontend identity |
+| Chain/database activation | 100-USDC cap finalized at 447724467; policies 149–151 finalized and pinned; migrations 74–80 applying | Complete migration validation and history-preserving budget activation |
+| Financed money flow | Captured protocol legs and local admission pass | Full released deposit-to-claim receipt set |
+| Automatic routing | Selector/transition code and controlled tests exist | Same-release rotation with current capacity/cost evidence |
+| Public access | Client deposit gate closed; report/account readers partly integrated | Current service/accounting readiness plus real wallet journey |
+
+**Latest live evidence:** `docs/evidence/voltr-selector-2026-09-16/pilot-cap-finalized-result.json` and `initializer-finalized-installations.json`. The first initializer attempt expired unspent; its signed wire and finalized absence proof are retained. Installation now uses consistent confirmed prestate/simulation/fee/preflight with finalized terminal recovery. Existing legacy-manifest tests explicitly omit installed pins; release pins are shared byte-for-byte with `docs/manifests/backyard-rwa-v2.json`.
+
+**Progress reporting:** report a deployed milestone, a resolved blocker, or a concrete failure in the money flow. Counts of component tests are supporting detail. Do not append more historical status narratives as a substitute for updating this board.
+
+### Work locations
+
+Worker implementation: isolated `feat/voltr-rwa-selector` checkout, based on `fleet/integration` at `0058abf5ce6e386a3e5245231b99b11a4fce595e`. Frontend implementation: isolated `ask-2025-voltr-pilot-access` checkout. Preserve both original dirty workspaces. No broad fleet merge or old-worker resume.
+
+## Historical implementation notes
+
+The sections below describe successive implementation stages. Statements such as “not yet connected” may have been superseded; use the acceptance board above and current source to determine remaining work.
 
 ## Implemented
 
@@ -113,8 +141,8 @@ establish transaction simulation success, deployment, or a live lifecycle PASS.
    shared-USDC admission changes now use canonical actions and count the common
    cash account once. Controlled tests cover payoff/entry and partial-capacity
    planning. Initial swaps consume all working cash; unused capital stays in
-   Voltr. Unsupported partial hard-LTV repayment is a truthful recovery hold,
-   so autonomous partial risk reduction still needs implementation and proof.
+   Voltr. Partial hard-LTV repayment now has local admission, revalidation and
+   durable unwind continuation; current-release lifecycle proof remains required.
 2. **Connect genuine pair capacity and complete economic move quotes.** The
    existing feed and API reserve-wide availability are insufficient for the
    chosen obligation's exact pair caps, withdrawals and swap depth. The shadow
@@ -485,3 +513,207 @@ intent rejects holdings beyond its envelope; the new runtime must renew that
 envelope against current protocol evidence and existing reserved exit spending
 under the route lock, without silently enlarging it. This is an outstanding
 release requirement, not evidence that restart recovery is complete.
+
+### Unwind renewal after downtime
+
+Debt above a committed payoff-interest bound now marks the snapshot as requiring
+fresh unwind admission instead of creating a permanent manual recovery latch.
+Unexpected source ownership or collateral growth still fails closed. Pending
+transaction recovery remains first, and executable hard-LTV reduction retains
+its existing fresh per-leg admission ahead of ordinary renewal.
+
+The worker's renewal hook reads the route version before a new confirmed source
+observation, reprices the remaining full exit, then replaces only the same
+source intent under the current lease/route lock. It validates pilot authority,
+original intent, position bounds, quote time and every retained observation
+slot. Existing exit reservations must cover the fresh gross bound; no budget is
+expanded or reset. Pending transactions, recovery latches and unresolved capital
+recovery refuse renewal. Success resumes from another observation, without
+creating a transaction or authorizing a destination. A refused budget renewal
+is a normal journaled hold and can be retried; insufficient reserved capacity
+still requires resolution before ordinary economic unwinding can continue.
+
+Controlled tests cover interest expiry, hard-LTV priority, worker ordering,
+restart with a committed intent, successful bounded renewal, unchanged budget,
+stale route version, insufficient exit reservation, pending recovery, missing
+cost evidence and a final RPC slot behind retained pricing evidence. Fable's
+read-only review identified the last freshness check, which is now implemented.
+Live outage recovery and all release lifecycle gates remain unproven; the
+background opportunity evaluator is still not enabled.
+
+Validation: full Go/PostgreSQL suite passes (20.142 seconds), as do Go vet,
+worker build and whitespace checks. Fable confirmed the focused freshness fix
+and found no remaining material issue in that review. No production mutation.
+
+### Background live evaluator (not activated)
+
+`BACKYARD_RWA_SELECTOR_LIVE=1` now opts into the background evaluator; live and
+shadow modes are mutually exclusive. Collection is separate from the serialized
+transaction loop. It requires validated pilot authority and a live route lease,
+reads the route version before accounts, and accepts results only through the
+existing atomic entry/switch transaction. The deployment setting is unchanged.
+The current conservative shadow policy still needs review against actual pilot
+rates and complete movement costs before live activation.
+
+Each sample prices the source once, then at most three destinations in parallel.
+Destination pricing may reduce the requested tranche to exact currently admitted
+pair capacity; exact-size callers retain their original refusal contract. Feed
+snapshots are not mutated. Failed/closed destinations receive no executable
+capacity or quote, while current holdings remain the KEEP baseline. Collection
+ends eight seconds after the source observation and cancels slow siblings;
+completed quotes remain subject to their original 32-slot and wall-clock gates.
+
+Ordinary economic selection waits for a funded tranche to finish its initial
+deposit, borrow and redeposit. It does not compare a temporary unlevered source
+against an alternative's finished loop and interrupt the accepted entry. Actual
+withdrawal, accounting and risk handling retain priority, and sub-receipt custody
+rounding residue does not prevent later evaluation of a settled loop.
+
+Controlled production-producer tests cover partial capacity, subsequent capacity
+closure, a blocked sibling, a slow RPC sibling, unchanged feed input, exact-size
+API preservation, stale observations, duplicate market rejection and the
+intermediate entry state. Fable identified the entry sequencing and slow-sibling
+issues; both are fixed. No live mode was enabled and no production funds changed.
+
+Validation: full Go/PostgreSQL suite passes (21.174 seconds), focused live
+collection race tests pass (2.956 seconds), and Go vet, worker build and
+whitespace checks pass. Fable confirmed both focused corrections. Local Git
+signing failed twice in the configured 1Password helper; the tested renewal and
+evaluator changes remain local pending signing. No signing policy was disabled.
+
+
+### Explicit pilot budget activation command
+
+The operator command `--activate-pilot-budget` now exposes the existing audited
+transition. It requires the fixed route, acquires an exclusive expiring lease,
+obtains finalized flat-state evidence through the transition, archives prior
+spending and releases the lease even after cancellation. It does not load a
+signer, install policies, enable deposits or start the worker. Its output is
+explicitly `PILOT_BUDGET_AUTHORITY_NOT_DEPOSIT_READINESS`; retry returns existing
+validated authority without refreshing it or resetting the budget.
+
+Full Go/PostgreSQL tests pass (21.325 seconds), including first activation via
+the command wrapper, occupied-lease refusal, absent/existing historical budgets,
+idempotence and lease release. Go vet and worker build pass. A command invocation
+with all configuration unset fails with a fixed configuration hold, as expected.
+
+A fresh public finalized read at slot **447471906** still refuses activation:
+`pilot_transition_custody_not_flat`. Historical custody
+`J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn` retains **214898 raw PYUSD**;
+Voltr idle retains **23 raw USDC**. No funds moved. Public evidence is retained
+in `docs/evidence/voltr-selector-2026-09-16/pilot-flat-finalized-447471906.json.gz`;
+uncompressed SHA-256 is
+`21f37f05cfd49644675cf9e0a8bb21f51fc8f56136baf787640bceb40d58ede4`.
+The historical PYUSD conversion and return, policy installation, journal
+migration/activation, policy calibration, deployment and released lifecycle
+proof remain actual work. The production budget activation command was not run.
+
+Fable reviewed the activation wrapper and found no material defect; that review
+was read-only and did not independently run tests or production actions.
+
+### Client cutover progress — 2026-09-16
+
+Isolated client work lives in `/private/tmp/loyal-vault-pilot`, branch `ask-2025-voltr-pilot-access`, copied from the existing ASK-2025 demo without local environment, browser wallet or build artifacts. The reader now uses strategy-two config/authority, validates the current version-2 192-byte receipt including reserved bytes, decodes receipt-tracked custody without adding it to measured allocation, and pins adaptor report bounds. It no longer interprets reserved config bytes as report history. Note: the deployed worker pins config v2/ticket v1; repository adaptor v3 source is not the deployed account contract.
+
+Typecheck and scoped lint pass. `scripts/verify-pilot-accounts.ts --live` passed against finalized slot 447474257, including mutated numeric bounds, reserved config bytes and receipt version/padding rejection. Fable identified and the implementation corrected both the receipt-version mismatch and missing numeric-limit checks. Current receipt position/custody tracking and manager USDC custody were zero. This is read-only account-reader evidence, not accounting reconciliation, service activation or lifecycle proof. NAV freshness remains unknown pending consumed-report evidence; deposits remain unavailable, while withdrawal request/claim preparation does not require fresh NAV. Changes remain local and unreleased; signing availability is still pending.
+
+### Client pilot-cap admission — 2026-09-16
+
+The actual deposit preflight now refuses preparation unless the observed on-chain Voltr cap is positive and no greater than 100 USDC. It retains the lower chain cap and actual NAV headroom; the app does not pretend a local limit constrains direct or concurrent deposits. The existing service and NAV gates remain independent, and claims are unaffected. Typecheck, scoped lint and all 20 preflight invariant checks pass, including oversized/zero/negative caps, exactly filling pilot headroom and a one-raw-unit overflow. The chain cap itself has not been changed; signed installation/readback is still required before opening deposits.
+
+### Cap-only activation tooling — 2026-09-16
+
+The historical `activation *-vault-config` command changes fee/HWM-related configuration and targets the historical large cap, so it is not the pilot cap installer. New commands are `activation simulate-pilot-cap` and `activation execute-pilot-cap --journal <absolute-path>`. Execution requires the existing `CONFIRM_MAINNET=1` fence and approved hot admin. Both use the same single MaxCap instruction with target 100,000,000 raw USDC. They pin mainnet and the worker's current Voltr deployment slot/ELF hash, require a lossless v4 vault decode, reject current NAV above the target, and compare the entire simulated/readback vault against the original with only maxCap changed. No fees, HWM, LP state or custody are intentionally changed.
+
+The execution path exclusively creates and flushes a mode-0600 attempt journal containing signed wire/hash, expected signature and original vault before sending. Retain it permanently for that attempt. A rerun with the same journal reconciles the same signature, without loading a signer or creating another transaction. Ambiguous send/readback returns a pending-reconciliation result with the signature. A missing/failed signature never automatically authorizes a replacement; operator recovery remains explicit. This journal records no private key.
+
+Three controlled tests (15 assertions) pass: captured-vault byte preservation and malicious unrelated changes, exact cap instruction/admin, and pending/failed attempt reconciliation with no new prepare/send. Package typecheck still reports its pre-existing `rwa-multiply-strategy2-policy-mask.ts:165` optional-number error; no errors are reported in the new module. This installer has NOT been simulated against mainnet or executed. Git signing and release, actual cap installation, full service activation and live lifecycle proofs remain outstanding.
+
+Fable's recovery review also required binding success to the retained wire and finalized readback. Recovery now uses the existing canonical signed-wire verifier, reconstructs the exact cap-only message, compares the finalized transaction message to that retained message, and reads finalized accounts at or after its finalized status slot. The controlled recovery test now contains a correctly shaped retained cap wire. These fixes pass the same three tests; mainnet simulation/execution remains unperformed.
+
+### Cap instruction live simulation — 2026-09-16
+
+The mounted Environment lacks `SOLANA_RPC_URL`; secret access was slow but the diagnostic completed and returned that explicit missing-variable gate. No secret-access process from these two attempts remains active, and neither sent a transaction. The simulation command now uses a public-RPC unsigned path (`sigVerify:false`) with the approved admin public address, avoiding secret access entirely. Execution still uses the approved signer, signed simulation and durable journal.
+
+A current public simulation against pinned Voltr succeeded at slot **447477664**, estimated fee **5,000 lamports**, compute **5,536 units**, cap **100 USDC**. Evidence: `docs/evidence/voltr-selector-2026-09-16/pilot-cap-unsigned-simulation-447477664.json`. Initial strict byte comparison identified Voltr's automatic `lastUpdatedTs` configuration stamp at offset 656; existing bootstrap proof confirms this behavior. The check now permits only cap plus a nondecreasing timestamp, preserving every other byte and account lamports. Three focused tests /16 assertions pass, including backward timestamp rejection. This is unsigned simulation, not proof of signer access, executed cap installation or deposit readiness. The actual on-chain cap remains unchanged.
+
+The subsequent authorized execute attempt with explicit public RPC stopped before the journal existed. Finalized readback at slot447478148 still shows cap1,000,000,000,000raw; no cap installation is claimed. The exact send code writes its journal before submission, and no journal was created. Required signer availability is being checked separately; do not rerun an execute attempt without resolving that pre-send failure.
+
+The serialized mounted-environment presence check completed with `admin_signer_missing`: `SOLANA_TESTING_PK` is absent. This explains the pre-journal execution failure. An asynchronous request asks the user to populate the existing approved hot-admin signer in the repository's 1Password Environment, never in chat or plaintext files. No further signed cap attempt is authorized by mere elapsed time or a missing answer. Unsigned implementation/protocol verification can continue; signer provisioning is an external deployment dependency. All environment-tool sessions for this turn are terminal.
+
+### Current Maple Kamino leg and release proof — 2026-09-16
+
+Added an opt-in current-compiler exporter and a separate Maple branch of the captured-program harness; the historical Ethena probe remains unchanged. The exporter sizes collateral from finalized reserve prices (slot447479681), exports zero-signature messages with an artificial blockhash, and the read-only capture verifies their installed policy hashes. Captured program/account state is finalized at slot447480268. The actual KLend ELF hash matches the existing pinned9db16dd4… release; captured Squads ELF is1c95bd7b… at deployment slot443245754.
+
+The harness seeded12,676,440raw syrupUSDC (about15USDC at the sizing read),100,000raw USDC and delegate SOL locally. Current Go deposit/borrow/repay/withdraw messages all executed through captured Squads/KLend: borrow credited5,000,000raw USDC, repayment extinguished the debt, and withdrawal returned all12,676,440collateral units with zero remaining receipt/debt. The borrowed cash remains available in this position experiment; this is **not financed entry, a swap test, or a full10-USDC pilot lifecycle**.
+
+A separate branch reconstructs that exact post-borrow state and executes the current pilot release compiler/model. The five-step interest bound is5,000,006raw debt; the predicted release is4,994,113collateral units, leaving7,682,327receipts. Actual execution matched both amounts exactly and left debt unchanged (5,000,000raw at the captured clock), using252,360compute units. This closes the narrow deployed-KLend release-sizing proof for the captured Maple state. Real swap minimums/costs, release-to-payoff continuity, other pilot lanes, initializer/close/recreate, risk/capacity races and released user/partner lifecycle remain unproven.
+
+Reproducible artifact: `docs/evidence/voltr-selector-2026-09-16/maple-protocol-probe-447480268.tar.gz`, SHA-256 `3514e3ad2910e788cfe1b8ec85e1d1f766456d2bd0b7f7833f5f2b9024992870`. It contains the exact plans, final account capture, five program ELFs, and local execution witnesses (11files,1,587,466bytes). Program bytes are retained once, not duplicated in every account-state witness. Extract into an explicit temporary directory, then run `SELECTOR_PROTOCOL_DIR=<dir> SELECTOR_PROTOCOL_RELEASE=1 cargo test -p squads-test-harness --test rwa_kamino_controlled_probe selector_maple_position_executes_current_go_messages -- --ignored --nocapture`. The Go exporters are opt-in `TestExportSelectorProtocolPosition` (`SELECTOR_PROTOCOL_PLAN`, public `SOLANA_RPC_URL`) and `TestExportSelectorProtocolRelease` (`SELECTOR_PROTOCOL_DIR`). Both exporters and the connected Rust probe passed; no signer, send or production state change occurred. Typecheck remains blocked only by the previously recorded policy-mask optional-number error.
+
+`TestSelectorProtocolMessagesMatchCurrentCompiler` also passes against the retained capture: it recompiles all four leg requests and the pilot release with the current Go compiler and requires byte-identical unsigned wires and hashes. Run it with `SELECTOR_PROTOCOL_DIR=<extracted-dir>` to detect compiler drift before reusing this evidence.
+
+Independent replay from a fresh extraction passed both the Rust protocol probe and the Go compiler comparison. Fable's final source/evidence review found no material defect in this bounded proof; Fable did not rerun it. The seeded USDC buffer is 100,000 raw units (0.1 USDC). The release branch ends before swap/payoff, so this evidence does not establish financed lifecycle or deposit readiness.
+
+The operator package typecheck now passes. The policy-mask decoder uses the installed SDK’s `Policy.deserialize(raw)` directly; `fromAccountInfo` delegates to that exact method and never inspects rent metadata. This removes the optional `rentEpoch` type mismatch without changing policy decoding or round-trip validation. No policy or production state changed.
+
+### Partial repayment protocol proof and admission design — 2026-09-16
+
+The current Go finite-repayment compiler now has a captured-Maple branch proof: a 1,000,000-raw-USDC partial repayment debited exactly 1 USDC, left collateral custody and receipts unchanged, and reduced debt from 5 to 4 USDC (remaining scaled debt 4611686018427387904000000). It consumed 211,899 compute units. The branch then executed the existing payoff and withdrawal messages, ending with zero debt/receipts, all seeded collateral returned and the original 0.1-USDC cash buffer. Installed policy hashes still matched before each continuation. This uses the same captured programs/slot and seeded position as the earlier probe; it does not exercise a hard-LTV state, admission, signing, advancing interest windows or a financed lifecycle.
+
+Evidence: `docs/evidence/voltr-selector-2026-09-16/maple-partial-repayment-probe-447480268.tar.gz`, SHA-256 `ca68953d0a00f4fac71e4477fbe9a7ec9956db48dcf785afb53d5c7e8e21af0b`, 1,635,791 bytes. A fresh extraction passed both the Rust probe with `SELECTOR_PROTOCOL_PARTIAL=1 SELECTOR_PROTOCOL_RELEASE=1 SELECTOR_PROTOCOL_DIR=<dir>` and `TestSelectorProtocolMessagesMatchCurrentCompiler`. The latter also reconstructs the partial wire and rejects changed lane, action, amount, payoff/release mode or instruction leg. Export the branch with opt-in `TestExportSelectorProtocolPartialRepayment`; no RPC or signer is needed after the captured position witness exists.
+
+Fable's admission review recommends reusing `pricePhase3ProjectedPositionReturn` with the exact partial-repayment simulation and a distinct `RepaymentProjection`. Preserve recovery admission: current repayment cost plus the newly priced complete remaining exit must fit inside the existing family exit reserve. No budget enlargement or simulated accounting settlement. Before build/send, re-simulate and validate the repayment and remaining payoff/release bounds under the original deadline. After finalized reconciliation, retain unwind intent and existing NAV priority. Prefer available debt cash before collateral funding dust, but cap a partial request strictly below observed debt (`min(cash, debt-1)`); cash equal to observed debt may still fall short of the accrued full-payoff allowance. Essential pending runtime tests cover that boundary, dust starvation, admission rollback, expiration/absence reserve restoration, restart/NAV/unwind, and debt/configuration/custody drift. The current runtime hold remains in place until this admission path and its checks are implemented.
+
+### Partial hard-LTV repayment runtime — 2026-09-16
+
+Implemented pilot-only finite partial repayment using the existing `DeleverRouteStep`, exact Kamino compiler and complete projected-return planner. After funded payoff priority, hard-LTV repair uses debt cash before collateral funding dust and caps its request below observed debt. Admission checks the actual custody prestate, simulates the exact unsigned repayment, verifies fixed conserved debit, unchanged collateral receipts/custody and reduced positive debt, then prices NAV, any funding release/swap, remaining payoff, collateral withdrawal and full return. It retains the existing recovery invariant: current upper cost plus the remaining exit must fit the already reserved family exit. It does not enlarge budget authority, book simulated proceeds or reset spending history.
+
+Build and send re-simulate the retained repayment message. They reject changed custody/debt, expired observation, greater payoff bound/rate, changed interest basis/time window, risk settings/prices and changed redeemable collateral amount. Even increased collateral backing requires fresh pricing because the gross return may grow. Funded payoff tails receive these checks without requiring an unnecessary collateral release. Where release is needed, existing release sizing and funding validation also apply.
+
+Admission atomically creates or preserves an existing source unwind and pauses/clears entry in the same leased budget transaction. The new reason is `hard_ltv_reduction`. This makes principal-equal cash residues continue to payoff after NAV/restart rather than being mistaken for another borrowed tranche. A proven-unspent attempt restores its original reserve but retains the committed risk exit. Current balances and finalized reconciliation still determine each subsequent leg and accounting; simulation never marks the unwind complete.
+
+Controlled regressions cover complete remaining-exit pricing, fixed partial transfer, cash equal to observed principal but below the payoff allowance, collateral dust priority, pilot authority, simulation failure, receipt/cash/collateral/debt changes, funded-tail price/backing drift, atomic DB rollback, durable residual-cash continuation and original reserve/spending preservation on unspent release. The DB continuation test exercises the production persistence/release helpers; it is not a full production admission-to-signer integration test. Fable reviewed the implementation and identified the funded-tail and residual-cash issues; both were corrected, and the focused follow-up found no further material defect. Full worker/PostgreSQL suite passed (22.113 seconds), Go vet and worker build passed, and whitespace validation passed. Changes remain local; no service deployment or live transaction occurred. Full financed lifecycle, current-release admission/sign/send races across all pilot lanes, and deposit readiness remain required.
+
+### Production partial admission and client report ticket — 2026-09-16
+
+Extended the controlled PostgreSQL partial-repayment test through actual `admitPhase3Withdrawal`, its idempotent retry, and `authorizePhase3Build`, including measured pilot execution cost. It passes, and the original reserve restoration/unwind persistence assertions remain. This replaces the prior helper-only coverage limitation for admission and pre-signing authorization; signed-send and live lifecycle evidence remain outstanding.
+
+The isolated client now includes the pinned v1 report ticket in its coherent finalized batch. Its decoder validates owner, address, non-executable flag, exact discriminator/version/bump/strategy, reserved bytes and armed-state consistency. The RPC adapter preserves the executable flag, and missing flag evidence cannot validate the ticket. Public finalized slot 447487174 showed the ticket unarmed with last-consumed sequence zero; receipt position and manager USDC custody were zero. Identity/layout/armed-state mutation checks passed, as did typecheck and scoped lint. This is input for consumed-report reconciliation, not fresh NAV or readiness; the deposit gate remains closed.
+
+The exported preflight verification function was explicitly invoked and passed 20 checks. The broader fast demo verifier ran with local test-server permission and retained FAIL in `/private/tmp/loyal-vault-pilot-fast-report.json`: deployment, genuine NAV/accounting, browser/lifecycle and handoff gates remain missing. It also exposed a verifier assumption that withdrawal arithmetic can run against the current zero circulating LP supply; the pinned SDK correctly rejects those withdrawal calculations. That empty-vault path needs explicit unavailable-quote coverage before the readiness verifier can proceed. No frontend build, deployment, signing or fund movement occurred.
+
+
+### Empty-vault verifier correction — 2026-09-16
+
+The demo verifier now distinguishes an empty circulating LP supply/asset balance from a funded withdrawal snapshot. It requires both positive withdrawal helpers to refuse with the pinned SDK supply/assets error when empty, and preserves the existing withdrawal/receipt arithmetic assertions for funded snapshots. It does not fabricate an LP supply or turn the unavailable quote into a zero payout. The fast verifier completes R02 without the prior `Invalid LP supply` exception and retains FAIL for the actual missing deployment/accounting/lifecycle gates. Typecheck and scoped lint pass. This is a verifier correction, not a deposit-readiness change.
+
+
+### Consumed-report wire decoder — 2026-09-16
+
+Added a narrow client decoder for the current zero-capital `REPORT_NAV` transaction: one pinned delegate/Squads/NAV-policy instruction, exact two-instruction arm/Voltr payload, full pinned account arrays, identical report payloads, zero capital amount, supported report version, nonzero sequence/digest, sequence equal to observed slot and bounded NAV. It returns wire facts only and makes no signature validity, finality, consumed-report or freshness claim. The current Go `CompileBridgeMessage` generated the checked-in unsigned vector (`scripts/fixtures/client-report-compiler-vector.json`); it is artificial and never submitted. `verify-report-wire.ts` matches the current compiler report/message hash, rejects all 1,027 truncations and five amount/sequence/NAV/digest/mode mutations. Typecheck and scoped lint pass.
+
+Fable confirmed the minimal next integration: existing server-side DB access locates the latest report signature; finalized transaction/trace verification supplies the evidence; each public and wallet-preparation coherent batch separately matches current disarmed ticket/sequence, receipt NAV and age. Candidate worker observation report fields must never supply consumed evidence. Post-report capital mutations, unresolved work, service/release readiness and cap checks remain separate deposit gates. The decoder is not yet wired into that server verification path, so deposits remain unavailable.
+
+
+### Initializer installation artifacts and first live simulation
+
+Added the offline `compile-backyard-multiply-initializers` binary, reusing the existing exact-lane compiler. It requires the caller's finalized Settings seed and emits three bounded legacy installation instructions; it never signs or sends. Public finalized Settings at slot 447651751 had seed 148, threshold 1, zero timelock and only the approved BAq… admin with mask 7. Candidate policies are seeds 149–151, each 767 bytes. These are not installed manifest pins.
+
+Reproduce the artifact with `cargo run --locked --offline -p loyal-actions --bin compile-backyard-multiply-initializers -- --policy-seed-before 148` (refresh the seed first). From `tools/backyard-voltr`, run `bun src/verify/simulate-multiply-initializer-install.ts <artifact> <new-output>`. The simulator rechecks finalized genesis, Settings authority and seed, enforces packet size, disables signature verification, and writes evidence exclusively. The retained run passed for seed 149 at slot 447652263 with 38,915 CU. Evidence includes the compiler artifact SHA-256 and simulated Settings/policy accounts. Typecheck and compiler build pass.
+
+Only the first installation is simulated against live state: later sequential seeds require preceding installed state. Prior captured-program tests cover three-policy installation mechanics but cannot establish current installed authority. Durable signed installation/recovery, finalized policy-byte verification, activation manifest pins and released lifecycle remain outstanding. No policy was installed and no transaction was broadcast.
+
+
+Initializer installation preparation now reuses `assertPolicyMatchesArtifact` from the existing installer for complete decoded authority/constraint verification. The initializer artifact reader accepts only the retained reviewed compiler bytes (SHA-256 `97da2aa6cb44bfd5bdabb58d064efbf0d7c9646cf9602eb8094c80bb22626d33`), binds all three canonical seeds/PDAs and checks each policy's delegate, threshold, account index and constraint count. Changed compiler output requires review rather than silently changing installation authority. The deployed simulation allocates 934 bytes, of which 576 decode and the remainder must be zero.
+
+The updated unsigned simulator verifies post-Settings seed/authority and the complete policy, including its timestamp against the simulation slot's block time. It passed at finalized slot 447652911, 38,915 CU, with no broadcast. Three controlled tests reject changed artifact authority, wrong lane/owner/executable/rent, truncated/nonzero padding and time mismatch. This does not supply installed account hashes: the timestamp and hence raw hash are simulation-specific. Signed installation and recovery are still to be connected; no manifest was enabled.
+
+
+### Sequential initializer installer — local implementation
+
+`tools/backyard-voltr/src/activation/install-multiply-initializers.ts` now provides one-policy installation and retained-wire recovery. Invoke it with the reviewed artifact, index 0–2 and an absolute journal path. A fresh attempt additionally requires `--execute`, `CONFIRM_MAINNET=1` and the approved admin signer through the mounted environment. Rerunning the same journal performs read-only recovery without needing the signer. It never automatically replaces or resends a retained attempt; unavailable finality remains pending and finalized failures are reported explicitly.
+
+Before signing, it checks the live Settings authority and consecutive seed, prior exact initializer policies, absent candidate addresses and the captured Squads ELF hash. Signed simulation checks full policy semantics, rent and bounded fees; a second read must preserve all protected account bytes and balances. The exact signed wire is cryptographically verified and exclusively persisted with flush before a single submission. Finalized recovery matches the transaction message, verifies native account effects and current policy bytes, and emits a manifest binding only after those checks. It does not edit or enable the manifest.
+
+Five artifact/readback/retained-wire tests (15 assertions), tool-package typecheck and whitespace checks pass. Tests cover signature refusal and wrong-wire/lane substitution, not a successfully signed admin transaction or a full installer RPC lifecycle. Signing access is still unavailable, no installer execution occurred, and broader recovery/race testing remains necessary before using the live command. Fable's additional review was unavailable due to a usage limit.

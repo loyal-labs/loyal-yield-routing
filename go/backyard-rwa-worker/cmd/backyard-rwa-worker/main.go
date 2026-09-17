@@ -32,6 +32,18 @@ func main() {
 			}
 			return
 		}
+		if os.Args[1] == "--activate-pilot-budget" && len(os.Args) == 2 {
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			result, err := backyardrwa.RunPilotBudgetActivation(ctx, os.Getenv("NEON_DATABASE_URL"), os.Getenv("SOLANA_RPC_URL"), os.Getenv("BACKYARD_RWA_ROUTE_KEY"))
+			if err != nil {
+				log.Fatal(err)
+			}
+			if err = json.NewEncoder(os.Stdout).Encode(result); err != nil {
+				log.Fatal("pilot activation output unavailable; retry is idempotent")
+			}
+			return
+		}
 		if os.Args[1] == "--initialize-phase3-budget" && len(os.Args) == 2 {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -72,7 +84,7 @@ func main() {
 			return
 		}
 		if os.Args[1] != "--inspect-phase3" || len(os.Args) < 3 {
-			log.Fatal("usage: backyard-rwa-worker [--inspect-pilot-flat-state | --selector-shadow | --inspect-phase3 lane ... | --inspect-phase3-setup-rent | --initialize-phase3-budget | clear-hold --route <route key> --reason \"<text>\"]")
+			log.Fatal("usage: backyard-rwa-worker [--inspect-pilot-flat-state | --activate-pilot-budget | --selector-shadow | --inspect-phase3 lane ... | --inspect-phase3-setup-rent | --initialize-phase3-budget | clear-hold --route <route key> --reason \"<text>\"]")
 		}
 		result, err := backyardrwa.InspectPhase3Runtime(os.Args[2:])
 		if err != nil {

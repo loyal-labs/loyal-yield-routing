@@ -471,6 +471,24 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0077_backyard_rwa_manual_recovery_generation.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 78,
+        name: "backyard_rwa_incident_resolution",
+        sql: include_str!("../../../loyal-yield-store/migrations/0078_backyard_rwa_incident_resolution.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 79,
+        name: "backyard_rwa_initializer_actions",
+        sql: include_str!("../../../loyal-yield-store/migrations/0079_backyard_rwa_initializer_actions.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 80,
+        name: "backyard_rwa_strategy_journal",
+        sql: include_str!("../../../loyal-yield-store/migrations/0080_backyard_rwa_strategy_journal.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

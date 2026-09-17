@@ -1,0 +1,9 @@
+{
+  "verdict": "PILOT_CAP_UNSIGNED_SIMULATION_PASS_NOT_DEPOSIT_READINESS",
+  "broadcast": false,
+  "slot": 447477664,
+  "capRaw": "100000000",
+  "feeLamports": 5000,
+  "messageSha256": "eef640dd6cacb440f2b8c1acb54c1ecd3df193d5de082b739bc6c6a609bf6ffa",
+  "unitsConsumed": 5536
+}

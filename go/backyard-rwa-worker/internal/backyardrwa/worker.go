@@ -33,6 +33,7 @@ type tickRuntime struct {
 	prepareInitialization            func(context.Context, RouteManifest, Decision) (Observation, KaminoInitializationRequest, error)
 	admitInitialization              func(context.Context, string, Observation, Decision, KaminoInitializationRequest) error
 	buildInitialization              func(context.Context, string, KaminoInitializationRequest) error
+	refreshUnwind                    func(context.Context) error
 	completeUnwind                   func(context.Context, Observation) (bool, error)
 	allocationSentWindow             func(context.Context, string) (uint64, error)
 	loadNonterminal                  func(context.Context, string) (*PersistedOperation, error)
@@ -202,6 +203,9 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		identity: newProgramIdentityWatcher(rpc).observe,
 	}
 	return tickRuntime{
+		refreshUnwind: func(ctx context.Context) error {
+			return database.refreshSelectorUnwind(ctx, rpc, manifest, state.observe)
+		},
 		prepareInitialization: func(ctx context.Context, m RouteManifest, d Decision) (Observation, KaminoInitializationRequest, error) {
 			return prepareKaminoInitialization(ctx, rpc, m, d, state.observe)
 		},
@@ -376,6 +380,18 @@ func (w *Worker) Tick(ctx context.Context) error {
 		}
 	}
 	decision := Decide(observation.Snapshot)
+	if decision.Action == Hold && decision.Reason == "unwind_requires_fresh_admission" && w.runtime.refreshUnwind != nil {
+		if err = w.runtime.refreshUnwind(ctx); err == nil {
+			return nil
+		}
+		var hold *BudgetHold
+		if !errors.As(err, &hold) {
+			return err
+		}
+		// A refused renewal stays a retryable journaled hold. It never turns
+		// ordinary accrued interest into a permanent manual recovery latch.
+		decision.Reason = hold.Reason
+	}
 	// Decide maps every observation-level hold to one generic reason. The
 	// observer records the audited Kamino health reason on the snapshot, so it
 	// is carried into the durable decision instead of being discarded.
@@ -823,7 +839,14 @@ func Run(ctx context.Context, out io.Writer) error {
 	if shadowMode != "" && shadowMode != "0" && shadowMode != "1" {
 		return fmt.Errorf("BACKYARD_RWA_SELECTOR_SHADOW must be 0 or 1")
 	}
-	if shadowMode == "1" {
+	liveMode := os.Getenv("BACKYARD_RWA_SELECTOR_LIVE")
+	if liveMode != "" && liveMode != "0" && liveMode != "1" {
+		return fmt.Errorf("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
+	}
+	if liveMode == "1" && shadowMode == "1" {
+		return fmt.Errorf("choose one selector mode")
+	}
+	if shadowMode == "1" || liveMode == "1" {
 		feed, err := NewEconomicFeed(ctx, os.Getenv("TIMESCALEDB_URL"))
 		if err != nil {
 			return err
@@ -831,12 +854,28 @@ func Run(ctx context.Context, out io.Writer) error {
 		feedCtx, cancelFeed := context.WithCancel(ctx)
 		feedDone := make(chan struct{})
 		shadowIdentity := newProgramIdentityWatcher(rpc).observe
-		// Shadow has its own observer and bounded background schedule. It never
-		// changes the execution manifest, decisions, or transaction tick.
+		// Economic collection stays off the transaction loop. Live acceptance
+		// is fenced against its pre-observation version and existing pilot;
+		// shadow records rankings only. Neither collector sends transactions.
 		go func() {
 			defer close(feedDone)
-			runSelectorSamples(feedCtx, time.Minute, func(ctx context.Context) {
+			interval := time.Minute
+			if liveMode == "1" {
+				interval = 15 * time.Second
+			}
+			runSelectorSamples(feedCtx, interval, func(ctx context.Context) {
 				_ = feed.Refresh(ctx)
+				if liveMode == "1" {
+					markets, _ := feed.Snapshot()
+					result, err := database.evaluateSelector(ctx, rpc, worker.manifest, markets, shadowIdentity, DefaultSelectorPolicy())
+					if err != nil {
+						// Avoid emitting RPC/DB errors that may contain service URLs.
+						_, _ = fmt.Fprintln(out, "backyard-rwa-worker: selector sample unavailable; retaining current authority")
+					} else if result.Action == "ENTER" || result.Action == "SWITCH" {
+						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector action=%s source=%s destination=%s\n", result.Action, result.SourceLane, result.DestinationLane)
+					}
+					return
+				}
 				observation, err := observeSelectorShadow(ctx, database, rpc, worker.manifest, shadowIdentity)
 				if err == nil {
 					markets, _ := feed.Snapshot()

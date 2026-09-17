@@ -415,3 +415,309 @@ fn ethena_go_messages_execute_sequentially_under_deployed_policies() {
         "real-program boundary failed; inspect retained logs and exact pre/post accounts"
     );
 }
+
+/// Current Maple policy/program leg proof. Collateral and a small debt-token
+/// buffer are seeded locally; this does not prove swaps or financed entry.
+#[test]
+#[ignore = "requires SELECTOR_PROTOCOL_DIR public capture and unsigned Go plan"]
+fn selector_maple_position_executes_current_go_messages() {
+    let directory = std::env::var("SELECTOR_PROTOCOL_DIR").expect("explicit capture directory");
+    let directory = Path::new(&directory);
+    let plan_bytes = fs::read(directory.join("plan.json")).unwrap();
+    let snapshot_bytes = fs::read(directory.join("snapshot.json")).unwrap();
+    let plan: Value = serde_json::from_slice(&plan_bytes).unwrap();
+    let snapshot: Value = serde_json::from_slice(&snapshot_bytes).unwrap();
+    assert_eq!(plan["schema"], "selector-kamino-position-probe/v1");
+    assert_eq!(plan["lane"], "Maple/syrupUSDC/USDC");
+    assert_eq!(plan["broadcast"], false);
+    assert_eq!(
+        snapshot["genesis"],
+        "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+    );
+    assert!(snapshot["slot"].as_u64().unwrap() >= plan["sizingSlot"].as_u64().unwrap());
+    let mut svm = LiteSVM::new()
+        .with_sigverify(false)
+        .with_blockhash_check(false)
+        .with_transaction_history(0);
+    for program in snapshot["programs"].as_array().unwrap() {
+        let code = fs::read(directory.join(program["file"].as_str().unwrap())).unwrap();
+        assert_eq!(sha(&code), program["elfSha256"]);
+        if program["program"] == "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD" {
+            assert_eq!(
+                sha(&code),
+                "9db16dd4b7bbfe4f13df850bf880bfc4522fcece06717c0626d625746a3cc85b"
+            );
+        }
+        svm.add_program(key(program["program"].as_str().unwrap()), &code)
+            .unwrap();
+    }
+    let mut protected = Vec::new();
+    for row in snapshot["accounts"].as_array().unwrap() {
+        let address = key(row["address"].as_str().unwrap());
+        // Executable bytes are retained once in the hash-checked program capture.
+        if row["executable"] == true {
+            continue;
+        }
+        protected.push(address);
+        if row["present"] != true {
+            continue;
+        }
+        let data = bytes(row, "dataBase64");
+        assert_eq!(sha(&data), row["dataSha256"]);
+        if address == solana_sdk::sysvar::clock::ID {
+            let clock: Clock = bincode::deserialize(&data).unwrap();
+            assert!(
+                clock.slot >= snapshot["slot"].as_u64().unwrap()
+                    && clock.slot <= snapshot["slot"].as_u64().unwrap() + 1
+            );
+            svm.set_sysvar(&clock);
+        } else {
+            svm.set_account(
+                address,
+                Account {
+                    lamports: row["lamports"].as_u64().unwrap(),
+                    data,
+                    owner: key(row["owner"].as_str().unwrap()),
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .unwrap();
+        }
+    }
+    for (address, hash) in plan["policies"].as_object().unwrap() {
+        assert_eq!(
+            sha(&svm.get_account(&key(address)).unwrap().data),
+            hash.as_str().unwrap()
+        );
+    }
+    let obligation = key(plan["obligation"].as_str().unwrap());
+    assert_eq!(position(&svm, obligation), (0, 0));
+    let mut overrides = Vec::new();
+    for (field, amount, token) in [
+        ("delegate", 1_000_000_000, false),
+        (
+            "collateralCustody",
+            plan["collateralSeedRaw"].as_u64().unwrap(),
+            true,
+        ),
+        ("debtCustody", plan["debtSeedRaw"].as_u64().unwrap(), true),
+    ] {
+        let address = key(plan[field].as_str().unwrap());
+        let mut account = svm.get_account(&address).unwrap();
+        let old = if token {
+            token_amount(&svm, address)
+        } else {
+            account.lamports
+        };
+        if token {
+            account.data[64..72].copy_from_slice(&amount.to_le_bytes());
+        } else {
+            account.lamports = amount;
+        }
+        svm.set_account(address, account).unwrap();
+        overrides.push(
+            json!({"address":address.to_string(),"beforeRaw":old,"afterRaw":amount,"token":token}),
+        );
+    }
+    let release_plan = if std::env::var("SELECTOR_PROTOCOL_RELEASE").as_deref() == Ok("1") {
+        let release: Value =
+            serde_json::from_slice(&fs::read(directory.join("release-plan.json")).unwrap())
+                .unwrap();
+        assert_eq!(release["schema"], "selector-kamino-release-probe/v1");
+        assert_eq!(
+            release["sourceResultSHA256"],
+            sha(&fs::read(directory.join("position-result.json")).unwrap())
+        );
+        Some(release)
+    } else {
+        None
+    };
+    let mut release_result = Value::Null;
+    let partial_plan = if std::env::var("SELECTOR_PROTOCOL_PARTIAL").as_deref() == Ok("1") {
+        let p: Value =
+            serde_json::from_slice(&fs::read(directory.join("partial-plan.json")).unwrap())
+                .unwrap();
+        assert_eq!(p["schema"], "selector-kamino-partial-probe/v1");
+        assert_eq!(
+            p["sourceResultSHA256"],
+            sha(&fs::read(directory.join("position-result.json")).unwrap())
+        );
+        Some(p)
+    } else {
+        None
+    };
+    let mut results = Vec::new();
+    let mut passed = true;
+    for (i, step) in plan["steps"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(step["leg"], ["deposit", "borrow", "repay", "withdraw"][i]);
+        let wire = bytes(step, "wireBase64");
+        assert_eq!(sha(&wire), step["wireSha256"]);
+        let transaction: VersionedTransaction = bincode::deserialize(&wire).unwrap();
+        assert!(transaction
+            .signatures
+            .iter()
+            .all(|s| s.as_ref().iter().all(|b| *b == 0)));
+        for (address, hash) in plan["policies"].as_object().unwrap() {
+            assert_eq!(
+                sha(&svm.get_account(&key(address)).unwrap().data),
+                hash.as_str().unwrap(),
+                "next operation policy preflight would fail"
+            );
+        }
+        let collateral_custody = key(plan["collateralCustody"].as_str().unwrap());
+        let debt_custody = key(plan["debtCustody"].as_str().unwrap());
+        let balances_before = (
+            token_amount(&svm, collateral_custody),
+            token_amount(&svm, debt_custody),
+        );
+        if i == 2 {
+            if let Some(partial) = &partial_plan {
+                let source: Value = serde_json::from_slice(
+                    &fs::read(directory.join("position-result.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(source["steps"][1]["after"], capture(&svm, &protected));
+                let mut branch = svm.clone();
+                let before = capture(&branch, &protected);
+                let (receipt_before, debt_before) = position(&branch, obligation);
+                let wire = bytes(partial, "wireBase64");
+                assert_eq!(sha(&wire), partial["wireSha256"]);
+                let tx: VersionedTransaction = bincode::deserialize(&wire).unwrap();
+                assert!(tx
+                    .signatures
+                    .iter()
+                    .all(|s| s.as_ref().iter().all(|b| *b == 0)));
+                let meta = branch
+                    .send_transaction(tx)
+                    .expect("partial repayment must execute");
+                let after_partial = capture(&branch, &protected);
+                let (receipt_after, debt_after) = position(&branch, obligation);
+                let debit = balances_before.1 - token_amount(&branch, debt_custody);
+                assert_eq!(debit, partial["amountRaw"].as_u64().unwrap());
+                assert_eq!(receipt_before, receipt_after);
+                assert_eq!(debt_before - debt_after, u128::from(debit) << 60);
+                assert!(debt_after > 0);
+                assert_eq!(token_amount(&branch, collateral_custody), balances_before.0);
+                let mut continuation = Vec::new();
+                for tail in &plan["steps"].as_array().unwrap()[2..] {
+                    for (address, hash) in plan["policies"].as_object().unwrap() {
+                        assert_eq!(
+                            sha(&branch.get_account(&key(address)).unwrap().data),
+                            hash.as_str().unwrap()
+                        );
+                    }
+                    let wire = bytes(tail, "wireBase64");
+                    assert_eq!(sha(&wire), tail["wireSha256"]);
+                    let tx: VersionedTransaction = bincode::deserialize(&wire).unwrap();
+                    let meta = branch
+                        .send_transaction(tx)
+                        .expect("payoff/withdraw after partial must execute");
+                    continuation.push(json!({"leg":tail["leg"],"computeUnits":meta.compute_units_consumed,"after":capture(&branch,&protected)}));
+                }
+                assert_eq!(position(&branch, obligation), (0, 0));
+                assert_eq!(
+                    token_amount(&branch, debt_custody),
+                    plan["debtSeedRaw"].as_u64().unwrap()
+                );
+                assert_eq!(
+                    token_amount(&branch, collateral_custody),
+                    plan["collateralSeedRaw"].as_u64().unwrap()
+                );
+                fs::write(directory.join("partial-result.json"), serde_json::to_vec_pretty(&json!({
+                    "schema":"selector-kamino-partial-result/v1","proofLevel":"CONTROLLED_PARTIAL_REPAYMENT_NOT_RUNTIME_ADMISSION",
+                    "sourceResultSHA256":partial["sourceResultSHA256"],"partialPlanSHA256":sha(&fs::read(directory.join("partial-plan.json")).unwrap()),
+                    "broadcast":false,"before":before,"afterPartial":after_partial,"debitRaw":debit,"remainingDebtSF":debt_after.to_string(),
+                    "computeUnits":meta.compute_units_consumed,"continuation":continuation,"closed":true
+                })).unwrap()).unwrap();
+            }
+            if let Some(release) = &release_plan {
+                let source: Value = serde_json::from_slice(
+                    &fs::read(directory.join("position-result.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(source["steps"][1]["after"], capture(&svm, &protected));
+                let mut branch = svm.clone();
+                let wire = bytes(release, "wireBase64");
+                assert_eq!(sha(&wire), release["wireSha256"]);
+                let debt_before = position(&branch, obligation).1;
+                let custody_before = token_amount(&branch, collateral_custody);
+                let tx: VersionedTransaction = bincode::deserialize(&wire).unwrap();
+                let result = branch.send_transaction(tx);
+                let (error, meta) = match result {
+                    Ok(meta) => (None, meta),
+                    Err(f) => (Some(format!("{:?}", f.err)), f.meta),
+                };
+                let released = token_amount(&branch, collateral_custody) - custody_before;
+                let remaining = position(&branch, obligation);
+                release_result = json!({"error":error,"logs":meta.logs,"computeUnits":meta.compute_units_consumed,
+                    "before":capture(&svm,&protected),"after":capture(&branch,&protected),"releasedRaw":released,
+                    "remainingReceiptRaw":remaining.0,"remainingDebtSF":remaining.1.to_string()});
+                fs::write(
+                    directory.join("release-branch.json"),
+                    serde_json::to_vec_pretty(&release_result).unwrap(),
+                )
+                .unwrap();
+                assert!(
+                    error.is_none(),
+                    "release failed; inspect release-branch.json"
+                );
+                assert_eq!(released, release["bound"]["liquidityRaw"].as_u64().unwrap());
+                assert_eq!(
+                    remaining.0,
+                    release["bound"]["remainingReceiptRaw"].as_u64().unwrap()
+                );
+                assert_eq!(remaining.1, debt_before);
+            }
+        }
+        let before = capture(&svm, &protected);
+        let (error, meta) = match svm.send_transaction(transaction) {
+            Ok(meta) => (None, meta),
+            Err(f) => (Some(format!("{:?}", f.err)), f.meta),
+        };
+        let after = capture(&svm, &protected);
+        let (collateral, debt) = position(&svm, obligation);
+        let balances_after = (
+            token_amount(&svm, collateral_custody),
+            token_amount(&svm, debt_custody),
+        );
+        results.push(json!({"leg":step["leg"],"before":before,"after":after,"error":error,"logs":meta.logs,
+            "computeUnits":meta.compute_units_consumed,"custodyBefore":balances_before,"custodyAfter":balances_after,"receiptRaw":collateral,"debtSF":debt.to_string()}));
+        if error.is_some() {
+            passed = false;
+            break;
+        }
+        match i {
+            0 => {
+                assert!(collateral > 0 && debt == 0);
+                assert_eq!(
+                    balances_before.0 - balances_after.0,
+                    plan["collateralSeedRaw"].as_u64().unwrap()
+                );
+            }
+            1 => {
+                assert!(collateral > 0 && debt > 0);
+                assert_eq!(balances_after.1 - balances_before.1, 5_000_000);
+            }
+            2 => assert!(collateral > 0 && debt == 0),
+            3 => assert_eq!((collateral, debt), (0, 0)),
+            _ => panic!("unexpected leg"),
+        }
+    }
+    let report = json!({"schema":"selector-kamino-position-result/v1","proofLevel":"CONTROLLED_KAMINO_LEGS_NOT_FINANCED_LIFECYCLE",
+        "broadcast":false,"slot":snapshot["slot"],"planSha256":sha(&plan_bytes),"snapshotSha256":sha(&snapshot_bytes),
+        "overrides":overrides,"steps":results,"release":release_result,"fourLegsPassed":passed && results.len()==4});
+    fs::write(
+        directory.join(if release_plan.is_some() {
+            "release-result.json"
+        } else {
+            "position-result.json"
+        }),
+        serde_json::to_vec_pretty(&report).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        passed && results.len() == 4,
+        "current compiled leg failed; inspect position-result.json"
+    );
+}

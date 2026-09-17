@@ -162,6 +162,9 @@ func decideUSDC(s Snapshot) Decision {
 				if s.PositionDebtRaw > 0 && debtCashRaw(s) >= payoff {
 					return decision(DeleverRouteStep, "hard_ltv_repay", s.PositionDebtRaw)
 				}
+				if s.PilotActive && s.PositionDebtRaw > 1 && debtCashRaw(s) > 0 {
+					return decision(DeleverRouteStep, "hard_ltv_partial_repay", min(debtCashRaw(s), s.PositionDebtRaw-1))
+				}
 				if s.PositionDebtRaw > 0 {
 					action, amount := payoffFundingSource(s, uint64(payoff))
 					if amount > 0 {
@@ -178,6 +181,9 @@ func decideUSDC(s Snapshot) Decision {
 			}
 			return decision(HoldManualRecovery, "hard_ltv_without_repayment_buffer", s.PositionDebtRaw)
 		}
+	}
+	if s.UnwindRefreshRequired {
+		return decision(Hold, "unwind_requires_fresh_admission", 0)
 	}
 	// Finish a journal-explained stage even if deposits or claims have since
 	// changed demand. Reporting cannot reconcile cash still in this custody.

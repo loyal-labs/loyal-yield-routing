@@ -80,6 +80,8 @@ type Snapshot struct {
 	StrategyKey   string
 	// Unwind is an admitted full exit, independent of the user's claim amount.
 	Unwind bool
+	// Expired debt envelope needs fresh same-source exit admission, not a manual latch.
+	UnwindRefreshRequired bool
 	// PilotActive comes only from validated persisted budget authority.
 	// Transaction admission rechecks that authority under the route lock.
 	InitializationPolicyReady bool

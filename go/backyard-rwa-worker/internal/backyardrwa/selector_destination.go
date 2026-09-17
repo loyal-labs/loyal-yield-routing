@@ -155,6 +155,12 @@ func selectorDestinationAccounts(ctx context.Context, rpc *RPCClient, m RouteMan
 // Price the real one-pass entry graph. Future balances are explicit scalars;
 // no invented account image reaches an RPC simulation or execution admission.
 func observeSelectorDestination(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64) (selectorDestinationQuote, error) {
+	return observeSelectorDestinationSize(ctx, rpc, client, m, lane, equity, sampleSlot, false)
+}
+
+// The live evaluator can quote the exact partial size admitted by current pair
+// capacity. Exact-size callers retain their fail-closed size contract.
+func observeSelectorDestinationSize(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool) (selectorDestinationQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out := selectorDestinationQuote{Lane: lane, EquityRaw: equity}
@@ -170,7 +176,11 @@ func observeSelectorDestination(ctx context.Context, rpc *RPCClient, client *jup
 	if err != nil {
 		return out, err
 	}
-	if equity > capacity || min(position.LiquidationThresholdBPS-1500, 6000) <= TargetLTVBPS {
+	if clampCapacity {
+		equity = min(equity, capacity)
+		out.EquityRaw = equity
+	}
+	if equity == 0 || equity > capacity || min(position.LiquidationThresholdBPS-1500, 6000) <= TargetLTVBPS {
 		return out, budgetHold("selector_destination_capacity_unavailable")
 	}
 	out.AccountSlot, out.AccountsSHA256 = slot, hashConfirmedAccounts(accounts)

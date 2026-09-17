@@ -289,7 +289,7 @@ func (b Phase3Budget) validatePilotReleaseAuthority(request any) error {
 // simulation with one fresh batch before signing and sending. Drift requires
 // a newly quoted complete plan, even when it might be economically favorable.
 func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *RPCClient, plan *phase3BridgeAdmission, slot int64) (int64, error) {
-	if plan == nil || !plan.Snapshot.PilotActive || (plan.FundingRelease == nil && plan.BorrowRelease == nil) {
+	if plan == nil || !plan.Snapshot.PilotActive || (plan.FundingRelease == nil && plan.BorrowRelease == nil && plan.RepaymentProjection == nil) {
 		return slot, nil
 	}
 	projection := plan.DepositProjection
@@ -298,6 +298,9 @@ func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *RPCClient, plan
 	}
 	if projection == nil {
 		projection = plan.LeverageProjection
+	}
+	if projection == nil {
+		projection = plan.RepaymentProjection
 	}
 	// Funding/NAV continuation plans use actual release revalidation; only
 	// entry simulations introduce the prospective post-entry position here.
@@ -326,6 +329,41 @@ func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *RPCClient, plan
 	if err != nil {
 		return 0, err
 	}
+	if plan.RepaymentProjection != nil {
+		request, effects, _, err := plan.Input.decode()
+		r, ok := request.(KaminoPrimeUSDCRequest)
+		if err != nil || !ok || fresh.Slot < projection.Slot || fresh.Slot > plan.ValidThroughSlot {
+			return 0, budgetHold("partial_repayment_projection_expired")
+		}
+		bound, err := validatePartialRepaymentProjection(r, effects, plan.Snapshot, fresh)
+		if err != nil {
+			return 0, err
+		}
+		if plan.Payoff == nil || bound.UpperDebtRaw > plan.Payoff.UpperDebtRaw || bound.InterestBasis != plan.Payoff.InterestBasis || bound.MaximumRateBPS > plan.Payoff.MaximumRateBPS || bound.ChainUnix < plan.Payoff.ChainUnix || bound.ChainUnix > plan.Payoff.ChainUnix+kaminoPayoffWindowSeconds {
+			return 0, budgetHold("partial_repayment_projection_payoff_changed")
+		}
+		if err = validateProjectedRiskSettings(*projection, fresh, route); err != nil {
+			return 0, err
+		}
+		oldReserve, err := decodeKaminoReserve(accountAt(projection.Accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+		if err != nil {
+			return 0, err
+		}
+		newReserve, err := decodeKaminoReserve(accountAt(fresh.Accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+		if err != nil {
+			return 0, err
+		}
+		oldRaw, oldErr := oldReserve.redeemLiquidityRaw(uint64(plan.Snapshot.PositionCollateralRaw))
+		newRaw, newErr := newReserve.redeemLiquidityRaw(uint64(plan.Snapshot.PositionCollateralRaw))
+		// Even positive backing drift can enlarge the gross collateral return.
+		// Reprice it instead of inheriting an envelope for a smaller amount.
+		if oldErr != nil || newErr != nil || oldRaw != newRaw {
+			return 0, budgetHold("partial_repayment_projection_backing_changed")
+		}
+		if plan.FundingRelease == nil && plan.BorrowRelease == nil {
+			return fresh.Slot, nil
+		}
+	}
 	if err = validatePilotReleaseProjection(plan, *projection, fresh, route); err != nil {
 		return 0, err
 	}
@@ -336,24 +374,8 @@ func validatePilotReleaseProjection(plan *phase3BridgeAdmission, projection, fre
 	if fresh.Slot > plan.ValidThroughSlot || fresh.Slot < projection.Slot {
 		return budgetHold("pilot_release_projection_expired")
 	}
-	for _, field := range []struct {
-		address    string
-		start, end int
-	}{
-		{route.Kamino.Market, kaminoMarketEmergencyModeOffset, kaminoMarketEmergencyModeOffset + 1},
-		{route.Kamino.Market, kaminoGlobalBorrowValueOffset, kaminoGlobalBorrowValueOffset + 8},
-		{route.Kamino.Market, kaminoMinRemainingValueOffset, kaminoMinRemainingValueOffset + 16},
-		{route.Kamino.CollateralReserve, kaminoLoanToValueOffset, kaminoLoanToValueOffset + 2},
-		{route.Kamino.CollateralReserve, 248, 264},
-		{route.Kamino.DebtReserve, 248, 264},
-		{route.Kamino.DebtReserve, kaminoBorrowFactorOffset, kaminoBorrowFactorOffset + 8},
-		{route.Kamino.Obligation, kaminoObligationElevationGroupOffset, kaminoObligationElevationGroupOffset + 1},
-	} {
-		before, after := accountAt(projection.Accounts, field.address), accountAt(fresh.Accounts, field.address)
-		if before.Owner != route.Kamino.Program || after.Owner != before.Owner || after.Executable || after.Lamports == 0 ||
-			len(before.Data) != len(after.Data) || len(before.Data) < field.end || !bytes.Equal(before.Data[field.start:field.end], after.Data[field.start:field.end]) {
-			return budgetHold("pilot_release_projection_risk_changed")
-		}
+	if err := validateProjectedRiskSettings(projection, fresh, route); err != nil {
+		return err
 	}
 	oldReserve, err := decodeKaminoReserve(accountAt(projection.Accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 	if err != nil {
@@ -415,6 +437,29 @@ func validatePilotReleaseProjection(plan *phase3BridgeAdmission, projection, fre
 	newBalance, newErr := DecodeTokenCustody(newCash.Owner, newCash.Data, mint, owner)
 	if oldErr != nil || newErr != nil || newCash.Executable || newCash.Lamports == 0 || newBalance.Raw < oldBalance.Raw {
 		return budgetHold("pilot_release_projection_funding_changed")
+	}
+	return nil
+}
+
+func validateProjectedRiskSettings(projection, fresh phase3KaminoProjection, route RuntimeRoute) error {
+	for _, field := range []struct {
+		address    string
+		start, end int
+	}{
+		{route.Kamino.Market, kaminoMarketEmergencyModeOffset, kaminoMarketEmergencyModeOffset + 1},
+		{route.Kamino.Market, kaminoGlobalBorrowValueOffset, kaminoGlobalBorrowValueOffset + 8},
+		{route.Kamino.Market, kaminoMinRemainingValueOffset, kaminoMinRemainingValueOffset + 16},
+		{route.Kamino.CollateralReserve, kaminoLoanToValueOffset, kaminoLoanToValueOffset + 2},
+		{route.Kamino.CollateralReserve, 248, 264},
+		{route.Kamino.DebtReserve, 248, 264},
+		{route.Kamino.DebtReserve, kaminoBorrowFactorOffset, kaminoBorrowFactorOffset + 8},
+		{route.Kamino.Obligation, kaminoObligationElevationGroupOffset, kaminoObligationElevationGroupOffset + 1},
+	} {
+		before, after := accountAt(projection.Accounts, field.address), accountAt(fresh.Accounts, field.address)
+		if before.Owner != route.Kamino.Program || after.Owner != before.Owner || after.Executable || after.Lamports == 0 ||
+			len(before.Data) != len(after.Data) || len(before.Data) < field.end || !bytes.Equal(before.Data[field.start:field.end], after.Data[field.start:field.end]) {
+			return budgetHold("pilot_release_projection_risk_changed")
+		}
 	}
 	return nil
 }

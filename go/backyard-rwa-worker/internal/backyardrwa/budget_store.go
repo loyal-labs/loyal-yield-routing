@@ -339,6 +339,15 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 		}
 	}
 	recovery := decision.Action != VoltrAllocateToSquads
+	if decision.Reason == "hard_ltv_partial_repay" || plan.RepaymentProjection != nil {
+		r, ok := request.(KaminoPrimeUSDCRequest)
+		if budget.Pilot == nil || !ok || decision.Action != DeleverRouteStep || decision.Reason != "hard_ltv_partial_repay" || plan.RepaymentProjection == nil || plan.Payoff == nil || budget.Families[family].ExitMicros == 0 || !decisionsEqual(Decide(observation.Snapshot), decision) {
+			return budgetHold("partial_repayment_requires_reserved_pilot_position")
+		}
+		if _, err = validatePartialRepaymentProjection(r, effects, observation.Snapshot, *plan.RepaymentProjection); err != nil {
+			return err
+		}
+	}
 	if decision.Action == InitializeKaminoObligation {
 		r, ok := request.(KaminoInitializationRequest)
 		if budget.Pilot == nil || !ok || r.RouteLane != lane || !initializationSnapshotReady(observation.Snapshot) || !decisionsEqual(Decide(observation.Snapshot), decision) || budget.Families[family].ExitMicros != 0 || plan.ExitAfterMicros != 0 || len(plan.Exit) != 0 {
@@ -401,6 +410,11 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 		return err
 	}
 	auth = phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: intent, BuildInput: plan.Input, BridgeAdmission: &plan}
+	if plan.RepaymentProjection != nil {
+		if err = d.persistPartialRepaymentUnwindTx(ctx, tx, plan, budget, intent); err != nil {
+			return err
+		}
+	}
 	if budget.Pilot != nil {
 		auth.PilotAuthorityID = budget.Pilot.AuthorityID
 	}

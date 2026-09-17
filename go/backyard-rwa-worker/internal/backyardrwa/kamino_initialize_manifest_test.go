@@ -12,6 +12,7 @@ func initializerManifestFixture(t *testing.T) RouteManifest {
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.RuntimeBindings.MultiplyInitializers = nil // Controlled fixture replaces installed release pins.
 	for i, lane := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
 		seed := uint64(151 + i)
 		p, err := policySetupAddress(seed)
@@ -28,6 +29,7 @@ func TestInitializationManifestRejectsPartialAndChangedAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	legacy.RuntimeBindings.MultiplyInitializers = nil // Exercise an older, unactivated deployment.
 	if legacy.validateBindings() != nil {
 		t.Fatal("legacy manifest cannot load")
 	}
@@ -77,6 +79,7 @@ func TestInitializationBuilderRejectsUnactivatedPolicyBeforeSigner(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	legacy.RuntimeBindings.MultiplyInitializers = nil // Keep the missing-authority refusal test explicit.
 	r, _ := initializationReconcileFixture(t)
 	rpc, _ := NewRPCClient("https://rpc.invalid")
 	rpc.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {

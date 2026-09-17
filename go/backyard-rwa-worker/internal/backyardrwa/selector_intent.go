@@ -26,7 +26,7 @@ type UnwindIntent struct {
 }
 
 func (i UnwindIntent) validate() error {
-	if !selectorLane(i.SourceLane) || (i.Reason != "economic_rotation" && i.Reason != "withdrawal_shortfall") || i.ObservationID == "" || i.MaxCollateralRaw < 0 || i.MaxDebtRaw < 0 || i.CostBoundRaw <= 0 || i.BudgetScope == "" || i.BudgetFamily == "" || i.BudgetFamily != phase3BudgetFamilyForLane(i.SourceLane) || !sha256Pattern.MatchString(i.EvidenceID) || i.CreatedAt.IsZero() {
+	if !selectorLane(i.SourceLane) || (i.Reason != "economic_rotation" && i.Reason != "withdrawal_shortfall" && i.Reason != "hard_ltv_reduction") || i.ObservationID == "" || i.MaxCollateralRaw < 0 || i.MaxDebtRaw < 0 || i.CostBoundRaw <= 0 || i.BudgetScope == "" || i.BudgetFamily == "" || i.BudgetFamily != phase3BudgetFamilyForLane(i.SourceLane) || !sha256Pattern.MatchString(i.EvidenceID) || i.CreatedAt.IsZero() {
 		return fmt.Errorf("invalid_unwind_intent")
 	}
 	return nil
@@ -43,10 +43,11 @@ func applyUnwindIntent(s *Snapshot, intent *UnwindIntent) error {
 	}
 	// The admitted debt bound includes the payoff interest window. Exceeding it
 	// requires fresh admission, not a silent increase in the committed envelope.
-	if s.PositionCollateralRaw > intent.MaxCollateralRaw || s.PositionDebtRaw > intent.MaxDebtRaw {
+	if s.PositionCollateralRaw > intent.MaxCollateralRaw {
 		return fmt.Errorf("unwind_holdings_exceed_admitted_bounds")
 	}
 	s.Unwind = true
+	s.UnwindRefreshRequired = s.PositionDebtRaw > intent.MaxDebtRaw
 	return nil
 }
 func unwindComplete(s Snapshot) bool {

@@ -35,6 +35,7 @@ type phase3BridgeAdmission struct {
 	FundingRelease        *phase3BuildInput       `json:"fundingRelease,omitempty"`
 	DepositProjection     *phase3KaminoProjection `json:"depositProjection,omitempty"`
 	BorrowProjection      *phase3KaminoProjection `json:"borrowProjection,omitempty"`
+	RepaymentProjection   *phase3KaminoProjection `json:"repaymentProjection,omitempty"`
 	LeverageProjection    *phase3KaminoProjection `json:"leverageProjection,omitempty"`
 	BorrowRelease         *phase3BuildInput       `json:"borrowRelease,omitempty"`
 }
