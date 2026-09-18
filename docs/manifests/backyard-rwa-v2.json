@@ -1,7 +1,7 @@
 {
   "schema": "loyal-backyard-rwa-manifest/v2",
   "status": "ready",
-  "statusNote": "strategy-two cutover: adaptor config DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY, report ticket 8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq (bump 255, disarmed, sequences 0), bridge policies at Squads seeds 145-148. The v2 config/ticket and the 62-65 bridge policies are retired; identities verified against finalized mainnet slot 446295496. runtimeBindings.bridgePolicies[].normalizedDigest is the masked policy digest: the sha256 of the account bytes with each maskedByteRanges span zeroed, derived offline with the generated Squads layout by tools/backyard-voltr/src/activation/rwa-multiply-strategy2-policy-mask.ts (decode, byte-exact re-encode round-trip, 0x55/0xAA sentinel diff). The spans cover only the bytes the program rewrites in normal operation - each embedded SpendingLimitV2 timeConstraints.start, usage.remainingInPeriod, and usage.lastReset, 24 bytes per policy - while constraints, programs, executor, mint, period, maxPerPeriod, expiration, and the trailing rent padding stay byte-pinned; dataSha256Raw records the unmasked raw digest verified at finalized slot 446295496. Every policy embeds exactly one Daily 300M spending limit today, so each mask is [[start,start+8),[usage_start,usage_start+16)).",
+  "statusNote": "Production bridge policies 152-155 installed and finalized with 200,000 USDC per-execution and daily limits. Superseded policies 145-148 must be retired before opening client deposits.",
   "cluster": "mainnet-beta",
   "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
   "commitment": "confirmed",
@@ -77,9 +77,9 @@
     "bridgePolicies": [
       {
         "action": "VOLTR_ALLOCATE_TO_SQUADS",
-        "seed": 145,
-        "account": "8Nd646MD6H6hQrXZuP6utG5QZjRZ44GrRmdZJGShmhnh",
-        "normalizedDigest": "c8cbd2102d8c8e0ea1b1bbf5b78038aab7ac080c96d5010052730a6c5c6b9eb8",
+        "seed": 152,
+        "account": "Bt2SEmvnWFyqSV83CieMHzBjYSL7CJL8fXmTshD2RNAv",
+        "normalizedDigest": "453ba26c074cb35366f6d097d8818210604b4972b654de313a9954da445972bb",
         "maskedByteRanges": [
           [
             945,
@@ -90,13 +90,13 @@
             989
           ]
         ],
-        "dataSha256Raw": "e89bdc6e5b09922c0c32078d579c3263020e6796d8415b804dd1b5ed263a7b55"
+        "dataSha256Raw": "57043335df88ac51cbdbe2a6f4bcb2bedaab4b4ea1ca02f2f9a1c9ec06669c32"
       },
       {
         "action": "REPORT_NAV",
-        "seed": 146,
-        "account": "AyymPJEAEN5YFySuEDVkdU9PTjBarj2y2UJxQ4rznjXr",
-        "normalizedDigest": "b13612430ffc513f4b167df7cb0cccd13a206cd7386533565d924a830a713535",
+        "seed": 153,
+        "account": "5r4gVPentTwudZXQAtvjqx8iWfmBjLjnJGBypB7aPi8f",
+        "normalizedDigest": "8215849592af46928ae42273cbf65248d351db96e16cb2f3eabb38bfd237b1e5",
         "maskedByteRanges": [
           [
             909,
@@ -107,13 +107,13 @@
             953
           ]
         ],
-        "dataSha256Raw": "76dd46b2f1f1aca2ce37afcb5eca045cb9921de4f99d46075fe6d9bd0ea04997"
+        "dataSha256Raw": "13aadb4368399dcccdddc95c312c9a3088346cef6d5ead4001fc330bac5df64a"
       },
       {
         "action": "STAGE_SQUADS_TO_VOLTR",
-        "seed": 147,
-        "account": "E2TZ5UJ3uyqTqiuKX3GK7t7wgeNBSGy2pV2BXPMpaVDr",
-        "normalizedDigest": "f3d90be6ba6b4136bc4546fb8abcc0b9e8530d2162c35d5ae7c2450f74e6fb9b",
+        "seed": 154,
+        "account": "7EW76UaxsNTnLG931HTNSteRjhR3s9rcKVJ7UtqyN6e3",
+        "normalizedDigest": "66618b0a47eeed818ea38521aedf26b89494616d79643f4e9e50f0df81281708",
         "maskedByteRanges": [
           [
             406,
@@ -124,13 +124,13 @@
             450
           ]
         ],
-        "dataSha256Raw": "9e12f4584396defdf46ac8a297e696c9a47caf83a5e45bf8a58c4e9a1fd2d868"
+        "dataSha256Raw": "cd33348d492b9a5d2ffc7b0e1fedbb401e56374bb6b644f3a49a87ffe6bdc69d"
       },
       {
         "action": "VOLTR_RESTORE_IDLE",
-        "seed": 148,
-        "account": "AsqfqCCDf2tWoZxtj3CZ4XSYcAxRuSfgq8oYtdAQ9eCU",
-        "normalizedDigest": "21273e22338de41b4601d2731b9fc8a0a259a8e42d6c298612ab91b21db3d092",
+        "seed": 155,
+        "account": "GSY3mcsWHPv7LvH38eZZR6WTj4YiMqdQ9Ai1WRKnR76K",
+        "normalizedDigest": "563a0624b874235a78817f44f7563c4629b6b03892bd012b5eaf734cadd66834",
         "maskedByteRanges": [
           [
             945,
@@ -141,7 +141,7 @@
             989
           ]
         ],
-        "dataSha256Raw": "917c849c16fed466039f7b562b670c9253636aabb683a0e58d72c3723c3d0998"
+        "dataSha256Raw": "ad7d9f26dd6ef2d0444142ef77ac40778eb72c793de50b6dafbebce1213fee1b"
       }
     ],
     "collateralLifecycle": {

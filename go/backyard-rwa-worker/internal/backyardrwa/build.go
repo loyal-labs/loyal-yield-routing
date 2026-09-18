@@ -98,12 +98,13 @@ const (
 	bridgeSettingsSigner = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
 	bridgeVault          = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
 	bridgeDelegate       = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
-	// Strategy-two bridge policies installed at fresh Squads seeds 145-148.
-	// The retired 62-65 set stays asserted absent by legacyPolicyGate.
-	bridgeAllocationPolicy = "8Nd646MD6H6hQrXZuP6utG5QZjRZ44GrRmdZJGShmhnh" // seed 145, VOLTR_ALLOCATE_TO_SQUADS
-	bridgeNAVPolicy        = "AyymPJEAEN5YFySuEDVkdU9PTjBarj2y2UJxQ4rznjXr" // seed 146, REPORT_NAV
-	bridgeStagePolicy      = "E2TZ5UJ3uyqTqiuKX3GK7t7wgeNBSGy2pV2BXPMpaVDr" // seed 147, STAGE_SQUADS_TO_VOLTR
-	bridgeWithdrawPolicy   = "AsqfqCCDf2tWoZxtj3CZ4XSYcAxRuSfgq8oYtdAQ9eCU" // seed 148, VOLTR_RESTORE_IDLE
+	// Fresh policy seed rollover: candidate public identities at Squads seeds
+	// 152-155. legacyPolicyGate asserts only the retired 62-65 set absent;
+	// root retires 145-148 operationally before opening.
+	bridgeAllocationPolicy = "Bt2SEmvnWFyqSV83CieMHzBjYSL7CJL8fXmTshD2RNAv" // seed 152, VOLTR_ALLOCATE_TO_SQUADS
+	bridgeNAVPolicy        = "5r4gVPentTwudZXQAtvjqx8iWfmBjLjnJGBypB7aPi8f" // seed 153, REPORT_NAV
+	bridgeStagePolicy      = "7EW76UaxsNTnLG931HTNSteRjhR3s9rcKVJ7UtqyN6e3" // seed 154, STAGE_SQUADS_TO_VOLTR
+	bridgeWithdrawPolicy   = "GSY3mcsWHPv7LvH38eZZR6WTj4YiMqdQ9Ai1WRKnR76K" // seed 155, VOLTR_RESTORE_IDLE
 	bridgeVoltrProgram     = "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
 	bridgeVoltrVault       = "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"
 	// Strategy-two adaptor config: its key IS the Voltr strategy key, derived
@@ -136,16 +137,16 @@ var (
 // and Voltr withdrawal-receipt admission. bridgeMaxNAV is the strategy-two
 // adaptor config's max reported NAV (the vault maxCap) decoded from confirmed
 // config state. strategyTwoBridgeLegCapRaw is the per-execution operational
-// bound installed on bridge policies 145-148 (100 USDC): every bridge capital
+// bound installed on bridge policies 152-155 (200k USDC): every bridge capital
 // leg is built against it. strategyTwoDailyAllocationCapRaw mirrors the daily
-// USDC spending limit embedded in the strategy-two policies (300 USDC), which
+// USDC spending limit embedded in the strategy-two policies (200k USDC), which
 // Squads enforces on chain across outflow legs.
 const (
 	bridgeCapRaw uint64 = 1_000_000_000_000
 	bridgeMaxNAV uint64 = 1_000_000_000_000
 
-	strategyTwoBridgeLegCapRaw       uint64 = 100_000_000
-	strategyTwoDailyAllocationCapRaw uint64 = 300_000_000
+	strategyTwoBridgeLegCapRaw       uint64 = 200_000_000_000
+	strategyTwoDailyAllocationCapRaw uint64 = 200_000_000_000
 )
 
 // BuildAndSignBridgeTransaction builds exactly one policy-wrapped bridge

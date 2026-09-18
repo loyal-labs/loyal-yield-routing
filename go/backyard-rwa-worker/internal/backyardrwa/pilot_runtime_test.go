@@ -15,10 +15,10 @@ func TestPilotPlannerSizesOneTrancheAndPreservesExitPriority(t *testing.T) {
 		s.StrategyKey = lane
 		s.PilotActive = true
 		s.SelectorEntryEquityRaw = PilotWorkingTrancheCapRaw
-		s.VoltrIdleRaw = 100_000_000
-		s.CapacityRaw = 100_000_000
-		s.PolicyLimitRaw = 100_000_000
-		s.MaxTargetLTVEntryRaw = 100_000_000
+		s.VoltrIdleRaw = PilotWorkingTrancheCapRaw
+		s.CapacityRaw = PilotWorkingTrancheCapRaw
+		s.PolicyLimitRaw = PilotWorkingTrancheCapRaw
+		s.MaxTargetLTVEntryRaw = PilotWorkingTrancheCapRaw
 		d := Decide(s)
 		if d.Action != VoltrAllocateToSquads || d.AmountRaw != PilotWorkingTrancheCapRaw || d.Validate() != nil {
 			t.Fatalf("pilot %s sizing: %+v", lane, d)

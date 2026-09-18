@@ -7,24 +7,24 @@ import (
 )
 
 // strategyTwoBridgePolicyDigests are the finalized digests of the four
-// strategy-two Squads bridge policies (seeds 145-148), verified against
+// strategy-two Squads bridge policies (seeds 152-155), verified against
 // mainnet at finalized commitment. The raw digests pin the exact account
 // bytes as captured; the normalized digests are what the worker pins at
 // runtime: the sha256 of the account bytes with the embedded limit's volatile
 // region (timeConstraints.start, usage.remainingInPeriod, usage.lastReset)
 // zeroed, so the program's own charging and re-windowing never breaks the pin.
 var strategyTwoBridgePolicyRawDigests = map[Action]string{
-	VoltrAllocateToSquads: "e89bdc6e5b09922c0c32078d579c3263020e6796d8415b804dd1b5ed263a7b55",
-	ReportNAV:             "76dd46b2f1f1aca2ce37afcb5eca045cb9921de4f99d46075fe6d9bd0ea04997",
-	StageSquadsToVoltr:    "9e12f4584396defdf46ac8a297e696c9a47caf83a5e45bf8a58c4e9a1fd2d868",
-	VoltrRestoreIdle:      "917c849c16fed466039f7b562b670c9253636aabb683a0e58d72c3723c3d0998",
+	VoltrAllocateToSquads: "57043335df88ac51cbdbe2a6f4bcb2bedaab4b4ea1ca02f2f9a1c9ec06669c32",
+	ReportNAV:             "13aadb4368399dcccdddc95c312c9a3088346cef6d5ead4001fc330bac5df64a",
+	StageSquadsToVoltr:    "cd33348d492b9a5d2ffc7b0e1fedbb401e56374bb6b644f3a49a87ffe6bdc69d",
+	VoltrRestoreIdle:      "ad7d9f26dd6ef2d0444142ef77ac40778eb72c793de50b6dafbebce1213fee1b",
 }
 
 var strategyTwoBridgePolicyNormalizedDigests = map[Action]string{
-	VoltrAllocateToSquads: "c8cbd2102d8c8e0ea1b1bbf5b78038aab7ac080c96d5010052730a6c5c6b9eb8",
-	ReportNAV:             "b13612430ffc513f4b167df7cb0cccd13a206cd7386533565d924a830a713535",
-	StageSquadsToVoltr:    "f3d90be6ba6b4136bc4546fb8abcc0b9e8530d2162c35d5ae7c2450f74e6fb9b",
-	VoltrRestoreIdle:      "21273e22338de41b4601d2731b9fc8a0a259a8e42d6c298612ab91b21db3d092",
+	VoltrAllocateToSquads: "453ba26c074cb35366f6d097d8818210604b4972b654de313a9954da445972bb",
+	ReportNAV:             "8215849592af46928ae42273cbf65248d351db96e16cb2f3eabb38bfd237b1e5",
+	StageSquadsToVoltr:    "66618b0a47eeed818ea38521aedf26b89494616d79643f4e9e50f0df81281708",
+	VoltrRestoreIdle:      "563a0624b874235a78817f44f7563c4629b6b03892bd012b5eaf734cadd66834",
 }
 
 func TestManifestBridgeBindingsMatchStrategyTwoPolicies(t *testing.T) {

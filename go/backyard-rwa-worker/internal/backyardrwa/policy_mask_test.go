@@ -10,60 +10,59 @@ import (
 	"time"
 )
 
-// liveSquadsPolicy145Hex is the exact finalized mainnet account data of the
-// allocation bridge policy at Squads seed 145, also embedded as
-// LIVE_SEED_145_ACCOUNT_HEX in
-// tools/backyard-voltr/src/policies/rwa-multiply-custom.test.ts.
-const liveSquadsPolicy145Hex = "de8707a3ebb121444379e0e134dbd2b80aa2aa8199739496b43794a41cdbb2a2217411e6d8efcae59100000000000000ff00000000000000000000000000000000010000004a9f9f54e872666d7c3d8dd6e06de67ec5f8953c0c6461fd593553d48d48fb4007010000000000030002000000d69aa5fd31edd7807c9b6602a74e09c229e70bcc5c62617458ca337793d1f38702000000000001000000b5533e4a117b87a7334998bc752855f8b58d005289d39352794e393e237eb6e90001000100000076c53dfd30a712428451510f7a2b9190a4a63ad618c390aee2edd817c4929c8e000500000000000000000000000509000000a4aff629b28c2303000009000000000000000300000000000000000209000000000000000300e1f50500000000052700000000000000030010a5d4e80000000511000000000000000506000000013900000001000db4588c00282e3906bc90f790d4706811e8cc24b29cca991b4d70db3aa58d390b000000000001000000068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa00020001000000f5a4eb5618d09fd728fb93f7e0cd62d27104d8e3cad915c47d5b5658117d6f5700030001000000b5533e4a117b87a7334998bc752855f8b58d005289d39352794e393e237eb6e900080001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61000b0001000000c6d7b1fbdbf758db76f540a3aa9a48779b269a36fa9b5c4d9cef4155a3c575af000c000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000d0001000000d69aa5fd31edd7807c9b6602a74e09c229e70bcc5c62617458ca337793d1f387000e00010000004379e0e134dbd2b80aa2aa8199739496b43794a41cdbb2a2217411e6d8efcae5000f0001000000068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa00100001000000c3c8bb6e0945061658ed1241d10f3625b81bf0af8a1fca6990709eecc9fe44050011000100000076c53dfd30a712428451510f7a2b9190a4a63ad618c390aee2edd817c4929c8e000500000000000000000000000508000000f65239e283defdf90008000000000000000300000000000000000208000000000000000300e1f50500000000053300000000000000030010a5d4e800000005100000000000000005130000000108000000f223c68952e1f2b601390000000100000001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d6115a8a36a0000000000010000a3e1110000000000000000000000000000a3e1110000000015a8a36a0000000015a8a36a0000000000971a24624a17f59e77b372ad6dcac49bc6c9b0fc0637028f5270205fd4977c080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+// liveSquadsPolicy152Hex is the exact finalized mainnet account data of the
+// allocation bridge policy at Squads seed 152, captured at finalized
+// commitment (slot 448193729).
+const liveSquadsPolicy152Hex = "de8707a3ebb121444379e0e134dbd2b80aa2aa8199739496b43794a41cdbb2a2217411e6d8efcae59800000000000000ff00000000000000000000000000000000010000004a9f9f54e872666d7c3d8dd6e06de67ec5f8953c0c6461fd593553d48d48fb4007010000000000030002000000d69aa5fd31edd7807c9b6602a74e09c229e70bcc5c62617458ca337793d1f38702000000000001000000b5533e4a117b87a7334998bc752855f8b58d005289d39352794e393e237eb6e90001000100000076c53dfd30a712428451510f7a2b9190a4a63ad618c390aee2edd817c4929c8e000500000000000000000000000509000000a4aff629b28c2303000009000000000000000300000000000000000209000000000000000300d0ed902e000000052700000000000000030010a5d4e80000000511000000000000000506000000013900000001000db4588c00282e3906bc90f790d4706811e8cc24b29cca991b4d70db3aa58d390b000000000001000000068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa00020001000000f5a4eb5618d09fd728fb93f7e0cd62d27104d8e3cad915c47d5b5658117d6f5700030001000000b5533e4a117b87a7334998bc752855f8b58d005289d39352794e393e237eb6e900080001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61000b0001000000c6d7b1fbdbf758db76f540a3aa9a48779b269a36fa9b5c4d9cef4155a3c575af000c000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000d0001000000d69aa5fd31edd7807c9b6602a74e09c229e70bcc5c62617458ca337793d1f387000e00010000004379e0e134dbd2b80aa2aa8199739496b43794a41cdbb2a2217411e6d8efcae5000f0001000000068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa00100001000000c3c8bb6e0945061658ed1241d10f3625b81bf0af8a1fca6990709eecc9fe44050011000100000076c53dfd30a712428451510f7a2b9190a4a63ad618c390aee2edd817c4929c8e000500000000000000000000000508000000f65239e283defdf90008000000000000000300000000000000000208000000000000000300d0ed902e000000053300000000000000030010a5d4e800000005100000000000000005130000000108000000f223c68952e1f2b601390000000100000001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d6145a0ad6a0000000000010000d0ed902e00000000000000000000000000d0ed902e00000045a0ad6a0000000045a0ad6a0000000000971a24624a17f59e77b372ad6dcac49bc6c9b0fc0637028f5270205fd4977c080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 
-// livePolicy145MaskedByteRanges is the mask the offline script derived for
-// seed 145: the embedded limit's timeConstraints.start and the contiguous
+// livePolicy152MaskedByteRanges is the mask the offline script derived for
+// seed 152: the embedded limit's timeConstraints.start and the contiguous
 // usage word pair (remainingInPeriod, lastReset).
-var livePolicy145MaskedByteRanges = [][2]int64{{945, 953}, {973, 989}}
+var livePolicy152MaskedByteRanges = [][2]int64{{945, 953}, {973, 989}}
 
-func liveSquadsPolicy145Bytes(t *testing.T) []byte {
+func liveSquadsPolicy152Bytes(t *testing.T) []byte {
 	t.Helper()
-	data, err := hex.DecodeString(liveSquadsPolicy145Hex)
+	data, err := hex.DecodeString(liveSquadsPolicy152Hex)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return data
 }
 
-func TestMaskedDigestPinsLivePolicy145(t *testing.T) {
-	data := liveSquadsPolicy145Bytes(t)
+func TestMaskedDigestPinsLivePolicy152(t *testing.T) {
+	data := liveSquadsPolicy152Bytes(t)
 	if len(data) != 1548 {
-		t.Fatalf("seed-145 fixture is %d bytes, want 1548", len(data))
+		t.Fatalf("seed-152 fixture is %d bytes, want 1548", len(data))
 	}
-	if err := validatePolicyByteMask(livePolicy145MaskedByteRanges); err != nil {
-		t.Fatalf("live seed-145 mask is invalid: %v", err)
+	if err := validatePolicyByteMask(livePolicy152MaskedByteRanges); err != nil {
+		t.Fatalf("live seed-152 mask is invalid: %v", err)
 	}
-	if !maskedPolicyDigestMatches(data, livePolicy145MaskedByteRanges, strategyTwoBridgePolicyNormalizedDigests[VoltrAllocateToSquads]) {
-		t.Fatal("masked pin rejected the live seed-145 policy")
+	if !maskedPolicyDigestMatches(data, livePolicy152MaskedByteRanges, strategyTwoBridgePolicyNormalizedDigests[VoltrAllocateToSquads]) {
+		t.Fatal("masked pin rejected the live seed-152 policy")
 	}
-	if maskedPolicyDigestMatches(data, livePolicy145MaskedByteRanges, strategyTwoBridgePolicyRawDigests[VoltrAllocateToSquads]) {
+	if maskedPolicyDigestMatches(data, livePolicy152MaskedByteRanges, strategyTwoBridgePolicyRawDigests[VoltrAllocateToSquads]) {
 		t.Fatal("masked pin accepted the raw digest, which excludes nothing")
 	}
 }
 
 func TestMaskedDigestIgnoresMaskedBytes(t *testing.T) {
-	data := liveSquadsPolicy145Bytes(t)
+	data := liveSquadsPolicy152Bytes(t)
 	// Charging the limit or restamping its window must never break the pin:
 	// flip every byte of each masked range, including the raw digest's own
 	// volatile content.
-	for index, bounds := range livePolicy145MaskedByteRanges {
+	for index, bounds := range livePolicy152MaskedByteRanges {
 		mutated := append([]byte(nil), data...)
 		for offset := int(bounds[0]); offset < int(bounds[1]); offset++ {
 			mutated[offset] ^= 0xff
 		}
-		if !maskedPolicyDigestMatches(mutated, livePolicy145MaskedByteRanges, strategyTwoBridgePolicyNormalizedDigests[VoltrAllocateToSquads]) {
+		if !maskedPolicyDigestMatches(mutated, livePolicy152MaskedByteRanges, strategyTwoBridgePolicyNormalizedDigests[VoltrAllocateToSquads]) {
 			t.Fatalf("masked range %d mutation broke the normalized pin", index)
 		}
 	}
 }
 
 func TestMaskedDigestRejectsUnmaskedMutation(t *testing.T) {
-	data := liveSquadsPolicy145Bytes(t)
+	data := liveSquadsPolicy152Bytes(t)
 	normalized := strategyTwoBridgePolicyNormalizedDigests[VoltrAllocateToSquads]
 	// Discriminator, instruction constraints, the limit's own quantity
 	// constraint, the first byte after the mask, and the trailing zero
@@ -79,14 +78,14 @@ func TestMaskedDigestRejectsUnmaskedMutation(t *testing.T) {
 	} {
 		mutated := append([]byte(nil), data...)
 		mutated[offset] ^= 0x01
-		if maskedPolicyDigestMatches(mutated, livePolicy145MaskedByteRanges, normalized) {
+		if maskedPolicyDigestMatches(mutated, livePolicy152MaskedByteRanges, normalized) {
 			t.Fatalf("mutated %s (offset %d) still matched the masked pin", name, offset)
 		}
 	}
 }
 
 func TestMaskedDigestEmptyMaskEqualsRawDigest(t *testing.T) {
-	data := liveSquadsPolicy145Bytes(t)
+	data := liveSquadsPolicy152Bytes(t)
 	// A policy without embedded limits has an empty mask, so its normalized
 	// digest is the raw digest.
 	if !maskedPolicyDigestMatches(data, nil, strategyTwoBridgePolicyRawDigests[VoltrAllocateToSquads]) {
@@ -98,7 +97,7 @@ func TestMaskedDigestEmptyMaskEqualsRawDigest(t *testing.T) {
 }
 
 func TestMaskedDigestFailsClosedOnBadMasks(t *testing.T) {
-	data := liveSquadsPolicy145Bytes(t)
+	data := liveSquadsPolicy152Bytes(t)
 	normalized := strategyTwoBridgePolicyNormalizedDigests[VoltrAllocateToSquads]
 	cases := map[string][][2]int64{
 		"endPastAccount":  {{940, int64(len(data) + 1)}},
@@ -117,8 +116,8 @@ func TestMaskedDigestFailsClosedOnBadMasks(t *testing.T) {
 			t.Fatalf("%s mask still matched the pin", name)
 		}
 	}
-	if err := validatePolicyByteMask(livePolicy145MaskedByteRanges); err != nil {
-		t.Fatalf("live seed-145 mask was rejected: %v", err)
+	if err := validatePolicyByteMask(livePolicy152MaskedByteRanges); err != nil {
+		t.Fatalf("live seed-152 mask was rejected: %v", err)
 	}
 	// A mask that is structurally valid but out of bounds for this account
 	// fails closed at compare time, not just at manifest validation time.
@@ -306,7 +305,7 @@ func TestCatalogReadinessAcceptsChargedStrategyTwoPolicy(t *testing.T) {
 	// Charge the limit to the floor and re-stamp its window over the live
 	// account: exactly the healthy post-allocation state a raw sha256 compare
 	// used to reject as drift.
-	charged := liveSquadsPolicy145Bytes(t)
+	charged := liveSquadsPolicy152Bytes(t)
 	for _, bounds := range binding.MaskedByteRanges {
 		for offset := int(bounds[0]); offset < int(bounds[1]); offset++ {
 			charged[offset] = 0x7f

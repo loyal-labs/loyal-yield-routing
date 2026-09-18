@@ -156,3 +156,34 @@ func TestPilotSelectorCannotSwitchDuringFundedTranche(t *testing.T) {
 		t.Fatal("sub-receipt residue blocked economics")
 	}
 }
+
+// A settled funded lane is only quoted when a strictly larger same-lane
+// reinvestment is eligible; otherwise it stays the unquotable keep baseline.
+func TestLiveSelectorPricesEligibleSameLaneReentryAndSkipsIneligible(t *testing.T) {
+	m, rpc, client, _, o, _, _ := reentryFundedFixture(t)
+	now := time.Now().UTC()
+	market := LaneEconomics{Lane: SelectedRouteID, EvidenceID: "rates", ObservedAt: now, NativeObservedAt: now, NativeAPY: .10, SupplyAPY: 0, CurrentBorrowAPY: .04, BorrowCurve: []BorrowCurvePoint{{0, 400}, {8000, 400}, {10000, 10000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, EntryCapacity: Capacity{Known: true, Unlimited: true}}
+	policy := DefaultSelectorPolicy()
+	s := o.Snapshot
+	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, 10_000_000)
+	if err != nil || len(quotes) != 1 {
+		t.Fatal("eligible same-lane reentry was not priced", err, quotes, observed)
+	}
+	if quotes[0].SourceLane != s.RouteLane || quotes[0].DestinationLane != s.RouteLane || quotes[0].EquityRaw <= 0 || quotes[0].CostRaw >= quotes[0].EquityRaw {
+		t.Fatal("same-lane quote is not a complete reinvestment move", quotes[0])
+	}
+	// Buffer-only idle keeps the funded lane unquotable and its feed untouched.
+	buffered := policy
+	buffered.IdleBufferRaw = s.VoltrIdleRaw
+	observed, quotes, err = collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, buffered, 10_000_000)
+	if err != nil || len(quotes) != 0 {
+		t.Fatal("buffer-only idle quoted the funded lane", err, quotes, observed)
+	}
+	// An incomplete tranche never reaches pricing at all.
+	staging := s
+	staging.SquadsIdleRaw = 5_000_000
+	staging.PositionDebtRaw, staging.PositionDebtValueRaw = 0, 0
+	stagedObservation := reentryObservation(staging)
+	_, _, err = collectSelectorQuotes(context.Background(), rpc, client, m, stagedObservation, []LaneEconomics{market}, policy, 10_000_000)
+	assertBudgetHold(t, err, "complete_current_tranche_first")
+}

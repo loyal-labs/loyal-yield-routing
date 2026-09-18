@@ -73,7 +73,7 @@ func TestPilotBudgetReusesPrincipalAcrossRotationsAndRestart(t *testing.T) {
 }
 func TestPilotExecutionCostCapPreservesReservedUnwind(t *testing.T) {
 	b := pilotTestBudget(t)
-	first := BudgetReservation{OperationID: "entry", Family: "Prime", IntentSHA256: sha256Bytes([]byte("entry")), UpperMicros: 10_000_000, ExecutionCostUpperMicros: 5_000_000, ExitAfterMicros: 20_000_000}
+	first := BudgetReservation{OperationID: "entry", Family: "Prime", IntentSHA256: sha256Bytes([]byte("entry")), UpperMicros: PilotEntryExecutionCostCapMicros, ExecutionCostUpperMicros: PilotEntryExecutionCostCapMicros, ExitAfterMicros: 20_000_000}
 	if err := b.Admit(first); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestPilotExecutionCostCapPreservesReservedUnwind(t *testing.T) {
 	if err := b.Settle(exit.OperationID, exit.IntentSHA256, exit.UpperMicros); err != nil {
 		t.Fatal(err)
 	}
-	if b.Families["Prime"].ExitMicros != 0 || b.Families["Prime"].ExecutionCostSpentMicros != 5_020_000 {
+	if b.Families["Prime"].ExitMicros != 0 || b.Families["Prime"].ExecutionCostSpentMicros != PilotEntryExecutionCostCapMicros+20_000 {
 		t.Fatal("unwind lost accounting")
 	}
 }

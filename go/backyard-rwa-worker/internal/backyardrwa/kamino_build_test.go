@@ -36,7 +36,9 @@ func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoPrimeUSDCReq
 	data := append([]byte(nil), discriminator...)
 	data = appendU64(data, 1_000_000)
 	return KaminoPrimeUSDCRequest{
-		Action: action, AmountRaw: 1_000_000, Policy: bridgeAllocationPolicy,
+		// Synthetic fixture address, frozen literal: independent of the Voltr
+		// bridge policy rollover and paired with the synthetic digest below.
+		Action: action, AmountRaw: 1_000_000, Policy: "8Nd646MD6H6hQrXZuP6utG5QZjRZ44GrRmdZJGShmhnh",
 		PolicyConstraintIndex: 0, PolicyAccountDataSHA256: hex.EncodeToString(bytes.Repeat([]byte{1}, 32)),
 		Accounts: manifestAccounts(metas), Data: data, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 	}

@@ -52,6 +52,28 @@ func validateSelectorFarms(route RuntimeRoute, accounts []ConfirmedAccount) erro
 
 func selectorDestinationAccounts(ctx context.Context, rpc *RPCClient, m RouteManifest, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
+	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, rpc, m, route, minimumSlot)
+	if err != nil {
+		return 0, nil, empty, err
+	}
+	if position.HasPosition || position.CollateralDepositedRaw != 0 || position.DebtRaw != 0 {
+		return 0, nil, empty, budgetHold("selector_destination_not_flat")
+	}
+	custody, err := validateSelectorDestinationCommon(m, route, slot, accounts, position)
+	if err != nil {
+		return 0, nil, empty, err
+	}
+	if custody != 0 {
+		return 0, nil, empty, budgetHold("selector_destination_not_flat")
+	}
+	return slot, accounts, position, nil
+}
+
+// observeSelectorDestinationBatch fetches the full destination batch and the
+// lane position, tolerating an absent optional obligation/farm, and retries
+// once against the closed unsigned reserve-refresh simulation when stale.
+func observeSelectorDestinationBatch(ctx context.Context, rpc *RPCClient, m RouteManifest, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
+	var empty KaminoPosition
 	addresses := []string{route.Kamino.Market, route.Kamino.Obligation, route.Kamino.CollateralReserve, route.Kamino.DebtReserve,
 		route.Kamino.CollateralMint, bridgeUSDC, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply,
 		route.DebtLiquiditySupply, route.DebtFeeReceiver, route.CollateralReceiptMint, route.CollateralReceiptSupply,
@@ -95,28 +117,32 @@ func selectorDestinationAccounts(ctx context.Context, rpc *RPCClient, m RouteMan
 	if err != nil {
 		return 0, nil, empty, err
 	}
-	if position.HasPosition || position.CollateralDepositedRaw != 0 || position.DebtRaw != 0 {
-		return 0, nil, empty, budgetHold("selector_destination_not_flat")
-	}
+	return slot, accounts, position, nil
+}
+
+// validateSelectorDestinationCommon runs every destination check that does not
+// depend on flatness, and returns the observed collateral custody balance so
+// each caller applies its own flatness contract.
+func validateSelectorDestinationCommon(m RouteManifest, route RuntimeRoute, slot int64, accounts []ConfirmedAccount, position KaminoPosition) (uint64, error) {
 	if ready, exit := liveRuntimePolicyReadiness(m, route, accounts); !ready || !exit {
-		return 0, nil, empty, budgetHold("selector_destination_policy_unavailable")
+		return 0, budgetHold("selector_destination_policy_unavailable")
 	}
 	for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
 		p, _ := m.bridgePolicy(action)
 		a := accountAt(accounts, p.Account)
 		if a.Owner != bridgeSquadsProgram || a.Executable || a.Lamports == 0 || !maskedPolicyDigestMatches(a.Data, p.MaskedByteRanges, p.NormalizedDigest) {
-			return 0, nil, empty, budgetHold("selector_destination_bridge_policy_unavailable")
+			return 0, budgetHold("selector_destination_bridge_policy_unavailable")
 		}
 	}
-	if _, err = decodeObservedAdaptorConfig(accountAt(accounts, bridgeStrategy)); err != nil {
-		return 0, nil, empty, err
+	if _, err := decodeObservedAdaptorConfig(accountAt(accounts, bridgeStrategy)); err != nil {
+		return 0, err
 	}
 	ticket, err := decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
 	if err != nil || ticket.Armed || ticket.LastConsumedSequence >= uint64(slot) {
-		return 0, nil, empty, budgetHold("selector_destination_ticket_unavailable")
+		return 0, budgetHold("selector_destination_ticket_unavailable")
 	}
 	if err = validateSelectorFarms(route, accounts); err != nil {
-		return 0, nil, empty, err
+		return 0, err
 	}
 	for _, side := range []struct{ reserve, mint, program, supply, farm string }{
 		{route.Kamino.CollateralReserve, route.Kamino.CollateralMint, route.CollateralTokenProgram, route.CollateralLiquiditySupply, route.CollateralFarm},
@@ -132,25 +158,26 @@ func selectorDestinationAccounts(ctx context.Context, rpc *RPCClient, m RouteMan
 			farmKey = "11111111111111111111111111111111"
 		}
 		if !sameKey(a.Data[160:192], side.supply) || !sameKey(a.Data[408:440], side.program) || !sameKey(a.Data[farmOffset:farmOffset+32], farmKey) {
-			return 0, nil, empty, budgetHold("selector_destination_reserve_binding_changed")
+			return 0, budgetHold("selector_destination_reserve_binding_changed")
 		}
 		decimals := position.CollateralDecimals
 		if side.mint == bridgeUSDC {
 			decimals = position.DebtDecimals
 		}
 		if err = validateExecutionMint(accountAt(accounts, side.mint), side.program, decimals); err != nil {
-			return 0, nil, empty, err
+			return 0, err
 		}
 	}
 	c := accountAt(accounts, route.Kamino.CollateralReserve)
 	d := accountAt(accounts, route.Kamino.DebtReserve)
 	if !sameKey(c.Data[2560:2592], route.CollateralReceiptMint) || !sameKey(c.Data[2600:2632], route.CollateralReceiptSupply) || !sameKey(d.Data[192:224], route.DebtFeeReceiver) {
-		return 0, nil, empty, budgetHold("selector_destination_reserve_binding_changed")
+		return 0, budgetHold("selector_destination_reserve_binding_changed")
 	}
 	receipt := accountAt(accounts, route.CollateralReceiptMint)
 	if receipt.Owner != classicTokenProgram || receipt.Executable || receipt.Lamports == 0 || len(receipt.Data) != 82 || receipt.Data[45] != 1 || binary.LittleEndian.Uint32(receipt.Data[:4]) != 1 || !sameKey(receipt.Data[4:36], route.Kamino.MarketAuthority) {
-		return 0, nil, empty, budgetHold("selector_destination_receipt_mint_unavailable")
+		return 0, budgetHold("selector_destination_receipt_mint_unavailable")
 	}
+	collateralCustody := uint64(0)
 	for _, b := range []kaminoCustodyBoundary{
 		{route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault}, {route.DebtCustody, bridgeUSDC, bridgeVault},
 		{route.CollateralLiquiditySupply, route.Kamino.CollateralMint, route.Kamino.MarketAuthority}, {route.DebtLiquiditySupply, bridgeUSDC, route.Kamino.MarketAuthority},
@@ -159,13 +186,13 @@ func selectorDestinationAccounts(ctx context.Context, rpc *RPCClient, m RouteMan
 		a := accountAt(accounts, b.Address)
 		custody, err := DecodeTokenCustody(a.Owner, a.Data, mustKey(b.Mint), mustKey(b.Authority))
 		if err != nil || a.Owner != classicTokenProgram || a.Executable || a.Lamports == 0 {
-			return 0, nil, empty, budgetHold("selector_destination_custody_unavailable")
+			return 0, budgetHold("selector_destination_custody_unavailable")
 		}
-		if b.Address == route.CollateralCustody && custody.Raw != 0 {
-			return 0, nil, empty, budgetHold("selector_destination_not_flat")
+		if b.Address == route.CollateralCustody {
+			collateralCustody = custody.Raw
 		}
 	}
-	return slot, accounts, position, nil
+	return collateralCustody, nil
 }
 
 // Price the real one-pass entry graph. Future balances are explicit scalars;
@@ -177,6 +204,15 @@ func observeSelectorDestination(ctx context.Context, rpc *RPCClient, client *jup
 // The live evaluator can quote the exact partial size admitted by current pair
 // capacity. Exact-size callers retain their fail-closed size contract.
 func observeSelectorDestinationSize(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool) (selectorDestinationQuote, error) {
+	return observeSelectorDestinationForecast(ctx, rpc, client, m, lane, equity, sampleSlot, clampCapacity, nil)
+}
+
+// observeSelectorDestinationForecast prices the real one-pass entry graph from
+// a flat destination, or — with reentry set — the same graph as the recreated
+// position after the bound source exit closes the funded one. Future balances
+// stay explicit scalars; no invented account image reaches an RPC simulation
+// or execution admission.
+func observeSelectorDestinationForecast(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out := selectorDestinationQuote{Lane: lane, EquityRaw: equity}
@@ -184,7 +220,15 @@ func observeSelectorDestinationSize(ctx context.Context, rpc *RPCClient, client 
 		return out, budgetHold("invalid_selector_destination")
 	}
 	route, _ := runtimeRoute(lane)
-	slot, accounts, position, err := selectorDestinationAccounts(ctx, rpc, m, route, sampleSlot)
+	var slot int64
+	var accounts []ConfirmedAccount
+	var position KaminoPosition
+	var err error
+	if reentry == nil {
+		slot, accounts, position, err = selectorDestinationAccounts(ctx, rpc, m, route, sampleSlot)
+	} else {
+		slot, accounts, position, err = selectorReentryDestinationAccounts(ctx, rpc, m, route, sampleSlot, reentry.bound, reentry.collateralIdle)
+	}
 	if err != nil {
 		return out, err
 	}
@@ -218,7 +262,12 @@ func observeSelectorDestinationSize(ctx context.Context, rpc *RPCClient, client 
 		inputs = append(inputs, input)
 		return nil
 	}
-	if !position.ObligationPresent {
+	// A reentry recipe always recreates the obligation: the bound source exit
+	// closes the currently funded one, so its rent and exact initializer fee
+	// stay in this quote even though the account is observed present. Future
+	// rent refunds are not spendable, so the funding checks below still see
+	// the full recreation rent.
+	if !position.ObligationPresent || reentry != nil {
 		var rent uint64
 		if err = rpc.call(ctx, "getMinimumBalanceForRentExemption", []any{kaminoObligationLength, map[string]string{"commitment": "confirmed"}}, &rent); err != nil {
 			return out, err
@@ -237,7 +286,14 @@ func observeSelectorDestinationSize(ctx context.Context, rpc *RPCClient, client 
 		}
 		r.MaximumFeeLamports = fee.Lamports
 		var initSlot int64
-		if initSlot, err = validateKaminoInitializationPrestate(ctx, rpc, r, max(slot, fee.Slot)); err != nil {
+		if reentry != nil && position.ObligationPresent {
+			// Forecast-only prestate: the initializer is priced against the
+			// exact observed funded obligation this exit will close. The
+			// execution admission wrapper stays strictly absent-only.
+			if initSlot, err = validateKaminoReentryForecastPrestate(ctx, rpc, r, max(slot, fee.Slot), reentry.bound); err != nil {
+				return out, err
+			}
+		} else if initSlot, err = validateKaminoInitializationPrestate(ctx, rpc, r, max(slot, fee.Slot)); err != nil {
 			return out, err
 		}
 		observationFloor = max(slot, fee.Slot, initSlot)

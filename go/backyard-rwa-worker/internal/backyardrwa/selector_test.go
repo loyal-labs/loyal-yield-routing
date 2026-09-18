@@ -341,6 +341,9 @@ func TestTypedUSDCRepaymentUsesCanonicalExecutionContract(t *testing.T) {
 func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *testing.T) {
 	in := selectorFixture()
 	in.Snapshot.PilotActive = true
+	// The destination quotes only the bounded executable tranche; the rest of
+	// the vault stays idle.
+	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
 	in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = 100_000_000, 100_000_000
 	in.Quotes[0].EquityRaw = 10_000_000
 	in.Quotes[0].BorrowReceiveRaw = 10_000_000 / 2
@@ -381,6 +384,9 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 func TestPilotSelectorKeepsActualSourceIncomeWhenCandidateTrancheIsSmaller(t *testing.T) {
 	in := selectorFixture()
 	in.Snapshot.PilotActive = true
+	// The destination quotes only the bounded candidate tranche against the
+	// larger funded source position.
+	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
 	in.Snapshot.VoltrIdleRaw = 0
 	in.Snapshot.HasPosition = true
 	in.Snapshot.PositionCollateralRaw, in.Snapshot.PositionCollateralValueRaw = 150_000_000, 150_000_000
@@ -407,6 +413,8 @@ func TestPilotSelectorKeepsActualSourceIncomeWhenCandidateTrancheIsSmaller(t *te
 func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *testing.T) {
 	in := selectorFixture()
 	in.Snapshot.PilotActive = true
+	// The destination quotes exactly the bounded executable tranche.
+	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
 	in.Quotes[0].EquityRaw = 10_000_000
 	in.Quotes[0].BorrowReceiveRaw = 3_000_000
 	in.Quotes[0].BorrowFeeRaw = 100
@@ -424,5 +432,134 @@ func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *tes
 	in.Quotes[0].BorrowReceiveRaw = 0
 	if got = SelectOpportunity(in, SelectorState{}).Candidates[0]; got.CostsKnown || got.BlockedReason != "bounded_borrow_unavailable" {
 		t.Fatal("missing amount accepted", got)
+	}
+}
+
+// sameLaneSelectorFixture is a settled, fully funded one-pass Maple position
+// with later deposits stranded as Voltr idle. The same reserve pays a fresh,
+// strictly larger one-pass entry more than the stale deployed position earns.
+func sameLaneSelectorFixture() SelectorInput {
+	in := selectorFixture()
+	s := &in.Snapshot
+	s.PilotActive, s.HasPosition = true, true
+	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 90_000_000, 100_000_000
+	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 15_000_000, 15_000_000
+	s.PositionDebtRaw, s.PositionDebtValueRaw = 5_000_000, 5_000_000
+	s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.LTVBPS = 10_000_000, 10_000_000, 3334
+	current := in.Markets[0]
+	current.Lane, current.NativeAPY = s.RouteLane, .10
+	in.Markets = []LaneEconomics{current}
+	in.Quotes[0].DestinationLane = s.RouteLane
+	in.Quotes[0].EquityRaw, in.Quotes[0].CostRaw = 20_000_000, 100
+	in.Quotes[0].BorrowReceiveRaw, in.Quotes[0].MinimumIdleRaw = 10_000_000, 99_900_000
+	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 20_000_000}
+	return in
+}
+
+func sameLaneSelectorHistory(in SelectorInput) SelectorState {
+	return SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{in.Snapshot.RouteLane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}
+}
+
+// Eligibility is bound lane-by-lane and position-by-position: only an active
+// pilot's settled, positively funded Maple position with idle above the buffer
+// may price a same-lane reinvestment. Everything else stays a keep baseline.
+func TestSameLaneReinvestmentEligibilityBindings(t *testing.T) {
+	in := sameLaneSelectorFixture()
+	if !sameLaneReinvestmentEligible(in.Snapshot, in.Policy) {
+		t.Fatal("settled funded Maple position with excess idle not eligible", in.Snapshot)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*SelectorInput)
+	}{
+		{"pilot_inactive", func(i *SelectorInput) { i.Snapshot.PilotActive = false }},
+		{"non_maple_lane", func(i *SelectorInput) {
+			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = "OnRe/ONyc/USDC", "OnRe/ONyc/USDC"
+		}},
+		{"zero_position", func(i *SelectorInput) { i.Snapshot.HasPosition = false }},
+		{"zero_collateral", func(i *SelectorInput) { i.Snapshot.PositionCollateralRaw, i.Snapshot.PositionCollateralValueRaw = 0, 0 }},
+		{"zero_debt", func(i *SelectorInput) { i.Snapshot.PositionDebtRaw, i.Snapshot.PositionDebtValueRaw = 0, 0 }},
+		{"zero_nav", func(i *SelectorInput) { i.Snapshot.StrategyNAVRaw, i.Snapshot.PriorReportedNAVRaw = 0, 0 }},
+		{"incomplete_tranche", func(i *SelectorInput) { i.Snapshot.SquadsIdleRaw = 5_000_000 }},
+		{"idle_at_buffer", func(i *SelectorInput) { i.Policy.IdleBufferRaw = i.Snapshot.VoltrIdleRaw }},
+		{"no_idle", func(i *SelectorInput) { i.Snapshot.VoltrIdleRaw = 0 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := in
+			tc.mutate(&mutated)
+			if sameLaneReinvestmentEligible(mutated.Snapshot, mutated.Policy) {
+				t.Fatal("ineligible state admitted same-lane reinvestment", tc.name, mutated.Snapshot)
+			}
+		})
+	}
+}
+
+func TestPilotSelectorSwitchesToLargerSameLaneReinvestment(t *testing.T) {
+	in := sameLaneSelectorFixture()
+	got := SelectOpportunity(in, sameLaneSelectorHistory(in))
+	if got.Action != "SWITCH" || got.DestinationLane != in.Snapshot.RouteLane || got.EquityRaw != 19_999_900 || got.SelectedQuote == nil {
+		t.Fatal("persistent profitable extra idle did not select the same-lane switch", got)
+	}
+	if got.SelectedQuote.DestinationLane != in.Snapshot.RouteLane || got.SelectedQuote.EquityRaw != 20_000_000 {
+		t.Fatal("selected quote is not the complete same-lane move", got.SelectedQuote)
+	}
+}
+
+func TestPilotSameLaneSwitchStaysBlockedWithoutStrictReinvestmentCase(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*SelectorInput)
+		reason string
+	}{
+		{"no_idle", func(i *SelectorInput) { i.Snapshot.VoltrIdleRaw = 0 }, "current_position_is_keep_baseline"},
+		{"buffer_only", func(i *SelectorInput) { i.Policy.IdleBufferRaw = i.Snapshot.VoltrIdleRaw }, "current_position_is_keep_baseline"},
+		{"at_cap", func(i *SelectorInput) {
+			i.Quotes[0].EquityRaw, i.Markets[0].EntryCapacity.Raw = 10_000_100, 10_000_100
+		}, "same_lane_reinvestment_not_larger"},
+		{"high_cost", func(i *SelectorInput) { i.Quotes[0].CostRaw = 5_000_000 }, ""},
+		{"closed_capacity", func(i *SelectorInput) { i.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 0} }, "entry_closed"},
+		{"stale_quote", func(i *SelectorInput) { i.Quotes[0].ObservedAt = i.Now.Add(-31 * time.Second) }, "bounded_move_cost_unavailable"},
+		{"incomplete_tranche", func(i *SelectorInput) { i.Snapshot.SquadsIdleRaw = 5_000_000 }, "complete_current_tranche_first"},
+		{"withdrawal", func(i *SelectorInput) { i.Snapshot.WithdrawalDemandRaw = 1 }, "withdrawal_unwind_or_accounting_first"},
+		{"non_maple_lane", func(i *SelectorInput) {
+			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = "OnRe/ONyc/USDC", "OnRe/ONyc/USDC"
+			i.Markets[0].Lane = i.Snapshot.RouteLane
+			i.Quotes[0].SourceLane, i.Quotes[0].DestinationLane = i.Snapshot.RouteLane, i.Snapshot.RouteLane
+		}, "current_position_is_keep_baseline"},
+		{"working_ceiling", func(i *SelectorInput) {
+			s := &i.Snapshot
+			s.PositionCollateralRaw, s.PositionCollateralValueRaw = 150_000_000_000, 150_000_000_000
+			s.PositionDebtRaw, s.PositionDebtValueRaw = 50_000_000_000, 50_000_000_000
+			s.StrategyNAVRaw, s.PriorReportedNAVRaw = PilotWorkingTrancheCapRaw, PilotWorkingTrancheCapRaw
+			s.VoltrIdleRaw, s.TotalVaultNAVRaw = 100_000_000_000, 200_000_000_000
+			i.Quotes[0].EquityRaw = PilotWorkingTrancheCapRaw
+			i.Quotes[0].BorrowReceiveRaw = uint64(PilotWorkingTrancheCapRaw) / 2
+			i.Quotes[0].MinimumIdleRaw = 199_900_000_000
+			i.Markets[0].EntryCapacity = Capacity{Known: true, Raw: PilotWorkingTrancheCapRaw}
+		}, "same_lane_reinvestment_not_larger"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := sameLaneSelectorFixture()
+			tc.mutate(&in)
+			got := SelectOpportunity(in, sameLaneSelectorHistory(in))
+			if got.Action != "KEEP" || got.SelectedQuote != nil {
+				t.Fatal("blocked same-lane case still switched", got)
+			}
+			if tc.reason == "" {
+				if got.Reason != "no_worthwhile_executable_move" {
+					t.Fatal("high cost did not fail the net-benefit gate", got)
+				}
+				return
+			}
+			blocked := false
+			for _, c := range got.Candidates {
+				if c.BlockedReason == tc.reason {
+					blocked = true
+				}
+			}
+			if !blocked && got.Reason != tc.reason {
+				t.Fatal("expected gate reason missing", tc.reason, got)
+			}
+		})
 	}
 }

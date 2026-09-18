@@ -3,13 +3,17 @@ package backyardrwa
 import "encoding/json"
 
 const (
-	pilotBudgetAuthoritySchema       = "voltr-rwa-pilot-budget/v1"
-	pilotBudgetAuthorityID           = "01a0a776-cb66-7333-99eb-7e6927c1e114"
-	PilotDepositCapRaw         int64 = 100_000_000
-	PilotWorkingTrancheCapRaw  int64 = 10_000_000
-	// Stop starting new work after $5 in bounded execution costs. Existing
+	pilotBudgetAuthoritySchema = "voltr-rwa-pilot-budget/v1"
+	pilotBudgetAuthorityID     = "01a0a776-cb66-7333-99eb-7e6927c1e114"
+	// Reviewed ceilings: $100,000 total deposits and the same working
+	// allocation. Widening these code ceilings never widens a budget
+	// already activated under the previous limits: its persisted Limits
+	// record keeps binding until an explicit operator limit update.
+	PilotDepositCapRaw        int64 = 100_000_000_000
+	PilotWorkingTrancheCapRaw int64 = 100_000_000_000
+	// Stop starting new work after $500 in bounded execution costs. Existing
 	// gross exit reservations remain usable, including their reserved fees.
-	PilotEntryExecutionCostCapMicros int64 = 5_000_000
+	PilotEntryExecutionCostCapMicros int64 = 500_000_000
 )
 
 // This is separate authority, not a reset of the historical goal or spend.
@@ -32,7 +36,7 @@ func (a pilotBudgetAuthority) validate() error {
 	return nil
 }
 func pilotDeploymentLimits() DeploymentLimits {
-	return DeploymentLimits{20_000_000, 100_000_000, 150_000_000}
+	return DeploymentLimits{200_000_000_000, 1_000_000_000_000, 1_500_000_000_000}
 }
 func (b Phase3Budget) budgetCeiling() DeploymentLimits {
 	if b.Pilot != nil {

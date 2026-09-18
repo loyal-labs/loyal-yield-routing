@@ -56,14 +56,26 @@ func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterC
 			continue
 		}
 		// Current deployed capital is the KEEP baseline, never close/reopen merely
-		// to quote the same destination. Idle ownership can enter that lane normally.
-		if (hasWorkingCapital(s) && market.Lane == s.RouteLane) || market.validate(time.Now().UTC(), policy) != nil || market.EntryBlockedReason != "" {
+		// to quote the same destination — unless a strictly larger same-lane
+		// reinvestment is eligible. Idle ownership can enter that lane normally.
+		sameLane := hasWorkingCapital(s) && market.Lane == s.RouteLane
+		if (sameLane && !sameLaneReinvestmentEligible(s, policy)) || market.validate(time.Now().UTC(), policy) != nil || market.EntryBlockedReason != "" {
 			continue
 		}
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			destination, err := observeSelectorDestinationSize(ctx, rpc, client, manifest, out[i].Lane, maximum, s.Slot, true)
+			// An eligible funded lane prices a forecast-only reentry against its
+			// own full source exit binding; every other lane prices the ordinary
+			// flat entry. Both yield the same complete move quote and neither
+			// relaxes actual entry admission.
+			var destination selectorDestinationQuote
+			var err error
+			if sameLane {
+				destination, err = observeSelectorReentryDestinationSize(ctx, rpc, client, manifest, o, source, maximum, true)
+			} else {
+				destination, err = observeSelectorDestinationSize(ctx, rpc, client, manifest, out[i].Lane, maximum, s.Slot, true)
+			}
 			if err != nil {
 				out[i].EntryCapacity = Capacity{Known: true}
 				out[i].EntryBlockedReason = "complete_entry_quote_unavailable"

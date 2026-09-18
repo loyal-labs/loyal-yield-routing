@@ -7,7 +7,25 @@ import (
 	"math"
 )
 
+// Execution admission prestate: strictly absent-only. The target obligation
+// must not exist when an initializer is admitted for execution.
 func validateKaminoInitializationPrestate(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, minimumSlot int64) (int64, error) {
+	return observeKaminoInitializationPrestate(ctx, rpc, r, minimumSlot, selectorExitBound{}, false)
+}
+
+// Forecast-only prestate for the same-lane reentry quote. It prices recreation
+// of an obligation the validated source exit is forecast to close, so it
+// requires the exact observed funded lane obligation — same identity, decode
+// evidence and exit-bound amounts — and weakens no other check. This never
+// replaces the execution wrapper above, which still demands absence.
+func validateKaminoReentryForecastPrestate(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, minimumSlot int64, bound selectorExitBound) (int64, error) {
+	if bound.MaxCollateralRaw < 0 || bound.MaxDebtRaw < 0 {
+		return 0, budgetHold("initializer_reentry_bound_invalid")
+	}
+	return observeKaminoInitializationPrestate(ctx, rpc, r, minimumSlot, bound, true)
+}
+
+func observeKaminoInitializationPrestate(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, minimumSlot int64, bound selectorExitBound, forecastExistingObligation bool) (int64, error) {
 	inner, err := kaminoMultiplyInitializer(r.RouteLane)
 	if rpc == nil || err != nil || minimumSlot <= 0 {
 		return 0, budgetHold("initializer_prestate_unavailable")
@@ -52,8 +70,19 @@ func validateKaminoInitializationPrestate(ctx context.Context, rpc *RPCClient, r
 		}
 	}
 	o := accountAt(accounts, route.Kamino.Obligation)
-	if o.Address != route.Kamino.Obligation || o.Lamports != 0 || len(o.Data) != 0 || o.Executable {
+	if o.Address != route.Kamino.Obligation || o.Executable {
 		return 0, budgetHold("initializer_obligation_already_present")
+	}
+	if !forecastExistingObligation {
+		if o.Lamports != 0 || len(o.Data) != 0 {
+			return 0, budgetHold("initializer_obligation_already_present")
+		}
+	} else {
+		decoded, err := decodeKaminoObligation(o, route.Kamino)
+		if err != nil || o.Lamports == 0 || len(o.Data) == 0 ||
+			int64(decoded.collateralDepositedRaw) != bound.MaxCollateralRaw || decoded.debtRaw > uint64(bound.MaxDebtRaw) {
+			return 0, budgetHold("initializer_reentry_obligation_unobserved")
+		}
 	}
 	metadata := accountAt(accounts, encodeBase58(inner.accounts[6].key[:]))
 	if metadata.Owner != kaminoProgram || metadata.Lamports == 0 || metadata.Executable || len(metadata.Data) != 1032 ||

@@ -241,6 +241,26 @@ func selectorTrancheInProgress(s Snapshot) bool {
 		(s.CollateralIdleRaw > 0 && (s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw))
 }
 
+// sameLaneReinvestmentEligible reports when the funded current lane itself may
+// compete as a SWITCH destination instead of staying a keep-only baseline.
+// Later deposits otherwise strand: with the funded lane unquotable, extra idle
+// cash can never buy a strictly larger position in the reviewed lane it sits
+// beside. It binds to the reviewed Maple entry lane only, and only for a
+// positively funded, settled one-pass position (collateral, debt and NAV all
+// present) whose tranche loop has completed. Eligibility gates pricing only —
+// capacity, the complete exit+entry quote, persistence and net-benefit
+// admission below are unchanged, and a same-lane move still commits the full
+// debt unwind before its fresh entry.
+func sameLaneReinvestmentEligible(s Snapshot, p SelectorPolicy) bool {
+	if !s.PilotActive || !selectorEntryLane(s.RouteLane) || s.VoltrIdleRaw <= p.IdleBufferRaw {
+		return false
+	}
+	if !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 0 || s.StrategyNAVRaw <= 0 {
+		return false
+	}
+	return !selectorTrancheInProgress(s)
+}
+
 func forecastGain(collateral, supplied, debt float64, e LaneEconomics, borrowAPR, years float64) float64 {
 	// Native yield on all owned collateral; lending yield only on supplied units.
 	return (collateral-supplied)*math.Expm1(math.Log1p(e.NativeAPY)*years) + supplied*math.Expm1((math.Log1p(e.NativeAPY)+math.Log1p(e.SupplyAPY))*years) - debt*math.Expm1(borrowAPR*years)
@@ -319,7 +339,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
-		if exposed && lane == s.RouteLane {
+		if exposed && lane == s.RouteLane && !sameLaneReinvestmentEligible(s, p) {
 			c.BlockedReason = "current_position_is_keep_baseline"
 			out.Candidates = append(out.Candidates, c)
 			continue
@@ -409,7 +429,15 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		c.CostsKnown = true
 		c.InvestedRaw = amount - quote.CostRaw
 		c.IdleRaw = s.TotalVaultNAVRaw - amount
-		// This pilot switches to another reserve; it does not lever existing debt twice.
+		// A same-lane move only pays for its full exit+entry round trip when the
+		// net reinvestment is strictly larger than the funded position it unwinds.
+		if lane == s.RouteLane && c.InvestedRaw <= s.StrategyNAVRaw {
+			c.BlockedReason = "same_lane_reinvestment_not_larger"
+			out.Candidates = append(out.Candidates, c)
+			continue
+		}
+		// Every pilot move fully unwinds the existing debt before the new entry,
+		// even when reentering the same reserve; it does not lever existing debt twice.
 		debt := float64(c.InvestedRaw) * (singlePassLeverage - 1)
 		if s.PilotActive {
 			debt = float64(quote.BorrowReceiveRaw) + float64(quote.BorrowFeeRaw)
