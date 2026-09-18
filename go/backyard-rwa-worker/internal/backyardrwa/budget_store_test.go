@@ -506,3 +506,115 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	t.Run("production withdrawal admission", func(t *testing.T) { testProductionWithdrawalAdmission(t, url) })
 	t.Run("policy setup durable intent", func(t *testing.T) { testPolicySetupDurability(t, url) })
 }
+
+func maintenanceNAVFixture(t *testing.T) (Phase3Budget, Snapshot, Decision, phase3BridgeAdmission) {
+	t.Helper()
+	b := pilotTestBudget(t)
+	b.Families["Maple"] = FamilyBudget{ExitMicros: 4_085_553}
+	s := base()
+	s.RouteLane, s.PilotActive, s.HasPosition = "Maple/syrupUSDC/USDC", true, true
+	s.PositionCollateralRaw, s.PostMutationNAVRequired = 844926, true
+	d := Decide(s)
+	if d.Action != ReportNAV || d.Reason != "post_mutation_nav_due" {
+		t.Fatal("fixture did not require maintenance", d)
+	}
+	p := phase3BridgeAdmission{CurrentCost: ValuedTransactionCost{TotalMicros: 516}, ExitAfterMicros: 4_085_046}
+	for _, cost := range []int64{1020786, 516, 1020786, 516, 1020705, 516, 1020705, 516} {
+		p.Exit = append(p.Exit, phase3BridgeExitCost{Cost: ValuedTransactionCost{TotalMicros: cost}})
+	}
+	if err := b.validateExitPlanCaps(p); err != nil {
+		t.Fatal(err)
+	}
+	return b, s, d, p
+}
+
+func TestMaintenanceNAVRetainsExitAcrossPriceDriftAndRepeatedFees(t *testing.T) {
+	b, s, d, p := maintenanceNAVFixture(t)
+	assertBudgetHold(t, b.Admit(BudgetReservation{OperationID: "old-recovery", Family: "Maple", IntentSHA256: sha256Bytes([]byte("old")), UpperMicros: 516, ExecutionCostUpperMicros: 516, ExitAfterMicros: p.ExitAfterMicros, Recovery: true}), "recovery_exceeds_reserved_exit")
+	for i := 0; i < 3; i++ {
+		if i == 2 {
+			// A larger fresh exit must be funded too, never clipped to the old reserve.
+			p.Exit[0].Cost.TotalMicros += 1000
+			p.ExitAfterMicros += 1000
+		}
+		before := b.Families["Maple"]
+		maintenance, retained, err := phase3MaintenanceNAVReserve(b, "Maple", s, d, p, OpenRouteStep, false)
+		if err != nil || !maintenance || retained != max(before.ExitMicros, p.ExitAfterMicros) {
+			t.Fatal(maintenance, retained, err)
+		}
+		id := fmt.Sprintf("maintenance-%d", i)
+		r := BudgetReservation{OperationID: id, Family: "Maple", IntentSHA256: sha256Bytes([]byte(id)), UpperMicros: 516, ExecutionCostUpperMicros: 516, ExitAfterMicros: retained}
+		if err = b.Admit(r); err != nil {
+			t.Fatal(err)
+		}
+		if err = b.Settle(id, r.IntentSHA256, r.UpperMicros); err != nil {
+			t.Fatal(err)
+		}
+		after := b.Families["Maple"]
+		if after.ExitMicros < before.ExitMicros || after.SpentMicros != before.SpentMicros+516 || after.ExecutionCostSpentMicros != before.ExecutionCostSpentMicros+516 {
+			t.Fatal("maintenance consumed reserve or lost fee", before, after)
+		}
+		if err = b.validateExitPlanCaps(p); err != nil {
+			t.Fatal("measured plan changed", err)
+		}
+	}
+}
+
+func TestMaintenanceNAVRejectsUnreservedExposureAndRetainsCaps(t *testing.T) {
+	b, s, d, p := maintenanceNAVFixture(t)
+	b.Families["Maple"] = FamilyBudget{}
+	_, _, err := phase3MaintenanceNAVReserve(b, "Maple", s, d, p, OpenRouteStep, false)
+	assertBudgetHold(t, err, "maintenance_nav_requires_reserved_exposure")
+	b.Families["Maple"] = FamilyBudget{SpentMicros: PilotEntryExecutionCostCapMicros - 515, ExitMicros: 4_085_553, ExecutionCostSpentMicros: PilotEntryExecutionCostCapMicros - 515}
+	_, retained, err := phase3MaintenanceNAVReserve(b, "Maple", s, d, p, OpenRouteStep, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := BudgetReservation{OperationID: "fee-cap", Family: "Maple", IntentSHA256: sha256Bytes([]byte("fee-cap")), UpperMicros: 516, ExecutionCostUpperMicros: 516, ExitAfterMicros: retained}
+	before, _ := json.Marshal(b)
+	assertBudgetHold(t, b.Admit(r), "pilot_entry_execution_cost_cap_exhausted")
+	after, _ := json.Marshal(b)
+	if string(before) != string(after) {
+		t.Fatal("rejected fee changed reserve")
+	}
+	b.Families["Maple"] = FamilyBudget{ExitMicros: retained}
+	r.UpperMicros = b.deploymentLimits().TransactionMicros + 1
+	assertBudgetHold(t, b.Admit(r), "transaction_cap_exceeded")
+}
+
+func TestMaintenanceNAVKeepsUnwindAndRiskReportsStrict(t *testing.T) {
+	for _, variant := range []string{"unwind", "durable-unwind", "withdrawal", "drain", "refresh", "risk", "repay", "exit-swap", "missing-mutation", "staged"} {
+		t.Run(variant, func(t *testing.T) {
+			b, s, d, p := maintenanceNAVFixture(t)
+			last, durable := OpenRouteStep, false
+			switch variant {
+			case "unwind":
+				s.Unwind = true
+			case "durable-unwind":
+				durable = true
+			case "withdrawal":
+				s.WithdrawalDemandRaw = 1
+			case "drain":
+				s.CutoverDrain = true
+			case "refresh":
+				s.UnwindRefreshRequired = true
+			case "risk":
+				s.LTVBPS = min(s.LiquidationThresholdBPS-1500, int64(6000))
+			case "repay":
+				last = DeleverRouteStep
+			case "exit-swap":
+				last = SwapCollateralToStableStep
+			case "missing-mutation":
+				last = ""
+			case "staged":
+				s.VoltrStrategyIdleRaw = 1
+			}
+			maintenance, exit, err := phase3MaintenanceNAVReserve(b, "Maple", s, d, p, last, durable)
+			if err != nil || maintenance || exit != p.ExitAfterMicros {
+				t.Fatal("exit classified as upkeep", maintenance, exit, err)
+			}
+			r := BudgetReservation{OperationID: variant, Family: "Maple", IntentSHA256: sha256Bytes([]byte(variant)), UpperMicros: 516, ExecutionCostUpperMicros: 516, ExitAfterMicros: exit, Recovery: true}
+			assertBudgetHold(t, b.Admit(r), "recovery_exceeds_reserved_exit")
+		})
+	}
+}

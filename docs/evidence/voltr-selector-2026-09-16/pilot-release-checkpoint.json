@@ -1,21 +1,21 @@
 {
   "proofLevel": "USER_DEPOSIT_FINALIZED_NOT_FINANCED_LIFECYCLE",
-  "workerCommit": "0e815617e5c0c02555db9c2703a328fbcf1a6b3b",
-  "actionsRun": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/35288407179",
+  "workerCommit": "19cfe2be6663fee8b757e54146b8e9e8fe934a0b",
+  "actionsRun": 35290222414,
   "actionsConclusion": "success",
-  "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-0e815617e5c0c02555db9c2703a328fbcf1a6b3b",
-  "imageDigest": "sha256:3e232562eea7435bcd69189108d96484c77f15e3038c6377d8283fed841abfb2",
-  "service": "srv-dalootgae00c73c4qhag",
-  "deploy": "dep-dam7pc3m8hqs73cqprl0",
-  "currentState": "crash_loop_recovering_failed_nav",
-  "reason": "repeated_planning_database_reads_age_accepted_quote_before_admission",
+  "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-19cfe2be6663fee8b757e54146b8e9e8fe934a0b",
+  "imageDigest": "sha256:31854938ae0231d8965ddb6797f6f02b8e3fff153b7d8af3e55d5ceb964639eb",
+  "service": "srv-dam87bp42hec738loc6g",
+  "deploy": "dep-dam87ch42hec738loed0",
+  "currentState": "collateral_deposited_nav_budget_hold",
+  "reason": "Allocation, swap and collateral deposit finalized and independently verified. Post-deposit report is9micros above old recovery reserve due live repricing; narrow maintenance classification fix in progress. No borrow/request/claim.",
   "oldService": "srv-dabkt0ojo6nc7381o9fg",
   "oldServiceSuspended": true,
   "pilotActivated": true,
   "frontendCommit": "0b23bb5f",
   "externalDepositsEnabled": false,
-  "frontendDeployment": "dpl_4wzykJ2fLLyghegfDLjJ3bjMBePh",
-  "frontendUrl": "https://loyal-vault-pilot-2tiy8s4sr-loyals-projects-4b3ed656.vercel.app",
+  "frontendDeployment": "dpl_Hot5fS4BMHkqjhWW9LYqxuTpvRzK",
+  "frontendUrl": "https://loyal-vault-pilot-b4wf6a56c-loyals-projects-4b3ed656.vercel.app",
   "frontendApi": {
     "path": "/api/vault",
     "status": 200,
@@ -27,8 +27,7 @@
     "navFreshness": "unknown"
   },
   "remainingGates": [
-    "finalized failed NAV fee settlement and narrow lifecycle schema support",
-    "consolidate duplicate planning reads with generation fence",
+    "preserve unwind reserve while charging non-unwind maintenance report fees",
     "current-release financed deposit-to-claim proof",
     "current-release rotation and recreation proof",
     "enable capped deposits only after acceptance"
@@ -202,13 +201,25 @@
       "holdReason": "selector_entry_quote_expired",
       "operationID": "388607057d32037e3e5791d34a32c9995d47afbbb4a5439a7860627a30ff79bf",
       "signature": null
+    },
+    {
+      "requestID": "af00224c79ae6f9f247ec57537ee8da9ec5dc5ce85a894c43d28c5ee10a58358",
+      "lane": "Maple/syrupUSDC/USDC",
+      "equityRaw": "1000000",
+      "consumedAt": "2026-09-18T00:23:51.222967472Z",
+      "operationID": "bb540b2d550b94204db32a432cddfd143c153ed5e5694963431d0a08ceab7f55",
+      "signature": "2PUdRqujoyRTcyHQPhHEuQs54qoex2WEZhjwMCLMoSkYKKcJdpLfmaC5sgyycj8mvrQKuq8MykKgjrjaDVh5yv3d",
+      "allocationSubmittedAt": "2026-09-18T00:23:52.563Z",
+      "allocationFinalizedSlot": 447930511,
+      "outcome": "allocation_swap_and_collateral_deposit_finalized"
     }
   ],
   "currentReleaseNav": {
-    "signature": "53djtF5EiCNBd2VQa6q1Jrcp8mKbDhhXzzZSa3yxvmNMus9CxPF8vKCpewmTEXWeu41pFCTK6q78yeNYgtMfTVqF",
-    "slot": 447918956,
-    "status": "reconciled",
-    "valuationSource": "unsigned-reserve-refresh-simulation"
+    "operationID": "37f00f83e241c4ca3672c19f1d8358b149eb96639e68c368d5dbf3e6dfb4c941",
+    "signature": "2UXz3cQA3NZiCcdV46Vsv5rS8criaczPsL3GFwAqqJ7ZPTJ8Nj7aFyoKCutZucpBeLe3ewmkZxEkn7tyZvUbGxpE",
+    "slot": 447930656,
+    "status": "finalized",
+    "note": "before collateral deposit; post-deposit NAV presently held"
   },
   "imageVersionSource": "baked immutable image ENV; service override removed",
   "currentCapacity": {
@@ -257,6 +268,26 @@
       "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 44369 of 200000 compute units",
       "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x9"
     ],
-    "runtimeRecovery": "blocked_by_lifecycle_constraint; fee_not_yet_settled; reservation_preserved"
-  }
+    "runtimeRecovery": "blocked_by_lifecycle_constraint; fee_not_yet_settled; reservation_preserved",
+    "settlement": {
+      "status": "failed",
+      "finality": "finalized",
+      "bookedGrossMicros": 519,
+      "bookedExecutionCostMicros": 519,
+      "feeLamports": 5000,
+      "proofSha256": "cb82f99c4dfa1a9ed8902700fa743f6ddde4a23057e37c1ad80474eff87d2ddc"
+    }
+  },
+  "regionMove": {
+    "fromService": "srv-dalootgae00c73c4qhag",
+    "fromRegion": "oregon",
+    "fromSuspended": true,
+    "toRegion": "virginia",
+    "databaseRegion": "us-east-1",
+    "samePlan": "starter",
+    "instances": 1,
+    "sharedHistoryPreserved": true,
+    "schema81AppliedAndValidated": true
+  },
+  "financedEntryEvidence": "docs/evidence/voltr-selector-2026-09-16/financed-entry-finalized.json"
 }

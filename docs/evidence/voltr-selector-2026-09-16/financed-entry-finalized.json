@@ -1,0 +1,320 @@
+{
+  "schema": "voltr-financed-finalized-receipts/v1",
+  "verdict": "FINALIZED_RECEIPTS_VERIFIED",
+  "route": "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+  "since": "2026-09-18T00:23:50Z",
+  "observedAt": "2026-09-18T00:28:38.841Z",
+  "candidateCount": 4,
+  "notFinalized": 0,
+  "finalizedFailures": 0,
+  "operations": [
+    {
+      "operationId": "bb540b2d550b94204db32a432cddfd143c153ed5e5694963431d0a08ceab7f55",
+      "action": "VOLTR_ALLOCATE_TO_SQUADS",
+      "strategyKey": "Maple/syrupUSDC/USDC",
+      "journalStatus": "reconciled",
+      "signature": "2PUdRqujoyRTcyHQPhHEuQs54qoex2WEZhjwMCLMoSkYKKcJdpLfmaC5sgyycj8mvrQKuq8MykKgjrjaDVh5yv3d",
+      "finalizedSlot": 447930511,
+      "timing": {
+        "createdAt": "2026-09-18T00:23:51.786Z",
+        "broadcastIntentAt": "2026-09-18T00:23:52.479Z",
+        "submittedAt": "2026-09-18T00:23:52.563Z",
+        "journalUpdatedAt": "2026-09-18T00:24:08.616Z",
+        "landedBlockTime": "2026-09-18T00:23:52.000Z"
+      },
+      "feeLamports": 5000,
+      "feePayer": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+      "messageSha256": "f693862365150653e871e6f3b8c17e1cebac397d4b9cd47ab02a2eabf63d50cb",
+      "signedWireSha256": "4f39f179749d820cfe6d97a251503501f7c4f822b22ac2593f3316fa422a8074",
+      "reconciliationSha256": "894e1a6acf36becb89638c38cb950c9862b9d47b6c7cd2b922e9b70f8bff15e2",
+      "exactWireVerified": true,
+      "signaturesVerified": true,
+      "tokenDeltas": [
+        {
+          "address": "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "1214944",
+          "afterRaw": "214944",
+          "deltaRaw": "-1000000"
+        },
+        {
+          "address": "EPCVCLY5wfumf6yPvqu7zuEB4WnnXbnPsy7JrKoAWcqC",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "5r74AE7yewacfRzoGAjXx5X3gM9LUoLU29eHzdjiLrJo",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "0",
+          "afterRaw": "0",
+          "deltaRaw": "0"
+        },
+        {
+          "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "0",
+          "afterRaw": "1000000",
+          "deltaRaw": "1000000"
+        }
+      ],
+      "lamportDeltas": [
+        {
+          "address": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+          "beforeLamports": "110419669",
+          "afterLamports": "110414669",
+          "deltaLamports": "-5000"
+        }
+      ]
+    },
+    {
+      "operationId": "bee23d0cdc7b39e24a2eb7284b8317f893d993a7fca5450620490d587936e45b",
+      "action": "SWAP_STABLE_TO_COLLATERAL_STEP",
+      "strategyKey": "Maple/syrupUSDC/USDC",
+      "journalStatus": "reconciled",
+      "signature": "5aUHPg6sn3gEgU4NHkz8QAq53wNFTPNVe5PSy86LmyzBgcksrVdMwk3ZNycGWvdueedLR2seRYzt862UGaZvsEwR",
+      "finalizedSlot": 447930587,
+      "timing": {
+        "createdAt": "2026-09-18T00:24:15.051Z",
+        "broadcastIntentAt": "2026-09-18T00:24:16.678Z",
+        "submittedAt": "2026-09-18T00:24:16.764Z",
+        "journalUpdatedAt": "2026-09-18T00:24:32.002Z",
+        "landedBlockTime": "2026-09-18T00:24:16.000Z"
+      },
+      "feeLamports": 5000,
+      "feePayer": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+      "messageSha256": "368c600cca48f735f7ede834bf31240189075bd414227162f9ae4a526d1cee92",
+      "signedWireSha256": "576bcc4af9f2f72ee3ca96bb3cd6c1093b7ffe416310e75b254a2ec3f9ab9dd9",
+      "reconciliationSha256": "a2c5737de859e3c8977b92b8e810e699cfc41989cb33c66c42e6cc7a3b408f84",
+      "exactWireVerified": true,
+      "signaturesVerified": true,
+      "tokenDeltas": [
+        {
+          "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "1000000",
+          "afterRaw": "0",
+          "deltaRaw": "-1000000"
+        },
+        {
+          "address": "59v2cSbCsnyaWymLnsq6TWzE6cEN5KJYNTBNrcP4smRH",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "6U91aKa8pmMxkJwBCfPTmUEfZi6dHe7DcFq2ALvB2tbB",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "112391",
+          "afterRaw": "112392",
+          "deltaRaw": "1"
+        },
+        {
+          "address": "5xuhjftR2AvE4xREhLw9ceZYGTJLXUeX35WozJZXPwhf",
+          "mint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "authority": "6U91aKa8pmMxkJwBCfPTmUEfZi6dHe7DcFq2ALvB2tbB",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "0",
+          "afterRaw": "0",
+          "deltaRaw": "0"
+        },
+        {
+          "address": "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN",
+          "mint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "0",
+          "afterRaw": "844926",
+          "deltaRaw": "844926"
+        },
+        {
+          "address": "DQhrtce8UsJDe8T3LroLN9q2ApwKHon7TgE6WBLvwGNv",
+          "mint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "authority": "DQhrtce8UsJDe8T3LroLN9q2ApwKHon7TgE6WBLvwGNv",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "23506016077",
+          "afterRaw": "23505171151",
+          "deltaRaw": "-844926"
+        },
+        {
+          "address": "2M5bhPemuCcZz6Q9KhEBDZBTH7tDvk7XcqRdewdhQzSw",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "2M5bhPemuCcZz6Q9KhEBDZBTH7tDvk7XcqRdewdhQzSw",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "12108097608",
+          "afterRaw": "12109097607",
+          "deltaRaw": "999999"
+        }
+      ],
+      "lamportDeltas": [
+        {
+          "address": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+          "beforeLamports": "110414669",
+          "afterLamports": "110409669",
+          "deltaLamports": "-5000"
+        }
+      ]
+    },
+    {
+      "operationId": "37f00f83e241c4ca3672c19f1d8358b149eb96639e68c368d5dbf3e6dfb4c941",
+      "action": "REPORT_NAV",
+      "strategyKey": "Maple/syrupUSDC/USDC",
+      "journalStatus": "reconciled",
+      "signature": "2UXz3cQA3NZiCcdV46Vsv5rS8criaczPsL3GFwAqqJ7ZPTJ8Nj7aFyoKCutZucpBeLe3ewmkZxEkn7tyZvUbGxpE",
+      "finalizedSlot": 447930656,
+      "timing": {
+        "createdAt": "2026-09-18T00:24:37.781Z",
+        "broadcastIntentAt": "2026-09-18T00:24:38.666Z",
+        "submittedAt": "2026-09-18T00:24:38.741Z",
+        "journalUpdatedAt": "2026-09-18T00:24:53.961Z",
+        "landedBlockTime": "2026-09-18T00:24:38.000Z"
+      },
+      "feeLamports": 5000,
+      "feePayer": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+      "messageSha256": "3409f22038d42291f01bb3a46dbd68adbe0b397a0bd04ebcfe63604a5e5b95ff",
+      "signedWireSha256": "7e50b13604f4d11ac4fa58198836f7010a4fd6bfb8aea694561f6d4127e94fba",
+      "reconciliationSha256": "adb42cb9f06e81e870b69cc908f3fb21f3500239f300ee685fa8de4b4595ee8c",
+      "exactWireVerified": true,
+      "signaturesVerified": true,
+      "tokenDeltas": [
+        {
+          "address": "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "214944",
+          "afterRaw": "214944",
+          "deltaRaw": "0"
+        },
+        {
+          "address": "EPCVCLY5wfumf6yPvqu7zuEB4WnnXbnPsy7JrKoAWcqC",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "5r74AE7yewacfRzoGAjXx5X3gM9LUoLU29eHzdjiLrJo",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "0",
+          "afterRaw": "0",
+          "deltaRaw": "0"
+        },
+        {
+          "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "0",
+          "afterRaw": "0",
+          "deltaRaw": "0"
+        }
+      ],
+      "lamportDeltas": [
+        {
+          "address": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+          "beforeLamports": "110404669",
+          "afterLamports": "110399669",
+          "deltaLamports": "-5000"
+        }
+      ]
+    },
+    {
+      "operationId": "6edb8ac27df9a862c655aca1c9a2c5ce608d1876ef50632ca5e75aea6c1a24e9",
+      "action": "OPEN_ROUTE_STEP",
+      "strategyKey": "Maple/syrupUSDC/USDC",
+      "journalStatus": "reconciled",
+      "signature": "5C9nYrZe7swAY73QVbKfeZkrZJdSgPXoafPNKBUb4wKrwWNKHoNDbLveSVbCpbPTkTgf23fSFnyaXXCfxg17LGZL",
+      "finalizedSlot": 447930732,
+      "timing": {
+        "createdAt": "2026-09-18T00:25:00.391Z",
+        "broadcastIntentAt": "2026-09-18T00:25:01.977Z",
+        "submittedAt": "2026-09-18T00:25:02.064Z",
+        "journalUpdatedAt": "2026-09-18T00:25:17.288Z",
+        "landedBlockTime": "2026-09-18T00:25:01.000Z"
+      },
+      "feeLamports": 5000,
+      "feePayer": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+      "messageSha256": "787e89b1b2f07fc0917ad78445183b9d792dbe2f29ca72ceae1e7cd8743353f9",
+      "signedWireSha256": "bf5e27fe4f3e7b58e068df96bbf74cb7b64a5fdc106a0bdf9c76204adf4b86ed",
+      "reconciliationSha256": "d0d19012a1d3b34d764e12f8d75de373e17a57dc29ce9f086c352f7ac79299b1",
+      "exactWireVerified": true,
+      "signaturesVerified": true,
+      "tokenDeltas": [
+        {
+          "address": "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i",
+          "mint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "authority": "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "62899553395525",
+          "afterRaw": "62899554240451",
+          "deltaRaw": "844926"
+        },
+        {
+          "address": "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58",
+          "mint": "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu",
+          "authority": "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "62899553295525",
+          "afterRaw": "62899554140451",
+          "deltaRaw": "844926"
+        },
+        {
+          "address": "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN",
+          "mint": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+          "authority": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "decimals": 6,
+          "prePresent": true,
+          "postPresent": true,
+          "beforeRaw": "844926",
+          "afterRaw": "0",
+          "deltaRaw": "-844926"
+        }
+      ],
+      "lamportDeltas": [
+        {
+          "address": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+          "beforeLamports": "110389669",
+          "afterLamports": "110384669",
+          "deltaLamports": "-5000"
+        }
+      ]
+    }
+  ]
+}

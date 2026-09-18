@@ -292,9 +292,13 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 		}
 		plan.ValidThroughSlot = min(plan.ValidThroughSlot, plan.CurrentCost.ValidThroughSlot)
 	}
-	var status, lane, action string
+	var status, lane, action, lastReconciledAction string
+	var durableUnwind bool
 	var decisionBytes []byte
-	if err = tx.QueryRow(ctx, `SELECT status,COALESCE(strategy_key,''),COALESCE(action,''),expected_effects->'decision' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&status, &lane, &action, &decisionBytes); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT op.status,COALESCE(op.strategy_key,''),COALESCE(op.action,''),op.expected_effects->'decision',
+	 COALESCE((SELECT prior.action FROM loyal_yield.multiply_operations prior WHERE prior.route_key=op.route_key AND prior.strategy_key=op.strategy_key AND prior.status='reconciled' ORDER BY prior.confirmed_slot DESC NULLS LAST,prior.updated_at DESC,prior.operation_id DESC LIMIT 1),''),
+	 COALESCE(route.state->'selectorUnwind','null'::jsonb)<>'null'::jsonb
+	 FROM loyal_yield.multiply_operations op JOIN loyal_yield.multiply_route_states route USING(route_key) WHERE op.operation_id=$1`, operationID).Scan(&status, &lane, &action, &decisionBytes, &lastReconciledAction, &durableUnwind); err != nil {
 		return err
 	}
 	var recorded decisionEvidence
@@ -401,8 +405,16 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	if decision.Action == ReportNAV && budget.Families[family].ExitMicros == 0 && len(plan.Exit) == 0 {
 		recovery = false
 	}
+	exitAfter := plan.ExitAfterMicros
+	maintenance, retainedExit, maintenanceErr := phase3MaintenanceNAVReserve(budget, family, observation.Snapshot, decision, plan, Action(lastReconciledAction), durableUnwind)
+	if maintenanceErr != nil {
+		return maintenanceErr
+	}
+	if maintenance {
+		recovery, exitAfter = false, retainedExit
+	}
 	r := BudgetReservation{OperationID: operationID, Family: family, IntentSHA256: intent,
-		UpperMicros: plan.CurrentCost.TotalMicros, ExitAfterMicros: plan.ExitAfterMicros, Recovery: recovery}
+		UpperMicros: plan.CurrentCost.TotalMicros, ExitAfterMicros: exitAfter, Recovery: recovery}
 	if budget.Pilot != nil {
 		r.ExecutionCostUpperMicros = plan.CurrentCost.ExecutionCost.TotalMicros
 	}
@@ -422,6 +434,36 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// Maintenance pays its fee from unused budget, retaining the complete exit reserve.
+// The measured plan remains unchanged: only the durable reservation retains
+// additional headroom. An actual unwind still consumes its existing reserve.
+func phase3MaintenanceNAVReserve(budget Phase3Budget, family string, s Snapshot, decision Decision, plan phase3BridgeAdmission, lastReconciledAction Action, durableUnwind bool) (bool, int64, error) {
+	if decision.Action != ReportNAV || budget.Pilot == nil || !s.PilotActive ||
+		(decision.Reason != "post_mutation_nav_due" && decision.Reason != "nav_due") ||
+		s.Unwind || durableUnwind || s.UnwindRefreshRequired || s.CutoverDrain || s.WithdrawalDemandRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
+		return false, plan.ExitAfterMicros, nil
+	}
+	if s.HasPosition && (s.LiquidationThresholdBPS <= 1500 || s.LTVBPS >= min(s.LiquidationThresholdBPS-1500, int64(6000))) {
+		return false, plan.ExitAfterMicros, nil
+	}
+	if decision.Reason == "post_mutation_nav_due" {
+		switch lastReconciledAction {
+		case OpenRouteStep, SwapStableToCollateralStep, SwapDebtToCollateralStep:
+		default:
+			return false, plan.ExitAfterMicros, nil
+		}
+	}
+	if !decisionsEqual(Decide(s), decision) {
+		return false, 0, budgetHold("maintenance_nav_decision_mismatch")
+	}
+	prior := budget.Families[family].ExitMicros
+	exposed := s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.SquadsIdleRaw != 0 || s.CollateralIdleRaw != 0 || s.PrimeIdleRaw != 0 || s.DebtIdleRaw != 0 || len(plan.Exit) != 0
+	if exposed && (prior <= 0 || plan.ExitAfterMicros <= 0 || len(plan.Exit) == 0) {
+		return false, 0, budgetHold("maintenance_nav_requires_reserved_exposure")
+	}
+	return true, max(prior, plan.ExitAfterMicros), nil
 }
 
 // Called only after the production cost observation, before signer access.
