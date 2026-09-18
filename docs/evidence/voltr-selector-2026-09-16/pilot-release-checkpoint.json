@@ -1,21 +1,21 @@
 {
   "proofLevel": "USER_DEPOSIT_FINALIZED_NOT_FINANCED_LIFECYCLE",
-  "workerCommit": "f46e9d36f6604940156442d4e290796b53fa4c5f",
-  "actionsRun": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/35287527358",
+  "workerCommit": "0e815617e5c0c02555db9c2703a328fbcf1a6b3b",
+  "actionsRun": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/35288407179",
   "actionsConclusion": "success",
-  "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-f46e9d36f6604940156442d4e290796b53fa4c5f",
-  "imageDigest": "sha256:0e4121368febdaf65378ba89a234af0d3fcce9e1c8641fa5f1abbf56431c97dc",
+  "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-0e815617e5c0c02555db9c2703a328fbcf1a6b3b",
+  "imageDigest": "sha256:3e232562eea7435bcd69189108d96484c77f15e3038c6377d8283fed841abfb2",
   "service": "srv-dalootgae00c73c4qhag",
-  "deploy": "dep-dam7jr2jnfac73e3tql0",
-  "currentState": "active",
-  "reason": "quote_freshness_expires_during_unsigned_build_after_allocation_admission",
+  "deploy": "dep-dam7pc3m8hqs73cqprl0",
+  "currentState": "crash_loop_recovering_failed_nav",
+  "reason": "repeated_planning_database_reads_age_accepted_quote_before_admission",
   "oldService": "srv-dabkt0ojo6nc7381o9fg",
   "oldServiceSuspended": true,
   "pilotActivated": true,
   "frontendCommit": "0b23bb5f",
   "externalDepositsEnabled": false,
-  "frontendDeployment": "dpl_GNmezyKsQbEKev8rVSZNhoGyDuzH",
-  "frontendUrl": "https://loyal-vault-pilot-mg2myxujf-loyals-projects-4b3ed656.vercel.app",
+  "frontendDeployment": "dpl_4wzykJ2fLLyghegfDLjJ3bjMBePh",
+  "frontendUrl": "https://loyal-vault-pilot-2tiy8s4sr-loyals-projects-4b3ed656.vercel.app",
   "frontendApi": {
     "path": "/api/vault",
     "status": 200,
@@ -27,7 +27,8 @@
     "navFreshness": "unknown"
   },
   "remainingGates": [
-    "bounded parallel independent fee and price reads without extending freshness",
+    "finalized failed NAV fee settlement and narrow lifecycle schema support",
+    "consolidate duplicate planning reads with generation fence",
     "current-release financed deposit-to-claim proof",
     "current-release rotation and recreation proof",
     "enable capped deposits only after acceptance"
@@ -186,6 +187,21 @@
       "holdReason": "selector_entry_quote_expired",
       "operationID": "c55aa0895380d40f43dd4d9531a33d44b4a568b7613a805fca86e6b079f3263e",
       "signature": null
+    },
+    {
+      "requestID": "ec25727d09b6d6b7fdd62356d796727762839de8ccbafd140de779f2da65cc23",
+      "lane": "Maple/syrupUSDC/USDC",
+      "equityRaw": "1000000",
+      "consumedAt": "2026-09-17T23:51:32.687279683Z",
+      "quoteSampleSlot": 447924407,
+      "quoteValidThroughSlot": 447924439,
+      "allocationDecisionSlot": 447924435,
+      "decisionCreatedAt": "2026-09-17T23:51:38.601Z",
+      "failedAt": "2026-09-17T23:51:40.627Z",
+      "outcome": "failed_admission_before_signing",
+      "holdReason": "selector_entry_quote_expired",
+      "operationID": "388607057d32037e3e5791d34a32c9995d47afbbb4a5439a7860627a30ff79bf",
+      "signature": null
     }
   ],
   "currentReleaseNav": {
@@ -194,5 +210,53 @@
     "status": "reconciled",
     "valuationSource": "unsigned-reserve-refresh-simulation"
   },
-  "imageVersionSource": "baked immutable image ENV; service override removed"
+  "imageVersionSource": "baked immutable image ENV; service override removed",
+  "currentCapacity": {
+    "slot": 447923932,
+    "Prime/PRIME/USDC": {
+      "equityCapacityRaw": 0,
+      "borrowUtilizationBlocked": true
+    },
+    "Maple/syrupUSDC/USDC": {
+      "equityCapacityRaw": 140987000036,
+      "borrowUtilizationBlocked": false
+    },
+    "OnRe/ONyc/USDC": {
+      "equityCapacityRaw": 0,
+      "borrowUtilizationBlocked": true
+    }
+  },
+  "failedNavRecovery": {
+    "proofLevel": "FINALIZED_FAILED_NAV_NO_CAPITAL_MOVEMENT",
+    "signature": "n1jg9BQi9sTapcR7pobxoMyqkHLsXCrH6jc8DHGGuS59pYWsQ2fjtDhFuQwwCKjeGYm4S1X5ZZ1HrqoUAgQ9qxA",
+    "slot": 447924535,
+    "blockTime": 1789689128,
+    "reportObservedSlot": 447924502,
+    "error": {
+      "InstructionError": [
+        0,
+        {
+          "Custom": 9
+        }
+      ]
+    },
+    "feeLamports": 5000,
+    "lamportChanges": [
+      {
+        "accountIndex": 0,
+        "delta": -5000
+      }
+    ],
+    "tokenBalancesUnchanged": true,
+    "logs": [
+      "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]",
+      "Program log: Instruction: ExecuteTransactionSyncV2",
+      "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+      "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 5685 of 161316 compute units",
+      "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW failed: custom program error: 0x9",
+      "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 44369 of 200000 compute units",
+      "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x9"
+    ],
+    "runtimeRecovery": "blocked_by_lifecycle_constraint; fee_not_yet_settled; reservation_preserved"
+  }
 }

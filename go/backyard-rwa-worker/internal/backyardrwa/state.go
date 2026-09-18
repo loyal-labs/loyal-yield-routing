@@ -254,6 +254,7 @@ func (d Decision) Validate() error {
 // Observation is one coherent bank read. Principal is chain state; reserve
 // valuations may use the explicitly identified unsigned refresh source.
 type Observation struct {
+	planning *routePlanningState
 	// Tick-local account evidence, intentionally excluded from persisted JSON.
 	// It is produced only by the coherent route observer and never cached by Worker.
 	routeBatch      *routeObservationBatch

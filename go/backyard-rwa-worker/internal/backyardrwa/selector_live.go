@@ -98,6 +98,9 @@ func (d *Database) evaluateSelector(ctx context.Context, rpc *RPCClient, manifes
 	if err != nil {
 		return SelectorResult{}, err
 	}
+	if o.planning == nil || o.planning.generation != version {
+		return SelectorResult{}, budgetHold("selector_state_changed_during_quote")
+	}
 	if !o.Snapshot.PilotActive {
 		return SelectorResult{}, budgetHold("selector_requires_active_pilot")
 	}

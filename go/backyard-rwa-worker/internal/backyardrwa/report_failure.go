@@ -1,9 +1,9 @@
 package backyardrwa
 
 // Audit U4 (docs/plans/backyard-rwa-adaptor-strategy2-audit-2026-09-08.md): a
-// report whose transaction lands after the adaptor's report age limit fails on
-// chain, and a failed Solana transaction moves no funds. Parking that row in
-// manual recovery blocked every later execution until an operator edited it.
+// report whose transaction lands after the adaptor's age limit fails on chain.
+// Instruction effects roll back atomically; its network fee still gets paid.
+// Exact finalized fee settlement allows the next observation without manual edits.
 
 import (
 	"context"
@@ -48,9 +48,8 @@ const (
 	reportSendFreshnessLimitSlots = adaptorMaxReportAgeSlots - reportFreshnessMarginSlots
 	// failureReceiptRetryWindow bounds how long a settled failure keeps its
 	// ambiguous submission state while its receipt is unreadable. A lagging or
-	// pruned RPC recovers in seconds; past this window the wire's blockhash is
-	// long expired, so the row terminates durably in `failed` without claiming
-	// that capital moved.
+	// pruned RPC may recover later. Past this window recheck finalized status,
+	// but never release a reservation without the complete failure receipt.
 	failureReceiptRetryWindow        = 15 * time.Minute
 	failureReceiptUnavailableReason  = "failure_receipt_unavailable"
 	unclassifiedTransactionErrReason = "confirmed_transaction_error"
@@ -210,9 +209,9 @@ func ClassifyConfirmedReportFailure(rawErr json.RawMessage, logs []string) Confi
 		}
 	}
 	if squadsSpendingLimitExceeded(rawErr, logs) {
-		// The policy refused the wire without moving capital, so the row
-		// terminates in `failed` with its own reason instead of a generic
-		// confirmed error or a capital stop.
+		// The policy refused capital movement, but its network fee still needs
+		// exact finalized settlement before a report-only row can terminate.
+		// Other action families retain their existing manual recovery hold.
 		return ConfirmedFailureClassification{Retryable: true, Reason: squadsSpendingLimitReason}
 	}
 	return ConfirmedFailureClassification{Reason: "confirmed_transaction_error"}
@@ -325,15 +324,6 @@ func (d *Database) MarkReportStaleFailed(ctx context.Context, operationID string
 	return d.transition(ctx, operationID, from, Failed, `, recovery_reason = 'report_stale'`)
 }
 
-// MarkReportRetryFailed terminates a broadcast transaction whose failure
-// receipt proves the report was refused unconsumed and no capital moved.
-func (d *Database) MarkReportRetryFailed(ctx context.Context, operationID string, from OperationStatus, reason string) error {
-	if reason == "" || (from != BroadcastIntent && from != Submitted) {
-		return fmt.Errorf("report retry failure requires an ambiguous submission and explicit reason")
-	}
-	return d.transition(ctx, operationID, from, Failed, `, recovery_reason = $4`, reason)
-}
-
 // broadcastIntentAt reads when the wire's submission was journaled. That
 // timestamp is the durable clock for the receipt retry window; a missing one
 // never expires the window.
@@ -348,8 +338,8 @@ func (d *Database) broadcastIntentAt(ctx context.Context, operationID string) (t
 	return sentAt, nil
 }
 
-// receiptRetryExpired is the pure liveness bound for unreadable failure
-// receipts: after it, the row must terminate instead of observing forever.
+// receiptRetryExpired bounds when unreadable receipts trigger another finalized
+// status read. Elapsed time alone never proves a zero-fee failure.
 func receiptRetryExpired(sentAt, now time.Time) bool {
 	return !sentAt.IsZero() && now.Sub(sentAt) > failureReceiptRetryWindow
 }
@@ -375,7 +365,7 @@ func (d *Database) classifyPersistedFailure(ctx context.Context, rpc *RPCClient,
 
 // unreadableReceiptOutcome keeps a settled-but-unreadable failure in its
 // ambiguous submission state, so later ticks fetch the receipt again, and
-// terminates it only once the retry window is exhausted.
+// rechecks finalized status once the retry window is exhausted.
 func (d *Database) unreadableReceiptOutcome(ctx context.Context, operation PersistedOperation) (ConfirmedFailureClassification, bool) {
 	classification := ConfirmedFailureClassification{Reason: failureReceiptUnavailableReason, ReceiptUnavailable: true}
 	sentAt, err := d.broadcastIntentAt(ctx, operation.ID)
@@ -410,7 +400,9 @@ func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *RPCClient, 
 			if !status.Finalized {
 				return nil
 			}
-			return d.MarkReportRetryFailed(ctx, operation.ID, operation.Status, classification.Reason)
+			// Status alone cannot measure the paid fee or prove the exact wire's
+			// atomic rollback. Retain the reservation until its receipt returns.
+			return nil
 		}
 		if status.Settled {
 			return d.MarkConfirmed(ctx, operation.ID, operation.Status, status.ConfirmationSlot)
@@ -421,5 +413,8 @@ func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *RPCClient, 
 	if !terminal {
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, unclassifiedTransactionErrReason)
 	}
-	return d.MarkReportRetryFailed(ctx, operation.ID, operation.Status, classification.Reason)
+	if operation.Decision.Action != ReportNAV {
+		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, unclassifiedTransactionErrReason)
+	}
+	return d.settleFinalizedReportFailure(ctx, rpc, operation, classification.Reason)
 }

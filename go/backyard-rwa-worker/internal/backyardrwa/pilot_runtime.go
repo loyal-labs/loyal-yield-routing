@@ -31,6 +31,10 @@ func (d *Database) PilotRuntimeState(ctx context.Context, routeKey string) (bool
 	if err := d.pool.QueryRow(ctx, `SELECT COALESCE(state->'phase3','null'::jsonb),COALESCE(state->'pilotBudgetActivation','null'::jsonb),state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey).Scan(&raw, &marker, &version); err != nil {
 		return false, nil, err
 	}
+	return decodePilotRuntimeState(raw, marker, version)
+}
+
+func decodePilotRuntimeState(raw, marker []byte, version int64) (bool, *pilotActivationBaseline, error) {
 	if string(raw) == "null" {
 		if string(marker) != "null" {
 			return false, nil, budgetHold("pilot_marker_without_budget")

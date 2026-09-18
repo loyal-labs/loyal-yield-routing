@@ -1,0 +1,33 @@
+{
+  "proofLevel": "FINALIZED_FAILED_NAV_NO_CAPITAL_MOVEMENT",
+  "signature": "n1jg9BQi9sTapcR7pobxoMyqkHLsXCrH6jc8DHGGuS59pYWsQ2fjtDhFuQwwCKjeGYm4S1X5ZZ1HrqoUAgQ9qxA",
+  "slot": 447924535,
+  "blockTime": 1789689128,
+  "reportObservedSlot": 447924502,
+  "error": {
+    "InstructionError": [
+      0,
+      {
+        "Custom": 9
+      }
+    ]
+  },
+  "feeLamports": 5000,
+  "lamportChanges": [
+    {
+      "accountIndex": 0,
+      "delta": -5000
+    }
+  ],
+  "tokenBalancesUnchanged": true,
+  "logs": [
+    "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]",
+    "Program log: Instruction: ExecuteTransactionSyncV2",
+    "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]",
+    "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 5685 of 161316 compute units",
+    "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW failed: custom program error: 0x9",
+    "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 44369 of 200000 compute units",
+    "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x9"
+  ],
+  "runtimeRecovery": "blocked_by_lifecycle_constraint; fee_not_yet_settled; reservation_preserved"
+}

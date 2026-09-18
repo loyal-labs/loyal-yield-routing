@@ -58,6 +58,10 @@ func (d *Database) LoadUnwindIntent(ctx context.Context, routeKey string) (*Unwi
 	if err := d.pool.QueryRow(ctx, `SELECT state->'selectorUnwind' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey).Scan(&raw); err != nil {
 		return nil, err
 	}
+	return decodeUnwindIntent(raw)
+}
+
+func decodeUnwindIntent(raw []byte) (*UnwindIntent, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}

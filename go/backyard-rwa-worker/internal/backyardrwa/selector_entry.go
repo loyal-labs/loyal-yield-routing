@@ -70,6 +70,10 @@ func (d *Database) LoadSelectorEntry(ctx context.Context, routeKey string) (*Sel
 	if err := d.pool.QueryRow(ctx, `SELECT state->'selectorEntry' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey).Scan(&raw); err != nil {
 		return nil, err
 	}
+	return decodeSelectorEntry(raw)
+}
+
+func decodeSelectorEntry(raw []byte) (*SelectorEntry, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}

@@ -1071,6 +1071,9 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 		}
 		return fmt.Errorf("lock route for position snapshot: %w", err)
 	}
+	if err := observation.planning.validateGeneration(routeKey, lease, generation); err != nil {
+		return err
+	}
 	if snapshot.SquadsIdleRaw > math.MaxInt64-snapshot.VoltrStrategyIdleRaw {
 		return fmt.Errorf("position snapshot idle claim overflows")
 	}

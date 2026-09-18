@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sync"
 	"time"
 )
 
@@ -91,6 +92,17 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 	// Integrity or health failures carry no decodable valuation. Preserve the
 	// last good position projection; the hold decision is the durable record.
 	if observation.Snapshot.StrategyReceiptIntegrityFault || observation.Snapshot.ManualReason != "" {
+		if observation.planning != nil {
+			reader, ok := p.journal.(interface {
+				validateRoutePlanningState(context.Context, string, *routePlanningState) error
+			})
+			if !ok {
+				return Observation{}, fmt.Errorf("planning generation reader unavailable")
+			}
+			if err := reader.validateRoutePlanningState(ctx, p.routeKey, observation.planning); err != nil {
+				return Observation{}, err
+			}
+		}
 		return observation, nil
 	}
 	if err := p.journal.RecordPositionSnapshot(ctx, p.routeKey, observation); err != nil {
@@ -104,12 +116,18 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 // this callback prevents a refresh from receiving a raw NAV snapshot while
 // the outer tick sees a verified program image.
 func (p productionObserveState) enrich(ctx context.Context, observation *Observation) error {
-	if err := p.mergeJournal(ctx, observation); err != nil {
-		return err
+	var journalErr, identityErr error
+	var identity programIdentityObservation
+	var reads sync.WaitGroup
+	reads.Add(2)
+	go func() { defer reads.Done(); journalErr = p.mergeJournal(ctx, observation) }()
+	go func() { defer reads.Done(); identity, identityErr = p.identity(ctx) }()
+	reads.Wait()
+	if journalErr != nil {
+		return journalErr
 	}
-	identity, err := p.identity(ctx)
-	if err != nil {
-		return err
+	if identityErr != nil {
+		return identityErr
 	}
 	applyProgramIdentityObservation(observation, identity)
 	observation.Snapshot.InitializationPolicyReady = false
@@ -128,9 +146,19 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	if observation == nil {
 		return fmt.Errorf("production observation is nil")
 	}
-	required, err := p.journal.PostMutationNAVRequired(ctx, p.routeKey)
-	if err != nil {
-		return err
+	var required bool
+	var journal ReconciledBridgeJournalState
+	var requiredErr, journalErr error
+	var reads sync.WaitGroup
+	reads.Add(2)
+	go func() { defer reads.Done(); required, requiredErr = p.journal.PostMutationNAVRequired(ctx, p.routeKey) }()
+	go func() { defer reads.Done(); journal, journalErr = p.journal.ReconciledBridgeJournal(ctx, p.routeKey) }()
+	reads.Wait()
+	if requiredErr != nil {
+		return requiredErr
+	}
+	if journalErr != nil {
+		return journalErr
 	}
 	// The extended read is preferred so production and shadow each make one
 	// database read and still carry the activation baseline into the snapshot;
@@ -140,7 +168,14 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	// survive into this snapshot.
 	observation.Snapshot.PilotBaselineKnown = false
 	observation.Snapshot.PilotBaselineTicketSequenceRaw = 0
-	if reader, ok := p.journal.(interface {
+	if observation.planning != nil {
+		planning := observation.planning
+		observation.Snapshot.PilotActive = planning.pilot
+		if planning.pilot && planning.baseline != nil {
+			observation.Snapshot.PilotBaselineKnown = true
+			observation.Snapshot.PilotBaselineTicketSequenceRaw = planning.baseline.TicketLastConsumedSequenceRaw
+		}
+	} else if reader, ok := p.journal.(interface {
 		PilotRuntimeState(context.Context, string) (bool, *pilotActivationBaseline, error)
 	}); ok {
 		active, baseline, err := reader.PilotRuntimeState(ctx, p.routeKey)
@@ -162,10 +197,6 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 		observation.Snapshot.PilotActive = active
 	}
 	observation.Snapshot.PostMutationNAVRequired = required
-	journal, err := p.journal.ReconciledBridgeJournal(ctx, p.routeKey)
-	if err != nil {
-		return err
-	}
 	observation.Snapshot.JournalSequenceKnown = journal.TicketSequenceKnown
 	observation.Snapshot.JournalReconciledSequenceRaw = journal.TicketSequenceRaw
 	observation.Snapshot.JournalArmedNAVKnown = journal.ArmedNAVKnown
@@ -176,6 +207,14 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	observation.Snapshot.StagedAmountKnown = journal.StagedAmountKnown
 	observation.Snapshot.StageTransient = journal.StageAfterTicket
 	observation.Snapshot.CapitalMutated = journal.MutationAfterReport
+	if observation.planning != nil {
+		planning := observation.planning
+		if err := applyUnwindIntent(&observation.Snapshot, planning.unwind); err != nil {
+			observation.Snapshot.ManualReason = err.Error()
+		}
+		observation.Snapshot.SelectorEntryPaused = planning.paused
+		return applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
+	}
 	if reader, ok := p.journal.(interface {
 		LoadUnwindIntent(context.Context, string) (*UnwindIntent, error)
 	}); ok {
@@ -215,11 +254,16 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		manifest: manifest, routeKey: productionRouteKey,
 		journal: database,
 		batch: func(ctx context.Context) (Observation, error) {
-			observedManifest, err := manifestForUnwind(ctx, database, manifest)
+			planning, err := database.readRoutePlanningState(ctx, productionRouteKey, true)
 			if err != nil {
 				return Observation{}, err
 			}
-			return ObserveConfirmedRouteSnapshot(ctx, rpc, observedManifest)
+			observation, err := ObserveConfirmedRouteSnapshot(ctx, rpc, planning.observationManifest(manifest))
+			if err != nil {
+				return Observation{}, err
+			}
+			observation.planning = planning
+			return observation, nil
 		},
 		identity: newProgramIdentityWatcher(rpc).observe,
 	}

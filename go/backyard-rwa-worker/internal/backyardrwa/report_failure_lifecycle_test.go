@@ -78,7 +78,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	}
 	submittedOperation := func(id, routeKey string) PersistedOperation {
 		return PersistedOperation{
-			Operation: Operation{ID: id, RouteKey: routeKey}, Status: Submitted,
+			Operation: Operation{ID: id, RouteKey: routeKey, Decision: Decision{Action: ReportNAV}}, Status: Submitted,
 			TransactionSignature: "failure-signature", LastValidBlockHeight: 10,
 		}
 	}
@@ -202,25 +202,25 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		}
 	})
 
-	t.Run("an aged finalized failure terminates durably as receipt unavailable", func(t *testing.T) {
+	t.Run("an aged finalized failure retains its reservation without a complete receipt", func(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "aged-finalized")
 		op := submittedOperation(id, routeKey)
 		ageBroadcast(t, id)
 		finalizedFailureAgain := `{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"finalized"}`
 		status, reason := advanceRechecked(t, op, &finalizedFailureAgain, "RPC_ERROR")
-		if status != "failed" || reason != failureReceiptUnavailableReason {
-			t.Fatalf("an aged finalized failure did not terminate durably: %s %q", status, reason)
+		if status != "submitted" || reason != "" {
+			t.Fatalf("status-only proof released an ambiguous paid failure: %s %q", status, reason)
 		}
 	})
 
-	t.Run("a finalized adaptor refusal is a retryable termination", func(t *testing.T) {
+	t.Run("finalized adaptor logs still require exact wire and fee evidence", func(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "adaptor")
 		op := submittedOperation(id, routeKey)
 		receipt := `{"slot":500,"meta":{"err":{"InstructionError":[0,{"Custom":9}]},"logMessages":` +
 			mustJSONLogs(t, adaptorFailureLogs(bridgeAdaptorProgram, 9)) + `}}`
 		status, reason, _ := advance(t, op, finalizedFailure, receipt)
-		if status != "failed" || reason != "adaptor_report_slot_refused" {
-			t.Fatalf("a proven adaptor refusal did not terminate for retry: %s %q", status, reason)
+		if status != "submitted" || reason != "" {
+			t.Fatalf("logs-only refusal settled without fee and wire proof: %s %q", status, reason)
 		}
 	})
 
