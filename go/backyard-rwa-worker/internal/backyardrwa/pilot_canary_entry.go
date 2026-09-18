@@ -49,6 +49,11 @@ func (r pilotCanaryEntryRequest) validate(now time.Time) error {
 	return nil
 }
 
+// pilotCanaryReceiptCapacity bounds the number of retained canary receipts.
+// Retained IDs are never pruned or reset, and consumed-ID checks stay before
+// this capacity gate.
+const pilotCanaryReceiptCapacity = 16
+
 func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history map[string]pilotCanaryEntryReceipt) (SelectorResult, *pilotCanaryEntryReceipt, error) {
 	request := input.canaryRequest
 	if request == nil {
@@ -67,7 +72,7 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 		result.Reason = "operator_canary_already_consumed"
 		return result, nil, nil
 	}
-	if len(history) >= 8 {
+	if len(history) >= pilotCanaryReceiptCapacity {
 		return result, nil, budgetHold("pilot_canary_history_full")
 	}
 	s := input.Snapshot

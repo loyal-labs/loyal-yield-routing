@@ -155,3 +155,101 @@ func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 		t.Fatal("lost exact entry", err)
 	}
 }
+
+// pilotCanaryRetainedHistory builds n distinct retained receipts as valid
+// historical requests: the reviewed lane/equity cloned from the live request,
+// a replaced ID that never collides with it, and a past expiry with
+// AcceptedAt before that expiry.
+func pilotCanaryRetainedHistory(t *testing.T, n int, in SelectorInput) map[string]pilotCanaryEntryReceipt {
+	t.Helper()
+	history := make(map[string]pilotCanaryEntryReceipt, n)
+	for i := 0; i < n; i++ {
+		id := sha256Bytes([]byte(fmt.Sprintf("retained-canary-%d", i)))
+		if id == in.canaryRequest.ID {
+			t.Fatal("retained id collided with the live request")
+		}
+		request := *in.canaryRequest
+		request.ID = id
+		request.ExpiresAt = in.Now.Add(-time.Duration(i+1) * time.Minute)
+		history[id] = pilotCanaryEntryReceipt{
+			Request:         request,
+			AcceptedAt:      in.Now.Add(-time.Duration(i+2) * time.Minute),
+			QuoteEvidenceID: sha256Bytes([]byte(fmt.Sprintf("retained-evidence-%d", i))),
+		}
+	}
+	return history
+}
+
+func canaryHoldReason(t *testing.T, err error) string {
+	t.Helper()
+	hold, ok := err.(*BudgetHold)
+	if !ok {
+		t.Fatalf("expected a budget hold, got %v", err)
+	}
+	return hold.Reason
+}
+
+func TestPilotCanaryCapacityRetainsHistoryWithoutBlockingCurrentRelease(t *testing.T) {
+	in := pilotCanaryFixture()
+	economic := SelectOpportunity(in, SelectorState{})
+
+	// Eight retained receipts leave plenty of room: a fresh eligible request is
+	// still accepted and every prior receipt is left untouched.
+	eight := pilotCanaryRetainedHistory(t, 8, in)
+	before, _ := json.Marshal(eight)
+	result, receipt, err := selectPilotCanaryEntry(in, economic, eight)
+	if err != nil || result.Action != "CANARY_ENTER" || receipt == nil {
+		t.Fatal("fresh request blocked by retained history", result, err)
+	}
+	after, _ := json.Marshal(eight)
+	if !bytes.Equal(before, after) || len(eight) != 8 {
+		t.Fatal("retained receipts changed")
+	}
+
+	// One below the named maximum still admits a fresh request.
+	fifteen := pilotCanaryRetainedHistory(t, 15, in)
+	if result, receipt, err = selectPilotCanaryEntry(in, economic, fifteen); err != nil || result.Action != "CANARY_ENTER" || receipt == nil {
+		t.Fatal("fresh request blocked below capacity", result, err)
+	}
+
+	// At the named maximum a fresh request is refused with the named hold.
+	full := pilotCanaryRetainedHistory(t, 16, in)
+	result, receipt, err = selectPilotCanaryEntry(in, economic, full)
+	if err == nil || receipt != nil || canaryHoldReason(t, err) != "pilot_canary_history_full" || result.Action != "KEEP" {
+		t.Fatal("capacity gate did not hold at the maximum", result, err)
+	}
+
+	// Idempotent replay of an already-consumed request is classified BEFORE the
+	// capacity gate: 15 retained receipts plus the consumed live ID is exactly
+	// the reachable full boundary, and the exact request still reports
+	// consumed, never a hold.
+	boundary := pilotCanaryRetainedHistory(t, 15, in)
+	boundary[in.canaryRequest.ID] = pilotCanaryEntryReceipt{Request: *in.canaryRequest, AcceptedAt: in.Now, QuoteEvidenceID: sha256Bytes([]byte("consumed-evidence"))}
+	if len(boundary) != pilotCanaryReceiptCapacity {
+		t.Fatalf("expected exactly %d retained receipts at the boundary, got %d", pilotCanaryReceiptCapacity, len(boundary))
+	}
+	result, receipt, err = selectPilotCanaryEntry(in, economic, boundary)
+	if err != nil || receipt != nil || result.Action != "KEEP" || result.Reason != "operator_canary_already_consumed" {
+		t.Fatal("consumed request not idempotent at capacity", result, err)
+	}
+
+	// A changed reuse of a retained ID is also classified BEFORE the capacity
+	// gate and still rejects with the reuse hold, not the capacity hold.
+	reused := pilotCanaryRetainedHistory(t, 16, in)
+	if len(reused) != pilotCanaryReceiptCapacity {
+		t.Fatalf("expected %d retained receipts, got %d", pilotCanaryReceiptCapacity, len(reused))
+	}
+	retainedID := in.canaryRequest.ID
+	for id := range reused {
+		retainedID = id
+		break
+	}
+	reusedRequest := *in.canaryRequest
+	reusedRequest.ID = retainedID
+	reusedRequest.EquityRaw = in.canaryRequest.EquityRaw - 1
+	in.canaryRequest = &reusedRequest
+	result, receipt, err = selectPilotCanaryEntry(in, economic, reused)
+	if err == nil || receipt != nil || canaryHoldReason(t, err) != "pilot_canary_request_id_reused" {
+		t.Fatal("changed reuse not rejected before capacity", result, err)
+	}
+}
