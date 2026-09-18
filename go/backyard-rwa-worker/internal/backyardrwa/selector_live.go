@@ -45,6 +45,16 @@ func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterC
 	var wg sync.WaitGroup
 	for i := range out {
 		market := out[i]
+		// Deferred rollout lanes keep their economics observable for KEEP
+		// baselines and valuation, but receive no executable destination quote,
+		// so no ENTER, SWITCH, or canary can select them.
+		if !selectorEntryLane(market.Lane) {
+			if market.EntryBlockedReason == "" {
+				out[i].EntryCapacity = Capacity{Known: true}
+				out[i].EntryBlockedReason = "lane_entry_deferred"
+			}
+			continue
+		}
 		// Current deployed capital is the KEEP baseline, never close/reopen merely
 		// to quote the same destination. Idle ownership can enter that lane normally.
 		if (hasWorkingCapital(s) && market.Lane == s.RouteLane) || market.validate(time.Now().UTC(), policy) != nil || market.EntryBlockedReason != "" {

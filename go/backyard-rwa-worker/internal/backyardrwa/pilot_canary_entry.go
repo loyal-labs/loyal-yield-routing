@@ -43,7 +43,11 @@ func readPilotCanaryEntryRequest(now time.Time) (*pilotCanaryEntryRequest, error
 	return &request, nil
 }
 func (r pilotCanaryEntryRequest) validate(now time.Time) error {
-	if len(r.ID) != 64 || !sha256Pattern.MatchString(r.ID) || !selectorLane(r.Lane) || r.EquityRaw <= 0 || r.EquityRaw > PilotWorkingTrancheCapRaw || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(15*time.Minute)) {
+	// Canary acceptance is entry authority too: a deferred lane must not become
+	// an operator-requested destination. Failing here ends this selector sample
+	// and retains the prior durable selector authority; it does not enable
+	// ordinary switching on this tick.
+	if len(r.ID) != 64 || !sha256Pattern.MatchString(r.ID) || !selectorEntryLane(r.Lane) || r.EquityRaw <= 0 || r.EquityRaw > PilotWorkingTrancheCapRaw || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(15*time.Minute)) {
 		return budgetHold("invalid_pilot_canary_request")
 	}
 	return nil

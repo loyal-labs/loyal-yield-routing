@@ -23,6 +23,15 @@ func selectorLane(lane string) bool {
 	return false
 }
 
+// selectorEntryLane is the reviewed new-entry scope for this rollout: Maple
+// (syrupUSDC/USDC) only. It is deliberately narrower than selectorLane, which
+// keeps deferred lanes (Prime/PRIME/USDC, OnRe/ONyc/USDC) fully observable,
+// validatable, and exitable. Only fresh entry or rotation authority is
+// withheld; widening it back to a selector lane is a reviewed change.
+func selectorEntryLane(lane string) bool {
+	return lane == SelectedRouteID
+}
+
 // Capacity distinguishes unknown, a closed entry, and an explicitly unlimited
 // limit. It is equity capacity for the exact pair and execution recipe, not a
 // reserve's aggregate available liquidity or the collateral's borrow limit.

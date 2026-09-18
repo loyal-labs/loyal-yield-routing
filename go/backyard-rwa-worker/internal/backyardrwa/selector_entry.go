@@ -340,6 +340,15 @@ func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, oper
 		// completion; current position, risk and costs are still checked per leg.
 		return nil
 	}
+	// Rollout scope. Initializer and allocation authority on a deferred lane is
+	// rejected even when a pre-revision admission already bound the allocation
+	// ID: binding happens before funds move, so it is not proof of a funded
+	// tranche. Funded completion stays available through the borrow path above
+	// and the existing deposit/exit legs; observation, valuation, exit and
+	// recovery never consult this fence.
+	if !selectorEntryLane(entry.Lane) {
+		return budgetHold("selector_entry_lane_deferred")
+	}
 	now := time.Now().UTC()
 	if !entry.Quote.currentAtSlot(slot) || now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt) {
 		return budgetHold("selector_entry_quote_expired")

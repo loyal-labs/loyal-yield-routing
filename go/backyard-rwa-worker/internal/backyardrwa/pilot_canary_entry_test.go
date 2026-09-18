@@ -10,6 +10,10 @@ import (
 
 func pilotCanaryFixture() SelectorInput {
 	in := selectorFixture()
+	// Canary acceptance is Maple-only for this rollout; retarget the fixture
+	// market, quote, and request onto the permitted entry lane.
+	in.Markets[0].Lane = SelectedRouteID
+	in.Quotes[0].DestinationLane = SelectedRouteID
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
 	in.Policy = DefaultSelectorPolicy()
 	in.Snapshot.PilotActive = true
