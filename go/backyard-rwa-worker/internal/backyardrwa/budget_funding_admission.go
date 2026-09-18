@@ -17,7 +17,7 @@ func isPayoffFundingAction(action Action) bool {
 	return action == SwapCollateralToDebtStep || action == SwapUSDCToDebtStep
 }
 
-func validatePayoffFunding(ctx context.Context, rpc *RPCClient, request JupiterSwapRequest, effects ExpectedEffects, slot, steps int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
+func validatePayoffFunding(ctx context.Context, rpc *RPCClient, request JupiterSwapRequest, effects ExpectedEffects, slot, steps int64, refreshedBasis bool) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	if !request.FullPayoffFunding || !isPayoffFundingAction(request.Action) {
 		return KaminoPayoffBound{}, nil, budgetHold("invalid_full_payoff_funding_intent")
 	}
@@ -32,11 +32,25 @@ func validatePayoffFunding(ctx context.Context, rpc *RPCClient, request JupiterS
 	if request.Action == SwapUSDCToDebtStep {
 		additional = []string{bridgeSquadsATA}
 	}
-	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, slot, steps, additional...)
+	bound, accounts, err := observePayoffWindowOnSnapshotBasis(ctx, rpc, route, slot, steps, refreshedBasis, additional...)
 	if err != nil {
 		return bound, nil, err
 	}
 	return validatePayoffFundingAccounts(request, effects, bound, accounts, route)
+}
+
+// observePayoffWindowOnSnapshotBasis prices the payoff window on the same
+// reserve basis the decision snapshot used. The route observer derives
+// Snapshot.PositionDebtRaw from the unsigned reserve-refresh simulation bank
+// whenever raw reserves are health-stale, so a strict comparison against a
+// raw re-capture would conflate the reserves' accrued rate basis with a real
+// obligation mutation and refuse funding after ordinary accrual crossed one
+// whole-unit ceil boundary.
+func observePayoffWindowOnSnapshotBasis(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot, steps int64, refreshedBasis bool, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	if refreshedBasis {
+		return observeKaminoPayoffWindowOnSnapshotBasis(ctx, rpc, route, minimumSlot, steps, additional...)
+	}
+	return observeKaminoPayoffWindowAccounts(ctx, rpc, route, minimumSlot, steps, additional...)
 }
 
 func validatePayoffFundingAccounts(request JupiterSwapRequest, effects ExpectedEffects, bound KaminoPayoffBound, accounts []ConfirmedAccount, route RuntimeRoute) (KaminoPayoffBound, []ConfirmedAccount, error) {
@@ -110,6 +124,9 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	defer cancel()
 	s := observation.Snapshot
 	original := s
+	// The snapshot's position debt is only comparable to a payoff window
+	// derived from the same reserve basis it was priced on.
+	refreshedBasis := observation.ValuationSource == routeRefreshValuationSource
 	if !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission ||
 		!s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 ||
 		s.RouteLane != s.StrategyKey || s.RouteLane != decision.StrategyKey || !positionReturnRoute(s.RouteLane) ||
@@ -158,7 +175,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			return phase3BridgeAdmission{}, budgetHold("funding_nav_intent_mismatch")
 		}
 		route, _ := runtimeRoute(s.RouteLane)
-		future, rows, err := observeKaminoPayoffWindow(ctx, rpc, route, s.Slot, 6)
+		future, rows, err := observePayoffWindowOnSnapshotBasis(ctx, rpc, route, s.Slot, 6, refreshedBasis)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -233,9 +250,9 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 		}
 		bound, accounts, err = validatePayoffFundingAccounts(funding.Request, funding.ExpectedEffects, bound, accounts, route)
 	} else if funding != nil {
-		bound, accounts, err = validatePayoffFunding(ctx, rpc, funding.Request, funding.ExpectedEffects, s.Slot, steps)
+		bound, accounts, err = validatePayoffFunding(ctx, rpc, funding.Request, funding.ExpectedEffects, s.Slot, steps, refreshedBasis)
 	} else {
-		bound, accounts, err = observeKaminoPayoffWindow(ctx, rpc, route, s.Slot, steps)
+		bound, accounts, err = observePayoffWindowOnSnapshotBasis(ctx, rpc, route, s.Slot, steps, refreshedBasis)
 	}
 	if err != nil {
 		return phase3BridgeAdmission{}, err

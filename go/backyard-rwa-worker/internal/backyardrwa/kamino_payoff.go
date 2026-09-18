@@ -34,23 +34,58 @@ func observeKaminoPayoffWindow(ctx context.Context, rpc *RPCClient, route Runtim
 	return observeKaminoPayoffWindowAccounts(ctx, rpc, route, minimumSlot, steps)
 }
 
-// Funding custody and debt must be captured in the same RPC account batch.
-func observeKaminoPayoffWindowAccounts(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot, steps int64, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	if rpc == nil || minimumSlot <= 0 {
-		return KaminoPayoffBound{}, nil, budgetHold("payoff_observation_unavailable")
-	}
+// payoffWindowAddresses pins the payoff window capture set: obligation, both
+// reserves, both custodies, both liquidity supplies, the Clock, and the
+// selector market where the lane reads one.
+func payoffWindowAddresses(route RuntimeRoute, additional ...string) []string {
 	addresses := []string{route.Kamino.Obligation, route.Kamino.DebtReserve, route.DebtCustody, route.DebtLiquiditySupply,
 		route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply, budgetClockAddress}
 	if selectorLane(route.Lane) {
 		addresses = append(addresses, route.Kamino.Market)
 	}
-	addresses = append(addresses, additional...)
+	return append(addresses, additional...)
+}
+
+// Funding custody and debt must be captured in the same RPC account batch.
+func observeKaminoPayoffWindowAccounts(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot, steps int64, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	if rpc == nil || minimumSlot <= 0 {
+		return KaminoPayoffBound{}, nil, budgetHold("payoff_observation_unavailable")
+	}
+	addresses := payoffWindowAddresses(route, additional...)
 	slot, accounts, err := rpc.GetMultipleAccounts(ctx, addresses, minimumSlot)
 	if err != nil {
 		return KaminoPayoffBound{}, nil, err
 	}
 	bound, err := decodeKaminoPayoffWindow(accounts, route, slot, steps)
 	return bound, accounts, err
+}
+
+// Re-derive the payoff window over the same closed unsigned reserve-refresh
+// simulation the route observer uses when raw reserves are health-stale. A
+// snapshot priced on that simulated bank (ValuationSource
+// routeRefreshValuationSource) carries position debt at the refreshed
+// cumulative borrow rate, while a raw re-capture still prices the same
+// unmutated obligation at the last on-chain refresh's older rate; one unit of
+// reserve accrual between the bases straddles the whole-unit ceil and a strict
+// debt comparison then refuses a position whose principal never changed.
+// Re-capturing through the identical simulation restores one rate basis.
+// Custody, policy and Clock bytes are read-only to those refreshes. When the
+// simulation is unavailable the raw capture stands and the caller's exact
+// comparison stays the fail-closed backstop.
+func observeKaminoPayoffWindowOnSnapshotBasis(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot, steps int64, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, minimumSlot, steps, additional...)
+	if err != nil || rpc == nil || minimumSlot <= 0 {
+		return bound, accounts, err
+	}
+	slot, refreshed, refreshErr := rpc.simulateBudgetReserveRefreshOptional(ctx, route.Lane, payoffWindowAddresses(route, additional...), nil, minimumSlot)
+	if refreshErr != nil {
+		return bound, accounts, nil
+	}
+	coherent, err := decodeKaminoPayoffWindow(refreshed, route, slot, steps)
+	if err != nil {
+		return bound, accounts, nil
+	}
+	return coherent, refreshed, nil
 }
 
 func decodeKaminoPayoffBound(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (KaminoPayoffBound, error) {

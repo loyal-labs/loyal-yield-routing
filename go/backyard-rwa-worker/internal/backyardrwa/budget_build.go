@@ -99,7 +99,8 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 			slot = max(slot, observed)
 		}
 		if r.FullPayoffFunding {
-			bound, _, err := validatePayoffFunding(ctx, rpc, r, effects, slot, 3)
+			// Build/send revalidation stays on the raw fail-closed capture.
+			bound, _, err := validatePayoffFunding(ctx, rpc, r, effects, slot, 3, false)
 			if err != nil {
 				return ValuedTransactionCost{}, err
 			}
