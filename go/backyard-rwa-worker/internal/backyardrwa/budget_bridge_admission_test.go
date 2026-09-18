@@ -22,11 +22,11 @@ func bridgeAdmissionFixture(t *testing.T, action Action, amount, idle, strategy,
 	d := Decision{Action: action, AmountRaw: amount, StrategyKey: s.RouteLane, Reason: "bridge-admission-test", IdempotencyKey: "bridge-admission-test"}
 	r := bridgeTestRequest(action, uint64(amount))
 	r.Report.ObservedSlot, r.Report.Sequence = 42, 42
-	effects, afterStrategy, afterSquads, err := bridgeExpectedEffects(d, uint64(idle), uint64(strategy), uint64(squads))
+	effects, _, afterSquads, err := bridgeExpectedEffects(d, uint64(idle), uint64(strategy), uint64(squads))
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.Report.NAVAfterRaw = afterStrategy + afterSquads
+	r.Report.NAVAfterRaw = afterSquads
 	effects.Kind = "bridge"
 	if action != StageSquadsToVoltr {
 		effects.ReturnData = expectedAdaptorReturnData(r.Report.NAVAfterRaw)
@@ -93,6 +93,36 @@ func TestBridgeAdmissionRejectsUnpricedExposureAndFullSweepCap(t *testing.T) {
 		_, err := observePhase3BridgeAdmission(context.Background(), nil, o, d, evidence)
 		assertBudgetHold(t, err, "bridge_allocation_requires_empty_strategy_custody")
 	})
+}
+
+// Staging is the admission path that empties Squads custody, so every staged
+// template must report the drained Squads vault as NAV (zero) and never the
+// amount parked in the strategy ATA: Voltr tracks strategy custody separately.
+func TestBridgeAdmissionStageTemplatesReportDrainedSquadsNAV(t *testing.T) {
+	o, d, evidence := bridgeAdmissionFixture(t, StageSquadsToVoltr, 999_952, 214_944, 0, 999_952)
+	steps, err := phase3BridgeTemplates(o.Snapshot, d, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []Action
+	for _, step := range steps {
+		actions = append(actions, step.Request.Action)
+		if step.Request.Report.NAVAfterRaw != 0 {
+			t.Fatalf("step %s counted strategy custody in NAV: %d", step.Request.Action, step.Request.Report.NAVAfterRaw)
+		}
+	}
+	if !reflect.DeepEqual(actions, []Action{StageSquadsToVoltr, ReportNAV, VoltrRestoreIdle, ReportNAV}) {
+		t.Fatalf("unexpected staged exit graph: %v", actions)
+	}
+	if steps[0].Request.AmountRaw != 999_952 || steps[2].Request.AmountRaw != 999_952 {
+		t.Fatalf("stage/restore lost the full custody amounts: %d/%d",
+			steps[0].Request.AmountRaw, steps[2].Request.AmountRaw)
+	}
+	// A request still carrying the pre-staging NAV contradicts the compiled
+	// poststate and must be refused at the same intent-mismatch boundary.
+	evidence.Request.Report.NAVAfterRaw = 999_952
+	_, err = phase3BridgeTemplates(o.Snapshot, d, evidence)
+	assertBudgetHold(t, err, "bridge_admission_intent_mismatch")
 }
 
 func TestBridgeAdmissionReturnGraphConsumesReservedBudget(t *testing.T) {
