@@ -33,7 +33,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	if _, err := observeSelectorDestinationSize(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42, true); err != nil {
 		t.Fatal("partial producer", err)
 	}
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, markets, in.Policy)
+	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, markets, in.Policy, -1)
 	if err != nil || len(quotes) != 1 {
 		t.Fatal(err, quotes, observed)
 	}
@@ -62,7 +62,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 		t.Fatal("collected partial quote not usable by selector", result)
 	}
 	binary.LittleEndian.PutUint64(debt[kaminoOutsideBorrowLimitOffset:], used)
-	observed, quotes, err = collectSelectorQuotes(context.Background(), rpc, client, m, o, markets, in.Policy)
+	observed, quotes, err = collectSelectorQuotes(context.Background(), rpc, client, m, o, markets, in.Policy, -1)
 	if err != nil || len(quotes) != 0 || observed[0].EntryCapacity.Raw != 0 || observed[0].EntryBlockedReason == "" {
 		t.Fatal("capacity closure retained stale quote", err, quotes, observed)
 	}
@@ -77,10 +77,10 @@ func TestLiveSelectorRejectsDuplicateMarketFanoutAndStaleSource(t *testing.T) {
 	o := tickObservation(in.Snapshot)
 	o.ObservedAt = time.Now().UTC()
 	market := in.Markets[0]
-	_, _, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market, market}, in.Policy)
+	_, _, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market, market}, in.Policy, -1)
 	assertBudgetHold(t, err, "invalid_selector_market_set")
 	o.ObservedAt = o.ObservedAt.Add(-time.Minute)
-	_, _, err = collectSelectorQuotes(context.Background(), rpc, client, m, o, in.Markets, in.Policy)
+	_, _, err = collectSelectorQuotes(context.Background(), rpc, client, m, o, in.Markets, in.Policy, -1)
 	assertBudgetHold(t, err, "selector_live_snapshot_unavailable")
 }
 
@@ -113,7 +113,7 @@ func TestLiveSelectorCancelsSlowSiblingAndRetainsCompletedQuote(t *testing.T) {
 		return original.RoundTrip(req)
 	})
 	start := time.Now()
-	markets, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market, slow}, in.Policy)
+	markets, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market, slow}, in.Policy, -1)
 	if err != nil || len(quotes) != 1 || quotes[0].DestinationLane != SelectedRouteID || time.Since(start) > 3*time.Second || markets[1].EntryBlockedReason == "" {
 		t.Fatal("slow sibling suppressed valid quote", err, quotes, markets, time.Since(start))
 	}
@@ -165,7 +165,7 @@ func TestLiveSelectorPricesEligibleSameLaneReentryAndSkipsIneligible(t *testing.
 	market := LaneEconomics{Lane: SelectedRouteID, EvidenceID: "rates", ObservedAt: now, NativeObservedAt: now, NativeAPY: .10, SupplyAPY: 0, CurrentBorrowAPY: .04, BorrowCurve: []BorrowCurvePoint{{0, 400}, {8000, 400}, {10000, 10000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, EntryCapacity: Capacity{Known: true, Unlimited: true}}
 	policy := DefaultSelectorPolicy()
 	s := o.Snapshot
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, 10_000_000)
+	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, -1, 10_000_000)
 	if err != nil || len(quotes) != 1 {
 		t.Fatal("eligible same-lane reentry was not priced", err, quotes, observed)
 	}
@@ -175,7 +175,7 @@ func TestLiveSelectorPricesEligibleSameLaneReentryAndSkipsIneligible(t *testing.
 	// Buffer-only idle keeps the funded lane unquotable and its feed untouched.
 	buffered := policy
 	buffered.IdleBufferRaw = s.VoltrIdleRaw
-	observed, quotes, err = collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, buffered, 10_000_000)
+	observed, quotes, err = collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, buffered, -1, 10_000_000)
 	if err != nil || len(quotes) != 0 {
 		t.Fatal("buffer-only idle quoted the funded lane", err, quotes, observed)
 	}
@@ -184,6 +184,6 @@ func TestLiveSelectorPricesEligibleSameLaneReentryAndSkipsIneligible(t *testing.
 	staging.SquadsIdleRaw = 5_000_000
 	staging.PositionDebtRaw, staging.PositionDebtValueRaw = 0, 0
 	stagedObservation := reentryObservation(staging)
-	_, _, err = collectSelectorQuotes(context.Background(), rpc, client, m, stagedObservation, []LaneEconomics{market}, policy, 10_000_000)
+	_, _, err = collectSelectorQuotes(context.Background(), rpc, client, m, stagedObservation, []LaneEconomics{market}, policy, -1, 10_000_000)
 	assertBudgetHold(t, err, "complete_current_tranche_first")
 }

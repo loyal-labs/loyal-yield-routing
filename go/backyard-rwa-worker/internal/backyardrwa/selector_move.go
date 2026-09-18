@@ -49,6 +49,14 @@ func composeSelectorMove(ctx context.Context, rpc *RPCClient, o Observation, sou
 	if err != nil || source.Recipe.CostRaw < 0 || destination.Recipe.CostRaw <= 0 || q.CostRaw >= q.EquityRaw || !q.validBorrow() {
 		return q, budgetHold("selector_move_cost_exceeds_equity")
 	}
+	expected, err := composeSelectorExpectedExpense(source.Recipe, destination.Recipe)
+	if err != nil || expected < 0 {
+		return q, budgetHold("selector_move_expected_cost_invalid")
+	}
+	if expected > q.CostRaw {
+		expected = q.CostRaw
+	}
+	q.ExpectedCostRaw = &expected
 	floor := max(s.Slot, destination.AccountSlot)
 	for _, recipe := range []selectorRecipe{source.Recipe, destination.Recipe} {
 		for _, cost := range recipe.Costs {

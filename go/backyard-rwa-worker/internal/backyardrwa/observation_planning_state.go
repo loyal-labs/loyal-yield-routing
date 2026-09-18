@@ -2,6 +2,7 @@ package backyardrwa
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -21,6 +22,12 @@ type routePlanningState struct {
 	entry      *SelectorEntry
 	unwind     *UnwindIntent
 	paused     bool
+	// remainingExecutionCost is advisory quote-sizing headroom under the
+	// reviewed $500 bounded execution-cost stop: the cap less booked spend and
+	// every outstanding reservation's cost bound. The binding check stays at
+	// reservation time under the record lock; this only shapes the sized quote
+	// ladder. Non-pilot states carry the full ceiling.
+	remainingExecutionCost int64
 }
 
 func (d *Database) readRoutePlanningState(ctx context.Context, routeKey string, execution bool) (*routePlanningState, error) {
@@ -59,6 +66,12 @@ func (d *Database) readRoutePlanningState(ctx context.Context, routeKey string, 
 	if err != nil {
 		return nil, err
 	}
+	out.remainingExecutionCost = int64(PilotEntryExecutionCostCapMicros)
+	if out.pilot {
+		if out.remainingExecutionCost, err = pilotRemainingExecutionCost(budget); err != nil {
+			return nil, err
+		}
+	}
 	out.entry, err = decodeSelectorEntry(entry)
 	if err != nil {
 		return nil, err
@@ -68,6 +81,34 @@ func (d *Database) readRoutePlanningState(ctx context.Context, routeKey string, 
 		return nil, err
 	}
 	return out, nil
+}
+
+// pilotRemainingExecutionCost derives the advisory remaining bounded
+// entry-cost budget from a validated durable pilot budget: the reviewed
+// ceiling less booked execution-cost spend and every outstanding
+// reservation's cost bound. The budget is only read here, never mutated.
+func pilotRemainingExecutionCost(raw []byte) (int64, error) {
+	var pilot Phase3Budget
+	if json.Unmarshal(raw, &pilot) != nil || pilot.validate() != nil || pilot.Pilot == nil {
+		return 0, budgetHold("invalid_durable_budget")
+	}
+	spent, err := pilot.executionCostSpent()
+	if err != nil {
+		return 0, err
+	}
+	var sumErr error
+	for _, reservation := range pilot.Reservations {
+		if spent, sumErr = budgetSum(spent, reservation.ExecutionCostUpperMicros); sumErr != nil {
+			return 0, sumErr
+		}
+	}
+	remaining := int64(PilotEntryExecutionCostCapMicros) - spent
+	if remaining < 0 {
+		// Exhausted headroom is a fact, never an unknown: production sizing
+		// must fail closed instead of disabling the budget trigger.
+		remaining = 0
+	}
+	return remaining, nil
 }
 
 func (p *routePlanningState) observationManifest(manifest RouteManifest) RouteManifest {

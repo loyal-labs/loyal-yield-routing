@@ -164,15 +164,20 @@ type MoveQuote struct {
 	MinimumIdleRaw uint64 `json:"minimumIdleRaw"`
 	// Exact one-pass borrow sized from conservative initial collateral. Execution
 	// may receive more collateral, but may not silently increase this borrow.
-	BorrowReceiveRaw uint64    `json:"borrowReceiveRaw"`
-	BorrowFeeRaw     uint64    `json:"borrowFeeRaw"`
-	SourceLane       string    `json:"sourceLane"`
-	DestinationLane  string    `json:"destinationLane"`
-	ObservationID    string    `json:"observationId"`
-	EquityRaw        int64     `json:"equityRaw"`
-	CostRaw          int64     `json:"costRaw"`
-	ObservedAt       time.Time `json:"observedAt"`
-	EvidenceID       string    `json:"evidenceId"`
+	BorrowReceiveRaw uint64 `json:"borrowReceiveRaw"`
+	BorrowFeeRaw     uint64 `json:"borrowFeeRaw"`
+	SourceLane       string `json:"sourceLane"`
+	DestinationLane  string `json:"destinationLane"`
+	ObservationID    string `json:"observationId"`
+	EquityRaw        int64  `json:"equityRaw"`
+	CostRaw          int64  `json:"costRaw"`
+	// ExpectedCostRaw is the forecast economic expense at central observed
+	// prices; nil on quotes predating the forecast. Every admission gate,
+	// reservation and spending bound keeps the conservative CostRaw upper
+	// exposure bound.
+	ExpectedCostRaw *int64    `json:"expectedCostRaw,omitempty"`
+	ObservedAt      time.Time `json:"observedAt"`
+	EvidenceID      string    `json:"evidenceId"`
 	// SampleSlot is captured before constructing any recipe input. Fresh fee
 	// observations cannot extend older quote/reserve evidence past this window.
 	SampleSlot       int64 `json:"sampleSlot"`
@@ -183,6 +188,17 @@ func (q MoveQuote) currentAtSlot(slot int64) bool {
 	return q.SampleSlot > 0 && q.ValidThroughSlot >= q.SampleSlot &&
 		q.ValidThroughSlot-q.SampleSlot <= budgetMaxObservationLagSlots &&
 		slot >= q.SampleSlot && slot <= q.ValidThroughSlot
+}
+
+// selectorEconomicCostRaw is the expected economic expense when a forecast is
+// present; old or opaque quotes fall back conservatively to the bounded
+// CostRaw. Only the net-yield comparison consumes this — admission, spending
+// bounds and history stay on CostRaw.
+func (q MoveQuote) selectorEconomicCostRaw() int64 {
+	if q.ExpectedCostRaw != nil && *q.ExpectedCostRaw >= 0 && *q.ExpectedCostRaw <= q.CostRaw {
+		return *q.ExpectedCostRaw
+	}
+	return q.CostRaw
 }
 
 type SelectorInput struct {
@@ -450,7 +466,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		}
 		c.BorrowAPR = apr
 		collateral := float64(c.InvestedRaw) + debt
-		c.GainRaw = forecastGain(collateral, collateral, debt, m, apr, years) - float64(quote.CostRaw)
+		c.GainRaw = forecastGain(collateral, collateral, debt, m, apr, years) - float64(quote.selectorEconomicCostRaw())
 		c.BenefitRaw = c.GainRaw - out.KeepGainRaw - float64(equity)*float64(p.UncertaintyBPS)/10_000
 		if !finite(c.GainRaw) || !finite(c.BenefitRaw) {
 			c.BlockedReason = "invalid_candidate_forecast"

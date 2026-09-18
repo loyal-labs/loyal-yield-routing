@@ -288,6 +288,17 @@ func durableDecisionIdempotencyKey(routeKey, operationEpoch string, decision Dec
 	return routeKey + ":" + operationEpoch + ":" + decision.IdempotencyKey, nil
 }
 
+// holdBoundIdempotencyKey namespaces a terminal hold's audit-only identity by
+// the manifest and catalog binding it was decided under: holds carry no epoch,
+// so an unchanged observation after a rollover reused the historical row's
+// identity and failed the evidence comparison every tick. The suffix is
+// collision-free (validated 64-hex hashes, fixed segment absent from
+// executable epochs); historical keys stay byte-identical and executable
+// epoch identities untouched.
+func holdBoundIdempotencyKey(persistedIdempotencyKey, manifestSHA256, policyCatalogSHA256 string) string {
+	return persistedIdempotencyKey + ":hold-binding:" + manifestSHA256 + ":" + policyCatalogSHA256
+}
+
 type decisionEvidence struct {
 	ValuationSource     string `json:"valuationSource,omitempty"`
 	ValuationSlot       int64  `json:"valuationSlot,omitempty"`
@@ -639,7 +650,8 @@ func (d *Database) recordDecisionTx(
 		// Economic observations intentionally exclude slot. Namespace executable
 		// decisions by the last completed lifecycle mutation so retries before
 		// reconciliation dedupe, while a genuinely later cycle can execute the
-		// same economic decision again. HOLD remains globally deduped.
+		// same economic decision again. HOLD dedupes per manifest and policy
+		// catalog binding.
 		if err := tx.QueryRow(ctx, LatestDecisionEpochSQL, routeKey).Scan(&operationEpoch); err != nil {
 			return DecisionRecord{}, fmt.Errorf("read durable operation epoch: %w", err)
 		}
@@ -647,6 +659,9 @@ func (d *Database) recordDecisionTx(
 	persistedIdempotencyKey, err := durableDecisionIdempotencyKey(routeKey, operationEpoch, decision)
 	if err != nil {
 		return DecisionRecord{}, err
+	}
+	if decision.Action == Hold || decision.Action == HoldManualRecovery {
+		persistedIdempotencyKey = holdBoundIdempotencyKey(persistedIdempotencyKey, manifestSHA256, policyCatalogSHA256)
 	}
 	var existing DecisionRecord
 	var existingAction string

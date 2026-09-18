@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"math/big"
 	"sort"
 	"sync"
 )
@@ -13,13 +14,71 @@ import (
 // simulated using invented accounts, persisted as operations, or sent. Actual
 // execution rebuilds each step from observed balances and its existing budget.
 type selectorRecipe struct {
-	Inputs           []*phase3BuildInput     `json:"inputs"`
-	Costs            []ValuedTransactionCost `json:"costs"`
-	CostRaw          int64                   `json:"costRaw"`
-	SetupLamports    uint64                  `json:"setupLamports"`
-	NetworkLamports  uint64                  `json:"networkLamports"`
-	ValidThroughSlot int64                   `json:"validThroughSlot"`
-	EvidenceID       string                  `json:"evidenceId"`
+	Inputs  []*phase3BuildInput     `json:"inputs"`
+	Costs   []ValuedTransactionCost `json:"costs"`
+	CostRaw int64                   `json:"costRaw"`
+	// ExpectedCostRaw is the forecast economic expense at central observed
+	// prices, always present on freshly priced recipes (zero stays zero, never
+	// an unknown). Every admission, reservation and spending bound keeps the
+	// conservative CostRaw upper exposure bound; only selector net-yield
+	// comparison reads this.
+	ExpectedCostRaw  *int64 `json:"expectedCostRaw,omitempty"`
+	SetupLamports    uint64 `json:"setupLamports"`
+	NetworkLamports  uint64 `json:"networkLamports"`
+	ValidThroughSlot int64  `json:"validThroughSlot"`
+	EvidenceID       string `json:"evidenceId"`
+}
+
+// selectorMidpointPriceValue reconstructs the central observed USDC value of a
+// token amount from the symmetric independently observed upper/lower interval
+// components of one BudgetPrice, using integer arithmetic only. It prices
+// expectations, never bounds: admissions and reservations stay on CostRaw.
+func selectorMidpointPriceValue(p BudgetPrice, raw uint64, mint, program string, slot int64) (int64, error) {
+	if raw == 0 || p.Mint != mint || p.TokenProgram != program || p.Decimals > 18 || p.ObservedSlot <= 0 || slot < p.ObservedSlot || slot > p.ValidThroughSlot || p.ValidThroughSlot < p.ObservedSlot || p.ValidThroughSlot-p.ObservedSlot > budgetMaxObservationLagSlots || !sha256Pattern.MatchString(p.EvidenceSHA256) {
+		return 0, budgetHold("missing_stale_or_mismatched_usdc_valuation")
+	}
+	if p.Credit == nil {
+		return 0, budgetHold("missing_credit_valuation_bounds")
+	}
+	tokenUpper, tokenLower := littleInt(p.TokenUpperSF[:]), littleInt(p.Credit.TokenLowerSF[:])
+	usdcLower, usdcUpper := littleInt(p.USDCLowerSF[:]), littleInt(p.Credit.USDCUpperSF[:])
+	if tokenLower.Cmp(tokenUpper) > 0 || usdcUpper.Cmp(usdcLower) < 0 || tokenUpper.Sign() <= 0 || tokenLower.Sign() <= 0 || usdcLower.Sign() <= 0 || usdcUpper.Sign() <= 0 {
+		return 0, budgetHold("invalid_credit_valuation_interval")
+	}
+	var tokenMid, usdcMid [16]byte
+	putScaledLittleSF(&tokenMid, new(big.Int).Quo(new(big.Int).Add(tokenUpper, tokenLower), big.NewInt(2)))
+	putScaledLittleSF(&usdcMid, new(big.Int).Quo(new(big.Int).Add(usdcLower, usdcUpper), big.NewInt(2)))
+	value, err := valueBetweenTokenRaw(raw, p.Decimals, 6, tokenMid, usdcMid, false)
+	if err != nil || value > math.MaxInt64 {
+		return 0, budgetHold("invalid_usdc_valuation")
+	}
+	return int64(value), nil
+}
+
+func putScaledLittleSF(out *[16]byte, value *big.Int) {
+	if value.Sign() <= 0 || value.BitLen() > 128 {
+		return
+	}
+	bytes := value.Bytes()
+	for i := range bytes {
+		out[i] = bytes[len(bytes)-1-i]
+	}
+}
+
+// composeSelectorExpectedExpense combines each recipe's expected expense,
+// falling back per recipe to its conservative CostRaw upper bound when no
+// forecast is present.
+// A flat idle source (zero bound, no forecast pointer) therefore contributes
+// zero and cannot erase a valid destination forecast, while an old source
+// recipe degrades conservatively to its own bound.
+func composeSelectorExpectedExpense(source, destination selectorRecipe) (int64, error) {
+	expected := func(r selectorRecipe) int64 {
+		if r.ExpectedCostRaw != nil && *r.ExpectedCostRaw >= 0 && *r.ExpectedCostRaw <= r.CostRaw {
+			return *r.ExpectedCostRaw
+		}
+		return r.CostRaw
+	}
+	return budgetSum(expected(source), expected(destination))
 }
 
 // Price every compiled message, including repeated NAV reports. Share only
@@ -145,6 +204,7 @@ func priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane stri
 	if nowSlot < slot || nowSlot > out.ValidThroughSlot {
 		return out, budgetHold("selector_recipe_observation_expired")
 	}
+	expectedTotal := int64(0)
 	for _, s := range steps {
 		cost, err := ValueTransactionCost(s.message, s.debit, s.fee, s.rent, prices[key(s.debit)], sol, nowSlot)
 		if err != nil {
@@ -162,8 +222,47 @@ func priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane stri
 			return out, err
 		}
 		cost.ExecutionCost = &expense
+		// The expected swap expense prices the validated pre-threshold quote
+		// output at central observed prices. The guaranteed MinimumOutputRaw
+		// bound above remains the reservation and admission floor; fees and
+		// protocol rounding keep their bound expense on every step.
+		stepExpected := expense.TotalMicros
+		if r, ok := s.request.(JupiterSwapRequest); ok {
+			// The pre-threshold quoted output was already compiled and bound to
+			// the guaranteed minimum by input.decode; only the safe ordering is
+			// rechecked here — no redundant floor multiplication that could
+			// overflow at u64 edges.
+			if r.QuotedOutputRaw < r.MinimumOutputRaw {
+				return out, budgetHold("selector_expected_quote_invalid")
+			}
+			if credit == nil {
+				return out, budgetHold("missing_swap_execution_cost_bound")
+			}
+			dst := s.effects.Accounts[1]
+			inValue, err := selectorMidpointPriceValue(prices[key(s.debit)], s.debit.Raw, s.debit.Mint, s.debit.TokenProgram, nowSlot)
+			if err != nil {
+				return out, err
+			}
+			outValue, err := selectorMidpointPriceValue(*credit, r.QuotedOutputRaw, dst.Mint, dst.Owner, nowSlot)
+			if err != nil {
+				return out, err
+			}
+			loss := int64(0)
+			if inValue > outValue {
+				loss = inValue - outValue
+			}
+			if stepExpected, err = budgetSum(expense.NetworkMicros, loss); err != nil {
+				return out, err
+			}
+			if stepExpected > expense.TotalMicros {
+				stepExpected = expense.TotalMicros
+			}
+		}
 		out.CostRaw, err = budgetSum(out.CostRaw, expense.TotalMicros)
 		if err != nil {
+			return out, err
+		}
+		if expectedTotal, err = budgetSum(expectedTotal, stepExpected); err != nil {
 			return out, err
 		}
 		out.ValidThroughSlot = min(out.ValidThroughSlot, cost.ValidThroughSlot)
@@ -172,6 +271,10 @@ func priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane stri
 	if nowSlot > out.ValidThroughSlot {
 		return out, budgetHold("selector_recipe_observation_expired")
 	}
+	if expectedTotal > out.CostRaw {
+		expectedTotal = out.CostRaw
+	}
+	out.ExpectedCostRaw = &expectedTotal
 	raw, err := json.Marshal(struct {
 		Kind, Lane  string
 		MinimumSlot int64
