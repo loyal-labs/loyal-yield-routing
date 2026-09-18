@@ -10,11 +10,16 @@ import (
 // vault signer through its adaptor CPI. The direct adaptor instruction and the
 // consuming Voltr instruction must be the first and second instruction of one
 // Squads sync payload; the ticket is never valid across transactions.
+//
+// Pinned to the strategy-two cutover: seed "report_ticket" plus the
+// strategy-two adaptor config under the adaptor program (bump 255), observed
+// disarmed with zero sequences at finalized slot 446295496. It replaces the
+// retired v2 ticket C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5 (bump 254).
 const (
-	reportTicketPDA         = "C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5"
+	reportTicketPDA         = "8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq"
 	reportTicketStateLength = 96
 	reportTicketVersion     = byte(1)
-	reportTicketBump        = byte(254)
+	reportTicketBump        = byte(255)
 	reportTicketDeposit     = byte(0)
 	reportTicketWithdraw    = byte(1)
 	reportTicketArmWireLen  = 79

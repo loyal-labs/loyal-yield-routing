@@ -447,6 +447,30 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0073_backyard_rwa_expired_absent_failure.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 74,
+        name: "backyard_rwa_phase3_journal_actions",
+        sql: include_str!("../../../loyal-yield-store/migrations/0074_backyard_rwa_phase3_journal_actions.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 75,
+        name: "backyard_rwa_setup_pre_simulation_wire",
+        sql: include_str!("../../../loyal-yield-store/migrations/0075_backyard_rwa_setup_pre_simulation_wire.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 76,
+        name: "backyard_rwa_manual_recovery_latch",
+        sql: include_str!("../../../loyal-yield-store/migrations/0076_backyard_rwa_manual_recovery_latch.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 77,
+        name: "backyard_rwa_manual_recovery_generation",
+        sql: include_str!("../../../loyal-yield-store/migrations/0077_backyard_rwa_manual_recovery_generation.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -4034,6 +4058,195 @@ mod tests {
                 Some(name),
             );
         }
+    }
+
+    #[test]
+    fn production_registry_includes_idempotent_manual_recovery_latch_backfill() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 76)
+            .expect("migration 76 exists in the production runner");
+        assert_eq!(migration.name, "backyard_rwa_manual_recovery_latch");
+        for required in [
+            "CREATE TABLE IF NOT EXISTS loyal_yield.backyard_manual_recovery_latches",
+            "INSERT INTO loyal_yield.backyard_manual_recovery_latches",
+            "HOLD_MANUAL_RECOVERY",
+            "HOLD_CLEARED",
+            "ON CONFLICT (route_key) DO UPDATE",
+        ] {
+            assert!(
+                migration.sql.contains(required),
+                "migration 76 lacks {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn production_registry_includes_generation_fenced_manual_recovery_latch() {
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 77)
+            .expect("migration 77 exists in the production runner");
+        assert_eq!(migration.name, "backyard_rwa_manual_recovery_generation");
+        assert!(migration
+            .sql
+            .contains("ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 0"));
+    }
+
+    #[tokio::test]
+    async fn manual_recovery_latch_migration_backfills_terminal_hold() {
+        let Ok(database_url) = env::var("PHASE3_TEST_DATABASE_URL") else {
+            eprintln!("PHASE3_TEST_DATABASE_URL not set; skipping database regression");
+            return;
+        };
+        let options =
+            PgConnectOptions::from_str(&database_url).expect("parse disposable database URL");
+        assert!(
+            options
+                .get_host()
+                .starts_with("/private/tmp/backyard-phase3-pg.")
+                || database_url.contains("/private/tmp/backyard-phase3-pg."),
+            "refusing non-disposable database host"
+        );
+        assert_eq!(
+            options.get_database(),
+            Some("phase3_budget_test"),
+            "refusing non-disposable database name"
+        );
+        let pool = connect(&database_url)
+            .await
+            .expect("connect to disposable migration database");
+        sqlx::raw_sql(
+            r#"
+            CREATE SCHEMA IF NOT EXISTS loyal_yield;
+            DROP TABLE IF EXISTS loyal_yield.backyard_manual_recovery_latches;
+            DROP TABLE IF EXISTS loyal_yield.multiply_operations;
+            DROP TABLE IF EXISTS loyal_yield.multiply_route_states;
+            CREATE TABLE loyal_yield.multiply_route_states (
+                route_key TEXT PRIMARY KEY
+            );
+            CREATE TABLE loyal_yield.multiply_operations (
+                operation_id TEXT PRIMARY KEY,
+                route_key TEXT NOT NULL REFERENCES loyal_yield.multiply_route_states(route_key),
+                cycle BIGINT NOT NULL,
+                engine_version TEXT NOT NULL,
+                action TEXT NOT NULL,
+                status TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                strategy_key TEXT,
+                expected_effects JSONB NOT NULL,
+                recovery_reason TEXT,
+                confirmed_slot BIGINT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+            );
+            INSERT INTO loyal_yield.multiply_route_states(route_key)
+            VALUES
+                ('rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh'),
+                ('rwa-multiply:pre-v76-cleared');
+            INSERT INTO loyal_yield.multiply_operations (
+                operation_id, route_key, cycle, engine_version, action, status,
+                idempotency_key, strategy_key, expected_effects, recovery_reason,
+                confirmed_slot
+            ) VALUES (
+                'pre-v76-manual-recovery-hold',
+                'rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh',
+                1, 'backyard_rwa_v1', 'HOLD_MANUAL_RECOVERY', 'manual_recovery',
+                'pre-v76-manual-recovery-key', 'OnRe/ONyc/USDC',
+                '{"decision":{"reason":"preseeded_hold","observationId":"preseeded-observation","observationSlot":445223838}}'::jsonb,
+                'preseeded_hold', 445223838
+            );
+            INSERT INTO loyal_yield.multiply_operations (
+                operation_id, route_key, cycle, engine_version, action, status,
+                idempotency_key, strategy_key, expected_effects, recovery_reason,
+                confirmed_slot, updated_at
+            ) VALUES
+            (
+                'pre-v76-cleared-hold', 'rwa-multiply:pre-v76-cleared', 1,
+                'backyard_rwa_v1', 'HOLD_MANUAL_RECOVERY', 'manual_recovery',
+                'pre-v76-cleared-hold-key', 'OnRe/ONyc/USDC',
+                '{"decision":{"reason":"already_cleared","observationId":"cleared-observation","observationSlot":445223839}}'::jsonb,
+                'already_cleared', 445223839, '2026-01-01T00:00:00Z'
+            ),
+            (
+                'pre-v76-cleared-clear', 'rwa-multiply:pre-v76-cleared', 1,
+                'backyard_rwa_v1', 'HOLD_CLEARED', 'manual_recovery',
+                'pre-v76-cleared-clear-key', 'OnRe/ONyc/USDC',
+                '{"clearedReason":"reviewed","latchGeneration":1}'::jsonb,
+                'reviewed', NULL, '2026-01-02T00:00:00Z'
+            );
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed terminal hold before migration");
+
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 76)
+            .expect("migration 76 exists");
+        apply_migration(&pool, migration)
+            .await
+            .expect("apply migration 76 through production registry");
+
+        let latch: (String, String, i64) = sqlx::query_as(
+            "SELECT reason, observation_id, observation_slot FROM loyal_yield.backyard_manual_recovery_latches WHERE route_key = $1",
+        )
+        .bind("rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh")
+        .fetch_one(&pool)
+        .await
+        .expect("migration 76 backfilled the terminal hold");
+        assert_eq!(
+            latch,
+            (
+                "preseeded_hold".to_owned(),
+                "preseeded-observation".to_owned(),
+                445223838
+            )
+        );
+
+        let cleared_latch: Option<(String,)> = sqlx::query_as(
+            "SELECT route_key FROM loyal_yield.backyard_manual_recovery_latches WHERE route_key = $1",
+        )
+        .bind("rwa-multiply:pre-v76-cleared")
+        .fetch_optional(&pool)
+        .await
+        .expect("migration 76 negative backfill query succeeds");
+        assert!(
+            cleared_latch.is_none(),
+            "a hold with a later HOLD_CLEARED must not be backfilled"
+        );
+
+        apply_migration(&pool, migration)
+            .await
+            .expect("migration 76 is idempotent with an active latch");
+
+        let generation_migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == 77)
+            .expect("migration 77 exists");
+        apply_migration(&pool, generation_migration)
+            .await
+            .expect("apply migration 77 through production registry");
+        let latch_with_generation: (String, String, i64, i64) = sqlx::query_as(
+            "SELECT reason, observation_id, observation_slot, generation FROM loyal_yield.backyard_manual_recovery_latches WHERE route_key = $1",
+        )
+        .bind("rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh")
+        .fetch_one(&pool)
+        .await
+        .expect("migration 77 adds generation to the backfilled latch");
+        assert_eq!(
+            latch_with_generation,
+            (
+                "preseeded_hold".to_owned(),
+                "preseeded-observation".to_owned(),
+                445223838,
+                0
+            )
+        );
+        apply_migration(&pool, generation_migration)
+            .await
+            .expect("migration 77 is idempotent");
+        pool.close().await;
     }
 
     #[test]

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -14,12 +15,16 @@ import (
 )
 
 type RPCClient struct {
-	url          string
-	client       *http.Client
-	retryBackoff time.Duration
+	url               string
+	client            *http.Client
+	retryBackoff      time.Duration
+	fixedRetryBackoff bool
+	retryDeadline     time.Time
+	now               func() time.Time
+	sleep             func(context.Context, time.Duration) error
 }
 
-const readOnlyRPCAttempts = 3
+const readOnlyRPCAttempts = 5
 
 type ConfirmedAccount struct {
 	Address    string
@@ -34,6 +39,37 @@ type LatestBlockhash struct {
 	LastValidBlockHeight int64
 }
 
+type MessageFeeObservation struct {
+	MessageSHA256 string `json:"messageSha256"`
+	Slot          int64  `json:"slot"`
+	Lamports      uint64 `json:"lamports"`
+}
+
+// ObserveMessageFee asks the chain to price the exact unsigned message,
+// including its compute-budget instructions. Null (expired blockhash) or an
+// incoherent slot is a HOLD, never a zero-fee assumption.
+func (c *RPCClient) ObserveMessageFee(ctx context.Context, message []byte, minimumSlot int64) (MessageFeeObservation, error) {
+	if _, err := checkedUnsignedMessage(message); err != nil {
+		return MessageFeeObservation{}, err
+	}
+	if minimumSlot <= 0 {
+		return MessageFeeObservation{}, budgetHold("invalid_fee_observation_slot")
+	}
+	var result struct {
+		Context struct {
+			Slot int64 `json:"slot"`
+		} `json:"context"`
+		Value *uint64 `json:"value"`
+	}
+	if err := c.call(ctx, "getFeeForMessage", []any{base64.StdEncoding.EncodeToString(message), map[string]any{"commitment": "confirmed", "minContextSlot": minimumSlot}}, &result); err != nil {
+		return MessageFeeObservation{}, budgetHold("network_fee_unavailable")
+	}
+	if result.Value == nil || *result.Value == 0 || result.Context.Slot < minimumSlot {
+		return MessageFeeObservation{}, budgetHold("network_fee_unavailable")
+	}
+	return MessageFeeObservation{MessageSHA256: sha256Bytes(message), Slot: result.Context.Slot, Lamports: *result.Value}, nil
+}
+
 type TransactionTokenBalance struct {
 	Address, OwnerProgram, Mint, Authority string
 	Raw                                    uint64
@@ -45,6 +81,7 @@ type ProgramReturnData struct {
 }
 
 type ConfirmedTransactionEvidence struct {
+	Finalized         bool
 	Signature         string
 	Slot              int64
 	PreTokenBalances  []TransactionTokenBalance
@@ -77,8 +114,17 @@ func (c *RPCClient) call(ctx context.Context, method string, params []any, outpu
 		attempts = 1
 	}
 	for attempt := 0; attempt < attempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !c.retryDeadline.IsZero() && !c.clockNow().Before(c.retryDeadline) {
+			return context.DeadlineExceeded
+		}
 		freshOutput := reflect.New(outputValue.Elem().Type())
 		err = c.callOnce(ctx, method, payload, freshOutput.Interface())
+		if !c.retryDeadline.IsZero() && !c.clockNow().Before(c.retryDeadline) {
+			return context.DeadlineExceeded
+		}
 		if err == nil {
 			outputValue.Elem().Set(freshOutput.Elem())
 			return nil
@@ -86,30 +132,61 @@ func (c *RPCClient) call(ctx context.Context, method string, params []any, outpu
 		if attempt+1 == attempts {
 			break
 		}
-		backoff := c.retryBackoff * time.Duration(attempt+1)
+		backoff := c.retryBackoff
+		if !c.fixedRetryBackoff {
+			backoff *= time.Duration(attempt + 1)
+		}
 		if backoff <= 0 {
 			continue
 		}
-		timer := time.NewTimer(backoff)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
+		if err := c.wait(ctx, backoff); err != nil {
+			return err
 		}
 	}
 	return err
 }
 
+func (c *RPCClient) clockNow() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *RPCClient) wait(ctx context.Context, duration time.Duration) error {
+	if !c.retryDeadline.IsZero() {
+		remaining := c.retryDeadline.Sub(c.clockNow())
+		if remaining <= 0 {
+			return context.DeadlineExceeded
+		}
+		if duration > remaining {
+			duration = remaining
+		}
+	}
+	if c.sleep != nil {
+		return c.sleep(ctx, duration)
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func (c *RPCClient) callOnce(ctx context.Context, method string, payload []byte, output any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(payload))
 	if err != nil {
-		return err
+		return fmt.Errorf("RPC %s request to %s failed", method, sanitizeRPCURL(c.url))
 	}
 	request.Header.Set("content-type", "application/json")
 	response, err := c.client.Do(request)
 	if err != nil {
-		return err
+		// url.Error and transport errors commonly echo the complete request URL.
+		// Keep credentials, query parameters, and path material out of worker logs.
+		return fmt.Errorf("RPC %s request to %s failed", method, sanitizeRPCURL(c.url))
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -131,6 +208,16 @@ func (c *RPCClient) callOnce(ctx context.Context, method string, payload []byte,
 	return json.Unmarshal(envelope.Result, output)
 }
 
+// sanitizeRPCURL is the only URL representation allowed in RPC errors. In
+// particular, URL.User, RawQuery, and Fragment are deliberately discarded.
+func sanitizeRPCURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "<rpc>"
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
 func (c *RPCClient) ConfirmedSlot(ctx context.Context) (int64, error) {
 	var slot int64
 	if err := c.call(ctx, "getSlot", []any{map[string]string{"commitment": "confirmed"}}, &slot); err != nil {
@@ -142,6 +229,42 @@ func (c *RPCClient) ConfirmedSlot(ctx context.Context) (int64, error) {
 	return slot, nil
 }
 
+// ConfirmedBlockTime returns the chain's own unix seconds for a slot. Kamino
+// oracle freshness is judged against block time, never the worker's clock: the
+// two can drift by more than the freshness window the audit requires.
+func (c *RPCClient) ConfirmedBlockTime(ctx context.Context, slot int64) (int64, error) {
+	var blockTime *int64
+	if err := c.call(ctx, "getBlockTime", []any{slot}, &blockTime); err != nil {
+		return 0, confirmedObservationUnavailable(err)
+	}
+	if blockTime == nil || *blockTime <= 0 {
+		return 0, confirmedObservationUnavailable(fmt.Errorf("confirmed block time unavailable for slot %d", slot))
+	}
+	return *blockTime, nil
+}
+
+func (c *RPCClient) FinalizedSlot(ctx context.Context) (int64, error) {
+	var slot int64
+	if err := c.call(ctx, "getSlot", []any{map[string]string{"commitment": "finalized"}}, &slot); err != nil {
+		return 0, confirmedObservationUnavailable(err)
+	}
+	if slot <= 0 {
+		return 0, confirmedObservationUnavailable(fmt.Errorf("finalized slot unavailable"))
+	}
+	return slot, nil
+}
+
+func (c *RPCClient) GenesisHash(ctx context.Context) (string, error) {
+	var genesis string
+	if err := c.call(ctx, "getGenesisHash", []any{}, &genesis); err != nil {
+		return "", confirmedObservationUnavailable(err)
+	}
+	if genesis == "" {
+		return "", confirmedObservationUnavailable(fmt.Errorf("genesis hash unavailable"))
+	}
+	return genesis, nil
+}
+
 // GetMultipleAccounts reads one coherent confirmed account set. The returned
 // context slot is the only slot callers may use for the resulting Snapshot.
 func (c *RPCClient) GetMultipleAccounts(
@@ -150,6 +273,15 @@ func (c *RPCClient) GetMultipleAccounts(
 	minContextSlot int64,
 ) (int64, []ConfirmedAccount, error) {
 	return c.getMultipleAccounts(ctx, addresses, minContextSlot, nil)
+}
+
+// strategyReceiptFinalized re-reads only the strategy receipt at finalized
+// commitment. A null there is settled ledger state; the same null at confirmed
+// commitment may still be a replication artifact, so it stays a retryable tick
+// error until this read settles the question.
+func (c *RPCClient) strategyReceiptFinalized(ctx context.Context, minContextSlot int64) (int64, []ConfirmedAccount, error) {
+	return c.getMultipleAccountsAtCommitment(ctx, []string{bridgeStrategyReceipt}, minContextSlot,
+		map[string]struct{}{bridgeStrategyReceipt: {}}, "finalized")
 }
 
 // GetMultipleAccountsWithOptional permits only caller-pinned lifecycle
@@ -183,6 +315,15 @@ func (c *RPCClient) getMultipleAccounts(
 	minContextSlot int64,
 	optionalAddresses map[string]struct{},
 ) (int64, []ConfirmedAccount, error) {
+	return c.getMultipleAccountsAtCommitment(ctx, addresses, minContextSlot, optionalAddresses, "confirmed")
+}
+
+// Finalized setup seed reads share the existing decoder; ordinary worker
+// observations retain their confirmed default.
+func (c *RPCClient) getMultipleAccountsAtCommitment(ctx context.Context, addresses []string, minContextSlot int64, optionalAddresses map[string]struct{}, commitment string) (int64, []ConfirmedAccount, error) {
+	if commitment != "confirmed" && commitment != "finalized" {
+		return 0, nil, fmt.Errorf("unsupported account commitment")
+	}
 	if len(addresses) == 0 || minContextSlot <= 0 {
 		return 0, nil, fmt.Errorf("account addresses and minContextSlot are required")
 	}
@@ -198,7 +339,7 @@ func (c *RPCClient) getMultipleAccounts(
 		} `json:"value"`
 	}
 	err := c.call(ctx, "getMultipleAccounts", []any{addresses, map[string]any{
-		"commitment": "confirmed", "encoding": "base64", "minContextSlot": minContextSlot,
+		"commitment": commitment, "encoding": "base64", "minContextSlot": minContextSlot,
 	}}, &result)
 	if err != nil {
 		return 0, nil, confirmedObservationUnavailable(err)
@@ -208,12 +349,15 @@ func (c *RPCClient) getMultipleAccounts(
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for index, value := range result.Value {
-		if value == nil || value.Owner == "" {
+		if value == nil {
 			if _, optional := optionalAddresses[addresses[index]]; optional {
 				accounts[index] = ConfirmedAccount{Address: addresses[index]}
 				continue
 			}
 			return 0, nil, fmt.Errorf("required account %s is absent", addresses[index])
+		}
+		if value.Owner == "" {
+			return 0, nil, confirmedObservationUnavailable(fmt.Errorf("account %s has no owner", addresses[index]))
 		}
 		var encoded []string
 		if err := json.Unmarshal(value.Data, &encoded); err != nil || len(encoded) != 2 || encoded[1] != "base64" {
@@ -229,6 +373,85 @@ func (c *RPCClient) getMultipleAccounts(
 		}
 	}
 	return result.Context.Slot, accounts, nil
+}
+
+// ProgramDataDeploySlots resolves each pinned upgradeable program to its
+// ProgramData account and returns the last-deploy slot recorded there. The
+// read is deliberately two-phase: a program account's 36-byte upgradeable
+// header names its ProgramData account, and the u64 at offset 4 of that
+// account is the slot of the last deploy. An in-place upgrade therefore
+// changes exactly the value this worker compares against its pinned slots.
+// programIdentityAccounts is the confirmed-state reader behind M6. It returns
+// the pinned program header accounts (36 bytes) and their ProgramData accounts
+// (12 bytes, or the full image when full is set). An absent account is a
+// confirmed identity failure rather than a transport error, so the watcher can
+// hold the route durably while only a failed call surfaces as an error.
+func (c *RPCClient) programIdentityAccounts(ctx context.Context, full bool) ([]programIdentityImage, error) {
+	programs := []string{bridgeVoltrProgram, bridgeAdaptorProgram}
+	programDataAddresses := []string{voltrProgramDataAddress, adaptorProgramDataAddress}
+	images, err := c.readProgramIdentityAccounts(ctx, programs, programHeaderLength)
+	if err != nil {
+		return nil, err
+	}
+	if full {
+		// Full ProgramData images are read one address at a time: the pinned
+		// Voltr image is over a megabyte and batch responses are size-capped.
+		for _, address := range programDataAddresses {
+			more, err := c.readProgramIdentityAccounts(ctx, []string{address}, 0)
+			if err != nil {
+				return nil, err
+			}
+			images = append(images, more...)
+		}
+		return images, nil
+	}
+	dataImages, err := c.readProgramIdentityAccounts(ctx, programDataAddresses, programDataHeaderLength)
+	if err != nil {
+		return nil, err
+	}
+	return append(images, dataImages...), nil
+}
+
+// readProgramIdentityAccounts reads one base64 account batch. A length of zero
+// or less asks the node for the whole account instead of a data slice.
+func (c *RPCClient) readProgramIdentityAccounts(ctx context.Context, addresses []string, length int) ([]programIdentityImage, error) {
+	var result struct {
+		Value []*struct {
+			Owner      string          `json:"owner"`
+			Lamports   uint64          `json:"lamports"`
+			Executable bool            `json:"executable"`
+			Data       json.RawMessage `json:"data"`
+		} `json:"value"`
+	}
+	options := map[string]any{"commitment": "confirmed", "encoding": "base64"}
+	if length > 0 {
+		options["dataSlice"] = map[string]any{"offset": 0, "length": length}
+	}
+	if err := c.call(ctx, "getMultipleAccounts", []any{addresses, options}, &result); err != nil {
+		return nil, confirmedObservationUnavailable(err)
+	}
+	if len(result.Value) != len(addresses) {
+		return nil, confirmedObservationUnavailable(fmt.Errorf("incoherent program identity response"))
+	}
+	images := make([]programIdentityImage, 0, len(addresses))
+	for index, value := range result.Value {
+		if value == nil {
+			continue
+		}
+		var encoded []string
+		if err := json.Unmarshal(value.Data, &encoded); err != nil || len(encoded) != 2 || encoded[1] != "base64" {
+			return nil, confirmedObservationUnavailable(fmt.Errorf("program identity account %s has invalid encoding", addresses[index]))
+		}
+		data, err := base64.StdEncoding.DecodeString(encoded[0])
+		if err != nil {
+			return nil, confirmedObservationUnavailable(fmt.Errorf("decode program identity account %s: %w", addresses[index], err))
+		}
+		images = append(images, programIdentityImage{
+			Address: addresses[index], Owner: value.Owner, Lamports: value.Lamports,
+			Executable: value.Executable, Data: data,
+		})
+	}
+	return images, nil
 }
 
 func (c *RPCClient) LatestBlockhash(ctx context.Context) (LatestBlockhash, error) {
@@ -279,6 +502,9 @@ func (c *RPCClient) SimulateSignedTransaction(ctx context.Context, signedWire []
 		if len(logTail) > 8 {
 			logTail = logTail[len(logTail)-8:]
 		}
+		if squadsSpendingLimitExceeded(result.Value.Err, result.Value.Logs) {
+			return SimulationResult{}, &SquadsSpendingLimitError{Slot: result.Context.Slot, Err: append([]byte(nil), result.Value.Err...)}
+		}
 		return SimulationResult{}, fmt.Errorf("signed transaction simulation failed: slot=%d err=%s log_tail=%q", result.Context.Slot, string(result.Value.Err), strings.Join(logTail, " | "))
 	}
 	return SimulationResult{Slot: result.Context.Slot, UnitsConsumed: result.Value.UnitsConsumed, Logs: append([]string(nil), result.Value.Logs...)}, nil
@@ -286,6 +512,19 @@ func (c *RPCClient) SimulateSignedTransaction(ctx context.Context, signedWire []
 
 // SendSignedTransactionOnce submits exactly the persisted wire with RPC retries
 // disabled. Callers must durably record broadcast_intent before invoking it.
+// SquadsSpendingLimitError marks a simulation the pinned Squads program
+// refused with its spending-limit-exceeded custom error (6073). It is a
+// specific, non-retryable pre-broadcast refusal, never a generic simulation
+// failure.
+type SquadsSpendingLimitError struct {
+	Slot int64
+	Err  json.RawMessage
+}
+
+func (e *SquadsSpendingLimitError) Error() string {
+	return fmt.Sprintf("squads spending limit exceeded: slot=%d err=%s", e.Slot, string(e.Err))
+}
+
 func (c *RPCClient) SendSignedTransactionOnce(ctx context.Context, signedWire []byte, expectedSignature string) (string, error) {
 	if len(signedWire) == 0 || expectedSignature == "" {
 		return "", fmt.Errorf("persisted signed wire and signature are required")
@@ -304,27 +543,54 @@ func (c *RPCClient) SendSignedTransactionOnce(ctx context.Context, signedWire []
 	return signature, nil
 }
 
+type signatureStatusRow struct {
+	Slot               int64           `json:"slot"`
+	Err                json.RawMessage `json:"err"`
+	ConfirmationStatus string          `json:"confirmationStatus"`
+}
+
+// signatureObservation is the settled invariant shared by the singular and the
+// batch reader: a processed-only result can still be forked away, so it proves
+// nothing about failure or success and may never drive a terminal transition.
+// Only a settled observation reports Failed; `Confirmed` additionally excludes
+// a settled on-chain error.
+func signatureObservation(row *signatureStatusRow) SignatureObservation {
+	settled := row.Slot > 0 && (row.ConfirmationStatus == "confirmed" || row.ConfirmationStatus == "finalized")
+	failed := settled && len(row.Err) > 0 && string(row.Err) != "null"
+	return SignatureObservation{
+		Found: true, Confirmed: settled && !failed,
+		Finalized: settled && row.ConfirmationStatus == "finalized",
+		Settled:   settled, ProcessedOnly: !settled,
+		ConfirmationSlot: row.Slot, Failed: failed,
+	}
+}
+
 func (c *RPCClient) SignatureStatus(ctx context.Context, signature string) (SignatureObservation, error) {
 	if signature == "" {
 		return SignatureObservation{}, fmt.Errorf("transaction signature is required")
 	}
 	var result struct {
-		Value []*struct {
-			Slot               int64           `json:"slot"`
-			Err                json.RawMessage `json:"err"`
-			ConfirmationStatus string          `json:"confirmationStatus"`
-		} `json:"value"`
+		Value []*signatureStatusRow `json:"value"`
 	}
 	if err := c.call(ctx, "getSignatureStatuses", []any{[]string{signature}, map[string]bool{"searchTransactionHistory": true}}, &result); err != nil {
 		return SignatureObservation{}, err
 	}
-	if len(result.Value) != 1 || result.Value[0] == nil {
+	if len(result.Value) != 1 {
+		return SignatureObservation{}, fmt.Errorf("signature status response has wrong cardinality")
+	}
+	if result.Value[0] == nil {
 		return SignatureObservation{Found: false}, nil
 	}
-	status := result.Value[0]
-	failed := len(status.Err) > 0 && string(status.Err) != "null"
-	confirmed := !failed && status.Slot > 0 && (status.ConfirmationStatus == "confirmed" || status.ConfirmationStatus == "finalized")
-	return SignatureObservation{Found: true, Confirmed: confirmed, ConfirmationSlot: status.Slot, Failed: failed}, nil
+	return signatureObservation(result.Value[0]), nil
+}
+
+// FinalizedSignatureStatus re-reads a signature before an unreadable failure
+// receipt may terminate an operation durably. getSignatureStatuses reports the
+// highest confirmation level the node has observed, so only an observation
+// with Finalized - or a settled success - proves the failure survived fork
+// risk; a confirmed-only or absent signature keeps the operation observing.
+func (c *RPCClient) FinalizedSignatureStatus(ctx context.Context, signature string) (SignatureObservation, error) {
+	return c.SignatureStatus(ctx, signature)
 }
 
 // ConfirmedTransaction reads the immutable receipt for the exact persisted
@@ -332,6 +598,14 @@ func (c *RPCClient) SignatureStatus(ctx context.Context, signature string) (Sign
 // balances rather than a later account read that can include unrelated user
 // deposits or claims.
 func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) (ConfirmedTransactionEvidence, error) {
+	return c.transactionReceipt(ctx, signature, "confirmed")
+}
+
+func (c *RPCClient) FinalizedTransaction(ctx context.Context, signature string) (ConfirmedTransactionEvidence, error) {
+	return c.transactionReceipt(ctx, signature, "finalized")
+}
+
+func (c *RPCClient) transactionReceipt(ctx context.Context, signature, commitment string) (ConfirmedTransactionEvidence, error) {
 	if signature == "" {
 		return ConfirmedTransactionEvidence{}, fmt.Errorf("transaction signature is required")
 	}
@@ -367,7 +641,7 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 		} `json:"transaction"`
 	}
 	if err := c.call(ctx, "getTransaction", []any{signature, map[string]any{
-		"commitment": "confirmed", "encoding": "json", "maxSupportedTransactionVersion": 0,
+		"commitment": commitment, "encoding": "json", "maxSupportedTransactionVersion": 0,
 	}}, &result); err != nil {
 		return ConfirmedTransactionEvidence{}, err
 	}
@@ -409,6 +683,7 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 		return ConfirmedTransactionEvidence{}, err
 	}
 	evidence := ConfirmedTransactionEvidence{
+		Finalized: commitment == "finalized",
 		Signature: signature, Slot: result.Slot, PreTokenBalances: pre, PostTokenBalances: post,
 		Logs: append([]string(nil), result.Meta.LogMessages...),
 	}
@@ -427,9 +702,48 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 	return evidence, nil
 }
 
+// FailedTransactionEvidence reads the immutable failure receipt for the exact
+// persisted signature. The success-path receipt readers reject a non-null
+// meta.err; this reader keeps it, because classifying a failed broadcast needs
+// the RPC error shape and the failing program's log lines. Only a finalized
+// receipt is acceptable: a failure can only be classified once it provably
+// cannot be forked away.
+func (c *RPCClient) FailedTransactionEvidence(ctx context.Context, signature string) (ConfirmedFailureEvidence, error) {
+	if signature == "" {
+		return ConfirmedFailureEvidence{}, fmt.Errorf("transaction signature is required")
+	}
+	var result struct {
+		Slot int64 `json:"slot"`
+		Meta struct {
+			Err         json.RawMessage `json:"err"`
+			LogMessages []string        `json:"logMessages"`
+		} `json:"meta"`
+	}
+	if err := c.call(ctx, "getTransaction", []any{signature, map[string]any{
+		"commitment": "finalized", "encoding": "json", "maxSupportedTransactionVersion": 0,
+	}}, &result); err != nil {
+		return ConfirmedFailureEvidence{}, err
+	}
+	if result.Slot <= 0 || len(result.Meta.Err) == 0 || string(result.Meta.Err) == "null" {
+		return ConfirmedFailureEvidence{}, fmt.Errorf("failed transaction receipt is unavailable")
+	}
+	return ConfirmedFailureEvidence{
+		Slot: result.Slot, Err: append([]byte(nil), result.Meta.Err...),
+		Logs: append([]string(nil), result.Meta.LogMessages...),
+	}, nil
+}
+
 func (c *RPCClient) ConfirmedBlockHeight(ctx context.Context) (int64, error) {
+	return c.blockHeight(ctx, "confirmed")
+}
+
+func (c *RPCClient) FinalizedBlockHeight(ctx context.Context) (int64, error) {
+	return c.blockHeight(ctx, "finalized")
+}
+
+func (c *RPCClient) blockHeight(ctx context.Context, commitment string) (int64, error) {
 	var height int64
-	if err := c.call(ctx, "getBlockHeight", []any{map[string]string{"commitment": "confirmed"}}, &height); err != nil {
+	if err := c.call(ctx, "getBlockHeight", []any{map[string]string{"commitment": commitment}}, &height); err != nil {
 		return 0, err
 	}
 	if height <= 0 {

@@ -39,8 +39,9 @@ describe("RWA Multiply custody and swap catalog", () => {
     Buffer.from([209, 152, 83, 147, 124, 254, 216, 233]).copy(data);
     data.writeUInt16LE(50, 25);
     data[27] = 0;
-    data.writeBigUInt64LE(1_000_000n, data.length - 19);
-    data.writeBigUInt64LE(990_000n, data.length - 11);
+    data.writeBigUInt64LE(1_000_000n, 9);
+    data.writeBigUInt64LE(990_000n, 17);
+    data.writeUInt32LE(1, 31);
     const instruction = new TransactionInstruction({
       programId: new PublicKey(RWA_MULTIPLY_ROUTE.programs.jupiter), keys, data,
     });
@@ -195,8 +196,11 @@ describe("RWA Multiply custody and swap catalog", () => {
     Buffer.from([209, 152, 83, 147, 124, 254, 216, 233]).copy(data);
     data.writeUInt16LE(50, 25);
     data[27] = 0;
-    data.writeBigUInt64LE(1_000_000n, data.length - 19);
-    data.writeBigUInt64LE(990_000n, data.length - 11);
+    // V2 amounts precede its variable route plan; the old tail-only cache
+    // fixture falsely confirmed the original validator defect.
+    data.writeBigUInt64LE(1_000_000n, 9);
+    data.writeBigUInt64LE(990_000n, 17);
+    data.writeUInt32LE(1, 31);
     const cache = {
       schema: "loyal-backyard-rwa-jupiter-header-evidence/v2",
       rows: [{

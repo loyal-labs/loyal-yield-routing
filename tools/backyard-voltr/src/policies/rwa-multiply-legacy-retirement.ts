@@ -4,30 +4,29 @@ import { AccountRole, type Instruction } from "@solana/kit";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import { deriveStrategyTwoPolicySeeds } from "../domain/rwa-multiply-strategy2-route-spec.js";
 import { fromWeb3Instruction } from "../integrations/solana-compat.js";
 
-export const LEGACY_CUSTOM_POLICY_SEEDS = [53n, 54n, 55n, 56n] as const;
+/**
+ * The v2 bridge policies (seeds 62-65) are the retirement target once the
+ * strategy-two policies derived from the finalized Settings counter verify on
+ * chain. Their frozen data
+ * hashes are what the worker manifest pinned, so a removal transaction is only
+ * built against exactly these bytes.
+ */
+export const LEGACY_CUSTOM_POLICY_SEEDS = [62n, 63n, 64n, 65n] as const;
 export const LEGACY_CUSTOM_POLICY_DATA_SHA256 = [
-  "273996c2fc10054fea2f4f3ec0cc58792d0a6020fbee81ec61e52cf08d994eca",
-  "f5491d82f96a920dcd7db233cece5b45b7e808ce9d97c20aa0c286d8c5af20d9",
-  "a6f8fd75878c9f8b14da86d9bd57e40e441cc63ea7ef8c918d834517cd08ac44",
-  "af14e7d00fb1bae520a0f642c04b52a5e88c01ab1d211d9a8a1ac4a2abb8201e",
-] as const;
-
-export const REPLACEMENT_CUSTOM_POLICY_DATA_SHA256 = [
   "bda72932f474064fa3cd60ce91633acba35b2730e86b82f4352aa96a6738e2f4",
   "bf34a3e9c9c635c79a0d30e096b639a86d52e300ad113c81161e3486832d97ca",
   "ef8c231497fb2620b5930cfe5d329c871f103db6512781eb5487534db8b1291b",
   "84e8f6f881758cff1714ef743603c016024104f9834392c6fba693c3651b719c",
 ] as const;
 
-export const REPLACEMENT_CUSTOM_POLICY_IDENTITIES = ([62n, 63n, 64n, 65n] as const).map(
-  (seed, index) => ({
-    seed: seed.toString(),
-    policy: customPolicyAddress(seed),
-    dataSha256: REPLACEMENT_CUSTOM_POLICY_DATA_SHA256[index]!,
-  }),
-);
+/** Strategy-two replacement seeds: allocation, NAV refresh, staging, withdraw. */
+export function deriveStrategyTwoReplacementSeeds(policySeedBefore: bigint): readonly bigint[] {
+  const seeds = deriveStrategyTwoPolicySeeds(policySeedBefore);
+  return [seeds.allocation, seeds.navRefresh, seeds.stageWithdrawal, seeds.withdraw];
+}
 
 export function customPolicyAddress(seed: bigint): string {
   const seedBytes = Buffer.alloc(8);
@@ -44,6 +43,28 @@ export const LEGACY_CUSTOM_POLICY_ADDRESSES = LEGACY_CUSTOM_POLICY_SEEDS.map(cus
 
 function invariant(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
+}
+
+/**
+ * Strategy-two installation is intentionally allowed to overlap the legacy
+ * set. Retirement is a later, separately gated operation, so presence here
+ * is an expected cutover state rather than a failure.
+ */
+export function assertStrategyTwoInstallMayCoexist(
+  legacyPolicyAccounts: readonly unknown[],
+): void {
+  invariant(legacyPolicyAccounts.length === LEGACY_CUSTOM_POLICY_ADDRESSES.length,
+    "strategy-two install legacy coexistence read is incomplete");
+}
+
+/** The retirement wire is refused until all four derived replacements pass. */
+export function assertStrategyTwoReplacementPoliciesFinalized(
+  installed: Readonly<{ pass: boolean; rows: readonly Readonly<{ seed: string }>[] }>,
+  expectedSeeds: readonly bigint[],
+): void {
+  const expected = expectedSeeds.map(String);
+  invariant(installed.pass && JSON.stringify(installed.rows.map(({ seed }) => seed)) === JSON.stringify(expected),
+    `four finalized strategy-two replacement policies are required before legacy retirement; expected seeds ${expected.join(",")}`);
 }
 
 /** One Settings instruction removes only the four superseded bridge policies. */

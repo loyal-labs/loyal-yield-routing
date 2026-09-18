@@ -7,11 +7,11 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 import bs58 from "bs58";
 import { generated as squadsGenerated } from "@loyal-labs/loyal-smart-accounts-core";
 import { Connection, Keypair, PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import { runRustCompiler } from "../policies/compiler-build.js";
 import { resolveFreshJupiterEdge } from "../policies/rwa-multiply-jupiter-headers.js";
 import { buildExactJupiterSquadsExecution, signExactJupiterSquadsExecution } from "../verify/rwa-phase2-jupiter-execution.js";
 import { signingMaterialFromEnvironment } from "../integrations/signer.js";
@@ -73,11 +73,13 @@ export function validateFreshMapleExitHeader(row: any) {
 }
 
 function compilePolicy(input: Json): Json {
-  const result = spawnSync("cargo", ["run", "--quiet", "-p", "loyal-actions", "--bin", "compile-backyard-rwa-maple-exit-policy"], {
-    cwd: ROOT, input: JSON.stringify(input), encoding: "utf8", env: process.env,
+  const result = runRustCompiler<Json>({
+    compilerBinary: "compile-backyard-rwa-maple-exit-policy",
+    cwd: ROOT,
+    input: JSON.stringify(input),
+    label: "Maple seed-139 compiler",
   });
-  invariant(result.status === 0, `Maple seed-139 compiler failed: ${String(result.stderr).slice(0, 400)}`);
-  return JSON.parse(String(result.stdout)) as Json;
+  return { ...result.output, compiler: result.compiler };
 }
 
 function syntheticPolicy(compiled: Json): Json {

@@ -30,13 +30,56 @@ func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *RPCC
 			return rpc.getVoltrWithdrawalReceiptAccounts(ctx, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
 		},
 		accounts: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
-			if optional := optionalLifecycleObligations(addresses); len(optional) > 0 {
+			optional := optionalLifecycleObligations(addresses)
+			for _, candidate := range addresses {
+				// A null strategy receipt must reach the integrity classifier
+				// instead of failing the batch as a required absent account.
+				if candidate == bridgeStrategyReceipt {
+					optional = append(optional, candidate)
+					break
+				}
+			}
+			if len(optional) > 0 {
 				return rpc.GetMultipleAccountsWithOptional(ctx, addresses, minSlot, optional...)
 			}
 			return rpc.GetMultipleAccounts(ctx, addresses, minSlot)
 		},
-		now: func() time.Time { return time.Now().UTC() },
+		finalizedReceipt: rpc.strategyReceiptFinalized,
+		now:              func() time.Time { return time.Now().UTC() },
 	})
+}
+
+// observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment is the construction
+// refresh seam. It requires the same journal and verified-identity merge as the
+// outer production observation before any monitor sees this snapshot.
+func observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(
+	ctx context.Context,
+	rpc *RPCClient,
+	manifest RouteManifest,
+	enrich func(context.Context, *Observation) error,
+) (Observation, []ConfirmedAccount, error) {
+	if enrich == nil {
+		return Observation{}, nil, fmt.Errorf("route observation enrichment is required")
+	}
+	observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccounts(ctx, rpc, manifest)
+	if err != nil {
+		return observation, accounts, err
+	}
+	if enrich != nil {
+		if err := enrich(ctx, &observation); err != nil {
+			return Observation{}, nil, err
+		}
+	}
+	return observation, accounts, nil
+}
+
+func applyProgramIdentityObservation(observation *Observation, identity programIdentityObservation) {
+	if observation == nil {
+		return
+	}
+	observation.Snapshot.ProgramIdentityKnown = identity.Verified
+	observation.Snapshot.VoltrProgramDeploySlot = identity.VoltrProgramDeploySlot
+	observation.Snapshot.AdaptorProgramDeploySlot = identity.AdaptorProgramDeploySlot
 }
 
 // A full K-Lend withdrawal closes its obligation account. Prefer the selected
@@ -58,14 +101,23 @@ func optionalLifecycleObligations(addresses []string) []string {
 			break
 		}
 	}
+	for _, obligation := range []string{autoAUTOPYUSD.Kamino.Obligation, ethenaUSDePYUSD.Kamino.Obligation, primePRIMEPYUSD.Kamino.Obligation, primePRIMEUSDS.Kamino.Obligation} {
+		for _, candidate := range addresses {
+			if candidate == obligation {
+				optional = append(optional, obligation)
+				break
+			}
+		}
+	}
 	return optional
 }
 
 type routeObservationRuntime struct {
-	confirmedSlot func(context.Context) (int64, error)
-	receipts      func(context.Context, int64) (int64, []programAccount, error)
-	accounts      func(context.Context, []string, int64) (int64, []ConfirmedAccount, error)
-	now           func() time.Time
+	confirmedSlot    func(context.Context) (int64, error)
+	receipts         func(context.Context, int64) (int64, []programAccount, error)
+	accounts         func(context.Context, []string, int64) (int64, []ConfirmedAccount, error)
+	finalizedReceipt func(context.Context, int64) (int64, []ConfirmedAccount, error)
+	now              func() time.Time
 }
 
 func observeConfirmedRouteSnapshot(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, error) {
@@ -74,7 +126,7 @@ func observeConfirmedRouteSnapshot(ctx context.Context, manifest RouteManifest, 
 }
 
 func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {
-	if runtime.confirmedSlot == nil || runtime.receipts == nil || runtime.accounts == nil || runtime.now == nil {
+	if runtime.confirmedSlot == nil || runtime.receipts == nil || runtime.accounts == nil || runtime.finalizedReceipt == nil || runtime.now == nil {
 		return Observation{}, nil, fmt.Errorf("route observation runtime is incomplete")
 	}
 	minimumSlot, err := runtime.confirmedSlot(ctx)
@@ -100,6 +152,28 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if err != nil {
 			return Observation{}, nil, err
 		}
+		// A confirmed batch whose strategy receipt is foreign-owned or the wrong
+		// length is an observed integrity failure, not a transport fault. A null
+		// receipt only becomes one at finalized commitment: at confirmed
+		// commitment it can be a replication artifact and stays a retryable tick
+		// error. Transport failures above stay errors.
+		receipt := accountAt(accounts, bridgeStrategyReceipt)
+		if strategyReceiptIntegrityFault(receipt) {
+			if strategyReceiptAbsent(receipt) {
+				finalSlot, finalReceipts, err := runtime.finalizedReceipt(ctx, slot)
+				if err != nil {
+					return Observation{}, nil, err
+				}
+				if finalSlot < slot {
+					return Observation{}, nil, fmt.Errorf("finalized strategy receipt read predates the confirmed batch")
+				}
+				if !strategyReceiptAbsent(accountAt(finalReceipts, bridgeStrategyReceipt)) {
+					return Observation{}, nil, fmt.Errorf("strategy receipt absent at confirmed commitment but present at finalized commitment")
+				}
+			}
+			integrity := receiptIntegrityObservation(slot, route)
+			return integrity, accounts, nil
+		}
 		cutoverDrain := false
 		if route.Lane == SelectedRouteID {
 			legacyPosition, legacyErr := observePrimeUSDCFromFixedAccounts(ctx, runtime.accounts, slot, accounts)
@@ -120,6 +194,11 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		}
 		position, err := observeKaminoFromFixedAccounts(ctx, runtime.accounts, slot, accounts, route.Kamino)
 		if err != nil {
+			// A stale, paused, or emergency Kamino state is a decision input,
+			// not a broken observer: the tick holds with the audited reason.
+			if hold, ok := KaminoHealthHoldObservation(err, slot, runtime.now()); ok {
+				return hold, accounts, nil
+			}
 			return Observation{}, nil, err
 		}
 		afterSlot, afterReceipts, err := runtime.receipts(ctx, slot)
@@ -140,6 +219,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		}
 		nav, err := ComputeRouteNAVForRoute(slot, navAccounts, manifest, nil, route)
 		if err != nil {
+			if hold, ok := KaminoHealthHoldObservation(err, slot, runtime.now()); ok {
+				return hold, accounts, nil
+			}
 			return Observation{}, nil, err
 		}
 		collateralMint, err := decodeBase58PublicKey(route.Kamino.CollateralMint)
@@ -169,6 +251,10 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if err != nil {
 			return Observation{}, nil, err
 		}
+		ticket, ticketErr := decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
+		if ticketErr != nil {
+			return Observation{}, nil, fmt.Errorf("decode report ticket: %w", ticketErr)
+		}
 		if nav.Custodies.VoltrIdleRaw != idle.Raw || nav.Custodies.StrategyUSDCraw != strategy.Raw || nav.Custodies.SquadsUSDCraw != squads.Raw || nav.Custodies.SquadsPRIMEraw != prime.Raw {
 			return Observation{}, nil, fmt.Errorf("route NAV custody differs inside fixed confirmed account batch")
 		}
@@ -184,24 +270,54 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: beforeDemand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw)}}
 		base.Snapshot.PrimeIdleRaw = int64(prime.Raw)
 		base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
+		if route.Kamino.DebtMint != bridgeUSDC && prime.Raw > 0 && !cutoverDrain && beforeDemand == 0 {
+			minimum, err := kaminoDepositMinimum(accounts, route, slot, math.MaxInt64)
+			if err != nil {
+				return Observation{}, nil, err
+			}
+			base.Snapshot.MinimumCollateralDepositRaw = math.MaxInt64 - int64(minimum) + 1
+		}
 		base.Snapshot.RouteLane = route.Lane
 		base.Snapshot.StrategyKey = route.Lane
 		base.Snapshot.CutoverDrain = cutoverDrain
+		base.Snapshot.TicketLastConsumedSequenceRaw = int64(ticket.LastConsumedSequence)
 		base.Snapshot.HasPosition = position.HasPosition
+		// The position view and the NAV view decode the obligation independently
+		// out of the same confirmed batch; they must agree on whether the account
+		// even exists. An absent obligation is carried forward explicitly instead
+		// of being silently folded into a flat position.
+		if position.ObligationPresent != nav.ObligationPresent {
+			return Observation{}, nil, fmt.Errorf("route NAV and position disagree on the obligation account")
+		}
+		base.Snapshot.ObligationPresent = position.ObligationPresent
+		base.Snapshot.ObligationPresenceKnown = true
 		base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
 		base.Snapshot.PositionDebtRaw = int64(position.DebtRaw)
+		if route.Kamino.DebtMint != bridgeUSDC && position.DebtRaw > 0 {
+			// Include NAV -> release -> NAV -> funding -> NAV -> payoff in
+			// planning. Each actual wire still has its own short freshness gate.
+			bound, err := decodeKaminoPayoffWindow(accounts, route, slot, 6)
+			if err != nil {
+				return Observation{}, nil, err
+			}
+			base.Snapshot.PayoffDebtRaw = int64(bound.UpperDebtRaw)
+		}
 		base.Snapshot.PositionCollateralValueRaw = int64(nav.PositionCollateralValue)
 		base.Snapshot.PositionDebtValueRaw = int64(nav.PositionDebtValue)
 		base.Snapshot.StrategyNAVRaw = int64(nav.StrategyNAVRaw)
 		base.Snapshot.LTVBPS = ltv
 		base.Snapshot.LiquidationThresholdBPS = position.LiquidationThresholdBPS
-		if position.EntryCapacityRaw > math.MaxInt64 {
+		entryUSDC, err := routeEntryCapacityUSDC(position, accounts, route)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		if entryUSDC > math.MaxInt64 {
 			return Observation{}, nil, fmt.Errorf("PRIME/USDC entry capacity exceeds signed decision range")
 		}
-		base.Snapshot.CapacityRaw = int64(position.EntryCapacityRaw)
-		base.Snapshot.MaxTargetLTVEntryRaw = int64(position.EntryCapacityRaw)
+		base.Snapshot.CapacityRaw = int64(entryUSDC)
+		base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
 		base.Snapshot.BorrowUtilizationBlocked = position.BorrowUtilizationBlocked
-		base.Snapshot.PolicyLimitRaw = int64(bridgeCapRaw)
+		base.Snapshot.PolicyLimitRaw = int64(strategyTwoBridgeLegCapRaw)
 		base.Snapshot.PolicyReady = ready
 		base.Snapshot.ExitBuildable = exit
 		observedAt := runtime.now()
@@ -211,12 +327,29 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base.Snapshot.ObservationID = routeEconomicObservationID(
 			base.Snapshot.ObservationID, prime.Raw, position.CollateralDepositedRaw, position.DebtRaw,
 			ready, exit, position.BorrowUtilizationBlocked,
-			nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, position.EntryCapacityRaw,
+			nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, entryUSDC,
 		)
+		if route.Kamino.DebtMint != bridgeUSDC {
+			digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d|payoff-debt:%d|idle-collateral-value:%d|position-debt-value:%d|minimum-deposit:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw, base.Snapshot.PayoffDebtRaw, base.Snapshot.CollateralIdleValueRaw, base.Snapshot.PositionDebtValueRaw, base.Snapshot.MinimumCollateralDepositRaw)))
+			base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
+		}
 		base.ObservedAt = observedAt
 		return base, accounts, nil
 	}
 	return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("confirmed receipt fence did not stabilize around fixed account batch"))
+}
+
+// receiptIntegrityObservation is the only observation a batch with a broken
+// strategy receipt can support: a monitors-armed snapshot whose single fact is
+// the integrity fault itself, so Decide persists the hold and nothing else
+// about the book is implied.
+func receiptIntegrityObservation(slot int64, route RuntimeRoute) Observation {
+	fingerprint := sha256.Sum256([]byte(fmt.Sprintf("strategy-receipt-integrity|%s|%d", route.Lane, slot)))
+	return Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{
+		ObservationID: fmt.Sprintf("%x", fingerprint[:]), Slot: slot, RouteKind: RouteKind, Fresh: true,
+		RouteLane: route.Lane, StrategyKey: route.Lane, MonitorsArmed: true,
+		StrategyReceiptIntegrityFault: true,
+	}}
 }
 
 func legacyPrimeExposure(position KaminoPosition, custodyRaw uint64) bool {
@@ -233,6 +366,27 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 		return nil
 	}
 	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
+	// All deposit rounding bounds use the Clock from the same custody/reserve
+	// batch, including retained PRIME/Maple consumers.
+	addressSet[budgetClockAddress] = struct{}{}
+	// The selected Phase 2 route can still require a legacy PRIME cutover
+	// drain. That observer now validates PRIME's lending market as part of the
+	// same confirmed batch, so pin the legacy market even when Maple is active.
+	if legacy, err := pinnedKaminoObservationConfig(); err == nil {
+		addressSet[legacy.Market] = struct{}{}
+	}
+	addressSet[route.DebtFeeReceiver] = struct{}{}
+	if catalogJupiterRoute(route.Lane) {
+		pins, err := catalogRoutePolicyPins(route, manifest)
+		if err != nil {
+			return nil
+		}
+		for address := range pins {
+			addressSet[address] = struct{}{}
+		}
+		addressSet[route.CollateralLiquiditySupply] = struct{}{}
+		addressSet[route.DebtLiquiditySupply] = struct{}{}
+	}
 	if route.Lane == SelectedRouteID {
 		addressSet[mapleSyrupUSDCUSDC.CollateralLiquiditySupply] = struct{}{}
 		addressSet[mapleSyrupUSDCUSDC.DebtLiquiditySupply] = struct{}{}
@@ -240,13 +394,17 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
 		addressSet[address] = struct{}{}
 	}
-	for address := range manifest.requiredPrimeUSDCPolicyHashes() {
+	for address := range manifest.runtimePolicyObservationSet() {
 		addressSet[address] = struct{}{}
 	}
 	for _, address := range route.PolicyAccounts {
 		addressSet[address] = struct{}{}
 	}
-	if route.Lane == SelectedRouteID {
+	if route.BasicPolicy {
+		for _, address := range manifest.PolicyCatalog.PolicyAccounts {
+			addressSet[address] = struct{}{}
+		}
+	} else if route.Lane == SelectedRouteID {
 		for _, address := range mapleKaminoPolicyAccounts() {
 			addressSet[address] = struct{}{}
 		}
@@ -260,8 +418,37 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 }
 
 func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount) (bool, bool) {
+	if catalogJupiterRoute(route.Lane) {
+		pins, err := catalogRoutePolicyPins(route, manifest)
+		if err != nil {
+			return false, false
+		}
+		for address, pin := range pins {
+			account := accountAt(accounts, address)
+			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 ||
+				!maskedPolicyDigestMatches(account.Data, pin.mask, pin.digest) {
+				return false, false
+			}
+		}
+		return true, true
+	}
 	if route.Lane == RouteID {
 		return manifest.livePrimeUSDCPolicyReadiness(accounts)
+	}
+	if route.BasicPolicy {
+		families := []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB}
+		ready := true
+		for _, family := range families {
+			binding, hash, err := manifest.basicPolicyBinding(family)
+			if err != nil {
+				return false, false
+			}
+			account := accountAt(accounts, binding.Policy)
+			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+				ready = false
+			}
+		}
+		return ready, ready
 	}
 	for action, address := range route.PolicyAccounts {
 		account := accountAt(accounts, address)
@@ -305,7 +492,21 @@ func observeKaminoFromFixedAccounts(ctx context.Context, accountsReader func(con
 	if err != nil {
 		return KaminoPosition{}, err
 	}
-	if err := validateKaminoRefresh(obligation, collateral, debt); err != nil {
+	// Audit U5 / monitor M5: the position view refuses the same unhealthy
+	// reserve states the NAV refuses, plus oracle staleness against chain time
+	// read from this batch's own Clock sysvar.
+	marketEmergency, err := decodeKaminoMarketEmergency(accountAt(accounts, config.Market), config)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, collateral, debt); err != nil {
+		return KaminoPosition{}, err
+	}
+	observedUnix := clockUnixTimestamp(accounts)
+	if observedUnix <= 0 {
+		return KaminoPosition{}, fmt.Errorf("confirmed batch has no usable Clock sysvar")
+	}
+	if err := validateKaminoOracleAge(observedUnix, collateral, debt); err != nil {
 		return KaminoPosition{}, err
 	}
 	oracles := uniqueNonzero(append(collateral.oracles, debt.oracles...))
@@ -336,7 +537,32 @@ func observeKaminoFromFixedAccounts(ctx context.Context, accountsReader func(con
 	if err != nil {
 		return KaminoPosition{}, err
 	}
-	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: obligation.debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
+	debtRaw, err := obligation.debtAtReserveRate(debt)
+	if err != nil {
+		return KaminoPosition{}, err
+	}
+	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, ObligationPresent: obligationAccount.Lamports != 0, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
+}
+
+// Capacity is originally debt-denominated. The entry planner spends bridge
+// USDC, so normalize at observed prices and floor rather than assume a peg.
+// The caller has already validated this same batch's NAV/refresh dependencies.
+func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
+	if route.Kamino.DebtMint == bridgeUSDC {
+		return position.EntryCapacityRaw, nil
+	}
+	reference, err := pinnedKaminoObservationConfig()
+	if err != nil {
+		return 0, err
+	}
+	usdc, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
+	if err != nil {
+		return 0, err
+	}
+	if usdc.mintDecimals != 6 || usdc.refreshedSlot > position.Slot {
+		return 0, fmt.Errorf("entry USDC reference drifted")
+	}
+	return valueBetweenTokenRaw(position.EntryCapacityRaw, position.DebtDecimals, 6, position.DebtPriceSF, usdc.marketPriceSF, false)
 }
 
 // routeEconomicObservationID deliberately excludes Slot, the stateless adaptor
@@ -361,9 +587,13 @@ func routeEconomicObservationID(
 func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Time) error {
 	if snapshot == nil || snapshot.Slot <= 0 || nav.Slot != snapshot.Slot || now.IsZero() || now.Unix() < 0 ||
 		nav.StrategyNAVRaw > math.MaxInt64 || nav.TotalVaultNAVRaw > math.MaxInt64 || nav.PriorReportedNAVRaw > math.MaxInt64 ||
-		nav.Report.Sequence > math.MaxInt64 ||
+		nav.Report.Sequence > math.MaxInt64 || nav.Custodies.SquadsDebtRaw > math.MaxInt64 || nav.PrimeIdleValueRaw > math.MaxInt64 ||
 		nav.PriorReportUpdatedTS > math.MaxInt64 || nav.Report.Sequence != nav.Report.ObservedSlot ||
 		nav.Report.ObservedSlot != uint64(nav.Slot) || nav.Report.NAVAfterRaw != nav.StrategyNAVRaw ||
+		nav.Voltr.TotalValueRaw > math.MaxInt64 || nav.Receipt.CustodyTrackedRaw > math.MaxInt64 ||
+		nav.Voltr.FeeAccumulatorRaw() > math.MaxInt64 || nav.Voltr.LPSupplyInclFeesRaw(nav.LPSupplyRaw) > math.MaxInt64 ||
+		nav.Voltr.LockedProfitDegradationSeconds > math.MaxInt64 || nav.Voltr.LastUpdatedLockedProfitRaw > math.MaxInt64 ||
+		nav.Voltr.LastLockedProfitReportUnix > math.MaxInt64 ||
 		nav.Report.SnapshotDigest != nav.SnapshotDigest || !sha256Pattern.MatchString(nav.SnapshotDigest) {
 		return fmt.Errorf("route NAV cannot be merged into the confirmed snapshot")
 	}
@@ -375,13 +605,30 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 		// engine treats as incoherent) or force a spurious report.
 		age = 0
 	}
-	snapshot.CapitalMutated = nav.StrategyNAVRaw != nav.PriorReportedNAVRaw
+	// A capital mutation is a journal fact, never a valuation comparison: the
+	// production observe path sets this from reconciled bridge mutations newer
+	// than the last reconciled report, so a NAV move can never explain itself.
 	snapshot.LastReportAgeSeconds = age
 	snapshot.TotalVaultNAVRaw = int64(nav.TotalVaultNAVRaw)
 	snapshot.PriorReportedNAVRaw = int64(nav.PriorReportedNAVRaw)
 	snapshot.PriorReportUpdatedUnix = lastUpdated
 	snapshot.ReportSequence = int64(nav.Report.Sequence)
 	snapshot.ReportSnapshotDigest = nav.Report.SnapshotDigest
+	snapshot.DebtIdleRaw = int64(nav.Custodies.SquadsDebtRaw)
+	snapshot.CollateralIdleValueRaw = int64(nav.PrimeIdleValueRaw)
+	snapshot.VoltrTotalValueRaw = int64(nav.Voltr.TotalValueRaw)
+	snapshot.VoltrReceiptCustodyTrackedRaw = int64(nav.Receipt.CustodyTrackedRaw)
+	snapshot.LockedProfitDegradationSeconds = int64(nav.Voltr.LockedProfitDegradationSeconds)
+	snapshot.LastUpdatedLockedProfitRaw = int64(nav.Voltr.LastUpdatedLockedProfitRaw)
+	snapshot.LastLockedProfitReportUnix = int64(nav.Voltr.LastLockedProfitReportUnix)
+	snapshot.FeeAccumulatorRaw = int64(nav.Voltr.FeeAccumulatorRaw())
+	snapshot.LPSupplyInclFeesRaw = int64(nav.Voltr.LPSupplyInclFeesRaw(nav.LPSupplyRaw))
+	snapshot.ManagerPerformanceFeeBPS = int64(nav.Voltr.ManagerPerformanceFeeBPS)
+	snapshot.AdminPerformanceFeeBPS = int64(nav.Voltr.AdminPerformanceFeeBPS)
+	// Reaching this point means every identity, book, custody, receipt, and
+	// reserve input decoded coherently from one confirmed batch, so the
+	// fail-closed monitors may gate the decisions planned from it.
+	snapshot.MonitorsArmed = true
 	return nil
 }
 
@@ -400,12 +647,24 @@ func decodePinnedPrime(account ConfirmedAccount) (DecodedTokenCustody, error) {
 	return DecodeTokenCustody(account.Owner, account.Data, mint, authority)
 }
 
-func (m RouteManifest) requiredPrimeUSDCPolicyHashes() map[string]string {
+// runtimePolicyObservationSet lists the policy accounts whose presence the
+// runtime observation must request, regardless of digest.
+func (m RouteManifest) runtimePolicyObservationSet() map[string]string {
+	wanted, _ := m.requiredPrimeUSDCPolicyHashes()
+	return wanted
+}
+
+// requiredPrimeUSDCPolicyHashes maps each policy account to the digest its
+// bytes must hash to, plus the masked-byte spans that digest excludes. Only
+// the bridge policies carry a mask; the rest compare as the raw digest.
+func (m RouteManifest) requiredPrimeUSDCPolicyHashes() (map[string]string, map[string][][2]int64) {
 	wanted := map[string]string{}
+	masks := map[string][][2]int64{}
 	for _, binding := range m.RuntimeBindings.BridgePolicies {
-		if binding.DataSHA256 != nil && validSHA256(*binding.DataSHA256) {
-			if prior, exists := wanted[binding.Account]; !exists || prior == *binding.DataSHA256 {
-				wanted[binding.Account] = *binding.DataSHA256
+		if validSHA256(binding.NormalizedDigest) {
+			if prior, exists := wanted[binding.Account]; !exists || prior == binding.NormalizedDigest {
+				wanted[binding.Account] = binding.NormalizedDigest
+				masks[binding.Account] = binding.MaskedByteRanges
 			} else {
 				wanted[binding.Account] = ""
 			}
@@ -429,19 +688,20 @@ func (m RouteManifest) requiredPrimeUSDCPolicyHashes() map[string]string {
 			}
 		}
 	}
-	return wanted
+	return wanted, masks
 }
 
 func (m RouteManifest) livePrimeUSDCPolicyReadiness(accounts []ConfirmedAccount) (bool, bool) {
+	wanted, masks := m.requiredPrimeUSDCPolicyHashes()
 	installed := map[string]bool{}
-	for address, hash := range m.requiredPrimeUSDCPolicyHashes() {
+	for address, hash := range wanted {
 		account := accountAt(accounts, address)
-		installed[address] = hash != "" && account.Address == address && account.Owner == bridgeSquadsProgram && !account.Executable && account.Lamports > 0 && sha256Bytes(account.Data) == hash
+		installed[address] = hash != "" && account.Address == address && account.Owner == bridgeSquadsProgram && !account.Executable && account.Lamports > 0 && maskedPolicyDigestMatches(account.Data, masks[address], hash)
 	}
 	kaminoReady := len(m.RuntimeBindings.PrimeUSDC.Packets) == 4
 	bridgeReady := len(m.RuntimeBindings.BridgePolicies) == 4
 	for _, binding := range m.RuntimeBindings.BridgePolicies {
-		if binding.DataSHA256 == nil || !installed[binding.Account] {
+		if !installed[binding.Account] {
 			bridgeReady = false
 		}
 	}
@@ -510,6 +770,9 @@ func manifestPacketLeg(data []byte) kaminoPrimeUSDCLeg {
 }
 
 func observedLTVBPS(position KaminoPosition) (int64, error) {
+	if position.CollateralDecimals > 18 || position.DebtDecimals > 18 {
+		return 0, fmt.Errorf("Kamino LTV decimals exceed supported scale")
+	}
 	if position.DebtRaw == 0 {
 		return 0, nil
 	}
@@ -518,10 +781,15 @@ func observedLTVBPS(position KaminoPosition) (int64, error) {
 	}
 	collateral := new(big.Int).Mul(new(big.Int).SetUint64(position.RedeemablePrimeRaw), littleInt(position.CollateralPriceSF[:]))
 	debt := new(big.Int).Mul(new(big.Int).SetUint64(position.DebtRaw), littleInt(position.DebtPriceSF[:]))
+	// Prices are per token, not per raw unit. Cross-multiply the decimal
+	// scales before division; otherwise a 9/6 lane understates LTV 1,000x.
+	debt.Mul(debt, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(position.CollateralDecimals)), nil))
+	collateral.Mul(collateral, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(position.DebtDecimals)), nil))
 	if collateral.Sign() <= 0 || debt.Sign() <= 0 {
 		return 0, fmt.Errorf("Kamino LTV price is zero")
 	}
-	debt.Mul(debt, big.NewInt(10_000)).Div(debt, collateral)
+	debt.Mul(debt, big.NewInt(10_000))
+	debt.Add(debt, new(big.Int).Sub(collateral, big.NewInt(1))).Div(debt, collateral)
 	if !debt.IsInt64() || debt.Int64() > 10_000 {
 		return 0, fmt.Errorf("Kamino LTV is outside bounded range")
 	}

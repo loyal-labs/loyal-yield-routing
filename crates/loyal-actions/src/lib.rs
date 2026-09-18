@@ -6,6 +6,7 @@
 mod actions;
 pub mod autonomous_vaults;
 pub mod backyard_policy_catalog;
+pub mod backyard_basic_policy_set;
 mod detection;
 mod earn_max;
 mod ids;
@@ -73,6 +74,7 @@ pub use protocols::{
 pub use squads::{
     compile_squads_inner_instruction,
     create_deployed_semantic_program_interaction_policy_instruction,
+    create_deployed_semantic_program_interaction_policy_with_daily_spending_limits,
     create_exact_program_interaction_policy_instruction,
     create_semantic_program_interaction_policy_instruction,
     create_unlimited_spl_spending_limit_policy_instruction,
