@@ -92,6 +92,35 @@ pub const EARN_MAX_OBSERVATION_RESERVES: [EarnMaxObservationReserve; 10] = [
     },
 ];
 
+/// Pinned AUTO observation identities (doc-07 collector followup). These are
+/// the same strings the AUTO policy set pins; the cross-referencing form
+/// lands with the AUTO policy-set module, which is not yet on main — this
+/// restatement is byte-for-byte the same identities, and the exact-string
+/// tests in loyal-kamino-data's target discovery pin them from the other
+/// side.
+pub const BACKYARD_AUTO_MARKET: &str = "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk";
+pub const BACKYARD_AUTO_COLLATERAL_RESERVE: &str = "G85AgoBdW8zSQBq5i4E8aBLCDdRYGgK44CzU1d1NdBzX";
+pub const BACKYARD_AUTO_MINT: &str = "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm";
+pub const BACKYARD_AUTO_PYUSD_DEBT_RESERVE: &str = "6A8D3ExQ4CdiZTBmij7MScUeKsgs6mSHksYzJbiY61FM";
+
+/// Observation-only supplement to `EARN_MAX_OBSERVATION_RESERVES`: the exact
+/// AUTO collateral and PYUSD debt pair, so the reserve monitor's verified
+/// feed covers that route's reserves. This set adds no policy lane, must
+/// stay out of `EARN_MAX_OBSERVATION_RESERVES`, and must never widen the
+/// stable Earn catalog.
+pub const EARN_MAX_SUPPLEMENTAL_OBSERVATION_RESERVES: [EarnMaxObservationReserve; 2] = [
+    EarnMaxObservationReserve {
+        market: BACKYARD_AUTO_MARKET,
+        reserve: BACKYARD_AUTO_COLLATERAL_RESERVE,
+        liquidity_mint: BACKYARD_AUTO_MINT,
+    },
+    EarnMaxObservationReserve {
+        market: BACKYARD_AUTO_MARKET,
+        reserve: BACKYARD_AUTO_PYUSD_DEBT_RESERVE,
+        liquidity_mint: EARN_MAX_PYUSD_MINT,
+    },
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EarnMaxPolicyFamily {
     Collateral,
