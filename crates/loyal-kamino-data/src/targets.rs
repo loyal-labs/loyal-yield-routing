@@ -7,12 +7,13 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use klend_interface::KLEND_PROGRAM_ID;
 use loyal_actions::{
-    AUSD_MINT, CASH_MINT, EARN_MAX_OBSERVATION_RESERVES, EUSX_MINT, FDUSD_MINT,
-    KAMINO_ALTCOINS_MARKET, KAMINO_BITCOIN_MARKET, KAMINO_ETHENA_MARKET, KAMINO_FIGURE_MARKET,
-    KAMINO_HUMA_MARKET, KAMINO_JLP_MARKET, KAMINO_MAIN_MARKET, KAMINO_MAIN_USDC_RESERVE,
-    KAMINO_MAPLE_MARKET, KAMINO_ONRE_MARKET, KAMINO_SOLSTICE_MARKET,
-    KAMINO_SUPERSTATE_OPENING_BELL_MARKET, KAMINO_XSTOCKS_MARKET, PYUSD_MINT, SUSDE_MINT,
-    SYRUP_USDC_MINT, USCC_MINT, USD1_MINT, USDC_MINT, USDE_MINT, USDG_MINT, USDS_MINT, USDT_MINT,
+    AUSD_MINT, CASH_MINT, EARN_MAX_OBSERVATION_RESERVES,
+    EARN_MAX_SUPPLEMENTAL_OBSERVATION_RESERVES, EUSX_MINT, FDUSD_MINT, KAMINO_ALTCOINS_MARKET,
+    KAMINO_BITCOIN_MARKET, KAMINO_ETHENA_MARKET, KAMINO_FIGURE_MARKET, KAMINO_HUMA_MARKET,
+    KAMINO_JLP_MARKET, KAMINO_MAIN_MARKET, KAMINO_MAIN_USDC_RESERVE, KAMINO_MAPLE_MARKET,
+    KAMINO_ONRE_MARKET, KAMINO_SOLSTICE_MARKET, KAMINO_SUPERSTATE_OPENING_BELL_MARKET,
+    KAMINO_XSTOCKS_MARKET, PYUSD_MINT, SUSDE_MINT, SYRUP_USDC_MINT, USCC_MINT, USD1_MINT,
+    USDC_MINT, USDE_MINT, USDG_MINT, USDS_MINT, USDT_MINT,
 };
 pub use loyal_kamino_codec::{ReserveTarget, SupportedReserveRecord};
 use reqwest::blocking::Client;
@@ -264,7 +265,10 @@ impl KaminoApi {
     }
 
     /// Resolve the exact reserve identities required by the seven approved RWA
-    /// loops without adding RWA collateral mints to the stable Earn catalog.
+    /// loops without adding RWA collateral mints to the stable Earn catalog,
+    /// then append the observation-only AUTO supplement. The supplement is
+    /// built from pinned identities with no API request, so an AUTO-only API
+    /// outage can never block the startup the approved reserves depend on.
     pub fn fetch_earn_max_observation_targets(&self) -> Result<Vec<ReserveTarget>> {
         let required_markets = EARN_MAX_OBSERVATION_RESERVES
             .iter()
@@ -287,7 +291,9 @@ impl KaminoApi {
             })?);
         }
 
-        select_earn_max_observation_targets(candidates)
+        let mut targets = select_earn_max_observation_targets(candidates)?;
+        targets.append(&mut supplemental_observation_targets()?);
+        Ok(targets)
     }
 
     fn fetch_all_targets(&self, requested_markets: &[Pubkey]) -> Result<Vec<ReserveTarget>> {
@@ -370,6 +376,37 @@ impl KaminoApi {
     fn base_url(&self) -> &str {
         self.base_url.trim_end_matches('/')
     }
+}
+
+/// The observation-only AUTO supplement: exact targets built from the pinned
+/// policy-set identities with no API request. API metadata stays None — the
+/// monitor validates every observed account's on-chain market and mint
+/// against these identities, and nothing here invents observed balances or
+/// economics.
+fn supplemental_observation_targets() -> Result<Vec<ReserveTarget>> {
+    EARN_MAX_SUPPLEMENTAL_OBSERVATION_RESERVES
+        .iter()
+        .map(|entry| {
+            Ok(ReserveTarget {
+                reserve: Pubkey::from_str(entry.reserve)
+                    .context("invalid supplemental observation reserve")?,
+                market: Some(
+                    Pubkey::from_str(entry.market)
+                        .context("invalid supplemental observation market")?,
+                ),
+                market_name: Some("Auto Market".to_owned()),
+                symbol: None,
+                liquidity_mint: Some(
+                    Pubkey::from_str(entry.liquidity_mint)
+                        .context("invalid supplemental observation mint")?,
+                ),
+                api_supply_apy: None,
+                api_borrow_apy: None,
+                api_total_supply_usd: None,
+                api_total_borrow_usd: None,
+            })
+        })
+        .collect()
 }
 
 fn select_earn_max_observation_targets(
@@ -685,5 +722,61 @@ mod tests {
         let mut duplicate = complete_candidates();
         duplicate.push(duplicate[0].clone());
         assert!(select_earn_max_observation_targets(duplicate).is_err());
+    }
+
+    /// The supplemental AUTO targets must equal the pinned identities exactly
+    /// and carry no API metadata: they are a fixed observation subscription,
+    /// never invented economics. Overlap with the approved strategy reserves
+    /// stays rejected by the monitor's existing merge conflict check.
+    #[test]
+    fn supplemental_auto_targets_match_pinned_identities_without_api_metadata() {
+        let supplemental = supplemental_observation_targets().unwrap();
+        assert_eq!(supplemental.len(), 2);
+        for (target, entry) in supplemental
+            .iter()
+            .zip(EARN_MAX_SUPPLEMENTAL_OBSERVATION_RESERVES)
+        {
+            assert_eq!(target.reserve.to_string(), entry.reserve);
+            assert_eq!(
+                target.market.map(|market| market.to_string()).as_deref(),
+                Some(entry.market)
+            );
+            assert_eq!(
+                target
+                    .liquidity_mint
+                    .map(|mint| mint.to_string())
+                    .as_deref(),
+                Some(entry.liquidity_mint)
+            );
+            assert_eq!(target.api_supply_apy, None);
+            assert_eq!(target.api_borrow_apy, None);
+            assert_eq!(target.api_total_supply_usd, None);
+            assert_eq!(target.api_total_borrow_usd, None);
+        }
+        let strategy = complete_candidates();
+        for target in &supplemental {
+            assert!(!strategy
+                .iter()
+                .any(|candidate| candidate.reserve == target.reserve));
+        }
+    }
+
+    /// Observation-only coverage must not leak into the stable Earn product
+    /// catalog: the AUTO market and collateral mint stay absent from the
+    /// policy-supported sets, and the supplement stays out of the approved
+    /// strategy reserves.
+    #[test]
+    fn supplemental_auto_identities_stay_outside_the_stable_earn_catalog() {
+        let auto_market = Pubkey::from_str(loyal_actions::BACKYARD_AUTO_MARKET).unwrap();
+        let auto_mint = Pubkey::from_str(loyal_actions::BACKYARD_AUTO_MINT).unwrap();
+        assert!(!policy_supported_market_pubkeys().contains(&auto_market));
+        assert!(!policy_supported_mint_pubkeys().contains(&auto_mint));
+        assert!(!EARN_MAX_OBSERVATION_RESERVES.iter().any(|entry| {
+            entry.market == loyal_actions::BACKYARD_AUTO_MARKET
+                || entry.reserve == loyal_actions::BACKYARD_AUTO_COLLATERAL_RESERVE
+                || entry.reserve == loyal_actions::BACKYARD_AUTO_PYUSD_DEBT_RESERVE
+        }));
+        assert_eq!(EARN_MAX_OBSERVATION_RESERVES.len(), 10);
+        assert_eq!(EARN_MAX_SUPPLEMENTAL_OBSERVATION_RESERVES.len(), 2);
     }
 }
