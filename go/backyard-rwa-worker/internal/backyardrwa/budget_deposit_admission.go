@@ -20,7 +20,7 @@ type phase3KaminoProjection struct {
 
 func depositProjectionAddresses(route RuntimeRoute) []string {
 	addresses := []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply, route.DebtCustody, budgetClockAddress}
-	if selectorLane(route.Lane) {
+	if selectorLane(route.Lane) || route.Lane == autoAUTOPYUSD.Lane {
 		addresses = append(addresses, route.Kamino.Market)
 	}
 	return addresses

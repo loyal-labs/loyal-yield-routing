@@ -363,8 +363,20 @@ func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *RPCClient, plan
 		return slot, nil
 	}
 	route, err := runtimeRoute(plan.Snapshot.RouteLane)
-	if err != nil || !selectorLane(route.Lane) || rpc == nil {
+	if err != nil || rpc == nil {
 		return 0, budgetHold("pilot_release_projection_unavailable")
+	}
+	if !selectorLane(route.Lane) {
+		if route.Lane != autoAUTOPYUSD.Lane {
+			return 0, budgetHold("pilot_release_projection_unavailable")
+		}
+		manifest, err := loadEmbeddedRouteManifest()
+		if err != nil {
+			return 0, err
+		}
+		if _, err = manifest.autoPolicyBinding(); err != nil {
+			return 0, err
+		}
 	}
 	if plan.Input == nil {
 		return 0, budgetHold("pilot_release_projection_unavailable")
