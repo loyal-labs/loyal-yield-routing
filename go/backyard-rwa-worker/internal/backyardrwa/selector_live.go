@@ -41,13 +41,17 @@ func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterC
 	if selectorTrancheInProgress(s) {
 		return out, nil, budgetHold("complete_current_tranche_first")
 	}
-	// Idle cash under an AUTO route prices no exit, so its first quote comes
-	// from the candidate producer: the same reviewed gates bound to this
-	// manifest's autoPolicy and active lane. Funded sources and installed
-	// lanes keep the reviewed producer.
+	// An AUTO route's source quote always comes from the candidate producer
+	// through the durable planning observation manifest: idle cash prices the
+	// OBSERVED_IDLE_NO_EXIT source there, and funded capital prices the same
+	// reviewed finite exit the installed lanes get — the candidate producer is
+	// the only one whose lane authority admits the AUTO route lane. The reviewed
+	// gates bound to this manifest's autoPolicy and active lane are unchanged;
+	// an absent or drifted binding fails closed, and installed lanes keep the
+	// reviewed producer.
 	observeSource := observeSelectorSource
 	sourceManifest := manifest
-	if s.RouteLane == autoAUTOPYUSD.Lane && !hasWorkingCapital(s) {
+	if s.RouteLane == autoAUTOPYUSD.Lane {
 		if o.planning == nil {
 			return out, nil, budgetHold("selector_source_unavailable")
 		}
@@ -230,6 +234,20 @@ func selectorMoveQuoteBenefit(manifest RouteManifest, o Observation, markets []L
 	return math.Inf(-1), false
 }
 
+// selectorQuoteCollectionHoldCodes is the closed set of BudgetHold reasons
+// collectSelectorQuotes itself raises before any destination pricing. Only
+// these codes survive into the no-quote lane diagnostic; deeper
+// source-producer, transport and database failures collapse to the generic
+// selector_source_quote_unavailable code, so nothing arbitrary ever reaches
+// the persisted lane evidence.
+var selectorQuoteCollectionHoldCodes = map[string]bool{
+	"complete_current_tranche_first":     true,
+	"invalid_selector_market_set":        true,
+	"selector_live_snapshot_unavailable": true,
+	"selector_move_has_no_entry_cash":    true,
+	"selector_source_unavailable":        true,
+}
+
 // Capture the generation before observing accounts. Concurrent execution or
 // budget changes invalidate collection in RecordSelectorEvaluation's lock.
 func (d *Database) evaluateSelector(ctx context.Context, rpc *RPCClient, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, error) {
@@ -272,9 +290,19 @@ func (d *Database) evaluateSelector(ctx context.Context, rpc *RPCClient, manifes
 	if quoteErr != nil {
 		// No fabricated executable capacity on an outage. Current economic evidence
 		// can still maintain persistence, while pure selection cannot enter/switch.
+		// Each lane keeps one sanitized refusal code: the collector's own closed
+		// gate codes echo, and every deeper producer, transport or database
+		// failure collapses to the generic source-quote code — never the raw
+		// error text.
 		enriched, quotes = append([]LaneEconomics(nil), markets...), nil
+		reason := "selector_source_quote_unavailable"
+		var hold *BudgetHold
+		if errors.As(quoteErr, &hold) && selectorQuoteCollectionHoldCodes[hold.Reason] {
+			reason = hold.Reason
+		}
 		for i := range enriched {
 			enriched[i].EntryCapacity = Capacity{}
+			enriched[i].EntryBlockedReason = reason
 		}
 	}
 	slot, err := rpc.ConfirmedSlot(ctx)

@@ -40,7 +40,13 @@ func RunSelectorShadow(ctx context.Context, out io.Writer) error {
 		return err
 	}
 	manifest.selectorObservation = true
-	feed, err := NewEconomicFeed(ctx, os.Getenv("TIMESCALEDB_URL"))
+	// The feed inventory is scoped to the SAME reviewed manifest the selection
+	// below resolves its lane authorities through: installed lanes plus the
+	// candidate AUTO route only when the manifest binding resolves — identical
+	// to the live sample loop and the evaluate command. The embedded
+	// installed-only constructor would silently drop the funded candidate from
+	// every shadow report.
+	feed, err := NewEconomicFeedOnManifest(ctx, os.Getenv("TIMESCALEDB_URL"), manifest)
 	if err != nil {
 		return err
 	}
@@ -51,8 +57,14 @@ func RunSelectorShadow(ctx context.Context, out io.Writer) error {
 		return err
 	}
 	markets, failure := feed.Snapshot()
-	result := SelectOpportunity(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Markets: markets, Policy: DefaultSelectorPolicy()}, SelectorState{})
-	next := Decide(observation.Snapshot)
+	// The same manifest lane authorities as the dry-run diagnostic and the
+	// live quote collector: candidate evidence and candidate-source economics
+	// stay visible, deferred lanes stay keep-only baselines. Every freshness,
+	// identity and content check inside the pure selector is unchanged.
+	laneAllowed := func(lane string) bool { return selectorDestinationLaneAuthorized(manifest, lane) }
+	fundingAllowed := func(lane string) bool { return manifest.selectorEntryFundingLane(lane, false) }
+	result := selectOpportunityWithLanes(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Markets: markets, Policy: DefaultSelectorPolicy()}, SelectorState{}, laneAllowed, fundingAllowed)
+	next := manifest.DecideOnManifest(observation.Snapshot)
 	if next.Action == HoldManualRecovery && observation.Snapshot.ManualReason != "" {
 		next.Reason = observation.Snapshot.ManualReason
 	}
@@ -67,9 +79,11 @@ func RunSelectorShadow(ctx context.Context, out io.Writer) error {
 		NextLifecycleAction Decision        `json:"nextLifecycleAction"`
 		Selection           SelectorResult  `json:"selection"`
 		ActivationBlockers  []string        `json:"activationBlockers"`
-	}{"read_only_shadow", observation.Snapshot, observation.ObservedAt, observation.Snapshot.Slot, observation.Snapshot.ObservationID, failure, markets, next, result, []string{"basic_usdc_execution_admission_incomplete", "automatic_obligation_recreation_not_admitted", "complete_move_cost_and_pair_capacity_not_admitted", "current_image_round_trip_canary_required"}}
+	}{"read_only_shadow", observation.Snapshot, observation.ObservedAt, observation.Snapshot.Slot, observation.Snapshot.ObservationID, failure, markets, next, result, []string{"no_quote_diagnostic_requires_live_admission"}}
+	// Fixed sanitized code only: the raw refresh error text never reaches the
+	// report, and the snapshot-level state string above is itself a fixed code.
 	if feedErr != nil {
-		report.FeedFailure = feedErr.Error()
+		report.FeedFailure = "selector_economic_feed_refresh_unavailable"
 	}
 	return json.NewEncoder(out).Encode(report)
 }

@@ -57,6 +57,16 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *RPCClient, 
 		return out, budgetHold("selector_reentry_equity_unavailable")
 	}
 	reentry := selectorReentryForecast{bound: *source.ExitBound, collateralIdle: uint64(s.CollateralIdleRaw)}
+	// Installed lanes keep the public wrapper's selectorLane gate unchanged.
+	// The candidate AUTO route lane dispatches to the shared authorized body
+	// only after this function's funding predicate and exact source-exit
+	// validation above both passed: the authorized form re-checks the same
+	// reviewed binding and runs the identical entry graph with this forecast's
+	// clampCapacity and reentry contract. An absent or drifted binding already
+	// failed closed at the funding gate.
+	if s.RouteLane == autoAUTOPYUSD.Lane {
+		return observeSelectorDestinationForecastAuthorized(ctx, rpc, client, m, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
+	}
 	return observeSelectorDestinationForecast(ctx, rpc, client, m, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
 }
 

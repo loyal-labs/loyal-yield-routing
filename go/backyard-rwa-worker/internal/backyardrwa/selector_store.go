@@ -10,6 +10,26 @@ import (
 // Keep shadow persistence beside the existing route state. It owns neither
 // holdings nor budget; replacing this projection cannot reset reservations.
 func (d *Database) RecordSelectorShadow(ctx context.Context, routeKey string, observation Observation, markets []LaneEconomics) (SelectorResult, error) {
+	// Preserved public wrapper: exactly the installed SelectOpportunity lane
+	// authorities the caller always had.
+	return d.recordSelectorShadowWithLanes(ctx, routeKey, observation, markets, selectorLane, selectorEntryLane)
+}
+
+// RecordSelectorShadowOnManifest is the identical shadow persistence with the
+// selection's lane authorities resolved through the reviewed manifest, so the
+// continuous shadow observes the funded candidate lane exactly when the
+// manifest-scoped feed, the live evaluation, and the evaluate command do.
+// Only the pure selection's two lane predicates move; every lease, fence,
+// nonterminal guard and write is shared verbatim with the installed wrapper,
+// and no allocation authority changes: deferred lanes stay keep-only
+// baselines because the funding predicate is the manifest's own.
+func (d *Database) RecordSelectorShadowOnManifest(ctx context.Context, routeKey string, manifest RouteManifest, observation Observation, markets []LaneEconomics) (SelectorResult, error) {
+	return d.recordSelectorShadowWithLanes(ctx, routeKey, observation, markets,
+		func(lane string) bool { return selectorDestinationLaneAuthorized(manifest, lane) },
+		func(lane string) bool { return manifest.selectorEntryFundingLane(lane, false) })
+}
+
+func (d *Database) recordSelectorShadowWithLanes(ctx context.Context, routeKey string, observation Observation, markets []LaneEconomics, laneAllowed func(string) bool, fundingAllowed func(string) bool) (SelectorResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	// An unresolved transaction is not a coherent economic sample. Preserve
@@ -53,7 +73,7 @@ func (d *Database) RecordSelectorShadow(ctx context.Context, routeKey string, ob
 	if err = json.Unmarshal(raw, &previous); err != nil {
 		return SelectorResult{}, err
 	}
-	result := SelectOpportunity(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Markets: markets, Policy: DefaultSelectorPolicy()}, previous.Selector.Result.State)
+	result := selectOpportunityWithLanes(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Markets: markets, Policy: DefaultSelectorPolicy()}, previous.Selector.Result.State, laneAllowed, fundingAllowed)
 	encoded, err := json.Marshal(struct {
 		Mode          string         `json:"mode"`
 		ObservationID string         `json:"observationId"`

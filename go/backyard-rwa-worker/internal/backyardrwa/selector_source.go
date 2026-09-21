@@ -129,8 +129,9 @@ func observeSelectorSource(ctx context.Context, rpc *RPCClient, client *jupiterC
 // observeAutoSelectorSource is the internal candidate source producer for the
 // AUTO lane. It runs the identical coherence gates and the identical finite
 // producer chain through an explicit reviewed manifest: public production
-// gates stay unchanged, this entry has no production caller yet, and no lane
-// list or global selector state is touched.
+// gates stay unchanged, the live selector routes every AUTO source quote —
+// idle and funded — through this entry over the durable planning observation
+// manifest, and no lane list or global selector state is touched.
 func observeAutoSelectorSource(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation) (selectorSourceQuote, error) {
 	return observeReviewedSelectorSource(ctx, rpc, client, m, o, true)
 }

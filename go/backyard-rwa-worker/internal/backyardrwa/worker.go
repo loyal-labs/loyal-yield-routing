@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -1025,6 +1026,12 @@ func Run(ctx context.Context, out io.Writer) error {
 		feedCtx, cancelFeed := context.WithCancel(ctx)
 		feedDone := make(chan struct{})
 		shadowIdentity := newProgramIdentityWatcher(rpc).observe
+		// Sample diagnostics are change-only: each line prints when its fixed
+		// sanitized shape changes and stays silent while that shape persists,
+		// so neither a persistent outage nor a stable hold floods the log on
+		// the sample cadence.
+		lastSampleAction, lastSampleReason, lastSampleCandidates := "", "", ""
+		lastEvaluateFailure, lastShadowFailure := "", ""
 		// Economic collection stays off the transaction loop. Live acceptance
 		// is fenced against its pre-observation version and existing pilot;
 		// shadow records rankings only. Neither collector sends transactions.
@@ -1040,19 +1047,64 @@ func Run(ctx context.Context, out io.Writer) error {
 					markets, _ := feed.Snapshot()
 					result, err := database.evaluateSelector(ctx, rpc, worker.manifest, markets, shadowIdentity, DefaultSelectorPolicy())
 					if err != nil {
-						// Avoid emitting RPC/DB errors that may contain service URLs.
-						_, _ = fmt.Fprintln(out, "backyard-rwa-worker: selector sample unavailable; retaining current authority")
-					} else if result.Action == "ENTER" || result.Action == "CANARY_ENTER" || result.Action == "SWITCH" {
+						// Closed-set sanitized code only: raw RPC/DB errors may
+						// carry service URLs. Change-only keeps a persistent
+						// outage at one line.
+						if code := sanitizedSelectorEvaluateFailure(err); code != lastEvaluateFailure {
+							lastEvaluateFailure = code
+							_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector sample unavailable (%s); retaining current authority\n", code)
+						}
+						return
+					}
+					lastEvaluateFailure = ""
+					if result.Action == "ENTER" || result.Action == "CANARY_ENTER" || result.Action == "SWITCH" {
 						worker.notifySelectorCommit(result.Action)
 						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector action=%s source=%s destination=%s\n", result.Action, result.SourceLane, result.DestinationLane)
+						lastSampleAction, lastSampleReason, lastSampleCandidates = "", "", ""
+						return
+					}
+					// Change-only held-sample diagnostics: the action, its fixed
+					// selector reason, and each considered candidate's lane and
+					// blocked reason in pure-selector order, capped at four. A
+					// candidate's blocked reason is the selector's own fixed
+					// vocabulary — never a rate, evidence ID, or raw error — so
+					// a newly deferred source or a silently missing candidate
+					// lane is actually visible in the log.
+					candidates := make([]string, 0, 4)
+					for i, c := range result.Candidates {
+						if i == 4 {
+							break
+						}
+						candidates = append(candidates, c.Lane+":"+c.BlockedReason)
+					}
+					candidateDetail := strings.Join(candidates, ",")
+					if result.Action != lastSampleAction || result.Reason != lastSampleReason || candidateDetail != lastSampleCandidates {
+						lastSampleAction, lastSampleReason, lastSampleCandidates = result.Action, result.Reason, candidateDetail
+						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector sample action=%s reason=%s source=%s candidates=%s\n", result.Action, result.Reason, result.SourceLane, candidateDetail)
 					}
 					return
 				}
 				observation, err := observeSelectorShadow(ctx, database, rpc, worker.manifest, shadowIdentity)
-				if err == nil {
-					markets, _ := feed.Snapshot()
-					_, _ = database.RecordSelectorShadow(ctx, worker.routeKey, observation, markets)
+				if err != nil {
+					if code := sanitizedSelectorEvaluateFailure(err); code != lastShadowFailure {
+						lastShadowFailure = code
+						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector shadow observation unavailable (%s)\n", code)
+					}
+					return
 				}
+				markets, _ := feed.Snapshot()
+				// The shadow's selection resolves its lane authorities through
+				// the SAME reviewed manifest as the feed above, so the funded
+				// candidate lane is observed and ranked instead of silently
+				// dropped by the installed-only closure.
+				if _, err := database.RecordSelectorShadowOnManifest(ctx, worker.routeKey, worker.manifest, observation, markets); err != nil {
+					if code := sanitizedSelectorEvaluateFailure(err); code != lastShadowFailure {
+						lastShadowFailure = code
+						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector shadow record unavailable (%s)\n", code)
+					}
+					return
+				}
+				lastShadowFailure = ""
 			})
 		}()
 		defer func() { cancelFeed(); <-feedDone; feed.Close() }()

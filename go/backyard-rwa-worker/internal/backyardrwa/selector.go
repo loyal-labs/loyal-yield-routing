@@ -498,7 +498,14 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 			}
 		}
 		if !known {
+			// An already-labeled market keeps its own refusal code on the
+			// candidate — a whole-collection outage must not lose its sanitized
+			// reason to the generic unknown-capacity label. The label changes no
+			// admission: unknown capacity is never enterable either way.
 			c.BlockedReason = "pair_capacity_unknown"
+			if m.EntryBlockedReason != "" {
+				c.BlockedReason = m.EntryBlockedReason
+			}
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
