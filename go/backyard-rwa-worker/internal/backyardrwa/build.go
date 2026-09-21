@@ -679,7 +679,8 @@ func decodeExactLegacyWire(wire []byte) ([]byte, []byte, publicKey, publicKey, e
 	copy(recentBlockhash[:], message[messageOffset:messageOffset+32])
 	messageOffset += 32
 	instructionCount, err := decodeShortVec(message, &messageOffset)
-	if err != nil || (instructionCount != 1 && instructionCount != 2 && instructionCount != 4 && instructionCount != 5) {
+	if err != nil || (instructionCount != 1 && instructionCount != 2 && instructionCount != 3 &&
+		instructionCount != 4 && instructionCount != 5) {
 		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy transaction has an unsupported instruction count")
 	}
 	instructions := make([]decodedLegacyInstruction, instructionCount)
@@ -704,12 +705,18 @@ func decodeExactLegacyWire(wire []byte) ([]byte, []byte, publicKey, publicKey, e
 	if instructionCount == 4 && !isExactKaminoTransaction(instructions) {
 		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy Kamino transaction has an invalid refresh or embedded leg")
 	}
-	// The AUTO resource envelope is the only other admitted shape: the
-	// canonical reviewed ComputeBudget heap frame leads, alone, and the payload
-	// behind it validates against the exact existing sequence gates. An
-	// arbitrary, duplicated or reordered compute instruction fails closed.
+	// The AUTO resource envelopes are the only other admitted shapes: either
+	// the legacy heap-only persisted envelope — the canonical reviewed
+	// ComputeBudget heap frame leads, alone — or the AUTO swap envelope, the
+	// heap frame plus the canonical compute-unit frame leading the payload. In
+	// both cases the payload behind the resource prefix validates against the
+	// exact existing sequence gates. An arbitrary, duplicated or reordered
+	// compute instruction fails closed.
 	if (instructionCount == 2 || instructionCount == 5) && !isAutoResourceHeapTransaction(instructions) {
 		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy AUTO transaction does not carry the exact reviewed heap frame first")
+	}
+	if instructionCount == 3 && !isAutoSwapResourceTransaction(instructions) {
+		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy AUTO swap transaction does not carry the exact reviewed heap and compute-unit frames first")
 	}
 	if instructionCount == 5 && !isExactAutoKaminoTransaction(instructions[1:]) {
 		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy AUTO Kamino transaction has an invalid refresh or embedded leg")
@@ -719,9 +726,9 @@ func decodeExactLegacyWire(wire []byte) ([]byte, []byte, publicKey, publicKey, e
 
 // decodeExactV0Wire is the narrow versioned counterpart of
 // decodeExactLegacyWire: one writable required signer and either the installed
-// single Squads execute or the AUTO resource envelope with the canonical heap
-// frame ahead of it. Invoked programs must stay static exactly as the compiler
-// emits them, the Squads authority pins must be static keys, and
+// single Squads execute, the legacy heap-only AUTO envelope, or the AUTO swap
+// envelope with the canonical heap and compute-unit frames ahead of it.
+// Invoked programs must stay static exactly as the compiler emits them, the Squads authority pins must be static keys, and
 // lookup-resolved venue accounts only need to stay inside the loaded index
 // space.
 func decodeExactV0Wire(wire []byte) ([]byte, []byte, publicKey, publicKey, error) {
@@ -751,7 +758,7 @@ func decodeExactV0Wire(wire []byte) ([]byte, []byte, publicKey, publicKey, error
 	copy(recentBlockhash[:], message[messageOffset:messageOffset+32])
 	messageOffset += 32
 	instructionCount, err := decodeShortVec(message, &messageOffset)
-	if err != nil || (instructionCount != 1 && instructionCount != 2) {
+	if err != nil || (instructionCount != 1 && instructionCount != 2 && instructionCount != 3) {
 		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("versioned transaction has an unsupported instruction count")
 	}
 	type versionedInstruction struct {
@@ -831,6 +838,15 @@ func decodeExactV0Wire(wire []byte) ([]byte, []byte, publicKey, publicKey, error
 		if first.program != heap.program || len(first.accountIndexes) != 0 || !bytesEqual(first.data, heap.data) {
 			return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("versioned AUTO transaction does not carry the exact reviewed heap frame first")
 		}
+	}
+	// The three-instruction AUTO swap envelope carries the exact heap frame and
+	// the exact compute-unit frame ahead of the already-pinned Squads outer, so
+	// no extra or reordered budget frame fits. Six-instruction AUTO Kamino
+	// messages stay unadmitted on this path.
+	if instructionCount == 3 &&
+		(!isCanonicalHeapFrame(instructions[0].program, len(instructions[0].accountIndexes), instructions[0].data) ||
+			!isCanonicalUnitLimitFrame(instructions[1].program, len(instructions[1].accountIndexes), instructions[1].data)) {
+		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("versioned AUTO swap transaction does not carry the exact reviewed heap and compute-unit frames first")
 	}
 	return signature, message, recentBlockhash, signer, nil
 }

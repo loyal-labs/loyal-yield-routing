@@ -523,15 +523,17 @@ func (m RouteManifest) compileJupiterMessage(request JupiterSwapRequest, delegat
 	var message []byte
 	if request.RouteLane == autoAUTOPYUSD.Lane {
 		// AUTO arrives here only through requireAutoJupiterBinding above, so the
-		// reviewed lane carries the canonical ComputeBudget heap frame ahead of
-		// its already-validated policy outer. The v0 path keeps lookup snapshots
-		// and gains the instruction directly; the legacy path goes through the
-		// closed AUTO resource wrapper because compileLegacyMessage still admits
-		// exactly one payload instruction.
+		// reviewed lane carries the canonical ComputeBudget heap frame plus the
+		// canonical compute-unit frame ahead of its already-validated policy
+		// outer — the live default CU meter ran out mid-swap. The v0 path keeps
+		// lookup snapshots and gains both instructions directly; the legacy path
+		// goes through the closed AUTO swap resource wrapper because
+		// compileLegacyMessage still admits exactly one payload instruction.
+		// The initializer and Kamino legs keep the heap-only wrappers.
 		if len(request.LookupTables) > 0 {
-			message, err = compileV0Message(delegate, blockhash, withAutoExecutionHeap([]compiledInstruction{outer}), request.LookupTables)
+			message, err = compileV0Message(delegate, blockhash, withAutoSwapExecutionResources([]compiledInstruction{outer}), request.LookupTables)
 		} else {
-			message, err = compileAutoResourceLegacyMessage(delegate, blockhash, outer)
+			message, err = compileAutoSwapResourceLegacyMessage(delegate, blockhash, outer)
 		}
 	} else if len(request.LookupTables) > 0 {
 		message, err = compileV0Message(delegate, blockhash, []compiledInstruction{outer}, request.LookupTables)

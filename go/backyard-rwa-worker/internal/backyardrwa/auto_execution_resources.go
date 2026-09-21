@@ -12,15 +12,24 @@ import (
 // carries the canonical ComputeBudget heap request before its payload. 64 KiB
 // is the tested working value, not a proven minimum: only 32 and 64 KiB were
 // exercised. Installed Maple and selector lanes compile byte-identical
-// messages and never gain this instruction.
+// messages and never gain this instruction. AUTO Jupiter swaps additionally
+// carry the canonical setComputeUnitLimit frame after the heap frame: the live
+// pre-send simulation of the AUTO USDC swap consumed 202842 of 202850 compute
+// units through an already-successful Jupiter CPI, so the default meter, not
+// the heap, is the binding constraint there. The initializer and Kamino legs
+// keep the heap-only envelope.
 const (
 	autoExecutionHeapBytes = 65536
+	// autoSwapComputeUnitLimit sets a fixed compute budget for AUTO Jupiter
+	// swaps above the 202842 units consumed before the default meter failed.
+	autoSwapComputeUnitLimit = 300000
 	// computeBudgetProgram is the exact ComputeBudget program identity from the
 	// authoritative SDK sources (@solana/web3.js src/programs/compute-budget.ts
 	// and solana-sdk-ids compute_budget declare_id!). Tests pin its decoded
 	// bytes independently; base58 validity alone never proves identity.
 	computeBudgetProgram          = "ComputeBudget111111111111111111111111111111"
 	requestHeapFrameDiscriminator = 1
+	setComputeUnitLimitFrameTag   = 2
 )
 
 // autoComputeBudgetHeapInstruction is the canonical ComputeBudget
@@ -49,6 +58,72 @@ func isAutoExecutionHeapInstruction(instruction compiledInstruction) bool {
 func isCanonicalHeapFrame(program publicKey, accountCount int, data []byte) bool {
 	expected := autoComputeBudgetHeapInstruction()
 	return program == expected.program && accountCount == 0 && bytesEqual(data, expected.data)
+}
+
+// autoComputeBudgetUnitLimitInstruction is the canonical ComputeBudget
+// setComputeUnitLimit(autoSwapComputeUnitLimit) instruction: discriminator
+// byte 2 followed by the limit as a little-endian u32, with no accounts. It is
+// only ever emitted on AUTO Jupiter swap legs, immediately behind the heap
+// frame.
+func autoComputeBudgetUnitLimitInstruction() compiledInstruction {
+	data := []byte{setComputeUnitLimitFrameTag, 0, 0, 0, 0}
+	binary.LittleEndian.PutUint32(data[1:], autoSwapComputeUnitLimit)
+	return compiledInstruction{program: mustKey(computeBudgetProgram), data: data}
+}
+
+// isCanonicalUnitLimitFrame is the decode-shape form of the same check,
+// mirroring isCanonicalHeapFrame: program identity, zero accounts, exact
+// payload bytes.
+func isCanonicalUnitLimitFrame(program publicKey, accountCount int, data []byte) bool {
+	expected := autoComputeBudgetUnitLimitInstruction()
+	return program == expected.program && accountCount == 0 && bytesEqual(data, expected.data)
+}
+
+// isAutoSwapResourceTransaction is the decode-side closure over the AUTO swap
+// resource prefix: the canonical heap frame at index 0 and the canonical
+// compute-unit frame at index 1, and the ComputeBudget program appearing
+// nowhere else, so a duplicated, reordered or arbitrary budget instruction
+// cannot slip through. The payload behind the prefix stays validated by the
+// caller's existing sequence gates.
+func isAutoSwapResourceTransaction(instructions []decodedLegacyInstruction) bool {
+	if len(instructions) < 3 {
+		return false
+	}
+	heap, unitLimit := instructions[0], instructions[1]
+	if !isCanonicalHeapFrame(heap.program, len(heap.accountIndexes), heap.data) ||
+		!isCanonicalUnitLimitFrame(unitLimit.program, len(unitLimit.accountIndexes), unitLimit.data) {
+		return false
+	}
+	budget := autoComputeBudgetHeapInstruction()
+	for _, instruction := range instructions[2:] {
+		if instruction.program == budget.program {
+			return false
+		}
+	}
+	return true
+}
+
+// withAutoSwapExecutionResources prepends the canonical heap frame plus the
+// compute-unit frame to a caller-validated AUTO swap payload without mutating
+// it. The heap-only counterpart withAutoExecutionHeap is unchanged and stays
+// the initializer and Kamino envelope.
+func withAutoSwapExecutionResources(payload []compiledInstruction) []compiledInstruction {
+	instructions := make([]compiledInstruction, 0, len(payload)+2)
+	instructions = append(instructions, autoComputeBudgetHeapInstruction(), autoComputeBudgetUnitLimitInstruction())
+	return append(instructions, payload...)
+}
+
+// compileAutoSwapResourceLegacyMessage is the closed legacy wrapper for AUTO
+// Jupiter swap legs: the canonical heap frame at index 0, the canonical
+// compute-unit frame at index 1, followed by exactly one caller-validated
+// payload instruction. The initializer and legacy recovery wrapper
+// compileAutoResourceLegacyMessage keeps its heap-only envelope so already
+// persisted messages decode exactly as they were signed.
+func compileAutoSwapResourceLegacyMessage(feePayer, blockhash publicKey, payload compiledInstruction) ([]byte, error) {
+	if payload.program == (publicKey{}) {
+		return nil, fmt.Errorf("empty AUTO payload instruction")
+	}
+	return encodeLegacyMessage(feePayer, blockhash, withAutoSwapExecutionResources([]compiledInstruction{payload}))
 }
 
 // isAutoResourceHeapTransaction is the decode-side closure over the AUTO heap

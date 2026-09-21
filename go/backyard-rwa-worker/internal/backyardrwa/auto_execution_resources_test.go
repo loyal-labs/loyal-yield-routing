@@ -85,6 +85,15 @@ func resourceInstructionIsCanonicalHeap(t *testing.T, instruction resourceTestIn
 	return isAutoExecutionHeapInstruction(compiledInstruction{program: key, data: instruction.data})
 }
 
+func resourceInstructionIsCanonicalUnitLimit(t *testing.T, instruction resourceTestInstruction) bool {
+	t.Helper()
+	key, err := decodeKey(instruction.program)
+	if err != nil {
+		t.Fatalf("instruction program %s does not decode: %v", instruction.program, err)
+	}
+	return isCanonicalUnitLimitFrame(key, len(instruction.accounts), instruction.data)
+}
+
 // The SDK identity bytes are pinned independently of the Go literal: base58
 // validity alone never proves identity. Several 1s-counts also decode to 32
 // bytes, and the first draft of this constant decoded to 33 bytes and would
@@ -242,7 +251,8 @@ func TestAutoJupiterExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 		t.Fatal("AUTO Jupiter legacy leg left the legacy envelope")
 	}
 	_, instructions := decodeResourceTestMessage(t, legacy)
-	if len(instructions) != 2 || !resourceInstructionIsCanonicalHeap(t, instructions[0]) || instructions[1].program != bridgeSquadsProgram {
+	if len(instructions) != 3 || !resourceInstructionIsCanonicalHeap(t, instructions[0]) ||
+		!resourceInstructionIsCanonicalUnitLimit(t, instructions[1]) || instructions[2].program != bridgeSquadsProgram {
 		t.Fatalf("AUTO Jupiter legacy wire drifted: %d instructions", len(instructions))
 	}
 	t.Logf("AUTO Jupiter legacy execution message = %d bytes (+65 signature = %d of %d packet bytes)", len(legacy), len(legacy)+65, solanaPacketBytes)
@@ -463,11 +473,12 @@ func TestAutoSignedWireValidatesThroughTheDecodeGate(t *testing.T) {
 		}
 	}
 
-	// Three instructions is still an unsupported count.
+	// Three instructions is now the AUTO swap envelope shape; the same count
+	// derived from the Kamino leg carries no resource prefix and fails its gate.
 	_, refreshStart, refreshEnd := legacyInstructionSpan(t, message, 1)
 	three := replaceSpan(replaceSpan(message, heapStart, heapEnd, nil), refreshStart-(heapEnd-heapStart), refreshEnd-(heapEnd-heapStart), nil)
 	three[countOffset] -= 2
-	if _, _, _, _, err := decodeExactLegacyWire(signTestWire(t, delegateKey, three)); err == nil || !strings.Contains(err.Error(), "unsupported instruction count") {
+	if _, _, _, _, err := decodeExactLegacyWire(signTestWire(t, delegateKey, three)); err == nil || !strings.Contains(err.Error(), "does not carry the exact reviewed heap and compute-unit frames") {
 		t.Fatalf("three-instruction wire: %v", err)
 	}
 
