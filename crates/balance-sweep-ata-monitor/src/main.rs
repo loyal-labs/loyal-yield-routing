@@ -300,6 +300,7 @@ async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Resu
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("HELIUS_API_KEY is required"))?,
                 from_slot: policy_from_slot,
+                replay_overlap_slots: args.laserstream_replay_overlap_slots,
                 config,
             }
             .spawn(

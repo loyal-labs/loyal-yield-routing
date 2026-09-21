@@ -72,7 +72,11 @@ That stream gave up after ten reconnect failures, and its cursor stayed at slot
 unprojected (loyal-app ASK-2252).
 
 The monitor now restarts the reconnect cycle after exhaustion and emits
-`earn_max_policy_stream_exhausted`. A cursor older than the ~24h LaserStream
+`earn_max_policy_stream_exhausted`, and each reconnect resubscribes from the
+durable cursor rather than the slot computed at process start; Helius ends this
+subscription with `Internal error during backfill` about every 25 minutes, so
+re-requesting the original slot restarted the whole backfill and a longer
+catch-up never finished. A cursor older than the ~24h LaserStream
 replay window is clamped to the window edge and logged; the skipped range must be
 recovered with the gap tool, scoped per wallet, using the wallet's settings
 transaction slots as bounds. Transaction reads accept any version and decode from
