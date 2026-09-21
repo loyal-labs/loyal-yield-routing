@@ -63,9 +63,9 @@ pub use earn_reconciliation::{
 pub use monitor_observability::{
     emit_autodeposit_reconciliation_consumer_failed,
     emit_autodeposit_reconciliation_request_failed, emit_autodeposit_reconciliation_rpc_behind,
-    emit_earn_reconciliation_consumer_failed, emit_earn_reconciliation_health_snapshot_failed,
-    emit_earn_reconciliation_job_dead_lettered, emit_earn_reconciliation_job_failed,
-    EarnMonitorMetrics,
+    emit_earn_max_policy_stream_exhausted, emit_earn_reconciliation_consumer_failed,
+    emit_earn_reconciliation_health_snapshot_failed, emit_earn_reconciliation_job_dead_lettered,
+    emit_earn_reconciliation_job_failed, EarnMonitorMetrics,
 };
 pub use smart_account::{
     build_multi_channel_subscribe_request, normalize_laserstream_update, subscribe_request_json,
@@ -757,7 +757,7 @@ async fn run_earn_max_laserstream_subscription(
     running: Arc<AtomicBool>,
 ) {
     let mut attempt = 1;
-    while running.load(Ordering::Relaxed) && attempt <= source.config.max_reconnect_attempts {
+    while running.load(Ordering::Relaxed) {
         let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
             .with_max_reconnect_attempts(0)
             .with_replay(true);
@@ -798,11 +798,21 @@ async fn run_earn_max_laserstream_subscription(
         let Some(error) = disconnect_error else {
             break;
         };
+        // This stream is the only source of new policy rows for first-time
+        // Earn wallets (the account stream cannot watch a wallet it has never
+        // seen). Giving up here stalls every new deposit projection while the
+        // process keeps running, so exhaustion is reported and the loop
+        // restarts instead of ending (ASK-2252, cursor stalled 2026-09-18).
         if attempt >= source.config.max_reconnect_attempts {
-            tracing::error!(attempt, error = %error, "Earn MAX policy LaserStream exhausted reconnects");
-            break;
+            emit_earn_max_policy_stream_exhausted();
+            tracing::error!(
+                attempt,
+                error = %error,
+                "Earn MAX policy LaserStream exhausted reconnects; restarting the reconnect cycle"
+            );
+            attempt = 0;
         }
-        let backoff = reconnect_backoff(source.config, attempt);
+        let backoff = reconnect_backoff(source.config, attempt.max(1));
         tracing::warn!(
             attempt,
             next_attempt = attempt + 1,

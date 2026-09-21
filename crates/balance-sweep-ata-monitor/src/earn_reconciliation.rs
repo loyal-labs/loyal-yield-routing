@@ -64,8 +64,9 @@ use solana_sdk::{
     transaction::VersionedTransaction,
 };
 use solana_transaction_status_client_types::{
-    option_serializer::OptionSerializer, EncodedConfirmedTransactionWithStatusMeta, UiInstruction,
-    UiParsedInstruction, UiTransactionEncoding, UiTransactionStatusMeta, UiTransactionTokenBalance,
+    option_serializer::OptionSerializer, EncodedConfirmedTransactionWithStatusMeta,
+    EncodedTransaction, UiInstruction, UiMessage, UiParsedInstruction, UiTransactionEncoding,
+    UiTransactionStatusMeta, UiTransactionTokenBalance,
 };
 use spl_token_2022::extension::StateWithExtensions;
 use tokio::{
@@ -881,6 +882,14 @@ fn read_transaction_with_config(
     signature: &Signature,
     config: RpcTransactionConfig,
 ) -> Result<EncodedConfirmedTransactionWithStatusMeta> {
+    // Callers pin `Some(0)`, which makes the RPC reject any newer transaction
+    // version with -32015 and the job then retries until it is dead-lettered
+    // (ASK-2252: 1,400+ pending policy-discovery jobs on v1 transactions).
+    // Accept every version the node knows; decoding below handles the shape.
+    let config = RpcTransactionConfig {
+        max_supported_transaction_version: Some(u8::MAX),
+        ..config
+    };
     read_transaction_proof_with_backoff(
         || {
             rpc.send::<Option<EncodedConfirmedTransactionWithStatusMeta>>(
@@ -1359,15 +1368,27 @@ fn read_squads_policy_transaction(
 ) -> Result<EarnPolicyTransactionRead> {
     let parsed_signature =
         Signature::from_str(signature).context("invalid transaction signature")?;
+    // Read the raw JSON message rather than base64: the pinned solana-sdk only
+    // decodes legacy and v0 payloads, so a newer transaction version would fail
+    // here forever. The raw message carries the same header, static keys and
+    // compiled instructions the LaserStream decoder already consumes.
     let transaction = read_transaction_with_config(
         rpc,
         &parsed_signature,
         RpcTransactionConfig {
-            encoding: Some(UiTransactionEncoding::Base64),
+            encoding: Some(UiTransactionEncoding::Json),
             commitment: Some(commitment),
-            max_supported_transaction_version: Some(0),
+            max_supported_transaction_version: Some(u8::MAX),
         },
     )?;
+    decode_json_squads_policy_transaction(&transaction, signature, expected_slot)
+}
+
+pub(crate) fn decode_json_squads_policy_transaction(
+    transaction: &EncodedConfirmedTransactionWithStatusMeta,
+    signature: &str,
+    expected_slot: u64,
+) -> Result<EarnPolicyTransactionRead> {
     if transaction.slot != expected_slot {
         bail!(
             "transaction {signature} landed at slot {}, expected {expected_slot}",
@@ -1384,28 +1405,48 @@ fn read_squads_policy_transaction(
     {
         return Ok(EarnPolicyTransactionRead::NoStateChange);
     }
-    let transaction = transaction
-        .transaction
-        .transaction
-        .decode()
-        .context("decode policy versioned transaction")?;
-    let mut account_keys = transaction.message.static_account_keys().to_vec();
+    let EncodedTransaction::Json(ui_transaction) = &transaction.transaction.transaction else {
+        bail!("policy transaction was not returned as JSON");
+    };
+    let UiMessage::Raw(message) = &ui_transaction.message else {
+        bail!("policy transaction message was not returned raw");
+    };
+    let static_len = message.account_keys.len();
+    let mut account_keys = message
+        .account_keys
+        .iter()
+        .map(|key| Pubkey::from_str(key).context("policy transaction account key"))
+        .collect::<Result<Vec<_>>>()?;
+    let mut loaded_writable_len = 0;
     if let OptionSerializer::Some(loaded) = &meta.loaded_addresses {
+        loaded_writable_len = loaded.writable.len();
         for address in loaded.writable.iter().chain(&loaded.readonly) {
             account_keys.push(Pubkey::from_str(address)?);
         }
     }
+    let required_signers = usize::from(message.header.num_required_signatures);
+    let readonly_signers = usize::from(message.header.num_readonly_signed_accounts);
+    let readonly_unsigned = usize::from(message.header.num_readonly_unsigned_accounts);
     let account_meta = |index: usize| {
-        account_keys.get(index).copied().map(|pubkey| AccountMeta {
+        let pubkey = account_keys.get(index).copied()?;
+        let is_signer = index < required_signers;
+        let is_writable = if is_signer {
+            index < required_signers.saturating_sub(readonly_signers)
+        } else if index < static_len {
+            index < static_len.saturating_sub(readonly_unsigned)
+        } else {
+            index < static_len.saturating_add(loaded_writable_len)
+        };
+        Some(AccountMeta {
             pubkey,
-            is_signer: transaction.message.is_signer(index),
-            is_writable: transaction.message.is_maybe_writable(index, None),
+            is_signer,
+            is_writable,
         })
     };
     let mut instructions = Vec::new();
-    for compiled in transaction.message.instructions() {
+    for compiled in &message.instructions {
         let Some(program_id) = account_keys
-            .get(compiled.program_id_index as usize)
+            .get(usize::from(compiled.program_id_index))
             .copied()
         else {
             continue;
@@ -1421,7 +1462,7 @@ fn read_squads_policy_transaction(
         instructions.push(Instruction {
             program_id,
             accounts,
-            data: compiled.data.clone(),
+            data: bs58::decode(&compiled.data).into_vec()?,
         });
     }
     let mut earn_max_memos = Vec::new();
@@ -1501,10 +1542,8 @@ fn read_squads_policy_transaction(
             slot: expected_slot,
             signers: account_keys
                 .iter()
-                .enumerate()
-                .filter_map(|(index, account)| {
-                    transaction.message.is_signer(index).then_some(*account)
-                })
+                .take(required_signers)
+                .copied()
                 .collect(),
             instructions,
             earn_max_memos,
@@ -3763,6 +3802,69 @@ mod tests {
 
         assert_eq!(config.commitment, Some(CommitmentConfig::confirmed()));
         assert_eq!(config.min_context_slot, Some(42));
+    }
+
+    #[test]
+    fn json_policy_transaction_decodes_squads_instructions_without_bincode() {
+        // Alex's route-policy creation (ASK-2252), fetched with encoding=json
+        // and maxSupportedTransactionVersion=255. The base64 path could not
+        // decode transaction versions above v0; the JSON path must yield the
+        // same Squads instruction with the settings account writable.
+        let transaction: EncodedConfirmedTransactionWithStatusMeta = serde_json::from_str(
+            include_str!("../tests/fixtures/squads-policy-create-json.json"),
+        )
+        .expect("fixture decodes");
+        let read = decode_json_squads_policy_transaction(
+            &transaction,
+            "5SyQHcNK5xFLgKFQUmibNDrDNarXz7FCoJpjgvwjmb2ogPDUiWxQyWXKnziBdp92Rbc69JmMNY9YZsPeWbs7MyG9",
+            448_495_297,
+        )
+        .expect("decode");
+        let EarnPolicyTransactionRead::Transaction(transaction) = read else {
+            panic!("expected a decoded transaction");
+        };
+        let settings: Pubkey = "4PQiGQn4AkkxPP4agjkbqwSDtnmB3wsHUcWmoGKEXDZJ"
+            .parse()
+            .unwrap();
+        let wallet: Pubkey = "FtCYES2CLXxKpVGxqEATmkBYg7RDMGz4zjMiBkFUszNU"
+            .parse()
+            .unwrap();
+        assert_eq!(transaction.signers, vec![wallet]);
+        let squads = transaction
+            .instructions
+            .iter()
+            .filter(|instruction| instruction.program_id == SQUADS_SMART_ACCOUNT_PROGRAM_ID)
+            .collect::<Vec<_>>();
+        assert!(!squads.is_empty(), "outer Squads instruction is kept");
+        let settings_meta = squads[0]
+            .accounts
+            .iter()
+            .find(|account| account.pubkey == settings)
+            .expect("settings account present");
+        assert!(settings_meta.is_writable);
+        assert!(!settings_meta.is_signer);
+        assert!(squads[0]
+            .accounts
+            .iter()
+            .any(|account| account.pubkey == wallet && account.is_signer));
+        assert!(
+            decode_json_squads_policy_transaction(
+                &transaction_with_slot(448_495_298),
+                "sig",
+                448_495_297
+            )
+            .is_err(),
+            "slot drift is rejected"
+        );
+
+        fn transaction_with_slot(slot: u64) -> EncodedConfirmedTransactionWithStatusMeta {
+            let mut transaction: EncodedConfirmedTransactionWithStatusMeta = serde_json::from_str(
+                include_str!("../tests/fixtures/squads-policy-create-json.json"),
+            )
+            .unwrap();
+            transaction.slot = slot;
+            transaction
+        }
     }
 
     #[test]

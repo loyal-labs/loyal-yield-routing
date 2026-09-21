@@ -10,6 +10,7 @@ pub const EARN_RECONCILIATION_JOB_DEAD_LETTERED: &str = "earn_reconciliation_job
 pub const EARN_RECONCILIATION_CONSUMER_FAILED: &str = "earn_reconciliation_consumer_failed";
 pub const EARN_RECONCILIATION_HEALTH_SNAPSHOT_FAILED: &str =
     "earn_reconciliation_health_snapshot_failed";
+pub const EARN_MAX_POLICY_STREAM_EXHAUSTED: &str = "earn_max_policy_stream_exhausted";
 pub const AUTODEPOSIT_RECONCILIATION_REQUEST_FAILED: &str =
     "autodeposit_reconciliation_request_failed";
 pub const AUTODEPOSIT_RECONCILIATION_RPC_BEHIND: &str = "autodeposit_reconciliation_rpc_behind";
@@ -110,6 +111,17 @@ pub fn emit_earn_reconciliation_consumer_failed() {
     )
     .retryable(true)
     .recovery_required(false)
+    .emit();
+}
+
+pub fn emit_earn_max_policy_stream_exhausted() {
+    OperationalError::new(
+        EARN_MAX_POLICY_STREAM_EXHAUSTED,
+        "run_earn_max_policy_laserstream",
+        "Earn policy LaserStream exhausted reconnects; new Earn policies are not being discovered",
+    )
+    .retryable(true)
+    .recovery_required(true)
     .emit();
 }
 
