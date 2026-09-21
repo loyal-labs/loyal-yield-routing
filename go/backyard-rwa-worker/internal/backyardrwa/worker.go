@@ -55,6 +55,7 @@ type tickRuntime struct {
 	buildBridge                      func(context.Context, string, BridgeExecutionEvidence) error
 	buildKamino                      func(context.Context, string, KaminoExecutionEvidence) error
 	buildJupiter                     func(context.Context, string, JupiterExecutionEvidence) error
+	custodyOwnershipProof            func(context.Context, RouteManifest, sharedCustodyAttributionConfig, ExpectedEffects, uint64, int64) (sharedCustodyAdmissionProof, error)
 	recordBudgetHold                 func(context.Context, string, *BudgetHold) error
 }
 
@@ -132,7 +133,15 @@ func (p productionObserveState) enrich(ctx context.Context, observation *Observa
 	applyProgramIdentityObservation(observation, identity)
 	observation.Snapshot.InitializationPolicyReady = false
 	if observation.Snapshot.PilotActive {
-		_, bindingErr := p.manifest.initializerBinding(observation.Snapshot.RouteLane)
+		// Resolve the binding the same way initializationRequest does: the
+		// candidate AUTO lane is governed by the auto-initializer constraint
+		// set, the installed lanes by the multiply-initializer bindings.
+		var bindingErr error
+		if observation.Snapshot.RouteLane == autoAUTOPYUSD.Lane {
+			_, _, bindingErr = p.manifest.autoInitializerBinding()
+		} else {
+			_, bindingErr = p.manifest.initializerBinding(observation.Snapshot.RouteLane)
+		}
 		observation.Snapshot.InitializationPolicyReady = bindingErr == nil
 	}
 	return nil
@@ -196,6 +205,15 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 		}
 		observation.Snapshot.PilotActive = active
 	}
+	// The reviewed manifest's funded candidate lane is the only non-installed
+	// route lane this snapshot may size at the pilot tranche. The stamp is
+	// cleared unconditionally: a reused observation must never keep a lane the
+	// current reviewed manifest no longer authorizes. No amount travels with
+	// it — the tranche value stays the reviewed pilot cap.
+	observation.Snapshot.PilotTrancheCapLane = ""
+	if observation.Snapshot.PilotActive && p.manifest.selectorEntryFundingLane(autoAUTOPYUSD.Lane, false) {
+		observation.Snapshot.PilotTrancheCapLane = autoAUTOPYUSD.Lane
+	}
 	observation.Snapshot.PostMutationNAVRequired = required
 	observation.Snapshot.JournalSequenceKnown = journal.TicketSequenceKnown
 	observation.Snapshot.JournalReconciledSequenceRaw = journal.TicketSequenceRaw
@@ -209,20 +227,34 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	observation.Snapshot.CapitalMutated = journal.MutationAfterReport
 	if observation.planning != nil {
 		planning := observation.planning
-		if err := applyUnwindIntent(&observation.Snapshot, planning.unwind); err != nil {
+		if err := applyUnwindIntentWithLane(&observation.Snapshot, planning.unwind, p.manifest.selectorEntryLaneAllowed); err != nil {
 			observation.Snapshot.ManualReason = err.Error()
 		}
 		observation.Snapshot.SelectorEntryPaused = planning.paused
-		return applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
+		return p.manifest.applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
 	}
+	// The manifest-aware reader is preferred exactly as the entry read below:
+	// a recorded candidate-source unwind survives restart only while the
+	// reviewed manifest's binding resolves. The plain reader stays for legacy
+	// test interfaces and keeps its installed closure.
 	if reader, ok := p.journal.(interface {
+		LoadUnwindIntentOnManifest(context.Context, RouteManifest, string) (*UnwindIntent, error)
+	}); ok {
+		intent, err := reader.LoadUnwindIntentOnManifest(ctx, p.manifest, p.routeKey)
+		if err != nil {
+			return err
+		}
+		if err := applyUnwindIntentWithLane(&observation.Snapshot, intent, p.manifest.selectorEntryLaneAllowed); err != nil {
+			observation.Snapshot.ManualReason = err.Error()
+		}
+	} else if reader, ok := p.journal.(interface {
 		LoadUnwindIntent(context.Context, string) (*UnwindIntent, error)
 	}); ok {
 		intent, err := reader.LoadUnwindIntent(ctx, p.routeKey)
 		if err != nil {
 			return err
 		}
-		if err := applyUnwindIntent(&observation.Snapshot, intent); err != nil {
+		if err := applyUnwindIntentWithLane(&observation.Snapshot, intent, p.manifest.selectorEntryLaneAllowed); err != nil {
 			observation.Snapshot.ManualReason = err.Error()
 		}
 	}
@@ -236,6 +268,16 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 		observation.Snapshot.SelectorEntryPaused = paused
 	}
 	if reader, ok := p.journal.(interface {
+		LoadSelectorEntryOnManifest(context.Context, RouteManifest, string) (*SelectorEntry, error)
+	}); ok {
+		entry, err := reader.LoadSelectorEntryOnManifest(ctx, p.manifest, p.routeKey)
+		if err != nil {
+			return err
+		}
+		if err = p.manifest.applySelectorEntry(&observation.Snapshot, entry, time.Now().UTC()); err != nil {
+			return err
+		}
+	} else if reader, ok := p.journal.(interface {
 		LoadSelectorEntry(context.Context, string) (*SelectorEntry, error)
 	}); ok {
 		entry, err := reader.LoadSelectorEntry(ctx, p.routeKey)
@@ -254,7 +296,7 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		manifest: manifest, routeKey: productionRouteKey,
 		journal: database,
 		batch: func(ctx context.Context) (Observation, error) {
-			planning, err := database.readRoutePlanningState(ctx, productionRouteKey, true)
+			planning, err := database.readRoutePlanningStateOnManifest(ctx, manifest, productionRouteKey, true)
 			if err != nil {
 				return Observation{}, err
 			}
@@ -284,18 +326,18 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			if !observation.Snapshot.Unwind || !unwindComplete(observation.Snapshot) {
 				return false, nil
 			}
-			intent, err := database.LoadUnwindIntent(ctx, productionRouteKey)
+			intent, err := database.LoadUnwindIntentOnManifest(ctx, manifest, productionRouteKey)
 			if err != nil {
 				return false, err
 			}
 			if intent == nil {
 				return false, fmt.Errorf("unwind disappeared before completion")
 			}
-			return true, database.CompleteUnwindIntent(ctx, productionRouteKey, *intent, observation.Snapshot)
+			return true, database.CompleteUnwindIntentOnManifest(ctx, manifest, productionRouteKey, *intent, observation.Snapshot)
 		},
 		loadNonterminal: database.LoadNonterminal,
 		advance: func(ctx context.Context, operation PersistedOperation) error {
-			return AdvanceNonterminal(ctx, database, rpc, operation)
+			return advanceNonterminalWithManifest(ctx, manifest, database, rpc, operation)
 		},
 		observe:                          state.observe,
 		loadLatch:                        database.ManualRecoveryLatch,
@@ -319,8 +361,11 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			return observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, productionJupiterClient(), state.enrich)
 		},
 		allocationSentWindow: database.AllocationSentRawTrailingWindow,
-		recordDecision:       database.RecordDecision,
-		recordBudgetHold:     database.RecordPhase3BudgetHold,
+		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256, policyCatalogSHA256 string) (DecisionRecord, error) {
+			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
+		},
+		custodyOwnershipProof: database.ObserveSharedCustodyOwnershipProof,
+		recordBudgetHold:      database.RecordPhase3BudgetHold,
 		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
 			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionDebtRaw > 0 && positionReturnRoute(observation.Snapshot.RouteLane) {
 				return database.admitPhase3Funding(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
@@ -440,7 +485,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 			return nil
 		}
 	}
-	decision := Decide(observation.Snapshot)
+	decision := w.manifest.DecideOnManifest(observation.Snapshot)
 	if decision.Action == Hold && decision.Reason == "unwind_requires_fresh_admission" && w.runtime.refreshUnwind != nil {
 		if err = w.runtime.refreshUnwind(ctx); err == nil {
 			return nil
@@ -459,7 +504,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if decision.Action == HoldManualRecovery && observation.Snapshot.ManualReason != "" {
 		decision.Reason = observation.Snapshot.ManualReason
 	}
-	if err := decision.Validate(); err != nil {
+	if err := w.manifest.validateDecision(decision); err != nil {
 		return err
 	}
 	if w.manifest.PolicyCatalog.SHA256 == nil || !sha256Pattern.MatchString(*w.manifest.PolicyCatalog.SHA256) {
@@ -539,12 +584,28 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	decision = Decide(observation.Snapshot)
-	if err := decision.Validate(); err != nil {
+	decision = w.manifest.DecideOnManifest(observation.Snapshot)
+	if err := w.manifest.validateDecision(decision); err != nil {
 		return err
 	}
-	if !decisionsEqual(decision, preparedDecision) || !decisionsEqual(Decide(observation.Snapshot), preparedDecision) {
+	if !decisionsEqual(decision, preparedDecision) || !decisionsEqual(w.manifest.DecideOnManifest(observation.Snapshot), preparedDecision) {
 		return fmt.Errorf("prepared evidence does not match the refreshed decision")
+	}
+	// Strict pre-decision shared-custody ownership proof (doc 26): a prepared
+	// AUTO-PYUSD spend is proofed against the prepared evidence's exact
+	// effects BEFORE the row exists, and the proof rides this observation into
+	// RecordDecision and the locked measured admission. Zero-spend and other
+	// lanes are untouched.
+	switch executionDecision {
+	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
+		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, bridgeEvidence.ExpectedEffects)
+	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
+		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, kaminoEvidence.ExpectedEffects)
+	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
+		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, jupiterEvidence.ExpectedEffects)
+	}
+	if err != nil {
+		return err
 	}
 	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash)
 	if err != nil {
@@ -950,7 +1011,12 @@ func Run(ctx context.Context, out io.Writer) error {
 		return fmt.Errorf("choose one selector mode")
 	}
 	if shadowMode == "1" || liveMode == "1" {
-		feed, err := NewEconomicFeed(ctx, os.Getenv("TIMESCALEDB_URL"))
+		// The feed's route inventory is scoped to the SAME reviewed manifest
+		// the selector evaluates below (worker.manifest): installed lanes plus
+		// the candidate AUTO route only when the manifest carries a valid
+		// existing binding. Construction sits after NewWorker precisely so the
+		// manifest is available here.
+		feed, err := NewEconomicFeedOnManifest(ctx, os.Getenv("TIMESCALEDB_URL"), worker.manifest)
 		if err != nil {
 			return err
 		}

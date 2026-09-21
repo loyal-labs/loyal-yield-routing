@@ -8,26 +8,82 @@ import (
 )
 
 // Execution admission prestate: strictly absent-only. The target obligation
-// must not exist when an initializer is admitted for execution.
+// must not exist when an initializer is admitted for execution. An unreviewed
+// lane keeps the installed typed hold: admission prestate failure is a
+// retryable observation outcome, not a fatal configuration error.
 func validateKaminoInitializationPrestate(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, minimumSlot int64) (int64, error) {
-	return observeKaminoInitializationPrestate(ctx, rpc, r, minimumSlot, selectorExitBound{}, false)
+	inner, err := kaminoMultiplyInitializer(r.RouteLane)
+	if err != nil {
+		return 0, budgetHold("initializer_prestate_unavailable")
+	}
+	return observeKaminoInitializationPrestate(ctx, rpc, r, minimumSlot, selectorExitBound{}, false, inner)
+}
+
+// validateKaminoInitializationPrestateOnRoute is the manifest-aware form: the
+// candidate AUTO lane is admitted only after the reviewed binding resolved the
+// request; every absent-only check below is the exact installed check.
+func (m RouteManifest) validateKaminoInitializationPrestate(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, minimumSlot int64) (int64, error) {
+	if err := m.validateInitializationRequest(r); err != nil {
+		return 0, err
+	}
+	_, inner, err := initializerRouteForRequest(r)
+	if err != nil {
+		return 0, err
+	}
+	return observeKaminoInitializationPrestate(ctx, rpc, r, minimumSlot, selectorExitBound{}, false, inner)
+}
+
+// validateKaminoReentryForecastPrestateOnRoute is the manifest-aware reentry
+// forecast: identical shape and gates, bounded by the exact exit bound.
+func (m RouteManifest) validateKaminoReentryForecastPrestate(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, minimumSlot int64, bound selectorExitBound) (int64, error) {
+	if err := m.validateInitializationRequest(r); err != nil {
+		return 0, err
+	}
+	_, inner, err := initializerRouteForRequest(r)
+	if err != nil {
+		return 0, err
+	}
+	if bound.MaxCollateralRaw < 0 || bound.MaxDebtRaw < 0 {
+		return 0, budgetHold("initializer_reentry_bound_invalid")
+	}
+	return observeKaminoInitializationPrestate(ctx, rpc, r, minimumSlot, bound, true, inner)
+}
+
+// initializerRouteForRequest resolves the lane topology: installed selector
+// lanes through the unchanged public gate, the candidate AUTO lane through the
+// checked route-aware core (already binding-gated by the caller).
+func initializerRouteForRequest(r KaminoInitializationRequest) (RuntimeRoute, compiledInstruction, error) {
+	route, err := runtimeRoute(r.RouteLane)
+	if err != nil {
+		return RuntimeRoute{}, compiledInstruction{}, err
+	}
+	if selectorLane(route.Lane) {
+		inner, err := kaminoMultiplyInitializer(route.Lane)
+		return route, inner, err
+	}
+	inner, err := kaminoRouteInitializer(route)
+	return route, inner, err
 }
 
 // Forecast-only prestate for the same-lane reentry quote. It prices recreation
 // of an obligation the validated source exit is forecast to close, so it
 // requires the exact observed funded lane obligation — same identity, decode
 // evidence and exit-bound amounts — and weakens no other check. This never
-// replaces the execution wrapper above, which still demands absence.
+// replaces the execution wrapper above, which still demands absence. An
+// unreviewed lane keeps the installed typed hold.
 func validateKaminoReentryForecastPrestate(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, minimumSlot int64, bound selectorExitBound) (int64, error) {
 	if bound.MaxCollateralRaw < 0 || bound.MaxDebtRaw < 0 {
 		return 0, budgetHold("initializer_reentry_bound_invalid")
 	}
-	return observeKaminoInitializationPrestate(ctx, rpc, r, minimumSlot, bound, true)
+	inner, err := kaminoMultiplyInitializer(r.RouteLane)
+	if err != nil {
+		return 0, budgetHold("initializer_prestate_unavailable")
+	}
+	return observeKaminoInitializationPrestate(ctx, rpc, r, minimumSlot, bound, true, inner)
 }
 
-func observeKaminoInitializationPrestate(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, minimumSlot int64, bound selectorExitBound, forecastExistingObligation bool) (int64, error) {
-	inner, err := kaminoMultiplyInitializer(r.RouteLane)
-	if rpc == nil || err != nil || minimumSlot <= 0 {
+func observeKaminoInitializationPrestate(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, minimumSlot int64, bound selectorExitBound, forecastExistingObligation bool, inner compiledInstruction) (int64, error) {
+	if rpc == nil || minimumSlot <= 0 {
 		return 0, budgetHold("initializer_prestate_unavailable")
 	}
 	policy, err := policySetupAddress(r.PolicySeed)
@@ -93,9 +149,29 @@ func observeKaminoInitializationPrestate(ctx context.Context, rpc *RPCClient, r 
 	if emergency, err := decodeKaminoMarketEmergency(accountAt(accounts, route.Kamino.Market), route.Kamino); err != nil || emergency {
 		return 0, budgetHold("initializer_market_unavailable")
 	}
-	for _, mint := range []string{route.Kamino.CollateralMint, route.Kamino.DebtMint} {
-		a := accountAt(accounts, mint)
-		if a.Owner != classicTokenProgram || a.Executable || a.Lamports == 0 || len(a.Data) != 82 || a.Data[45] != 1 {
+	// Each seed mint must exist under its route's own reviewed token program:
+	// installed lanes are classic/classic and keep the exact installed check;
+	// the candidate AUTO debt is PYUSD under Token-2022, so it goes through
+	// the same execution-mint parser as every other admitted leg (extension
+	// whitelist, transfer fee and transfer hook disabled). The parser's
+	// decimals argument pins the observed decimals byte to the supported
+	// scale, the same <=18 bound decodeKaminoReserve enforces elsewhere;
+	// absolute decimals identity stays pinned by each lane's reserve reads.
+	for _, mint := range []struct{ address, program string }{
+		{route.Kamino.CollateralMint, route.CollateralTokenProgram},
+		{route.Kamino.DebtMint, route.DebtTokenProgram},
+	} {
+		a := accountAt(accounts, mint.address)
+		if a.Owner != mint.program || a.Executable || a.Lamports == 0 {
+			return 0, budgetHold("initializer_seed_mint_unavailable")
+		}
+		if mint.program == classicTokenProgram {
+			if len(a.Data) != 82 || a.Data[45] != 1 {
+				return 0, budgetHold("initializer_seed_mint_unavailable")
+			}
+			continue
+		}
+		if len(a.Data) < 82 || validateExecutionMint(a, token2022Program, a.Data[44]) != nil {
 			return 0, budgetHold("initializer_seed_mint_unavailable")
 		}
 	}

@@ -202,7 +202,10 @@ func basicJupiterRequestFromExport(t *testing.T, lane, leg string) (JupiterSwapR
 // decodeV0OuterInstruction reads the single Squads execute back out of a
 // compiled v0 message. The Squads authority accounts must stay static, so their
 // references are resolved from the static key list while venue accounts past
-// them may legitimately resolve through a table.
+// them may legitimately resolve through a table. AUTO resource messages carry
+// the ComputeBudget heap frame ahead of the outer, so the Squads instruction is
+// located by program rather than by position; installed single-instruction
+// messages decode exactly as before.
 func decodeV0OuterInstruction(t *testing.T, message []byte) ([]string, []string, []byte) {
 	t.Helper()
 	offset := 4
@@ -217,36 +220,52 @@ func decodeV0OuterInstruction(t *testing.T, message []byte) ([]string, []string,
 	}
 	offset += 32 // recent blockhash
 	instructions, err := decodeShortVec(message, &offset)
-	if err != nil || instructions != 1 {
-		t.Fatalf("v0 message does not carry exactly one instruction: %v", err)
+	if err != nil || instructions == 0 || instructions > 2 {
+		t.Fatalf("v0 message carries an unsupported instruction count: %v", err)
 	}
-	programIndex, err := decodeShortVec(message, &offset)
-	if err != nil || programIndex >= staticCount || staticKeys[programIndex] != bridgeSquadsProgram {
-		t.Fatalf("v0 outer program drifted: %v", err)
-	}
-	accountsCount, err := decodeShortVec(message, &offset)
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts := make([]string, 0, 3)
-	for index := 0; index < accountsCount; index++ {
-		accountIndex, err := decodeShortVec(message, &offset)
+	found := 0
+	accounts := []string(nil)
+	var outerData []byte
+	for index := 0; index < instructions; index++ {
+		programIndex, err := decodeShortVec(message, &offset)
+		if err != nil || programIndex >= staticCount {
+			t.Fatalf("v0 instruction %d program drifted: %v", index, err)
+		}
+		isOuter := staticKeys[programIndex] == bridgeSquadsProgram
+		accountsCount, err := decodeShortVec(message, &offset)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if index >= 3 {
-			continue // venue accounts may legitimately resolve through a table
+		if isOuter {
+			found++
+			accounts = make([]string, 0, 3)
 		}
-		if accountIndex >= staticCount {
-			t.Fatalf("v0 outer authority account %d moved into a lookup table", index)
+		for account := 0; account < accountsCount; account++ {
+			accountIndex, err := decodeShortVec(message, &offset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !isOuter || account >= 3 {
+				continue // venue accounts may legitimately resolve through a table
+			}
+			if accountIndex >= staticCount {
+				t.Fatalf("v0 outer authority account %d moved into a lookup table", account)
+			}
+			accounts = append(accounts, staticKeys[accountIndex])
 		}
-		accounts = append(accounts, staticKeys[accountIndex])
+		dataLength, err := decodeShortVec(message, &offset)
+		if err != nil || offset+dataLength > len(message) {
+			t.Fatalf("v0 message truncates its instruction data: %v", err)
+		}
+		if isOuter {
+			outerData = message[offset : offset+dataLength]
+		}
+		offset += dataLength
 	}
-	dataLength, err := decodeShortVec(message, &offset)
-	if err != nil || offset+dataLength > len(message) {
-		t.Fatalf("v0 message truncates its instruction data: %v", err)
+	if found != 1 {
+		t.Fatalf("v0 message does not carry exactly one Squads instruction: %d", found)
 	}
-	return staticKeys, accounts, message[offset : offset+dataLength]
+	return staticKeys, accounts, outerData
 }
 
 func TestOversizedBasicSwapLegsBuildV0FromQuotedLookupHints(t *testing.T) {
@@ -363,9 +382,21 @@ func TestBasicLaneLookupHintsStayScopedToSwapEdges(t *testing.T) {
 	if acceptsJupiterLookupHints(RouteID, SwapUSDCToPrimeStep) {
 		t.Fatal("legacy Prime lane changed its hint admission")
 	}
-	for _, lane := range []string{"unknown/asset/debt", "AUTO/AUTO/PYUSD"} {
+	for _, lane := range []string{"unknown/asset/debt"} {
 		if acceptsJupiterLookupHints(lane, SwapStableToCollateralStep) {
 			t.Fatalf("lane %s gained unregistered hint admission", lane)
+		}
+	}
+	// The candidate AUTO lane keeps the v0 escape hatch on its five reviewed
+	// edges only; unknown routes and non-edge actions stay rejected.
+	for _, action := range []Action{SwapStableToCollateralStep, SwapDebtToCollateralStep, SwapCollateralToStableStep, SwapCollateralToDebtStep, SwapDebtToUSDCStep} {
+		if !acceptsJupiterLookupHints(autoAUTOPYUSD.Lane, action) {
+			t.Fatalf("AUTO lane lost its exact-edge hint admission for %s", action)
+		}
+	}
+	for _, action := range []Action{SwapUSDCToDebtStep, OpenRouteStep, DeleverRouteStep, HoldManualRecovery} {
+		if acceptsJupiterLookupHints(autoAUTOPYUSD.Lane, action) {
+			t.Fatalf("AUTO lane admitted hints for non-edge action %s", action)
 		}
 	}
 }

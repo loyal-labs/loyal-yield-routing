@@ -35,7 +35,17 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 			return Observation{}, JupiterExecutionEvidence{}, err
 		}
 		sourceProgram, destinationProgram := bridgeTokenProgram, bridgeTokenProgram
-		if catalogJupiterRoute(decision.StrategyKey) {
+		if decision.StrategyKey == autoAUTOPYUSD.Lane {
+			// The candidate AUTO lane reads its token programs from the route's
+			// own reviewed identities, never from the catalog entry.
+			route, routeErr := runtimeRoute(decision.StrategyKey)
+			if routeErr != nil {
+				return Observation{}, JupiterExecutionEvidence{}, routeErr
+			}
+			if sourceProgram, destinationProgram, routeErr = autoTokenPrograms(route, decision.Action); routeErr != nil {
+				return Observation{}, JupiterExecutionEvidence{}, routeErr
+			}
+		} else if catalogJupiterRoute(decision.StrategyKey) {
 			edge, err := catalogJupiterBindingForRoute(decision.Action, decision.StrategyKey)
 			if err != nil {
 				return Observation{}, JupiterExecutionEvidence{}, err
@@ -104,7 +114,17 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *RPCClient, client *ju
 		return JupiterExecutionEvidence{}, err
 	}
 	sourceProgram, destinationProgram := bridgeTokenProgram, bridgeTokenProgram
-	if catalogJupiterRoute(decision.StrategyKey) {
+	if decision.StrategyKey == autoAUTOPYUSD.Lane {
+		// Candidate AUTO lane: token programs from route identities, not the
+		// catalog entry.
+		route, routeErr := runtimeRoute(decision.StrategyKey)
+		if routeErr != nil {
+			return JupiterExecutionEvidence{}, routeErr
+		}
+		if sourceProgram, destinationProgram, routeErr = autoTokenPrograms(route, decision.Action); routeErr != nil {
+			return JupiterExecutionEvidence{}, routeErr
+		}
+	} else if catalogJupiterRoute(decision.StrategyKey) {
 		edge, err := catalogJupiterBindingForRoute(decision.Action, decision.StrategyKey)
 		if err != nil {
 			return JupiterExecutionEvidence{}, err
@@ -131,13 +151,32 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *RPCClient, client *ju
 	if err != nil || destinationRaw > math.MaxUint64-minimum {
 		return JupiterExecutionEvidence{}, fmt.Errorf("Jupiter destination threshold overflows")
 	}
+	if decision.StrategyKey == autoAUTOPYUSD.Lane {
+		// Retention keeps min(JSON threshold, enforceable wire floor): the
+		// legacy AUTO wire cannot guarantee more than its quoted output scaled
+		// by its own slippage, so funding is never sized off an advisory
+		// threshold the program would not enforce. A normalized floor of zero
+		// means the quote carries no enforceable output guarantee at all —
+		// fail closed with a typed hold the caller can propagate, never a
+		// retained zero minimum.
+		floor, floorErr := jupiterInstructionWireFloor(instruction)
+		if floorErr != nil {
+			return JupiterExecutionEvidence{}, confirmedObservationUnavailable(floorErr)
+		}
+		if floor < minimum {
+			minimum = floor
+		}
+		if minimum == 0 {
+			return JupiterExecutionEvidence{}, budgetHold("jupiter_auto_wire_floor_zero")
+		}
+	}
 	minimumAfter := destinationRaw + minimum
 	blockhash, err := rpc.LatestBlockhash(ctx)
 	if err != nil {
 		return JupiterExecutionEvidence{}, err
 	}
 	request := JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: binding.Policy, PolicyAccountDataSHA256: binding.PolicyAccountDataSHA256, PolicyConstraintIndex: constraintIndex, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: decision.StrategyKey}
-	request, err = prepareJupiterLookupTables(ctx, rpc, request, slot)
+	request, err = manifest.prepareJupiterLookupTables(ctx, rpc, request, slot)
 	if err != nil {
 		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
 	}

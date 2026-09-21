@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -107,6 +108,15 @@ func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMin
 	if lane == "" {
 		lane = RouteID
 	}
+	if lane == autoAUTOPYUSD.Lane {
+		// AUTO edges resolve from the route's own reviewed identities; the
+		// historical catalog entry is never consulted for the candidate lane.
+		route, err := runtimeRoute(lane)
+		if err != nil {
+			return "", "", "", "", err
+		}
+		return autoSwapEdge(route, action)
+	}
 	if catalogJupiterRoute(lane) {
 		b, err := catalogJupiterBindingForRoute(action, lane)
 		return b.SourceMint, b.DestinationMint, b.SourceCustody, b.DestinationCustody, err
@@ -155,7 +165,9 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 		"amount": {strconv.FormatUint(amount, 10)}, "slippageBps": {strconv.Itoa(int(jupiterMaxSlippageBPS))},
 		"swapMode": {"ExactIn"}, "maxAccounts": {"32"},
 	}
-	if catalogJupiterRoute(lane) {
+	if catalogJupiterRoute(lane) && lane != autoAUTOPYUSD.Lane {
+		// AUTO's dialect is fixed by its reviewed policy shape (legacy
+		// SharedAccountsRoute), not by the historical catalog entries.
 		binding, err := catalogJupiterBindingForRoute(action, lane)
 		if err != nil {
 			return JupiterQuote{}, JupiterSwapInstruction{}, err
@@ -187,7 +199,7 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 		return JupiterQuote{}, JupiterSwapInstruction{}, err
 	}
 	useSharedAccounts := true
-	if catalogJupiterRoute(lane) {
+	if catalogJupiterRoute(lane) && lane != autoAUTOPYUSD.Lane {
 		binding, err := catalogJupiterBindingForRoute(action, lane)
 		if err != nil {
 			return JupiterQuote{}, JupiterSwapInstruction{}, err
@@ -309,7 +321,7 @@ func validateJupiterInstruction(value JupiterSwapInstruction, action Action, amo
 }
 
 func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Action, amount, out, minimum uint64, lane string) (compiledInstruction, error) {
-	if catalogJupiterRoute(lane) {
+	if catalogJupiterRoute(lane) && lane != autoAUTOPYUSD.Lane {
 		return validateCatalogJupiterInstruction(value, action, amount, out, minimum, lane)
 	}
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(action, lane)
@@ -324,6 +336,10 @@ func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Act
 		return compiledInstruction{}, fmt.Errorf("Jupiter instruction data is malformed")
 	}
 	legacy, v2 := bytes.Equal(data[:8], jupiterSharedAccountsRoute), bytes.Equal(data[:8], jupiterSharedAccountsRouteV2)
+	autoLane := lane == autoAUTOPYUSD.Lane
+	if autoLane && !legacy {
+		return compiledInstruction{}, fmt.Errorf("AUTO policy requires legacy sharedAccountsRoute")
+	}
 	if selectorLane(lane) && !legacy {
 		return compiledInstruction{}, fmt.Errorf("basic policy requires legacy sharedAccountsRoute")
 	}
@@ -336,7 +352,9 @@ func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Act
 		signer, writable bool
 	}
 	boundaries := []boundary{}
-	if selectorLane(lane) {
+	if selectorLane(lane) || autoLane {
+		// Both the basic swap families and the combined AUTO policy pin the
+		// platform-fee account to the Jupiter program.
 		boundaries = append(boundaries, boundary{9, jupiterV6Program, false, false})
 	}
 	slippageOffset, feeOffset := len(data)-3, len(data)-1
@@ -374,6 +392,55 @@ func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Act
 	return compiledInstruction{program: mustKey(jupiterV6Program), accounts: accounts, data: data}, nil
 }
 
+// jupiterLegacyGuaranteedFloor computes the exact output floor a legacy
+// sharedAccountsRoute wire can enforce: the on-wire quoted output scaled by
+// the on-wire slippage in wide integer arithmetic. The legacy dialect carries
+// no explicit minimum-out argument, so any larger JSON threshold is advisory
+// and must never be retained as a funding guarantee. The defensive re-checks
+// tie the tail offsets to the one dialect they are valid for.
+func jupiterLegacyGuaranteedFloor(data []byte) (uint64, bool) {
+	if len(data) < 19 || !bytes.Equal(data[:8], jupiterSharedAccountsRoute) {
+		return 0, false
+	}
+	slippage := uint16(data[len(data)-3]) | uint16(data[len(data)-3+1])<<8
+	if slippage > jupiterMaxSlippageBPS {
+		return 0, false
+	}
+	floor := new(big.Int).Mul(new(big.Int).SetUint64(readU64(data[len(data)-11:])), big.NewInt(int64(10_000-slippage)))
+	floor.Div(floor, big.NewInt(10_000))
+	if !floor.IsUint64() {
+		return 0, false
+	}
+	return floor.Uint64(), true
+}
+
+func jupiterInstructionWireFloor(instruction JupiterSwapInstruction) (uint64, error) {
+	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
+	if err != nil || len(data) < 19 {
+		return 0, fmt.Errorf("Jupiter instruction data is malformed")
+	}
+	floor, ok := jupiterLegacyGuaranteedFloor(data)
+	if !ok {
+		return 0, fmt.Errorf("Jupiter AUTO wire floor unavailable")
+	}
+	return floor, nil
+}
+
+// jupiterValidateAutoRetainedMinimum rejects a retained AUTO request whose
+// minimum output exceeds what its own wire can enforce, so caller-forged
+// evidence quoting an advisory JSON threshold cannot bypass the producer's
+// conservative retention. Other lanes keep their established semantics.
+func jupiterValidateAutoRetainedMinimum(request JupiterSwapRequest) error {
+	if request.RouteLane != autoAUTOPYUSD.Lane {
+		return nil
+	}
+	floor, err := jupiterInstructionWireFloor(request.Instruction)
+	if err != nil || request.MinimumOutputRaw > floor {
+		return fmt.Errorf("Jupiter AUTO minimum exceeds enforceable wire floor")
+	}
+	return nil
+}
+
 type SignedJupiterTransaction struct {
 	message, signedWire                                   []byte
 	messageSHA256, signedWireSHA256, transactionSignature string
@@ -389,7 +456,19 @@ func CompileJupiterMessage(request JupiterSwapRequest) ([]byte, error) {
 	return compileJupiterMessageForDelegate(request, mustKey(bridgeDelegate))
 }
 
+// The production wrapper supplies the embedded reviewed manifest exactly once;
+// the manifest-aware helper below retains that value into AUTO policy
+// validation so a candidate binding never depends on a reload inside the
+// compiler or on request-supplied authorization.
 func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publicKey) ([]byte, error) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return nil, err
+	}
+	return manifest.compileJupiterMessage(request, delegate)
+}
+
+func (m RouteManifest) compileJupiterMessage(request JupiterSwapRequest, delegate publicKey) ([]byte, error) {
 	if request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 || !validSHA256(request.PolicyAccountDataSHA256) {
 		return nil, fmt.Errorf("invalid Jupiter request")
 	}
@@ -401,7 +480,16 @@ func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publi
 	if err != nil {
 		return nil, err
 	}
-	if catalogJupiterRoute(request.RouteLane) {
+	if err := jupiterValidateAutoRetainedMinimum(request); err != nil {
+		return nil, err
+	}
+	if request.RouteLane == autoAUTOPYUSD.Lane {
+		// Retention point: the reviewed AUTO binding supplied on m decides,
+		// never the request and never the catalog.
+		if err := m.requireAutoJupiterBinding(request); err != nil {
+			return nil, err
+		}
+	} else if catalogJupiterRoute(request.RouteLane) {
 		b, err := catalogJupiterBindingForRoute(request.Action, request.RouteLane)
 		if err != nil || request.Policy != b.Policy || request.PolicyAccountDataSHA256 != b.PolicySHA256 || request.PolicyConstraintIndex != b.ConstraintIndex {
 			return nil, fmt.Errorf("Jupiter policy does not match catalog edge")
@@ -433,7 +521,19 @@ func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publi
 		return nil, err
 	}
 	var message []byte
-	if len(request.LookupTables) > 0 {
+	if request.RouteLane == autoAUTOPYUSD.Lane {
+		// AUTO arrives here only through requireAutoJupiterBinding above, so the
+		// reviewed lane carries the canonical ComputeBudget heap frame ahead of
+		// its already-validated policy outer. The v0 path keeps lookup snapshots
+		// and gains the instruction directly; the legacy path goes through the
+		// closed AUTO resource wrapper because compileLegacyMessage still admits
+		// exactly one payload instruction.
+		if len(request.LookupTables) > 0 {
+			message, err = compileV0Message(delegate, blockhash, withAutoExecutionHeap([]compiledInstruction{outer}), request.LookupTables)
+		} else {
+			message, err = compileAutoResourceLegacyMessage(delegate, blockhash, outer)
+		}
+	} else if len(request.LookupTables) > 0 {
 		message, err = compileV0Message(delegate, blockhash, []compiledInstruction{outer}, request.LookupTables)
 	} else {
 		message, err = compileLegacyMessage(delegate, blockhash, []compiledInstruction{outer})
@@ -506,6 +606,9 @@ func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc
 		return fmt.Errorf("Jupiter runtime dependencies are required")
 	}
 	if _, err := validateJupiterInstructionForRoute(evidence.Request.Instruction, evidence.Request.Action, evidence.Request.AmountRaw, evidence.Request.QuotedOutputRaw, evidence.Request.MinimumOutputRaw, evidence.Request.RouteLane); err != nil {
+		return err
+	}
+	if err := jupiterValidateAutoRetainedMinimum(evidence.Request); err != nil {
 		return err
 	}
 	effects, err := jsonMarshalExpectedEffects(evidence.ExpectedEffects)

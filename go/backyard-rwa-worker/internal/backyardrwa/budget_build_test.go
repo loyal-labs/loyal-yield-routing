@@ -82,6 +82,14 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 			result = map[string]any{"context": map[string]int{"slot": 42}, "value": fee}
 		case "getBlockHeight":
 			result = 10 // A signed HOLD at this height is not expired in the DB fixture.
+		case "getMinimumBalanceForRentExemption":
+			// Read-only fixture of the real RPC: (128+bytes) lamports per byte
+			// year across the two-year exemption threshold at 3480 lamports.
+			var size int
+			if err := json.Unmarshal(body.Params[0], &size); err != nil || size < 0 {
+				t.Fatal("rent exemption request must carry a byte size")
+			}
+			result = uint64((128 + size) * 3480 * 2)
 		case "getMultipleAccounts":
 			var addresses []string
 			if err := json.Unmarshal(body.Params[0], &addresses); err != nil {

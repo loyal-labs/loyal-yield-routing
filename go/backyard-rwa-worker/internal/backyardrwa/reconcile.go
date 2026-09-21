@@ -273,6 +273,17 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 	return Reconciliation{ConfirmedSlot: receipt.Slot, EffectsSHA256: hex.EncodeToString(hash[:]), Conserved: true}, evidence, nil
 }
 
+// ReconcileConfirmedTransaction is the manifest-aware dispatch: only the
+// native initializer branch differs — it reconciles through the explicit
+// reviewed manifest — and every other kind delegates to the public reconciler
+// unchanged.
+func (m RouteManifest) ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
+	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
+		return m.reconcileKaminoInitialization(expected, receipt)
+	}
+	return ReconcileConfirmedTransaction(expected, receipt)
+}
+
 func transactionBalancesByAddress(balances []TransactionTokenBalance) (map[string]TransactionTokenBalance, error) {
 	byAddress := make(map[string]TransactionTokenBalance, len(balances))
 	for _, balance := range balances {

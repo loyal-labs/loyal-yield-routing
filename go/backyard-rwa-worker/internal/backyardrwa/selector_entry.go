@@ -25,12 +25,70 @@ type SelectorEntry struct {
 }
 
 func (e SelectorEntry) validate() error {
-	if !selectorLane(e.Lane) || e.ObservationID == "" || e.EquityRaw <= 0 || e.EquityRaw > PilotWorkingTrancheCapRaw ||
-		e.Quote.DestinationLane != e.Lane || !selectorLane(e.Quote.SourceLane) || e.Quote.ObservationID != e.ObservationID || e.Quote.EquityRaw != e.EquityRaw || e.Quote.CostRaw < 0 || e.Quote.CostRaw >= e.EquityRaw || !sha256Pattern.MatchString(e.Quote.EvidenceID) ||
+	return validateSelectorEntry(e, selectorLane)
+}
+
+// validateSelectorEntry is the shared compound entry check with the lane
+// authority parameterized: the installed embedded manifest admits only
+// selectorLane members, while an explicit reviewed manifest may additionally
+// admit its own initializer lane through the same reviewed binding that
+// compiles its requests. Observation binding, equity bounds, quote economics,
+// evidence identity, borrow shape and the 30-second quote window stay the
+// exact installed checks for every caller.
+func validateSelectorEntry(e SelectorEntry, laneAllowed func(string) bool) error {
+	if !laneAllowed(e.Lane) || e.ObservationID == "" || e.EquityRaw <= 0 || e.EquityRaw > PilotWorkingTrancheCapRaw ||
+		e.Quote.DestinationLane != e.Lane || !laneAllowed(e.Quote.SourceLane) || e.Quote.ObservationID != e.ObservationID || e.Quote.EquityRaw != e.EquityRaw || e.Quote.CostRaw < 0 || e.Quote.CostRaw >= e.EquityRaw || !sha256Pattern.MatchString(e.Quote.EvidenceID) ||
 		e.Quote.MinimumIdleRaw < uint64(e.EquityRaw) || !e.Quote.validBorrow() || !e.Quote.currentAtSlot(e.Quote.SampleSlot) || e.AcceptedAt.IsZero() || e.Quote.ObservedAt.IsZero() || e.Quote.ObservedAt.After(e.AcceptedAt) || !e.ExpiresAt.After(e.AcceptedAt) || e.ExpiresAt.After(e.Quote.ObservedAt.Add(30*time.Second)) {
 		return fmt.Errorf("invalid_selector_entry")
 	}
 	return nil
+}
+
+// validateSelectorEntryOnManifest resolves the entry lane authority through
+// the explicit reviewed manifest. It serves only the internal pilot
+// authorization chain (locked build and final-send fences); every public
+// decode keeps the installed embedded check above.
+func (m RouteManifest) validateSelectorEntry(e SelectorEntry) error {
+	return validateSelectorEntry(e, m.selectorEntryLaneAllowed)
+}
+
+// selectorEntryLaneAllowed admits the installed selector lanes plus — only
+// while the reviewed AUTO initializer binding resolves in this explicit
+// manifest — the candidate AUTO lane itself. An absent or drifted binding
+// keeps the installed closure.
+func (m RouteManifest) selectorEntryLaneAllowed(lane string) bool {
+	if selectorLane(lane) {
+		return true
+	}
+	if lane != autoAUTOPYUSD.Lane {
+		return false
+	}
+	_, _, err := m.autoInitializerBinding()
+	return err == nil
+}
+
+// selectorEntryFundingLane is the rollout scope for funded allocation:
+// installed selectorEntryLane members, plus the candidate AUTO lane while this
+// explicit manifest's binding resolves. The initializer onboarding path
+// requires the complete binding including the reviewed initialize constraint;
+// funded allocation requires the same complete validated binding the
+// destination and recipe pricers already use — a persisted candidate entry can
+// only exist because its decode admitted the initializer constraint. The
+// plain selectorEntryLane scope is unchanged for every public caller: absent
+// or drifted bindings keep candidate funding closed.
+func (m RouteManifest) selectorEntryFundingLane(lane string, initializer bool) bool {
+	if selectorEntryLane(lane) {
+		return true
+	}
+	if lane != autoAUTOPYUSD.Lane {
+		return false
+	}
+	if initializer {
+		_, _, err := m.autoInitializerBinding()
+		return err == nil
+	}
+	_, err := m.autoPolicyBinding()
+	return err == nil
 }
 
 func hasWorkingCapital(s Snapshot) bool {
@@ -38,6 +96,15 @@ func hasWorkingCapital(s Snapshot) bool {
 }
 
 func applySelectorEntry(s *Snapshot, entry *SelectorEntry, now time.Time) error {
+	return applySelectorEntryWithLane(s, entry, now, selectorLane)
+}
+
+// applySelectorEntryWithLane is the identical entry merge with the entry
+// validity authority parameterized: an explicit reviewed manifest accepts its
+// candidate initializer lane through the same reviewed binding that decides
+// and admits it. Every installed check — pilot gating, expiry, allocation and
+// quote currency — is shared verbatim.
+func applySelectorEntryWithLane(s *Snapshot, entry *SelectorEntry, now time.Time, laneAllowed func(string) bool) error {
 	s.SelectorEntryEquityRaw = 0
 	s.SelectorBorrowRaw = 0
 	if !s.PilotActive {
@@ -47,7 +114,7 @@ func applySelectorEntry(s *Snapshot, entry *SelectorEntry, now time.Time) error 
 		s.SelectorEntryPaused = true
 		return nil
 	}
-	if err := entry.validate(); err != nil {
+	if err := validateSelectorEntry(*entry, laneAllowed); err != nil {
 		return err
 	}
 	if entry.Lane != s.RouteLane {
@@ -73,7 +140,28 @@ func (d *Database) LoadSelectorEntry(ctx context.Context, routeKey string) (*Sel
 	return decodeSelectorEntry(raw)
 }
 
+// LoadSelectorEntryOnManifest is the identical durable read with the entry
+// decode resolved through the explicit reviewed manifest, so the production
+// journal merge without a planning read still accepts the candidate
+// initializer entry only while that manifest's reviewed binding resolves.
+// Every other read, lease and generation fence is shared verbatim.
+func (d *Database) LoadSelectorEntryOnManifest(ctx context.Context, manifest RouteManifest, routeKey string) (*SelectorEntry, error) {
+	var raw []byte
+	if err := d.pool.QueryRow(ctx, `SELECT state->'selectorEntry' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey).Scan(&raw); err != nil {
+		return nil, err
+	}
+	return manifest.decodeSelectorEntry(raw)
+}
+
 func decodeSelectorEntry(raw []byte) (*SelectorEntry, error) {
+	return decodeSelectorEntryWithLane(raw, selectorLane)
+}
+
+// decodeSelectorEntryWithLane is the identical durable decode with the entry
+// lane authority parameterized, so the real batch planning read accepts the
+// candidate initializer entry only through the same reviewed manifest binding
+// that admits it. Unknown bytes and every installed check stay exact.
+func decodeSelectorEntryWithLane(raw []byte, laneAllowed func(string) bool) (*SelectorEntry, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
@@ -81,10 +169,24 @@ func decodeSelectorEntry(raw []byte) (*SelectorEntry, error) {
 	if json.Unmarshal(raw, &entry) != nil {
 		return nil, fmt.Errorf("invalid_durable_selector_entry")
 	}
-	if err := entry.validate(); err != nil {
+	if err := validateSelectorEntry(entry, laneAllowed); err != nil {
 		return nil, err
 	}
 	return &entry, nil
+}
+
+// decodeSelectorEntryOnManifest resolves the entry lane authority through the
+// explicit reviewed manifest. It serves the real batch planning read; every
+// public decode keeps the installed embedded check above.
+func (m RouteManifest) decodeSelectorEntry(raw []byte) (*SelectorEntry, error) {
+	return decodeSelectorEntryWithLane(raw, m.selectorEntryLaneAllowed)
+}
+
+// applySelectorEntryOnManifest merges the durable entry with the explicit
+// reviewed manifest's lane authority. It serves the real production journal
+// merge; every public caller keeps the installed embedded check.
+func (m RouteManifest) applySelectorEntry(s *Snapshot, entry *SelectorEntry, now time.Time) error {
+	return applySelectorEntryWithLane(s, entry, now, m.selectorEntryLaneAllowed)
 }
 
 // RecordSelectorEvaluation consumes a complete economic quote, never a shadow
@@ -95,6 +197,31 @@ func decodeSelectorEntry(raw []byte) (*SelectorEntry, error) {
 // unwind in this same transaction, using only existing reserved exit spending.
 // Neither action writes an executable transaction.
 func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string, input SelectorInput, confirmedSlot, expectedVersion int64) (SelectorResult, error) {
+	return d.recordSelectorEvaluationWithLanes(ctx, routeKey, nil, input, confirmedSlot, expectedVersion)
+}
+
+// recordSelectorEvaluationWithLanes is the identical locked evaluation with
+// the market lane authority resolved through an explicit reviewed manifest:
+// the production evaluation path (evaluateSelector) passes that manifest so a
+// candidate lane's collected quote can persist its entry through the same
+// validated autoPolicy binding that priced it, and the entry itself is
+// validated through that manifest's initializer-constraint authority. A nil
+// manifest keeps the installed embedded selector-lane behavior exactly. Every
+// lock, fence, budget and recovery precondition is shared verbatim.
+func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeKey string, manifest *RouteManifest, input SelectorInput, confirmedSlot, expectedVersion int64) (SelectorResult, error) {
+	laneAllowed := selectorLane
+	fundingAllowed := selectorEntryLane
+	entryValid := func(e SelectorEntry) error { return e.validate() }
+	unwindValid := func(i UnwindIntent) error { return i.validate() }
+	selectResult := func(in SelectorInput, previous SelectorState) SelectorResult {
+		return selectOpportunityWithLanes(in, previous, laneAllowed, fundingAllowed)
+	}
+	if manifest != nil {
+		laneAllowed = func(lane string) bool { return selectorDestinationLaneAuthorized(*manifest, lane) }
+		fundingAllowed = func(lane string) bool { return manifest.selectorEntryFundingLane(lane, false) }
+		entryValid = manifest.validateSelectorEntry
+		unwindValid = manifest.validateUnwindIntent
+	}
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	var result SelectorResult
@@ -150,23 +277,28 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 	if state.Unwind != nil || len(state.Budget.Reservations) != 0 {
 		return result, budgetHold("selector_finish_current_work_first")
 	}
-	var pending bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key=$1 AND status IN (`+nonterminalStatusSQL+`))`, routeKey).Scan(&pending); err != nil {
+	// The two operation-table guard checks ride ONE SELECT whose columns wrap
+	// the unchanged guard predicates (order, hold codes and precedence
+	// unchanged; one sequential statement round trip saved). The manual latch
+	// read stays a separate statement AFTER them — LatchManualRecovery writes
+	// the latch without this route row lock, so its snapshot must not move earlier. Proof: docs/plans/voltr-auto-expansion/51-agent-b-admission-result.md.
+	var opsPending, recoveryPending bool
+	if err = tx.QueryRow(ctx, `SELECT `+
+		`EXISTS(SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key=$1 AND status IN (`+nonterminalStatusSQL+`)), `+
+		`(`+UnresolvedCapitalRecoverySQL+`)`, routeKey).Scan(&opsPending, &recoveryPending); err != nil {
 		return result, err
 	}
-	if pending {
+	if opsPending {
 		return result, budgetHold("selector_finish_current_work_first")
 	}
-	if err = tx.QueryRow(ctx, UnresolvedCapitalRecoverySQL, routeKey).Scan(&pending); err != nil {
-		return result, err
-	}
-	if pending {
+	if recoveryPending {
 		return result, budgetHold("selector_resolve_capital_recovery_first")
 	}
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.backyard_manual_recovery_latches WHERE route_key=$1 AND cleared_at IS NULL) OR EXISTS (`+manualRecoveryDerivedLatchSQL+`)`, routeKey).Scan(&pending); err != nil {
+	var manualPending bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.backyard_manual_recovery_latches WHERE route_key=$1 AND cleared_at IS NULL) OR EXISTS (`+manualRecoveryDerivedLatchSQL+`)`, routeKey).Scan(&manualPending); err != nil {
 		return result, err
 	}
-	if pending {
+	if manualPending {
 		return result, budgetHold("selector_manual_recovery_active")
 	}
 	now = time.Now().UTC()
@@ -184,8 +316,16 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 		}
 	}
 	input.Quotes = currentQuotes
-	result = SelectOpportunity(input, state.Selector.Result.State)
-	result, canaryReceipt, err := selectPilotCanaryEntry(input, result, state.CanaryHistory)
+	result = selectResult(input, state.Selector.Result.State)
+	var canaryReceipt *pilotCanaryEntryReceipt
+	// The manifest path resolves both forced-acceptance lane authorities —
+	// the operator request and the constructed entry — through the explicit
+	// reviewed manifest (doc 31); the embedded path keeps the installed sets.
+	if manifest != nil {
+		result, canaryReceipt, err = selectPilotCanaryEntryOnManifest(input, result, state.CanaryHistory, *manifest)
+	} else {
+		result, canaryReceipt, err = selectPilotCanaryEntry(input, result, state.CanaryHistory)
+	}
 	if err != nil {
 		return result, err
 	}
@@ -208,7 +348,7 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 		if canaryReceipt != nil && canaryReceipt.Request.ExpiresAt.Before(entry.ExpiresAt) {
 			entry.ExpiresAt = canaryReceipt.Request.ExpiresAt
 		}
-		if err = entry.validate(); err != nil {
+		if err = entryValid(*entry); err != nil {
 			return result, err
 		}
 		if entry.EquityRaw > s.VoltrIdleRaw {
@@ -222,7 +362,7 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 			return result, budgetHold("selector_unwind_quote_missing")
 		}
 		unwind = &UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: s.ObservationID, MaxCollateralRaw: q.SourceExit.MaxCollateralRaw, MaxDebtRaw: q.SourceExit.MaxDebtRaw, CostBoundRaw: q.SourceExit.GrossMicros, BudgetScope: state.Budget.GoalID, BudgetFamily: phase3BudgetFamilyForLane(s.RouteLane), EvidenceID: q.EvidenceID, CreatedAt: now}
-		if err = unwind.validate(); err != nil {
+		if err = unwindValid(*unwind); err != nil {
 			return result, err
 		}
 		if state.Budget.Families[unwind.BudgetFamily].ExitMicros < unwind.CostBoundRaw {
@@ -289,6 +429,20 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 // Expiry only closes a new allocation or account setup; completion and exits
 // never depend on a still-current economic forecast.
 func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, operationID string, budget Phase3Budget, request any, effects ExpectedEffects, slot int64, admission bool) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return d.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, operationID, budget, request, effects, slot, admission)
+}
+
+// authorizeSelectorEntryTxOnManifest is the exact locked selector-entry fence
+// with only the entry validation and the rollout-scope lane resolved through
+// the explicit reviewed manifest: a candidate AUTO entry is admitted solely
+// while its reviewed initializer binding resolves, and installed lanes keep
+// the public behavior above. Pause, unwind, journal-lane, equity, borrow,
+// quote-currentness, allocation-binding and authority checks are byte-identical.
+func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manifest RouteManifest, tx pgx.Tx, operationID string, budget Phase3Budget, request any, effects ExpectedEffects, slot int64, admission bool) error {
 	if budget.Pilot == nil {
 		return nil
 	}
@@ -322,7 +476,7 @@ func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, oper
 		return err
 	}
 	var entry SelectorEntry
-	if len(raw) == 0 || json.Unmarshal(raw, &entry) != nil || entry.validate() != nil || paused || unwinding || lane != entry.Lane || (requestedLane != "" && requestedLane != lane) || (requestedLane == "" && amount != uint64(entry.EquityRaw)) {
+	if len(raw) == 0 || json.Unmarshal(raw, &entry) != nil || manifest.validateSelectorEntry(entry) != nil || paused || unwinding || lane != entry.Lane || (requestedLane != "" && requestedLane != lane) || (requestedLane == "" && amount != uint64(entry.EquityRaw)) {
 		return budgetHold("selector_entry_authority_mismatch")
 	}
 	if borrow {
@@ -345,8 +499,10 @@ func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, oper
 	// ID: binding happens before funds move, so it is not proof of a funded
 	// tranche. Funded completion stays available through the borrow path above
 	// and the existing deposit/exit legs; observation, valuation, exit and
-	// recovery never consult this fence.
-	if !selectorEntryLane(entry.Lane) {
+	// recovery never consult this fence. The explicit reviewed manifest admits
+	// its initializer lane under the same reviewed binding — never a mutable
+	// activation flag.
+	if !manifest.selectorEntryFundingLane(entry.Lane, requestedLane != "") {
 		return budgetHold("selector_entry_lane_deferred")
 	}
 	now := time.Now().UTC()

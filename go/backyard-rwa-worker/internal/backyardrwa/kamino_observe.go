@@ -71,6 +71,17 @@ var (
 	errKaminoMarketEmergency = errors.New("kamino_market_emergency")
 )
 
+// kaminoOracleSentinelPubkey is the pinned klend-sdk's documented NULL_PUBKEY
+// (tools/backyard-voltr/node_modules/@kamino-finance/klend-sdk/src/utils/
+// pubkey.ts): the value installed reserves write into UNUSED oracle config
+// slots. keyString already maps all-zero keys to "", so the SDK's
+// DEFAULT_PUBLIC_KEY never surfaces here; this sentinel is a real non-zero
+// pubkey and did reach the oracle account fetch as a required account. It is
+// filtered ONLY at the reserve oracle-key extraction below — no other
+// account selection changes, and a reserve with no remaining configured
+// oracle still fails "Kamino reserve has no configured oracle".
+const kaminoOracleSentinelPubkey = "nu11111111111111111111111111111111111111111"
+
 // kaminoHealthReason maps a reserve-health sentinel to its HOLD reason.
 func kaminoHealthReason(err error) (string, bool) {
 	switch {
@@ -331,7 +342,16 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 	// ReserveConfig begins at 4856 and TokenInfo at 5032. Offset 645 is the
 	// reviewed u8 utilization borrowing gate; the oracle keys below are the
 	// only other config fields read. Curve and padding bytes remain ignored.
-	oracles := []string{keyString(account.Data[5112:5144]), keyString(account.Data[5160:5192]), keyString(account.Data[5192:5224]), keyString(account.Data[5224:5256])}
+	var oracles []string
+	for _, offset := range []int{5112, 5160, 5192, 5224} {
+		// Drop ONLY the documented klend-sdk NULL_PUBKEY sentinel (see
+		// kaminoOracleSentinelPubkey): an unused oracle slot is not a
+		// configured oracle, and requesting it as an account can only fail
+		// the observation. Every real configured oracle still passes.
+		if key := keyString(account.Data[offset : offset+32]); key != kaminoOracleSentinelPubkey {
+			oracles = append(oracles, key)
+		}
+	}
 	borrowedLiquiditySF := littleInt(account.Data[232:248])
 	totalLiquidity := new(big.Int).Set(borrowedLiquiditySF)
 	totalLiquidity.Add(totalLiquidity, new(big.Int).Lsh(new(big.Int).SetUint64(binary.LittleEndian.Uint64(account.Data[224:232])), 60))

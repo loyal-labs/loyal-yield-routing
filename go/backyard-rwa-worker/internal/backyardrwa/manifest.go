@@ -71,7 +71,12 @@ type RouteManifest struct {
 	} `json:"policyCatalog"`
 	RuntimeBindings struct {
 		MultiplyInitializers []KaminoInitializerBinding `json:"multiplyInitializers,omitempty"`
-		BridgePolicies       []struct {
+		// AutoPolicy is the optional combined AUTO candidate binding. It stays
+		// a pointer: the shipped manifest has no autoPolicy section, and a
+		// nil value must keep every Maple/Prime/OnRe path byte-identical
+		// while AUTO resolves to an explicit hold.
+		AutoPolicy     *AutoPolicyBinding `json:"autoPolicy,omitempty"`
+		BridgePolicies []struct {
 			Action           Action     `json:"action"`
 			Account          string     `json:"account"`
 			NormalizedDigest string     `json:"normalizedDigest"`
@@ -216,8 +221,11 @@ type SelectedLaneBinding struct {
 }
 
 type JupiterPolicyBinding struct {
-	CatalogLane             string                     `json:"catalogLane,omitempty"`
-	BasicPolicy             bool                       `json:"-"`
+	CatalogLane string `json:"catalogLane,omitempty"`
+	BasicPolicy bool   `json:"-"`
+	// AutoPolicy marks a binding resolved from the optional combined AUTO
+	// manifest section. Computed at resolution, never parsed from JSON.
+	AutoPolicy              bool                       `json:"-"`
 	Action                  Action                     `json:"action"`
 	Policy                  string                     `json:"policy"`
 	PolicyAccountDataSHA256 string                     `json:"policyAccountDataSha256"`
@@ -261,6 +269,12 @@ func (m RouteManifest) jupiterPolicy(action Action) (JupiterPolicyBinding, error
 }
 
 func (m RouteManifest) jupiterPolicyForRoute(action Action, lane string) (JupiterPolicyBinding, error) {
+	if lane == autoAUTOPYUSD.Lane {
+		// AUTO resolves only the reviewed combined binding. The historical
+		// catalog entry stays an observation pin and is never consulted, and
+		// there is no fallthrough: an absent binding is an explicit hold.
+		return m.autoJupiterBinding(action)
+	}
 	if catalogJupiterRoute(lane) {
 		b, err := catalogJupiterBindingForRoute(action, lane)
 		if err != nil {
@@ -335,6 +349,15 @@ func (b JupiterPolicyBinding) constraintIndex(instruction JupiterSwapInstruction
 	if b.BasicPolicy {
 		if len(data) < 28 || !bytes.Equal(data[:8], jupiterSharedAccountsRoute) {
 			return 0, fmt.Errorf("fresh Jupiter header does not match the basic policy binding")
+		}
+		return b.PolicyConstraintIndex, nil
+	}
+	if b.AutoPolicy {
+		// The combined AUTO policy authorizes only the legacy SharedAccountsRoute
+		// dialect; the exact edge (and therefore index) was already pinned by
+		// the action at resolution and by instruction validation.
+		if len(data) < 28 || !bytes.Equal(data[:8], jupiterSharedAccountsRoute) {
+			return 0, fmt.Errorf("fresh Jupiter header does not match the reviewed AUTO binding")
 		}
 		return b.PolicyConstraintIndex, nil
 	}
@@ -668,13 +691,28 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
 	var policy, policyHash string
+	var constraintIndex byte
 	if route.BasicPolicy {
 		family := basicPolicyFamilyForKaminoLeg(leg)
 		binding, hash, err := m.basicPolicyBinding(family)
 		if err != nil {
 			return KaminoPrimeUSDCRequest{}, err
 		}
-		policy, policyHash = binding.Policy, hash
+		policy, policyHash, constraintIndex = binding.Policy, hash, kaminoConstraintIndexForRoute(route, leg)
+	} else if route.Lane == autoAUTOPYUSD.Lane {
+		// The combined AUTO candidate policy resolves from the reviewed
+		// manifest binding, never from the route struct's observation pins.
+		binding, index, err := m.autoKaminoBinding(leg)
+		if err != nil {
+			return KaminoPrimeUSDCRequest{}, err
+		}
+		policy, policyHash, constraintIndex = binding.Policy, binding.AccountDataSHA256, index
+	} else {
+		entry, ok := route.KaminoPolicies[leg]
+		if !ok {
+			return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
+		}
+		policy, policyHash, constraintIndex = entry.Policy, entry.DataSHA256, kaminoConstraintIndexForRoute(route, leg)
 	}
 	metaSets := func() []KaminoPrimeUSDCAccounts {
 		deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
@@ -696,20 +734,13 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	if index < 0 || index >= len(sets) {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
-	if !route.BasicPolicy {
-		entry, ok := route.KaminoPolicies[leg]
-		if !ok {
-			return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
-		}
-		policy, policyHash = entry.Policy, entry.DataSHA256
-	}
 	discriminators := map[kaminoPrimeUSDCLeg][]byte{kaminoLegDeposit: kaminoDepositCollateral, kaminoLegBorrow: kaminoBorrowUSDC, kaminoLegRepay: kaminoRepayUSDC, kaminoLegWithdraw: kaminoWithdrawCollateral}
 	data := make([]byte, 16)
 	copy(data, discriminators[leg])
 	for i := 0; i < 8; i++ {
 		data[8+i] = byte(amount >> (8 * i))
 	}
-	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: policy, PolicyAccountDataSHA256: policyHash, PolicyConstraintIndex: kaminoConstraintIndexForRoute(route, leg), Accounts: sets[index], Data: data, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
+	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: policy, PolicyAccountDataSHA256: policyHash, PolicyConstraintIndex: constraintIndex, Accounts: sets[index], Data: data, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
 	if _, observedLeg, err := kaminoRouteInstruction(request, lane); err != nil || observedLeg != leg {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
@@ -758,7 +789,12 @@ func (m RouteManifest) hasPhaseOneUnresolved() bool {
 
 func (m RouteManifest) activeRuntimeRoute() (RuntimeRoute, error) {
 	if m.observationLane != "" {
-		if !m.selectorObservation || !selectorLane(m.observationLane) {
+		// The observation lane authority is the same reviewed manifest lane
+		// set that admits entries and initializer decisions: installed lanes
+		// always, the candidate AUTO lane only while this explicit manifest's
+		// reviewed binding resolves. The embedded manifest keeps the exact
+		// installed closure, so every public observation is unchanged.
+		if !m.selectorObservation || !m.selectorEntryLaneAllowed(m.observationLane) {
 			return RuntimeRoute{}, fmt.Errorf("unadmitted observation lane")
 		}
 		return runtimeRoute(m.observationLane)

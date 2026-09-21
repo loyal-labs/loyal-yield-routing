@@ -89,6 +89,8 @@ const MIGRATION_0080: &str =
     include_str!("../migrations/0080_backyard_rwa_strategy_journal.sql");
 const MIGRATION_0081: &str =
     include_str!("../migrations/0081_backyard_rwa_finalized_report_failure.sql");
+const MIGRATION_0082: &str =
+    include_str!("../migrations/0082_backyard_rwa_initializer_auto_scope.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -687,6 +689,12 @@ impl NeonSqlClient {
                 version: 81,
                 name: "backyard_rwa_finalized_report_failure",
                 sql: MIGRATION_0081,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 82,
+                name: "backyard_rwa_initializer_auto_scope",
+                sql: MIGRATION_0082,
                 expected_checksum: None,
             },
         ] {

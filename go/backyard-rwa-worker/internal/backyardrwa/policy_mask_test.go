@@ -282,8 +282,10 @@ func TestCatalogReadinessAcceptsChargedStrategyTwoPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The installed catalog lanes share the bridge policy bindings with the
-	// active lane, so exercise the real catalog readiness set directly.
-	route, err := runtimeRoute("AUTO/AUTO/PYUSD")
+	// active lane, so exercise the real catalog readiness set directly on an
+	// installed lane. AUTO readiness is bound to the reviewed candidate
+	// binding instead (see auto_policy_readiness_test.go).
+	route, err := runtimeRoute("Ethena/USDe/PYUSD")
 	if err != nil {
 		t.Fatal(err)
 	}

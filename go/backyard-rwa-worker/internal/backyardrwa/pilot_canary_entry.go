@@ -24,7 +24,26 @@ type pilotCanaryEntryReceipt struct {
 	QuoteEvidenceID string                  `json:"quoteEvidenceId"`
 }
 
+// readPilotCanaryEntryRequest is the preserved embedded wrapper: the request
+// lane authority stays exactly the installed selectorEntryLane set.
 func readPilotCanaryEntryRequest(now time.Time) (*pilotCanaryEntryRequest, error) {
+	return readPilotCanaryEntryRequestWithLane(now, selectorEntryLane)
+}
+
+// readPilotCanaryEntryRequestOnManifest scopes the request lane authority to
+// the explicit reviewed manifest: the installed selectorEntryLane members plus
+// the candidate AUTO lane only while that manifest's plain binding resolves
+// (doc 31: new-entry candidate authority is selectorEntryFundingLane(lane,
+// false)). The read shape is byte-identical — same environment variable, same
+// unknown-field and trailing-value rejection, same 512-byte bound, same
+// invalid-request hold.
+func readPilotCanaryEntryRequestOnManifest(now time.Time, manifest RouteManifest) (*pilotCanaryEntryRequest, error) {
+	return readPilotCanaryEntryRequestWithLane(now, func(lane string) bool {
+		return manifest.selectorEntryFundingLane(lane, false)
+	})
+}
+
+func readPilotCanaryEntryRequestWithLane(now time.Time, laneAllowed func(string) bool) (*pilotCanaryEntryRequest, error) {
 	raw := os.Getenv("BACKYARD_RWA_PILOT_CANARY_ENTRY")
 	if raw == "" {
 		return nil, nil
@@ -37,20 +56,38 @@ func readPilotCanaryEntryRequest(now time.Time) (*pilotCanaryEntryRequest, error
 	}
 	// Reject trailing values as well as overlong/unbounded configuration.
 	var trailing any
-	if len(raw) > 512 || decoder.Decode(&trailing) != io.EOF || request.validate(now) != nil {
+	if len(raw) > 512 || decoder.Decode(&trailing) != io.EOF || request.validateWithLane(now, laneAllowed) != nil {
 		return nil, budgetHold("invalid_pilot_canary_request")
 	}
 	return &request, nil
 }
-func (r pilotCanaryEntryRequest) validate(now time.Time) error {
-	// Canary acceptance is entry authority too: a deferred lane must not become
-	// an operator-requested destination. Failing here ends this selector sample
-	// and retains the prior durable selector authority; it does not enable
-	// ordinary switching on this tick.
-	if len(r.ID) != 64 || !sha256Pattern.MatchString(r.ID) || !selectorEntryLane(r.Lane) || r.EquityRaw <= 0 || r.EquityRaw > PilotWorkingTrancheCapRaw || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(15*time.Minute)) {
+
+// validateWithLane is the shared request check with the lane authority
+// parameterized. Canary acceptance is entry authority too: a deferred lane
+// must not become an operator-requested destination. Failing here ends this
+// selector sample and retains the prior durable selector authority; it does
+// not enable ordinary switching on this tick. ID shape, equity bounds and the
+// expiry window are the exact installed checks for every caller.
+func (r pilotCanaryEntryRequest) validateWithLane(now time.Time, laneAllowed func(string) bool) error {
+	if len(r.ID) != 64 || !sha256Pattern.MatchString(r.ID) || !laneAllowed(r.Lane) || r.EquityRaw <= 0 || r.EquityRaw > PilotWorkingTrancheCapRaw || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(15*time.Minute)) {
 		return budgetHold("invalid_pilot_canary_request")
 	}
 	return nil
+}
+
+func (r pilotCanaryEntryRequest) validate(now time.Time) error {
+	return r.validateWithLane(now, selectorEntryLane)
+}
+
+// validateOnManifest resolves the request lane authority through the explicit
+// reviewed manifest with the doc 31 new-entry candidate scope
+// (selectorEntryFundingLane(lane, false)). An absent binding keeps the
+// candidate lane refused; a malformed binding fails the candidate request,
+// never the installed lanes.
+func (r pilotCanaryEntryRequest) validateOnManifest(now time.Time, manifest RouteManifest) error {
+	return r.validateWithLane(now, func(lane string) bool {
+		return manifest.selectorEntryFundingLane(lane, false)
+	})
 }
 
 // pilotCanaryReceiptCapacity bounds the number of retained canary receipts.
@@ -58,12 +95,35 @@ func (r pilotCanaryEntryRequest) validate(now time.Time) error {
 // this capacity gate.
 const pilotCanaryReceiptCapacity = 16
 
+// selectPilotCanaryEntry is the preserved embedded wrapper: both lane
+// authorities stay the installed embedded sets — selectorEntryLane for the
+// operator request, selectorLane for the built entry.
 func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history map[string]pilotCanaryEntryReceipt) (SelectorResult, *pilotCanaryEntryReceipt, error) {
+	return selectPilotCanaryEntryWithManifest(input, result, history, nil)
+}
+
+// selectPilotCanaryEntryOnManifest is the manifest-scoped forced-acceptance
+// call for evaluateSelector: the same request identity, retained-history,
+// capacity and expiry semantics, with the request and entry lane authorities
+// resolved through the explicit reviewed manifest. An absent binding keeps
+// the candidate lane refused exactly as the embedded wrapper does; a malformed
+// binding fails the candidate request, never the installed lanes.
+func selectPilotCanaryEntryOnManifest(input SelectorInput, result SelectorResult, history map[string]pilotCanaryEntryReceipt, manifest RouteManifest) (SelectorResult, *pilotCanaryEntryReceipt, error) {
+	return selectPilotCanaryEntryWithManifest(input, result, history, &manifest)
+}
+
+func selectPilotCanaryEntryWithManifest(input SelectorInput, result SelectorResult, history map[string]pilotCanaryEntryReceipt, manifest *RouteManifest) (SelectorResult, *pilotCanaryEntryReceipt, error) {
 	request := input.canaryRequest
 	if request == nil {
 		return result, nil, nil
 	}
-	if err := request.validate(input.Now); err != nil {
+	requestValid := func() error { return request.validate(input.Now) }
+	entryValid := func(e SelectorEntry) error { return e.validate() }
+	if manifest != nil {
+		requestValid = func() error { return request.validateOnManifest(input.Now, *manifest) }
+		entryValid = manifest.validateSelectorEntry
+	}
+	if err := requestValid(); err != nil {
 		return result, nil, err
 	}
 	// Always suppress economic switching while an acceptance request is installed.
@@ -109,7 +169,7 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 		return result, nil, nil
 	}
 	entry := SelectorEntry{Lane: request.Lane, EquityRaw: request.EquityRaw, ObservationID: s.ObservationID, Quote: *chosen, AcceptedAt: input.Now, ExpiresAt: chosen.ObservedAt.Add(min(input.Policy.QuoteMaxAge, 30*time.Second))}
-	if err := entry.validate(); err != nil {
+	if err := entryValid(entry); err != nil {
 		return result, nil, err
 	}
 	result.Action, result.Reason, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "CANARY_ENTER", "operator_acceptance_not_economic_recommendation", request.Lane, request.EquityRaw, chosen

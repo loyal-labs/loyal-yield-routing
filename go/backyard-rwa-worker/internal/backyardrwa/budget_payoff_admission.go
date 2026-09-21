@@ -80,7 +80,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 		return phase3BridgeAdmission{}, err
 	}
 	if release != nil {
-		debit, err := MeasureExecutableDebit(release.Request, release.ExpectedEffects)
+		debit, err := manifest.measureExecutableDebit(release.Request, release.ExpectedEffects)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -163,7 +163,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 	if err != nil {
 		return tail, err
 	}
-	current, err := observePhase3KnownBuildCost(ctx, rpc, request, effects)
+	current, err := manifest.observePhase3KnownBuildCost(ctx, rpc, request, effects)
 	if err != nil {
 		return tail, err
 	}

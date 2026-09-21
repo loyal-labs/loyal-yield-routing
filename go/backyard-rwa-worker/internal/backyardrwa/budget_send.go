@@ -38,7 +38,26 @@ func encodePhase3BuildInput(request any, effects []byte) (*phase3BuildInput, err
 	return input, nil
 }
 
+// decode keeps the persisted-build compatibility behavior: requests compile
+// against the embedded route manifest exactly as every send/reconcile/journal
+// path has always done.
 func (input *phase3BuildInput) decode() (any, ExpectedEffects, []byte, error) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return nil, ExpectedEffects{}, nil, err
+	}
+	return input.decodeWithManifest(manifest)
+}
+
+// decodeWithManifest is the manifest-aware form of decode, used only by the
+// selector recipe pricer so retained payoff legs compile against the SAME
+// route manifest that produced them. Kamino, initializer and Jupiter requests
+// compile via the manifest-bound compilers with the fixed bridge delegate;
+// the delegate is never request-supplied. Installed lanes take the exact
+// public initializer path, and the candidate AUTO initializer compiles only
+// against its reviewed binding. Bridge compilation alone is
+// manifest-independent and keeps its existing behavior.
+func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, ExpectedEffects, []byte, error) {
 	if input == nil {
 		return nil, ExpectedEffects{}, nil, budgetHold("missing_persisted_build_input")
 	}
@@ -72,22 +91,53 @@ func (input *phase3BuildInput) decode() (any, ExpectedEffects, []byte, error) {
 		message, err = CompileBridgeMessage(*r)
 	case *KaminoPrimeUSDCRequest:
 		request = *r
-		message, err = CompileKaminoMessage(*r)
+		message, err = m.compileKaminoMessage(*r, mustKey(bridgeDelegate))
 	case *KaminoInitializationRequest:
 		request = *r
-		message, err = CompileKaminoInitializationMessage(*r)
+		message, err = m.compileKaminoInitializationMessage(*r)
 	case *JupiterSwapRequest:
 		request = *r
-		message, err = CompileJupiterMessage(*r)
+		message, err = m.compileJupiterMessage(*r, mustKey(bridgeDelegate))
 	}
 	if err != nil {
 		return nil, ExpectedEffects{}, nil, budgetHold("persisted_build_no_longer_compiles")
 	}
-	effects, err := DecodeExpectedEffects(input.Effects)
+	effects, err := decodeExpectedEffectsWithManifest(m, input.Effects)
 	if err != nil {
 		return nil, ExpectedEffects{}, nil, budgetHold("invalid_persisted_build_effects")
 	}
 	return request, effects, message, nil
+}
+
+// decodeExpectedEffectsWithManifest is the manifest-aware effects decode for
+// the retained-recipe path. Every non-initializer shape delegates to the
+// public decoder unchanged; initializer effects revalidate through the SAME
+// explicit manifest that compiled the request above, so a candidate AUTO
+// effect only validates when it carries its reviewed binding, while the
+// public decoder (and every persisted production caller) stays untouched.
+func decodeExpectedEffectsWithManifest(m RouteManifest, data []byte) (ExpectedEffects, error) {
+	var envelope struct {
+		Schema          string          `json:"schema"`
+		ExpectedEffects json.RawMessage `json:"expectedEffects"`
+	}
+	raw := data
+	if json.Unmarshal(data, &envelope) == nil && envelope.Schema == "loyal-backyard-rwa-operation-evidence/v1" {
+		if len(envelope.ExpectedEffects) == 0 || string(envelope.ExpectedEffects) == "null" {
+			return ExpectedEffects{}, fmt.Errorf("operation has no built expected effects")
+		}
+		raw = envelope.ExpectedEffects
+	}
+	var expected ExpectedEffects
+	if json.Unmarshal(raw, &expected) != nil {
+		return DecodeExpectedEffects(data)
+	}
+	if expected.Kind != "kamino-initialize" && expected.Initialization == nil {
+		return DecodeExpectedEffects(data)
+	}
+	if err := m.validateInitializationEffects(expected); err != nil {
+		return ExpectedEffects{}, err
+	}
+	return expected, nil
 }
 
 // Only this marker permits the signed-HOLD expiry path. Invalid persisted
@@ -98,6 +148,20 @@ func (e *validatedSignedBudgetHold) Error() string { return e.hold.Error() }
 func (e *validatedSignedBudgetHold) Unwrap() error { return e.hold }
 
 func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3OperationAuthorization, operation PersistedOperation) (ValuedTransactionCost, error) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return ValuedTransactionCost{}, err
+	}
+	return manifest.revaluePhase3SignedInput(ctx, rpc, auth, operation)
+}
+
+// revaluePhase3SignedInput is the manifest-aware form: the exact signed-input
+// revaluation with the persisted executable input, fresh cost/prestate
+// observation and execution-cost bound resolved through the explicit reviewed
+// manifest. The initializer journal identity keeps the same hold surface; the
+// candidate AUTO journal decision validates only through its reviewed binding
+// via validateInitializerDecision. The public form above is unchanged.
+func (m RouteManifest) revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3OperationAuthorization, operation PersistedOperation) (ValuedTransactionCost, error) {
 	if auth.PolicySetup != nil {
 		if err := validatePolicySetupSignedPayment(auth, operation); err != nil {
 			return ValuedTransactionCost{}, err
@@ -116,7 +180,7 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 	if auth.GoalID != Phase3GoalID || len(wire) <= 65 || wire[0] != 1 || auth.SignedWireSHA256 != sha256Bytes(wire) {
 		return ValuedTransactionCost{}, budgetHold("signed_wire_reservation_mismatch")
 	}
-	request, effects, message, err := auth.BuildInput.decode()
+	request, effects, message, err := auth.BuildInput.decodeWithManifest(m)
 	if err != nil {
 		return ValuedTransactionCost{}, err
 	}
@@ -132,7 +196,7 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 	case KaminoPrimeUSDCRequest:
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case KaminoInitializationRequest:
-		if operation.Decision.Action != InitializeKaminoObligation || operation.Decision.StrategyKey != r.RouteLane || operation.Decision.Validate() != nil {
+		if m.validateInitializerDecision(operation.Decision, r) != nil {
 			return ValuedTransactionCost{}, budgetHold("initializer_journal_identity_mismatch")
 		}
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
@@ -142,7 +206,7 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 	if operation.SignedWireSHA256 != auth.SignedWireSHA256 || operation.RecentBlockhash != blockhash || operation.LastValidBlockHeight != height || operation.TransactionSignature != encodeBase58(wire[1:65]) {
 		return ValuedTransactionCost{}, budgetHold("persisted_signature_or_expiry_mismatch")
 	}
-	cost, err := observePhase3KnownBuildCost(ctx, rpc, request, effects)
+	cost, err := m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
 	if err == nil {
 		// This early signed-HOLD check is not authority. The locked send gate
 		// independently requires the exact persisted budget and reservation.
@@ -199,7 +263,7 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 		cost.ObservationSlot = max(cost.ObservationSlot, observed)
 	}
 	if err == nil && auth.PilotAuthorityID != "" {
-		cost, err = observePilotExecutionCost(ctx, rpc, request, effects, cost)
+		cost, err = m.observePilotExecutionCost(ctx, rpc, request, effects, cost)
 	}
 	if err == nil && auth.BridgeAdmission != nil {
 		// Fresh principal pricing cannot extend the earlier complete exit
@@ -220,6 +284,19 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 // atomically recheck its reservation/lease and record broadcast intent. The
 // coordinator still submits only its already persisted bytes, once.
 func (d *Database) RevalueAndMarkBroadcastIntent(ctx context.Context, rpc *RPCClient, operation PersistedOperation) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return d.RevalueAndMarkBroadcastIntentOnManifest(ctx, manifest, rpc, operation)
+}
+
+// RevalueAndMarkBroadcastIntentOnManifest is the exact locked final-send
+// entrypoint with the durable authorization load, signed-input revaluation and
+// broadcast-intent reservation resolved through the explicit reviewed
+// manifest. The public form above loads the embedded manifest once and is
+// unchanged.
+func (d *Database) RevalueAndMarkBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, rpc *RPCClient, operation PersistedOperation) error {
 	if d == nil || d.pool == nil || rpc == nil || operation.ID == "" || operation.Status != Signed {
 		return fmt.Errorf("invalid final-send valuation input")
 	}
@@ -231,11 +308,29 @@ func (d *Database) RevalueAndMarkBroadcastIntent(ctx context.Context, rpc *RPCCl
 	if json.Unmarshal(encoded, &auth) != nil {
 		return budgetHold("invalid_durable_budget")
 	}
-	cost, err := revaluePhase3SignedInput(ctx, rpc, auth, operation)
+	cost, err := manifest.revaluePhase3SignedInput(ctx, rpc, auth, operation)
 	if err != nil {
 		return err
 	}
-	err = d.markBroadcastIntent(ctx, operation.ID, rpc, auth.IntentSHA256, sha256Bytes(operation.SignedWire), cost)
+	// Shared final-send custody seam (doc 26 §4): for a positive AUTO-PYUSD
+	// spend, a FRESH confirmed custody observation (pinned token
+	// owner/mint/authority at the valuation's minimum slot) feeds the full
+	// send-phase walk for the exact signed operation. The returned proof is
+	// re-validated inside the locked broadcast-intent transaction below.
+	var custody *sharedCustodyAdmissionProof
+	if auth.BuildInput != nil {
+		_, decodedEffects, _, decodeErr := auth.BuildInput.decodeWithManifest(manifest)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		proof, proofErr := d.observeSharedCustodySendProofForOperation(ctx, manifest, rpc, operation.ID, decodedEffects, cost.ObservationSlot,
+			sharedCustodySignedSpend{OperationID: operation.ID, SignedWireSHA256: operation.SignedWireSHA256, TransactionSignature: operation.TransactionSignature})
+		if proofErr != nil {
+			return proofErr
+		}
+		custody = proof
+	}
+	err = d.markBroadcastIntentOnManifest(ctx, manifest, operation.ID, rpc, auth.IntentSHA256, sha256Bytes(operation.SignedWire), cost, custody)
 	var hold *BudgetHold
 	if errors.As(err, &hold) && (hold.Reason == "fresh_execution_cost_exceeds_reservation" || hold.Reason == "fresh_send_cost_exceeds_reservation" || hold.Reason == "send_valuation_expired" || hold.Reason == "send_valuation_slot_unavailable" || hold.Reason == "selector_entry_quote_expired") {
 		return &validatedSignedBudgetHold{hold}

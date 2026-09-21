@@ -442,9 +442,13 @@ func TestFundingPayoffWindowIncludesInterveningSteps(t *testing.T) {
 	minimum := short.UpperDebtRaw
 	e.ExpectedEffects.Accounts[1].AfterRaw = minimum
 	e.ExpectedEffects.Accounts[1].MinimumAfterRaw = &minimum
-	if _, _, err := validatePayoffFunding(context.Background(), rpc, e.Request, e.ExpectedEffects, 42, 1, false); err != nil {
+	embedded, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := validatePayoffFunding(context.Background(), rpc, embedded, e.Request, e.ExpectedEffects, 42, 1, false); err != nil {
 		t.Fatal("immediate payoff should be funded", err)
 	}
-	_, _, err = validatePayoffFunding(context.Background(), rpc, e.Request, e.ExpectedEffects, 42, 4, false)
+	_, _, err = validatePayoffFunding(context.Background(), rpc, embedded, e.Request, e.ExpectedEffects, 42, 4, false)
 	assertBudgetHold(t, err, "funding_quote_cannot_cover_full_payoff")
 }

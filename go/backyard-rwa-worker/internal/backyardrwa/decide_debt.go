@@ -40,7 +40,7 @@ func payoffFundingSource(s Snapshot, upperDebt uint64) (Action, int64) {
 // The same single-loop lifecycle as the retained routes, with debt custody
 // explicitly distinct from bridge USDC. No raw-unit cap or stablecoin peg is
 // assumed here: admission must price the executable transaction and its exit.
-func decideNonUSDC(s Snapshot) Decision {
+func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	d := func(action Action, reason string, amount int64) Decision {
 		return Decision{Action: action, Reason: reason, AmountRaw: amount, StrategyKey: s.RouteLane,
 			IdempotencyKey: fmt.Sprintf("%s:%s:%s:%d:%s", s.ObservationID, s.RouteLane, action, amount, reason)}
@@ -157,7 +157,7 @@ func decideNonUSDC(s Snapshot) Decision {
 	// Same prerequisite as the fixed lane: a deposit into a missing obligation
 	// is refused, so no allocation, swap, or deposit is constructed. Reports and
 	// withdrawal legs above stay live.
-	if hold, absent := obligationPrerequisiteHold(s); absent {
+	if hold, absent := obligationPrerequisiteHold(s, initializationReady); absent {
 		return hold
 	}
 	if !s.PolicyReady || !s.ExitBuildable {

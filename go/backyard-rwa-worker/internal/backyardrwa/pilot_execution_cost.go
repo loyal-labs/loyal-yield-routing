@@ -22,8 +22,19 @@ type PilotExecutionCost struct {
 // reconciliation gates establish conservation, fees and actual rent ownership.
 // Missing bounds are a refusal, never permission to recycle the entire debit.
 func classifyPilotExecutionCost(request any, effects ExpectedEffects, cost ValuedTransactionCost, credit *BudgetPrice) (PilotExecutionCost, error) {
+	m, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return PilotExecutionCost{}, err
+	}
+	return m.classifyPilotExecutionCost(request, effects, cost, credit)
+}
+
+// The manifest-aware form serves only the internal recipe-pricing path
+// (existing lanes and exact AUTO with a validated binding); the public
+// wrapper above keeps every persisted-build caller on the embedded manifest.
+func (m RouteManifest) classifyPilotExecutionCost(request any, effects ExpectedEffects, cost ValuedTransactionCost, credit *BudgetPrice) (PilotExecutionCost, error) {
 	out := PilotExecutionCost{NetworkMicros: cost.NetworkFeeMicros}
-	debit, err := MeasureExecutableDebit(request, effects)
+	debit, err := m.measureExecutableDebit(request, effects)
 	if err != nil {
 		return out, err
 	}
@@ -36,11 +47,14 @@ func classifyPilotExecutionCost(request any, effects ExpectedEffects, cost Value
 	case BridgeBuildRequest:
 		message, err = CompileBridgeMessage(r)
 	case KaminoPrimeUSDCRequest:
-		message, err = CompileKaminoMessage(r)
+		message, err = m.compileKaminoMessage(r, mustKey(bridgeDelegate))
 	case KaminoInitializationRequest:
-		message, err = CompileKaminoInitializationMessage(r)
+		// Same explicit manifest as the decode that produced this request:
+		// installed lanes keep the exact public compile, the candidate AUTO
+		// initializer compiles only against its reviewed binding.
+		message, err = m.compileKaminoInitializationMessage(r)
 	case JupiterSwapRequest:
-		message, err = CompileJupiterMessage(r)
+		message, err = m.compileJupiterMessage(r, mustKey(bridgeDelegate))
 	}
 	if err != nil {
 		return out, err
@@ -144,6 +158,18 @@ func classifyPilotExecutionCost(request any, effects ExpectedEffects, cost Value
 }
 
 func observePilotExecutionCost(ctx context.Context, rpc *RPCClient, request any, effects ExpectedEffects, cost ValuedTransactionCost) (ValuedTransactionCost, error) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return cost, err
+	}
+	return manifest.observePilotExecutionCost(ctx, rpc, request, effects, cost)
+}
+
+// observePilotExecutionCost is the manifest-aware form: the exact execution
+// cost bound observation with the classification resolved through the explicit
+// reviewed manifest, so a candidate AUTO bound is classified against the same
+// binding that compiled its request. The public form above is unchanged.
+func (m RouteManifest) observePilotExecutionCost(ctx context.Context, rpc *RPCClient, request any, effects ExpectedEffects, cost ValuedTransactionCost) (ValuedTransactionCost, error) {
 	var credit *BudgetPrice
 	if r, ok := request.(JupiterSwapRequest); ok {
 		if len(effects.Accounts) != 2 || r.MinimumOutputRaw == 0 {
@@ -169,7 +195,7 @@ func observePilotExecutionCost(ctx context.Context, rpc *RPCClient, request any,
 		return cost, budgetHold("execution_cost_observation_expired")
 	}
 	cost.ObservationSlot = slot
-	bound, err := classifyPilotExecutionCost(request, effects, cost, credit)
+	bound, err := m.classifyPilotExecutionCost(request, effects, cost, credit)
 	if err != nil {
 		return cost, err
 	}
@@ -180,13 +206,24 @@ func observePilotExecutionCost(ctx context.Context, rpc *RPCClient, request any,
 // Both pre-signing and the locked final-send fence recompute the bound from
 // the persisted executable input. Repricing can narrow an allowance, not grow it.
 func validateReservedExecutionCost(budget Phase3Budget, reservation BudgetReservation, request any, effects ExpectedEffects, cost ValuedTransactionCost) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return manifest.validateReservedExecutionCost(budget, reservation, request, effects, cost)
+}
+
+// validateReservedExecutionCost is the manifest-aware form: the exact
+// reservation fence with the bound recomputed through the explicit reviewed
+// manifest. The public form above is unchanged.
+func (m RouteManifest) validateReservedExecutionCost(budget Phase3Budget, reservation BudgetReservation, request any, effects ExpectedEffects, cost ValuedTransactionCost) error {
 	if budget.Pilot == nil {
 		return nil
 	}
 	if cost.ExecutionCost == nil {
 		return budgetHold("missing_or_invalid_execution_cost_bound")
 	}
-	bound, err := classifyPilotExecutionCost(request, effects, cost, cost.ExecutionCost.CreditPrice)
+	bound, err := m.classifyPilotExecutionCost(request, effects, cost, cost.ExecutionCost.CreditPrice)
 	if err != nil {
 		return err
 	}

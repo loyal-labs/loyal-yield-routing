@@ -15,9 +15,24 @@ type ExecutableDebit struct {
 // A withdrawal's wire amount may be receipt units: charge its underlying
 // liquidity debit from the checked effect graph, not that receipt amount.
 func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDebit, error) {
+	m, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return ExecutableDebit{}, err
+	}
+	return m.measureExecutableDebit(request, effects)
+}
+
+// The manifest-aware form exists only for the internal recipe-pricing path:
+// retained selector payoff inputs compile against the SAME manifest that
+// produced them (existing lanes and exact AUTO with a validated autoPolicy
+// binding). Every other caller keeps the embedded-manifest behavior above.
+func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDebit, error) {
 	if effects.Kind == "kamino-initialize" || effects.Initialization != nil {
 		r, ok := request.(KaminoInitializationRequest)
-		if !ok || validateInitializationEffects(effects) != nil || *effects.Initialization != r {
+		// The manifest-aware effects validator shares every structural check
+		// and recompiles the embedded request through the SAME explicit
+		// manifest that produced this recipe.
+		if !ok || m.validateInitializationEffects(effects) != nil || *effects.Initialization != r {
 			return ExecutableDebit{}, budgetHold("initializer_effects_request_mismatch")
 		}
 		// Native creation is priced as SetupLamports, never as zero-cost setup
@@ -68,7 +83,7 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 		}
 		exactAmount = &r.AmountRaw
 	case KaminoPrimeUSDCRequest:
-		if _, err = CompileKaminoMessage(r); err != nil {
+		if _, err = m.compileKaminoMessage(r, mustKey(bridgeDelegate)); err != nil {
 			return ExecutableDebit{}, err
 		}
 		_, leg, err := kaminoPrimeUSDCInstruction(r)
@@ -124,7 +139,7 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 		if r.FullPayoffFunding && !isPayoffFundingAction(r.Action) {
 			return ExecutableDebit{}, budgetHold("funding_bounds_on_non_funding_swap")
 		}
-		if _, err = CompileJupiterMessage(r); err != nil {
+		if _, err = m.compileJupiterMessage(r, mustKey(bridgeDelegate)); err != nil {
 			return ExecutableDebit{}, err
 		}
 		mint, _, address, _, err := jupiterEdgeForRoute(r.Action, r.RouteLane)

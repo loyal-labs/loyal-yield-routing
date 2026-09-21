@@ -186,7 +186,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		}
 		cutoverDrain := false
 		if manifest.selectorObservation {
-			route, err = observedSelectorRoute(accounts, selectedRoute.Lane)
+			route, err = observedSelectorRouteForManifest(accounts, selectedRoute.Lane, manifest)
 			if err != nil {
 				return Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: sha256Bytes([]byte(fmt.Sprintf("selector-ownership:%d:%s", slot, err.Error()))), Slot: slot, RouteKind: RouteKind, RouteLane: selectedRoute.Lane, ManualReason: err.Error()}}, accounts, nil
 			}
@@ -232,7 +232,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 					continue
 				}
 				if manifest.selectorObservation {
-					freshRoute, routeErr := observedSelectorRoute(refreshedAccounts, selectedRoute.Lane)
+					freshRoute, routeErr := observedSelectorRouteForManifest(refreshedAccounts, selectedRoute.Lane, manifest)
 					if routeErr != nil || freshRoute.Lane != route.Lane {
 						minimumSlot = refreshedSlot
 						continue
@@ -437,7 +437,7 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	}
 	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
 	if manifest.selectorObservation {
-		for _, lane := range selectorLanes {
+		for _, lane := range selectorObservationLanes(manifest) {
 			other, _ := runtimeRoute(lane)
 			for _, address := range pinnedRouteNAVAddressesForRoute(other) {
 				addressSet[address] = struct{}{}
@@ -459,8 +459,13 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	}
 	addressSet[route.DebtFeeReceiver] = struct{}{}
 	if catalogJupiterRoute(route.Lane) {
-		pins, err := catalogRoutePolicyPins(route, manifest)
-		if err != nil {
+		pins, pinErr := catalogRoutePolicyPins(route, manifest)
+		// An absent or invalid AUTO binding fails AUTO readiness below without
+		// any legacy fallback, but it must not tear down the rest of the
+		// confirmed batch: the candidate route keeps observing its protocol
+		// and NAV identities while the readiness gate reports the hold.
+		// Installed catalog lanes keep the stricter abort on a broken graph.
+		if pinErr != nil && route.Lane != autoAUTOPYUSD.Lane {
 			return nil
 		}
 		for address := range pins {

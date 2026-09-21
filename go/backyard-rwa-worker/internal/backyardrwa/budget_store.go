@@ -24,6 +24,12 @@ type phase3OperationAuthorization struct {
 	PolicySetupCompletion     *policySetupCompletion  `json:"policySetupCompletion,omitempty"`
 	SetupBuildCost            *ValuedTransactionCost  `json:"setupBuildCost,omitempty"`
 	SetupCompletionCost       *ValuedTransactionCost  `json:"setupCompletionCost,omitempty"`
+	// CustodyProof is the durable pre-decision shared-custody ownership
+	// binding (doc 26): persisted by the shared locked admission for a
+	// positive AUTO-PYUSD spend and re-required by the build and
+	// broadcast-intent fences. Nil for every other lane and zero-spend
+	// operation (installed behavior unchanged).
+	CustodyProof *sharedCustodyProofBinding `json:"custodyProof,omitempty"`
 }
 
 // Preserve an admission failure before restart recovery can replace it with a
@@ -255,11 +261,28 @@ func (d *Database) admitPhase3Bridge(ctx context.Context, rpc *RPCClient, operat
 // Shared durable boundary for measured paths that terminate at bridge idle.
 // The historical JSON field name remains bridgeAdmission; its Input.Kind binds
 // the current action (bridge or Kamino), not the type of the whole return graph.
+// The public form loads the embedded reviewed manifest exactly once and is
+// byte-identical to the installed behavior.
 func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClient, operationID string, observation Observation, decision Decision, plan phase3BridgeAdmission) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return d.persistPhase3ExitAdmissionOnManifest(ctx, rpc, manifest, operationID, observation, decision, plan)
+}
+
+// persistPhase3ExitAdmissionOnManifest is the identical locked admission with
+// every embedded resolution made explicit through the same manifest: the
+// build-input decode, the pilot execution-cost classification, the selector
+// entry authority (which allocates the candidate AUTO entry only while the
+// reviewed binding resolves), the reserved-cost validation and the initializer
+// snapshot/decision rechecks. Installed lanes resolve identically through the
+// embedded manifest.
+func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc *RPCClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, plan phase3BridgeAdmission) error {
 	if d == nil || d.pool == nil {
 		return budgetHold("bridge_admission_database_unavailable")
 	}
-	request, effects, _, err := plan.Input.decode()
+	request, effects, _, err := plan.Input.decodeWithManifest(manifest)
 	if err != nil {
 		return err
 	}
@@ -286,19 +309,19 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 		return budgetHold("pilot_planning_authority_required")
 	}
 	if budget.Pilot != nil {
-		plan.CurrentCost, err = observePilotExecutionCost(ctx, rpc, request, effects, plan.CurrentCost)
+		plan.CurrentCost, err = manifest.observePilotExecutionCost(ctx, rpc, request, effects, plan.CurrentCost)
 		if err != nil {
 			return err
 		}
 		plan.ValidThroughSlot = min(plan.ValidThroughSlot, plan.CurrentCost.ValidThroughSlot)
 	}
-	var status, lane, action, lastReconciledAction string
+	var status, lane, routeKey, action, lastReconciledAction string
 	var durableUnwind bool
 	var decisionBytes []byte
-	if err = tx.QueryRow(ctx, `SELECT op.status,COALESCE(op.strategy_key,''),COALESCE(op.action,''),op.expected_effects->'decision',
+	if err = tx.QueryRow(ctx, `SELECT op.status,COALESCE(op.strategy_key,''),COALESCE(op.route_key,''),COALESCE(op.action,''),op.expected_effects->'decision',
 	 COALESCE((SELECT prior.action FROM loyal_yield.multiply_operations prior WHERE prior.route_key=op.route_key AND prior.strategy_key=op.strategy_key AND prior.status='reconciled' ORDER BY prior.confirmed_slot DESC NULLS LAST,prior.updated_at DESC,prior.operation_id DESC LIMIT 1),''),
 	 COALESCE(route.state->'selectorUnwind','null'::jsonb)<>'null'::jsonb
-	 FROM loyal_yield.multiply_operations op JOIN loyal_yield.multiply_route_states route USING(route_key) WHERE op.operation_id=$1`, operationID).Scan(&status, &lane, &action, &decisionBytes, &lastReconciledAction, &durableUnwind); err != nil {
+	 FROM loyal_yield.multiply_operations op JOIN loyal_yield.multiply_route_states route USING(route_key) WHERE op.operation_id=$1`, operationID).Scan(&status, &lane, &routeKey, &action, &decisionBytes, &lastReconciledAction, &durableUnwind); err != nil {
 		return err
 	}
 	var recorded decisionEvidence
@@ -316,7 +339,24 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	if slot < plan.CurrentCost.ObservationSlot || slot > plan.ValidThroughSlot {
 		return budgetHold("stale_bridge_admission_snapshot")
 	}
-	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, effects, slot, true); err != nil {
+	// Shared locked-admission custody seam (doc 26 §2): a FIRST admission of a
+	// positive prepared AUTO-PYUSD spend requires the strict pre-decision
+	// proof carried on this admission's own observation, re-validated under the
+	// route lock. This must run BEFORE the selector-entry write below so the
+	// proof's generation is still the lock's when the fence compares it. A
+	// retry never binds a carried proof — no fresh ownership proof is
+	// obtainable once the decided row exists — and instead re-validates the
+	// PERSISTED admitted binding under the current lease/generation in the
+	// retry branch below. Every other lane and zero-spend operation binds
+	// nothing here.
+	var custody sharedCustodyProofBinding
+	if auth.GoalID == "" {
+		custody, err = bindSharedCustodyAdmissionProofOnManifest(ctx, tx, routeKey, lane, observation, effects)
+		if err != nil {
+			return err
+		}
+	}
+	if err = d.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, operationID, budget, request, effects, slot, true); err != nil {
 		return err
 	}
 	if auth.GoalID != "" {
@@ -331,7 +371,18 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 		if plan.CurrentCost.TotalMicros > reserved.UpperMicros || plan.ExitAfterMicros > reserved.ExitAfterMicros {
 			return budgetHold("fresh_bridge_cost_exceeds_reservation")
 		}
-		if err = validateReservedExecutionCost(budget, reserved, request, effects, plan.CurrentCost); err != nil {
+		if err = manifest.validateReservedExecutionCost(budget, reserved, request, effects, plan.CurrentCost); err != nil {
+			return err
+		}
+		// Reachable retry semantics (doc 26 §2): the decided row blocks any
+		// fresh ownership proof, so this re-arms the EXACT binding the first
+		// measured admission persisted — same effects digest, spend, custody
+		// and lease identity — against the CURRENT lock row. No generation is
+		// consumed and the reservation is not replenished: the retry commits
+		// without a phase3 write. History identity is preserved: the journal
+		// evidence recheck above still pins the recorded observation, and the
+		// ownership proof stays strict about nonterminal rows.
+		if err = validatePersistedSharedCustodyBindingOnManifest(ctx, tx, routeKey, lane, effects, auth.CustodyProof); err != nil {
 			return err
 		}
 		return tx.Commit(ctx)
@@ -345,7 +396,7 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	recovery := decision.Action != VoltrAllocateToSquads
 	if decision.Reason == "hard_ltv_partial_repay" || plan.RepaymentProjection != nil {
 		r, ok := request.(KaminoPrimeUSDCRequest)
-		if budget.Pilot == nil || !ok || decision.Action != DeleverRouteStep || decision.Reason != "hard_ltv_partial_repay" || plan.RepaymentProjection == nil || plan.Payoff == nil || budget.Families[family].ExitMicros == 0 || !decisionsEqual(Decide(observation.Snapshot), decision) {
+		if budget.Pilot == nil || !ok || decision.Action != DeleverRouteStep || decision.Reason != "hard_ltv_partial_repay" || plan.RepaymentProjection == nil || plan.Payoff == nil || budget.Families[family].ExitMicros == 0 || !decisionsEqual(manifest.DecideOnManifest(observation.Snapshot), decision) {
 			return budgetHold("partial_repayment_requires_reserved_pilot_position")
 		}
 		if _, err = validatePartialRepaymentProjection(r, effects, observation.Snapshot, *plan.RepaymentProjection); err != nil {
@@ -354,7 +405,7 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 	}
 	if decision.Action == InitializeKaminoObligation {
 		r, ok := request.(KaminoInitializationRequest)
-		if budget.Pilot == nil || !ok || r.RouteLane != lane || !initializationSnapshotReady(observation.Snapshot) || !decisionsEqual(Decide(observation.Snapshot), decision) || budget.Families[family].ExitMicros != 0 || plan.ExitAfterMicros != 0 || len(plan.Exit) != 0 {
+		if budget.Pilot == nil || !ok || r.RouteLane != lane || !manifest.initializationSnapshotReady(observation.Snapshot) || !decisionsEqual(manifest.DecideOnManifest(observation.Snapshot), decision) || budget.Families[family].ExitMicros != 0 || plan.ExitAfterMicros != 0 || len(plan.Exit) != 0 {
 			return budgetHold("initializer_requires_flat_pilot_admission")
 		}
 		recovery = false
@@ -422,6 +473,25 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 		return err
 	}
 	auth = phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: intent, BuildInput: plan.Input, BridgeAdmission: &plan}
+	if custody.SpendRaw > 0 {
+		// writePhase3BudgetTx performs this transaction's generation increment
+		// (any earlier in-transaction increment, e.g. a new selector entry, has
+		// already run above). The durable binding deliberately records the
+		// ADMITTED generation — read again under the lock held since the proof
+		// validation — so the build fence compares it against the
+		// post-admission route state, not the pre-admission one the carried
+		// proof was observed under. This is the ONLY custody re-stamp beside
+		// the narrow build seam below: the shared writer is never made to
+		// renew custody authority on unrelated phase3 transitions (coordinator
+		// decision on doc 28's generic restamping proposal).
+		var admittedGeneration int64
+		if err = tx.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey).Scan(&admittedGeneration); err != nil {
+			return err
+		}
+		custody.Generation = admittedGeneration + 1
+		custodyBinding := custody
+		auth.CustodyProof = &custodyBinding
+	}
 	if plan.RepaymentProjection != nil {
 		if err = d.persistPartialRepaymentUnwindTx(ctx, tx, plan, budget, intent); err != nil {
 			return err
@@ -469,6 +539,18 @@ func phase3MaintenanceNAVReserve(budget Phase3Budget, family string, s Snapshot,
 // Called only after the production cost observation, before signer access.
 // A fresh known debit cannot inherit a smaller durable reservation.
 func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, operationID string, request any, effects []byte, knownCost ValuedTransactionCost) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return d.authorizePhase3BuildOnManifest(ctx, manifest, rpc, operationID, request, effects, knownCost)
+}
+
+// authorizePhase3BuildOnManifest is the exact locked build authorization body;
+// only the pilot effects decode is resolved through the explicit reviewed
+// manifest, so a candidate AUTO reservation decodes the same effects the
+// reviewed manifest compiled while installed lanes keep the public path above.
+func (d *Database) authorizePhase3BuildOnManifest(ctx context.Context, manifest RouteManifest, rpc *RPCClient, operationID string, request any, effects []byte, knownCost ValuedTransactionCost) error {
 	intent, err := Phase3IntentDigest(request, effects)
 	if err != nil {
 		return err
@@ -487,6 +569,29 @@ func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, ope
 	}
 	if auth.GoalID != Phase3GoalID || auth.IntentSHA256 != intent {
 		return budgetHold("unreserved_build_intent")
+	}
+	// Shared build-authorization custody seam (doc 26 §3): a positive
+	// AUTO-PYUSD spend requires the persisted admission binding, bound to the
+	// exact effects being built and the CURRENT route generation. The row has
+	// no built effects yet, so this reads only the in-memory build input and
+	// the persisted authorization; MarkBuilt still runs after this gate.
+	var custodyLane, custodyRouteKey string
+	var custodyGeneration int64
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(op.strategy_key,''), op.route_key, route.state_version
+		FROM loyal_yield.multiply_operations op JOIN loyal_yield.multiply_route_states route ON route.route_key=op.route_key
+		WHERE op.operation_id=$1`, operationID).Scan(&custodyLane, &custodyRouteKey, &custodyGeneration); err != nil {
+		return err
+	}
+	advanceCustodyBinding := false
+	if custodyLane == autoAUTOPYUSD.Lane {
+		decodedEffects, decodeErr := decodeExpectedEffectsWithManifest(manifest, effects)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if err = requireSharedCustodyBuildBinding(custodyLane, custodyRouteKey, auth, decodedEffects, custodyGeneration); err != nil {
+			return err
+		}
+		advanceCustodyBinding = auth.CustodyProof != nil
 	}
 	if err = budget.validatePilotReleaseAuthority(request); err != nil {
 		return err
@@ -513,16 +618,16 @@ func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, ope
 	}
 	var selectorEffects ExpectedEffects
 	if budget.Pilot != nil {
-		decoded, decodeErr := DecodeExpectedEffects(effects)
+		decoded, decodeErr := decodeExpectedEffectsWithManifest(manifest, effects)
 		if decodeErr != nil {
 			return decodeErr
 		}
 		selectorEffects = decoded
-		knownCost, err = observePilotExecutionCost(ctx, rpc, request, decoded, knownCost)
+		knownCost, err = manifest.observePilotExecutionCost(ctx, rpc, request, decoded, knownCost)
 		if err != nil {
 			return err
 		}
-		if err = validateReservedExecutionCost(budget, reservation, request, decoded, knownCost); err != nil {
+		if err = manifest.validateReservedExecutionCost(budget, reservation, request, decoded, knownCost); err != nil {
 			return err
 		}
 		if auth.BridgeAdmission != nil && knownCost.ObservationSlot > auth.BridgeAdmission.ValidThroughSlot {
@@ -543,12 +648,33 @@ func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, ope
 			return budgetHold("stale_bridge_admission_snapshot")
 		}
 	}
-	if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, selectorEffects, entrySlot, false); err != nil {
+	if err = d.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, operationID, budget, request, selectorEffects, entrySlot, false); err != nil {
 		return err
 	}
 	auth.BuildInput, err = encodePhase3BuildInput(request, effects)
 	if err != nil {
 		return err
+	}
+	if advanceCustodyBinding {
+		// Coordinator-authorized NARROW build seam (doc 28 §B minimal
+		// alternative; the generic writePhase3BudgetTx restamping was
+		// rejected — wire/recovery/accounting writers must never renew
+		// custody authority). The write below consumes one generation, so
+		// record that post-build generation on the binding deliberately —
+		// re-read in THIS transaction, after every earlier write in it — but
+		// only after the gate above actually validated the binding at the
+		// pre-build generation. Without this, a repeated authorizePhase3Build
+		// (crash after this commit, before MarkBuilt, same live lease) finds
+		// binding.Generation one behind the route lock and bricks on
+		// custody_attribution_proof_drift. Unrelated state changes still
+		// refuse at the gate.
+		var currentGeneration int64
+		if err = tx.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, custodyRouteKey).Scan(&currentGeneration); err != nil {
+			return err
+		}
+		advanced := *auth.CustodyProof
+		advanced.Generation = currentGeneration + 1
+		auth.CustodyProof = &advanced
 	}
 	if err = d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth); err != nil {
 		return err
@@ -575,12 +701,24 @@ func (d *Database) bindPhase3WireTx(ctx context.Context, tx pgx.Tx, operationID,
 }
 
 func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operationID, intent, wireHash string, cost ValuedTransactionCost, confirmedSlot int64) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return d.authorizePhase3SendTxOnManifest(ctx, manifest, tx, operationID, intent, wireHash, cost, confirmedSlot)
+}
+
+// authorizePhase3SendTxOnManifest is the exact locked final-send fence; the
+// persisted executable input and the pilot reservation fence resolve through
+// the explicit reviewed manifest, while the wire/status/goal identity, intent
+// and cost gates stay byte-identical. The public form above is unchanged.
+func (d *Database) authorizePhase3SendTxOnManifest(ctx context.Context, manifest RouteManifest, tx pgx.Tx, operationID, intent, wireHash string, cost ValuedTransactionCost, confirmedSlot int64) error {
 	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
 	if err != nil {
 		return err
 	}
 	if auth.BuildInput != nil {
-		request, _, _, err := auth.BuildInput.decode()
+		request, _, _, err := auth.BuildInput.decodeWithManifest(manifest)
 		if err != nil {
 			return err
 		}
@@ -613,20 +751,20 @@ func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operati
 		return budgetHold("fresh_send_cost_exceeds_reservation")
 	}
 	if budget.Pilot != nil {
-		request, effects, _, err := auth.BuildInput.decode()
+		request, effects, _, err := auth.BuildInput.decodeWithManifest(manifest)
 		if err != nil {
 			return err
 		}
-		if err = validateReservedExecutionCost(budget, budget.Reservations[operationID], request, effects, cost); err != nil {
+		if err = manifest.validateReservedExecutionCost(budget, budget.Reservations[operationID], request, effects, cost); err != nil {
 			return err
 		}
 	}
 	if auth.BuildInput != nil {
-		request, effects, _, err := auth.BuildInput.decode()
+		request, effects, _, err := auth.BuildInput.decodeWithManifest(manifest)
 		if err != nil {
 			return err
 		}
-		if err = d.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, effects, confirmedSlot, false); err != nil {
+		if err = d.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, operationID, budget, request, effects, confirmedSlot, false); err != nil {
 			return err
 		}
 	}

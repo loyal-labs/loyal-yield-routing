@@ -18,17 +18,59 @@ type KaminoInitializationReceipt struct {
 	Obligation       ConfirmedAccount `json:"obligation"`
 }
 
-func validateInitializationEffects(e ExpectedEffects) error {
+// validateInitializationEffectsShape is the exact structural check both effect
+// validators share: only a conserved native kamino-initialize effect with no
+// side accounts, deposits, repayments or return data is admissible.
+func validateInitializationEffectsShape(e ExpectedEffects) error {
 	if e.Schema != "loyal-backyard-rwa-expected-effects/v1" || e.Kind != "kamino-initialize" ||
 		!e.Conserved || len(e.Accounts) != 0 || e.Initialization == nil || e.Deposit != nil || e.Repayment != nil || e.ReturnData != nil {
 		return fmt.Errorf("invalid native initialization effects")
+	}
+	return nil
+}
+
+func validateInitializationEffects(e ExpectedEffects) error {
+	if err := validateInitializationEffectsShape(e); err != nil {
+		return err
 	}
 	_, err := CompileKaminoInitializationMessage(*e.Initialization)
 	return err
 }
 
+// validateInitializationEffectsOnRoute is the manifest-aware form: identical
+// structural checks, but the embedded admission request is recompiled through
+// the manifest compiler, so an AUTO effect only validates when its request
+// matches the reviewed binding. Installed selector lanes keep the exact public
+// path; reconcile.go keeps calling the public function unchanged.
+func (m RouteManifest) validateInitializationEffects(e ExpectedEffects) error {
+	if err := validateInitializationEffectsShape(e); err != nil {
+		return err
+	}
+	_, err := m.compileKaminoInitializationMessage(*e.Initialization)
+	return err
+}
+
 func reconcileKaminoInitialization(e ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
-	if err := validateInitializationEffects(e); err != nil {
+	return reconcileKaminoInitializationAdmission(e, receipt, validateInitializationEffects, CompileKaminoInitializationMessage, validateInitializedKaminoObligation)
+}
+
+// reconcileKaminoInitialization is the manifest-aware variant: the exact
+// installed reconciler body with only the three admission calls swapped to the
+// explicit reviewed manifest, so a candidate AUTO effect reconciles against the
+// same binding that compiled it. The public form above is unchanged.
+func (m RouteManifest) reconcileKaminoInitialization(e ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
+	return reconcileKaminoInitializationAdmission(e, receipt, m.validateInitializationEffects, m.compileKaminoInitializationMessage, m.validateInitializedKaminoObligation)
+}
+
+// reconcileKaminoInitializationAdmission is the shared initializer reconciler
+// body; the installed and manifest forms differ only in the three functions
+// that revalidate the effect, recompile the message and check the poststate.
+func reconcileKaminoInitializationAdmission(e ExpectedEffects, receipt ConfirmedTransactionEvidence,
+	validate func(ExpectedEffects) error,
+	compile func(KaminoInitializationRequest) ([]byte, error),
+	validateObligation func(KaminoInitializationRequest, ConfirmedAccount) error,
+) (Reconciliation, []byte, error) {
+	if err := validate(e); err != nil {
 		return Reconciliation{}, nil, err
 	}
 	r, n := *e.Initialization, receipt.Initialization
@@ -37,7 +79,7 @@ func reconcileKaminoInitialization(e ExpectedEffects, receipt ConfirmedTransacti
 		n.AccountReadSlot < receipt.Slot || n.FeeLamports == 0 || n.FeeLamports > r.MaximumFeeLamports || !validSHA256(n.SignedWireSHA256) {
 		return Reconciliation{}, nil, fmt.Errorf("native initialization receipt is incomplete")
 	}
-	message, err := CompileKaminoInitializationMessage(r)
+	message, err := compile(r)
 	if err != nil || n.MessageSHA256 != sha256Bytes(message) {
 		return Reconciliation{}, nil, fmt.Errorf("native initialization message differs")
 	}
@@ -76,7 +118,7 @@ func reconcileKaminoInitialization(e ExpectedEffects, receipt ConfirmedTransacti
 	if !seenPayer || !seenVault || !seenObligation {
 		return Reconciliation{}, nil, fmt.Errorf("initializer native graph differs")
 	}
-	if err = validateInitializedKaminoObligation(r, n.Obligation); err != nil {
+	if err = validateObligation(r, n.Obligation); err != nil {
 		return Reconciliation{}, nil, err
 	}
 	evidence, err := json.Marshal(map[string]any{"schema": "loyal-backyard-rwa-reconciled-effects/v1", "kind": "kamino-initialize",
@@ -90,14 +132,40 @@ func reconcileKaminoInitialization(e ExpectedEffects, receipt ConfirmedTransacti
 // Recovery reads the immutable receipt for the persisted wire. Account presence
 // alone never establishes which submission created it or authorizes a retry.
 func observeFinalizedKaminoInitialization(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, op PersistedOperation) (ConfirmedTransactionEvidence, error) {
+	return observeFinalizedKaminoInitializationAdmission(ctx, rpc, r, op, CompileKaminoInitializationMessage, observeInitializerDecisionInstalled)
+}
+
+// observeInitializerDecisionInstalled is the exact installed journal-decision
+// check the public observer has always applied.
+func observeInitializerDecisionInstalled(d Decision, r KaminoInitializationRequest) error {
+	if d.Action != InitializeKaminoObligation || d.StrategyKey != r.RouteLane || d.Validate() != nil {
+		return fmt.Errorf("initializer journal decision differs")
+	}
+	return nil
+}
+
+// observeFinalizedKaminoInitialization is the manifest-aware variant: the same
+// receipt observer with the persisted-wire recompilation and the journal
+// decision validation resolved through the explicit reviewed manifest, so
+// recovery re-derives the candidate AUTO wire from the binding that produced
+// it. The public form above is unchanged.
+func (m RouteManifest) observeFinalizedKaminoInitialization(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, op PersistedOperation) (ConfirmedTransactionEvidence, error) {
+	return observeFinalizedKaminoInitializationAdmission(ctx, rpc, r, op, m.compileKaminoInitializationMessage, m.validateInitializerDecision)
+}
+
+// observeFinalizedKaminoInitializationAdmission is the shared observer body;
+// the installed and manifest forms differ only in the compiler that must
+// reproduce the exact persisted wire and in the decision validator applied to
+// the journal decision.
+func observeFinalizedKaminoInitializationAdmission(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, op PersistedOperation, compile func(KaminoInitializationRequest) ([]byte, error), validateDecision func(Decision, KaminoInitializationRequest) error) (ConfirmedTransactionEvidence, error) {
 	var out ConfirmedTransactionEvidence
 	if rpc == nil {
 		return out, fmt.Errorf("initializer RPC unavailable")
 	}
-	if op.Decision.Action != InitializeKaminoObligation || op.Decision.StrategyKey != r.RouteLane || op.Decision.Validate() != nil {
-		return out, fmt.Errorf("initializer journal decision differs")
+	if err := validateDecision(op.Decision, r); err != nil {
+		return out, err
 	}
-	message, err := CompileKaminoInitializationMessage(r)
+	message, err := compile(r)
 	if err != nil {
 		return out, err
 	}

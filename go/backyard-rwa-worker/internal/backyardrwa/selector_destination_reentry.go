@@ -27,8 +27,13 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *RPCClient, 
 	defer cancel()
 	s := o.Snapshot
 	out := selectorDestinationQuote{Lane: s.RouteLane, EquityRaw: maximum}
+	// Reentry prices a NEW funded allocation for the route lane, so the lane
+	// must carry this manifest's funding authority — installed entry lanes
+	// plus the candidate AUTO lane only under its reviewed binding — not
+	// merely the broader decode/source-evidence authority that keeps deferred
+	// installed lanes observable.
 	if rpc == nil || client == nil || o.ObservedAt.IsZero() || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) ||
-		!s.PilotActive || !s.Fresh || !selectorLane(s.RouteLane) || !selectorEntryLane(s.RouteLane) || s.RouteLane != s.StrategyKey ||
+		!s.PilotActive || !s.Fresh || !m.selectorEntryFundingLane(s.RouteLane, false) || s.RouteLane != s.StrategyKey ||
 		s.ObservationID == "" || s.DebtIdleRaw != 0 || s.CollateralIdleRaw < 0 || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagSlots {
 		return out, budgetHold("selector_reentry_destination_unavailable")
 	}

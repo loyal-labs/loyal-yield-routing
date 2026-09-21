@@ -132,3 +132,193 @@ func TestSelectorObservesPriorCustodyAndRejectsMultipleExposures(t *testing.T) {
 		t.Fatal("two lanes silently reduced to one NAV")
 	}
 }
+
+// TestEconomicFeedInventoryIsManifestScoped pins the inventory closure in
+// both binding states: the embedded constructor stays exactly the installed
+// selector lanes regardless of the manifest, and the manifest-scoped
+// constructor appends the candidate AUTO route ONLY for a manifest carrying a
+// valid RuntimeBindings.AutoPolicy binding — the explicit absent-binding
+// fixture (the shipped pre-install state) and a malformed binding leave the
+// inventory identical to the embedded constructor, while the embedded release
+// manifest carries the installed binding and appends the route. pgxpool
+// connects lazily, so no database is needed to pin inventory shape.
+func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
+	ctx := context.Background()
+	const url = "postgresql://backyard_feed@/economic_feed_shape_test"
+	embedded := requireEmbeddedInstalledBinding(t)
+	plain, err := NewEconomicFeed(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+	// The embedded constructor's inventory closure is manifest-independent:
+	// exactly the installed selector lanes, never the candidate route.
+	if len(plain.routes) != len(selectorLanes) {
+		t.Fatalf("embedded inventory changed size: %d", len(plain.routes))
+	}
+	for i, lane := range selectorLanes {
+		want, err := runtimeRoute(lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plain.routes[i].Lane != want.Lane || plain.routes[i].Kamino.CollateralReserve != want.Kamino.CollateralReserve {
+			t.Fatalf("embedded installed route %d drifted: %+v", i, plain.routes[i])
+		}
+		if plain.routes[i].Lane == autoAUTOPYUSD.Lane {
+			t.Fatal("embedded inventory contains the candidate route")
+		}
+	}
+	// The absent-binding fixture (the shipped pre-install state) keeps the
+	// manifest-scoped inventory identical to the embedded constructor.
+	scoped, err := NewEconomicFeedOnManifest(ctx, url, autoAbsentBindingManifest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scoped.Close()
+	if len(scoped.routes) != len(selectorLanes) {
+		t.Fatalf("absent binding changed the scoped inventory size: %d", len(scoped.routes))
+	}
+	for i, lane := range selectorLanes {
+		want, err := runtimeRoute(lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scoped.routes[i].Lane != want.Lane || scoped.routes[i].Kamino.CollateralReserve != want.Kamino.CollateralReserve {
+			t.Fatalf("absent binding drifted scoped route %d: %+v", i, scoped.routes[i])
+		}
+	}
+	// The embedded manifest carries the installed binding, so the scoped
+	// inventory appends exactly one AUTO route, last.
+	installedScoped, err := NewEconomicFeedOnManifest(ctx, url, embedded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer installedScoped.Close()
+	if len(installedScoped.routes) != len(selectorLanes)+1 {
+		t.Fatalf("installed binding did not add exactly one route: %d", len(installedScoped.routes))
+	}
+	if last := installedScoped.routes[len(installedScoped.routes)-1]; last.Lane != autoAUTOPYUSD.Lane {
+		t.Fatalf("installed binding did not append the candidate route last: %+v", last)
+	}
+	autoWant, err := runtimeRoute(autoAUTOPYUSD.Lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appended := installedScoped.routes[len(installedScoped.routes)-1]
+	if appended.Kamino.CollateralReserve != autoWant.Kamino.CollateralReserve {
+		t.Fatalf("installed binding appended a drifted candidate route: %+v", appended)
+	}
+	for i, lane := range selectorLanes {
+		want, err := runtimeRoute(lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if installedScoped.routes[i].Lane != want.Lane || installedScoped.routes[i].Kamino.CollateralReserve != want.Kamino.CollateralReserve {
+			t.Fatalf("installed binding drifted installed route %d: %+v", i, installedScoped.routes[i])
+		}
+	}
+	withAuto, err := NewEconomicFeedOnManifest(ctx, url, autoFixtureManifest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer withAuto.Close()
+	if len(withAuto.routes) != len(selectorLanes)+1 {
+		t.Fatalf("valid binding did not add exactly one route: %d", len(withAuto.routes))
+	}
+	if last := withAuto.routes[len(withAuto.routes)-1]; last.Lane != autoAUTOPYUSD.Lane {
+		t.Fatalf("candidate route is not appended last: %+v", last)
+	}
+	candidateWant, err := runtimeRoute(autoAUTOPYUSD.Lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateAppended := withAuto.routes[len(withAuto.routes)-1]
+	if candidateAppended.Kamino.CollateralReserve != candidateWant.Kamino.CollateralReserve {
+		t.Fatalf("candidate route drifted from its route config: %+v", candidateAppended)
+	}
+	for i, lane := range selectorLanes {
+		want, err := runtimeRoute(lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if withAuto.routes[i].Lane != want.Lane || withAuto.routes[i].Kamino.CollateralReserve != want.Kamino.CollateralReserve {
+			t.Fatalf("valid binding drifted installed route %d: %+v", i, withAuto.routes[i])
+		}
+	}
+	malformed := embedded
+	malformed.RuntimeBindings.AutoPolicy = &AutoPolicyBinding{Lane: autoAUTOPYUSD.Lane}
+	refused, err := NewEconomicFeedOnManifest(ctx, url, malformed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer refused.Close()
+	if len(refused.routes) != len(selectorLanes) {
+		t.Fatalf("malformed binding admitted the candidate route: %d", len(refused.routes))
+	}
+}
+
+// TestCombineEconomicsProducesCandidateRouteEconomics pins the candidate
+// emission semantics: with the manifest-scoped inventory, complete verified
+// evidence for the AUTO reserves produces the AUTO LaneEconomics with its
+// true lane, the debt identity is checked against the ROUTE's debt mint
+// (PYUSD for AUTO; every installed lane stays USDC), and content that fails
+// validation is never emitted. The installed acceptance scope inside
+// LaneEconomics.validate is the selector's decision, not the feed's.
+func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
+	auto := autoAUTOPYUSD
+	now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
+	nativeBody := `{"` + auto.Kamino.CollateralReserve + `":{"token":"` + auto.Kamino.CollateralMint + `","underlyingApy":{"current":"0.0612","sourceType":"yield-feed","sourceMint":"` + auto.Kamino.CollateralMint + `","observedAt":"2026-09-15T23:00:13.804Z"}}}`
+	native, err := parseNativeYields([]byte(nativeBody), []RuntimeRoute{auto}, now, 2*time.Hour)
+	if err != nil || len(native) != 1 {
+		t.Fatalf("candidate native evidence refused: %v", err)
+	}
+	zero, no, schema := 0, false, 2
+	supply, borrow, host := 1_000_000_000_000.0, 500_000_000_000.0, 300.0
+	supplyAPY, borrowAPY := 0.0004, 0.079
+	rows := map[string]verifiedEconomicReserve{}
+	collateral := verifiedEconomicReserve{Reserve: auto.Kamino.CollateralReserve, Market: auto.Kamino.Market, Mint: auto.Kamino.CollateralMint,
+		ObservedAt: now, Slot: 42, Hash: strings.Repeat("a", 64), Commitment: "confirmed", Schema: &schema, Status: &zero, Emergency: &no, SupplyAPY: &supplyAPY}
+	debt := collateral
+	debt.Reserve = auto.Kamino.DebtReserve
+	debt.Mint = auto.Kamino.DebtMint
+	debt.BorrowAPY = &borrowAPY
+	debt.SupplyRaw = &supply
+	debt.BorrowRaw = &borrow
+	debt.HostBPS = &host
+	if err := json.Unmarshal([]byte(`[{"utilization_rate_bps":0,"borrow_rate_bps":0},{"utilization_rate_bps":9000,"borrow_rate_bps":364},{"utilization_rate_bps":10000,"borrow_rate_bps":1075}]`), &debt.Curve); err != nil {
+		t.Fatal(err)
+	}
+	rows[collateral.Reserve] = collateral
+	rows[debt.Reserve] = debt
+	// The lane authority is the feed's manifest-scoped set; the public
+	// combineEconomics wrapper keeps the installed selectorLane scope.
+	candidateAllowed := func(lane string) bool {
+		return selectorLane(lane) || lane == autoAUTOPYUSD.Lane
+	}
+	got := combineEconomicsWithLane([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy(), candidateAllowed)
+	if len(got) != 1 || got[0].Lane != autoAUTOPYUSD.Lane || got[0].DebtBorrowRaw != borrow || got[0].DebtSupplyRaw != supply || got[0].HostBorrowBPS != host {
+		t.Fatalf("candidate route economics not produced from complete evidence: %+v", got)
+	}
+	// The public wrapper keeps installed scope: the same complete candidate
+	// evidence is NOT accepted through it.
+	if got := combineEconomics([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy()); len(got) != 0 {
+		t.Fatalf("installed wrapper accepted the candidate lane: %+v", got)
+	}
+	// The debt identity is the route's OWN debt mint: a USDC-minted debt row
+	// for the AUTO debt reserve is an identity mismatch and is refused.
+	wrong := debt
+	wrong.Mint = bridgeUSDC
+	rows[debt.Reserve] = wrong
+	if len(combineEconomicsWithLane([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy(), candidateAllowed)) != 0 {
+		t.Fatal("candidate debt identity mismatch accepted")
+	}
+	rows[debt.Reserve] = debt
+	// Content that cannot project a borrow APR is never emitted, even with a
+	// valid manifest binding.
+	broken := debt
+	broken.Curve = nil
+	rows[debt.Reserve] = broken
+	if len(combineEconomicsWithLane([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy(), candidateAllowed)) != 0 {
+		t.Fatal("candidate content validation bypassed")
+	}
+}

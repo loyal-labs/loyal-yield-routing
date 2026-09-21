@@ -265,7 +265,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	if quotes[0].ExpectedCostRaw == nil || *quotes[0].ExpectedCostRaw < 0 || *quotes[0].ExpectedCostRaw > quotes[0].CostRaw {
 		t.Fatal("published quote lost its forecast expense", quotes[0].ExpectedCostRaw, quotes[0].CostRaw)
 	}
-	if benefit, admissible := selectorMoveQuoteBenefit(o, []LaneEconomics{market}, market.Lane, policy, quotes[0]); !admissible || benefit <= 0 {
+	if benefit, admissible := selectorMoveQuoteBenefit(m, o, []LaneEconomics{market}, market.Lane, policy, quotes[0]); !admissible || benefit <= 0 {
 		t.Fatal("smaller candidate is not positively profitable", benefit, admissible)
 	}
 }

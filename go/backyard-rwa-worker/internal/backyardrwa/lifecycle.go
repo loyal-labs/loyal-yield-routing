@@ -13,6 +13,18 @@ import (
 // records broadcast_intent and then sends its exact persisted wire once.
 // BroadcastIntent and Submitted are recovery states and never resend.
 func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient, operation PersistedOperation) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return advanceNonterminalWithManifest(ctx, manifest, database, rpc, operation)
+}
+
+// advanceNonterminalWithManifest is the identical recovery state machine with
+// the immutable reviewed manifest explicit: only the reconciliation decode,
+// initializer receipt observation, reconciliation and locked settlement resolve
+// through it. Every other state transition is unchanged.
+func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest, database *Database, rpc *RPCClient, operation PersistedOperation) error {
 	if database == nil || rpc == nil || !IsNonterminal(operation.Status) {
 		return fmt.Errorf("invalid nonterminal recovery input")
 	}
@@ -67,7 +79,7 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 			// in-memory status would revalue and send again on this tick.
 			return nil
 		}
-		if err := database.RevalueAndMarkBroadcastIntent(ctx, rpc, operation); err != nil {
+		if err := database.RevalueAndMarkBroadcastIntentOnManifest(ctx, manifest, rpc, operation); err != nil {
 			var hold *BudgetHold
 			if errors.As(err, &hold) {
 				if journalErr := database.RecordPhase3SignedBudgetHold(ctx, operation.ID, hold); journalErr != nil {
@@ -158,13 +170,13 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 		if !status.Finalized {
 			return nil
 		}
-		expected, err := DecodeExpectedEffects(operation.ExpectedEffects)
+		expected, err := decodeExpectedEffectsWithManifest(manifest, operation.ExpectedEffects)
 		if err != nil {
 			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "invalid_expected_effects")
 		}
 		var receipt ConfirmedTransactionEvidence
 		if expected.Initialization != nil {
-			receipt, err = observeFinalizedKaminoInitialization(ctx, rpc, *expected.Initialization, operation)
+			receipt, err = manifest.observeFinalizedKaminoInitialization(ctx, rpc, *expected.Initialization, operation)
 		} else {
 			receipt, err = rpc.FinalizedTransaction(ctx, operation.TransactionSignature)
 		}
@@ -174,11 +186,11 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 		if receipt.Slot != operation.ConfirmedSlot {
 			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "confirmed_transaction_slot_mismatch")
 		}
-		reconciliation, effects, err := ReconcileConfirmedTransaction(expected, receipt)
+		reconciliation, effects, err := manifest.ReconcileConfirmedTransaction(expected, receipt)
 		if err != nil {
 			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "exact_effect_reconciliation_failed")
 		}
-		return database.MarkReconciled(ctx, operation.ID, reconciliation, effects, receipt)
+		return database.markReconciledOnManifest(ctx, manifest, operation.ID, reconciliation, effects, receipt)
 	default:
 		return fmt.Errorf("unsupported nonterminal status: %s", operation.Status)
 	}

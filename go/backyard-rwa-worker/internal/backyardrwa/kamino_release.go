@@ -78,6 +78,19 @@ func decodeKaminoRepaymentReleaseWindow(accounts []ConfirmedAccount, route Runti
 }
 
 func decodeKaminoRepaymentReleaseForMode(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64, pilot bool) (KaminoReleaseBound, error) {
+	return decodeKaminoRepaymentReleaseWithAllowance(accounts, route, slot, steps, pilot, pilotRepaymentLiquidityAllowance)
+}
+
+// The manifest-aware internal form serves the candidate AUTO source path only:
+// installed lanes resolve through the same public function as always, and the
+// reviewed AUTO pilot release reuses the identical body with the manifest-aware
+// allowance resolver. No gate, bound or receipt conversion changes.
+func (m RouteManifest) decodeKaminoRepaymentReleaseForMode(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64, pilot bool) (KaminoReleaseBound, error) {
+	return decodeKaminoRepaymentReleaseWithAllowance(accounts, route, slot, steps, pilot, m.pilotRepaymentLiquidityAllowance)
+}
+
+func decodeKaminoRepaymentReleaseWithAllowance(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64, pilot bool,
+	allowanceFor func([]ConfirmedAccount, RuntimeRoute, KaminoPosition, byte) (uint64, error)) (KaminoReleaseBound, error) {
 	var result KaminoReleaseBound
 	bound, err := decodeKaminoPayoffWindow(accounts, route, slot, steps)
 	if err != nil {
@@ -106,7 +119,7 @@ func decodeKaminoRepaymentReleaseForMode(accounts []ConfirmedAccount, route Runt
 		CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF}
 	_, allowance, err := withdrawExcessForRepayment(position)
 	if pilot {
-		allowance, err = pilotRepaymentLiquidityAllowance(accounts, route, position, collateral.liquidationThresholdPct)
+		allowance, err = allowanceFor(accounts, route, position, collateral.liquidationThresholdPct)
 	}
 	if err != nil {
 		return result, budgetHold("no_safe_repayment_collateral_release")
@@ -128,22 +141,40 @@ func decodeKaminoRepaymentReleaseForMode(accounts []ConfirmedAccount, route Runt
 // already-admitted amount may remain safe, but stale effects cannot survive a
 // changed exchange rate/custody or an interest/price move beyond the safe size.
 func validateRepaymentReleaseRequest(ctx context.Context, rpc *RPCClient, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return KaminoReleaseBound{}, nil, err
+	}
+	return manifest.validateRepaymentReleaseRequest(ctx, rpc, request, effects, slot)
+}
+
+// The manifest-aware form keeps every release-size, custody and effects check
+// unchanged and only lets the candidate AUTO source path measure its request
+// through the SAME reviewed manifest that produced it.
+func (m RouteManifest) validateRepaymentReleaseRequest(ctx context.Context, rpc *RPCClient, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
 	var result KaminoReleaseBound
 	if !request.RepaymentRelease || request.FullPayoff {
 		return result, nil, budgetHold("invalid_repayment_release_intent")
 	}
-	if _, err := MeasureExecutableDebit(request, effects); err != nil {
+	if _, err := m.measureExecutableDebit(request, effects); err != nil {
 		return result, nil, err
 	}
 	route, err := runtimeRoute(request.RouteLane)
 	if err != nil {
 		return result, nil, err
 	}
-	observed, accounts, err := observeKaminoPayoffWindow(ctx, rpc, route, slot, 5)
+	// The pilot risk model reads the lending market, which the payoff window
+	// captures only for installed selector lanes; the reviewed candidate lane
+	// rides the same window request so the recheck keeps one coherent slot.
+	payoffAdditional := []string(nil)
+	if request.PilotRepaymentRelease && route.Lane == autoAUTOPYUSD.Lane {
+		payoffAdditional = append(payoffAdditional, route.Kamino.Market)
+	}
+	observed, accounts, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, slot, 5, payoffAdditional...)
 	if err != nil {
 		return result, nil, err
 	}
-	result, err = decodeKaminoRepaymentReleaseForMode(accounts, route, observed.ObservedSlot, 5, request.PilotRepaymentRelease)
+	result, err = m.decodeKaminoRepaymentReleaseForMode(accounts, route, observed.ObservedSlot, 5, request.PilotRepaymentRelease)
 	if err != nil {
 		return result, nil, err
 	}
@@ -187,6 +218,30 @@ func pilotRepaymentLiquidityAllowance(accounts []ConfirmedAccount, route Runtime
 	if !selectorLane(route.Lane) || route.Kamino.DebtMint != bridgeUSDC {
 		return 0, budgetHold("pilot_release_lane_unreviewed")
 	}
+	return pilotRepaymentLiquidityAllowanceChecked(accounts, route, position, liquidationPct)
+}
+
+// The manifest-aware form admits exactly one candidate lane: the reviewed AUTO
+// binding's release, through the SAME checked risk arithmetic the installed
+// pilot lanes use. Every public gate and the installed-lane behavior stay
+// byte-identical; an absent or drifted binding errors instead of falling back.
+func (m RouteManifest) pilotRepaymentLiquidityAllowance(accounts []ConfirmedAccount, route RuntimeRoute, position KaminoPosition, liquidationPct byte) (uint64, error) {
+	if selectorLane(route.Lane) && route.Kamino.DebtMint == bridgeUSDC {
+		return pilotRepaymentLiquidityAllowance(accounts, route, position, liquidationPct)
+	}
+	if route.Lane != autoAUTOPYUSD.Lane {
+		return 0, budgetHold("pilot_release_lane_unreviewed")
+	}
+	if _, err := m.autoPolicyBinding(); err != nil {
+		return 0, err
+	}
+	return pilotRepaymentLiquidityAllowanceChecked(accounts, route, position, liquidationPct)
+}
+
+// pilotRepaymentLiquidityAllowanceChecked is the lane-independent core shared
+// by both forms above: market risk model, LTV ceiling, and the existing
+// rounded and ForValues allowance arithmetic with its receipt bounds.
+func pilotRepaymentLiquidityAllowanceChecked(accounts []ConfirmedAccount, route RuntimeRoute, position KaminoPosition, liquidationPct byte) (uint64, error) {
 	market := accountAt(accounts, route.Kamino.Market)
 	if emergency, err := decodeKaminoMarketEmergency(market, route.Kamino); err != nil {
 		return 0, err

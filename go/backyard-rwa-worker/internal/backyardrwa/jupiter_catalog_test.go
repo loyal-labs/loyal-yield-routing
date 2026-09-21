@@ -73,6 +73,14 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 			key := b.From + "->" + b.To
 			seen[key] = true
 			t.Run(lane+"/"+key, func(t *testing.T) {
+				if lane == autoAUTOPYUSD.Lane {
+					// The historical catalog shards stay observation pins:
+					// AUTO construction is bound to the reviewed binding —
+					// absent fixture closed, installed manifest resolved
+					// (see auto_policy_binding_test.go).
+					testAutoJupiterCatalogLaneFailClosed(t, action, key)
+					return
+				}
 				foundPolicy := false
 				for _, p := range installed.Operations {
 					if p.PolicyAddress == b.Policy {

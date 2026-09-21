@@ -100,6 +100,13 @@ type Snapshot struct {
 	PilotBaselineKnown             bool
 	PilotBaselineTicketSequenceRaw int64
 	SelectorEntryPaused            bool
+	// PilotTrancheCapLane names the one non-installed route lane whose tranche
+	// sizing may use the reviewed pilot cap: it is stamped only by the
+	// reviewed-manifest observation merge while that manifest's funded binding
+	// resolves, and it is consulted only when it equals RouteLane. It carries
+	// no amount — the tranche value stays the reviewed pilot cap — and every
+	// embedded lane closure is unchanged.
+	PilotTrancheCapLane string
 	// Exact equity authorized by a current durable selector quote.
 	SelectorEntryEquityRaw int64
 	SelectorBorrowRaw      uint64
@@ -197,7 +204,36 @@ type Decision struct {
 	StrategyKey    string
 }
 
+// validateSelectorInitializerDecision is the exact installed initializer
+// decision shape, extracted unchanged from Decision.Validate: selector lanes
+// only, zero amount, exact reason, nonempty idempotency key.
+func validateSelectorInitializerDecision(d Decision) error {
+	return validateSelectorInitializerDecisionWithLane(d, selectorLane)
+}
+
+// validateSelectorInitializerDecisionWithLane is the identical initializer
+// decision shape with the lane authority explicit; the manifest form admits
+// the candidate AUTO lane only while its reviewed binding resolves.
+func validateSelectorInitializerDecisionWithLane(d Decision, laneAllowed func(string) bool) error {
+	if !laneAllowed(d.StrategyKey) || d.AmountRaw != 0 || d.Reason != "multiply_obligation_missing" || d.IdempotencyKey == "" {
+		return fmt.Errorf("invalid Multiply initialization decision")
+	}
+	return nil
+}
+
 func (d Decision) Validate() error {
+	return validateDecisionWithLane(d, selectorLane)
+}
+
+// validateDecision is the identical shared decision validation with the
+// initializer lane authority resolved through the manifest: the candidate
+// AUTO lane is admitted only while its reviewed binding resolves, and the
+// embedded manifest keeps the installed closure.
+func (m RouteManifest) validateDecision(d Decision) error {
+	return validateDecisionWithLane(d, m.selectorEntryLaneAllowed)
+}
+
+func validateDecisionWithLane(d Decision, initializerLaneAllowed func(string) bool) error {
 	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 {
 		return fmt.Errorf("incomplete decision")
 	}
@@ -208,10 +244,7 @@ func (d Decision) Validate() error {
 		return nil // Journal identity only; not a runtime lane registration.
 	}
 	if d.Action == InitializeKaminoObligation {
-		if !selectorLane(d.StrategyKey) || d.AmountRaw != 0 || d.Reason != "multiply_obligation_missing" {
-			return fmt.Errorf("invalid Multiply initialization decision")
-		}
-		return nil
+		return validateSelectorInitializerDecisionWithLane(d, initializerLaneAllowed)
 	}
 	neutral := d.Action == SwapStableToCollateralStep || d.Action == SwapCollateralToStableStep || d.Action == OpenRouteStep || d.Action == DeleverRouteStep
 	catalog := false
@@ -257,11 +290,22 @@ type Observation struct {
 	planning *routePlanningState
 	// Tick-local account evidence, intentionally excluded from persisted JSON.
 	// It is produced only by the coherent route observer and never cached by Worker.
-	routeBatch      *routeObservationBatch
+	routeBatch *routeObservationBatch
+	// custodyProof carries the strict pre-decision shared-custody ownership
+	// proof for the CURRENT operation only (doc 26). Unexported: per-operation
+	// local data on the tick's own observation — never persisted in the
+	// decision JSON and never a mutable global.
+	custodyProof    *sharedCustodyAdmissionProof
 	ValuationSource string `json:",omitempty"`
 	ValuationSlot   int64  `json:",omitempty"`
 	Snapshot        Snapshot
 	ObservedAt      time.Time
+}
+
+// carriedCustodyOwnershipProof returns the tick's pre-decision shared-custody
+// ownership proof, or nil when the operation spends no shared custody.
+func (o Observation) carriedCustodyOwnershipProof() *sharedCustodyAdmissionProof {
+	return o.custodyProof
 }
 
 // Operation is the durable journal identity created before transaction work.

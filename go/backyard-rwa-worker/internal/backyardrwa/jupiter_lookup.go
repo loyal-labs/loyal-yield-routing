@@ -36,6 +36,15 @@ func basicSwapLaneEdge(action Action) bool {
 }
 
 func acceptsJupiterLookupHints(lane string, action Action) bool {
+	if lane == autoAUTOPYUSD.Lane {
+		// The candidate AUTO lane keeps the same v0 escape hatch as the basic
+		// lanes: hints come only from the fresh quote, are resolved from chain,
+		// and are pinned to the persisted request identities. Eligibility is
+		// the exact reviewed AUTO edge, never the catalog entry, so oversized
+		// packets stay constructible under the one reviewed binding.
+		_, err := autoSwapConstraintKey(action)
+		return err == nil
+	}
 	if lane == "Ethena/USDe/PYUSD" && action == SwapCollateralToDebtStep {
 		return true
 	}
@@ -107,8 +116,20 @@ func observeJupiterLookupTables(ctx context.Context, rpc *RPCClient, addresses [
 	return tables, slot, nil
 }
 
+// prepareJupiterLookupTables compiles for callers holding only the embedded
+// reviewed manifest. The manifest-owning observation path must use
+// (RouteManifest).prepareJupiterLookupTables so a candidate AUTO binding is
+// retained instead of reloading the embedded (binding-less) manifest.
 func prepareJupiterLookupTables(ctx context.Context, rpc *RPCClient, r JupiterSwapRequest, minimumSlot int64) (JupiterSwapRequest, error) {
-	if _, err := CompileJupiterMessage(r); err == nil {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return r, err
+	}
+	return manifest.prepareJupiterLookupTables(ctx, rpc, r, minimumSlot)
+}
+
+func (m RouteManifest) prepareJupiterLookupTables(ctx context.Context, rpc *RPCClient, r JupiterSwapRequest, minimumSlot int64) (JupiterSwapRequest, error) {
+	if _, err := m.compileJupiterMessage(r, mustKey(bridgeDelegate)); err == nil {
 		return r, nil
 	}
 	addresses := jupiterLookupAddresses(r)
@@ -123,7 +144,7 @@ func prepareJupiterLookupTables(ctx context.Context, rpc *RPCClient, r JupiterSw
 		return r, err
 	}
 	r.LookupTables = tables
-	_, err = CompileJupiterMessage(r)
+	_, err = m.compileJupiterMessage(r, mustKey(bridgeDelegate))
 	return r, err
 }
 

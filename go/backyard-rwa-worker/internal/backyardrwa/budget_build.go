@@ -12,10 +12,23 @@ import (
 // admission/build/send boundaries enforce the current authorized caps. Account setup
 // and the remaining exit graph still require independently bounded funding.
 // Only the typed initializer admits its exact native rent in this gate.
+// The production wrapper supplies the embedded reviewed manifest exactly once;
+// every existing build/send/reconcile caller keeps this behavior. The
+// manifest-aware form below serves only the internal candidate AUTO source
+// path, whose retained legs compile against the SAME reviewed manifest that
+// produced them (its validated autoPolicy binding).
 func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return ValuedTransactionCost{}, err
+	}
+	return manifest.observePhase3KnownBuildCost(ctx, rpc, request, effects)
+}
+
+func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	debit, err := MeasureExecutableDebit(request, effects)
+	debit, err := m.measureExecutableDebit(request, effects)
 	if err != nil {
 		return ValuedTransactionCost{}, err
 	}
@@ -27,13 +40,13 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 	case BridgeBuildRequest:
 		message, err = CompileBridgeMessage(r)
 	case KaminoPrimeUSDCRequest:
-		message, err = CompileKaminoMessage(r)
+		message, err = m.compileKaminoMessage(r, mustKey(bridgeDelegate))
 		lane = r.RouteLane
 	case KaminoInitializationRequest:
-		message, err = CompileKaminoInitializationMessage(r)
+		message, err = m.compileKaminoInitializationMessage(r)
 		lane, setupLamports = r.RouteLane, r.RentLamports
 	case JupiterSwapRequest:
-		message, err = CompileJupiterMessage(r)
+		message, err = m.compileJupiterMessage(r, mustKey(bridgeDelegate))
 		lane = r.RouteLane
 	default:
 		return ValuedTransactionCost{}, budgetHold("unmapped_economic_action")
@@ -49,14 +62,22 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
 	}
 	if r, ok := request.(KaminoInitializationRequest); ok {
-		slot, err = validateKaminoInitializationPrestate(ctx, rpc, r, slot)
+		// Installed lanes keep the exact public absent-only prestate path —
+		// including validated expiry recovery — with no manifest identity
+		// re-checks. Only the candidate AUTO lane revalidates through the
+		// reviewed binding's manifest-aware prestate.
+		if r.RouteLane == autoAUTOPYUSD.Lane {
+			slot, err = m.validateKaminoInitializationPrestate(ctx, rpc, r, slot)
+		} else {
+			slot, err = validateKaminoInitializationPrestate(ctx, rpc, r, slot)
+		}
 		initializerPrestateSlot = slot
 		if err != nil {
 			return ValuedTransactionCost{}, err
 		}
 	}
 	if r, ok := request.(KaminoPrimeUSDCRequest); ok && r.FullPayoff {
-		bound, err := validateFullPayoffRequest(ctx, rpc, r, effects, slot)
+		bound, err := m.validateFullPayoffRequest(ctx, rpc, r, effects, slot)
 		if err != nil {
 			return ValuedTransactionCost{}, err
 		}
@@ -77,7 +98,7 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 		slot = max(slot, observed)
 	}
 	if r, ok := request.(KaminoPrimeUSDCRequest); ok && r.RepaymentRelease {
-		bound, _, err := validateRepaymentReleaseRequest(ctx, rpc, r, effects, slot)
+		bound, _, err := m.validateRepaymentReleaseRequest(ctx, rpc, r, effects, slot)
 		if err != nil {
 			return ValuedTransactionCost{}, err
 		}
@@ -100,7 +121,7 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 		}
 		if r.FullPayoffFunding {
 			// Build/send revalidation stays on the raw fail-closed capture.
-			bound, _, err := validatePayoffFunding(ctx, rpc, r, effects, slot, 3, false)
+			bound, _, err := validatePayoffFunding(ctx, rpc, m, r, effects, slot, 3, false)
 			if err != nil {
 				return ValuedTransactionCost{}, err
 			}
@@ -157,9 +178,21 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 // Every production builder uses this gate before signer access. Passing it
 // does not create a reservation or authorize a missing setup/exit plan.
 func authorizePhase3ProductionBuild(ctx context.Context, database *Database, rpc *RPCClient, operationID string, request any, effects ExpectedEffects, encodedEffects []byte) error {
-	cost, err := observePhase3KnownBuildCost(ctx, rpc, request, effects)
+	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return err
 	}
-	return database.authorizePhase3Build(ctx, rpc, operationID, request, encodedEffects, cost)
+	return manifest.authorizePhase3ProductionBuild(ctx, database, rpc, operationID, request, effects, encodedEffects)
+}
+
+// authorizePhase3ProductionBuild is the manifest-aware form: the exact
+// production gate with the fresh cost/prestate observation and the locked
+// build authorization resolved through the explicit reviewed manifest. The
+// public form above loads the embedded manifest once and is unchanged.
+func (m RouteManifest) authorizePhase3ProductionBuild(ctx context.Context, database *Database, rpc *RPCClient, operationID string, request any, effects ExpectedEffects, encodedEffects []byte) error {
+	cost, err := m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
+	if err != nil {
+		return err
+	}
+	return database.authorizePhase3BuildOnManifest(ctx, m, rpc, operationID, request, encodedEffects, cost)
 }

@@ -26,16 +26,43 @@ type UnwindIntent struct {
 }
 
 func (i UnwindIntent) validate() error {
-	if !selectorLane(i.SourceLane) || (i.Reason != "economic_rotation" && i.Reason != "withdrawal_shortfall" && i.Reason != "hard_ltv_reduction") || i.ObservationID == "" || i.MaxCollateralRaw < 0 || i.MaxDebtRaw < 0 || i.CostBoundRaw <= 0 || i.BudgetScope == "" || i.BudgetFamily == "" || i.BudgetFamily != phase3BudgetFamilyForLane(i.SourceLane) || !sha256Pattern.MatchString(i.EvidenceID) || i.CreatedAt.IsZero() {
+	return validateUnwindIntent(i, selectorLane)
+}
+
+// validateUnwindIntent is the shared compound unwind check with the source
+// lane authority parameterized: the installed embedded manifest admits only
+// selectorLane members, while an explicit reviewed manifest also admits its
+// candidate lane as the funded production source through the same validated
+// binding that recorded the position. Reason, bounds, budget-family identity
+// and evidence shape stay the exact installed checks for every caller.
+func validateUnwindIntent(i UnwindIntent, laneAllowed func(string) bool) error {
+	if !laneAllowed(i.SourceLane) || (i.Reason != "economic_rotation" && i.Reason != "withdrawal_shortfall" && i.Reason != "hard_ltv_reduction") || i.ObservationID == "" || i.MaxCollateralRaw < 0 || i.MaxDebtRaw < 0 || i.CostBoundRaw <= 0 || i.BudgetScope == "" || i.BudgetFamily == "" || i.BudgetFamily != phase3BudgetFamilyForLane(i.SourceLane) || !sha256Pattern.MatchString(i.EvidenceID) || i.CreatedAt.IsZero() {
 		return fmt.Errorf("invalid_unwind_intent")
 	}
 	return nil
 }
+
+// validateUnwindIntentOnManifest resolves the source lane authority through
+// the explicit reviewed manifest with the same entry-lane authority that
+// admits its persisted entries. Every public decode and commit keeps the
+// installed embedded check.
+func (m RouteManifest) validateUnwindIntent(i UnwindIntent) error {
+	return validateUnwindIntent(i, m.selectorEntryLaneAllowed)
+}
+
 func applyUnwindIntent(s *Snapshot, intent *UnwindIntent) error {
+	return applyUnwindIntentWithLane(s, intent, selectorLane)
+}
+
+// applyUnwindIntentWithLane is the identical unwind merge with the source
+// lane authority parameterized, so the production journal merge under an
+// explicit reviewed manifest accepts a recorded candidate-source unwind.
+// Every bound, identity and reconciliation check is shared verbatim.
+func applyUnwindIntentWithLane(s *Snapshot, intent *UnwindIntent, laneAllowed func(string) bool) error {
 	if intent == nil {
 		return nil
 	}
-	if err := intent.validate(); err != nil {
+	if err := validateUnwindIntent(*intent, laneAllowed); err != nil {
 		return err
 	}
 	if s.RouteLane != intent.SourceLane {
@@ -61,7 +88,26 @@ func (d *Database) LoadUnwindIntent(ctx context.Context, routeKey string) (*Unwi
 	return decodeUnwindIntent(raw)
 }
 
+// LoadUnwindIntentOnManifest is the identical durable read with the intent
+// decode resolved through the explicit reviewed manifest, so a recorded
+// candidate-source unwind survives restart exactly while that manifest's
+// reviewed binding resolves. Every other read stays shared verbatim.
+func (d *Database) LoadUnwindIntentOnManifest(ctx context.Context, manifest RouteManifest, routeKey string) (*UnwindIntent, error) {
+	var raw []byte
+	if err := d.pool.QueryRow(ctx, `SELECT state->'selectorUnwind' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey).Scan(&raw); err != nil {
+		return nil, err
+	}
+	return manifest.decodeUnwindIntent(raw)
+}
+
 func decodeUnwindIntent(raw []byte) (*UnwindIntent, error) {
+	return decodeUnwindIntentWithLane(raw, selectorLane)
+}
+
+// decodeUnwindIntentWithLane is the identical durable decode with the source
+// lane authority parameterized; unknown bytes and every installed check stay
+// exact.
+func decodeUnwindIntentWithLane(raw []byte, laneAllowed func(string) bool) (*UnwindIntent, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
@@ -69,17 +115,36 @@ func decodeUnwindIntent(raw []byte) (*UnwindIntent, error) {
 	if err := json.Unmarshal(raw, &intent); err != nil {
 		return nil, fmt.Errorf("invalid_durable_unwind")
 	}
-	if err := intent.validate(); err != nil {
+	if err := validateUnwindIntent(intent, laneAllowed); err != nil {
 		return nil, err
 	}
 	return &intent, nil
+}
+
+// decodeUnwindIntentOnManifest resolves the decode lane authority through the
+// explicit reviewed manifest.
+func (m RouteManifest) decodeUnwindIntent(raw []byte) (*UnwindIntent, error) {
+	return decodeUnwindIntentWithLane(raw, m.selectorEntryLaneAllowed)
 }
 
 // CommitUnwindIntent can only refer to an already funded exit in the existing
 // budget. It never creates spending room or loosens a closed campaign. The same
 // route lease/lock and no-nonterminal fence serialize it with RecordDecision.
 func (d *Database) CommitUnwindIntent(ctx context.Context, routeKey string, intent UnwindIntent) error {
-	if err := intent.validate(); err != nil {
+	return d.commitUnwindIntentWithLane(ctx, routeKey, intent, selectorLane)
+}
+
+// CommitUnwindIntentOnManifest is the identical durable commit with the
+// source lane authority resolved through the explicit reviewed manifest, so
+// the production worker can drive a recorded candidate-source unwind through
+// the same validated binding that recorded it. Every fence, existing exit
+// reservation and identity check is shared verbatim.
+func (d *Database) CommitUnwindIntentOnManifest(ctx context.Context, manifest RouteManifest, routeKey string, intent UnwindIntent) error {
+	return d.commitUnwindIntentWithLane(ctx, routeKey, intent, manifest.selectorEntryLaneAllowed)
+}
+
+func (d *Database) commitUnwindIntentWithLane(ctx context.Context, routeKey string, intent UnwindIntent, laneAllowed func(string) bool) error {
+	if err := validateUnwindIntent(intent, laneAllowed); err != nil {
 		return err
 	}
 	lease, err := d.currentLease()
@@ -164,7 +229,19 @@ func (d *Database) writeUnwindTx(ctx context.Context, tx pgx.Tx, routeKey string
 // Completion requires independently observed flat holdings and current NAV;
 // an intent never clears simply because its latest transaction succeeded.
 func (d *Database) CompleteUnwindIntent(ctx context.Context, routeKey string, intent UnwindIntent, s Snapshot) error {
-	if err := intent.validate(); err != nil {
+	return d.completeUnwindIntentWithLane(ctx, routeKey, intent, s, selectorLane)
+}
+
+// CompleteUnwindIntentOnManifest is the identical completion with the source
+// lane authority resolved through the explicit reviewed manifest, so a
+// candidate-source unwind reconciles exactly while that binding resolves.
+// The observed-flat and lease fences are shared verbatim.
+func (d *Database) CompleteUnwindIntentOnManifest(ctx context.Context, manifest RouteManifest, routeKey string, intent UnwindIntent, s Snapshot) error {
+	return d.completeUnwindIntentWithLane(ctx, routeKey, intent, s, manifest.selectorEntryLaneAllowed)
+}
+
+func (d *Database) completeUnwindIntentWithLane(ctx context.Context, routeKey string, intent UnwindIntent, s Snapshot, laneAllowed func(string) bool) error {
+	if err := validateUnwindIntent(intent, laneAllowed); err != nil {
 		return err
 	}
 	if !unwindComplete(s) || s.RouteLane != intent.SourceLane {

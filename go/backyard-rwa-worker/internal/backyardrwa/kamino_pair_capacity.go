@@ -25,10 +25,25 @@ const (
 // Constrain the reserve-wide 1.5x equity bound by every cross-mode borrowing
 // cap. This is a protocol size ceiling, not policy, swap-depth or exit admission.
 // Inputs come from the same confirmed batch as the independently observed NAV.
+//
+// The returned equity is DEBT-denominated: it is twice the borrow headroom,
+// expressed in raw debt-mint units. That equals USDC equity only when the debt
+// mint is bridgeUSDC. For any other debt lane the caller must convert it
+// explicitly through the established BudgetPrice valuation
+// (selectorDestinationDebtPrice / ObserveBudgetTokenPrice) — same decimals
+// never imply price parity.
 func kaminoPairEntryCapacity(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
-	if !selectorLane(route.Lane) || route.Kamino.DebtMint != bridgeUSDC {
+	if !selectorLane(route.Lane) {
 		return 0, fmt.Errorf("pair_capacity_lane_unreviewed")
 	}
+	return kaminoPairEntryCapacityAuthorized(position, accounts, route)
+}
+
+// kaminoPairEntryCapacityAuthorized is the arithmetic core behind the reviewed
+// public gate above, which is unchanged and still rejects every unreviewed
+// lane. The candidate AUTO destination path calls it only after
+// selectorDestinationLaneAuthorized admitted the exact manifest-bound lane.
+func kaminoPairEntryCapacityAuthorized(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
 	if position.EntryCapacityRaw == 0 {
 		return 0, nil
 	}
@@ -37,7 +52,7 @@ func kaminoPairEntryCapacity(position KaminoPosition, accounts []ConfirmedAccoun
 	if err != nil {
 		return 0, err
 	}
-	debt, err := decodeKaminoReserve(debtAccount, bridgeUSDC, route.Kamino)
+	debt, err := decodeKaminoReserve(debtAccount, route.Kamino.DebtMint, route.Kamino)
 	if err != nil {
 		return 0, err
 	}

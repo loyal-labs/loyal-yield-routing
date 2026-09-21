@@ -17,11 +17,14 @@ func isPayoffFundingAction(action Action) bool {
 	return action == SwapCollateralToDebtStep || action == SwapUSDCToDebtStep
 }
 
-func validatePayoffFunding(ctx context.Context, rpc *RPCClient, request JupiterSwapRequest, effects ExpectedEffects, slot, steps int64, refreshedBasis bool) (KaminoPayoffBound, []ConfirmedAccount, error) {
+// validatePayoffFunding keeps the explicit reviewed manifest so an AUTO
+// funding swap measures through the same binding that produced it; existing
+// lanes resolve identically through either manifest.
+func validatePayoffFunding(ctx context.Context, rpc *RPCClient, manifest RouteManifest, request JupiterSwapRequest, effects ExpectedEffects, slot, steps int64, refreshedBasis bool) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	if !request.FullPayoffFunding || !isPayoffFundingAction(request.Action) {
 		return KaminoPayoffBound{}, nil, budgetHold("invalid_full_payoff_funding_intent")
 	}
-	if _, err := MeasureExecutableDebit(request, effects); err != nil {
+	if _, err := manifest.measureExecutableDebit(request, effects); err != nil {
 		return KaminoPayoffBound{}, nil, err
 	}
 	route, err := runtimeRoute(request.RouteLane)
@@ -36,7 +39,7 @@ func validatePayoffFunding(ctx context.Context, rpc *RPCClient, request JupiterS
 	if err != nil {
 		return bound, nil, err
 	}
-	return validatePayoffFundingAccounts(request, effects, bound, accounts, route)
+	return validatePayoffFundingAccounts(manifest, request, effects, bound, accounts, route)
 }
 
 // observePayoffWindowOnSnapshotBasis prices the payoff window on the same
@@ -53,11 +56,11 @@ func observePayoffWindowOnSnapshotBasis(ctx context.Context, rpc *RPCClient, rou
 	return observeKaminoPayoffWindowAccounts(ctx, rpc, route, minimumSlot, steps, additional...)
 }
 
-func validatePayoffFundingAccounts(request JupiterSwapRequest, effects ExpectedEffects, bound KaminoPayoffBound, accounts []ConfirmedAccount, route RuntimeRoute) (KaminoPayoffBound, []ConfirmedAccount, error) {
+func validatePayoffFundingAccounts(manifest RouteManifest, request JupiterSwapRequest, effects ExpectedEffects, bound KaminoPayoffBound, accounts []ConfirmedAccount, route RuntimeRoute) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	if !request.FullPayoffFunding || !isPayoffFundingAction(request.Action) || request.RouteLane != route.Lane {
 		return bound, nil, budgetHold("invalid_full_payoff_funding_intent")
 	}
-	if _, err := MeasureExecutableDebit(request, effects); err != nil {
+	if _, err := manifest.measureExecutableDebit(request, effects); err != nil {
 		return bound, nil, err
 	}
 	if len(effects.Accounts) != 2 {
@@ -88,7 +91,20 @@ func validatePayoffFundingAccounts(request JupiterSwapRequest, effects ExpectedE
 	// Compile validates this lane's actual Jupiter dialect and policy boundaries.
 	// Basic USDC edges use the same physical collateral/USDC swap for funding.
 	offset := len(wire) - 3
-	if catalogJupiterRoute(request.RouteLane) {
+	if request.RouteLane == autoAUTOPYUSD.Lane {
+		// The reviewed AUTO binding authorizes only the legacy
+		// SharedAccountsRoute dialect — structurally validated here through the
+		// explicit reviewed binding — so its slippage byte stays at len-3. The
+		// historical catalog entry describes the retired AUTO policy layout
+		// and is never consulted for the candidate lane.
+		binding, err := manifest.jupiterPolicyForRoute(request.Action, request.RouteLane)
+		if err != nil {
+			return bound, nil, err
+		}
+		if _, err := binding.constraintIndex(request.Instruction); err != nil {
+			return bound, nil, err
+		}
+	} else if catalogJupiterRoute(request.RouteLane) {
 		binding, err := catalogJupiterBindingForRoute(request.Action, request.RouteLane)
 		if err != nil {
 			return bound, nil, err
@@ -146,7 +162,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			return phase3BridgeAdmission{}, budgetHold("release_return_intent_mismatch")
 		}
 		var err error
-		releaseBound, releaseAccounts, err = validateRepaymentReleaseRequest(ctx, rpc, r, effects, s.Slot)
+		releaseBound, releaseAccounts, err = manifest.validateRepaymentReleaseRequest(ctx, rpc, r, effects, s.Slot)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -155,7 +171,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 		if err != nil || obligation.collateralDepositedRaw != uint64(s.PositionCollateralRaw) {
 			return phase3BridgeAdmission{}, budgetHold("release_position_snapshot_changed")
 		}
-		debit, err := MeasureExecutableDebit(r, effects)
+		debit, err := manifest.measureExecutableDebit(r, effects)
 		if err != nil || debit.Raw > uint64(math.MaxInt64-s.CollateralIdleRaw) || effects.Accounts[1].BeforeRaw != uint64(s.CollateralIdleRaw) {
 			return phase3BridgeAdmission{}, budgetHold("release_custody_snapshot_changed")
 		}
@@ -175,7 +191,15 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			return phase3BridgeAdmission{}, budgetHold("funding_nav_intent_mismatch")
 		}
 		route, _ := runtimeRoute(s.RouteLane)
-		future, rows, err := observePayoffWindowOnSnapshotBasis(ctx, rpc, route, s.Slot, 6, refreshedBasis)
+		// The candidate AUTO pilot release risk model reads the lending
+		// market, which the payoff window captures only for installed
+		// selector lanes; the reviewed candidate lane rides the same window
+		// request so every decode keeps one coherent slot.
+		payoffAdditional := []string(nil)
+		if route.Lane == autoAUTOPYUSD.Lane {
+			payoffAdditional = append(payoffAdditional, route.Kamino.Market)
+		}
+		future, rows, err := observePayoffWindowOnSnapshotBasis(ctx, rpc, route, s.Slot, 6, refreshedBasis, payoffAdditional...)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -184,7 +208,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			// NAV -> release -> NAV -> funding -> NAV -> payoff. This is a
 			// future cost template; the release will be rebuilt and admitted
 			// from actual custody after NAV, never signed from this projection.
-			releaseBound, err = decodeKaminoRepaymentReleaseForMode(rows, route, future.ObservedSlot, 6, s.PilotActive)
+			releaseBound, err = manifest.decodeKaminoRepaymentReleaseForMode(rows, route, future.ObservedSlot, 6, s.PilotActive)
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}
@@ -218,7 +242,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 		return phase3BridgeAdmission{}, budgetHold("funding_return_intent_mismatch")
 	}
 	if release != nil {
-		debit, err := MeasureExecutableDebit(release.Request, release.ExpectedEffects)
+		debit, err := manifest.measureExecutableDebit(release.Request, release.ExpectedEffects)
 		if err != nil || debit.Raw > uint64(math.MaxInt64-s.CollateralIdleRaw) || release.ExpectedEffects.Accounts[1].BeforeRaw != uint64(s.CollateralIdleRaw) || release.Request.AmountRaw >= uint64(s.PositionCollateralRaw) {
 			return phase3BridgeAdmission{}, budgetHold("release_custody_snapshot_changed")
 		}
@@ -248,9 +272,9 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 				binary.LittleEndian.PutUint64(accounts[i].Data[64:72], uint64(s.CollateralIdleRaw))
 			}
 		}
-		bound, accounts, err = validatePayoffFundingAccounts(funding.Request, funding.ExpectedEffects, bound, accounts, route)
+		bound, accounts, err = validatePayoffFundingAccounts(manifest, funding.Request, funding.ExpectedEffects, bound, accounts, route)
 	} else if funding != nil {
-		bound, accounts, err = validatePayoffFunding(ctx, rpc, funding.Request, funding.ExpectedEffects, s.Slot, steps, refreshedBasis)
+		bound, accounts, err = validatePayoffFunding(ctx, rpc, manifest, funding.Request, funding.ExpectedEffects, s.Slot, steps, refreshedBasis)
 	} else {
 		bound, accounts, err = observePayoffWindowOnSnapshotBasis(ctx, rpc, route, s.Slot, steps, refreshedBasis)
 	}
@@ -329,7 +353,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	if err != nil {
 		return plan, err
 	}
-	payoffCost, err := observePhase3KnownBuildCost(ctx, rpc, payoff, payoffEffects)
+	payoffCost, err := manifest.observePhase3KnownBuildCost(ctx, rpc, payoff, payoffEffects)
 	if err != nil {
 		return plan, err
 	}
@@ -344,7 +368,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	prefix := []phase3BridgeExitCost{}
 	if release != nil {
 		if futureRelease {
-			cost, err := observePhase3KnownBuildCost(ctx, rpc, release.Request, release.ExpectedEffects)
+			cost, err := manifest.observePhase3KnownBuildCost(ctx, rpc, release.Request, release.ExpectedEffects)
 			if err != nil {
 				return plan, err
 			}
@@ -373,7 +397,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			if release != nil {
 				costRequest.FullPayoffFunding = false
 			} // future custody; never the persisted current wire
-			cost, err = observePhase3KnownBuildCost(ctx, rpc, costRequest, funding.ExpectedEffects)
+			cost, err = manifest.observePhase3KnownBuildCost(ctx, rpc, costRequest, funding.ExpectedEffects)
 			if err != nil {
 				return plan, err
 			}

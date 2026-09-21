@@ -364,10 +364,30 @@ func (d *Database) RecordDecision(
 	manifestSHA256 string,
 	policyCatalogSHA256 string,
 ) (DecisionRecord, error) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return DecisionRecord{}, err
+	}
+	return d.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
+}
+
+// RecordDecisionOnManifest is the identical locked decision persistence with
+// the decision validation resolved through the same manifest: the candidate
+// AUTO initializer decision is admitted only while its reviewed binding
+// resolves, and the embedded manifest keeps the installed closure.
+func (d *Database) RecordDecisionOnManifest(
+	ctx context.Context,
+	manifest RouteManifest,
+	routeKey string,
+	observation Observation,
+	decision Decision,
+	manifestSHA256 string,
+	policyCatalogSHA256 string,
+) (DecisionRecord, error) {
 	if decision.Action == HoldManualRecovery {
 		return d.RecordManualRecovery(ctx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
 	}
-	if err := validateDecisionPersistence(d, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256); err != nil {
+	if err := validateDecisionPersistenceOnManifest(d, manifest, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256); err != nil {
 		return DecisionRecord{}, err
 	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -426,10 +446,26 @@ func validateDecisionPersistence(
 	manifestSHA256 string,
 	policyCatalogSHA256 string,
 ) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return validateDecisionPersistenceOnManifest(d, manifest, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
+}
+
+func validateDecisionPersistenceOnManifest(
+	d *Database,
+	manifest RouteManifest,
+	routeKey string,
+	observation Observation,
+	decision Decision,
+	manifestSHA256 string,
+	policyCatalogSHA256 string,
+) error {
 	if isPolicySetupAction(decision.Action) {
 		return budgetHold("policy_setup_requires_atomic_intent")
 	}
-	if err := decision.Validate(); err != nil {
+	if err := manifest.validateDecision(decision); err != nil {
 		return fmt.Errorf("validate decision before persistence: %w", err)
 	}
 	if d == nil || d.pool == nil || routeKey == "" {
@@ -1159,10 +1195,22 @@ func (d *Database) transition(ctx context.Context, operationID string, from, to 
 }
 
 func (d *Database) MarkBuilt(ctx context.Context, operationID, messageSHA256 string, expectedEffects []byte) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return d.markBuiltOnManifest(ctx, manifest, operationID, messageSHA256, expectedEffects)
+}
+
+// markBuiltOnManifest is the shared build-persistence body: identical checks
+// and SQL, with the effect decode resolved through the explicit reviewed
+// manifest so a candidate AUTO build persists against the same binding that
+// compiled it. The public wrapper above loads the embedded reviewed manifest.
+func (d *Database) markBuiltOnManifest(ctx context.Context, manifest RouteManifest, operationID, messageSHA256 string, expectedEffects []byte) error {
 	if !sha256Pattern.MatchString(messageSHA256) || !json.Valid(expectedEffects) {
 		return fmt.Errorf("invalid built transaction evidence")
 	}
-	if _, err := DecodeExpectedEffects(expectedEffects); err != nil {
+	if _, err := decodeExpectedEffectsWithManifest(manifest, expectedEffects); err != nil {
 		return err
 	}
 	// Preserve the pre-construction decision envelope and merge only the
@@ -1232,6 +1280,18 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, build 
 }
 
 func (d *Database) markBroadcastIntent(ctx context.Context, operationID string, rpc *RPCClient, intent, wireHash string, cost ValuedTransactionCost) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return d.markBroadcastIntentOnManifest(ctx, manifest, operationID, rpc, intent, wireHash, cost, nil)
+}
+
+// markBroadcastIntentOnManifest is the exact locked broadcast-intent body with
+// the final-send fence resolved through the explicit reviewed manifest; the
+// lease, freshness recheck and transition stay byte-identical. The public form
+// above loads the embedded manifest once and is unchanged.
+func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, rpc *RPCClient, intent, wireHash string, cost ValuedTransactionCost, custody *sharedCustodyAdmissionProof) error {
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -1249,7 +1309,14 @@ func (d *Database) markBroadcastIntent(ctx context.Context, operationID string, 
 	if slot < cost.ObservationSlot || slot > cost.ValidThroughSlot {
 		return budgetHold("send_valuation_expired")
 	}
-	if err := d.authorizePhase3SendTx(ctx, tx, operationID, intent, wireHash, cost, slot); err != nil {
+	// Shared broadcast-intent custody seam (doc 26 §4): the fresh send proof
+	// is re-validated under THIS transaction's route lock against the
+	// PERSISTED built effects (decoded under the same reviewed manifest)
+	// before broadcast intent can be recorded.
+	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, operationID, cost, custody); err != nil {
+		return err
+	}
+	if err := d.authorizePhase3SendTxOnManifest(ctx, manifest, tx, operationID, intent, wireHash, cost, slot); err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx, PersistBroadcastIntentUpdate, operationID)
@@ -1299,6 +1366,18 @@ func (d *Database) MarkReconciling(ctx context.Context, operationID string) erro
 }
 
 func (d *Database) MarkReconciled(ctx context.Context, operationID string, reconciliation Reconciliation, effects []byte, receipt ConfirmedTransactionEvidence) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return d.markReconciledOnManifest(ctx, manifest, operationID, reconciliation, effects, receipt)
+}
+
+// markReconciledOnManifest is the shared locked-settlement body: identical
+// lease, identity and reservation SQL in one transaction, with the journal
+// decode and reconciliation resolved through the explicit reviewed manifest.
+// The public wrapper above loads the embedded reviewed manifest.
+func (d *Database) markReconciledOnManifest(ctx context.Context, manifest RouteManifest, operationID string, reconciliation Reconciliation, effects []byte, receipt ConfirmedTransactionEvidence) error {
 	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) || !receipt.Finalized || receipt.Slot != reconciliation.ConfirmedSlot {
 		return fmt.Errorf("invalid reconciliation evidence")
 	}
@@ -1323,14 +1402,14 @@ func (d *Database) MarkReconciled(ctx context.Context, operationID string, recon
 	if signature != receipt.Signature || slot != receipt.Slot {
 		return fmt.Errorf("finalized receipt does not match journal identity")
 	}
-	expected, err := DecodeExpectedEffects(expectedBytes)
+	expected, err := decodeExpectedEffectsWithManifest(manifest, expectedBytes)
 	if err != nil {
 		return err
 	}
 	if expected.Initialization != nil && (receipt.Initialization == nil || signedWireHash == "" || receipt.Initialization.SignedWireSHA256 != signedWireHash) {
 		return fmt.Errorf("initializer finalized wire does not match journal identity")
 	}
-	checked, checkedEffects, err := ReconcileConfirmedTransaction(expected, receipt)
+	checked, checkedEffects, err := manifest.ReconcileConfirmedTransaction(expected, receipt)
 	if err != nil || checked != reconciliation || sha256Bytes(checkedEffects) != sha256Bytes(effects) {
 		return fmt.Errorf("finalized effects do not match journal contract")
 	}

@@ -5,9 +5,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
-	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -182,46 +183,193 @@ func (c *RPCClient) wait(ctx context.Context, duration time.Duration) error {
 	}
 }
 
+// rpcStage is the fixed set of positions where a callOnce can fail. The
+// tokens are stable diagnostic surface, never free-form text.
+type rpcStage string
+
+const (
+	rpcStageRequest      rpcStage = "request"
+	rpcStageTransport    rpcStage = "transport"
+	rpcStageHTTP         rpcStage = "http"
+	rpcStageDecode       rpcStage = "decode"
+	rpcStageEnvelope     rpcStage = "rpc_envelope"
+	rpcStageResultDecode rpcStage = "result_decode"
+)
+
+// Fixed transport classes. They record how the transport failed without
+// re-exporting its cause: the rendered rpcError deliberately does not unwrap
+// to context.Canceled or context.DeadlineExceeded, so every errors.Is
+// decision a caller makes today keeps exactly the same answer.
+const (
+	rpcClassContextTimeout  = "context_timeout"
+	rpcClassContextCanceled = "context_canceled"
+	rpcClassNetworkTimeout  = "network_timeout"
+	rpcClassTransportOther  = "transport_other"
+)
+
+// rpcDiagnosticMethods is the fixed allowlist of every method this module
+// issues through call. Any other name renders as the fixed "unknown" token.
+var rpcDiagnosticMethods = map[string]struct{}{
+	"getBlockHeight":                    {},
+	"getBlockTime":                      {},
+	"getFeeForMessage":                  {},
+	"getGenesisHash":                    {},
+	"getLatestBlockhash":                {},
+	"getMinimumBalanceForRentExemption": {},
+	"getMultipleAccounts":               {},
+	"getProgramAccounts":                {},
+	"getSignatureStatuses":              {},
+	"getSlot":                           {},
+	"getTransaction":                    {},
+	"sendTransaction":                   {},
+	"simulateBundle":                    {},
+	"simulateTransaction":               {},
+}
+
+func rpcDiagnosticMethodToken(method string) string {
+	if _, known := rpcDiagnosticMethods[method]; known {
+		return method
+	}
+	return "unknown"
+}
+
+// rpcTransportClass inspects the transport cause to pick one fixed class and
+// is the only place the cause is read; the cause itself is then dropped and
+// never rendered or wrapped.
+func rpcTransportClass(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return rpcClassContextTimeout
+	case errors.Is(err, context.Canceled):
+		return rpcClassContextCanceled
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return rpcClassNetworkTimeout
+	}
+	return rpcClassTransportOther
+}
+
+// rpcError is the single failure type callOnce returns. It carries only safe
+// tokens: fixed stage, allowlisted method, fixed class, and numeric HTTP or
+// JSON-RPC codes. Error strings never include URL material, a request or
+// response body, an RPC error message, or wire data.
+type rpcError struct {
+	stage    rpcStage
+	method   string
+	class    string
+	status   int
+	code     int64
+	hasCode  bool
+	noResult bool
+	// cause retains the original error ONLY for the two stages whose errors
+	// were previously returned raw (decode, result_decode), preserving the
+	// errors.Is/errors.As identities callers already rely on — including
+	// context cancellation and deadline errors surfacing from the response
+	// body reader. Transport and request causes were always discarded and
+	// stay discarded; their classification happens in rpcTransportClass
+	// before the cause is dropped. Error() never renders the cause.
+	cause error
+}
+
+func (c *RPCClient) rpcFailure(stage rpcStage, method string) *rpcError {
+	return &rpcError{stage: stage, method: rpcDiagnosticMethodToken(method)}
+}
+
+// Unwrap exposes only the retained decode-stage causes; every other stage
+// has a nil cause, so its errors.Is and errors.As answers are unchanged.
+func (e *rpcError) Unwrap() error {
+	return e.cause
+}
+
+func (e *rpcError) Error() string {
+	switch e.stage {
+	case rpcStageRequest, rpcStageTransport:
+		message := fmt.Sprintf("RPC %s request failed: stage=%s", e.method, e.stage)
+		if e.class != "" {
+			message += " class=" + e.class
+		}
+		return message
+	case rpcStageHTTP:
+		return fmt.Sprintf("RPC %s returned HTTP %d: stage=%s", e.method, e.status, e.stage)
+	case rpcStageDecode:
+		message := fmt.Sprintf("RPC %s response decode failed: stage=%s", e.method, e.stage)
+		if e.class != "" {
+			message += " class=" + e.class
+		}
+		return message
+	case rpcStageResultDecode:
+		return fmt.Sprintf("RPC %s result decode failed: stage=%s", e.method, e.stage)
+	default:
+		if e.noResult {
+			return fmt.Sprintf("RPC %s returned no result: stage=%s", e.method, e.stage)
+		}
+		message := fmt.Sprintf("RPC %s failed: stage=%s", e.method, e.stage)
+		if e.hasCode {
+			message += fmt.Sprintf(" code=%d", e.code)
+		}
+		return message
+	}
+}
+
 func (c *RPCClient) callOnce(ctx context.Context, method string, payload []byte, output any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("RPC %s request to %s failed", method, sanitizeRPCURL(c.url))
+		return c.rpcFailure(rpcStageRequest, method)
 	}
 	request.Header.Set("content-type", "application/json")
 	response, err := c.client.Do(request)
 	if err != nil {
-		// url.Error and transport errors commonly echo the complete request URL.
-		// Keep credentials, query parameters, and path material out of worker logs.
-		return fmt.Errorf("RPC %s request to %s failed", method, sanitizeRPCURL(c.url))
+		// url.Error and transport errors commonly echo the complete request
+		// URL. The cause is classified and then dropped: credentials, query
+		// parameters, path material, and cause text stay out of worker logs.
+		failure := c.rpcFailure(rpcStageTransport, method)
+		failure.class = rpcTransportClass(err)
+		return failure
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("RPC %s returned HTTP %d", method, response.StatusCode)
+		failure := c.rpcFailure(rpcStageHTTP, method)
+		failure.status = response.StatusCode
+		return failure
 	}
 	envelope := struct {
 		Result json.RawMessage `json:"result"`
 		Error  json.RawMessage `json:"error"`
 	}{}
 	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
-		return err
+		// The decode cause was previously returned raw; keep its identity
+		// and classify how the read failed without rendering its text.
+		failure := c.rpcFailure(rpcStageDecode, method)
+		failure.cause = err
+		failure.class = rpcTransportClass(err)
+		return failure
 	}
 	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
-		return fmt.Errorf("RPC %s failed", method)
+		failure := c.rpcFailure(rpcStageEnvelope, method)
+		var described struct {
+			Code *int64 `json:"code"`
+		}
+		if json.Unmarshal(envelope.Error, &described) == nil && described.Code != nil {
+			failure.code = *described.Code
+			failure.hasCode = true
+		}
+		return failure
 	}
 	if len(envelope.Result) == 0 || string(envelope.Result) == "null" {
-		return fmt.Errorf("RPC %s returned no result", method)
+		failure := c.rpcFailure(rpcStageEnvelope, method)
+		failure.noResult = true
+		return failure
 	}
-	return json.Unmarshal(envelope.Result, output)
-}
-
-// sanitizeRPCURL is the only URL representation allowed in RPC errors. In
-// particular, URL.User, RawQuery, and Fragment are deliberately discarded.
-func sanitizeRPCURL(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "<rpc>"
+	if err := json.Unmarshal(envelope.Result, output); err != nil {
+		// The result decode cause was previously returned raw; keep its
+		// errors.As identity (json.SyntaxError, json.UnmarshalTypeError)
+		// while rendering only the fixed tokens.
+		failure := c.rpcFailure(rpcStageResultDecode, method)
+		failure.cause = err
+		return failure
 	}
-	return parsed.Scheme + "://" + parsed.Host
+	return nil
 }
 
 func (c *RPCClient) ConfirmedSlot(ctx context.Context) (int64, error) {

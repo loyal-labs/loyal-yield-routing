@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/big"
 	"sort"
+	"strconv"
 	"sync"
 )
 
@@ -89,10 +90,36 @@ func priceSelectorRecipe(ctx context.Context, rpc *RPCClient, lane string, input
 }
 
 // Keep the sample start fixed while later prerequisites advance the minimum
-// slot accepted for fees/prices and final collection.
+// slot accepted for fees/prices and final collection. The public entry keeps
+// the plain selector-lane gate and prices against the embedded manifest,
+// which carries no AUTO binding, so the persisted-build path stays closed.
 func priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
+	if !selectorLane(lane) {
+		return selectorRecipe{Inputs: inputs}, budgetHold("invalid_selector_recipe")
+	}
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return selectorRecipe{Inputs: inputs}, err
+	}
+	return manifest.priceSelectorRecipeWithFloor(ctx, rpc, lane, inputs, minimumSlot, observationFloor)
+}
+
+// The manifest-aware internal form prices retained recipe inputs against the
+// SAME manifest that produced them, so AUTO payoff legs bound through a
+// validated autoPolicy binding can enter the identical cost machinery. Beyond
+// the reviewed selector lanes it admits exactly the AUTO lane and only when
+// this manifest itself carries a fully validated binding — never a
+// request-supplied one — and this enables no live selection: AUTO stays out
+// of selectorLanes/selectorEntryLane.
+func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
 	out := selectorRecipe{Inputs: inputs}
-	if rpc == nil || !selectorLane(lane) || len(inputs) == 0 || len(inputs) > 32 || minimumSlot <= 0 || minimumSlot > math.MaxInt64-budgetMaxObservationLagSlots || observationFloor < minimumSlot || observationFloor-minimumSlot > budgetMaxObservationLagSlots {
+	authorized := selectorLane(lane)
+	if !authorized && lane == autoAUTOPYUSD.Lane {
+		if _, err := m.autoPolicyBinding(); err == nil {
+			authorized = true
+		}
+	}
+	if rpc == nil || !authorized || len(inputs) == 0 || len(inputs) > 32 || minimumSlot <= 0 || minimumSlot > math.MaxInt64-budgetMaxObservationLagSlots || observationFloor < minimumSlot || observationFloor-minimumSlot > budgetMaxObservationLagSlots {
 		return out, budgetHold("invalid_selector_recipe")
 	}
 	type step struct {
@@ -110,11 +137,11 @@ func priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane stri
 	slot := observationFloor
 	out.ValidThroughSlot = minimumSlot + budgetMaxObservationLagSlots
 	for i, input := range inputs {
-		request, effects, message, err := input.decode()
+		request, effects, message, err := input.decodeWithManifest(m)
 		if err != nil {
 			return out, err
 		}
-		debit, err := MeasureExecutableDebit(request, effects)
+		debit, err := m.measureExecutableDebit(request, effects)
 		if err != nil {
 			return out, err
 		}
@@ -217,7 +244,7 @@ func priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane stri
 			credit = &p
 			cost.ValidThroughSlot = min(cost.ValidThroughSlot, p.ValidThroughSlot)
 		}
-		expense, err := classifyPilotExecutionCost(s.request, s.effects, cost, credit)
+		expense, err := m.classifyPilotExecutionCost(s.request, s.effects, cost, credit)
 		if err != nil {
 			return out, err
 		}
@@ -299,6 +326,44 @@ func selectorSwapObservationFloor(r JupiterSwapRequest, sampleSlot, floor int64)
 	}
 	if floor > sampleSlot+budgetMaxObservationLagSlots {
 		return 0, budgetHold("selector_recipe_observation_expired")
+	}
+	return floor, nil
+}
+
+// selectorPayoffObservationFloor intersects every payoff swap leg into the
+// observation window with the SAME budgetMaxObservationLagSlots bound a
+// single-leg payoff used — horizons are never loosened for extra legs. A leg
+// whose evidence predates the sample or exceeds the window holds with the
+// same reason and Details recording the exact uncovered interval.
+func selectorPayoffObservationFloor(sampleSlot, floor int64, legs ...JupiterExecutionEvidence) (int64, error) {
+	for i, leg := range legs {
+		observed, stale := floor, int64(0)
+		for _, table := range leg.Request.LookupTables {
+			observed = max(observed, table.ObservedSlot)
+			if table.ObservedSlot < sampleSlot && (stale == 0 || table.ObservedSlot < stale) {
+				stale = table.ObservedSlot
+			}
+		}
+		legFloor, err := selectorSwapObservationFloor(leg.Request, sampleSlot, floor)
+		if err == nil {
+			floor = legFloor
+			continue
+		}
+		if hold, ok := err.(*BudgetHold); ok {
+			details := map[string]string{
+				"legIndex":         strconv.FormatInt(int64(i), 10),
+				"legObservedFloor": strconv.FormatInt(observed, 10),
+			}
+			if stale > 0 {
+				details["coveredThroughSlot"] = strconv.FormatInt(stale, 10)
+				details["uncoveredSlots"] = strconv.FormatInt(sampleSlot-stale, 10)
+			} else {
+				details["coveredThroughSlot"] = strconv.FormatInt(sampleSlot+budgetMaxObservationLagSlots, 10)
+				details["uncoveredSlots"] = strconv.FormatInt(observed-(sampleSlot+budgetMaxObservationLagSlots), 10)
+			}
+			hold.Details = details
+		}
+		return 0, err
 	}
 	return floor, nil
 }

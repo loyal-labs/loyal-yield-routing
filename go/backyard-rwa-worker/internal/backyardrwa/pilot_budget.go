@@ -49,7 +49,13 @@ func (b Phase3Budget) budgetFamily(f string) bool {
 }
 func (b Phase3Budget) entryFamily(f string) bool {
 	if b.Pilot != nil {
-		return f == "Prime" || f == "Maple" || f == "OnRe"
+		// AUTO is an accounting family of the same goal envelope — phase3Family
+		// already tracks it — so pilot entry/cost validation recognizes it like
+		// the other funded families. This is local accounting capability, not
+		// activation: real trade eligibility stays behind the reviewed manifest
+		// binding and the existing selector-entry authority, which still refuse
+		// an unbound AUTO lane on every public path.
+		return f == "Prime" || f == "Maple" || f == "OnRe" || f == "AUTO"
 	}
 	return phase3Family(f)
 }

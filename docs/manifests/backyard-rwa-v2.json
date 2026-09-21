@@ -195,7 +195,23 @@
         "policy": "CbtyAVtdWfr6sVrHayN1cZQXbdPxYHFoQgzQXJkhrtXt",
         "accountDataSha256": "d9b39f6df13b67532f7d28b1e67bb933d4ae929b6bfa76872e01b9617c47cb7e"
       }
-    ]
+    ],
+    "autoPolicy": {
+      "lane": "AUTO/AUTO/PYUSD",
+      "policySeed": 156,
+      "policy": "H6X87EqwDcM2qigQ4SadS3uWFozkkGSwvUxDuYYcD92q",
+      "accountDataSha256": "80b702a28425a937a6e852b71b4e3c85b24cebb2170df1f717253015f8261a78",
+      "constraintIndices": {
+        "deposit": 0,
+        "withdraw": 1,
+        "borrow": 2,
+        "repay": 3,
+        "swapUSDCOrPYUSDToAUTO": 4,
+        "swapAUTOToUSDCOrPYUSD": 5,
+        "swapPYUSDToUSDC": 6,
+        "initialize": 7
+      }
+    }
   },
   "runtimeActivation": {
     "schema": "loyal-backyard-rwa-runtime-activation/v2",

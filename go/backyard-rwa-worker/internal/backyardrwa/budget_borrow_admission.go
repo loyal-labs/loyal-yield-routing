@@ -214,11 +214,11 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 		}
 		check := quote.Request
 		check.FullPayoffFunding = true
-		if _, _, err = validatePayoffFundingAccounts(check, quote.ExpectedEffects, bound, projected, route); err != nil {
+		if _, _, err = validatePayoffFundingAccounts(m, check, quote.ExpectedEffects, bound, projected, route); err != nil {
 			return phase3BridgeAdmission{}, err
 		}
 		funding = &quote
-		fundingCost, err = observePhase3KnownBuildCost(ctx, rpc, quote.Request, quote.ExpectedEffects)
+		fundingCost, err = m.observePhase3KnownBuildCost(ctx, rpc, quote.Request, quote.ExpectedEffects)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}

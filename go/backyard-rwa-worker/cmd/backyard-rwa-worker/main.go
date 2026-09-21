@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -36,6 +37,21 @@ func main() {
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			if err := backyardrwa.RunSelectorShadow(ctx, os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
+		if os.Args[1] == "--selector-evaluate" && (len(os.Args) == 2 || (len(os.Args) == 3 && os.Args[2] == "--execute")) {
+			execute := len(os.Args) == 3
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			// One-shot selector evaluation. The default is the read-only
+			// shadow path plus an explicit canary-request report; --execute
+			// performs exactly one locked evaluation under its own short
+			// route lease — the same call the continuous live sample loop
+			// makes — and the committed entry is durable route state for the
+			// next worker start.
+			if err := backyardrwa.RunSelectorEvaluate(ctx, os.Stdout, execute); err != nil {
 				log.Fatal(err)
 			}
 			return
@@ -91,8 +107,36 @@ func main() {
 			fmt.Println(result)
 			return
 		}
+		if os.Args[1] == "commit-unwind-intent" {
+			request, execute, err := parseUnwindIntentFlags(os.Args[2:])
+			if err != nil {
+				log.Fatal(err)
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			// The operator exit seam for the bounded entry/exit proof. The
+			// default is a dry-run: it validates the exact intent through the
+			// installed embedded manifest and prints it without any database
+			// write. --execute acquires its own short route lease and goes
+			// through the shared guarded commit.
+			result, err := backyardrwa.RunUnwindIntentCommit(ctx, os.Getenv("NEON_DATABASE_URL"), request, execute)
+			if err != nil {
+				// A lease-release failure after a durable commit still prints
+				// the committed intent: the commit is NOT unsent.
+				if errors.Is(err, backyardrwa.ErrUnwindIntentCommittedReleaseUnconfirmed) {
+					if encodeErr := json.NewEncoder(os.Stdout).Encode(result); encodeErr != nil {
+						log.Fatal(err)
+					}
+				}
+				log.Fatal(err)
+			}
+			if err = json.NewEncoder(os.Stdout).Encode(result); err != nil {
+				log.Fatal("unwind intent output unavailable")
+			}
+			return
+		}
 		if os.Args[1] != "--inspect-phase3" || len(os.Args) < 3 {
-			log.Fatal("usage: backyard-rwa-worker [--prepare-pilot-cleanup | --inspect-pilot-flat-state | --activate-pilot-budget | --selector-shadow | --inspect-phase3 lane ... | --inspect-phase3-setup-rent | --initialize-phase3-budget | clear-hold --route <route key> --reason \"<text>\"]")
+			log.Fatal("usage: backyard-rwa-worker [--prepare-pilot-cleanup | --inspect-pilot-flat-state | --activate-pilot-budget | --selector-shadow | --selector-evaluate [--execute] | --inspect-phase3 lane ... | --inspect-phase3-setup-rent | --initialize-phase3-budget | clear-hold --route <route key> --reason \"<text>\" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--execute]]")
 		}
 		result, err := backyardrwa.InspectPhase3Runtime(os.Args[2:])
 		if err != nil {
@@ -142,4 +186,57 @@ func parseClearHoldFlags(args []string) (string, string, error) {
 		return "", "", fmt.Errorf(`usage: backyard-rwa-worker clear-hold --route <route key> --reason "<text>"`)
 	}
 	return reason, routeKey, nil
+}
+
+// parseUnwindIntentFlags reads the exit seam's operator inputs. The default is
+// a dry-run; --execute is the explicit write. Value shape and lane authority
+// stay with the shared unwind-intent validation, so the parser is syntactic
+// only.
+func parseUnwindIntentFlags(args []string) (backyardrwa.UnwindIntentCommitRequest, bool, error) {
+	request := backyardrwa.UnwindIntentCommitRequest{}
+	execute := false
+	usage := `usage: backyard-rwa-worker commit-unwind-intent --lane <lane> --reason <economic_rotation|withdrawal_shortfall|hard_ltv_reduction> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--execute]`
+	strings := map[string]*string{
+		"--lane":           &request.Lane,
+		"--reason":         &request.Reason,
+		"--observation-id": &request.ObservationID,
+		"--evidence-id":    &request.EvidenceID,
+	}
+	numbers := map[string]*int64{
+		"--max-collateral-raw": &request.MaxCollateralRaw,
+		"--max-debt-raw":       &request.MaxDebtRaw,
+		"--cost-bound-raw":     &request.CostBoundRaw,
+	}
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--execute" {
+			execute = true
+			continue
+		}
+		if target, ok := numbers[arg]; ok {
+			if index+1 >= len(args) {
+				return request, execute, fmt.Errorf("commit-unwind-intent: %s requires a value\n%s", arg, usage)
+			}
+			value, err := strconv.ParseInt(args[index+1], 10, 64)
+			if err != nil {
+				return request, execute, fmt.Errorf("commit-unwind-intent: %s requires an integer\n%s", arg, usage)
+			}
+			*target = value
+			index++
+			continue
+		}
+		target, ok := strings[arg]
+		if !ok {
+			return request, execute, fmt.Errorf("commit-unwind-intent: unexpected argument %q\n%s", arg, usage)
+		}
+		if index+1 >= len(args) {
+			return request, execute, fmt.Errorf("commit-unwind-intent: %s requires a value\n%s", arg, usage)
+		}
+		*target = args[index+1]
+		index++
+	}
+	if request.Lane == "" || request.Reason == "" || request.ObservationID == "" || request.EvidenceID == "" {
+		return request, execute, fmt.Errorf("commit-unwind-intent: --lane, --reason, --observation-id and --evidence-id are required\n%s", usage)
+	}
+	return request, execute, nil
 }

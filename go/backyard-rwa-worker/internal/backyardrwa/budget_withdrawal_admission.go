@@ -84,7 +84,7 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *RPCClient, clien
 	if err != nil || leg != kaminoLegWithdraw {
 		return plan, budgetHold("withdrawal_admission_intent_mismatch")
 	}
-	debit, err := MeasureExecutableDebit(r, evidence.ExpectedEffects)
+	debit, err := manifest.measureExecutableDebit(r, evidence.ExpectedEffects)
 	if err != nil {
 		return plan, err
 	}
@@ -248,7 +248,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *ju
 	if err != nil {
 		return plan, err
 	}
-	current, err := observePhase3KnownBuildCost(ctx, rpc, request, effects)
+	current, err := manifest.observePhase3KnownBuildCost(ctx, rpc, request, effects)
 	if err != nil {
 		return plan, err
 	}
@@ -268,7 +268,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *ju
 	}
 	plan.ValidThroughSlot = min(tail.ValidThroughSlot, current.ValidThroughSlot)
 	for i, swap := range swaps {
-		swapCost, err := observePhase3KnownBuildCost(ctx, rpc, swap.Request, swap.ExpectedEffects)
+		swapCost, err := manifest.observePhase3KnownBuildCost(ctx, rpc, swap.Request, swap.ExpectedEffects)
 		if err != nil {
 			return plan, err
 		}

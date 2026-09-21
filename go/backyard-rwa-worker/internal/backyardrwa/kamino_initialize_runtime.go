@@ -7,10 +7,23 @@ import (
 )
 
 func initializationSnapshotReady(s Snapshot) bool {
+	return snapshotInitializationReady(s, selectorLane)
+}
+
+// initializationSnapshotReadyOnManifest is the identical initializer snapshot
+// readiness with the lane authority explicit: the candidate AUTO lane is
+// admitted only while the manifest's reviewed binding resolves, and every
+// freshness, flat-state, pause, unwind, withdrawal, capacity and LTV
+// condition is shared verbatim with the installed form.
+func (m RouteManifest) initializationSnapshotReady(s Snapshot) bool {
+	return snapshotInitializationReady(s, m.selectorEntryLaneAllowed)
+}
+
+func snapshotInitializationReady(s Snapshot, laneAllowed func(string) bool) bool {
 	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagSlots || s.RouteKind != RouteKind || !s.Fresh {
 		return false
 	}
-	if !s.PilotActive || !s.InitializationPolicyReady || !selectorLane(s.RouteLane) || !s.ObligationPresenceKnown || s.ObligationPresent {
+	if !s.PilotActive || !s.InitializationPolicyReady || !laneAllowed(s.RouteLane) || !s.ObligationPresenceKnown || s.ObligationPresent {
 		return false
 	}
 	if s.HasPosition || s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleValueRaw != 0 || s.StrategyNAVRaw != 0 || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.CollateralIdleRaw != 0 || s.DebtIdleRaw != 0 || s.SquadsIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
@@ -28,14 +41,18 @@ func initializationSnapshotReady(s Snapshot) bool {
 func prepareKaminoInitialization(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, observe func(context.Context) (Observation, error)) (Observation, KaminoInitializationRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	if rpc == nil || observe == nil || decision.Action != InitializeKaminoObligation || decision.Validate() != nil {
+	// The decision is validated through the same manifest authority that
+	// produced it: the embedded form keeps every installed lane and refuses the
+	// candidate outright, while the manifest form admits the reviewed AUTO
+	// binding exactly as DecideOnManifest does.
+	if rpc == nil || observe == nil || decision.Action != InitializeKaminoObligation || manifest.validateDecision(decision) != nil {
 		return Observation{}, KaminoInitializationRequest{}, budgetHold("invalid_initializer_preparation")
 	}
 	o, err := observe(ctx)
 	if err != nil {
 		return o, KaminoInitializationRequest{}, err
 	}
-	if !decisionsEqual(Decide(o.Snapshot), decision) || !initializationSnapshotReady(o.Snapshot) {
+	if !decisionsEqual(manifest.DecideOnManifest(o.Snapshot), decision) || !manifest.initializationSnapshotReady(o.Snapshot) {
 		return o, KaminoInitializationRequest{}, budgetHold("initializer_decision_changed")
 	}
 	if err = manifest.validateBindings(); err != nil {
@@ -55,7 +72,7 @@ func prepareKaminoInitialization(ctx context.Context, rpc *RPCClient, manifest R
 	if err != nil {
 		return o, r, err
 	}
-	message, err := CompileKaminoInitializationMessage(r)
+	message, err := manifest.compileKaminoInitializationMessage(r)
 	if err != nil {
 		return o, r, err
 	}
@@ -64,14 +81,14 @@ func prepareKaminoInitialization(ctx context.Context, rpc *RPCClient, manifest R
 		return o, r, err
 	}
 	r.MaximumFeeLamports = fee.Lamports
-	if _, err = validateKaminoInitializationPrestate(ctx, rpc, r, max(o.Snapshot.Slot, fee.Slot)); err != nil {
+	if _, err = manifest.validateKaminoInitializationPrestate(ctx, rpc, r, max(o.Snapshot.Slot, fee.Slot)); err != nil {
 		return o, r, err
 	}
 	return o, r, nil
 }
 
 func (d *Database) admitKaminoInitialization(ctx context.Context, rpc *RPCClient, manifest RouteManifest, id string, o Observation, decision Decision, r KaminoInitializationRequest) error {
-	if !initializationSnapshotReady(o.Snapshot) || !decisionsEqual(Decide(o.Snapshot), decision) || decision.StrategyKey != r.RouteLane {
+	if !manifest.initializationSnapshotReady(o.Snapshot) || !decisionsEqual(manifest.DecideOnManifest(o.Snapshot), decision) || decision.StrategyKey != r.RouteLane {
 		return budgetHold("initializer_decision_changed")
 	}
 	if err := manifest.validateBindings(); err != nil {
@@ -81,7 +98,7 @@ func (d *Database) admitKaminoInitialization(ctx context.Context, rpc *RPCClient
 		return err
 	}
 	effects := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
-	cost, err := observePhase3KnownBuildCost(ctx, rpc, r, effects)
+	cost, err := manifest.observePhase3KnownBuildCost(ctx, rpc, r, effects)
 	if err != nil {
 		return err
 	}
@@ -96,5 +113,5 @@ func (d *Database) admitKaminoInitialization(ctx context.Context, rpc *RPCClient
 	// There is no token exposure or exit graph yet. Creation cannot consume an
 	// outstanding exit reservation; the locked shared admission checks that too.
 	plan := phase3BridgeAdmission{Snapshot: o.Snapshot, Decision: decision, Input: input, CurrentCost: cost, ValidThroughSlot: min(cost.ValidThroughSlot, o.Snapshot.Slot+budgetMaxObservationLagSlots)}
-	return d.persistPhase3ExitAdmission(ctx, rpc, id, o, decision, plan)
+	return d.persistPhase3ExitAdmissionOnManifest(ctx, rpc, manifest, id, o, decision, plan)
 }

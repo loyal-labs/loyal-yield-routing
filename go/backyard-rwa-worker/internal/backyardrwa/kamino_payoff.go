@@ -211,7 +211,18 @@ func upperKaminoCompoundedDebtSF(debtSF *big.Int, annualBPS, elapsed, unitsPerYe
 }
 
 func validateFullPayoffRequest(ctx context.Context, rpc *RPCClient, request KaminoPrimeUSDCRequest, effects ExpectedEffects, minimumSlot int64) (KaminoPayoffBound, error) {
-	if _, err := MeasureExecutableDebit(request, effects); err != nil {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return KaminoPayoffBound{}, err
+	}
+	return manifest.validateFullPayoffRequest(ctx, rpc, request, effects, minimumSlot)
+}
+
+// The manifest-aware form keeps every payoff-window, funding and custody check
+// unchanged and only lets the candidate AUTO source path measure its request
+// through the SAME reviewed manifest that produced it.
+func (m RouteManifest) validateFullPayoffRequest(ctx context.Context, rpc *RPCClient, request KaminoPrimeUSDCRequest, effects ExpectedEffects, minimumSlot int64) (KaminoPayoffBound, error) {
+	if _, err := m.measureExecutableDebit(request, effects); err != nil {
 		return KaminoPayoffBound{}, err
 	}
 	route, err := runtimeRoute(request.RouteLane)

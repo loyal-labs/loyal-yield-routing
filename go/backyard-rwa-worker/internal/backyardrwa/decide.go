@@ -58,6 +58,19 @@ func installedDecisionLane(lane string) bool {
 // the registered routes fail closed. Registration does not enable the live
 // selection manifest or replace policy/exit/admission checks.
 func Decide(s Snapshot) Decision {
+	return decideSnapshot(s, initializationSnapshotReady)
+}
+
+// DecideOnManifest is the identical shared decision logic with one seam made
+// explicit: the initializer readiness check resolves the candidate AUTO lane
+// through the manifest's reviewed binding instead of the installed lane list.
+// Every other rule, ordering and hold is byte-identical, and the embedded
+// manifest keeps the installed closure.
+func (m RouteManifest) DecideOnManifest(s Snapshot) Decision {
+	return decideSnapshot(s, m.initializationSnapshotReady)
+}
+
+func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if hold, blocked := custodyDiscipline(s); blocked {
 		return hold
 	}
@@ -65,7 +78,7 @@ func Decide(s Snapshot) Decision {
 		return hold
 	}
 	if route, err := runtimeRoute(s.RouteLane); err == nil && route.Kamino.DebtMint != bridgeUSDC && len(route.KaminoPolicies) == 4 {
-		return decideNonUSDC(s)
+		return decideNonUSDC(s, initializationReady)
 	}
 
 	if s.RouteLane != "" && !installedDecisionLane(s.RouteLane) {
@@ -76,7 +89,7 @@ func Decide(s Snapshot) Decision {
 	if s.RouteLane == "" || s.RouteLane == RouteID {
 		s.CollateralIdleRaw = s.PrimeIdleRaw
 	}
-	decision := decideUSDC(s)
+	decision := decideUSDC(s, initializationReady)
 	decision.StrategyKey = s.RouteLane
 	if decision.StrategyKey == "" {
 		decision.StrategyKey = RouteID
@@ -104,7 +117,7 @@ func Decide(s Snapshot) Decision {
 // is a plain hold that clears by itself once the account exists.
 const obligationAbsentHoldReason = "obligation_absent"
 
-func obligationPrerequisiteHold(s Snapshot) (Decision, bool) {
+func obligationPrerequisiteHold(s Snapshot, initializationReady func(Snapshot) bool) (Decision, bool) {
 	if !s.ObligationPresenceKnown || s.ObligationPresent {
 		return Decision{}, false
 	}
@@ -112,7 +125,7 @@ func obligationPrerequisiteHold(s Snapshot) (Decision, bool) {
 	if strategyKey == "" {
 		strategyKey = RouteID
 	}
-	if initializationSnapshotReady(s) {
+	if initializationReady(s) {
 		return Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: strategyKey,
 			IdempotencyKey: fmt.Sprintf("%s:initialize:%s", s.ObservationID, strategyKey)}, true
 	}
@@ -120,7 +133,7 @@ func obligationPrerequisiteHold(s Snapshot) (Decision, bool) {
 		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, obligationAbsentHoldReason, 0)}, true
 }
 
-func decideUSDC(s Snapshot) Decision {
+func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	decision := func(action Action, reason string, amount int64) Decision {
 		return Decision{
 			Action:    action,
@@ -298,7 +311,7 @@ func decideUSDC(s Snapshot) Decision {
 	if s.SelectorEntryPaused {
 		return decision(Hold, "selector_entry_requires_fresh_admission", 0)
 	}
-	if hold, absent := obligationPrerequisiteHold(s); absent {
+	if hold, absent := obligationPrerequisiteHold(s, initializationReady); absent {
 		return hold
 	}
 	if s.VoltrIdleRaw > 0 && !selectorLane(s.RouteLane) {

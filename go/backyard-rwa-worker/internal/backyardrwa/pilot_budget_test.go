@@ -150,7 +150,9 @@ func TestPilotAuthorityTransitionDoesNotEraseHistoryOrWidenImplicitly(t *testing
 	for _, r := range []BudgetReservation{
 		{OperationID: "no-cost", Family: "Prime", IntentSHA256: sha256Bytes([]byte("x")), UpperMicros: 1},
 		{OperationID: "excess-cost", Family: "Prime", IntentSHA256: sha256Bytes([]byte("x")), UpperMicros: 1, ExecutionCostUpperMicros: 2},
-		{OperationID: "retired-family", Family: "AUTO", IntentSHA256: sha256Bytes([]byte("x")), UpperMicros: 1, ExecutionCostUpperMicros: 1},
+		// AUTO is a pilot accounting entry family now; Ethena stays tracked but
+		// outside the funded entry scope.
+		{OperationID: "retired-family", Family: "Ethena", IntentSHA256: sha256Bytes([]byte("x")), UpperMicros: 1, ExecutionCostUpperMicros: 1},
 	} {
 		if err := b.Admit(r); err == nil {
 			t.Fatalf("admitted missing cost or retired family: %+v", r)

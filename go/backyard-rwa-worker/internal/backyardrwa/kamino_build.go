@@ -113,7 +113,19 @@ func CompileKaminoMessage(request KaminoPrimeUSDCRequest) ([]byte, error) {
 	return compileKaminoMessageForDelegate(request, mustKey(bridgeDelegate))
 }
 
+// The production wrapper supplies the embedded reviewed manifest exactly once;
+// the manifest-aware helper retains that value into AUTO policy validation so
+// a candidate binding is provable against a supplied manifest and the shipped
+// wrapper still fails closed while no binding exists.
 func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return nil, err
+	}
+	return manifest.compileKaminoMessage(request, delegate)
+}
+
+func (m RouteManifest) compileKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
 	lane := request.RouteLane
 	if lane == "" {
 		lane = RouteID
@@ -121,6 +133,12 @@ func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate pu
 	route, err := runtimeRoute(lane)
 	if err != nil {
 		return nil, err
+	}
+	if lane == autoAUTOPYUSD.Lane {
+		if err := m.requireAutoKaminoBinding(request, route); err != nil {
+			return nil, err
+		}
+		return compileReviewedKaminoMessage(request, delegate, route)
 	}
 	return compileResolvedKaminoMessage(request, delegate, route)
 }
@@ -130,6 +148,19 @@ func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate pu
 // tests without registering candidate routes or changing production authority.
 func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
 	if request.PilotRepaymentRelease && (!request.RepaymentRelease || request.FullPayoff || !selectorLane(request.RouteLane)) {
+		return nil, budgetHold("invalid_pilot_repayment_release")
+	}
+	return compileReviewedKaminoMessage(request, delegate, route)
+}
+
+// compileReviewedKaminoMessage is the checked byte builder behind both
+// entries. Installed selector lanes pass the public pilot gate above, and the
+// candidate AUTO lane arrives only through the manifest compiler, whose
+// requireAutoKaminoBinding has already validated the request against the
+// reviewed catalog binding. The pilot release still must be a withdrawal-only
+// repayment release in both cases.
+func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
+	if request.PilotRepaymentRelease && (!request.RepaymentRelease || request.FullPayoff) {
 		return nil, budgetHold("invalid_pilot_repayment_release")
 	}
 	if request.LastValidBlockHeight <= 0 {
@@ -155,7 +186,17 @@ func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 		return nil, err
 	}
 	instructions := append(kaminoRefreshInstructionsForResolvedRoute(leg, request, route), outer)
-	message, err := compileKaminoLegacyMessage(delegate, blockhash, instructions)
+	// Installed lanes keep the exact installed legacy bytes; the candidate AUTO
+	// lane arrives only after requireAutoKaminoBinding and carries the reviewed
+	// ComputeBudget heap frame ahead of the identical refresh-plus-policy
+	// payload, so the eight-constraint policy parses and executes on the
+	// deployed Squads ELF.
+	var message []byte
+	if route.Lane == autoAUTOPYUSD.Lane {
+		message, err = compileAutoKaminoLegacyMessage(delegate, blockhash, instructions)
+	} else {
+		message, err = compileKaminoLegacyMessage(delegate, blockhash, instructions)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -195,12 +236,46 @@ func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRe
 // (two reserve refreshes and one obligation refresh) followed by one Squads
 // policy execution; no general multi-instruction transaction API is exposed.
 func compileKaminoLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
+	if err := validateKaminoRefreshSequence(instructions); err != nil {
+		return nil, err
+	}
+	return encodeKaminoLegacyMessageBody(feePayer, blockhash, instructions)
+}
+
+// validateKaminoRefreshSequence is the exact installed gate: the reviewed KLend
+// prefix (two reserve refreshes and one obligation refresh) followed by one
+// Squads policy execution, nothing else. The AUTO resource compiler reuses it
+// unchanged so its heap-carrying messages validate the identical payload.
+func validateKaminoRefreshSequence(instructions []compiledInstruction) error {
 	if len(instructions) != 4 || instructions[0].program != mustKey(kaminoPrimeUSDCProgram) ||
 		instructions[1].program != mustKey(kaminoPrimeUSDCProgram) || instructions[2].program != mustKey(kaminoPrimeUSDCProgram) ||
 		instructions[3].program != mustKey(bridgeSquadsProgram) || !bytesEqual(instructions[0].data, kaminoRefreshReserve) ||
 		!bytesEqual(instructions[1].data, kaminoRefreshReserve) || !bytesEqual(instructions[2].data, kaminoRefreshObligation) {
-		return nil, fmt.Errorf("Kamino transaction is not the exact refresh-plus-policy sequence")
+		return fmt.Errorf("Kamino transaction is not the exact refresh-plus-policy sequence")
 	}
+	return nil
+}
+
+// compileAutoKaminoLegacyMessage is the closed AUTO variant: the exact
+// refresh-plus-policy sequence validated by the same gate as the installed
+// compiler, prefixed by the canonical ComputeBudget heap frame. The five-slot
+// body encoder is only reachable through this validated combination — the
+// installed compiler keeps its exact-four gate.
+func compileAutoKaminoLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
+	if err := validateKaminoRefreshSequence(instructions); err != nil {
+		return nil, err
+	}
+	heap := autoComputeBudgetHeapInstruction()
+	if !isAutoExecutionHeapInstruction(heap) {
+		return nil, fmt.Errorf("AUTO heap resource drifted from the reviewed frame")
+	}
+	return encodeKaminoLegacyMessageBody(feePayer, blockhash, withAutoExecutionHeap(instructions))
+}
+
+// encodeKaminoLegacyMessageBody serializes an already-validated instruction
+// list into the legacy wire format. Count and sequence admission stay with the
+// callers above; this body never adds or drops instructions.
+func encodeKaminoLegacyMessageBody(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
 	accounts := []accountMeta{{key: feePayer, signer: true, writable: true}}
 	for _, instruction := range instructions {
 		for _, account := range instruction.accounts {
@@ -313,6 +388,12 @@ func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route Runtim
 		if err != nil || request.Policy != binding.Policy {
 			return compiledInstruction{}, 0, fmt.Errorf("Kamino policy does not match the basic family binding")
 		}
+	} else if route.Lane == autoAUTOPYUSD.Lane {
+		// The combined AUTO candidate policy has no static identity to compare
+		// here: the per-leg constraint index was pinned above, and policy
+		// identity is retained against the reviewed manifest binding at the
+		// compile entry (compileKaminoMessage), never from these observation
+		// pins on the route struct.
 	} else if route.Lane != RouteID {
 		binding, ok := route.KaminoPolicies[leg]
 		if !ok || request.Policy != binding.Policy || request.PolicyAccountDataSHA256 != binding.DataSHA256 {
@@ -323,9 +404,14 @@ func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route Runtim
 }
 
 func kaminoConstraintIndexForRoute(route RuntimeRoute, leg kaminoPrimeUSDCLeg) byte {
-	// Retained split-policy routes still have one constraint at index zero. The
-	// four-policy basic set uses the family indexes above; Phase 2 attaches that
-	// model to the three runtime lanes.
+	// The combined AUTO candidate policy carries all four lifecycle legs in one
+	// account at the proven per-leg indexes. Retained split-policy routes still
+	// have one constraint at index zero, and the four-policy basic set uses the
+	// family indexes above; Phase 2 attaches that model to the three runtime
+	// lanes.
+	if route.Lane == autoAUTOPYUSD.Lane {
+		return autoKaminoConstraintIndex(leg)
+	}
 	if !route.BasicPolicy && (route.Lane == RouteID || len(route.KaminoPolicies) > 0) {
 		return 0
 	}

@@ -87,8 +87,17 @@ func (d *Database) PilotRuntimeEnabled(ctx context.Context, routeKey string) (bo
 	return active, err
 }
 
+// workingTrancheCap keeps the installed sizing authority: an active pilot on
+// an installed selector lane deploys the reviewed pilot tranche, and every
+// other snapshot stays at the ordinary working cap. A candidate lane reaches
+// the pilot tranche only through the manifest-authorized lane fact stamped
+// into this snapshot by the reviewed-manifest observation merge — the
+// embedded closure here is never widened.
 func workingTrancheCap(s Snapshot) int64 {
 	if s.PilotActive && selectorLane(s.RouteLane) {
+		return PilotWorkingTrancheCapRaw
+	}
+	if s.PilotActive && s.RouteLane != "" && s.RouteLane == s.PilotTrancheCapLane {
 		return PilotWorkingTrancheCapRaw
 	}
 	return Phase3WorkingTrancheCapRaw

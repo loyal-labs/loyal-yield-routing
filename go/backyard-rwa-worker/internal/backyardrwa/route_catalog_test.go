@@ -108,6 +108,14 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 					if !op.ProgramMatches || !op.RetainedPolicyBytesMatch || !op.AccountVectorMatches {
 						t.Fatal("retained operation is not exact")
 					}
+					if lane.Lane == autoAUTOPYUSD.Lane {
+						// The historical shard policies stay observation pins:
+						// AUTO packet resolution is bound to the reviewed
+						// binding — absent fixture closed, installed manifest
+						// resolved (see auto_policy_binding_test.go).
+						testAutoKaminoCatalogLegFailClosed(t, action, leg, op.Accounts)
+						return
+					}
 					request, err := manifest.kaminoPacketForRoute(action, leg, 77,
 						LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, lane.Lane)
 					if err != nil {

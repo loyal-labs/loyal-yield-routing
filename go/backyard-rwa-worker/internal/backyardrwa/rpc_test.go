@@ -235,14 +235,20 @@ func TestRPCErrorsSanitizeCredentialsAndQueryParameters(t *testing.T) {
 	if err == nil {
 		t.Fatal("transport failure unexpectedly succeeded")
 	}
-	if strings.Contains(err.Error(), "rpc-pass") || strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), ":8899/rpc") {
-		t.Fatalf("RPC error leaked sensitive URL material: %v", err)
+	// Privacy tightening: RPC diagnostics carry no URL material at all —
+	// no scheme, host, port, path, query, or userinfo, credential-bearing
+	// or otherwise.
+	rendered := err.Error()
+	for _, forbidden := range []string{
+		"rpc-pass", "secret-token", "rpc-user", "rpc.example", "8899",
+		"/rpc", "https://", "http://", "://", "api-key",
+	} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("RPC error leaked URL material %q: %v", forbidden, rendered)
+		}
 	}
-	if !strings.Contains(err.Error(), "https://rpc.example:8899") {
-		t.Fatalf("sanitized host was not retained for diagnosis: %v", err)
-	}
-	if got := sanitizeRPCURL("https://rpc-user:rpc-pass@rpc.example:8899/rpc?api-key=secret-token"); got != "https://rpc.example:8899" {
-		t.Fatalf("sanitized URL=%q", got)
+	if !strings.Contains(rendered, "stage=transport class=transport_other") {
+		t.Fatalf("transport diagnostics missing: %v", rendered)
 	}
 }
 

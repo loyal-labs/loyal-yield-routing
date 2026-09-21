@@ -23,14 +23,14 @@ func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *
 	if err != nil {
 		return err
 	}
-	if err = authorizePhase3ProductionBuild(ctx, database, rpc, operationID, request, effects, encoded); err != nil {
+	if err = manifest.authorizePhase3ProductionBuild(ctx, database, rpc, operationID, request, effects, encoded); err != nil {
 		return err
 	}
 	signer, err := loadPinnedPolicySigner()
 	if err != nil {
 		return err
 	}
-	message, err := CompileKaminoInitializationMessage(request)
+	message, err := manifest.compileKaminoInitializationMessage(request)
 	if err != nil {
 		return err
 	}
@@ -38,7 +38,7 @@ func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *
 	wire := append(encodeShortVec(1), signature...)
 	wire = append(wire, message...)
 	signed := SignedKaminoTransaction{message: message, signedWire: wire, messageSHA256: sha256Bytes(message), signedWireSHA256: sha256Bytes(wire), transactionSignature: encodeBase58(signature), recentBlockhash: request.RecentBlockhash, lastValidBlockHeight: request.LastValidBlockHeight}
-	if err = database.MarkBuilt(ctx, operationID, signed.messageSHA256, encoded); err != nil {
+	if err = database.markBuiltOnManifest(ctx, manifest, operationID, signed.messageSHA256, encoded); err != nil {
 		return err
 	}
 	simulation, err := rpc.SimulateSignedTransaction(ctx, wire)

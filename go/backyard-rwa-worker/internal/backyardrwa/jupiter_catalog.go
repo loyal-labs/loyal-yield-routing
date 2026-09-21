@@ -51,12 +51,39 @@ func catalogRoutePolicyPins(route RuntimeRoute, manifest RouteManifest) (map[str
 		wanted[address] = observedPolicyPin{digest: hash, mask: mask}
 		return nil
 	}
-	if len(route.KaminoPolicies) != 4 || len(manifest.RuntimeBindings.BridgePolicies) != 4 {
+	if len(manifest.RuntimeBindings.BridgePolicies) != 4 {
 		return nil, fmt.Errorf("incomplete catalog policy graph")
 	}
-	for _, b := range route.KaminoPolicies {
-		if err := add(b.Policy, b.DataSHA256, nil); err != nil {
+	if route.Lane == autoAUTOPYUSD.Lane {
+		// Candidate AUTO readiness pins the ONE combined reviewed policy next
+		// to the four masked bridge policies. The historical four Kamino
+		// shards and six catalog swap edges stay observation pins only: they
+		// are never required here and can never establish AUTO readiness, and
+		// an absent or invalid binding errors so nothing falls back to them.
+		binding, err := manifest.autoPolicyBinding()
+		if err != nil {
 			return nil, err
+		}
+		if err := add(binding.Policy, binding.AccountDataSHA256, nil); err != nil {
+			return nil, err
+		}
+	} else {
+		if len(route.KaminoPolicies) != 4 {
+			return nil, fmt.Errorf("incomplete catalog policy graph")
+		}
+		for _, b := range route.KaminoPolicies {
+			if err := add(b.Policy, b.DataSHA256, nil); err != nil {
+				return nil, err
+			}
+		}
+		for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
+			b, err := catalogJupiterBindingForRoute(action, route.Lane)
+			if err != nil {
+				return nil, err
+			}
+			if err = add(b.Policy, b.PolicySHA256, nil); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for _, b := range manifest.RuntimeBindings.BridgePolicies {
@@ -64,15 +91,6 @@ func catalogRoutePolicyPins(route RuntimeRoute, manifest RouteManifest) (map[str
 			return nil, fmt.Errorf("unbound bridge policy")
 		}
 		if err := add(b.Account, b.NormalizedDigest, b.MaskedByteRanges); err != nil {
-			return nil, err
-		}
-	}
-	for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
-		b, err := catalogJupiterBindingForRoute(action, route.Lane)
-		if err != nil {
-			return nil, err
-		}
-		if err = add(b.Policy, b.PolicySHA256, nil); err != nil {
 			return nil, err
 		}
 	}
