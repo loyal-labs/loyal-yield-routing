@@ -426,6 +426,10 @@ func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *RPCClient, plan
 }
 
 func validatePilotReleaseProjection(plan *phase3BridgeAdmission, projection, fresh phase3KaminoProjection, route RuntimeRoute) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
 	if fresh.Slot > plan.ValidThroughSlot || fresh.Slot < projection.Slot {
 		return budgetHold("pilot_release_projection_expired")
 	}
@@ -449,7 +453,7 @@ func validatePilotReleaseProjection(plan *phase3BridgeAdmission, projection, fre
 	}
 	// The current entry has now been simulated, leaving six of the admitted
 	// seven execution windows. Its complete-payoff bound must still fit.
-	bound, err := decodeKaminoRepaymentReleaseForMode(fresh.Accounts, route, fresh.Slot, 6, true)
+	bound, err := manifest.decodeKaminoRepaymentReleaseForMode(fresh.Accounts, route, fresh.Slot, 6, true)
 	if err != nil {
 		return err
 	}

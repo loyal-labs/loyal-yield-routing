@@ -269,7 +269,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		var leg kaminoPrimeUSDCLeg
 		var wireAmount, effectAmount uint64
 		if repaymentRelease {
-			bound, err := decodeKaminoRepaymentReleaseForMode(accounts, route, observation.Snapshot.Slot, 5, observation.Snapshot.PilotActive)
+			bound, err := manifest.decodeKaminoRepaymentReleaseForMode(accounts, route, observation.Snapshot.Slot, 5, observation.Snapshot.PilotActive)
 			if err != nil {
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}
