@@ -24,6 +24,11 @@ const (
 	// TicketReplay: this slot's report was already consumed, so the refused
 	// transaction cannot have armed a second report for the same slot.
 	adaptorErrorTicketReplay uint32 = 18
+
+	// adaptorReportSlotRefusedReason is the classification reason for the
+	// ReportSlot refusal. Naming it once keeps the classifier and the two
+	// settlement gates from drifting apart.
+	adaptorReportSlotRefusedReason = "adaptor_report_slot_refused"
 )
 
 const (
@@ -203,7 +208,7 @@ func ClassifyConfirmedReportFailure(rawErr json.RawMessage, logs []string) Confi
 	if code, ok := decodeInstructionErrorCustom(rawErr); ok && failingProgramFromLogs(logs) == bridgeAdaptorProgram {
 		switch code {
 		case adaptorErrorReportSlot:
-			return ConfirmedFailureClassification{Retryable: true, Reason: "adaptor_report_slot_refused"}
+			return ConfirmedFailureClassification{Retryable: true, Reason: adaptorReportSlotRefusedReason}
 		case adaptorErrorTicketReplay:
 			return ConfirmedFailureClassification{Retryable: true, Reason: "adaptor_report_ticket_replayed"}
 		}
@@ -413,8 +418,23 @@ func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *RPCClient, 
 	if !terminal {
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, unclassifiedTransactionErrReason)
 	}
-	if operation.Decision.Action != ReportNAV {
+	if !isSettleableReportFailure(operation.Decision.Action, classification.Reason) {
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, unclassifiedTransactionErrReason)
 	}
-	return d.settleFinalizedReportFailure(ctx, rpc, operation, classification.Reason)
+	return d.settleFinalizedReportFailure(ctx, rpc, operation, classification.Reason, false)
+}
+
+// isSettleableReportFailure scopes automatic finalized-fee settlement to the
+// report-bearing bridge wires whose refusal receipt alone proves nothing was
+// consumed and no capital moved: the report-only NAV refresh for every
+// retryable adaptor refusal, and — restricted to the adaptor's report-age
+// refusal — the VOLTR_RESTORE_IDLE wire that pulls staged custody back. A
+// failed restore carries capital in its amount, so only the narrow ReportSlot
+// classification (the report was refused before the Voltr CPI) admits it;
+// every other action family and classification keeps its manual recovery hold.
+func isSettleableReportFailure(action Action, reason string) bool {
+	if action == ReportNAV {
+		return true
+	}
+	return action == VoltrRestoreIdle && reason == adaptorReportSlotRefusedReason
 }

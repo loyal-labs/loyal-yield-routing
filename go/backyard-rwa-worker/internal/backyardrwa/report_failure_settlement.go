@@ -201,7 +201,18 @@ func settleFailedFeeBudget(budget Phase3Budget, auth phase3OperationAuthorizatio
 	return next, auth, nil
 }
 
-func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *RPCClient, operation PersistedOperation, reason string) error {
+// settleFinalizedReportFailure terminates one classified report-bearing
+// failure with the exact finalized receipt: the landed wire is byte-identical
+// to the persisted wire, the fee is measured and booked, and the terminal
+// `failed` row releases the reservation so the next tick re-observes. Both
+// report-bearing bridge wires are admitted: the report-only NAV refresh in
+// every retryable state, and the VOLTR_RESTORE_IDLE wire only for the
+// adaptor's report-age refusal — in the automatic walk's broadcast states and,
+// through the scoped operator entrypoint (manualRecovery=true), in the
+// explicit manual state for rows the previous binary's action gate forced
+// into manual recovery with the unclassified marker. Same receipt proof, same
+// fee settlement, one guarded status transition per source state.
+func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *RPCClient, operation PersistedOperation, reason string, manualRecovery bool) error {
 	// A missing detailed receipt stays ambiguous even after finalized status.
 	var receipt finalizedFailureReceipt
 	if err := rpc.call(ctx, "getTransaction", []any{operation.TransactionSignature, map[string]any{"commitment": "finalized", "encoding": "base64", "maxSupportedTransactionVersion": 0}}, &receipt); err != nil {
@@ -210,7 +221,17 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *RPCCli
 	if receipt.Meta == nil || len(receipt.Transaction) != 2 {
 		return nil
 	}
-	if d == nil || d.pool == nil || operation.ID == "" || (operation.Status != Submitted && operation.Status != BroadcastIntent) {
+	if d == nil || d.pool == nil || operation.ID == "" {
+		return fmt.Errorf("invalid finalized failure settlement")
+	}
+	if manualRecovery {
+		// The operator path admits exactly the restore rows this package
+		// itself forced into manual recovery (recoverConfirmedFailure's old
+		// action gate); recovery_reason is re-verified from the row below.
+		if operation.Status != ManualRecovery || operation.Decision.Action != VoltrRestoreIdle {
+			return fmt.Errorf("invalid manual report failure settlement")
+		}
+	} else if operation.Status != Submitted && operation.Status != BroadcastIntent {
 		return fmt.Errorf("invalid finalized failure settlement")
 	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -223,29 +244,63 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *RPCCli
 		return err
 	}
 	var wire []byte
-	var signature, wireHash, messageHash, action, status string
-	if err = tx.QueryRow(ctx, `SELECT signed_wire,transaction_signature,signed_wire_sha256,message_sha256,action,status FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operation.ID).Scan(&wire, &signature, &wireHash, &messageHash, &action, &status); err != nil {
+	var signature, wireHash, messageHash, action, status, recoveryReason string
+	if err = tx.QueryRow(ctx, `SELECT signed_wire,transaction_signature,signed_wire_sha256,message_sha256,action,status,COALESCE(recovery_reason,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operation.ID).Scan(&wire, &signature, &wireHash, &messageHash, &action, &status, &recoveryReason); err != nil {
 		return err
 	}
 	if status != string(operation.Status) || signature != operation.TransactionSignature {
 		return budgetHold("failed_settlement_journal_changed")
 	}
+	// Only a row the old binary stamped with the bare unclassified marker —
+	// a classified retryable refusal that the action gate then forced manual —
+	// may leave manual recovery through this settlement. Any other recovery
+	// reason is a different incident and stays manual.
+	if manualRecovery && recoveryReason != unclassifiedTransactionErrReason {
+		return budgetHold("failed_settlement_requires_exact_report")
+	}
 	request, effects, message, err := auth.BuildInput.decode()
 	if err != nil {
 		return err
 	}
-	if err = validateFinalizedFailureReceipt(receipt, wire, signature, wireHash, messageHash, mustKey(bridgeDelegate), effects); err != nil {
+	bridge, ok := request.(BridgeBuildRequest)
+	// Scope fee settlement to the two report-bearing bridge wires: the
+	// report-only NAV refresh, and the restore — the latter only through the
+	// operator path and only for the adaptor's report-age refusal. The
+	// compiled request must be the same action the journal row records, and
+	// its compiled message must hash to the persisted message digest.
+	restore := ok && bridge.Action == VoltrRestoreIdle
+	// The restore is admitted from the automatic walk's broadcast states and
+	// the explicit manual state alike — in both cases only for the ReportSlot
+	// refusal, whose receipt proves the report was refused before the Voltr
+	// CPI and therefore that no capital moved.
+	if !ok || action != string(bridge.Action) || sha256Bytes(message) != messageHash ||
+		(bridge.Action != ReportNAV && !restore) ||
+		(restore && reason != adaptorReportSlotRefusedReason) {
+		return budgetHold("failed_settlement_requires_exact_report")
+	}
+	// The restore's persisted effects predict successful capital movement
+	// (custody down, idle up). The receipt must instead prove the exact wire
+	// rolled back, so validate against their rollback form — every AfterRaw
+	// replaced by its own BeforeRaw — and bind the compiled message to the
+	// saved exact wire bytes. The report-only validator itself is unchanged.
+	receiptEffects := effects
+	if restore {
+		if len(wire) <= ed25519.SignatureSize+1 || wire[0] != 1 || !bytes.Equal(message, wire[ed25519.SignatureSize+1:]) {
+			return budgetHold("failed_settlement_requires_exact_report")
+		}
+		rollback := make([]ExpectedAccountEffect, len(effects.Accounts))
+		for index, account := range effects.Accounts {
+			account.AfterRaw = account.BeforeRaw
+			rollback[index] = account
+		}
+		receiptEffects.Accounts = rollback
+	}
+	if err = validateFinalizedFailureReceipt(receipt, wire, signature, wireHash, messageHash, mustKey(bridgeDelegate), receiptEffects); err != nil {
 		return err
 	}
 	intent, err := Phase3IntentDigest(request, auth.BuildInput.Effects)
 	if err != nil || intent != auth.IntentSHA256 {
 		return budgetHold("failed_settlement_intent_changed")
-	}
-	bridge, ok := request.(BridgeBuildRequest)
-	// Scope automatic fee settlement to the report-only wire being recovered.
-	// Other action families need their own exact-envelope proof before adoption.
-	if !ok || bridge.Action != ReportNAV || action != string(ReportNAV) || sha256Bytes(message) != messageHash {
-		return budgetHold("failed_settlement_requires_exact_report")
 	}
 	classification := ClassifyConfirmedReportFailure(receipt.Meta.Err, receipt.Meta.LogMessages)
 	if !classification.Retryable && ReportExpiredAtLanding(int64(bridge.Report.ObservedSlot), receipt.Slot) {

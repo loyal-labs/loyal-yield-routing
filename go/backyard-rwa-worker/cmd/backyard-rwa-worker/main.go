@@ -135,8 +135,33 @@ func main() {
 			}
 			return
 		}
+		if os.Args[1] == "settle-manual-restore" {
+			request, execute, err := parseSettleManualRestoreFlags(os.Args[2:])
+			if err != nil {
+				log.Fatal(err)
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			// The scoped operator seam for one already-manual VOLTR_RESTORE_IDLE
+			// ReportSlot failure. The default is a dry-run: it validates the exact
+			// row identity, recovery marker, and refusal classification, and
+			// prints the sanitized result without any database write. --execute
+			// additionally requires an empty route under a short route lease and
+			// runs the same finalized fee settlement the automatic walk uses.
+			result, err := backyardrwa.RunManualRestoreReprocess(ctx, os.Getenv("NEON_DATABASE_URL"), os.Getenv("SOLANA_RPC_URL"), request, execute)
+			if err != nil {
+				if encodeErr := json.NewEncoder(os.Stdout).Encode(result); encodeErr != nil {
+					log.Fatal(err)
+				}
+				log.Fatal(err)
+			}
+			if err = json.NewEncoder(os.Stdout).Encode(result); err != nil {
+				log.Fatal("settlement result output unavailable")
+			}
+			return
+		}
 		if os.Args[1] != "--inspect-phase3" || len(os.Args) < 3 {
-			log.Fatal("usage: backyard-rwa-worker [--prepare-pilot-cleanup | --inspect-pilot-flat-state | --activate-pilot-budget | --selector-shadow | --selector-evaluate [--execute] | --inspect-phase3 lane ... | --inspect-phase3-setup-rent | --initialize-phase3-budget | clear-hold --route <route key> --reason \"<text>\" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--execute]]")
+			log.Fatal("usage: backyard-rwa-worker [--prepare-pilot-cleanup | --inspect-pilot-flat-state | --activate-pilot-budget | --selector-shadow | --selector-evaluate [--execute] | --inspect-phase3 lane ... | --inspect-phase3-setup-rent | --initialize-phase3-budget | clear-hold --route <route key> --reason \"<text>\" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]")
 		}
 		result, err := backyardrwa.InspectPhase3Runtime(os.Args[2:])
 		if err != nil {
@@ -186,6 +211,41 @@ func parseClearHoldFlags(args []string) (string, string, error) {
 		return "", "", fmt.Errorf(`usage: backyard-rwa-worker clear-hold --route <route key> --reason "<text>"`)
 	}
 	return reason, routeKey, nil
+}
+
+// parseSettleManualRestoreFlags reads the manual-restore seam's only two
+// inputs. The default is a dry-run; --execute is the explicit write. Every
+// authority check stays with the settlement package, so the parser is
+// syntactic only.
+func parseSettleManualRestoreFlags(args []string) (backyardrwa.ManualRestoreReprocessRequest, bool, error) {
+	request := backyardrwa.ManualRestoreReprocessRequest{}
+	execute := false
+	usage := `usage: backyard-rwa-worker settle-manual-restore --operation <operation id> --signature <signature> [--execute]`
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--execute" {
+			execute = true
+			continue
+		}
+		var target *string
+		switch arg {
+		case "--operation":
+			target = &request.OperationID
+		case "--signature":
+			target = &request.Signature
+		default:
+			return request, execute, fmt.Errorf("settle-manual-restore: unexpected argument %q\n%s", arg, usage)
+		}
+		if index+1 >= len(args) {
+			return request, execute, fmt.Errorf("settle-manual-restore: %s requires a value\n%s", arg, usage)
+		}
+		*target = args[index+1]
+		index++
+	}
+	if request.OperationID == "" || request.Signature == "" {
+		return request, execute, fmt.Errorf("settle-manual-restore: --operation and --signature are required\n%s", usage)
+	}
+	return request, execute, nil
 }
 
 // parseUnwindIntentFlags reads the exit seam's operator inputs. The default is
