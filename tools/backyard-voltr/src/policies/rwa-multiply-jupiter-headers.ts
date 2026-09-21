@@ -305,6 +305,16 @@ export function validateJupiterHeader(input: Readonly<{
   const v2 = ix.data.subarray(0, 8).equals(SHARED_V2);
   const route = ix.data.subarray(0, 8).equals(ROUTE);
   invariant(legacy || v2 || route, "unsupported Jupiter route discriminator");
+  // V2 moves economic fields ahead of the variable route plan. Its two fee
+  // fields are u16, unlike legacy's final u8 platform fee. Do not infer V2
+  // offsets from a quote's length or permit the high byte/positive fee to leak.
+  if (v2) {
+    invariant(ix.data.length >= 40, "Jupiter V2 route data is too short");
+    const count = ix.data.readUInt32LE(31);
+    invariant(count > 0 && count <= 4, "Jupiter V2 route count is outside the bounded header proof");
+    invariant(ix.data.readUInt16LE(27) === 0 && ix.data.readUInt16LE(29) === 0,
+      "Jupiter V2 platform or positive-slippage fee is not zero");
+  }
   const sourceMintIndex = route
     ? ix.keys.findIndex(({ pubkey }, index) => index >= 9 && pubkey.toBase58() === input.sourceMint)
     : legacy ? 7 : 6;
@@ -361,10 +371,10 @@ export function validateJupiterHeader(input: Readonly<{
     "Jupiter instruction has an unexpected signer");
   invariant(!ix.keys.some(({ pubkey }) => pubkey.toBase58() === RWA_MULTIPLY_ROUTE.previousBackyardVault),
     "Jupiter instruction references the previous Backyard vault");
-  invariant(ix.data.readBigUInt64LE(ix.data.length - 19) === input.amountRaw,
-    "Jupiter input amount tail drifted");
-  invariant(ix.data.readBigUInt64LE(ix.data.length - 11) === input.outAmountRaw,
-    "Jupiter quoted output tail drifted");
+  invariant(input.amountRaw > 0n && ix.data.readBigUInt64LE(v2 ? 9 : ix.data.length - 19) === input.amountRaw,
+    "Jupiter input amount field drifted");
+  invariant(input.outAmountRaw > 0n && ix.data.readBigUInt64LE(v2 ? 17 : ix.data.length - 11) === input.outAmountRaw,
+    "Jupiter quoted output field drifted");
   invariant(ix.data.readUInt16LE(layout.slippage) <= RWA_MULTIPLY_ROUTE.assets.maxSlippageBps,
     "Jupiter slippage exceeds the route boundary");
   invariant(ix.data[layout.platformFee] === 0, "Jupiter platform fee is not zero");

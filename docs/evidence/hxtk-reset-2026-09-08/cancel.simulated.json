@@ -1,0 +1,108 @@
+{
+  "canonicalStateRoot": "/Users/user/.loyal/hxtk-reset/HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "schema": "loyal-voltr-hxtk-reset-step/v1",
+  "step": "cancel",
+  "verdict": "SIMULATION_PASS_UNSENT",
+  "adminLpDelta": "99941522",
+  "requestReceiptPda": "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+  "originalFrozenReceipt": true,
+  "before": {
+    "contextSlot": 445472531,
+    "epoch": 1031,
+    "totalValue": "2793298",
+    "idleBalance": "3793417",
+    "custody1Balance": "0",
+    "receipt1PositionValue": "2793417",
+    "receipt1CustodyTracked": "0",
+    "lpSupply": "99941522",
+    "deadWeight": "1000",
+    "feeAccumulatedLpManager": "0",
+    "feeAccumulatedLpAdmin": "89601150",
+    "feeAccumulatedLpProtocol": "0",
+    "lockedProfitDegradationDuration": "86400",
+    "withdrawalWaitingPeriod": "600",
+    "adminPerformanceFeeBps": 500,
+    "managerPerformanceFeeBps": 0,
+    "maxCap": "1000000000000",
+    "lastUpdatedLockedProfit": "0",
+    "lockedProfitLastReport": "1788497414",
+    "highWaterMarkBits": "5633268378698",
+    "managerLpBalance": null,
+    "adminLpBalance": "0",
+    "treasuryLpBalance": null,
+    "requestEscrowLpBalance": "99941522",
+    "adminUsdcBalance": "3022630",
+    "squadsUsdcBalance": "0",
+    "requestReceipt": {
+      "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+      "userTransferAuthority": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "amountLpEscrowed": "99941522",
+      "amountAssetBits": "497586472129346763441",
+      "amountAssetToWithdrawRaw": "1767782",
+      "withdrawableFromTs": "1788493649",
+      "bump": 255
+    },
+    "reportTicket": {
+      "version": 1,
+      "armed": false,
+      "lastConsumedSequence": "444157930",
+      "activeSequence": "0",
+      "activeHashIsZero": true
+    },
+    "conservedGap_idlePlusReceiptsMinusTv": "3793536",
+    "tvEqualsIdle": false
+  },
+  "checks": [
+    {
+      "check": "simulation succeeds",
+      "pass": true,
+      "expected": null,
+      "actual": null
+    },
+    {
+      "check": "cancel event emitted",
+      "pass": true,
+      "expected": ">=1",
+      "actual": 1
+    },
+    {
+      "check": "escrow drained",
+      "pass": true,
+      "expected": "0",
+      "actual": "0"
+    },
+    {
+      "check": "admin LP balance delta equals the full escrow refund 1:1",
+      "pass": true,
+      "expected": "99941522",
+      "actual": "99941522"
+    },
+    {
+      "check": "lp supply unchanged (the program burns nothing on cancel)",
+      "pass": true,
+      "expected": "99941522 (burn 0)",
+      "actual": "99941522 (burn 0)"
+    },
+    {
+      "check": "receipt cleared (closed or amountLpEscrowed 0)",
+      "pass": true,
+      "expected": "closed|0",
+      "actual": "0"
+    }
+  ],
+  "events": [
+    {
+      "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+      "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+      "requestWithdrawVaultReceipt": "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+      "amountLpRefunded": "99941522",
+      "amountLpBurned": "0",
+      "vaultHighestAssetPerLpDecimalBitsBefore": "5633268378698",
+      "vaultHighestAssetPerLpDecimalBitsAfter": "5633268378698",
+      "cancelledTs": "1788913075"
+    }
+  ],
+  "sent": false,
+  "signed": false,
+  "broadcast": false
+}

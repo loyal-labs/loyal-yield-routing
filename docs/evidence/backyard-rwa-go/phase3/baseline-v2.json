@@ -1,0 +1,905 @@
+{
+  "schema": "loyal-backyard-rwa-phase3-family-activation-verifier/v2",
+  "verdict": "FAIL",
+  "implementationStatus": "NOT_IMPLEMENTED",
+  "broadcast": false,
+  "readOnly": true,
+  "generatedAt": "2026-09-04T23:26:41.703Z",
+  "goalId": "01a06b6c-8023-72b1-ad5d-c97c0662820e",
+  "contract": {
+    "path": "docs/plans/backyard-rwa-phase3-family-activation-verifier.md",
+    "sha256": "de07b8ebb9746712b6fe77b5b9d92d8413db599f1e12a7a0c5cf10271cb6adc2"
+  },
+  "preflight": {
+    "chain": {
+      "status": "OBSERVED",
+      "source": "fresh finalized Solana accounts",
+      "data": {
+        "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        "slot": 444370290,
+        "accounts": [
+          {
+            "address": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "346661602",
+            "dataLength": 82,
+            "dataSha256": "74f897e463be0aafaecbebdbd2e933d409c7b763d19af7d9b409e77215112782",
+            "mintDecimals": 9,
+            "mintInitialized": true
+          },
+          {
+            "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "526986586549",
+            "dataLength": 82,
+            "dataSha256": "334e9852566a5325413ea9fbb9097f9e2cc13c5d347a363986cceec46c5580f0",
+            "mintDecimals": 6,
+            "mintInitialized": true
+          },
+          {
+            "address": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+            "present": true,
+            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "executable": false,
+            "lamports": "562701269",
+            "dataLength": 866,
+            "dataSha256": "782dfbb841a7fc1f071df265745479d01a8998c53f751a46cf07371fd4f82470",
+            "mintDecimals": 6,
+            "mintInitialized": true
+          },
+          {
+            "address": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "201461601",
+            "dataLength": 82,
+            "dataSha256": "df93c7782881f400cb91c5347cb050a4ec174b83287c91fd6b5ed89859724960",
+            "mintDecimals": 6,
+            "mintInitialized": true
+          },
+          {
+            "address": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "1461600",
+            "dataLength": 82,
+            "dataSha256": "fa419a822789d95ebb8f84740e075b94a2daed2fd18fd0cb3c3242d8b0aecc8c",
+            "mintDecimals": 6,
+            "mintInitialized": true
+          },
+          {
+            "address": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+            "present": true,
+            "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "executable": false,
+            "lamports": "2078412093",
+            "dataLength": 866,
+            "dataSha256": "f3fedcb9de73e0193a5f83bd25c63c6ccb5116162c62073cd6b5a00fd0196325",
+            "mintDecimals": 6,
+            "mintInitialized": true
+          },
+          {
+            "address": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "10823189",
+            "dataLength": 82,
+            "dataSha256": "2556bcd0c87cd73240c7482a9a4dc95a1c4c98254cf87883bbbce0fdd0a1a825",
+            "mintDecimals": 6,
+            "mintInitialized": true
+          },
+          {
+            "address": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "1461600",
+            "dataLength": 82,
+            "dataSha256": "400496992636497fd8f533421ce5cb728a1eab5fa34f6ecf5ccee0e535c110e7",
+            "mintDecimals": 6,
+            "mintInitialized": true
+          },
+          {
+            "address": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "1461600",
+            "dataLength": 82,
+            "dataSha256": "b3ffa2153680fbd347526bcfbd86267e7f60d57700752e9978428a34cd7390ec",
+            "mintDecimals": 9,
+            "mintInitialized": true
+          },
+          {
+            "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+            "present": true,
+            "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "executable": false,
+            "lamports": "2060160",
+            "dataLength": 168,
+            "dataSha256": "f3a35b21e680c4a10b008d7b838ce82867ec415eb843cb3293f573248c33aa11"
+          },
+          {
+            "address": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+            "present": true,
+            "owner": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+            "executable": false,
+            "lamports": "7349760",
+            "dataLength": 928,
+            "dataSha256": "9bd488018899997fec0696a2c5eda27eae65a55dbeee5c6c1f2723e19fe8dbb4"
+          },
+          {
+            "address": "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj",
+            "present": true,
+            "owner": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+            "executable": false,
+            "lamports": "4176000",
+            "dataLength": 472,
+            "dataSha256": "fbfe43f0b41ae1cf4ac036914c67801450c6ae006440b79838ac6ccac26e14c2"
+          },
+          {
+            "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+            "present": true,
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "executable": false,
+            "lamports": "2039280",
+            "dataLength": 165,
+            "dataSha256": "11bc82dceb3459b983bf580c0bf6ed5cf432a9f5267aeb2564cbc3b8f52cbd05",
+            "tokenAmountRaw": "0"
+          },
+          {
+            "address": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+            "present": true,
+            "owner": "11111111111111111111111111111111",
+            "executable": false,
+            "lamports": "1521131296",
+            "dataLength": 0,
+            "dataSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "address": "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "73c18881f3d227aae1ab2d14621a53e801c997a27d7214a4d420c5835dc3c880"
+          },
+          {
+            "address": "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913931",
+            "dataLength": 8624,
+            "dataSha256": "4d1009e2e045879593779f9f4604be8e5c3f0aa325ebc3487eca2ecd355f14ad"
+          },
+          {
+            "address": "JBmLCoKqjdKSStK45onRqe6U6sxVgSpdXoeXe4h7NwJw",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913931",
+            "dataLength": 8624,
+            "dataSha256": "737ab5646d76cf15197e4e13b916d96943f84946750ceb94f2a3944a7815667f"
+          },
+          {
+            "address": "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913959",
+            "dataLength": 8624,
+            "dataSha256": "81b524ff0d307fde498b82f362a8f33587cc6bf6e142c9195cec68b72bcd9a68"
+          },
+          {
+            "address": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "f5b89d8cb47b8b7c45a70b8e2ed5cc455323b4f32657e0a84aa5428fd7b007df"
+          },
+          {
+            "address": "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "4ad23012215509f2c9dc78b9231541c1d3a1e107d2586f8deb4c741cf46ce518"
+          },
+          {
+            "address": "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "99ee484440ad57fdcf6d0997408f988d54f21c9e3bf342f8229ff58138dcff1a"
+          },
+          {
+            "address": "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "8b9203cb752186b225fed34a733ae81bb1d39e7bf288916875ada822d638add2"
+          },
+          {
+            "address": "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913928",
+            "dataLength": 8624,
+            "dataSha256": "ef057eb97dffadd8ab30ac88ad793c4fb3697e329ce67b2f74d2d7241e4cd089"
+          },
+          {
+            "address": "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913935",
+            "dataLength": 8624,
+            "dataSha256": "d4026b9b9f3483135980d63a5949d28797a284bf988ce4c00efbcd2e57827322"
+          },
+          {
+            "address": "HokDw9LaDf9qNzJf4F21RjHU3K4pRBkGQENvWnRGyRbn",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913927",
+            "dataLength": 8624,
+            "dataSha256": "d06c5948b577e1889b8656de1d6499a2e58b2ef8f1188b0a1705f739a3641c65"
+          },
+          {
+            "address": "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913944",
+            "dataLength": 8624,
+            "dataSha256": "aa03020b7f9755891ac901a84752fe650a4c212f3eefe9437cd9cf23832f47e2"
+          },
+          {
+            "address": "G85AgoBdW8zSQBq5i4E8aBLCDdRYGgK44CzU1d1NdBzX",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "93d042f2dfb62a3442af8981c8e2858bd54ef80a7698cf994411dd2776b1a97a"
+          },
+          {
+            "address": "6A8D3ExQ4CdiZTBmij7MScUeKsgs6mSHksYzJbiY61FM",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "5f0ef829554572619812b4e2486e660709716876839d19c98e853bcde2571991"
+          },
+          {
+            "address": "2erD9GTGcaQbLsVSQweg3HvMpfKxScmz95raWv8H4iPN",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "a223eae7a605163ccf6d1ac24916dc1065a956a543f99bf264cf9542df0bf8b6"
+          },
+          {
+            "address": "EDf6dGbVnCCABbNhE3mp5i1jV2JhDAVmTWb1ztij1Yhs",
+            "present": true,
+            "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "executable": false,
+            "lamports": "60913920",
+            "dataLength": 8624,
+            "dataSha256": "ad15884a97230f391a422398bab68244ee27c5ea55812973b98a5f898ccf328a"
+          }
+        ]
+      }
+    },
+    "database": {
+      "status": "OBSERVED",
+      "source": "fresh read-only Postgres snapshot",
+      "data": {
+        "route": {
+          "routeKey": "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+          "leaseOwner": "render:srv-dabkt0ojo6nc7381o9fg:sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b",
+          "leaseLive": true,
+          "fencingToken": 15073,
+          "stateVersion": 818,
+          "phase3": null
+        },
+        "nonterminal": [],
+        "phase3OperationCount": 0,
+        "latestOperation": {
+          "operationId": "2aba0a4a2886fecfd94b7bcb04b7a9626943b0fc7c3d68146f89631e95e177e3",
+          "status": "held",
+          "action": "HOLD",
+          "createdAt": "2026-09-04T23:25:21.02433+00:00"
+        }
+      }
+    },
+    "deployment": {
+      "status": "OBSERVED",
+      "source": "Render deploy API",
+      "data": {
+        "serviceId": "srv-dabkt0ojo6nc7381o9fg",
+        "deploys": [
+          {
+            "id": "dep-dad73rrncjis7388r9sg",
+            "status": "live",
+            "createdAt": "2026-09-04T07:23:27.906297Z",
+            "finishedAt": "2026-09-04T07:23:35.388507Z",
+            "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b"
+          },
+          {
+            "id": "dep-dad6vfrncjis7388e750",
+            "status": "deactivated",
+            "createdAt": "2026-09-04T07:14:07.303561Z",
+            "finishedAt": "2026-09-04T07:14:15.094778Z",
+            "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-a3d0d0aa9169fb48258db6b656a49370f6e84282"
+          },
+          {
+            "id": "dep-dad6sjtg1s2s73fa096g",
+            "status": "deactivated",
+            "createdAt": "2026-09-04T07:07:59.800765Z",
+            "finishedAt": "2026-09-04T07:08:10.584455Z",
+            "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-bf4df9783fd1ebe617114e74f954be3670ed271f"
+          },
+          {
+            "id": "dep-dad6qen10e5c73dja6v0",
+            "status": "deactivated",
+            "createdAt": "2026-09-04T07:03:22.91806Z",
+            "finishedAt": "2026-09-04T07:03:31.759386Z",
+            "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-c75394407f6439ce01d2456df2a273304c914f75"
+          },
+          {
+            "id": "dep-dad6n6n10e5c73disc3g",
+            "status": "deactivated",
+            "createdAt": "2026-09-04T06:56:26.525815Z",
+            "finishedAt": "2026-09-04T06:56:34.771822Z",
+            "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-4ec790dc5c9758e34fbeccb2d2bad0107bfdc956"
+          }
+        ]
+      }
+    }
+  },
+  "conditions": [
+    {
+      "id": "R01",
+      "condition": "Production admission/send cap enforcement, durable exit reservations and negative behavior",
+      "verdict": "FAIL",
+      "measurementStatus": "NOT_IMPLEMENTED",
+      "evidence": {
+        "governorSource": false,
+        "capsMicros": [
+          1000000,
+          20000000,
+          60000000
+        ]
+      },
+      "resumeCondition": "Implement and execute production-path reservation/sign/send/restart/exit witnesses; reconcile live budget state."
+    },
+    {
+      "id": "R02",
+      "condition": "Exact eleven-lane runtime allowlist and frozen three-family queue",
+      "verdict": "FAIL",
+      "measurementStatus": "NOT_IMPLEMENTED",
+      "evidence": {
+        "expectedLanes": [
+          "AUTO/AUTO/PYUSD",
+          "Ethena/USDe/PYUSD",
+          "Maple/syrupUSDC/PYUSD",
+          "Maple/syrupUSDC/USDC",
+          "Maple/syrupUSDC/USDG",
+          "OnRe/ONyc/USDC",
+          "OnRe/ONyc/USDG",
+          "OnRe/ONyc/USDS",
+          "Prime/PRIME/PYUSD",
+          "Prime/PRIME/USDC",
+          "Prime/PRIME/USDS"
+        ],
+        "catalogLanes": [
+          "OnRe/ONyc/USDC",
+          "OnRe/ONyc/USDG",
+          "OnRe/ONyc/USDS",
+          "Prime/PRIME/USDC",
+          "Prime/PRIME/PYUSD",
+          "Prime/PRIME/USDS",
+          "Maple/syrupUSDC/USDC",
+          "Maple/syrupUSDC/USDG",
+          "Maple/syrupUSDC/PYUSD",
+          "AUTO/AUTO/PYUSD",
+          "Ethena/USDe/PYUSD"
+        ],
+        "runtimeRoutes": [
+          "Prime/PRIME/USDC",
+          "Maple/syrupUSDC/USDC"
+        ],
+        "catalogExact": true,
+        "runtimeExact": false
+      },
+      "resumeCondition": "Resolve current bindings, validate compiled runtime capability and persist the approved queue."
+    },
+    {
+      "id": "R03",
+      "condition": "Shared debt/token/valuation/exit runtime with exact existing policy authority",
+      "verdict": "FAIL",
+      "measurementStatus": "NOT_IMPLEMENTED",
+      "evidence": {
+        "operationCount": 44,
+        "edgeCount": 52,
+        "chain": {
+          "status": "OBSERVED",
+          "source": "fresh finalized Solana accounts",
+          "data": {
+            "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+            "slot": 444370290,
+            "accounts": [
+              {
+                "address": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+                "present": true,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "executable": false,
+                "lamports": "346661602",
+                "dataLength": 82,
+                "dataSha256": "74f897e463be0aafaecbebdbd2e933d409c7b763d19af7d9b409e77215112782",
+                "mintDecimals": 9,
+                "mintInitialized": true
+              },
+              {
+                "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "present": true,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "executable": false,
+                "lamports": "526986586549",
+                "dataLength": 82,
+                "dataSha256": "334e9852566a5325413ea9fbb9097f9e2cc13c5d347a363986cceec46c5580f0",
+                "mintDecimals": 6,
+                "mintInitialized": true
+              },
+              {
+                "address": "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+                "present": true,
+                "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+                "executable": false,
+                "lamports": "562701269",
+                "dataLength": 866,
+                "dataSha256": "782dfbb841a7fc1f071df265745479d01a8998c53f751a46cf07371fd4f82470",
+                "mintDecimals": 6,
+                "mintInitialized": true
+              },
+              {
+                "address": "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+                "present": true,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "executable": false,
+                "lamports": "201461601",
+                "dataLength": 82,
+                "dataSha256": "df93c7782881f400cb91c5347cb050a4ec174b83287c91fd6b5ed89859724960",
+                "mintDecimals": 6,
+                "mintInitialized": true
+              },
+              {
+                "address": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+                "present": true,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "executable": false,
+                "lamports": "1461600",
+                "dataLength": 82,
+                "dataSha256": "fa419a822789d95ebb8f84740e075b94a2daed2fd18fd0cb3c3242d8b0aecc8c",
+                "mintDecimals": 6,
+                "mintInitialized": true
+              },
+              {
+                "address": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+                "present": true,
+                "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+                "executable": false,
+                "lamports": "2078412093",
+                "dataLength": 866,
+                "dataSha256": "f3fedcb9de73e0193a5f83bd25c63c6ccb5116162c62073cd6b5a00fd0196325",
+                "mintDecimals": 6,
+                "mintInitialized": true
+              },
+              {
+                "address": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+                "present": true,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "executable": false,
+                "lamports": "10823189",
+                "dataLength": 82,
+                "dataSha256": "2556bcd0c87cd73240c7482a9a4dc95a1c4c98254cf87883bbbce0fdd0a1a825",
+                "mintDecimals": 6,
+                "mintInitialized": true
+              },
+              {
+                "address": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
+                "present": true,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "executable": false,
+                "lamports": "1461600",
+                "dataLength": 82,
+                "dataSha256": "400496992636497fd8f533421ce5cb728a1eab5fa34f6ecf5ccee0e535c110e7",
+                "mintDecimals": 6,
+                "mintInitialized": true
+              },
+              {
+                "address": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+                "present": true,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "executable": false,
+                "lamports": "1461600",
+                "dataLength": 82,
+                "dataSha256": "b3ffa2153680fbd347526bcfbd86267e7f60d57700752e9978428a34cd7390ec",
+                "mintDecimals": 9,
+                "mintInitialized": true
+              },
+              {
+                "address": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+                "present": true,
+                "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+                "executable": false,
+                "lamports": "2060160",
+                "dataLength": 168,
+                "dataSha256": "f3a35b21e680c4a10b008d7b838ce82867ec415eb843cb3293f573248c33aa11"
+              },
+              {
+                "address": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+                "present": true,
+                "owner": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+                "executable": false,
+                "lamports": "7349760",
+                "dataLength": 928,
+                "dataSha256": "9bd488018899997fec0696a2c5eda27eae65a55dbeee5c6c1f2723e19fe8dbb4"
+              },
+              {
+                "address": "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj",
+                "present": true,
+                "owner": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+                "executable": false,
+                "lamports": "4176000",
+                "dataLength": 472,
+                "dataSha256": "fbfe43f0b41ae1cf4ac036914c67801450c6ae006440b79838ac6ccac26e14c2"
+              },
+              {
+                "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                "present": true,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "executable": false,
+                "lamports": "2039280",
+                "dataLength": 165,
+                "dataSha256": "11bc82dceb3459b983bf580c0bf6ed5cf432a9f5267aeb2564cbc3b8f52cbd05",
+                "tokenAmountRaw": "0"
+              },
+              {
+                "address": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+                "present": true,
+                "owner": "11111111111111111111111111111111",
+                "executable": false,
+                "lamports": "1521131296",
+                "dataLength": 0,
+                "dataSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              },
+              {
+                "address": "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913920",
+                "dataLength": 8624,
+                "dataSha256": "73c18881f3d227aae1ab2d14621a53e801c997a27d7214a4d420c5835dc3c880"
+              },
+              {
+                "address": "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913931",
+                "dataLength": 8624,
+                "dataSha256": "4d1009e2e045879593779f9f4604be8e5c3f0aa325ebc3487eca2ecd355f14ad"
+              },
+              {
+                "address": "JBmLCoKqjdKSStK45onRqe6U6sxVgSpdXoeXe4h7NwJw",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913931",
+                "dataLength": 8624,
+                "dataSha256": "737ab5646d76cf15197e4e13b916d96943f84946750ceb94f2a3944a7815667f"
+              },
+              {
+                "address": "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913959",
+                "dataLength": 8624,
+                "dataSha256": "81b524ff0d307fde498b82f362a8f33587cc6bf6e142c9195cec68b72bcd9a68"
+              },
+              {
+                "address": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913920",
+                "dataLength": 8624,
+                "dataSha256": "f5b89d8cb47b8b7c45a70b8e2ed5cc455323b4f32657e0a84aa5428fd7b007df"
+              },
+              {
+                "address": "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913920",
+                "dataLength": 8624,
+                "dataSha256": "4ad23012215509f2c9dc78b9231541c1d3a1e107d2586f8deb4c741cf46ce518"
+              },
+              {
+                "address": "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913920",
+                "dataLength": 8624,
+                "dataSha256": "99ee484440ad57fdcf6d0997408f988d54f21c9e3bf342f8229ff58138dcff1a"
+              },
+              {
+                "address": "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913920",
+                "dataLength": 8624,
+                "dataSha256": "8b9203cb752186b225fed34a733ae81bb1d39e7bf288916875ada822d638add2"
+              },
+              {
+                "address": "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913928",
+                "dataLength": 8624,
+                "dataSha256": "ef057eb97dffadd8ab30ac88ad793c4fb3697e329ce67b2f74d2d7241e4cd089"
+              },
+              {
+                "address": "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913935",
+                "dataLength": 8624,
+                "dataSha256": "d4026b9b9f3483135980d63a5949d28797a284bf988ce4c00efbcd2e57827322"
+              },
+              {
+                "address": "HokDw9LaDf9qNzJf4F21RjHU3K4pRBkGQENvWnRGyRbn",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913927",
+                "dataLength": 8624,
+                "dataSha256": "d06c5948b577e1889b8656de1d6499a2e58b2ef8f1188b0a1705f739a3641c65"
+              },
+              {
+                "address": "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913944",
+                "dataLength": 8624,
+                "dataSha256": "aa03020b7f9755891ac901a84752fe650a4c212f3eefe9437cd9cf23832f47e2"
+              },
+              {
+                "address": "G85AgoBdW8zSQBq5i4E8aBLCDdRYGgK44CzU1d1NdBzX",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913920",
+                "dataLength": 8624,
+                "dataSha256": "93d042f2dfb62a3442af8981c8e2858bd54ef80a7698cf994411dd2776b1a97a"
+              },
+              {
+                "address": "6A8D3ExQ4CdiZTBmij7MScUeKsgs6mSHksYzJbiY61FM",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913920",
+                "dataLength": 8624,
+                "dataSha256": "5f0ef829554572619812b4e2486e660709716876839d19c98e853bcde2571991"
+              },
+              {
+                "address": "2erD9GTGcaQbLsVSQweg3HvMpfKxScmz95raWv8H4iPN",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913920",
+                "dataLength": 8624,
+                "dataSha256": "a223eae7a605163ccf6d1ac24916dc1065a956a543f99bf264cf9542df0bf8b6"
+              },
+              {
+                "address": "EDf6dGbVnCCABbNhE3mp5i1jV2JhDAVmTWb1ztij1Yhs",
+                "present": true,
+                "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "executable": false,
+                "lamports": "60913920",
+                "dataLength": 8624,
+                "dataSha256": "ad15884a97230f391a422398bab68244ee27c5ea55812973b98a5f898ccf328a"
+              }
+            ]
+          }
+        }
+      },
+      "resumeCondition": "Execute each lane through the shared production paths and reconcile installed policy intersections."
+    },
+    {
+      "id": "R04",
+      "condition": "Batched all-lane positive/negative and full stateful lifecycle evidence",
+      "verdict": "FAIL",
+      "measurementStatus": "NOT_IMPLEMENTED",
+      "evidence": {
+        "lanes": [
+          "AUTO/AUTO/PYUSD",
+          "Ethena/USDe/PYUSD",
+          "Maple/syrupUSDC/PYUSD",
+          "Maple/syrupUSDC/USDC",
+          "Maple/syrupUSDC/USDG",
+          "OnRe/ONyc/USDC",
+          "OnRe/ONyc/USDG",
+          "OnRe/ONyc/USDS",
+          "Prime/PRIME/PYUSD",
+          "Prime/PRIME/USDC",
+          "Prime/PRIME/USDS"
+        ],
+        "simulationTimeoutMs": 180000
+      },
+      "resumeCondition": "Run current-chain and explicitly controlled-state production-program evidence with exact per-lane coverage."
+    },
+    {
+      "id": "R05",
+      "condition": "Immutable deployment, one fenced writer, flat sequential transitions",
+      "verdict": "FAIL",
+      "measurementStatus": "NOT_IMPLEMENTED",
+      "evidence": {
+        "deployment": {
+          "status": "OBSERVED",
+          "source": "Render deploy API",
+          "data": {
+            "serviceId": "srv-dabkt0ojo6nc7381o9fg",
+            "deploys": [
+              {
+                "id": "dep-dad73rrncjis7388r9sg",
+                "status": "live",
+                "createdAt": "2026-09-04T07:23:27.906297Z",
+                "finishedAt": "2026-09-04T07:23:35.388507Z",
+                "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b"
+              },
+              {
+                "id": "dep-dad6vfrncjis7388e750",
+                "status": "deactivated",
+                "createdAt": "2026-09-04T07:14:07.303561Z",
+                "finishedAt": "2026-09-04T07:14:15.094778Z",
+                "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-a3d0d0aa9169fb48258db6b656a49370f6e84282"
+              },
+              {
+                "id": "dep-dad6sjtg1s2s73fa096g",
+                "status": "deactivated",
+                "createdAt": "2026-09-04T07:07:59.800765Z",
+                "finishedAt": "2026-09-04T07:08:10.584455Z",
+                "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-bf4df9783fd1ebe617114e74f954be3670ed271f"
+              },
+              {
+                "id": "dep-dad6qen10e5c73dja6v0",
+                "status": "deactivated",
+                "createdAt": "2026-09-04T07:03:22.91806Z",
+                "finishedAt": "2026-09-04T07:03:31.759386Z",
+                "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-c75394407f6439ce01d2456df2a273304c914f75"
+              },
+              {
+                "id": "dep-dad6n6n10e5c73disc3g",
+                "status": "deactivated",
+                "createdAt": "2026-09-04T06:56:26.525815Z",
+                "finishedAt": "2026-09-04T06:56:34.771822Z",
+                "image": "ghcr.io/loyal-labs/loyal-yield-routing/backyard-rwa-worker:sha-4ec790dc5c9758e34fbeccb2d2bad0107bfdc956"
+              }
+            ]
+          }
+        },
+        "database": {
+          "status": "OBSERVED",
+          "source": "fresh read-only Postgres snapshot",
+          "data": {
+            "route": {
+              "routeKey": "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "leaseOwner": "render:srv-dabkt0ojo6nc7381o9fg:sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b",
+              "leaseLive": true,
+              "fencingToken": 15073,
+              "stateVersion": 818,
+              "phase3": null
+            },
+            "nonterminal": [],
+            "phase3OperationCount": 0,
+            "latestOperation": {
+              "operationId": "2aba0a4a2886fecfd94b7bcb04b7a9626943b0fc7c3d68146f89631e95e177e3",
+              "status": "held",
+              "action": "HOLD",
+              "createdAt": "2026-09-04T23:25:21.02433+00:00"
+            }
+          }
+        }
+      },
+      "resumeCondition": "Bind deployed image to verified source and prove durable independent queue advancement under one lease."
+    },
+    {
+      "id": "R06",
+      "condition": "Three Go-originated LIVE_VALIDATED or proven CAPACITY_PENDING outcomes",
+      "verdict": "FAIL",
+      "measurementStatus": "NOT_IMPLEMENTED",
+      "evidence": {
+        "canaries": [
+          "OnRe/ONyc/USDC",
+          "AUTO/AUTO/PYUSD",
+          "Ethena/USDe/PYUSD"
+        ],
+        "database": {
+          "status": "OBSERVED",
+          "source": "fresh read-only Postgres snapshot",
+          "data": {
+            "route": {
+              "routeKey": "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "leaseOwner": "render:srv-dabkt0ojo6nc7381o9fg:sha-4f5445ee068f577b4eec0cf8b931ac421db60c2b",
+              "leaseLive": true,
+              "fencingToken": 15073,
+              "stateVersion": 818,
+              "phase3": null
+            },
+            "nonterminal": [],
+            "phase3OperationCount": 0,
+            "latestOperation": {
+              "operationId": "2aba0a4a2886fecfd94b7bcb04b7a9626943b0fc7c3d68146f89631e95e177e3",
+              "status": "held",
+              "action": "HOLD",
+              "createdAt": "2026-09-04T23:25:21.02433+00:00"
+            }
+          }
+        }
+      },
+      "resumeCondition": "Complete each approved canary proof and independently reconcile finalized terminal custody."
+    },
+    {
+      "id": "R07",
+      "condition": "Prior-route, withdrawal, NAV and recovery behavior including reserved exits",
+      "verdict": "FAIL",
+      "measurementStatus": "NOT_IMPLEMENTED",
+      "evidence": {
+        "retainedPhase2": "PASS"
+      },
+      "resumeCondition": "Run affected production-path regressions and verify current shared custody/recovery invariants."
+    },
+    {
+      "id": "R08",
+      "condition": "Deployed eleven-lane readiness agrees with operational handoff and standing coverage",
+      "verdict": "FAIL",
+      "measurementStatus": "NOT_IMPLEMENTED",
+      "evidence": {
+        "runtimeRoutes": [
+          "Prime/PRIME/USDC",
+          "Maple/syrupUSDC/USDC"
+        ]
+      },
+      "resumeCondition": "Reconcile truthful lane statuses and retained/promoted proof with the deployed runtime."
+    }
+  ]
+}

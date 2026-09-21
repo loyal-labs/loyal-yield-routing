@@ -1,0 +1,127 @@
+{
+  "schema": "loyal-backyard-rwa-basic-policy-install-journal/v1",
+  "broadcast": true,
+  "artifactSha256": "f987dc836b3e407b05d957a1f831fb4d652ae8b00b1108ff05b7701ec6153e02",
+  "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+  "authority": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+  "legs": [
+    {
+      "seed": "141",
+      "account": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "family": "CollateralLifecycle",
+      "state": "finalized",
+      "wireSha256": "f90000abd76faab04e5508c2ec30788fbbb5e69b836ab0686df1bcd092700b12",
+      "blockhash": "5q2rmJ9YZafaxZ3FSqFh9cayq626Sz1tayEvXvEa6Q4Q",
+      "lastValidBlockHeight": 423844048,
+      "packetBytes": 1136,
+      "signature": "5YPXgLPzS4SPBMNiYuqgPxERa6SoouqVQpm6AY6trc5FZvNkSqC9D57dCmxshBPNaR8qEK7prkniXHt1wPtM925P",
+      "preSendSimulation": {
+        "contextSlot": 445800508,
+        "unitsConsumed": 53943,
+        "err": null
+      },
+      "finalizedSlot": 445806570,
+      "readback": {
+        "seed": "141",
+        "account": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+        "dataSha256": "bd75abb8acb28180e2fbcd66814e21d32267a447cf3dac50c928d2d2cc0dcc83",
+        "accountDataSha256": "c716c948bb6f20c4bf951386ea9d49b43b933a6009778518fa04263be0df0ae9",
+        "finalizedSlot": 445806570,
+        "blockTime": 1789016967,
+        "start": 1789016967
+      }
+    },
+    {
+      "seed": "142",
+      "account": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "family": "DebtLifecycle",
+      "state": "finalized",
+      "wireSha256": "4f5c65f98dd7d08a2efe4e1038572ce6caa8fae0adc21b23a25d71252202a946",
+      "blockhash": "FrFwVuwxExiDeqhLddwiJSvstZ81aFouU6H46wpjxpUi",
+      "lastValidBlockHeight": 423850110,
+      "packetBytes": 1136,
+      "signature": "FCRTggRPmZs1SPsPd8iTu4h2w8SytgFZCyjpQcVgkieYKYgA3EuYdegkHzQWg4F1jk6br9sdNSkwghGKDhx6GtZ",
+      "preSendSimulation": {
+        "contextSlot": 445806570,
+        "unitsConsumed": 50943,
+        "err": null
+      },
+      "finalizedSlot": 445806604,
+      "readback": {
+        "seed": "142",
+        "account": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+        "dataSha256": "d49cd14712056de39fb06c6fea3120dc851bf0f5b0bfa0d87413697457b30479",
+        "accountDataSha256": "bb42c52b1f5641e8105a7b04607a35fe92034d71ad87b3e528d7914edd38e704",
+        "finalizedSlot": 445806604,
+        "blockTime": 1789018876,
+        "start": 1789018876
+      }
+    },
+    {
+      "seed": "143",
+      "account": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "family": "SwapRoutesA",
+      "state": "finalized",
+      "wireSha256": "448fb03d958eaad474b20ab4842132956aa272fb614b91fa54ab4bab868aa95f",
+      "blockhash": "BY6DR8UY7t8X82LYfSzfCfstsd7vEonRA7ewVeoGrzcM",
+      "lastValidBlockHeight": 423850144,
+      "packetBytes": 916,
+      "signature": "2dweZbjFmgeLcTPzbnpravGQGLFDGd3oDt74BVXkRcCduA7gjzA6kb96cNFp6p2d7eLLcdCSEiaWuN1RAbzvmo4M",
+      "preSendSimulation": {
+        "contextSlot": 445806604,
+        "unitsConsumed": 42056,
+        "err": null
+      },
+      "finalizedSlot": 445806638,
+      "readback": {
+        "seed": "143",
+        "account": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+        "dataSha256": "ff7b27cab93ec1d02c3e645b78af5725b8e5616dcb1799c7c527939286c63484",
+        "accountDataSha256": "7058ac2cc0db6befa76c4e10cd8558f52ccb9814532970241d6cfd0038f79f3f",
+        "finalizedSlot": 445806637,
+        "blockTime": 1789018887,
+        "start": 1789018887
+      }
+    },
+    {
+      "seed": "144",
+      "account": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+      "family": "SwapRoutesB",
+      "state": "finalized",
+      "wireSha256": "4df3c55d892ca7348f2e6cd6f2ed1c31e09d86317b85d2f2946a1bb8ea684734",
+      "blockhash": "8RLfE7RSWUdYM9pxzRWK9qWEiL2qUsqq4chKLZRPPUqd",
+      "lastValidBlockHeight": 423850178,
+      "packetBytes": 916,
+      "signature": "2wJAkv79ca7HVJ8y4FPkfCgdMCZkjkT8PJ8b4szt7rZRat1dt8YU7xBCy4Z6RG3jcNbsggnTfLk8BAUNCLjB8pAe",
+      "preSendSimulation": {
+        "contextSlot": 445806638,
+        "unitsConsumed": 43556,
+        "err": null
+      },
+      "finalizedSlot": 445806672,
+      "readback": {
+        "seed": "144",
+        "account": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+        "dataSha256": "dec1b2b9f3e69265eed238e281688c167b8d3a732ddb1e5e02ec6d302472968e",
+        "accountDataSha256": "43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a",
+        "finalizedSlot": 445806672,
+        "blockTime": 1789018899,
+        "start": 1789018899
+      }
+    }
+  ],
+  "reconciliations": [
+    {
+      "at": "2026-09-10T05:41:16.623Z",
+      "finalizedSlot": 445806569,
+      "livePolicySeed": "141",
+      "verdicts": [
+        {
+          "seed": "141",
+          "recordedState": "planned",
+          "verdict": "promote-finalized"
+        }
+      ]
+    }
+  ]
+}
