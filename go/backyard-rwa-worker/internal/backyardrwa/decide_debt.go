@@ -85,6 +85,17 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		}
 		return d(HoldManualRecovery, "hard_ltv_without_repayment_buffer", 0)
 	}
+	// An admitted unwind whose sizing evidence went stale re-admits before any
+	// further leg; only the recovery holds and the hard-LTV safety above it
+	// may preempt.
+	if s.UnwindRefreshRequired {
+		return d(Hold, "unwind_requires_fresh_admission", 0)
+	}
+	// Finish a journal-explained stage even if deposits or claims have since
+	// changed demand. Reporting cannot reconcile cash still in this custody.
+	if s.VoltrStrategyIdleRaw > 0 {
+		return d(VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw)
+	}
 	if s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
 		// M4: the unwind legs below stay admissible when idle cannot cover the
 		// pending withdrawal queue.
@@ -94,11 +105,10 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		return d(ReportNAV, "post_mutation_nav_due", 0)
 	}
 	// A requested canary drain stays a drain even when Voltr idle already covers
-	// the withdrawal. Flat means every debt/collateral/bridge custody is cleared.
-	if s.CutoverDrain || s.WithdrawalDemandRaw > 0 {
-		if s.VoltrStrategyIdleRaw > 0 {
-			return d(VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw)
-		}
+	// the withdrawal, and an admitted unwind is "a full exit, independent of the
+	// user's claim amount", so it drains with no demand at all. Flat means every
+	// debt/collateral/bridge custody is cleared.
+	if s.CutoverDrain || s.Unwind || s.WithdrawalDemandRaw > 0 {
 		if s.PositionDebtRaw > 0 {
 			// A normal drain needs a full payoff. A principal-only or partial
 			// buffer can fail the interest bound or KLend's residual-debt floor;
@@ -141,6 +151,9 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		if s.WithdrawalDemandRaw > s.VoltrIdleRaw {
 			return d(HoldManualRecovery, "withdrawal_conservation_shortfall", s.WithdrawalDemandRaw-s.VoltrIdleRaw)
 		}
+		if s.Unwind {
+			return d(Hold, "unwind_complete", 0)
+		}
 		return d(Hold, "canary_flat_nav_current", 0)
 	}
 	// S1/S2 mirror the fixed lane: an unexplained drift holds, a reconciled
@@ -153,6 +166,18 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 			return hold
 		}
 		return d(ReportNAV, "nav_due", 0)
+	}
+	// Returning flat working cash is an exit. It does not need a usable entry
+	// market, an obligation account, or an entry LTV threshold. Unlike the USDC
+	// flat predicate, idle debt custody disqualifies the return: unattributed
+	// PYUSD residue keeps its own manual-recovery hold below and is never
+	// cleared or carried alongside a bridge-cash stage.
+	if !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.CollateralIdleRaw == 0 && s.DebtIdleRaw == 0 && s.SquadsIdleRaw > 0 &&
+		(s.CapacityRaw < s.SquadsIdleRaw || s.PolicyLimitRaw < s.SquadsIdleRaw || s.MaxTargetLTVEntryRaw < s.SquadsIdleRaw || s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
+		return d(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
+	}
+	if s.SelectorEntryPaused {
+		return d(Hold, "selector_entry_requires_fresh_admission", 0)
 	}
 	// Same prerequisite as the fixed lane: a deposit into a missing obligation
 	// is refused, so no allocation, swap, or deposit is constructed. Reports and
@@ -204,7 +229,19 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		return d(SwapStableToCollateralStep, "usdc_requires_collateral", min(s.SquadsIdleRaw, limit))
 	}
 	if s.VoltrIdleRaw > 0 {
-		return d(VoltrAllocateToSquads, "eligible_voltr_idle", min(s.VoltrIdleRaw, limit))
+		amount := min(s.VoltrIdleRaw, limit)
+		if s.PilotActive {
+			// A pilot allocation is sized only by the admitted selector entry
+			// equity, and that authority must still fit the working tranche cap
+			// and the reviewed capacity above. A missing or oversized admission
+			// holds for a fresh quote instead of spending unadmitted idle.
+			amount = min(amount, workingTrancheCap(s))
+			if s.SelectorEntryEquityRaw <= 0 || s.SelectorEntryEquityRaw > amount {
+				return d(Hold, "selector_entry_amount_requires_fresh_quote", 0)
+			}
+			amount = s.SelectorEntryEquityRaw
+		}
+		return d(VoltrAllocateToSquads, "eligible_voltr_idle", amount)
 	}
 	return d(Hold, "no_eligible_action", 0)
 }

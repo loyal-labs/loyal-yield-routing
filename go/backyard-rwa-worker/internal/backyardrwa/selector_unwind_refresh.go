@@ -9,6 +9,9 @@ import (
 
 // Renewal observes the same source again before replacing an expired interest
 // envelope. It never adds exit spending or makes a new destination choice.
+// Renewal authority resolves through the explicit reviewed manifest, the same
+// way the commit, decode and merge paths already do: the candidate AUTO
+// source renews exactly while that manifest's reviewed binding resolves.
 func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *RPCClient, manifest RouteManifest, observe func(context.Context) (Observation, error)) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -18,7 +21,7 @@ func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *RPCClient, ma
 		return err
 	}
 	var previous UnwindIntent
-	if json.Unmarshal(raw, &previous) != nil || previous.validate() != nil {
+	if json.Unmarshal(raw, &previous) != nil || manifest.validateUnwindIntent(previous) != nil {
 		return budgetHold("unwind_refresh_intent_unavailable")
 	}
 	o, err := observe(ctx)
@@ -43,10 +46,21 @@ func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *RPCClient, ma
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}
-	return d.renewSelectorUnwind(ctx, productionRouteKey, version, previous, o, source, slot)
+	return d.renewSelectorUnwindOnManifest(ctx, manifest, productionRouteKey, version, previous, o, source, slot)
 }
 
+// renewSelectorUnwind keeps the pre-manifest renewal signature for legacy
+// callers and tests: renewal authority resolves through the installed
+// embedded manifest, exactly as the embedded entry fence does.
 func (d *Database) renewSelectorUnwind(ctx context.Context, routeKey string, expectedVersion int64, previous UnwindIntent, o Observation, source selectorSourceQuote, confirmedSlot int64) error {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return err
+	}
+	return d.renewSelectorUnwindOnManifest(ctx, manifest, routeKey, expectedVersion, previous, o, source, confirmedSlot)
+}
+
+func (d *Database) renewSelectorUnwindOnManifest(ctx context.Context, manifest RouteManifest, routeKey string, expectedVersion int64, previous UnwindIntent, o Observation, source selectorSourceQuote, confirmedSlot int64) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	s := o.Snapshot
@@ -63,13 +77,13 @@ func (d *Database) renewSelectorUnwind(ctx context.Context, routeKey string, exp
 	current := func() bool {
 		return freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) && s.Slot > 0 && confirmedSlot >= floor && confirmedSlot <= source.Recipe.ValidThroughSlot && source.Recipe.ValidThroughSlot-s.Slot <= budgetMaxObservationLagSlots
 	}
-	if previous.validate() != nil || !current() || !s.Fresh || !s.PilotActive || !s.Unwind || !s.UnwindRefreshRequired || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain || s.RouteLane != previous.SourceLane || source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || s.ObservationID == "" || source.ExitBound == nil || !sha256Pattern.MatchString(source.Recipe.EvidenceID) || s.PositionCollateralRaw < 0 || s.PositionCollateralRaw > previous.MaxCollateralRaw || source.ExitBound.MaxCollateralRaw != s.PositionCollateralRaw || s.PositionDebtRaw <= previous.MaxDebtRaw || source.ExitBound.MaxDebtRaw < s.PositionDebtRaw {
+	if manifest.validateUnwindIntent(previous) != nil || !current() || !s.Fresh || !s.PilotActive || !s.Unwind || !s.UnwindRefreshRequired || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain || s.RouteLane != previous.SourceLane || source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || s.ObservationID == "" || source.ExitBound == nil || !sha256Pattern.MatchString(source.Recipe.EvidenceID) || s.PositionCollateralRaw < 0 || s.PositionCollateralRaw > previous.MaxCollateralRaw || source.ExitBound.MaxCollateralRaw != s.PositionCollateralRaw || s.PositionDebtRaw <= previous.MaxDebtRaw || source.ExitBound.MaxDebtRaw < s.PositionDebtRaw {
 		return budgetHold("unwind_refresh_evidence_unavailable")
 	}
 	next := previous
 	next.ObservationID, next.EvidenceID, next.CreatedAt = s.ObservationID, source.Recipe.EvidenceID, time.Now().UTC()
 	next.MaxCollateralRaw, next.MaxDebtRaw, next.CostBoundRaw = source.ExitBound.MaxCollateralRaw, source.ExitBound.MaxDebtRaw, source.ExitBound.GrossMicros
-	if err := next.validate(); err != nil {
+	if err := manifest.validateUnwindIntent(next); err != nil {
 		return err
 	}
 	lease, err := d.currentLease()

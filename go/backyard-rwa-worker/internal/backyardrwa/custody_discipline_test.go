@@ -126,10 +126,27 @@ func TestRefreshRequiresEmptyStrategyCustody(t *testing.T) {
 	if got := Decide(resolved); got.Action != ReportNAV || got.Reason != "nav_due" {
 		t.Fatalf("empty custody was blocked from reporting: %+v", got)
 	}
-	// The existing non-USDC path retains its residue hold.
+	// The non-USDC path now restores its journaled stage before the refresh,
+	// exactly like the USDC path, while unexplained staged evidence still
+	// fails closed.
 	canary := s
 	canary.RouteLane = "AUTO/AUTO/PYUSD"
-	if got := Decide(canary); got.Action != HoldManualRecovery || got.Reason != "custody_residue" {
-		t.Fatalf("non-USDC refresh ignored a custody residue: %+v", got)
+	if got := Decide(canary); got.Action != VoltrRestoreIdle || got.Reason != "withdrawal_staged" || got.AmountRaw != 5 {
+		t.Fatalf("non-USDC journaled stage was not restored before refresh: %+v", got)
+	}
+	resolvedCanary := canary
+	resolvedCanary.VoltrStrategyIdleRaw = 0
+	if got := Decide(resolvedCanary); got.Action != ReportNAV || got.Reason != "nav_due" {
+		t.Fatalf("empty non-USDC custody was blocked from reporting: %+v", got)
+	}
+	unknownCanary := canary
+	unknownCanary.StagedAmountKnown = false
+	if got := Decide(unknownCanary); got.Action != HoldManualRecovery || got.Reason != "custody_mismatch" {
+		t.Fatalf("non-USDC refresh accepted unknown staged evidence: %+v", got)
+	}
+	mismatchedCanary := canary
+	mismatchedCanary.StagedAmountRaw = 7
+	if got := Decide(mismatchedCanary); got.Action != HoldManualRecovery || got.Reason != "custody_mismatch" {
+		t.Fatalf("non-USDC refresh accepted mismatched staged evidence: %+v", got)
 	}
 }
