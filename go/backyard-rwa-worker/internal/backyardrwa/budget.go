@@ -3,6 +3,7 @@ package backyardrwa
 import (
 	"fmt"
 	"math"
+	"strconv"
 )
 
 const (
@@ -240,7 +241,12 @@ func (b *Phase3Budget) Admit(r BudgetReservation) error {
 			return err
 		}
 		if needed > row.ExitMicros {
-			return budgetHold("recovery_exceeds_reserved_exit")
+			return &BudgetHold{Reason: "recovery_exceeds_reserved_exit", Details: map[string]string{
+				"needed": strconv.FormatInt(needed, 10),
+				"prior":  strconv.FormatInt(row.ExitMicros, 10),
+				"upper":  strconv.FormatInt(r.UpperMicros, 10),
+				"tail":   strconv.FormatInt(r.ExitAfterMicros, 10),
+			}}
 		}
 	}
 	family, goal, err := b.totals(r.Family)

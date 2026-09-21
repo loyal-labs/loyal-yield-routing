@@ -457,6 +457,18 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 		recovery = false
 	}
 	exitAfter := plan.ExitAfterMicros
+	// A mid-unwind recovery step must not shrink the committed reserve to its
+	// own re-priced plan tail: quote drift between planning windows would
+	// strand the discarded slack and hold the next step on
+	// recovery_exceeds_reserved_exit. Retain the unspent prior reserve minus
+	// this transaction's admitted upper bound instead. Admit still refuses
+	// when this upper bound plus the plan tail exceeds the prior reserve, and
+	// a genuinely terminal tail of zero still clears the reserve.
+	if recovery && exitAfter > 0 && plan.CurrentCost.TotalMicros <= budget.Families[family].ExitMicros {
+		if retained := budget.Families[family].ExitMicros - plan.CurrentCost.TotalMicros; retained > exitAfter {
+			exitAfter = retained
+		}
+	}
 	maintenance, retainedExit, maintenanceErr := phase3MaintenanceNAVReserve(budget, family, observation.Snapshot, decision, plan, Action(lastReconciledAction), durableUnwind)
 	if maintenanceErr != nil {
 		return maintenanceErr
