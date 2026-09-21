@@ -41,7 +41,15 @@ func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterC
 	if selectorTrancheInProgress(s) {
 		return out, nil, budgetHold("complete_current_tranche_first")
 	}
-	source, err := observeSelectorSource(ctx, rpc, client, manifest, o)
+	// Idle cash under an AUTO route prices no exit, so its first quote comes
+	// from the candidate producer: the same reviewed gates bound to this
+	// manifest's autoPolicy and active lane. Funded sources and installed
+	// lanes keep the reviewed producer.
+	observeSource := observeSelectorSource
+	if s.RouteLane == autoAUTOPYUSD.Lane && !hasWorkingCapital(s) {
+		observeSource = observeAutoSelectorSource
+	}
+	source, err := observeSource(ctx, rpc, client, manifest, o)
 	if err != nil {
 		return out, nil, err
 	}
