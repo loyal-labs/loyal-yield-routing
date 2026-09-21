@@ -46,10 +46,15 @@ func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterC
 	// manifest's autoPolicy and active lane. Funded sources and installed
 	// lanes keep the reviewed producer.
 	observeSource := observeSelectorSource
+	sourceManifest := manifest
 	if s.RouteLane == autoAUTOPYUSD.Lane && !hasWorkingCapital(s) {
+		if o.planning == nil {
+			return out, nil, budgetHold("selector_source_unavailable")
+		}
+		sourceManifest = o.planning.observationManifest(manifest)
 		observeSource = observeAutoSelectorSource
 	}
-	source, err := observeSource(ctx, rpc, client, manifest, o)
+	source, err := observeSource(ctx, rpc, client, sourceManifest, o)
 	if err != nil {
 		return out, nil, err
 	}
