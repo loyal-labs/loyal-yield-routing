@@ -1080,7 +1080,7 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 		AND NOT (status='failed' AND signed_wire IS NULL AND COALESCE(signed_wire_sha256,'')=''
 			AND COALESCE(transaction_signature,'')='' AND broadcast_intent_at IS NULL
 			AND COALESCE(recovery_reason,'')<>'')
-		AND NOT (status='held' AND COALESCE(action,'')='HOLD' AND signed_wire IS NULL
+		AND (status='held' AND COALESCE(action,'')='HOLD' AND signed_wire IS NULL
 			AND COALESCE(signed_wire_sha256,'')='' AND COALESCE(transaction_signature,'')=''
 			AND broadcast_intent_at IS NULL
 			AND COALESCE(expected_effects->>'schema','')='loyal-backyard-rwa-operation-evidence/v1'

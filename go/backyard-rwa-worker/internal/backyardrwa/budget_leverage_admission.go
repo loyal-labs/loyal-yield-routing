@@ -18,7 +18,11 @@ func validateLeverageSwap(ctx context.Context, rpc *RPCClient, r JupiterSwapRequ
 	if err != nil {
 		return KaminoPayoffBound{}, nil, err
 	}
-	bound, accounts, err := observeKaminoPayoffWindow(ctx, rpc, route, slot, 3)
+	var additional []string
+	if route.Lane == autoAUTOPYUSD.Lane {
+		additional = append(additional, route.Kamino.Market)
+	}
+	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, slot, 3, additional...)
 	if err != nil {
 		return bound, nil, err
 	}
