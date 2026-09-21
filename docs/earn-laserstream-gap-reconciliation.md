@@ -61,3 +61,19 @@ Focused verification (disposable local PostgreSQL, no production credentials):
 bash scripts/verify-earn-replay-repair.sh ../loyal-app
 bash scripts/verify-earn-laserstream-gap-reconciliation.sh
 ```
+
+## Stalled policy stream (2026-09-18 to 2026-09-21)
+
+First-time Earn wallets have no rows in `loyal_yield`, so the account stream cannot
+watch them. Their first `route_policies` and `managed_vaults` rows come only from
+the Squads-program transaction stream (`earn_max_policy_sets_laserstream_v2`).
+That stream gave up after ten reconnect failures, and its cursor stayed at slot
+448021765 while the process kept running. Every new wallet's first deposit went
+unprojected (loyal-app ASK-2252).
+
+The monitor now restarts the reconnect cycle after exhaustion and emits
+`earn_max_policy_stream_exhausted`. A cursor older than the ~24h LaserStream
+replay window is clamped to the window edge and logged; the skipped range must be
+recovered with the gap tool, scoped per wallet, using the wallet's settings
+transaction slots as bounds. Transaction reads accept any version and decode from
+the JSON message, so v1 transactions no longer dead-letter reconciliation jobs.

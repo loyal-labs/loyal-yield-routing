@@ -45,6 +45,9 @@ const EARN_APY_FAILURE_REPORT_THRESHOLD: u32 = 3;
 const EARN_RECONCILIATION_CONCURRENCY: usize = 4;
 const AUTODEPOSIT_RECONCILIATION_CONCURRENCY: usize = 4;
 const EARN_MAX_POLICY_BOOTSTRAP_REPLAY_SLOTS: u64 = 10_000;
+// Helius documents a ~216,000-slot (24h) replay limit; leave margin for the
+// time between reading the RPC slot and the subscribe call landing.
+const LASERSTREAM_MAX_REPLAY_SLOTS: u64 = 200_000;
 const EARN_MAX_ACCOUNT_HISTORY_PAGE_SIZE: usize = 1_000;
 const EARN_MAX_ACCOUNT_HISTORY_LIMIT: usize = 10_000;
 
@@ -1002,8 +1005,34 @@ async fn laserstream_replay_start_slot(
         .await
         .map_err(orchestrator_error)?;
     Ok(durable
-        .map(|slot| laserstream_replay_from_slot(slot, replay_overlap_slots).min(current_slot))
+        .map(|slot| {
+            clamp_laserstream_replay_start(
+                laserstream_replay_from_slot(slot, replay_overlap_slots),
+                current_slot,
+                consumer_name,
+            )
+        })
         .unwrap_or(current_fallback))
+}
+
+/// LaserStream replays at most ~216,000 slots (about 24 hours). A cursor older
+/// than that makes every subscribe attempt fail, so the stream never comes back
+/// (ASK-2252: the policy cursor sat 1M slots behind). Start inside the window
+/// and report the gap; `earn-laserstream-gap-reconcile` recovers the skipped
+/// range from finalized history.
+fn clamp_laserstream_replay_start(requested: u64, current_slot: u64, consumer_name: &str) -> u64 {
+    let oldest_replayable = current_slot.saturating_sub(LASERSTREAM_MAX_REPLAY_SLOTS);
+    if requested < oldest_replayable {
+        tracing::error!(
+            consumer = consumer_name,
+            requested_from_slot = requested,
+            clamped_from_slot = oldest_replayable,
+            skipped_slots = oldest_replayable - requested,
+            "LaserStream cursor is outside the replay window; run earn-laserstream-gap-reconcile for the skipped range"
+        );
+        return oldest_replayable;
+    }
+    requested.min(current_slot)
 }
 
 async fn finalized_laserstream_replay_start_slot(
@@ -1049,11 +1078,12 @@ async fn earn_max_projection_replay_start_slot(
         .await
         .map_err(orchestrator_error)?;
     if durable > 0 {
-        return Ok(laserstream_replay_from_slot(
-            u64::try_from(durable).context("Earn MAX policy cursor is negative")?,
-            replay_overlap_slots,
-        )
-        .min(current_slot));
+        let durable = u64::try_from(durable).context("Earn MAX policy cursor is negative")?;
+        return Ok(clamp_laserstream_replay_start(
+            laserstream_replay_from_slot(durable, replay_overlap_slots),
+            current_slot,
+            consumer_name,
+        ));
     }
     Ok(laserstream_replay_from_slot(
         current_slot,
@@ -1110,6 +1140,26 @@ async fn log_finished_session(session: MonitorSession) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_cursor_is_clamped_into_the_laserstream_replay_window() {
+        let current = 449_073_607;
+        // Cursor 1M slots behind (the ASK-2252 stall) starts at the window edge.
+        assert_eq!(
+            clamp_laserstream_replay_start(448_021_765, current, "test"),
+            current - LASERSTREAM_MAX_REPLAY_SLOTS
+        );
+        // A recent cursor is used as-is.
+        assert_eq!(
+            clamp_laserstream_replay_start(current - 32, current, "test"),
+            current - 32
+        );
+        // A cursor ahead of the RPC view is capped at the RPC slot.
+        assert_eq!(
+            clamp_laserstream_replay_start(current + 5, current, "test"),
+            current
+        );
+    }
 
     #[test]
     fn watch_change_replays_from_live_processed_frontier() {
