@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ManualRestoreReprocessRequest pins the exact row: both fields are required
@@ -193,8 +194,19 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 	result.LeaseReleaseConfirmed = releaseErr == nil && released
 	if settleErr != nil {
 		result.Stage = "settlement"
-		// The row is unchanged and the fee remains reserved; the sanitized
-		// stage code is all the operator output carries.
+		var pgErr *pgconn.PgError
+		if errors.As(settleErr, &pgErr) {
+			result.Stage = "settlement_sql_" + pgErr.Code + "_" + pgErr.ConstraintName
+		}
+		// A BudgetHold names the exact existing safety guard that refused
+		// settlement; surfacing its Reason alone keeps operator output fixed
+		// while still identifying the guard. The row is unchanged and the fee
+		// remains reserved; the sanitized stage code is all the operator
+		// output carries.
+		var hold *BudgetHold
+		if errors.As(settleErr, &hold) {
+			result.Stage = hold.Reason
+		}
 		return result, sanitizedStage(result.Stage)
 	}
 	if releaseErr != nil || !released {
