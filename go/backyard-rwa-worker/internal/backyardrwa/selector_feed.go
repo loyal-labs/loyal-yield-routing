@@ -26,28 +26,34 @@ const selectorReserveSQL = `SELECT jsonb_build_object(
  'debtSupplyRaw',v.total_supply_amount,'debtBorrowRaw',v.borrowed_amount,
  'status',v.reserve_status,'emergency',v.emergency_mode,'curve',v.borrow_rate_curve,
  'hostBps',s.snapshot->'host_fixed_interest_rate_bps',
+ 'borrowApr',s.snapshot->'borrow_apr',
  'schema',s.snapshot->'observation_schema_version')
  FROM kamino.latest_verified_reserve_updates v
  JOIN kamino.reserve_updates s ON s.event_id=v.event_id AND s.reserve=v.reserve AND s.account_data_hash=v.account_data_hash
  WHERE v.reserve=ANY($1::text[])`
 
 type verifiedEconomicReserve struct {
-	Reserve    string             `json:"reserve"`
-	Market     string             `json:"market"`
-	Mint       string             `json:"mint"`
-	ObservedAt time.Time          `json:"observedAt"`
-	Slot       int64              `json:"slot"`
-	Hash       string             `json:"hash"`
-	Commitment string             `json:"commitment"`
-	SupplyAPY  *float64           `json:"supplyApy"`
-	BorrowAPY  *float64           `json:"borrowApy"`
-	SupplyRaw  *float64           `json:"debtSupplyRaw"`
-	BorrowRaw  *float64           `json:"debtBorrowRaw"`
-	Status     *int               `json:"status"`
-	Emergency  *bool              `json:"emergency"`
-	Curve      []BorrowCurvePoint `json:"curve"`
-	HostBPS    *float64           `json:"hostBps"`
-	Schema     *int               `json:"schema"`
+	Reserve    string    `json:"reserve"`
+	Market     string    `json:"market"`
+	Mint       string    `json:"mint"`
+	ObservedAt time.Time `json:"observedAt"`
+	Slot       int64     `json:"slot"`
+	Hash       string    `json:"hash"`
+	Commitment string    `json:"commitment"`
+	SupplyAPY  *float64  `json:"supplyApy"`
+	BorrowAPY  *float64  `json:"borrowApy"`
+	// BorrowAPR is the snapshot's own annualized borrow APR from the SAME
+	// verified event join. loyal-kamino-codec scales curve+host by
+	// 500ms/actual slot_duration_ms before publishing it, so it is the
+	// annualization evidence the raw per-slot curve lacks.
+	BorrowAPR *float64           `json:"borrowApr"`
+	SupplyRaw *float64           `json:"debtSupplyRaw"`
+	BorrowRaw *float64           `json:"debtBorrowRaw"`
+	Status    *int               `json:"status"`
+	Emergency *bool              `json:"emergency"`
+	Curve     []BorrowCurvePoint `json:"curve"`
+	HostBPS   *float64           `json:"hostBps"`
+	Schema    *int               `json:"schema"`
 }
 
 type nativeYield struct {
@@ -152,6 +158,14 @@ func readVerifiedEconomics(ctx context.Context, pool *pgxpool.Pool, routes []Run
 		if _, duplicate := out[r.Reserve]; duplicate {
 			return nil, fmt.Errorf("verified_reserve_feed_duplicate")
 		}
+		// Production boundary: every row must carry the snapshot's own
+		// annualized borrow APR. Missing, non-finite or negative evidence fails
+		// the whole read — combine must never silently fall back to the
+		// unadjusted per-slot curve. Zero stays valid: collateral reserves that
+		// never borrow legitimately report a zero borrow APR.
+		if r.BorrowAPR == nil || !finite(*r.BorrowAPR) || *r.BorrowAPR < 0 {
+			return nil, fmt.Errorf("verified_reserve_annualization_invalid")
+		}
 		out[r.Reserve] = r
 	}
 	if rows.Err() != nil {
@@ -192,6 +206,29 @@ func combineEconomicsWithLane(routes []RuntimeRoute, reserves map[string]verifie
 		// supplies exact execution-size capacity after policies, caps and swaps pass.
 		if *c.Status != 0 || *d.Status != 0 || *c.Emergency || *d.Emergency {
 			e.EntryBlockedReason = "reserve_inactive_or_emergency"
+		}
+		// The raw curve points are per-slot rates; loyal-kamino-codec
+		// annualizes curve+host by 500ms/actual slot duration before publishing
+		// borrow_apr, while the KEEP baseline compounds log1p(CurrentBorrowAPY)
+		// on that annualized basis. Projecting prospective borrowing off the
+		// unadjusted curve compares units that differ by that same factor and
+		// overstates the opportunity, so normalize the debt curve to the exact
+		// annualized APR of the SAME verified event: scale = borrow_apr / raw
+		// projected APR at the observed utilization. A zero base curve or an
+		// unusable ratio yields no invented scale — the lane is omitted and the
+		// refresh reports incomplete evidence. Rows without the field keep the
+		// unadjusted fixture behavior; readVerifiedEconomics never emits them.
+		if observed := d.BorrowAPR; observed != nil {
+			raw, rawErr := projectedBorrowAPR(e, 0)
+			if rawErr != nil || raw <= 0 || *observed <= 0 {
+				continue
+			}
+			scale := *observed / raw
+			curve := append([]BorrowCurvePoint(nil), e.BorrowCurve...)
+			for i := range curve {
+				curve[i].BorrowBPS *= scale
+			}
+			e.BorrowCurve, e.HostBorrowBPS = curve, e.HostBorrowBPS*scale
 		}
 		if e.validateWithLane(now, p, laneAllowed) == nil {
 			out = append(out, e)
