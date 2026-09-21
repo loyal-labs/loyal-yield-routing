@@ -254,6 +254,7 @@ pub struct LaserstreamPolicyUpdateSource {
     pub endpoint: String,
     pub api_key: String,
     pub from_slot: u64,
+    pub replay_overlap_slots: u64,
     pub config: SubscriptionConfig,
 }
 
@@ -749,6 +750,23 @@ async fn run_earn_max_policy_laserstream(
     .await;
 }
 
+/// Where a reconnect resumes. The durable cursor is the authority; the slot the
+/// process started from is a floor, because it was already clamped into the
+/// LaserStream replay window and an older slot makes every subscribe fail.
+fn earn_max_policy_resume_slot(
+    durable_slot: i64,
+    floor_slot: u64,
+    replay_overlap_slots: u64,
+) -> u64 {
+    let Ok(durable) = u64::try_from(durable_slot) else {
+        return floor_slot;
+    };
+    if durable == 0 {
+        return floor_slot;
+    }
+    laserstream_replay_from_slot(durable, replay_overlap_slots).max(floor_slot)
+}
+
 async fn run_earn_max_laserstream_subscription(
     source: LaserstreamPolicyUpdateSource,
     request: SubscribeRequest,
@@ -756,8 +774,35 @@ async fn run_earn_max_laserstream_subscription(
     policy_monitor: Arc<Mutex<PolicyMonitor<PostgresPolicyMatchSink>>>,
     running: Arc<AtomicBool>,
 ) {
+    let floor_slot = source.from_slot;
+    let mut request = request;
     let mut attempt = 1;
     while running.load(Ordering::Relaxed) {
+        // Helius drops this subscription with "Internal error during backfill"
+        // every ~25 minutes. Re-requesting the slot computed at process start
+        // restarts the whole backfill on each reconnect, so a catch-up longer
+        // than that interval never finishes (ASK-2252, 2026-09-21: the cursor
+        // sat at one slot for 20 minutes while the stream replayed covered
+        // ground). Resume from the durable cursor instead.
+        match store
+            .projection_offset(EARN_MAX_POLICY_PROJECTION_CONSUMER)
+            .await
+        {
+            Ok(durable) => {
+                request.from_slot = Some(earn_max_policy_resume_slot(
+                    durable,
+                    floor_slot,
+                    source.replay_overlap_slots,
+                ));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    floor_slot,
+                    "failed to read the Earn MAX policy cursor; resuming from the process-start slot"
+                );
+            }
+        }
         let config = LaserstreamConfig::new(source.endpoint.clone(), source.api_key.clone())
             .with_max_reconnect_attempts(0)
             .with_replay(true);
@@ -765,6 +810,7 @@ async fn run_earn_max_laserstream_subscription(
         futures_util::pin_mut!(stream);
         tracing::info!(
             attempt,
+            from_slot = request.from_slot,
             "Earn MAX policy LaserStream subscription connected"
         );
         let mut heartbeat = time::interval(source.config.heartbeat_interval);
@@ -1039,6 +1085,22 @@ fn decode_ui_account_data(data: UiAccountData) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_resumes_from_the_durable_cursor_not_the_start_slot() {
+        let floor = 448_921_765;
+        // The cursor advanced during the backfill: resume there, not at the floor.
+        assert_eq!(
+            earn_max_policy_resume_slot(449_040_241, floor, 32),
+            449_040_209
+        );
+        // A cursor behind the process-start slot would fall outside the replay
+        // window, so the floor still wins.
+        assert_eq!(earn_max_policy_resume_slot(448_021_765, floor, 32), floor);
+        // No cursor yet, or an unreadable one, keeps the process-start slot.
+        assert_eq!(earn_max_policy_resume_slot(0, floor, 32), floor);
+        assert_eq!(earn_max_policy_resume_slot(-1, floor, 32), floor);
+    }
 
     #[test]
     fn fresh_subscription_request_preserves_replay_slot() {
