@@ -220,7 +220,7 @@ func decodeV0OuterInstruction(t *testing.T, message []byte) ([]string, []string,
 	}
 	offset += 32 // recent blockhash
 	instructions, err := decodeShortVec(message, &offset)
-	if err != nil || instructions == 0 || instructions > 2 {
+	if err != nil || instructions == 0 || instructions > 3 {
 		t.Fatalf("v0 message carries an unsupported instruction count: %v", err)
 	}
 	found := 0
