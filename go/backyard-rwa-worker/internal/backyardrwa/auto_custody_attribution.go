@@ -23,11 +23,15 @@ package backyardrwa
 // route's reconciled journal — newest first in the journal's own composite
 // order, no custody-substring filter, no content filter of any kind — plus
 // three chronology-independent route-wide conflict prechecks (bounded
-// EXISTS): any unresolved (nonterminal) route record, any unrecognized
-// terminal/manual-state record (except failed rows the journal itself proves
-// never signed and never broadcast — the legitimate presend rejection), and
-// any reconciled record with a malformed ordering identity (NULL or
-// nonpositive slot, absent signature or digest). Every route record is
+// reads): any unresolved (nonterminal) route record, any unrecognized
+// terminal/manual-state record (except the two families the journal itself
+// proves inert — presend rejections that never signed or broadcast, and
+// ordinary unsigned unbroadcast HOLD decision envelopes — with the surviving
+// bounded candidates classified only after the zero-origin is proven, by
+// exact NAV-report wire bytes or by a positive expiry strictly before the
+// origin's dynamically resolved finalized block height), and any reconciled
+// record with a malformed ordering identity (NULL or nonpositive slot,
+// absent signature or digest). Every route record is
 // covered by exactly one of the four reads, so nothing can fall between
 // them. The validator strictness-checks every row in the window from the tip
 // THROUGH the proven zero-start origin and STOPS there: strict token-account
@@ -69,6 +73,13 @@ const (
 	// it carries custody evidence.
 	sharedCustodyUnresolvedStatuses = `('decided','built','simulated','signed','broadcast_intent','submitted','confirmed','reconciling')`
 
+	// sharedCustodyUnknownRowBound caps how many unrecognized terminal/manual
+	// candidates the reader will fetch and classify. The query reads one extra
+	// row, so an over-bound candidate set is a refusal, never a silent
+	// truncation that could hide an unexcusable record. The bound is sized
+	// well above the observed live candidate population.
+	sharedCustodyUnknownRowBound = 256
+
 	// The canonical reconciled evidence envelope, pinned to reconcile.go.
 	reconciledEffectsSchema = "loyal-backyard-rwa-reconciled-effects/v1"
 	reconciledEffectsSource = "confirmed-transaction-meta"
@@ -92,20 +103,42 @@ type custodyAttributionRow struct {
 
 // sharedCustodyAttributionEvidence is the coherent read bundle: ONE bounded
 // unfiltered journal window (every route row, newest first in the journal's
-// composite order) plus two chronology-independent global conflict flags.
+// composite order) plus chronology-independent global conflict flags.
 // The flags are independent of the window order and bound, so an unresolved
 // or unrecognized record can never be skipped by chain chronology (NULL
 // slots sort LAST in the composite order, behind a proven zero-start origin)
 // or by the window limit.
+//
+// The unknown gate is a bounded candidate list, not a bare flag. Two families
+// are excluded in SQL because the journal itself proves them inert: failed
+// rows that provably never signed and never broadcast (the legitimate presend
+// rejection), and ordinary HOLD decision rows — 'held' is terminal, and a
+// held row with no wire, no wire digest, no signature, no broadcast intent,
+// and only the decision envelope (no built effects, no phase3 build input)
+// could never have moved anything, so thousands of them cannot exhaust any
+// bound. Every surviving candidate is classified by the validator, strictly
+// AFTER the walk proves the zero-origin: a terminal signed NAV report is
+// recognized by its exact persisted bytes through the production wire
+// validator and the persisted build input's compiled ReportNAV message (which
+// must name no shared custody account), and every other candidate is excused
+// only by a POSITIVE blockhash expiry strictly before the origin slot's
+// finalized block height, resolved dynamically through the caller-supplied
+// RPC client. Anything missing, unclassifiable, or unresolvable holds.
 type sharedCustodyAttributionEvidence struct {
 	Rows []custodyAttributionRow
 	// Unresolved is the route-wide existence of any nonterminal operation.
 	Unresolved bool
-	// Unknown is the route-wide existence of any unrecognized
-	// terminal/manual-recovery record, EXCEPT failed rows the journal itself
-	// proves never signed and never broadcast (the legitimate presend
-	// rejection MarkPreBroadcastFailed writes).
+	// Unknown is set when any unrecognized terminal/manual-recovery record
+	// survived the reader's two provably-inert SQL exclusions (presend
+	// rejections and ordinary unsigned unbroadcast HOLD decision envelopes).
+	// With UnknownRows populated it is classified, not held unconditionally;
+	// Unknown without rows (a caller that did not fetch candidates) still
+	// holds unconditionally in the validator.
 	Unknown bool
+	// UnknownRows is the bounded candidate list behind Unknown: every route
+	// record in an unrecognized terminal/manual state, carrying exactly the
+	// columns the validator's two positive inertness classifications need.
+	UnknownRows []custodyAttributionUnknownRow
 	// MalformedIdentity is the route-wide existence of any reconciled record
 	// whose ordering identity is malformed: NULL or nonpositive confirmed
 	// slot, or absent signature or digest. Such a row sorts LAST in the
@@ -113,6 +146,138 @@ type sharedCustodyAttributionEvidence struct {
 	// so it must not be hideable behind a proven zero-start origin or beyond
 	// the window bound.
 	MalformedIdentity bool
+}
+
+// custodyAttributionUnknownRow is the bounded read-only projection of one
+// route record in an unrecognized terminal/manual state, carrying every
+// column the two positive inertness classifications need: the full persisted
+// signed-wire evidence for the NAV recognition, and the blockhash expiry for
+// the historical-expiry excuse. BuildInput is the persisted phase3 build
+// input JSONB (nil when the record has none).
+type custodyAttributionUnknownRow struct {
+	OperationID          string
+	Action               string
+	LastValidBlockHeight int64
+	SignedWirePresent    bool
+	SignedWire           []byte
+	SignedWireSHA256     string
+	TransactionSignature string
+	MessageSHA256        string
+	RecentBlockhash      string
+	SimulationSlot       int64
+	BuildInput           []byte
+}
+
+// recognizedInertNAVReport positively proves one unknown terminal record
+// could never touch the shared custody. The persisted row must carry the
+// COMPLETE signed-wire evidence the production signing persistence writes,
+// the production validator must reconstruct and verify it against the pinned
+// delegate, the persisted phase3 build input must decode to a ReportNAV
+// bridge request (the compiler itself refuses any nonzero amount), the exact
+// message the compiler emits must be byte-identical to the signed wire's own
+// message, and the compiled message's account-key list must name no custody
+// account. A missing field, decode failure, digest drift, or custody match
+// is a refusal to recognize — never a pass — and leaves the record to the
+// expiry classification, which fails closed.
+func (r custodyAttributionUnknownRow) recognizedInertNAVReport(cfg sharedCustodyAttributionConfig) bool {
+	if r.Action != string(ReportNAV) || !r.SignedWirePresent || len(r.SignedWire) <= 65 || r.SignedWire[0] != 1 {
+		return false
+	}
+	evidence := BuildResult{
+		MessageSHA256: r.MessageSHA256, SignedWire: r.SignedWire, SignedWireSHA256: r.SignedWireSHA256,
+		TransactionSignature: r.TransactionSignature, RecentBlockhash: r.RecentBlockhash,
+		LastValidBlockHeight: r.LastValidBlockHeight, SimulationSlot: r.SimulationSlot,
+	}
+	if evidence.validateForDelegate(cfg.Delegate) != nil {
+		return false
+	}
+	var input phase3BuildInput
+	if len(r.BuildInput) == 0 || json.Unmarshal(r.BuildInput, &input) != nil {
+		return false
+	}
+	decoded, _, _, err := input.decode()
+	if err != nil {
+		return false
+	}
+	bridge, ok := decoded.(BridgeBuildRequest)
+	if !ok || bridge.Action != ReportNAV || bridge.AmountRaw != 0 {
+		return false
+	}
+	message, err := CompileBridgeMessage(bridge)
+	if err != nil || !bytes.Equal(message, r.SignedWire[65:]) {
+		return false
+	}
+	custody, err := decodeKey(cfg.Custody)
+	if err != nil {
+		return false
+	}
+	touches, err := bridgeMessageNamesCustody(message, custody)
+	return err == nil && !touches
+}
+
+// bridgeMessageNamesCustody reports whether a compiled legacy bridge
+// message's static account-key list contains the pinned custody key. The
+// compiled ReportNAV message is always the legacy shape; any other shape is
+// a refusal, never a "no touch".
+func bridgeMessageNamesCustody(message []byte, custody publicKey) (bool, error) {
+	if len(message) < 4 || message[0] != 1 || message[1] != 0 {
+		return false, budgetHold("custody_attribution_malformed_record")
+	}
+	offset := 3
+	count, err := decodeShortVec(message, &offset)
+	if err != nil || count <= 0 || count > 256 || len(message)-offset < count*32+32 {
+		return false, budgetHold("custody_attribution_malformed_record")
+	}
+	for index := 0; index < count; index++ {
+		var key publicKey
+		copy(key[:], message[offset+index*32:])
+		if key == custody {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// resolveSharedCustodyUnknownRecords excuses the bounded unknown candidates
+// only through the two positive classifications, evaluated strictly AFTER
+// the walk has proven the zero-origin: a terminal signed NAV report whose
+// exact persisted bytes cannot touch the shared custody, or — for every
+// other candidate — a POSITIVE blockhash expiry strictly before the origin
+// slot's finalized block height, resolved dynamically through the explicit
+// resolver. Such an expired wire, had it landed at all, landed before the
+// proven zero-start edge that severs older history, so it cannot explain any
+// part of the observed residue. A nonpositive expiry, an unavailable origin
+// height, or an expiry at or after the origin height holds.
+func resolveSharedCustodyUnknownRecords(ctx context.Context, rows []custodyAttributionUnknownRow, cfg sharedCustodyAttributionConfig, originSlot int64, originBlockHeight func(context.Context, int64) (int64, error)) error {
+	originHeight := int64(0)
+	for _, row := range rows {
+		if row.recognizedInertNAVReport(cfg) {
+			continue
+		}
+		if row.LastValidBlockHeight <= 0 {
+			return budgetHold("custody_attribution_unknown_record")
+		}
+		if originHeight == 0 {
+			if originBlockHeight == nil {
+				// No resolver: the legacy failure reason. The route held on
+				// this record before the expiry classification existed, and
+				// nothing here silently relaxes that.
+				return budgetHold("custody_attribution_unknown_record")
+			}
+			height, err := originBlockHeight(ctx, originSlot)
+			if err != nil {
+				return err
+			}
+			if height <= 0 {
+				return budgetHold("custody_attribution_origin_height_unavailable")
+			}
+			originHeight = height
+		}
+		if row.LastValidBlockHeight >= originHeight {
+			return budgetHold("custody_attribution_unknown_record")
+		}
+	}
+	return nil
 }
 
 // sharedCustodyAttributionConfig pins the exact custody identity the chain
@@ -563,11 +728,17 @@ func custodyAttributionStep(row custodyAttributionRow, signature string, slot in
 // from the lease-scoped reader, observedRaw/observedSlot the FRESH snapshot
 // the proof is bound to. BEFORE any chain walking it fails closed on the
 // three route-wide prechecks — any unresolved (nonterminal) operation, any
-// unrecognized manual/terminal-state record (except proven no-sign/no-
-// broadcast presend failures), and any reconciled record with a malformed
-// ordering identity — however they sort and however the window bound
-// truncates, so such records cannot hide behind a proven zero-start origin
-// or beyond the window. The walk then strictness-checks EVERY row of the
+// unrecognized manual/terminal-state record, and any reconciled record with
+// a malformed ordering identity — however they sort and however the window
+// bound truncates, so such records cannot hide behind a proven zero-start
+// origin or beyond the window. The unknown precheck is classification-
+// deferred, not waived: candidates the reader could not prove inert in SQL
+// are classified only AFTER the walk proves the zero-origin (proof ordering:
+// validated zero-origin first, unknown expiry compared against its block
+// height), by exact NAV-report wire bytes or by a positive expiry strictly
+// before the origin's dynamically resolved finalized block height, and any
+// unclassifiable or unresolvable candidate holds. The walk then
+// strictness-checks EVERY row of the
 // unfiltered window from the tip back THROUGH the origin: foreign routes,
 // unrecognized states, NULL receipts, unreadable or custody-intending
 // expected effects, malformed canonical evidence, digest mismatches, and
@@ -583,7 +754,19 @@ func custodyAttributionStep(row custodyAttributionRow, signature string, slot in
 // native-balance evidence) from this proof, and the route-wide gates above
 // are what hold it closed. A restart over the same rows reconstructs the
 // identical proof.
+// validateSharedCustodyAttribution is the signature-stable form: no origin
+// block-height resolver, so the historical-expiry classification fails
+// closed if any candidate needs it.
 func validateSharedCustodyAttribution(observedRaw uint64, observedSlot int64, cfg sharedCustodyAttributionConfig, evidence sharedCustodyAttributionEvidence, maxDepth int) (sharedCustodyProof, error) {
+	return validateSharedCustodyAttributionResolved(context.Background(), observedRaw, observedSlot, cfg, evidence, maxDepth, nil)
+}
+
+// validateSharedCustodyAttributionResolved is the full validator. The
+// originBlockHeight resolver — wired by production callers to the explicit
+// RPC client's finalized getBlock — is consulted at most once, and only when
+// the proven zero-origin exists AND at least one unknown candidate needs the
+// expiry excuse.
+func validateSharedCustodyAttributionResolved(ctx context.Context, observedRaw uint64, observedSlot int64, cfg sharedCustodyAttributionConfig, evidence sharedCustodyAttributionEvidence, maxDepth int, originBlockHeight func(context.Context, int64) (int64, error)) (sharedCustodyProof, error) {
 	// Precheck 1, route-wide and chronology-independent: any pending or
 	// ambiguous operation — with or without custody evidence — means the
 	// custody state is not settled. A NULL confirmed_slot sorts LAST in the
@@ -594,13 +777,14 @@ func validateSharedCustodyAttribution(observedRaw uint64, observedSlot int64, cf
 		return sharedCustodyProof{}, budgetHold("custody_attribution_unresolved_operation")
 	}
 	// Precheck 2, route-wide and chronology-independent: an unrecognized
-	// manual/terminal state has unproven provenance. It holds regardless of
-	// its content, slot, or position: the reconciled account list is only the
-	// expected-effects projection, so no classification of such a record can
-	// prove it never moved the shared custody. Failed rows the journal itself
-	// proves never signed and never broadcast are excluded by the reader —
-	// the one legitimate presend rejection must not disable cleanup forever.
-	if evidence.Unknown {
+	// manual/terminal state has unproven provenance. Candidates the reader
+	// already proved inert in SQL never reach this validator; the bounded
+	// survivors are classified strictly AFTER the zero-origin is proven (see
+	// resolveSharedCustodyUnknownRecords). Without the candidate rows — an
+	// Unknown flag a direct caller set but did not back with rows — there is
+	// nothing to classify, so the record holds unconditionally, exactly as
+	// before.
+	if evidence.Unknown && len(evidence.UnknownRows) == 0 {
 		return sharedCustodyProof{}, budgetHold("custody_attribution_unknown_record")
 	}
 	// Precheck 3, route-wide and chronology-independent: a reconciled record
@@ -746,6 +930,14 @@ func validateSharedCustodyAttribution(observedRaw uint64, observedSlot int64, cf
 		}
 	}
 	if originFound {
+		// PROOF ORDERING: the validated zero-origin exists FIRST; only now
+		// are the bounded unknown candidates compared against it — NAV wires
+		// by their exact bytes, everything else by a positive expiry strictly
+		// before the origin's finalized block height. A candidate that cannot
+		// be excused, and every failure to resolve the origin height, hold.
+		if err := resolveSharedCustodyUnknownRecords(ctx, evidence.UnknownRows, cfg, proof.Origin.Slot, originBlockHeight); err != nil {
+			return sharedCustodyProof{}, err
+		}
 		return proof, nil
 	}
 	if tip {
@@ -758,9 +950,12 @@ func validateSharedCustodyAttribution(observedRaw uint64, observedSlot int64, cf
 // The passed lease must be THIS worker Database's own current lease (identity
 // compared via currentLease), then asserted against the route state row
 // inside one coherent read-only repeatable-read transaction that reads
-// (a) whether ANY unresolved operation exists on the route key, (b) whether
-// ANY route record sits in an unrecognized terminal/manual state — except
-// failed rows the journal proves never signed and never broadcast — and (c)
+// (a) whether ANY unresolved operation exists on the route key, (b) the
+// BOUNDED candidate list of route records in unrecognized terminal/manual
+// states — except the two families the journal proves inert (presend
+// rejections that never signed or broadcast, and ordinary unsigned
+// unbroadcast HOLD decision envelopes), classified by the validator only
+// after the zero-origin is proven — and (c)
 // whether ANY reconciled record has a malformed ordering identity: three
 // bounded existence probes, independent of the composite order and of the
 // window limit — plus (d) ONE bounded unfiltered contiguous window of the
@@ -846,25 +1041,73 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 		lease.RouteKey, excludeOperationID).Scan(&evidence.Unresolved); err != nil {
 		return evidence, err
 	}
-	// Precheck 2, route-wide existence probe, independent of any ordering or
-	// limit: ANY route record in an unrecognized terminal/manual state has
-	// unproven provenance and holds the route closed regardless of its
-	// content, slot, or position — EXCEPT failed rows the journal itself
-	// proves never signed and never broadcast: NULL signed wire, wire digest,
-	// transaction signature, and broadcast intent, with an explicit failure
-	// reason. That is exactly the state MarkPreBroadcastFailed writes for a
-	// legitimate presend rejection (from decided/built/simulated, which
-	// cannot have produced a signature), and one such rejection must not
-	// disable attribution forever. Ambiguous failures carrying signing or
-	// broadcast state — including signed wires whose signature was never
-	// confirmed — and manual-recovery records still hold.
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.multiply_operations
+	// Precheck 2, route-wide, independent of any ordering or limit: the
+	// BOUNDED candidate list of records in unrecognized terminal/manual
+	// states. Two families are excluded in SQL because the journal itself
+	// proves them inert:
+	//
+	//   (a) failed rows that provably never signed and never broadcast — NULL
+	//       signed wire, wire digest, transaction signature, and broadcast
+	//       intent, with an explicit failure reason. That is exactly the
+	//       state MarkPreBroadcastFailed writes for a legitimate presend
+	//       rejection (from decided/built/simulated, which cannot have
+	//       produced a signature), and one such rejection must not disable
+	//       attribution forever.
+	//
+	//   (b) ordinary HOLD decision rows. 'held' is terminal — no transition
+	//       leaves it — and a held row with no wire, no wire digest, no
+	//       signature, and no broadcast intent, carrying only the decision
+	//       envelope (schema-pinned, expectedEffects null/absent, no phase3
+	//       build input) never carried capital, so the thousands of ordinary
+	//       holds a long-lived route accumulates cannot exhaust any bound.
+	//       The schema comparison COALESCEs to the empty string and the whole
+	//       inert predicate is wrapped IS NOT TRUE, so SQL three-valued logic
+	//       can never exclude a malformed or NULL expected_effects row: it
+	//       stays a candidate and holds.
+	//
+	// Ambiguous failures carrying signing or broadcast state — including
+	// signed wires whose signature was never confirmed — and manual-recovery
+	// records remain candidates. They are returned to the validator, which
+	// classifies them strictly AFTER the zero-origin is proven; the list is
+	// read with one extra slot so an over-bound candidate set is a refusal,
+	// never a silent truncation.
+	candidates, err := tx.Query(ctx, `SELECT operation_id, COALESCE(action,''), COALESCE(last_valid_block_height,0),
+		signed_wire IS NOT NULL, COALESCE(signed_wire,''), COALESCE(signed_wire_sha256,''),
+		COALESCE(transaction_signature,''), COALESCE(message_sha256,''), COALESCE(recent_blockhash,''),
+		COALESCE(simulation_slot,0), expected_effects->'phase3'->'buildInput'
+		FROM loyal_yield.multiply_operations
 		WHERE route_key=$1 AND status NOT IN `+sharedCustodyUnresolvedStatuses+` AND status <> 'reconciled'
 		AND NOT (status='failed' AND signed_wire IS NULL AND COALESCE(signed_wire_sha256,'')=''
 			AND COALESCE(transaction_signature,'')='' AND broadcast_intent_at IS NULL
-			AND COALESCE(recovery_reason,'')<>''))`, lease.RouteKey).Scan(&evidence.Unknown); err != nil {
+			AND COALESCE(recovery_reason,'')<>'')
+		AND NOT (status='held' AND COALESCE(action,'')='HOLD' AND signed_wire IS NULL
+			AND COALESCE(signed_wire_sha256,'')='' AND COALESCE(transaction_signature,'')=''
+			AND broadcast_intent_at IS NULL
+			AND COALESCE(expected_effects->>'schema','')='loyal-backyard-rwa-operation-evidence/v1'
+			AND (expected_effects->'expectedEffects' IS NULL OR expected_effects->'expectedEffects'='null'::jsonb)
+			AND expected_effects->'phase3' IS NULL) IS NOT TRUE
+		ORDER BY operation_id COLLATE "C" LIMIT $2`, lease.RouteKey, sharedCustodyUnknownRowBound+1)
+	if err != nil {
 		return evidence, err
 	}
+	for candidates.Next() {
+		var row custodyAttributionUnknownRow
+		if err := candidates.Scan(&row.OperationID, &row.Action, &row.LastValidBlockHeight,
+			&row.SignedWirePresent, &row.SignedWire, &row.SignedWireSHA256, &row.TransactionSignature,
+			&row.MessageSHA256, &row.RecentBlockhash, &row.SimulationSlot, &row.BuildInput); err != nil {
+			candidates.Close()
+			return evidence, err
+		}
+		evidence.UnknownRows = append(evidence.UnknownRows, row)
+	}
+	if err := candidates.Err(); err != nil {
+		return evidence, err
+	}
+	candidates.Close()
+	if len(evidence.UnknownRows) > sharedCustodyUnknownRowBound {
+		return evidence, budgetHold("custody_attribution_unknown_overflow")
+	}
+	evidence.Unknown = len(evidence.UnknownRows) > 0
 	// Precheck 3, route-wide existence probe, independent of any ordering or
 	// limit: a reconciled record with a malformed ordering identity — NULL or
 	// nonpositive confirmed slot, absent signature or digest — would fail the

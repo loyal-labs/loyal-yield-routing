@@ -210,6 +210,7 @@ const (
 // rpcDiagnosticMethods is the fixed allowlist of every method this module
 // issues through call. Any other name renders as the fixed "unknown" token.
 var rpcDiagnosticMethods = map[string]struct{}{
+	"getBlock":                          {},
 	"getBlockHeight":                    {},
 	"getBlockTime":                      {},
 	"getFeeForMessage":                  {},
@@ -904,6 +905,30 @@ func (c *RPCClient) blockHeight(ctx context.Context, commitment string) (int64, 
 		return 0, fmt.Errorf("confirmed block height unavailable")
 	}
 	return height, nil
+}
+
+// FinalizedBlockHeightForSlot returns the ledger block height of the
+// FINALIZED block containing slot, read with transactionDetails "none" so the
+// answer carries no transaction payload. It is the dynamic anchor the shared
+// custody attribution compares historical blockhash expiries against; a slot
+// without a finalized block is an error, never zero.
+func (c *RPCClient) FinalizedBlockHeightForSlot(ctx context.Context, slot int64) (int64, error) {
+	if slot <= 0 {
+		return 0, fmt.Errorf("slot is required")
+	}
+	var result struct {
+		BlockHeight int64 `json:"blockHeight"`
+	}
+	if err := c.call(ctx, "getBlock", []any{slot, map[string]any{
+		"commitment": "finalized", "transactionDetails": "none",
+		"rewards": false, "maxSupportedTransactionVersion": 1,
+	}}, &result); err != nil {
+		return 0, confirmedObservationUnavailable(err)
+	}
+	if result.BlockHeight <= 0 {
+		return 0, confirmedObservationUnavailable(fmt.Errorf("finalized block height unavailable for slot %d", slot))
+	}
+	return result.BlockHeight, nil
 }
 
 func ConfirmedSlot(ctx context.Context, rpcURL string) (int64, error) {

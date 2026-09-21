@@ -187,9 +187,22 @@ type sharedCustodySignedSpend struct {
 // shared-custody residue belongs to cfg.Lane under the lease and generation
 // the tick holds. expected is the PREPARED execution evidence's expected
 // effects: the probe runs only when they positively debit the pinned
-// custody. Strict gates: any nonterminal row on the route holds.
+// custody. Strict gates: any nonterminal row on the route holds. This
+// signature-stable form carries no RPC, so unknown terminal records can only
+// be classified by their exact NAV wire bytes — the historical-expiry
+// classification fails closed.
 func (d *Database) ObserveSharedCustodyOwnershipProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64) (sharedCustodyAdmissionProof, error) {
-	return d.observeSharedCustodySpendProof(ctx, manifest, cfg, expected, observedRaw, observedSlot, nil)
+	return d.ObserveSharedCustodyOwnershipProofWithRPC(ctx, manifest, cfg, expected, observedRaw, observedSlot, nil)
+}
+
+// ObserveSharedCustodyOwnershipProofWithRPC is the ownership proof with the
+// caller's explicit RPC client. The client is used ONLY to resolve the
+// proven zero-origin slot's finalized block height when unknown terminal
+// records need the historical-expiry classification; it never reads
+// environment or global config inside the database helper. nil keeps every
+// non-RPC classification and fails closed on the expiry path.
+func (d *Database) ObserveSharedCustodyOwnershipProofWithRPC(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, rpc *RPCClient) (sharedCustodyAdmissionProof, error) {
+	return d.observeSharedCustodySpendProof(ctx, manifest, cfg, expected, observedRaw, observedSlot, nil, sharedCustodyOriginHeightResolver(rpc))
 }
 
 // ObserveSharedCustodySendProof re-proves ownership at the pre-broadcast
@@ -199,20 +212,40 @@ func (d *Database) ObserveSharedCustodyOwnershipProof(ctx context.Context, manif
 // before broadcast). The signed row is the one validated exclusion from the
 // unresolved gate; every other state is refused, never exempted.
 func (d *Database) ObserveSharedCustodySendProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, signed sharedCustodySignedSpend) (sharedCustodyAdmissionProof, error) {
+	return d.ObserveSharedCustodySendProofWithRPC(ctx, manifest, cfg, expected, observedRaw, observedSlot, signed, nil)
+}
+
+// ObserveSharedCustodySendProofWithRPC is the send proof with the caller's
+// explicit RPC client for the origin block-height resolution, same contract
+// as ObserveSharedCustodyOwnershipProofWithRPC.
+func (d *Database) ObserveSharedCustodySendProofWithRPC(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, signed sharedCustodySignedSpend, rpc *RPCClient) (sharedCustodyAdmissionProof, error) {
 	if signed.OperationID == "" || signed.SignedWireSHA256 == "" || signed.TransactionSignature == "" {
 		return sharedCustodyAdmissionProof{}, budgetHold("custody_attribution_current_operation_invalid")
 	}
 	return d.observeSharedCustodySpendProof(ctx, manifest, cfg, expected, observedRaw, observedSlot, &sharedCustodyCurrentOperation{
 		OperationID: signed.OperationID, SignedWireSHA256: signed.SignedWireSHA256,
 		TransactionSignature: signed.TransactionSignature, ExpectedEffects: expected,
-	})
+	}, sharedCustodyOriginHeightResolver(rpc))
+}
+
+// sharedCustodyOriginHeightResolver adapts the explicit RPC client into the
+// validator's origin block-height resolver: the finalized block height
+// containing the proven zero-origin slot. nil yields nil — the expiry
+// classification then holds fail-closed instead of silently passing.
+func sharedCustodyOriginHeightResolver(rpc *RPCClient) func(context.Context, int64) (int64, error) {
+	if rpc == nil {
+		return nil
+	}
+	return func(ctx context.Context, slot int64) (int64, error) {
+		return rpc.FinalizedBlockHeightForSlot(ctx, slot)
+	}
 }
 
 // observeSharedCustodySpendProof is the shared proof core: planning read
 // under the caller's manifest, validated optional exclusion, journal walk,
 // observation binding, intent-prestate binding, and the carried
 // generation/fence.
-func (d *Database) observeSharedCustodySpendProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, current *sharedCustodyCurrentOperation) (sharedCustodyAdmissionProof, error) {
+func (d *Database) observeSharedCustodySpendProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, current *sharedCustodyCurrentOperation, originBlockHeight func(context.Context, int64) (int64, error)) (sharedCustodyAdmissionProof, error) {
 	spend := sharedCustodySpendRaw(expected, cfg)
 	if spend == 0 {
 		// The operation spends no shared custody: the attribution gate does
@@ -246,7 +279,7 @@ func (d *Database) observeSharedCustodySpendProof(ctx context.Context, manifest 
 	if err != nil {
 		return sharedCustodyAdmissionProof{}, err
 	}
-	proof, err := validateSharedCustodyAttribution(observedRaw, observedSlot, cfg, evidence, 0)
+	proof, err := validateSharedCustodyAttributionResolved(ctx, observedRaw, observedSlot, cfg, evidence, 0, originBlockHeight)
 	if err != nil {
 		return sharedCustodyAdmissionProof{}, err
 	}
@@ -543,7 +576,7 @@ func (d *Database) observeSharedCustodySendProofForOperation(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
-	proof, err := d.ObserveSharedCustodySendProof(ctx, manifest, cfg, decoded, raw, slot, signed)
+	proof, err := d.ObserveSharedCustodySendProofWithRPC(ctx, manifest, cfg, decoded, raw, slot, signed, rpc)
 	if err != nil {
 		return nil, err
 	}
