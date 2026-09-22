@@ -3953,7 +3953,10 @@ async fn load_movements(
                    ELSE NULL
                END AS pre_target_snapshot_observed_at,
                pre_source.amount_raw AS pre_source_amount_raw,
-               post_source.amount_raw AS post_source_amount_raw,
+               -- Zero-amount rows are no longer written to history; a missing
+               -- source or target row after a snapshot means zero.
+               CASE WHEN decision.post_snapshot_id IS NULL THEN NULL
+                    ELSE COALESCE(post_source.amount_raw, 0) END AS post_source_amount_raw,
                CASE
                    WHEN opportunity.execution_plan->>'kind' = 'same_mint'
                        THEN pre_target.liquidity_mint
@@ -3963,14 +3966,14 @@ async fn load_movements(
                END AS pre_target_liquidity_mint,
                CASE
                    WHEN opportunity.execution_plan->>'kind' = 'same_mint'
-                       THEN pre_target.has_value
+                       THEN COALESCE(pre_target.has_value, FALSE)
                    WHEN opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
                        THEN idle_pre_target.has_value
                    ELSE NULL
                END AS pre_target_has_value,
                CASE
                    WHEN opportunity.execution_plan->>'kind' = 'same_mint'
-                       THEN pre_target.amount_raw
+                       THEN COALESCE(pre_target.amount_raw, 0)
                    WHEN opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
                        THEN idle_pre_target.amount_raw
                    ELSE NULL
@@ -4003,12 +4006,15 @@ async fn load_movements(
                    snapshot.vault_id AS snapshot_vault_id,
                    snapshot.context AS snapshot_context,
                    snapshot.observed_slot, snapshot.observed_at,
-                   target.liquidity_mint, target.amount_raw, target.has_value,
+                   COALESCE(target.liquidity_mint, opportunity.liquidity_mint) AS liquidity_mint,
+                   COALESCE(target.amount_raw, 0) AS amount_raw,
+                   COALESCE(target.has_value, FALSE) AS has_value,
                    target.planning_metadata
             FROM loyal_yield.vault_position_snapshots snapshot
-            JOIN loyal_yield.vault_position_snapshot_positions target
+            LEFT JOIN loyal_yield.vault_position_snapshot_positions target
               ON target.snapshot_id = snapshot.id
              AND target.reserve = opportunity.target_reserve
+             AND target.liquidity_mint = opportunity.liquidity_mint
             WHERE opportunity.execution_plan->>'kind' = 'idle_vault_deposit'
               AND snapshot.vault_id = opportunity.vault_id
               AND snapshot.observed_at <= submission.created_at
@@ -4016,7 +4022,6 @@ async fn load_movements(
                   submission.confirmed_slot IS NULL
                   OR snapshot.observed_slot <= submission.confirmed_slot
               )
-              AND target.liquidity_mint = opportunity.liquidity_mint
             ORDER BY snapshot.observed_slot DESC, snapshot.id DESC
             LIMIT 1
         ) idle_pre_target ON TRUE

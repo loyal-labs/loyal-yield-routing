@@ -4231,24 +4231,30 @@ impl NeonSqlClient {
             let planning_metadata = position.planning_metadata;
             observed_reserves.push(reserve.clone());
 
-            sqlx::query!(
+            // History keeps only funded reserves. A zero row says "checked, empty",
+            // and the current-state table below already records that; the two
+            // history readers (fleet-worker expiry check, production evidence)
+            // treat a missing row as zero. Zero rows were 96% of the 774 GB table.
+            if amount > 0 {
+                sqlx::query!(
                 r#"
                 INSERT INTO loyal_yield.vault_position_snapshot_positions
                     (snapshot_id, reserve, market, liquidity_mint, amount_raw, supply_apy_bps, borrow_apy_bps, has_value, planning_metadata)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 "#,
-                snapshot_row.id,
-                reserve,
-                market,
-                liquidity_mint,
-                amount,
-                supply_apy_bps,
-                borrow_apy_bps,
-                amount > 0,
-                planning_metadata
-            )
-            .execute(&mut *tx)
-            .await?;
+                    snapshot_row.id,
+                    reserve,
+                    market,
+                    liquidity_mint,
+                    amount,
+                    supply_apy_bps,
+                    borrow_apy_bps,
+                    true,
+                    planning_metadata
+                )
+                .execute(&mut *tx)
+                .await?;
+            }
 
             sqlx::query!(
                 r#"
@@ -5018,24 +5024,27 @@ impl NeonSqlClient {
         let mut observed_reserves = Vec::with_capacity(next_positions.len());
         for position in next_positions {
             observed_reserves.push(position.reserve.clone());
-            sqlx::query!(
+            // Zero rows stay out of history; see reconcile_vault_transaction_guarded.
+            if position.amount_raw > 0 {
+                sqlx::query!(
                 r#"
                 INSERT INTO loyal_yield.vault_position_snapshot_positions
                     (snapshot_id, reserve, market, liquidity_mint, amount_raw, supply_apy_bps, borrow_apy_bps, has_value, planning_metadata)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 "#,
-                snapshot_row.id,
-                position.reserve,
-                position.market,
-                position.liquidity_mint,
-                position.amount_raw,
-                position.supply_apy_bps,
-                position.borrow_apy_bps,
-                position.has_value,
-                position.planning_metadata
-            )
-            .execute(&mut *tx)
-            .await?;
+                    snapshot_row.id,
+                    position.reserve,
+                    position.market,
+                    position.liquidity_mint,
+                    position.amount_raw,
+                    position.supply_apy_bps,
+                    position.borrow_apy_bps,
+                    position.has_value,
+                    position.planning_metadata
+                )
+                .execute(&mut *tx)
+                .await?;
+            }
 
             sqlx::query!(
                 r#"
@@ -6683,25 +6692,28 @@ async fn apply_earn_observed_balances(
     .await?;
     for reserve in reserve_state {
         let amount = to_i64_amount(reserve.amount_raw)?;
-        sqlx::query(
-            r#"
-            INSERT INTO loyal_yield.vault_position_snapshot_positions
-                (snapshot_id, reserve, market, liquidity_mint, amount_raw,
-                 supply_apy_bps, borrow_apy_bps, has_value, planning_metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            "#,
-        )
-        .bind(snapshot_id)
-        .bind(&reserve.reserve)
-        .bind(&reserve.market)
-        .bind(&reserve.liquidity_mint)
-        .bind(amount)
-        .bind(reserve.supply_apy_bps)
-        .bind(reserve.borrow_apy_bps)
-        .bind(reserve.has_value)
-        .bind(&reserve.planning_metadata)
-        .execute(&mut *conn)
-        .await?;
+        // Zero rows stay out of history; see reconcile_vault_transaction_guarded.
+        if amount > 0 {
+            sqlx::query(
+                r#"
+                INSERT INTO loyal_yield.vault_position_snapshot_positions
+                    (snapshot_id, reserve, market, liquidity_mint, amount_raw,
+                     supply_apy_bps, borrow_apy_bps, has_value, planning_metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                "#,
+            )
+            .bind(snapshot_id)
+            .bind(&reserve.reserve)
+            .bind(&reserve.market)
+            .bind(&reserve.liquidity_mint)
+            .bind(amount)
+            .bind(reserve.supply_apy_bps)
+            .bind(reserve.borrow_apy_bps)
+            .bind(reserve.has_value)
+            .bind(&reserve.planning_metadata)
+            .execute(&mut *conn)
+            .await?;
+        }
         sqlx::query(
             r#"
             INSERT INTO loyal_yield.vault_reserve_positions_current
