@@ -194,6 +194,8 @@ const FEE_PAYER_BALANCE_CACHE_MAX_ENTRIES: usize = 256;
 const DEFAULT_FLEET_EXECUTE_CONCURRENCY: usize = 8;
 const DEFAULT_FLEET_RECONCILE_CONCURRENCY: usize = 16;
 const DEFAULT_FLEET_RECONCILE_BATCH_SIZE: i64 = 32;
+/// Bounded above by the Go planner's 5-minute `stale_vault_position` gate;
+/// see docs/vault-position-snapshot-contract.md rule 3.
 const DEFAULT_FLEET_POSITION_SWEEP_INTERVAL_SECONDS: u64 = 300;
 const FLEET_POSITION_SWEEP_FAILURE_RETRY_SECONDS: u64 = 5;
 /// Consecutive transport failures before the first operational error is
