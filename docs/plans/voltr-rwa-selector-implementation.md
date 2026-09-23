@@ -1,5 +1,15 @@
 # Voltr RWA pilot implementation and release plan
 
+## State refresh — 2026-09-23 (ASK-2294)
+
+Read-only snapshot (public RPC finalized slot 449715926, Render API, deployed demo APIs). This supersedes the 09-17 board below where they differ.
+
+- Worker `sha-d1bcff99` (branch head) is live on `srv-dam87bp42hec738loc6g` since 2026-09-21. Manifest sha `b4d6677d…` matches both repo copies. NAV is reported about once a minute; route is idle.
+- HXtk holds 100.370294 USDC, all idle. The Squads vault has no Kamino debt or collateral. It holds 1.000000 USDG and 0.992252 CASH that the book does not account for.
+- Financed loops ran end to end on chain: Maple 2026-09-18 05:55–06:10, and AUTO 2026-09-21 06:24–07:37. Both went deposit → borrow → redeposit → repay → withdraw, and both obligations are closed again. Retained evidence files for these runs are still missing.
+- Policies: 141–144, 149–151 and 156 match their raw hashes; 152–155 match their masked digests. The superseded 145–148, 62–65 and 140 are absent. Settings: one signer (`BAqgbE…`, mask 7); next seed 157.
+- Remaining before deposits open: the user-side withdrawal request and claim through the demo on this release; sweeping or accounting for the USDG/CASH residue; the demo consumed-report gate and `verify:demo --tier full` PASS; and the joint session. Key separation is required before third-party money. Note that the delegate `62JLkP…` is shared with the Rust fleet services.
+
 ## Current critical path — replaces earlier status summaries
 
 **Not ready for external deposits.** The worker image has passed CI and deployed successfully; the compatible frontend is deployed and its live vault API is verified. Current-release funded money-flow and rotation proofs remain incomplete. Historical entries below retain evidence but do not define the current execution order. Existing hot-admin approval, 100-USDC vault cap, 10-USDC working equity, three reviewed USDC lanes, preserved spending history and full release acceptance remain unchanged.
