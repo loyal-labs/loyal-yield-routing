@@ -1075,6 +1075,13 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 	//       HOLD_CLEARED) with no wire, wire digest, signature or broadcast
 	//       intent: they record a hold or its clearing, never a transaction.
 	//
+	//   (d) signed rows that never recorded a broadcast intent and that
+	//       lifecycle recovery failed through MarkExpiredAbsentFailed: the
+	//       worker never sent the wire, and recovery proved its signature
+	//       absent after its blockhash expired, so it can never land. AUTO
+	//       sends refused at the final projection check left such rows after
+	//       the custody origin, and they held every PYUSD spend (2026-09-24).
+	//
 	// Ambiguous failures carrying signing or broadcast state — including
 	// signed wires whose signature was never confirmed — and manual-recovery
 	// records remain candidates. They are returned to the validator, which
@@ -1099,6 +1106,8 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 		AND NOT (status='manual_recovery' AND COALESCE(action,'') IN ('HOLD_MANUAL_RECOVERY','HOLD_CLEARED')
 			AND signed_wire IS NULL AND COALESCE(signed_wire_sha256,'')='' AND COALESCE(transaction_signature,'')=''
 			AND broadcast_intent_at IS NULL)
+		AND NOT (status='failed' AND broadcast_intent_at IS NULL
+			AND COALESCE(recovery_reason,'')='signature_absent_after_blockhash_expiry')
 		ORDER BY operation_id COLLATE "C" LIMIT $2`, lease.RouteKey, sharedCustodyUnknownScanBound+1)
 	if err != nil {
 		return evidence, err

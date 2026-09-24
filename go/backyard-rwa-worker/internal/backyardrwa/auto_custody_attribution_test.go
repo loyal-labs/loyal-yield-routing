@@ -1298,9 +1298,21 @@ func TestSharedCustodyUnknownBoundIgnoresInertNAVAndHoldMarkers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A signed swap never broadcast and failed as expired-absent can never land.
+	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,transaction_signature,last_valid_block_height,recovery_reason) VALUES($1,$2,'failed','SWAP_DEBT_TO_COLLATERAL_STEP','{}','\\x01','sig-unsent',999999999,'signature_absent_after_blockhash_expiry')`, routeKey+"-unsent", routeKey); err != nil {
+		t.Fatal(err)
+	}
 	evidence, err := db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
 	if err != nil || evidence.Unknown || len(evidence.UnknownRows) != 0 {
-		t.Fatal("inert NAV reports or hold markers counted as unknown", len(evidence.UnknownRows), err)
+		t.Fatal("inert NAV reports, hold markers or unsent expired rows counted as unknown", len(evidence.UnknownRows), err)
+	}
+	// The same failure once a broadcast intent was recorded stays unknown.
+	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,transaction_signature,broadcast_intent_at,last_valid_block_height,recovery_reason) VALUES($1,$2,'failed','SWAP_DEBT_TO_COLLATERAL_STEP','{}','\\x01','sig-sent',now(),999999999,'signature_absent_after_blockhash_expiry')`, routeKey+"-sent", routeKey); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
+	if err != nil || len(evidence.UnknownRows) != 1 || evidence.UnknownRows[0].OperationID != routeKey+"-sent" {
+		t.Fatal("broadcast expired row was excused", len(evidence.UnknownRows), err)
 	}
 	for i := 0; i <= sharedCustodyUnknownRowBound; i++ {
 		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,broadcast_intent_at,last_valid_block_height,recovery_reason) VALUES($1,$2,'failed','OPEN_ROUTE_STEP','{}','\x01',now(),5,'signature_absent_after_blockhash_expiry')`, fmt.Sprintf("%s-open-%03d", routeKey, i), routeKey); err != nil {
