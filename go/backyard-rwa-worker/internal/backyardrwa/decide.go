@@ -292,7 +292,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	// S2: a reconciled capital mutation reports only beyond the drift
 	// tolerance; the post-mutation requirement and the aging cadence report
 	// unconditionally.
-	if capitalMutationReports(s) || s.PostMutationNAVRequired || s.LastReportAgeSeconds >= 60 {
+	if capitalMutationReports(s) || s.PostMutationNAVRequired || (s.LastReportAgeSeconds >= 60 && !admittedEntryAllocationReady(s)) {
 		if hold, blocked := custodyResidueHold(s); blocked {
 			return hold
 		}
@@ -390,4 +390,16 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		return decision(OpenRouteStep, "prime_collateral_requires_borrow", 1)
 	}
 	return decision(Hold, "no_eligible_action", 0)
+}
+
+// admittedEntryAllocationReady lets a still-valid admitted selector entry
+// allocate before an age-only NAV report. The allocation carries its own
+// adaptor report, so the book is refreshed in the same transaction; reporting
+// first would outlive the entry's short quote window and pause every entry.
+// Drift, post-mutation and custody reports keep their priority, and only a
+// flat route whose sole working cash is Voltr idle qualifies.
+func admittedEntryAllocationReady(s Snapshot) bool {
+	return s.PilotActive && !s.SelectorEntryPaused && s.SelectorEntryEquityRaw > 0 &&
+		s.VoltrIdleRaw >= s.SelectorEntryEquityRaw && !s.CapitalMutated && !s.PostMutationNAVRequired &&
+		s.WithdrawalDemandRaw == 0 && !s.Unwind && !s.CutoverDrain && !hasWorkingCapital(s)
 }

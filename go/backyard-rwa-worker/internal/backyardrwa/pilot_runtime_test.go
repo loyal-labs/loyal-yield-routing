@@ -143,3 +143,41 @@ func TestPilotRuntimeRequiresPersistedVerifiedAuthority(t *testing.T) {
 	_, err = db.PilotRuntimeEnabled(ctx, key)
 	assertBudgetHold(t, err, "pilot_marker_without_budget")
 }
+
+// An admitted, still-valid selector entry allocates before an age-only NAV
+// report: the allocation carries its own adaptor report, and reporting first
+// outlives the entry's 30-second quote window (2026-09-24 canary, ASK-2297).
+// Drift and withdrawal demand keep their priority, and without an admitted
+// entry the age-only report still runs.
+func TestAdmittedEntryAllocatesBeforeAgeOnlyReport(t *testing.T) {
+	for _, lane := range selectorLanes {
+		s := base()
+		s.RouteLane, s.StrategyKey, s.PilotActive = lane, lane, true
+		s.SelectorEntryEquityRaw, s.VoltrIdleRaw = 200_000_000, 256_387_976
+		s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw = PilotWorkingTrancheCapRaw, PilotWorkingTrancheCapRaw, PilotWorkingTrancheCapRaw
+		s.LastReportAgeSeconds = 75
+		if d := Decide(s); d.Action != VoltrAllocateToSquads || d.AmountRaw != 200_000_000 {
+			t.Fatalf("%s: admitted entry did not allocate before age-only report: %+v", lane, d)
+		}
+		noEntry := s
+		noEntry.SelectorEntryEquityRaw = 0
+		if d := Decide(noEntry); d.Action != ReportNAV {
+			t.Fatalf("%s: age-only report skipped without an admitted entry: %+v", lane, d)
+		}
+		paused := s
+		paused.SelectorEntryPaused = true
+		if d := Decide(paused); d.Action != ReportNAV {
+			t.Fatalf("%s: paused entry skipped the age-only report: %+v", lane, d)
+		}
+		withdrawal := s
+		withdrawal.WithdrawalDemandRaw = 1
+		if d := Decide(withdrawal); d.Action == VoltrAllocateToSquads {
+			t.Fatalf("%s: allocation preempted withdrawal handling: %+v", lane, d)
+		}
+		mutated := s
+		mutated.PostMutationNAVRequired = true
+		if d := Decide(mutated); d.Action == VoltrAllocateToSquads {
+			t.Fatalf("%s: allocation preempted a required post-mutation report: %+v", lane, d)
+		}
+	}
+}
