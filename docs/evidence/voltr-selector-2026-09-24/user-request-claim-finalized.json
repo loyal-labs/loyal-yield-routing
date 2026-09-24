@@ -1,0 +1,59 @@
+{
+  "schema": "loyal-backyard-rwa-user-roundtrip/v1",
+  "issue": "ASK-2295",
+  "cluster": "mainnet-beta",
+  "commitment": "finalized",
+  "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "lpMint": "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb",
+  "user": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+  "client": "https://loyal-vault-pilot.vercel.app (Jupiter wallet)",
+  "workerImage": "backyard-rwa-worker:sha-d1bcff992a162ff74a8fed05e9224690e9e0a463",
+  "request": {
+    "signature": "2ggtPDz8CPJTWWXVrr8eZm9g3KFXjCTuDQc1BW2guAJPNuSuCjEDqeAjUqrjbceVUmP5LucBdLxcvH5xMdnZ521h",
+    "slot": 450078889,
+    "blockTime": "2026-09-24T16:10:16Z",
+    "instruction": "RequestWithdrawVault",
+    "lpEscrowedRaw": "13455",
+    "receipt": "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+    "assetAtRequestRaw": "4982318",
+    "withdrawableFrom": "2026-09-24T16:20:16Z",
+    "userUsdcDeltaRaw": "0"
+  },
+  "workerDuringWait": {
+    "routeStatus": "withdrawal_pending",
+    "selector": "KEEP withdrawal_unwind_or_accounting_first",
+    "unwind": "none (idle covered demand)",
+    "nav": "REPORT_NAV reconciled"
+  },
+  "claim": {
+    "signature": "5mB2Q21e9Mp2QbQXeXZMJ9Sh9FGdDan37DnxPzGK94eg4GJnFnuqaozi9Kd4gwp6W4pMtuwnQA4j34LxYZZtegTu",
+    "slot": 450081332,
+    "blockTime": "2026-09-24T16:21:08Z",
+    "instruction": "WithdrawVault",
+    "userUsdcDeltaRaw": "4982318",
+    "vaultIdleDeltaRaw": "-4982318",
+    "lpBurnedRaw": "13455",
+    "receiptClosed": true,
+    "escrowRentRefundedLamports": 1214200
+  },
+  "before": {
+    "vaultTotalValueRaw": "100370294",
+    "vaultIdleRaw": "100370294",
+    "lpCirculatingRaw": "270055",
+    "userUsdcRaw": "5660766"
+  },
+  "after": {
+    "vaultTotalValueRaw": "95387976",
+    "vaultIdleRaw": "95387976",
+    "lpCirculatingRaw": "256600",
+    "userUsdcRaw": "10643084",
+    "navFreshness": "fresh",
+    "routeStatus": "idle"
+  },
+  "checks": {
+    "totalValueConserved": true,
+    "lpConserved": true,
+    "userPaidExactReceipt": true
+  },
+  "notScoped": "No new deposit and no worker unwind: vault was fully idle. Loop legs were proven on chain 2026-09-18 (Maple) and 2026-09-21 (AUTO)."
+}
