@@ -205,10 +205,20 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 		post, postOK := postByAddress[effect.Address]
 		if !preOK || !postOK || pre.OwnerProgram != effect.Owner || post.OwnerProgram != effect.Owner ||
 			pre.Mint != effect.Mint || post.Mint != effect.Mint ||
-			pre.Authority != effect.Authority || post.Authority != effect.Authority || pre.Raw != effect.BeforeRaw {
+			pre.Authority != effect.Authority || post.Authority != effect.Authority {
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
 		}
-		if bounds != nil {
+		// Voltr idle is also written by permissionless user deposits and claims,
+		// which can land between our observation and this transaction. For that
+		// one account only, reconcile this transaction's own delta; every other
+		// account keeps the exact pre/post contract.
+		if effect.Address == bridgeIdleATA && bounds == nil && effect.MinimumAfterRaw == nil {
+			if int64(post.Raw)-int64(pre.Raw) != int64(effect.AfterRaw)-int64(effect.BeforeRaw) {
+				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped Voltr idle delta mismatch: %s", effect.Address)
+			}
+		} else if pre.Raw != effect.BeforeRaw {
+			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
+		} else if bounds != nil {
 			var moved uint64
 			if i == 0 && post.Raw <= pre.Raw {
 				moved = pre.Raw - post.Raw
