@@ -100,3 +100,26 @@ func TestReleaseAdmissionRejectsUnsafeFundingAndChangedSignedState(t *testing.T)
 	_, err = revaluePhase3SignedInput(context.Background(), rpc, auth, op)
 	assertBudgetHold(t, err, "repayment_release_exceeds_safe_size")
 }
+
+// The release is re-checked at build and send on a raw five-step capture, so
+// sizing must use the raw capture too (one window longer for headroom). Live
+// 2026-09-24: sizing on the refreshed-reserve simulation produced a release
+// 290 receipts above what the raw re-check allowed, and every withdrawal held.
+func TestRawRepaymentReleaseSizingPassesSendRecheck(t *testing.T) {
+	_, _, e, m, rpc, _, _ := releaseAdmissionFixture(t, 20_000)
+	route := ethenaUSDePYUSD
+	sized, rows, err := m.observeRawRepaymentRelease(context.Background(), rpc, route, 42, false)
+	if err != nil || sized.ReceiptRaw == 0 || sized.ReceiptRaw > e.Request.AmountRaw {
+		t.Fatal("raw six-step sizing must not exceed the five-step safe size", sized.ReceiptRaw, e.Request.AmountRaw, err)
+	}
+	r := e.Request
+	r.AmountRaw = sized.ReceiptRaw
+	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
+	effects, err := exactKaminoTokenEffects(rows, source, destination, sized.LiquidityRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.validateRepaymentReleaseRequest(context.Background(), rpc, r, effects, 42); err != nil {
+		t.Fatal("sized release refused by its own send re-check", err)
+	}
+}

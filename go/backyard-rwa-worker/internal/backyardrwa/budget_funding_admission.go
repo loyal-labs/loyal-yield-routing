@@ -208,15 +208,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			// NAV -> release -> NAV -> funding -> NAV -> payoff. This is a
 			// future cost template; the release will be rebuilt and admitted
 			// from actual custody after NAV, never signed from this projection.
-			// Size the release on the raw capture: build and send re-check it
-			// against raw reserves, whose older rate yields a smaller safe size
-			// than the refreshed simulation (live 2026-09-24).
-			rawFuture, rawRows, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, s.Slot, 6, payoffAdditional...)
-			if err != nil {
-				return phase3BridgeAdmission{}, err
-			}
-			rows = rawRows
-			releaseBound, err = manifest.decodeKaminoRepaymentReleaseForMode(rows, route, rawFuture.ObservedSlot, 6, s.PilotActive)
+			releaseBound, rows, err = manifest.observeRawRepaymentRelease(ctx, rpc, route, s.Slot, s.PilotActive)
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}

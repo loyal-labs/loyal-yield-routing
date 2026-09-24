@@ -268,12 +268,13 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && decision.Reason == "withdrawal_release_repayment_collateral" && positionReturnRoute(route.Lane)
 		var leg kaminoPrimeUSDCLeg
 		var wireAmount, effectAmount uint64
+		releaseAccounts := accounts
 		if repaymentRelease {
-			bound, err := manifest.decodeKaminoRepaymentReleaseForMode(accounts, route, observation.Snapshot.Slot, 5, observation.Snapshot.PilotActive)
+			bound, raw, err := manifest.observeRawRepaymentRelease(ctx, rpc, route, observation.Snapshot.Slot, observation.Snapshot.PilotActive)
 			if err != nil {
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}
-			leg, wireAmount, effectAmount = kaminoLegWithdraw, bound.ReceiptRaw, bound.LiquidityRaw
+			leg, wireAmount, effectAmount, releaseAccounts = kaminoLegWithdraw, bound.ReceiptRaw, bound.LiquidityRaw, raw
 		} else {
 			leg, wireAmount, effectAmount, err = selectKaminoLeg(observation.Snapshot.PilotActive, decision, position)
 			if err != nil {
@@ -336,7 +337,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		} else if leg == kaminoLegRepay {
 			effects, err = boundedKaminoRepaymentEffects(accounts, source, destination, effectAmount, wireAmount)
 		} else {
-			effects, err = exactKaminoTokenEffects(accounts, source, destination, effectAmount)
+			effects, err = exactKaminoTokenEffects(releaseAccounts, source, destination, effectAmount)
 		}
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
