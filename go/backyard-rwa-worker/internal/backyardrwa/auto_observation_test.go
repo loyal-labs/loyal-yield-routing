@@ -459,3 +459,23 @@ func TestAutoCandidateAbsentObligationStaysExplicit(t *testing.T) {
 		t.Fatalf("absence was not carried as an explicit observation fact: %+v", snapshot)
 	}
 }
+
+// An empty AUTO lane (no position, no AUTO or PYUSD custody) is valued as cash
+// when its reserves are stale, like an empty USDC lane; any AUTO exposure
+// keeps the health hold (TestAutoCandidateStaleValuationHoldsAndNeverDropsToCash).
+func TestAutoEmptyLaneStaleReserveFallsBackToCash(t *testing.T) {
+	stale := func(accounts []ConfirmedAccount) {
+		flattenAutoPosition(accounts)
+		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
+	}
+	_, route, accounts := autoObservationBatch(t, 77, stale)
+	reader, _ := fixtureBatchRuntime(77, accounts)
+	position, err := observeKaminoWithCashFallback(context.Background(), reader, 77, accounts, route)
+	if err != nil || position.HasPosition || position.DebtRaw != 0 || position.CollateralDepositedRaw != 0 || !position.BorrowUtilizationBlocked {
+		t.Fatalf("empty stale AUTO lane did not fall back to cash: %+v, %v", position, err)
+	}
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 1)
+	if _, err := observeKaminoWithCashFallback(context.Background(), reader, 77, accounts, route); !errors.Is(err, errKaminoReserveStale) {
+		t.Fatalf("PYUSD custody was valued as cash on a stale reserve: %v", err)
+	}
+}

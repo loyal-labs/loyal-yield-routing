@@ -569,7 +569,11 @@ func observeKaminoWithCashFallback(ctx context.Context, reader func(context.Cont
 	if originalErr == nil {
 		return position, nil
 	}
-	if _, health := kaminoHealthReason(originalErr); !health || route.Kamino.DebtMint != bridgeUSDC {
+	// Non-USDC debt lanes qualify too: the checks below still refuse any
+	// collateral or debt-asset custody and any obligation position, so only an
+	// empty lane is valued as cash. An empty AUTO lane otherwise latched a
+	// manual hold on one failed reserve-refresh simulation (live 2026-09-24).
+	if _, health := kaminoHealthReason(originalErr); !health {
 		return KaminoPosition{}, originalErr
 	}
 	custodies, err := decodeRouteNAVCustodiesForRoute(accounts, route)
