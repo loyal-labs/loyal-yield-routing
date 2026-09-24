@@ -265,3 +265,12 @@ func sameAccruingDebt(b KaminoPayoffBound, snapshotDebtRaw int64) bool {
 	d := uint64(snapshotDebtRaw)
 	return max(d, b.ObservedDebtRaw)-min(d, b.ObservedDebtRaw) <= b.UpperDebtRaw-b.ObservedDebtRaw+1
 }
+
+// observeRawFullPayoff sizes a full payoff on a raw capture over three steps.
+// Build and send re-check it on a raw one-step capture; sizing on the
+// refreshed-reserve simulation gave a wire below the send-time upper bound
+// (live 2026-09-24: 99,495,971 < 99,495,984, full_payoff_request_underfunded).
+// The raw observed debt only rises, so the effect minimum stays valid.
+func observeRawFullPayoff(ctx context.Context, rpc *RPCClient, route RuntimeRoute, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	return observeKaminoPayoffWindowAccounts(ctx, rpc, route, slot, 3)
+}

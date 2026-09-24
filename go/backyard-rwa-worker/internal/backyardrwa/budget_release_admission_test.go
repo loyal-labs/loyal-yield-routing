@@ -123,3 +123,35 @@ func TestRawRepaymentReleaseSizingPassesSendRecheck(t *testing.T) {
 		t.Fatal("sized release refused by its own send re-check", err)
 	}
 }
+
+// Build and send re-check a full payoff on a raw one-step capture, so the
+// wire is sized on a raw three-step capture. Live 2026-09-24: sizing on the
+// refreshed simulation left the wire under the send-time bound and every
+// withdrawal repay held with full_payoff_request_underfunded.
+func TestRawFullPayoffSizingPassesSendRecheck(t *testing.T) {
+	_, _, _, m, rpc, _, accounts := releaseAdmissionFixture(t, 20_000)
+	route := ethenaUSDePYUSD
+	// Funded debt custody, served by the fixture RPC to every capture.
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 1_000_000)
+	sized, rows, err := observeRawFullPayoff(context.Background(), rpc, route, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, _, err := observeKaminoPayoffBound(context.Background(), rpc, route, 42)
+	if err != nil || sized.UpperDebtRaw < check.UpperDebtRaw || sized.ObservedDebtRaw > check.ObservedDebtRaw {
+		t.Fatal("three-step raw payoff must cover the one-step send bound", sized, check, err)
+	}
+	r, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, sized.UpperDebtRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.ObligationReserves, r.FullPayoff = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}, true
+	source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
+	effects, err := boundedKaminoRepaymentEffects(rows, source, destination, sized.ObservedDebtRaw, sized.UpperDebtRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.validateFullPayoffRequest(context.Background(), rpc, r, effects, 42); err != nil {
+		t.Fatal("raw-sized payoff refused by its own send re-check", err)
+	}
+}

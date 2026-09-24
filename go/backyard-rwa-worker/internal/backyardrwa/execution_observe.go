@@ -268,6 +268,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && decision.Reason == "withdrawal_release_repayment_collateral" && positionReturnRoute(route.Lane)
 		var leg kaminoPrimeUSDCLeg
 		var wireAmount, effectAmount uint64
+		// Release and full-payoff sizing read raw reserves (see the helpers).
 		releaseAccounts := accounts
 		if repaymentRelease {
 			bound, raw, err := manifest.observeRawRepaymentRelease(ctx, rpc, route, observation.Snapshot.Slot, observation.Snapshot.PilotActive)
@@ -290,11 +291,11 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		}
 		fullPayoff := leg == kaminoLegRepay && decision.Action == DeleverRouteStep && decision.AmountRaw > 0 && uint64(decision.AmountRaw) >= position.DebtRaw
 		if fullPayoff {
-			bound, err := decodeKaminoPayoffBound(accounts, route, observation.Snapshot.Slot)
+			bound, raw, err := observeRawFullPayoff(ctx, rpc, route, observation.Snapshot.Slot)
 			if err != nil {
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}
-			wireAmount, effectAmount = bound.UpperDebtRaw, bound.ObservedDebtRaw
+			wireAmount, effectAmount, releaseAccounts = bound.UpperDebtRaw, bound.ObservedDebtRaw, raw
 			if debtCashRaw(observation.Snapshot) < 0 || uint64(debtCashRaw(observation.Snapshot)) < wireAmount {
 				return Observation{}, KaminoExecutionEvidence{}, budgetHold("full_payoff_cash_insufficient")
 			}
@@ -335,7 +336,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		} else if leg == kaminoLegBorrow {
 			effects, err = kaminoBorrowEffects(accounts, route, wireAmount)
 		} else if leg == kaminoLegRepay {
-			effects, err = boundedKaminoRepaymentEffects(accounts, source, destination, effectAmount, wireAmount)
+			effects, err = boundedKaminoRepaymentEffects(releaseAccounts, source, destination, effectAmount, wireAmount)
 		} else {
 			effects, err = exactKaminoTokenEffects(releaseAccounts, source, destination, effectAmount)
 		}
