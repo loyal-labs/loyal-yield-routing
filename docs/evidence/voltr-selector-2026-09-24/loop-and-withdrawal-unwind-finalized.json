@@ -1,0 +1,186 @@
+{
+  "schema": "voltr-selector-loop-and-withdrawal-unwind/v1",
+  "issue": [
+    "ASK-2297",
+    "ASK-2295"
+  ],
+  "cluster": "mainnet-beta",
+  "commitment": "finalized",
+  "vault": {
+    "beforeLoopTotalRaw": "256387976",
+    "afterUnwindTotalRaw": "256378183",
+    "loopRoundTripCostRaw": "9793",
+    "afterClaim": {
+      "totalRaw": "176508322",
+      "idleRaw": "176508322",
+      "navFreshness": "fresh",
+      "lpSupplyRaw": "475686"
+    }
+  },
+  "lpMint": "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb",
+  "route": "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+  "lane": "Maple/syrupUSDC/USDC",
+  "summary": "A forced $200 Maple entry ran the full single loop (allocate, swap, deposit, borrow, swap, redeposit). A $79.87 user withdrawal with only $56.39 idle then forced the worker to unwind the whole loop and restore $199.99 to Voltr idle, and the user claimed through the demo.",
+  "workerImages": {
+    "loop": "sha-15aca392df0c79508e31a98d81e3e0e1a05bb900\u2192sha-fb2ce16b789d7c351c071f5988585936031f5f13",
+    "unwind": "sha-fa457eb787bc8e1979f01d54f6fd95a154c87149\u2192sha-2e351b1965f4481e251d6d8119d57a2b9fae3197\u2192sha-9733fc08cfb01d20460f9c82b19a7699c6da1b3e"
+  },
+  "fixCommits": {
+    "15aca39": "admitted entry allocates before age-only NAV",
+    "fb2ce16": "debt compared across reserve bases within priced interest",
+    "fa457eb": "repayment release sized on raw basis",
+    "2e351b1": "exit may exceed reserve by <=0.1% (interest drift)",
+    "9733fc0": "full payoff sized on raw basis"
+  },
+  "workerOperations": [
+    {
+      "at": "2026-09-24T19:40:16Z",
+      "action": "VOLTR_ALLOCATE_TO_SQUADS",
+      "reason": "eligible_voltr_idle",
+      "amountRaw": "200000000",
+      "signature": "4q1FcQPgUmGN5bktx7wTNcnoyhfEbW67bBSgpJFuY542guF9FXxeLXdcroyUAK7VAKvdD2W1MfEbbgQCcje3mpUu",
+      "slot": 450126027
+    },
+    {
+      "at": "2026-09-24T19:40:42Z",
+      "action": "SWAP_STABLE_TO_COLLATERAL_STEP",
+      "reason": "usdc_requires_prime_collateral",
+      "amountRaw": "200000000",
+      "signature": "iZkVcd3ETWwZdqKM5AFvH2wRyEkKFnnzM5tT1qZAofcYB16oebGUqwSUbtTRhLHkfLm2FQ9JoAtYrSvmdrdKaSC",
+      "slot": 450126127
+    },
+    {
+      "at": "2026-09-24T19:41:33Z",
+      "action": "OPEN_ROUTE_STEP",
+      "reason": "prime_collateral_ready",
+      "amountRaw": "168805260",
+      "signature": "51GFLmMdAhnW6UBvzsPvQsD2gGvyMhztZfP7vHfVyuYBzDVLFsKHCyXxTH4ZH7t5BWgiWwXtrXKJ5SpdmVCRGE36",
+      "slot": 450126309
+    },
+    {
+      "at": "2026-09-24T19:42:26Z",
+      "action": "OPEN_ROUTE_STEP",
+      "reason": "prime_collateral_requires_borrow",
+      "amountRaw": "1",
+      "signature": "4LmJJAfDo7rq1PCv8r9YqLhXfFqPeQJFMj3tjpGsLoEJv9DEuWy9GPmaCcFivxQ3pbF9LGuDkpzExrEs51FiJ3k8",
+      "slot": 450126510
+    },
+    {
+      "at": "2026-09-24T20:19:00Z",
+      "action": "SWAP_DEBT_TO_COLLATERAL_STEP",
+      "reason": "borrowed_usdc_requires_prime_buffer",
+      "amountRaw": "99495353",
+      "signature": "2CrvC75xZaRSFBTypDSnkCQdbJZ7CAUMtw4Gdf8fJCfzedoKD6H9RTc9HRcwmB9QRChfYn69Tq192qgKxSbqGqkv",
+      "slot": 450134688
+    },
+    {
+      "at": "2026-09-24T20:19:55Z",
+      "action": "OPEN_ROUTE_STEP",
+      "reason": "single_loop_redeposit",
+      "amountRaw": "83979032",
+      "signature": "4caiYswqCpfsMDhdg7B9QPjxgdo4KWkQuyPN5Uw1D9rpMdvhqyb3YjtNVp6aVaxswrJ2S7EChNiL72H2SeynZbWX",
+      "slot": 450134892
+    },
+    {
+      "at": "2026-09-24T21:03:04Z",
+      "action": "DELEVER_ROUTE_STEP",
+      "reason": "withdrawal_release_repayment_collateral",
+      "amountRaw": "1",
+      "signature": "5msbztndYfkpuE8iZc1Mi8QWLttJSv8G8ZeNsnfzVYDgL4fYeSFzcFvUCw3L7THSAVFTr28ULNGrP9YQVu3NtyMJ",
+      "slot": 450144617
+    },
+    {
+      "at": "2026-09-24T21:03:42Z",
+      "action": "SWAP_COLLATERAL_TO_DEBT_STEP",
+      "reason": "withdrawal_swap_repayment_buffer",
+      "amountRaw": "100094279",
+      "signature": "R2aPw5ifR9DQuknbEjYJPRL6hYLaUtMDT52EaV8QEZt6PVayKaiEB5RWYYW84RgNzJzWBsW8C47b7KvotYscbM8",
+      "slot": 450144758
+    },
+    {
+      "at": "2026-09-24T21:11:48Z",
+      "action": "DELEVER_ROUTE_STEP",
+      "reason": "withdrawal_repay_debt",
+      "amountRaw": "99495985",
+      "signature": "3aYzbp4MbfU5pJkEAKjQTu1A1fAiHPTQVXsWSGd3HEJEtPcqoN7p2U4Xpx8KdzB5t4MetuJ2gkQNuyhw2tFhZrjf",
+      "slot": 450146571
+    },
+    {
+      "at": "2026-09-24T21:12:13Z",
+      "action": "DELEVER_ROUTE_STEP",
+      "reason": "withdrawal_withdraw_collateral",
+      "amountRaw": "0",
+      "signature": "2UExpS3mMnqz4QeNAtERFAWprGyvgGojEiLNKJnoWhoUA7BVc1SnWDdVZCgAdpZhCfhQzh4XFLQuU6B7b4pDzuJK",
+      "slot": 450146666
+    },
+    {
+      "at": "2026-09-24T21:12:39Z",
+      "action": "SWAP_COLLATERAL_TO_STABLE_STEP",
+      "reason": "withdrawal_swap_withdrawn_prime",
+      "amountRaw": "152690013",
+      "signature": "5q6ShrH5xQ2VKM34Srhe7Ni1QsoVmJiZrGNK2oApxhX7z4CjVmisQ5tkd6hMs1qVgTaSBFVyvpnby9vsHSfwGvJ5",
+      "slot": 450146763
+    },
+    {
+      "at": "2026-09-24T21:13:02Z",
+      "action": "STAGE_SQUADS_TO_VOLTR",
+      "reason": "withdrawal_demand",
+      "amountRaw": "199990207",
+      "signature": "3zRZynrXvutUZcji6cVLnjyzRnFe6aNztNH1Urp8NxezM1bUXxf6j99nXiY13pCAq5QGhSrwJKNtETMcVyRDSfqc",
+      "slot": 450146852
+    },
+    {
+      "at": "2026-09-24T21:13:28Z",
+      "action": "VOLTR_RESTORE_IDLE",
+      "reason": "withdrawal_staged",
+      "amountRaw": "199990207",
+      "signature": "3VVeR9o7aTHLA4d2CgEpiwk4FEe5dHiUNMqa4GgFabdrmDn21awzeYhX6jsBTV27m5n1asS3CxfeANTzngFjPNEM",
+      "slot": 450146945
+    }
+  ],
+  "heldAttemptsDuringUnwind": {
+    "phase3_budget_hold:repayment_release_exceeds_safe_size": 7,
+    "phase3_budget_hold:recovery_exceeds_reserved_exit": 9,
+    "phase3_budget_hold:missing_stale_or_mismatched_usdc_valuation": 1,
+    "phase3_budget_hold:full_payoff_request_underfunded": 2
+  },
+  "userRequest": {
+    "signature": "xQZZLsDiHpuQfjJjLoW2FP3NrSUDBGKCt3aQrjfi67TmCPaCxBQrFK3zgo763nxfT2g5UQC5kGNZERucQKEUm2T",
+    "slot": 450137031,
+    "blockTime": "2026-09-24T20:29:09Z",
+    "wallet": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+    "lpRaw": "215700",
+    "assetAtRequestRaw": "79870048",
+    "client": "loyal-vault-pilot.vercel.app (Jupiter wallet)"
+  },
+  "userClaim": {
+    "signature": "3oYPPNk59jyaRyp7KhW2UcbEw4xYQj6YEEqqF4LAGRZQQ7kkRo7byCJHbYP6Wd8pvKktj3ctYh31MezVa2Gn3avg",
+    "slot": 450148831,
+    "blockTime": "2026-09-24T21:21:38Z",
+    "instruction": "WithdrawVault",
+    "usdcToUserRaw": "79869861",
+    "lpBurnedFromEscrowRaw": "215700",
+    "tokenDeltas": [
+      {
+        "owner": "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "deltaRaw": "-79869861"
+      },
+      {
+        "owner": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "deltaRaw": "79869861"
+      },
+      {
+        "owner": "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+        "mint": "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb",
+        "deltaRaw": "-215700"
+      }
+    ]
+  },
+  "notScoped": [
+    "Partial withdrawals flatten the entire loop by design (decide.go); re-entry costs are paid again.",
+    "Stray 1 USDG and 0.992252 CASH in ST999 are unrelated to this flow.",
+    "Maple\u2192AUTO rotation is not yet tested."
+  ]
+}
