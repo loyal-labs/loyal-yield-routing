@@ -257,3 +257,43 @@ func TestPilotCanaryCapacityRetainsHistoryWithoutBlockingCurrentRelease(t *testi
 		t.Fatal("changed reuse not rejected before capacity", result, err)
 	}
 }
+
+// One unexpired request may re-accept with a fresh quote after its own entry
+// lapsed unallocated: a new lane needs the obligation initializer and then the
+// allocation, which outlive one 30-second entry (live 2026-09-24). A bound
+// allocation, another request's entry or a still-live entry keeps it consumed.
+func TestPilotCanaryReacceptsOnlyUnallocatedLapsedEntry(t *testing.T) {
+	in := pilotCanaryFixture()
+	economic := SelectOpportunity(in, SelectorState{})
+	_, receipt, err := selectPilotCanaryEntry(in, economic, nil)
+	if err != nil || receipt == nil {
+		t.Fatal(receipt, err)
+	}
+	history := map[string]pilotCanaryEntryReceipt{receipt.Request.ID: *receipt}
+	lapsed := SelectorEntry{Lane: receipt.Request.Lane, EquityRaw: receipt.Request.EquityRaw, Quote: in.Quotes[0], AcceptedAt: in.Now.Add(-time.Minute), ExpiresAt: in.Now.Add(-30 * time.Second)}
+	lapsed.Quote.EvidenceID = receipt.QuoteEvidenceID
+	for name, tc := range map[string]struct {
+		change func(*SelectorEntry)
+		want   bool
+	}{
+		"lapsed unallocated": {func(*SelectorEntry) {}, true},
+		"allocated":          {func(e *SelectorEntry) { e.AllocationOperationID = "op" }, false},
+		"still live":         {func(e *SelectorEntry) { e.ExpiresAt = in.Now.Add(time.Second) }, false},
+		"other request":      {func(e *SelectorEntry) { e.Quote.EvidenceID = sha256Bytes([]byte("other")) }, false},
+	} {
+		e := lapsed
+		tc.change(&e)
+		x := in
+		x.canaryPriorEntry = &e
+		result, again, err := selectPilotCanaryEntry(x, economic, history)
+		if err != nil || (result.Action == "CANARY_ENTER") != tc.want || (again != nil) != tc.want {
+			t.Fatal(name, result.Action, result.Reason, err)
+		}
+	}
+	x := in
+	x.canaryPriorEntry = &lapsed
+	x.Now = receipt.Request.ExpiresAt
+	if result, again, _ := selectPilotCanaryEntry(x, economic, history); result.Action == "CANARY_ENTER" || again != nil {
+		t.Fatal("expired request re-accepted")
+	}
+}

@@ -232,11 +232,13 @@ func (q MoveQuote) selectorEconomicCostRaw() int64 {
 
 type SelectorInput struct {
 	canaryRequest *pilotCanaryEntryRequest
-	Now           time.Time
-	Snapshot      Snapshot
-	Markets       []LaneEconomics
-	Quotes        []MoveQuote
-	Policy        SelectorPolicy
+	// canaryPriorEntry is the persisted selector entry, read under the route lock.
+	canaryPriorEntry *SelectorEntry
+	Now              time.Time
+	Snapshot         Snapshot
+	Markets          []LaneEconomics
+	Quotes           []MoveQuote
+	Policy           SelectorPolicy
 }
 
 // Only economic persistence lives here. A source exit is committed by the

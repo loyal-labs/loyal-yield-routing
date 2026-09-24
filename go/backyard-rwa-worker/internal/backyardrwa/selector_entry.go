@@ -258,6 +258,7 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 		Activation    json.RawMessage                    `json:"pilotBudgetActivation"`
 		Unwind        *UnwindIntent                      `json:"selectorUnwind"`
 		CanaryHistory map[string]pilotCanaryEntryReceipt `json:"pilotCanaryEntries"`
+		Entry         *SelectorEntry                     `json:"selectorEntry"`
 		Selector      struct {
 			Result SelectorResult `json:"result"`
 		} `json:"selector"`
@@ -317,6 +318,7 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 	}
 	input.Quotes = currentQuotes
 	result = selectResult(input, state.Selector.Result.State)
+	input.canaryPriorEntry = state.Entry
 	var canaryReceipt *pilotCanaryEntryReceipt
 	// The manifest path resolves both forced-acceptance lane authorities —
 	// the operator request and the constructed entry — through the explicit

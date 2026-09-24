@@ -133,10 +133,11 @@ func selectPilotCanaryEntryWithManifest(input SelectorInput, result SelectorResu
 		if prior.Request != *request {
 			return result, nil, budgetHold("pilot_canary_request_id_reused")
 		}
-		result.Reason = "operator_canary_already_consumed"
-		return result, nil, nil
-	}
-	if len(history) >= pilotCanaryReceiptCapacity {
+		if !canaryReacceptable(input, prior) {
+			result.Reason = "operator_canary_already_consumed"
+			return result, nil, nil
+		}
+	} else if len(history) >= pilotCanaryReceiptCapacity {
 		return result, nil, budgetHold("pilot_canary_history_full")
 	}
 	s := input.Snapshot
@@ -174,4 +175,19 @@ func selectPilotCanaryEntryWithManifest(input SelectorInput, result SelectorResu
 	}
 	result.Action, result.Reason, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "CANARY_ENTER", "operator_acceptance_not_economic_recommendation", request.Lane, request.EquityRaw, chosen
 	return result, &pilotCanaryEntryReceipt{Request: *request, AcceptedAt: input.Now, QuoteEvidenceID: chosen.EvidenceID}, nil
+}
+
+// canaryReacceptable lets one unexpired request re-accept with a fresh quote
+// when its own last entry lapsed before any allocation bound to it. A new lane
+// needs an obligation initializer and then the allocation, and the entry
+// lapses 30 s after its quote, so one attempt could never fund a new lane
+// (live 2026-09-24: Maple and AUTO each consumed two receipts). Once an
+// allocation binds, or the request's own <=15-minute expiry passes, the
+// request stays consumed; every money step still needs a current quote. The
+// caller already requires the route flat and the request valid.
+func canaryReacceptable(input SelectorInput, prior pilotCanaryEntryReceipt) bool {
+	e := input.canaryPriorEntry
+	return e != nil && e.Lane == prior.Request.Lane && e.EquityRaw == prior.Request.EquityRaw &&
+		e.Quote.EvidenceID == prior.QuoteEvidenceID && e.AllocationOperationID == "" &&
+		(!input.Now.Before(e.ExpiresAt) || !e.Quote.currentAtSlot(input.Snapshot.Slot))
 }
