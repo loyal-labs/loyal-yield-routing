@@ -248,3 +248,20 @@ func (m RouteManifest) validateFullPayoffRequest(ctx context.Context, rpc *RPCCl
 	}
 	return bound, nil
 }
+
+// sameAccruingDebt reports whether a snapshot's debt and a later capture's
+// debt are the same obligation principal seen at different interest bases.
+// The route observer prices snapshot debt on the unsigned reserve-refresh
+// simulation, while prestate captures read raw reserves (older rate) or a
+// fresh simulation a few slots later, so exact equality refuses unmutated
+// positions once accrual crosses a whole unit (hit live with a $99.50 Maple
+// borrow, 2026-09-24). The gap may not exceed the interest this window
+// already prices, plus one unit of ceil rounding; any real borrow or repay
+// beyond that still fails closed.
+func sameAccruingDebt(b KaminoPayoffBound, snapshotDebtRaw int64) bool {
+	if snapshotDebtRaw <= 0 || b.ObservedDebtRaw == 0 || b.UpperDebtRaw < b.ObservedDebtRaw {
+		return false
+	}
+	d := uint64(snapshotDebtRaw)
+	return max(d, b.ObservedDebtRaw)-min(d, b.ObservedDebtRaw) <= b.UpperDebtRaw-b.ObservedDebtRaw+1
+}

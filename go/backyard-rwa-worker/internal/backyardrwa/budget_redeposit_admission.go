@@ -13,7 +13,7 @@ func observeRedepositPrestate(ctx context.Context, rpc *RPCClient, route Runtime
 		return bound, nil, err
 	}
 	position, err := decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino)
-	if err != nil || s.PositionCollateralRaw <= 0 || position.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || s.PositionDebtRaw <= 0 || bound.ObservedDebtRaw != uint64(s.PositionDebtRaw) {
+	if err != nil || s.PositionCollateralRaw <= 0 || position.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || s.PositionDebtRaw <= 0 || !sameAccruingDebt(bound, s.PositionDebtRaw) {
 		return bound, nil, budgetHold("redeposit_position_changed")
 	}
 	a := accountAt(accounts, route.DebtCustody)

@@ -96,7 +96,7 @@ func observePhase3LeverageSwapAdmission(ctx context.Context, rpc *RPCClient, cli
 	}
 	route, _ := runtimeRoute(s.RouteLane)
 	position, err := decodeKaminoObligation(accountAt(before, route.Kamino.Obligation), route.Kamino)
-	if err != nil || position.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || bound.ObservedDebtRaw != uint64(s.PositionDebtRaw) || e.ExpectedEffects.Accounts[1].BeforeRaw != uint64(s.CollateralIdleRaw) {
+	if err != nil || position.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || !sameAccruingDebt(bound, s.PositionDebtRaw) || e.ExpectedEffects.Accounts[1].BeforeRaw != uint64(s.CollateralIdleRaw) {
 		return phase3BridgeAdmission{}, budgetHold("leverage_swap_snapshot_changed")
 	}
 	message, err := CompileJupiterMessage(r)
@@ -140,7 +140,7 @@ func validateLeverageAdmissionPrestate(ctx context.Context, rpc *RPCClient, r Ju
 	}
 	route, _ := runtimeRoute(r.RouteLane)
 	position, err := decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino)
-	if err != nil || position.collateralDepositedRaw != uint64(p.Snapshot.PositionCollateralRaw) || bound.ObservedDebtRaw != uint64(p.Snapshot.PositionDebtRaw) {
+	if err != nil || position.collateralDepositedRaw != uint64(p.Snapshot.PositionCollateralRaw) || !sameAccruingDebt(bound, p.Snapshot.PositionDebtRaw) {
 		return 0, budgetHold("leverage_swap_snapshot_changed")
 	}
 	if bound.MaximumRateBPS > p.Payoff.MaximumRateBPS || bound.InterestBasis != p.Payoff.InterestBasis || bound.ChainUnix < p.Payoff.ChainUnix || bound.ChainUnix > p.Payoff.ChainUnix+kaminoPayoffWindowSeconds || bound.UpperDebtRaw > p.Payoff.UpperDebtRaw {

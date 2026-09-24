@@ -25,7 +25,7 @@ func observePhase3PayoffAdmission(ctx context.Context, rpc *RPCClient, client *j
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	if bound.ObservedDebtRaw != uint64(s.PositionDebtRaw) || evidence.ExpectedEffects.Accounts[0].BeforeRaw != uint64(debtCashRaw(s)) {
+	if !sameAccruingDebt(bound, s.PositionDebtRaw) || evidence.ExpectedEffects.Accounts[0].BeforeRaw != uint64(debtCashRaw(s)) {
 		return phase3BridgeAdmission{}, budgetHold("payoff_admission_snapshot_changed")
 	}
 	post := observation

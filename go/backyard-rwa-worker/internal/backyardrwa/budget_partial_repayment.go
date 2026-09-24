@@ -30,7 +30,7 @@ func observePhase3PartialRepaymentAdmission(ctx context.Context, rpc *RPCClient,
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	if before.ObservedDebtRaw != uint64(s.PositionDebtRaw) {
+	if !sameAccruingDebt(before, s.PositionDebtRaw) {
 		return phase3BridgeAdmission{}, budgetHold("partial_repayment_prestate_changed")
 	}
 	for _, effect := range e.ExpectedEffects.Accounts {
