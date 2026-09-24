@@ -467,7 +467,11 @@ consume that reserve instead of double-counting it against themselves; they
 still obey all caps. New allocation cannot spend exit reserves. Revalue before
 increasing risk and unwind early as headroom shrinks. This is a conservative
 estimate, not a guarantee against arbitrary price changes: an unfit exit is a
-named recovery gate, never permission to bypass a cap.
+named recovery gate, never permission to bypass a cap. A recovery may exceed
+the prior exit reserve by at most 0.1% (`recoveryExitDriftDivisor`): debt
+interest accrues after the reserve was priced, and a pending withdrawal stops
+the maintenance NAV that re-prices it, so an exact bound deadlocked every
+unwind (live 2026-09-24). Larger overruns still hold, and all caps still apply.
 
 Spent value is monotonic. Convert reservations to reconciled spend or release
 unused amounts only with authoritative proof they cannot be spent. Ambiguous

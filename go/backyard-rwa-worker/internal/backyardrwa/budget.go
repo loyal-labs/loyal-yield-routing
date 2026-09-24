@@ -180,6 +180,11 @@ func (b Phase3Budget) totals(family string) (int64, int64, error) {
 	return familyTotal, goalTotal, nil
 }
 
+// recoveryExitDriftDivisor bounds exit-reserve overrun to 1/1000 (0.1%).
+// ponytail: flat 0.1%; re-price the reserve on withdrawal demand if long
+// waits with >0.1% quote drift start holding exits.
+const recoveryExitDriftDivisor = 1000
+
 // Admit never mutates on rejection. A matching retry reuses, rather than
 // replenishes, its reservation. Any other unresolved intent fences the queue.
 func (b *Phase3Budget) Admit(r BudgetReservation) error {
@@ -240,7 +245,13 @@ func (b *Phase3Budget) Admit(r BudgetReservation) error {
 		if err != nil {
 			return err
 		}
-		if needed > row.ExitMicros {
+		// An exit may exceed its reserve by 0.1%: debt interest keeps raising
+		// the exit's cost after the reserve was last priced, and a pending
+		// withdrawal stops the maintenance NAV that re-prices it, so an exact
+		// bound deadlocked every unwind (live 2026-09-24, ~$0.001 over
+		// $1,122.66). Larger jumps (quotes, prices) still hold for review, and
+		// the transaction/family/goal caps below are unchanged.
+		if needed > row.ExitMicros+row.ExitMicros/recoveryExitDriftDivisor {
 			return &BudgetHold{Reason: "recovery_exceeds_reserved_exit", Details: map[string]string{
 				"needed": strconv.FormatInt(needed, 10),
 				"prior":  strconv.FormatInt(row.ExitMicros, 10),

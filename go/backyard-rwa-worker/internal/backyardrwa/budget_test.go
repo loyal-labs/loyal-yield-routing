@@ -38,8 +38,9 @@ func TestBudgetRejectsWithoutMutation(t *testing.T) {
 		}, "goal_cap_exceeded"},
 		{"reserve", func(b *Phase3Budget, r *BudgetReservation) { b.Families["OnRe"] = FamilyBudget{ExitMicros: 4_000_000} }, "entry_consumes_exit_reserve"},
 		{"unfit exit", func(b *Phase3Budget, r *BudgetReservation) {
+			// needed 3,900,000 exceeds 3,896,000 + 0.1% (3,896).
 			r.Recovery = true
-			b.Families["OnRe"] = FamilyBudget{ExitMicros: 3_899_999}
+			b.Families["OnRe"] = FamilyBudget{ExitMicros: 3_896_000}
 		}, "recovery_exceeds_reserved_exit"},
 		{"expired", func(b *Phase3Budget, r *BudgetReservation) { b.Closed = true }, "goal_envelope_expired"},
 	} {
@@ -158,5 +159,27 @@ func TestUnspentUnwindRestoresPriorExitReserveAcrossRestart(t *testing.T) {
 	}
 	if err = restarted.Admit(r); err != nil {
 		t.Fatal("unspent recovery cannot be readmitted", err)
+	}
+}
+
+// Live 2026-09-24: accrued debt interest put a withdrawal's exit $0.0011 over
+// its $1,122.66 reserve and every unwind held. Up to 0.1% over is admitted;
+// one micro beyond still holds.
+func TestRecoveryAdmitsInterestDriftWithinOneTenthPercent(t *testing.T) {
+	const prior, upper = 1_122_659_351, 120_981_094
+	for _, tc := range []struct {
+		tail int64
+		ok   bool
+	}{{1_001_679_364, true}, {prior + prior/1000 - upper, true}, {prior + prior/1000 - upper + 1, false}} {
+		b := pilotTestBudget(t)
+		b.Families["Maple"] = FamilyBudget{ExitMicros: prior}
+		r := BudgetReservation{OperationID: "exit", Family: "Maple", IntentSHA256: strings.Repeat("a", 64), UpperMicros: upper, ExecutionCostUpperMicros: upper, ExitAfterMicros: tc.tail, Recovery: true}
+		err := b.Admit(r)
+		if tc.ok && err != nil {
+			t.Fatalf("tail %d: interest drift held: %v", tc.tail, err)
+		}
+		if !tc.ok {
+			assertBudgetHold(t, err, "recovery_exceeds_reserved_exit")
+		}
 	}
 }

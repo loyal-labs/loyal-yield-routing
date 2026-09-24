@@ -530,7 +530,8 @@ func maintenanceNAVFixture(t *testing.T) (Phase3Budget, Snapshot, Decision, phas
 
 func TestMaintenanceNAVRetainsExitAcrossPriceDriftAndRepeatedFees(t *testing.T) {
 	b, s, d, p := maintenanceNAVFixture(t)
-	assertBudgetHold(t, b.Admit(BudgetReservation{OperationID: "old-recovery", Family: "Maple", IntentSHA256: sha256Bytes([]byte("old")), UpperMicros: 516, ExecutionCostUpperMicros: 516, ExitAfterMicros: p.ExitAfterMicros, Recovery: true}), "recovery_exceeds_reserved_exit")
+	// Beyond the 0.1% interest-drift allowance (4,085 micros on this reserve).
+	assertBudgetHold(t, b.Admit(BudgetReservation{OperationID: "old-recovery", Family: "Maple", IntentSHA256: sha256Bytes([]byte("old")), UpperMicros: 516, ExecutionCostUpperMicros: 516, ExitAfterMicros: p.ExitAfterMicros + 4_100, Recovery: true}), "recovery_exceeds_reserved_exit")
 	for i := 0; i < 3; i++ {
 		if i == 2 {
 			// A larger fresh exit must be funded too, never clipped to the old reserve.
@@ -613,7 +614,8 @@ func TestMaintenanceNAVKeepsUnwindAndRiskReportsStrict(t *testing.T) {
 			if err != nil || maintenance || exit != p.ExitAfterMicros {
 				t.Fatal("exit classified as upkeep", maintenance, exit, err)
 			}
-			r := BudgetReservation{OperationID: variant, Family: "Maple", IntentSHA256: sha256Bytes([]byte(variant)), UpperMicros: 516, ExecutionCostUpperMicros: 516, ExitAfterMicros: exit, Recovery: true}
+			// Beyond the 0.1% interest-drift allowance, a recovery still holds.
+			r := BudgetReservation{OperationID: variant, Family: "Maple", IntentSHA256: sha256Bytes([]byte(variant)), UpperMicros: 516, ExecutionCostUpperMicros: 516, ExitAfterMicros: exit + 4_100, Recovery: true}
 			assertBudgetHold(t, b.Admit(r), "recovery_exceeds_reserved_exit")
 		})
 	}
