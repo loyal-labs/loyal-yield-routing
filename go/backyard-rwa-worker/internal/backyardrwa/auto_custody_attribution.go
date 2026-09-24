@@ -80,6 +80,10 @@ const (
 	// well above the observed live candidate population.
 	sharedCustodyUnknownRowBound = 256
 
+	// sharedCustodyUnknownScanBound caps the rows read before recognized
+	// inert NAV reports are dropped; the row bound applies to survivors.
+	sharedCustodyUnknownScanBound = 4096
+
 	// The canonical reconciled evidence envelope, pinned to reconcile.go.
 	reconciledEffectsSchema = "loyal-backyard-rwa-reconciled-effects/v1"
 	reconciledEffectsSource = "confirmed-transaction-meta"
@@ -203,7 +207,9 @@ func (r custodyAttributionUnknownRow) recognizedInertNAVReport(cfg sharedCustody
 	if !ok || bridge.Action != ReportNAV || bridge.AmountRaw != 0 {
 		return false
 	}
-	message, err := CompileBridgeMessage(bridge)
+	// Compile for the same pinned delegate the wire was validated against
+	// (production cfg.Delegate is mustKey(bridgeDelegate), so unchanged there).
+	message, err := compileBridgeMessageForDelegate(bridge, cfg.Delegate)
 	if err != nil || !bytes.Equal(message, r.SignedWire[65:]) {
 		return false
 	}
@@ -1065,6 +1071,10 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 	//       can never exclude a malformed or NULL expected_effects row: it
 	//       stays a candidate and holds.
 	//
+	//   (c) manual-recovery journal markers (HOLD_MANUAL_RECOVERY and
+	//       HOLD_CLEARED) with no wire, wire digest, signature or broadcast
+	//       intent: they record a hold or its clearing, never a transaction.
+	//
 	// Ambiguous failures carrying signing or broadcast state — including
 	// signed wires whose signature was never confirmed — and manual-recovery
 	// records remain candidates. They are returned to the validator, which
@@ -1086,10 +1096,14 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 			AND COALESCE(expected_effects->>'schema','')='loyal-backyard-rwa-operation-evidence/v1'
 			AND (expected_effects->'expectedEffects' IS NULL OR expected_effects->'expectedEffects'='null'::jsonb)
 			AND expected_effects->'phase3' IS NULL) IS NOT TRUE
-		ORDER BY operation_id COLLATE "C" LIMIT $2`, lease.RouteKey, sharedCustodyUnknownRowBound+1)
+		AND NOT (status='manual_recovery' AND COALESCE(action,'') IN ('HOLD_MANUAL_RECOVERY','HOLD_CLEARED')
+			AND signed_wire IS NULL AND COALESCE(signed_wire_sha256,'')='' AND COALESCE(transaction_signature,'')=''
+			AND broadcast_intent_at IS NULL)
+		ORDER BY operation_id COLLATE "C" LIMIT $2`, lease.RouteKey, sharedCustodyUnknownScanBound+1)
 	if err != nil {
 		return evidence, err
 	}
+	scanned := 0
 	for candidates.Next() {
 		var row custodyAttributionUnknownRow
 		if err := candidates.Scan(&row.OperationID, &row.Action, &row.LastValidBlockHeight,
@@ -1098,13 +1112,20 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 			candidates.Close()
 			return evidence, err
 		}
+		scanned++
+		// A NAV report whose exact signed bytes name no shared custody is
+		// excused by the validator anyway; counting it against the bound let
+		// ordinary failed reports alone overflow a funded route (2026-09-24).
+		if row.recognizedInertNAVReport(cfg) {
+			continue
+		}
 		evidence.UnknownRows = append(evidence.UnknownRows, row)
 	}
 	if err := candidates.Err(); err != nil {
 		return evidence, err
 	}
 	candidates.Close()
-	if len(evidence.UnknownRows) > sharedCustodyUnknownRowBound {
+	if scanned > sharedCustodyUnknownScanBound || len(evidence.UnknownRows) > sharedCustodyUnknownRowBound {
 		return evidence, budgetHold("custody_attribution_unknown_overflow")
 	}
 	evidence.Unknown = len(evidence.UnknownRows) > 0

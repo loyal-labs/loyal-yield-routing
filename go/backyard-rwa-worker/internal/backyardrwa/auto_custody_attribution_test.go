@@ -9,6 +9,7 @@ package backyardrwa
 // inserted through ::jsonb casts still verify against the original digests.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1227,5 +1228,87 @@ func TestSharedCustodyAttributionDatabaseLifecycleGates(t *testing.T) {
 	_, err = validateSharedCustodyAttribution(3_100_000_000, 300, failCfg, failEvidence, 0)
 	if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_unknown_record" {
 		t.Fatalf("ambiguous signed failed row not held: %s", reason)
+	}
+}
+
+// Failed NAV reports whose exact signed bytes name no shared custody, and
+// wire-less manual-recovery hold/clear markers, no longer count against the
+// unknown-row bound: a funded AUTO route with 260 failed reports otherwise
+// held every PYUSD spend with custody_attribution_unknown_overflow
+// (2026-09-24). Any other unknown row still fills the bound and holds.
+func TestSharedCustodyUnknownBoundIgnoresInertNAVAndHoldMarkers(t *testing.T) {
+	url := os.Getenv("PHASE3_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("requires isolated PHASE3_TEST_DATABASE_URL")
+	}
+	config, err := pgxpool.ParseConfig(url)
+	if err != nil || !strings.HasPrefix(config.ConnConfig.Host, "/private/tmp/backyard-phase3-pg.") || config.ConnConfig.Database != "phase3_budget_test" {
+		t.Fatal("refusing non-disposable database")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, err := OpenDatabase(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	custodyAttributionSchema(ctx, t, db)
+	routeKey := fmt.Sprintf("auto-attribution-bound-%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		c, done := context.WithTimeout(context.Background(), 30*time.Second)
+		defer done()
+		_, _ = db.pool.Exec(c, `DELETE FROM loyal_yield.multiply_operations WHERE route_key=$1`, routeKey)
+		_, _ = db.pool.Exec(c, `DELETE FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey)
+		db.Close()
+	})
+	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,'{"generation":1}')`, routeKey); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := db.AcquireRouteLease(ctx, routeKey, "attribution-worker", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build, delegate := custodyAdmissionSignedBuild(t, bytes.Repeat([]byte{7}, 32))
+	cfg := autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, routeKey)
+	cfg.Delegate = delegate
+	navEffects, _, _, err := bridgeExpectedEffects(Decision{Action: ReportNAV}, 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedEffects, err := jsonMarshalExpectedEffects(navEffects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := encodePhase3BuildInput(bridgeTestRequest(ReportNAV, 0), encodedEffects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects, err := json.Marshal(map[string]any{"phase3": map[string]any{"buildInput": input}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < sharedCustodyUnknownRowBound+10; i++ {
+		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,signed_wire_sha256,transaction_signature,message_sha256,recent_blockhash,last_valid_block_height,simulation_slot,broadcast_intent_at,recovery_reason)
+			VALUES($1,$2,'failed','REPORT_NAV',$3::jsonb,$4,$5,$6,$7,$8,$9,$10,now(),'signature_absent_after_blockhash_expiry')`,
+			fmt.Sprintf("%s-nav-%03d", routeKey, i), routeKey, string(effects), build.SignedWire, build.SignedWireSHA256, build.TransactionSignature, build.MessageSHA256, build.RecentBlockhash, build.LastValidBlockHeight, build.SimulationSlot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, action := range []string{"HOLD_MANUAL_RECOVERY", "HOLD_CLEARED"} {
+		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,recovery_reason) VALUES($1,$2,'manual_recovery',$3,'{}','kamino_stale')`, routeKey+"-"+action, routeKey, action); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evidence, err := db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
+	if err != nil || evidence.Unknown || len(evidence.UnknownRows) != 0 {
+		t.Fatal("inert NAV reports or hold markers counted as unknown", len(evidence.UnknownRows), err)
+	}
+	for i := 0; i <= sharedCustodyUnknownRowBound; i++ {
+		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,broadcast_intent_at,last_valid_block_height,recovery_reason) VALUES($1,$2,'failed','OPEN_ROUTE_STEP','{}','\x01',now(),5,'signature_absent_after_blockhash_expiry')`, fmt.Sprintf("%s-open-%03d", routeKey, i), routeKey); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
+	if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_unknown_overflow" {
+		t.Fatalf("unrecognized rows beyond the bound did not hold: %s", reason)
 	}
 }
