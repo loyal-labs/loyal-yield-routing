@@ -336,7 +336,9 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			}
 			return true, database.CompleteUnwindIntentOnManifest(ctx, manifest, productionRouteKey, *intent, observation.Snapshot)
 		},
-		loadNonterminal: database.LoadNonterminal,
+		loadNonterminal: func(ctx context.Context, routeKey string) (*PersistedOperation, error) {
+			return database.LoadNonterminalOnManifest(ctx, routeKey, manifest)
+		},
 		advance: func(ctx context.Context, operation PersistedOperation) error {
 			return advanceNonterminalWithManifest(ctx, manifest, database, rpc, operation)
 		},

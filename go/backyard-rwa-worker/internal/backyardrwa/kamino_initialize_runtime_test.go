@@ -324,3 +324,22 @@ func TestWorkerDispatchesInitializationOnlyAfterPersistedAdmission(t *testing.T)
 		t.Fatal("admission hold not recorded")
 	}
 }
+
+// A signed AUTO initializer must reload after a restart through the manifest
+// that admitted it; the embedded validator refuses the candidate lane and
+// left the live route unable to finish its own initializer (2026-09-24).
+func TestNonterminalAutoInitializerRestoresOnManifest(t *testing.T) {
+	d := Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: autoAUTOPYUSD.Lane, IdempotencyKey: "obs:initialize:AUTO/AUTO/PYUSD"}
+	effects := []byte(`{"decision":{"reason":"multiply_obligation_missing","amountRaw":0,"strategyKey":"AUTO/AUTO/PYUSD"}}`)
+	if _, err := restorePersistedDecision(effects, d.Action, d.IdempotencyKey, d.StrategyKey); err == nil {
+		t.Fatal("embedded restore unexpectedly admits the candidate lane")
+	}
+	m := autoInitializerFixtureManifest(t)
+	got, err := restorePersistedDecisionWith(effects, d.Action, d.IdempotencyKey, d.StrategyKey, m.validateDecision)
+	if err != nil || got != d {
+		t.Fatal("manifest restore refused its own AUTO initializer", got, err)
+	}
+	if _, err := restorePersistedDecisionWith(effects, d.Action, d.IdempotencyKey, d.StrategyKey, autoAbsentBindingManifest(t).validateDecision); err == nil {
+		t.Fatal("restore admitted AUTO without its reviewed binding")
+	}
+}
