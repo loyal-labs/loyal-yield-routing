@@ -563,3 +563,20 @@ func TestPilotSameLaneSwitchStaysBlockedWithoutStrictReinvestmentCase(t *testing
 		})
 	}
 }
+
+func TestFlatMapleUnwindReportsBeforeCompleting(t *testing.T) {
+	s := base()
+	s.RouteLane = SelectedRouteID
+	s.StrategyKey = s.RouteLane
+	s.Unwind = true
+	// Flat after restore, but the reconciled bridge mutations are unreported:
+	// unwindComplete needs !CapitalMutated, so only a report can finish it.
+	s.CapitalMutated = true
+	if got := Decide(s); got.Action != ReportNAV || got.Reason != "withdrawal_terminal_nav_due" {
+		t.Fatal("flat unwind held before its terminal report", got)
+	}
+	s.CapitalMutated, s.PriorReportedNAVRaw, s.LastReportAgeSeconds = false, 0, 0
+	if got := Decide(s); got.Action != Hold || got.Reason != "unwind_complete" || !unwindComplete(s) {
+		t.Fatal("reported flat unwind did not complete", got)
+	}
+}

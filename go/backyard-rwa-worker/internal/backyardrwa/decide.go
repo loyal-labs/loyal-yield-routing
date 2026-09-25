@@ -271,6 +271,15 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 			return decision(StageSquadsToVoltr, "unwind_return_cash", s.SquadsIdleRaw)
 		}
 		if remaining == 0 {
+			// A flat unwind still owes its terminal report: completion requires
+			// !CapitalMutated, so holding here first would never finish. Mirrors
+			// decide_debt's withdrawal_terminal_nav_due (2026-09-25 Maple unwind).
+			if s.Unwind && (s.CapitalMutated || s.PriorReportedNAVRaw != 0 || s.LastReportAgeSeconds >= 60) {
+				if hold, blocked := custodyResidueHold(s); blocked {
+					return hold
+				}
+				return decision(ReportNAV, "withdrawal_terminal_nav_due", 0)
+			}
 			return decision(Hold, "unwind_complete", 0)
 		}
 		if s.SquadsIdleRaw >= remaining {
