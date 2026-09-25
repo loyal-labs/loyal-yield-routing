@@ -328,5 +328,9 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *RPCCli
 	if result.RowsAffected() != 1 {
 		return fmt.Errorf("failed settlement lost serialization")
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	d.otelFailedAfterSend(ctx, operation.ID, reason)
+	return nil
 }

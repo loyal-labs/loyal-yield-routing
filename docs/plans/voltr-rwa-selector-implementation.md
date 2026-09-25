@@ -10,6 +10,42 @@ Read-only snapshot (public RPC finalized slot 449715926, Render API, deployed de
 - Policies: 141–144, 149–151 and 156 match their raw hashes; 152–155 match their masked digests. The superseded 145–148, 62–65 and 140 are absent. Settings: one signer (`BAqgbE…`, mask 7); next seed 157.
 - Remaining before deposits open: the user-side withdrawal request and claim through the demo on this release; sweeping or accounting for the USDG/CASH residue; the demo consumed-report gate and `verify:demo --tier full` PASS; and the joint session. Key separation is required before third-party money. Note that the delegate `62JLkP…` is shared with the Rust fleet services.
 
+## Observability — OTLP log export (backyard-rwa-worker)
+
+`internal/backyardrwa/otel_export.go` sends OTLP/HTTP JSON logs to ClickStack.
+The shape matches the web app (`apps/web/src/features/observability/otlp.ts`).
+
+- Env: `OBSERVABILITY_OTLP_ENDPOINT` (https base URL; the path becomes
+  `/v1/logs`) and `OBSERVABILITY_INGESTION_API_KEY` (sent as the raw
+  `authorization` header). If either is unset, export is off. This is not an error.
+- Resource: `service.name=backyard-rwa-worker`, `service.version=<LOYAL_IMAGE_VERSION>`,
+  `deployment.environment.name=production`.
+- Every record: body `backyard_rwa.<kind>`, `loyal.flow.name=backyard_rwa.worker`,
+  `loyal.flow.stage=<kind>`, `loyal.route.key`, `loyal.route.lane` when known, and
+  `loyal.error.code=<reason>` for alerts. Error text is bounded to 300 chars.
+  URLs and credential-like values are removed from it.
+- Export never blocks a tick. It uses a 1024-record queue: when the queue is
+  full, new records are dropped and counted in the heartbeat as
+  `loyal.otel.dropped`. It sends batches of up to 100 records or every 2 s, with
+  a 3 s POST timeout. On shutdown it flushes for at most 2 s.
+
+| Kind | Severity | When |
+| --- | --- | --- |
+| `latched` | ERROR | A new manual recovery stop is recorded. `loyal.error.detail` carries the cause when one is known (for example, the `price_refresh_simulation_failed` transactionError). |
+| `worker_exit` | ERROR | `runTicks` returns a fatal tick or lease error. A SIGTERM stop is not reported. |
+| `operation_failed_after_send` | ERROR | A broadcast operation ends `failed` or `manual_recovery`. |
+| `ltv_urgent` | ERROR | LTV >= 5500 bps with a position. Sent at most once per 10 min. |
+| `custody_unexplained` | ERROR | A tick fails on `custody_attribution_unknown_*`. Sent at most once per 10 min. |
+| `ltv_warning` | WARN | 4500 <= LTV < 5500 bps. Sent at most once per 30 min. |
+| `repeated_failure` | WARN | The same action and reason fail 10 ticks in a row, then again every further 50. A success resets the count. |
+| `withdrawal_waiting` | WARN | Uncovered withdrawal demand has lasted more than 30 min. Sent at most once per 30 min. |
+| `selector_unavailable` | WARN | The live selector sample has failed for 30 min without a break. Sent at most once per 30 min. |
+| `heartbeat` | INFO | Sent at most once per 60 s. Carries `loyal.ltv_bps`, `loyal.nav_raw`, and `loyal.manual`. |
+| `worker_start` | INFO | Worker startup. |
+| `latch_cleared` | INFO | The worker sees that a latch it held is now clear (operator `HOLD_CLEARED`). |
+| `operation_reconciled` | INFO | A money step reconciles. Carries the action, `loyal.amount_raw`, and `loyal.tx.signature`. |
+| `nav_reported` | INFO | A `REPORT_NAV` reconciles. Carries the armed `loyal.nav_raw` and the signature. |
+
 ## Current critical path — replaces earlier status summaries
 
 **Not ready for external deposits.** The worker image has passed CI and deployed successfully; the compatible frontend is deployed and its live vault API is verified. Current-release funded money-flow and rotation proofs remain incomplete. Historical entries below retain evidence but do not define the current execution order. Existing hot-admin approval, 100-USDC vault cap, 10-USDC working equity, three reviewed USDC lanes, preserved spending history and full release acceptance remain unchanged.

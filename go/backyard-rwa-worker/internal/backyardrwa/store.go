@@ -1254,8 +1254,12 @@ func (d *Database) MarkExpiredAbsentFailed(ctx context.Context, operationID stri
 	if from != Signed && from != BroadcastIntent && from != Submitted {
 		return fmt.Errorf("expired-absent failure requires a signed source")
 	}
-	return d.transition(ctx, operationID, from, Failed,
-		`, recovery_reason = 'signature_absent_after_blockhash_expiry'`)
+	if err := d.transition(ctx, operationID, from, Failed,
+		`, recovery_reason = 'signature_absent_after_blockhash_expiry'`); err != nil {
+		return err
+	}
+	d.otelFailedAfterSend(ctx, operationID, "signature_absent_after_blockhash_expiry")
+	return nil
 }
 
 func (d *Database) MarkSimulated(ctx context.Context, operationID string, simulation SimulationResult) error {
@@ -1440,7 +1444,11 @@ func (d *Database) markReconciledOnManifest(ctx context.Context, manifest RouteM
 	if err = d.settlePhase3ReservationTx(ctx, tx, operationID); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	d.otelReconciled(ctx, operationID)
+	return nil
 }
 
 func (d *Database) MarkManualRecovery(ctx context.Context, operationID string, from OperationStatus, reason string) error {
@@ -1462,5 +1470,9 @@ func (d *Database) MarkManualRecovery(ctx context.Context, operationID string, f
 	if result.RowsAffected() != 1 {
 		return fmt.Errorf("persist manual recovery lost serialization")
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	d.otelFailedAfterSend(ctx, operationID, reason)
+	return nil
 }

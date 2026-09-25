@@ -450,6 +450,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		otelLogs.noteLatch(latched, latch.Reason)
 		if latched {
 			return w.recordLatchedHold(ctx, latch)
 		}
@@ -459,6 +460,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		return err
 	}
 	if operation != nil {
+		otelLogs.noteAction(operation.Decision.Action)
 		if err := w.runtime.advance(ctx, *operation); err != nil {
 			return err
 		}
@@ -482,6 +484,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	otelLogs.noteSnapshot(observation.Snapshot)
 	if w.runtime.completeUnwind != nil {
 		completed, err := w.runtime.completeUnwind(ctx, observation)
 		if err != nil {
@@ -513,6 +516,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if err := w.manifest.validateDecision(decision); err != nil {
 		return err
 	}
+	otelLogs.noteAction(decision.Action)
 	if w.manifest.PolicyCatalog.SHA256 == nil || !sha256Pattern.MatchString(*w.manifest.PolicyCatalog.SHA256) {
 		return ErrBridgePrerequisitesUnavailable
 	}
@@ -766,6 +770,10 @@ func (w *Worker) recordManualRecoveryDecision(ctx context.Context, observation O
 	if _, err := w.runtime.recordManualRecovery(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash); err != nil {
 		return err
 	}
+	// A "latched:" reason is the per-tick re-record of an existing stop.
+	if !strings.HasPrefix(decision.Reason, "latched:") {
+		otelLogs.latched(decision.Reason)
+	}
 	return nil
 }
 
@@ -935,9 +943,11 @@ func (w *Worker) notifySelectorCommit(action string) {
 
 func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick func(context.Context) error) error {
 	for {
-		if err := tick(ctx); err != nil {
+		err := tick(ctx)
+		if err != nil {
 			select {
 			case leaseErr := <-leaseErrors:
+				otelLogs.tickResult(leaseErr, true)
 				return leaseErr
 			default:
 			}
@@ -946,13 +956,19 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 			// anything else - including a hold joined with a store error -
 			// is a process fault and stops the worker.
 			if !errors.Is(err, errConfirmedObservationUnavailable) && !isPureHold(err) && !isStaleInputHold(err) {
+				// A SIGTERM cancellation is a normal stop, not an alert.
+				if ctx.Err() == nil {
+					otelLogs.tickResult(err, true)
+				}
 				return err
 			}
 		}
+		otelLogs.tickResult(err, false)
 		timer := time.NewTimer(w.interval)
 		select {
 		case err := <-leaseErrors:
 			timer.Stop()
+			otelLogs.tickResult(err, true)
 			return err
 		case <-ctx.Done():
 			timer.Stop()
@@ -1038,6 +1054,10 @@ func Run(ctx context.Context, out io.Writer) error {
 	if runtimeConfig.RouteKey != productionRouteKey {
 		return fmt.Errorf("Backyard worker route key does not match the fixed production route")
 	}
+	// Best-effort OTLP log export; nil (disabled) without its env. The
+	// deferred flush is bounded so shutdown never waits on the collector.
+	otelLogs = newOtelExporterFromEnv(runtimeConfig.ImageVersion)
+	defer otelLogs.shutdown(2 * time.Second)
 	leaseOwner, err := runtimeConfig.LeaseOwner()
 	if err != nil {
 		return err
@@ -1106,12 +1126,15 @@ func Run(ctx context.Context, out io.Writer) error {
 						// Closed-set sanitized code only: raw RPC/DB errors may
 						// carry service URLs. Change-only keeps a persistent
 						// outage at one line.
-						if code := sanitizedSelectorEvaluateFailure(err); code != lastEvaluateFailure {
+						code := sanitizedSelectorEvaluateFailure(err)
+						otelLogs.selectorSample(code)
+						if code != lastEvaluateFailure {
 							lastEvaluateFailure = code
 							_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector sample unavailable (%s); retaining current authority\n", code)
 						}
 						return
 					}
+					otelLogs.selectorSample("")
 					lastEvaluateFailure = ""
 					if result.Action == "ENTER" || result.Action == "CANARY_ENTER" || result.Action == "SWITCH" {
 						worker.notifySelectorCommit(result.Action)
@@ -1171,6 +1194,7 @@ func Run(ctx context.Context, out io.Writer) error {
 	); err != nil {
 		return err
 	}
+	otelLogs.workerStart()
 	err = worker.Run(ctx, database, leaseOwner, DefaultConfig())
 	if errors.Is(err, context.Canceled) {
 		return nil

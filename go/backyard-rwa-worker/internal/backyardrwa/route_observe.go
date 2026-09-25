@@ -241,13 +241,19 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 				}
 				slot, accounts = refreshedSlot, refreshedAccounts
 			} else {
-				_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: reserve valuation refresh failed lane=%s: %v\n", route.Lane, refreshErr)
+				detail := ""
+				if te := holdTransactionError(refreshErr); te != "" {
+					detail = " transactionError=" + te
+				}
+				_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: reserve valuation refresh failed lane=%s: %v%s\n", route.Lane, refreshErr, detail)
 				if transientValuationRefreshFailure(refreshErr) {
 					// A refresh that never reached the chain says nothing about
 					// reserve health. Retry next tick instead of latching a manual
 					// stop; a refresh Kamino itself rejects still holds below.
 					return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh unavailable: %w", refreshErr))
 				}
+				// The health hold below latches; carry this cause into its alert.
+				otelLogs.noteCause(holdDetail(refreshErr))
 			}
 			// On unavailable refresh, cash-only accounting still works. Any
 			// noncash exposure retains the original fail-closed health hold.
