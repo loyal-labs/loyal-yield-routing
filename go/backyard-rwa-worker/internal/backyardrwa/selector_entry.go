@@ -123,13 +123,25 @@ func applySelectorEntryWithLane(s *Snapshot, entry *SelectorEntry, now time.Time
 	}
 	// Expiry stops a new allocation, never interrupts the already allocated
 	// tranche. Risk, withdrawals and return-to-idle retain their earlier priority.
-	if !hasWorkingCapital(*s) && (entry.AllocationOperationID != "" || !entry.Quote.currentAtSlot(s.Slot) || now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt)) {
+	// While the lane's obligation is known absent the only next step is its
+	// initializer, which moves no principal (its rent returns on close), so the
+	// entry stays live until its own <=30 s expiry instead of the quote's
+	// 32-slot window: quote collection plus the initializer tick overran that
+	// window on every attempt (2026-09-25). The allocation keeps the slot check.
+	quoteCurrent := entry.Quote.currentAtSlot(s.Slot) || initializerOnlyEntry(*s)
+	if !hasWorkingCapital(*s) && (entry.AllocationOperationID != "" || !quoteCurrent || now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt)) {
 		s.SelectorEntryPaused = true
 		return nil
 	}
 	s.SelectorEntryEquityRaw = entry.EquityRaw
 	s.SelectorBorrowRaw = entry.Quote.BorrowReceiveRaw
 	return nil
+}
+
+// initializerOnlyEntry reports a flat route whose lane obligation is known
+// absent, so the only step an entry can authorize is the initializer.
+func initializerOnlyEntry(s Snapshot) bool {
+	return s.ObligationPresenceKnown && !s.ObligationPresent && !hasWorkingCapital(s)
 }
 
 func (d *Database) LoadSelectorEntry(ctx context.Context, routeKey string) (*SelectorEntry, error) {
@@ -508,7 +520,10 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 		return budgetHold("selector_entry_lane_deferred")
 	}
 	now := time.Now().UTC()
-	if !entry.Quote.currentAtSlot(slot) || now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt) {
+	// The initializer (requestedLane set, no borrow) moves no principal; it
+	// keeps the entry's own expiry but not the quote slot window. See
+	// applySelectorEntryWithLane.
+	if (requestedLane == "" && !entry.Quote.currentAtSlot(slot)) || now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt) {
 		return budgetHold("selector_entry_quote_expired")
 	}
 	if requestedLane != "" {

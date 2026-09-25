@@ -835,15 +835,12 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		t.Fatalf("installed manifest did not resolve its own initializer request: %+v %v", installedRequest, installedErr)
 	}
 
-	// An expired quote refuses the measured admission itself, leaving no
-	// reservation behind.
+	// An expired entry refuses the measured admission itself, leaving no
+	// reservation behind. The initializer ignores only the quote's slot window
+	// (it moves no principal), never the entry's own wall-clock expiry.
 	expiredKey := "auto-init-expired-" + time.Now().Format("150405.000000000")
 	seedAutoInitializerPilotRoute(t, ctx, db, expiredKey, &price, candidateEquity)
-	slotExpired := autoSelectorEntryFixture(time.Now().UTC(), candidateEquity, &price)
-	slotExpired.Quote.SampleSlot, slotExpired.Quote.ValidThroughSlot = 30, 41
-	earlyPrice := price
-	earlyPrice.ObservedSlot, earlyPrice.ValidThroughSlot = 30, 30+budgetMaxObservationLagSlots
-	slotExpired.Quote.DebtPrice = &earlyPrice
+	slotExpired := autoSelectorEntryFixture(time.Now().UTC().Add(-time.Minute), candidateEquity, &price)
 	storeTestSelectorEntry(t, ctx, db, expiredKey, slotExpired)
 	expiredRecord, err := db.RecordDecisionOnManifest(ctx, manifest, expiredKey, o, d, manifest.SHA256, policyHash)
 	if err != nil {

@@ -101,6 +101,22 @@ func TestSelectorEntryExpiryAndCapacityPreserveLifecycle(t *testing.T) {
 		if d := Decide(s); d.Action == InitializeKaminoObligation {
 			t.Fatal("setup spent rent on shrunken capacity", d)
 		}
+		// Past the quote's slot window the initializer (no principal) may still
+		// run until the entry's own expiry; the allocation may not.
+		s = original
+		s.ObligationPresenceKnown = true
+		s.InitializationPolicyReady = true
+		s.Slot = entry.Quote.ValidThroughSlot + 5
+		if err := applySelectorEntry(&s, &entry, now); err != nil || Decide(s).Action != InitializeKaminoObligation {
+			t.Fatal("slot-late initializer refused before entry expiry", err, Decide(s))
+		}
+		if err := applySelectorEntry(&s, &entry, entry.ExpiresAt); err != nil || Decide(s).Action == InitializeKaminoObligation {
+			t.Fatal("expired entry still initialized", err, Decide(s))
+		}
+		s.ObligationPresent = true
+		if err := applySelectorEntry(&s, &entry, now); err != nil || Decide(s).Action != Hold {
+			t.Fatal("slot-late quote allocated once the obligation exists", err, Decide(s))
+		}
 	}
 }
 

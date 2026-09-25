@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -198,16 +199,18 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 		t.Fatal(err)
 	}
 	op := PersistedOperation{Operation: Operation{ID: id, Decision: d}, Status: Signed, SignedWire: wire, SignedWireSHA256: hash, TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
-	// A fresh wall clock must not revive a recipe whose slot window ended.
+	// The initializer moves no principal: a quote past its slot window still
+	// authorizes it until the entry's own expiry (2026-09-25). Only the send
+	// fence is exercised here; the wall-clock expiry below still refuses.
 	slotExpired := selectorEntryFixture(time.Now().UTC(), r.RouteLane, o.Snapshot.SelectorEntryEquityRaw)
 	slotExpired.Quote.SampleSlot, slotExpired.Quote.ValidThroughSlot = 9, 41
 	storeTestSelectorEntry(t, ctx, db, key, slotExpired)
-	err = db.RevalueAndMarkBroadcastIntent(ctx, rpc, op)
-	var slotValidated *validatedSignedBudgetHold
-	if !errors.As(err, &slotValidated) {
-		t.Fatal("slot expiry lost exact signed recovery", err)
+	if err = db.RevalueAndMarkBroadcastIntent(ctx, rpc, op); err != nil && strings.Contains(err.Error(), "selector_entry_quote_expired") {
+		t.Fatal("slot-late initializer refused before entry expiry", err)
 	}
-	assertBudgetHold(t, err, "selector_entry_quote_expired")
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',broadcast_intent_at=NULL WHERE operation_id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
 	storeTestSelectorEntry(t, ctx, db, key, selectorEntryFixture(time.Now().UTC().Add(-time.Minute), r.RouteLane, o.Snapshot.SelectorEntryEquityRaw))
 	err = db.RevalueAndMarkBroadcastIntent(ctx, rpc, op)
 	var validated *validatedSignedBudgetHold
