@@ -482,7 +482,14 @@ func (e *otelExporter) operationFailedAfterSend(action Action, reason, signature
 	if signature != "" {
 		attrs = append(attrs, otelStr("loyal.tx.signature", signature))
 	}
-	e.emit("ERROR", "operation_failed_after_send", reason, attrs...)
+	// A failed REPORT_NAV is retried by the next tick (~30/48h in production,
+	// mostly blockhash expiry). The nav_reported absence alert pages if the
+	// retries stop working, so only fund-moving steps page here.
+	severity := "ERROR"
+	if action == ReportNAV {
+		severity = "INFO"
+	}
+	e.emit(severity, "operation_failed_after_send", reason, attrs...)
 }
 
 // operationReconciled reports one finalized, reconciled money step; a

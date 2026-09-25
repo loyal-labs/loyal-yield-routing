@@ -209,3 +209,15 @@ func TestOtelAlertRepeatedFailureCrossing(t *testing.T) {
 		t.Fatalf("streak survived reset: %d", n)
 	}
 }
+
+func TestOtelFailedAfterSendPagesOnlyForMoneyMoves(t *testing.T) {
+	e := newOtelExporter("http://127.0.0.1/v1/logs", "k", "v", 4)
+	e.operationFailedAfterSend(ReportNAV, "signature_absent_after_blockhash_expiry", "sig")
+	e.operationFailedAfterSend(Action("SWAP_DEBT_TO_USDC_STEP"), "signature_absent_after_blockhash_expiry", "sig")
+	if got := (<-e.queue).SeverityText; got != "INFO" {
+		t.Fatalf("REPORT_NAV failure severity = %s, want INFO (retried next tick)", got)
+	}
+	if got := (<-e.queue).SeverityText; got != "ERROR" {
+		t.Fatalf("money-move failure severity = %s, want ERROR", got)
+	}
+}
