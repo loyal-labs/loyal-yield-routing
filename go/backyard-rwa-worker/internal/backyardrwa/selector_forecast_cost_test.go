@@ -335,3 +335,18 @@ func TestRecipeExpectedCostExcludesMarginWhileBoundKeepsFloor(t *testing.T) {
 		t.Fatal("bound economics drifted", q.Recipe.CostRaw)
 	}
 }
+
+func TestLiveSelectorLadderStopsAfterQuoteWindowBudget(t *testing.T) {
+	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
+	policy.UncertaintyBPS = 0
+	var legs []uint64
+	client.http.Transport = quoteLegsTransport(t, client.http.Transport, &legs, 5_000_000, 100_000)
+	// Same economics as the ladder test above, but the observation is already
+	// past the ladder budget: only the largest size is priced, so no smaller
+	// quote can arrive with too few slots left to allocate.
+	o.ObservedAt = time.Now().UTC().Add(-selectorLadderBudget - time.Second)
+	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, -1, 10_000_000)
+	if err != nil || len(quotes) != 0 || len(legs) != 1 || legs[0] != 10_000_000 {
+		t.Fatal("ladder priced smaller sizes after its budget", err, quotes, legs)
+	}
+}

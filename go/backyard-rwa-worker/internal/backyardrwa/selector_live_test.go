@@ -187,3 +187,24 @@ func TestLiveSelectorPricesEligibleSameLaneReentryAndSkipsIneligible(t *testing.
 	_, _, err = collectSelectorQuotes(context.Background(), rpc, client, m, stagedObservation, []LaneEconomics{market}, policy, -1, 10_000_000)
 	assertBudgetHold(t, err, "complete_current_tranche_first")
 }
+
+func TestCanaryQuoteCollectionSkipsOtherLanes(t *testing.T) {
+	m, rpc, client, _ := selectorDestinationFixture(t)
+	in := selectorFixture()
+	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
+	in.Snapshot.PilotActive, in.Snapshot.Slot = true, 42
+	in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = 10_000_000, 10_000_000
+	o := tickObservation(in.Snapshot)
+	o.ObservedAt = time.Now().UTC()
+	market := in.Markets[0]
+	market.Lane = SelectedRouteID
+	// Control: without a canary lane the fundable lane is priced.
+	if _, quotes, err := collectSelectorQuotesForLane(context.Background(), rpc, client, m, o, []LaneEconomics{market}, in.Policy, -1, ""); err != nil || len(quotes) != 1 {
+		t.Fatal("control quote missing", err, quotes)
+	}
+	// A canary for another lane leaves this lane unpriced and not executable.
+	markets, quotes, err := collectSelectorQuotesForLane(context.Background(), rpc, client, m, o, []LaneEconomics{market}, in.Policy, -1, autoAUTOPYUSD.Lane)
+	if err != nil || len(quotes) != 0 || markets[0].EntryBlockedReason != "operator_canary_lane_only" || markets[0].EntryCapacity.Raw != 0 {
+		t.Fatal("canary collection priced another lane", err, quotes, markets[0])
+	}
+}

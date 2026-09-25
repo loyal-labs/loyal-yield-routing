@@ -16,6 +16,22 @@ import (
 // entryCostRemainingRaw is advisory sizing headroom under the bounded
 // execution-cost stop; negative means unknown and skips that trigger.
 func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+	return collectSelectorQuotesForLane(ctx, rpc, client, manifest, o, markets, policy, entryCostRemainingRaw, "", canaryMaximum...)
+}
+
+// selectorLadderBudget stops pricing smaller ladder sizes once this much of
+// the quote's 32-slot (~9-13 s) window has passed since the observation; the
+// largest size is always priced. Every lane waits for the slowest ladder, and
+// the AUTO ladder alone took ~6 s of a ~9 s window on 2026-09-25, so accepted
+// entries reached the worker with too few slots left to allocate.
+const selectorLadderBudget = 3 * time.Second
+
+// collectSelectorQuotesForLane prices only onlyLane when it is set: while an
+// operator canary is installed the pure selector's economic choice is always
+// suppressed, so other lanes' destination quotes are never used and only
+// delay the canary's own quote. Those lanes keep their market economics and
+// are published as blocked without a quote.
+func collectSelectorQuotesForLane(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
 	defer cancel()
 	if err := policy.validate(); err != nil {
@@ -87,6 +103,13 @@ func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterC
 			}
 			continue
 		}
+		if onlyLane != "" && market.Lane != onlyLane {
+			if market.EntryBlockedReason == "" {
+				out[i].EntryCapacity = Capacity{Known: true}
+				out[i].EntryBlockedReason = "operator_canary_lane_only"
+			}
+			continue
+		}
 		// Current deployed capital is the KEEP baseline, never close/reopen merely
 		// to quote the same destination — unless a strictly larger same-lane
 		// reinvestment is eligible. Idle ownership can enter that lane normally.
@@ -142,7 +165,7 @@ func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterC
 			// staleness and validation refusals stop the ladder immediately.
 			refusal := ""
 			for j, size := range sizes {
-				if size == 0 || (j > 0 && ctx.Err() != nil) {
+				if size == 0 || (j > 0 && (ctx.Err() != nil || time.Since(o.ObservedAt) > selectorLadderBudget)) {
 					break
 				}
 				q, unavailable, economic, err := price(size)
@@ -279,8 +302,10 @@ func (d *Database) evaluateSelector(ctx context.Context, rpc *RPCClient, manifes
 		return SelectorResult{}, err
 	}
 	var maximum []uint64
+	onlyLane := ""
 	if request != nil {
 		maximum = []uint64{uint64(request.EquityRaw)}
+		onlyLane = request.Lane
 	}
 	// Advisory sizing headroom from the same planning snapshot; the binding
 	// bounded-cost stop still runs at reservation time under the record lock.
@@ -288,7 +313,7 @@ func (d *Database) evaluateSelector(ctx context.Context, rpc *RPCClient, manifes
 	if o.planning != nil {
 		remaining = o.planning.remainingExecutionCost
 	}
-	enriched, quotes, quoteErr := collectSelectorQuotes(ctx, rpc, productionJupiterClient(), manifest, o, markets, policy, remaining, maximum...)
+	enriched, quotes, quoteErr := collectSelectorQuotesForLane(ctx, rpc, productionJupiterClient(), manifest, o, markets, policy, remaining, onlyLane, maximum...)
 	if quoteErr != nil {
 		// No fabricated executable capacity on an outage. Current economic evidence
 		// can still maintain persistence, while pure selection cannot enter/switch.
