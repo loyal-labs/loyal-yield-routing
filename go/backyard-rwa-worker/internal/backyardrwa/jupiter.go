@@ -620,9 +620,11 @@ func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc
 	if _, err := DecodeExpectedEffects(effects); err != nil {
 		return err
 	}
+	buildStart := time.Now()
 	if err := authorizePhase3ProductionBuild(ctx, database, rpc, operationID, evidence.Request, evidence.ExpectedEffects, effects); err != nil {
 		return err
 	}
+	logStage("jupiter_build_authorize", buildStart)
 	signer, err := loadPinnedPolicySigner()
 	if err != nil {
 		return err
@@ -638,6 +640,7 @@ func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc
 	if err != nil {
 		return err
 	}
+	logStage("jupiter_build_simulate", buildStart)
 	if err := database.MarkSimulated(ctx, operationID, simulation); err != nil {
 		return err
 	}

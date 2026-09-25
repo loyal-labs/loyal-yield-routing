@@ -477,6 +477,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		}
 		return nil
 	}
+	tickStart := time.Now()
 	observation, err := w.runtime.observe(ctx)
 	if err != nil {
 		return err
@@ -551,6 +552,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if blocker := w.manifest.executionBlocker(); blocker != nil {
 		return blocker
 	}
+	logStage("observe_decide", tickStart)
 	var initializationRequest KaminoInitializationRequest
 	var bridgeEvidence BridgeExecutionEvidence
 	var kaminoEvidence KaminoExecutionEvidence
@@ -586,6 +588,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		}
 		return nil
 	}
+	logStage("prepare", tickStart)
 	if err != nil {
 		return err
 	}
@@ -612,10 +615,12 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	logStage("custody_proof", tickStart)
 	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash)
 	if err != nil {
 		return err
 	}
+	logStage("record_decision", tickStart)
 	if record.Status != Decided || record.OperationID == "" {
 		return fmt.Errorf("actionable decision was not durably recorded as decided")
 	}
@@ -643,6 +648,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 			err = budgetHold("position_admission_unavailable")
 		} else {
 			err = w.runtime.admitKamino(ctx, record.OperationID, observation, decision, kaminoEvidence)
+			logStage("admit", tickStart)
 			if err == nil {
 				err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
 			}
@@ -652,6 +658,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 			err = budgetHold("swap_admission_unavailable")
 		} else {
 			err = w.runtime.admitJupiter(ctx, record.OperationID, observation, decision, jupiterEvidence)
+			logStage("admit", tickStart)
 			if err == nil {
 				err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
 			}
@@ -659,6 +666,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	default:
 		return fmt.Errorf("prepared evidence no longer matches an actionable decision")
 	}
+	logStage("build_sign", tickStart)
 	if err != nil {
 		return w.journalTickError(ctx, record.OperationID, err)
 	}
@@ -684,6 +692,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 			return fmt.Errorf("operation changed after durable build")
 		}
 		if pending.Status == Signed {
+			defer logStage("final_check_send", tickStart)
 			return w.runtime.advance(ctx, *pending)
 		}
 	}

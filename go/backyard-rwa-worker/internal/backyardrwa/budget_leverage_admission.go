@@ -86,10 +86,12 @@ func observePhase3LeverageSwapAdmission(ctx context.Context, rpc *RPCClient, cli
 		s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !positionReturnRoute(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 || debtCashRaw(s) <= 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || d.Action != SwapDebtToCollateralStep || d.Action != r.Action || d.AmountRaw != debtCashRaw(s) || r.AmountRaw != uint64(d.AmountRaw) {
 		return phase3BridgeAdmission{}, budgetHold("complete_leverage_swap_return_unavailable")
 	}
+	admitStart := time.Now()
 	current, err := observePhase3KnownBuildCost(ctx, rpc, r, e.ExpectedEffects)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
+	logStage("leverage_admit_build_cost", admitStart)
 	bound, before, err := validateLeverageSwap(ctx, rpc, r, e.ExpectedEffects, max(s.Slot, current.ObservationSlot))
 	if err != nil {
 		return phase3BridgeAdmission{}, err
@@ -111,10 +113,12 @@ func observePhase3LeverageSwapAdmission(ctx context.Context, rpc *RPCClient, cli
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
+	logStage("leverage_admit_projection", admitStart)
 	if err := validateLeverageProjection(r, e.ExpectedEffects, before, projection); err != nil {
 		return phase3BridgeAdmission{}, err
 	}
 	plan, err := pricePhase3ProjectedPositionReturn(ctx, rpc, client, m, o, d, r, e.ExpectedEffects, current, projection)
+	logStage("leverage_admit_exit_pricing", admitStart)
 	if err != nil {
 		return plan, err
 	}
@@ -127,6 +131,8 @@ func (db *Database) admitPhase3LeverageSwap(ctx context.Context, rpc *RPCClient,
 	if err != nil {
 		return err
 	}
+	persistStart := time.Now()
+	defer logStage("leverage_admit_persist", persistStart)
 	return db.persistPhase3ExitAdmission(ctx, rpc, id, o, d, plan)
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Byte strings retain the exact canonical request/effects encoding through
@@ -206,7 +207,9 @@ func (m RouteManifest) revaluePhase3SignedInput(ctx context.Context, rpc *RPCCli
 	if operation.SignedWireSHA256 != auth.SignedWireSHA256 || operation.RecentBlockhash != blockhash || operation.LastValidBlockHeight != height || operation.TransactionSignature != encodeBase58(wire[1:65]) {
 		return ValuedTransactionCost{}, budgetHold("persisted_signature_or_expiry_mismatch")
 	}
+	revalueStart := time.Now()
 	cost, err := m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
+	logStage("revalue_build_cost", revalueStart)
 	if err == nil {
 		// This early signed-HOLD check is not authority. The locked send gate
 		// independently requires the exact persisted budget and reservation.
@@ -257,13 +260,16 @@ func (m RouteManifest) revaluePhase3SignedInput(ctx context.Context, rpc *RPCCli
 			}
 		}
 	}
+	logStage("revalue_prestate", revalueStart)
 	if err == nil && auth.PilotAuthorityID != "" {
 		var observed int64
 		observed, err = validatePilotProjectedReleaseRisk(ctx, rpc, auth.BridgeAdmission, cost.ObservationSlot)
+		logStage("revalue_release_risk", revalueStart)
 		cost.ObservationSlot = max(cost.ObservationSlot, observed)
 	}
 	if err == nil && auth.PilotAuthorityID != "" {
 		cost, err = m.observePilotExecutionCost(ctx, rpc, request, effects, cost)
+		logStage("revalue_execution_cost", revalueStart)
 	}
 	if err == nil && auth.BridgeAdmission != nil {
 		// Fresh principal pricing cannot extend the earlier complete exit
@@ -308,7 +314,9 @@ func (d *Database) RevalueAndMarkBroadcastIntentOnManifest(ctx context.Context, 
 	if json.Unmarshal(encoded, &auth) != nil {
 		return budgetHold("invalid_durable_budget")
 	}
+	checkStart := time.Now()
 	cost, err := manifest.revaluePhase3SignedInput(ctx, rpc, auth, operation)
+	logStage("final_check_revalue", checkStart)
 	if err != nil {
 		return err
 	}
@@ -330,7 +338,9 @@ func (d *Database) RevalueAndMarkBroadcastIntentOnManifest(ctx context.Context, 
 		}
 		custody = proof
 	}
+	logStage("final_check_custody", checkStart)
 	err = d.markBroadcastIntentOnManifest(ctx, manifest, operation.ID, rpc, auth.IntentSHA256, sha256Bytes(operation.SignedWire), cost, custody)
+	logStage("final_check_intent", checkStart)
 	var hold *BudgetHold
 	if errors.As(err, &hold) && (hold.Reason == "fresh_execution_cost_exceeds_reservation" || hold.Reason == "fresh_send_cost_exceeds_reservation" || hold.Reason == "send_valuation_expired" || hold.Reason == "send_valuation_slot_unavailable" || hold.Reason == "selector_entry_quote_expired") {
 		return &validatedSignedBudgetHold{hold}
