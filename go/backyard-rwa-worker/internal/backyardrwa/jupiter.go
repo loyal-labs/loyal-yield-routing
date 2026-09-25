@@ -269,8 +269,28 @@ func validateInstalledJupiterHeader(action Action, instruction JupiterSwapInstru
 	return nil
 }
 
+// jupiterRateLimitRetries bounds retries of an HTTP 429. Quote and
+// swap-instruction requests have no side effects, and the selector's parallel
+// entry quotes hit the keyless rate limit in bursts (2026-09-25).
+var jupiterRateLimitBackoff = []time.Duration{250 * time.Millisecond, 750 * time.Millisecond}
+
 func (c *jupiterClient) doJSON(request *http.Request) (json.RawMessage, error) {
 	response, err := c.http.Do(request)
+	for _, backoff := range jupiterRateLimitBackoff {
+		if err != nil || response.StatusCode != http.StatusTooManyRequests {
+			break
+		}
+		response.Body.Close()
+		if request, err = rewindJupiterRequest(request); err != nil {
+			return nil, err
+		}
+		select {
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
+		case <-time.After(backoff):
+		}
+		response, err = c.http.Do(request)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -283,6 +303,18 @@ func (c *jupiterClient) doJSON(request *http.Request) (json.RawMessage, error) {
 		return nil, fmt.Errorf("Jupiter returned invalid HTTP %d response", response.StatusCode)
 	}
 	return data, nil
+}
+
+func rewindJupiterRequest(request *http.Request) (*http.Request, error) {
+	next := request.Clone(request.Context())
+	if request.GetBody != nil {
+		body, err := request.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		next.Body = body
+	}
+	return next, nil
 }
 
 func jsonNull(value json.RawMessage) bool {
