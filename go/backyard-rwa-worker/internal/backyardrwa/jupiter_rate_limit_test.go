@@ -15,8 +15,8 @@ func TestJupiterRetriesRateLimitWithSameBody(t *testing.T) {
 		calls := 0
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			calls++
-			if body, _ := io.ReadAll(r.Body); string(body) != `{"q":1}` {
-				t.Fatal("retry lost the request body", string(body))
+			if body, _ := io.ReadAll(r.Body); string(body) != `{"q":1}` || r.Header.Get("x-api-key") != "k" {
+				t.Fatal("retry lost the request body or API key", string(body))
 			}
 			if calls <= limited {
 				w.WriteHeader(http.StatusTooManyRequests)
@@ -25,6 +25,7 @@ func TestJupiterRetriesRateLimitWithSameBody(t *testing.T) {
 			_, _ = w.Write([]byte(`{"ok":true}`))
 		}))
 		client, _ := newJupiterClient(server.URL, server.Client())
+		client.apiKey = "k"
 		request, _ := http.NewRequest(http.MethodPost, server.URL, bytes.NewReader([]byte(`{"q":1}`)))
 		_, err := client.doJSON(request)
 		server.Close()

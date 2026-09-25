@@ -14,13 +14,16 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const (
 	jupiterV6Program       = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 	jupiterAPIBase         = "https://lite-api.jup.ag/swap/v1"
+	jupiterKeyedAPIBase    = "https://api.jup.ag/swap/v1"
 	previousBackyardVault  = "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK"
 	jupiterMaxSlippageBPS  = uint16(50)
 	jupiterMaxRoutePlanLeg = 4
@@ -83,8 +86,9 @@ type JupiterExecutionEvidence struct {
 }
 
 type jupiterClient struct {
-	base string
-	http *http.Client
+	base   string
+	http   *http.Client
+	apiKey string
 }
 
 func newJupiterClient(base string, client *http.Client) (*jupiterClient, error) {
@@ -95,8 +99,16 @@ func newJupiterClient(base string, client *http.Client) (*jupiterClient, error) 
 	return &jupiterClient{base: string(bytes.TrimRight([]byte(base), "/")), http: client}, nil
 }
 
+// productionJupiterClient uses the keyed API when JUPITER_API_KEY is set. The
+// keyless lite endpoint allows too few requests for one selector round (about
+// 18 parallel quote calls; 2026-09-25). Both serve the same swap/v1 API.
 func productionJupiterClient() *jupiterClient {
-	client, _ := newJupiterClient(jupiterAPIBase, &http.Client{Timeout: 20 * time.Second})
+	base, key := jupiterAPIBase, strings.TrimSpace(os.Getenv("JUPITER_API_KEY"))
+	if key != "" {
+		base = jupiterKeyedAPIBase
+	}
+	client, _ := newJupiterClient(base, &http.Client{Timeout: 20 * time.Second})
+	client.apiKey = key
 	return client
 }
 
@@ -275,6 +287,9 @@ func validateInstalledJupiterHeader(action Action, instruction JupiterSwapInstru
 var jupiterRateLimitBackoff = []time.Duration{250 * time.Millisecond, 750 * time.Millisecond}
 
 func (c *jupiterClient) doJSON(request *http.Request) (json.RawMessage, error) {
+	if c.apiKey != "" {
+		request.Header.Set("x-api-key", c.apiKey)
+	}
 	response, err := c.http.Do(request)
 	for _, backoff := range jupiterRateLimitBackoff {
 		if err != nil || response.StatusCode != http.StatusTooManyRequests {
