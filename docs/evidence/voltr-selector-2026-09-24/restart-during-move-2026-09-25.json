@@ -1,0 +1,91 @@
+{
+  "schema": "voltr-selector-evidence/restart-during-move/v1",
+  "route": "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+  "date": "2026-09-25",
+  "summary": "Restart during an in-flight financed move. During the 13:58-14:17 UTC Maple re-entry, Render recorded 7 worker process failures (server_failed at 13:59:13, 14:01:52, 14:06:11, 14:10:45, 14:10:46, 14:11:46, 14:13:11), 4 of them between the allocation (14:06:31) and the final redeposit (14:15:18). There were also 3 image deploys (13:58, 14:00, 14:05). After each one, the new process took the route lease, re-read the journal and the chain, and continued from the last reconciled step. No reconciled step was repeated and no signed wire was broadcast twice. The loop completed at 14:16:21 with the expected position.",
+  "restarts": [
+    {
+      "at": "2026-09-25T13:59:13Z",
+      "renderEvent": "server_failed",
+      "lastLogBefore": "route lease is held by another worker"
+    },
+    {
+      "at": "2026-09-25T14:01:52Z",
+      "renderEvent": "server_failed",
+      "lastLogBefore": "reserve valuation refresh failed lane=Maple/syrupUSDC/USDC: HOLD: price_refresh_simulation_failed"
+    },
+    {
+      "at": "2026-09-25T14:06:11Z",
+      "renderEvent": "server_failed",
+      "lastLogBefore": "reserve valuation refresh failed lane=Maple/syrupUSDC/USDC: HOLD: price_refresh_simulation_failed"
+    },
+    {
+      "at": "2026-09-25T14:10:45Z",
+      "renderEvent": "server_failed",
+      "lastLogBefore": "HOLD: pilot_release_projection_expired"
+    },
+    {
+      "at": "2026-09-25T14:10:46Z",
+      "renderEvent": "server_failed",
+      "lastLogBefore": "(paired with previous)"
+    },
+    {
+      "at": "2026-09-25T14:11:46Z",
+      "renderEvent": "server_failed",
+      "lastLogBefore": "HOLD: pilot_release_projection_risk_changed"
+    },
+    {
+      "at": "2026-09-25T14:13:11Z",
+      "renderEvent": "server_failed",
+      "lastLogBefore": "HOLD: pilot_release_projection_risk_changed"
+    }
+  ],
+  "journal": [
+    "13:59:14 | REPORT_NAV | reconciled |  | 13:59:15",
+    "14:00:20 | REPORT_NAV | reconciled |  | 14:00:21",
+    "14:01:22 | REPORT_NAV | reconciled |  | 14:01:23",
+    "14:01:53 | INITIALIZE_KAMINO_OBLIGATION | reconciled |  | 14:01:54",
+    "14:02:23 | VOLTR_ALLOCATE_TO_SQUADS | failed | report_stale | ",
+    "14:02:40 | REPORT_NAV | reconciled |  | 14:02:41",
+    "14:03:44 | REPORT_NAV | reconciled |  | 14:03:45",
+    "14:04:51 | REPORT_NAV | failed | adaptor_report_slot_refused | 14:04:52",
+    "14:05:42 | REPORT_NAV | reconciled |  | 14:05:43",
+    "14:06:31 | VOLTR_ALLOCATE_TO_SQUADS | reconciled |  | 14:06:33",
+    "14:06:57 | SWAP_STABLE_TO_COLLATERAL_STEP | reconciled |  | 14:06:59",
+    "14:07:22 | REPORT_NAV | reconciled |  | 14:07:24",
+    "14:07:47 | OPEN_ROUTE_STEP | reconciled |  | 14:07:49",
+    "14:08:13 | REPORT_NAV | reconciled |  | 14:08:14",
+    "14:08:38 | OPEN_ROUTE_STEP | reconciled |  | 14:08:41",
+    "14:09:04 | REPORT_NAV | reconciled |  | 14:09:07",
+    "14:09:30 | SWAP_DEBT_TO_COLLATERAL_STEP | reconciled |  | 14:09:33",
+    "14:09:56 | REPORT_NAV | reconciled |  | 14:09:59",
+    "14:10:23 | OPEN_ROUTE_STEP | failed | signature_absent_after_blockhash_expiry | ",
+    "14:11:18 | REPORT_NAV | reconciled |  | 14:11:20",
+    "14:11:44 | OPEN_ROUTE_STEP | failed | phase3_budget_hold:pilot_release_projection_risk_changed | ",
+    "14:12:38 | REPORT_NAV | reconciled |  | 14:12:41",
+    "14:13:08 | OPEN_ROUTE_STEP | failed | signature_absent_after_blockhash_expiry | ",
+    "14:14:51 | REPORT_NAV | reconciled |  | 14:14:53",
+    "14:15:18 | OPEN_ROUTE_STEP | reconciled |  | 14:15:20",
+    "14:15:43 | REPORT_NAV | reconciled |  | 14:15:45"
+  ],
+  "invariants": [
+    "every never-broadcast signed row ended failed with signature_absent_after_blockhash_expiry or a pre-send hold (broadcast_intent_at empty)",
+    "reconciled steps are in order and each exactly once",
+    "final snapshot 189,628,590 collateral / 74,639,960 debt / equity $150.05 / LTV 33.2%"
+  ],
+  "relatedEvidence": "maple-reentry-fix19-2026-09-25.json",
+  "deploys": [
+    {
+      "at": "2026-09-25T13:58:13Z",
+      "image": "sha-166d09c3303445e856395c82fe7f79a6c3c46209"
+    },
+    {
+      "at": "2026-09-25T14:00:33Z",
+      "purpose": "canary 10 env"
+    },
+    {
+      "at": "2026-09-25T14:05:13Z",
+      "purpose": "canary 11 env"
+    }
+  ]
+}
