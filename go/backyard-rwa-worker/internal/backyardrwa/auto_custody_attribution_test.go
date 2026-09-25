@@ -1288,7 +1288,7 @@ func TestSharedCustodyUnknownBoundIgnoresInertNAVAndHoldMarkers(t *testing.T) {
 	}
 	for i := 0; i < sharedCustodyUnknownRowBound+10; i++ {
 		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,signed_wire_sha256,transaction_signature,message_sha256,recent_blockhash,last_valid_block_height,simulation_slot,broadcast_intent_at,recovery_reason)
-			VALUES($1,$2,'failed','REPORT_NAV',$3::jsonb,$4,$5,$6,$7,$8,$9,$10,now(),'signature_absent_after_blockhash_expiry')`,
+			VALUES($1,$2,'failed','REPORT_NAV',$3::jsonb,$4,$5,$6,$7,$8,$9,$10,now(),'report_stale')`,
 			fmt.Sprintf("%s-nav-%03d", routeKey, i), routeKey, string(effects), build.SignedWire, build.SignedWireSHA256, build.TransactionSignature, build.MessageSHA256, build.RecentBlockhash, build.LastValidBlockHeight, build.SimulationSlot); err != nil {
 			t.Fatal(err)
 		}
@@ -1306,16 +1306,19 @@ func TestSharedCustodyUnknownBoundIgnoresInertNAVAndHoldMarkers(t *testing.T) {
 	if err != nil || evidence.Unknown || len(evidence.UnknownRows) != 0 {
 		t.Fatal("inert NAV reports, hold markers or unsent expired rows counted as unknown", len(evidence.UnknownRows), err)
 	}
-	// The same failure once a broadcast intent was recorded stays unknown.
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,transaction_signature,broadcast_intent_at,last_valid_block_height,recovery_reason) VALUES($1,$2,'failed','SWAP_DEBT_TO_COLLATERAL_STEP','{}','\\x01','sig-sent',now(),999999999,'signature_absent_after_blockhash_expiry')`, routeKey+"-sent", routeKey); err != nil {
-		t.Fatal(err)
+	// A sent wire proven absent after expiry can never land either; the same
+	// sent row with any other failure reason stays unknown.
+	for _, reason := range []string{"signature_absent_after_blockhash_expiry", "confirmed_transaction_error"} {
+		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,transaction_signature,broadcast_intent_at,last_valid_block_height,recovery_reason) VALUES($1,$2,'failed','SWAP_DEBT_TO_USDC_STEP','{}','\\x01',$1,now(),999999999,$3)`, routeKey+"-sent-"+reason, routeKey, reason); err != nil {
+			t.Fatal(err)
+		}
 	}
 	evidence, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
-	if err != nil || len(evidence.UnknownRows) != 1 || evidence.UnknownRows[0].OperationID != routeKey+"-sent" {
-		t.Fatal("broadcast expired row was excused", len(evidence.UnknownRows), err)
+	if err != nil || len(evidence.UnknownRows) != 1 || evidence.UnknownRows[0].OperationID != routeKey+"-sent-confirmed_transaction_error" {
+		t.Fatal("sent expired-absent row not excused, or another sent failure excused", len(evidence.UnknownRows), err)
 	}
 	for i := 0; i <= sharedCustodyUnknownRowBound; i++ {
-		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,broadcast_intent_at,last_valid_block_height,recovery_reason) VALUES($1,$2,'failed','OPEN_ROUTE_STEP','{}','\x01',now(),5,'signature_absent_after_blockhash_expiry')`, fmt.Sprintf("%s-open-%03d", routeKey, i), routeKey); err != nil {
+		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,broadcast_intent_at,last_valid_block_height,recovery_reason) VALUES($1,$2,'failed','OPEN_ROUTE_STEP','{}','\x01',now(),5,'confirmed_transaction_error')`, fmt.Sprintf("%s-open-%03d", routeKey, i), routeKey); err != nil {
 			t.Fatal(err)
 		}
 	}
