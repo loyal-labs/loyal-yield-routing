@@ -334,9 +334,12 @@ func TestStaleInputHoldRetriesInsteadOfStoppingTheWorker(t *testing.T) {
 		if ticks == 2 {
 			return fmt.Errorf("admit: %w", budgetHold("missing_stale_or_mismatched_usdc_valuation"))
 		}
+		if ticks == 3 {
+			return budgetHold("pilot_release_projection_risk_changed")
+		}
 		return nil
 	})
-	if !errors.Is(err, context.DeadlineExceeded) || ticks < 3 {
+	if !errors.Is(err, context.DeadlineExceeded) || ticks < 4 {
 		t.Fatalf("stale-input hold stopped the worker: ticks=%d err=%v", ticks, err)
 	}
 	for name, stop := range map[string]error{

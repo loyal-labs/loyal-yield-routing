@@ -891,6 +891,11 @@ var staleInputHoldReasons = map[string]bool{
 	"bridge_admission_token_valuation_unavailable": true,
 	"send_valuation_expired":                       true,
 	"send_valuation_slot_unavailable":              true,
+	// Pre-send re-checks of an entry's Kamino projection and of the fee
+	// quote: the next tick rebuilds from a fresh read (2026-09-25 redeposit).
+	"pilot_release_projection_expired":      true,
+	"pilot_release_projection_risk_changed": true,
+	"fee_message_or_slot_mismatch":          true,
 }
 
 // isStaleInputHold reports a tick error made only of stale-input holds. Like
