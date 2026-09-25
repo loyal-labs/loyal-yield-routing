@@ -904,6 +904,9 @@ var staleInputHoldReasons = map[string]bool{
 	"pilot_release_projection_expired":      true,
 	"pilot_release_projection_risk_changed": true,
 	"fee_message_or_slot_mismatch":          true,
+	// The fresh build's fee is over its reservation: nothing was sent, and the
+	// next tick reserves again (11 pre-send since 09-18, 0 sent; Vlad OK 09-25).
+	"fresh_build_cost_exceeds_reservation": true,
 }
 
 // isStaleInputHold reports a tick error made only of stale-input holds. Like
