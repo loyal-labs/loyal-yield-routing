@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sync"
 	"time"
 )
@@ -114,6 +115,7 @@ func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterC
 					destination, err = observeSelectorDestinationForecastAuthorized(ctx, rpc, client, manifest, out[i].Lane, size, s.Slot, true, nil)
 				}
 				if err != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable lane=%s size=%d: %v\n", out[i].Lane, size, err)
 					return MoveQuote{}, "complete_entry_quote_unavailable", false, err
 				}
 				q, err := composeSelectorMoveWithLane(ctx, rpc, o, source, destination, laneAllowed)
