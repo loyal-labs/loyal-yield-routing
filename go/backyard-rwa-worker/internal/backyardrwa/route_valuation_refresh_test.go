@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -180,5 +181,43 @@ func TestConfirmedAccountPreservesArchivedJSONEncoding(t *testing.T) {
 	var restored ConfirmedAccount
 	if json.Unmarshal(b, &restored) != nil || restored.ValuationSource != a.ValuationSource || restored.ValuationSlot != 78 {
 		t.Fatal("explicit provenance was dropped")
+	}
+}
+
+// A reserve refresh that never reached the chain retries next tick; one that
+// Kamino rejected still latches kamino_stale. Both start from stale reserves
+// with noncash exposure.
+func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
+	for _, tc := range []struct {
+		reason    string
+		transient bool
+	}{{"price_refresh_blockhash_unavailable", true}, {"price_refresh_simulation_unavailable", true}, {"price_refresh_simulation_failed", false}} {
+		m := readyWorkerManifest(t)
+		m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+		initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
+			binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 77)
+			binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[16:24], 1)
+			binary.LittleEndian.PutUint64(accountAt(a, kaminoDebtReserve).Data[16:24], 1)
+		})
+		read, finalized := fixtureBatchRuntime(77, initial)
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
+			confirmedSlot:    func(context.Context) (int64, error) { return 77, nil },
+			accounts:         read,
+			finalizedReceipt: finalized,
+			receipts:         func(context.Context, int64) (int64, []programAccount, error) { return 77, nil, nil },
+			now:              func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+			refreshValuation: func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
+				return 0, nil, budgetHold(tc.reason)
+			},
+		})
+		if tc.transient {
+			if !errors.Is(err, errConfirmedObservationUnavailable) || o.Snapshot.ManualReason != "" {
+				t.Fatal("transient refresh failure latched or escaped retry", tc.reason, o.Snapshot.ManualReason, err)
+			}
+			continue
+		}
+		if err != nil || o.Snapshot.ManualReason != "kamino_stale" || o.Snapshot.Fresh {
+			t.Fatal("rejected refresh escaped the health hold", tc.reason, o.Snapshot.ManualReason, err)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"os"
 	"sort"
 	"time"
 )
@@ -239,6 +240,14 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 					}
 				}
 				slot, accounts = refreshedSlot, refreshedAccounts
+			} else {
+				_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: reserve valuation refresh failed lane=%s: %v\n", route.Lane, refreshErr)
+				if transientValuationRefreshFailure(refreshErr) {
+					// A refresh that never reached the chain says nothing about
+					// reserve health. Retry next tick instead of latching a manual
+					// stop; a refresh Kamino itself rejects still holds below.
+					return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh unavailable: %w", refreshErr))
+				}
 			}
 			// On unavailable refresh, cash-only accounting still works. Any
 			// noncash exposure retains the original fail-closed health hold.
@@ -932,4 +941,20 @@ func observedLTVBPS(position KaminoPosition) (int64, error) {
 		return 0, fmt.Errorf("Kamino LTV is outside bounded range")
 	}
 	return debt.Int64(), nil
+}
+
+// transientValuationRefreshFailure reports refresh failures that happened
+// before the simulation reached the chain (transport or RPC availability). A
+// simulated refresh that Kamino rejected, or an incomplete capture, is not
+// transient: it may be a genuinely stale oracle and keeps the health hold.
+func transientValuationRefreshFailure(err error) bool {
+	var hold *BudgetHold
+	if errors.As(err, &hold) {
+		switch hold.Reason {
+		case "price_refresh_blockhash_unavailable", "price_refresh_simulation_unavailable", "price_refresh_lookup_unavailable":
+			return true
+		}
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errConfirmedObservationUnavailable)
 }
