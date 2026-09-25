@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"sort"
+	"sync/atomic"
 	"time"
 )
 
@@ -223,6 +224,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			}
 			refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, route, captureAddresses, slot)
 			if refreshErr == nil {
+				refreshSimulationFailures.Store(0)
+			}
+			if refreshErr == nil {
 				if err := validateRouteValuationCapture(refreshedSlot, refreshedAccounts, captureAddresses, slot); err != nil {
 					return Observation{}, nil, err
 				}
@@ -251,6 +255,15 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 					// reserve health. Retry next tick instead of latching a manual
 					// stop; a refresh Kamino itself rejects still holds below.
 					return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh unavailable: %w", refreshErr))
+				}
+				// Vlad-approved 09-25 after two one-off latches (16:13, 21:26) whose
+				// refresh passed on the next probe: a Kamino-rejected refresh retries
+				// until refreshSimulationLatchAfter refreshes in a row fail (worker
+				// ticks and selector samples share the count, so it latches sooner,
+				// never later).
+				if refreshSimulationFailed(refreshErr) &&
+					refreshSimulationFailures.Add(1) < refreshSimulationLatchAfter {
+					return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh rejected, retrying: %w", refreshErr))
 				}
 				// The health hold below latches; carry this cause into its alert.
 				otelLogs.noteCause(holdDetail(refreshErr))
@@ -953,6 +966,17 @@ func observedLTVBPS(position KaminoPosition) (int64, error) {
 // before the simulation reached the chain (transport or RPC availability). A
 // simulated refresh that Kamino rejected, or an incomplete capture, is not
 // transient: it may be a genuinely stale oracle and keeps the health hold.
+// refreshSimulationFailures counts consecutive reserve refreshes Kamino
+// rejected. ponytail: process-wide; the worker observes one route.
+var refreshSimulationFailures atomic.Int64
+
+const refreshSimulationLatchAfter = 3
+
+func refreshSimulationFailed(err error) bool {
+	var hold *BudgetHold
+	return errors.As(err, &hold) && hold.Reason == "price_refresh_simulation_failed"
+}
+
 func transientValuationRefreshFailure(err error) bool {
 	var hold *BudgetHold
 	if errors.As(err, &hold) {

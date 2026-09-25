@@ -216,8 +216,57 @@ func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
 			}
 			continue
 		}
-		if err != nil || o.Snapshot.ManualReason != "kamino_stale" || o.Snapshot.Fresh {
-			t.Fatal("rejected refresh escaped the health hold", tc.reason, o.Snapshot.ManualReason, err)
+		// A rejected refresh retries until the latch threshold (see
+		// TestRejectedRefreshRetriesUntilThirdFailureInARow); pin the last one.
+		if !errors.Is(err, errConfirmedObservationUnavailable) {
+			t.Fatal("first rejected refresh did not retry", tc.reason, o.Snapshot.ManualReason, err)
 		}
+	}
+	refreshSimulationFailures.Store(0)
+}
+
+func TestRejectedRefreshRetriesUntilThirdFailureInARow(t *testing.T) {
+	refreshSimulationFailures.Store(0)
+	t.Cleanup(func() { refreshSimulationFailures.Store(0) })
+	m := readyWorkerManifest(t)
+	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
+		binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 77)
+		binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[16:24], 1)
+		binary.LittleEndian.PutUint64(accountAt(a, kaminoDebtReserve).Data[16:24], 1)
+	})
+	read, finalized := fixtureBatchRuntime(77, initial)
+	rejected := true
+	observe := func() (Observation, error) {
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
+			confirmedSlot:    func(context.Context) (int64, error) { return 77, nil },
+			accounts:         read,
+			finalizedReceipt: finalized,
+			receipts:         func(context.Context, int64) (int64, []programAccount, error) { return 77, nil, nil },
+			now:              func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+			refreshValuation: func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
+				if rejected {
+					return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed"}
+				}
+				return 0, nil, context.DeadlineExceeded // transient: neither counts nor latches
+			},
+		})
+		return o, err
+	}
+	for i := 1; i <= 2; i++ {
+		if _, err := observe(); !errors.Is(err, errConfirmedObservationUnavailable) {
+			t.Fatalf("rejected refresh %d latched instead of retrying: %v", i, err)
+		}
+	}
+	o, err := observe()
+	if err != nil || o.Snapshot.ManualReason != "kamino_stale" {
+		t.Fatalf("third rejected refresh in a row did not hold kamino_stale: %v %+v", err, o.Snapshot.ManualReason)
+	}
+	// A refresh that reaches Kamino successfully resets the streak.
+	refreshSimulationFailures.Store(2)
+	rejected = false
+	_, _ = observe()
+	if refreshSimulationFailures.Load() != 2 {
+		t.Fatal("a transient refresh failure changed the rejected streak")
 	}
 }
