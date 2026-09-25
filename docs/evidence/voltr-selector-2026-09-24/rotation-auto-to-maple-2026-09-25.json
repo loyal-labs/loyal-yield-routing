@@ -1,0 +1,162 @@
+{
+  "schema": "voltr-selector-evidence/rotation-auto-to-maple/v1",
+  "route": "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+  "date": "2026-09-25",
+  "summary": "Forced AUTO -> Maple rotation: AUTO loop fully unwound to idle vault USDC, then Maple canary entry re-created the obligation, allocated 150 USDC and built the single loop.",
+  "unwindIntent": {
+    "committedAt": "2026-09-25T10:22:13Z",
+    "observationId": "6b3c220b70c320ca7fbf33cb177523588ea5653625329d9c33e6f148fbb20c9a",
+    "evidenceId": "bd1c6633ef1ca6a0a946945f95e7dcf35a49dac47876053f663f7b6d15ccc3da",
+    "maxCollateralRaw": 220286444,
+    "maxDebtRaw": 74800000,
+    "costBoundRaw": 860686753
+  },
+  "vaultTotalRaw": {
+    "beforeUnwind": "176542080",
+    "afterUnwindAllIdle": "176482160"
+  },
+  "canary": {
+    "id": "8784be98a10ec4c867ca361beaaea8cc4c380bf60c63d40feb4e24c446c3e3a4",
+    "lane": "Maple/syrupUSDC/USDC",
+    "equityRaw": 150000000,
+    "receiptsUsed": 16,
+    "receiptCapacity": 16
+  },
+  "mapleSnapshotAfter": {
+    "observedSlot": 450355209,
+    "collateralRaw": 189621864,
+    "debtRaw": 74637522,
+    "equityUsdMicros": 150037509,
+    "ltvBps": 3323
+  },
+  "steps": [
+    {
+      "createdAt": "09-25 10:22:36",
+      "action": "DELEVER_ROUTE_STEP",
+      "amountRaw": "1",
+      "signature": "7ZdPib7L9ZefGi9xdCXWkK2KwsHPgwV9oLJMDMZfaqKm6VhUb7PPWp5GQ37TNdioAembqJinFuoXXAdD3FYjxVx"
+    },
+    {
+      "createdAt": "09-25 10:23:29",
+      "action": "SWAP_COLLATERAL_TO_DEBT_STEP",
+      "amountRaw": "87219308",
+      "signature": "45wq5L2nDvnAcm33SSKHsmQdkwYd8bMrjdrEe1LDvV9LgKtzkvxGG4mpw4qJDEnut4p2N26B3Ur8oRNnx3nErv5G"
+    },
+    {
+      "createdAt": "09-25 10:24:24",
+      "action": "DELEVER_ROUTE_STEP",
+      "amountRaw": "74644822",
+      "signature": "3ncokfAGZ47vC9b6oVgdDyj5Q4VvZjohxzfb31tfCaQL4JmKkhsKq7gpF27KJB45QurXxgfgbRB1ep4uiF5VGd2m"
+    },
+    {
+      "createdAt": "09-25 10:25:16",
+      "action": "DELEVER_ROUTE_STEP",
+      "amountRaw": "0",
+      "signature": "46qU81ZwPa9z29wVcpXhbb2Mq1Fubv12aP89gBc2V5RqzeU1qYQCRmsPCmCTXyxP96T3LBEYLiUjXbVz1Wf7aDyW"
+    },
+    {
+      "createdAt": "09-25 10:26:09",
+      "action": "SWAP_COLLATERAL_TO_STABLE_STEP",
+      "amountRaw": "133067136",
+      "signature": "4PMwkqpMbAsizi3v34tU6oMYp4uWfCPJXxMUnFDxyWgaoJyMnyoT7KdKnmyyeMM3K5359sWchgUq7wGeDUXKdf32"
+    },
+    {
+      "createdAt": "09-25 10:38:00",
+      "action": "SWAP_DEBT_TO_USDC_STEP",
+      "amountRaw": "14282613",
+      "signature": "jYPgB7MNtHonyPwfbtZA2uZPpvFoqSCSdyJypypkkDbRNKEeRLgq6qL2EPKL69jjcBTwsips6vNks4VUngS89YU"
+    },
+    {
+      "createdAt": "09-25 10:39:03",
+      "action": "STAGE_SQUADS_TO_VOLTR",
+      "amountRaw": "149973838",
+      "signature": "VxU6AZ6Ug2dh8yX3Dw7pMArGedLcHfVmBHMqitERtaYwhVDBfZXVkGUTppdpt8rAh9e92Gu3bCuyLU79LdwjoiU"
+    },
+    {
+      "createdAt": "09-25 10:39:26",
+      "action": "VOLTR_RESTORE_IDLE",
+      "amountRaw": "149973838",
+      "signature": "59V65yD5yq5sUSGHjd4e6zmk1JyGhKtoQSnDKEdG6qQnpsWExpEdLzJVXWPs95X59RA7ruByZzNJuDZ3MC7jeJpR"
+    },
+    {
+      "createdAt": "09-25 12:31:54",
+      "action": "INITIALIZE_KAMINO_OBLIGATION",
+      "amountRaw": "0",
+      "signature": "547Z11aueEyqeE6GcgSvMZZedG1MtWaH6ytadPKFFBW8gdGiQZAu6tFDmpj2EdF61mtK4XparWwdoSyRMwXVE7cu"
+    },
+    {
+      "createdAt": "09-25 12:34:22",
+      "action": "VOLTR_ALLOCATE_TO_SQUADS",
+      "amountRaw": "150000000",
+      "signature": "5iX467gXGp4zCuULe7VntLbhCXsu9psnvxQK3tER2DA1impD8dxP2erarvSSAp11dqpsEP6bwqoKzPvy4ZQyoH25"
+    },
+    {
+      "createdAt": "09-25 12:34:47",
+      "action": "SWAP_STABLE_TO_COLLATERAL_STEP",
+      "amountRaw": "150000000",
+      "signature": "MDenZUUoQQfLBvgNR4P6Xpbe1JgbFm6QHZMcgrKgbcX5KKqu4paSEjaQrEnYQXJjE7tFp1ebPW5PKXGDcDULhC2"
+    },
+    {
+      "createdAt": "09-25 12:35:40",
+      "action": "OPEN_ROUTE_STEP",
+      "amountRaw": "126618701",
+      "signature": "4kCfbaxzP6U8QMPw4UMBNHqSJRm8otDfTHgTkckQiRdMentjoNegcWchL2rUwJ27YN6FvfoNMce2CWKbfHVquDy6"
+    },
+    {
+      "createdAt": "09-25 12:36:30",
+      "action": "OPEN_ROUTE_STEP",
+      "amountRaw": "1",
+      "signature": "3GT5sVDVWU2kctMqDkNy7JNeytBtToAQZeYXwVJPfvC4vVRk9T1gcaLvT2oCotD9cEpTtGw4H5Uq3Qa4AkUthMMe"
+    },
+    {
+      "createdAt": "09-25 12:37:21",
+      "action": "SWAP_DEBT_TO_COLLATERAL_STEP",
+      "amountRaw": "74637507",
+      "signature": "LeSvYBQP8f5KDV1XLXWx5oanVipvAjjZHndTUwjjShofTHv7QhxrmYsVVgsDh3X5Xoumk2N6YKr7W1EDqqTfG2i"
+    },
+    {
+      "createdAt": "09-25 12:38:12",
+      "action": "OPEN_ROUTE_STEP",
+      "amountRaw": "63003163",
+      "signature": "5XzBX2AsgUahGjd62cb3o6Fgrz8v5auVrhU4JgsoHLpKk932FGibwjNwhz45Sx9HjT5s4Z8PfVSrDMqfcc1Y6VrD"
+    }
+  ],
+  "fixCommits": [
+    [
+      "aab5490",
+      "fix(voltr): let the obligation initializer run until selector entry expiry"
+    ],
+    [
+      "03dc8da",
+      "feat(voltr): use keyed Jupiter API when JUPITER_API_KEY is set"
+    ],
+    [
+      "79d4975",
+      "fix(voltr): retry Jupiter HTTP 429 twice with short backoff"
+    ],
+    [
+      "832e687",
+      "chore(voltr): log why a selector entry quote is unavailable"
+    ],
+    [
+      "cf94af7",
+      "fix(voltr): excuse sent wires proven absent after expiry in custody attribution"
+    ],
+    [
+      "0947f72",
+      "fix(voltr): retry transient reserve-refresh failures instead of latching kamino_stale"
+    ],
+    [
+      "20dbf5f",
+      "chore(voltr): log per-stage tick timing for AUTO send-window misses"
+    ],
+    [
+      "78c5434",
+      "fix(voltr): excuse never-broadcast expired-absent rows in custody attribution"
+    ],
+    [
+      "4d17937",
+      "fix(voltr): skip inert NAV reports and hold markers in custody unknown bound"
+    ]
+  ]
+}
