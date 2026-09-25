@@ -211,13 +211,13 @@ func TestPilotCanaryCapacityRetainsHistoryWithoutBlockingCurrentRelease(t *testi
 	}
 
 	// One below the named maximum still admits a fresh request.
-	fifteen := pilotCanaryRetainedHistory(t, 15, in)
+	fifteen := pilotCanaryRetainedHistory(t, pilotCanaryReceiptCapacity-1, in)
 	if result, receipt, err = selectPilotCanaryEntry(in, economic, fifteen); err != nil || result.Action != "CANARY_ENTER" || receipt == nil {
 		t.Fatal("fresh request blocked below capacity", result, err)
 	}
 
 	// At the named maximum a fresh request is refused with the named hold.
-	full := pilotCanaryRetainedHistory(t, 16, in)
+	full := pilotCanaryRetainedHistory(t, pilotCanaryReceiptCapacity, in)
 	result, receipt, err = selectPilotCanaryEntry(in, economic, full)
 	if err == nil || receipt != nil || canaryHoldReason(t, err) != "pilot_canary_history_full" || result.Action != "KEEP" {
 		t.Fatal("capacity gate did not hold at the maximum", result, err)
@@ -227,7 +227,7 @@ func TestPilotCanaryCapacityRetainsHistoryWithoutBlockingCurrentRelease(t *testi
 	// capacity gate: 15 retained receipts plus the consumed live ID is exactly
 	// the reachable full boundary, and the exact request still reports
 	// consumed, never a hold.
-	boundary := pilotCanaryRetainedHistory(t, 15, in)
+	boundary := pilotCanaryRetainedHistory(t, pilotCanaryReceiptCapacity-1, in)
 	boundary[in.canaryRequest.ID] = pilotCanaryEntryReceipt{Request: *in.canaryRequest, AcceptedAt: in.Now, QuoteEvidenceID: sha256Bytes([]byte("consumed-evidence"))}
 	if len(boundary) != pilotCanaryReceiptCapacity {
 		t.Fatalf("expected exactly %d retained receipts at the boundary, got %d", pilotCanaryReceiptCapacity, len(boundary))
@@ -239,7 +239,7 @@ func TestPilotCanaryCapacityRetainsHistoryWithoutBlockingCurrentRelease(t *testi
 
 	// A changed reuse of a retained ID is also classified BEFORE the capacity
 	// gate and still rejects with the reuse hold, not the capacity hold.
-	reused := pilotCanaryRetainedHistory(t, 16, in)
+	reused := pilotCanaryRetainedHistory(t, pilotCanaryReceiptCapacity, in)
 	if len(reused) != pilotCanaryReceiptCapacity {
 		t.Fatalf("expected %d retained receipts, got %d", pilotCanaryReceiptCapacity, len(reused))
 	}

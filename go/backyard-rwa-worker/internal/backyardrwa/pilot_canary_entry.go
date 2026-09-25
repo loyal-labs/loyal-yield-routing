@@ -93,7 +93,8 @@ func (r pilotCanaryEntryRequest) validateOnManifest(now time.Time, manifest Rout
 // pilotCanaryReceiptCapacity bounds the number of retained canary receipts.
 // Retained IDs are never pruned or reset, and consumed-ID checks stay before
 // this capacity gate.
-const pilotCanaryReceiptCapacity = 16
+// Raised 16 -> 32 on 2026-09-25 after the Maple/AUTO rotation used all 16.
+const pilotCanaryReceiptCapacity = 32
 
 // selectPilotCanaryEntry is the preserved embedded wrapper: both lane
 // authorities stay the installed embedded sets — selectorEntryLane for the

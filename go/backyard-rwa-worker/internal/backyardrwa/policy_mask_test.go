@@ -320,3 +320,31 @@ func TestCatalogReadinessAcceptsChargedStrategyTwoPolicy(t *testing.T) {
 		t.Fatal("catalog readiness comparator rejected a charged strategy-two policy")
 	}
 }
+
+func TestStaleInputHoldRetriesInsteadOfStoppingTheWorker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	worker := &Worker{interval: time.Millisecond}
+	ticks := 0
+	err := worker.runTicks(ctx, make(chan error, 1), func(context.Context) error {
+		ticks++
+		if ticks == 1 {
+			return &validatedSignedBudgetHold{&BudgetHold{Reason: "selector_entry_quote_expired"}}
+		}
+		if ticks == 2 {
+			return fmt.Errorf("admit: %w", budgetHold("missing_stale_or_mismatched_usdc_valuation"))
+		}
+		return nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) || ticks < 3 {
+		t.Fatalf("stale-input hold stopped the worker: ticks=%d err=%v", ticks, err)
+	}
+	for name, stop := range map[string]error{
+		"otherHold": budgetHold("custody_attribution_unknown_record"),
+		"joined":    errors.Join(budgetHold("send_valuation_expired"), errors.New("persist failed")),
+	} {
+		if got := worker.runTicks(context.Background(), make(chan error, 1), func(context.Context) error { return stop }); got == nil {
+			t.Fatalf("%s did not stop the worker", name)
+		}
+	}
+}

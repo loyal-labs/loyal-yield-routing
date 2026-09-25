@@ -876,6 +876,46 @@ func isPureHold(err error) bool {
 	}
 }
 
+// staleInputHoldReasons are refusals caused only by a quote, price or fee
+// reading that aged out or was briefly unavailable before anything was sent.
+// Each tick re-observes the chain and re-derives the whole leg, so the next
+// tick is exactly what a process restart would do - without the ~1-25 s of
+// Render restart per hold (36 restarts on 2026-09-25, most of them these).
+var staleInputHoldReasons = map[string]bool{
+	"selector_entry_quote_expired":                 true,
+	"missing_stale_or_mismatched_usdc_valuation":   true,
+	"stale_funding_exit_admission":                 true,
+	"build_native_valuation_unavailable":           true,
+	"initializer_decision_changed":                 true,
+	"network_fee_unavailable":                      true,
+	"bridge_admission_token_valuation_unavailable": true,
+	"send_valuation_expired":                       true,
+	"send_valuation_slot_unavailable":              true,
+}
+
+// isStaleInputHold reports a tick error made only of stale-input holds. Like
+// isPureHold, a hold joined with any other fault (a store or wire error) still
+// stops the worker.
+func isStaleInputHold(err error) bool {
+	var hold *BudgetHold
+	if !errors.As(err, &hold) || !staleInputHoldReasons[hold.Reason] {
+		return false
+	}
+	switch unwrappable := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, member := range unwrappable.Unwrap() {
+			if !isStaleInputHold(member) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		return isStaleInputHold(unwrappable.Unwrap())
+	default:
+		return true
+	}
+}
+
 // notifySelectorCommit requests another serialized tick; never execute a
 // transaction from the collector. A queued wake survives an active tick.
 func (w *Worker) notifySelectorCommit(action string) {
@@ -896,11 +936,11 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 				return leaseErr
 			default:
 			}
-			// Confirmed-observation gaps and pure journaled spending-limit
-			// holds skip this tick's leg and retry on the next interval;
+			// Confirmed-observation gaps, pure journaled spending-limit holds
+			// and stale-input holds skip this tick's leg and retry on the next interval;
 			// anything else - including a hold joined with a store error -
 			// is a process fault and stops the worker.
-			if !errors.Is(err, errConfirmedObservationUnavailable) && !isPureHold(err) {
+			if !errors.Is(err, errConfirmedObservationUnavailable) && !isPureHold(err) && !isStaleInputHold(err) {
 				return err
 			}
 		}
