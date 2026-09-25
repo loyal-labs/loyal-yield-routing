@@ -1,0 +1,67 @@
+{
+  "schema": "voltr-selector-evidence/maple-reentry-fix19/v1",
+  "route": "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+  "date": "2026-09-25",
+  "summary": "Forced Maple unwind (economic_rotation) to flat idle vault, then Maple canary re-entry proving fix 19 (canary-only quote collection + 3 s ladder budget): the 150 USDC allocation landed on the first attempt after acceptance.",
+  "unwindIntent": {
+    "lane": "Maple/syrupUSDC/USDC",
+    "observationId": "d3412b9abd86be14f35468ad1f08fde75ed6f92975c9930d0c0476dff973d300",
+    "maxCollateralRaw": 189621864,
+    "maxDebtRaw": 74800000,
+    "costBoundRaw": 842147057,
+    "evidenceId": "45d91d81183debaaa86d4b354296303c0f92caa55caf9c2b9d6aeb2a148f9a5b",
+    "committedAt": "2026-09-25T13:37:13Z"
+  },
+  "vaultIdleAfterUnwindRaw": 176478774,
+  "canaries": [
+    {
+      "id": "b3f84562201e11ac9ef5272d085667ce6ee2a8ae1e794edc982e9ef1497979ca",
+      "receipt": 17,
+      "outcome": "allocation refused pre-broadcast: report_stale (bridge NAV report > 28 slots old at send)"
+    },
+    {
+      "id": "908de417353649a12f752456a8b9bfcb5a86063dc354d0108e20c8be63594d56",
+      "receipt": 18,
+      "acceptedAt": "2026-09-25T14:06:30.357Z",
+      "allocationSubmittedAt": "2026-09-25T14:06:31Z",
+      "outcome": "allocation reconciled first attempt"
+    }
+  ],
+  "finalSnapshot": {
+    "slot": 450377026,
+    "collateralRaw": 189628590,
+    "debtRaw": 74639960,
+    "equityUsdMicros": 150045092,
+    "ltvBps": 3322
+  },
+  "operationsSql": [
+    "13:37:24 | DELEVER_ROUTE_STEP | reconciled | withdrawal_release_repayment_collateral |  | hPEdpCPJnBPPA5kVbmxzChrgoQxQXCzvXuLA3tfo2YdhvxBxGJxmJomfUmUPGRAgFDN1p2kcfnkpjPY5C2A9Fbn | 1",
+    "13:38:14 | SWAP_COLLATERAL_TO_DEBT_STEP | reconciled | withdrawal_swap_repayment_buffer |  | 2FqFDmfvRxZQuHKJ26yUg8Guhrmsx9FqeSXgQi4U2j2X8XxAWtZv73uynEHdQ2enqwBK9EDnLy2EWi7HFcRE9m5T | 75089588",
+    "13:39:08 | DELEVER_ROUTE_STEP | reconciled | withdrawal_repay_debt |  | 65xK9RqzwF1vqGs3JgyADwjF5ufHxJBgUM9vy9TNupsGkTV2eRZsTgooCC7WdcKUPesd8XqapVWe491du2kDMLFm | 74637827",
+    "13:39:58 | DELEVER_ROUTE_STEP | reconciled | withdrawal_withdraw_collateral |  | 4qvFaEFHFRr1fmhzjdVx2t6kdFp6mTQA9EvpVvnpHr4CdoZ4Vqu58c3B5DJGqbh6pohFgydRkV6HTSCVVNr2tszr | 0",
+    "13:40:49 | SWAP_COLLATERAL_TO_STABLE_STEP | reconciled | withdrawal_swap_withdrawn_prime |  | 3LDeHShkbuCEaNMU85xX5DypXg6NQCCaoLBRfbaEUKZP1Pt1fxVfw9YkdmEjiKXgVwgCQVS1A8CCz1AKskfgn4p4 | 114532276",
+    "13:41:37 | STAGE_SQUADS_TO_VOLTR | reconciled | unwind_return_cash |  | 319twRmtgf614ePdnB5YoHWzFJ3o35oREUUD2zNcngZJchbSmdWHTjySPZwyZmMYrUbMR7RBr6PsV7q1uD7FiWc4 | 149996614",
+    "13:42:13 | VOLTR_RESTORE_IDLE | reconciled | withdrawal_staged |  | 2EFa9W2gRdEVPR5vEt6aQq7MTpUsdxdo8rj6DrnBaR7bz7Ve9Anb4ub2Y5hc9DtbvPgCqEseMTPtUo7mSTbSvosi | 149996614",
+    "14:01:53 | INITIALIZE_KAMINO_OBLIGATION | reconciled | multiply_obligation_missing |  | tqHVndQ2dwWLhRBFBCJ2vYxQx1jjVze23PJV9P1WzDfk8HAVPH92eP4yqRAvdPbzE859uZ9JukYEFuwmG3JzUwC | 0",
+    "14:02:23 | VOLTR_ALLOCATE_TO_SQUADS | failed | eligible_voltr_idle | report_stale | 2xnVC2j8CzJQFMeWyAFx2cctaNjj55YozXLKxDRCPEDVfKX8Lc1TYPhStpAbWatEZuAxgaYEvJEejrrgj4L7H3dL | 150000000",
+    "14:06:31 | VOLTR_ALLOCATE_TO_SQUADS | reconciled | eligible_voltr_idle |  | 4PWDWyq3Bm4vkMBJ5h3vKXU1sXvRZfSunWhCDXZcH4Q5FJ9qZvvkCBxHAgjSwwG8T2i6eJA13nM88wpofWDjCgBs | 150000000",
+    "14:06:57 | SWAP_STABLE_TO_COLLATERAL_STEP | reconciled | usdc_requires_prime_collateral |  | 2HcjdVvjczBeztgUR7qK9hxssTeYwg2vmrS14p8no8K5LDifDwvFtNMNGBP29siLKGyC4ePWxCds9qNNQ4HC2i1n | 150000000",
+    "14:07:47 | OPEN_ROUTE_STEP | reconciled | prime_collateral_ready |  | eU9xJWQieY91zwYk4Gpdgc94jpjoxMuAEjr6MtRksASSNzk8e2bUefgvYZsQfcZqZLBEBtT1Juq6HMkHTFdgpNE | 126621701",
+    "14:08:38 | OPEN_ROUTE_STEP | reconciled | prime_collateral_requires_borrow |  | 5ZVKF4b31CytPV8yonQizVzUz8ChHJTdDBNBtqkmunDkyrqdYEYUWjewjxACA1rEjK5YACEVaKGFCGzaMtGXjom8 | 1",
+    "14:09:30 | SWAP_DEBT_TO_COLLATERAL_STEP | reconciled | borrowed_usdc_requires_prime_buffer |  | 3kybXG6KoBWBp2Vesbv8ebtM9FR75Z8CyyiRf9ivxCpdTvc8UkPKEjZkMW6VPkY2DfzRNNunUhKffvrYd6RqayWk | 74639918",
+    "14:10:23 | OPEN_ROUTE_STEP | failed | single_loop_redeposit | signature_absent_after_blockhash_expiry | 2RMxayDjod5HesgeRB9TNPGVowAAgfmZCdHZce73xauAi6Mu6wybR2b1R8p23KBYmTGqowcFJ2a2FuFuouHLcNZn | 63006889",
+    "14:11:44 | OPEN_ROUTE_STEP | failed | single_loop_redeposit | phase3_budget_hold:pilot_release_projection_risk_changed |  | 63006889",
+    "14:13:08 | OPEN_ROUTE_STEP | failed | single_loop_redeposit | signature_absent_after_blockhash_expiry | 4KTeEHHWMhnVLEXs3UQDkYyVSyet2zTHXSQsNcjtZzpehm2D6VkogRNvgY5K9TeqqFZMcyNSosKHjQhNBHsK38e1 | 63006889",
+    "14:15:18 | OPEN_ROUTE_STEP | reconciled | single_loop_redeposit |  | 49zLFtkW5xa6zDiEksRKvUhW3tCjdGGmm6E2e7gTGCYKi5nULza1dnjAUTrm9ERUdSmDdtZH4LWXfbYsAKs6hv2 | 63006889"
+  ],
+  "fixCommits": {
+    "fix19": "6b7fba729d354c64326d9908931eb91576570abc",
+    "fix20": "bbcc4584911cd4a18742ec62e26f78220f852299",
+    "fix21": "166d09c3303445e856395c82fe7f79a6c3c46209"
+  },
+  "openFindings": [
+    "report_stale on allocate wire (NAV report window 28 slots)",
+    "redeposit: 2 sends expired unlanded + 2 pilot_release_projection_* holds before landing at 14:15:18",
+    "restarts on pilot_release_projection_* and price_refresh_simulation_failed holds"
+  ]
+}
