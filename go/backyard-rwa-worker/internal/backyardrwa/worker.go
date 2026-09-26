@@ -907,6 +907,9 @@ var staleInputHoldReasons = map[string]bool{
 	// The fresh build's fee is over its reservation: nothing was sent, and the
 	// next tick reserves again (11 pre-send since 09-18, 0 sent; Vlad OK 09-25).
 	"fresh_build_cost_exceeds_reservation": true,
+	// The token-price twin of build_native_valuation_unavailable in the same
+	// pre-send cost check (10 exits in 40 h on 09-25/26, 0 sent; Vlad OK 09-26).
+	"build_token_valuation_unavailable": true,
 }
 
 // isStaleInputHold reports a tick error made only of stale-input holds. Like
