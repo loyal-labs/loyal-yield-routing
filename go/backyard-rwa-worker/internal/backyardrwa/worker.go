@@ -910,6 +910,11 @@ var staleInputHoldReasons = map[string]bool{
 	// The token-price twin of build_native_valuation_unavailable in the same
 	// pre-send cost check (10 exits in 40 h on 09-25/26, 0 sent; Vlad OK 09-26).
 	"build_token_valuation_unavailable": true,
+	// Pre-send re-checks during the 09-26 AUTO entry: the exit-cost window
+	// aged out, or the Kamino deposit simulation refused a stale read; both
+	// rebuild from a fresh observation (5 exits in 3 min, 0 sent; Vlad OK).
+	"stale_withdrawal_exit_admission": true,
+	"deposit_projection_failed":       true,
 }
 
 // isStaleInputHold reports a tick error made only of stale-input holds. Like

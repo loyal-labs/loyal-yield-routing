@@ -221,3 +221,21 @@ func TestOtelFailedAfterSendPagesOnlyForMoneyMoves(t *testing.T) {
 		t.Fatalf("money-move failure severity = %s, want ERROR", got)
 	}
 }
+
+func TestOtelLTVAlertsWaitForHardRuleMidMove(t *testing.T) {
+	e := newOtelExporter("http://127.0.0.1:1/v1/logs", "k", "sha-abc", 16)
+	lane := SelectedRouteID
+	borrowed := Snapshot{Fresh: true, HasPosition: true, RouteLane: lane, StrategyKey: lane, PositionDebtRaw: 1, LTVBPS: 5501}
+	setDebtCashRaw(&borrowed, 1) // borrowed cash awaiting its swap
+	unwinding := Snapshot{Fresh: true, HasPosition: true, RouteLane: lane, Unwind: true, LTVBPS: 5501}
+	e.noteSnapshot(borrowed)
+	e.noteSnapshot(unwinding)
+	if len(e.queue) != 0 {
+		t.Fatalf("mid-move LTV under the hard rule alerted: %d", len(e.queue))
+	}
+	e.noteSnapshot(Snapshot{Fresh: true, HasPosition: true, RouteLane: lane, Unwind: true, LTVBPS: 6000})
+	e.noteSnapshot(Snapshot{Fresh: true, HasPosition: true, RouteLane: lane, LTVBPS: 4600})
+	if len(e.queue) != 2 {
+		t.Fatalf("hard-rule breach or settled-position warning missing: %d", len(e.queue))
+	}
+}

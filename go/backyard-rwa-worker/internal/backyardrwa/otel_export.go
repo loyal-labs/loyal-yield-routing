@@ -375,8 +375,16 @@ func (e *otelExporter) noteSnapshot(s Snapshot) {
 	e.mu.Lock()
 	now := e.now()
 	e.lane, e.ltvBPS, e.nav = s.RouteLane, s.LTVBPS, s.StrategyNAVRaw
-	urgent := s.HasPosition && s.LTVBPS >= 5500 && e.due("ltv_urgent", 10*time.Minute)
-	warning := s.HasPosition && s.LTVBPS >= 4500 && s.LTVBPS < 5500 && e.due("ltv_warning", 30*time.Minute)
+	// Mid-move (an admitted unwind, borrowed cash or withdrawn collateral not
+	// yet redeposited) LTV passes ~50-55% by design: the entry borrows to
+	// target before its swap, the unwind withdraws before it repays. Alert
+	// only past the 60% hard rule then (Vlad OK 09-26).
+	floor := int64(0)
+	if s.Unwind || debtCashRaw(s) > 0 || s.CollateralIdleRaw > 0 {
+		floor = 6000
+	}
+	urgent := s.HasPosition && s.LTVBPS >= max(5500, floor) && e.due("ltv_urgent", 10*time.Minute)
+	warning := s.HasPosition && s.LTVBPS >= max(4500, floor) && s.LTVBPS < 5500 && e.due("ltv_warning", 30*time.Minute)
 	waiting := int64(0)
 	if s.WithdrawalDemandRaw > s.VoltrIdleRaw {
 		if e.withdrawSince.IsZero() {
