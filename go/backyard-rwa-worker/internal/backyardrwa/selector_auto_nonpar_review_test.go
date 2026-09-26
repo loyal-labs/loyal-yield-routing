@@ -93,7 +93,7 @@ func nonParCandidate(t *testing.T, result SelectorResult) *CandidateForecast {
 func nonParWantBenefit(t *testing.T, debtUpper, proceedsFloor int64, equity int64) float64 {
 	t.Helper()
 	invested := float64(equity - nonParCost)
-	years := (7 * 24 * time.Hour).Hours() / (365.25 * 24)
+	years := DefaultSelectorPolicy().Horizon.Hours() / (365.25 * 24)
 	growth := math.Expm1((math.Log1p(0.15) + math.Log1p(0)) * years)
 	interest := float64(debtUpper) * math.Expm1(0.04*years)
 	return (invested+float64(proceedsFloor))*growth - interest - float64(nonParCost)
