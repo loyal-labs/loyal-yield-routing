@@ -278,7 +278,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if err != nil {
 			// A stale, paused, or emergency Kamino state is a decision input,
 			// not a broken observer: the tick holds with the audited reason.
-			if hold, ok := KaminoHealthHoldObservation(err, slot, runtime.now()); ok {
+			if hold, ok := kaminoHealthHold(err, slot, runtime.now(), route.Lane); ok {
 				return hold, accounts, nil
 			}
 			return Observation{}, nil, err
@@ -301,7 +301,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		}
 		nav, err := ComputeRouteNAVForRoute(slot, navAccounts, manifest, nil, route)
 		if err != nil {
-			if hold, ok := KaminoHealthHoldObservation(err, slot, runtime.now()); ok {
+			if hold, ok := kaminoHealthHold(err, slot, runtime.now(), route.Lane); ok {
 				return hold, accounts, nil
 			}
 			return Observation{}, nil, err
@@ -966,6 +966,17 @@ func observedLTVBPS(position KaminoPosition) (int64, error) {
 // before the simulation reached the chain (transport or RPC availability). A
 // simulated refresh that Kamino rejected, or an incomplete capture, is not
 // transient: it may be a genuinely stale oracle and keeps the health hold.
+// kaminoHealthHold is KaminoHealthHoldObservation plus the verdict text (which
+// reserve or oracle, how old) on stderr and in the latch alert.
+func kaminoHealthHold(err error, slot int64, now time.Time, lane string) (Observation, bool) {
+	hold, ok := KaminoHealthHoldObservation(err, slot, now)
+	if ok {
+		_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: kamino health hold lane=%s: %v\n", lane, err)
+		otelLogs.noteCause(err.Error())
+	}
+	return hold, ok
+}
+
 // refreshSimulationFailures counts consecutive reserve refreshes Kamino
 // rejected. ponytail: process-wide; the worker observes one route.
 var refreshSimulationFailures atomic.Int64
