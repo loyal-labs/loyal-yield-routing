@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -159,10 +160,9 @@ func readVerifiedEconomics(ctx context.Context, pool *pgxpool.Pool, routes []Run
 			return nil, fmt.Errorf("verified_reserve_feed_duplicate")
 		}
 		// Production boundary: every row must carry the snapshot's own
-		// annualized borrow APR. Missing, non-finite or negative evidence fails
-		// the whole read — combine must never silently fall back to the
-		// unadjusted per-slot curve. Zero stays valid: collateral reserves that
-		// never borrow legitimately report a zero borrow APR.
+		// annualized borrow APR (a completeness check on the verified event;
+		// combine prices borrowing off the plain curve, see there). Zero stays
+		// valid: collateral reserves that never borrow report zero.
 		if r.BorrowAPR == nil || !finite(*r.BorrowAPR) || *r.BorrowAPR < 0 {
 			return nil, fmt.Errorf("verified_reserve_annualization_invalid")
 		}
@@ -207,29 +207,18 @@ func combineEconomicsWithLane(routes []RuntimeRoute, reserves map[string]verifie
 		if *c.Status != 0 || *d.Status != 0 || *c.Emergency || *d.Emergency {
 			e.EntryBlockedReason = "reserve_inactive_or_emergency"
 		}
-		// The raw curve points are per-slot rates; loyal-kamino-codec
-		// annualizes curve+host by 500ms/actual slot duration before publishing
-		// borrow_apr, while the KEEP baseline compounds log1p(CurrentBorrowAPY)
-		// on that annualized basis. Projecting prospective borrowing off the
-		// unadjusted curve compares units that differ by that same factor and
-		// overstates the opportunity, so normalize the debt curve to the exact
-		// annualized APR of the SAME verified event: scale = borrow_apr / raw
-		// projected APR at the observed utilization. A zero base curve or an
-		// unusable ratio yields no invented scale — the lane is omitted and the
-		// refresh reports incomplete evidence. Rows without the field keep the
-		// unadjusted fixture behavior; readVerifiedEconomics never emits them.
-		if observed := d.BorrowAPR; observed != nil {
-			raw, rawErr := projectedBorrowAPR(e, 0)
-			if rawErr != nil || raw <= 0 || *observed <= 0 {
-				continue
-			}
-			scale := *observed / raw
-			curve := append([]BorrowCurvePoint(nil), e.BorrowCurve...)
-			for i := range curve {
-				curve[i].BorrowBPS *= scale
-			}
-			e.BorrowCurve, e.HostBorrowBPS = curve, e.HostBorrowBPS*scale
+		// The KLend curve (plus host rate) at the observed utilization IS the
+		// annual borrow APR. loyal-kamino-codec's borrow_apr/borrow_apy
+		// multiply it by 500 ms / actual slot duration (~1.9x on 2026-09-26),
+		// but the on-chain cumulative borrow index grows at the plain curve
+		// (48 hourly samples: Maple USDC 3.70% on chain, 3.69% curve, 6.99%
+		// stored). So price the current debt off the same plain curve the
+		// candidates use; the stored annualized fields are not used.
+		apr, aprErr := projectedBorrowAPR(e, 0)
+		if aprErr != nil {
+			continue
 		}
+		e.CurrentBorrowAPY = math.Expm1(apr)
 		if e.validateWithLane(now, p, laneAllowed) == nil {
 			out = append(out, e)
 		}

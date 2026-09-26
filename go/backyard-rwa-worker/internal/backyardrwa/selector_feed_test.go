@@ -88,10 +88,18 @@ func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	if err := json.Unmarshal([]byte(`[{"utilization_rate_bps":0,"borrow_rate_bps":0},{"utilization_rate_bps":9000,"borrow_rate_bps":364},{"utilization_rate_bps":10000,"borrow_rate_bps":1075},{"utilization_rate_bps":10000,"borrow_rate_bps":1075}]`), &d.Curve); err != nil {
 		t.Fatal(err)
 	}
+	// The collector's annualized fields run ~2x the on-chain accrual
+	// (2026-09-26); borrowing must price off the plain curve regardless.
+	inflated := 0.25
+	d.BorrowAPR, d.BorrowAPY = &inflated, &inflated
 	rows := map[string]verifiedEconomicReserve{c.Reserve: c, d.Reserve: d}
 	got := combineEconomics([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy())
 	if len(got) != 1 || got[0].EntryCapacity.Known || got[0].DebtSupplyRaw != supply || got[0].DebtBorrowRaw != borrow {
 		t.Fatalf("feed: %+v", got)
+	}
+	curveAPR := (364.0*5000/9000 + f.HostBorrowBPS) / 10_000 // 50% utilization
+	if apr, err := projectedBorrowAPR(got[0], 0); err != nil || math.Abs(apr-curveAPR) > 1e-12 || math.Abs(got[0].CurrentBorrowAPY-math.Expm1(curveAPR)) > 1e-12 {
+		t.Fatalf("borrow priced off the inflated stored rate: curve %v got %v / %v %v", curveAPR, apr, got[0].CurrentBorrowAPY, err)
 	}
 	projected := got[0]
 	projected.BorrowCurve = []BorrowCurvePoint{{0, 0}, {10000, 1000}}
