@@ -447,6 +447,13 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0073_backyard_rwa_expired_absent_failure.sql"),
         expected_checksum: None,
     },
+    // 0074-0077 are reserved by the backyard-rwa phase 3 work (PR #228).
+    Migration {
+        version: 78,
+        name: "earn_reserve_share_prices",
+        sql: include_str!("../../../loyal-yield-store/migrations/0078_earn_reserve_share_prices.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
