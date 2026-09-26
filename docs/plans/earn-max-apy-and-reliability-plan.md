@@ -26,6 +26,8 @@ Every step that changes worker rules or production is shown to Vlad before deplo
 | A3 | Skip the 1-2 min blockhash wait when the attempt was never broadcast (no broadcast intent recorded). Verify first that no path sends without the mark. | ASK-2313 | Todo |
 | A4 | Measure on the next real move: tries per step and restarts. Pass = most steps in 1-2 tries, 0 restarts. | ASK-2313 | Todo |
 | A5 | Only if A4 fails: speed up admission (quote, exit pricing, projections; now 7-9 s). | ASK-2313 | Decide after A4 |
+| A6 | Kamino health hold (reserve refresh age) latches only after 3 in a row, like FIX25 for refresh failures. Gen 8 latch 09-26 21:52: AUTO reserve last refreshed 345 slots (~93 s) before the check; nothing unsafe. | ASK-2313 | Waiting for Vlad |
+| A7 | A latch always pages. The relay folded the 21:52 latch into the open Errors window for the worker (outcome suppressed), so nobody saw it for ~50 min. | ASK-2313 | Waiting for Vlad |
 
 ## Part B: higher APY (in order of impact)
 
@@ -49,6 +51,8 @@ Every step that changes worker rules or production is shown to Vlad before deplo
 - The $500 top-up is not needed for the optimizer test anymore (done with $381 on 09-26).
 
 ## Log
+
+- 2026-09-26 22:45: gen 8 kamino_stale latch at 21:52 stopped NAV reports (Earned frozen). The latch alert was suppressed by the relay mute window. Added A6, A7.
 
 - 2026-09-26: plan created. B1 done. First optimizer move Maple -> AUTO done (Maple unwind 18:19-18:24,
   AUTO entry 20:36-21:34 UTC). Codec 2x rate bug found (ASK-2312). Slow-swap cause found (A1-A3).
