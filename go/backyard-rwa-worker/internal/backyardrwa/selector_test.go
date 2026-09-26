@@ -80,7 +80,7 @@ func TestSelectorPersistenceSurvivesCapacityClosureAndJSONRestart(t *testing.T) 
 		t.Fatal(opened)
 	}
 	// A long observation gap is not proof of continuous advantage.
-	advanceSelectorFixture(&in, 3*time.Minute)
+	advanceSelectorFixture(&in, in.Policy.MaxSampleGap+time.Minute)
 	if got := SelectOpportunity(in, opened.State); got.Action != "KEEP" || got.Reason != "advantage_not_yet_persistent" {
 		t.Fatal(got)
 	}

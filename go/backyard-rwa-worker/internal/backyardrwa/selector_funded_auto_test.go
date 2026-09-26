@@ -114,7 +114,7 @@ func TestAutoCandidateOrdinarySelectionAcrossSamples(t *testing.T) {
 	}
 	// Hysteresis: a gap beyond MaxSampleGap restarts the window instead of
 	// carrying stale persistence into an entry.
-	advanceSelectorFixture(&in, 3*time.Minute)
+	advanceSelectorFixture(&in, in.Policy.MaxSampleGap+time.Minute)
 	result = selectOpportunityWithLanes(in, result.State, manifestLaneAllowed(manifest), manifestFundingAllowed(manifest))
 	if result.Action != "KEEP" || result.Reason != "advantage_not_yet_persistent" {
 		t.Fatal("stale window survived a MaxSampleGap breach", result)

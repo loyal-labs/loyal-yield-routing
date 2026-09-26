@@ -148,7 +148,10 @@ func DefaultSelectorPolicy() SelectorPolicy {
 	// 30-day horizon (Vlad OK 09-26): over 7 days a move had to repay its
 	// cost plus the margin within one week (~5%/yr APY edge), so even a
 	// clearly better lane (AUTO 9.2% vs Maple 3.7%) never passed.
-	return SelectorPolicy{Horizon: 30 * 24 * time.Hour, Persistence: 30 * time.Minute, MaxSampleGap: 2 * time.Minute, MarketMaxAge: 90 * time.Second, NativeMaxAge: 2 * time.Hour, QuoteMaxAge: 30 * time.Second, MinimumBenefitRaw: 250_000, UncertaintyBPS: 10, IdleBufferRaw: 0}
+	// MaxSampleGap 10 min (Vlad OK 09-26): samples skip while a NAV report or
+	// a failed quote runs, so live gaps reached ~6 min and a 2-min gap reset
+	// the 30-min window every few minutes; every sample taken must still lead.
+	return SelectorPolicy{Horizon: 30 * 24 * time.Hour, Persistence: 30 * time.Minute, MaxSampleGap: 10 * time.Minute, MarketMaxAge: 90 * time.Second, NativeMaxAge: 2 * time.Hour, QuoteMaxAge: 30 * time.Second, MinimumBenefitRaw: 250_000, UncertaintyBPS: 10, IdleBufferRaw: 0}
 }
 func (p SelectorPolicy) validate() error {
 	if p.Horizon <= 0 || p.Horizon > 365*24*time.Hour || p.Persistence <= 0 || p.MaxSampleGap <= 0 || p.MarketMaxAge <= 0 || p.NativeMaxAge <= 0 || p.QuoteMaxAge <= 0 || p.MinimumBenefitRaw < 0 || p.UncertaintyBPS < 0 || p.UncertaintyBPS > 10_000 || p.IdleBufferRaw < 0 {
