@@ -35,7 +35,7 @@ type selectorRecipe struct {
 // components of one BudgetPrice, using integer arithmetic only. It prices
 // expectations, never bounds: admissions and reservations stay on CostRaw.
 func selectorMidpointPriceValue(p BudgetPrice, raw uint64, mint, program string, slot int64) (int64, error) {
-	if raw == 0 || p.Mint != mint || p.TokenProgram != program || p.Decimals > 18 || p.ObservedSlot <= 0 || slot < p.ObservedSlot || slot > p.ValidThroughSlot || p.ValidThroughSlot < p.ObservedSlot || p.ValidThroughSlot-p.ObservedSlot > budgetMaxObservationLagSlots || !sha256Pattern.MatchString(p.EvidenceSHA256) {
+	if raw == 0 || p.Mint != mint || p.TokenProgram != program || p.Decimals > 18 || p.ObservedSlot <= 0 || slot < p.ObservedSlot || slot > p.ValidThroughSlot || p.ValidThroughSlot < p.ObservedSlot || p.ValidThroughSlot-p.ObservedSlot > budgetMaxObservationLagCeilingSlots || !sha256Pattern.MatchString(p.EvidenceSHA256) {
 		return 0, budgetHold("missing_stale_or_mismatched_usdc_valuation")
 	}
 	if p.Credit == nil {
@@ -119,7 +119,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *RP
 			authorized = true
 		}
 	}
-	if rpc == nil || !authorized || len(inputs) == 0 || len(inputs) > 32 || minimumSlot <= 0 || minimumSlot > math.MaxInt64-budgetMaxObservationLagSlots || observationFloor < minimumSlot || observationFloor-minimumSlot > budgetMaxObservationLagSlots {
+	if rpc == nil || !authorized || len(inputs) == 0 || len(inputs) > 32 || minimumSlot <= 0 || minimumSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || observationFloor < minimumSlot || observationFloor-minimumSlot > observationLagSlots() {
 		return out, budgetHold("invalid_selector_recipe")
 	}
 	type step struct {
@@ -135,7 +135,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *RP
 	sources := map[string]ExecutableDebit{}
 	key := func(d ExecutableDebit) string { return d.Mint + ":" + d.TokenProgram }
 	slot := observationFloor
-	out.ValidThroughSlot = minimumSlot + budgetMaxObservationLagSlots
+	out.ValidThroughSlot = minimumSlot + observationLagSlots()
 	for i, input := range inputs {
 		request, effects, message, err := input.decodeWithManifest(m)
 		if err != nil {
@@ -315,7 +315,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *RP
 }
 
 func selectorSwapObservationFloor(r JupiterSwapRequest, sampleSlot, floor int64) (int64, error) {
-	if sampleSlot <= 0 || sampleSlot > math.MaxInt64-budgetMaxObservationLagSlots || floor < sampleSlot {
+	if sampleSlot <= 0 || sampleSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || floor < sampleSlot {
 		return 0, budgetHold("selector_recipe_observation_expired")
 	}
 	for _, table := range r.LookupTables {
@@ -324,14 +324,14 @@ func selectorSwapObservationFloor(r JupiterSwapRequest, sampleSlot, floor int64)
 		}
 		floor = max(floor, table.ObservedSlot)
 	}
-	if floor > sampleSlot+budgetMaxObservationLagSlots {
+	if floor > sampleSlot+observationLagSlots() {
 		return 0, budgetHold("selector_recipe_observation_expired")
 	}
 	return floor, nil
 }
 
 // selectorPayoffObservationFloor intersects every payoff swap leg into the
-// observation window with the SAME budgetMaxObservationLagSlots bound a
+// observation window with the SAME observationLagSlots bound a
 // single-leg payoff used — horizons are never loosened for extra legs. A leg
 // whose evidence predates the sample or exceeds the window holds with the
 // same reason and Details recording the exact uncovered interval.
@@ -358,8 +358,8 @@ func selectorPayoffObservationFloor(sampleSlot, floor int64, legs ...JupiterExec
 				details["coveredThroughSlot"] = strconv.FormatInt(stale, 10)
 				details["uncoveredSlots"] = strconv.FormatInt(sampleSlot-stale, 10)
 			} else {
-				details["coveredThroughSlot"] = strconv.FormatInt(sampleSlot+budgetMaxObservationLagSlots, 10)
-				details["uncoveredSlots"] = strconv.FormatInt(observed-(sampleSlot+budgetMaxObservationLagSlots), 10)
+				details["coveredThroughSlot"] = strconv.FormatInt(sampleSlot+observationLagSlots(), 10)
+				details["uncoveredSlots"] = strconv.FormatInt(observed-(sampleSlot+observationLagSlots()), 10)
 			}
 			hold.Details = details
 		}

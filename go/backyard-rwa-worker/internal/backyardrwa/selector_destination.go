@@ -368,7 +368,7 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out := selectorDestinationQuote{Lane: lane, EquityRaw: equity}
-	if rpc == nil || client == nil || !selectorDestinationLaneAuthorized(m, lane) || equity == 0 || equity > uint64(PilotWorkingTrancheCapRaw) || sampleSlot <= 0 || sampleSlot > math.MaxInt64-budgetMaxObservationLagSlots {
+	if rpc == nil || client == nil || !selectorDestinationLaneAuthorized(m, lane) || equity == 0 || equity > uint64(PilotWorkingTrancheCapRaw) || sampleSlot <= 0 || sampleSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return out, budgetHold("invalid_selector_destination")
 	}
 	route, _ := runtimeRoute(lane)
@@ -474,7 +474,7 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 			return out, err
 		}
 		observationFloor = max(slot, fee.Slot, initSlot)
-		if observationFloor > sampleSlot+budgetMaxObservationLagSlots {
+		if observationFloor > sampleSlot+observationLagSlots() {
 			return out, budgetHold("selector_recipe_observation_expired")
 		}
 		if err = appendInput(r, ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}); err != nil {

@@ -72,7 +72,7 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *RPCClient, clien
 	defer cancel()
 	s, r := observation.Snapshot, evidence.Request
 	plan := phase3BridgeAdmission{Snapshot: s, Decision: decision}
-	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagSlots || s.RouteKind != RouteKind ||
+	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey ||
 		s.RouteLane != decision.StrategyKey || s.RouteLane != r.RouteLane || phase3BudgetFamilyForLane(s.RouteLane) == "" ||
 		decision.Action != DeleverRouteStep || r.Action != decision.Action || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
@@ -116,7 +116,7 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *RPCClient, clien
 // estimator. Outstanding position debt still requires separate repayment proof.
 func observePhase3CollateralReturnAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error) {
 	s := observation.Snapshot
-	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagSlots || s.RouteKind != RouteKind ||
+	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
 		phase3BudgetFamilyForLane(s.RouteLane) == "" || s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||
 		s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.DebtIdleRaw < 0 || s.CollateralIdleRaw < 0 ||

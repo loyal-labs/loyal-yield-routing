@@ -93,16 +93,16 @@ func decodeKaminoPayoffBound(accounts []ConfirmedAccount, route RuntimeRoute, sl
 }
 
 // Each not-yet-executed funding/NAV/payoff step needs an accrual window.
-// This extends the cost estimate only; current-wire freshness remains 32 slots.
+// This extends the cost estimate only; current-wire freshness stays one window.
 func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64) (KaminoPayoffBound, error) {
 	var bound KaminoPayoffBound
 	// Borrow -> NAV -> release -> NAV -> funding -> NAV -> payoff is the
-	// longest admitted prefix. Current-wire freshness is still only 32 slots.
+	// longest admitted prefix. Current-wire freshness is still only one window.
 	if steps < 1 || steps > 7 {
 		return bound, budgetHold("invalid_payoff_execution_window")
 	}
 	clock := accountAt(accounts, budgetClockAddress)
-	if slot <= 0 || slot > math.MaxInt64-steps*budgetMaxObservationLagSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" ||
+	if slot <= 0 || slot > math.MaxInt64-steps*budgetMaxObservationLagCeilingSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" ||
 		clock.Executable || len(clock.Data) != 40 {
 		return bound, budgetHold("invalid_payoff_clock")
 	}
@@ -138,7 +138,7 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 		return bound, err
 	}
 	updatedUnix := int64(binary.LittleEndian.Uint32(reserveAccount.Data[28:32]))
-	bound = KaminoPayoffBound{ObservedSlot: slot, ChainUnix: now, ThroughSlot: int64(clockSlot) + steps*budgetMaxObservationLagSlots,
+	bound = KaminoPayoffBound{ObservedSlot: slot, ChainUnix: now, ThroughSlot: int64(clockSlot) + steps*observationLagSlots(),
 		ThroughUnix: now + steps*kaminoPayoffWindowSeconds, ReserveUpdatedSlot: reserve.refreshedSlot, ReserveUpdatedUnix: updatedUnix,
 		InterestBasis: basis, MaximumRateBPS: maximumRate, ObservedDebtRaw: debt, AccountsSHA256: hashConfirmedAccounts(accounts)}
 	elapsed, unitsPerYear := bound.ThroughSlot-reserve.refreshedSlot, uint64(63_072_000)

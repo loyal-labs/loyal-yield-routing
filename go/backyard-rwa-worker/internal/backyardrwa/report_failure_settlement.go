@@ -152,7 +152,7 @@ func settleFailedFeeBudget(budget Phase3Budget, auth phase3OperationAuthorizatio
 		return fail()
 	}
 	cost := auth.SendKnownCost
-	if cost.MessageSHA256 != proof.MessageSHA256 || cost.Fee.MessageSHA256 != proof.MessageSHA256 || cost.NativePrice.Decimals != 9 || cost.Fee.Slot <= 0 || cost.Fee.Slot > cost.ObservationSlot || cost.ObservationSlot-cost.Fee.Slot > budgetMaxObservationLagSlots || proof.FeeLamports == 0 || proof.FeeLamports > cost.Fee.Lamports || proof.Slot < cost.ObservationSlot {
+	if cost.MessageSHA256 != proof.MessageSHA256 || cost.Fee.MessageSHA256 != proof.MessageSHA256 || cost.NativePrice.Decimals != 9 || cost.Fee.Slot <= 0 || cost.Fee.Slot > cost.ObservationSlot || cost.ObservationSlot-cost.Fee.Slot > budgetMaxObservationLagCeilingSlots || proof.FeeLamports == 0 || proof.FeeLamports > cost.Fee.Lamports || proof.Slot < cost.ObservationSlot {
 		return fail()
 	}
 	quoted, err := cost.NativePrice.valueUpper(cost.Fee.Lamports, nativeSOLBudgetAsset, "11111111111111111111111111111111", cost.ObservationSlot)

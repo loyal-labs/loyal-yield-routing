@@ -81,7 +81,7 @@ func (c *RPCClient) simulatePhase3EntryProjection(ctx context.Context, message [
 	if err = c.call(ctx, "simulateTransaction", []any{base64.StdEncoding.EncodeToString(wire), map[string]any{"encoding": "base64", "commitment": "confirmed", "sigVerify": false, "replaceRecentBlockhash": false, "minContextSlot": minimumSlot, "accounts": map[string]any{"encoding": "base64", "addresses": addresses}}}, &response); err != nil {
 		return projection, budgetHold("deposit_projection_unavailable")
 	}
-	if (len(response.Value.Err) > 0 && string(response.Value.Err) != "null") || response.Context.Slot < minimumSlot || response.Context.Slot-minimumSlot > budgetMaxObservationLagSlots || response.Value.UnitsConsumed == 0 || len(response.Value.Accounts) != len(addresses) {
+	if (len(response.Value.Err) > 0 && string(response.Value.Err) != "null") || response.Context.Slot < minimumSlot || response.Context.Slot-minimumSlot > observationLagSlots() || response.Value.UnitsConsumed == 0 || len(response.Value.Accounts) != len(addresses) {
 		return projection, budgetHold("deposit_projection_failed")
 	}
 	projection.Slot, projection.MessageSHA256, projection.UnitsConsumed = response.Context.Slot, sha256Bytes(message), response.Value.UnitsConsumed

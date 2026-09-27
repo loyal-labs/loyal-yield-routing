@@ -238,7 +238,7 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 	defer cancel()
 	var result SelectorResult
 	now := time.Now().UTC()
-	if !input.Snapshot.PilotActive || input.Now.After(now) || now.Sub(input.Now) > 5*time.Second || input.Snapshot.Slot <= 0 || confirmedSlot < input.Snapshot.Slot || confirmedSlot-input.Snapshot.Slot > budgetMaxObservationLagSlots {
+	if !input.Snapshot.PilotActive || input.Now.After(now) || now.Sub(input.Now) > 5*time.Second || input.Snapshot.Slot <= 0 || confirmedSlot < input.Snapshot.Slot || confirmedSlot-input.Snapshot.Slot > observationLagSlots() {
 		return result, budgetHold("selector_evaluation_not_current")
 	}
 	// Recompute wall-clock quote expiry after waiting for the route lock below.

@@ -44,7 +44,7 @@ func selectorProspectiveUpper(accounts []ConfirmedAccount, route RuntimeRoute, s
 		return 0, err
 	}
 	clock := accountAt(accounts, budgetClockAddress)
-	if windows < 1 || windows > selectorFullRecipeWindows || slot <= 0 || slot > math.MaxInt64-windows*budgetMaxObservationLagSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" || clock.Executable || len(clock.Data) != 40 {
+	if windows < 1 || windows > selectorFullRecipeWindows || slot <= 0 || slot > math.MaxInt64-windows*budgetMaxObservationLagCeilingSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" || clock.Executable || len(clock.Data) != 40 {
 		return 0, budgetHold("invalid_payoff_clock")
 	}
 	clockSlot := binary.LittleEndian.Uint64(clock.Data[:8])
@@ -60,7 +60,7 @@ func selectorProspectiveUpper(accounts []ConfirmedAccount, route RuntimeRoute, s
 	if err != nil {
 		return 0, err
 	}
-	elapsed, units := int64(clockSlot)+windows*budgetMaxObservationLagSlots-reserve.refreshedSlot, uint64(63_072_000)
+	elapsed, units := int64(clockSlot)+windows*observationLagSlots()-reserve.refreshedSlot, uint64(63_072_000)
 	if config[9] == 1 {
 		updated := int64(binary.LittleEndian.Uint32(a.Data[28:32]))
 		if updated <= 0 || updated > now {

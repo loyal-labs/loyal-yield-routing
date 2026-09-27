@@ -159,12 +159,12 @@ func observeReviewedSelectorSource(ctx context.Context, rpc *RPCClient, client *
 	defer cancel()
 	s := o.Snapshot
 	out := selectorSourceQuote{Lane: s.RouteLane, ObservationID: s.ObservationID}
-	if rpc == nil || client == nil || !s.PilotActive || !selectorSourceLaneAuthorized(m, s.RouteLane, candidate) || s.RouteLane != s.StrategyKey || !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagSlots || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" || s.Unwind || s.CutoverDrain || s.WithdrawalDemandRaw != 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.CollateralIdleRaw < 0 || s.PositionDebtRaw < 0 || s.PositionCollateralRaw < 0 || s.DebtIdleRaw != 0 {
+	if rpc == nil || client == nil || !s.PilotActive || !selectorSourceLaneAuthorized(m, s.RouteLane, candidate) || s.RouteLane != s.StrategyKey || !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" || s.Unwind || s.CutoverDrain || s.WithdrawalDemandRaw != 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.CollateralIdleRaw < 0 || s.PositionDebtRaw < 0 || s.PositionCollateralRaw < 0 || s.DebtIdleRaw != 0 {
 		return out, budgetHold("selector_source_unavailable")
 	}
 	if !hasWorkingCapital(s) {
 		out.MinimumIdleRaw = uint64(s.VoltrIdleRaw)
-		out.Recipe.ValidThroughSlot = s.Slot + budgetMaxObservationLagSlots
+		out.Recipe.ValidThroughSlot = s.Slot + observationLagSlots()
 		raw, err := json.Marshal(struct {
 			Kind     string
 			Snapshot Snapshot
@@ -268,7 +268,7 @@ func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *RPCClient, client
 			return out, budgetHold("selector_recipe_observation_expired")
 		}
 		observationFloor = max(observationFloor, costs[i].ObservationSlot)
-		if observationFloor > s.Slot+budgetMaxObservationLagSlots {
+		if observationFloor > s.Slot+observationLagSlots() {
 			return out, budgetHold("selector_recipe_observation_expired")
 		}
 		request, effects, message, err := input.decodeWithManifest(m)

@@ -53,7 +53,7 @@ type phase3QuotedExit struct {
 // a swap exit, initialize an account, adopt historical exposure, or reset funds.
 func phase3BridgeTemplates(s Snapshot, decision Decision, evidence BridgeExecutionEvidence) ([]BridgeExecutionEvidence, error) {
 	r := evidence.Request
-	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagSlots || s.RouteKind != RouteKind ||
+	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.HasAmbiguousSubmission || s.Nonterminal != "" || s.CutoverDrain ||
 		s.StrategyKey != s.RouteLane || decision.StrategyKey != s.RouteLane || phase3BudgetFamilyForLane(s.RouteLane) == "" {
 		return nil, budgetHold("bridge_admission_snapshot_unavailable")
@@ -243,7 +243,7 @@ func observePhase3BridgeAdmission(ctx context.Context, rpc *RPCClient, observati
 	if err != nil {
 		return plan, err
 	}
-	plan.ValidThroughSlot = observation.Snapshot.Slot + budgetMaxObservationLagSlots
+	plan.ValidThroughSlot = observation.Snapshot.Slot + observationLagSlots()
 	if slot < observation.Snapshot.Slot || slot > plan.ValidThroughSlot {
 		return plan, budgetHold("stale_bridge_admission_snapshot")
 	}

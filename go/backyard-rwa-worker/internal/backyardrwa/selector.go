@@ -221,7 +221,7 @@ type MoveQuote struct {
 
 func (q MoveQuote) currentAtSlot(slot int64) bool {
 	return q.SampleSlot > 0 && q.ValidThroughSlot >= q.SampleSlot &&
-		q.ValidThroughSlot-q.SampleSlot <= budgetMaxObservationLagSlots &&
+		q.ValidThroughSlot-q.SampleSlot <= observationLagSlots() &&
 		slot >= q.SampleSlot && slot <= q.ValidThroughSlot
 }
 

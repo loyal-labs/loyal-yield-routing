@@ -191,7 +191,7 @@ func (m RouteManifest) observePilotExecutionCost(ctx context.Context, rpc *RPCCl
 	if err != nil {
 		return cost, err
 	}
-	if slot < cost.ObservationSlot || slot > cost.ValidThroughSlot || slot > math.MaxInt64-budgetMaxObservationLagSlots {
+	if slot < cost.ObservationSlot || slot > cost.ValidThroughSlot || slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return cost, budgetHold("execution_cost_observation_expired")
 	}
 	cost.ObservationSlot = slot

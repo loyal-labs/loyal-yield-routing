@@ -67,7 +67,7 @@ func ObserveBudgetTokenPrice(ctx context.Context, rpc *RPCClient, lane string, d
 }
 
 func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, reference KaminoObservationConfig, reserveAddress string, debit ExecutableDebit) (BudgetPrice, error) {
-	if slot > math.MaxInt64-budgetMaxObservationLagSlots {
+	if slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return BudgetPrice{}, budgetHold("invalid_price_observation_slot")
 	}
 	clock := accountAt(accounts, budgetClockAddress)
@@ -126,5 +126,5 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 			return BudgetPrice{}, err
 		}
 	}
-	return BudgetPrice{Credit: &BudgetCreditBounds{tokenLower, usdcUpper}, Source: "confirmed-chain-accounts", Mint: debit.Mint, TokenProgram: mint.Owner, Decimals: token.mintDecimals, TokenUpperSF: upper, USDCLowerSF: lower, ObservedSlot: slot, ValidThroughSlot: slot + budgetMaxObservationLagSlots, EvidenceSHA256: hashConfirmedAccounts(accounts)}, nil
+	return BudgetPrice{Credit: &BudgetCreditBounds{tokenLower, usdcUpper}, Source: "confirmed-chain-accounts", Mint: debit.Mint, TokenProgram: mint.Owner, Decimals: token.mintDecimals, TokenUpperSF: upper, USDCLowerSF: lower, ObservedSlot: slot, ValidThroughSlot: slot + observationLagSlots(), EvidenceSHA256: hashConfirmedAccounts(accounts)}, nil
 }

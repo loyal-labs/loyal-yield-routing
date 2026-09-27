@@ -34,7 +34,7 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *RPCClient, 
 	// installed lanes observable.
 	if rpc == nil || client == nil || o.ObservedAt.IsZero() || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) ||
 		!s.PilotActive || !s.Fresh || !m.selectorEntryFundingLane(s.RouteLane, false) || s.RouteLane != s.StrategyKey ||
-		s.ObservationID == "" || s.DebtIdleRaw != 0 || s.CollateralIdleRaw < 0 || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagSlots {
+		s.ObservationID == "" || s.DebtIdleRaw != 0 || s.CollateralIdleRaw < 0 || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return out, budgetHold("selector_reentry_destination_unavailable")
 	}
 	// Only a completed funded route observation — the lane's obligation present
@@ -50,7 +50,7 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *RPCClient, 
 		source.ExitBound.MaxCollateralRaw < 0 || source.ExitBound.MaxDebtRaw < 0 ||
 		source.ExitBound.MaxCollateralRaw != s.PositionCollateralRaw || source.ExitBound.MaxDebtRaw < s.PositionDebtRaw ||
 		!sha256Pattern.MatchString(source.Recipe.EvidenceID) ||
-		source.Recipe.ValidThroughSlot < s.Slot || source.Recipe.ValidThroughSlot-s.Slot > budgetMaxObservationLagSlots {
+		source.Recipe.ValidThroughSlot < s.Slot || source.Recipe.ValidThroughSlot-s.Slot > observationLagSlots() {
 		return out, budgetHold("selector_reentry_exit_bound_unavailable")
 	}
 	if maximum == 0 || maximum > uint64(PilotWorkingTrancheCapRaw) || maximum > source.MinimumIdleRaw {

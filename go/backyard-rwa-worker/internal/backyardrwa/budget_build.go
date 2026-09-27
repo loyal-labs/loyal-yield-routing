@@ -162,7 +162,7 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *RPC
 	if err != nil {
 		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
 	}
-	if initializerPrestateSlot > 0 && (slot < initializerPrestateSlot || slot-initializerPrestateSlot > budgetMaxObservationLagSlots) {
+	if initializerPrestateSlot > 0 && (slot < initializerPrestateSlot || slot-initializerPrestateSlot > observationLagSlots()) {
 		return ValuedTransactionCost{}, budgetHold("initializer_prestate_expired")
 	}
 	cost, err := ValueTransactionCost(message, debit, fee, setupLamports, token, sol, slot)
@@ -170,7 +170,7 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *RPC
 		return cost, err
 	}
 	if initializerPrestateSlot > 0 {
-		cost.ValidThroughSlot = min(cost.ValidThroughSlot, initializerPrestateSlot+budgetMaxObservationLagSlots)
+		cost.ValidThroughSlot = min(cost.ValidThroughSlot, initializerPrestateSlot+observationLagSlots())
 	}
 	return cost, nil
 }

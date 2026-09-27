@@ -20,7 +20,7 @@ func (m RouteManifest) initializationSnapshotReady(s Snapshot) bool {
 }
 
 func snapshotInitializationReady(s Snapshot, laneAllowed func(string) bool) bool {
-	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagSlots || s.RouteKind != RouteKind || !s.Fresh {
+	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind || !s.Fresh {
 		return false
 	}
 	if !s.PilotActive || !s.InitializationPolicyReady || !laneAllowed(s.RouteLane) || !s.ObligationPresenceKnown || s.ObligationPresent {
@@ -112,6 +112,6 @@ func (d *Database) admitKaminoInitialization(ctx context.Context, rpc *RPCClient
 	}
 	// There is no token exposure or exit graph yet. Creation cannot consume an
 	// outstanding exit reservation; the locked shared admission checks that too.
-	plan := phase3BridgeAdmission{Snapshot: o.Snapshot, Decision: decision, Input: input, CurrentCost: cost, ValidThroughSlot: min(cost.ValidThroughSlot, o.Snapshot.Slot+budgetMaxObservationLagSlots)}
+	plan := phase3BridgeAdmission{Snapshot: o.Snapshot, Decision: decision, Input: input, CurrentCost: cost, ValidThroughSlot: min(cost.ValidThroughSlot, o.Snapshot.Slot+observationLagSlots())}
 	return d.persistPhase3ExitAdmissionOnManifest(ctx, rpc, manifest, id, o, decision, plan)
 }

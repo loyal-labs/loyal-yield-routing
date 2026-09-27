@@ -1,11 +1,100 @@
 package backyardrwa
 
 import (
+	"context"
+	"fmt"
 	"math"
 	"math/big"
+	"os"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 const budgetMaxObservationLagSlots int64 = 32
+
+// Our observation freshness window is ~13 s of chain time, not a fixed 32
+// slots: at ~270 ms slots 32 slots is 8.6 s while observe-to-send takes 9-12 s,
+// so most 09-26 moves failed the final re-check (13 tries, 10 restarts).
+// observationLagSlots is ceil(13 s / measured slot time) clamped to
+// [budgetMaxObservationLagSlots, budgetMaxObservationLagCeilingSlots]; 32 when
+// unmeasured. Window producers and fresh age checks use it; window-width
+// sanity checks on persisted evidence use the fixed ceiling so a later
+// measurement never strands a record. Kamino/adaptor protocol limits stay 32.
+// A lower later measurement only shortens a live window: a quote or recipe
+// wider than the current window is refused and re-priced, never stretched.
+const (
+	budgetMaxObservationLagCeilingSlots int64 = 64
+	observationWindowMillis                   = 13_000
+)
+
+var (
+	observationLag         atomic.Int64
+	observationLagMu       sync.Mutex
+	observationLagChecked  time.Time
+	observationLagMeasured time.Time
+)
+
+func observationLagSlots() int64 {
+	if v := observationLag.Load(); v > 0 {
+		return v
+	}
+	return budgetMaxObservationLagSlots
+}
+
+func observationLagForSlotMillis(ms float64) int64 {
+	if !(ms > 0) {
+		return budgetMaxObservationLagSlots
+	}
+	return min(max(int64(math.Ceil(observationWindowMillis/ms)), budgetMaxObservationLagSlots), budgetMaxObservationLagCeilingSlots)
+}
+
+// refreshObservationLagSlots re-measures the slot time at most once a minute,
+// at the start of a tick so one tick sees one window. A failed read keeps the
+// last value for 10 minutes, then falls back to 32 slots.
+func (c *RPCClient) refreshObservationLagSlots(ctx context.Context) {
+	observationLagMu.Lock()
+	defer observationLagMu.Unlock()
+	now := time.Now()
+	if now.Sub(observationLagChecked) < time.Minute {
+		return
+	}
+	observationLagChecked = now
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	ms, err := c.recentSlotMillis(ctx)
+	if err != nil {
+		if now.Sub(observationLagMeasured) > 10*time.Minute {
+			observationLag.Store(0)
+		}
+		return
+	}
+	observationLagMeasured = now
+	if slots := observationLagForSlotMillis(ms); observationLag.Swap(slots) != slots {
+		_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: observation window slots=%d slot_ms=%.0f\n", slots, ms)
+	}
+}
+
+// recentSlotMillis averages the chain's last five 60 s performance samples.
+func (c *RPCClient) recentSlotMillis(ctx context.Context) (float64, error) {
+	var samples []struct {
+		NumSlots         int64 `json:"numSlots"`
+		SamplePeriodSecs int64 `json:"samplePeriodSecs"`
+	}
+	if err := c.call(ctx, "getRecentPerformanceSamples", []any{5}, &samples); err != nil {
+		return 0, err
+	}
+	var slots, secs int64
+	for _, s := range samples {
+		if s.NumSlots > 0 && s.SamplePeriodSecs > 0 {
+			slots, secs = slots+s.NumSlots, secs+s.SamplePeriodSecs
+		}
+	}
+	if slots == 0 {
+		return 0, fmt.Errorf("no usable performance samples")
+	}
+	return float64(secs) * 1000 / float64(slots), nil
+}
 
 // BudgetPrice is an observation, not an assumed stablecoin peg. The producer
 // must bind the mint/program/decimals and reserve/oracle account hashes to its
@@ -29,7 +118,7 @@ type BudgetPrice struct {
 }
 
 func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (int64, error) {
-	if p.Mint != mint || p.TokenProgram != program || p.Decimals > 18 || p.ObservedSlot <= 0 || slot < p.ObservedSlot || slot > p.ValidThroughSlot || p.ValidThroughSlot < p.ObservedSlot || p.ValidThroughSlot-p.ObservedSlot > budgetMaxObservationLagSlots || !sha256Pattern.MatchString(p.EvidenceSHA256) {
+	if p.Mint != mint || p.TokenProgram != program || p.Decimals > 18 || p.ObservedSlot <= 0 || slot < p.ObservedSlot || slot > p.ValidThroughSlot || p.ValidThroughSlot < p.ObservedSlot || p.ValidThroughSlot-p.ObservedSlot > budgetMaxObservationLagCeilingSlots || !sha256Pattern.MatchString(p.EvidenceSHA256) {
 		return 0, budgetHold("missing_stale_or_mismatched_usdc_valuation")
 	}
 	value, err := valueBetweenTokenRaw(raw, p.Decimals, 6, p.TokenUpperSF, p.USDCLowerSF, true)
@@ -87,7 +176,7 @@ func ValueTransactionCost(message []byte, debit ExecutableDebit, fee MessageFeeO
 	if _, err := checkedUnsignedMessage(message); err != nil {
 		return result, err
 	}
-	if fee.MessageSHA256 != result.MessageSHA256 || fee.Slot <= 0 || fee.Slot > math.MaxInt64-budgetMaxObservationLagSlots || fee.Slot > slot || slot-fee.Slot > budgetMaxObservationLagSlots || fee.Lamports == 0 {
+	if fee.MessageSHA256 != result.MessageSHA256 || fee.Slot <= 0 || fee.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || fee.Slot > slot || slot-fee.Slot > observationLagSlots() || fee.Lamports == 0 {
 		return result, budgetHold("fee_message_or_slot_mismatch")
 	}
 	var err error
@@ -116,7 +205,7 @@ func ValueTransactionCost(message []byte, debit ExecutableDebit, fee MessageFeeO
 	}
 	result.TotalMicros, err = budgetSum(result.PrincipalMicros, result.NetworkFeeMicros, result.SetupLamportsMicros)
 	// Validity is bounded by the oldest input, not the final observation.
-	result.ValidThroughSlot = min(fee.Slot+budgetMaxObservationLagSlots, solPrice.ValidThroughSlot)
+	result.ValidThroughSlot = min(fee.Slot+observationLagSlots(), solPrice.ValidThroughSlot)
 	if debit.Raw > 0 {
 		result.ValidThroughSlot = min(result.ValidThroughSlot, tokenPrice.ValidThroughSlot)
 	}

@@ -44,7 +44,7 @@ func (c *RPCClient) simulateRouteValuationRefresh(ctx context.Context, route Run
 }
 
 func validateRouteValuationCapture(slot int64, accounts []ConfirmedAccount, addresses []string, minimumSlot int64) error {
-	if slot < minimumSlot || slot-minimumSlot > budgetMaxObservationLagSlots || len(accounts) != len(addresses) {
+	if slot < minimumSlot || slot-minimumSlot > observationLagSlots() || len(accounts) != len(addresses) {
 		return fmt.Errorf("valuation capture is incomplete or outside freshness window")
 	}
 	seen := make(map[string]bool, len(addresses))

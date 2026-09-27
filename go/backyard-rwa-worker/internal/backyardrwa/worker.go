@@ -297,6 +297,7 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		manifest: manifest, routeKey: productionRouteKey,
 		journal: database,
 		batch: func(ctx context.Context) (Observation, error) {
+			rpc.refreshObservationLagSlots(ctx)
 			planning, err := database.readRoutePlanningStateOnManifest(ctx, manifest, productionRouteKey, true)
 			if err != nil {
 				return Observation{}, err

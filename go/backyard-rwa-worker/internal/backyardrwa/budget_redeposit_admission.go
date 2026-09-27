@@ -145,7 +145,7 @@ func validateRedepositAdmissionPrestate(ctx context.Context, rpc *RPCClient, r K
 	if err != nil {
 		return 0, err
 	}
-	if bound.MaximumRateBPS > p.Payoff.MaximumRateBPS || bound.InterestBasis != p.Payoff.InterestBasis || bound.ChainUnix < p.Payoff.ChainUnix || bound.ChainUnix > p.Payoff.ChainUnix+kaminoPayoffWindowSeconds || bound.UpperDebtRaw > p.Payoff.UpperDebtRaw || bound.ObservedSlot > math.MaxInt64-budgetMaxObservationLagSlots {
+	if bound.MaximumRateBPS > p.Payoff.MaximumRateBPS || bound.InterestBasis != p.Payoff.InterestBasis || bound.ChainUnix < p.Payoff.ChainUnix || bound.ChainUnix > p.Payoff.ChainUnix+kaminoPayoffWindowSeconds || bound.UpperDebtRaw > p.Payoff.UpperDebtRaw || bound.ObservedSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return 0, budgetHold("redeposit_return_interest_window_changed")
 	}
 	return bound.ObservedSlot, nil

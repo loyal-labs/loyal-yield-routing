@@ -346,7 +346,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: payoff.AmountRaw, Cost: payoffCost, Template: plan.PayoffRepayment}, nav, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: withdrawal.AmountRaw, Cost: tail.CurrentCost, Template: tail.Input})
 	plan.Exit = append(prefix, tail.Exit...)
 	plan.ExitAfterMicros = 0
-	plan.ValidThroughSlot = min(current.ValidThroughSlot, tail.ValidThroughSlot, projection.Slot+budgetMaxObservationLagSlots)
+	plan.ValidThroughSlot = min(current.ValidThroughSlot, tail.ValidThroughSlot, projection.Slot+observationLagSlots())
 	for _, step := range plan.Exit {
 		plan.ExitAfterMicros, err = budgetSum(plan.ExitAfterMicros, step.Cost.TotalMicros)
 		if err != nil {

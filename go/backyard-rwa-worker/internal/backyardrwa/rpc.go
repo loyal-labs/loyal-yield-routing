@@ -219,6 +219,7 @@ var rpcDiagnosticMethods = map[string]struct{}{
 	"getMinimumBalanceForRentExemption": {},
 	"getMultipleAccounts":               {},
 	"getProgramAccounts":                {},
+	"getRecentPerformanceSamples":       {},
 	"getSignatureStatuses":              {},
 	"getSlot":                           {},
 	"getTransaction":                    {},
