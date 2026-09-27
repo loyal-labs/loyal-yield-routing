@@ -52,6 +52,8 @@ Every step that changes worker rules or production is shown to Vlad before deplo
 
 ## Log
 
+- 2026-09-27 12:37: A1 regression fixed (`2fc768f`). A1's 49-slot window also reached NAV-report bridge wires; the adaptor refuses reports older than 32 slots (Custom 9), so 2 reports failed in simulation and the worker restarted (07:24, 10:50; nothing sent). Report-bearing windows are back to 32. An adaptor Custom 9 in simulation for an already-expired report is now a pre-send retry.
+
 - 2026-09-27 00:40: A2 live (`2d06e87`), A1 live (`13290aa`). A3 blocked (signed-wire simulation before intent); Vlad chose to measure first (A4). Next: B2 variable leverage.
 
 - 2026-09-27 00:18: A6 live (`3aadeea`). A7 live (loyal-app #799). Gen 9 latch 23:19 cleared; kamino_stale auto-clear standing OK until A6 proves itself.
