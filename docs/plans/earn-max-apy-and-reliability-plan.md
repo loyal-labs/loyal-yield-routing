@@ -34,7 +34,7 @@ Every step that changes worker rules or production is shown to Vlad before deplo
 | # | Step | Task | Expected effect (09-26 rates) | Status |
 |---|------|------|------|--------|
 | B1 | Correct borrow rates in the optimizer | ASK-2310 | AUTO 1.5x 9% -> 12% | Done (`c0811f0`) |
-| B2 | Variable leverage per lane: choose 1x / 1.5x / 2x / up to the safe cap by the real spread; 1x (no loan) when borrowing costs more than the token pays. Chris's leverage grid (`scripts/rwa-decision.ts`). | ASK-2309 | AUTO ~12% -> ~15-18% at 2-3x while borrow < yield | Todo |
+| B2 | Variable leverage per lane: choose 1x / 1.5x / 2x / up to the safe cap by the real spread; 1x (no loan) when borrowing costs more than the token pays. Chris's leverage grid (`scripts/rwa-decision.ts`). Design: `b2-variable-leverage-design.md`. | ASK-2309 | Corrected 09-27: AUTO 1.5x 11.3% -> 1.75x 12.2% (2x 13.0%); 2.5x = the 60% hard rule, not allowed | Design waiting for Vlad |
 | B3 | Idle cash into the current loop (top-up tranche), so new deposits earn at once. | ASK-2308 | No more idle weeks after deposits (was ~60% idle) | Todo |
 | B4 | Enable OnRe (then Prime) for entry. | ASK-2311 | OnRe 1.5x ~12.8% today; more choice when rates move | Todo |
 | B5 | Fix the doubled APR/APY in the shared Kamino collector (other services). | ASK-2312 | Correct data everywhere | Todo |
@@ -51,6 +51,8 @@ Every step that changes worker rules or production is shown to Vlad before deplo
 - The $500 top-up is not needed for the optimizer test anymore (done with $381 on 09-26).
 
 ## Log
+
+- 2026-09-27 13:00: B2 design drafted (`b2-variable-leverage-design.md`). No 7-day share-price check (Vlad: he monitors directly).
 
 - 2026-09-27 12:37: A1 regression fixed (`2fc768f`). A1's 49-slot window also reached NAV-report bridge wires; the adaptor refuses reports older than 32 slots (Custom 9), so 2 reports failed in simulation and the worker restarted (07:24, 10:50; nothing sent). Report-bearing windows are back to 32. An adaptor Custom 9 in simulation for an already-expired report is now a pre-send retry.
 
