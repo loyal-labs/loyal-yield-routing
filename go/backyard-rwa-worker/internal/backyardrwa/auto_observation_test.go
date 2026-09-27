@@ -400,6 +400,9 @@ func TestAutoCandidateStaleValuationHoldsAndNeverDropsToCash(t *testing.T) {
 		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
 	}
 	manifest, route, accounts := autoObservationBatch(t, 77, stale)
+	// Pin the third stale hold in a row, the one that latches.
+	kaminoStaleHolds.Store(refreshSimulationLatchAfter - 1)
+	t.Cleanup(func() { kaminoStaleHolds.Store(0) })
 	observation, _, err := autoObservationForAccounts(manifest, 77, accounts)(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -477,5 +480,76 @@ func TestAutoEmptyLaneStaleReserveFallsBackToCash(t *testing.T) {
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 1)
 	if _, err := observeKaminoWithCashFallback(context.Background(), reader, 77, accounts, route); !errors.Is(err, errKaminoReserveStale) {
 		t.Fatalf("PYUSD custody was valued as cash on a stale reserve: %v", err)
+	}
+}
+
+// A6 (09-26 21:52 and 23:19 one-off latches): a kamino_stale health hold
+// retries twice and latches on the third in a row; a passed health check
+// resets the streak.
+func TestKaminoStaleHealthHoldLatchesOnlyOnThirdInARow(t *testing.T) {
+	kaminoStaleHolds.Store(0)
+	t.Cleanup(func() { kaminoStaleHolds.Store(0) })
+	stale := func(accounts []ConfirmedAccount) {
+		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
+	}
+	manifest, _, staleAccounts := autoObservationBatch(t, 77, stale)
+	_, _, freshAccounts := autoObservationBatch(t, 77, nil)
+	observe := func(accounts []ConfirmedAccount) (Observation, error) {
+		o, _, err := autoObservationForAccounts(manifest, 77, accounts)(context.Background())
+		return o, err
+	}
+	for i := 1; i <= 2; i++ {
+		if o, err := observe(staleAccounts); !errors.Is(err, errConfirmedObservationUnavailable) || o.Snapshot.ManualReason != "" {
+			t.Fatalf("stale hold %d latched instead of retrying: %v %q", i, err, o.Snapshot.ManualReason)
+		}
+	}
+	if o, err := observe(freshAccounts); err != nil || o.Snapshot.ManualReason != "" || kaminoStaleHolds.Load() != 0 {
+		t.Fatalf("a passed health check did not reset the streak: %v %q %d", err, o.Snapshot.ManualReason, kaminoStaleHolds.Load())
+	}
+	for i := 1; i <= 2; i++ {
+		if _, err := observe(staleAccounts); !errors.Is(err, errConfirmedObservationUnavailable) {
+			t.Fatalf("stale hold %d after reset latched: %v", i, err)
+		}
+	}
+	if o, err := observe(staleAccounts); err != nil || o.Snapshot.ManualReason != "kamino_stale" {
+		t.Fatalf("third stale hold in a row did not latch: %v %q", err, o.Snapshot.ManualReason)
+	}
+}
+
+// A6: BlockhashNotFound means the simulating node never evaluated the
+// refresh; it retries without counting toward the rejected-refresh latch.
+func TestRefreshBlockhashNotFoundIsTransient(t *testing.T) {
+	notFound := &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `"BlockhashNotFound"`}}
+	rejected := &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
+	if !transientValuationRefreshFailure(notFound) || transientValuationRefreshFailure(rejected) || transientValuationRefreshFailure(budgetHold("price_refresh_simulation_failed")) {
+		t.Fatal("BlockhashNotFound classification is wrong")
+	}
+}
+
+// A6 (c), 09-26 23:19: the AUTO NAV health-checks the pinned USDC reference
+// reserve, which the position check never reads. A stale reference with the
+// lane's own reserves fresh now tries the reserve refresh before any hold.
+func TestStaleUSDCReferenceTriesRefreshBeforeHealthHold(t *testing.T) {
+	kaminoStaleHolds.Store(0)
+	refreshSimulationFailures.Store(0)
+	t.Cleanup(func() { kaminoStaleHolds.Store(0); refreshSimulationFailures.Store(0) })
+	manifest, _, accounts := autoObservationBatch(t, 77, func(accounts []ConfirmedAccount) {
+		binary.LittleEndian.PutUint64(accountAt(accounts, kaminoDebtReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
+	})
+	read, finalized := fixtureBatchRuntime(77, accounts)
+	refreshCalls := 0
+	_, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{
+		confirmedSlot:    func(context.Context) (int64, error) { return 77, nil },
+		receipts:         func(context.Context, int64) (int64, []programAccount, error) { return 77, nil, nil },
+		accounts:         read,
+		finalizedReceipt: finalized,
+		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		refreshValuation: func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
+			refreshCalls++
+			return 0, nil, budgetHold("price_refresh_simulation_unavailable")
+		},
+	})
+	if refreshCalls != 1 || !errors.Is(err, errConfirmedObservationUnavailable) {
+		t.Fatalf("stale USDC reference skipped the refresh: calls=%d err=%v", refreshCalls, err)
 	}
 }

@@ -10,7 +10,10 @@ import (
 )
 
 func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T) {
+	t.Cleanup(func() { kaminoStaleHolds.Store(0) })
 	for _, staleOracle := range []bool{false, true} {
+		// Pin the third stale hold in a row, the one that latches.
+		kaminoStaleHolds.Store(refreshSimulationLatchAfter - 1)
 		m := readyWorkerManifest(t)
 		m.RuntimeActivation.SelectedLane = PhaseOneLaneID
 		initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {

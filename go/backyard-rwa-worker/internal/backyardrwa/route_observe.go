@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -217,7 +218,12 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		// bank again so custody, obligations, receipts and Clock are coherent
 		// with those refreshed inputs, including after a landed swap.
 		position, reserveErr := observeKaminoFromFixedAccounts(ctx, runtime.accounts, slot, accounts, route.Kamino)
-		if errors.Is(reserveErr, errKaminoReserveStale) && runtime.refreshValuation != nil {
+		refreshExhausted := false
+		// A non-USDC lane's NAV also health-checks the pinned USDC reference
+		// reserve. With the lane's own reserves fresh it was never refreshed,
+		// so its age latched kamino_stale without a refresh try (09-26 23:19).
+		usdcReferenceStale := reserveErr == nil && navUSDCReferenceStale(slot, accounts, route)
+		if (errors.Is(reserveErr, errKaminoReserveStale) || usdcReferenceStale) && runtime.refreshValuation != nil {
 			captureAddresses := addresses
 			if manifest.selectorObservation {
 				captureAddresses = selectorValuationPolicyAddresses(manifest, route, selectorValuationAddresses(route, addresses))
@@ -244,6 +250,10 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 					}
 				}
 				slot, accounts = refreshedSlot, refreshedAccounts
+				if usdcReferenceStale {
+					// Keep the position on the same refreshed bank as the NAV.
+					position, reserveErr = observeKaminoFromFixedAccounts(ctx, runtime.accounts, slot, accounts, route.Kamino)
+				}
 			} else {
 				detail := ""
 				if te := holdTransactionError(refreshErr); te != "" {
@@ -265,6 +275,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 					refreshSimulationFailures.Add(1) < refreshSimulationLatchAfter {
 					return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh rejected, retrying: %w", refreshErr))
 				}
+				// Already rejected that many times in a row: latch now, without a
+				// second streak on the health hold below.
+				refreshExhausted = true
 				// The health hold below latches; carry this cause into its alert.
 				otelLogs.noteCause(holdDetail(refreshErr))
 			}
@@ -279,6 +292,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			// A stale, paused, or emergency Kamino state is a decision input,
 			// not a broken observer: the tick holds with the audited reason.
 			if hold, ok := kaminoHealthHold(err, slot, runtime.now(), route.Lane); ok {
+				if retry := staleHealthRetry(hold, err, refreshExhausted); retry != nil {
+					return Observation{}, nil, retry
+				}
 				return hold, accounts, nil
 			}
 			return Observation{}, nil, err
@@ -302,10 +318,14 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		nav, err := ComputeRouteNAVForRoute(slot, navAccounts, manifest, nil, route)
 		if err != nil {
 			if hold, ok := kaminoHealthHold(err, slot, runtime.now(), route.Lane); ok {
+				if retry := staleHealthRetry(hold, err, refreshExhausted); retry != nil {
+					return Observation{}, nil, retry
+				}
 				return hold, accounts, nil
 			}
 			return Observation{}, nil, err
 		}
+		kaminoStaleHolds.Store(0)
 		collateralMint, err := decodeBase58PublicKey(route.Kamino.CollateralMint)
 		if err != nil {
 			return Observation{}, nil, err
@@ -983,6 +1003,37 @@ var refreshSimulationFailures atomic.Int64
 
 const refreshSimulationLatchAfter = 3
 
+// kaminoStaleHolds counts consecutive kamino_stale health holds. One-off
+// stale reads latched on 09-26 (21:52 AUTO reserve 345 slots old; 23:19 230
+// slots old): the first two retry, the third in a row latches as before, and
+// a passed health check resets it. Paused/emergency reserves still latch at
+// once. ponytail: process-wide like refreshSimulationFailures.
+var kaminoStaleHolds atomic.Int64
+
+// staleHealthRetry returns the retry error for a kamino_stale hold that has
+// not yet been seen refreshSimulationLatchAfter times in a row, else nil.
+func staleHealthRetry(hold Observation, err error, refreshExhausted bool) error {
+	if hold.Snapshot.ManualReason != "kamino_stale" || refreshExhausted || kaminoStaleHolds.Add(1) >= refreshSimulationLatchAfter {
+		return nil
+	}
+	return confirmedObservationUnavailable(fmt.Errorf("kamino health hold, retrying: %w", err))
+}
+
+// navUSDCReferenceStale reports a non-USDC lane whose pinned USDC reference
+// reserve (read by the NAV, not by the position check) is past the Kamino
+// reserve age limit. Decode faults are left to the NAV itself.
+func navUSDCReferenceStale(slot int64, accounts []ConfirmedAccount, route RuntimeRoute) bool {
+	if route.Kamino.DebtMint == "" || route.Kamino.DebtMint == bridgeUSDC {
+		return false
+	}
+	reference, err := pinnedKaminoObservationConfig()
+	if err != nil {
+		return false
+	}
+	reserve, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
+	return err == nil && reserve.refreshedSlot <= slot && slot-reserve.refreshedSlot > kaminoMaxReserveAgeSlots
+}
+
 func refreshSimulationFailed(err error) bool {
 	var hold *BudgetHold
 	return errors.As(err, &hold) && hold.Reason == "price_refresh_simulation_failed"
@@ -995,7 +1046,9 @@ func transientValuationRefreshFailure(err error) bool {
 		case "price_refresh_blockhash_unavailable", "price_refresh_simulation_unavailable", "price_refresh_lookup_unavailable":
 			return true
 		}
-		return false
+		// BlockhashNotFound: the simulating RPC node did not know our fresh
+		// blockhash, so Kamino never evaluated the refresh (09-26 23:18:51).
+		return hold.Reason == "price_refresh_simulation_failed" && strings.Trim(holdTransactionError(err), `"`) == "BlockhashNotFound"
 	}
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errConfirmedObservationUnavailable)
 }
