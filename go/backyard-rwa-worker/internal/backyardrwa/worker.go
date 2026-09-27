@@ -462,6 +462,9 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if operation != nil {
 		otelLogs.noteAction(operation.Decision.Action)
 		if err := w.runtime.advance(ctx, *operation); err != nil {
+			if operation.BroadcastIntentRecorded || !preBroadcastStatus(operation.Status) {
+				return &afterBroadcastError{err}
+			}
 			return err
 		}
 		// Reconciling is the only state whose successful advance finalizes a
@@ -884,57 +887,42 @@ func isPureHold(err error) bool {
 	}
 }
 
-// staleInputHoldReasons are refusals caused only by a quote, price or fee
-// reading that aged out or was briefly unavailable before anything was sent.
-// Each tick re-observes the chain and re-derives the whole leg, so the next
-// tick is exactly what a process restart would do - without the ~1-25 s of
-// Render restart per hold (36 restarts on 2026-09-25, most of them these).
-var staleInputHoldReasons = map[string]bool{
-	"selector_entry_quote_expired":                 true,
-	"missing_stale_or_mismatched_usdc_valuation":   true,
-	"stale_funding_exit_admission":                 true,
-	"build_native_valuation_unavailable":           true,
-	"initializer_decision_changed":                 true,
-	"network_fee_unavailable":                      true,
-	"bridge_admission_token_valuation_unavailable": true,
-	"send_valuation_expired":                       true,
-	"send_valuation_slot_unavailable":              true,
-	// Pre-send re-checks of an entry's Kamino projection and of the fee
-	// quote: the next tick rebuilds from a fresh read (2026-09-25 redeposit).
-	"pilot_release_projection_expired":      true,
-	"pilot_release_projection_risk_changed": true,
-	"fee_message_or_slot_mismatch":          true,
-	// The fresh build's fee is over its reservation: nothing was sent, and the
-	// next tick reserves again (11 pre-send since 09-18, 0 sent; Vlad OK 09-25).
-	"fresh_build_cost_exceeds_reservation": true,
-	// The token-price twin of build_native_valuation_unavailable in the same
-	// pre-send cost check (10 exits in 40 h on 09-25/26, 0 sent; Vlad OK 09-26).
-	"build_token_valuation_unavailable": true,
-	// Pre-send re-checks during the 09-26 AUTO entry: the exit-cost window
-	// aged out, or the Kamino deposit simulation refused a stale read; both
-	// rebuild from a fresh observation (5 exits in 3 min, 0 sent; Vlad OK).
-	"stale_withdrawal_exit_admission": true,
-	"deposit_projection_failed":       true,
+// afterBroadcastError marks a tick error from advancing an operation whose
+// broadcast intent is already durable. Its holds are never pre-send retries.
+type afterBroadcastError struct{ err error }
+
+func (e *afterBroadcastError) Error() string { return e.err.Error() }
+func (e *afterBroadcastError) Unwrap() error { return e.err }
+
+// preBroadcastStatus reports states in which lifecycle recovery can still
+// only refuse or retire the wire: a send first commits broadcast_intent.
+func preBroadcastStatus(status OperationStatus) bool {
+	return status == Decided || status == Built || status == Simulated || status == Signed
 }
 
-// isStaleInputHold reports a tick error made only of stale-input holds. Like
-// isPureHold, a hold joined with any other fault (a store or wire error) still
-// stops the worker.
-func isStaleInputHold(err error) bool {
+// isPreSendHold reports a tick error made only of admission holds raised
+// before anything was broadcast. The next tick re-observes the chain and
+// re-derives the whole leg, exactly what a process restart would do, without
+// the Render restart (13 tries, 10 restarts in the 09-26 AUTO entry; the
+// per-reason list it replaces grew with every move). Like isPureHold, a hold
+// joined with any other fault (a store or wire error) still stops the worker,
+// and so does any hold from an operation whose broadcast intent is recorded.
+func isPreSendHold(err error) bool {
 	var hold *BudgetHold
-	if !errors.As(err, &hold) || !staleInputHoldReasons[hold.Reason] {
+	var sent *afterBroadcastError
+	if !errors.As(err, &hold) || errors.As(err, &sent) {
 		return false
 	}
 	switch unwrappable := err.(type) {
 	case interface{ Unwrap() []error }:
 		for _, member := range unwrappable.Unwrap() {
-			if !isStaleInputHold(member) {
+			if !isPreSendHold(member) {
 				return false
 			}
 		}
 		return true
 	case interface{ Unwrap() error }:
-		return isStaleInputHold(unwrappable.Unwrap())
+		return isPreSendHold(unwrappable.Unwrap())
 	default:
 		return true
 	}
@@ -963,10 +951,10 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 			default:
 			}
 			// Confirmed-observation gaps, pure journaled spending-limit holds
-			// and stale-input holds skip this tick's leg and retry on the next interval;
+			// and pre-send holds skip this tick's leg and retry on the next interval;
 			// anything else - including a hold joined with a store error -
 			// is a process fault and stops the worker.
-			if !errors.Is(err, errConfirmedObservationUnavailable) && !isPureHold(err) && !isStaleInputHold(err) {
+			if !errors.Is(err, errConfirmedObservationUnavailable) && !isPureHold(err) && !isPreSendHold(err) {
 				// A SIGTERM cancellation is a normal stop, not an alert.
 				if ctx.Err() == nil {
 					otelLogs.tickResult(err, true)

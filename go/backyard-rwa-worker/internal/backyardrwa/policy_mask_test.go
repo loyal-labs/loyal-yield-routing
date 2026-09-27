@@ -346,11 +346,67 @@ func TestStaleInputHoldRetriesInsteadOfStoppingTheWorker(t *testing.T) {
 		t.Fatalf("stale-input hold stopped the worker: ticks=%d err=%v", ticks, err)
 	}
 	for name, stop := range map[string]error{
-		"otherHold": budgetHold("custody_attribution_unknown_record"),
-		"joined":    errors.Join(budgetHold("send_valuation_expired"), errors.New("persist failed")),
+		"afterBroadcast": &afterBroadcastError{budgetHold("unproven_failed_fee_settlement")},
+		"joined":         errors.Join(budgetHold("send_valuation_expired"), errors.New("persist failed")),
+		"store":          errors.New("persist transition signed -> failed: connection reset"),
+		"lease":          ErrRouteLeaseLost,
 	} {
 		if got := worker.runTicks(context.Background(), make(chan error, 1), func(context.Context) error { return stop }); got == nil {
 			t.Fatalf("%s did not stop the worker", name)
 		}
+	}
+}
+
+// A2: any hold raised before broadcast intent retries on the next tick, not
+// only the listed stale-input reasons. A hold from an operation whose intent
+// is already durable, or a store fault, still stops the worker.
+func TestPreSendHoldRetriesButAfterBroadcastHoldStops(t *testing.T) {
+	if !isPreSendHold(budgetHold("custody_attribution_unknown_record")) || !isPreSendHold(&validatedSignedBudgetHold{&BudgetHold{Reason: "any_new_refusal"}}) {
+		t.Fatal("a pre-send hold was not retryable")
+	}
+	for name, stop := range map[string]error{
+		"nil":            nil,
+		"plain":          errors.New("persist failed"),
+		"joined":         errors.Join(budgetHold("x"), errors.New("persist failed")),
+		"afterBroadcast": fmt.Errorf("advance: %w", &afterBroadcastError{budgetHold("x")}),
+	} {
+		if isPreSendHold(stop) {
+			t.Fatalf("%s was treated as a pre-send hold", name)
+		}
+	}
+	// The Tick wrapper: advancing a signed, never-broadcast row keeps its
+	// hold retryable; an operation with recorded intent does not.
+	hold := budgetHold("send_valuation_expired")
+	for _, tc := range []struct {
+		op    PersistedOperation
+		retry bool
+	}{
+		{PersistedOperation{Status: Signed}, true},
+		{PersistedOperation{Status: BroadcastIntent, BroadcastIntentRecorded: true}, false},
+		{PersistedOperation{Status: Submitted, BroadcastIntentRecorded: true}, false},
+		{PersistedOperation{Status: Reconciling, BroadcastIntentRecorded: true}, false},
+	} {
+		op := tc.op
+		w := &Worker{routeKey: productionRouteKey, runtime: tickRuntime{
+			loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return &op, nil },
+			advance:         func(context.Context, PersistedOperation) error { return hold },
+		}}
+		err := w.Tick(context.Background())
+		if !errors.Is(err, hold) || isPreSendHold(err) != tc.retry {
+			t.Fatalf("%s: retry=%t err=%v", op.Status, isPreSendHold(err), err)
+		}
+	}
+	// End to end: a store error after pre-send holds stops the run loop.
+	worker := &Worker{interval: time.Millisecond}
+	ticks := 0
+	storeErr := errors.New("persist failed")
+	if err := worker.runTicks(context.Background(), make(chan error, 1), func(context.Context) error {
+		ticks++
+		if ticks < 3 {
+			return budgetHold("any_new_refusal")
+		}
+		return storeErr
+	}); !errors.Is(err, storeErr) || ticks != 3 {
+		t.Fatalf("store error did not stop the worker after pre-send holds: ticks=%d err=%v", ticks, err)
 	}
 }
