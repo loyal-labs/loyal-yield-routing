@@ -661,10 +661,23 @@ func (c *RPCClient) SimulateSignedTransaction(ctx context.Context, signedWire []
 		if squadsSpendingLimitExceeded(result.Value.Err, result.Value.Logs) {
 			return SimulationResult{}, &SquadsSpendingLimitError{Slot: result.Context.Slot, Err: append([]byte(nil), result.Value.Err...)}
 		}
-		return SimulationResult{}, fmt.Errorf("signed transaction simulation failed: slot=%d err=%s log_tail=%q", result.Context.Slot, string(result.Value.Err), strings.Join(logTail, " | "))
+		err := fmt.Errorf("signed transaction simulation failed: slot=%d err=%s log_tail=%q", result.Context.Slot, string(result.Value.Err), strings.Join(logTail, " | "))
+		if code, ok := decodeInstructionErrorCustom(result.Value.Err); ok && code == adaptorErrorReportSlot && failingProgramFromLogs(result.Value.Logs) == bridgeAdaptorProgram {
+			return SimulationResult{}, &ReportSlotSimulationError{Slot: result.Context.Slot, err: err}
+		}
+		return SimulationResult{}, err
 	}
 	return SimulationResult{Slot: result.Context.Slot, UnitsConsumed: result.Value.UnitsConsumed, Logs: append([]string(nil), result.Value.Logs...)}, nil
 }
+
+// ReportSlotSimulationError is a simulation the NAV adaptor refused with
+// ReportSlot (Custom 9). Slot is the simulation's confirmed slot.
+type ReportSlotSimulationError struct {
+	Slot int64
+	err  error
+}
+
+func (e *ReportSlotSimulationError) Error() string { return e.err.Error() }
 
 // SendSignedTransactionOnce submits exactly the persisted wire with RPC retries
 // disabled. Callers must durably record broadcast_intent before invoking it.

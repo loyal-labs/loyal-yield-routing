@@ -71,7 +71,7 @@ func prepareBridgeFromTickObservation(ctx context.Context, rpc *RPCClient, manif
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	if slot < batch.Slot || slot-batch.Slot > observationLagSlots() {
+	if slot < batch.Slot || slot-batch.Slot > min(observationLagSlots(), adaptorMaxReportAgeSlots) {
 		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation exceeded slot freshness"))
 	}
 	return prepareBridgeFromObservedAccounts(ctx, rpc, manifest, decision, observation, batch.Accounts)

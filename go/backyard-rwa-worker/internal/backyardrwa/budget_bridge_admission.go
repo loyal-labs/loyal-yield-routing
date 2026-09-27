@@ -243,7 +243,10 @@ func observePhase3BridgeAdmission(ctx context.Context, rpc *RPCClient, observati
 	if err != nil {
 		return plan, err
 	}
-	plan.ValidThroughSlot = observation.Snapshot.Slot + observationLagSlots()
+	// Every bridge wire carries a report for this snapshot slot, and the adaptor
+	// refuses a report older than adaptorMaxReportAgeSlots (Custom 9): the wider
+	// A1 window must not apply here.
+	plan.ValidThroughSlot = observation.Snapshot.Slot + min(observationLagSlots(), adaptorMaxReportAgeSlots)
 	if slot < observation.Snapshot.Slot || slot > plan.ValidThroughSlot {
 		return plan, budgetHold("stale_bridge_admission_snapshot")
 	}

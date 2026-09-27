@@ -29,6 +29,10 @@ const (
 	// ReportSlot refusal. Naming it once keeps the classifier and the two
 	// settlement gates from drifting apart.
 	adaptorReportSlotRefusedReason = "adaptor_report_slot_refused"
+
+	// reportExpiredInSimulationReason: the adaptor refused an unsent wire in
+	// simulation because its report was already past the age limit.
+	reportExpiredInSimulationReason = "report_expired_in_simulation"
 )
 
 const (

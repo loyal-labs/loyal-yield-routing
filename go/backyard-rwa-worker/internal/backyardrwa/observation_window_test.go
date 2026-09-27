@@ -2,6 +2,7 @@ package backyardrwa
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -77,4 +78,36 @@ func TestWidenedWindowStillBoundsPriceAge(t *testing.T) {
 	p.ValidThroughSlot = 100 + budgetMaxObservationLagCeilingSlots + 1
 	_, err = p.valueUpper(1, "m", "p", 101)
 	assertBudgetHoldReason(err)
+}
+
+// The adaptor refuses a report older than 32 slots (Custom 9 = ReportSlot).
+// On 09-27 the A1 window (49 slots) let two NAV reports reach simulation at
+// ages 34 and 39 and the worker exited. The simulation refusal must be a
+// typed error, and a report-bearing tick observation must stay within 32
+// slots even when the general window is wider.
+func TestReportSlotSimulationRefusalIsTypedAndReportWindowStaysAtAdaptorLimit(t *testing.T) {
+	client, _ := NewRPCClient("https://rpc.invalid")
+	client.client.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":450928730},"value":{"err":{"InstructionError":[0,{"Custom":9}]},"logs":["Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]","Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]","Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW failed: custom program error: 0x9","Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x9"],"unitsConsumed":1}}}`), nil
+	})
+	_, err := client.SimulateSignedTransaction(context.Background(), []byte{1, 2})
+	var slotErr *ReportSlotSimulationError
+	if !errors.As(err, &slotErr) || slotErr.Slot != 450928730 {
+		t.Fatalf("adaptor ReportSlot simulation refusal is not typed: %v", err)
+	}
+	if !ReportExpiredAtLanding(450928696, slotErr.Slot) || ReportExpiredAtLanding(450928730-32, slotErr.Slot) {
+		t.Fatal("expiry must hold at age 34 and not at age 32")
+	}
+	// Same Custom 9 from another program is not the adaptor's refusal.
+	client.client.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":5},"value":{"err":{"InstructionError":[0,{"Custom":9}]},"logs":["Program Other111 invoke [1]","Program Other111 failed: custom program error: 0x9"],"unitsConsumed":1}}}`), nil
+	})
+	if _, err := client.SimulateSignedTransaction(context.Background(), []byte{1, 2}); err == nil || errors.As(err, &slotErr) {
+		t.Fatalf("a foreign Custom 9 was typed as the adaptor refusal: %v", err)
+	}
+	observationLag.Store(49)
+	t.Cleanup(func() { observationLag.Store(0) })
+	if got := min(observationLagSlots(), adaptorMaxReportAgeSlots); got != 32 {
+		t.Fatalf("report window %d slots, want 32", got)
+	}
 }
