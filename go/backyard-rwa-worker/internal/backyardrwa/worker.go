@@ -1108,6 +1108,7 @@ func Run(ctx context.Context, out io.Writer) error {
 		// the sample cadence.
 		lastSampleAction, lastSampleReason, lastSampleCandidates := "", "", ""
 		lastEvaluateFailure, lastShadowFailure := "", ""
+		levWatch, levWatchSummary := &leverageWatch{}, time.Time{}
 		// Economic collection stays off the transaction loop. Live acceptance
 		// is fenced against its pre-observation version and existing pilot;
 		// shadow records rankings only. Neither collector sends transactions.
@@ -1136,6 +1137,13 @@ func Run(ctx context.Context, out io.Writer) error {
 					}
 					otelLogs.selectorSample("")
 					lastEvaluateFailure = ""
+					// B2 watch-only: log lines, never a decision input.
+					for _, line := range levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(levWatchSummary) >= time.Hour, func(lane string) bool { return worker.manifest.selectorEntryFundingLane(lane, false) }) {
+						_, _ = fmt.Fprintln(out, line)
+					}
+					if time.Since(levWatchSummary) >= time.Hour {
+						levWatchSummary = time.Now()
+					}
 					if result.Action == "ENTER" || result.Action == "CANARY_ENTER" || result.Action == "SWITCH" {
 						worker.notifySelectorCommit(result.Action)
 						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector action=%s source=%s destination=%s\n", result.Action, result.SourceLane, result.DestinationLane)
