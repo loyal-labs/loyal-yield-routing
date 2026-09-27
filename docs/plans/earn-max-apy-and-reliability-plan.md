@@ -21,13 +21,13 @@ Every step that changes worker rules or production is shown to Vlad before deplo
 
 | # | Step | Task | Status |
 |---|------|------|--------|
-| A1 | Freshness window in seconds (~13 s), not 32 slots. Slots are ~270 ms now (8.6 s window); our pipeline needs 9-12 s. | ASK-2313 | Todo |
-| A2 | Any refusal before sending = retry on the next tick, never a worker restart. Real faults still stop the worker. Replaces the growing retry list. | ASK-2313 | Todo |
-| A3 | Skip the 1-2 min blockhash wait when the attempt was never broadcast (no broadcast intent recorded). Verify first that no path sends without the mark. | ASK-2313 | Todo |
-| A4 | Measure on the next real move: tries per step and restarts. Pass = most steps in 1-2 tries, 0 restarts. | ASK-2313 | Todo |
+| A1 | Freshness window in seconds (~13 s), not 32 slots. Slots are ~270 ms now (8.6 s window); our pipeline needs 9-12 s. | ASK-2313 | Done (`13290aa`, live 09-27 00:38; measured 268-272 ms -> 48-49 slots) |
+| A2 | Any refusal before sending = retry on the next tick, never a worker restart. Real faults still stop the worker. Replaces the growing retry list. | ASK-2313 | Done (`2d06e87`, live 09-27 00:29) |
+| A3 | Skip the 1-2 min blockhash wait when the attempt was never broadcast. | ASK-2313 | Blocked: the build step simulates the SIGNED wire (sigVerify true) before intent, so the RPC provider holds sendable bytes; not safe as is. Vlad chose (c) 09-27: measure after A1 (A4) first; if still needed, simulate unsigned first, then A3. |
+| A4 | Measure on the next real move: tries per step and restarts. Pass = most steps in 1-2 tries, 0 restarts. | ASK-2313 | Next real move (B2 or B3) |
 | A5 | Only if A4 fails: speed up admission (quote, exit pricing, projections; now 7-9 s). | ASK-2313 | Decide after A4 |
-| A6 | Kamino health hold (reserve refresh age) latches only after 3 in a row, like FIX25 for refresh failures. Gen 8 latch 09-26 21:52: AUTO reserve last refreshed 345 slots (~93 s) before the check; nothing unsafe. | ASK-2313 | Waiting for Vlad |
-| A7 | A latch always pages. The relay folded the 21:52 latch into the open Errors window for the worker (outcome suppressed), so nobody saw it for ~50 min. | ASK-2313 | Waiting for Vlad |
+| A6 | Kamino health hold (reserve refresh age) latches only after 3 in a row, like FIX25 for refresh failures. Gen 8 latch 09-26 21:52: AUTO reserve last refreshed 345 slots (~93 s) before the check; nothing unsafe. | ASK-2313 | Done (`3aadeea`, live 09-27 00:16; also fixes the unrefreshed USDC reference reserve behind the 23:19 latch) |
+| A7 | A latch always pages. The relay folded the 21:52 latch into the open Errors window for the worker (outcome suppressed), so nobody saw it for ~50 min. | ASK-2313 | Done (loyal-app #799, live 09-26 23:14) |
 
 ## Part B: higher APY (in order of impact)
 
@@ -51,6 +51,10 @@ Every step that changes worker rules or production is shown to Vlad before deplo
 - The $500 top-up is not needed for the optimizer test anymore (done with $381 on 09-26).
 
 ## Log
+
+- 2026-09-27 00:40: A2 live (`2d06e87`), A1 live (`13290aa`). A3 blocked (signed-wire simulation before intent); Vlad chose to measure first (A4). Next: B2 variable leverage.
+
+- 2026-09-27 00:18: A6 live (`3aadeea`). A7 live (loyal-app #799). Gen 9 latch 23:19 cleared; kamino_stale auto-clear standing OK until A6 proves itself.
 
 - 2026-09-26 22:45: gen 8 kamino_stale latch at 21:52 stopped NAV reports (Earned frozen). The latch alert was suppressed by the relay mute window. Added A6, A7.
 
