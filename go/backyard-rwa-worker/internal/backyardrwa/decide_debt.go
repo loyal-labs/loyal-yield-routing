@@ -167,6 +167,13 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		}
 		return d(ReportNAV, "nav_due", 0)
 	}
+	// A debt buffer larger than the whole debt can only be left over from an
+	// exit whose demand went away (a borrow never receives more than it owes).
+	// Pay the debt off with it: the funded full-payoff admission needs no
+	// collateral release, so this also works at an LTV where no release is safe.
+	if s.PositionDebtRaw > 0 && s.DebtIdleRaw > s.PositionDebtRaw && s.DebtIdleRaw >= s.PayoffDebtRaw {
+		return d(DeleverRouteStep, "idle_debt_repay", s.PositionDebtRaw)
+	}
 	// Returning flat working cash is an exit. It does not need a usable entry
 	// market, an obligation account, or an entry LTV threshold. Unlike the USDC
 	// flat predicate, idle debt custody disqualifies the return: unattributed
@@ -208,6 +215,12 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		return d(OpenRouteStep, "collateral_ready", s.CollateralIdleRaw)
 	}
 	if s.PositionCollateralRaw > 0 {
+		// The payoff residue stays in debt custody. The borrow admission needs
+		// that custody empty, so a borrow here would be refused on every tick;
+		// the residue leaves with the next complete exit.
+		if s.DebtIdleRaw > 0 {
+			return d(Hold, "idle_debt_residue_after_repay", 0)
+		}
 		if s.BorrowUtilizationBlocked {
 			return d(Hold, "debt_reserve_utilization_blocks_borrow", 0)
 		}
