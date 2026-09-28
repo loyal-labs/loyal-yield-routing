@@ -22,6 +22,8 @@ type routePlanningState struct {
 	entry      *SelectorEntry
 	unwind     *UnwindIntent
 	paused     bool
+	// leverage is the durable B2 option-1 level target (nil = none stored).
+	leverage *LeverageTarget
 	// remainingExecutionCost is advisory quote-sizing headroom under the
 	// reviewed $500 bounded execution-cost stop: the cap less booked spend and
 	// every outstanding reservation's cost bound. The binding check stays at
@@ -58,13 +60,14 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 		out.lease = &lease
 		owner, fence = lease.Owner, lease.FencingToken
 	}
-	var budget, activation, entry, unwind []byte
+	var budget, activation, entry, unwind, leverage []byte
 	err := d.pool.QueryRow(ctx, `SELECT state_version,
 		COALESCE(state->'phase3','null'::jsonb),COALESCE(state->'pilotBudgetActivation','null'::jsonb),
-		state->'selectorEntry',state->'selectorUnwind',COALESCE((state->>'selectorEntryPaused')::boolean,false)
+		state->'selectorEntry',state->'selectorUnwind',COALESCE((state->>'selectorEntryPaused')::boolean,false),
+		COALESCE(state->'leverageTarget','null'::jsonb)
 		FROM loyal_yield.multiply_route_states WHERE route_key=$1
 		AND ($2='' OR (lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()))`,
-		routeKey, owner, fence).Scan(&out.generation, &budget, &activation, &entry, &unwind, &out.paused)
+		routeKey, owner, fence).Scan(&out.generation, &budget, &activation, &entry, &unwind, &out.paused, &leverage)
 	if errors.Is(err, pgx.ErrNoRows) && execution {
 		d.setLease(nil)
 		return nil, ErrRouteLeaseLost
@@ -90,6 +93,10 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 		return nil, err
 	}
 	out.unwind, err = manifest.decodeUnwindIntent(unwind)
+	if err != nil {
+		return nil, err
+	}
+	out.leverage, err = decodeLeverageTarget(leverage)
 	if err != nil {
 		return nil, err
 	}

@@ -26,6 +26,8 @@ type Worker struct {
 	runtime      tickRuntime
 	leaseHandoff startupLeaseHandoffRuntime
 	retryLog     tickRetryLog
+	// borrowBlockedLog reports a borrow-blocked hold at most once an hour.
+	borrowBlockedLog borrowBlockedLog
 }
 
 type startupLeaseHandoffRuntime struct {
@@ -236,6 +238,7 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 			observation.Snapshot.ManualReason = err.Error()
 		}
 		observation.Snapshot.SelectorEntryPaused = planning.paused
+		applyLeverageTarget(&observation.Snapshot, planning.leverage)
 		return p.manifest.applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
 	}
 	// The manifest-aware reader is preferred exactly as the entry read below:
@@ -509,6 +512,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		}
 	}
 	decision := w.manifest.DecideOnManifest(observation.Snapshot)
+	w.borrowBlockedLog.note(time.Now(), decision)
 	if decision.Action == Hold && decision.Reason == "unwind_requires_fresh_admission" && w.runtime.refreshUnwind != nil {
 		if err = w.runtime.refreshUnwind(ctx); err == nil {
 			return nil
@@ -1147,7 +1151,7 @@ func Run(ctx context.Context, out io.Writer) error {
 				_ = feed.Refresh(ctx)
 				if liveMode == "1" {
 					markets, _ := feed.Snapshot()
-					result, err := database.evaluateSelector(ctx, rpc, worker.manifest, markets, shadowIdentity, DefaultSelectorPolicy())
+					result, observed, err := database.evaluateSelectorObserved(ctx, rpc, worker.manifest, markets, shadowIdentity, DefaultSelectorPolicy())
 					if err != nil {
 						// Closed-set sanitized code only: raw RPC/DB errors may
 						// carry service URLs. Change-only keeps a persistent
@@ -1168,6 +1172,20 @@ func Run(ctx context.Context, out io.Writer) error {
 					}
 					if time.Since(levWatchSummary) >= time.Hour {
 						levWatchSummary = time.Now()
+					}
+					// B2 option 1: store the funded lane's level target. It
+					// never runs beside a selector move, unwind or open
+					// operation, and changes no money by itself.
+					if decision, ok := decideLeverageTarget(observed.Snapshot, result, markets, DefaultSelectorPolicy()); ok && observed.planning != nil {
+						if decision.Next != decision.Current {
+							_, _ = fmt.Fprintln(out, decision.logLine())
+						}
+						if decision.Next != observed.Snapshot.LeverageTargetLevel {
+							target := LeverageTarget{Lane: decision.Lane, Level: decision.Next, SpreadBPS: decision.SpreadBPS, DecidedAt: time.Now().UTC()}
+							if err := database.RecordLeverageTarget(ctx, productionRouteKey, target, observed.planning.generation); err != nil {
+								_, _ = fmt.Fprintf(out, "backyard-rwa-worker: leverage target not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
+							}
+						}
 					}
 					if result.Action == "ENTER" || result.Action == "CANARY_ENTER" || result.Action == "SWITCH" {
 						worker.notifySelectorCommit(result.Action)

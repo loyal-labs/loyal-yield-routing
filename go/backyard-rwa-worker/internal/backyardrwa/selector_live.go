@@ -276,30 +276,38 @@ var selectorQuoteCollectionHoldCodes = map[string]bool{
 // Capture the generation before observing accounts. Concurrent execution or
 // budget changes invalidate collection in RecordSelectorEvaluation's lock.
 func (d *Database) evaluateSelector(ctx context.Context, rpc *RPCClient, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, error) {
+	result, _, err := d.evaluateSelectorObserved(ctx, rpc, manifest, markets, identity, policy)
+	return result, err
+}
+
+// evaluateSelectorObserved also returns the observation the result was
+// decided from, so the B2 leverage decision uses the same snapshot and
+// planning generation.
+func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *RPCClient, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, Observation, error) {
 	var version int64
 	lease, err := d.currentLease()
 	if err != nil {
-		return SelectorResult{}, err
+		return SelectorResult{}, Observation{}, err
 	}
 	if lease.RouteKey != productionRouteKey {
-		return SelectorResult{}, fmt.Errorf("selector_route_lease_mismatch")
+		return SelectorResult{}, Observation{}, fmt.Errorf("selector_route_lease_mismatch")
 	}
 	if err = d.pool.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`, productionRouteKey, lease.Owner, lease.FencingToken).Scan(&version); err != nil {
-		return SelectorResult{}, err
+		return SelectorResult{}, Observation{}, err
 	}
 	o, err := observeSelectorShadow(ctx, d, rpc, manifest, identity)
 	if err != nil {
-		return SelectorResult{}, err
+		return SelectorResult{}, Observation{}, err
 	}
 	if o.planning == nil || o.planning.generation != version {
-		return SelectorResult{}, budgetHold("selector_state_changed_during_quote")
+		return SelectorResult{}, Observation{}, budgetHold("selector_state_changed_during_quote")
 	}
 	if !o.Snapshot.PilotActive {
-		return SelectorResult{}, budgetHold("selector_requires_active_pilot")
+		return SelectorResult{}, Observation{}, budgetHold("selector_requires_active_pilot")
 	}
 	request, err := readPilotCanaryEntryRequestOnManifest(time.Now().UTC(), manifest)
 	if err != nil {
-		return SelectorResult{}, err
+		return SelectorResult{}, Observation{}, err
 	}
 	var maximum []uint64
 	onlyLane := ""
@@ -334,11 +342,12 @@ func (d *Database) evaluateSelector(ctx context.Context, rpc *RPCClient, manifes
 	}
 	slot, err := rpc.ConfirmedSlot(ctx)
 	if err != nil {
-		return SelectorResult{}, err
+		return SelectorResult{}, Observation{}, err
 	}
 	// The locked persistence resolves its market lane authority through the
 	// same reviewed manifest that priced these quotes, so a candidate lane's
 	// profitable quote can be recorded as an entry rather than silently
 	// dropped at the installed embedded-lane gate.
-	return d.recordSelectorEvaluationWithLanes(ctx, productionRouteKey, &manifest, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request}, slot, version)
+	result, err := d.recordSelectorEvaluationWithLanes(ctx, productionRouteKey, &manifest, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request}, slot, version)
+	return result, o, err
 }
