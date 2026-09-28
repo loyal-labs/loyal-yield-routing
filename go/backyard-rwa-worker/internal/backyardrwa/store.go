@@ -1276,7 +1276,10 @@ func (d *Database) MarkSimulated(ctx context.Context, operationID string, simula
 
 func (d *Database) PersistSigned(ctx context.Context, operationID string, build BuildResult) error {
 	if err := build.validateForDelegate(mustKey(bridgeDelegate)); err != nil {
-		return err
+		// Nothing was persisted or sent: the refused wire exists only in
+		// memory. A typed hold fails this never-submitted row and retries on
+		// the next tick instead of stopping the worker (live 2026-09-28).
+		return &BudgetHold{Reason: "signed_wire_shape_refused", Details: map[string]string{"error": err.Error()}}
 	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {

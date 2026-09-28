@@ -920,7 +920,13 @@ func isExactKaminoTransactionForLanes(instructions []decodedLegacyInstruction, l
 			var topologies [][]string
 			switch leg {
 			case kaminoLegDeposit:
+				// Initial deposit (flat obligation) and leveraged redeposit
+				// (both reserves); AUTO also admits the plan B3 top-up
+				// deposit into its debt-free obligation (collateral only).
 				topologies = [][]string{{}, {route.Kamino.CollateralReserve, route.Kamino.DebtReserve}}
+				if lane == autoAUTOPYUSD.Lane {
+					topologies = append(topologies, []string{route.Kamino.CollateralReserve})
+				}
 			case kaminoLegBorrow:
 				topologies = [][]string{{route.Kamino.CollateralReserve}}
 			case kaminoLegWithdraw:
