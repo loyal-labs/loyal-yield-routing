@@ -244,7 +244,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *ju
 	tailRequest := BridgeBuildRequest{Action: ReportNAV, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
 		Report:          BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(post.Snapshot.SquadsIdleRaw), SnapshotDigest: s.ReportSnapshotDigest},
 		RecentBlockhash: blockhash, LastValidBlockHeight: height}
-	tail, err := observePhase3BridgeAdmission(ctx, rpc, post, tailDecision, BridgeExecutionEvidence{tailRequest, tailEffects})
+	tail, err := observePhase3BridgeTemplateAdmission(ctx, rpc, post, tailDecision, BridgeExecutionEvidence{tailRequest, tailEffects})
 	if err != nil {
 		return plan, err
 	}

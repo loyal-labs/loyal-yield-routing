@@ -432,3 +432,30 @@ func TestBridgeAdmissionConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
 		})
 	}
 }
+
+// Live 2026-09-28 13:33-13:41: every AUTO whole-debt repayment expired before
+// send (send_valuation_expired). The payoff admission prices its exit plan's
+// NAV report fee through the bridge admission, whose window was capped at the
+// adaptor's 32-slot report age (~8.6 s), while a PYUSD-spending tick needs
+// ~12 s from snapshot to send. That report template is never sent as priced,
+// so only real report wires keep the 32-slot cap.
+func TestReportTemplateAdmissionUsesObservationWindow(t *testing.T) {
+	observationLag.Store(49)
+	t.Cleanup(func() { observationLag.Store(0) })
+	o, d, evidence := bridgeAdmissionFixture(t, ReportNAV, 0, 200_000, 0, 0)
+	real, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5_000, 42), o, d, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := observePhase3BridgeTemplateAdmission(context.Background(), budgetBuildRPC(t, 5_000, 42), o, d, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if real.ValidThroughSlot > o.Snapshot.Slot+32 {
+		t.Fatalf("a real report wire must stay within the adaptor's 32 slots, got %d", real.ValidThroughSlot-o.Snapshot.Slot)
+	}
+	if template.ValidThroughSlot <= real.ValidThroughSlot {
+		t.Fatalf("the fee-only report template must use the wider observation window: template %d, real %d",
+			template.ValidThroughSlot-o.Snapshot.Slot, real.ValidThroughSlot-o.Snapshot.Slot)
+	}
+}

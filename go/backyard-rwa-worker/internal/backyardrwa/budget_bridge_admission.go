@@ -160,6 +160,21 @@ func phase3BridgeTemplates(s Snapshot, decision Decision, evidence BridgeExecuti
 // Existing bridge builders contain no account creation or protocol fee debit;
 // preparation verifies the existing custodies, adaptor, ticket and policies.
 func observePhase3BridgeAdmission(ctx context.Context, rpc *RPCClient, observation Observation, decision Decision, evidence BridgeExecutionEvidence) (phase3BridgeAdmission, error) {
+	return observePhase3BridgeAdmissionWindow(ctx, rpc, observation, decision, evidence, min(observationLagSlots(), adaptorMaxReportAgeSlots))
+}
+
+// observePhase3BridgeTemplateAdmission prices a follow-up NAV report that is
+// never sent as priced: payoff and withdrawal admissions use it only for the
+// report fee of their exit plan, and the real report is prepared and admitted
+// again later. The adaptor's 32-slot report age limit therefore does not bound
+// the current (Kamino) wire; the ordinary observation window does. Capping it
+// at 32 slots (2fc768f) made every AUTO repayment expire before send, since
+// that tick takes ~14 s (live 2026-09-28 13:33-13:39).
+func observePhase3BridgeTemplateAdmission(ctx context.Context, rpc *RPCClient, observation Observation, decision Decision, evidence BridgeExecutionEvidence) (phase3BridgeAdmission, error) {
+	return observePhase3BridgeAdmissionWindow(ctx, rpc, observation, decision, evidence, observationLagSlots())
+}
+
+func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *RPCClient, observation Observation, decision Decision, evidence BridgeExecutionEvidence, windowSlots int64) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	plan := phase3BridgeAdmission{Snapshot: observation.Snapshot, Decision: decision}
@@ -246,7 +261,7 @@ func observePhase3BridgeAdmission(ctx context.Context, rpc *RPCClient, observati
 	// Every bridge wire carries a report for this snapshot slot, and the adaptor
 	// refuses a report older than adaptorMaxReportAgeSlots (Custom 9): the wider
 	// A1 window must not apply here.
-	plan.ValidThroughSlot = observation.Snapshot.Slot + min(observationLagSlots(), adaptorMaxReportAgeSlots)
+	plan.ValidThroughSlot = observation.Snapshot.Slot + windowSlots
 	if slot < observation.Snapshot.Slot || slot > plan.ValidThroughSlot {
 		return plan, budgetHold("stale_bridge_admission_snapshot")
 	}
