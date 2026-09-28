@@ -272,7 +272,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
-		repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && decision.Reason == "withdrawal_release_repayment_collateral" && positionReturnRoute(route.Lane)
+		repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && repaymentReleaseReason(decision.Reason) && positionReturnRoute(route.Lane)
 		var leg kaminoPrimeUSDCLeg
 		var wireAmount, effectAmount uint64
 		// Release and full-payoff sizing read raw reserves (see the helpers).
@@ -403,7 +403,7 @@ func selectKaminoLeg(pilotActive bool, decision Decision, position KaminoPositio
 			return kaminoLegDeposit, uint64(decision.AmountRaw), uint64(decision.AmountRaw), nil
 		}
 	case DeleverPrimeUSDCStep:
-		if position.DebtRaw > 0 && decision.Reason == "withdrawal_release_repayment_collateral" {
+		if position.DebtRaw > 0 && repaymentReleaseReason(decision.Reason) {
 			receiptRaw, primeRaw, err := withdrawExcessForRepayment(position)
 			if err != nil {
 				return 0, 0, 0, err

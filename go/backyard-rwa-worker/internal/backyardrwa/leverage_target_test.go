@@ -42,24 +42,25 @@ func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
 		{"1x stays below 1 pt", 1, 0.10, math.Log1p(0.095), 1, "spread_rule"},
 		{"1x up at >= 1 pt", 1, 0.12, math.Log1p(0.06), 1.5, "spread_rule"},
 		{"1.5x stays 1-2 pt", 1.5, 0.10, math.Log1p(0.085), 1.5, "spread_rule"},
-		{"1.5x up at >= 2 pt", 1.5, 0.12, math.Log1p(0.06), 1.75, "spread_rule"},
+		// Live targets stop at 1.5x (leverageMaxLiveLevel) until a
+		// multi-cycle exit exists; the watch rule itself is unchanged.
+		{"1.5x up at >= 2 pt is capped", 1.5, 0.12, math.Log1p(0.06), 1.5, "spread_rule"},
 		{"1.5x down below 0", 1.5, 0.05, math.Log1p(0.06), 1, "spread_rule"},
-		{"1.75x stays in the gap", 1.75, 0.10, math.Log1p(0.085), 1.75, "spread_rule"},
-		{"1.75x down below 1 pt", 1.75, 0.10, math.Log1p(0.095), 1.5, "spread_rule"},
-		{"1.75x never above", 1.75, 0.20, math.Log1p(0.01), 1.75, "spread_rule"},
+		{"1.75x counts as 1.5x", 1.75, 0.10, math.Log1p(0.085), 1.5, "spread_rule"},
+		{"1.75x counts as 1.5x, down below 0", 1.75, 0.05, math.Log1p(0.06), 1, "spread_rule"},
 	} {
 		s := leverageSnapshot(tc.level)
 		got, ok := decideLeverageTarget(s, keep, []LaneEconomics{leverageMarket(s.RouteLane, tc.yield, tc.apr)}, p)
-		if !ok || got.Current != tc.level || got.Next != tc.want || got.Reason != tc.wantReason {
+		if !ok || got.Current != min(tc.level, leverageMaxLiveLevel) || got.Next != tc.want || got.Reason != tc.wantReason {
 			t.Fatalf("%s: %+v ok=%t", tc.name, got, ok)
 		}
 	}
 	// Up needs the move to beat MinimumBenefit plus cost: a tiny position
 	// with a qualifying spread stays put, and the numbers are logged.
-	small := leverageSnapshot(1.5)
-	small.PositionCollateralValueRaw, small.PositionDebtValueRaw = 3_000_000, 1_000_000
+	small := leverageSnapshot(1)
+	small.PositionCollateralValueRaw, small.PositionCollateralRaw = 2_000_000, 2_000_000
 	got, _ := decideLeverageTarget(small, keep, []LaneEconomics{leverageMarket(small.RouteLane, 0.12, math.Log1p(0.06))}, p)
-	if got.Next != 1.5 || got.Reason != "up_move_below_minimum_benefit" || got.GainRaw <= 0 || got.CostRaw <= 0 ||
+	if got.Next != 1 || got.Reason != "up_move_below_minimum_benefit" || got.GainRaw <= 0 || got.CostRaw <= 0 ||
 		!strings.Contains(got.logLine(), "gain=") || !strings.Contains(got.logLine(), "cost=") {
 		t.Fatalf("small up move not refused or not logged: %+v %s", got, got.logLine())
 	}

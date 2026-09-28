@@ -79,7 +79,8 @@ func TestLeverageUpDecisionsAtEachLevel(t *testing.T) {
 			{1, 1.5, OpenRouteStep, leverageUpReason, 150},
 			{1, 1.75, OpenRouteStep, leverageUpReason, 150}, // one level per move
 			{1, 1, Hold, "leverage_target_1x", 0},
-			{1.5, 1.75, OpenRouteStep, leverageUpReason, 175},
+			// 1.75x is capped until a multi-cycle exit exists.
+			{1.5, 1.75, Hold, "single_loop_position_ready", 0},
 			{1.5, 1.5, Hold, "single_loop_position_ready", 0},
 			{1.75, 1.75, Hold, "single_loop_position_ready", 0},
 		} {
@@ -96,7 +97,7 @@ func TestLeverageUpDecisionsAtEachLevel(t *testing.T) {
 		}
 		// The selector-entry pause does not stop an up move on the current
 		// lane, and a pending up move keeps the selector frozen.
-		s := at(1.5, 1.75)
+		s := at(1, 1.5)
 		s.SelectorEntryPaused = true
 		if got := Decide(s); got.Reason != leverageUpReason || !selectorTrancheInProgress(s) {
 			t.Fatalf("%s: paused up move: %+v in-progress=%t", lane, got, selectorTrancheInProgress(s))
@@ -105,9 +106,9 @@ func TestLeverageUpDecisionsAtEachLevel(t *testing.T) {
 		for name, mutate := range map[string]func(*Snapshot){
 			"withdrawal": func(s *Snapshot) { s.WithdrawalDemandRaw = 1 },
 			"unwind":     func(s *Snapshot) { s.Unwind = true },
-			"hard ltv":   func(s *Snapshot) { s.LTVBPS = 6_000 },
+			"hard ltv":   func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw, s.LTVBPS = 1, 1, 6_000 },
 		} {
-			c := at(1.5, 1.75)
+			c := at(1, 1.5)
 			mutate(&c)
 			if got := Decide(c); got.Reason == leverageUpReason {
 				t.Fatalf("%s: %s did not preempt leverage_up", lane, name)
@@ -256,5 +257,25 @@ func TestLeverageUpBorrowWithDebtPassesThePersistedWireGate(t *testing.T) {
 				t.Errorf("%s %s: gate accepted a topology outside AUTO/OnRe", c.lane, name)
 			}
 		}
+	}
+}
+
+// The reviewed complete exit is one release at <=55% LTV, then one full
+// payoff. It repays a 1.5x position but not a 1.75x one, so live up moves
+// stop at 1.5x (leverageMaxLiveLevel) until a multi-cycle exit exists.
+func TestOneReleaseExitCoversOnlyUpTo1_5x(t *testing.T) {
+	for _, c := range []struct {
+		collateral, debt uint64
+		covered          bool
+	}{{1_500_000_000, 500_000_000, true}, {1_750_000_000, 750_000_000, false}} {
+		_, release, err := withdrawExcessAtLTV(leverageTestPosition(c.collateral, c.debt), 5500)
+		if err != nil || (release >= c.debt) != c.covered {
+			t.Fatalf("C=%d D=%d: one release %d covered=%t, want %t", c.collateral, c.debt, release, release >= c.debt, c.covered)
+		}
+	}
+	s := leverageSnapshot(1.5)
+	s.LeverageTargetLevel = 1.75
+	if leverageUpLevel(s) != 0 || selectorTrancheInProgress(s) {
+		t.Fatal("capped 1.75x target still starts a move or freezes the selector")
 	}
 }

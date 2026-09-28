@@ -96,7 +96,7 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 		if err == nil && decision.Action == SwapDebtToCollateralStep && positionReturnRoute(decision.StrategyKey) {
 			evidence.Request.PositionReturnReserved = true
 		}
-		funding := (decision.Action == SwapCollateralToDebtStep && (decision.Reason == "withdrawal_swap_repayment_buffer" || decision.Reason == "hard_ltv_buffer_swap")) ||
+		funding := (decision.Action == SwapCollateralToDebtStep && (decision.Reason == "withdrawal_swap_repayment_buffer" || decision.Reason == "hard_ltv_buffer_swap" || decision.Reason == leverageDownSwapReason)) ||
 			(decision.Action == SwapUSDCToDebtStep && decision.Reason == "withdrawal_usdc_repayment_buffer")
 		if err == nil && funding && observation.Snapshot.PositionDebtRaw > 0 && positionReturnRoute(decision.StrategyKey) {
 			evidence.Request.FullPayoffFunding = true

@@ -234,7 +234,7 @@ func decisionsEqual(left, right Decision) bool {
 // the debt may only have grown.
 func fullDebtRepaymentRefreshed(prepared, refreshed Decision, s Snapshot) bool {
 	switch prepared.Reason {
-	case "withdrawal_repay_debt", "hard_ltv_repay", "idle_debt_repay":
+	case "withdrawal_repay_debt", "hard_ltv_repay", "idle_debt_repay", leverageDownRepayReason:
 	default:
 		return false
 	}

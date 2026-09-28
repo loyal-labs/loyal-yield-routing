@@ -307,6 +307,10 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		}
 		return decision(ReportNAV, "nav_due", 0)
 	}
+	// B2 down move to 1x: repay the position before any top-up or borrow.
+	if action, reason, amount, ok := leverageDownStep(s); ok {
+		return decision(action, reason, amount)
+	}
 	// Plan B3 top-up beside a funded debt-free OnRe position (B4). The USDC
 	// debt cash is Squads cash, so there is no separate residue leg. Every
 	// withdrawal, hard-LTV, unwind and report rule above has already run.

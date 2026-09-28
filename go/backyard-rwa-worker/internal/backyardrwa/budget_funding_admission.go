@@ -158,7 +158,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	steps := int64(2) // current NAV -> payoff
 	switch r := request.(type) {
 	case KaminoPrimeUSDCRequest:
-		if !r.RepaymentRelease || r.Action != DeleverRouteStep || decision.Action != r.Action || decision.Reason != "withdrawal_release_repayment_collateral" || r.RouteLane != s.RouteLane || r.AmountRaw >= uint64(s.PositionCollateralRaw) || r.ReleaseDebtIdleRaw != uint64(debtCashRaw(s)) {
+		if !r.RepaymentRelease || r.Action != DeleverRouteStep || decision.Action != r.Action || !repaymentReleaseReason(decision.Reason) || r.RouteLane != s.RouteLane || r.AmountRaw >= uint64(s.PositionCollateralRaw) || r.ReleaseDebtIdleRaw != uint64(debtCashRaw(s)) {
 			return phase3BridgeAdmission{}, budgetHold("release_return_intent_mismatch")
 		}
 		var err error

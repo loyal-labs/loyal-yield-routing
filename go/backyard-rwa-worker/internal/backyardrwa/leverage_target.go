@@ -119,9 +119,11 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	if market == nil || equity <= 0 {
 		return out, false
 	}
-	out.Current = currentLeverageLevel(s)
+	// Live levels stop at leverageMaxLiveLevel (see leverage_up.go); a
+	// position drifted above it counts as that level.
+	out.Current = min(currentLeverageLevel(s), leverageMaxLiveLevel)
 	spreadAt := func(level float64) (float64, bool) { return leverageSpread(*market, level, equity, out.Current > 1) }
-	out.Next = nextLiveLeverageLevel(out.Current, spreadAt)
+	out.Next = min(nextLiveLeverageLevel(out.Current, spreadAt), leverageMaxLiveLevel)
 	spread, _ := spreadAt(max(out.Current, out.Next))
 	out.SpreadBPS = int64(spread * 10_000)
 	out.Reason = "spread_rule"

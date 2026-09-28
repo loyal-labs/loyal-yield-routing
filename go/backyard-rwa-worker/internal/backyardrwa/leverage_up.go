@@ -15,6 +15,11 @@ const (
 	// Smallest leverage_up borrow in debt raw units (six-decimal stables).
 	leverageMinimumBorrowRaw = 10_000_000
 	leverageSwapLossBPS      = 100
+	// leverageMaxLiveLevel caps live up moves. ponytail: 1.5x until a
+	// multi-cycle exit exists; the reviewed exit prices one release (<=55% LTV)
+	// then one full payoff, which cannot repay 1.75x debt (C=1.75, D=0.75:
+	// one release frees ~0.39). Raise to 1.75 with that exit.
+	leverageMaxLiveLevel = 1.5
 )
 
 // leverageUpLevel is the next level above the position (at most one step),
@@ -32,7 +37,7 @@ func leverageUpLevel(s Snapshot) float64 {
 	}
 	for _, level := range leverageLevels[1:] {
 		if leverageLevelLTVBPS(level) > ltv+leverageUpNearBPS {
-			if level > s.LeverageTargetLevel {
+			if level > s.LeverageTargetLevel || level > leverageMaxLiveLevel {
 				return 0
 			}
 			return level
@@ -221,4 +226,44 @@ func leverageUpBypassesEntryFence(request any, journaledReason string, unwinding
 // collateral cash still has to finish the loop.
 func leverageLoopInProgress(s Snapshot) bool {
 	return leverageLane(s.RouteLane) && s.HasPosition && s.PositionDebtRaw > 0 && (debtCashRaw(s) > 0 || s.CollateralIdleRaw > 0)
+}
+
+// B2 down move to 1x: a stored 1x target below a leveraged AUTO/OnRe
+// position repays it in full through the existing release -> funding swap ->
+// full payoff legs (the withdrawal-shaped chain, priced and admitted the same
+// way), under its own reasons. Leftover debt/USDC cash then returns to the
+// position through the plan B3 residue and top-up legs.
+const (
+	leverageDownReleaseReason = "leverage_down_release"
+	leverageDownSwapReason    = "leverage_down_swap"
+	leverageDownRepayReason   = "leverage_down_repay"
+)
+
+func leverageDownPending(s Snapshot) bool {
+	return leverageLane(s.RouteLane) && s.LeverageTargetLevel == 1 && s.HasPosition && s.PositionDebtRaw > 0
+}
+
+func leverageDownStep(s Snapshot) (Action, string, int64, bool) {
+	if !leverageDownPending(s) {
+		return "", "", 0, false
+	}
+	payoff := max(s.PositionDebtRaw, s.PayoffDebtRaw)
+	if debtCashRaw(s) >= payoff {
+		return DeleverRouteStep, leverageDownRepayReason, s.PositionDebtRaw, true
+	}
+	switch action, amount := payoffFundingSource(s, uint64(payoff)); action {
+	case SwapCollateralToDebtStep:
+		return action, leverageDownSwapReason, amount, true
+	case "":
+		// The builder sizes the safe release; 1 is only the state marker.
+		return DeleverRouteStep, leverageDownReleaseReason, 1, true
+	default:
+		// Bridge USDC beside a down move is not part of this chain.
+		return Hold, "leverage_down_unexpected_cash", 0, true
+	}
+}
+
+// Reason groups shared by the withdrawal chain and the B2 down move.
+func repaymentReleaseReason(reason string) bool {
+	return reason == "withdrawal_release_repayment_collateral" || reason == leverageDownReleaseReason
 }
