@@ -116,10 +116,15 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *RPCClient, clien
 // estimator. Outstanding position debt still requires separate repayment proof.
 func observePhase3CollateralReturnAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error) {
 	s := observation.Snapshot
+	// A payoff residue converted beside a debt-free position (plan B3) keeps
+	// that position; its complete return is priced after the swap below.
+	residue := decision.Reason == debtResidueSwapReason && decision.Action == SwapDebtToUSDCStep && s.HasPosition &&
+		s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.PositionDebtValueRaw == 0 && s.CollateralIdleRaw == 0 &&
+		s.WithdrawalDemandRaw == 0 && !s.Unwind && !s.CutoverDrain
 	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
-		phase3BudgetFamilyForLane(s.RouteLane) == "" || s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||
-		s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.DebtIdleRaw < 0 || s.CollateralIdleRaw < 0 ||
+		phase3BudgetFamilyForLane(s.RouteLane) == "" || (!residue && (s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||
+		s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0)) || s.DebtIdleRaw < 0 || s.CollateralIdleRaw < 0 ||
 		(s.CollateralIdleRaw == 0 && s.DebtIdleRaw == 0) ||
 		s.PrimeIdleRaw != s.CollateralIdleRaw || s.VoltrStrategyIdleRaw != 0 || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {
 		return phase3BridgeAdmission{}, budgetHold("complete_collateral_return_admission_unavailable")
@@ -159,10 +164,40 @@ func observePhase3CollateralReturnAdmission(ctx context.Context, rpc *RPCClient,
 			return phase3BridgeAdmission{}, budgetHold("collateral_return_custody_mismatch")
 		}
 		currentSwap = &JupiterExecutionEvidence{r, effects}
+		if residue {
+			return pricePhase3DebtResidueSwapReturn(ctx, rpc, client, manifest, observation, decision, r, effects)
+		}
 	default:
 		return phase3BridgeAdmission{}, budgetHold("collateral_return_intent_mismatch")
 	}
+	if residue {
+		return phase3BridgeAdmission{}, budgetHold("collateral_return_intent_mismatch")
+	}
 	return pricePhase3CollateralReturn(ctx, rpc, client, manifest, observation, decision, request, effects, uint64(s.CollateralIdleRaw), false, currentSwap)
+}
+
+// The residue swap keeps the debt-free position. Reserve the NAV after the
+// swap plus the complete position return from the post-swap custody: the
+// quoted USDC (with the two-sided margin) joins bridge cash, debt custody is
+// empty. Cost-only; the swap itself is the only current wire.
+func pricePhase3DebtResidueSwapReturn(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, r JupiterSwapRequest, effects ExpectedEffects) (phase3BridgeAdmission, error) {
+	s := observation.Snapshot
+	if r.AmountRaw != uint64(s.DebtIdleRaw) || r.FullPayoffFunding || r.EntryReturnReserved || r.PositionReturnReserved {
+		return phase3BridgeAdmission{}, budgetHold("collateral_return_intent_mismatch")
+	}
+	upper, err := withdrawalUSDCExitEstimate(r.QuotedOutputRaw)
+	if err != nil || upper > uint64(math.MaxInt64-s.SquadsIdleRaw) {
+		return phase3BridgeAdmission{}, budgetHold("withdrawal_exit_estimate_overflow")
+	}
+	post := observation
+	post.Snapshot.DebtIdleRaw = 0
+	post.Snapshot.SquadsIdleRaw += int64(upper)
+	plan, err := pricePhase3PositionReturn(ctx, rpc, client, manifest, post, decision, r, effects, true)
+	if err != nil {
+		return plan, err
+	}
+	plan.Snapshot = s
+	return plan, nil
 }
 
 func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects, collateralRaw uint64, reportBeforeSwap bool, currentSwap *JupiterExecutionEvidence) (phase3BridgeAdmission, error) {

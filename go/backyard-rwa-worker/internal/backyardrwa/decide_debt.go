@@ -5,6 +5,10 @@ import (
 	"math/big"
 )
 
+// Journaled reasons of the top-up tranche (plan B3). Admissions and the
+// selector fence key on these exact reasons, never on a balance.
+const debtResidueSwapReason = "debt_residue_to_usdc"
+
 // Select without assuming equal token decimals or a stablecoin peg. Values
 // already use the NAV's floor(asset)/ceil(liability) rounding; apply the existing
 // two-sided pricing margin too. This is planning, never quote authorization.
@@ -227,11 +231,15 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		return d(OpenRouteStep, "collateral_ready", s.CollateralIdleRaw)
 	}
 	if s.PositionCollateralRaw > 0 {
-		// The payoff residue stays in debt custody. The borrow admission needs
-		// that custody empty, so a borrow here would be refused on every tick;
-		// the residue leaves with the next complete exit.
+		// The payoff residue stays in debt custody, where it earns nothing and
+		// blocks the borrow admission. Convert it to bridge USDC; the top-up
+		// swap then turns that cash into collateral.
 		if s.DebtIdleRaw > 0 {
-			return d(Hold, "idle_debt_residue_after_repay", 0)
+			return d(SwapDebtToUSDCStep, debtResidueSwapReason, s.DebtIdleRaw)
+		}
+		// Working cash beside a funded position waits for the top-up swap.
+		if s.SquadsIdleRaw > 0 {
+			return d(Hold, "topup_cash_requires_collateral_swap", 0)
 		}
 		if s.BorrowUtilizationBlocked {
 			return d(Hold, "debt_reserve_utilization_blocks_borrow", 0)

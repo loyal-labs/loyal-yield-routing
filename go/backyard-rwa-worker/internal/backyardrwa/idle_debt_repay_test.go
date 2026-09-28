@@ -42,10 +42,10 @@ func TestIdleDebtBufferRepaysWholeDebtWithoutDemand(t *testing.T) {
 	if got := Decide(demand); got.Reason != "withdrawal_repay_debt" {
 		t.Fatalf("unwind lost priority: %+v", got)
 	}
-	// After the payoff the residue holds; no borrow is attempted.
+	// After the payoff the residue is converted (plan B3); no borrow is attempted.
 	after := s
 	after.PositionDebtRaw, after.PositionDebtValueRaw, after.PayoffDebtRaw, after.DebtIdleRaw, after.LTVBPS = 0, 0, 0, 36_520_000, 0
-	if got := Decide(after); got.Action != Hold || got.Reason != "idle_debt_residue_after_repay" {
+	if got := Decide(after); got.Action != SwapDebtToUSDCStep || got.Reason != debtResidueSwapReason {
 		t.Fatalf("payoff residue attempted a borrow: %+v", got)
 	}
 }
