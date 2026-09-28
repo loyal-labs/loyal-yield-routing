@@ -154,6 +154,27 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 			}
 		}
 	}
+	if topup, ok := request.(JupiterSwapRequest); ok && topup.TopupReturnReserved {
+		// Plan B3: this cost template sees the swapped collateral beside the
+		// position. The actual custody is checked empty first, as the entry
+		// swap requires; RPC data and the current wire are never changed.
+		if funding != nil || release != nil || !afterPayoff {
+			return phase3BridgeAdmission{}, budgetHold("invalid_topup_return_projection")
+		}
+		accounts = append([]ConfirmedAccount(nil), accounts...)
+		for i, account := range accounts {
+			if account.Address == route.CollateralCustody {
+				mint, _ := decodeBase58PublicKey(route.Kamino.CollateralMint)
+				authority, _ := decodeBase58PublicKey(bridgeVault)
+				custody, err := DecodeTokenCustody(account.Owner, account.Data, mint, authority)
+				if err != nil || custody.Raw != 0 {
+					return phase3BridgeAdmission{}, budgetHold("topup_collateral_custody_changed")
+				}
+				accounts[i].Data = append([]byte(nil), account.Data...)
+				binary.LittleEndian.PutUint64(accounts[i].Data[64:72], uint64(s.CollateralIdleRaw))
+			}
+		}
+	}
 	withdrawalEffects, err := exactKaminoTokenEffects(accounts, source, destination, amount)
 	if err != nil {
 		return phase3BridgeAdmission{}, err

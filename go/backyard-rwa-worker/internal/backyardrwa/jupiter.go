@@ -78,6 +78,10 @@ type JupiterSwapRequest struct {
 	FullPayoffFunding       bool                  `json:"fullPayoffFunding,omitempty"`
 	EntryReturnReserved     bool                  `json:"entryReturnReserved,omitempty"`
 	PositionReturnReserved  bool                  `json:"positionReturnReserved,omitempty"`
+	// TopupReturnReserved marks an entry swap beside a funded debt-free
+	// position (plan B3). It is set only for the journaled top-up reason and
+	// always together with EntryReturnReserved.
+	TopupReturnReserved bool `json:"topupReturnReserved,omitempty"`
 }
 
 type JupiterExecutionEvidence struct {

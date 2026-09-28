@@ -35,7 +35,9 @@ func validateEntrySwap(ctx context.Context, rpc *RPCClient, request JupiterSwapR
 		return 0, budgetHold("entry_swap_state_unavailable")
 	}
 	obligation, err := decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino)
-	if err != nil || obligation.collateralDepositedRaw != 0 || obligation.debtRaw != 0 {
+	// A top-up swap sits beside a funded debt-free position; every other
+	// entry swap requires a flat obligation.
+	if err != nil || obligation.debtRaw != 0 || (obligation.collateralDepositedRaw == 0) != !request.TopupReturnReserved {
 		return 0, budgetHold("entry_swap_position_changed")
 	}
 	for i, identity := range []struct{ address, mint string }{{source, sourceMint}, {destination, destinationMint}, {route.DebtCustody, route.Kamino.DebtMint}} {
@@ -73,10 +75,19 @@ func observePhase3EntrySwapAdmission(ctx context.Context, rpc *RPCClient, client
 	if rpc == nil || client == nil || !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain ||
 		s.RouteLane != s.StrategyKey || s.RouteLane != decision.StrategyKey || s.RouteLane != r.RouteLane ||
-		phase3BudgetFamilyForLane(s.RouteLane) == "" || s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||
-		s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleRaw != 0 || s.PrimeIdleRaw != 0 || s.DebtIdleRaw != 0 ||
+		phase3BudgetFamilyForLane(s.RouteLane) == "" || s.CollateralIdleRaw != 0 || s.PrimeIdleRaw != 0 || s.DebtIdleRaw != 0 ||
 		s.VoltrStrategyIdleRaw != 0 || s.VoltrIdleRaw < 0 || s.SquadsIdleRaw <= 0 || decision.AmountRaw <= 0 || decision.AmountRaw > s.SquadsIdleRaw ||
-		decision.Action != SwapStableToCollateralStep || r.Action != decision.Action || r.AmountRaw != uint64(decision.AmountRaw) || !r.EntryReturnReserved {
+		decision.Action != SwapStableToCollateralStep || r.Action != decision.Action || r.AmountRaw != uint64(decision.AmountRaw) || !r.EntryReturnReserved ||
+		r.TopupReturnReserved != (decision.Reason == topupSwapReason) {
+		return phase3BridgeAdmission{}, budgetHold("complete_entry_swap_return_unavailable")
+	}
+	// Plan B3: the top-up swap keeps a funded debt-free position; every other
+	// entry swap stays closed over a flat route.
+	topup := r.TopupReturnReserved && s.HasPosition && s.PositionCollateralRaw > 0 && s.PositionCollateralValueRaw > 0 &&
+		s.PositionDebtRaw == 0 && s.PositionDebtValueRaw == 0 && s.WithdrawalDemandRaw == 0 && !s.Unwind && decision.AmountRaw == s.SquadsIdleRaw
+	flat := !r.TopupReturnReserved && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 &&
+		s.PositionCollateralValueRaw == 0 && s.PositionDebtValueRaw == 0
+	if !topup && !flat {
 		return phase3BridgeAdmission{}, budgetHold("complete_entry_swap_return_unavailable")
 	}
 	slot, err := validateEntrySwap(ctx, rpc, r, evidence.ExpectedEffects, s.Slot)
@@ -96,7 +107,14 @@ func observePhase3EntrySwapAdmission(ctx context.Context, rpc *RPCClient, client
 	post := observation
 	post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw = int64(upper), int64(upper)
 	post.Snapshot.SquadsIdleRaw -= int64(r.AmountRaw)
-	plan, err := pricePhase3CollateralReturn(ctx, rpc, client, manifest, post, decision, r, evidence.ExpectedEffects, upper, true, nil)
+	var plan phase3BridgeAdmission
+	if topup {
+		// NAV, then withdraw the whole position and return it together with
+		// the swapped collateral, exactly like the post-payoff return.
+		plan, err = pricePhase3PositionReturn(ctx, rpc, client, manifest, post, decision, r, evidence.ExpectedEffects, true)
+	} else {
+		plan, err = pricePhase3CollateralReturn(ctx, rpc, client, manifest, post, decision, r, evidence.ExpectedEffects, upper, true, nil)
+	}
 	if err != nil {
 		return plan, err
 	}

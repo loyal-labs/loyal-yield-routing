@@ -136,6 +136,9 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 		if r.EntryReturnReserved && (r.Action != SwapStableToCollateralStep || r.FullPayoffFunding) {
 			return ExecutableDebit{}, budgetHold("invalid_entry_return_intent")
 		}
+		if r.TopupReturnReserved && !r.EntryReturnReserved {
+			return ExecutableDebit{}, budgetHold("invalid_entry_return_intent")
+		}
 		if r.FullPayoffFunding && !isPayoffFundingAction(r.Action) {
 			return ExecutableDebit{}, budgetHold("funding_bounds_on_non_funding_swap")
 		}

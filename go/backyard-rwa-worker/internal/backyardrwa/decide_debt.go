@@ -7,7 +7,10 @@ import (
 
 // Journaled reasons of the top-up tranche (plan B3). Admissions and the
 // selector fence key on these exact reasons, never on a balance.
-const debtResidueSwapReason = "debt_residue_to_usdc"
+const (
+	debtResidueSwapReason = "debt_residue_to_usdc"
+	topupSwapReason       = "topup_usdc_requires_collateral"
+)
 
 // Select without assuming equal token decimals or a stablecoin peg. Values
 // already use the NAV's floor(asset)/ceil(liability) rounding; apply the existing
@@ -237,9 +240,13 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		if s.DebtIdleRaw > 0 {
 			return d(SwapDebtToUSDCStep, debtResidueSwapReason, s.DebtIdleRaw)
 		}
-		// Working cash beside a funded position waits for the top-up swap.
+		// Working cash beside a funded debt-free position is a top-up
+		// tranche: convert all of it to collateral for the next deposit.
 		if s.SquadsIdleRaw > 0 {
-			return d(Hold, "topup_cash_requires_collateral_swap", 0)
+			if s.CollateralIdleRaw != 0 {
+				return d(Hold, "topup_cash_beside_collateral_residue", 0)
+			}
+			return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw)
 		}
 		if s.BorrowUtilizationBlocked {
 			return d(Hold, "debt_reserve_utilization_blocks_borrow", 0)

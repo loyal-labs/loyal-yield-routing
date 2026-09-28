@@ -27,9 +27,9 @@ func TestDebtResidueSwapBesideDebtFreePosition(t *testing.T) {
 			t.Fatalf("%s lost priority to the residue swap: %+v", name, got)
 		}
 	}
-	// Squads cash beside the position waits; it is never stranded as an error.
+	// The converted USDC then joins the top-up swap; it is never stranded.
 	s.DebtIdleRaw, s.SquadsIdleRaw = 0, 36_000_000
-	if got := Decide(s); got.Action != Hold || got.Reason != "topup_cash_requires_collateral_swap" {
+	if got := Decide(s); got.Action != SwapStableToCollateralStep || got.Reason != topupSwapReason {
 		t.Fatalf("working cash beside a position: %+v", got)
 	}
 }

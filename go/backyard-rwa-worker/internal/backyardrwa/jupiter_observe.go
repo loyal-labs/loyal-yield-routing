@@ -87,6 +87,7 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 		evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
 		if err == nil && decision.Action == SwapStableToCollateralStep && phase3BudgetFamilyForLane(decision.StrategyKey) != "" {
 			evidence.Request.EntryReturnReserved = true
+			evidence.Request.TopupReturnReserved = decision.Reason == topupSwapReason
 		}
 		if err == nil && decision.Action == SwapDebtToCollateralStep && positionReturnRoute(decision.StrategyKey) {
 			evidence.Request.PositionReturnReserved = true
