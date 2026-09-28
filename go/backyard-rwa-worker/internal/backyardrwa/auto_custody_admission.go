@@ -244,20 +244,39 @@ func sharedCustodyOriginHeightResolver(rpc *RPCClient) func(context.Context, int
 	}
 }
 
+// sharedCustodyProofInputs is the journal side of a proof: the planning read
+// (lease, generation) and the attribution evidence snapshot. It needs no
+// custody balance, so it can be read while the balance's slot is still being
+// fixed; finishSharedCustodySpendProof then binds both.
+type sharedCustodyProofInputs struct {
+	spend    uint64
+	planning *routePlanningState
+	probe    *sharedCustodyCurrentOperation
+	evidence sharedCustodyAttributionEvidence
+}
+
 // observeSharedCustodySpendProof is the shared proof core: planning read
 // under the caller's manifest, validated optional exclusion, journal walk,
 // observation binding, intent-prestate binding, and the carried
 // generation/fence.
 func (d *Database) observeSharedCustodySpendProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, current *sharedCustodyCurrentOperation, originBlockHeight func(context.Context, int64) (int64, error)) (sharedCustodyAdmissionProof, error) {
-	spend := sharedCustodySpendRaw(expected, cfg)
-	if spend == 0 {
+	inputs, err := d.gatherSharedCustodyProofInputs(ctx, manifest, cfg, expected, current)
+	if err != nil || inputs.spend == 0 {
+		return sharedCustodyAdmissionProof{}, err
+	}
+	return finishSharedCustodySpendProof(ctx, cfg, expected, inputs, observedRaw, observedSlot, originBlockHeight)
+}
+
+func (d *Database) gatherSharedCustodyProofInputs(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, current *sharedCustodyCurrentOperation) (sharedCustodyProofInputs, error) {
+	inputs := sharedCustodyProofInputs{spend: sharedCustodySpendRaw(expected, cfg)}
+	if inputs.spend == 0 {
 		// The operation spends no shared custody: the attribution gate does
 		// not apply, and unrelated recovery must not be blocked by a positive
 		// balance alone.
-		return sharedCustodyAdmissionProof{}, nil
+		return inputs, nil
 	}
 	if cfg.RouteKey == "" || cfg.Lane == "" {
-		return sharedCustodyAdmissionProof{}, fmt.Errorf("shared custody attribution config is incomplete")
+		return inputs, fmt.Errorf("shared custody attribution config is incomplete")
 	}
 	// Planning read at proof time through the caller's explicit reviewed
 	// manifest: refuses without THIS database's current lease on the route,
@@ -269,24 +288,29 @@ func (d *Database) observeSharedCustodySpendProof(ctx context.Context, manifest 
 	planning, err := d.readRoutePlanningStateOnManifest(ctx, manifest, cfg.RouteKey, true)
 	logStage("custody_proof_planning", proofStart)
 	if err != nil {
-		return sharedCustodyAdmissionProof{}, err
+		return inputs, err
 	}
 	if planning.lease == nil {
-		return sharedCustodyAdmissionProof{}, budgetHold("custody_attribution_lease_unavailable")
+		return inputs, budgetHold("custody_attribution_lease_unavailable")
 	}
-	var probe *sharedCustodyCurrentOperation
+	inputs.planning = planning
 	if current != nil {
 		claimed := *current
 		claimed.ExpectedEffects = expected
-		probe = &claimed
+		inputs.probe = &claimed
 	}
-	evidence, err := d.observeSharedCustodyAttributionEvidence(ctx, *planning.lease, cfg, 0, probe)
+	inputs.evidence, err = d.observeSharedCustodyAttributionEvidence(ctx, *planning.lease, cfg, 0, inputs.probe)
 	logStage("custody_proof_evidence", proofStart)
-	if err != nil {
-		return sharedCustodyAdmissionProof{}, err
+	return inputs, err
+}
+
+func finishSharedCustodySpendProof(ctx context.Context, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, inputs sharedCustodyProofInputs, observedRaw uint64, observedSlot int64, originBlockHeight func(context.Context, int64) (int64, error)) (sharedCustodyAdmissionProof, error) {
+	if inputs.spend == 0 || inputs.planning == nil || inputs.planning.lease == nil || inputs.spend != sharedCustodySpendRaw(expected, cfg) {
+		return sharedCustodyAdmissionProof{}, budgetHold("custody_attribution_lease_unavailable")
 	}
-	proof, err := validateSharedCustodyAttributionResolved(ctx, observedRaw, observedSlot, cfg, evidence, 0, originBlockHeight)
-	logStage("custody_proof_validate", proofStart)
+	validateStart := time.Now()
+	proof, err := validateSharedCustodyAttributionResolved(ctx, observedRaw, observedSlot, cfg, inputs.evidence, 0, originBlockHeight)
+	logStage("custody_proof_validate", validateStart)
 	if err != nil {
 		return sharedCustodyAdmissionProof{}, err
 	}
@@ -299,13 +323,14 @@ func (d *Database) observeSharedCustodySpendProof(ctx context.Context, manifest 
 	if err != nil {
 		return sharedCustodyAdmissionProof{}, err
 	}
+	planning := inputs.planning
 	out := sharedCustodyAdmissionProof{
 		Proof: proof, RouteKey: cfg.RouteKey, Lane: cfg.Lane, Custody: cfg.Custody, Mint: cfg.Mint,
-		ObservedSlot: observedSlot, SpendRaw: spend, EffectsSHA256: effectsSHA256,
+		ObservedSlot: observedSlot, SpendRaw: inputs.spend, EffectsSHA256: effectsSHA256,
 		Generation: planning.generation, LeaseOwner: planning.lease.Owner, LeaseFencing: planning.lease.FencingToken,
 	}
-	if probe != nil {
-		out.ExcludedOperation = probe.OperationID
+	if inputs.probe != nil {
+		out.ExcludedOperation = inputs.probe.OperationID
 	}
 	out.Digest = sharedCustodyAdmissionDigest(out)
 	return out, nil
@@ -571,21 +596,53 @@ func observeConfirmedSharedCustodyRaw(ctx context.Context, rpc *RPCClient, cfg s
 // broadcast-intent lock re-validates. Zero-spend and other lanes return nil
 // and keep installed behavior.
 func (d *Database) observeSharedCustodySendProofForOperation(ctx context.Context, manifest RouteManifest, rpc *RPCClient, operationID string, decoded ExpectedEffects, minimumSlot int64, signed sharedCustodySignedSpend) (*sharedCustodyAdmissionProof, error) {
+	send, err := d.gatherSharedCustodySendProof(ctx, manifest, operationID, decoded, signed)
+	if err != nil {
+		return nil, err
+	}
+	return send.finish(ctx, rpc, decoded, minimumSlot)
+}
+
+// sharedCustodySendProof splits the final-send proof so its journal read can
+// run while the signed wire is revalued. The fresh custody balance is still
+// read only in finish, at a slot no older than the revalued cost, and the
+// same full walk then binds that balance to the journal snapshot.
+type sharedCustodySendProof struct {
+	applies bool
+	cfg     sharedCustodyAttributionConfig
+	inputs  sharedCustodyProofInputs
+}
+
+func (d *Database) gatherSharedCustodySendProof(ctx context.Context, manifest RouteManifest, operationID string, decoded ExpectedEffects, signed sharedCustodySignedSpend) (sharedCustodySendProof, error) {
 	var routeKey, lane string
 	if err := d.pool.QueryRow(ctx, `SELECT route_key, COALESCE(strategy_key,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&routeKey, &lane); err != nil {
-		return nil, err
+		return sharedCustodySendProof{}, err
 	}
 	cfg, _, applies := autoSharedCustodySpend(lane, routeKey, decoded)
 	if !applies {
+		return sharedCustodySendProof{}, nil
+	}
+	if signed.OperationID == "" || signed.SignedWireSHA256 == "" || signed.TransactionSignature == "" {
+		return sharedCustodySendProof{}, budgetHold("custody_attribution_current_operation_invalid")
+	}
+	inputs, err := d.gatherSharedCustodyProofInputs(ctx, manifest, cfg, decoded, &sharedCustodyCurrentOperation{
+		OperationID: signed.OperationID, SignedWireSHA256: signed.SignedWireSHA256,
+		TransactionSignature: signed.TransactionSignature, ExpectedEffects: decoded,
+	})
+	return sharedCustodySendProof{applies: true, cfg: cfg, inputs: inputs}, err
+}
+
+func (p sharedCustodySendProof) finish(ctx context.Context, rpc *RPCClient, decoded ExpectedEffects, minimumSlot int64) (*sharedCustodyAdmissionProof, error) {
+	if !p.applies {
 		return nil, nil
 	}
 	balanceStart := time.Now()
-	raw, slot, err := observeConfirmedSharedCustodyRaw(ctx, rpc, cfg, minimumSlot)
+	raw, slot, err := observeConfirmedSharedCustodyRaw(ctx, rpc, p.cfg, minimumSlot)
 	logStage("final_check_custody_balance", balanceStart)
 	if err != nil {
 		return nil, err
 	}
-	proof, err := d.ObserveSharedCustodySendProofWithRPC(ctx, manifest, cfg, decoded, raw, slot, signed, rpc)
+	proof, err := finishSharedCustodySpendProof(ctx, p.cfg, decoded, p.inputs, raw, slot, sharedCustodyOriginHeightResolver(rpc))
 	if err != nil {
 		return nil, err
 	}

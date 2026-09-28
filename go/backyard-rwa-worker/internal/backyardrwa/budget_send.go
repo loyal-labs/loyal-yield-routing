@@ -315,28 +315,43 @@ func (d *Database) RevalueAndMarkBroadcastIntentOnManifest(ctx context.Context, 
 		return budgetHold("invalid_durable_budget")
 	}
 	checkStart := time.Now()
-	cost, err := manifest.revaluePhase3SignedInput(ctx, rpc, auth, operation)
-	logStage("final_check_revalue", checkStart)
-	if err != nil {
-		return err
-	}
 	// Shared final-send custody seam (doc 26 §4): for a positive AUTO-PYUSD
 	// spend, a FRESH confirmed custody observation (pinned token
 	// owner/mint/authority at the valuation's minimum slot) feeds the full
 	// send-phase walk for the exact signed operation. The returned proof is
 	// re-validated inside the locked broadcast-intent transaction below.
-	var custody *sharedCustodyAdmissionProof
+	// The walk's journal snapshot does not depend on the valuation, so it is
+	// read while the signed wire is revalued; the custody balance is read
+	// only afterwards, at a slot no older than the revalued cost.
+	var decodedEffects ExpectedEffects
 	if auth.BuildInput != nil {
-		_, decodedEffects, _, decodeErr := auth.BuildInput.decodeWithManifest(manifest)
-		if decodeErr != nil {
+		var decodeErr error
+		if _, decodedEffects, _, decodeErr = auth.BuildInput.decodeWithManifest(manifest); decodeErr != nil {
 			return decodeErr
 		}
-		proof, proofErr := d.observeSharedCustodySendProofForOperation(ctx, manifest, rpc, operation.ID, decodedEffects, cost.ObservationSlot,
-			sharedCustodySignedSpend{OperationID: operation.ID, SignedWireSHA256: operation.SignedWireSHA256, TransactionSignature: operation.TransactionSignature})
-		if proofErr != nil {
-			return proofErr
+	}
+	var send sharedCustodySendProof
+	var sendErr error
+	journalRead := make(chan struct{})
+	go func() {
+		defer close(journalRead)
+		if auth.BuildInput != nil {
+			send, sendErr = d.gatherSharedCustodySendProof(ctx, manifest, operation.ID, decodedEffects,
+				sharedCustodySignedSpend{OperationID: operation.ID, SignedWireSHA256: operation.SignedWireSHA256, TransactionSignature: operation.TransactionSignature})
 		}
-		custody = proof
+	}()
+	cost, err := manifest.revaluePhase3SignedInput(ctx, rpc, auth, operation)
+	logStage("final_check_revalue", checkStart)
+	<-journalRead
+	if err != nil {
+		return err
+	}
+	if sendErr != nil {
+		return sendErr
+	}
+	custody, err := send.finish(ctx, rpc, decodedEffects, cost.ObservationSlot)
+	if err != nil {
+		return err
 	}
 	logStage("final_check_custody", checkStart)
 	err = d.markBroadcastIntentOnManifest(ctx, manifest, operation.ID, rpc, auth.IntentSHA256, sha256Bytes(operation.SignedWire), cost, custody)
