@@ -373,6 +373,9 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		},
 		recordBudgetHold: database.RecordPhase3BudgetHold,
 		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+			if evidence.Request.Action == VoltrAllocateToSquads && decision.Reason == topupAllocationReason {
+				return database.admitPhase3TopupAllocation(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+			}
 			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionDebtRaw > 0 && positionReturnRoute(observation.Snapshot.RouteLane) {
 				return database.admitPhase3Funding(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
 			}

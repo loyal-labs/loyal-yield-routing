@@ -485,9 +485,16 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 	}
 	var raw []byte
 	var paused, unwinding bool
-	var lane string
-	if err := tx.QueryRow(ctx, `SELECT s.state->'selectorEntry',COALESCE((s.state->>'selectorEntryPaused')::boolean,false),COALESCE(s.state->'selectorUnwind','null'::jsonb) <> 'null'::jsonb,COALESCE(o.strategy_key,'') FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE o.operation_id=$1`, operationID).Scan(&raw, &paused, &unwinding, &lane); err != nil {
+	var lane, reason string
+	if err := tx.QueryRow(ctx, `SELECT s.state->'selectorEntry',COALESCE((s.state->>'selectorEntryPaused')::boolean,false),COALESCE(s.state->'selectorUnwind','null'::jsonb) <> 'null'::jsonb,COALESCE(o.strategy_key,''),COALESCE(o.expected_effects->'decision'->>'reason','') FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE o.operation_id=$1`, operationID).Scan(&raw, &paused, &unwinding, &lane, &reason); err != nil {
 		return err
+	}
+	// Plan B3: a top-up allocation adds to the current loop instead of opening
+	// a lane, so no selector entry authorizes it. Only this journaled reason
+	// on an allocation, outside an unwind, skips the entry fence; its own
+	// measured admission bound the position, sizing and complete return.
+	if topupAllocationBypassesEntryFence(request, reason, unwinding) {
+		return nil
 	}
 	var entry SelectorEntry
 	if len(raw) == 0 || json.Unmarshal(raw, &entry) != nil || manifest.validateSelectorEntry(entry) != nil || paused || unwinding || lane != entry.Lane || (requestedLane != "" && requestedLane != lane) || (requestedLane == "" && amount != uint64(entry.EquityRaw)) {
@@ -550,6 +557,11 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 		}
 	}
 	return nil
+}
+
+func topupAllocationBypassesEntryFence(request any, journaledReason string, unwinding bool) bool {
+	r, ok := request.(BridgeBuildRequest)
+	return ok && r.Action == VoltrAllocateToSquads && journaledReason == topupAllocationReason && !unwinding
 }
 
 // Hold when the reviewed amount is no longer supportable. Do not silently

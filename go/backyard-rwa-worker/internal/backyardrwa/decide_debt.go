@@ -10,7 +10,43 @@ import (
 const (
 	debtResidueSwapReason = "debt_residue_to_usdc"
 	topupSwapReason       = "topup_usdc_requires_collateral"
+	topupAllocationReason = "topup_voltr_idle"
 )
+
+// A top-up allocation below this is not worth its fees; the cash waits in
+// Voltr for the next deposit. ponytail: fixed $10 floor, derive it from the
+// measured leg costs if small deposits matter.
+const topupMinimumRaw int64 = 10_000_000
+
+// topupStep is the plan B3 sequence beside a funded debt-free position:
+// convert a payoff debt residue to USDC, swap Squads cash to collateral, and,
+// only while borrowing is blocked, move idle Voltr cash into Squads. Every
+// withdrawal, hard-LTV, unwind and report rule has already run.
+func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (Decision, bool) {
+	if !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw != 0 || !s.PolicyReady || !s.ExitBuildable || hard <= TargetLTVBPS ||
+		s.WithdrawalDemandRaw != 0 || s.Unwind || s.CutoverDrain || s.UnwindRefreshRequired || s.VoltrStrategyIdleRaw != 0 {
+		return Decision{}, false
+	}
+	if s.DebtIdleRaw > 0 {
+		return d(SwapDebtToUSDCStep, debtResidueSwapReason, s.DebtIdleRaw), true
+	}
+	if s.SquadsIdleRaw > 0 {
+		if s.CollateralIdleRaw != 0 {
+			return d(Hold, "topup_cash_beside_collateral_residue", 0), true
+		}
+		return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw), true
+	}
+	// Top up before any borrow, so idle cash never waits for a full close and
+	// reopen, and a later borrow levers the whole collateral at once.
+	if s.CollateralIdleRaw != 0 || !s.PilotActive {
+		return Decision{}, false
+	}
+	amount := min(s.VoltrIdleRaw-DefaultSelectorPolicy().IdleBufferRaw, workingTrancheCap(s), s.TopupDepositRoomRaw, int64(strategyTwoBridgeLegCapRaw))
+	if amount < topupMinimumRaw {
+		return Decision{}, false
+	}
+	return d(VoltrAllocateToSquads, topupAllocationReason, amount), true
+}
 
 // Select without assuming equal token decimals or a stablecoin peg. Values
 // already use the NAV's floor(asset)/ceil(liability) rounding; apply the existing
@@ -193,6 +229,11 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 	if s.PositionDebtRaw > 0 && s.DebtIdleRaw > s.PositionDebtRaw && s.DebtIdleRaw >= s.PayoffDebtRaw {
 		return d(DeleverRouteStep, "idle_debt_repay", s.PositionDebtRaw)
 	}
+	// Plan B3 top-up tranche beside a funded debt-free position. It adds to
+	// the current loop, so it needs no new-lane selector entry authority.
+	if decision, ok := topupStep(s, hard, d); ok {
+		return decision
+	}
 	// Returning flat working cash is an exit. It does not need a usable entry
 	// market, an obligation account, or an entry LTV threshold. Unlike the USDC
 	// flat predicate, idle debt custody disqualifies the return: unattributed
@@ -234,20 +275,6 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		return d(OpenRouteStep, "collateral_ready", s.CollateralIdleRaw)
 	}
 	if s.PositionCollateralRaw > 0 {
-		// The payoff residue stays in debt custody, where it earns nothing and
-		// blocks the borrow admission. Convert it to bridge USDC; the top-up
-		// swap then turns that cash into collateral.
-		if s.DebtIdleRaw > 0 {
-			return d(SwapDebtToUSDCStep, debtResidueSwapReason, s.DebtIdleRaw)
-		}
-		// Working cash beside a funded debt-free position is a top-up
-		// tranche: convert all of it to collateral for the next deposit.
-		if s.SquadsIdleRaw > 0 {
-			if s.CollateralIdleRaw != 0 {
-				return d(Hold, "topup_cash_beside_collateral_residue", 0)
-			}
-			return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw)
-		}
 		if s.BorrowUtilizationBlocked {
 			return d(Hold, "debt_reserve_utilization_blocks_borrow", 0)
 		}

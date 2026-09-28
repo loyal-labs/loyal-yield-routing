@@ -423,6 +423,11 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if entryUSDC > math.MaxInt64 {
 			return Observation{}, nil, fmt.Errorf("PRIME/USDC entry capacity exceeds signed decision range")
 		}
+		room, err := topupDepositRoomUSDC(accounts, route)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		base.Snapshot.TopupDepositRoomRaw = int64(room)
 		base.Snapshot.CapacityRaw = int64(entryUSDC)
 		base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
 		base.Snapshot.BorrowUtilizationBlocked = position.BorrowUtilizationBlocked
@@ -749,6 +754,36 @@ func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount
 		return 0, fmt.Errorf("entry USDC reference drifted")
 	}
 	return valueBetweenTokenRaw(position.EntryCapacityRaw, position.DebtDecimals, 6, position.DebtPriceSF, usdc.marketPriceSF, false)
+}
+
+// topupDepositRoomUSDC values the collateral reserve's remaining deposit limit
+// in bridge USDC from the same confirmed batch, floored and less a 1% price
+// margin, so a plan B3 top-up never sizes a deposit the reserve refuses.
+func topupDepositRoomUSDC(accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
+	collateral, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+	if err != nil || collateral.totalLiquiditySF == nil || collateral.depositLimitRaw == 0 {
+		return 0, err
+	}
+	deposited, err := ceilScaledBigFraction(collateral.totalLiquiditySF)
+	if err != nil || deposited >= collateral.depositLimitRaw {
+		return 0, err
+	}
+	usdcReserve, usdcConfig := route.Kamino.DebtReserve, route.Kamino
+	if route.Kamino.DebtMint != bridgeUSDC {
+		if usdcConfig, err = pinnedKaminoObservationConfig(); err != nil {
+			return 0, err
+		}
+		usdcReserve = usdcConfig.DebtReserve
+	}
+	usdc, err := decodeKaminoReserve(accountAt(accounts, usdcReserve), bridgeUSDC, usdcConfig)
+	if err != nil || usdc.mintDecimals != 6 {
+		return 0, fmt.Errorf("top-up USDC reference unavailable")
+	}
+	room, err := valueBetweenTokenRaw(collateral.depositLimitRaw-deposited, collateral.mintDecimals, 6, collateral.marketPriceSF, usdc.marketPriceSF, false)
+	if err != nil {
+		return 0, err
+	}
+	return min(room/100*99, math.MaxInt64), nil
 }
 
 // routeEconomicObservationID deliberately excludes Slot, the stateless adaptor

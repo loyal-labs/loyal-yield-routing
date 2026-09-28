@@ -189,11 +189,15 @@ type Snapshot struct {
 	PolicyLimitRaw                int64
 	MaxTargetLTVEntryRaw          int64
 	BorrowUtilizationBlocked      bool
-	PolicyReady                   bool
-	ExitBuildable                 bool
-	CapitalMutated                bool
-	PostMutationNAVRequired       bool
-	LastReportAgeSeconds          int64
+	// TopupDepositRoomRaw is the collateral reserve's remaining deposit limit,
+	// valued in bridge USDC (floored, less a 1% price margin). It sizes a
+	// plan B3 top-up; zero or unknown allocates nothing.
+	TopupDepositRoomRaw     int64
+	PolicyReady             bool
+	ExitBuildable           bool
+	CapitalMutated          bool
+	PostMutationNAVRequired bool
+	LastReportAgeSeconds    int64
 }
 
 type Decision struct {
