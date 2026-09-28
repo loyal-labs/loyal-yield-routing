@@ -1138,6 +1138,7 @@ func Run(ctx context.Context, out io.Writer) error {
 		lastSampleAction, lastSampleReason, lastSampleCandidates := "", "", ""
 		lastEvaluateFailure, lastShadowFailure := "", ""
 		levWatch, levWatchSummary := &leverageWatch{}, time.Time{}
+		levDecisionLog := &leverageDecisionLog{}
 		// Economic collection stays off the transaction loop. Live acceptance
 		// is fenced against its pre-observation version and existing pilot;
 		// shadow records rankings only. Neither collector sends transactions.
@@ -1177,7 +1178,7 @@ func Run(ctx context.Context, out io.Writer) error {
 					// never runs beside a selector move, unwind or open
 					// operation, and changes no money by itself.
 					if decision, ok := decideLeverageTarget(observed.Snapshot, result, markets, DefaultSelectorPolicy()); ok && observed.planning != nil {
-						if decision.Next != decision.Current {
+						if levDecisionLog.due(time.Now(), decision, observed.Snapshot.LeverageTargetLevel) {
 							_, _ = fmt.Fprintln(out, decision.logLine())
 						}
 						if decision.Next != observed.Snapshot.LeverageTargetLevel {

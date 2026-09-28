@@ -152,3 +152,30 @@ func TestBorrowBlockedHoldLogsOncePerHour(t *testing.T) {
 		t.Fatalf("want 2 lines in 61 minutes, got %d", n)
 	}
 }
+
+func TestLeverageDecisionLogPrintsOnChangeOrHourly(t *testing.T) {
+	l := &leverageDecisionLog{}
+	now := time.Unix(10_000, 0)
+	up := leverageDecision{Current: 1, Next: 1.5}
+	if !l.due(now, up, 0) {
+		t.Fatal("a new target was not logged")
+	}
+	lines := 0
+	for i := 1; i < 240; i++ { // one hour of 15 s samples, target stored, borrowing blocked
+		if l.due(now.Add(time.Duration(i)*15*time.Second), up, 1.5) {
+			lines++
+		}
+	}
+	if lines != 0 {
+		t.Fatalf("unchanged target logged %d times within the hour", lines)
+	}
+	if !l.due(now.Add(time.Hour), up, 1.5) {
+		t.Fatal("hourly reminder missing")
+	}
+	if !l.due(now.Add(time.Hour+time.Second), leverageDecision{Current: 1.5, Next: 1}, 1.5) {
+		t.Fatal("a target change was rate-limited")
+	}
+	if l.due(now.Add(3*time.Hour), leverageDecision{Current: 1.5, Next: 1.5}, 1.5) {
+		t.Fatal("a hold decision was logged")
+	}
+}

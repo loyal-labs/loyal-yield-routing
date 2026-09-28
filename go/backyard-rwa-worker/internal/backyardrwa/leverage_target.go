@@ -142,3 +142,22 @@ func (d leverageDecision) logLine() string {
 	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f reason=%s",
 		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, d.CostRaw, d.Reason)
 }
+
+// leverageDecisionLog rate-limits the 'leverage decision' line: it prints
+// when the decision changes the stored target, otherwise at most once an
+// hour (live 2026-09-28: a 1x->1.5x decision held by blocked borrowing
+// printed on every 15 s selector sample).
+type leverageDecisionLog struct {
+	printed time.Time
+}
+
+func (l *leverageDecisionLog) due(now time.Time, d leverageDecision, storedLevel float64) bool {
+	if d.Next == d.Current {
+		return false
+	}
+	if d.Next != storedLevel || now.Sub(l.printed) >= time.Hour {
+		l.printed = now
+		return true
+	}
+	return false
+}
