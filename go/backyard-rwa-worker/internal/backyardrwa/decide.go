@@ -307,6 +307,14 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		}
 		return decision(ReportNAV, "nav_due", 0)
 	}
+	// Plan B3 top-up beside a funded debt-free OnRe position (B4). The USDC
+	// debt cash is Squads cash, so there is no separate residue leg. Every
+	// withdrawal, hard-LTV, unwind and report rule above has already run.
+	if s.RouteLane == onreONycUSDC {
+		if next, ok := topupStep(s, hard, decision); ok {
+			return next
+		}
+	}
 	// Returning flat working cash is an exit. It does not need a usable
 	// entry market, an obligation account, or an entry LTV threshold.
 	if selectorLane(s.RouteLane) && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.CollateralIdleRaw == 0 && s.SquadsIdleRaw > 0 &&

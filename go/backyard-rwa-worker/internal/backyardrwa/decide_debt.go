@@ -14,6 +14,9 @@ const (
 	topupDepositReason    = "topup_collateral_deposit"
 )
 
+// onreONycUSDC is the one USDC-debt lane with the plan B3 top-up (B4).
+const onreONycUSDC = "OnRe/ONyc/USDC"
+
 // A top-up allocation below this is not worth its fees; the cash waits in
 // Voltr for the next deposit. ponytail: fixed $10 floor, derive it from the
 // measured leg costs if small deposits matter.

@@ -18,8 +18,16 @@ import (
 // transport; no simulation, signer or live-program success is claimed here.
 func usdcReturnFixture(t *testing.T) (Observation, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
+	return usdcReturnFixtureForLane(t, SelectedRouteID)
+}
+
+// usdcReturnFixtureForLane maps the controlled Ethena fixture onto one basic
+// USDC-debt lane (Maple or OnRe) and its recorded Jupiter exports.
+func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+	t.Helper()
 	old := ethenaUSDePYUSD
-	route, _ := runtimeRoute(SelectedRouteID)
+	route, _ := runtimeRoute(lane)
+	symbol := route.CollateralSymbol
 	o, _, _, m, oldRPC, _, existing := payoffAdmissionFixture(t, 20_000)
 	addresses := []string{old.Kamino.CollateralReserve, old.Kamino.CollateralMint, old.Kamino.DebtMint, reportTicketPDA}
 	for _, p := range m.RuntimeBindings.BridgePolicies {
@@ -76,7 +84,7 @@ func usdcReturnFixture(t *testing.T) (Observation, RouteManifest, *RPCClient, *j
 		accounts = append(accounts, ConfirmedAccount{Address: b.Policy, Owner: bridgeSquadsProgram, Lamports: 1, Data: data})
 	}
 	tables := retainedJupiterLookups(t)
-	for _, leg := range []string{"syrupUSDC->USDC"} {
+	for _, leg := range []string{symbol + "->USDC"} {
 		req, record := basicJupiterRequestFromExport(t, route.Lane, leg)
 		tables = append(tables, retainedOrReconstructedLookupTables(t, req.Instruction.LookupTableAddresses, legacyMessageKeys(t, record.MessageBase64), []string{record.PolicyAccount})...)
 	}
@@ -111,9 +119,9 @@ func usdcReturnFixture(t *testing.T) (Observation, RouteManifest, *RPCClient, *j
 			if err != nil {
 				t.Fatal(err)
 			}
-			key, out := "syrupUSDC->USDC", amount/1000
+			key, out := symbol+"->USDC", amount/1000
 			if q.Get("inputMint") == bridgeUSDC {
-				key, out = "USDC->syrupUSDC", amount*1000
+				key, out = "USDC->"+symbol, amount*1000
 			}
 			for _, row := range headers.Rows {
 				if row.Key == key {
