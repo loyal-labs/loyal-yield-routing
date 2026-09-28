@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -926,10 +927,28 @@ func (c *RPCClient) blockHeight(ctx context.Context, commitment string) (int64, 
 // answer carries no transaction payload. It is the dynamic anchor the shared
 // custody attribution compares historical blockhash expiries against; a slot
 // without a finalized block is an error, never zero.
+// A finalized slot's block height never changes, so a positive answer is kept
+// per RPC endpoint and slot. Errors and non-positive heights are never kept.
+// ponytail: unbounded map; origin slots are few (one per custody lifecycle),
+// add eviction if that ever changes.
+var finalizedBlockHeights sync.Map
+
 func (c *RPCClient) FinalizedBlockHeightForSlot(ctx context.Context, slot int64) (int64, error) {
 	if slot <= 0 {
 		return 0, fmt.Errorf("slot is required")
 	}
+	key := c.url + "|" + strconv.FormatInt(slot, 10)
+	if height, ok := finalizedBlockHeights.Load(key); ok {
+		return height.(int64), nil
+	}
+	height, err := c.finalizedBlockHeightForSlot(ctx, slot)
+	if err == nil && height > 0 {
+		finalizedBlockHeights.Store(key, height)
+	}
+	return height, err
+}
+
+func (c *RPCClient) finalizedBlockHeightForSlot(ctx context.Context, slot int64) (int64, error) {
 	var result struct {
 		BlockHeight int64 `json:"blockHeight"`
 	}
