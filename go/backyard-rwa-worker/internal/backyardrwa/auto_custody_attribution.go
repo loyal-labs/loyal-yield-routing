@@ -80,6 +80,11 @@ const (
 	// well above the observed live candidate population.
 	sharedCustodyUnknownRowBound = 256
 
+	// sharedCustodyAttributionWindowBound caps the reconciled rows one proof
+	// may page through looking for its zero-start origin. Reaching it without
+	// an origin is a bound_exhausted refusal, never a pass.
+	sharedCustodyAttributionWindowBound = 4096
+
 	// sharedCustodyUnknownScanBound caps the rows read before recognized
 	// inert NAV reports are dropped; the row bound applies to survivors.
 	sharedCustodyUnknownScanBound = 4096
@@ -130,6 +135,10 @@ type custodyAttributionRow struct {
 // RPC client. Anything missing, unclassifiable, or unresolvable holds.
 type sharedCustodyAttributionEvidence struct {
 	Rows []custodyAttributionRow
+	// WindowExhausted is set when the reader reached its hard row bound
+	// before any proven zero-start edge: an unproven walk then refuses as
+	// bound_exhausted.
+	WindowExhausted bool
 	// Unresolved is the route-wide existence of any nonterminal operation.
 	Unresolved bool
 	// Unknown is set when any unrecognized terminal/manual-recovery record
@@ -946,6 +955,9 @@ func validateSharedCustodyAttributionResolved(ctx context.Context, observedRaw u
 		}
 		return proof, nil
 	}
+	if evidence.WindowExhausted {
+		return sharedCustodyProof{}, budgetHold("custody_attribution_bound_exhausted")
+	}
 	if tip {
 		return sharedCustodyProof{}, budgetHold("custody_attribution_no_evidence")
 	}
@@ -991,7 +1003,7 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 		return evidence, budgetHold("custody_attribution_no_evidence")
 	}
 	if limit <= 0 || limit > 256 {
-		limit = 64
+		limit = 256
 	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
 	if err != nil {
@@ -1161,31 +1173,80 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 	// record cannot hide behind an absent substring. The window bound is the
 	// completeness boundary: a chain that cannot reach a proven zero-start
 	// edge inside it is refused, never passed.
-	rows, err := tx.Query(ctx, `SELECT operation_id, COALESCE(strategy_key,''), route_key, COALESCE(action,''), status,
+	// The unfiltered window is read in pages inside this same snapshot, from
+	// the tip back, until a page holds a proven zero-start edge or the hard
+	// row bound is reached. Every row read is still strictness-checked by the
+	// validator; paging only moves the completeness boundary to the origin
+	// (live 2026-09-28: 98 NAV reports behind the tip pushed the origin out of
+	// a fixed 64-row window and every PYUSD spend held silently).
+	evidence.Rows, evidence.WindowExhausted, err = pageSharedCustodyWindow(cfg, limit, sharedCustodyAttributionWindowBound, func(offset, size int) ([]custodyAttributionRow, error) {
+		rows, err := tx.Query(ctx, `SELECT operation_id, COALESCE(strategy_key,''), route_key, COALESCE(action,''), status,
 		COALESCE(confirmation_status,''), COALESCE(confirmed_slot,0), COALESCE(transaction_signature,''),
 		COALESCE(reconciliation_sha256,''), COALESCE(reconciled_effects::text,''), COALESCE(expected_effects::text,'')
 		FROM loyal_yield.multiply_operations
 		WHERE route_key=$1 AND status='reconciled'
-		ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT $2`, lease.RouteKey, limit)
+		ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT $2 OFFSET $3`, lease.RouteKey, size, offset)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var page []custodyAttributionRow
+		for rows.Next() {
+			var row custodyAttributionRow
+			if err := rows.Scan(&row.OperationID, &row.StrategyKey, &row.RouteKey, &row.Action, &row.Status,
+				&row.ConfirmationStatus, &row.ConfirmedSlot, &row.TransactionSignature,
+				&row.ReconciliationSHA256, &row.ReconciledEffects, &row.ExpectedEffects); err != nil {
+				return nil, err
+			}
+			page = append(page, row)
+		}
+		return page, rows.Err()
+	})
 	if err != nil {
 		return evidence, err
 	}
-	for rows.Next() {
-		var row custodyAttributionRow
-		if err := rows.Scan(&row.OperationID, &row.StrategyKey, &row.RouteKey, &row.Action, &row.Status,
-			&row.ConfirmationStatus, &row.ConfirmedSlot, &row.TransactionSignature,
-			&row.ReconciliationSHA256, &row.ReconciledEffects, &row.ExpectedEffects); err != nil {
-			rows.Close()
-			return evidence, err
-		}
-		evidence.Rows = append(evidence.Rows, row)
-	}
-	if err := rows.Err(); err != nil {
-		return evidence, err
-	}
-	rows.Close()
 	if err := tx.Commit(ctx); err != nil {
 		return evidence, err
 	}
 	return evidence, nil
+}
+
+// pageSharedCustodyWindow reads the reconciled window newest first in pages
+// of size rows until a page contains a proven zero-start edge for cfg, the
+// journal ends, or bound rows were read. It returns every row read and
+// whether the bound stopped it first. It only decides where to stop reading;
+// the validator still checks every row from the tip through the origin.
+func pageSharedCustodyWindow(cfg sharedCustodyAttributionConfig, size, bound int, fetch func(offset, size int) ([]custodyAttributionRow, error)) ([]custodyAttributionRow, bool, error) {
+	var rows []custodyAttributionRow
+	for len(rows) < bound {
+		page, err := fetch(len(rows), min(size, bound-len(rows)))
+		if err != nil {
+			return nil, false, err
+		}
+		rows = append(rows, page...)
+		for _, row := range page {
+			if custodyRowIsZeroStartOrigin(row, cfg) {
+				return rows, false, nil
+			}
+		}
+		if len(page) < size {
+			return rows, false, nil
+		}
+	}
+	return rows, true, nil
+}
+
+// custodyRowIsZeroStartOrigin reports a row the walk would accept as its
+// origin: an actual before==0 custody touch on a reviewed funding or borrow
+// edge. Unparseable rows are not origins; the validator refuses them.
+func custodyRowIsZeroStartOrigin(row custodyAttributionRow, cfg sharedCustodyAttributionConfig) bool {
+	if len(row.ReconciledEffects) == 0 {
+		return false
+	}
+	_, _, accounts, err := parseReconciledCustodyEvidence(row.ReconciledEffects, cfg)
+	if err != nil {
+		return false
+	}
+	effect, touches, err := classifyRowCustody(accounts, cfg)
+	return err == nil && touches && effect.BeforeRaw == 0 && isProvenZeroStartEdge(row, cfg)
 }
