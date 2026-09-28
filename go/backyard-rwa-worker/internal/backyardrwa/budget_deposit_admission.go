@@ -164,13 +164,15 @@ func validateDepositProjection(r KaminoPrimeUSDCRequest, effects ExpectedEffects
 	return obligation.collateralDepositedRaw, liquidity, residue, nil
 }
 
-func validateInitialDepositPrestate(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot int64) (int64, error) {
+// collateralRaw is the obligation's admitted collateral: zero for an initial
+// deposit, the unchanged debt-free position for a plan B3 top-up deposit.
+func validateInitialDepositPrestate(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot int64, collateralRaw uint64) (int64, error) {
 	slot, accounts, err := rpc.GetMultipleAccounts(ctx, []string{route.Kamino.Obligation, route.DebtCustody}, minimumSlot)
 	if err != nil {
 		return 0, err
 	}
 	position, err := decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino)
-	if err != nil || position.hasPosition {
+	if err != nil || position.hasPosition != (collateralRaw > 0) || position.debtRaw != 0 || position.collateralDepositedRaw != collateralRaw {
 		return 0, budgetHold("deposit_prestate_changed")
 	}
 	debt := accountAt(accounts, route.DebtCustody)
@@ -190,8 +192,14 @@ func observePhase3DepositAdmission(ctx context.Context, rpc *RPCClient, client *
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := observation.Snapshot, evidence.Request
+	// Plan B3: a top-up deposit joins a funded debt-free position; every
+	// other initial deposit needs a flat obligation.
+	topup := decision.Reason == topupDepositReason && s.HasPosition && s.PositionCollateralRaw > 0 && s.PositionCollateralValueRaw > 0 &&
+		s.PositionDebtRaw == 0 && s.PositionDebtValueRaw == 0 && s.WithdrawalDemandRaw == 0 && !s.Unwind
+	flat := decision.Reason != topupDepositReason && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionCollateralValueRaw == 0 &&
+		s.PositionDebtRaw == 0 && s.PositionDebtValueRaw == 0
 	if rpc == nil || client == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain ||
-		s.RouteLane != s.StrategyKey || s.RouteLane != decision.StrategyKey || s.RouteLane != r.RouteLane || phase3BudgetFamilyForLane(s.RouteLane) == "" || s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 ||
+		s.RouteLane != s.StrategyKey || s.RouteLane != decision.StrategyKey || s.RouteLane != r.RouteLane || phase3BudgetFamilyForLane(s.RouteLane) == "" || (!topup && !flat) ||
 		s.CollateralIdleRaw <= 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.DebtIdleRaw != 0 || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || decision.Action != OpenRouteStep || r.Action != decision.Action || decision.AmountRaw <= 0 || r.AmountRaw != uint64(decision.AmountRaw) || r.AmountRaw > uint64(s.CollateralIdleRaw) || evidence.ExpectedEffects.Deposit == nil {
 		return phase3BridgeAdmission{}, budgetHold("complete_initial_deposit_return_unavailable")
 	}
@@ -203,7 +211,7 @@ func observePhase3DepositAdmission(ctx context.Context, rpc *RPCClient, client *
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	slot, err := validateInitialDepositPrestate(ctx, rpc, route, s.Slot)
+	slot, err := validateInitialDepositPrestate(ctx, rpc, route, s.Slot, uint64(s.PositionCollateralRaw))
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -217,6 +225,9 @@ func observePhase3DepositAdmission(ctx context.Context, rpc *RPCClient, client *
 	receipts, liquidity, residue, err := validateDepositProjection(r, evidence.ExpectedEffects, projection)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
+	}
+	if receipts <= uint64(s.PositionCollateralRaw) {
+		return phase3BridgeAdmission{}, budgetHold("deposit_projection_position_mismatch")
 	}
 	withdrawal, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, receipts, LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}, r.RouteLane)
 	if err != nil {

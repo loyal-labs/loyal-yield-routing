@@ -254,7 +254,7 @@ func (m RouteManifest) revaluePhase3SignedInput(ctx context.Context, rpc *RPCCli
 				if auth.BridgeAdmission.Snapshot.PositionDebtRaw > 0 {
 					observed, err = validateRedepositAdmissionPrestate(ctx, rpc, entry, auth.BridgeAdmission, cost.ObservationSlot)
 				} else {
-					observed, err = validateInitialDepositPrestate(ctx, rpc, route, cost.ObservationSlot)
+					observed, err = validateInitialDepositPrestate(ctx, rpc, route, cost.ObservationSlot, uint64(auth.BridgeAdmission.Snapshot.PositionCollateralRaw))
 				}
 				cost.ObservationSlot = max(cost.ObservationSlot, observed)
 			}

@@ -439,6 +439,11 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 				if plan.DepositProjection == nil || plan.Payoff == nil || !plan.Snapshot.HasPosition || plan.Snapshot.PositionCollateralRaw <= 0 || budget.Families[family].ExitMicros == 0 {
 					return budgetHold("redeposit_requires_reserved_position")
 				}
+			} else if decision.Reason == topupDepositReason {
+				// Plan B3: joins the admitted debt-free position.
+				if plan.DepositProjection == nil || !plan.Snapshot.HasPosition || plan.Snapshot.PositionCollateralRaw <= 0 || budget.Families[family].ExitMicros == 0 {
+					return budgetHold("topup_deposit_requires_reserved_position")
+				}
 			} else if plan.DepositProjection == nil || plan.Snapshot.HasPosition || plan.Snapshot.PositionCollateralRaw != 0 || budget.Families[family].ExitMicros == 0 {
 				return budgetHold("deposit_requires_reserved_collateral_custody")
 			}

@@ -11,6 +11,7 @@ const (
 	debtResidueSwapReason = "debt_residue_to_usdc"
 	topupSwapReason       = "topup_usdc_requires_collateral"
 	topupAllocationReason = "topup_voltr_idle"
+	topupDepositReason    = "topup_collateral_deposit"
 )
 
 // A top-up allocation below this is not worth its fees; the cash waits in
@@ -19,8 +20,9 @@ const (
 const topupMinimumRaw int64 = 10_000_000
 
 // topupStep is the plan B3 sequence beside a funded debt-free position:
-// convert a payoff debt residue to USDC, swap Squads cash to collateral, and,
-// only while borrowing is blocked, move idle Voltr cash into Squads. Every
+// convert a payoff debt residue to USDC, swap Squads cash to collateral,
+// deposit that collateral, then move idle Voltr cash into Squads. It runs
+// before any borrow, so a later borrow levers the whole collateral. Every
 // withdrawal, hard-LTV, unwind and report rule has already run.
 func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (Decision, bool) {
 	if !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw != 0 || !s.PolicyReady || !s.ExitBuildable || hard <= TargetLTVBPS ||
@@ -36,9 +38,17 @@ func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (
 		}
 		return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw), true
 	}
+	// Swapped collateral joins the existing obligation. No borrow comes with
+	// it: the loan-to-value can only go down.
+	if s.CollateralIdleRaw > 0 {
+		if s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw < s.MinimumCollateralDepositRaw {
+			return Decision{}, false
+		}
+		return d(OpenRouteStep, topupDepositReason, s.CollateralIdleRaw), true
+	}
 	// Top up before any borrow, so idle cash never waits for a full close and
 	// reopen, and a later borrow levers the whole collateral at once.
-	if s.CollateralIdleRaw != 0 || !s.PilotActive {
+	if !s.PilotActive {
 		return Decision{}, false
 	}
 	amount := min(s.VoltrIdleRaw-DefaultSelectorPolicy().IdleBufferRaw, workingTrancheCap(s), s.TopupDepositRoomRaw, int64(strategyTwoBridgeLegCapRaw))

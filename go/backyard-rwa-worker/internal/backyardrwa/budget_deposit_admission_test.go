@@ -114,9 +114,11 @@ func depositAdmissionFixtureForPosition(t *testing.T, variant string, redeposit 
 			a.Data = append([]byte(nil), a.Data...)
 			switch address {
 			case route.Kamino.Obligation:
-				binary.LittleEndian.PutUint64(a.Data[128:136], uint64(o.Snapshot.PositionCollateralRaw)+909_090)
+				// The deposit adds receipts to whatever the live obligation holds.
+				before := binary.LittleEndian.Uint64(a.Data[128:136])
+				binary.LittleEndian.PutUint64(a.Data[128:136], before+909_090)
 				if variant == "receipts" {
-					binary.LittleEndian.PutUint64(a.Data[128:136], uint64(o.Snapshot.PositionCollateralRaw))
+					binary.LittleEndian.PutUint64(a.Data[128:136], before)
 				}
 				if variant == "debt" {
 					putScaledFraction(a.Data[1296:1312], new(big.Int).Lsh(big.NewInt(1001), 60))

@@ -370,6 +370,9 @@ func selectKaminoLeg(pilotActive bool, decision Decision, position KaminoPositio
 		if position.CollateralDepositedRaw == 0 && position.DebtRaw == 0 {
 			return kaminoLegDeposit, uint64(decision.AmountRaw), uint64(decision.AmountRaw), nil
 		}
+		if position.CollateralDepositedRaw > 0 && position.DebtRaw == 0 && decision.Reason == topupDepositReason {
+			return kaminoLegDeposit, uint64(decision.AmountRaw), uint64(decision.AmountRaw), nil
+		}
 		if position.CollateralDepositedRaw > 0 && position.DebtRaw == 0 {
 			amount, err := position.targetLTVBorrowRaw()
 			if err != nil {
