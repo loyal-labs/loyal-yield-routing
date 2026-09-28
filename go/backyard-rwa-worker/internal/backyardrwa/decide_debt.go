@@ -291,6 +291,10 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		if s.BorrowUtilizationBlocked {
 			return d(Hold, "debt_reserve_utilization_blocks_borrow", 0)
 		}
+		// B2: 1x chosen on purpose is a finished position, not a pending loop.
+		if s.LeverageTargetLevel == 1 {
+			return d(Hold, "leverage_target_1x", 0)
+		}
 		return d(OpenRouteStep, "collateral_requires_borrow", 1)
 	}
 	if s.CollateralIdleRaw > 0 {

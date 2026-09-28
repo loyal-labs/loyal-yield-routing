@@ -295,11 +295,17 @@ type SelectorResult struct {
 
 // A funded entry must finish before its temporary holdings become an economic
 // KEEP baseline. Safety and withdrawal handling remain separate priorities.
+//
+// B2: a funded debt-free position is complete when 1x is the chosen level
+// (LeverageTargetLevel == 1) or borrowing is blocked; otherwise debt 0 still
+// means the first borrow loop is pending. Idle Squads/debt/collateral cash
+// always means the tranche is in progress.
 func selectorTrancheInProgress(s Snapshot) bool {
 	if !s.PilotActive || !hasWorkingCapital(s) {
 		return false
 	}
-	return s.PositionDebtRaw <= 0 || s.SquadsIdleRaw > 0 || s.DebtIdleRaw > 0 ||
+	unborrowed := s.PositionDebtRaw <= 0 && !(s.HasPosition && s.PositionCollateralRaw > 0 && (s.LeverageTargetLevel == 1 || s.BorrowUtilizationBlocked))
+	return unborrowed || s.SquadsIdleRaw > 0 || s.DebtIdleRaw > 0 ||
 		(s.CollateralIdleRaw > 0 && (s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw))
 }
 

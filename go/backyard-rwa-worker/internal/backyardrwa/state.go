@@ -189,6 +189,10 @@ type Snapshot struct {
 	PolicyLimitRaw                int64
 	MaxTargetLTVEntryRaw          int64
 	BorrowUtilizationBlocked      bool
+	// LeverageTargetLevel is the durable B2 option-1 level target for this
+	// lane (1, 1.5 or 1.75); 0 means no target is stored, which keeps the
+	// installed behaviour (one 50% loop).
+	LeverageTargetLevel float64
 	// TopupDepositRoomRaw is the collateral reserve's remaining deposit limit,
 	// valued in bridge USDC (floored, less a 1% price margin). It sizes a
 	// plan B3 top-up; zero or unknown allocates nothing.

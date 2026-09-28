@@ -399,6 +399,10 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.BorrowUtilizationBlocked {
 		return decision(Hold, "debt_reserve_utilization_blocks_borrow", 0)
 	}
+	// B2: 1x chosen on purpose is a finished position, not a pending loop.
+	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.LeverageTargetLevel == 1 {
+		return decision(Hold, "leverage_target_1x", 0)
+	}
 	// A collateral-only intermediate state needs the borrow leg even though no
 	// idle token amount drives that instruction. The builder computes its exact
 	// amount from the refreshed reserve prices; AmountRaw=1 is only the durable
