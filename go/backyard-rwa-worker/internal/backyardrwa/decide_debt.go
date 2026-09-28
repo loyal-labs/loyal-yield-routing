@@ -104,6 +104,18 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		}
 		return d(ReportNAV, "post_mutation_nav_due", 0)
 	}
+	// Voltr idle already pays a plain withdrawal: report if due, never unwind.
+	// Mirrors the USDC lane's withdrawal_covered (live 2026-09-28: a $5 claim
+	// against $1,295 idle started a full AUTO unwind).
+	if s.WithdrawalDemandRaw > 0 && !s.Unwind && !s.CutoverDrain && s.WithdrawalDemandRaw <= s.VoltrIdleRaw {
+		if s.CapitalMutated || s.LastReportAgeSeconds >= 60 {
+			if hold, blocked := custodyResidueHold(s); blocked {
+				return hold
+			}
+			return d(ReportNAV, "withdrawal_covered_nav_due", 0)
+		}
+		return d(Hold, "withdrawal_covered", 0)
+	}
 	// A requested canary drain stays a drain even when Voltr idle already covers
 	// the withdrawal, and an admitted unwind is "a full exit, independent of the
 	// user's claim amount", so it drains with no demand at all. Flat means every
