@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"time"
 )
 
 func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, client *jupiterClient, enrich func(context.Context, *Observation) error) (Observation, JupiterExecutionEvidence, error) {
@@ -15,7 +16,9 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 		return Observation{}, JupiterExecutionEvidence{}, err
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
+		prepareStart := time.Now()
 		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(ctx, rpc, manifest, enrich)
+		logStage("prepare_jupiter_observe", prepareStart)
 		if err != nil {
 			return Observation{}, JupiterExecutionEvidence{}, err
 		}
@@ -85,6 +88,7 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("Jupiter source custody is below exact input")
 		}
 		evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
+		logStage("prepare_jupiter_quote", prepareStart)
 		if err == nil && decision.Action == SwapStableToCollateralStep && phase3BudgetFamilyForLane(decision.StrategyKey) != "" {
 			evidence.Request.EntryReturnReserved = true
 			evidence.Request.TopupReturnReserved = decision.Reason == topupSwapReason

@@ -66,6 +66,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -237,6 +238,8 @@ func sharedCustodyOriginHeightResolver(rpc *RPCClient) func(context.Context, int
 		return nil
 	}
 	return func(ctx context.Context, slot int64) (int64, error) {
+		start := time.Now()
+		defer logStage("custody_proof_origin_height", start)
 		return rpc.FinalizedBlockHeightForSlot(ctx, slot)
 	}
 }
@@ -262,7 +265,9 @@ func (d *Database) observeSharedCustodySpendProof(ctx context.Context, manifest 
 	// the caller's lifecycle uses (a candidate AUTO entry is rejected by the
 	// embedded manifest's decode), and yields the generation + fence the
 	// proof carries.
+	proofStart := time.Now()
 	planning, err := d.readRoutePlanningStateOnManifest(ctx, manifest, cfg.RouteKey, true)
+	logStage("custody_proof_planning", proofStart)
 	if err != nil {
 		return sharedCustodyAdmissionProof{}, err
 	}
@@ -276,10 +281,12 @@ func (d *Database) observeSharedCustodySpendProof(ctx context.Context, manifest 
 		probe = &claimed
 	}
 	evidence, err := d.observeSharedCustodyAttributionEvidence(ctx, *planning.lease, cfg, 0, probe)
+	logStage("custody_proof_evidence", proofStart)
 	if err != nil {
 		return sharedCustodyAdmissionProof{}, err
 	}
 	proof, err := validateSharedCustodyAttributionResolved(ctx, observedRaw, observedSlot, cfg, evidence, 0, originBlockHeight)
+	logStage("custody_proof_validate", proofStart)
 	if err != nil {
 		return sharedCustodyAdmissionProof{}, err
 	}
@@ -572,7 +579,9 @@ func (d *Database) observeSharedCustodySendProofForOperation(ctx context.Context
 	if !applies {
 		return nil, nil
 	}
+	balanceStart := time.Now()
 	raw, slot, err := observeConfirmedSharedCustodyRaw(ctx, rpc, cfg, minimumSlot)
+	logStage("final_check_custody_balance", balanceStart)
 	if err != nil {
 		return nil, err
 	}

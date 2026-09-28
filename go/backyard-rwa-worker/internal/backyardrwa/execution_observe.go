@@ -246,7 +246,9 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("invalid Kamino evidence request")
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
+		prepareStart := time.Now()
 		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(ctx, rpc, manifest, enrich)
+		logStage("prepare_kamino_observe", prepareStart)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
@@ -349,6 +351,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
 		observation.Snapshot.HasPosition = position.HasPosition
+		logStage("prepare_kamino_evidence", prepareStart)
 		return observation, KaminoExecutionEvidence{Request: request, ExpectedEffects: effects}, nil
 	}
 	return Observation{}, KaminoExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("confirmed bridge and Kamino construction reads did not align"))
