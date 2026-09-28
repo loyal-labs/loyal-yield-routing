@@ -25,6 +25,7 @@ type Worker struct {
 	manifest     RouteManifest
 	runtime      tickRuntime
 	leaseHandoff startupLeaseHandoffRuntime
+	retryLog     tickRetryLog
 }
 
 type startupLeaseHandoffRuntime struct {
@@ -973,6 +974,9 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 			}
 		}
 		otelLogs.tickResult(err, false)
+		if err != nil {
+			w.retryLog.note(time.Now(), err)
+		}
 		timer := time.NewTimer(w.interval)
 		select {
 		case err := <-leaseErrors:
