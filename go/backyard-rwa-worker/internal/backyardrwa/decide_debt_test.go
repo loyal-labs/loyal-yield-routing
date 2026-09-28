@@ -67,7 +67,13 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 			s.SquadsIdleRaw, s.CollateralIdleRaw = 0, 90
 			check(OpenRouteStep, 90)
 			s.CollateralIdleRaw, s.PositionCollateralRaw, s.HasPosition = 0, 90, true
-			check(OpenRouteStep, 1)
+			if leverageLane(lane) {
+				check(Hold, 0) // B2: leverage_target_required
+				s.LeverageTargetLevel = 1.5
+				check(OpenRouteStep, 150)
+			} else {
+				check(OpenRouteStep, 1)
+			}
 			s.PositionDebtRaw, s.DebtIdleRaw = 40, 40
 			s.PositionDebtValueRaw = 80
 			// An unrelated USDC residue cannot be treated as borrowed PYUSD.

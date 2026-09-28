@@ -305,7 +305,10 @@ func selectorTrancheInProgress(s Snapshot) bool {
 		return false
 	}
 	unborrowed := s.PositionDebtRaw <= 0 && !(s.HasPosition && s.PositionCollateralRaw > 0 && (s.LeverageTargetLevel == 1 || s.BorrowUtilizationBlocked))
-	return unborrowed || s.SquadsIdleRaw > 0 || s.DebtIdleRaw > 0 ||
+	// A pending B2 up move (target above the position, borrowing open) is
+	// unfinished work too, so the selector never switches in its middle.
+	levelPending := leverageUpLevel(s) > 0 && !s.BorrowUtilizationBlocked
+	return unborrowed || levelPending || s.SquadsIdleRaw > 0 || s.DebtIdleRaw > 0 ||
 		(s.CollateralIdleRaw > 0 && (s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw))
 }
 

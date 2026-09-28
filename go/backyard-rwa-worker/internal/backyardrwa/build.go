@@ -929,6 +929,11 @@ func isExactKaminoTransactionForLanes(instructions []decodedLegacyInstruction, l
 				}
 			case kaminoLegBorrow:
 				topologies = [][]string{{route.Kamino.CollateralReserve}}
+				// B2 leverage_up 1.5x -> 1.75x borrows beside existing debt
+				// (AUTO and OnRe only).
+				if lane == autoAUTOPYUSD.Lane || lane == "OnRe/ONyc/USDC" {
+					topologies = append(topologies, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve})
+				}
 			case kaminoLegWithdraw:
 				topologies = [][]string{
 					{route.Kamino.CollateralReserve},

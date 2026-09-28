@@ -448,7 +448,7 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 				return budgetHold("deposit_requires_reserved_collateral_custody")
 			}
 		case kaminoLegBorrow:
-			if plan.BorrowProjection == nil || plan.Payoff == nil || !plan.Snapshot.HasPosition || plan.Snapshot.PositionCollateralRaw <= 0 || plan.Snapshot.PositionDebtRaw != 0 || budget.Families[family].ExitMicros == 0 {
+			if plan.BorrowProjection == nil || plan.Payoff == nil || !plan.Snapshot.HasPosition || plan.Snapshot.PositionCollateralRaw <= 0 || (plan.Snapshot.PositionDebtRaw != 0 && decision.Reason != leverageUpReason) || budget.Families[family].ExitMicros == 0 {
 				return budgetHold("borrow_requires_reserved_position")
 			}
 		default:

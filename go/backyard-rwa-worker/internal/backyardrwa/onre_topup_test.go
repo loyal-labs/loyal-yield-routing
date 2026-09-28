@@ -32,10 +32,11 @@ func TestOnReTopupSequenceOnTheUSDCPath(t *testing.T) {
 	check(s, SwapStableToCollateralStep, topupSwapReason, 1_295_000_000)
 	s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 1_120_000_000_000, 1_120_000_000_000
 	check(s, OpenRouteStep, topupDepositReason, 1_120_000_000_000)
-	// Once everything is deposited the ordinary borrow of the whole
+	// Once everything is deposited the B2 target borrow of the whole
 	// collateral follows (no top-up is left to do).
 	s.CollateralIdleRaw, s.PrimeIdleRaw, s.PositionCollateralRaw = 0, 0, 1_420_000_000_000
-	check(s, OpenRouteStep, "prime_collateral_requires_borrow", 1)
+	s.LeverageTargetLevel = 1.5
+	check(s, OpenRouteStep, leverageUpReason, 150)
 	// Size: min(idle - buffer, tranche cap, deposit-limit room).
 	room := onreTopupSnapshot()
 	room.TopupDepositRoomRaw = 400_000_000

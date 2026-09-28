@@ -137,7 +137,14 @@ func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {
 				t.Fatal("remainder bypassed required NAV", got)
 			}
 			s.PostMutationNAVRequired = false
-			if got := Decide(s); got.Action != OpenRouteStep || got.Reason != "prime_collateral_requires_borrow" {
+			want := "prime_collateral_requires_borrow"
+			if leverageLane(lane) {
+				if got := Decide(s); got.Action != Hold || got.Reason != "leverage_target_required" {
+					t.Fatal("B2: a debt-free position without a target borrowed", got)
+				}
+				s.LeverageTargetLevel, want = 1.5, leverageUpReason
+			}
+			if got := Decide(s); got.Action != OpenRouteStep || got.Reason != want {
 				t.Fatal("deposit remainder blocked borrowing", got)
 			}
 			s.PositionDebtRaw, s.PositionDebtValueRaw, s.SquadsIdleRaw = 5_000_000, 5_000_000, 5_000_000

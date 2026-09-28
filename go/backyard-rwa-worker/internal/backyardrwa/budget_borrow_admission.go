@@ -13,7 +13,7 @@ func validateInitialBorrowPrestate(ctx context.Context, rpc *RPCClient, route Ru
 		return 0, err
 	}
 	o, err := decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino)
-	if err != nil || o.debtRaw != 0 || s.PositionCollateralRaw <= 0 || o.collateralDepositedRaw != uint64(s.PositionCollateralRaw) {
+	if err != nil || s.PositionDebtRaw < 0 || !borrowDebtMatches(o.debtRaw, uint64(s.PositionDebtRaw)) || s.PositionCollateralRaw <= 0 || o.collateralDepositedRaw != uint64(s.PositionCollateralRaw) {
 		return 0, budgetHold("borrow_prestate_changed")
 	}
 	for _, row := range []struct {
@@ -53,12 +53,15 @@ func validateBorrowProjection(r KaminoPrimeUSDCRequest, e ExpectedEffects, s Sna
 			return KaminoPayoffBound{}, budgetHold("borrow_projection_custody_mismatch")
 		}
 	}
+	// A B2 leverage_up borrow adds to existing debt; every other borrow
+	// starts debt-free and must match the debit exactly.
+	prior := uint64(max(s.PositionDebtRaw, 0))
 	o, err := decodeKaminoObligation(accountAt(p.Accounts, route.Kamino.Obligation), route.Kamino)
-	if err != nil || s.PositionCollateralRaw <= 0 || o.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || o.debtRaw != debit.Raw {
+	if err != nil || s.PositionCollateralRaw <= 0 || o.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || o.debtRaw < debit.Raw || !borrowDebtMatches(o.debtRaw-debit.Raw, prior) {
 		return KaminoPayoffBound{}, budgetHold("borrow_projection_position_mismatch")
 	}
 	bound, err := decodeKaminoPayoffWindow(p.Accounts, route, p.Slot, 3)
-	if err != nil || bound.ObservedDebtRaw != debit.Raw {
+	if err != nil || bound.ObservedDebtRaw < debit.Raw || !borrowDebtMatches(bound.ObservedDebtRaw-debit.Raw, prior) {
 		return bound, budgetHold("borrow_projection_debt_mismatch")
 	}
 	if _, err := decodeKaminoReserve(accountAt(p.Accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino); err != nil {
@@ -86,8 +89,12 @@ func observePhase3BorrowAdmission(ctx context.Context, rpc *RPCClient, client *j
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := o.Snapshot, e.Request
+	// B2 leverage_up may borrow beside existing debt (1.5x -> 1.75x); every
+	// other borrow keeps the debt-free precondition.
+	leverageUp := d.Reason == leverageUpReason && leverageLane(s.RouteLane) && !s.Unwind && s.WithdrawalDemandRaw == 0
 	if rpc == nil || client == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain ||
-		s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !positionReturnRoute(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0 || debtCashRaw(s) != 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || d.Action != OpenRouteStep || r.Action != d.Action || d.AmountRaw <= 0 || e.ExpectedEffects.Kind != "kamino-borrow" {
+		(d.Reason == leverageUpReason && !leverageUp) || (!leverageUp && (s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0)) ||
+		s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !positionReturnRoute(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw < 0 || s.PositionDebtValueRaw < 0 || debtCashRaw(s) != 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || d.Action != OpenRouteStep || r.Action != d.Action || d.AmountRaw <= 0 || e.ExpectedEffects.Kind != "kamino-borrow" {
 		return phase3BridgeAdmission{}, budgetHold("complete_initial_borrow_return_unavailable")
 	}
 	current, err := observePhase3KnownBuildCost(ctx, rpc, r, e.ExpectedEffects)
@@ -109,6 +116,11 @@ func observePhase3BorrowAdmission(ctx context.Context, rpc *RPCClient, client *j
 	_, err = validateBorrowProjection(r, e.ExpectedEffects, s, projection)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
+	}
+	if leverageUp {
+		if err = leverageUpProjectionWithinCaps(projection, route, r.AmountRaw); err != nil {
+			return phase3BridgeAdmission{}, err
+		}
 	}
 	if e.ExpectedEffects.Accounts[1].BeforeRaw != 0 {
 		return phase3BridgeAdmission{}, budgetHold("borrow_cash_snapshot_changed")

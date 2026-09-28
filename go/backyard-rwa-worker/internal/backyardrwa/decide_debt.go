@@ -256,7 +256,13 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		(s.CapacityRaw < s.SquadsIdleRaw || s.PolicyLimitRaw < s.SquadsIdleRaw || s.MaxTargetLTVEntryRaw < s.SquadsIdleRaw || s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
 		return d(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
 	}
-	if s.SelectorEntryPaused {
+	// B2: borrow only toward the stored level target (never an entry quote).
+	if action, reason, amount, ok := leverageBorrowStep(s, hard); ok {
+		return d(action, reason, amount)
+	}
+	// The pause blocks new entries; a B2 leveraged loop on its own lane still
+	// swaps and redeposits its borrowed cash (no entry authority is needed).
+	if s.SelectorEntryPaused && !leverageLoopInProgress(s) {
 		return d(Hold, "selector_entry_requires_fresh_admission", 0)
 	}
 	// Same prerequisite as the fixed lane: a deposit into a missing obligation
@@ -288,12 +294,12 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		return d(OpenRouteStep, "collateral_ready", s.CollateralIdleRaw)
 	}
 	if s.PositionCollateralRaw > 0 {
+		if leverageLane(s.RouteLane) {
+			action, reason, amount := leverageDebtFreeStep(s)
+			return d(action, reason, amount)
+		}
 		if s.BorrowUtilizationBlocked {
 			return d(Hold, "debt_reserve_utilization_blocks_borrow", 0)
-		}
-		// B2: 1x chosen on purpose is a finished position, not a pending loop.
-		if s.LeverageTargetLevel == 1 {
-			return d(Hold, "leverage_target_1x", 0)
 		}
 		return d(OpenRouteStep, "collateral_requires_borrow", 1)
 	}

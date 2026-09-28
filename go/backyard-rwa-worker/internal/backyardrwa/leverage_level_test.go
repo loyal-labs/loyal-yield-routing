@@ -42,8 +42,8 @@ func TestOneXByChoiceIsAFinishedPosition(t *testing.T) {
 		s.RouteLane, s.StrategyKey, s.PilotActive = lane, lane, true
 		s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 300_000_000, 300_000_000
 		s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw = 1_000_000_000, 1_000_000_000, 1_000_000_000
-		if got := Decide(s); got.Action != OpenRouteStep {
-			t.Fatalf("%s without a target must keep the installed first loop: %+v", lane, got)
+		if got := Decide(s); got.Action != Hold || got.Reason != "leverage_target_required" {
+			t.Fatalf("%s without a target must hold, never borrow: %+v", lane, got)
 		}
 		if !selectorTrancheInProgress(s) {
 			t.Fatalf("%s: debt 0 without a 1x target must still be in progress", lane)

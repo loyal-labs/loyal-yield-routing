@@ -252,7 +252,11 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 			t.Fatalf("%s finish deposit before allocating more: %+v", lane, d)
 		}
 		s.CollateralIdleRaw, s.PrimeIdleRaw, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.HasPosition = 0, 0, 20_000, 20_000, true
-		if d = Decide(s); d.Action != OpenRouteStep || d.Reason != "prime_collateral_requires_borrow" {
+		wantBorrow := "prime_collateral_requires_borrow"
+		if leverageLane(lane) {
+			s.LeverageTargetLevel, wantBorrow = 1.5, leverageUpReason
+		}
+		if d = Decide(s); d.Action != OpenRouteStep || d.Reason != wantBorrow {
 			t.Fatalf("%s finish borrow: %+v", lane, d)
 		}
 		s.PositionDebtRaw, s.PositionDebtValueRaw, s.SquadsIdleRaw = 10_000, 10_000, 10_000

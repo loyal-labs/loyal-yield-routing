@@ -325,7 +325,13 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	// deposit is refused and the funded capital strands in custody, so no
 	// allocation, swap, or deposit is constructed. Withdrawal and reporting legs
 	// above stay live.
-	if s.SelectorEntryPaused {
+	// B2: borrow only toward the stored level target (never an entry quote).
+	if action, reason, amount, ok := leverageBorrowStep(s, hard); ok {
+		return decision(action, reason, amount)
+	}
+	// The pause blocks new entries; a B2 leveraged loop on its own lane still
+	// swaps and redeposits its borrowed cash (no entry authority is needed).
+	if s.SelectorEntryPaused && !leverageLoopInProgress(s) {
 		return decision(Hold, "selector_entry_requires_fresh_admission", 0)
 	}
 	if hold, absent := obligationPrerequisiteHold(s, initializationReady); absent {
@@ -399,9 +405,9 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.BorrowUtilizationBlocked {
 		return decision(Hold, "debt_reserve_utilization_blocks_borrow", 0)
 	}
-	// B2: 1x chosen on purpose is a finished position, not a pending loop.
-	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.LeverageTargetLevel == 1 {
-		return decision(Hold, "leverage_target_1x", 0)
+	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && leverageLane(s.RouteLane) {
+		action, reason, amount := leverageDebtFreeStep(s)
+		return decision(action, reason, amount)
 	}
 	// A collateral-only intermediate state needs the borrow leg even though no
 	// idle token amount drives that instruction. The builder computes its exact

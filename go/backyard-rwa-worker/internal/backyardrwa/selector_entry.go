@@ -483,10 +483,16 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 	default:
 		return nil
 	}
-	var raw []byte
+	var raw, leverageTarget []byte
 	var paused, unwinding bool
 	var lane, reason string
-	if err := tx.QueryRow(ctx, `SELECT s.state->'selectorEntry',COALESCE((s.state->>'selectorEntryPaused')::boolean,false),COALESCE(s.state->'selectorUnwind','null'::jsonb) <> 'null'::jsonb,COALESCE(o.strategy_key,''),COALESCE(o.expected_effects->'decision'->>'reason','') FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE o.operation_id=$1`, operationID).Scan(&raw, &paused, &unwinding, &lane, &reason); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT s.state->'selectorEntry',COALESCE((s.state->>'selectorEntryPaused')::boolean,false),COALESCE(s.state->'selectorUnwind','null'::jsonb) <> 'null'::jsonb,COALESCE(o.strategy_key,''),COALESCE(o.expected_effects->'decision'->>'reason',''),COALESCE(s.state->'leverageTarget','null'::jsonb) FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE o.operation_id=$1`, operationID).Scan(&raw, &paused, &unwinding, &lane, &reason, &leverageTarget); err != nil {
+		return err
+	}
+	// B2: a leverage_up borrow adds to the current lane under its stored
+	// level target, not a selector entry. Sizing, both LTV caps and the
+	// complete return are bound by its own measured admission.
+	if bypass, err := leverageUpBypassesEntryFence(request, reason, unwinding, lane, leverageTarget); err != nil || bypass {
 		return err
 	}
 	// Plan B3: a top-up allocation adds to the current loop instead of opening

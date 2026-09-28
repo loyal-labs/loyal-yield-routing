@@ -41,8 +41,8 @@ func TestTopupAllocationSizingAndPriority(t *testing.T) {
 	if got := Decide(open); got.Reason != topupAllocationReason {
 		t.Fatalf("borrow preempted the top-up: %+v", got)
 	}
-	open.VoltrIdleRaw = 0
-	if got := Decide(open); got.Action != OpenRouteStep || got.Reason != "collateral_requires_borrow" {
+	open.VoltrIdleRaw, open.LeverageTargetLevel = 0, 1.5
+	if got := Decide(open); got.Action != OpenRouteStep || got.Reason != leverageUpReason {
 		t.Fatalf("no borrow after the top-up is done: %+v", got)
 	}
 	// The selector-entry pause does not block adding to the current loop.
