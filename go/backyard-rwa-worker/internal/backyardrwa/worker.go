@@ -58,7 +58,10 @@ type tickRuntime struct {
 	buildKamino                      func(context.Context, string, KaminoExecutionEvidence) error
 	buildJupiter                     func(context.Context, string, JupiterExecutionEvidence) error
 	custodyOwnershipProof            func(context.Context, RouteManifest, sharedCustodyAttributionConfig, ExpectedEffects, uint64, int64) (sharedCustodyAdmissionProof, error)
-	recordBudgetHold                 func(context.Context, string, *BudgetHold) error
+	// prefetchCustodyProof starts the pre-decision custody journal read while
+	// the spend is prepared; nil keeps the serial custodyOwnershipProof.
+	prefetchCustodyProof func(context.Context, RouteManifest, sharedCustodyAttributionConfig) custodyProofFinisher
+	recordBudgetHold     func(context.Context, string, *BudgetHold) error
 }
 
 // productionJournal is the journal evidence the production observe path merges
@@ -369,6 +372,9 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256, policyCatalogSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
 		},
+		prefetchCustodyProof: func(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig) custodyProofFinisher {
+			return database.prefetchSharedCustodyOwnershipProof(ctx, manifest, cfg, rpc)
+		},
 		custodyOwnershipProof: func(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64) (sharedCustodyAdmissionProof, error) {
 			return database.ObserveSharedCustodyOwnershipProofWithRPC(ctx, manifest, cfg, expected, observedRaw, observedSlot, rpc)
 		},
@@ -576,6 +582,12 @@ func (w *Worker) Tick(ctx context.Context) error {
 	}
 	wireDecision := decision
 	wireDecision.Action = executionDecision
+	// The custody journal read of a PYUSD spend does not depend on the
+	// prepared wire, so it runs while preparation re-observes the chain.
+	var prefetchedCustody custodyProofFinisher
+	if w.runtime.prefetchCustodyProof != nil && custodyProofPrefetchAction(decision, observation.Snapshot) {
+		prefetchedCustody = w.runtime.prefetchCustodyProof(ctx, w.manifest, autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, w.routeKey))
+	}
 	switch executionDecision {
 	case InitializeKaminoObligation:
 		if w.runtime.prepareInitialization == nil {
@@ -624,11 +636,11 @@ func (w *Worker) Tick(ctx context.Context) error {
 	// lanes are untouched.
 	switch executionDecision {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, bridgeEvidence.ExpectedEffects)
+		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, bridgeEvidence.ExpectedEffects, prefetchedCustody)
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, kaminoEvidence.ExpectedEffects)
+		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, kaminoEvidence.ExpectedEffects, prefetchedCustody)
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, jupiterEvidence.ExpectedEffects)
+		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, jupiterEvidence.ExpectedEffects, prefetchedCustody)
 	}
 	if err != nil {
 		return err

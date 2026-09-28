@@ -690,7 +690,7 @@ func TestSharedCustodyPreDecisionWorkerSeam(t *testing.T) {
 	}}
 	w := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: runtime}
 	observation := Observation{Snapshot: Snapshot{DebtIdleRaw: 3_100_000_000, Slot: 300}}
-	if err := w.observePreDecisionCustodyOwnershipProof(context.Background(), &observation, decision, effects); err != nil {
+	if err := w.observePreDecisionCustodyOwnershipProof(context.Background(), &observation, decision, effects, nil); err != nil {
 		t.Fatalf("pre-decision proof refused: %v", err)
 	}
 	if calls != 1 || observation.carriedCustodyOwnershipProof() == nil {
@@ -698,11 +698,11 @@ func TestSharedCustodyPreDecisionWorkerSeam(t *testing.T) {
 	}
 	// Zero-spend and non-AUTO lanes never call the producer and carry nothing.
 	zero := Observation{Snapshot: Snapshot{DebtIdleRaw: 3_100_000_000, Slot: 300}}
-	if err := w.observePreDecisionCustodyOwnershipProof(context.Background(), &zero, decision, custodyAttributionFundingExpected(10_000_000_000, 8_000_000_000, nil)); err != nil {
+	if err := w.observePreDecisionCustodyOwnershipProof(context.Background(), &zero, decision, custodyAttributionFundingExpected(10_000_000_000, 8_000_000_000, nil), nil); err != nil {
 		t.Fatalf("zero-spend AUTO operation held: %v", err)
 	}
 	other := Observation{}
-	if err := w.observePreDecisionCustodyOwnershipProof(context.Background(), &other, Decision{Action: DeleverRouteStep, StrategyKey: "Ethena/ETH/PYUSD"}, effects); err != nil {
+	if err := w.observePreDecisionCustodyOwnershipProof(context.Background(), &other, Decision{Action: DeleverRouteStep, StrategyKey: "Ethena/ETH/PYUSD"}, effects, nil); err != nil {
 		t.Fatalf("non-AUTO lane held: %v", err)
 	}
 	if calls != 1 {
@@ -711,7 +711,7 @@ func TestSharedCustodyPreDecisionWorkerSeam(t *testing.T) {
 	// No producer wired (e.g. an unwired test runtime) fails closed on a real
 	// spend, never silently proceeds.
 	bare := &Worker{routeKey: productionRouteKey, manifest: manifest}
-	if err := bare.observePreDecisionCustodyOwnershipProof(context.Background(), &Observation{Snapshot: Snapshot{DebtIdleRaw: 3_100_000_000, Slot: 300}}, decision, effects); custodyAttributionHoldReason(t, err) != "custody_attribution_ownership_proof_unavailable" {
+	if err := bare.observePreDecisionCustodyOwnershipProof(context.Background(), &Observation{Snapshot: Snapshot{DebtIdleRaw: 3_100_000_000, Slot: 300}}, decision, effects, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_ownership_proof_unavailable" {
 		t.Fatalf("unwired producer did not hold: %v", err)
 	}
 }

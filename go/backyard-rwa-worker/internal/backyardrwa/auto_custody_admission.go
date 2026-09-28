@@ -268,13 +268,29 @@ func (d *Database) observeSharedCustodySpendProof(ctx context.Context, manifest 
 }
 
 func (d *Database) gatherSharedCustodyProofInputs(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, current *sharedCustodyCurrentOperation) (sharedCustodyProofInputs, error) {
-	inputs := sharedCustodyProofInputs{spend: sharedCustodySpendRaw(expected, cfg)}
-	if inputs.spend == 0 {
+	spend := sharedCustodySpendRaw(expected, cfg)
+	if spend == 0 {
 		// The operation spends no shared custody: the attribution gate does
 		// not apply, and unrelated recovery must not be blocked by a positive
 		// balance alone.
-		return inputs, nil
+		return sharedCustodyProofInputs{}, nil
 	}
+	var probe *sharedCustodyCurrentOperation
+	if current != nil {
+		claimed := *current
+		claimed.ExpectedEffects = expected
+		probe = &claimed
+	}
+	inputs, err := d.readSharedCustodyJournal(ctx, manifest, cfg, probe)
+	inputs.spend = spend
+	return inputs, err
+}
+
+// readSharedCustodyJournal is the journal side of a proof. It needs only the
+// lease and the custody identity, so the pre-decision proof may read it while
+// the spend is still being prepared.
+func (d *Database) readSharedCustodyJournal(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, probe *sharedCustodyCurrentOperation) (sharedCustodyProofInputs, error) {
+	var inputs sharedCustodyProofInputs
 	if cfg.RouteKey == "" || cfg.Lane == "" {
 		return inputs, fmt.Errorf("shared custody attribution config is incomplete")
 	}
@@ -293,15 +309,62 @@ func (d *Database) gatherSharedCustodyProofInputs(ctx context.Context, manifest 
 	if planning.lease == nil {
 		return inputs, budgetHold("custody_attribution_lease_unavailable")
 	}
-	inputs.planning = planning
-	if current != nil {
-		claimed := *current
-		claimed.ExpectedEffects = expected
-		inputs.probe = &claimed
-	}
-	inputs.evidence, err = d.observeSharedCustodyAttributionEvidence(ctx, *planning.lease, cfg, 0, inputs.probe)
+	inputs.planning, inputs.probe = planning, probe
+	inputs.evidence, err = d.observeSharedCustodyAttributionEvidence(ctx, *planning.lease, cfg, 0, probe)
 	logStage("custody_proof_evidence", proofStart)
 	return inputs, err
+}
+
+// prefetchSharedCustodyOwnershipProof starts the pre-decision journal read
+// and returns the finisher that binds it to the prepared spend and the
+// prepared observation. The proof is the same strict proof: a journal change
+// after the read fails the balance/tip binding here or the generation check
+// under the admission lock.
+func (d *Database) prefetchSharedCustodyOwnershipProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, rpc *RPCClient) custodyProofFinisher {
+	var inputs sharedCustodyProofInputs
+	var readErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		inputs, readErr = d.readSharedCustodyJournal(ctx, manifest, cfg, nil)
+	}()
+	resolver := sharedCustodyOriginHeightResolver(rpc)
+	return func(ctx context.Context, got sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64) (sharedCustodyAdmissionProof, error) {
+		<-done
+		return finishPrefetchedOwnershipProof(ctx, cfg, got, expected, inputs, readErr, observedRaw, observedSlot, resolver)
+	}
+}
+
+// finishPrefetchedOwnershipProof binds a journal read taken before prepare to
+// the prepared spend and observation, with the same validator as the serial
+// proof.
+func finishPrefetchedOwnershipProof(ctx context.Context, cfg, got sharedCustodyAttributionConfig, expected ExpectedEffects, inputs sharedCustodyProofInputs, readErr error, observedRaw uint64, observedSlot int64, resolver func(context.Context, int64) (int64, error)) (sharedCustodyAdmissionProof, error) {
+	if readErr != nil {
+		return sharedCustodyAdmissionProof{}, readErr
+	}
+	if got != cfg {
+		return sharedCustodyAdmissionProof{}, budgetHold("custody_attribution_proof_drift")
+	}
+	inputs.spend = sharedCustodySpendRaw(expected, cfg)
+	if inputs.spend == 0 {
+		return sharedCustodyAdmissionProof{}, nil
+	}
+	return finishSharedCustodySpendProof(ctx, cfg, expected, inputs, observedRaw, observedSlot, resolver)
+}
+
+type custodyProofFinisher func(context.Context, sharedCustodyAttributionConfig, ExpectedEffects, uint64, int64) (sharedCustodyAdmissionProof, error)
+
+// custodyProofPrefetchAction lists the AUTO actions that can debit the shared
+// PYUSD custody; only these pay for an early journal read.
+func custodyProofPrefetchAction(d Decision, s Snapshot) bool {
+	if d.StrategyKey != autoAUTOPYUSD.Lane || s.DebtIdleRaw <= 0 {
+		return false
+	}
+	switch d.Action {
+	case DeleverRouteStep, SwapDebtToCollateralStep, SwapDebtToUSDCStep:
+		return true
+	}
+	return false
 }
 
 func finishSharedCustodySpendProof(ctx context.Context, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, inputs sharedCustodyProofInputs, observedRaw uint64, observedSlot int64, originBlockHeight func(context.Context, int64) (int64, error)) (sharedCustodyAdmissionProof, error) {
@@ -739,19 +802,25 @@ func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx,
 // per-operation local data on the observation that goes to RecordDecision and
 // the locked admission. Zero-spend and non-AUTO lanes preserve installed
 // behavior exactly; the proof is never a mutable global.
-func (w *Worker) observePreDecisionCustodyOwnershipProof(ctx context.Context, observation *Observation, decision Decision, effects ExpectedEffects) error {
+func (w *Worker) observePreDecisionCustodyOwnershipProof(ctx context.Context, observation *Observation, decision Decision, effects ExpectedEffects, prefetched custodyProofFinisher) error {
 	cfg, _, applies := autoSharedCustodySpend(decision.StrategyKey, w.routeKey, effects)
 	if !applies {
 		return nil
 	}
-	if w.runtime.custodyOwnershipProof == nil {
+	if w.runtime.custodyOwnershipProof == nil && prefetched == nil {
 		return budgetHold("custody_attribution_ownership_proof_unavailable")
 	}
 	observedRaw := uint64(0)
 	if observation.Snapshot.DebtIdleRaw > 0 {
 		observedRaw = uint64(observation.Snapshot.DebtIdleRaw)
 	}
-	proof, err := w.runtime.custodyOwnershipProof(ctx, w.manifest, cfg, effects, observedRaw, observation.Snapshot.Slot)
+	produce := custodyProofFinisher(func(ctx context.Context, cfg sharedCustodyAttributionConfig, effects ExpectedEffects, raw uint64, slot int64) (sharedCustodyAdmissionProof, error) {
+		return w.runtime.custodyOwnershipProof(ctx, w.manifest, cfg, effects, raw, slot)
+	})
+	if prefetched != nil {
+		produce = prefetched
+	}
+	proof, err := produce(ctx, cfg, effects, observedRaw, observation.Snapshot.Slot)
 	if err != nil {
 		return err
 	}
