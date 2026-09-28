@@ -15,7 +15,7 @@ const (
 	// Phase 2 freezes one additional installed representative. This is a
 	// compile-time lane, never caller input or runtime route selection.
 	SelectedRouteID   = "Maple/syrupUSDC/USDC"
-	RuntimeRouteCount = 2
+	RuntimeRouteCount = 3
 	// The Phase 2 authorization envelope permits at most 1 USDC-equivalent per
 	// money-moving transaction. Selected-lane decisions are clamped before they
 	// are journaled, quoted, signed, or broadcast.
@@ -24,6 +24,36 @@ const (
 	FixedCollateral               = "PRIME"
 	FixedDebt                     = "USDC"
 	TargetLTVBPS                  = int64(5000)
+)
+
+// Phase 2 monitor knobs. They are code constants on purpose: loosening a
+// fail-closed bound must be a reviewed change, not environment configuration.
+const (
+	// Program-identity pins (M6): for each pinned program the ProgramData
+	// address, the last-deploy slot recorded in that account, and the sha256 of
+	// the executable bytes only, ProgramData.data[45:], past the loader
+	// discriminant, deploy slot, option byte, and upgrade authority. Hashing
+	// past the header keeps an upgrade-authority rotation from reading as a new
+	// binary and lets any external tool reproduce the pin byte for byte
+	// (scripts/voltr_deploy_check.py prints the identical digest). Slots and
+	// hashes were computed from a read-only mainnet fetch on 2026-09-08. Every
+	// tick compares the slot; a moved slot forces a full re-hash against these
+	// pins, and any absent, incoherent, or mismatched read stops the worker for
+	// manual recovery instead of failing one tick.
+	voltrProgramDataAddress   = "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az"
+	voltrProgramDataSHA256    = "bf1c1831b3d6350f4340badb942bd2e7bfaca4aa89276cb65e8480aa30d44c56"
+	adaptorProgramDataAddress = "DrvzixaVmAuPVVJPtP5wykb9mvgDWqZbvZau9oiCUpHu"
+	adaptorProgramDataSHA256  = "8361a469833fa17df8f62f9c4b8055aa859552fe8db7610b8fcb3af6ac6eb6d5"
+	voltrProgramDeploySlot    = int64(445223838)
+	adaptorProgramDeploySlot  = int64(443528877)
+	// S1/S2: the observed NAV may drift from the last reported NAV by this
+	// bounded relative tolerance; beyond it the book is unexplained and the
+	// route stops instead of reporting.
+	navDriftToleranceBPS = int64(50)
+	navDriftFloorRaw     = int64(1_000)
+	// M7: un-harvested LP fee accumulators are bounded as a share of the LP
+	// supply Voltr actually prices against.
+	feeAccumulatorMaxBPS = int64(100)
 )
 
 var renderServiceIDPattern = regexp.MustCompile(`^srv-[a-z0-9]+$`)

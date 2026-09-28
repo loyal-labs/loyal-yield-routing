@@ -367,7 +367,7 @@ pub fn update_exact_program_interaction_policy_instruction(
     })
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticProgramInteractionConstraint {
     pub program_id: Pubkey,
     pub account_pubkeys: Vec<(u8, Vec<Pubkey>)>,
@@ -375,14 +375,14 @@ pub struct SemanticProgramInteractionConstraint {
     pub data: Vec<SemanticProgramInteractionDataConstraint>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SemanticProgramInteractionAccountDataConstraint {
     pub account_index: u8,
     pub owner: Option<Pubkey>,
     pub data: Vec<SemanticProgramInteractionDataConstraint>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SemanticProgramInteractionDataConstraint {
     SliceEquals { offset: u64, value: Vec<u8> },
     U8Equals { offset: u64, value: u8 },
@@ -496,6 +496,32 @@ pub fn create_deployed_semantic_program_interaction_policy_instruction(
         ],
         data: serialize_settings_actions(vec![action]),
     })
+}
+
+/// Create a deployed-ABI semantic ProgramInteraction policy with the same
+/// mint-scoped Daily spending-limit path used by production custom-policy
+/// compilation. This is intentionally separate from the compact experiment
+/// above: the deployed Squads program accepts the LegacyProgramInteraction
+/// payload for limited PolicyCreate actions.
+pub fn create_deployed_semantic_program_interaction_policy_with_daily_spending_limits(
+    settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    specs: Vec<SemanticProgramInteractionConstraint>,
+    daily_spending_limits: &[(Pubkey, u64)],
+) -> Result<Instruction> {
+    let constraints = semantic_program_interaction_constraints(specs)?;
+    create_program_interaction_action_instruction_with_daily_spending_limits(
+        settings,
+        authority,
+        delegated_signer,
+        policy_seed,
+        account_index,
+        constraints,
+        daily_spending_limits,
+    )
 }
 
 fn semantic_program_interaction_constraints(

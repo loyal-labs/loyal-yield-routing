@@ -3,7 +3,7 @@ package backyardrwa
 import "testing"
 
 func base() Snapshot {
-	return Snapshot{ObservationID: "o", Slot: 9, RouteKind: RouteKind, Fresh: true, LiquidationThresholdBPS: 8000, CapacityRaw: 7, PolicyLimitRaw: 10, MaxTargetLTVEntryRaw: 7, PolicyReady: true, ExitBuildable: true}
+	return Snapshot{ObservationID: "o", Slot: 9, RouteKind: RouteKind, Fresh: true, LiquidationThresholdBPS: 8000, CapacityRaw: 7, PolicyLimitRaw: 10, MaxTargetLTVEntryRaw: 7, PolicyReady: true, ExitBuildable: true, MinimumCollateralDepositRaw: 1}
 }
 func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 	s := base()
@@ -36,6 +36,7 @@ func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 	s.WithdrawalDemandRaw = 8
 	s.VoltrIdleRaw = 3
 	s.VoltrStrategyIdleRaw = 5
+	s.StagedAmountKnown, s.StagedAmountRaw = true, 5
 	if got := Decide(s); got.Action != VoltrRestoreIdle || got.AmountRaw != 5 {
 		t.Fatal(got)
 	}
@@ -49,6 +50,7 @@ func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 	s = base()
 	s.WithdrawalDemandRaw = 8
 	s.VoltrStrategyIdleRaw = 2
+	s.StagedAmountKnown, s.StagedAmountRaw = true, 2
 	s.SquadsIdleRaw = 3
 	s.HasPosition = true
 	if got := Decide(s); got.Action != VoltrRestoreIdle || got.AmountRaw != 2 {
@@ -79,6 +81,7 @@ func TestSelectedRouteNeverRestoresMoreThanActualEffectCap(t *testing.T) {
 	s.WithdrawalDemandRaw = Phase2TransactionCapRaw + 1
 	s.StrategyNAVRaw = Phase2TransactionCapRaw + 1
 	s.VoltrStrategyIdleRaw = Phase2TransactionCapRaw + 1
+	s.StagedAmountKnown, s.StagedAmountRaw = true, Phase2TransactionCapRaw+1
 	got := Decide(s)
 	if got.Action != HoldManualRecovery || got.Reason != "voltr_restore_actual_effect_exceeds_cap" || got.AmountRaw != 0 {
 		t.Fatal(got)
@@ -91,6 +94,7 @@ func TestSelectedRouteRestoreModelsFullWithinCapSweep(t *testing.T) {
 	s.WithdrawalDemandRaw = 500_000
 	s.StrategyNAVRaw = 900_000
 	s.VoltrStrategyIdleRaw = 900_000
+	s.StagedAmountKnown, s.StagedAmountRaw = true, 900_000
 	got := Decide(s)
 	if got.Action != VoltrRestoreIdle || got.AmountRaw != 900_000 || got.Reason != "withdrawal_staged" {
 		t.Fatal(got)
@@ -204,6 +208,7 @@ func TestSingleLoopEntryAndFullWithdrawalPrecedence(t *testing.T) {
 		t.Fatal(got)
 	}
 	withdraw.SquadsIdleRaw, withdraw.VoltrStrategyIdleRaw = 0, 99
+	withdraw.StagedAmountKnown, withdraw.StagedAmountRaw = true, 99
 	if got := Decide(withdraw); got.Action != VoltrRestoreIdle || got.AmountRaw != 99 {
 		t.Fatal(got)
 	}

@@ -67,11 +67,44 @@ const ADAPTOR_SPEC: ProgramSpec = ProgramSpec {
     max_data_len: 115_384,
 };
 
+/// v3 pin for the in-CPI holding pull / flow-adjusted NAV step-bound adaptor
+/// (v3.1: writable receipt, slot-based interval, v2 ticket, grief-resistant
+/// ticket init, relaxed settings graph; v3.2: withdraw pre-sweep,
+/// tracked-custody guard; v3.3: pricing by Voltr-explained flows only, exact
+/// 192-byte receipt pin, custody postconditions). Selected only by an explicit
+/// `--spec v3`, so a forgotten flag cannot ship the upgrade by accident. The
+/// artifact only fits ProgramData when built with link-time optimization:
+///
+/// ```sh
+/// cd crates/loyal-voltr-rwa-nav-adaptor
+/// env -u CARGO_TARGET_DIR CARGO_PROFILE_RELEASE_LTO=fat \
+///   CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 cargo-build-sbf \
+///   --sbf-out-dir ../../target/deploy
+/// ```
+///
+/// A default build is ~119.8 KB and exceeds `max_data_len`, so both
+/// `ensure_programdata_capacity` and the pinned hash below refuse it.
+const ADAPTOR_SPEC_V3: ProgramSpec = ProgramSpec {
+    schema: "loyal-voltr-rwa-nav-adaptor-deployer/v3",
+    barrier_schema: "loyal-voltr-rwa-nav-adaptor-mainnet-barrier/v3",
+    buffer_domain: b"loyal-voltr-rwa-nav-adaptor-upgradeable-buffer-v3\0",
+    program_id: "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+    artifact_filename: "loyal_voltr_rwa_nav_adaptor.so",
+    keypair_filename: "loyal_voltr_rwa_nav_adaptor-keypair.json",
+    elf_sha256: "836ded9ff4e79cda9fafbafcffcf9f2e9f395c762c69ba5af4630e82a9d8a4d0",
+    elf_len: 107_832,
+    max_data_len: 115_384,
+};
+
 #[derive(Debug, Serialize)]
 struct ArtifactReport {
     bytes: usize,
     sha256: String,
+    /// Payload capacity of the deployed ProgramData account: the loader stores
+    /// its metadata (deployment slot and upgrade authority) before this region,
+    /// so an ELF larger than `max_data_len` cannot be upgraded in place.
     max_data_len: usize,
+    headroom_bytes: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -175,6 +208,7 @@ struct Args {
     execute: bool,
     barrier_dir: Option<PathBuf>,
     write_window: usize,
+    spec: &'static str,
 }
 
 fn main() {
@@ -207,7 +241,7 @@ fn main() {
 
 fn run(rpc_url: &str) -> Result<DeploymentReport> {
     let args = parse_args()?;
-    let spec = ADAPTOR_SPEC;
+    let spec = select_spec(args.spec)?;
     if rpc_url.trim().is_empty() {
         bail!("SOLANA_RPC_URL is required");
     }
@@ -274,6 +308,7 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
                 bytes: artifact.len(),
                 sha256: spec.elf_sha256.to_owned(),
                 max_data_len: spec.max_data_len,
+                headroom_bytes: spec.max_data_len.saturating_sub(artifact.len()),
             },
             buffer: BufferReport {
                 address: "not-loaded-without-signer".to_owned(),
@@ -325,6 +360,7 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
                 bytes: artifact.len(),
                 sha256: spec.elf_sha256.to_owned(),
                 max_data_len: spec.max_data_len,
+                headroom_bytes: spec.max_data_len.saturating_sub(artifact.len()),
             },
             buffer: BufferReport {
                 address: "derived-only-after-execute-confirmation".to_owned(),
@@ -544,6 +580,7 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
                 bytes: artifact.len(),
                 sha256: spec.elf_sha256.to_owned(),
                 max_data_len: spec.max_data_len,
+                headroom_bytes: spec.max_data_len.saturating_sub(artifact.len()),
             },
             buffer: BufferReport {
                 address: buffer_address.to_string(),
@@ -630,6 +667,7 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
             bytes: artifact.len(),
             sha256: spec.elf_sha256.to_owned(),
             max_data_len: spec.max_data_len,
+            headroom_bytes: spec.max_data_len.saturating_sub(artifact.len()),
         },
         buffer: BufferReport {
             address: buffer_address.to_string(),
@@ -660,6 +698,8 @@ fn parse_args() -> Result<Args> {
     let mut execute = false;
     let mut barrier_dir = None;
     let mut target_seen = false;
+    let mut spec: &'static str = "v2";
+    let mut spec_seen = false;
     let mut write_window = env::var("LOYAL_LOADER_WRITE_WINDOW")
         .ok()
         .map(|value| parse_write_window(&value))
@@ -696,15 +736,24 @@ fn parse_args() -> Result<Args> {
                 write_window = parse_write_window(&value)?;
                 write_window_from_cli = true;
             }
+            "--spec" if !spec_seen => match arguments.next().as_deref() {
+                Some(value @ ("v2" | "v3")) => {
+                    spec = if value == "v3" { "v3" } else { "v2" };
+                    spec_seen = true;
+                }
+                Some(other) => bail!("unsupported --spec {other}; expected v2 or v3"),
+                None => bail!("--spec requires v2 or v3"),
+            },
             "--help" | "-h" => {
                 println!(
-                    "Usage: loyal-voltr-rwa-nav-adaptor-deployer [--target voltr-rwa-nav-adaptor] [--execute --barrier-dir ABSOLUTE_PATH] [--write-window 1..={MAX_LOADER_WRITE_WINDOW}]\n\nDry-run is the default and does not load signer material. --execute additionally requires CONFIRM_MAINNET=1 and persists one-send barriers before any broadcast. Loader writes are sent in bounded batches (default {DEFAULT_LOADER_WRITE_WINDOW}; LOYAL_LOADER_WRITE_WINDOW may override it)."
+                    "Usage: loyal-voltr-rwa-nav-adaptor-deployer [--target voltr-rwa-nav-adaptor] [--spec v2|v3] [--execute --barrier-dir ABSOLUTE_PATH] [--write-window 1..={MAX_LOADER_WRITE_WINDOW}]\n\nDry-run is the default and does not load signer material. --spec defaults to v2 (the live mainnet ELF); v3 is the pending upgrade pin. --execute additionally requires CONFIRM_MAINNET=1 and persists one-send barriers before any broadcast. Loader writes are sent in bounded batches (default {DEFAULT_LOADER_WRITE_WINDOW}; LOYAL_LOADER_WRITE_WINDOW may override it)."
                 );
                 process::exit(0);
             }
             "--execute" => bail!("--execute may only be provided once"),
             "--barrier-dir" => bail!("--barrier-dir may only be provided once"),
             "--target" => bail!("--target may only be provided once"),
+            "--spec" => bail!("--spec may only be provided once"),
             "--write-window" => bail!("--write-window may only be provided once"),
             _ => bail!("unknown argument: {argument}"),
         }
@@ -716,7 +765,37 @@ fn parse_args() -> Result<Args> {
         execute,
         barrier_dir,
         write_window,
+        spec,
     })
+}
+
+/// Select the pinned artifact spec. The default stays v2 (the live mainnet
+/// ELF): an operator who forgets `--spec` cannot ship the v3 upgrade by
+/// accident, and `validate_artifact` refuses a selected pin whose hash or
+/// length does not match the artifact on disk.
+fn select_spec(name: &str) -> Result<&'static ProgramSpec> {
+    match name {
+        "v2" => Ok(&ADAPTOR_SPEC),
+        "v3" => Ok(&ADAPTOR_SPEC_V3),
+        other => bail!("unknown --spec {other}: expected v2 or v3"),
+    }
+}
+
+/// An ELF that does not fit the deployed ProgramData payload cannot be
+/// upgraded in place, so refuse before any write is sliced or broadcast and
+/// name the `solana program extend` remedy.
+fn ensure_programdata_capacity(elf_len: usize, max_data_len: usize) -> Result<()> {
+    if elf_len > max_data_len {
+        // `solana program extend` ADDS bytes to the ProgramData account, so the
+        // remedy is the shortfall rounded up to the loader's 8-byte alignment —
+        // not the whole ELF size — and extending capacity also requires a
+        // reviewed re-pin of the capacity and artifact in the spec below.
+        let shortfall = (elf_len - max_data_len).next_multiple_of(8);
+        bail!(
+            "ELF is {elf_len} bytes but ProgramData capacity is pinned at {max_data_len} bytes; a reviewed capacity re-pin in the deployer spec plus `solana program extend <PROGRAM_ID> {shortfall}` is required before upgrading"
+        );
+    }
+    Ok(())
 }
 
 fn parse_write_window(value: &str) -> Result<usize> {
@@ -756,6 +835,7 @@ fn validate_private_key_file(path: &Path) -> Result<()> {
 }
 
 fn validate_artifact(artifact: &[u8], spec: &ProgramSpec) -> Result<()> {
+    ensure_programdata_capacity(artifact.len(), spec.max_data_len)?;
     if artifact.len() != spec.elf_len {
         bail!(
             "pinned artifact length mismatch: expected {}, got {}",
@@ -1664,9 +1744,47 @@ mod tests {
     };
 
     use super::{
-        classify_absent_signature, latest_barrier_path, parse_write_window,
+        classify_absent_signature, ensure_programdata_capacity, latest_barrier_path,
+        parse_write_window, select_spec, ADAPTOR_SPEC, ADAPTOR_SPEC_V3,
         DEFAULT_LOADER_WRITE_WINDOW, MAX_LOADER_WRITE_WINDOW,
     };
+
+    #[test]
+    fn spec_selection_picks_the_pinned_v3_artifact() {
+        let v2 = select_spec("v2").unwrap();
+        assert_eq!(
+            (v2.schema, v2.elf_sha256),
+            (ADAPTOR_SPEC.schema, ADAPTOR_SPEC.elf_sha256)
+        );
+        let v3 = select_spec("v3").unwrap();
+        assert_eq!(v3.schema, "loyal-voltr-rwa-nav-adaptor-deployer/v3");
+        assert_eq!(v3.elf_sha256, ADAPTOR_SPEC_V3.elf_sha256);
+        assert_eq!(v3.program_id, ADAPTOR_SPEC.program_id);
+        assert_eq!(v3.max_data_len, ADAPTOR_SPEC.max_data_len);
+        assert!(select_spec("v4").is_err());
+        assert!(select_spec("V3").is_err());
+        assert!(select_spec("").is_err());
+    }
+
+    #[test]
+    fn capacity_check_rejects_an_oversized_elf_and_names_the_remedy() {
+        assert!(ensure_programdata_capacity(107_720, 115_384).is_ok());
+        assert!(ensure_programdata_capacity(115_384, 115_384).is_ok());
+        let error = ensure_programdata_capacity(116_000, 115_384)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("116000"), "{error}");
+        assert!(error.contains("115384"), "{error}");
+        // `solana program extend` adds bytes, so the remedy is the shortfall
+        // (616 is already 8-byte aligned), not the whole ELF size.
+        assert!(error.contains("<PROGRAM_ID> 616`"), "{error}");
+        assert!(error.contains("re-pin"), "{error}");
+        // A shortfall that is not 8-byte aligned is rounded up.
+        let error = ensure_programdata_capacity(115_390, 115_384)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("<PROGRAM_ID> 8`"), "{error}");
+    }
 
     #[test]
     fn loader_write_window_is_bounded() {

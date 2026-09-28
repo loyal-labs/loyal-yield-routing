@@ -1,0 +1,30 @@
+{
+ "slot": 445228615,
+ "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+ "rpc": "https://api.mainnet-beta.solana.com",
+ "accounts": {
+  "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8": "voltr_program",
+  "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW": "adaptor_program",
+  "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG": "squads_smart_account_program",
+  "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA": "vault",
+  "3GHLmyTTGH9ZfQqb3YCo9xKjpPhMLvHsq2JSYzCnk9U6": "strategy_init_receipt",
+  "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj": "v2_strategy_config",
+  "ABYbbc7ms3FdB9BDe8HPYMKvuU9iEj8a55rVuyuZeNSs": "v1_strategy_config",
+  "C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5": "report_ticket",
+  "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh": "idle_ata",
+  "FTDWN5Ay8tzYPJBJT4s2oZaHRQ7jKPo8XP2ZRWb5GP3M": "custody_strategy_asset_ata",
+  "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe": "squads_usdc_ata",
+  "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6": "squads_settings",
+  "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh": "squads_vault",
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "usdc_mint",
+  "HoDV7mtsb2u1VARZLYuGByW7cCsGWL9NFxHZs7WHjdzz": "policy_voltr_allocate",
+  "41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP": "policy_report_nav",
+  "ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY": "policy_stage_squads_to_voltr",
+  "DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t": "policy_voltr_restore_idle"
+ },
+ "programdata": {
+  "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8": "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+  "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW": "DrvzixaVmAuPVVJPtP5wykb9mvgDWqZbvZau9oiCUpHu",
+  "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG": "2g3u9qgz4adKQVN1TUoh7bbBKqaSsjXtz1yX2ptagW5T"
+ }
+}

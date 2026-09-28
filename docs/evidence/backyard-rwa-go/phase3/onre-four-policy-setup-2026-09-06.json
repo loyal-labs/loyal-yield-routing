@@ -1,0 +1,633 @@
+{
+  "schema": "loyal-backyard-rwa-phase3-setup-rent-inspection/v1",
+  "readOnly": true,
+  "slot": 444669281,
+  "price": {
+    "source": "unsigned-reserve-refresh-simulation",
+    "mint": "native:SOL",
+    "tokenProgram": "11111111111111111111111111111111",
+    "decimals": 9,
+    "tokenUpperSf": [
+      244,
+      172,
+      110,
+      181,
+      202,
+      108,
+      141,
+      140,
+      6,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "usdcLowerSf": [
+      172,
+      22,
+      237,
+      108,
+      46,
+      144,
+      214,
+      15,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "observedSlot": 444669281,
+    "validThroughSlot": 444669313,
+    "evidenceSha256": "6fc060a2381f5f236a00fba2d5c1b7f58f8c3f8ee6bb2f885afba01c0402b19b"
+  },
+  "policies": [
+    {
+      "address": "2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV",
+      "dataLength": 1400,
+      "dataSha256": "6f97d7928d7927d65b588644d2e0506bc86b2173f2f525edf087474e28631a94",
+      "rentLamports": 9676824,
+      "rentUpperMicros": 1024345,
+      "rentAloneFitsTransactionCap": false
+    },
+    {
+      "address": "AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo",
+      "dataLength": 1250,
+      "dataSha256": "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11",
+      "rentLamports": 8726874,
+      "rentUpperMicros": 923787,
+      "rentAloneFitsTransactionCap": true
+    }
+  ],
+  "candidates": [
+    {
+      "operation": "onre-entry-swap",
+      "observation": {
+        "request": {
+          "Operation": "onre-entry-swap",
+          "Seed": 140,
+          "RecentBlockhash": "7KRT3BHTeGujcsdqif2tvHeCXLi3dGZtHqUnKfY9rD2m",
+          "LastValidBlockHeight": 422713831
+        },
+        "policy": "7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR",
+        "settingsSha256": "f3a35b21e680c4a10b008d7b838ce82867ec415eb843cb3293f573248c33aa11",
+        "finalizedSettingsSlot": 444669252,
+        "observationSlot": 444669284,
+        "mode": "prefund-then-create",
+        "allocatedBytes": 1383,
+        "rentLamports": 9569163,
+        "payerBalanceLamports": 1061980556,
+        "payments": [
+          {
+            "debit": {
+              "source": "",
+              "mint": "",
+              "tokenProgram": "",
+              "raw": 0
+            },
+            "fee": {
+              "messageSha256": "3ee935e555127807752fcd191545c4947173d518c740a0b10e03ff49c51bb6cd",
+              "slot": 444669284,
+              "lamports": 5000
+            },
+            "setupLamports": 4784581,
+            "nativePrice": {
+              "source": "unsigned-reserve-refresh-simulation",
+              "mint": "native:SOL",
+              "tokenProgram": "11111111111111111111111111111111",
+              "decimals": 9,
+              "tokenUpperSf": [
+                244,
+                172,
+                110,
+                181,
+                202,
+                108,
+                141,
+                140,
+                6,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "usdcLowerSf": [
+                172,
+                22,
+                237,
+                108,
+                46,
+                144,
+                214,
+                15,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "observedSlot": 444669283,
+              "validThroughSlot": 444669315,
+              "evidenceSha256": "ef665cc003081c91aaccc009a5ecce9488569b8ab146257abba1c2a00511e5ce"
+            },
+            "messageSha256": "3ee935e555127807752fcd191545c4947173d518c740a0b10e03ff49c51bb6cd",
+            "observationSlot": 444669284,
+            "validThroughSlot": 444669315,
+            "principalMicros": 0,
+            "networkFeeMicros": 530,
+            "setupLamportsMicros": 506474,
+            "totalMicros": 507004
+          },
+          {
+            "debit": {
+              "source": "",
+              "mint": "",
+              "tokenProgram": "",
+              "raw": 0
+            },
+            "fee": {
+              "messageSha256": "50662495c155c03b75bdbd2977fd3fca27e983315d1a6e1c0541f7aa95ed3fc8",
+              "slot": 444669283,
+              "lamports": 5000
+            },
+            "setupLamports": 4784582,
+            "nativePrice": {
+              "source": "unsigned-reserve-refresh-simulation",
+              "mint": "native:SOL",
+              "tokenProgram": "11111111111111111111111111111111",
+              "decimals": 9,
+              "tokenUpperSf": [
+                244,
+                172,
+                110,
+                181,
+                202,
+                108,
+                141,
+                140,
+                6,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "usdcLowerSf": [
+                172,
+                22,
+                237,
+                108,
+                46,
+                144,
+                214,
+                15,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "observedSlot": 444669283,
+              "validThroughSlot": 444669315,
+              "evidenceSha256": "ef665cc003081c91aaccc009a5ecce9488569b8ab146257abba1c2a00511e5ce"
+            },
+            "messageSha256": "50662495c155c03b75bdbd2977fd3fca27e983315d1a6e1c0541f7aa95ed3fc8",
+            "observationSlot": 444669284,
+            "validThroughSlot": 444669315,
+            "principalMicros": 0,
+            "networkFeeMicros": 530,
+            "setupLamportsMicros": 506474,
+            "totalMicros": 507004
+          }
+        ],
+        "totalMicros": 1014008,
+        "completionReserveMicros": 507004,
+        "validThroughSlot": 444669315,
+        "productionSetupAdmission": false
+      }
+    },
+    {
+      "operation": "onre-return-swap",
+      "observation": {
+        "request": {
+          "Operation": "onre-return-swap",
+          "Seed": 140,
+          "RecentBlockhash": "7GQ7rMknb4aRkjze3bVe274qn8UXVyaB284M6EMYRoFt",
+          "LastValidBlockHeight": 422713834
+        },
+        "policy": "7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR",
+        "settingsSha256": "f3a35b21e680c4a10b008d7b838ce82867ec415eb843cb3293f573248c33aa11",
+        "finalizedSettingsSlot": 444669255,
+        "observationSlot": 444669286,
+        "mode": "prefund-then-create",
+        "allocatedBytes": 1383,
+        "rentLamports": 9569163,
+        "payerBalanceLamports": 1061980556,
+        "payments": [
+          {
+            "debit": {
+              "source": "",
+              "mint": "",
+              "tokenProgram": "",
+              "raw": 0
+            },
+            "fee": {
+              "messageSha256": "5699554fa02ed479a9e6b09b091722f8cacbf5ee072db14292dd304002561a97",
+              "slot": 444669286,
+              "lamports": 5000
+            },
+            "setupLamports": 4784581,
+            "nativePrice": {
+              "source": "unsigned-reserve-refresh-simulation",
+              "mint": "native:SOL",
+              "tokenProgram": "11111111111111111111111111111111",
+              "decimals": 9,
+              "tokenUpperSf": [
+                244,
+                172,
+                110,
+                181,
+                202,
+                108,
+                141,
+                140,
+                6,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "usdcLowerSf": [
+                172,
+                22,
+                237,
+                108,
+                46,
+                144,
+                214,
+                15,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "observedSlot": 444669286,
+              "validThroughSlot": 444669318,
+              "evidenceSha256": "4cf71a707599d4cced0db347456d687b9c9faffe248f19a611c282f29caae3dd"
+            },
+            "messageSha256": "5699554fa02ed479a9e6b09b091722f8cacbf5ee072db14292dd304002561a97",
+            "observationSlot": 444669286,
+            "validThroughSlot": 444669318,
+            "principalMicros": 0,
+            "networkFeeMicros": 530,
+            "setupLamportsMicros": 506474,
+            "totalMicros": 507004
+          },
+          {
+            "debit": {
+              "source": "",
+              "mint": "",
+              "tokenProgram": "",
+              "raw": 0
+            },
+            "fee": {
+              "messageSha256": "e5c247ba2f1518f4a9c7080a436b29ba9325a95fa86a3bd502cee153330d3dcf",
+              "slot": 444669286,
+              "lamports": 5000
+            },
+            "setupLamports": 4784582,
+            "nativePrice": {
+              "source": "unsigned-reserve-refresh-simulation",
+              "mint": "native:SOL",
+              "tokenProgram": "11111111111111111111111111111111",
+              "decimals": 9,
+              "tokenUpperSf": [
+                244,
+                172,
+                110,
+                181,
+                202,
+                108,
+                141,
+                140,
+                6,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "usdcLowerSf": [
+                172,
+                22,
+                237,
+                108,
+                46,
+                144,
+                214,
+                15,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "observedSlot": 444669286,
+              "validThroughSlot": 444669318,
+              "evidenceSha256": "4cf71a707599d4cced0db347456d687b9c9faffe248f19a611c282f29caae3dd"
+            },
+            "messageSha256": "e5c247ba2f1518f4a9c7080a436b29ba9325a95fa86a3bd502cee153330d3dcf",
+            "observationSlot": 444669286,
+            "validThroughSlot": 444669318,
+            "principalMicros": 0,
+            "networkFeeMicros": 530,
+            "setupLamportsMicros": 506474,
+            "totalMicros": 507004
+          }
+        ],
+        "totalMicros": 1014008,
+        "completionReserveMicros": 507004,
+        "validThroughSlot": 444669318,
+        "productionSetupAdmission": false
+      }
+    },
+    {
+      "operation": "borrow",
+      "observation": {
+        "request": {
+          "Operation": "borrow",
+          "Seed": 140,
+          "RecentBlockhash": "BPDuVyRXvQFuTWUz1W2MTuKJLnnL6XgLcgj4s7jcxchM",
+          "LastValidBlockHeight": 422713835
+        },
+        "policy": "7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR",
+        "settingsSha256": "f3a35b21e680c4a10b008d7b838ce82867ec415eb843cb3293f573248c33aa11",
+        "finalizedSettingsSlot": 444669256,
+        "observationSlot": 444669288,
+        "mode": "prefund-then-create",
+        "allocatedBytes": 1400,
+        "rentLamports": 9676824,
+        "payerBalanceLamports": 1061980556,
+        "payments": [
+          {
+            "debit": {
+              "source": "",
+              "mint": "",
+              "tokenProgram": "",
+              "raw": 0
+            },
+            "fee": {
+              "messageSha256": "f3fefb5c3171ca66f45df1cf9e0ac6acdc6a71977ee96f390464d74d26f86a9c",
+              "slot": 444669288,
+              "lamports": 5000
+            },
+            "setupLamports": 4838412,
+            "nativePrice": {
+              "source": "unsigned-reserve-refresh-simulation",
+              "mint": "native:SOL",
+              "tokenProgram": "11111111111111111111111111111111",
+              "decimals": 9,
+              "tokenUpperSf": [
+                244,
+                172,
+                110,
+                181,
+                202,
+                108,
+                141,
+                140,
+                6,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "usdcLowerSf": [
+                172,
+                22,
+                237,
+                108,
+                46,
+                144,
+                214,
+                15,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "observedSlot": 444669287,
+              "validThroughSlot": 444669319,
+              "evidenceSha256": "5e3edaa4e49962fae67d99b97b5343560b3bf505f26deed864b45d27a17d600a"
+            },
+            "messageSha256": "f3fefb5c3171ca66f45df1cf9e0ac6acdc6a71977ee96f390464d74d26f86a9c",
+            "observationSlot": 444669288,
+            "validThroughSlot": 444669319,
+            "principalMicros": 0,
+            "networkFeeMicros": 530,
+            "setupLamportsMicros": 512173,
+            "totalMicros": 512703
+          },
+          {
+            "debit": {
+              "source": "",
+              "mint": "",
+              "tokenProgram": "",
+              "raw": 0
+            },
+            "fee": {
+              "messageSha256": "e02d7bd2b81ed2b3c4eab7ae23f7ed6e95006fee83b748f1061f9ec449bb0689",
+              "slot": 444669287,
+              "lamports": 5000
+            },
+            "setupLamports": 4838412,
+            "nativePrice": {
+              "source": "unsigned-reserve-refresh-simulation",
+              "mint": "native:SOL",
+              "tokenProgram": "11111111111111111111111111111111",
+              "decimals": 9,
+              "tokenUpperSf": [
+                244,
+                172,
+                110,
+                181,
+                202,
+                108,
+                141,
+                140,
+                6,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "usdcLowerSf": [
+                172,
+                22,
+                237,
+                108,
+                46,
+                144,
+                214,
+                15,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "observedSlot": 444669287,
+              "validThroughSlot": 444669319,
+              "evidenceSha256": "5e3edaa4e49962fae67d99b97b5343560b3bf505f26deed864b45d27a17d600a"
+            },
+            "messageSha256": "e02d7bd2b81ed2b3c4eab7ae23f7ed6e95006fee83b748f1061f9ec449bb0689",
+            "observationSlot": 444669288,
+            "validThroughSlot": 444669319,
+            "principalMicros": 0,
+            "networkFeeMicros": 530,
+            "setupLamportsMicros": 512173,
+            "totalMicros": 512703
+          }
+        ],
+        "totalMicros": 1025406,
+        "completionReserveMicros": 512703,
+        "validThroughSlot": 444669319,
+        "productionSetupAdmission": false
+      }
+    },
+    {
+      "operation": "repay",
+      "observation": {
+        "request": {
+          "Operation": "repay",
+          "Seed": 140,
+          "RecentBlockhash": "RAN4PsBxE6GSQZBM318fHfKzJf2E9xnSnqPpA473U49",
+          "LastValidBlockHeight": 422713837
+        },
+        "policy": "7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR",
+        "settingsSha256": "f3a35b21e680c4a10b008d7b838ce82867ec415eb843cb3293f573248c33aa11",
+        "finalizedSettingsSlot": 444669258,
+        "observationSlot": 444669290,
+        "mode": "direct-create",
+        "allocatedBytes": 1250,
+        "rentLamports": 8726874,
+        "payerBalanceLamports": 1061980556,
+        "payments": [
+          {
+            "debit": {
+              "source": "",
+              "mint": "",
+              "tokenProgram": "",
+              "raw": 0
+            },
+            "fee": {
+              "messageSha256": "231052e76ff2e101a95e4156dc06b05e355ec23117d7011dd683928654c0d01d",
+              "slot": 444669290,
+              "lamports": 5000
+            },
+            "setupLamports": 8726874,
+            "nativePrice": {
+              "source": "unsigned-reserve-refresh-simulation",
+              "mint": "native:SOL",
+              "tokenProgram": "11111111111111111111111111111111",
+              "decimals": 9,
+              "tokenUpperSf": [
+                244,
+                172,
+                110,
+                181,
+                202,
+                108,
+                141,
+                140,
+                6,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "usdcLowerSf": [
+                172,
+                22,
+                237,
+                108,
+                46,
+                144,
+                214,
+                15,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0
+              ],
+              "observedSlot": 444669289,
+              "validThroughSlot": 444669321,
+              "evidenceSha256": "20ff593a97cb9e4be8f7ef82276883046fbae5b7e68bbe51d17897906e2c45fd"
+            },
+            "messageSha256": "231052e76ff2e101a95e4156dc06b05e355ec23117d7011dd683928654c0d01d",
+            "observationSlot": 444669290,
+            "validThroughSlot": 444669321,
+            "principalMicros": 0,
+            "networkFeeMicros": 530,
+            "setupLamportsMicros": 923787,
+            "totalMicros": 924317
+          }
+        ],
+        "totalMicros": 924317,
+        "completionReserveMicros": 0,
+        "validThroughSlot": 444669321,
+        "productionSetupAdmission": false
+      }
+    }
+  ],
+  "limitation": "Allocation samples exclude fees. Candidates include fees and use independent observation slots; they are alternatives at the currently finalized next seed, not a batch. Refresh after each creation. No durable admission, deployment or repaired-farm validation, signing, installation or broadcast."
+}

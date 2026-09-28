@@ -1,0 +1,43 @@
+{
+  "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "phase": "1 (mainnet reset)",
+  "completedAtUtc": "2026-09-09T22:20:00Z",
+  "toolHead": "40d7cc7",
+  "legs": [
+    { "leg": 1, "step": "config", "journal": "hxtk-config.json", "verdict": "FINALIZED_RECONCILED", "note": "degradation 0, admin fee 0, waiting period 600" },
+    { "leg": 2, "step": "repair-policy", "journal": "hxtk-repair-policy.json", "verdict": "FINALIZED_RECONCILED", "note": "seed 140 policy 7vqKymJ4RcP9TUR9jT6G2ruuRp3j6rVhTzoYJWYTe2dR, PolicyCreate 837 bytes, sha256 796624dfef068d71db889913de3527f36c23e19e11aafc9e370f021b649f153e" },
+    { "leg": 3, "step": "repair + repair-policy-remove", "journal": "hxtk-repair.json", "verdict": "FINALIZED_RECONCILED", "note": "crafted NAV 3793536; tv == idle == 3793417; receipt1 3793536; policy removed; ticket lastConsumedSequence 445678843; block time 1788978394" },
+    { "leg": 4, "step": "harvest", "journal": "hxtk-harvest.json", "verdict": "FINALIZED_RECONCILED", "note": "fee accumulators 0/0/0" },
+    { "leg": 5, "step": "cancel", "journal": "hxtk-cancel-2.json", "signature": "21MGqU69nfaG9SUMDAzQvMrtbUfSAvaFRRMc3ozGgFmc2iezPZRewWzpnSn4XP1EYpedDCBVqE2rc7gKdvEkzvow", "finalizedSlot": 445724924, "verdict": "FINALIZED_RECONCILED", "note": "refund 78196265, burn 21745257, supply after 167797415 == admin LP, receipt 8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e closed; first attempt hxtk-cancel.json aborted pre-send on the fence allowlist, never sent, wire expired" },
+    { "leg": 6, "step": "request", "journal": "hxtk-request.json", "signature": "65kUHLJ4dwsUjNVMZfoHGsXbkTcJMnj7pafGgmq5e5nPAt3C8WePwGUUj1Q7yNvoaskC85DsVuaxfZjrtZhebEcm", "finalizedSlot": 445725361, "verdict": "FINALIZED_RECONCILED", "note": "withdraw-all 167797415 LP, amountAssetBits 1067745598426973642066, quote 3793394, withdrawableFromTs 1788993817" },
+    { "leg": 7, "step": "claim", "journal": "hxtk-claim.json", "signature": "3KUAbWRM4J14saXxaQ8nats6vPfDhrC1M8Huecn2w4uwuTJG3m6GvzaYD2hwmrZSp1ozDfzkQqo6rQnQxuEhJs6R", "finalizedSlot": 445730288, "verdict": "FINALIZED_RECONCILED", "note": "payout 3793394, burn 167797415; first reconcile refused on a ticket comparison bug fixed in 40d7cc7; same-journal --reconcile finalized" }
+  ],
+  "postState": {
+    "totalValue": "23",
+    "idleBalance": "23",
+    "lpSupply": "0",
+    "adminLp": "0",
+    "requestEscrowLp": "0",
+    "requestReceipt": null,
+    "receipt1PositionValue": "3793536",
+    "receipt1CustodyTracked": "0",
+    "adminUsdcBalance": "6816024",
+    "feeAccumulators": "0/0/0",
+    "lockedProfitDegradationDurationSeconds": "0",
+    "withdrawalWaitingPeriodSeconds": "600",
+    "reportTicket": { "lastConsumedSequence": "445678843", "activeSequence": "0", "armed": false, "activeHashIsZero": true }
+  },
+  "conservationInvariant": "idle + receipt1 - tv == 3793536 (23 + 3793536 - 23)",
+  "nextSteps": [
+    "restore-degradation 86400 only at or after 2026-09-10T18:26:34Z (24 h after the repair block time) and before any deposit",
+    "1 USDC canary after the restore",
+    "strategy-two cutover (adaptor v3.3, bootstrap, policies 141-144, retire 62-65, worker image) before third-party money"
+  ],
+  "toolFixesDuringPhase1": [
+    "d54e128 and f878186: report slot freshness and proof pins",
+    "7f1918f: pre-sign and pre-send validation, event-aligned reconciles",
+    "bdfa488: accounts closed inside a simulated transaction read as absent",
+    "c3cb395: fence allowlist accepts preSendSnapshotSlot",
+    "40d7cc7: report ticket compared by projected fields"
+  ]
+}

@@ -12,6 +12,7 @@ import (
 
 func readyWorkerManifest(t *testing.T) RouteManifest {
 	t.Helper()
+	stringPtr := func(value string) *string { return &value }
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -21,7 +22,17 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 	manifest.PolicyCatalog.AddressesResolved = true
 	packing := int64(8)
 	manifest.PolicyCatalog.PackingRung = &packing
-	manifest.PolicyCatalog.PolicyAccounts = []string{bridgeAllocationPolicy}
+	manifest.PolicyCatalog.SHA256 = stringPtr(strings.Repeat("c", 64))
+	manifest.PolicyCatalog.PolicyAccounts = []string{
+		"2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+		"BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+		"9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+		"Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+	}
+	for index := range manifest.PolicyCatalog.Policies {
+		hash := strings.Repeat(string("def0"[index]), 64)
+		manifest.PolicyCatalog.Policies[index].DataSHA256 = &hash
+	}
 	commit := strings.Repeat("1", 40)
 	digest := "sha256:" + strings.Repeat("2", 64)
 	service := "loyal-backyard-rwa-worker"
@@ -30,8 +41,13 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 	manifest.Deployment.SingleWriterService = &service
 	for index := range manifest.RuntimeBindings.BridgePolicies {
 		hash := strings.Repeat(string(rune('a'+index)), 64)
-		manifest.RuntimeBindings.BridgePolicies[index].DataSHA256 = &hash
+		manifest.RuntimeBindings.BridgePolicies[index].NormalizedDigest = hash
+		manifest.RuntimeBindings.BridgePolicies[index].DataSHA256Raw = hash
 	}
+	manifest.RuntimeBindings.CollateralLifecycle.DataSHA256 = stringPtr(strings.Repeat("e", 64))
+	manifest.RuntimeBindings.DebtLifecycle.DataSHA256 = stringPtr(strings.Repeat("f", 64))
+	manifest.RuntimeBindings.SwapRoutesA.DataSHA256 = stringPtr(strings.Repeat("0", 64))
+	manifest.RuntimeBindings.SwapRoutesB.DataSHA256 = stringPtr(strings.Repeat("1", 64))
 	manifest.RuntimeBindings.PrimeUSDC.Packets = make([]struct {
 		Action                  Action                  `json:"action"`
 		Policy                  string                  `json:"policy"`
@@ -86,12 +102,38 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 			}
 			return nil
 		},
+		admitBridge: func(_ context.Context, id string, got Observation, d Decision, _ BridgeExecutionEvidence) error {
+			order = append(order, "admit")
+			if id != "operation" || got != observation || d != decision {
+				t.Fatal("admission lost the recorded decision")
+			}
+			return nil
+		},
 	}}
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "prepare,record,build" {
+	if got := strings.Join(order, ","); got != "prepare,record,admit,build" {
 		t.Fatalf("decision was not persisted before build: %s", got)
+	}
+	// The same real dispatch path must preserve a typed admission rejection,
+	// not turn it into generic restart recovery or a successful build.
+	rejected := &BudgetHold{Reason: "transaction_cap_exceeded"}
+	worker.runtime.admitBridge = func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return rejected }
+	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error {
+		t.Fatal("admission rejection reached construction/signing")
+		return nil
+	}
+	journaled := false
+	worker.runtime.recordBudgetHold = func(_ context.Context, id string, hold *BudgetHold) error {
+		if id != "operation" || hold != rejected {
+			t.Fatal("budget HOLD lost its operation or type")
+		}
+		journaled = true
+		return nil
+	}
+	if err := worker.Tick(context.Background()); !errors.Is(err, rejected) || !journaled {
+		t.Fatalf("budget rejection did not remain a journaled stop: %v", err)
 	}
 }
 
@@ -100,6 +142,8 @@ func TestTickPreservesHoldJournalWhileManifestIsBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	policyCatalogHash := strings.Repeat("c", 64)
+	manifest.PolicyCatalog.SHA256 = &policyCatalogHash
 	observation := tickObservation(Snapshot{ObservationID: "hold", Slot: 10, RouteKind: RouteKind, Fresh: true})
 	recorded := false
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
@@ -182,13 +226,25 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 			}
 			return nil
 		},
+		admitKamino: func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error {
+			order = append(order, "admit-kamino")
+			return nil
+		},
 	}}
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "prepare-kamino,record,build-kamino" {
+	if got := strings.Join(order, ","); got != "prepare-kamino,record,admit-kamino,build-kamino" {
 		t.Fatalf("wrong Kamino dispatch order: %s", got)
 	}
+	worker.runtime.admitKamino = func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error {
+		return budgetHold("complete_position_exit_admission_unavailable")
+	}
+	worker.runtime.buildKamino = func(context.Context, string, KaminoExecutionEvidence) error {
+		t.Fatal("rejected position admission reached signing")
+		return nil
+	}
+	assertBudgetHold(t, worker.Tick(context.Background()), "complete_position_exit_admission_unavailable")
 
 	loads := 0
 	reobserved := false
@@ -394,6 +450,7 @@ func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 			cancel()
 			return nil
 		},
+		admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return nil },
 	}}
 	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
 	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("f", 40), config)

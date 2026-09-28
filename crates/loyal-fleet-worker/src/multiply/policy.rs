@@ -272,3 +272,26 @@ fn route_constraint_index(instruction: &Instruction, index: u8) -> Result<u8, Bo
     }
     Ok(index)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loyal_actions::backyard_basic_policy_set::compile_backyard_basic_policy_set;
+
+    #[test]
+    fn basic_policy_lifecycle_constraints_match_the_worker_consumer() {
+        let settings = Pubkey::from_str("5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6").unwrap();
+        let authority = Pubkey::from_str("BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ").unwrap();
+        let delegate = Pubkey::from_str("62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5").unwrap();
+        let topology =
+            super::super::config::derive_earn_max_topology_with_policy_seed_base(settings, 141)
+                .unwrap();
+        let consumer_collateral =
+            canonical_constraints(topology, PolicyFamily::Collateral).unwrap();
+        let consumer_debt = canonical_constraints(topology, PolicyFamily::Debt).unwrap();
+        let artifact =
+            compile_backyard_basic_policy_set(settings, authority, delegate, 141).unwrap();
+        assert_eq!(artifact[0].constraints, consumer_collateral);
+        assert_eq!(artifact[1].constraints, consumer_debt);
+    }
+}

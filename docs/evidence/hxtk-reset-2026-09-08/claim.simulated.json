@@ -1,0 +1,10 @@
+{
+  "canonicalStateRoot": "/Users/user/.loyal/hxtk-reset/HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "schema": "loyal-voltr-hxtk-reset-step/v1",
+  "step": "claim",
+  "sent": false,
+  "signed": false,
+  "broadcast": false,
+  "verdict": "PENDING_FINALIZED_REQUEST",
+  "reason": "--request-journal is required; claim must bind to the new request receipt"
+}

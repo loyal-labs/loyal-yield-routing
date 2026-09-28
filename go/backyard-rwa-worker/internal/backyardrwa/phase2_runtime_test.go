@@ -4,8 +4,27 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func basicPolicyFixtureManifest(t *testing.T) RouteManifest {
+	t.Helper()
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashes := map[BasicPolicyFamily]*string{}
+	for index, family := range []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB} {
+		hash := strings.Repeat(string("abcd"[index:index+1]), 64)
+		hashes[family] = &hash
+	}
+	manifest.RuntimeBindings.CollateralLifecycle.DataSHA256 = hashes[BasicCollateralLifecycle]
+	manifest.RuntimeBindings.DebtLifecycle.DataSHA256 = hashes[BasicDebtLifecycle]
+	manifest.RuntimeBindings.SwapRoutesA.DataSHA256 = hashes[BasicSwapRoutesA]
+	manifest.RuntimeBindings.SwapRoutesB.DataSHA256 = hashes[BasicSwapRoutesB]
+	return manifest
+}
 
 func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 	snapshot := Snapshot{
@@ -64,10 +83,7 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 }
 
 func TestPhase2PinnedRuntimeAddressesAreCanonicalBase58(t *testing.T) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := basicPolicyFixtureManifest(t)
 	addresses := routeFixedAddresses(manifest)
 	for _, lane := range []string{RouteID, SelectedRouteID} {
 		route, err := runtimeRoute(lane)
@@ -90,19 +106,27 @@ func TestPhase2PinnedRuntimeAddressesAreCanonicalBase58(t *testing.T) {
 }
 
 func TestPhase2UnsupportedLaneFailsClosed(t *testing.T) {
-	decision := Decide(Snapshot{ObservationID: "other", Slot: 1, RouteKind: RouteKind, RouteLane: "OnRe/ONyc/USDC", Fresh: true})
-	if decision.Action != HoldManualRecovery || decision.Reason != "unsupported_runtime_lane" {
-		t.Fatalf("unsupported lane was not held: %+v", decision)
+	if _, err := runtimeRoute("OnRe/ONyc/USDC"); err != nil {
+		t.Fatal(err)
+	}
+	// The OnRe sibling shares the phase 3 budget family but no runtime
+	// install, so it must hold exactly like a fully unknown lane.
+	for _, lane := range []string{"unknown/asset/debt", "OnRe/ONyc/USDG"} {
+		decision := Decide(Snapshot{ObservationID: "other", Slot: 1, RouteKind: RouteKind, RouteLane: lane, Fresh: true})
+		if decision.Action != HoldManualRecovery || decision.Reason != "unsupported_runtime_lane" || decision.StrategyKey != lane {
+			t.Fatalf("unsupported lane was not held: %+v", decision)
+		}
 	}
 }
 
-func TestPhase2RuntimeActivationIsExactlyTwoRoutes(t *testing.T) {
+func TestPhase2RuntimeActivationIncludesBasicRoutes(t *testing.T) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if manifest.RuntimeActivation.SelectedLane != SelectedRouteID || len(manifest.RuntimeActivation.RuntimeRoutes) != RuntimeRouteCount ||
-		manifest.RuntimeActivation.RuntimeRoutes[0] != PhaseOneLaneID || manifest.RuntimeActivation.RuntimeRoutes[1] != SelectedRouteID {
+		manifest.RuntimeActivation.RuntimeRoutes[0].Lane != PhaseOneLaneID || manifest.RuntimeActivation.RuntimeRoutes[1].Lane != SelectedRouteID ||
+		manifest.RuntimeActivation.RuntimeRoutes[2].Lane != "OnRe/ONyc/USDC" {
 		t.Fatalf("unexpected runtime activation: %+v", manifest.RuntimeActivation)
 	}
 	route, err := manifest.activeRuntimeRoute()
@@ -112,15 +136,13 @@ func TestPhase2RuntimeActivationIsExactlyTwoRoutes(t *testing.T) {
 }
 
 func TestPhase2MapleKaminoPacketUsesPinnedGraph(t *testing.T) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := basicPolicyFixtureManifest(t)
+	var err error
 	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if request.RouteLane != SelectedRouteID || request.Policy != "5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c" || len(request.Accounts) != 17 {
+	if request.RouteLane != SelectedRouteID || request.Policy != mustBasicPolicy(t, BasicCollateralLifecycle).Policy || request.PolicyConstraintIndex != 0 || len(request.Accounts) != 17 {
 		t.Fatalf("unexpected Maple Kamino packet: %+v", request)
 	}
 	if _, leg, err := kaminoRouteInstruction(request, SelectedRouteID); err != nil || leg != kaminoLegDeposit {
@@ -130,23 +152,20 @@ func TestPhase2MapleKaminoPacketUsesPinnedGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if borrow.Policy != "2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV" || borrow.Accounts[12].Address != mapleObligationDebtFarm || borrow.Accounts[13].Address != mapleDebtFarm {
+	if borrow.Policy != mustBasicPolicy(t, BasicDebtLifecycle).Policy || borrow.PolicyConstraintIndex != 0 || borrow.Accounts[12].Address != mapleObligationDebtFarm || borrow.Accounts[13].Address != mapleDebtFarm {
 		t.Fatalf("borrow packet did not pin live farm accounts: %+v", borrow)
 	}
 	repay, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repay.Policy != "AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo" || repay.Accounts[9].Address != mapleObligationDebtFarm || repay.Accounts[10].Address != mapleDebtFarm {
+	if repay.Policy != mustBasicPolicy(t, BasicDebtLifecycle).Policy || repay.PolicyConstraintIndex != 1 || repay.Accounts[9].Address != mapleObligationDebtFarm || repay.Accounts[10].Address != mapleDebtFarm {
 		t.Fatalf("repay packet did not pin live farm accounts: %+v", repay)
 	}
 }
 
 func TestPhase2MapleSignedKaminoWirePassesPersistenceValidation(t *testing.T) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := basicPolicyFixtureManifest(t)
 	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +182,62 @@ func TestPhase2MapleSignedKaminoWirePassesPersistenceValidation(t *testing.T) {
 	}
 	if err := result.validateForDelegate(delegate); err != nil {
 		t.Fatalf("exact Maple Kamino wire was rejected before persistence: %v", err)
+	}
+}
+
+func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
+	manifest := basicPolicyFixtureManifest(t)
+	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
+		route, err := runtimeRoute(lane)
+		if err != nil || !route.BasicPolicy {
+			t.Fatalf("%s is not a basic runtime route: %+v, %v", lane, route, err)
+		}
+		if _, err := fixedRouteAction(OpenRouteStep, lane); err != nil {
+			t.Fatalf("%s lifecycle action was not dispatchable: %v", lane, err)
+		}
+		for _, test := range []struct {
+			leg    kaminoPrimeUSDCLeg
+			action Action
+			family BasicPolicyFamily
+			index  byte
+		}{
+			{kaminoLegDeposit, OpenRouteStep, BasicCollateralLifecycle, 0},
+			{kaminoLegWithdraw, DeleverRouteStep, BasicCollateralLifecycle, 1},
+			{kaminoLegBorrow, OpenRouteStep, BasicDebtLifecycle, 0},
+			{kaminoLegRepay, DeleverRouteStep, BasicDebtLifecycle, 1},
+		} {
+			request, err := manifest.kaminoPacketForRoute(test.action, test.leg, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, lane)
+			if err != nil {
+				t.Fatalf("%s %v: %v", lane, test.leg, err)
+			}
+			policy, _ := basicPolicyBinding(test.family)
+			if request.Policy != policy.Policy || request.PolicyConstraintIndex != test.index {
+				t.Fatalf("%s %v resolved to policy=%s index=%d", lane, test.leg, request.Policy, request.PolicyConstraintIndex)
+			}
+			if _, got, err := kaminoRouteInstruction(request, lane); err != nil || got != test.leg {
+				t.Fatalf("%s %v did not validate: %v, %v", lane, test.leg, err, got)
+			}
+		}
+		for _, test := range []struct {
+			action Action
+			family BasicPolicyFamily
+		}{
+			{SwapStableToCollateralStep, BasicSwapRoutesA},
+			{SwapCollateralToStableStep, BasicSwapRoutesB},
+		} {
+			binding, err := manifest.jupiterPolicyForRoute(test.action, lane)
+			if err != nil {
+				t.Fatalf("%s %s: %v", lane, test.action, err)
+			}
+			policy, _ := basicPolicyBinding(test.family)
+			wantIndex := byte(0)
+			if lane == SelectedRouteID {
+				wantIndex = 1
+			}
+			if binding.Policy != policy.Policy || binding.PolicyConstraintIndex != wantIndex {
+				t.Fatalf("%s %s resolved to policy=%s index=%d", lane, test.action, binding.Policy, binding.PolicyConstraintIndex)
+			}
+		}
 	}
 }
 
@@ -187,10 +262,8 @@ func TestPhase2CutoverRejectsAnyLegacyPrimeExposure(t *testing.T) {
 }
 
 func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := basicPolicyFixtureManifest(t)
+	var err error
 	entry, err := manifest.jupiterPolicyForRoute(SwapStableToCollateralStep, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
@@ -199,9 +272,9 @@ func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.ConstraintBindings[0].RoutePlanPrefixHex != "01010000007400640001" ||
-		exit.ConstraintBindings[0].RoutePlanPrefixHex != "02010000007400640001" {
-		t.Fatalf("unexpected Phase 2 route prefixes: entry=%+v exit=%+v", entry, exit)
+	if entry.Policy != mustBasicPolicy(t, BasicSwapRoutesA).Policy || entry.PolicyConstraintIndex != 1 ||
+		exit.Policy != mustBasicPolicy(t, BasicSwapRoutesB).Policy || exit.PolicyConstraintIndex != 1 {
+		t.Fatalf("unexpected Phase 2 basic swap bindings: entry=%+v exit=%+v", entry, exit)
 	}
 }
 
@@ -213,12 +286,21 @@ func TestPhase2JupiterQuotePinsManifestVenue(t *testing.T) {
 		RoutePlan: []json.RawMessage{json.RawMessage(`{"swapInfo":{"label":"Manifest"}}`)},
 	}
 	if _, _, err := validateJupiterQuoteForRoute(quote, SwapUSDCToPrimeStep, 1_000_000, SelectedRouteID); err != nil {
-		t.Fatalf("Manifest quote rejected: %v", err)
+		t.Fatalf("basic quote rejected: %v", err)
 	}
 	quote.RoutePlan = []json.RawMessage{json.RawMessage(`{"swapInfo":{"label":"AlphaQ"}}`)}
-	if _, _, err := validateJupiterQuoteForRoute(quote, SwapUSDCToPrimeStep, 1_000_000, SelectedRouteID); err == nil {
-		t.Fatal("accepted an unreviewed selected-lane venue")
+	if _, _, err := validateJupiterQuoteForRoute(quote, SwapUSDCToPrimeStep, 1_000_000, SelectedRouteID); err != nil {
+		t.Fatalf("basic quote with recorded route plan rejected: %v", err)
 	}
+}
+
+func mustBasicPolicy(t *testing.T, family BasicPolicyFamily) BasicPolicyBinding {
+	t.Helper()
+	binding, err := basicPolicyBinding(family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binding
 }
 
 func TestPhase2DecisionIsClampedToAuthorizedPerTransactionCap(t *testing.T) {

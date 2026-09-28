@@ -3,22 +3,39 @@ import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, resolve } from "node:path";
 
 import { generated as squadsGenerated } from "@loyal-labs/loyal-smart-accounts-core";
-import { Connection, PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { address } from "@solana/kit";
+import { Connection, PublicKey, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
-import { prepareSignedV0Transaction } from "../integrations/solana-compat.js";
+import {
+  deriveStrategyTwoPolicySeeds,
+  rwaMultiplyStrategyTwoTarget,
+} from "../domain/rwa-multiply-strategy2-route-spec.js";
+import { prepareSignedV0Transaction, toWeb3Instruction } from "../integrations/solana-compat.js";
 import { signingMaterialFromEnvironment } from "../integrations/signer.js";
 import { deriveRwaMultiplyVoltrAccounts } from "../integrations/rwa-multiply-voltr.js";
 import {
+  assertStrategyTwoReplacementPoliciesFinalized,
   buildLegacyCustomPolicyRetirementInstruction,
+  customPolicyAddress,
+  deriveStrategyTwoReplacementSeeds,
   LEGACY_CUSTOM_POLICY_ADDRESSES,
   LEGACY_CUSTOM_POLICY_DATA_SHA256,
   LEGACY_CUSTOM_POLICY_SEEDS,
-  REPLACEMENT_CUSTOM_POLICY_IDENTITIES,
 } from "../policies/rwa-multiply-legacy-retirement.js";
-import { verifyInstalledCustomPolicies } from "../policies/rwa-multiply-custom.js";
+import {
+  readFinalizedCustomPolicySeed,
+  verifyInstalledCustomPolicies,
+} from "../policies/rwa-multiply-custom.js";
+import {
+  assertStrategyTwoAnchorObservation,
+  observeStrategyTwoSeedAnchor,
+  readStrategyTwoSeedExpectation,
+} from "../policies/rwa-multiply-strategy2-seed-journal.js";
 
 const PACKET_LIMIT = 1_232;
+/** Read-only fallback endpoint for unsigned preflight simulations; never logged. */
+const PUBLIC_MAINNET_RPC = "https://api.mainnet-beta.solana.com";
 
 type PolicyState = Readonly<{
   settings: PublicKey;
@@ -105,6 +122,7 @@ async function simulateProtectedAccountBatches(input: Readonly<{
   serializedTransaction: Uint8Array;
   minContextSlot: number;
   manifest: Awaited<ReturnType<typeof protectedAccountManifest>>;
+  sigVerify: boolean;
 }>) {
   const transaction = VersionedTransaction.deserialize(input.serializedTransaction);
   const rows: ReturnType<typeof protectedRows> = [];
@@ -114,7 +132,7 @@ async function simulateProtectedAccountBatches(input: Readonly<{
     const addresses = manifestBatch.map(({ address }) => address);
     const simulation = await input.connection.simulateTransaction(transaction, {
       commitment: "finalized",
-      sigVerify: true,
+      sigVerify: input.sigVerify,
       replaceRecentBlockhash: false,
       minContextSlot: input.minContextSlot,
       accounts: { encoding: "base64", addresses: [...addresses] },
@@ -231,12 +249,168 @@ async function inspectProtectedState(
   };
 }
 
+function cliValue(flag: string): string {
+  const index = process.argv.indexOf(flag);
+  if (index < 0) return "";
+  const value = process.argv[index + 1] ?? "";
+  invariant(value.length > 0 && !value.startsWith("--"), `${flag} requires a value`);
+  return value;
+}
+
+function seedStrings(policySeedBefore: bigint): string[] {
+  const seeds = deriveStrategyTwoPolicySeeds(policySeedBefore);
+  return [seeds.allocation, seeds.navRefresh, seeds.stageWithdrawal, seeds.withdraw].map(String);
+}
+
+function seedBaseFromJournal(path: string): bigint {
+  return readStrategyTwoSeedExpectation(path).policySeedBefore;
+}
+
+/**
+ * Keyless rehearsal: the PolicyRemove wire is simulated unsigned
+ * (`sigVerify: false`) against live mainnet state, every protected account is
+ * re-read from the post-simulation images, and the result lands in the
+ * evidence file with `signed: false, sent: false`. No key material is loaded
+ * anywhere in this branch, so this run can never produce a sendable wire.
+ */
+async function runPreflight(
+  connection: Connection,
+  route: typeof RWA_MULTIPLY_ROUTE,
+  policySeedBefore: bigint,
+  anchorObserved: "pass" | "skipped-no-connection",
+) {
+  const evidence = cliValue("--evidence");
+  invariant(evidence.endsWith(".json") && existsSync(dirname(evidence)),
+    "--preflight requires --evidence PATH.json under an existing directory");
+  const protectedManifest = await protectedAccountManifest();
+  const before = await inspectProtectedState(connection, 0, protectedManifest);
+  invariant(before.allPresent, "legacy policy set is not fully present; nothing to preflight");
+
+  const retirement = buildLegacyCustomPolicyRetirementInstruction();
+  const latestBlockhash = await connection.getLatestBlockhash("finalized");
+  const message = new TransactionMessage({
+    payerKey: new PublicKey(route.setupAdmin),
+    recentBlockhash: latestBlockhash.blockhash,
+    instructions: [toWeb3Instruction(retirement)],
+  }).compileToV0Message();
+  const unsigned = new VersionedTransaction(message);
+  const serialized = unsigned.serialize();
+  invariant(serialized.length <= PACKET_LIMIT,
+    `legacy policy retirement packet exceeds ${PACKET_LIMIT} bytes`);
+  const simulation = await connection.simulateTransaction(unsigned, {
+    commitment: "finalized",
+    sigVerify: false,
+    replaceRecentBlockhash: false,
+    minContextSlot: before.contextSlot,
+    accounts: {
+      encoding: "base64",
+      addresses: [
+        ...LEGACY_CUSTOM_POLICY_ADDRESSES,
+        route.squads.settings,
+        route.previousBackyardVault,
+        route.vault.address,
+      ],
+    },
+  });
+  invariant(simulation.value.err === null,
+    `unsigned legacy retirement simulation failed: ${JSON.stringify(simulation.value.err)}`);
+  invariant(simulation.context.slot >= before.contextSlot,
+    "simulation context predates the inspected prestate");
+  invariant(simulation.value.accounts?.length === LEGACY_CUSTOM_POLICY_ADDRESSES.length + 3,
+    "simulation omitted an inspected post-account image");
+  const postAccounts = simulation.value.accounts.map((account) => {
+    if (!account) return null;
+    invariant(account.data[1] === "base64", "simulation returned non-base64 account data");
+    const encodedData = account.data[0];
+    invariant(typeof encodedData === "string", "simulation omitted account data");
+    return {
+      owner: account.owner,
+      lamports: account.lamports,
+      executable: account.executable,
+      data: Buffer.from(encodedData, "base64"),
+    } satisfies HashableAccount;
+  });
+  const legacyImages = postAccounts.slice(0, LEGACY_CUSTOM_POLICY_ADDRESSES.length);
+  const postSettings = postAccounts[LEGACY_CUSTOM_POLICY_ADDRESSES.length];
+  const postPreviousVault = postAccounts[LEGACY_CUSTOM_POLICY_ADDRESSES.length + 1];
+  const postActiveVault = postAccounts[LEGACY_CUSTOM_POLICY_ADDRESSES.length + 2];
+  invariant(legacyImages.every(projectedClosed),
+    "unsigned simulation did not close exactly all legacy policy accounts");
+  invariant(postSettings?.owner === route.squads.program
+    && sha256(postSettings.data) === before.settingsSha256,
+  "unsigned simulation changed Squads Settings owner or bytes");
+  invariant(postPreviousVault != null
+    && sha256(postPreviousVault.data) === before.previousVaultSha256,
+  "unsigned simulation changed the protected Backyard vault");
+  invariant(postActiveVault != null && sha256(postActiveVault.data) === before.activeVaultSha256,
+  "unsigned simulation changed the active Voltr vault");
+  const protectedSimulation = await simulateProtectedAccountBatches({
+    connection,
+    serializedTransaction: serialized,
+    minContextSlot: simulation.context.slot,
+    manifest: protectedManifest,
+    sigVerify: false,
+  });
+  invariant(JSON.stringify(protectedSimulation.rows) === JSON.stringify(before.protectedAccounts),
+  "unsigned simulation changed Squads/Voltr custody or adaptor protected state");
+
+  const evidenceDocument = {
+    schema: "loyal-rwa-multiply-legacy-policy-retirement-preflight/v1",
+    verdict: "UNSIGNED_SIMULATION_PASS",
+    sent: false,
+    signed: false,
+    generatedAtUtc: new Date().toISOString(),
+    rpcEndpoint: process.env.SOLANA_RPC_URL ? "custom" : "api.mainnet-beta.solana.com",
+    contextSlot: before.contextSlot,
+    legacySeeds: LEGACY_CUSTOM_POLICY_SEEDS.map(String),
+    legacyPolicies: LEGACY_CUSTOM_POLICY_ADDRESSES,
+    legacyPolicyDataSha256: LEGACY_CUSTOM_POLICY_DATA_SHA256,
+    legacyInspection: before.rows,
+    protectedAccounts: before.protectedAccounts,
+    protectedAccountNotes: {
+      expectedAbsent: ["voltr_strategy_authority", "voltr_idle_authority", "voltr_lp_mint_authority"],
+      note: "These three Voltr PDAs are signing authorities with no on-chain account data; absence in the prestate is expected and is not a gate. The enforced invariant is that every row is byte-identical across the simulation.",
+    },
+    replacementGate: {
+      status: "PENDING",
+      requirement: "verifyInstalledCustomPolicies(connection, strategyTwoTarget) must pass for the four seeds derived from the finalized Settings counter before this retirement is signed or sent",
+      policySeedBefore: policySeedBefore.toString(),
+      expectedSeeds: seedStrings(policySeedBefore),
+      expectedPolicies: seedStrings(policySeedBefore).map((seed) => customPolicyAddress(BigInt(seed))),
+      anchorReobserved: anchorObserved,
+    },
+    transaction: {
+      instructionCount: 1,
+      actionCount: 4,
+      signed: false,
+      packetBytes: serialized.length,
+      unitsConsumed: simulation.value.unitsConsumed ?? null,
+      messageSha256: sha256(message.serialize()),
+      wireSha256: sha256(serialized),
+      latestBlockhash,
+      prestateSlot: before.contextSlot,
+      simulationSlot: simulation.context.slot,
+      protectedSimulationBatches: protectedSimulation.batches,
+      previousLegacyPolicyDataSha256: before.rows.map((row) => row.present ? row.dataSha256 : null),
+      projectedSettingsSha256: sha256(postSettings.data),
+      protectedPreviousVaultSha256: before.previousVaultSha256,
+      protectedActiveVaultSha256: before.activeVaultSha256,
+      simulationLogsTail: (simulation.value.logs ?? []).slice(-8),
+    },
+  };
+  writeFileSync(evidence, `${JSON.stringify(evidenceDocument, null, 2)}\n`, { flag: "wx" });
+  console.log(JSON.stringify({ verdict: "UNSIGNED_SIMULATION_PASS", sent: false, signed: false,
+    evidence }, null, 2));
+}
+
 async function main() {
   const execute = process.argv.includes("--execute");
   const reconcile = process.argv.includes("--reconcile");
+  const preflight = process.argv.includes("--preflight");
   const journalIndex = process.argv.indexOf("--journal");
   const journal = journalIndex >= 0 ? resolve(process.argv[journalIndex + 1] ?? "") : "";
-  invariant(!(execute && reconcile), "--execute and --reconcile are mutually exclusive");
+  invariant((execute ? 1 : 0) + (reconcile ? 1 : 0) + (preflight ? 1 : 0) <= 1,
+    "--execute/--reconcile/--preflight are mutually exclusive");
   invariant(!execute || process.env.CONFIRM_MAINNET === "1", "--execute requires CONFIRM_MAINNET=1");
   invariant(!(execute || reconcile) || (journal.endsWith(".json") && existsSync(dirname(journal))),
     "--execute/--reconcile requires --journal PATH under an existing directory");
@@ -245,21 +419,42 @@ async function main() {
   invariant(!reconcile || (!existsSync(journal) && existsSync(`${journal}.pending`)),
     "--reconcile requires one pending journal and no finalized journal");
 
-  const rpcUrl = process.env.SOLANA_RPC_URL?.trim();
-  invariant(rpcUrl, "SOLANA_RPC_URL is required");
   const route = RWA_MULTIPLY_ROUTE;
+  const rpcUrl = process.env.SOLANA_RPC_URL?.trim() || PUBLIC_MAINNET_RPC;
   const connection = new Connection(rpcUrl, "finalized");
   invariant(await connection.getGenesisHash() === route.genesisHash, "RPC is not mainnet-beta");
+
+  const seedJournalArg = cliValue("--seed-journal");
+  const seedJournal = seedJournalArg.length > 0 ? resolve(seedJournalArg) : "";
+  invariant(seedJournal.length > 0 && seedJournal.endsWith(".json") && existsSync(seedJournal),
+    "all strategy-two retirement modes require the finalized --seed-journal PATH.json");
+  const policySeedBefore = seedBaseFromJournal(seedJournal);
+  const finalizedSeed = await readFinalizedCustomPolicySeed(connection);
+  invariant(finalizedSeed.policySeedBefore === policySeedBefore + 4n,
+    `finalized Settings counter ${finalizedSeed.policySeedBefore} does not show all four journaled strategy-two PolicyCreate seeds ${policySeedBefore + 1n}-${policySeedBefore + 4n}`);
+  // A connection is in scope here, so the journaled anchor is re-observed on
+  // live finalized state before the retirement wire is built.
+  const anchorGate = assertStrategyTwoAnchorObservation(
+    await observeStrategyTwoSeedAnchor(connection, route.squads.program));
+
+  if (preflight) {
+    await runPreflight(connection, route, policySeedBefore, anchorGate.observed);
+    return;
+  }
+
+  const configArg = cliValue("--config");
+  const delegatedSignerArg = cliValue("--delegated-signer");
+  invariant(configArg.length > 0 && delegatedSignerArg.length > 0,
+    "--execute/--reconcile require the strategy-two identities --config and --delegated-signer");
+  const target = await rwaMultiplyStrategyTwoTarget({
+    config: address(configArg),
+    delegatedSigner: address(delegatedSignerArg),
+  }, policySeedBefore);
   const admin = await signingMaterialFromEnvironment("SOLANA_TESTING_PK");
   invariant(admin.signer.address === route.setupAdmin, "setup admin signer drifted");
 
-  const installed = await verifyInstalledCustomPolicies(connection);
-  const replacementIdentities = installed.rows.map(({ seed, policy, dataSha256 }) => ({
-    seed, policy, dataSha256,
-  }));
-  invariant(installed.pass
-    && JSON.stringify(replacementIdentities) === JSON.stringify(REPLACEMENT_CUSTOM_POLICY_IDENTITIES),
-  "exact ordered replacement policy PDA/seed/data hashes 62-65 are not finalized; refusing legacy retirement");
+  const installed = await verifyInstalledCustomPolicies(connection, target);
+  assertStrategyTwoReplacementPoliciesFinalized(installed, deriveStrategyTwoReplacementSeeds(policySeedBefore));
   const protectedManifest = await protectedAccountManifest();
   const before = await inspectProtectedState(connection, installed.contextSlot, protectedManifest);
 
@@ -310,7 +505,7 @@ async function main() {
     return;
   }
   invariant(before.allPresent,
-    "legacy policy set is partially present; refusing a transaction that is not the exact 53-56 retirement");
+    "legacy policy set is partially present; refusing a transaction that is not the exact 62-65 retirement");
 
   const retirement = buildLegacyCustomPolicyRetirementInstruction();
   const prepared = await prepareSignedV0Transaction({
@@ -333,9 +528,9 @@ async function main() {
       err: prepared.simulation.err,
       logs: prepared.simulation.logs,
     })}`);
-  const [old53, old54, old55, old56, postSettings, postPreviousVault, postActiveVault] =
+  const [old62, old63, old64, old65, postSettings, postPreviousVault, postActiveVault] =
     prepared.simulation.postAccounts;
-  invariant([old53, old54, old55, old56].every(projectedClosed),
+  invariant([old62, old63, old64, old65].every(projectedClosed),
     "simulation did not close exactly all legacy policy accounts");
   invariant(postSettings?.owner === route.squads.program
     && sha256(postSettings.data) === before.settingsSha256,
@@ -349,6 +544,7 @@ async function main() {
     serializedTransaction: prepared.serializedTransaction,
     minContextSlot: prepared.simulationSlot,
     manifest: protectedManifest,
+    sigVerify: true,
   });
   invariant(JSON.stringify(protectedSimulation.rows)
     === JSON.stringify(before.protectedAccounts),
@@ -361,6 +557,8 @@ async function main() {
     legacySeeds: LEGACY_CUSTOM_POLICY_SEEDS.map(String),
     legacyPolicies: LEGACY_CUSTOM_POLICY_ADDRESSES,
     legacyPolicyDataSha256: LEGACY_CUSTOM_POLICY_DATA_SHA256,
+    strategyTwoPolicySeedBefore: policySeedBefore.toString(),
+    strategyTwoExpectedPolicySeeds: seedStrings(policySeedBefore),
     protectedAccounts: before.protectedAccounts,
     replacementPolicies: installed.rows.map(({ operation, seed, policy, dataSha256 }) => ({
       operation, seed, policy, dataSha256,
@@ -406,7 +604,7 @@ async function main() {
   );
   invariant(confirmation.value.err === null,
     `legacy policy retirement finalized with ${JSON.stringify(confirmation.value.err)}`);
-  const replacementAfter = await verifyInstalledCustomPolicies(connection);
+  const replacementAfter = await verifyInstalledCustomPolicies(connection, target);
   invariant(replacementAfter.pass, "replacement policies drifted after legacy retirement");
   const after = await inspectProtectedState(connection, confirmation.context.slot, protectedManifest);
   invariant(after.allAbsent, "finalized retirement did not remove exactly all legacy policies");

@@ -334,21 +334,26 @@ fn obligation_owned_by_vault(boundary: &EarnMaxPolicyBoundary) -> AccountDataCon
     }
 }
 
-fn swap_constraint(
+pub(crate) fn swap_constraint(
     boundary: &EarnMaxPolicyBoundary,
     sources: Vec<Pubkey>,
     destinations: Vec<Pubkey>,
 ) -> Constraint {
     Constraint {
         program_id: boundary.jupiter_program,
-        account_pubkeys: vec![(2, vec![boundary.vault]), (3, sources), (6, destinations)],
+        account_pubkeys: vec![
+            (2, vec![boundary.vault]),
+            (3, sources),
+            (6, destinations),
+            // Jupiter legacy sharedAccountsRoute account 9 is the optional
+            // platform_fee_account; pinning it to the Jupiter program itself
+            // keeps a compromised delegate from collecting our fees.
+            (9, vec![boundary.jupiter_program]),
+        ],
         account_data: vec![],
-        data: vec![DataConstraint::U16Equals {
+        data: vec![DataConstraint::SliceEquals {
             offset: 0,
-            value: u16::from_le_bytes([
-                EARN_MAX_SHARED_ACCOUNTS_ROUTE[0],
-                EARN_MAX_SHARED_ACCOUNTS_ROUTE[1],
-            ]),
+            value: EARN_MAX_SHARED_ACCOUNTS_ROUTE.to_vec(),
         }],
     }
 }
@@ -568,7 +573,7 @@ mod tests {
             [
                 "c9aae4e32ef1659c0f9ef7367f7e3f920809bb5842e4d838c67681b6de39ca43",
                 "791ba0305d76427d970f3550989707767da2aadac7d0979acecaff2a40a7db4e",
-                "6e50e231456bb7a67fb551b219ef56fc2bf83b5f1594a5b6d80c82eb1e0475ad",
+                "5f95255b4d305bf871b21cf146d274affb65b5f8ceba6d557ff2f5929ebd17a7",
             ]
         );
         assert_eq!(

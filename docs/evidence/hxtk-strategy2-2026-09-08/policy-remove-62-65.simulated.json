@@ -1,0 +1,234 @@
+{
+  "schema": "loyal-rwa-multiply-legacy-policy-retirement-preflight/v1",
+  "verdict": "UNSIGNED_SIMULATION_PASS",
+  "sent": false,
+  "signed": false,
+  "generatedAtUtc": "2026-09-08T07:56:51.201Z",
+  "rpcEndpoint": "api.mainnet-beta.solana.com",
+  "contextSlot": 445286831,
+  "legacySeeds": [
+    "62",
+    "63",
+    "64",
+    "65"
+  ],
+  "legacyPolicies": [
+    "HoDV7mtsb2u1VARZLYuGByW7cCsGWL9NFxHZs7WHjdzz",
+    "41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP",
+    "ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY",
+    "DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t"
+  ],
+  "legacyPolicyDataSha256": [
+    "bda72932f474064fa3cd60ce91633acba35b2730e86b82f4352aa96a6738e2f4",
+    "bf34a3e9c9c635c79a0d30e096b639a86d52e300ad113c81161e3486832d97ca",
+    "ef8c231497fb2620b5930cfe5d329c871f103db6512781eb5487534db8b1291b",
+    "84e8f6f881758cff1714ef743603c016024104f9834392c6fba693c3651b719c"
+  ],
+  "legacyInspection": [
+    {
+      "seed": "62",
+      "policy": "HoDV7mtsb2u1VARZLYuGByW7cCsGWL9NFxHZs7WHjdzz",
+      "present": true,
+      "dataSha256": "bda72932f474064fa3cd60ce91633acba35b2730e86b82f4352aa96a6738e2f4",
+      "lamports": 10774080
+    },
+    {
+      "seed": "63",
+      "policy": "41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP",
+      "present": true,
+      "dataSha256": "bf34a3e9c9c635c79a0d30e096b639a86d52e300ad113c81161e3486832d97ca",
+      "lamports": 10523520
+    },
+    {
+      "seed": "64",
+      "policy": "ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY",
+      "present": true,
+      "dataSha256": "ef8c231497fb2620b5930cfe5d329c871f103db6512781eb5487534db8b1291b",
+      "lamports": 5018160
+    },
+    {
+      "seed": "65",
+      "policy": "DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t",
+      "present": true,
+      "dataSha256": "84e8f6f881758cff1714ef743603c016024104f9834392c6fba693c3651b719c",
+      "lamports": 10774080
+    }
+  ],
+  "protectedAccounts": [
+    {
+      "label": "squads_asset_ata",
+      "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+      "present": true,
+      "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "stateSha256": "178f38e043c077e731d16edcdda9abb54944a7fb5a3a284e98798b6a37f189fe"
+    },
+    {
+      "label": "squads_collateral_ata",
+      "address": "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+      "present": true,
+      "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "stateSha256": "064e04d282b9d584ef8ebe556a878670ed36b51f4f77ed50c7b705adca6ed9d6"
+    },
+    {
+      "label": "voltr_idle_ata",
+      "address": "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh",
+      "present": true,
+      "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "stateSha256": "83c9f346036652aaad5982c9351563d5cb3166d98d0e87184185cf22904eb289"
+    },
+    {
+      "label": "voltr_strategy_asset_ata",
+      "address": "FTDWN5Ay8tzYPJBJT4s2oZaHRQ7jKPo8XP2ZRWb5GP3M",
+      "present": true,
+      "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "stateSha256": "bcfd2e6c1c10b780e970afb97435cc1b02e20dc4486e3f2388a33c8d6a2c113b"
+    },
+    {
+      "label": "adaptor_strategy_config",
+      "address": "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj",
+      "present": true,
+      "owner": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+      "stateSha256": "c89c12b197c9c3c5897334bbbe26be4b929bb1939e13d386245e7e53271f299c"
+    },
+    {
+      "label": "adaptor_report_ticket",
+      "address": "C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5",
+      "present": true,
+      "owner": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+      "stateSha256": "9c6ca5858069b6b8cfd11bad9c3afda742c9a934b085f62b8c9405dccc93ac08"
+    },
+    {
+      "label": "voltr_strategy_init_receipt",
+      "address": "3GHLmyTTGH9ZfQqb3YCo9xKjpPhMLvHsq2JSYzCnk9U6",
+      "present": true,
+      "owner": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      "stateSha256": "0fe3e610395add53974e9b534b4ddd43bf4d16960898d264521247bef9d6a7b1"
+    },
+    {
+      "label": "voltr_adaptor_add_receipt",
+      "address": "AsfkxMdVYjMnr2fdTBMUXhq81hgi2hbENXCy9WhUQF7u",
+      "present": true,
+      "owner": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      "stateSha256": "3b5fdc28dc9ced891940a03dbdc1fa38f8bfeb527e9dd2b9a59407b323034fe3"
+    },
+    {
+      "label": "voltr_protocol",
+      "address": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+      "present": true,
+      "owner": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      "stateSha256": "a9038c5f2d3939d13c0afb6067015691677153ae51a64f2b7678ae14e57a7dbd"
+    },
+    {
+      "label": "voltr_lp_mint",
+      "address": "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb",
+      "present": true,
+      "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "stateSha256": "457d12279f8aeda75c5e8d74f867d7559daeabc1fb246e56d4f992f5db67b1ce"
+    },
+    {
+      "label": "voltr_strategy_authority",
+      "address": "8fLTf2ufePttZW3Es1xVoW3ows3WjXcuHQkkBCVvHsdH",
+      "present": false,
+      "owner": null,
+      "stateSha256": "a929cdea19606183add59f496a63bd7ddb520cfe5de7f82146e0d344ec40f973"
+    },
+    {
+      "label": "voltr_idle_authority",
+      "address": "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb",
+      "present": false,
+      "owner": null,
+      "stateSha256": "a929cdea19606183add59f496a63bd7ddb520cfe5de7f82146e0d344ec40f973"
+    },
+    {
+      "label": "voltr_lp_mint_authority",
+      "address": "HHM86gQUM7rN8bz2VPWhqNn7ZcfznLC5KyT7kLs569yq",
+      "present": false,
+      "owner": null,
+      "stateSha256": "a929cdea19606183add59f496a63bd7ddb520cfe5de7f82146e0d344ec40f973"
+    }
+  ],
+  "protectedAccountNotes": {
+    "expectedAbsent": [
+      "voltr_strategy_authority",
+      "voltr_idle_authority",
+      "voltr_lp_mint_authority"
+    ],
+    "note": "These three Voltr PDAs are signing authorities with no on-chain account data; absence in the prestate is expected and is not a gate. The enforced invariant is that every row is byte-identical across the simulation."
+  },
+  "replacementGate": {
+    "status": "PENDING",
+    "requirement": "verifyInstalledCustomPolicies(connection, strategyTwoTarget) must pass for the four seeds derived from the finalized Settings counter before this retirement is signed or sent",
+    "policySeedBefore": "140",
+    "expectedSeeds": [
+      "141",
+      "142",
+      "143",
+      "144"
+    ],
+    "expectedPolicies": [
+      "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz"
+    ]
+  },
+  "transaction": {
+    "instructionCount": 1,
+    "actionCount": 4,
+    "signed": false,
+    "packetBytes": 519,
+    "unitsConsumed": 68383,
+    "messageSha256": "8a74165a65cf194bda448407f95384fcb7274eab375236aafee8b3914727a27b",
+    "wireSha256": "299f2358fcf91d324feb6801bce36c7b7ee6d8370c7ebe78f1a9a4618c8fd258",
+    "latestBlockhash": {
+      "blockhash": "GcxRoEsfBR3nrBmc1fwX71A4WsuCWWo5YsWE85E6RSiG",
+      "lastValidBlockHeight": 423331109
+    },
+    "prestateSlot": 445286831,
+    "simulationSlot": 445286831,
+    "protectedSimulationBatches": [
+      {
+        "contextSlot": 445286831,
+        "addresses": [
+          "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+          "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+          "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh",
+          "FTDWN5Ay8tzYPJBJT4s2oZaHRQ7jKPo8XP2ZRWb5GP3M",
+          "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj",
+          "C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5",
+          "3GHLmyTTGH9ZfQqb3YCo9xKjpPhMLvHsq2JSYzCnk9U6",
+          "AsfkxMdVYjMnr2fdTBMUXhq81hgi2hbENXCy9WhUQF7u"
+        ]
+      },
+      {
+        "contextSlot": 445286831,
+        "addresses": [
+          "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y",
+          "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb",
+          "8fLTf2ufePttZW3Es1xVoW3ows3WjXcuHQkkBCVvHsdH",
+          "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb",
+          "HHM86gQUM7rN8bz2VPWhqNn7ZcfznLC5KyT7kLs569yq"
+        ]
+      }
+    ],
+    "previousLegacyPolicyDataSha256": [
+      "bda72932f474064fa3cd60ce91633acba35b2730e86b82f4352aa96a6738e2f4",
+      "bf34a3e9c9c635c79a0d30e096b639a86d52e300ad113c81161e3486832d97ca",
+      "ef8c231497fb2620b5930cfe5d329c871f103db6512781eb5487534db8b1291b",
+      "84e8f6f881758cff1714ef743603c016024104f9834392c6fba693c3651b719c"
+    ],
+    "projectedSettingsSha256": "f3a35b21e680c4a10b008d7b838ce82867ec415eb843cb3293f573248c33aa11",
+    "protectedPreviousVaultSha256": "379bfed2169396b632754f0d71a5f2ec497901a1d5e14ca6e3c3380da5c9efce",
+    "protectedActiveVaultSha256": "9bd488018899997fec0696a2c5eda27eae65a55dbeee5c6c1f2723e19fe8dbb4",
+    "simulationLogsTail": [
+      "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 1346 of 138655 compute units",
+      "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success",
+      "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [2]",
+      "Program log: Instruction: LogEvent",
+      "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 1048 of 134095 compute units",
+      "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success",
+      "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG consumed 68383 of 200000 compute units",
+      "Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG success"
+    ]
+  }
+}

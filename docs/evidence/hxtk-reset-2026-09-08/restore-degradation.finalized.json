@@ -1,0 +1,32 @@
+{
+  "schema": "loyal-voltr-hxtk-reset-evidence/restore-degradation-finalized/v1",
+  "step": "restore-degradation",
+  "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "verdict": "FINALIZED_RECONCILED",
+  "signature": "4yvqvJv9RWaWbAmP2UrL1gZhSQ9f5gfHLS5XAMpc6X9dKN5aDSVcwYjzRj6x4282dAKuwyD2g5v9GuxoDuZBySU5",
+  "finalizedSlot": 446033541,
+  "finalizedBlockTime": 1789090635,
+  "repairBlockTime": 1788978394,
+  "eligibleAt": 1789064794,
+  "restoreMinusRepairSeconds": 112241,
+  "instructions": [
+    "updateVaultConfig(LockedProfitDegradationDuration, u64 86400)"
+  ],
+  "finalizedState": {
+    "contextSlot": 446033546,
+    "totalValue": "23",
+    "idleBalance": "23",
+    "lpSupply": "0",
+    "lockedProfitDegradationDuration": "86400",
+    "adminPerformanceFeeBps": 0,
+    "withdrawalWaitingPeriod": "600",
+    "receipt1PositionValue": "3793536",
+    "adminUsdcBalance": "6816024",
+    "requestReceipt": null
+  },
+  "journal": {
+    "path": "/Users/user/loyal/hxtk-journals-2026-09-08/hxtk-restore-degradation.json",
+    "sha256": "9e2d2afea74a6bc3e27b00c02b276b684ceb18715454609c187885a3f2d8227b"
+  },
+  "toolFix": "a132056 fix(voltr): compare the report ticket by its projected fields in the claim journal verifier"
+}

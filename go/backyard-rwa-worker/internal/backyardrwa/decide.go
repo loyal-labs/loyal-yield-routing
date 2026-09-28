@@ -2,10 +2,71 @@ package backyardrwa
 
 import "fmt"
 
+// custodyDiscipline fails closed when the strategy custody balance is not
+// exactly the amount this worker last staged into Voltr for the route. Voltr
+// sweeps the entire custody on restore and books that balance into its own
+// total value, so an unexplained balance is manual recovery and never an
+// amount the planner may infer from a custody read.
+func custodyDiscipline(s Snapshot) (Decision, bool) {
+	if s.Nonterminal != "" || s.VoltrStrategyIdleRaw <= 0 {
+		return Decision{}, false
+	}
+	if !s.StagedAmountKnown || s.StagedAmountRaw != s.VoltrStrategyIdleRaw {
+		strategyKey := s.RouteLane
+		if strategyKey == "" {
+			strategyKey = RouteID
+		}
+		return Decision{Action: HoldManualRecovery, Reason: "custody_mismatch", AmountRaw: 0,
+			IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "custody_mismatch", s.VoltrStrategyIdleRaw),
+			StrategyKey:    strategyKey}, true
+	}
+	return Decision{}, false
+}
+
+// custodyResidueHold blocks every accounting refresh while a strategy custody
+// balance exists. A report moves no capital, so it must observe custody empty;
+// a residue has to be restored (or recovered manually) instead of being
+// silently reported as current book.
+func custodyResidueHold(s Snapshot) (Decision, bool) {
+	if s.VoltrStrategyIdleRaw == 0 {
+		return Decision{}, false
+	}
+	strategyKey := s.RouteLane
+	if strategyKey == "" {
+		strategyKey = RouteID
+	}
+	return Decision{Action: HoldManualRecovery, Reason: "custody_residue", AmountRaw: 0,
+		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "custody_residue", s.VoltrStrategyIdleRaw),
+		StrategyKey:    strategyKey}, true
+}
+
+// installedDecisionLane reports whether a confirmed observation frozen on
+// this lane may be resolved by Decide: the pinned legacy Prime route plus the
+// basic policy lanes. The remaining runtimeRoute catalog entries stay
+// observation-only, so they keep failing closed here instead of reusing the
+// legacy Prime decision path.
+func installedDecisionLane(lane string) bool {
+	if lane == RouteID {
+		return true
+	}
+	route, err := runtimeRoute(lane)
+	return err == nil && route.BasicPolicy
+}
+
 // Decide resolves the already-frozen lane carried by the confirmed
 // observation. It does not choose a lane; observations for any lane outside
-// the two manifest-approved routes fail closed.
+// the registered routes fail closed. Registration does not enable the live
+// selection manifest or replace policy/exit/admission checks.
 func Decide(s Snapshot) Decision {
+	if hold, blocked := custodyDiscipline(s); blocked {
+		return hold
+	}
+	if hold, blocked := bridgeMonitorHold(s); blocked {
+		return hold
+	}
+	if route, err := runtimeRoute(s.RouteLane); err == nil && route.Kamino.DebtMint != bridgeUSDC && len(route.KaminoPolicies) == 4 {
+		return decideNonUSDC(s)
+	}
 	if s.RouteLane == SelectedRouteID {
 		if s.CollateralIdleRaw >= 0 {
 			s.PrimeIdleRaw = s.CollateralIdleRaw
@@ -57,7 +118,7 @@ func Decide(s Snapshot) Decision {
 		decision.StrategyKey = SelectedRouteID
 		return decision
 	}
-	if s.RouteLane != "" && s.RouteLane != RouteID {
+	if s.RouteLane != "" && !installedDecisionLane(s.RouteLane) {
 		return Decision{Action: HoldManualRecovery, Reason: "unsupported_runtime_lane", AmountRaw: 0,
 			IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "unsupported_runtime_lane"), StrategyKey: s.RouteLane}
 	}
@@ -69,7 +130,28 @@ func Decide(s Snapshot) Decision {
 	}
 	decision := decideFixed(s)
 	decision.StrategyKey = RouteID
+	if s.RouteLane != "" {
+		decision.StrategyKey = s.RouteLane
+	}
 	return decision
+}
+
+// obligationAbsentHoldReason marks an observed prerequisite, never a policy
+// failure and never unexplained NAV drift: the lane's Kamino obligation account
+// does not exist, so Kamino refuses the deposit entry planning would fund. It
+// is a plain hold that clears by itself once the account exists.
+const obligationAbsentHoldReason = "obligation_absent"
+
+func obligationPrerequisiteHold(s Snapshot) (Decision, bool) {
+	if !s.ObligationPresenceKnown || s.ObligationPresent {
+		return Decision{}, false
+	}
+	strategyKey := s.RouteLane
+	if strategyKey == "" {
+		strategyKey = RouteID
+	}
+	return Decision{Action: Hold, Reason: obligationAbsentHoldReason, AmountRaw: 0, StrategyKey: strategyKey,
+		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, obligationAbsentHoldReason, 0)}, true
 }
 
 func decideFixed(s Snapshot) Decision {
@@ -121,7 +203,12 @@ func decideFixed(s Snapshot) Decision {
 	// A reconciled Jupiter/Kamino mutation must be accounted before any next
 	// lifecycle leg, including a withdrawal unwind. Hard-LTV safety above is the
 	// only action allowed to preempt this report.
-	if s.PostMutationNAVRequired {
+	if s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
+		// M4: a pending withdrawal queue that Voltr idle cannot cover makes a
+		// refresh-only tick inadmissible; the unwind legs below stay live.
+		if hold, blocked := custodyResidueHold(s); blocked {
+			return hold
+		}
 		return decision(ReportNAV, "post_mutation_nav_due", 0)
 	}
 	// A legacy position can sit at its maximum reviewed LTV, where withdrawing
@@ -135,6 +222,9 @@ func decideFixed(s Snapshot) Decision {
 		shortfall := s.WithdrawalDemandRaw - s.VoltrIdleRaw
 		if shortfall <= 0 {
 			if s.CapitalMutated || s.PostMutationNAVRequired || s.LastReportAgeSeconds >= 60 {
+				if hold, blocked := custodyResidueHold(s); blocked {
+					return hold
+				}
 				return decision(ReportNAV, "withdrawal_covered_nav_due", 0)
 			}
 			return decision(Hold, "withdrawal_covered", 0)
@@ -177,8 +267,25 @@ func decideFixed(s Snapshot) Decision {
 		}
 		return decision(DeleverPrimeUSDCStep, "withdrawal_shortfall", remaining)
 	}
-	if s.CapitalMutated || s.PostMutationNAVRequired || s.LastReportAgeSeconds >= 60 {
+	// S1: an unexplained book drift stops the route instead of reporting it.
+	if hold, drifted := unexplainedNAVDriftHold(s); drifted {
+		return hold
+	}
+	// S2: a reconciled capital mutation reports only beyond the drift
+	// tolerance; the post-mutation requirement and the aging cadence report
+	// unconditionally.
+	if capitalMutationReports(s) || s.PostMutationNAVRequired || s.LastReportAgeSeconds >= 60 {
+		if hold, blocked := custodyResidueHold(s); blocked {
+			return hold
+		}
 		return decision(ReportNAV, "nav_due", 0)
+	}
+	// Entry planning funds a Kamino deposit. Without the obligation account that
+	// deposit is refused and the funded capital strands in custody, so no
+	// allocation, swap, or deposit is constructed. Withdrawal and reporting legs
+	// above stay live.
+	if hold, absent := obligationPrerequisiteHold(s); absent {
+		return hold
 	}
 	if s.VoltrIdleRaw > 0 {
 		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", s.VoltrIdleRaw)

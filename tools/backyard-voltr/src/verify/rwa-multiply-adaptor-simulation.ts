@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { AccountRole, address, createNoopSigner, type Instruction } from "@solana/kit";
 import { Connection, PublicKey, type AccountInfo } from "@solana/web3.js";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import {
+  runRustCompiler,
+  type CompilerProvenance,
+} from "../policies/compiler-build.js";
 import { prepareSignedV0Transaction, type AccountSnapshot } from "../integrations/solana-compat.js";
 import { signingMaterialFromEnvironment } from "../integrations/signer.js";
 import {
@@ -26,6 +29,7 @@ const CONFIG_LEN = 472;
 const TICKET_LEN = 96;
 const ZERO_HASH = "0".repeat(64);
 const BPF_LOADER_UPGRADEABLE_PROGRAM_ID = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
+let lastCompiler: CompilerProvenance | null = null;
 
 async function confirmedAccountsAtOrAfter(
   connection: Connection,
@@ -146,14 +150,18 @@ function compileWrapper(input: MutationBuild): Instruction {
     constraintIndices: input.constraintIndices ?? inner.map((_, index) => index),
     inner: inner.map(wire),
   });
-  const result = spawnSync("cargo", ["run", "--quiet", "-p", "loyal-actions", "--bin", COMPILER], {
+  const result = runRustCompiler<{
+    schema?: unknown;
+    instruction?: WireInstruction;
+  }>({
+    compilerBinary: COMPILER,
     cwd: REPOSITORY_ROOT,
     input: source,
-    encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
+    label: "execution compiler",
   });
-  invariant(result.status === 0, `execution compiler failed: ${(result.stderr || result.stdout).trim()}`);
-  const output = JSON.parse(result.stdout) as { schema?: unknown; instruction?: WireInstruction };
+  lastCompiler = result.compiler;
+  const output = result.output;
   invariant(output.schema === "loyal-voltr-custom-execution/v2" && output.instruction,
     "execution compiler escaped its exact v2 wrapper contract");
   const outer = instruction(output.instruction);
@@ -698,6 +706,10 @@ async function main() {
         source: "Voltr invoke_signed strategy authority at adaptor consume" },
     ],
     deployedPrograms: { adaptor: adaptorIdentity, voltr: voltrIdentity },
+    compiler: (() => {
+      invariant(lastCompiler !== null, "execution compiler provenance is missing");
+      return lastCompiler;
+    })(),
     mutations,
   };
   writeFileSync(outputPath, `${JSON.stringify(artifact, null, 2)}\n`, { flag: "wx", mode: 0o600 });

@@ -1,0 +1,44 @@
+{
+  "schema": "backyard-rwa-strategy2/phase3-dryrun/v1",
+  "captured_at": "2026-09-08T12:05:56Z",
+  "rpc_endpoint": "https://api.mainnet-beta.solana.com",
+  "rpc_fallback_used": false,
+  "spec": "v3",
+  "deployer_schema": "loyal-voltr-rwa-nav-adaptor-deployer/v3",
+  "cluster": "mainnet-beta",
+  "program_id": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+  "programdata_address": "DrvzixaVmAuPVVJPtP5wykb9mvgDWqZbvZau9oiCUpHu",
+  "artifact": {
+    "size_bytes": 107832,
+    "sha256": "836ded9ff4e79cda9fafbafcffcf9f2e9f395c762c69ba5af4630e82a9d8a4d0"
+  },
+  "capacity": {
+    "max_data_len": 115384,
+    "headroom_bytes": 7552
+  },
+  "current_deployment": {
+    "finalized_read_slot": 445333892,
+    "programdata_deployment_slot": 443528877,
+    "programdata_account_bytes": 115429,
+    "on_chain_sha256_data_45_onward": "8361a469833fa17df8f62f9c4b8055aa859552fe8db7610b8fcb3af6ac6eb6d5",
+    "on_chain_artifact_prefix_sha256": "3e03fbc1579bb0efe6bb976330d246cf92158b1b4039d0f0f9054630cdc891f5",
+    "program_executable": true,
+    "program_owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+    "programdata_owner": "BPFLoaderUpgradeab1e11111111111111111111111",
+    "upgrade_authority": "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+  },
+  "plan": {
+    "status": "planned-no-broadcast",
+    "loader_write_chunk_bytes": 980,
+    "loader_write_transactions": 111,
+    "submitted_write_transactions": 0,
+    "sent": false,
+    "signed": false,
+    "broadcast": false
+  },
+  "verdict": "PASS_DRY_RUN_PLANNED_NO_BROADCAST",
+  "notes": [
+    "The v3 artifact passed local pin and capacity validation and the finalized mainnet Program/ProgramData identity checks.",
+    "The current on-chain payload is not the v3 artifact; this report is planning evidence only and does not prove deployment or upgrade."
+  ]
+}

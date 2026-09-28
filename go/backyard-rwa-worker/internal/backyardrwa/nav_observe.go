@@ -13,9 +13,21 @@ import (
 	"strings"
 )
 
-const strategyReceiptLength = 192
+const (
+	strategyReceiptLength = 192
+	// voltrVaultMinimumLength is the prefix of Voltr's Vault account this worker
+	// decodes. Offsets below are verified against the deployed 928-byte account
+	// (scripts/decode_voltr_repair.py). Only the prefix is required so a
+	// same-identity upgrade that appends fields still reaches the M6
+	// program-identity monitor instead of dying inside account decoding.
+	voltrVaultMinimumLength = 696
+	voltrLPMintLength       = 82
+)
 
-var strategyReceiptDiscriminator = [8]byte{51, 8, 192, 253, 115, 78, 112, 214}
+var (
+	strategyReceiptDiscriminator = [8]byte{51, 8, 192, 253, 115, 78, 112, 214}
+	voltrVaultDiscriminator      = [8]byte{211, 8, 232, 43, 2, 152, 117, 119}
+)
 
 // ConfirmedAccountReader is the complete transport boundary for route NAV.
 // Production uses RPCClient; fixtures use an in-memory reader without changing
@@ -28,14 +40,90 @@ type ConfirmedAccountReader interface {
 type StrategyReceipt struct {
 	PositionValueRaw uint64
 	LastUpdatedTS    uint64
+	// CustodyTrackedRaw is the strategy custody balance Voltr itself books in
+	// the receipt's reserved bytes at offset 128 on the post-upgrade binary.
+	// Voltr credits this balance into totalValue by itself, so an independent
+	// NAV must never add it again.
+	CustodyTrackedRaw uint64
+}
+
+// VoltrVaultBook is the vault book decoded independently of the adaptor and of
+// this worker's own arithmetic. It is the only admissible comparison input for
+// the M1 identity `totalValue == idle + custody + receipt.positionValue`.
+type VoltrVaultBook struct {
+	TotalValueRaw                  uint64
+	LockedProfitDegradationSeconds uint64
+	LastUpdatedLockedProfitRaw     uint64
+	LastLockedProfitReportUnix     uint64
+	ManagerPerformanceFeeBPS       uint64
+	AdminPerformanceFeeBPS         uint64
+	WithdrawalWaitingPeriodSeconds uint64
+	FeeAccumulatorManagerRaw       uint64
+	FeeAccumulatorAdminRaw         uint64
+	FeeAccumulatorProtocolRaw      uint64
+	LPSupplyDeadWeightRaw          uint64
+}
+
+// FeeAccumulatorRaw sums the un-harvested LP fee accumulators that
+// get_total_lp_supply_incl_fees adds to the mint supply.
+func (b VoltrVaultBook) FeeAccumulatorRaw() uint64 {
+	return b.FeeAccumulatorManagerRaw + b.FeeAccumulatorAdminRaw + b.FeeAccumulatorProtocolRaw
+}
+
+// LPSupplyInclFeesRaw mirrors Voltr's SDK LP supply used to price deposits and
+// claims. The dead-weight LP at offset 616 is minted but untracked supply.
+func (b VoltrVaultBook) LPSupplyInclFeesRaw(lpSupplyRaw uint64) uint64 {
+	return lpSupplyRaw + b.FeeAccumulatorRaw() + b.LPSupplyDeadWeightRaw
+}
+
+func decodeVoltrVaultBook(account ConfirmedAccount) (VoltrVaultBook, error) {
+	if account.Address != bridgeVoltrVault || account.Owner != bridgeVoltrProgram || account.Executable ||
+		account.Lamports == 0 || len(account.Data) < voltrVaultMinimumLength ||
+		!bytes.Equal(account.Data[:8], voltrVaultDiscriminator[:]) {
+		return VoltrVaultBook{}, fmt.Errorf("Voltr vault account envelope or layout drifted")
+	}
+	if !sameKey(account.Data[104:136], bridgeUSDC) || !sameKey(account.Data[136:168], bridgeIdleATA) ||
+		!sameKey(account.Data[272:304], bridgeLPMint) || !sameKey(account.Data[368:400], bridgeVault) ||
+		!sameKey(account.Data[400:432], bridgeSettingsSigner) {
+		return VoltrVaultBook{}, fmt.Errorf("Voltr vault asset, LP, manager, or admin identity drifted")
+	}
+	return VoltrVaultBook{
+		TotalValueRaw:                  binary.LittleEndian.Uint64(account.Data[168:176]),
+		LockedProfitDegradationSeconds: binary.LittleEndian.Uint64(account.Data[448:456]),
+		WithdrawalWaitingPeriodSeconds: binary.LittleEndian.Uint64(account.Data[456:464]),
+		ManagerPerformanceFeeBPS:       uint64(binary.LittleEndian.Uint16(account.Data[512:514])),
+		AdminPerformanceFeeBPS:         uint64(binary.LittleEndian.Uint16(account.Data[514:516])),
+		FeeAccumulatorManagerRaw:       binary.LittleEndian.Uint64(account.Data[576:584]),
+		FeeAccumulatorAdminRaw:         binary.LittleEndian.Uint64(account.Data[584:592]),
+		FeeAccumulatorProtocolRaw:      binary.LittleEndian.Uint64(account.Data[592:600]),
+		LPSupplyDeadWeightRaw:          binary.LittleEndian.Uint64(account.Data[616:624]),
+		LastUpdatedLockedProfitRaw:     binary.LittleEndian.Uint64(account.Data[672:680]),
+		LastLockedProfitReportUnix:     binary.LittleEndian.Uint64(account.Data[680:688]),
+	}, nil
+}
+
+// decodeVoltrLPSupply reads only the mint supply of the vault LP asset. Fee
+// LP that Voltr has accrued but not yet minted is added by VoltrVaultBook.
+func decodeVoltrLPSupply(account ConfirmedAccount) (uint64, error) {
+	if account.Address != bridgeLPMint || account.Owner != bridgeTokenProgram || account.Executable ||
+		account.Lamports == 0 || len(account.Data) < voltrLPMintLength {
+		return 0, fmt.Errorf("Voltr LP mint account envelope drifted")
+	}
+	return binary.LittleEndian.Uint64(account.Data[36:44]), nil
 }
 
 type RouteNAVCustodies struct {
 	VoltrIdleRaw, StrategyUSDCraw, SquadsUSDCraw, SquadsPRIMEraw uint64
+	// Separate from USDC; zero on USDC-debt lanes to avoid double counting.
+	SquadsDebtRaw uint64
 }
 
 type RouteNAVSnapshot struct {
-	Slot                    int64
+	Slot int64
+	// Custodies reports every observed custody balance, including the strategy
+	// custody ATA. StrategyCustody is deliberately not a NAV component: Voltr
+	// books the strategy custody balance itself, so adding it here would count
+	// it twice (the Sep 4 incident reported exactly that double count).
 	Custodies               RouteNAVCustodies
 	VaultIdleRaw            uint64
 	StrategyNAVRaw          uint64
@@ -43,18 +131,26 @@ type RouteNAVSnapshot struct {
 	PriorReportedNAVRaw     uint64
 	PriorReportUpdatedTS    uint64
 	PrimeIdleValueRaw       uint64
+	DebtIdleValueRaw        uint64
 	PositionCollateralValue uint64
 	PositionDebtValue       uint64
-	SnapshotDigest          string
-	Report                  BridgeReport
+	// ObligationPresent reports whether the obligation account existed in this
+	// confirmed batch. Zero position values from a missing account are an
+	// observed absence, never a silently decoded flat position.
+	ObligationPresent bool
+	Receipt           StrategyReceipt
+	Voltr             VoltrVaultBook
+	LPSupplyRaw       uint64
+	SnapshotDigest    string
+	Report            BridgeReport
 }
 
 func pinnedRouteNAVAddresses() []string {
-	return pinnedRouteNAVAddressesForRoute(RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve}, CollateralCustody: kaminoPrimeCustody})
+	return pinnedRouteNAVAddressesForRoute(RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, Market: kaminoMarket, Program: kaminoProgram}, CollateralCustody: kaminoPrimeCustody})
 }
 
 func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
-	return []string{
+	addresses := []string{
 		bridgeStrategy,
 		bridgeStrategyReceipt,
 		bridgeIdleATA,
@@ -64,11 +160,23 @@ func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
 		route.Kamino.Obligation,
 		route.Kamino.CollateralReserve,
 		route.Kamino.DebtReserve,
+		// The lending market is part of the valuation input: its emergency
+		// mode pauses the whole position, so it is pinned, hashed into the
+		// NAV fingerprint, and required in every batch.
+		route.Kamino.Market,
+		// The Voltr book and the LP mint are read in the same coherent batch so
+		// the fail-closed monitors never compare values from different slots.
+		bridgeVoltrVault,
+		bridgeLPMint,
 	}
+	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
+		addresses = append(addresses, route.DebtCustody, kaminoDebtReserve)
+	}
+	return addresses
 }
 
 func selectRouteNAVAccounts(accounts []ConfirmedAccount) ([]ConfirmedAccount, error) {
-	return selectRouteNAVAccountsForRoute(accounts, RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve}, CollateralCustody: kaminoPrimeCustody})
+	return selectRouteNAVAccountsForRoute(accounts, RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, Market: kaminoMarket, Program: kaminoProgram}, CollateralCustody: kaminoPrimeCustody})
 }
 
 func selectRouteNAVAccountsForRoute(accounts []ConfirmedAccount, route RuntimeRoute) ([]ConfirmedAccount, error) {
@@ -92,13 +200,36 @@ func decodeStrategyReceipt(account ConfirmedAccount) (StrategyReceipt, error) {
 	if !sameKey(account.Data[8:40], bridgeVoltrVault) ||
 		!sameKey(account.Data[40:72], bridgeStrategy) ||
 		!sameKey(account.Data[72:104], bridgeAdaptorProgram) ||
-		account.Data[120] != 1 || !allZero(account.Data[123:]) {
+		account.Data[120] != 1 || !allZero(account.Data[123:128]) || !allZero(account.Data[136:]) {
 		return StrategyReceipt{}, fmt.Errorf("Voltr strategy receipt binding or reserved bytes drifted")
 	}
+	// Offset 128 is reserved on the pre-upgrade binary and holds the custody
+	// balance Voltr books for this strategy on the current one. It is decoded
+	// and reported rather than required zero: a nonzero value must surface as a
+	// custody monitor HOLD, not as an undecodable account.
 	return StrategyReceipt{
-		PositionValueRaw: binary.LittleEndian.Uint64(account.Data[104:112]),
-		LastUpdatedTS:    binary.LittleEndian.Uint64(account.Data[112:120]),
+		PositionValueRaw:  binary.LittleEndian.Uint64(account.Data[104:112]),
+		LastUpdatedTS:     binary.LittleEndian.Uint64(account.Data[112:120]),
+		CustodyTrackedRaw: binary.LittleEndian.Uint64(account.Data[128:136]),
 	}, nil
+}
+
+// strategyReceiptIntegrityFault classifies a confirmed strategy receipt that
+// cannot be the reviewed Voltr account at all: it is absent from the batch,
+// owned by another program, or the wrong length. Those are observed integrity
+// failures and become the durable strategy_receipt_integrity hold; malformed
+// fields inside a correctly enveloped receipt stay decode errors, and
+// transport failures never reach this classifier.
+func strategyReceiptIntegrityFault(account ConfirmedAccount) bool {
+	return account.Address == "" || account.Owner != bridgeVoltrProgram || len(account.Data) != strategyReceiptLength
+}
+
+// strategyReceiptAbsent separates a null account in the batch — which may be a
+// replication artifact until the ledger finalizes past it — from a present
+// account with a broken envelope. Only the finalized re-read may promote
+// absence to an integrity fault.
+func strategyReceiptAbsent(account ConfirmedAccount) bool {
+	return account.Owner == "" && len(account.Data) == 0
 }
 
 func decodeRouteNAVCustodies(accounts []ConfirmedAccount) (RouteNAVCustodies, error) {
@@ -134,23 +265,54 @@ func decodeRouteNAVCustodiesForRoute(accounts []ConfirmedAccount, route RuntimeR
 	if err != nil {
 		return RouteNAVCustodies{}, fmt.Errorf("decode route collateral custody: %w", err)
 	}
-	return RouteNAVCustodies{
+	result := RouteNAVCustodies{
 		VoltrIdleRaw: idle.Raw, StrategyUSDCraw: strategy.Raw,
 		SquadsUSDCraw: squadsUSDC.Raw, SquadsPRIMEraw: squadsPRIME.Raw,
-	}, nil
+	}
+	if route.Kamino.DebtMint != bridgeUSDC {
+		if route.DebtCustody == "" || route.DebtCustody == bridgeSquadsATA || route.DebtCustody == route.CollateralCustody {
+			return RouteNAVCustodies{}, fmt.Errorf("non-USDC debt custody is missing or aliased")
+		}
+		mint, err := decodeBase58PublicKey(route.Kamino.DebtMint)
+		if err != nil {
+			return RouteNAVCustodies{}, err
+		}
+		account := accountAt(accounts, route.DebtCustody)
+		if account.Owner != route.DebtTokenProgram || account.Executable || account.Lamports == 0 {
+			return RouteNAVCustodies{}, fmt.Errorf("debt custody token program or account envelope drifted")
+		}
+		debt, err := DecodeTokenCustody(account.Owner, account.Data, mint, authority)
+		if err != nil {
+			return RouteNAVCustodies{}, fmt.Errorf("decode debt custody: %w", err)
+		}
+		result.SquadsDebtRaw = debt.Raw
+	}
+	return result, nil
 }
 
 // valueInDebtRaw conservatively converts equal-decimal token raw units into
 // debt-token raw units. Assets floor; liabilities ceil. big.Int keeps hostile
 // reserve prices and balances from wrapping intermediate arithmetic.
 func valueInDebtRaw(raw uint64, tokenPriceSF, debtPriceSF [16]byte, liability bool) (uint64, error) {
+	return valueBetweenTokenRaw(raw, 0, 0, tokenPriceSF, debtPriceSF, liability)
+}
+
+// valueBetweenTokenRaw converts raw units between assets without assuming
+// matching decimals or a stablecoin peg. The two reserve prices use the same
+// scaled-fraction quote denomination, which cancels exactly in their ratio.
+func valueBetweenTokenRaw(raw uint64, tokenDecimals, debtDecimals uint8, tokenPriceSF, debtPriceSF [16]byte, liability bool) (uint64, error) {
+	if tokenDecimals > 18 || debtDecimals > 18 {
+		return 0, fmt.Errorf("unsupported token decimal scale")
+	}
 	tokenPrice, debtPrice := littleInt(tokenPriceSF[:]), littleInt(debtPriceSF[:])
 	if tokenPrice.Sign() <= 0 || debtPrice.Sign() <= 0 {
 		return 0, fmt.Errorf("Kamino reserve market price is zero")
 	}
 	numerator := new(big.Int).Mul(new(big.Int).SetUint64(raw), tokenPrice)
+	numerator.Mul(numerator, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(debtDecimals)), nil))
+	denominator := new(big.Int).Mul(debtPrice, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(tokenDecimals)), nil))
 	quotient, remainder := new(big.Int), new(big.Int)
-	quotient.QuoRem(numerator, debtPrice, remainder)
+	quotient.QuoRem(numerator, denominator, remainder)
 	if liability && remainder.Sign() != 0 {
 		quotient.Add(quotient, big.NewInt(1))
 	}
@@ -161,7 +323,7 @@ func valueInDebtRaw(raw uint64, tokenPriceSF, debtPriceSF [16]byte, liability bo
 }
 
 func navInputFingerprint(slot int64, accounts []ConfirmedAccount, custodies RouteNAVCustodies) (string, error) {
-	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve}, CollateralCustody: kaminoPrimeCustody}
+	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, Market: kaminoMarket, Program: kaminoProgram}, CollateralCustody: kaminoPrimeCustody}
 	return navInputFingerprintForRoute(slot, accounts, custodies, route)
 }
 
@@ -194,6 +356,9 @@ func navInputFingerprintForRoute(slot int64, accounts []ConfirmedAccount, custod
 	// For bridge construction, custody overrides describe the exact expected
 	// poststate while reserve/obligation/config bytes remain the confirmed input.
 	parts = append(parts, fmt.Sprintf("post:%d:%d:%d:%d", custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw, custodies.SquadsPRIMEraw))
+	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
+		parts = append(parts, fmt.Sprintf("post-debt:%d", custodies.SquadsDebtRaw))
+	}
 	sort.Strings(parts)
 	hash := sha256.Sum256([]byte(fmt.Sprintf("%d|%s", slot, strings.Join(parts, "|"))))
 	return hex.EncodeToString(hash[:]), nil
@@ -234,8 +399,19 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
+	vault, err := decodeVoltrVaultBook(accountAt(accounts, bridgeVoltrVault))
+	if err != nil {
+		return RouteNAVSnapshot{}, err
+	}
+	lpSupply, err := decodeVoltrLPSupply(accountAt(accounts, bridgeLPMint))
+	if err != nil {
+		return RouteNAVSnapshot{}, err
+	}
 	if override != nil {
 		custodies = *override
+	}
+	if route.Kamino.DebtMint == bridgeUSDC && custodies.SquadsDebtRaw != 0 {
+		return RouteNAVSnapshot{}, fmt.Errorf("USDC debt custody would be counted twice")
 	}
 
 	kaminoConfig := route.Kamino
@@ -255,29 +431,68 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	if err := validateKaminoRefresh(obligation, collateralReserve, debtReserve); err != nil {
+	// Audit U5 / monitor M5: NAV is never computed from a market in emergency
+	// mode, an inactive reserve, or a reserve whose refresh is outside the
+	// adaptor's report window. Such a batch would keep reporting the previous
+	// valuation, so it fails closed into a HOLD reason instead.
+	marketEmergency, err := decodeKaminoMarketEmergency(accountAt(accounts, kaminoConfig.Market), kaminoConfig)
+	if err != nil {
+		return RouteNAVSnapshot{}, err
+	}
+	if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, collateralReserve, debtReserve); err != nil {
 		return RouteNAVSnapshot{}, err
 	}
 	if collateralReserve.refreshedSlot > slot || debtReserve.refreshedSlot > slot || obligation.refreshedSlot > slot {
 		return RouteNAVSnapshot{}, fmt.Errorf("Kamino valuation claims a future refresh slot")
 	}
+	// Voltr reports USDC raw units, never raw units of the selected debt
+	// asset. A separate USDC reference from the same batch is required for
+	// non-USDC lanes; neither a ticker nor equal decimals establishes a peg.
+	usdcReserve := debtReserve
+	if kaminoConfig.DebtMint != bridgeUSDC {
+		reference, err := pinnedKaminoObservationConfig()
+		if err != nil {
+			return RouteNAVSnapshot{}, err
+		}
+		usdcReserve, err = decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
+		if err != nil {
+			return RouteNAVSnapshot{}, fmt.Errorf("decode NAV USDC reference: %w", err)
+		}
+		if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, usdcReserve); err != nil {
+			return RouteNAVSnapshot{}, err
+		}
+		if usdcReserve.refreshedSlot > slot {
+			return RouteNAVSnapshot{}, fmt.Errorf("NAV USDC reference claims a future slot")
+		}
+	}
+	if usdcReserve.mintDecimals != 6 {
+		return RouteNAVSnapshot{}, fmt.Errorf("NAV USDC reference decimals drifted")
+	}
 	redeemablePRIME, err := collateralReserve.redeemLiquidityRaw(obligation.collateralDepositedRaw)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	primeIdleValue, err := valueInDebtRaw(custodies.SquadsPRIMEraw, collateralReserve.marketPriceSF, debtReserve.marketPriceSF, false)
+	primeIdleValue, err := valueBetweenTokenRaw(custodies.SquadsPRIMEraw, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	collateralValue, err := valueInDebtRaw(redeemablePRIME, collateralReserve.marketPriceSF, debtReserve.marketPriceSF, false)
+	collateralValue, err := valueBetweenTokenRaw(redeemablePRIME, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	debtValue, err := valueInDebtRaw(obligation.debtRaw, debtReserve.marketPriceSF, debtReserve.marketPriceSF, true)
+	debtRaw, err := obligation.debtAtReserveRate(debtReserve)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	values := []uint64{custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw, primeIdleValue, collateralValue, debtValue}
+	debtValue, err := valueBetweenTokenRaw(debtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, true)
+	if err != nil {
+		return RouteNAVSnapshot{}, err
+	}
+	debtIdleValue, err := valueBetweenTokenRaw(custodies.SquadsDebtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
+	if err != nil {
+		return RouteNAVSnapshot{}, err
+	}
+	values := []uint64{custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw, primeIdleValue, collateralValue, debtValue, debtIdleValue}
 	for _, value := range values {
 		if value > math.MaxInt64 {
 			return RouteNAVSnapshot{}, fmt.Errorf("NAV component exceeds signed range")
@@ -287,16 +502,24 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	nav, err := ComputeNAV(NAVSnapshotContext{
-		Slot: slot, ReceiptFingerprint: fingerprint,
-		ManifestSHA256: manifest.SHA256, PolicyCatalogSHA256: *manifest.PolicyCatalog.SHA256,
-	}, []NAVComponent{
-		{Account: bridgeStrategyATA, Owner: bridgeStrategyAuth, Raw: int64(custodies.StrategyUSDCraw), Slot: slot, Known: true},
+	// The strategy custody ATA is deliberately absent from this list. On the
+	// current Voltr binary the vault books that balance itself (receipt offset
+	// 128) and credits it into totalValue when it is swept, so counting it here
+	// double counts it. Every remaining component is value held outside Voltr
+	// custody: Squads cash, idle collateral, and the Kamino net position.
+	components := []NAVComponent{
 		{Account: bridgeSquadsATA, Owner: bridgeVault, Raw: int64(custodies.SquadsUSDCraw), Slot: slot, Known: true},
 		{Account: route.CollateralCustody, Owner: bridgeVault, Raw: int64(primeIdleValue), Slot: slot, Known: true},
 		{Account: kaminoConfig.Obligation + ":collateral", Owner: kaminoProgram, Raw: int64(collateralValue), Slot: slot, Known: true},
 		{Account: kaminoConfig.Obligation + ":debt", Owner: kaminoProgram, Raw: int64(debtValue), Slot: slot, Known: true, Liability: true},
-	})
+	}
+	if kaminoConfig.DebtMint != bridgeUSDC {
+		components = append(components, NAVComponent{Account: route.DebtCustody, Owner: bridgeVault, Raw: int64(debtIdleValue), Slot: slot, Known: true})
+	}
+	nav, err := ComputeNAV(NAVSnapshotContext{
+		Slot: slot, ReceiptFingerprint: fingerprint,
+		ManifestSHA256: manifest.SHA256, PolicyCatalogSHA256: *manifest.PolicyCatalog.SHA256,
+	}, components)
 	if err != nil || nav.Raw < 0 {
 		return RouteNAVSnapshot{}, fmt.Errorf("compute route NAV: %w", err)
 	}
@@ -311,6 +534,9 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 		TotalVaultNAVRaw: custodies.VoltrIdleRaw + uint64(nav.Raw), PriorReportedNAVRaw: receipt.PositionValueRaw,
 		PriorReportUpdatedTS: receipt.LastUpdatedTS,
 		PrimeIdleValueRaw:    primeIdleValue, PositionCollateralValue: collateralValue, PositionDebtValue: debtValue,
+		DebtIdleValueRaw:  debtIdleValue,
+		ObligationPresent: obligationAccount.Lamports != 0,
+		Receipt:           receipt, Voltr: vault, LPSupplyRaw: lpSupply,
 		SnapshotDigest: nav.SnapshotDigest,
 		Report:         BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
 	}, nil

@@ -10,21 +10,32 @@ import (
 )
 
 const policyKeypairEnvironment = "POLICY_KEYPAIR"
+const setupKeypairEnvironment = "SOLANA_TESTING_PK"
 
 // loadPinnedPolicySigner follows loyal-solana-env's established input contract:
 // a JSON byte array, hexadecimal bytes, or base58 bytes representing a 32-byte
 // seed or 64-byte Solana secret key. Errors deliberately omit all secret data.
 func loadPinnedPolicySigner() (ed25519.PrivateKey, error) {
-	value, ok := os.LookupEnv(policyKeypairEnvironment)
+	return loadPinnedSigner(policyKeypairEnvironment, mustKey(bridgeDelegate), "delegated executor")
+}
+
+// Setup uses the already-established Backyard Settings admin, never the
+// lifecycle delegate and never a fallback key. Loading it does not enable send.
+func loadPinnedPolicySetupSigner() (ed25519.PrivateKey, error) {
+	return loadPinnedSigner(setupKeypairEnvironment, mustKey(bridgeSettingsSigner), "Settings admin")
+}
+
+func loadPinnedSigner(environment string, expected publicKey, role string) (ed25519.PrivateKey, error) {
+	value, ok := os.LookupEnv(environment)
 	if !ok || strings.TrimSpace(value) == "" {
-		return nil, fmt.Errorf("%s is not configured", policyKeypairEnvironment)
+		return nil, fmt.Errorf("%s is not configured", environment)
 	}
 	key, err := decodeSolanaKeypairMaterial(value)
 	if err != nil {
-		return nil, fmt.Errorf("%s is not a valid Solana keypair", policyKeypairEnvironment)
+		return nil, fmt.Errorf("%s is not a valid Solana keypair", environment)
 	}
-	if publicKeyFromBytes(key.Public().(ed25519.PublicKey)) != mustKey(bridgeDelegate) {
-		return nil, fmt.Errorf("%s does not match the pinned delegated executor", policyKeypairEnvironment)
+	if publicKeyFromBytes(key.Public().(ed25519.PublicKey)) != expected {
+		return nil, fmt.Errorf("%s does not match the pinned %s", environment, role)
 	}
 	return key, nil
 }

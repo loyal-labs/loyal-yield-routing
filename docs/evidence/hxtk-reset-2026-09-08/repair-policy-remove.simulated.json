@@ -1,0 +1,11 @@
+{
+  "canonicalStateRoot": "/Users/user/.loyal/hxtk-reset/HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+  "schema": "loyal-voltr-hxtk-repair-policy-remove/v1",
+  "step": "repair-policy-remove",
+  "policyProvenanceStatement": "Live policy bytes are compared to the hash recorded in the finalized PolicyCreate journal as a dynamic continuity pin, alongside decoded semantic checks.",
+  "sent": false,
+  "signed": false,
+  "broadcast": false,
+  "verdict": "PENDING_FINALIZED_POLICY_AND_REPAIR",
+  "reason": "--policy-journal and --repair-journal are required; removal follows the proven PolicyCreate and finalized repair journals"
+}

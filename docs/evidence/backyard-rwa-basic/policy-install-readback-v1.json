@@ -1,0 +1,61 @@
+{
+  "schema": "loyal-backyard-rwa-basic-policy-install-readback/v1",
+  "verdict": "PASS",
+  "broadcast": true,
+  "cluster": "mainnet-beta",
+  "commitment": "finalized",
+  "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "policySeedBefore": "140",
+  "policySeedAfter": "144",
+  "seeds": [
+    "141",
+    "142",
+    "143",
+    "144"
+  ],
+  "PDAs": [
+    "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+    "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+    "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+    "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz"
+  ],
+  "policies": [
+    {
+      "seed": "141",
+      "account": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "dataSha256": "bd75abb8acb28180e2fbcd66814e21d32267a447cf3dac50c928d2d2cc0dcc83",
+      "accountDataSha256": "c716c948bb6f20c4bf951386ea9d49b43b933a6009778518fa04263be0df0ae9",
+      "finalizedSlot": 445806570,
+      "blockTime": 1789016967,
+      "start": 1789016967
+    },
+    {
+      "seed": "142",
+      "account": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "dataSha256": "d49cd14712056de39fb06c6fea3120dc851bf0f5b0bfa0d87413697457b30479",
+      "accountDataSha256": "bb42c52b1f5641e8105a7b04607a35fe92034d71ad87b3e528d7914edd38e704",
+      "finalizedSlot": 445806604,
+      "blockTime": 1789018876,
+      "start": 1789018876
+    },
+    {
+      "seed": "143",
+      "account": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "dataSha256": "ff7b27cab93ec1d02c3e645b78af5725b8e5616dcb1799c7c527939286c63484",
+      "accountDataSha256": "7058ac2cc0db6befa76c4e10cd8558f52ccb9814532970241d6cfd0038f79f3f",
+      "finalizedSlot": 445806637,
+      "blockTime": 1789018887,
+      "start": 1789018887
+    },
+    {
+      "seed": "144",
+      "account": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+      "dataSha256": "dec1b2b9f3e69265eed238e281688c167b8d3a732ddb1e5e02ec6d302472968e",
+      "accountDataSha256": "43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a",
+      "finalizedSlot": 445806672,
+      "blockTime": 1789018899,
+      "start": 1789018899
+    }
+  ],
+  "finalizedSlot": 445806672
+}

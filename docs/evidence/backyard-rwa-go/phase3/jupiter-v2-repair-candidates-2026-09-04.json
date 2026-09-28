@@ -1,0 +1,570 @@
+{
+  "schema": "phase3-jupiter-v2-repair-candidates/v1",
+  "broadcast": false,
+  "installed": false,
+  "proofLevel": "OFFLINE_CANDIDATE_CONSTRAINTS_NO_SEED_OR_AUTHORITY_INSTALLED",
+  "groups": [
+    {
+      "edge": "USDC->USDe",
+      "originalPolicy": "2XBybywY6igbD5iJuXfTRi79PQw1vHrta2iYvVCnSCkp",
+      "originalPolicyDataSha256": "16cfe7e0aa6a2736b84cc193e99f7da7c51d094a8d79cb755d281af057a49075",
+      "originalConstraints": [
+        {
+          "operation": null,
+          "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+          "accountPubkeys": [
+            {
+              "index": 0,
+              "pubkeys": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              ]
+            },
+            {
+              "index": 2,
+              "pubkeys": [
+                "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+              ]
+            },
+            {
+              "index": 3,
+              "pubkeys": [
+                "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"
+              ]
+            },
+            {
+              "index": 6,
+              "pubkeys": [
+                "6wSE9RKCReDiDiW4tSRiieFHSaVS2gTMFCVBB8mimtVk"
+              ]
+            },
+            {
+              "index": 7,
+              "pubkeys": [
+                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+              ]
+            },
+            {
+              "index": 8,
+              "pubkeys": [
+                "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT"
+              ]
+            }
+          ],
+          "data": [
+            {
+              "kind": "slice-equals",
+              "offset": 0,
+              "valueHex": "c1209b3341d69c81"
+            },
+            {
+              "kind": "u64-less-than-or-equal",
+              "offset": 18,
+              "value": 1000000000000
+            },
+            {
+              "kind": "u16-less-than-or-equal",
+              "offset": 34,
+              "value": 50
+            },
+            {
+              "kind": "u8-equals",
+              "offset": 36,
+              "value": 0
+            }
+          ]
+        },
+        {
+          "operation": null,
+          "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+          "accountPubkeys": [
+            {
+              "index": 0,
+              "pubkeys": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              ]
+            },
+            {
+              "index": 2,
+              "pubkeys": [
+                "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+              ]
+            },
+            {
+              "index": 3,
+              "pubkeys": [
+                "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV"
+              ]
+            },
+            {
+              "index": 6,
+              "pubkeys": [
+                "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3"
+              ]
+            },
+            {
+              "index": 7,
+              "pubkeys": [
+                "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
+              ]
+            },
+            {
+              "index": 8,
+              "pubkeys": [
+                "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5"
+              ]
+            }
+          ],
+          "data": [
+            {
+              "kind": "slice-equals",
+              "offset": 0,
+              "valueHex": "c1209b3341d69c81"
+            },
+            {
+              "kind": "u64-less-than-or-equal",
+              "offset": 28,
+              "value": 1000000000000
+            },
+            {
+              "kind": "u16-less-than-or-equal",
+              "offset": 44,
+              "value": 50
+            },
+            {
+              "kind": "u8-equals",
+              "offset": 46,
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "replacedConstraintIndex": 0,
+      "replacementConstraints": [
+        {
+          "operation": null,
+          "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+          "accountPubkeys": [
+            {
+              "index": 1,
+              "pubkeys": [
+                "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+              ]
+            },
+            {
+              "index": 2,
+              "pubkeys": [
+                "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"
+              ]
+            },
+            {
+              "index": 5,
+              "pubkeys": [
+                "6wSE9RKCReDiDiW4tSRiieFHSaVS2gTMFCVBB8mimtVk"
+              ]
+            },
+            {
+              "index": 6,
+              "pubkeys": [
+                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+              ]
+            },
+            {
+              "index": 7,
+              "pubkeys": [
+                "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT"
+              ]
+            },
+            {
+              "index": 8,
+              "pubkeys": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              ]
+            },
+            {
+              "index": 9,
+              "pubkeys": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              ]
+            }
+          ],
+          "data": [
+            {
+              "kind": "slice-equals",
+              "offset": 0,
+              "valueHex": "d19853937cfed8e9"
+            },
+            {
+              "kind": "u64-less-than-or-equal",
+              "offset": 9,
+              "value": 1000000000000
+            },
+            {
+              "kind": "u16-less-than-or-equal",
+              "offset": 25,
+              "value": 50
+            },
+            {
+              "kind": "slice-equals",
+              "offset": 27,
+              "valueHex": "00000000"
+            }
+          ]
+        },
+        {
+          "operation": null,
+          "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+          "accountPubkeys": [
+            {
+              "index": 0,
+              "pubkeys": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              ]
+            },
+            {
+              "index": 2,
+              "pubkeys": [
+                "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+              ]
+            },
+            {
+              "index": 3,
+              "pubkeys": [
+                "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV"
+              ]
+            },
+            {
+              "index": 6,
+              "pubkeys": [
+                "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3"
+              ]
+            },
+            {
+              "index": 7,
+              "pubkeys": [
+                "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
+              ]
+            },
+            {
+              "index": 8,
+              "pubkeys": [
+                "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5"
+              ]
+            }
+          ],
+          "data": [
+            {
+              "kind": "slice-equals",
+              "offset": 0,
+              "valueHex": "c1209b3341d69c81"
+            },
+            {
+              "kind": "u64-less-than-or-equal",
+              "offset": 28,
+              "value": 1000000000000
+            },
+            {
+              "kind": "u16-less-than-or-equal",
+              "offset": 44,
+              "value": 50
+            },
+            {
+              "kind": "u8-equals",
+              "offset": 46,
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "edge": "USDe->PYUSD",
+      "originalPolicy": "J6zG9mfCPycJ6KDdE7c2hZfoGgpevdC2qUJEyzYWydcy",
+      "originalPolicyDataSha256": "76d29f6bba7e9913691e76cc7be1be973d65df73c0b233524b34d84f41ad517d",
+      "originalConstraints": [
+        {
+          "operation": null,
+          "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+          "accountPubkeys": [
+            {
+              "index": 0,
+              "pubkeys": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              ]
+            },
+            {
+              "index": 2,
+              "pubkeys": [
+                "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+              ]
+            },
+            {
+              "index": 3,
+              "pubkeys": [
+                "6wSE9RKCReDiDiW4tSRiieFHSaVS2gTMFCVBB8mimtVk"
+              ]
+            },
+            {
+              "index": 6,
+              "pubkeys": [
+                "2PHU3gdj32bdtuvFqSSzji3G8mV1G2vE1UbXtvvdvqgn"
+              ]
+            },
+            {
+              "index": 7,
+              "pubkeys": [
+                "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT"
+              ]
+            },
+            {
+              "index": 8,
+              "pubkeys": [
+                "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+              ]
+            },
+            {
+              "index": 10,
+              "pubkeys": [
+                "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+              ]
+            }
+          ],
+          "data": [
+            {
+              "kind": "slice-equals",
+              "offset": 0,
+              "valueHex": "c1209b3341d69c81"
+            },
+            {
+              "kind": "u64-less-than-or-equal",
+              "offset": 23,
+              "value": 1000000000000
+            },
+            {
+              "kind": "u16-less-than-or-equal",
+              "offset": 39,
+              "value": 50
+            },
+            {
+              "kind": "u8-equals",
+              "offset": 41,
+              "value": 0
+            }
+          ]
+        },
+        {
+          "operation": null,
+          "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+          "accountPubkeys": [
+            {
+              "index": 0,
+              "pubkeys": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              ]
+            },
+            {
+              "index": 2,
+              "pubkeys": [
+                "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+              ]
+            },
+            {
+              "index": 3,
+              "pubkeys": [
+                "6wSE9RKCReDiDiW4tSRiieFHSaVS2gTMFCVBB8mimtVk"
+              ]
+            },
+            {
+              "index": 6,
+              "pubkeys": [
+                "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+              ]
+            },
+            {
+              "index": 7,
+              "pubkeys": [
+                "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT"
+              ]
+            },
+            {
+              "index": 8,
+              "pubkeys": [
+                "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+              ]
+            },
+            {
+              "index": 10,
+              "pubkeys": [
+                "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+              ]
+            }
+          ],
+          "data": [
+            {
+              "kind": "slice-equals",
+              "offset": 0,
+              "valueHex": "c1209b3341d69c81"
+            },
+            {
+              "kind": "u64-less-than-or-equal",
+              "offset": 29,
+              "value": 1000000000000
+            },
+            {
+              "kind": "u16-less-than-or-equal",
+              "offset": 45,
+              "value": 50
+            },
+            {
+              "kind": "u8-equals",
+              "offset": 47,
+              "value": 0
+            }
+          ]
+        }
+      ],
+      "replacedConstraintIndex": 1,
+      "replacementConstraints": [
+        {
+          "operation": null,
+          "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+          "accountPubkeys": [
+            {
+              "index": 0,
+              "pubkeys": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              ]
+            },
+            {
+              "index": 2,
+              "pubkeys": [
+                "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+              ]
+            },
+            {
+              "index": 3,
+              "pubkeys": [
+                "6wSE9RKCReDiDiW4tSRiieFHSaVS2gTMFCVBB8mimtVk"
+              ]
+            },
+            {
+              "index": 6,
+              "pubkeys": [
+                "2PHU3gdj32bdtuvFqSSzji3G8mV1G2vE1UbXtvvdvqgn"
+              ]
+            },
+            {
+              "index": 7,
+              "pubkeys": [
+                "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT"
+              ]
+            },
+            {
+              "index": 8,
+              "pubkeys": [
+                "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+              ]
+            },
+            {
+              "index": 10,
+              "pubkeys": [
+                "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+              ]
+            }
+          ],
+          "data": [
+            {
+              "kind": "slice-equals",
+              "offset": 0,
+              "valueHex": "c1209b3341d69c81"
+            },
+            {
+              "kind": "u64-less-than-or-equal",
+              "offset": 23,
+              "value": 1000000000000
+            },
+            {
+              "kind": "u16-less-than-or-equal",
+              "offset": 39,
+              "value": 50
+            },
+            {
+              "kind": "u8-equals",
+              "offset": 41,
+              "value": 0
+            }
+          ]
+        },
+        {
+          "operation": null,
+          "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+          "accountPubkeys": [
+            {
+              "index": 1,
+              "pubkeys": [
+                "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+              ]
+            },
+            {
+              "index": 2,
+              "pubkeys": [
+                "6wSE9RKCReDiDiW4tSRiieFHSaVS2gTMFCVBB8mimtVk"
+              ]
+            },
+            {
+              "index": 5,
+              "pubkeys": [
+                "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+              ]
+            },
+            {
+              "index": 6,
+              "pubkeys": [
+                "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT"
+              ]
+            },
+            {
+              "index": 7,
+              "pubkeys": [
+                "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+              ]
+            },
+            {
+              "index": 8,
+              "pubkeys": [
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              ]
+            },
+            {
+              "index": 9,
+              "pubkeys": [
+                "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+              ]
+            }
+          ],
+          "data": [
+            {
+              "kind": "slice-equals",
+              "offset": 0,
+              "valueHex": "d19853937cfed8e9"
+            },
+            {
+              "kind": "u64-less-than-or-equal",
+              "offset": 9,
+              "value": 1000000000000
+            },
+            {
+              "kind": "u16-less-than-or-equal",
+              "offset": 25,
+              "value": 50
+            },
+            {
+              "kind": "slice-equals",
+              "offset": 27,
+              "valueHex": "00000000"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

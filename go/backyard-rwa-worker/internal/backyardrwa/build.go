@@ -93,30 +93,35 @@ func (s SignedBridgeTransaction) BuildResult(simulationSlot int64) (BuildResult,
 // They are not configurable: a different key is a different reviewed manifest,
 // not an environment override.
 const (
-	bridgeSquadsProgram    = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
-	bridgeSettings         = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
-	bridgeSettingsSigner   = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
-	bridgeVault            = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
-	bridgeDelegate         = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
-	bridgeAllocationPolicy = "HoDV7mtsb2u1VARZLYuGByW7cCsGWL9NFxHZs7WHjdzz"
-	bridgeNAVPolicy        = "41nzu42c3KPgJfWhnV5jbfxjHbvVU6HXaiJmzzYNqvBP"
-	bridgeStagePolicy      = "ALz5Wkt82GhGFH1LfzbnAovkZ6t85ErovbxHUH3yY1wY"
-	bridgeWithdrawPolicy   = "DjYYkQWb4zYbySfEndjVdg2NwZ8i77Fb9P1UFVbebc5t"
+	bridgeSquadsProgram  = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+	bridgeSettings       = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
+	bridgeSettingsSigner = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+	bridgeVault          = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+	bridgeDelegate       = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
+	// Strategy-two bridge policies installed at fresh Squads seeds 145-148.
+	// The retired 62-65 set stays asserted absent by legacyPolicyGate.
+	bridgeAllocationPolicy = "8Nd646MD6H6hQrXZuP6utG5QZjRZ44GrRmdZJGShmhnh" // seed 145, VOLTR_ALLOCATE_TO_SQUADS
+	bridgeNAVPolicy        = "AyymPJEAEN5YFySuEDVkdU9PTjBarj2y2UJxQ4rznjXr" // seed 146, REPORT_NAV
+	bridgeStagePolicy      = "E2TZ5UJ3uyqTqiuKX3GK7t7wgeNBSGy2pV2BXPMpaVDr" // seed 147, STAGE_SQUADS_TO_VOLTR
+	bridgeWithdrawPolicy   = "AsqfqCCDf2tWoZxtj3CZ4XSYcAxRuSfgq8oYtdAQ9eCU" // seed 148, VOLTR_RESTORE_IDLE
 	bridgeVoltrProgram     = "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
 	bridgeVoltrVault       = "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"
-	bridgeStrategy         = "9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj"
-	bridgeProtocol         = "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y"
-	bridgeAdaptorReceipt   = "AsfkxMdVYjMnr2fdTBMUXhq81hgi2hbENXCy9WhUQF7u"
-	bridgeStrategyReceipt  = "3GHLmyTTGH9ZfQqb3YCo9xKjpPhMLvHsq2JSYzCnk9U6"
-	bridgeIdleAuthority    = "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb"
-	bridgeStrategyAuth     = "8fLTf2ufePttZW3Es1xVoW3ows3WjXcuHQkkBCVvHsdH"
-	bridgeUSDC             = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-	bridgeLPMint           = "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb"
-	bridgeIdleATA          = "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh"
-	bridgeStrategyATA      = "FTDWN5Ay8tzYPJBJT4s2oZaHRQ7jKPo8XP2ZRWb5GP3M"
-	bridgeSquadsATA        = "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"
-	bridgeTokenProgram     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	bridgeAdaptorProgram   = "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"
+	// Strategy-two adaptor config: its key IS the Voltr strategy key, derived
+	// offline from the setup admin over domain loyal-rwa-multiply-mainnet-v3.
+	// It replaces the retired v2 config 9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj.
+	bridgeStrategy        = "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY"
+	bridgeProtocol        = "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y"
+	bridgeAdaptorReceipt  = "AsfkxMdVYjMnr2fdTBMUXhq81hgi2hbENXCy9WhUQF7u"
+	bridgeStrategyReceipt = "5bw4VYzpZXsk9SUNyWwJkb4fEx1DS8eNMFB6Qb4MUfhE"
+	bridgeIdleAuthority   = "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb"
+	bridgeStrategyAuth    = "5r74AE7yewacfRzoGAjXx5X3gM9LUoLU29eHzdjiLrJo"
+	bridgeUSDC            = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	bridgeLPMint          = "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb"
+	bridgeIdleATA         = "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh"
+	bridgeStrategyATA     = "EPCVCLY5wfumf6yPvqu7zuEB4WnnXbnPsy7JrKoAWcqC"
+	bridgeSquadsATA       = "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"
+	bridgeTokenProgram    = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	bridgeAdaptorProgram  = "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"
 )
 
 var (
@@ -127,9 +132,20 @@ var (
 	squadsExecuteSyncDiscriminator = []byte{90, 81, 187, 81, 39, 70, 128, 78}
 )
 
+// bridgeCapRaw stays the whole-vault bound used by the Kamino basic policies
+// and Voltr withdrawal-receipt admission. bridgeMaxNAV is the strategy-two
+// adaptor config's max reported NAV (the vault maxCap) decoded from confirmed
+// config state. strategyTwoBridgeLegCapRaw is the per-execution operational
+// bound installed on bridge policies 145-148 (100 USDC): every bridge capital
+// leg is built against it. strategyTwoDailyAllocationCapRaw mirrors the daily
+// USDC spending limit embedded in the strategy-two policies (300 USDC), which
+// Squads enforces on chain across outflow legs.
 const (
 	bridgeCapRaw uint64 = 1_000_000_000_000
-	bridgeMaxNAV uint64 = 2_000_000_000_000
+	bridgeMaxNAV uint64 = 1_000_000_000_000
+
+	strategyTwoBridgeLegCapRaw       uint64 = 100_000_000
+	strategyTwoDailyAllocationCapRaw uint64 = 300_000_000
 )
 
 // BuildAndSignBridgeTransaction builds exactly one policy-wrapped bridge
@@ -140,6 +156,44 @@ func BuildAndSignBridgeTransaction(request BridgeBuildRequest, executor ed25519.
 	return buildAndSignBridgeTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
 }
 
+// CompileBridgeMessage uses the exact signing path without accessing a key.
+// Fee/cap admission therefore measures the message before signing is possible.
+func CompileBridgeMessage(request BridgeBuildRequest) ([]byte, error) {
+	return compileBridgeMessageForDelegate(request, mustKey(bridgeDelegate))
+}
+
+func compileBridgeMessageForDelegate(request BridgeBuildRequest, delegate publicKey) ([]byte, error) {
+	if request.LastValidBlockHeight <= 0 || request.AdaptorConfig != bridgeStrategy || request.Settings != bridgeSettings || request.Report.Sequence != request.Report.ObservedSlot {
+		return nil, fmt.Errorf("bridge config or report is not bound to confirmed state")
+	}
+	blockhash, err := decodeKey(request.RecentBlockhash)
+	if err != nil {
+		return nil, err
+	}
+	inner, policy, indexes, err := ticketedBridgeInstructions(request)
+	if err != nil {
+		return nil, err
+	}
+	outer, err := wrapSquadsPolicyForDelegate(policy, delegate, delegate, indexes, inner)
+	if err != nil {
+		return nil, err
+	}
+	message, err := compileLegacyMessage(delegate, blockhash, []compiledInstruction{outer})
+	if err != nil {
+		return nil, err
+	}
+	return checkedUnsignedMessage(message)
+}
+
+func checkedUnsignedMessage(message []byte) ([]byte, error) {
+	legacy := len(message) >= 3 && message[0] == 1
+	v0 := len(message) >= 4 && message[0] == 0x80 && message[1] == 1
+	if (!legacy && !v0) || 1+ed25519.SignatureSize+len(message) > solanaPacketBytes {
+		return nil, fmt.Errorf("unsigned message does not fit the single-signer packet envelope")
+	}
+	return message, nil
+}
+
 // buildAndSignBridgeTransactionForDelegate exists solely so package tests can
 // verify Solana wire encoding with deterministic non-production key material.
 // Production always calls BuildAndSignBridgeTransaction, which pins the real
@@ -148,27 +202,11 @@ func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, execut
 	if len(executor) != ed25519.PrivateKeySize || request.LastValidBlockHeight <= 0 {
 		return SignedBridgeTransaction{}, fmt.Errorf("invalid bridge signing material")
 	}
-	if request.AdaptorConfig != bridgeStrategy || request.Settings != bridgeSettings ||
-		request.Report.Sequence != request.Report.ObservedSlot {
-		return SignedBridgeTransaction{}, fmt.Errorf("bridge config or report sequence is not bound to the confirmed snapshot")
-	}
 	feePayer := publicKeyFromBytes(executor.Public().(ed25519.PublicKey))
 	if feePayer != expectedDelegate {
 		return SignedBridgeTransaction{}, fmt.Errorf("executor is not the pinned Squads delegate")
 	}
-	blockhash, err := decodeKey(request.RecentBlockhash)
-	if err != nil {
-		return SignedBridgeTransaction{}, fmt.Errorf("invalid confirmed blockhash: %w", err)
-	}
-	inner, policy, constraintIndexes, err := ticketedBridgeInstructions(request)
-	if err != nil {
-		return SignedBridgeTransaction{}, err
-	}
-	outer, err := wrapSquadsPolicyForDelegate(policy, feePayer, expectedDelegate, constraintIndexes, inner)
-	if err != nil {
-		return SignedBridgeTransaction{}, err
-	}
-	message, err := compileLegacyMessage(feePayer, blockhash, []compiledInstruction{outer})
+	message, err := compileBridgeMessageForDelegate(request, expectedDelegate)
 	if err != nil {
 		return SignedBridgeTransaction{}, err
 	}
@@ -193,7 +231,7 @@ func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, execut
 func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, publicKey, byte, error) {
 	switch request.Action {
 	case VoltrAllocateToSquads:
-		if request.AmountRaw == 0 || request.AmountRaw > bridgeCapRaw {
+		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid allocation amount")
 		}
 		data, err := voltrStrategyData(voltrDepositDiscriminator, adaptorDepositDiscriminator, request.AmountRaw, request.Report)
@@ -211,7 +249,7 @@ func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, publicK
 		}
 		return voltrDepositInstruction(data), mustKey(bridgeNAVPolicy), 0, nil
 	case VoltrRestoreIdle:
-		if request.AmountRaw == 0 || request.AmountRaw > bridgeCapRaw {
+		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid Voltr restore amount")
 		}
 		data, err := voltrStrategyData(voltrWithdrawDiscriminator, adaptorWithdrawDiscriminator, request.AmountRaw, request.Report)
@@ -220,7 +258,7 @@ func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, publicK
 		}
 		return voltrWithdrawInstruction(data), mustKey(bridgeWithdrawPolicy), 0, nil
 	case StageSquadsToVoltr:
-		if request.AmountRaw == 0 || request.AmountRaw > bridgeCapRaw {
+		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid staging amount")
 		}
 		return stageInstruction(request.AmountRaw), mustKey(bridgeStagePolicy), 0, nil
@@ -340,6 +378,15 @@ func wrapSquadsPolicyForDelegate(policy, executor, expectedDelegate publicKey, c
 func compileLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
 	if len(instructions) != 1 {
 		return nil, fmt.Errorf("bridge transaction must contain exactly one Squads instruction")
+	}
+	return encodeLegacyMessage(feePayer, blockhash, instructions)
+}
+
+// Encoding is separate from each caller's closed instruction-set validation.
+// The bridge/signing boundary above still permits exactly one instruction.
+func encodeLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
+	if len(instructions) == 0 || len(instructions) > 4 {
+		return nil, fmt.Errorf("unsupported legacy instruction count")
 	}
 	accounts := []accountMeta{{key: feePayer, signer: true, writable: true}}
 	for _, instruction := range instructions {
@@ -523,6 +570,12 @@ func encodeBase58(value []byte) string {
 		zeros++
 	}
 	out := make([]byte, zeros, zeros+len(digits))
+	for i := range out {
+		out[i] = base58Alphabet[0]
+	}
+	if zeros == len(value) {
+		return string(out)
+	}
 	for _, digit := range digits {
 		out = append(out, base58Alphabet[digit])
 	}
@@ -675,7 +728,7 @@ func isExactKaminoTransaction(instructions []decodedLegacyInstruction) bool {
 	if len(instructions) != 4 {
 		return false
 	}
-	for _, lane := range []string{RouteID, SelectedRouteID} {
+	for _, lane := range []string{RouteID, PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
 		route, err := runtimeRoute(lane)
 		if err != nil {
 			continue
@@ -730,10 +783,17 @@ func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kamino
 	// discriminator | vault | signer count | policy kind | interaction kind |
 	// Some(constraint indexes) | vec len | index | sync tx | inner vault |
 	// compact payload len | compact payload.
+	if lane == "" {
+		lane = RouteID
+	}
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return false
+	}
 	if len(outer.accounts) < 4 || len(outer.data) < 27 ||
 		!bytes.Equal(outer.data[:8], squadsExecuteSyncDiscriminator) ||
 		!bytes.Equal(outer.data[8:13], []byte{0, 1, 1, 1, 1}) ||
-		readU32LE(outer.data[13:17]) != 1 || outer.data[17] != kaminoConstraintIndex(leg) ||
+		readU32LE(outer.data[13:17]) != 1 || outer.data[17] != kaminoConstraintIndexForRoute(route, leg) ||
 		!bytes.Equal(outer.data[18:20], []byte{1, 0}) {
 		return false
 	}
@@ -787,6 +847,21 @@ func kaminoLegMetas(leg kaminoPrimeUSDCLeg) []accountMeta {
 }
 
 func kaminoLegMetasForRoute(leg kaminoPrimeUSDCLeg, lane string) []accountMeta {
+	if lane != RouteID && lane != "" {
+		if route, err := runtimeRoute(lane); err == nil && route.BasicPolicy {
+			deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
+			switch leg {
+			case kaminoLegDeposit:
+				return deposit
+			case kaminoLegBorrow:
+				return borrow
+			case kaminoLegRepay:
+				return repay
+			case kaminoLegWithdraw:
+				return withdraw
+			}
+		}
+	}
 	if lane == SelectedRouteID {
 		deposit, borrow, repay, withdraw := mapleKaminoMetas()
 		switch leg {

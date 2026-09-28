@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { generated as squadsGenerated } from "@loyal-labs/loyal-smart-accounts-core";
 import { Connection, PublicKey } from "@solana/web3.js";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import {
+  runRustCompiler,
+  type CompilerProvenance,
+} from "./compiler-build.js";
 import {
   PHASE_ONE_FORWARD_ROUTE_PREFIX_HEX,
   resolveCurrentPhaseOneForwardJupiterHeader,
@@ -48,6 +51,7 @@ export type ForwardJupiterPolicyArtifact = Readonly<{
   catalogSha256: string;
   resolutionSha256: string;
   sourceSha256: string;
+  compiler: CompilerProvenance;
   policies: readonly [Readonly<{
     name: "swap/Prime/USDC/PRIME/forward-rollover";
     seed: "66";
@@ -113,7 +117,7 @@ export function forwardJupiterConstraints() {
   ] as const;
 }
 
-function parseArtifact(value: unknown): ForwardJupiterPolicyArtifact {
+function parseArtifact(value: unknown, compiler: CompilerProvenance): ForwardJupiterPolicyArtifact {
   invariant(value !== null && typeof value === "object" && !Array.isArray(value),
     "forward Jupiter compiler returned a non-object");
   const artifact = value as Partial<ForwardJupiterPolicyArtifact>;
@@ -144,7 +148,7 @@ function parseArtifact(value: unknown): ForwardJupiterPolicyArtifact {
     && JSON.stringify(policy.createInstruction.accounts) === JSON.stringify(expectedCreateAccounts)
     && /^[0-9a-f]{64}$/.test(policy.createInstruction.dataSha256),
   "forward Jupiter compiler escaped the exact one-policy boundary");
-  return artifact as ForwardJupiterPolicyArtifact;
+  return { ...(artifact as ForwardJupiterPolicyArtifact), compiler };
 }
 
 export async function compileCurrentForwardJupiterPolicy(connection: Connection) {
@@ -184,12 +188,15 @@ export async function compileCurrentForwardJupiterPolicy(connection: Connection)
     }],
   } as const;
   const source = JSON.stringify(compilerInput);
-  const result = spawnSync("cargo", ["run", "--quiet", "-p", "loyal-actions", "--bin",
-    COMPILER, "--", "--phase1-forward-jupiter-rollover"], {
-    cwd: REPOSITORY_ROOT, input: source, encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
+  const result = runRustCompiler<Record<string, unknown>>({
+    compilerBinary: COMPILER,
+    args: ["--phase1-forward-jupiter-rollover"],
+    cwd: REPOSITORY_ROOT,
+    input: source,
+    maxBuffer: 8 * 1024 * 1024,
+    label: "forward Jupiter policy compiler",
   });
-  invariant(result.status === 0,
-    `forward Jupiter policy compiler failed: ${(result.stderr || result.stdout).trim()}`);
+  const artifact = parseArtifact(result.output, result.compiler);
   return {
     schema: "loyal-backyard-rwa-forward-jupiter-policy-bindings/v1",
     verdict: "COMPILED_SIGNED_SIMULATION_REQUIRED",
@@ -197,6 +204,7 @@ export async function compileCurrentForwardJupiterPolicy(connection: Connection)
     settingsSlot: settingsRead.context.slot,
     header,
     compilerInput,
-    artifact: parseArtifact(JSON.parse(result.stdout)),
+    compiler: result.compiler,
+    artifact,
   } as const;
 }

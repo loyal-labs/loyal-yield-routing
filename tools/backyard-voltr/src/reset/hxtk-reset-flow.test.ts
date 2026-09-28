@@ -1,0 +1,1945 @@
+import { existsSync, linkSync, lstatSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, test } from "bun:test";
+import { address, createKeyPairSignerFromBytes } from "@solana/kit";
+import { Connection, Keypair, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import bs58 from "bs58";
+
+import {
+  assertReportSlotFresh,
+  assertHxtkCancelProofPreState,
+  assertHxtkCancelFinalizedReconcile,
+  assertHxtkCancelSimulation,
+  assertHxtkClaimProof,
+  assertHxtkClaimFinalizedReconcile,
+  assertHxtkRequestFinalizedReconcile,
+  assertHxtkRequestSimulation,
+  buildFreshRepairReport,
+  buildHxtkRecoveryCommand,
+  CANCEL_EXPECTED_BURN_LP,
+  CANCEL_EXPECTED_REFUND_LP,
+  CANCEL_EXPECTED_SUPPLY_AFTER,
+  CLAIM_EXPECTED_PAYOUT_RAW,
+  CLAIM_EXPECTED_RESIDUAL_RAW,
+  CLAIM_EXPECTED_SUPPLY_INCL_FEES_AFTER,
+  HXTK_RESET_PROOF_PRESTATE,
+  HXTK_RECOVERY_LEGS,
+  JournalTransitionFault,
+  REPORT_AGE_MARGIN_SLOTS,
+  ADAPTOR_MAX_REPORT_AGE_SLOTS,
+  REQUEST_EXPECTED_LP,
+  REQUEST_EXPECTED_QUOTE_BITS,
+  RESET_EXPECTED_LP_SUPPLY_INCL_FEES,
+  HxtkPreSendStateDriftError,
+  buildRepairRecoveryCommands,
+  resumeInterruptedTransition,
+  runJournaledStepForTest,
+  reportTicketFingerprint,
+  simulatedPostAccount,
+  type JournalTransitionStep,
+  type RawAccount,
+} from "./hxtk-reset.js";
+import { parseHxtkCli } from "./hxtk-cli.js";
+import { resolveCanonicalStateRoot } from "./hxtk-fence.js";
+import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
+import {
+  prepareSignedV0Transaction,
+  sendPreparedConfirmedOnce,
+  sendPreparedOnce,
+} from "../integrations/solana-compat.js";
+
+const roots: string[] = [];
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function fixture() {
+  const root = mkdtempSync(join("/tmp", "hxtk-flow-"));
+  roots.push(root);
+  const stateRoot = resolveCanonicalStateRoot({ vault: "HXtk", homeDir: root, create: true });
+  const journal = join(root, "flow.json");
+  const signer = Keypair.generate();
+  const message = new TransactionMessage({
+    payerKey: signer.publicKey,
+    recentBlockhash: signer.publicKey.toBase58(),
+    instructions: [],
+  }).compileToV0Message();
+  const transaction = new VersionedTransaction(message);
+  transaction.sign([signer]);
+  const serializedTransaction = Uint8Array.from(transaction.serialize());
+  const serializedMessage = Uint8Array.from(transaction.message.serialize());
+  const signature = bs58.encode(transaction.signatures[0]!);
+  const prepared = {
+    cluster: "mainnet-beta" as const,
+    genesisHash: "genesis",
+    commitment: "finalized" as const,
+    serializedTransaction,
+    serializedMessage,
+    expectedSignature: signature,
+    latestBlockhash: { blockhash: signer.publicKey.toBase58(), lastValidBlockHeight: 1 },
+    prestateSlot: 1,
+    simulationSlot: 1,
+    packetBytes: serializedTransaction.length,
+    feeLamports: 0,
+    simulation: { err: null, unitsConsumed: 1, logs: [], returnData: null, postAccounts: [] },
+  };
+  const finalized = {
+    slot: 2,
+    blockTime: 2,
+    transaction: {
+      signatures: [signature],
+      message: { serialize: () => serializedMessage },
+    },
+    meta: { err: null },
+  } as never;
+  const input = (path: string, mode: "execute" | "reconcile") => ({
+    mode,
+    step: "flow-test",
+    schema: "flow-test-schema",
+    journal: path,
+    rpcUrl: "offline",
+    build: async () => ({
+      prepared,
+      plan: {
+        before: { fixed: "before" },
+        postState: { fixed: "after" },
+        transaction: { kind: "test" },
+      },
+    }),
+    reconcile: async () => ({ reconciled: true }),
+  });
+  return { root, stateRoot, journal, prepared, finalized, input };
+}
+
+function deps(fx: ReturnType<typeof fixture>, options: Readonly<{
+  send?: () => Promise<unknown>;
+  finalize?: () => Promise<unknown>;
+  readStatus?: () => Promise<unknown>;
+  currentBlockHeight?: () => Promise<number>;
+  sleep?: (milliseconds: number) => Promise<void>;
+  faultAfterTransitionStep?: (step: JournalTransitionStep) => void | Promise<void>;
+}> = {}) {
+  return {
+    stateRoot: fx.stateRoot,
+    sendPreparedOnce: (options.send ?? (async () => ({ signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 }))) as never,
+    finalizedTransaction: (options.finalize ?? (async () => fx.finalized)) as never,
+    readFinalizedSignatureStatus: (options.readStatus ?? (async () => {
+      try {
+        const transaction = await (options.finalize ?? (async () => fx.finalized))();
+        return { kind: "finalized", slot: 2, err: null, transaction };
+      } catch (error) {
+        if (error instanceof Error && error.message === "not readable") return { kind: "absent" };
+        return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+      }
+    })) as never,
+    currentBlockHeight: options.currentBlockHeight,
+    sleep: options.sleep,
+    faultAfterTransitionStep: options.faultAfterTransitionStep,
+  };
+}
+
+function claimSnapshot(stateRoot: string, step: string) {
+  return readdirSync(stateRoot)
+    .filter((entry) => entry.startsWith(`${step}.claim`))
+    .sort()
+    .map((entry) => {
+      const stat = lstatSync(join(stateRoot, entry));
+      return { entry, dev: stat.dev, ino: stat.ino, size: stat.size, mode: stat.mode };
+    });
+}
+
+function repairSnapshot() {
+  return {
+    contextSlot: 100,
+    epoch: null,
+    vault: {
+      totalValue: 2_793_298n,
+      lockedProfitDegradationDuration: 0n,
+      adminPerformanceFeeBps: 0,
+      withdrawalWaitingPeriod: 600n,
+      admin: RWA_MULTIPLY_ROUTE.setupAdmin,
+      manager: RWA_MULTIPLY_ROUTE.squads.vault,
+    },
+    idleBalance: 3_793_417n,
+    lpSupply: 99_941_522n,
+    receipt1: {
+      positionValue: 2_793_417n,
+      vault: RWA_MULTIPLY_ROUTE.vault.address,
+      strategy: RWA_MULTIPLY_ROUTE.customAdaptor.strategyConfig,
+      adaptorProgram: RWA_MULTIPLY_ROUTE.customAdaptor.program,
+    },
+    custody1Balance: 0n,
+    reportTicket: {
+      armed: false,
+      activeSequence: 0n,
+      activeHashIsZero: true,
+      lastConsumedSequence: 444_157_930n,
+    },
+    requestReceipt: {
+      vault: RWA_MULTIPLY_ROUTE.vault.address,
+      userTransferAuthority: RWA_MULTIPLY_ROUTE.setupAdmin,
+      amountLpEscrowed: 99_941_522n,
+    },
+    requestEscrowLpBalance: 99_941_522n,
+  } as never;
+}
+
+function proofPostCancelState() {
+  return {
+    adminLpBalance: CANCEL_EXPECTED_SUPPLY_AFTER,
+    lpSupply: CANCEL_EXPECTED_SUPPLY_AFTER,
+    adminUsdcBalance: 0n,
+    totalValue: 3_793_417n,
+    idleBalance: 3_793_417n,
+    receipt1PositionValue: 3_793_536n,
+    requestEscrowLpBalance: 0n,
+    requestReceiptLp: null,
+  } as const;
+}
+
+function proofClaimPreState() {
+  return {
+    requestAmountLp: REQUEST_EXPECTED_LP,
+    totalValue: 3_793_417n,
+    idleBalance: 3_793_417n,
+    lpSupply: REQUEST_EXPECTED_LP,
+    receipt1PositionValue: 3_793_536n,
+  } as const;
+}
+
+function proofCancelReconcileObservation() {
+  return {
+    preState: HXTK_RESET_PROOF_PRESTATE,
+    simulationSucceeded: true,
+    cancelEventCount: 1,
+    eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+    eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+    eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+    eventRefundLp: CANCEL_EXPECTED_REFUND_LP,
+    eventBurnLp: CANCEL_EXPECTED_BURN_LP,
+    escrowAfter: 0n,
+    requestReceiptLpAfter: null,
+    adminLpDelta: CANCEL_EXPECTED_REFUND_LP,
+    adminLpAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+    supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+    adminUsdcBefore: 0n,
+    adminUsdcAfter: 0n,
+    totalValueAfter: 3_793_417n,
+    idleBalanceAfter: 3_793_417n,
+    receipt1PositionValueAfter: 3_793_536n,
+  } as const;
+}
+
+function proofRequestReconcileObservation() {
+  return {
+    preState: proofPostCancelState(),
+    simulationSucceeded: true,
+    requestEventCount: 1,
+    eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+    eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+    eventAssetMint: RWA_MULTIPLY_ROUTE.assets.assetMint,
+    eventRequestedAmount: REQUEST_EXPECTED_LP,
+    eventIsAmountInLp: true,
+    eventIsWithdrawAll: true,
+    eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+    eventAmountLpEscrowed: REQUEST_EXPECTED_LP,
+    eventQuoteBits: REQUEST_EXPECTED_QUOTE_BITS,
+    eventRequestedTs: 1_000n,
+    eventWithdrawableFromTs: 1_600n,
+    eventTotalValueUnlocked: 3_793_417n,
+    eventTotalValue: 3_793_417n,
+    eventLpSupplyInclFees: RESET_EXPECTED_LP_SUPPLY_INCL_FEES,
+    escrowAfter: REQUEST_EXPECTED_LP,
+    adminLpAfter: 0n,
+    supplyAfter: REQUEST_EXPECTED_LP,
+    requestReceiptLpAfter: REQUEST_EXPECTED_LP,
+    requestReceiptQuoteBits: REQUEST_EXPECTED_QUOTE_BITS,
+    requestReceiptWithdrawableFromTs: 1_600n,
+    requestReceiptVault: RWA_MULTIPLY_ROUTE.vault.address,
+    requestReceiptUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+    requestBlockTime: 1_000n,
+    adminUsdcBefore: 0n,
+    adminUsdcAfter: 0n,
+    totalValueAfter: 3_793_417n,
+    idleBalanceAfter: 3_793_417n,
+    receipt1PositionValueAfter: 3_793_536n,
+  } as const;
+}
+
+function proofClaimReconcileObservation() {
+  return {
+    proof: {
+      preState: proofClaimPreState(),
+      payout: CLAIM_EXPECTED_PAYOUT_RAW,
+      lpBurned: REQUEST_EXPECTED_LP,
+      lpSupplyAfter: 0n,
+      totalValueAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      idleBalanceAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      receipt1PositionValueAfter: 3_793_536n,
+      requestReceiptClosed: true,
+      escrowAfter: 0n,
+    },
+    eventCount: 1,
+    eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+    eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+    eventAssetMint: RWA_MULTIPLY_ROUTE.assets.assetMint,
+    eventPayout: CLAIM_EXPECTED_PAYOUT_RAW,
+    eventLpBurned: REQUEST_EXPECTED_LP,
+    eventTvBefore: 3_793_417n,
+    eventTvAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+    eventLpSupplyInclFeesBefore: RESET_EXPECTED_LP_SUPPLY_INCL_FEES,
+    eventLpSupplyInclFeesAfter: CLAIM_EXPECTED_SUPPLY_INCL_FEES_AFTER,
+    adminLpAfter: 0n,
+    adminUsdcBefore: 0n,
+    adminUsdcAfter: CLAIM_EXPECTED_PAYOUT_RAW,
+  } as const;
+}
+
+describe("HXtk reset proof-pinned assertions", () => {
+  test("fake cancel simulation passes the documented partial refund and burn", () => {
+    const checks = assertHxtkCancelSimulation({
+      preState: HXTK_RESET_PROOF_PRESTATE,
+      simulationSucceeded: true,
+      cancelEventCount: 1,
+      eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+      eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+      eventRefundLp: CANCEL_EXPECTED_REFUND_LP,
+      eventBurnLp: CANCEL_EXPECTED_BURN_LP,
+      escrowAfter: 0n,
+      requestReceiptLpAfter: null,
+      adminLpDelta: CANCEL_EXPECTED_REFUND_LP,
+      adminLpAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      adminUsdcBefore: 0n,
+      adminUsdcAfter: 0n,
+      totalValueAfter: 3_793_417n,
+      idleBalanceAfter: 3_793_417n,
+      receipt1PositionValueAfter: 3_793_536n,
+    }, "fake cancel simulation");
+    expect(checks.every((check) => check.pass)).toBe(true);
+  });
+
+  test("cancel assertion refuses a wrong refund before any send", () => {
+    expect(() => assertHxtkCancelSimulation({
+      preState: HXTK_RESET_PROOF_PRESTATE,
+      simulationSucceeded: true,
+      cancelEventCount: 1,
+      eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+      eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+      eventRefundLp: CANCEL_EXPECTED_REFUND_LP + 1n,
+      eventBurnLp: CANCEL_EXPECTED_BURN_LP,
+      escrowAfter: 0n,
+      requestReceiptLpAfter: null,
+      adminLpDelta: CANCEL_EXPECTED_REFUND_LP,
+      adminLpAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      adminUsdcBefore: 0n,
+      adminUsdcAfter: 0n,
+      totalValueAfter: 3_793_417n,
+      idleBalanceAfter: 3_793_417n,
+      receipt1PositionValueAfter: 3_793_536n,
+    })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
+  });
+
+  test("cancel assertion refuses a wrong burn before any send", () => {
+    expect(() => assertHxtkCancelSimulation({
+      preState: HXTK_RESET_PROOF_PRESTATE,
+      simulationSucceeded: true,
+      cancelEventCount: 1,
+      eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+      eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+      eventRefundLp: CANCEL_EXPECTED_REFUND_LP,
+      eventBurnLp: CANCEL_EXPECTED_BURN_LP - 1n,
+      escrowAfter: 0n,
+      requestReceiptLpAfter: null,
+      adminLpDelta: CANCEL_EXPECTED_REFUND_LP,
+      adminLpAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER,
+      adminUsdcBefore: 0n,
+      adminUsdcAfter: 0n,
+      totalValueAfter: 3_793_417n,
+      idleBalanceAfter: 3_793_417n,
+      receipt1PositionValueAfter: 3_793_536n,
+    })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
+  });
+
+  test("cancel proof guard refuses drifted pre-state before signer loading", () => {
+    let signerReads = 0;
+    const prepareSignedCancel = () => {
+      assertHxtkCancelProofPreState({
+        ...HXTK_RESET_PROOF_PRESTATE,
+        lpSupply: HXTK_RESET_PROOF_PRESTATE.lpSupply + 1n,
+      }, "fake cancel pre-sign");
+      signerReads += 1;
+    };
+    expect(prepareSignedCancel).toThrow("HXTK_RESET_PROOF_STATE_DRIFT");
+    expect(signerReads).toBe(0);
+  });
+
+  test("request assertion pins all post-cancel LP and isWithdrawAll", () => {
+    expect(() => assertHxtkRequestSimulation({
+      preState: proofPostCancelState(),
+      simulationSucceeded: true,
+      requestEventCount: 1,
+      eventRequestedAmount: REQUEST_EXPECTED_LP,
+      eventIsAmountInLp: true,
+      eventIsWithdrawAll: true,
+      eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+      eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+      eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      eventAssetMint: RWA_MULTIPLY_ROUTE.assets.assetMint,
+      eventAmountLpEscrowed: REQUEST_EXPECTED_LP,
+      eventQuoteBits: 1_067_745_598_426_973_642_066n,
+      eventRequestedTs: 1n,
+      eventWithdrawableFromTs: 601n,
+      eventTotalValueUnlocked: 3_793_417n,
+      eventTotalValue: 3_793_417n,
+      eventLpSupplyInclFees: RESET_EXPECTED_LP_SUPPLY_INCL_FEES,
+      escrowAfter: REQUEST_EXPECTED_LP,
+      adminLpAfter: 0n,
+      supplyAfter: REQUEST_EXPECTED_LP,
+      requestReceiptLpAfter: REQUEST_EXPECTED_LP,
+      requestReceiptQuoteBits: 1_067_745_598_426_973_642_066n,
+      requestReceiptWithdrawableFromTs: 601n,
+      requestReceiptVault: RWA_MULTIPLY_ROUTE.vault.address,
+      requestReceiptUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      requestBlockTime: null,
+      adminUsdcBefore: 0n,
+      adminUsdcAfter: 0n,
+      totalValueAfter: 3_793_417n,
+      idleBalanceAfter: 3_793_417n,
+      receipt1PositionValueAfter: 3_793_536n,
+    })).not.toThrow();
+  });
+
+  test("request assertion refuses a non-proof amount", () => {
+    expect(() => assertHxtkRequestSimulation({
+      preState: proofPostCancelState(),
+      simulationSucceeded: true,
+      requestEventCount: 1,
+      eventRequestedAmount: REQUEST_EXPECTED_LP - 1n,
+      eventIsAmountInLp: true,
+      eventIsWithdrawAll: true,
+      eventReceipt: "8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e",
+      eventVault: RWA_MULTIPLY_ROUTE.vault.address,
+      eventUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      eventAssetMint: RWA_MULTIPLY_ROUTE.assets.assetMint,
+      eventAmountLpEscrowed: REQUEST_EXPECTED_LP - 1n,
+      eventQuoteBits: 1_067_745_598_426_973_642_066n,
+      eventRequestedTs: 1n,
+      eventWithdrawableFromTs: 601n,
+      eventTotalValueUnlocked: 3_793_417n,
+      eventTotalValue: 3_793_417n,
+      eventLpSupplyInclFees: RESET_EXPECTED_LP_SUPPLY_INCL_FEES,
+      escrowAfter: REQUEST_EXPECTED_LP - 1n,
+      adminLpAfter: 0n,
+      supplyAfter: REQUEST_EXPECTED_LP,
+      requestReceiptLpAfter: REQUEST_EXPECTED_LP - 1n,
+      requestReceiptQuoteBits: 1_067_745_598_426_973_642_066n,
+      requestReceiptWithdrawableFromTs: 601n,
+      requestReceiptVault: RWA_MULTIPLY_ROUTE.vault.address,
+      requestReceiptUser: RWA_MULTIPLY_ROUTE.setupAdmin,
+      requestBlockTime: null,
+      adminUsdcBefore: 0n,
+      adminUsdcAfter: 0n,
+      totalValueAfter: 3_793_417n,
+      idleBalanceAfter: 3_793_417n,
+      receipt1PositionValueAfter: 3_793_536n,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
+  });
+
+  test("claim assertion pins payout, burn, residual, and unchanged orphan receipt", () => {
+    expect(() => assertHxtkClaimProof({
+      preState: proofClaimPreState(),
+      payout: CLAIM_EXPECTED_PAYOUT_RAW,
+      lpBurned: REQUEST_EXPECTED_LP,
+      lpSupplyAfter: 0n,
+      totalValueAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      idleBalanceAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      receipt1PositionValueAfter: 3_793_536n,
+      requestReceiptClosed: true,
+      escrowAfter: 0n,
+    })).not.toThrow();
+  });
+
+  test("claim assertion refuses a non-proof payout", () => {
+    expect(() => assertHxtkClaimProof({
+      preState: proofClaimPreState(),
+      payout: CLAIM_EXPECTED_PAYOUT_RAW + 1n,
+      lpBurned: REQUEST_EXPECTED_LP,
+      lpSupplyAfter: 0n,
+      totalValueAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      idleBalanceAfter: CLAIM_EXPECTED_RESIDUAL_RAW,
+      receipt1PositionValueAfter: 3_793_536n,
+      requestReceiptClosed: true,
+      escrowAfter: 0n,
+    })).toThrow("HXTK_CLAIM_PROOF_MISMATCH");
+  });
+});
+
+describe("HXtk finalized reconcile negatives", () => {
+  test("cancel reconcile refuses wrong event amount, open receipt, and drifted supply", () => {
+    expect(() => assertHxtkCancelFinalizedReconcile({
+      ...proofCancelReconcileObservation(),
+      eventRefundLp: CANCEL_EXPECTED_REFUND_LP + 1n,
+    })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
+    expect(() => assertHxtkCancelFinalizedReconcile({
+      ...proofCancelReconcileObservation(),
+      requestReceiptLpAfter: 0n,
+    })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
+    expect(() => assertHxtkCancelFinalizedReconcile({
+      ...proofCancelReconcileObservation(),
+      supplyAfter: CANCEL_EXPECTED_SUPPLY_AFTER - 1n,
+    })).toThrow("HXTK_CANCEL_PROOF_MISMATCH");
+  });
+
+  test("request reconcile refuses wrong event amount, closed receipt, and drifted supply", () => {
+    expect(() => assertHxtkRequestFinalizedReconcile({
+      ...proofRequestReconcileObservation(),
+      eventRequestedAmount: REQUEST_EXPECTED_LP - 1n,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
+    expect(() => assertHxtkRequestFinalizedReconcile({
+      ...proofRequestReconcileObservation(),
+      requestReceiptLpAfter: null,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
+    expect(() => assertHxtkRequestFinalizedReconcile({
+      ...proofRequestReconcileObservation(),
+      supplyAfter: REQUEST_EXPECTED_LP - 1n,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
+  });
+
+  test("claim reconcile refuses wrong event amount, open receipt, and drifted supply", () => {
+    expect(() => assertHxtkClaimFinalizedReconcile({
+      ...proofClaimReconcileObservation(),
+      eventPayout: CLAIM_EXPECTED_PAYOUT_RAW + 1n,
+    })).toThrow("HXTK_CLAIM_RECONCILE_MISMATCH");
+    expect(() => assertHxtkClaimFinalizedReconcile({
+      ...proofClaimReconcileObservation(),
+      proof: { ...proofClaimReconcileObservation().proof, requestReceiptClosed: false },
+    })).toThrow("HXTK_CLAIM_PROOF_MISMATCH");
+    expect(() => assertHxtkClaimFinalizedReconcile({
+      ...proofClaimReconcileObservation(),
+      proof: { ...proofClaimReconcileObservation().proof, lpSupplyAfter: 1n },
+    })).toThrow("HXTK_CLAIM_PROOF_MISMATCH");
+  });
+
+  test("request reconcile pins the exact quote bits and block-time deadline", () => {
+    expect(() => assertHxtkRequestFinalizedReconcile({
+      ...proofRequestReconcileObservation(),
+      eventQuoteBits: REQUEST_EXPECTED_QUOTE_BITS + 1n,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
+    expect(() => assertHxtkRequestFinalizedReconcile({
+      ...proofRequestReconcileObservation(),
+      eventWithdrawableFromTs: 1_601n,
+    })).toThrow("HXTK_REQUEST_PROOF_MISMATCH");
+  });
+});
+
+describe("HXtk journaled flow", () => {
+  test("repair report sequence uses the fresh confirmed slot and snapshot NAV", async () => {
+    const snapshot = repairSnapshot();
+    let reads = 0;
+    const fresh = await buildFreshRepairReport({
+      snapshot,
+      readConfirmedSlot: async () => {
+        reads += 1;
+        return 444_157_940;
+      },
+    });
+    expect(reads).toBe(1);
+    expect(fresh.report.sequence).toBe(444_157_940n);
+    expect(fresh.report.observedSlot).toBe(444_157_940n);
+    expect(fresh.report.sequence).not.toBe(BigInt(snapshot.contextSlot));
+    expect(fresh.repairNavRaw).toBe(snapshot.idleBalance + snapshot.receipt1.positionValue - snapshot.vault.totalValue);
+    expect(fresh.report.navAfterRaw).toBe(3_793_536n);
+    expect(REPORT_AGE_MARGIN_SLOTS).toBe(8);
+    expect(ADAPTOR_MAX_REPORT_AGE_SLOTS).toBe(32);
+  });
+
+  test("pre-simulate and pre-send stale slots elect aborted-pre-send with no send", async () => {
+    for (const phase of ["pre-simulate", "pre-send"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      let slotReads = 0;
+      const input = {
+        ...fx.input(fx.journal, "execute"),
+        build: async () => ({
+          prepared: fx.prepared,
+          plan: { transaction: { kind: "test" } },
+          beforeSend: async () => {
+            slotReads += 1;
+            assertReportSlotFresh(100, 125, phase);
+          },
+        }),
+      };
+      await expect(runJournaledStepForTest(input, deps(fx, {
+        send: async () => {
+          sends += 1;
+          return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        },
+      }))).rejects.toThrow(phase === "pre-send"
+        ? "REPORT_SLOT_STALE_PRE_SEND"
+        : "REPORT_SLOT_STALE_PRE_SIMULATE");
+      expect(slotReads).toBe(1);
+      expect(sends).toBe(0);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+        status: "aborted-pre-send",
+        broadcast: false,
+      });
+      expect(readdirSync(fx.root).some((entry) => entry.includes("aborted-") && entry.endsWith(".json"))).toBe(true);
+    }
+  });
+
+  test("cancel, request, and claim pre-send state drift aborts distinctly before raw send", async () => {
+    for (const step of ["cancel", "request", "claim"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      const input = {
+        ...fx.input(fx.journal, "execute"),
+        build: async () => ({
+          prepared: fx.prepared,
+          plan: { transaction: { kind: step } },
+          beforeSend: async () => {
+            throw new HxtkPreSendStateDriftError(step, 100, 101);
+          },
+        }),
+      };
+      await expect(runJournaledStepForTest(input, deps(fx, {
+        send: async () => {
+          sends += 1;
+          return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        },
+      }))).rejects.toThrow("ABORTED_PRE_SEND_STATE_DRIFT");
+      expect(sends).toBe(0);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+        status: "aborted-pre-send",
+        broadcast: false,
+        abortReason: expect.stringContaining("ABORTED_PRE_SEND_STATE_DRIFT"),
+      });
+      const aborted = readdirSync(fx.root)
+        .find((entry) => entry.startsWith("flow.json.aborted-") && entry.endsWith(".json"));
+      expect(aborted).toBeDefined();
+      expect(JSON.parse(readFileSync(join(fx.root, aborted!), "utf8"))).toMatchObject({
+        verdict: "ABORTED_PRE_SEND",
+        abortReason: expect.stringContaining("ABORTED_PRE_SEND_STATE_DRIFT"),
+      });
+    }
+  });
+
+  test("fresh slot margin normal path reaches exactly one send", async () => {
+    const fx = fixture();
+    let sends = 0;
+    let slot = 101;
+    const input = {
+      ...fx.input(fx.journal, "execute"),
+      build: async () => ({
+        prepared: fx.prepared,
+        plan: { transaction: { kind: "test" }, reportSlotAgeAtSimulate: 1 },
+        beforeSend: async () => {
+          slot += 1;
+          const age = assertReportSlotFresh(100, slot, "pre-send");
+          expect(age.ageSlots + age.marginSlots).toBeLessThanOrEqual(age.maxAgeSlots);
+          return { sendStatus: { reportSlotAgeAtSend: age.ageSlots } };
+        },
+      }),
+    };
+    expect(await runJournaledStepForTest(input, deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+    }))).toBe(0);
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(fx.journal, "utf8"))).toMatchObject({
+      reportSlotAgeAtSimulate: 1,
+      sendStatus: { reportSlotAgeAtSend: 2 },
+    });
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
+  test("pre-send snapshot slot is recorded through the real fence before the sole send", async () => {
+    // cancel, request and claim record the finalized slot of their pre-send re-read;
+    // the fence must accept that field or the leg aborts before the raw send.
+    const fx = fixture();
+    let sends = 0;
+    const input = {
+      ...fx.input(fx.journal, "execute"),
+      build: async () => ({
+        prepared: fx.prepared,
+        plan: { transaction: { kind: "test" } },
+        beforeSend: async () => ({ sendStatus: { preSendSnapshotSlot: 445707000 } }),
+      }),
+    };
+    expect(await runJournaledStepForTest(input, deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+    }))).toBe(0);
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(fx.journal, "utf8"))).toMatchObject({
+      sendStatus: { preSendSnapshotSlot: 445707000 },
+    });
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
+  test("repair execute uses real sendPreparedConfirmedOnce with confirmed preparation and one raw send", async () => {
+    const previousConfirmation = process.env.CONFIRM_MAINNET;
+    process.env.CONFIRM_MAINNET = "1";
+    const originalMethods = new Map<string, unknown>();
+    const connectionPrototype = Connection.prototype as unknown as Record<string, unknown>;
+    const originalRpcRequest = Object.getOwnPropertyDescriptor(Connection.prototype, "_rpcRequest");
+    let slot = 1;
+    let rawSends = 0;
+    let expectedSignature: string | null = null;
+    const fakeRpcRequest = async (method: string) => {
+      const response = (result: unknown) => ({ jsonrpc: "2.0", id: "hxtk-test", result });
+      if (method === "getGenesisHash") return response("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d");
+      if (method === "getBlockHeight") return response(1);
+      if (method === "getSlot") {
+        slot += 1;
+        return response(slot);
+      }
+      if (method === "sendTransaction") {
+        rawSends += 1;
+        return response(expectedSignature);
+      }
+      if (method === "getSignatureStatuses") {
+        return response({ context: { slot }, value: [{ slot, confirmations: 1, confirmationStatus: "finalized", err: null }] });
+      }
+      throw new Error(`unexpected fake RPC method ${method}`);
+    };
+    Object.defineProperty(Connection.prototype, "_rpcRequest", {
+      configurable: true,
+      get() { return fakeRpcRequest; },
+      set() { /* Replace the HTTP transport for this test with fake RPC. */ },
+    });
+    const patchConnection = (name: string, implementation: unknown) => {
+      originalMethods.set(name, connectionPrototype[name]);
+      connectionPrototype[name] = implementation;
+    };
+    try {
+      const mismatch = fixture();
+      await expect(runJournaledStepForTest({
+        ...mismatch.input(mismatch.journal, "execute"),
+        rpcUrl: "https://fake.invalid",
+        build: async () => ({
+          prepared: { ...mismatch.prepared, commitment: "confirmed" as const },
+          plan: { transaction: { kind: "repair" } },
+        }),
+      }, {
+        ...deps(mismatch),
+        sendPreparedOnce,
+      })).rejects.toThrow("prepared transaction commitment confirmed does not match settlement finalized");
+
+      const normal = fixture();
+      const normalPrepared = {
+        ...normal.prepared,
+        genesisHash: "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+      };
+      const decoded = VersionedTransaction.deserialize(normalPrepared.serializedTransaction);
+      const finalized = {
+        slot: 4,
+        blockTime: 4,
+        transaction: {
+          signatures: [normalPrepared.expectedSignature],
+          message: {
+            serialize: () => normalPrepared.serializedMessage,
+            staticAccountKeys: decoded.message.staticAccountKeys,
+          },
+        },
+        meta: {
+          err: null,
+          fee: 0,
+          preBalances: decoded.message.staticAccountKeys.map(() => 0),
+          postBalances: decoded.message.staticAccountKeys.map(() => 0),
+          loadedAddresses: { writable: [], readonly: [] },
+          preTokenBalances: [],
+          postTokenBalances: [],
+        },
+      };
+      expectedSignature = normalPrepared.expectedSignature;
+      patchConnection("confirmTransaction", async () => ({
+        context: { slot },
+        value: { err: null },
+      }));
+      patchConnection("getTransaction", async () => finalized);
+
+      expect(await runJournaledStepForTest({
+        ...normal.input(normal.journal, "execute"),
+        rpcUrl: "http://fake.invalid",
+        build: async () => ({
+          prepared: normalPrepared,
+          plan: { transaction: { kind: "repair" } },
+        }),
+      }, {
+        ...deps(normal, { finalize: async () => finalized }),
+        sendPreparedOnce,
+      })).toBe(0);
+      expect(slot).toBeGreaterThan(1);
+      expect(rawSends).toBe(1);
+    } finally {
+      for (const [name, implementation] of originalMethods) connectionPrototype[name] = implementation;
+      if (originalRpcRequest === undefined) delete connectionPrototype._rpcRequest;
+      else Object.defineProperty(Connection.prototype, "_rpcRequest", originalRpcRequest);
+      if (previousConfirmation === undefined) delete process.env.CONFIRM_MAINNET;
+      else process.env.CONFIRM_MAINNET = previousConfirmation;
+    }
+  });
+
+  test("repair execute uses real confirmed sender with a lagging finalized read", async () => {
+    const previousConfirmation = process.env.CONFIRM_MAINNET;
+    process.env.CONFIRM_MAINNET = "1";
+    const originalMethods = new Map<string, unknown>();
+    const connectionPrototype = Connection.prototype as unknown as Record<string, unknown>;
+    const originalRpcRequest = Object.getOwnPropertyDescriptor(Connection.prototype, "_rpcRequest");
+    const signerKeypair = Keypair.generate();
+    const signer = await createKeyPairSignerFromBytes(signerKeypair.secretKey);
+    const commitments = new Map<string, string[]>();
+    let confirmedSlot = 131;
+    let finalizedSlot = 100;
+    let rawSends = 0;
+    let expectedSignature: string | null = null;
+    const blockhash = Keypair.generate().publicKey.toBase58();
+    const account = {
+      owner: "11111111111111111111111111111111",
+      lamports: 1,
+      executable: false,
+      rentEpoch: 0,
+      data: ["", "base64"],
+    };
+    const response = (result: unknown) => ({ jsonrpc: "2.0", id: "hxtk-confirmed-test", result });
+    const commitmentOf = (args: unknown[]) => {
+      const config = args.find((value) => value !== null && typeof value === "object"
+        && "commitment" in (value as Record<string, unknown>)) as Record<string, unknown> | undefined;
+      return typeof config?.commitment === "string" ? config.commitment : "none";
+    };
+    const advance = (commitment: string) => {
+      if (commitment === "confirmed") {
+        confirmedSlot += 1;
+        return confirmedSlot;
+      }
+      finalizedSlot += 1;
+      return finalizedSlot;
+    };
+    const fakeRpcRequest = async (method: string, args: unknown[] = []) => {
+      const commitment = commitmentOf(args);
+      commitments.set(method, [...(commitments.get(method) ?? []), commitment]);
+      if (method === "getGenesisHash") return response("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d");
+      if (method === "getLatestBlockhash") {
+        return response({ context: { slot: advance(commitment) }, value: { blockhash, lastValidBlockHeight: 1_000 } });
+      }
+      if (method === "getMultipleAccounts") {
+        return response({ context: { slot: advance(commitment) }, value: [account] });
+      }
+      if (method === "getFeeForMessage") {
+        return response({ context: { slot: advance(commitment) }, value: 5_000 });
+      }
+      if (method === "simulateTransaction") {
+        return response({
+          context: { slot: advance(commitment) },
+          value: {
+            err: null,
+            accounts: [account],
+            unitsConsumed: 1,
+            logs: [],
+            returnData: null,
+          },
+        });
+      }
+      if (method === "getSlot") return response(advance(commitment));
+      if (method === "getBlockHeight") return response(1);
+      if (method === "sendTransaction") {
+        rawSends += 1;
+        return response(expectedSignature);
+      }
+      if (method === "getSignatureStatuses") {
+        return response({
+          context: { slot: advance("confirmed") },
+          value: [{ slot: confirmedSlot, confirmations: 1, confirmationStatus: "confirmed", err: null }],
+        });
+      }
+      throw new Error(`unexpected fake RPC method ${method}`);
+    };
+    Object.defineProperty(Connection.prototype, "_rpcRequest", {
+      configurable: true,
+      get() { return fakeRpcRequest; },
+      set() { /* Replace the HTTP transport for this test with fake RPC. */ },
+    });
+    const patchConnection = (name: string, implementation: unknown) => {
+      originalMethods.set(name, connectionPrototype[name]);
+      connectionPrototype[name] = implementation;
+    };
+    try {
+      const prepared = await prepareSignedV0Transaction({
+        rpcUrl: "http://fake.invalid",
+        feePayer: {
+          signer,
+          privateSeed: signerKeypair.secretKey.subarray(0, 32),
+          secretKey: signerKeypair.secretKey,
+        },
+        instructions: [],
+        inspectedAddresses: [signer.address],
+        prestateAddresses: [signer.address],
+        minimumContextSlot: 0,
+        commitment: "confirmed",
+      });
+      expect(prepared.commitment).toBe("confirmed");
+      expect(prepared.simulationSlot).toBeGreaterThan(131);
+      expect(commitments.get("getLatestBlockhash")).toEqual(["confirmed"]);
+      expect(commitments.get("getMultipleAccounts")).toEqual(["confirmed"]);
+      expect(commitments.get("simulateTransaction")).toEqual(["confirmed"]);
+
+      const decoded = VersionedTransaction.deserialize(prepared.serializedTransaction);
+      const finalized = {
+        slot: confirmedSlot + 100,
+        blockTime: 2,
+        transaction: {
+          signatures: [prepared.expectedSignature],
+          message: {
+            serialize: () => prepared.serializedMessage,
+            staticAccountKeys: decoded.message.staticAccountKeys,
+          },
+        },
+        meta: {
+          err: null,
+          fee: 0,
+          preBalances: decoded.message.staticAccountKeys.map(() => 0),
+          postBalances: decoded.message.staticAccountKeys.map(() => 0),
+          loadedAddresses: { writable: [], readonly: [] },
+          preTokenBalances: [],
+          postTokenBalances: [],
+        },
+      };
+      expectedSignature = prepared.expectedSignature;
+      patchConnection("confirmTransaction", async () => ({
+        context: { slot: advance("confirmed") },
+        value: { err: null },
+      }));
+      patchConnection("getTransaction", async () => ({
+        ...finalized,
+        slot: confirmedSlot,
+      }));
+      const fx = fixture();
+      let finalizedStatusReads = 0;
+      expect(await runJournaledStepForTest({
+        ...fx.input(fx.journal, "execute"),
+        rpcUrl: "http://fake.invalid",
+        step: "repair",
+        build: async () => ({ prepared, plan: { transaction: { kind: "repair" } } }),
+      }, {
+        ...deps(fx, {
+          finalize: async () => finalized,
+          readStatus: async () => {
+            finalizedStatusReads += 1;
+            return finalizedStatusReads < 3
+              ? { kind: "absent" }
+              : { kind: "finalized", slot: finalized.slot, err: null, transaction: finalized };
+          },
+          currentBlockHeight: async () => 1,
+          sleep: async () => {},
+        }),
+        sendPreparedOnce: sendPreparedConfirmedOnce,
+      })).toBe(0);
+      expect(rawSends).toBe(1);
+      expect(finalizedStatusReads).toBe(3);
+      expect(confirmedSlot - finalizedSlot).toBeGreaterThanOrEqual(31);
+      expect(JSON.parse(readFileSync(fx.journal, "utf8"))).toMatchObject({
+        confirmedSettledSlot: confirmedSlot,
+        confirmedContextSlot: expect.any(Number),
+        finalizedContextSlot: null,
+        finalizedSlot: finalized.slot,
+      });
+    } finally {
+      for (const [name, implementation] of originalMethods) connectionPrototype[name] = implementation;
+      if (originalRpcRequest === undefined) delete connectionPrototype._rpcRequest;
+      else Object.defineProperty(Connection.prototype, "_rpcRequest", originalRpcRequest);
+      if (previousConfirmation === undefined) delete process.env.CONFIRM_MAINNET;
+      else process.env.CONFIRM_MAINNET = previousConfirmation;
+    }
+  });
+
+  test("finalized-commitment simulation fails the future-slot freshness check", () => {
+    expect(() => assertReportSlotFresh(132, 101, "pre-simulate"))
+      .toThrow("REPORT_SLOT_STALE_PRE_SIMULATE");
+  });
+
+  test("bounded finalized wait leaves attempted on persistent transient errors", async () => {
+    const fx = fixture();
+    let sends = 0;
+    let statusReads = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+      readStatus: async () => {
+        statusReads += 1;
+        return { kind: "error", message: `transient-${statusReads}` };
+      },
+      sleep: async () => {},
+    }))).rejects.toThrow("FINALIZED_WAIT_UNREADABLE");
+    expect(statusReads).toBe(3);
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "attempted",
+      broadcast: "attempted",
+    });
+  });
+
+  test("every emitted recovery command round-trips through the real CLI parser", () => {
+    for (const step of HXTK_RECOVERY_LEGS) {
+      for (const mode of ["simulate", "execute", "reconcile"] as const) {
+        const command = buildHxtkRecoveryCommand({
+          step,
+          mode,
+          journal: "/tmp/" + step + ".json",
+          allowRepeat: ["config", "harvest", "restore-degradation"].includes(step),
+          breakClaim: true,
+        });
+        const parsed = parseHxtkCli(command.split(/\s+/));
+        expect(parsed.step).toBe(step);
+        expect(parsed.has("--" + mode)).toBe(true);
+        expect(parsed.has("--break-claim")).toBe(true);
+        expect(parsed.value("--journal")).toBe("/tmp/" + step + ".json");
+        if (["config", "harvest", "restore-degradation"].includes(step)) {
+          expect(parsed.has("--allow-repeat")).toBe(true);
+        } else {
+          expect(() => buildHxtkRecoveryCommand({
+            step,
+            mode,
+            allowRepeat: true,
+          })).toThrow("--allow-repeat is not accepted");
+        }
+      }
+      const alreadyFinalized = buildHxtkRecoveryCommand({
+        step,
+        mode: "reconcile",
+        finalized: true,
+      });
+      const verifyCommand = alreadyFinalized.split("verify with ")[1]!;
+      expect(parseHxtkCli(verifyCommand.split(/\s+/))).toMatchObject({
+        step: "verify",
+        mode: null,
+      });
+    }
+  });
+
+  test("repair recovery commands carry the complete parser-visible provenance", () => {
+    const base = {
+      repairJournal: "/tmp/hxtk-repair.json",
+      policyJournal: "/tmp/hxtk-repair-policy.json",
+      policyRemoveJournal: "/tmp/hxtk-repair.policy-remove.json",
+    } as const;
+    for (const [status, mode] of [
+      ["pending", "reconcile"],
+      ["attempted", "reconcile"],
+      ["aborted-pre-send", "execute"],
+      [null, "execute"],
+    ] as const) {
+      const commands = buildRepairRecoveryCommands({ ...base, removalStatus: status });
+      expect(commands).toHaveLength(2);
+      const repair = parseHxtkCli(commands[0]!.split(/\s+/));
+      expect(repair).toMatchObject({ step: "repair", mode: "reconcile" });
+      expect(repair.value("--policy-journal")).toBe(base.policyJournal);
+      expect(repair.value("--journal")).toBe(base.repairJournal);
+      const removal = parseHxtkCli(commands[1]!.split(/\s+/));
+      expect(removal).toMatchObject({ step: "repair-policy-remove", mode });
+      expect(removal.value("--expect-seed")).toBe("140");
+      expect(removal.value("--policy-journal")).toBe(base.policyJournal);
+      expect(removal.value("--repair-journal")).toBe(base.repairJournal);
+      expect(removal.value("--journal")).toBe(base.policyRemoveJournal);
+      if (mode === "execute") {
+        expect(commands[1]).toStartWith("op run --env-file=.env.1password -- env CONFIRM_MAINNET=1 bun run reset:hxtk ");
+      }
+    }
+    const finalized = buildRepairRecoveryCommands({ ...base, removalStatus: "finalized" });
+    expect(finalized[1]).toBe("repair-policy-remove already finalized; verify with bun run reset:hxtk verify");
+    expect(parseHxtkCli(finalized[1]!.split("verify with ")[1]!.split(/\s+/))).toMatchObject({
+      step: "verify",
+      mode: null,
+    });
+  });
+
+  test("send failure leaves attempted state and reconcile finalizes without resend", async () => {
+    const fx = fixture();
+    let sends = 0;
+    const failing = deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("submitted but response was lost");
+      },
+      finalize: async () => { throw new Error("not finalized"); },
+    });
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), failing)).rejects.toThrow("response was lost");
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
+    expect(existsSync(join(fx.stateRoot, "flow-test.claim"))).toBe(false);
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), failing)).rejects.toThrow("finalized signature unreadable-error: not finalized");
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
+    expect(existsSync(join(fx.stateRoot, "flow-test.claim"))).toBe(false);
+
+    const finalized = deps(fx, { send: async () => { sends += 1; throw new Error("must not send"); } });
+    expect(await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), finalized)).toBe(0);
+    expect(sends).toBe(1);
+    expect(existsSync(fx.journal)).toBe(true);
+  });
+
+  test("canonical pending and pending-journal crashes never become attempted before a send", async () => {
+    for (const transitionStep of ["canonical-pending", "pending-journal"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        faultAfterTransitionStep: (step) => {
+          if (step === transitionStep) throw new JournalTransitionFault(step);
+        },
+      }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: " + transitionStep);
+      const crashedState = JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")) as Record<string, unknown>;
+      expect(crashedState.status).toBe("pending");
+      expect(crashedState.status).not.toBe("attempted");
+
+      expect(await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        },
+      }))).toBe(0);
+      if (transitionStep === "canonical-pending") {
+        expect(sends).toBe(0);
+        expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status)
+          .toBe("aborted-pre-send");
+        await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+          send: async () => {
+            sends += 1;
+            return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+          },
+        }));
+      }
+      expect(sends).toBe(1);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+    }
+  });
+
+  test("a crash after the attempted pre-mark reconciles without a second send", async () => {
+    const fx = fixture();
+    let sends = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      faultAfterTransitionStep: (step) => {
+        if (step === "attempted-state") throw new JournalTransitionFault(step);
+      },
+    }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: attempted-state");
+    expect(sends).toBe(0);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
+
+    await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("reconcile must not send");
+      },
+    }));
+    expect(sends).toBe(0);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
+  test("foreign abort artifacts cannot shadow an attempted retry but reconcile reports them as stale", async () => {
+    const fx = fixture();
+    let sends = 0;
+    const aborting = {
+      ...fx.input(fx.journal, "execute"),
+      build: async () => ({
+        prepared: fx.prepared,
+        plan: { transaction: { kind: "test" } },
+        beforeSend: async () => { throw new Error("prestate changed"); },
+      }),
+    };
+    await expect(runJournaledStepForTest(aborting, deps(fx))).rejects.toThrow("prestate changed");
+    const oldAbort = readdirSync(fx.root)
+      .find((entry) => entry.startsWith("flow.json.aborted-") && entry.endsWith(".json"));
+    expect(oldAbort).toBeDefined();
+
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+      faultAfterTransitionStep: (step) => {
+        if (step === "final-journal") throw new JournalTransitionFault(step);
+      },
+    }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: final-journal");
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx)))
+      .rejects.toThrow("JOURNAL_HAS_FOREIGN_ABORT_ARTIFACT");
+
+    const recovered = resumeInterruptedTransition({
+      step: "flow-test",
+      journal: fx.journal,
+      stateRoot: fx.stateRoot,
+      mode: "reconcile",
+    });
+    expect(recovered.staleAbortArtifacts).toContain(join(fx.root, oldAbort!));
+    await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("reconcile must not send");
+      },
+    }));
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
+  test("proven expiry is re-armable only with a new journal", async () => {
+    const fx = fixture();
+    let sends = 0;
+    let finalizedStatusReads = 0;
+    expect(await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+      readStatus: async () => {
+        finalizedStatusReads += 1;
+        return { kind: "absent" };
+      },
+      currentBlockHeight: async () => 100,
+      sleep: async () => {},
+    }))).toBe(1);
+    expect(sends).toBe(1);
+    expect(finalizedStatusReads).toBe(2);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "aborted-pre-send",
+      broadcast: "attempted",
+      abortReason: "attempted-expired-proven",
+      rearmable: true,
+      attemptedExpiryProof: {
+        lastValidBlockHeight: 1,
+        finalizedBlockHeight: 100,
+        absentReads: [{ kind: "absent" }, { kind: "absent" }],
+      },
+    });
+
+    const newJournal = join(fx.root, "rearmed.json");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("must not reuse the proven-expiry journal");
+      },
+    }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN");
+
+    expect(await runJournaledStepForTest(fx.input(newJournal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+    }))).toBe(0);
+    expect(sends).toBe(2);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "finalized",
+      journal: newJournal,
+      history: [{ journal: fx.journal, abortReason: "attempted-expired-proven" }],
+    });
+  });
+
+  test("expiry cannot re-arm before two absent reads beyond the validity margin", async () => {
+    const fx = fixture();
+    let sends = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("submitted but response was lost");
+      },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("response was lost");
+
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      readStatus: async () => ({ kind: "absent" }),
+      currentBlockHeight: async () => 64,
+    }))).rejects.toThrow("finalized signature absence is not beyond the expiry recheck margin");
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "attempted",
+    });
+    await expect(runJournaledStepForTest(fx.input(join(fx.root, "too-early.json"), "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("must not re-arm an unproven expiry");
+      },
+    }))).rejects.toThrow("JOURNAL_MISMATCH_CANONICAL_STATE");
+    expect(sends).toBe(1);
+  });
+
+  test("RPC error on the expiry re-read does not elect an abort", async () => {
+    const fx = fixture();
+    let reads = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => { throw new Error("submitted but response was lost"); },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("submitted but response was lost");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => {
+        reads += 1;
+        throw new Error(reads === 1 ? "not readable" : "rpc unavailable");
+      },
+      readStatus: async () => {
+        reads += 1;
+        return reads === 1
+          ? { kind: "absent" }
+          : { kind: "error", message: "rpc unavailable" };
+      },
+      currentBlockHeight: async () => 100,
+    }))).rejects.toThrow("rpc unavailable");
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
+  });
+
+  test("pending-journal reconcile uses typed status for both expiry reads", async () => {
+    for (const statuses of [
+      [{ kind: "error", message: "not readable: transport failure" }],
+      [{ kind: "absent" }, { kind: "error", message: "not readable: transport failure" }],
+    ] as const) {
+      const fx = fixture();
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => { throw new Error("submitted but response was lost"); },
+      }))).rejects.toThrow("submitted but response was lost");
+      let statusRead = 0;
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+        readStatus: async () => statuses[Math.min(statusRead++, statuses.length - 1)]!,
+        currentBlockHeight: async () => 100,
+      }))).rejects.toThrow("unreadable-error");
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("attempted");
+      expect(readdirSync(fx.root).some((entry) => entry.includes("aborted-"))).toBe(false);
+    }
+
+    const absent = fixture();
+    await expect(runJournaledStepForTest(absent.input(absent.journal, "execute"), deps(absent, {
+      send: async () => { throw new Error("submitted but response was lost"); },
+    }))).rejects.toThrow("submitted but response was lost");
+    let reads = 0;
+    await runJournaledStepForTest(absent.input(absent.journal, "reconcile"), deps(absent, {
+      readStatus: async () => { reads += 1; return { kind: "absent" }; },
+      currentBlockHeight: async () => 100,
+    }));
+    expect(reads).toBe(2);
+    expect(JSON.parse(readFileSync(join(absent.stateRoot, "flow-test.state"), "utf8")).status).toBe("aborted-pre-send");
+
+    const landed = fixture();
+    await expect(runJournaledStepForTest(landed.input(landed.journal, "execute"), deps(landed, {
+      send: async () => { throw new Error("submitted but response was lost"); },
+    }))).rejects.toThrow("submitted but response was lost");
+    reads = 0;
+    await runJournaledStepForTest(landed.input(landed.journal, "reconcile"), deps(landed, {
+      readStatus: async () => {
+        reads += 1;
+        return reads === 1 ? { kind: "absent" } : { kind: "finalized", slot: 2, err: null, transaction: landed.finalized };
+      },
+      currentBlockHeight: async () => 100,
+    }));
+    expect(JSON.parse(readFileSync(join(landed.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+  });
+
+  test("unproven expiry refuses a different journal before any read or write", async () => {
+    for (const status of [
+      { kind: "absent" },
+      { kind: "finalized", slot: 2, err: null, transaction: undefined },
+    ] as const) {
+      const fx = fixture();
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => { throw new Error("submitted but response was lost"); },
+      }))).rejects.toThrow("submitted but response was lost");
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+        readStatus: async () => ({ kind: "absent" }),
+        currentBlockHeight: async () => 64,
+      }))).rejects.toThrow("finalized signature absence is not beyond the expiry recheck margin");
+      const beforeState = readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8");
+      const beforeEntries = readdirSync(fx.root).sort();
+      const beforeClaims = claimSnapshot(fx.stateRoot, "flow-test");
+      await expect(runJournaledStepForTest(fx.input(join(fx.root, "different.json"), "execute"), deps(fx, {
+        readStatus: async () => status,
+        send: async () => { throw new Error("must not send"); },
+      }))).rejects.toThrow("JOURNAL_MISMATCH_CANONICAL_STATE");
+      expect(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).toBe(beforeState);
+      expect(readdirSync(fx.root).sort()).toEqual(beforeEntries);
+      expect(claimSnapshot(fx.stateRoot, "flow-test")).toEqual(beforeClaims);
+      expect(readdirSync(fx.root).some((entry) => entry.includes("different.json"))).toBe(false);
+
+      const recoveryInstruction = buildHxtkRecoveryCommand({
+        step: "flow-test",
+        mode: "reconcile",
+        journal: fx.journal,
+        finalized: false,
+      });
+      expect(recoveryInstruction).toContain(`--journal ${fx.journal}`);
+      expect(recoveryInstruction).toContain("--reconcile");
+    }
+  });
+
+  test("different final journal plus pending file is not resumed or claimed", async () => {
+    const fx = fixture();
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => { throw new Error("submitted but response was lost"); },
+    }))).rejects.toThrow("submitted but response was lost");
+    await runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      readStatus: async () => ({ kind: "absent" }),
+      currentBlockHeight: async () => 100,
+    }));
+    const foreignJournal = join(fx.root, "different.json");
+    writeFileSync(foreignJournal, "foreign-final-journal");
+    writeFileSync(`${foreignJournal}.pending`, "foreign-pending-journal");
+    const before = readdirSync(fx.root).sort();
+    const beforeClaims = claimSnapshot(fx.stateRoot, "flow-test");
+    await expect(runJournaledStepForTest(fx.input(foreignJournal, "execute"), deps(fx, {
+      send: async () => { throw new Error("must not send"); },
+    }))).rejects.toThrow("JOURNAL_EXISTS_ATTEMPTED_EXPIRY_PROVEN");
+    expect(readdirSync(fx.root).sort()).toEqual(before);
+    expect(claimSnapshot(fx.stateRoot, "flow-test")).toEqual(beforeClaims);
+    expect(existsSync(`${foreignJournal}.pending`)).toBe(true);
+    expect(existsSync(`${foreignJournal}.sent-wire`)).toBe(false);
+  });
+
+  test("attempted-expiry transition is canonical-first and resumes after every crash boundary", async () => {
+    for (const transitionStep of ["attempted-expiry-state", "attempted-expiry-artifact"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          throw new Error("submitted but response was lost");
+        },
+        finalize: async () => { throw new Error("not readable"); },
+      }))).rejects.toThrow("response was lost");
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+        finalize: async () => { throw new Error("not readable"); },
+        currentBlockHeight: async () => 100,
+        faultAfterTransitionStep: (step) => {
+          if (step === transitionStep) throw new JournalTransitionFault(step);
+        },
+      }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: " + transitionStep);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+        status: "aborted-pre-send",
+        abortReason: "attempted-expired-proven",
+        rearmable: true,
+        broadcast: "attempted",
+        attemptedExpiryProof: {
+          lastValidBlockHeight: 1,
+          finalizedBlockHeight: 100,
+          absentReads: [{ kind: "absent" }, { kind: "absent" }],
+        },
+      });
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+        finalize: async () => { throw new Error("not readable"); },
+        currentBlockHeight: async () => 100,
+      }))).resolves.toBe(0);
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          throw new Error("must not send after expiry recovery");
+        },
+      }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN");
+      expect(sends).toBe(1);
+    }
+  });
+
+  test("same-journal execute completes interrupted proven expiry then refuses before re-arm", async () => {
+    const fx = fixture();
+    let sends = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("submitted but response was lost");
+      },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("response was lost");
+
+    // Crash after the canonical proven-expiry election, before artifact publication.
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => { throw new Error("not readable"); },
+      currentBlockHeight: async () => 100,
+      faultAfterTransitionStep: (step) => {
+        if (step === "attempted-expiry-state") throw new JournalTransitionFault(step);
+      },
+    }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: attempted-expiry-state");
+
+    const statePath = join(fx.stateRoot, "flow-test.state");
+    expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+      status: "aborted-pre-send",
+      abortReason: "attempted-expired-proven",
+      rearmable: true,
+      attemptedExpiryProof: { finalizedBlockHeight: 100 },
+    });
+
+    // The same execute completes the artifact and marker idempotently, then refuses
+    // before build/send and therefore cannot enter the policy-removal chain.
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("must not send before re-arm");
+      },
+    }))).rejects.toThrow("JOURNAL_MISMATCH_ATTEMPTED_EXPIRY_PROVEN");
+    expect(sends).toBe(1);
+    expect(existsSync(`${fx.journal}.pending`)).toBe(false);
+    const artifactNames = readdirSync(fx.root).filter((entry) => entry.includes("aborted-"));
+    expect(artifactNames).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(fx.root, artifactNames[0]!), "utf8"))).toMatchObject({
+      rearmable: true,
+      attemptedExpiryProof: { finalizedBlockHeight: 100, absentReads: [{ kind: "absent" }, { kind: "absent" }] },
+    });
+    expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+      status: "aborted-pre-send",
+      rearmable: true,
+      attemptedExpiryProof: { finalizedBlockHeight: 100 },
+    });
+
+    const newJournal = join(fx.root, "rearmed-after-interrupted-expiry.json");
+    expect(await runJournaledStepForTest(fx.input(newJournal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+    }))).toBe(0);
+    expect(sends).toBe(2);
+    expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+      status: "finalized",
+      journal: newJournal,
+      history: [{ journal: fx.journal, abortReason: "attempted-expired-proven" }],
+    });
+  });
+
+  test("new-journal execute completes state-election publication before one re-arm send", async () => {
+    const fx = fixture();
+    let initialSends = 0;
+    let rearmSends = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        initialSends += 1;
+        throw new Error("submitted but response was lost");
+      },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("response was lost");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => { throw new Error("not readable"); },
+      currentBlockHeight: async () => 100,
+      faultAfterTransitionStep: (step) => {
+        if (step === "attempted-expiry-state") throw new JournalTransitionFault(step);
+      },
+    }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: attempted-expiry-state");
+
+    const newJournal = join(fx.root, "rearmed-after-state-election.json");
+    expect(await runJournaledStepForTest(fx.input(newJournal, "execute"), deps(fx, {
+      send: async () => {
+        rearmSends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+    }))).toBe(0);
+    expect(initialSends).toBe(1);
+    expect(rearmSends).toBe(1);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "finalized",
+      journal: newJournal,
+      history: [{ journal: fx.journal, abortReason: "attempted-expired-proven" }],
+    });
+  });
+
+  test("new-journal execute completes artifact publication before the marker and one re-arm send", async () => {
+    const fx = fixture();
+    let initialSends = 0;
+    let rearmSends = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        initialSends += 1;
+        throw new Error("submitted but response was lost");
+      },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("response was lost");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => { throw new Error("not readable"); },
+      currentBlockHeight: async () => 100,
+      faultAfterTransitionStep: (step) => {
+        if (step === "attempted-expiry-artifact") throw new JournalTransitionFault(step);
+      },
+    }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: attempted-expiry-artifact");
+    expect(existsSync(fx.journal + ".pending")).toBe(false);
+
+    const stateBeforeRearm = JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"));
+    expect(stateBeforeRearm).toMatchObject({
+      status: "aborted-pre-send",
+      abortReason: "attempted-expired-proven",
+      rearmable: true,
+    });
+    expect(stateBeforeRearm.abortedJournal).toBeUndefined();
+
+    const newJournal = join(fx.root, "rearmed-after-artifact.json");
+    expect(await runJournaledStepForTest(fx.input(newJournal, "execute"), deps(fx, {
+      send: async () => {
+        rearmSends += 1;
+        return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+      },
+    }))).toBe(0);
+    expect(initialSends).toBe(1);
+    expect(rearmSends).toBe(1);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "finalized",
+      journal: newJournal,
+      history: [{ journal: fx.journal, abortReason: "attempted-expired-proven" }],
+    });
+  });
+
+  test("new-journal execute refuses when proven-expiry publication completion fails", async () => {
+    const fx = fixture();
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => { throw new Error("submitted but response was lost"); },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("response was lost");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => { throw new Error("not readable"); },
+      currentBlockHeight: async () => 100,
+      faultAfterTransitionStep: (step) => {
+        if (step === "attempted-expiry-state") throw new JournalTransitionFault(step);
+      },
+    }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: attempted-expiry-state");
+
+    const newJournal = join(fx.root, "rearm-must-not-start.json");
+    let rearmSends = 0;
+    await expect(runJournaledStepForTest(fx.input(newJournal, "execute"), deps(fx, {
+      send: async () => {
+        rearmSends += 1;
+        throw new Error("must not send after publication failure");
+      },
+      faultAfterTransitionStep: (step) => {
+        if (step === "attempted-expiry-artifact") throw new JournalTransitionFault(step);
+      },
+    }))).rejects.toThrow(
+      "reconcile the original journal with bun run reset:hxtk flow-test --reconcile --journal " + fx.journal,
+    );
+    expect(rearmSends).toBe(0);
+    expect(existsSync(newJournal)).toBe(false);
+    expect(existsSync(newJournal + ".pending")).toBe(false);
+  });
+
+  test("legacy expiry ordering with no pending journal resumes in reconcile and execute", async () => {
+    const fx = fixture();
+    let sends = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("submitted but response was lost");
+      },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("response was lost");
+    const statePath = join(fx.stateRoot, "flow-test.state");
+    const state = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+    const pendingPath = `${fx.journal}.pending`;
+    const pending = JSON.parse(readFileSync(pendingPath, "utf8")) as Record<string, unknown>;
+    const attemptToken = String(pending.attemptToken);
+    const artifactPath = `${fx.journal}.aborted-1-${attemptToken}.json`;
+    writeFileSync(pendingPath, `${JSON.stringify({
+      ...pending,
+      verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY",
+      broadcast: "attempted",
+      abortReason: "attempted-expired",
+      attemptGeneration: state.generation,
+      journalBindingSha256: pending.pendingBindingSha256,
+      sendStatus: { verdict: "ABORTED_AFTER_BLOCKHASH_EXPIRY", signature: fx.prepared.expectedSignature },
+    })}\n`, { mode: 0o600 });
+    renameSync(pendingPath, artifactPath);
+
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => { throw new Error("not readable"); },
+      currentBlockHeight: async () => 100,
+    }))).resolves.toBe(0);
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("must not send after legacy expiry recovery");
+      },
+    }))).resolves.toBe(0);
+    expect(sends).toBe(1);
+    expect(JSON.parse(readFileSync(statePath, "utf8")).status).toBe("finalized");
+  });
+
+  test("a late landed signature wins over the expiry decision", async () => {
+    const fx = fixture();
+    let sends = 0;
+    let finalizeReads = 0;
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+      send: async () => {
+        sends += 1;
+        throw new Error("submitted but response was lost");
+      },
+      finalize: async () => { throw new Error("not readable"); },
+    }))).rejects.toThrow("response was lost");
+    await expect(runJournaledStepForTest(fx.input(fx.journal, "reconcile"), deps(fx, {
+      finalize: async () => {
+        finalizeReads += 1;
+        if (finalizeReads === 1) throw new Error("not readable");
+        return fx.finalized;
+      },
+      currentBlockHeight: async () => 100,
+    }))).resolves.toBe(0);
+    expect(sends).toBe(1);
+    expect(finalizeReads).toBe(2);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8"))).toMatchObject({
+      status: "finalized",
+    });
+    expect(existsSync(fx.journal)).toBe(true);
+  });
+
+  test("pre-send abort re-arms and concurrent executes produce one send", async () => {
+    const fx = fixture();
+    let sends = 0;
+    const abort = { ...fx.input(fx.journal, "execute"), build: async () => ({
+      prepared: fx.prepared,
+      plan: { transaction: { kind: "test" } },
+      beforeSend: async () => { throw new Error("prestate changed"); },
+    }) };
+    await expect(runJournaledStepForTest(abort, deps(fx))).rejects.toThrow("prestate changed");
+    expect(sends).toBe(0);
+    expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("aborted-pre-send");
+
+    let releaseRecoveryBuild!: () => void;
+    const recoveryBuildGate = new Promise<void>((resolve) => { releaseRecoveryBuild = resolve; });
+    const recovered = deps(fx, { send: async () => {
+      sends += 1;
+      return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+    }});
+    const recoveredInput = fx.input(join(fx.root, "recovered.json"), "execute");
+    recoveredInput.build = async () => {
+      await recoveryBuildGate;
+      return { prepared: fx.prepared, plan: { transaction: { kind: "test" } } };
+    };
+    const firstRecovery = runJournaledStepForTest(recoveredInput, recovered);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(runJournaledStepForTest(fx.input(join(fx.root, "second-recovery.json"), "execute"), recovered))
+      .rejects.toThrow("another hxtk-reset process holds the flow-test claim");
+    releaseRecoveryBuild();
+    expect(await firstRecovery).toBe(0);
+    expect(sends).toBe(1);
+
+    const concurrent = fixture();
+    let releaseBuild!: () => void;
+    const buildGate = new Promise<void>((resolve) => { releaseBuild = resolve; });
+    const first = concurrent.input(concurrent.journal, "execute");
+    first.build = async () => {
+      await buildGate;
+      return { prepared: concurrent.prepared, plan: { transaction: { kind: "test" } } };
+    };
+    const send = async () => { sends += 1; return { signature: concurrent.prepared.expectedSignature, err: null, confirmationSlot: 2 }; };
+    const firstRun = runJournaledStepForTest(first, deps(concurrent, { send }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(runJournaledStepForTest(concurrent.input(join(concurrent.root, "other.json"), "execute"), deps(concurrent, { send })))
+      .rejects.toThrow("another hxtk-reset process holds the flow-test claim");
+    releaseBuild();
+    expect(await firstRun).toBe(0);
+  });
+
+  test("canonical generation conflict aborts before raw send", async () => {
+    const fx = fixture();
+    let sends = 0;
+    const input = fx.input(join(fx.root, "generation-conflict.json"), "execute");
+    input.build = async () => ({
+      prepared: fx.prepared,
+      plan: { transaction: { kind: "test" } },
+      beforeSend: async () => {
+        const statePath = join(fx.stateRoot, "flow-test.state");
+        const current = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+        writeFileSync(statePath, `${JSON.stringify({
+          ...current,
+          generation: Number(current.generation) + 1,
+        })}\n`);
+      },
+    });
+    await expect(runJournaledStepForTest(input, {
+      ...deps(fx, {
+        send: async () => {
+          sends += 1;
+          return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        },
+      }),
+    })).rejects.toThrow("STATE_GENERATION_CONFLICT");
+    expect(sends).toBe(0);
+    expect(existsSync(join(fx.stateRoot, "flow-test.claim"))).toBe(false);
+  });
+
+  test("fresh execution resumes every finalized transition boundary without a second send", async () => {
+    for (const transitionStep of ["final-journal", "sent-wire", "finalized-state"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      await expect(runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        },
+        faultAfterTransitionStep: (step) => {
+          if (step === transitionStep) throw new JournalTransitionFault(step);
+        },
+      }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: " + transitionStep);
+      expect(sends).toBe(1);
+      expect(await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          throw new Error("must not send twice");
+        },
+      }))).toBe(0);
+      expect(sends).toBe(1);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+      expect(existsSync(`${fx.journal}.pending`)).toBe(false);
+      expect(existsSync(`${fx.journal}.sent-wire`)).toBe(true);
+    }
+  });
+
+  test("fresh execution resumes every aborted-pre-send transition boundary and re-arms", async () => {
+    for (const transitionStep of ["aborted-pending", "aborted-journal", "aborted-state"] as const) {
+      const fx = fixture();
+      let sends = 0;
+      const aborting = {
+        ...fx.input(fx.journal, "execute"),
+        build: async () => ({
+          prepared: fx.prepared,
+          plan: { transaction: { kind: "test" } },
+          beforeSend: async () => { throw new Error("prestate changed"); },
+        }),
+      };
+      await expect(runJournaledStepForTest(aborting, deps(fx, {
+        faultAfterTransitionStep: (step) => {
+          if (step === transitionStep) throw new JournalTransitionFault(step);
+        },
+      }))).rejects.toThrow("HXTK_TEST_INTERRUPTED: " + transitionStep);
+      expect(sends).toBe(0);
+      expect(await runJournaledStepForTest(fx.input(fx.journal, "execute"), deps(fx, {
+        send: async () => {
+          sends += 1;
+          return { signature: fx.prepared.expectedSignature, err: null, confirmationSlot: 2 };
+        },
+      }))).toBe(0);
+      expect(sends).toBe(1);
+      expect(JSON.parse(readFileSync(join(fx.stateRoot, "flow-test.state"), "utf8")).status).toBe("finalized");
+      expect(existsSync(`${fx.journal}.pending`)).toBe(false);
+    }
+  });
+
+  test("two Bun processes racing one leg elect one generation and send once", async () => {
+    for (const breakClaim of [false, true]) {
+      const root = mkdtempSync(join("/tmp", "hxtk-race-"));
+      roots.push(root);
+      const stateRoot = resolveCanonicalStateRoot({ vault: "HXtk", homeDir: root, create: true });
+      const startFile = join(root, "start");
+      const sendCounter = join(root, "sends");
+      const raceJournal = join(root, "race.json");
+      writeFileSync(sendCounter, "", { mode: 0o600 });
+      if (breakClaim) {
+        const claimPath = join(stateRoot, "race-test.claim");
+        const token = "a".repeat(32);
+        const tokenPath = claimPath + "." + token;
+        writeFileSync(tokenPath, JSON.stringify({
+          pid: 99999999,
+          startedAtUnixMs: 1,
+          processStartTime: "dead-process",
+          journal: "/tmp/dead.json",
+          hostname: hostname(),
+          token,
+        }) + "\n", { mode: 0o600 });
+        linkSync(tokenPath, claimPath);
+      }
+      const childPath = join(import.meta.dir, "hxtk-reset-race-child.ts");
+      const children = [0, 1].map((childId) => Bun.spawn([
+        process.execPath,
+        "run",
+        childPath,
+      ], {
+        cwd: join(import.meta.dir, "../.."),
+        env: {
+          PATH: process.env.PATH ?? "",
+          HXTK_FAKE_RPC: "1",
+          HXTK_RACE_BREAK_CLAIM: breakClaim ? "1" : "0",
+          HXTK_RACE_STATE_ROOT: stateRoot,
+          HXTK_RACE_START_FILE: startFile,
+          HXTK_RACE_SEND_COUNTER: sendCounter,
+          HXTK_RACE_DIRECTORY: root,
+          HXTK_RACE_CHILD_ID: String(childId),
+          HXTK_RACE_JOURNAL: raceJournal,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      writeFileSync(startFile, "go\n", { mode: 0o600 });
+      const results = await Promise.all(children.map(async (child) => {
+        const stdout = await new Response(child.stdout).text();
+        const stderr = await new Response(child.stderr).text();
+        const exitCode = await child.exited;
+        const line = stdout.split(/\r?\n/).filter((entry) => entry.startsWith("RACE_RESULT ")).pop();
+        return {
+          exitCode,
+          stdout,
+          stderr,
+          result: line ? JSON.parse(line.slice("RACE_RESULT ".length)) as {
+            ok: boolean;
+            error?: string;
+          } : null,
+        };
+      }));
+      const sentPids = readFileSync(sendCounter, "utf8").trim().split(/\r?\n/).filter(Boolean);
+      expect(sentPids).toHaveLength(1);
+      expect(results.filter((result) => result.result?.ok)).toHaveLength(1);
+      expect(results.filter((result) => !result.result?.ok && /claim/.test(result.result?.error ?? ""))).toHaveLength(1);
+      expect(results.every((result) => result.exitCode === 0)).toBe(true);
+      expect(existsSync(join(stateRoot, "race-test.claim"))).toBe(false);
+      expect(existsSync(join(stateRoot, "race-test.claim.break-lease"))).toBe(false);
+    }
+  });
+});
+
+describe("HXtk simulated post-account reads", () => {
+  const receipt = address("8eufrxGC9Djf7ekcoWnyewKvYz4GgjtmLLpB8HBji99e");
+  const other = address("HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA");
+  const systemProgram = "11111111111111111111111111111111";
+
+  test("a receipt closed inside the simulated transaction reads as absent, not as zeros", () => {
+    // simulateTransaction reports a closed account as this record rather than null.
+    const closed: RawAccount = { address: receipt, owner: systemProgram, lamports: 0, data: new Uint8Array(0) };
+    expect(simulatedPostAccount([closed], receipt)).toBeNull();
+    expect(simulatedPostAccount([null, closed], receipt)).toBeNull();
+    expect(simulatedPostAccount([], receipt)).toBeNull();
+  });
+
+  test("a live account keeps its bytes even when zero-filled or unrelated accounts are closed", () => {
+    const live: RawAccount = {
+      address: receipt,
+      owner: "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      lamports: 1,
+      data: new Uint8Array(120),
+    };
+    const closedOther: RawAccount = { address: other, owner: systemProgram, lamports: 0, data: new Uint8Array(0) };
+    expect(simulatedPostAccount([closedOther, live], receipt)).toBe(live);
+    const funded: RawAccount = { address: receipt, owner: systemProgram, lamports: 890880, data: new Uint8Array(0) };
+    expect(simulatedPostAccount([funded], receipt)).toBe(funded);
+  });
+});
+
+describe("HXtk report ticket comparison", () => {
+  test("the journal projection and the live decode of the same ticket compare equal", () => {
+    const journalProjection = {
+      version: 1,
+      armed: false,
+      lastConsumedSequence: "445678843",
+      activeSequence: "0",
+      activeHashIsZero: true,
+    };
+    const liveDecode = {
+      version: 1,
+      bump: 254,
+      armed: false,
+      strategy: "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+      lastConsumedSequence: 445678843n,
+      activeSequence: 0n,
+      activeHashIsZero: true,
+    };
+    expect(reportTicketFingerprint(journalProjection)).toBe(reportTicketFingerprint(liveDecode));
+    expect(reportTicketFingerprint({ ...liveDecode, lastConsumedSequence: 445678844n }))
+      .not.toBe(reportTicketFingerprint(journalProjection));
+    expect(reportTicketFingerprint({ ...liveDecode, armed: true })).not.toBe(reportTicketFingerprint(journalProjection));
+    expect(reportTicketFingerprint(null)).toBeNull();
+  });
+});

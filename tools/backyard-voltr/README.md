@@ -20,6 +20,21 @@ The separate 86,400-second locked-profit degradation duration is not a
 withdrawal lock. It controls Voltr profit smoothing and must not be used to
 derive a user's receipt deadline.
 
+## HXtk reset policy provenance
+
+For the HXtk seed-140 repair policy, live policy bytes are compared to the
+hash recorded in the finalized PolicyCreate journal as a dynamic continuity
+pin, alongside decoded semantic checks for the policy identity, delegated
+executor, exact NAV constraints, and Squads settings. This is not a static
+raw-account hash pin: the finalized creation journal is the continuity anchor
+and the decoded checks remain mandatory.
+
+The reset tool also keeps a canonical replay state under
+`tools/backyard-voltr/.hxtk-reset/<vault>/<leg>.state`, independent of the
+operator's journal directory. It records the leg as `pending`, `attempted`, or
+`finalized`; one-shot legs cannot be replayed, while the explicitly repeatable
+config legs require `--allow-repeat`.
+
 ## Read-only checks
 
 Run secret-dependent commands through the repository's 1Password mount:

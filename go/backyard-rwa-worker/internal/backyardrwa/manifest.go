@@ -1,6 +1,7 @@
 package backyardrwa
 
 import (
+	"bytes"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
@@ -10,11 +11,17 @@ import (
 )
 
 // embeddedBackyardManifest is a generated, byte-for-byte runtime counterpart
-// of docs/manifests/backyard-rwa-v1.json. Keeping it next to the binary makes
+// of docs/manifests/backyard-rwa-v2.json. Keeping it next to the binary makes
 // the deployment consume a reviewed manifest rather than deployment variables.
 //
-//go:embed manifest/backyard-rwa-v1.json
+//go:embed manifest/backyard-rwa-v2.json
 var embeddedBackyardManifest []byte
+
+// The v1 copy remains embedded only as a compatibility fixture for existing
+// packet-construction tests. It is never used as the runtime manifest.
+//
+//go:embed manifest/backyard-rwa-v1.json
+var embeddedLegacyBackyardManifest []byte
 
 type RouteManifest struct {
 	Schema                string `json:"schema"`
@@ -52,13 +59,41 @@ type RouteManifest struct {
 		AddressesResolved bool     `json:"addressesResolved"`
 		PackingRung       *int64   `json:"packingRung"`
 		PolicyAccounts    []string `json:"policyAccounts"`
+		Policies          []struct {
+			Family     BasicPolicyFamily `json:"family"`
+			Seed       uint64            `json:"seed"`
+			Account    string            `json:"account"`
+			DataSHA256 *string           `json:"dataSha256"`
+		} `json:"policies"`
 	} `json:"policyCatalog"`
 	RuntimeBindings struct {
 		BridgePolicies []struct {
-			Action     Action  `json:"action"`
-			Account    string  `json:"account"`
-			DataSHA256 *string `json:"dataSha256"`
+			Action           Action     `json:"action"`
+			Account          string     `json:"account"`
+			NormalizedDigest string     `json:"normalizedDigest"`
+			MaskedByteRanges [][2]int64 `json:"maskedByteRanges"`
+			DataSHA256Raw    string     `json:"dataSha256Raw"`
 		} `json:"bridgePolicies"`
+		CollateralLifecycle struct {
+			Policy            string          `json:"policy"`
+			DataSHA256        *string         `json:"dataSha256"`
+			ConstraintIndices map[string]byte `json:"constraintIndices"`
+		} `json:"collateralLifecycle"`
+		DebtLifecycle struct {
+			Policy            string          `json:"policy"`
+			DataSHA256        *string         `json:"dataSha256"`
+			ConstraintIndices map[string]byte `json:"constraintIndices"`
+		} `json:"debtLifecycle"`
+		SwapRoutesA struct {
+			Policy            string          `json:"policy"`
+			DataSHA256        *string         `json:"dataSha256"`
+			ConstraintIndices map[string]byte `json:"constraintIndices"`
+		} `json:"swapRoutesA"`
+		SwapRoutesB struct {
+			Policy            string          `json:"policy"`
+			DataSHA256        *string         `json:"dataSha256"`
+			ConstraintIndices map[string]byte `json:"constraintIndices"`
+		} `json:"swapRoutesB"`
 		PrimeUSDC struct {
 			Program           string `json:"program"`
 			Market            string `json:"market"`
@@ -94,9 +129,39 @@ type RouteManifest struct {
 }
 
 type RuntimeActivation struct {
-	SelectedLane        string              `json:"selectedLane"`
-	RuntimeRoutes       []string            `json:"runtimeRoutes"`
-	SelectedLaneBinding SelectedLaneBinding `json:"selectedLaneBinding"`
+	SelectedLane        string               `json:"selectedLane"`
+	RuntimeRoutes       []RuntimeLaneBinding `json:"runtimeRoutes"`
+	SelectedLaneBinding SelectedLaneBinding  `json:"selectedLaneBinding"`
+}
+
+type RuntimeLaneBinding struct {
+	Lane             string `json:"lane"`
+	Protocol         string `json:"protocol"`
+	CollateralSymbol string `json:"collateralSymbol"`
+	DebtSymbol       string `json:"debtSymbol"`
+	Graph            struct {
+		KLendProgram              string `json:"klendProgram"`
+		Vault                     string `json:"vault"`
+		Market                    string `json:"market"`
+		MarketAuthority           string `json:"marketAuthority"`
+		CollateralReserve         string `json:"collateralReserve"`
+		CollateralMint            string `json:"collateralMint"`
+		CollateralLiquiditySupply string `json:"collateralLiquiditySupply"`
+		CollateralReceiptMint     string `json:"collateralReceiptMint"`
+		CollateralReceiptSupply   string `json:"collateralReceiptSupply"`
+		CollateralCustody         string `json:"collateralCustody"`
+		DebtReserve               string `json:"debtReserve"`
+		DebtMint                  string `json:"debtMint"`
+		DebtTokenProgram          string `json:"debtTokenProgram"`
+		DebtLiquiditySupply       string `json:"debtLiquiditySupply"`
+		DebtFeeReceiver           string `json:"debtFeeReceiver"`
+		DebtCustody               string `json:"debtCustody"`
+		Obligation                string `json:"obligation"`
+		CollateralFarmState       string `json:"collateralFarmState"`
+		CollateralFarmUserState   string `json:"collateralFarmUserState"`
+		DebtFarmState             string `json:"debtFarmState"`
+		DebtFarmUserState         string `json:"debtFarmUserState"`
+	} `json:"graph"`
 }
 
 type SelectedLaneBinding struct {
@@ -147,6 +212,8 @@ type SelectedLaneBinding struct {
 }
 
 type JupiterPolicyBinding struct {
+	CatalogLane             string                     `json:"catalogLane,omitempty"`
+	BasicPolicy             bool                       `json:"-"`
 	Action                  Action                     `json:"action"`
 	Policy                  string                     `json:"policy"`
 	PolicyAccountDataSHA256 string                     `json:"policyAccountDataSha256"`
@@ -190,39 +257,84 @@ func (m RouteManifest) jupiterPolicy(action Action) (JupiterPolicyBinding, error
 }
 
 func (m RouteManifest) jupiterPolicyForRoute(action Action, lane string) (JupiterPolicyBinding, error) {
-	if lane == SelectedRouteID {
-		mapped := action
-		if action == SwapStableToCollateralStep {
-			mapped = SwapUSDCToPrimeStep
-		} else if action == SwapCollateralToStableStep {
-			mapped = SwapPrimeToUSDCStep
+	if catalogJupiterRoute(lane) {
+		b, err := catalogJupiterBindingForRoute(action, lane)
+		if err != nil {
+			return JupiterPolicyBinding{}, err
 		}
-		if mapped != SwapUSDCToPrimeStep && mapped != SwapPrimeToUSDCStep {
-			return JupiterPolicyBinding{}, fmt.Errorf("action %s is not a Maple swap", action)
+		dataLength := b.FeeOffset + 1
+		if b.fixedPrefixV2() {
+			dataLength = 0
+		} // variable route vector; matchesData validates the fixed prefix
+		return JupiterPolicyBinding{CatalogLane: lane, Action: action, Policy: b.Policy, PolicyAccountDataSHA256: b.PolicySHA256,
+			PolicyConstraintIndex: b.ConstraintIndex, InstructionDataLength: dataLength, AmountOffset: b.AmountOffset}, nil
+	}
+	if lane == PhaseOneLaneID || lane == SelectedRouteID || lane == "OnRe/ONyc/USDC" {
+		_, _, sourceCustody, destinationCustody, err := jupiterEdgeForRoute(action, lane)
+		if err != nil {
+			return JupiterPolicyBinding{}, err
 		}
-		neutral := action
-		if action == SwapUSDCToPrimeStep {
-			neutral = SwapStableToCollateralStep
-		} else if action == SwapPrimeToUSDCStep {
-			neutral = SwapCollateralToStableStep
+		basic, index, err := resolveBasicSwapPolicy(sourceCustody, destinationCustody)
+		if err != nil {
+			return JupiterPolicyBinding{}, err
 		}
-		policy := mapleSyrupUSDCUSDC.PolicyAccounts[neutral]
-		hash := mapleSyrupUSDCUSDC.PolicyHashes[neutral]
-		if policy == "" || !validSHA256(hash) {
-			return JupiterPolicyBinding{}, ErrBridgePrerequisitesUnavailable
+		_, hash, err := m.basicPolicyBinding(basic.Family)
+		if err != nil {
+			return JupiterPolicyBinding{}, err
 		}
-		prefix := "01010000007400640001"
-		if neutral == SwapCollateralToStableStep {
-			prefix = "02010000007400640001"
-		}
-		return JupiterPolicyBinding{Action: mapped, Policy: policy, PolicyAccountDataSHA256: hash, PolicyConstraintIndex: 0, InstructionDataLength: 37, AmountOffset: 18, ConstraintBindings: []JupiterConstraintBinding{{RoutePlanPrefixHex: prefix, PolicyConstraintIndex: 0}}}, nil
+		return JupiterPolicyBinding{BasicPolicy: true, Action: action, Policy: basic.Policy,
+			PolicyAccountDataSHA256: hash, PolicyConstraintIndex: index, AmountOffset: 18}, nil
+	}
+	if lane != "" && lane != RouteID {
+		return JupiterPolicyBinding{}, fmt.Errorf("unregistered Jupiter policy lane")
 	}
 	return m.jupiterPolicy(action)
 }
 
+func (m RouteManifest) basicPolicyBinding(family BasicPolicyFamily) (BasicPolicyBinding, string, error) {
+	binding, err := basicPolicyBinding(family)
+	if err != nil {
+		return BasicPolicyBinding{}, "", err
+	}
+	var policy string
+	var hash *string
+	switch family {
+	case BasicCollateralLifecycle:
+		policy, hash = m.RuntimeBindings.CollateralLifecycle.Policy, m.RuntimeBindings.CollateralLifecycle.DataSHA256
+	case BasicDebtLifecycle:
+		policy, hash = m.RuntimeBindings.DebtLifecycle.Policy, m.RuntimeBindings.DebtLifecycle.DataSHA256
+	case BasicSwapRoutesA:
+		policy, hash = m.RuntimeBindings.SwapRoutesA.Policy, m.RuntimeBindings.SwapRoutesA.DataSHA256
+	case BasicSwapRoutesB:
+		policy, hash = m.RuntimeBindings.SwapRoutesB.Policy, m.RuntimeBindings.SwapRoutesB.DataSHA256
+	default:
+		return BasicPolicyBinding{}, "", fmt.Errorf("unknown basic policy family %q", family)
+	}
+	if policy != binding.Policy || hash == nil || !validSHA256(*hash) {
+		return BasicPolicyBinding{}, "", ErrBridgePrerequisitesUnavailable
+	}
+	return binding, *hash, nil
+}
+
 func (b JupiterPolicyBinding) constraintIndex(instruction JupiterSwapInstruction) (byte, error) {
 	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil || len(data) != b.InstructionDataLength || b.AmountOffset != len(data)-19 {
+	if err != nil {
+		return 0, fmt.Errorf("fresh Jupiter header does not match the manifest binding")
+	}
+	if b.CatalogLane != "" {
+		bound, err := catalogJupiterBindingForRoute(b.Action, b.CatalogLane)
+		if err != nil || b.Policy != bound.Policy || b.PolicyAccountDataSHA256 != bound.PolicySHA256 || b.PolicyConstraintIndex != bound.ConstraintIndex || b.AmountOffset != bound.AmountOffset || !bound.matchesData(data) {
+			return 0, fmt.Errorf("Jupiter catalog policy changed")
+		}
+		return bound.ConstraintIndex, nil
+	}
+	if b.BasicPolicy {
+		if len(data) < 28 || (!bytes.Equal(data[:8], jupiterSharedAccountsRoute) && !bytes.Equal(data[:8], jupiterSharedAccountsRouteV2)) {
+			return 0, fmt.Errorf("fresh Jupiter header does not match the basic policy binding")
+		}
+		return b.PolicyConstraintIndex, nil
+	}
+	if len(data) != b.InstructionDataLength || b.AmountOffset != len(data)-19 {
 		return 0, fmt.Errorf("fresh Jupiter header does not match the manifest binding")
 	}
 	if b.Action == SwapPrimeToUSDCStep {
@@ -245,6 +357,23 @@ func loadEmbeddedRouteManifest() (RouteManifest, error) {
 	if err := json.Unmarshal(embeddedBackyardManifest, &manifest); err != nil {
 		return RouteManifest{}, fmt.Errorf("decode embedded Backyard manifest: %w", err)
 	}
+	// Keep the old packet-shaped field available to existing construction
+	// fixtures while the v2 runtime source of truth is family-shaped. Phase 2
+	// replaces these compatibility reads with the generic family resolver.
+	if len(manifest.RuntimeBindings.PrimeUSDC.Packets) == 0 {
+		var legacy struct {
+			RuntimeBindings json.RawMessage `json:"runtimeBindings"`
+		}
+		if err := json.Unmarshal(embeddedLegacyBackyardManifest, &legacy); err != nil {
+			return RouteManifest{}, fmt.Errorf("decode embedded legacy Backyard manifest: %w", err)
+		}
+		var bindings struct {
+			PrimeUSDC json.RawMessage `json:"primeUsdc"`
+		}
+		if err := json.Unmarshal(legacy.RuntimeBindings, &bindings); err != nil || json.Unmarshal(bindings.PrimeUSDC, &manifest.RuntimeBindings.PrimeUSDC) != nil {
+			return RouteManifest{}, fmt.Errorf("decode embedded legacy Backyard packet bindings")
+		}
+	}
 	hash := sha256.Sum256(embeddedBackyardManifest)
 	manifest.SHA256 = hex.EncodeToString(hash[:])
 	if err := manifest.validateBindings(); err != nil {
@@ -254,7 +383,7 @@ func loadEmbeddedRouteManifest() (RouteManifest, error) {
 }
 
 func (m RouteManifest) validateBindings() error {
-	if m.Schema != "loyal-backyard-rwa-manifest/v1" || m.Cluster != "mainnet-beta" ||
+	if m.Schema != "loyal-backyard-rwa-manifest/v2" || m.Cluster != "mainnet-beta" ||
 		m.Commitment != "confirmed" || m.MVPRoute != RouteID || m.TargetLTVBPS != TargetLTVBPS ||
 		m.HardLTVRule != "min(6000, liquidationThresholdBps - 1500)" ||
 		m.WithdrawalWaitSeconds != 600 || m.NAVMaxAgeSeconds != 60 || m.VaultCapRaw != "1000000000000" {
@@ -271,23 +400,16 @@ func (m RouteManifest) validateBindings() error {
 		m.Identities.Token2022 != token2022Program {
 		return fmt.Errorf("embedded Backyard manifest does not match pinned bridge identities")
 	}
-	if m.RuntimeActivation.SelectedLane != "" {
-		if m.RuntimeActivation.SelectedLane != SelectedRouteID || len(m.RuntimeActivation.RuntimeRoutes) != RuntimeRouteCount ||
-			m.RuntimeActivation.RuntimeRoutes[0] != PhaseOneLaneID || m.RuntimeActivation.RuntimeRoutes[1] != SelectedRouteID {
-			return fmt.Errorf("embedded Backyard manifest has an invalid Phase 2 runtime allowlist")
-		}
-		if err := m.validateSelectedLaneBinding(); err != nil {
-			return err
+	if m.RuntimeActivation.SelectedLane != SelectedRouteID || len(m.RuntimeActivation.RuntimeRoutes) != RuntimeRouteCount {
+		return fmt.Errorf("embedded Backyard manifest has an invalid basic runtime allowlist")
+	}
+	for i, expected := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
+		if m.RuntimeActivation.RuntimeRoutes[i].Lane != expected || !validRuntimeLaneBinding(m.RuntimeActivation.RuntimeRoutes[i]) {
+			return fmt.Errorf("embedded Backyard manifest has an invalid runtime graph for %q", expected)
 		}
 	}
-	if m.RuntimeBindings.PrimeUSDC.Program != kaminoProgram ||
-		m.RuntimeBindings.PrimeUSDC.Market != kaminoMarket ||
-		m.RuntimeBindings.PrimeUSDC.Obligation != kaminoPrimeUSDCObligation ||
-		m.RuntimeBindings.PrimeUSDC.CollateralReserve != kaminoCollateralReserve ||
-		m.RuntimeBindings.PrimeUSDC.DebtReserve != kaminoDebtReserve ||
-		m.RuntimeBindings.PrimeUSDC.CollateralMint != kaminoPrimeMint ||
-		m.RuntimeBindings.PrimeUSDC.DebtMint != kaminoUSDCMint {
-		return fmt.Errorf("embedded Backyard manifest does not match pinned PRIME/USDC identities")
+	if err := m.validateBasicPolicyBindings(); err != nil {
+		return err
 	}
 	expectedBridgePolicies := map[Action]string{
 		VoltrAllocateToSquads: bridgeAllocationPolicy,
@@ -303,18 +425,88 @@ func (m RouteManifest) validateBindings() error {
 		if expectedBridgePolicies[binding.Action] != binding.Account || seen[binding.Action] {
 			return fmt.Errorf("embedded Backyard manifest has a drifted bridge policy identity")
 		}
+		if !sha256Pattern.MatchString(binding.NormalizedDigest) || !sha256Pattern.MatchString(binding.DataSHA256Raw) {
+			return fmt.Errorf("embedded Backyard manifest has a malformed bridge policy digest for %s", binding.Action)
+		}
+		if err := validatePolicyByteMask(binding.MaskedByteRanges); err != nil {
+			return fmt.Errorf("embedded Backyard manifest has an invalid bridge policy mask for %s: %w", binding.Action, err)
+		}
 		seen[binding.Action] = true
 	}
-	if len(m.RuntimeBindings.PrimeUSDC.SwapPolicies) != 2 {
-		return fmt.Errorf("embedded Backyard manifest has an incomplete swap policy set")
+	return nil
+}
+
+func validRuntimeLaneBinding(route RuntimeLaneBinding) bool {
+	if route.Lane == "" || route.Protocol == "" || route.CollateralSymbol == "" || route.DebtSymbol == "" {
+		return false
 	}
-	for _, expected := range []struct {
-		action Action
-		index  byte
-	}{{SwapUSDCToPrimeStep, 0}, {SwapPrimeToUSDCStep, 1}} {
-		binding, err := m.jupiterPolicy(expected.action)
-		if err != nil || binding.PolicyConstraintIndex != expected.index {
-			return fmt.Errorf("embedded Backyard manifest has a drifted swap policy binding")
+	graph := route.Graph
+	values := []string{
+		graph.KLendProgram, graph.Vault, graph.Market, graph.MarketAuthority,
+		graph.CollateralReserve, graph.CollateralMint, graph.CollateralLiquiditySupply,
+		graph.CollateralReceiptMint, graph.CollateralReceiptSupply, graph.CollateralCustody,
+		graph.DebtReserve, graph.DebtMint, graph.DebtTokenProgram, graph.DebtLiquiditySupply,
+		graph.DebtFeeReceiver, graph.DebtCustody, graph.Obligation,
+	}
+	for _, value := range values {
+		if value == "" {
+			return false
+		}
+	}
+	if (graph.CollateralFarmState == "") != (graph.CollateralFarmUserState == "") ||
+		(graph.DebtFarmState == "") != (graph.DebtFarmUserState == "") {
+		return false
+	}
+	return true
+}
+
+func (m RouteManifest) validateBasicPolicyBindings() error {
+	set, err := basicPolicySet()
+	if err != nil {
+		return err
+	}
+	if m.PolicyCatalog.Schema != "loyal-backyard-rwa-policy-catalog/v2" || len(m.PolicyCatalog.Policies) != 4 {
+		return fmt.Errorf("embedded Backyard manifest has an incomplete basic policy catalog")
+	}
+	seen := map[BasicPolicyFamily]bool{}
+	for _, entry := range m.PolicyCatalog.Policies {
+		expected, ok := set[entry.Family]
+		if !ok || seen[entry.Family] || entry.Seed != expected.Seed || entry.Account != expected.Policy {
+			return fmt.Errorf("embedded Backyard manifest has a drifted policy catalog entry")
+		}
+		if entry.DataSHA256 != nil && !validSHA256(*entry.DataSHA256) {
+			return fmt.Errorf("embedded Backyard manifest has an invalid policy data hash")
+		}
+		seen[entry.Family] = true
+	}
+	for _, family := range []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB} {
+		if !seen[family] {
+			return fmt.Errorf("embedded Backyard manifest is missing %s", family)
+		}
+	}
+	for _, binding := range []struct {
+		family BasicPolicyFamily
+		policy string
+		data   *string
+		want   map[string]byte
+		got    map[string]byte
+	}{
+		{BasicCollateralLifecycle, m.RuntimeBindings.CollateralLifecycle.Policy, m.RuntimeBindings.CollateralLifecycle.DataSHA256, map[string]byte{"deposit": 0, "withdraw": 1}, m.RuntimeBindings.CollateralLifecycle.ConstraintIndices},
+		{BasicDebtLifecycle, m.RuntimeBindings.DebtLifecycle.Policy, m.RuntimeBindings.DebtLifecycle.DataSHA256, map[string]byte{"borrow": 0, "repay": 1}, m.RuntimeBindings.DebtLifecycle.ConstraintIndices},
+		{BasicSwapRoutesA, m.RuntimeBindings.SwapRoutesA.Policy, m.RuntimeBindings.SwapRoutesA.DataSHA256, map[string]byte{"route0": 0, "route1": 1}, m.RuntimeBindings.SwapRoutesA.ConstraintIndices},
+		{BasicSwapRoutesB, m.RuntimeBindings.SwapRoutesB.Policy, m.RuntimeBindings.SwapRoutesB.DataSHA256, map[string]byte{"route0": 0, "route1": 1}, m.RuntimeBindings.SwapRoutesB.ConstraintIndices},
+	} {
+		expected := set[binding.family]
+		if binding.policy != expected.Policy || len(binding.got) != len(binding.want) || len(binding.want) != len(expected.Index) {
+			return fmt.Errorf("embedded Backyard manifest has a drifted %s binding", binding.family)
+		}
+		for key, index := range binding.want {
+			if binding.got[key] != index {
+				return fmt.Errorf("embedded Backyard manifest has a drifted %s index", binding.family)
+			}
+		}
+		if binding.data != nil && !validSHA256(*binding.data) {
+			return fmt.Errorf("embedded Backyard manifest has an invalid %s data hash", binding.family)
 		}
 	}
 	return nil
@@ -388,17 +580,26 @@ func (m RouteManifest) validateSelectedLaneBinding() error {
 	return nil
 }
 
-func (m RouteManifest) bridgePolicy(action Action) (string, string, error) {
+// BridgePolicyPin is the manifest-pinned identity of one bridge policy: the
+// account, the masked normalized digest its bytes must hash to, and the byte
+// ranges the mask excludes.
+type BridgePolicyPin struct {
+	Account          string
+	NormalizedDigest string
+	MaskedByteRanges [][2]int64
+}
+
+func (m RouteManifest) bridgePolicy(action Action) (BridgePolicyPin, error) {
 	for _, binding := range m.RuntimeBindings.BridgePolicies {
 		if binding.Action != action {
 			continue
 		}
-		if binding.DataSHA256 == nil || !sha256Pattern.MatchString(*binding.DataSHA256) {
-			return "", "", ErrBridgePrerequisitesUnavailable
+		if !sha256Pattern.MatchString(binding.NormalizedDigest) {
+			return BridgePolicyPin{}, ErrBridgePrerequisitesUnavailable
 		}
-		return binding.Account, *binding.DataSHA256, nil
+		return BridgePolicyPin{Account: binding.Account, NormalizedDigest: binding.NormalizedDigest, MaskedByteRanges: binding.MaskedByteRanges}, nil
 	}
-	return "", "", fmt.Errorf("action %s has no fixed bridge policy", action)
+	return BridgePolicyPin{}, fmt.Errorf("action %s has no fixed bridge policy", action)
 }
 
 func (m RouteManifest) primeUSDCPacket(action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash) (KaminoPrimeUSDCRequest, error) {
@@ -445,7 +646,7 @@ func (m RouteManifest) primeUSDCPacket(action Action, leg kaminoPrimeUSDCLeg, am
 }
 
 func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash, lane string) (KaminoPrimeUSDCRequest, error) {
-	if lane != SelectedRouteID {
+	if lane == "" || lane == RouteID {
 		request, err := m.primeUSDCPacket(action, leg, amount, blockhash)
 		if err == nil {
 			request.RouteLane = lane
@@ -455,14 +656,21 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	if amount == 0 || blockhash.Blockhash == "" || blockhash.LastValidBlockHeight <= 0 {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
-	policies := map[kaminoPrimeUSDCLeg]struct{ policy, hash string }{
-		kaminoLegDeposit:  {"5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c", "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f"},
-		kaminoLegBorrow:   {"2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV", "6f97d7928d7927d65b588644d2e0506bc86b2173f2f525edf087474e28631a94"},
-		kaminoLegRepay:    {"AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo", "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11"},
-		kaminoLegWithdraw: {"4ZRoNsVZCNJXUdNjFL6MvjMhbLFG512hjStfipMftzcY", "e994455d6351a4f615ae57dd0b0b65287e8c6af10457e70383307bb43c762a7e"},
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
+	}
+	var policy, policyHash string
+	if route.BasicPolicy {
+		family := basicPolicyFamilyForKaminoLeg(leg)
+		binding, hash, err := m.basicPolicyBinding(family)
+		if err != nil {
+			return KaminoPrimeUSDCRequest{}, err
+		}
+		policy, policyHash = binding.Policy, hash
 	}
 	metaSets := func() []KaminoPrimeUSDCAccounts {
-		deposit, borrow, repay, withdraw := mapleKaminoMetas()
+		deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 		convert := func(input []accountMeta) KaminoPrimeUSDCAccounts {
 			out := make(KaminoPrimeUSDCAccounts, len(input))
 			for i, item := range input {
@@ -481,9 +689,12 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	if index < 0 || index >= len(sets) {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
-	entry, ok := policies[leg]
-	if !ok {
-		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
+	if !route.BasicPolicy {
+		entry, ok := route.KaminoPolicies[leg]
+		if !ok {
+			return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
+		}
+		policy, policyHash = entry.Policy, entry.DataSHA256
 	}
 	discriminators := map[kaminoPrimeUSDCLeg][]byte{kaminoLegDeposit: kaminoDepositCollateral, kaminoLegBorrow: kaminoBorrowUSDC, kaminoLegRepay: kaminoRepayUSDC, kaminoLegWithdraw: kaminoWithdrawCollateral}
 	data := make([]byte, 16)
@@ -491,7 +702,7 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	for i := 0; i < 8; i++ {
 		data[8+i] = byte(amount >> (8 * i))
 	}
-	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: entry.policy, PolicyAccountDataSHA256: entry.hash, PolicyConstraintIndex: 0, Accounts: sets[index], Data: data, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
+	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: policy, PolicyAccountDataSHA256: policyHash, PolicyConstraintIndex: kaminoConstraintIndexForRoute(route, leg), Accounts: sets[index], Data: data, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
 	if _, observedLeg, err := kaminoRouteInstruction(request, lane); err != nil || observedLeg != leg {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
@@ -499,13 +710,28 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 }
 
 func (m RouteManifest) executionBlocker() *RuntimeBlocker {
-	if m.Status != "ready" || m.hasPhaseOneUnresolved() || m.PolicyCatalog.Schema != "loyal-backyard-rwa-policy-catalog/v1" ||
+	if m.Status != "ready" || m.hasPhaseOneUnresolved() || m.PolicyCatalog.Schema != "loyal-backyard-rwa-policy-catalog/v2" ||
 		m.PolicyCatalog.SHA256 == nil || !sha256Pattern.MatchString(*m.PolicyCatalog.SHA256) ||
-		len(m.RuntimeBindings.PrimeUSDC.Packets) < 4 || len(m.RuntimeBindings.PrimeUSDC.SwapPolicies) != 2 {
+		len(m.PolicyCatalog.Policies) != 4 {
 		return ErrBridgePrerequisitesUnavailable
 	}
+	for _, policy := range m.PolicyCatalog.Policies {
+		if policy.DataSHA256 == nil || !sha256Pattern.MatchString(*policy.DataSHA256) {
+			return ErrBridgePrerequisitesUnavailable
+		}
+	}
 	for _, binding := range m.RuntimeBindings.BridgePolicies {
-		if binding.DataSHA256 == nil || !sha256Pattern.MatchString(*binding.DataSHA256) {
+		if !sha256Pattern.MatchString(binding.NormalizedDigest) || !sha256Pattern.MatchString(binding.DataSHA256Raw) {
+			return ErrBridgePrerequisitesUnavailable
+		}
+	}
+	for _, hash := range []*string{
+		m.RuntimeBindings.CollateralLifecycle.DataSHA256,
+		m.RuntimeBindings.DebtLifecycle.DataSHA256,
+		m.RuntimeBindings.SwapRoutesA.DataSHA256,
+		m.RuntimeBindings.SwapRoutesB.DataSHA256,
+	} {
+		if hash == nil || !sha256Pattern.MatchString(*hash) {
 			return ErrBridgePrerequisitesUnavailable
 		}
 	}

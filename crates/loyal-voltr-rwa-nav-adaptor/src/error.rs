@@ -22,6 +22,11 @@ pub enum AdaptorError {
     TicketNotArmed = 16,
     TicketMismatch = 17,
     TicketReplay = 18,
+    ReportStep = 19,
+    ReportInterval = 20,
+    CustodyNotEmpty = 21,
+    TrackedCustodyNonZero = 22,
+    CustodyMismatch = 23,
 }
 
 impl From<AdaptorError> for ProgramError {

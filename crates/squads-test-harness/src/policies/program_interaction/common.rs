@@ -45,6 +45,81 @@ pub(super) fn create_squads_compact_program_interaction_policy_instruction(
     }
 }
 
+/// ProgramInteraction policy gated to whole programs and carrying mint-scoped
+/// Daily spending limits. Test-facing on purpose: production action
+/// construction lives in loyal-actions, but spending-limit enforcement on
+/// packed instructions has to be provable against the loaded Squads SBF with
+/// the same wire encoding the compiler emits.
+#[allow(clippy::too_many_arguments)]
+pub fn create_squads_program_interaction_policy_with_daily_limits_instruction(
+    squads_settings: Pubkey,
+    authority: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    account_index: u8,
+    allowed_programs: &[Pubkey],
+    daily_limits: &[(Pubkey, u64)],
+) -> Instruction {
+    let (policy, _) = derive_squads_policy(&squads_settings, policy_seed);
+    let instructions_constraints = allowed_programs
+        .iter()
+        .map(|program_id| SquadsInstructionConstraint {
+            program_id: *program_id,
+            account_constraints: Vec::new(),
+            data_constraints: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let spending_limits = daily_limits
+        .iter()
+        .map(|(mint, max_per_period)| SquadsLimitedSpendingLimit {
+            mint: *mint,
+            time_constraints: SquadsLimitedTimeConstraints {
+                start: 0,
+                expiration: None,
+                period: SquadsPeriodV2::Daily,
+            },
+            quantity_constraints: SquadsLimitedQuantityConstraints {
+                max_per_period: *max_per_period,
+            },
+        })
+        .collect::<Vec<_>>();
+    let action = SquadsSettingsAction::PolicyCreate {
+        seed: policy_seed,
+        policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
+            SquadsProgramInteractionPolicyCreationPayloadLegacy {
+                account_index,
+                instructions_constraints,
+                pre_hook: None,
+                post_hook: None,
+                spending_limits,
+            },
+        ),
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        start_timestamp: None,
+        expiration_args: None,
+    };
+
+    Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(squads_settings, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new(policy, false),
+        ],
+        data: serialize_squads_sync_settings_transaction_args(vec![action]),
+    }
+}
+
 fn compile_squads_program_interaction_policy_creation_payload(
     account_index: u8,
     constraints: Vec<SquadsInstructionConstraint>,

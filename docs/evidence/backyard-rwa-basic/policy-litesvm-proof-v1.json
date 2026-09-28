@@ -1,0 +1,1166 @@
+{
+  "broadcast": false,
+  "goMessageCount": 18,
+  "goMessagesSha256": "dc7931c25b9f8d9123e11a155eb29ca5244f283c3e5e1b90c9f55f7ee826ad35",
+  "goMessagesSource": "docs/evidence/backyard-rwa-basic/go-messages-v1.json",
+  "goShapedNegativeTwins": [
+    {
+      "computeUnits": 33496,
+      "error": "InstructionError(3, Custom(6064))",
+      "foreignOwner": "HpobdyxYFFxQjYHNcPDnSyAwnYP7hpxB8bxPWeAB2xK2",
+      "lane": "Prime/PRIME/USDC",
+      "leg": "deposit",
+      "messageSha256": "479685ee336827a8086258a1dda31b060aa396013de26625629c85481191fd98",
+      "obligation": "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "computeUnits": 33496,
+      "error": "InstructionError(3, Custom(6064))",
+      "foreignOwner": "HpobdyxYFFxQjYHNcPDnSyAwnYP7hpxB8bxPWeAB2xK2",
+      "lane": "Maple/syrupUSDC/USDC",
+      "leg": "deposit",
+      "messageSha256": "7ed23a03e8e0a54a12e9865caff98d880eed512920879833f48de5a002dbc620",
+      "obligation": "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "computeUnits": 33496,
+      "error": "InstructionError(3, Custom(6064))",
+      "foreignOwner": "HpobdyxYFFxQjYHNcPDnSyAwnYP7hpxB8bxPWeAB2xK2",
+      "lane": "OnRe/ONyc/USDC",
+      "leg": "deposit",
+      "messageSha256": "4371571020c9f21761739ba5369226b668021619002abbf8d0cbbbfdca1fa523",
+      "obligation": "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    }
+  ],
+  "install": [
+    {
+      "accountDataBytes": 1203,
+      "accountDataSha256": "c222e61866686b64264447284750e138e2d2b0974f6714a49de91bfe3ca1cb8f",
+      "computeUnits": 54105,
+      "instructionDataSha256": "bd75abb8acb28180e2fbcd66814e21d32267a447cf3dac50c928d2d2cc0dcc83",
+      "payloadProjection": {
+        "constraints": [
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 0,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 1,
+                "kind": {
+                  "constraints": [
+                    {
+                      "offset": 64,
+                      "operator": "Equals",
+                      "value": {
+                        "kind": "U8Slice",
+                        "value": "068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa"
+                      }
+                    }
+                  ],
+                  "kind": "AccountData",
+                  "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+                }
+              },
+              {
+                "accountIndex": 4,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+                    "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+                    "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+                    "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "d8e0bf1bcc9766af"
+                }
+              }
+            ],
+            "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+          },
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 0,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 1,
+                "kind": {
+                  "constraints": [
+                    {
+                      "offset": 64,
+                      "operator": "Equals",
+                      "value": {
+                        "kind": "U8Slice",
+                        "value": "068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa"
+                      }
+                    }
+                  ],
+                  "kind": "AccountData",
+                  "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+                }
+              },
+              {
+                "accountIndex": 4,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+                    "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+                    "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+                    "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "eb34779895c51407"
+                }
+              }
+            ],
+            "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+          }
+        ],
+        "delegatedSigner": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+        "policy": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+        "pubkeyTable": [],
+        "seed": 141,
+        "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+        "spendingLimits": 0,
+        "threshold": 1,
+        "vaultIndex": 0
+      },
+      "policy": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "proof": "decoded payload projection; account envelope adds Squads metadata",
+      "seed": "141"
+    },
+    {
+      "accountDataBytes": 1203,
+      "accountDataSha256": "b068a1d30558d814730ad6a0ae147ed53e7f97eeeff9bd5ddb35e0b5efd56dd6",
+      "computeUnits": 51105,
+      "instructionDataSha256": "d49cd14712056de39fb06c6fea3120dc851bf0f5b0bfa0d87413697457b30479",
+      "payloadProjection": {
+        "constraints": [
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 0,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 1,
+                "kind": {
+                  "constraints": [
+                    {
+                      "offset": 64,
+                      "operator": "Equals",
+                      "value": {
+                        "kind": "U8Slice",
+                        "value": "068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa"
+                      }
+                    }
+                  ],
+                  "kind": "AccountData",
+                  "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+                }
+              },
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+                    "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+                    "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 8,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV",
+                    "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "a1808ff5abc7c206"
+                }
+              }
+            ],
+            "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+          },
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 0,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 1,
+                "kind": {
+                  "constraints": [
+                    {
+                      "offset": 64,
+                      "operator": "Equals",
+                      "value": {
+                        "kind": "U8Slice",
+                        "value": "068513c48cf2381aa83b47182c9841a91f0f337d03cf1f887c1c308c1653c2fa"
+                      }
+                    }
+                  ],
+                  "kind": "AccountData",
+                  "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+                }
+              },
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+                    "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+                    "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 6,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV",
+                    "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "74aed54cb435d290"
+                }
+              }
+            ],
+            "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+          }
+        ],
+        "delegatedSigner": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+        "policy": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+        "pubkeyTable": [],
+        "seed": 142,
+        "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+        "spendingLimits": 0,
+        "threshold": 1,
+        "vaultIndex": 0
+      },
+      "policy": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "proof": "decoded payload projection; account envelope adds Squads metadata",
+      "seed": "142"
+    },
+    {
+      "accountDataBytes": 1047,
+      "accountDataSha256": "39eb2dae3af9cc533643738b81aa4779599cc9010d3479bf071d04ffa12c72f0",
+      "computeUnits": 42218,
+      "instructionDataSha256": "ff7b27cab93ec1d02c3e645b78af5725b8e5616dcb1799c7c527939286c63484",
+      "payloadProjection": {
+        "constraints": [
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 3,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 6,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "c1209b3341d69c81"
+                }
+              }
+            ],
+            "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+          },
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 3,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 6,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+                    "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "c1209b3341d69c81"
+                }
+              }
+            ],
+            "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+          }
+        ],
+        "delegatedSigner": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+        "policy": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+        "pubkeyTable": [],
+        "seed": 143,
+        "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+        "spendingLimits": 0,
+        "threshold": 1,
+        "vaultIndex": 0
+      },
+      "policy": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "proof": "decoded payload projection; account envelope adds Squads metadata",
+      "seed": "143"
+    },
+    {
+      "accountDataBytes": 1047,
+      "accountDataSha256": "831e95ebd013b93e47f3d80a3e708d1fcbc30fd28dc416a26caff46d4c4c5d02",
+      "computeUnits": 43718,
+      "instructionDataSha256": "dec1b2b9f3e69265eed238e281688c167b8d3a732ddb1e5e02ec6d302472968e",
+      "payloadProjection": {
+        "constraints": [
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 3,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 6,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "c1209b3341d69c81"
+                }
+              }
+            ],
+            "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+          },
+          {
+            "accountConstraints": [
+              {
+                "accountIndex": 2,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 3,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+                    "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 6,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+                    "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
+                  ]
+                }
+              },
+              {
+                "accountIndex": 9,
+                "kind": {
+                  "kind": "Pubkey",
+                  "values": [
+                    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+                  ]
+                }
+              }
+            ],
+            "dataConstraints": [
+              {
+                "offset": 0,
+                "operator": "Equals",
+                "value": {
+                  "kind": "U8Slice",
+                  "value": "c1209b3341d69c81"
+                }
+              }
+            ],
+            "programId": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+          }
+        ],
+        "delegatedSigner": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+        "policy": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+        "pubkeyTable": [],
+        "seed": 144,
+        "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+        "spendingLimits": 0,
+        "threshold": 1,
+        "vaultIndex": 0
+      },
+      "policy": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+      "proof": "decoded payload projection; account envelope adds Squads metadata",
+      "seed": "144"
+    }
+  ],
+  "negativeMutationMatrix": [
+    {
+      "case": "passing deposit control: OnRe ONyc lane with the approved reserve",
+      "computeUnits": 52671,
+      "constraintIndex": 0,
+      "coveredLane": "OnRe/ONyc collateral deposit",
+      "error": null,
+      "policySeed": "141",
+      "protocolInvokeObserved": true,
+      "result": "accepted"
+    },
+    {
+      "case": "foreign obligation owner",
+      "computeUnits": 32416,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6064))",
+      "policySeed": "141",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "foreign reserve",
+      "computeUnits": 32514,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6069))",
+      "policySeed": "141",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "foreign custody",
+      "computeUnits": 32566,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6069))",
+      "policySeed": "141",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "wrong discriminator",
+      "computeUnits": 32626,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6064))",
+      "policySeed": "141",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "passing swap control: real Go USDC -> ONyc message on seed 143",
+      "computeUnits": 55218,
+      "constraintIndex": 0,
+      "coveredLane": "OnRe/ONyc/USDC USDC->ONyc",
+      "error": null,
+      "policySeed": "143",
+      "protocolInvokeObserved": true,
+      "result": "accepted"
+    },
+    {
+      "case": "platform fee account 9 moved to a foreign token account",
+      "computeUnits": 27305,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6069))",
+      "policySeed": "143",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "discriminator suffix swapped past the c120 prefix",
+      "computeUnits": 27237,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6064))",
+      "policySeed": "143",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "covered-lane control ONyc -> USDS",
+      "computeUnits": 43299,
+      "constraintIndex": 0,
+      "coveredLane": "OnRe/ONyc/USDS",
+      "error": null,
+      "policySeed": "144",
+      "protocolInvokeObserved": true,
+      "result": "accepted"
+    },
+    {
+      "case": "forbidden swap pair ONyc -> PYUSD (ONyc lane constraint)",
+      "computeUnits": 24521,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6069))",
+      "policySeed": "144",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "forbidden swap pair ONyc -> PYUSD (syrupUSDC lane constraint)",
+      "computeUnits": 24469,
+      "constraintIndex": 1,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6069))",
+      "policySeed": "144",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "non-vault authority",
+      "computeUnits": 22907,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6069))",
+      "policySeed": "143",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    },
+    {
+      "case": "Ethena lane destination not in catalog",
+      "computeUnits": 23021,
+      "constraintIndex": 0,
+      "coveredLane": null,
+      "error": "InstructionError(0, Custom(6069))",
+      "policySeed": "143",
+      "protocolInvokeObserved": false,
+      "result": "rejected"
+    }
+  ],
+  "positiveLegs": [
+    {
+      "computeUnits": 56698,
+      "constraintIndex": 0,
+      "error": null,
+      "kind": "kamino",
+      "lane": "Prime/PRIME/USDC",
+      "leg": "deposit",
+      "messageSha256": "479685ee336827a8086258a1dda31b060aa396013de26625629c85481191fd98",
+      "policyAccount": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "policySeed": "141",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 839,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+        "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH",
+        "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+        "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+        "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
+        "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+        "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+        "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+        "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN",
+        "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
+        "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352"
+      ]
+    },
+    {
+      "computeUnits": 52747,
+      "constraintIndex": 0,
+      "error": null,
+      "kind": "kamino",
+      "lane": "Prime/PRIME/USDC",
+      "leg": "borrow",
+      "messageSha256": "447c8f0588ff35027daf726e0d39810524cab49b549caab65f067e2f914164ad",
+      "policyAccount": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "policySeed": "142",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 805,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6",
+        "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC"
+      ]
+    },
+    {
+      "computeUnits": 51696,
+      "constraintIndex": 1,
+      "error": null,
+      "kind": "kamino",
+      "lane": "Prime/PRIME/USDC",
+      "leg": "repay",
+      "messageSha256": "e57f8aa88cffd1d434d51529fd923645da9463ec7cf0a59e9efc065e7ddffd85",
+      "policyAccount": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "policySeed": "142",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 771,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": []
+    },
+    {
+      "computeUnits": 56698,
+      "constraintIndex": 1,
+      "error": null,
+      "kind": "kamino",
+      "lane": "Prime/PRIME/USDC",
+      "leg": "withdraw",
+      "messageSha256": "08a4cd914d51c3f0b9cf662c6dc6e621df4116cb08a6263ed0a988ad9f90d0a3",
+      "policyAccount": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "policySeed": "141",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 840,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": []
+    },
+    {
+      "computeUnits": 70036,
+      "constraintIndex": 0,
+      "error": null,
+      "kind": "jupiter",
+      "lane": "Prime/PRIME/USDC",
+      "leg": "USDC->PRIME",
+      "messageSha256": "b599326acd462e58ad3e852bf175b73b316467414b4f63c0944842ef4c188959",
+      "policyAccount": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "policySeed": "143",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 1311,
+      "singleSignerPacketFits": false,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "236kMgPPGkXkpUMhMDcju5gYSnRHgV3DoXDkE4H7ncgb",
+        "2A5Cmp2mYwPzdxsQ5w6YTukYR2dNjCWVhnDTWUrifRxd",
+        "2YR8bXXn4tTnq8nVjvpYnBiQ7ZKjN3G16wxE8ShL3KaB",
+        "3CiG1JsPHfwQFwbVPSArgvGH1soZy7ikef5m4gBcvxvE",
+        "3dxmmZ42LgDPHkoZEXBeRCfjjkf9461E48QyMK2Pkdn3",
+        "4gcU2zeFiTC1FWQXSDxLbQrs2MLZsjfV6gQvJc3CZMV8",
+        "8YXpJQAyXbC4G3Xdf9ex8yieu7sttU3hCGhM2FQ75vco",
+        "9iFER3bpjf1PTTCQCfTRu17EJgvsxo9pVyA9QWwEuX4x",
+        "ALPHAQmeA7bjrVuccPsYPiCvsi428SNwte66Srvs4pHA",
+        "BVNhnxpXr2tpniwKA3hMAhqGuQgcYSMy8fcbRLt5Lsa5",
+        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK",
+        "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
+        "D8cy77BBepLMngZx6ZukaTff5hCt1HrWyKk3Hnd9oitf",
+        "DVCeozFGbe6ew3eWTnZByjHeYqTq1cvbrB7JJhkLxaRJ",
+        "DutmwGK2jj2fi8MEd2s3yFxf4tcSAt3qHFEoCgWrtTFE",
+        "F2KCaXcp7AoQtxTDvNEDCyMyWjSCAMWNzcyN9dsPfPs5",
+        "GGztQqQ6pCPaJQnNpXBgELr5cs3WwDakRbh1iEMzjgSJ",
+        "H2QVdKLRbriBwnhapBEkyQ2aLeTJWbatzybeDBTtN36Q",
+        "Ht8zi1F7qZmTQmWJ9KbFKeNq4rbnwvwin5nG6QEh1gHb",
+        "aXQtJ9cGr1zgLyrppKJ5BR5jv1RMjyYL5Wetd2KZNtB"
+      ]
+    },
+    {
+      "computeUnits": 57264,
+      "constraintIndex": 0,
+      "error": null,
+      "kind": "jupiter",
+      "lane": "Prime/PRIME/USDC",
+      "leg": "PRIME->USDC",
+      "messageSha256": "8f4a1fec9f62282abf0ef2f21a8d3e2aea8247e5004c503bffc4596ba0a46c2a",
+      "policyAccount": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+      "policySeed": "144",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 1095,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "4rEqDMTvAhHhc8nxbWCxsshP9xMkYCkQrvUaSyNYddkM",
+        "5BK2iwhjtzvfqHA7pqSmnRXsxqBDi1LafCduHsQ4fSCy",
+        "64mowTtEWdgW3XocqTXjgVvLgXEQHdADmc5EbWuRiSgp",
+        "8TDGMW61UKG6c3DRa9xsa21GkyspKnwZSirxQKSVSqJw",
+        "8tN7DEq5TA1T1wapaFWfepLJ5rHiiKvoiZ9oSjMPG4HS",
+        "9L3NfzsxFEvqhshfviKwiGPajPHJ9TY7sWRqddqi5zkg",
+        "AgJ4G4vcU8pQzNSJhpmBHQ1TvUHmQMbGLa6U63BTMe88",
+        "CapuXNQoDviLvU1PxFiizLgPNQCxrsag1uMeyk6zLVps",
+        "DrSQeGtKjRody6zfj5hu4HyRFK1vgCwwcfbznsy9FtU6",
+        "FLE4Yc2etrXRgsmcrZGpgYoq5LxD4h8VA4tArgDEPxAN",
+        "Gjmjory7TWKJXD2Jc6hKzAG991wWutFhtbXudzJqgx3p",
+        "GnGfCCLVEd6q3kUVQ3AGWzXEkH5L4kDeLZfuDhZP6YgF",
+        "HADRoNbLovyqhCsocfYQYB7QdfCAAinN9HTePvBCVDQ8",
+        "HJWQqbkLzwPk7nfeyhaBgWhmRYFt4Dv1Nr6fvGLec31U"
+      ]
+    },
+    {
+      "computeUnits": 56718,
+      "constraintIndex": 0,
+      "error": null,
+      "kind": "kamino",
+      "lane": "Maple/syrupUSDC/USDC",
+      "leg": "deposit",
+      "messageSha256": "7ed23a03e8e0a54a12e9865caff98d880eed512920879833f48de5a002dbc620",
+      "policyAccount": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "policySeed": "141",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 839,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58",
+        "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
+        "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+        "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i",
+        "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu",
+        "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
+        "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+        "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
+        "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN",
+        "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT"
+      ]
+    },
+    {
+      "computeUnits": 53657,
+      "constraintIndex": 0,
+      "error": null,
+      "kind": "kamino",
+      "lane": "Maple/syrupUSDC/USDC",
+      "leg": "borrow",
+      "messageSha256": "e8e11ccb2be86f7a78dabeab9aeeb793fd19592832c2e26f4a7464bfb354d3fc",
+      "policyAccount": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "policySeed": "142",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 871,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y",
+        "BBcwMNSMyhhBnYE9pevEvkxKHGzTafMP9v3j7Kk7nAWM",
+        "CcUorNoacydFVu7SHmhsA1qi9CcEu8K5YFvuS8unAzgr",
+        "HH7GLnRcGHJrdkEueVVj7mccNUjnSeWobDmtu9cHLkJV"
+      ]
+    },
+    {
+      "computeUnits": 52546,
+      "constraintIndex": 1,
+      "error": null,
+      "kind": "kamino",
+      "lane": "Maple/syrupUSDC/USDC",
+      "leg": "repay",
+      "messageSha256": "800236cbf373d1fcbbeb7d4ecd42e65f356d1d9c58de36f7761d218cdad9fdc7",
+      "policyAccount": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "policySeed": "142",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 837,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": []
+    },
+    {
+      "computeUnits": 56718,
+      "constraintIndex": 1,
+      "error": null,
+      "kind": "kamino",
+      "lane": "Maple/syrupUSDC/USDC",
+      "leg": "withdraw",
+      "messageSha256": "6c058f7948840ae41448f741a852d43cb9e08464fdd4ad01686a841e2d5ab7d6",
+      "policyAccount": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "policySeed": "141",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 840,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": []
+    },
+    {
+      "computeUnits": 50448,
+      "constraintIndex": 1,
+      "error": null,
+      "kind": "jupiter",
+      "lane": "Maple/syrupUSDC/USDC",
+      "leg": "USDC->syrupUSDC",
+      "messageSha256": "20902777e2ef01def9e1fbee14dcf616b188b03e83ab45737829bb5e2949ac7b",
+      "policyAccount": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "policySeed": "143",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 858,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "59v2cSbCsnyaWymLnsq6TWzE6cEN5KJYNTBNrcP4smRH",
+        "5xuhjftR2AvE4xREhLw9ceZYGTJLXUeX35WozJZXPwhf",
+        "61LMyNZudQFDNMRFKwkBmf5HtRf1vU8B8FgNYdrha3fq",
+        "6U91aKa8pmMxkJwBCfPTmUEfZi6dHe7DcFq2ALvB2tbB",
+        "C1L4VrUwNRpXw7YmC1V6JXGZCyZcks9GtZrmCL4jKUZ4",
+        "FGRoxhDzPmY3ggRZqZsBTn6aLcrAePmNwH5GXLE6cok5"
+      ]
+    },
+    {
+      "computeUnits": 70220,
+      "constraintIndex": 1,
+      "error": null,
+      "kind": "jupiter",
+      "lane": "Maple/syrupUSDC/USDC",
+      "leg": "syrupUSDC->USDC",
+      "messageSha256": "76a484bc42695df198ae074f9ed88a594eaac388ac2714417ad768d8a0871a51",
+      "policyAccount": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+      "policySeed": "144",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 1310,
+      "singleSignerPacketFits": false,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "2agVmcRbdcdWWF8VM23cf4YXSqLo2wigxii2fdd5TDMv",
+        "2ovNVDzhRTXyijrs38rbhEyw7XDPvRXHHr7hvPDv5aRs",
+        "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+        "489m7ivjzaRf6Qn9hAqZwiReKXrth4LuLtKrDLzBr6j7",
+        "4SMRzaLXsuvTi2B5cSVs4LuCUUqQhB2uByTWUvbixjfF",
+        "57yN3m15SnA4fc82KB5aQxaSs9c6QyMpmBrQKEF8FKSL",
+        "6KzHa7L1MDTkaUb4qGiJqMvnmAy1qztGDeLvSHdS9ooU",
+        "8P8toQHdWuuianrSCCcm1WQjPojzVXB964UmAKE9nM1b",
+        "8km4RjRMWZALb23A6SW4DPVTrMmVEL99iM78Uf2yhgQF",
+        "9goWMLg5ZxayhTinjtfNQLCZg2VBzdwERqHqP5tYSP9Z",
+        "EXMcKF76kmBUH8xZ5fi1jv3ezh3eVQCeL4rQbpjCRxvF",
+        "G8AAnPwtGRZJ7hsmKyVfYQW4NNqsC8dHXYiDtP7N1e7Z",
+        "GZhS9kh46MWz7rJmJa8YCFuiqFBbxd3EtLfiHZCbKEB1",
+        "Hds6DHGpLWzgFMTwMTBqyQX4VNXq1Ke1SNUena4dxkSE",
+        "JAVj73fdncxHNkJpH5KZ5fdU5cCNnMwxtEEvjCwt3BEn",
+        "MNFSTqtC93rEfYHB6hF82sKdZpUDFWkViLByLd1k1Ms",
+        "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
+      ]
+    },
+    {
+      "computeUnits": 56678,
+      "constraintIndex": 0,
+      "error": null,
+      "kind": "kamino",
+      "lane": "OnRe/ONyc/USDC",
+      "leg": "deposit",
+      "messageSha256": "4371571020c9f21761739ba5369226b668021619002abbf8d0cbbbfdca1fa523",
+      "policyAccount": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "policySeed": "141",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 839,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo",
+        "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+        "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+        "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+        "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
+        "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG",
+        "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
+        "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+        "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd",
+        "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss"
+      ]
+    },
+    {
+      "computeUnits": 53637,
+      "constraintIndex": 0,
+      "error": null,
+      "kind": "kamino",
+      "lane": "OnRe/ONyc/USDC",
+      "leg": "borrow",
+      "messageSha256": "a32a969c1b2306b8431274c57c821f168a6fc88d5561801c936a3abe8a2abfcf",
+      "policyAccount": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "policySeed": "142",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 871,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
+        "7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF",
+        "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
+        "nMqFZFPQsNwot49QAD1B76LxNV7qRG1tnbkXyTjbUAD"
+      ]
+    },
+    {
+      "computeUnits": 52526,
+      "constraintIndex": 1,
+      "error": null,
+      "kind": "kamino",
+      "lane": "OnRe/ONyc/USDC",
+      "leg": "repay",
+      "messageSha256": "bc0f4842ca2bc49d8ae055640fe39e0bc1064e4caa39a0e9dd428d9489daa215",
+      "policyAccount": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "policySeed": "142",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 837,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": []
+    },
+    {
+      "computeUnits": 56678,
+      "constraintIndex": 1,
+      "error": null,
+      "kind": "kamino",
+      "lane": "OnRe/ONyc/USDC",
+      "leg": "withdraw",
+      "messageSha256": "61e3303655077f47aa0f5ad240038ffd9d194313ef9cca14fd571cc717b7c5e4",
+      "policyAccount": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "policySeed": "141",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 840,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": []
+    },
+    {
+      "computeUnits": 52654,
+      "constraintIndex": 0,
+      "error": null,
+      "kind": "jupiter",
+      "lane": "OnRe/ONyc/USDC",
+      "leg": "USDC->ONyc",
+      "messageSha256": "4623b5b67d32a19c46a13b85391223f06b057062070f35e8fc53161e7b03f6f0",
+      "policyAccount": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "policySeed": "143",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 960,
+      "singleSignerPacketFits": true,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "3J8ahxRgSvEjc1AMf9A9p5qyePWGWXZaqCEkRU2R848h",
+        "4AnnpKm2SYDWHcWyuPp8q73Ge72wRgxXxvrwE8Z722fS",
+        "4SNzvPoPnnzR6sz5GdEnUpSFoZQUSnpX6KpXRKzDDfLh",
+        "4xddixxbq398nakRXsGbvQtJo7451o1BjzKfftEQBrZD",
+        "6efatwoXy3j6QxELDXaznPxC8i9g16DVsTGc8X5yZixZ",
+        "7jhhyxPUKpu42hPGSYwgMXbR2dtVJHKhs8DW3sAAgAvX",
+        "9nnLbotNTcUhvbrsA6Mdkx45Sm82G35zo28AqUvjExn8",
+        "CMDtGA6Ka1jjw4VgAy7Pd49aQxgiUUiK5zPqA6H2QpAL",
+        "EFK2eCu8FoEJerhf9P877oT3wWuq5ciAGWHR21jJaebY",
+        "EXrqY7jLTLp83H38L8Zw3GvGkk1KoQbYTckPGBghwD8X"
+      ]
+    },
+    {
+      "computeUnits": 72047,
+      "constraintIndex": 0,
+      "error": null,
+      "kind": "jupiter",
+      "lane": "OnRe/ONyc/USDC",
+      "leg": "ONyc->USDC",
+      "messageSha256": "82c021d04ee8842e400a34f9b73f7d39468920f621be4d51f87deb1849a48101",
+      "policyAccount": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+      "policySeed": "144",
+      "protocolExecution": "stub builtin; policy-acceptance proof only",
+      "protocolInvokeObserved": true,
+      "singleSignerPacketBytes": 1377,
+      "singleSignerPacketFits": false,
+      "status": "ACCEPTED",
+      "syntheticAccounts": [
+        "2tRGvraNzLDCuNkH8YGvS7sZoGv7ZAYL4Dfc73e3uSic",
+        "3oJ7pXjdaDkrfd5s2FDkxhgQn8JjpTY6rEJQq1CANJTg",
+        "3vZe7krtxQ6zaSSzkZcMv2dk5DRU1eCWCX6bdVZUMcFS",
+        "7Qw43QPaZHBJvekULVd6hCQmPFqbM9ucPV8n1Fp2ENs2",
+        "7VrzC3oU6S2Z6DN2xiRBNghuSWHbCEGKukwTXLzjqMuy",
+        "A9RdNEf4T9x1eNPnEHFX1ABHS7J4e9kxBm43S3o5r9Kw",
+        "DVS7jieY6F5mm8KYuCf6bwJMQyuQpsWLHvXwNFdXVm6M",
+        "G8HbAqBKRDme779KEei4iaHrHX2ke6KMJRJc9viAQLax",
+        "oGqiDSraBEx7gtQVQPWmtkxXmZ19hSSET7w94tKT67s"
+      ]
+    }
+  ],
+  "schema": "loyal-backyard-rwa-basic-policy-litesvm-proof/v2",
+  "settings": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6",
+  "settingsPolicySeedAfter": 144,
+  "settingsPolicySeedBefore": 140
+}

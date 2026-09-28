@@ -1,0 +1,147 @@
+{
+  "schema": "loyal-rwa-multiply-strategy-two-bootstrap-preflight/v1",
+  "verdict": "UNSIGNED_SIMULATION_PASS",
+  "sent": false,
+  "signed": false,
+  "identityClass": "generated-throwaway",
+  "authoritativeHashCaveat": "Policy data hashes below come from the throwaway config identity. The install-time hashes are produced only after the operator derives the real config keypair from the setup admin over STRATEGY_TWO_DERIVATION_DOMAIN and the strategy-two target is recompiled.",
+  "generatedAtUtc": "2026-09-08T12:33:18.954Z",
+  "rpcEndpoint": "api.mainnet-beta.solana.com",
+  "derivationDomain": "loyal-rwa-multiply-mainnet-v3",
+  "strategyTwo": {
+    "config": "EwUYjSETc4wsdSEiwxsZMkUaz7fjNZxrDaXxLqfkK6BP",
+    "delegatedSigner": "9wd1ZkDumSrUqooD1Xbmoq7SqiG5sbZ9TWS1unNNXWJs",
+    "strategyInitReceipt": "6FXjQvcM3uQr77PhNxGDSjELoF2EGzQznEfqahdLS8LM",
+    "strategyAuth": "3CJXecvhynsHvPr9Yh3ehrvj7yJT39zhyZ2NbC6Xjwof",
+    "strategyAssetAta": "H68NAFkNnbRzJP7dpwggudH6oz842H213kMUBf57Yn3V",
+    "reportTicket": "GPDpmD9eP5MRrMwMxk4XQYPTkhrA55icrUrYzp8vQFmc",
+    "sharedWithV2": {
+      "vault": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
+      "adaptorProgram": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+      "adaptorAddReceipt": "AsfkxMdVYjMnr2fdTBMUXhq81hgi2hbENXCy9WhUQF7u"
+    }
+  },
+  "replacementPolicies": {
+    "policySeedBefore": "140",
+    "seeds": [
+      "141",
+      "142",
+      "143",
+      "144"
+    ],
+    "policies": [
+      "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+      "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+      "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+      "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz"
+    ],
+    "caps": {
+      "amountRaw": "100000000",
+      "reportNavRaw": "1000000000000"
+    },
+    "compiled": {
+      "sourceSha256": "5ca88676c75ba1f4079342029397313f84ebb81ae958758750af5c5a59c639e9",
+      "physicalPolicyCount": 4,
+      "deploymentReady": false,
+      "rows": [
+        {
+          "operation": "allocation",
+          "seed": "141",
+          "policy": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+          "createDataSha256": "54d354f04c232a8d77e946572d760548bd7af9452b7fdeb8063ddc6ee7609d7a",
+          "createDataBytes": 923,
+          "authoritative": false
+        },
+        {
+          "operation": "nav-refresh",
+          "seed": "142",
+          "policy": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+          "createDataSha256": "0bee4b74f9bc298a42f1aed826326d096546aa042d7385212fee0e2b8aec486b",
+          "createDataBytes": 887,
+          "authoritative": false
+        },
+        {
+          "operation": "stage-withdrawal",
+          "seed": "143",
+          "policy": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+          "createDataSha256": "0f81cd3b954203248d673af5380382a44ccbb9022c495b5a125011259da2283e",
+          "createDataBytes": 384,
+          "authoritative": false
+        },
+        {
+          "operation": "withdraw",
+          "seed": "144",
+          "policy": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+          "createDataSha256": "a362b5ad32d592f01e922efdf8a8213429a540148c20e3ec45272c8adf968c7d",
+          "createDataBytes": 923,
+          "authoritative": false
+        }
+      ]
+    }
+  },
+  "simulation": {
+    "sequenceNote": "Account privileges are transaction-wide, so the bootstrap is three wires: A initialize_config (config keypair signs), B initialize_report_ticket, C custody ATA + manager round-trip (BAqg -> initializeStrategy -> ST999). Wires B and C read state that A and B create, so only wire A is simulable against live mainnet; the full ordered sequence is rehearsed by the LiteSVM proof crates/squads-test-harness/tests/voltr_reset_sequence.rs (R5a).",
+    "wires": {
+      "A": {
+        "label": "initialize_config",
+        "instructionCount": 1,
+        "packetBytes": 625,
+        "wireSha256": "a2aac9065d5cbcfbd37c393af109b7c3827ae1d2046419beb4ee93a4fde1bfe1",
+        "simulated": true
+      },
+      "B": {
+        "label": "initialize_report_ticket",
+        "instructionCount": 1,
+        "packetBytes": 279,
+        "wireSha256": "e7b9c2b08d84ff16ae6ca20345f5d79941fd6bfec8e9aad9ed26584db04b3128",
+        "simulated": false
+      },
+      "C": {
+        "label": "custody_ata+manager_round_trip",
+        "instructionCount": 4,
+        "packetBytes": 931,
+        "wireSha256": "a49c28da04c29812c43736acd3ecdce819f10217f24dd1dac32557dfd47ae117",
+        "simulated": false
+      }
+    },
+    "simulatedInstructionCount": 1,
+    "simulatedPacketBytes": 625,
+    "unitsConsumed": 20202,
+    "messageSha256": "cbe71acad6060f236266edf692d4325c7289189bf58d8685116f2fbf259ad269",
+    "wireSha256": "a2aac9065d5cbcfbd37c393af109b7c3827ae1d2046419beb4ee93a4fde1bfe1",
+    "latestBlockhash": {
+      "blockhash": "Gy2LXBArPo1MmrhaYRLwmdZ5ab9RkQmRVfdV7V7EBZvP",
+      "lastValidBlockHeight": 423383427
+    },
+    "simulationSlot": 445339295,
+    "initializeConfigArgsHex": "d07f1501c2bec446000010a5d4e80000002000000000000000",
+    "postAccounts": [
+      {
+        "label": "adaptor_strategy_config",
+        "expected": "created",
+        "present": true,
+        "owner": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+        "lamports": 3799800,
+        "dataBytes": 472,
+        "stateSha256": "19d545ce8ac92e4b1d118d7e0fef7595f3234b01f45ae10fc9435d985723238e"
+      },
+      {
+        "label": "voltr_vault",
+        "expected": "created",
+        "present": true,
+        "owner": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+        "lamports": 7349760,
+        "dataBytes": 928,
+        "stateSha256": "9bd488018899997fec0696a2c5eda27eae65a55dbeee5c6c1f2723e19fe8dbb4"
+      }
+    ],
+    "authorityNote": "voltr_strategy_authority is a PDA signing authority with no on-chain account data; absence is expected and is not a gate.",
+    "logsTail": [
+      "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [1]",
+      "Program 11111111111111111111111111111111 invoke [2]",
+      "Program 11111111111111111111111111111111 success",
+      "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW consumed 20202 of 200000 compute units",
+      "Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW success"
+    ]
+  }
+}

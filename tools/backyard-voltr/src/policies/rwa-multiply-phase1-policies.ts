@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 
 import {
   borrowObligationLiquidityV2,
@@ -26,6 +25,10 @@ import BN from "bn.js";
 
 import { RWA_MULTIPLY_ROUTE } from "../domain/rwa-multiply-route-spec.js";
 import { resolveCurrentPhaseOnePrimeUsdcJupiterHeaders } from "./rwa-multiply-jupiter-headers.js";
+import {
+  runRustCompiler,
+  type CompilerProvenance,
+} from "./compiler-build.js";
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const CATALOG_PATH = resolve(REPOSITORY_ROOT,
@@ -243,11 +246,16 @@ export async function compileCurrentPhaseOnePrimeUsdcPolicies(connection: Connec
     ],
   };
   const source = Buffer.from(JSON.stringify(compilerInput));
-  const result = spawnSync("cargo", ["run", "--quiet", "-p", "loyal-actions", "--bin", COMPILER, "--", "--phase1"], {
-    cwd: REPOSITORY_ROOT, input: source, encoding: "utf8", maxBuffer: 32 * 1024 * 1024,
+  const result = runRustCompiler<Record<string, any>>({
+    compilerBinary: COMPILER,
+    args: ["--phase1"],
+    cwd: REPOSITORY_ROOT,
+    input: source,
+    maxBuffer: 32 * 1024 * 1024,
+    label: "Phase 1 policy compiler",
   });
-  invariant(result.status === 0, `Phase 1 policy compiler failed: ${(result.stderr || result.stdout).trim()}`);
-  const artifact = JSON.parse(result.stdout) as Json;
+  const artifact = result.output as Record<string, any> & { compiler: CompilerProvenance };
+  artifact.compiler = result.compiler;
   const policies = artifact.policies as Json[];
   invariant(artifact.phase === "phase1" && artifact.physicalPolicyCount === 5 && policies.length === 5,
     "Phase 1 compiler escaped its five-policy boundary");
@@ -257,6 +265,7 @@ export async function compileCurrentPhaseOnePrimeUsdcPolicies(connection: Connec
     broadcast: false,
     contextSlot: graphRead.context.slot,
     settingsSlot: settingsRead.context.slot,
+    compiler: result.compiler satisfies CompilerProvenance,
     compilerInput,
     artifact,
     manifestBindings: {

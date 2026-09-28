@@ -512,6 +512,34 @@ export async function finalizedTransaction(
   return transaction;
 }
 
+export type FinalizedSignatureStatus =
+  | { kind: "finalized"; slot: number; err: unknown; transaction: VersionedTransactionResponse }
+  | { kind: "absent" }
+  | { kind: "error"; message: string };
+
+/** Read signature presence without conflating a successful null with transport/RPC failure. */
+export async function readFinalizedSignatureStatus(
+  rpcUrl: string,
+  signature: string,
+): Promise<FinalizedSignatureStatus> {
+  try {
+    const connection = new Connection(rpcUrl, "finalized");
+    const transaction = await connection.getTransaction(signature, {
+      commitment: "finalized",
+      maxSupportedTransactionVersion: 0,
+    });
+    if (transaction === null) return { kind: "absent" };
+    return {
+      kind: "finalized",
+      slot: transaction.slot,
+      err: transaction.meta?.err ?? null,
+      transaction,
+    };
+  } catch (error) {
+    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /** Load a confirmed, successful transaction without reducing it to logs. */
 export async function confirmedTransaction(
   rpcUrl: string,

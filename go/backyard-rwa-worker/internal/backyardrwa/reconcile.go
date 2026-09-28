@@ -33,6 +33,25 @@ type ExpectedEffects struct {
 	Conserved  bool                    `json:"conserved"`
 	Accounts   []ExpectedAccountEffect `json:"accounts"`
 	ReturnData *ExpectedReturnData     `json:"returnData,omitempty"`
+	Repayment  *ExpectedRepayment      `json:"repayment,omitempty"`
+	Deposit    *ExpectedDeposit        `json:"deposit,omitempty"`
+}
+
+// Deposits round down to whole receipts and may debit less than the requested
+// liquidity. Bounds describe only conserved token movement, not minted receipts.
+type ExpectedDeposit struct {
+	MinimumDebitRaw uint64 `json:"minimumDebitRaw"`
+	MaximumDebitRaw uint64 `json:"maximumDebitRaw"`
+}
+
+// ExpectedRepayment bounds a finite Kamino repayment request, not the debt
+// remaining afterward. KLend clips its transfer to the debt owed. Accounts are
+// ordered source/destination, with AfterRaw describing the maximum debit;
+// reconciliation requires the same actual debit and credit within these bounds.
+// Only a subsequent obligation observation can establish a full payoff.
+type ExpectedRepayment struct {
+	MinimumDebitRaw uint64 `json:"minimumDebitRaw"`
+	MaximumDebitRaw uint64 `json:"maximumDebitRaw"`
 }
 
 type ExpectedReturnData struct {
@@ -87,6 +106,12 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 			return ExpectedEffects{}, fmt.Errorf("duplicate expected custody")
 		}
 		seen[account.Address] = struct{}{}
+		if expected.Kind != "cross-mint-swap" && account.MinimumAfterRaw != nil {
+			return ExpectedEffects{}, fmt.Errorf("minimum balance is only supported for a cross-mint swap destination")
+		}
+	}
+	if err := validateRepaymentEffects(expected); err != nil {
+		return ExpectedEffects{}, err
 	}
 	if expected.Kind == "cross-mint-swap" {
 		if expected.Accounts[0].Mint == expected.Accounts[1].Mint || expected.Accounts[0].MinimumAfterRaw != nil ||
@@ -103,11 +128,50 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 	return expected, nil
 }
 
+func validateRepaymentEffects(expected ExpectedEffects) error {
+	if expected.Deposit != nil {
+		if expected.Kind != "kamino-deposit" || expected.Repayment != nil {
+			return fmt.Errorf("deposit bounds require only a Kamino deposit")
+		}
+		// Share conservation/finite-range validation, without changing the
+		// serialized operation kind or treating a deposit as repayment.
+		copy := expected
+		copy.Kind, copy.Deposit = "kamino-repay", nil
+		copy.Repayment = &ExpectedRepayment{expected.Deposit.MinimumDebitRaw, expected.Deposit.MaximumDebitRaw}
+		return validateRepaymentEffects(copy)
+	}
+	if expected.Kind == "kamino-deposit" {
+		return fmt.Errorf("missing finite Kamino deposit bounds")
+	}
+	if expected.Kind != "kamino-repay" {
+		if expected.Repayment != nil {
+			return fmt.Errorf("repayment bounds require a Kamino repayment")
+		}
+		return nil
+	}
+	bounds := expected.Repayment
+	if bounds == nil || !expected.Conserved || len(expected.Accounts) != 2 || expected.ReturnData != nil ||
+		bounds.MinimumDebitRaw == 0 || bounds.MinimumDebitRaw > bounds.MaximumDebitRaw || bounds.MaximumDebitRaw == ^uint64(0) {
+		return fmt.Errorf("invalid finite Kamino repayment bounds")
+	}
+	source, destination := expected.Accounts[0], expected.Accounts[1]
+	if source.Address == destination.Address || source.Mint != destination.Mint || source.Owner != destination.Owner ||
+		source.MinimumAfterRaw != nil || destination.MinimumAfterRaw != nil ||
+		source.AfterRaw > source.BeforeRaw || destination.AfterRaw < destination.BeforeRaw ||
+		source.BeforeRaw-source.AfterRaw != bounds.MaximumDebitRaw || destination.AfterRaw-destination.BeforeRaw != bounds.MaximumDebitRaw {
+		return fmt.Errorf("Kamino repayment bounds do not match the conserved custody graph")
+	}
+	return nil
+}
+
 // ReconcileConfirmedTransaction verifies effects against the immutable receipt
 // for the exact persisted signature. A later account read is intentionally not
 // accepted: unrelated deposits and claims can mutate the same custodies after
 // this transaction confirms.
 func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
+	if err := validateRepaymentEffects(expected); err != nil {
+		return Reconciliation{}, nil, err
+	}
 	if receipt.Signature == "" || receipt.Slot <= 0 {
 		return Reconciliation{}, nil, fmt.Errorf("confirmed transaction identity is incomplete")
 	}
@@ -120,9 +184,13 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 		return Reconciliation{}, nil, err
 	}
 	canonical := make([]string, 0, len(expected.Accounts))
+	bounds := expected.Repayment
+	if expected.Deposit != nil {
+		bounds = &ExpectedRepayment{expected.Deposit.MinimumDebitRaw, expected.Deposit.MaximumDebitRaw}
+	}
 	beforeByMint := make(map[string]uint64, len(expected.Accounts))
 	afterByMint := make(map[string]uint64, len(expected.Accounts))
-	for _, effect := range expected.Accounts {
+	for i, effect := range expected.Accounts {
 		pre, preOK := preByAddress[effect.Address]
 		post, postOK := postByAddress[effect.Address]
 		if !preOK || !postOK || pre.OwnerProgram != effect.Owner || post.OwnerProgram != effect.Owner ||
@@ -130,7 +198,17 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 			pre.Authority != effect.Authority || post.Authority != effect.Authority || pre.Raw != effect.BeforeRaw {
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
 		}
-		if effect.MinimumAfterRaw != nil {
+		if bounds != nil {
+			var moved uint64
+			if i == 0 && post.Raw <= pre.Raw {
+				moved = pre.Raw - post.Raw
+			} else if i == 1 && post.Raw >= pre.Raw {
+				moved = post.Raw - pre.Raw
+			}
+			if moved < bounds.MinimumDebitRaw || moved > bounds.MaximumDebitRaw {
+				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped Kamino transfer outside finite bounds: %s", effect.Address)
+			}
+		} else if effect.MinimumAfterRaw != nil {
 			if post.Raw < *effect.MinimumAfterRaw {
 				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody minimum postcondition mismatch: %s", effect.Address)
 			}
