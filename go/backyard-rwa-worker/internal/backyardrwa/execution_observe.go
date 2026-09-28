@@ -257,6 +257,11 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 			// this coherent observation and persists it before returning.
 			return observation, KaminoExecutionEvidence{}, nil
 		}
+		// Size a whole-debt repayment on this refreshed debt, so it is built
+		// as the full payoff the worker will record.
+		if fullDebtRepaymentRefreshed(decision, refreshedDecision, observation.Snapshot) {
+			decision.AmountRaw = refreshedDecision.AmountRaw
+		}
 		route, err := runtimeRoute(decision.StrategyKey)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err

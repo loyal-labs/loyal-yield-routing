@@ -228,6 +228,22 @@ func decisionsEqual(left, right Decision) bool {
 	return leftErr == nil && rightErr == nil && leftAction == rightAction
 }
 
+// fullDebtRepaymentRefreshed accepts the one expected drift between deciding
+// and preparing a repayment of the whole debt: interest accrues every slot, so
+// the refreshed amount is the refreshed debt. Everything else must match, and
+// the debt may only have grown.
+func fullDebtRepaymentRefreshed(prepared, refreshed Decision, s Snapshot) bool {
+	switch prepared.Reason {
+	case "withdrawal_repay_debt", "hard_ltv_repay", "idle_debt_repay":
+	default:
+		return false
+	}
+	aligned := prepared
+	aligned.AmountRaw = refreshed.AmountRaw
+	return prepared.AmountRaw > 0 && prepared.AmountRaw <= refreshed.AmountRaw &&
+		refreshed.AmountRaw == s.PositionDebtRaw && decisionsEqual(aligned, refreshed)
+}
+
 // The basic USDC lanes and catalog debt lanes share the same bounded position
 // return recipe. This does not change Jupiter wire dialects or installed policy
 // authority; each builder still resolves its own exact route binding.

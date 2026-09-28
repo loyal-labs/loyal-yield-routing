@@ -604,8 +604,14 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if err := w.manifest.validateDecision(decision); err != nil {
 		return err
 	}
-	if !decisionsEqual(decision, preparedDecision) || !decisionsEqual(w.manifest.DecideOnManifest(observation.Snapshot), preparedDecision) {
-		return fmt.Errorf("prepared evidence does not match the refreshed decision")
+	// A whole-debt repayment accrues interest between decide and prepare; it
+	// is accepted only when preparation built the full payoff of that debt.
+	// Any other drift is a new state: nothing is recorded yet, so retry the
+	// leg on the next tick instead of stopping the worker (live 2026-09-28).
+	accruedRepayment := executionDecision == DeleverRouteStep && kaminoEvidence.Request.FullPayoff &&
+		fullDebtRepaymentRefreshed(preparedDecision, decision, observation.Snapshot)
+	if !decisionsEqual(decision, preparedDecision) && !accruedRepayment {
+		return confirmedObservationUnavailable(fmt.Errorf("prepared evidence does not match the refreshed decision"))
 	}
 	// Strict pre-decision shared-custody ownership proof (doc 26): a prepared
 	// AUTO-PYUSD spend is proofed against the prepared evidence's exact
