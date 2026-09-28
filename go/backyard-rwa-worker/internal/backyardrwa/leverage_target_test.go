@@ -179,3 +179,45 @@ func TestLeverageDecisionLogPrintsOnChangeOrHourly(t *testing.T) {
 		t.Fatal("a hold decision was logged")
 	}
 }
+
+// Live 2026-09-28: position at 1x (borrowing blocked), stored target 1.5x.
+// When spread(1.5x) was unavailable (our borrow did not fit the pool's free
+// liquidity) the rule fell back to "stay at 1x" and stored 1x; the next
+// sample stored 1.5x again. Now: unavailable spread -> no decision, no write;
+// available again -> the stored 1.5x stands (no flip).
+func TestUnavailableSpreadNeverFlipsTheStoredTarget(t *testing.T) {
+	keep := SelectorResult{Action: "KEEP"}
+	p := DefaultSelectorPolicy()
+	s := leverageSnapshot(1) // debt-free, ~$1,000 equity
+	s.LeverageTargetLevel = 1.5
+	good := leverageMarket(s.RouteLane, 0.12, math.Log1p(0.06))
+	full := good
+	full.DebtSupplyRaw, full.DebtBorrowRaw = 1_000_000_000, 900_000_000 // $100 free < $500 borrow
+	if _, ok := leverageSpread(full, 1.5, 1_000_000_000, false); ok {
+		t.Fatal("fixture: spread(1.5x) should be unavailable")
+	}
+	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{full}, p); ok {
+		t.Fatalf("unavailable spread still decided: %+v", d)
+	}
+	d, ok := decideLeverageTarget(s, keep, []LaneEconomics{good}, p)
+	if !ok || d.Next != 1.5 || d.changesTarget(s.LeverageTargetLevel) {
+		t.Fatalf("available again: %+v ok=%t changes=%t", d, ok, d.changesTarget(s.LeverageTargetLevel))
+	}
+	// A dip in gain below the up gate does not undo a stored target either:
+	// the rule steps from the stored level (down from 1.5x only below 0).
+	weak := leverageMarket(s.RouteLane, 0.10, math.Log1p(0.095))
+	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{weak}, p); !ok || d.changesTarget(1.5) {
+		t.Fatalf("weak spread flipped the stored 1.5x: %+v", d)
+	}
+	neg := leverageMarket(s.RouteLane, 0.05, math.Log1p(0.06))
+	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{neg}, p); !ok || d.Next != 1 || !d.changesTarget(1.5) {
+		t.Fatalf("negative spread did not step down: %+v", d)
+	}
+	// Equal in effect: a stored 1.75x (above the live cap) is 1.5x.
+	if (leverageDecision{Current: 1.5, Next: 1.5}).changesTarget(1.75) {
+		t.Fatal("stored 1.75x rewritten as 1.5x")
+	}
+	if !(leverageDecision{Current: 1, Next: 1.5}).changesTarget(0) {
+		t.Fatal("no stored target: first decision not written")
+	}
+}

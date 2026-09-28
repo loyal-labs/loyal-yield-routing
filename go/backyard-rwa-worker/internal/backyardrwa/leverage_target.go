@@ -119,10 +119,30 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	if market == nil || equity <= 0 {
 		return out, false
 	}
-	// Live levels stop at leverageMaxLiveLevel (see leverage_up.go); a
-	// position drifted above it counts as that level.
-	out.Current = min(currentLeverageLevel(s), leverageMaxLiveLevel)
-	spreadAt := func(level float64) (float64, bool) { return leverageSpread(*market, level, equity, out.Current > 1) }
+	// The rule steps from the STORED target, not the position: a target the
+	// position has not reached yet (borrowing blocked) is still the decided
+	// level, so re-deciding from the position flipped it (live 2026-09-28:
+	// 1.5x <-> 1x writes, each bumping the generation). Without a stored
+	// target the position level is the base. Live levels stop at
+	// leverageMaxLiveLevel (see leverage_up.go).
+	positionLevel := min(currentLeverageLevel(s), leverageMaxLiveLevel)
+	out.Current = positionLevel
+	if s.LeverageTargetLevel > 0 {
+		out.Current = min(s.LeverageTargetLevel, leverageMaxLiveLevel)
+	}
+	spreadAt := func(level float64) (float64, bool) { return leverageSpread(*market, level, equity, positionLevel > 1) }
+	// Every spread the rule reads from this level must be available; an
+	// unavailable one (e.g. our borrow does not fit the pool's free
+	// liquidity) is no decision, never a silent "stay" that rewrites the
+	// target.
+	for _, step := range leverageWatchOptions["1"] {
+		if step.from != out.Current || step.to > leverageMaxLiveLevel {
+			continue
+		}
+		if _, ok := spreadAt(max(step.from, step.to)); !ok {
+			return out, false
+		}
+	}
 	out.Next = min(nextLiveLeverageLevel(out.Current, spreadAt), leverageMaxLiveLevel)
 	spread, _ := spreadAt(max(out.Current, out.Next))
 	out.SpreadBPS = int64(spread * 10_000)
@@ -136,6 +156,15 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		}
 	}
 	return out, true
+}
+
+// changesTarget reports whether storing d would change the stored target in
+// effect (a stored level above the live cap counts as the cap).
+func (d leverageDecision) changesTarget(stored float64) bool {
+	if stored > 0 {
+		stored = min(stored, leverageMaxLiveLevel)
+	}
+	return d.Next != stored
 }
 
 func (d leverageDecision) logLine() string {
@@ -155,7 +184,7 @@ func (l *leverageDecisionLog) due(now time.Time, d leverageDecision, storedLevel
 	if d.Next == d.Current {
 		return false
 	}
-	if d.Next != storedLevel || now.Sub(l.printed) >= time.Hour {
+	if d.changesTarget(storedLevel) || now.Sub(l.printed) >= time.Hour {
 		l.printed = now
 		return true
 	}

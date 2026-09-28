@@ -1181,7 +1181,7 @@ func Run(ctx context.Context, out io.Writer) error {
 						if levDecisionLog.due(time.Now(), decision, observed.Snapshot.LeverageTargetLevel) {
 							_, _ = fmt.Fprintln(out, decision.logLine())
 						}
-						if decision.Next != observed.Snapshot.LeverageTargetLevel {
+						if decision.changesTarget(observed.Snapshot.LeverageTargetLevel) {
 							target := LeverageTarget{Lane: decision.Lane, Level: decision.Next, SpreadBPS: decision.SpreadBPS, DecidedAt: time.Now().UTC()}
 							if err := database.RecordLeverageTarget(ctx, productionRouteKey, target, observed.planning.generation); err != nil {
 								_, _ = fmt.Fprintf(out, "backyard-rwa-worker: leverage target not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
