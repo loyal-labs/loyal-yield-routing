@@ -31,13 +31,14 @@ func selectorScoredLane(lane string) bool {
 	return selectorLane(lane) && lane != PhaseOneLaneID
 }
 
-// selectorEntryLane is the reviewed new-entry scope for this rollout: Maple
-// (syrupUSDC/USDC) only. It is deliberately narrower than selectorLane, which
-// keeps deferred lanes (Prime/PRIME/USDC, OnRe/ONyc/USDC) fully observable,
-// validatable, and exitable. Only fresh entry or rotation authority is
-// withheld; widening it back to a selector lane is a reviewed change.
+// selectorEntryLane is the reviewed new-entry scope: Maple (syrupUSDC/USDC)
+// and, since B4 (2026-09-28, approved), OnRe (ONyc/USDC). It is narrower than
+// selectorLane, which keeps the dropped Prime/PRIME/USDC lane observable,
+// validatable, and exitable. Entry into OnRe uses the unchanged selector rule
+// (minimum benefit, persistence, horizon); widening further is a reviewed
+// change.
 func selectorEntryLane(lane string) bool {
-	return lane == SelectedRouteID
+	return lane == SelectedRouteID || lane == onreONycUSDC
 }
 
 // Capacity distinguishes unknown, a closed entry, and an explicitly unlimited

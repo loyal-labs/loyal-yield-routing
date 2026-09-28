@@ -12,20 +12,22 @@ func TestCanaryRequestCannotTargetDeferredLane(t *testing.T) {
 		raw, _ := json.Marshal(pilotCanaryEntryRequest{ID: sha256Bytes([]byte("canary-acceptance")), Lane: lane, EquityRaw: 1_000_000, ExpiresAt: time.Now().UTC().Add(10 * time.Minute)})
 		return string(raw)
 	}
-	for _, lane := range []string{PhaseOneLaneID, "OnRe/ONyc/USDC"} {
+	t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", request(PhaseOneLaneID))
+	_, err := readPilotCanaryEntryRequest(time.Now().UTC())
+	assertBudgetHold(t, err, "invalid_pilot_canary_request")
+	// Maple and, since B4, OnRe are entry lanes.
+	for _, lane := range []string{SelectedRouteID, "OnRe/ONyc/USDC"} {
 		t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", request(lane))
-		_, err := readPilotCanaryEntryRequest(time.Now().UTC())
-		assertBudgetHold(t, err, "invalid_pilot_canary_request")
-	}
-	t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", request(SelectedRouteID))
-	got, err := readPilotCanaryEntryRequest(time.Now().UTC())
-	if err != nil || got == nil || got.Lane != SelectedRouteID {
-		t.Fatal("permitted canary request rejected", err, got)
+		got, err := readPilotCanaryEntryRequest(time.Now().UTC())
+		if err != nil || got == nil || got.Lane != lane {
+			t.Fatal("permitted canary request rejected", lane, err, got)
+		}
 	}
 	// An in-memory deferred request (prior durable state) is rejected by the
 	// selection-time validation as well.
 	in := selectorFixture()
 	in.Policy = DefaultSelectorPolicy()
+	in.Markets[0].Lane, in.Quotes[0].DestinationLane = PhaseOneLaneID, PhaseOneLaneID
 	in.canaryRequest = &pilotCanaryEntryRequest{ID: sha256Bytes([]byte("deferred-acceptance")), Lane: in.Markets[0].Lane, EquityRaw: int64(in.Snapshot.TotalVaultNAVRaw), ExpiresAt: in.Now.Add(10 * time.Minute)}
 	result, receipt, err := selectPilotCanaryEntry(in, SelectOpportunity(in, SelectorState{}), nil)
 	assertBudgetHold(t, err, "invalid_pilot_canary_request")

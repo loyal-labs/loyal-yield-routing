@@ -473,8 +473,8 @@ func TestSameLaneReinvestmentEligibilityBindings(t *testing.T) {
 		mutate func(*SelectorInput)
 	}{
 		{"pilot_inactive", func(i *SelectorInput) { i.Snapshot.PilotActive = false }},
-		{"non_maple_lane", func(i *SelectorInput) {
-			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = "OnRe/ONyc/USDC", "OnRe/ONyc/USDC"
+		{"non_entry_lane", func(i *SelectorInput) {
+			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
 		}},
 		{"zero_position", func(i *SelectorInput) { i.Snapshot.HasPosition = false }},
 		{"zero_collateral", func(i *SelectorInput) { i.Snapshot.PositionCollateralRaw, i.Snapshot.PositionCollateralValueRaw = 0, 0 }},
@@ -521,8 +521,8 @@ func TestPilotSameLaneSwitchStaysBlockedWithoutStrictReinvestmentCase(t *testing
 		{"stale_quote", func(i *SelectorInput) { i.Quotes[0].ObservedAt = i.Now.Add(-31 * time.Second) }, "bounded_move_cost_unavailable"},
 		{"incomplete_tranche", func(i *SelectorInput) { i.Snapshot.SquadsIdleRaw = 5_000_000 }, "complete_current_tranche_first"},
 		{"withdrawal", func(i *SelectorInput) { i.Snapshot.WithdrawalDemandRaw = 1 }, "withdrawal_unwind_or_accounting_first"},
-		{"non_maple_lane", func(i *SelectorInput) {
-			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = "OnRe/ONyc/USDC", "OnRe/ONyc/USDC"
+		{"non_entry_lane", func(i *SelectorInput) {
+			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
 			i.Markets[0].Lane = i.Snapshot.RouteLane
 			i.Quotes[0].SourceLane, i.Quotes[0].DestinationLane = i.Snapshot.RouteLane, i.Snapshot.RouteLane
 		}, "current_position_is_keep_baseline"},
