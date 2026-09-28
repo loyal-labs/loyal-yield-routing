@@ -1240,7 +1240,10 @@ func pageSharedCustodyWindow(cfg sharedCustodyAttributionConfig, size, bound int
 // origin: an actual before==0 custody touch on a reviewed funding or borrow
 // edge. Unparseable rows are not origins; the validator refuses them.
 func custodyRowIsZeroStartOrigin(row custodyAttributionRow, cfg sharedCustodyAttributionConfig) bool {
-	if len(row.ReconciledEffects) == 0 {
+	// A row without a positive confirmed slot has no provable place in the
+	// journal order, so it never ends paging; the route-wide malformed
+	// identity gate refuses it.
+	if row.ConfirmedSlot <= 0 || len(row.ReconciledEffects) == 0 {
 		return false
 	}
 	_, _, accounts, err := parseReconciledCustodyEvidence(row.ReconciledEffects, cfg)

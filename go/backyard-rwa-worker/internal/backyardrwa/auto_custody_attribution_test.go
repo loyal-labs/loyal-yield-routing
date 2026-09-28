@@ -1164,8 +1164,10 @@ func TestSharedCustodyAttributionDatabaseLifecycleGates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(slotEvidence.Rows) != 4 || !slotEvidence.MalformedIdentity {
-		t.Fatalf("NULL-slot reconciled row beyond the window limit not gated: %d rows, malformedIdentity=%v", len(slotEvidence.Rows), slotEvidence.MalformedIdentity)
+	// Paging reads past the full first page; the NULL-slot row is read but
+	// is never a paging origin, and the route-wide gate still holds it.
+	if len(slotEvidence.Rows) != 5 || slotEvidence.WindowExhausted || !slotEvidence.MalformedIdentity {
+		t.Fatalf("NULL-slot reconciled row beyond the first page not gated: %d rows, exhausted=%v, malformedIdentity=%v", len(slotEvidence.Rows), slotEvidence.WindowExhausted, slotEvidence.MalformedIdentity)
 	}
 	_, err = validateSharedCustodyAttribution(3_000_000, 500, slotCfg, slotEvidence, 0)
 	if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_malformed_identity" {

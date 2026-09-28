@@ -107,3 +107,26 @@ func TestSharedCustodyWindowStillChecksRowsInLaterPages(t *testing.T) {
 		t.Fatalf("journal without origin accepted: %v", err)
 	}
 }
+
+// A funding row without a positive confirmed slot is not a paging origin:
+// paging continues past it and the route-wide malformed-identity gate holds.
+func TestSharedCustodyWindowNeverStopsAtAnUnorderedOrigin(t *testing.T) {
+	cfg := custodyAttributionConfig()
+	unordered := custodyAttributionFundingRow(t, "auto-fund-null", "sig-fund-null", 100)
+	if !custodyRowIsZeroStartOrigin(unordered, cfg) {
+		t.Fatal("fixture is not an origin with a slot")
+	}
+	unordered.ConfirmedSlot = 0
+	if custodyRowIsZeroStartOrigin(unordered, cfg) {
+		t.Fatal("NULL-slot funding row ended paging")
+	}
+	journal := []custodyAttributionRow{custodyAttributionRepayRow(t, "auto-repay", "sig-repay", 200), unordered, custodyAttributionInertRow(t, "after", 50)}
+	evidence, fetches := pagedCustodyEvidence(t, journal, 2, sharedCustodyAttributionWindowBound)
+	if fetches != 2 || len(evidence.Rows) != 3 || evidence.WindowExhausted {
+		t.Fatalf("paging stopped at the unordered row: fetches=%d rows=%d", fetches, len(evidence.Rows))
+	}
+	evidence.MalformedIdentity = true // what the reader's route-wide EXISTS reports for this row
+	if _, err := validateSharedCustodyAttribution(3_100_000_000, 300, cfg, evidence, 0); custodyAttributionHoldReason(t, err) != "custody_attribution_malformed_identity" {
+		t.Fatalf("unordered origin not held: %v", err)
+	}
+}
