@@ -23,6 +23,14 @@ func selectorLane(lane string) bool {
 	return false
 }
 
+// selectorScoredLane is the economic feed's scope. Prime/PRIME/USDC was
+// dropped from the plan (B4, 2026-09-28): the selector no longer scores or
+// picks it. It stays a selectorLane, so an unexpected Prime exposure is still
+// observed, valued and exited, and its recovery code is unchanged.
+func selectorScoredLane(lane string) bool {
+	return selectorLane(lane) && lane != PhaseOneLaneID
+}
+
 // selectorEntryLane is the reviewed new-entry scope for this rollout: Maple
 // (syrupUSDC/USDC) only. It is deliberately narrower than selectorLane, which
 // keeps deferred lanes (Prime/PRIME/USDC, OnRe/ONyc/USDC) fully observable,

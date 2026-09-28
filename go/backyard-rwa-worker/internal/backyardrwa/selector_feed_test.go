@@ -160,11 +160,21 @@ func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
 	}
 	defer plain.Close()
 	// The embedded constructor's inventory closure is manifest-independent:
-	// exactly the installed selector lanes, never the candidate route.
-	if len(plain.routes) != len(selectorLanes) {
+	// exactly the scored installed selector lanes (Prime dropped, B4), never
+	// the candidate route.
+	scoredLanes := []string{}
+	for _, lane := range selectorLanes {
+		if selectorScoredLane(lane) {
+			scoredLanes = append(scoredLanes, lane)
+		}
+	}
+	if len(scoredLanes) != len(selectorLanes)-1 || selectorScoredLane(PhaseOneLaneID) || !selectorLane(PhaseOneLaneID) {
+		t.Fatal("Prime must stay observable but unscored")
+	}
+	if len(plain.routes) != len(scoredLanes) {
 		t.Fatalf("embedded inventory changed size: %d", len(plain.routes))
 	}
-	for i, lane := range selectorLanes {
+	for i, lane := range scoredLanes {
 		want, err := runtimeRoute(lane)
 		if err != nil {
 			t.Fatal(err)
@@ -183,10 +193,10 @@ func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer scoped.Close()
-	if len(scoped.routes) != len(selectorLanes) {
+	if len(scoped.routes) != len(scoredLanes) {
 		t.Fatalf("absent binding changed the scoped inventory size: %d", len(scoped.routes))
 	}
-	for i, lane := range selectorLanes {
+	for i, lane := range scoredLanes {
 		want, err := runtimeRoute(lane)
 		if err != nil {
 			t.Fatal(err)
@@ -202,7 +212,7 @@ func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer installedScoped.Close()
-	if len(installedScoped.routes) != len(selectorLanes)+1 {
+	if len(installedScoped.routes) != len(scoredLanes)+1 {
 		t.Fatalf("installed binding did not add exactly one route: %d", len(installedScoped.routes))
 	}
 	if last := installedScoped.routes[len(installedScoped.routes)-1]; last.Lane != autoAUTOPYUSD.Lane {
@@ -216,7 +226,7 @@ func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
 	if appended.Kamino.CollateralReserve != autoWant.Kamino.CollateralReserve {
 		t.Fatalf("installed binding appended a drifted candidate route: %+v", appended)
 	}
-	for i, lane := range selectorLanes {
+	for i, lane := range scoredLanes {
 		want, err := runtimeRoute(lane)
 		if err != nil {
 			t.Fatal(err)
@@ -230,7 +240,7 @@ func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer withAuto.Close()
-	if len(withAuto.routes) != len(selectorLanes)+1 {
+	if len(withAuto.routes) != len(scoredLanes)+1 {
 		t.Fatalf("valid binding did not add exactly one route: %d", len(withAuto.routes))
 	}
 	if last := withAuto.routes[len(withAuto.routes)-1]; last.Lane != autoAUTOPYUSD.Lane {
@@ -244,7 +254,7 @@ func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
 	if candidateAppended.Kamino.CollateralReserve != candidateWant.Kamino.CollateralReserve {
 		t.Fatalf("candidate route drifted from its route config: %+v", candidateAppended)
 	}
-	for i, lane := range selectorLanes {
+	for i, lane := range scoredLanes {
 		want, err := runtimeRoute(lane)
 		if err != nil {
 			t.Fatal(err)
@@ -260,7 +270,7 @@ func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer refused.Close()
-	if len(refused.routes) != len(selectorLanes) {
+	if len(refused.routes) != len(scoredLanes) {
 		t.Fatalf("malformed binding admitted the candidate route: %d", len(refused.routes))
 	}
 }

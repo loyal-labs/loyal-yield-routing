@@ -265,6 +265,9 @@ func NewEconomicFeed(ctx context.Context, databaseURL string) (*EconomicFeed, er
 	}
 	routes := make([]RuntimeRoute, 0, len(selectorLanes))
 	for _, lane := range selectorLanes {
+		if !selectorScoredLane(lane) {
+			continue
+		}
 		r, _ := runtimeRoute(lane)
 		routes = append(routes, r)
 	}
