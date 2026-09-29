@@ -27,6 +27,10 @@ const (
 	partialSwapToUSDCReason = "withdrawal_partial_swap_to_usdc"
 	partialStageReason      = "withdrawal_partial_stage"
 	partialDebtToUSDCReason = "withdrawal_partial_debt_to_usdc"
+	// At most this many release rounds (each keeps LTV under the release
+	// ceiling); a shortfall under 90% of equity at 1.5x needs <= 6. More
+	// takes the full exit.
+	partialWithdrawalMaxRounds = 6
 )
 
 // partialWithdrawalTargetLTVBPS is the LTV the position keeps: the stored
@@ -81,6 +85,12 @@ func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 	if shortfall*10_000 >= total*partialWithdrawalFullExitBPS || total-shortfall < partialWithdrawalMinRemainingRaw {
 		return "", "", 0, false
 	}
+	// Bounded rounds: a shortfall a capped release cannot free within
+	// partialWithdrawalMaxRounds rounds takes the full exit. Judged against
+	// the whole vault position so the answer is stable mid-chain.
+	if !partialWithdrawalFitsRounds(s, shortfall, total) {
+		return "", "", 0, false
+	}
 	overTarget := s.PositionDebtRaw > 0 && s.LTVBPS > target+leverageUpNearBPS
 	switch {
 	case overTarget && debtCash > partialWithdrawalDustRaw:
@@ -113,10 +123,23 @@ func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 	if inflight > partialWithdrawalDustRaw {
 		return "", "", 0, false
 	}
-	// Nothing in flight: release the collateral share for E = S + buffer.
+	// Nothing in flight: release the collateral share for E = S + buffer,
+	// capped so the LTV after the release (before its repay) stays at or
+	// under the release ceiling; a larger E runs further rounds (release ->
+	// repay back to the level -> stage) until Voltr idle covers the demand.
 	free := shortfall + max(shortfall*partialWithdrawalBufferBPS/10_000, partialWithdrawalMinimumBuffer)
-	receipts := new(big.Int).Mul(big.NewInt(s.PositionCollateralRaw), big.NewInt(free))
-	receipts.Quo(receipts, big.NewInt(equity))
+	releaseValue := free * s.PositionCollateralValueRaw / equity
+	if s.PositionDebtValueRaw > 0 {
+		// C - R >= D / ceiling, with a 5-point margin for prices, rounding
+		// and interest (the builder's safe-size bound is the hard cap).
+		limit := s.PositionCollateralValueRaw - s.PositionDebtValueRaw*10_000/(leverageExitReleaseCeilingBPS-500)
+		if limit <= 0 {
+			return "", "", 0, false
+		}
+		releaseValue = min(releaseValue, limit)
+	}
+	receipts := new(big.Int).Mul(big.NewInt(s.PositionCollateralRaw), big.NewInt(releaseValue))
+	receipts.Quo(receipts, big.NewInt(s.PositionCollateralValueRaw))
 	if !receipts.IsInt64() || receipts.Sign() <= 0 || receipts.Int64() >= s.PositionCollateralRaw {
 		return "", "", 0, false
 	}
@@ -306,4 +329,37 @@ func pricePhase3ProjectedDebtFreeReturn(ctx context.Context, rpc *RPCClient, cli
 	}
 	plan.ValidThroughSlot = min(tail.ValidThroughSlot, current.ValidThroughSlot)
 	return plan, nil
+}
+
+// partialWithdrawalFitsRounds: at the position's level (value units), each
+// round releases up to C - D/(ceiling - 5 pts) and frees that times
+// (1 - target LTV) of equity; the rounds shrink C and D proportionally. A
+// debt-free position frees everything in one release.
+func partialWithdrawalFitsRounds(s Snapshot, shortfall, total int64) bool {
+	target, ok := partialWithdrawalTargetLTVBPS(s)
+	if !ok {
+		return false
+	}
+	if target == 0 {
+		return true
+	}
+	need := shortfall + max(shortfall*partialWithdrawalBufferBPS/10_000, partialWithdrawalMinimumBuffer)
+	// Per unit of equity at the level: C = 1/(1-t), D = t/(1-t).
+	c := 10_000.0 / float64(10_000-target)
+	d := float64(target) / float64(10_000-target)
+	perRound := (c - d*10_000/float64(leverageExitReleaseCeilingBPS-500)) * float64(10_000-target) / 10_000
+	if perRound <= 0 {
+		return false
+	}
+	remaining := float64(total)
+	freed := 0.0
+	for round := 0; round < partialWithdrawalMaxRounds; round++ {
+		step := remaining * perRound
+		freed += step
+		remaining -= step
+		if freed >= float64(need) {
+			return true
+		}
+	}
+	return false
 }

@@ -23,9 +23,13 @@ func livePartialSnapshot() Snapshot {
 func runPartialWithdrawal(t *testing.T, s Snapshot, price float64) (Snapshot, []Decision) {
 	t.Helper()
 	var legs []Decision
-	for step := 0; step < 12; step++ {
+	for step := 0; step < 40; step++ {
 		d := Decide(s)
 		legs = append(legs, d)
+		// Restart safety: deciding again on the same snapshot gives the same leg.
+		if again := Decide(s); !decisionsEqual(again, d) {
+			t.Fatalf("stateless decide differs: %+v vs %+v", d, again)
+		}
 		switch {
 		case d.Reason == partialReleaseReason:
 			value := int64(float64(d.AmountRaw) * price)
@@ -33,6 +37,15 @@ func runPartialWithdrawal(t *testing.T, s Snapshot, price float64) (Snapshot, []
 			s.PositionCollateralValueRaw -= value
 			s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = s.CollateralIdleRaw+d.AmountRaw, s.PrimeIdleRaw+d.AmountRaw, s.CollateralIdleValueRaw+value
 			s.LTVBPS = s.PositionDebtValueRaw * 10_000 / max(s.PositionCollateralValueRaw, 1)
+			if s.LTVBPS > leverageExitReleaseCeilingBPS {
+				t.Fatalf("release lifted LTV to %d (> ceiling)", s.LTVBPS)
+			}
+			if hard := s; true {
+				hard.LTVBPS = 6000
+				if got := Decide(hard); got.Reason == partialSwapToDebtReason || got.Reason == partialReleaseReason {
+					t.Fatalf("hard LTV did not preempt mid-chain: %+v", got)
+				}
+			}
 		case d.Reason == partialSwapToDebtReason:
 			value := int64(float64(d.AmountRaw) * price)
 			s.CollateralIdleRaw -= d.AmountRaw
@@ -160,5 +173,52 @@ func TestPartialWithdrawalFallbacksKeepInstalledBehaviour(t *testing.T) {
 	s.LTVBPS = 6000
 	if d := Decide(s); d.Reason == partialReleaseReason {
 		t.Fatal("hard LTV did not preempt")
+	}
+}
+
+// Review: withdrawals of 28-89% of equity at 1.5x (AUTO and OnRe) keep every
+// intermediate LTV under the release ceiling, run rounds as needed, end at
+// the level with the position kept; 1x debt-free has no ceiling issue.
+func TestPartialWithdrawalRoundsKeepLTVUnderTheCeiling(t *testing.T) {
+	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
+		for _, pct := range []int64{28, 39, 50, 75, 89} {
+			s := livePartialSnapshot()
+			s.RouteLane, s.StrategyKey = lane, lane
+			s.WithdrawalDemandRaw = 1_677_197_000 * pct / 100
+			if !partialWithdrawalFitsRounds(s, s.WithdrawalDemandRaw, 1_677_197_000) {
+				// Beyond three rounds: the installed full exit, unchanged.
+				if d := Decide(s); d.Reason != "withdrawal_release_repayment_collateral" {
+					t.Fatalf("%s %d%%: beyond the round cap: %+v", lane, pct, d)
+				}
+				t.Logf("%s %d%%: full exit (beyond %d rounds)", lane, pct, partialWithdrawalMaxRounds)
+				continue
+			}
+			after, legs := runPartialWithdrawal(t, s, 1.0209)
+			rounds := 0
+			for _, d := range legs {
+				if d.Reason == partialReleaseReason {
+					rounds++
+				}
+				if d.Reason == "withdrawal_release_repayment_collateral" || d.Reason == "withdrawal_withdraw_collateral" {
+					t.Fatalf("%s %d%%: full-exit leg %v", lane, pct, reasons(legs))
+				}
+			}
+			if rounds > partialWithdrawalMaxRounds {
+				t.Fatalf("%s %d%%: %d rounds", lane, pct, rounds)
+			}
+			if after.VoltrIdleRaw < after.WithdrawalDemandRaw || !after.HasPosition || after.PositionDebtRaw <= 0 || after.LTVBPS < 3200 || after.LTVBPS > 3450 {
+				t.Fatalf("%s %d%%: idle %d LTV %d debt %d (%v)", lane, pct, after.VoltrIdleRaw, after.LTVBPS, after.PositionDebtRaw, reasons(legs))
+			}
+			t.Logf("%s %d%%: %d rounds, %d legs, final LTV %d", lane, pct, rounds, len(legs), after.LTVBPS)
+		}
+	}
+	for _, pct := range []int64{28, 50, 89} {
+		s := livePartialSnapshot()
+		s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw, s.LTVBPS, s.LeverageTargetLevel = 0, 0, 0, 0, 1
+		s.WithdrawalDemandRaw = 2_514_967_000 * pct / 100
+		after, legs := runPartialWithdrawal(t, s, 1.0209)
+		if after.VoltrIdleRaw < after.WithdrawalDemandRaw || after.PositionDebtRaw != 0 || after.PositionCollateralRaw <= 0 || reasons(legs)[0] != partialReleaseReason {
+			t.Fatalf("1x %d%%: %v", pct, reasons(legs))
+		}
 	}
 }
