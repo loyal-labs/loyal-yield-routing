@@ -427,6 +427,16 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if err != nil {
 			return Observation{}, nil, err
 		}
+		// B2 1x entry: while the lane's debt reserve blocks borrowing, an
+		// AUTO/OnRe entry is a debt-free deposit, bounded by collateral
+		// deposit room instead of the (zero) leveraged pair capacity. Never on
+		// the cash-only fallback, which has no reserve prices (entry closed).
+		// The observation ID keeps the pair capacity, so price-driven room
+		// changes do not churn it.
+		pairEntryUSDC := entryUSDC
+		if entryUSDC == 0 && leverageLane(route.Lane) && position.BorrowUtilizationBlocked && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
+			entryUSDC = room
+		}
 		base.Snapshot.TopupDepositRoomRaw = int64(room)
 		base.Snapshot.CapacityRaw = int64(entryUSDC)
 		base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
@@ -441,7 +451,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base.Snapshot.ObservationID = routeEconomicObservationID(
 			base.Snapshot.ObservationID, prime.Raw, position.CollateralDepositedRaw, position.DebtRaw,
 			ready, exit, position.BorrowUtilizationBlocked,
-			nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, entryUSDC,
+			nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, pairEntryUSDC,
 		)
 		if route.Kamino.DebtMint != bridgeUSDC || selectorLane(route.Lane) {
 			digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d|payoff-debt:%d|idle-collateral-value:%d|position-debt-value:%d|minimum-deposit:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw, base.Snapshot.PayoffDebtRaw, base.Snapshot.CollateralIdleValueRaw, base.Snapshot.PositionDebtValueRaw, base.Snapshot.MinimumCollateralDepositRaw)))

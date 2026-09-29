@@ -91,7 +91,7 @@ func composeSelectorMoveWithLane(ctx context.Context, rpc *RPCClient, o Observat
 		validThrough = min(validThrough, destination.CollateralAssetPrice.ValidThroughSlot)
 	}
 	q := MoveQuote{SourceExit: source.ExitBound, SourceLane: source.Lane, DestinationLane: destination.Lane, ObservationID: s.ObservationID, ObservedAt: o.ObservedAt, SampleSlot: s.Slot,
-		BorrowReceiveRaw: destination.BorrowReceiveRaw, BorrowFeeRaw: destination.BorrowFeeRaw, MinimumIdleRaw: source.MinimumIdleRaw,
+		BorrowReceiveRaw: destination.BorrowReceiveRaw, BorrowFeeRaw: destination.BorrowFeeRaw, Unlevered: destination.Unlevered, MinimumIdleRaw: source.MinimumIdleRaw,
 		DebtPrice: copyDebtPrice(destination.DebtPrice), ValidThroughSlot: validThrough}
 	if destination.CollateralAssetUSDCRaw != nil {
 		asset := *destination.CollateralAssetUSDCRaw

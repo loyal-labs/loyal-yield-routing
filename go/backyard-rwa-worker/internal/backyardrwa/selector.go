@@ -192,6 +192,10 @@ type MoveQuote struct {
 	// meaning, recomputed from the bound evidence at every use.
 	BorrowReceiveRaw uint64 `json:"borrowReceiveRaw"`
 	BorrowFeeRaw     uint64 `json:"borrowFeeRaw"`
+	// Unlevered is a B2 1x entry quoted while the destination debt reserve
+	// blocks borrowing: no borrow (receive and fee are zero), scored at the
+	// lane's 1x yield, and persisted in its own advantage window.
+	Unlevered bool `json:"unlevered,omitempty"`
 	// DebtPrice is nil for USDC-debt lanes (raw==USDC parity, old JSON decodes
 	// unchanged). A non-USDC debt quote without this evidence is invalid:
 	// missing price evidence is rejected, never waivered. The observation is
@@ -363,6 +367,13 @@ type pilotEconomics struct {
 // observed interval. One price never serves both directions, and raw debt
 // units never pass for USDC. A non-empty second return blocks the candidate.
 func pilotQuoteEconomics(pilot bool, quote MoveQuote, m LaneEconomics, invested, years float64) (pilotEconomics, string) {
+	if quote.Unlevered {
+		// B2 1x entry: all invested equity is supplied collateral, no debt.
+		if !quote.validBorrow() {
+			return pilotEconomics{}, "bounded_borrow_unavailable"
+		}
+		return pilotEconomics{Gain: forecastGain(invested, invested, 0, m, 0, years) - float64(quote.selectorEconomicCostRaw())}, ""
+	}
 	e := pilotEconomics{DebtRaw: invested * (singlePassLeverage - 1)}
 	e.Debt, e.Proceeds = e.DebtRaw, e.DebtRaw
 	if pilot {
@@ -608,7 +619,11 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		// unavailable market never reaches a priced quote here and so never
 		// accumulates persistence; an unprofitable tick drops the window
 		// exactly as the feed-level path does.
-		if unpricedDebt && s.PilotActive && c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
+		// A 1x quote persists in its own window, sampled from its own priced
+		// benefit: a leveraged feed-level advantage never counts toward it.
+		if quote.Unlevered && s.PilotActive && c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
+			sampleAdvantageWindow(&out, previous, unleveredAdvantageKey(lane), in.Now, p)
+		} else if unpricedDebt && s.PilotActive && c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
 			sampleAdvantageWindow(&out, previous, lane, in.Now, p)
 		}
 		out.Candidates = append(out.Candidates, c)
@@ -631,7 +646,11 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 	chosen := out.Candidates[best]
 	out.DestinationLane = chosen.Lane
 	out.EquityRaw = chosen.InvestedRaw
-	window, stable := out.State.Advantages[chosen.Lane]
+	windowKey := chosen.Lane
+	if quotes[chosen.Lane].Unlevered {
+		windowKey = unleveredAdvantageKey(chosen.Lane)
+	}
+	window, stable := out.State.Advantages[windowKey]
 	if !stable || in.Now.Sub(window.Since) < p.Persistence {
 		out.Reason = "advantage_not_yet_persistent"
 		return out
@@ -651,6 +670,9 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 // its Since while the last sample stayed inside MaxSampleGap. The USDC-debt
 // feed-level forecast and the non-USDC priced per-quote forecast share it, so
 // both persistence signals carry identical window semantics.
+// unleveredAdvantageKey is the persistence window of a lane's 1x entry.
+func unleveredAdvantageKey(lane string) string { return lane + "|1x" }
+
 func sampleAdvantageWindow(out *SelectorResult, previous SelectorState, lane string, now time.Time, p SelectorPolicy) {
 	window := AdvantageWindow{Since: now, LastSample: now}
 	old, ok := previous.Advantages[lane]
@@ -661,6 +683,9 @@ func sampleAdvantageWindow(out *SelectorResult, previous SelectorState, lane str
 }
 
 func (q MoveQuote) validBorrow() bool {
+	if q.Unlevered {
+		return q.EquityRaw > 0 && q.BorrowReceiveRaw == 0 && q.BorrowFeeRaw == 0 && leverageLane(q.DestinationLane)
+	}
 	if q.EquityRaw <= 0 || q.BorrowReceiveRaw <= 0 {
 		return false
 	}

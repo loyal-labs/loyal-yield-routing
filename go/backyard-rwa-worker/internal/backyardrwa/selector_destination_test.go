@@ -19,8 +19,16 @@ import (
 // Neither fixture transport supports simulation/signing/submission.
 func selectorDestinationFixture(t *testing.T) (RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
+	return selectorDestinationFixtureForLane(t, SelectedRouteID, nil)
+}
+
+// selectorDestinationFixtureForLane builds the same controlled destination
+// for any basic-policy lane; tweak may edit the accounts before the RPC
+// fixture captures them.
+func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]ConfirmedAccount)) (RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+	t.Helper()
 	m := basicPolicyFixtureManifest(t)
-	route, _ := runtimeRoute(SelectedRouteID)
+	route, _ := runtimeRoute(lane)
 	var accounts []ConfirmedAccount
 	add := func(a ConfirmedAccount) { accounts = append(accounts, a) }
 	one := new(big.Int).Lsh(big.NewInt(1), 60)
@@ -128,11 +136,14 @@ func selectorDestinationFixture(t *testing.T) (RouteManifest, *RPCClient, *jupit
 	u.Data[80] = 1
 	putKey(t, u.Data[480:512], route.Kamino.Obligation)
 	add(u)
-	captured, _ := basicJupiterRequestFromExport(t, route.Lane, "USDC->syrupUSDC")
-	reverse, record := basicJupiterRequestFromExport(t, route.Lane, "syrupUSDC->USDC")
+	captured, _ := basicJupiterRequestFromExport(t, route.Lane, "USDC->"+route.CollateralSymbol)
+	reverse, record := basicJupiterRequestFromExport(t, route.Lane, route.CollateralSymbol+"->USDC")
 	for _, table := range retainedOrReconstructedLookupTables(t, reverse.Instruction.LookupTableAddresses, legacyMessageKeys(t, record.MessageBase64), []string{record.PolicyAccount}) {
 		binary.LittleEndian.PutUint64(table.Data[12:20], 41)
 		add(ConfirmedAccount{Address: table.Address, Owner: table.Owner, Lamports: table.Lamports, Data: table.Data})
+	}
+	if tweak != nil {
+		tweak(accounts)
 	}
 	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, accounts)
 	client, err := newJupiterClient("https://jupiter.invalid", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {

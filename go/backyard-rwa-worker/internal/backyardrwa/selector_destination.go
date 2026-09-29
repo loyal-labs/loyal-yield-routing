@@ -26,9 +26,12 @@ type selectorDestinationQuote struct {
 	// DebtPrice is nil for USDC-debt lanes. A non-USDC debt lane carries the
 	// established budget price observation that converts its debt-denominated
 	// capacity and borrow quantities into USDC without assuming a peg.
-	DebtPrice      *BudgetPrice             `json:"debtPrice,omitempty"`
-	PayoffUpperRaw uint64                   `json:"payoffUpperRaw"`
-	PayoffSwap     JupiterExecutionEvidence `json:"payoffSwap"`
+	DebtPrice      *BudgetPrice `json:"debtPrice,omitempty"`
+	PayoffUpperRaw uint64       `json:"payoffUpperRaw"`
+	// Unlevered marks a B2 1x entry priced while the destination debt reserve
+	// blocks borrowing: no borrow, no debt, exit = withdraw -> swap back.
+	Unlevered  bool                     `json:"unlevered,omitempty"`
+	PayoffSwap JupiterExecutionEvidence `json:"payoffSwap"`
 	// PayoffLegs retains EVERY non-USDC payoff swap leg (funding, residue?,
 	// return?) as recipe evidence; nil on USDC-debt lanes, whose payoff stays
 	// the single PayoffSwap leg. PayoffResidueInputRaw is the guaranteed
@@ -391,6 +394,17 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 	if err != nil {
 		return out, err
 	}
+	// B2: while the destination debt reserve blocks new borrowing (the same
+	// condition as the debt_reserve_utilization_blocks_borrow hold), an
+	// AUTO/OnRe destination prices a debt-free 1x entry sized by collateral
+	// deposit room. Every other state keeps the leveraged entry exactly.
+	unlevered := false
+	if capacity == 0 && reentry == nil && leverageLane(route.Lane) && position.BorrowUtilizationBlocked {
+		out.Unlevered, unlevered = true, true
+		if capacity, err = unleveredEntryCapacityDebtRaw(position, accounts, route); err != nil {
+			return out, err
+		}
+	}
 	// Pair capacity is DEBT-denominated. A non-USDC debt lane converts it
 	// downwards at the established budget price observation before the result
 	// may bound a USDC equity; USDC lanes keep exact raw==USDC parity.
@@ -523,25 +537,6 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 		return out, budgetHold("selector_destination_below_deposit_minimum")
 	}
 	minimum := swap.Request.MinimumOutputRaw - rounding
-	// Transfer rounding is not receipt redemption rounding. Deduct an extra
-	// liquidity unit before estimating a borrow against the first deposit.
-	borrow, err := targetBorrowForCollateralRaw(minimum-1, position.CollateralDecimals, position.DebtDecimals, position.CollateralPriceSF, position.DebtPriceSF)
-	if err != nil {
-		return out, err
-	}
-	fee, err := kaminoBorrowFeeAtRate(binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:]), borrow)
-	if err != nil {
-		return out, err
-	}
-	out.BorrowReceiveRaw, out.BorrowFeeRaw = borrow, fee
-	// Amount-specific origination rounding can close a tiny tranche even when
-	// the reserve's maximum-size capacity is positive.
-	debtValue, err := valueBetweenTokenRaw(borrow+fee, position.DebtDecimals, position.CollateralDecimals, position.DebtPriceSF, position.CollateralPriceSF, true)
-	allowed := new(big.Int).Mul(new(big.Int).SetUint64(minimum-1), new(big.Int).SetUint64(uint64(accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset])))
-	allowed.Quo(allowed, big.NewInt(100))
-	if err != nil || new(big.Int).SetUint64(debtValue).Cmp(allowed) > 0 {
-		return out, budgetHold("selector_destination_initial_borrow_unsafe")
-	}
 	liquidity := binary.LittleEndian.Uint64(accountAt(accounts, route.CollateralLiquiditySupply).Data[64:72])
 	deposit := func(amount, minDebit, beforeSupply uint64, reserves []string) error {
 		if amount > math.MaxUint64-beforeSupply {
@@ -558,107 +553,136 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 		}}
 		return appendInput(r, e)
 	}
-	if err = deposit(swap.Request.MinimumOutputRaw, minimum, liquidity, nil); err != nil {
-		return out, err
-	}
-	if err = appendBridge(ReportNAV, 0, 0, 0, 0); err != nil {
-		return out, err
-	}
-	r, err := m.kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, borrow, blockhash, lane)
-	if err != nil {
-		return out, err
-	}
-	r.ObligationReserves = []string{route.Kamino.CollateralReserve}
-	supply := binary.LittleEndian.Uint64(accountAt(accounts, route.DebtLiquiditySupply).Data[64:72])
-	feeBalance := binary.LittleEndian.Uint64(accountAt(accounts, route.DebtFeeReceiver).Data[64:72])
-	if borrow+fee > supply || fee > math.MaxUint64-feeBalance {
-		return out, budgetHold("selector_destination_borrow_liquidity_unavailable")
-	}
-	e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-borrow", Conserved: true, Accounts: []ExpectedAccountEffect{
-		{Address: route.DebtLiquiditySupply, Owner: route.DebtTokenProgram, Mint: route.Kamino.DebtMint, Authority: route.Kamino.MarketAuthority, BeforeRaw: supply, AfterRaw: supply - borrow - fee},
-		{Address: route.DebtCustody, Owner: route.DebtTokenProgram, Mint: route.Kamino.DebtMint, Authority: bridgeVault, BeforeRaw: 0, AfterRaw: borrow},
-		{Address: route.DebtFeeReceiver, Owner: route.DebtTokenProgram, Mint: route.Kamino.DebtMint, Authority: route.Kamino.MarketAuthority, BeforeRaw: feeBalance, AfterRaw: feeBalance + fee},
-	}}
-	if err = appendInput(r, e); err != nil {
-		return out, err
-	}
-	if err = appendBridge(ReportNAV, 0, 0, 0, borrow); err != nil {
-		return out, err
-	}
-	leverage, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapDebtToCollateralStep, AmountRaw: int64(borrow), StrategyKey: lane}, borrow, 0, observationFloor)
-	if err != nil {
-		return out, err
-	}
-	observationFloor, err = selectorSwapObservationFloor(leverage.Request, sampleSlot, observationFloor)
-	if err != nil {
-		return out, err
-	}
-	if err = appendInput(leverage.Request, leverage.ExpectedEffects); err != nil {
-		return out, err
-	}
-	if err = appendBridge(ReportNAV, 0, 0, 0, 0); err != nil {
-		return out, err
-	}
-	if leverage.Request.MinimumOutputRaw <= rounding+1 {
-		return out, budgetHold("selector_destination_below_deposit_minimum")
-	}
-	redepositMinimum := leverage.Request.MinimumOutputRaw - rounding
-	if err = deposit(leverage.Request.MinimumOutputRaw, redepositMinimum, liquidity+swap.Request.MinimumOutputRaw, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}); err != nil {
-		return out, err
-	}
-	if err = appendBridge(ReportNAV, 0, 0, 0, 0); err != nil {
-		return out, err
-	}
-	payoff, err := selectorDestinationExit(ctx, rpc, client, m, route, accounts, position, slot, observationFloor, swap.Request.MinimumOutputRaw, leverage.Request.MinimumOutputRaw, minimum, redepositMinimum, borrow, fee, rounding)
-	if err != nil {
-		return out, err
-	}
-	out.PayoffUpperRaw, out.PayoffSwap = payoff.DebtUpperRaw, payoff.Funding
-	out.PayoffLegs, out.PayoffResidueInputRaw, out.PayoffReturnAmountRaw = payoff.Legs, payoff.ResidueInputRaw, payoff.ReturnAmountRaw
-	// The one-pass exit is bounded, not flat: the two retained fields are the
-	// residual bounds (an upper uncertainty and a guaranteed remainder), never
-	// observed balances — complete cleanup stays explicitly gated behind
-	// refreshed balances, attribution and a reviewed residual policy.
-	out.PayoffResidualReceiptsRaw, out.PayoffLeftoverCollateralRaw = payoff.ResidualReceiptsRaw, payoff.CustodyLeftoverRaw
-	// Asset-side correction for non-USDC lanes (doc 12): the two bounded
-	// collateral purchase outputs valued at the observed collateral price
-	// lower bound. The debt price never lifts the asset side. The collateral
-	// price evidence itself is retained on the quote so production economics
-	// can revalue the actual redeposited collateral, and its validity window
-	// intersects the quote's like the debt price's.
-	if route.Kamino.DebtMint != bridgeUSDC {
-		deposited, err := budgetSumU64(swap.Request.MinimumOutputRaw, leverage.Request.MinimumOutputRaw)
+	var payoffLegs []JupiterExecutionEvidence
+	if unlevered {
+		// B2 1x entry while the destination debt reserve blocks borrowing:
+		// swap -> deposit, no borrow leg; the exit is withdraw -> swap back.
+		if err = appendSelectorUnleveredTail(ctx, rpc, client, m, route, accounts, slot, observationFloor, blockhash, swap, minimum, liquidity, deposit, appendInput, appendBridge, &out); err != nil {
+			return out, err
+		}
+	} else {
+		// Transfer rounding is not receipt redemption rounding. Deduct an extra
+		// liquidity unit before estimating a borrow against the first deposit.
+		borrow, err := targetBorrowForCollateralRaw(minimum-1, position.CollateralDecimals, position.DebtDecimals, position.CollateralPriceSF, position.DebtPriceSF)
 		if err != nil {
 			return out, err
 		}
-		assetPrice, err := ObserveBudgetTokenPrice(ctx, rpc, lane, ExecutableDebit{Source: route.CollateralCustody, Mint: route.Kamino.CollateralMint, TokenProgram: route.CollateralTokenProgram, Raw: deposited}, slot)
+		fee, err := kaminoBorrowFeeAtRate(binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:]), borrow)
 		if err != nil {
 			return out, err
 		}
-		asset, err := assetPrice.valueLower(deposited, route.Kamino.CollateralMint, route.CollateralTokenProgram, assetPrice.ObservedSlot)
-		if err != nil || asset <= 0 {
-			return out, budgetHold("selector_destination_collateral_asset_unpriced")
+		out.BorrowReceiveRaw, out.BorrowFeeRaw = borrow, fee
+		// Amount-specific origination rounding can close a tiny tranche even when
+		// the reserve's maximum-size capacity is positive.
+		debtValue, err := valueBetweenTokenRaw(borrow+fee, position.DebtDecimals, position.CollateralDecimals, position.DebtPriceSF, position.CollateralPriceSF, true)
+		allowed := new(big.Int).Mul(new(big.Int).SetUint64(minimum-1), new(big.Int).SetUint64(uint64(accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset])))
+		allowed.Quo(allowed, big.NewInt(100))
+		if err != nil || new(big.Int).SetUint64(debtValue).Cmp(allowed) > 0 {
+			return out, budgetHold("selector_destination_initial_borrow_unsafe")
 		}
-		assetRaw := uint64(asset)
-		out.CollateralAssetUSDCRaw = &assetRaw
-		out.CollateralAssetPrice = copyDebtPrice(&assetPrice)
-		out.RedepositCollateralRaw = leverage.Request.MinimumOutputRaw
-		// Every payoff step between the entry tail and the residue/return
-		// swaps — funding withdrawal, repay, post-repay withdrawal, the NAV
-		// reports between them, the custody return and the idle restore —
-		// enters the retained recipe evidence through the real pricing
-		// consumer below. The recipe ledger continues from the leverage
-		// deposit, which emptied the collateral custody: observed unrelated
-		// custody dust never enters.
-		state := selectorPayoffTemplateState{
-			blockhash:    blockhash,
-			liquidityRaw: liquidity, debtSupplyRaw: supply - borrow - fee,
-			entryDeposit: swap.Request.MinimumOutputRaw, redepositDeposit: leverage.Request.MinimumOutputRaw,
-			borrow: borrow, fee: fee, rounding: rounding,
-		}
-		if err = appendSelectorPayoffRecipeInputs(m, route, blockhash, accounts, payoff, state, appendInput, appendBridge); err != nil {
+		if err = deposit(swap.Request.MinimumOutputRaw, minimum, liquidity, nil); err != nil {
 			return out, err
 		}
+		if err = appendBridge(ReportNAV, 0, 0, 0, 0); err != nil {
+			return out, err
+		}
+		r, err := m.kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, borrow, blockhash, lane)
+		if err != nil {
+			return out, err
+		}
+		r.ObligationReserves = []string{route.Kamino.CollateralReserve}
+		supply := binary.LittleEndian.Uint64(accountAt(accounts, route.DebtLiquiditySupply).Data[64:72])
+		feeBalance := binary.LittleEndian.Uint64(accountAt(accounts, route.DebtFeeReceiver).Data[64:72])
+		if borrow+fee > supply || fee > math.MaxUint64-feeBalance {
+			return out, budgetHold("selector_destination_borrow_liquidity_unavailable")
+		}
+		e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-borrow", Conserved: true, Accounts: []ExpectedAccountEffect{
+			{Address: route.DebtLiquiditySupply, Owner: route.DebtTokenProgram, Mint: route.Kamino.DebtMint, Authority: route.Kamino.MarketAuthority, BeforeRaw: supply, AfterRaw: supply - borrow - fee},
+			{Address: route.DebtCustody, Owner: route.DebtTokenProgram, Mint: route.Kamino.DebtMint, Authority: bridgeVault, BeforeRaw: 0, AfterRaw: borrow},
+			{Address: route.DebtFeeReceiver, Owner: route.DebtTokenProgram, Mint: route.Kamino.DebtMint, Authority: route.Kamino.MarketAuthority, BeforeRaw: feeBalance, AfterRaw: feeBalance + fee},
+		}}
+		if err = appendInput(r, e); err != nil {
+			return out, err
+		}
+		if err = appendBridge(ReportNAV, 0, 0, 0, borrow); err != nil {
+			return out, err
+		}
+		leverage, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapDebtToCollateralStep, AmountRaw: int64(borrow), StrategyKey: lane}, borrow, 0, observationFloor)
+		if err != nil {
+			return out, err
+		}
+		observationFloor, err = selectorSwapObservationFloor(leverage.Request, sampleSlot, observationFloor)
+		if err != nil {
+			return out, err
+		}
+		if err = appendInput(leverage.Request, leverage.ExpectedEffects); err != nil {
+			return out, err
+		}
+		if err = appendBridge(ReportNAV, 0, 0, 0, 0); err != nil {
+			return out, err
+		}
+		if leverage.Request.MinimumOutputRaw <= rounding+1 {
+			return out, budgetHold("selector_destination_below_deposit_minimum")
+		}
+		redepositMinimum := leverage.Request.MinimumOutputRaw - rounding
+		if err = deposit(leverage.Request.MinimumOutputRaw, redepositMinimum, liquidity+swap.Request.MinimumOutputRaw, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}); err != nil {
+			return out, err
+		}
+		if err = appendBridge(ReportNAV, 0, 0, 0, 0); err != nil {
+			return out, err
+		}
+		payoff, err := selectorDestinationExit(ctx, rpc, client, m, route, accounts, position, slot, observationFloor, swap.Request.MinimumOutputRaw, leverage.Request.MinimumOutputRaw, minimum, redepositMinimum, borrow, fee, rounding)
+		if err != nil {
+			return out, err
+		}
+		out.PayoffUpperRaw, out.PayoffSwap = payoff.DebtUpperRaw, payoff.Funding
+		out.PayoffLegs, out.PayoffResidueInputRaw, out.PayoffReturnAmountRaw = payoff.Legs, payoff.ResidueInputRaw, payoff.ReturnAmountRaw
+		// The one-pass exit is bounded, not flat: the two retained fields are the
+		// residual bounds (an upper uncertainty and a guaranteed remainder), never
+		// observed balances — complete cleanup stays explicitly gated behind
+		// refreshed balances, attribution and a reviewed residual policy.
+		out.PayoffResidualReceiptsRaw, out.PayoffLeftoverCollateralRaw = payoff.ResidualReceiptsRaw, payoff.CustodyLeftoverRaw
+		// Asset-side correction for non-USDC lanes (doc 12): the two bounded
+		// collateral purchase outputs valued at the observed collateral price
+		// lower bound. The debt price never lifts the asset side. The collateral
+		// price evidence itself is retained on the quote so production economics
+		// can revalue the actual redeposited collateral, and its validity window
+		// intersects the quote's like the debt price's.
+		if route.Kamino.DebtMint != bridgeUSDC {
+			deposited, err := budgetSumU64(swap.Request.MinimumOutputRaw, leverage.Request.MinimumOutputRaw)
+			if err != nil {
+				return out, err
+			}
+			assetPrice, err := ObserveBudgetTokenPrice(ctx, rpc, lane, ExecutableDebit{Source: route.CollateralCustody, Mint: route.Kamino.CollateralMint, TokenProgram: route.CollateralTokenProgram, Raw: deposited}, slot)
+			if err != nil {
+				return out, err
+			}
+			asset, err := assetPrice.valueLower(deposited, route.Kamino.CollateralMint, route.CollateralTokenProgram, assetPrice.ObservedSlot)
+			if err != nil || asset <= 0 {
+				return out, budgetHold("selector_destination_collateral_asset_unpriced")
+			}
+			assetRaw := uint64(asset)
+			out.CollateralAssetUSDCRaw = &assetRaw
+			out.CollateralAssetPrice = copyDebtPrice(&assetPrice)
+			out.RedepositCollateralRaw = leverage.Request.MinimumOutputRaw
+			// Every payoff step between the entry tail and the residue/return
+			// swaps — funding withdrawal, repay, post-repay withdrawal, the NAV
+			// reports between them, the custody return and the idle restore —
+			// enters the retained recipe evidence through the real pricing
+			// consumer below. The recipe ledger continues from the leverage
+			// deposit, which emptied the collateral custody: observed unrelated
+			// custody dust never enters.
+			state := selectorPayoffTemplateState{
+				blockhash:    blockhash,
+				liquidityRaw: liquidity, debtSupplyRaw: supply - borrow - fee,
+				entryDeposit: swap.Request.MinimumOutputRaw, redepositDeposit: leverage.Request.MinimumOutputRaw,
+				borrow: borrow, fee: fee, rounding: rounding,
+			}
+			if err = appendSelectorPayoffRecipeInputs(m, route, blockhash, accounts, payoff, state, appendInput, appendBridge); err != nil {
+				return out, err
+			}
+		}
+		payoffLegs = payoff.Legs
 	}
 	// The bounded compounding horizons cover the retained recipe exactly; a
 	// structural drift holds the lane instead of silently understating debt
@@ -670,7 +694,7 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 	if err != nil {
 		return out, err
 	}
-	observationFloor, err = selectorPayoffObservationFloor(sampleSlot, observationFloor, payoff.Legs...)
+	observationFloor, err = selectorPayoffObservationFloor(sampleSlot, observationFloor, payoffLegs...)
 	if err != nil {
 		return out, err
 	}
@@ -861,5 +885,96 @@ func appendSelectorPayoffRecipeInputs(m RouteManifest, route RuntimeRoute, block
 			return err
 		}
 	}
+	return appendBridge(ReportNAV, 0, 0, 0, 0)
+}
+
+// unleveredEntryCapacityDebtRaw bounds a B2 1x destination entry by the
+// collateral reserve's remaining deposit limit, valued in debt-mint units
+// (floored, less 1%) so the caller's existing debt-price conversion applies
+// unchanged. No borrow capacity is involved.
+func unleveredEntryCapacityDebtRaw(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
+	collateral, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+	if err != nil || collateral.totalLiquiditySF == nil || collateral.depositLimitRaw == 0 {
+		return 0, err
+	}
+	deposited, err := ceilScaledBigFraction(collateral.totalLiquiditySF)
+	if err != nil || deposited >= collateral.depositLimitRaw {
+		return 0, err
+	}
+	room, err := valueBetweenTokenRaw(collateral.depositLimitRaw-deposited, position.CollateralDecimals, position.DebtDecimals, position.CollateralPriceSF, position.DebtPriceSF, false)
+	if err != nil {
+		return 0, err
+	}
+	return min(room/100*99, math.MaxInt64), nil
+}
+
+// appendSelectorUnleveredTail prices the B2 1x entry tail and its complete
+// exit on the same ledger rules as the leveraged recipe: deposit the entry
+// swap minimum into the debt-free obligation, then withdraw every guaranteed
+// receipt, swap the guaranteed redemption back to USDC and return it to
+// Voltr idle. Every wire shape here is an existing one (flat deposit,
+// collateral-only withdraw, collateral->USDC swap, stage/restore/NAV).
+func appendSelectorUnleveredTail(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount, slot, observationFloor int64, blockhash LatestBlockhash,
+	swap JupiterExecutionEvidence, minimum, liquidity uint64, deposit func(uint64, uint64, uint64, []string) error,
+	appendInput func(any, ExpectedEffects) error, appendBridge func(Action, uint64, uint64, uint64, uint64) error, out *selectorDestinationQuote) error {
+	entry := swap.Request.MinimumOutputRaw
+	if err := deposit(entry, minimum, liquidity, nil); err != nil {
+		return err
+	}
+	if err := appendBridge(ReportNAV, 0, 0, 0, 0); err != nil {
+		return err
+	}
+	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+	if err != nil {
+		return err
+	}
+	poolUpperRaw, err := selectorCollateralPoolUpper(accounts, route, slot, selectorCollateralWindows)
+	if err != nil {
+		return err
+	}
+	receipts, err := payoffOwnedReceiptsLower(new(big.Int).Lsh(new(big.Int).SetUint64(poolUpperRaw), 60), reserve.collateralMintSupply, entry)
+	if err != nil {
+		return err
+	}
+	returned, err := payoffLiquidityForReceipts(reserve.totalLiquiditySF, reserve.collateralMintSupply, receipts)
+	if err != nil {
+		return err
+	}
+	if receipts == 0 || returned == 0 || returned > entry || returned > math.MaxInt64 || entry > math.MaxUint64-liquidity {
+		return budgetHold("selector_destination_unlevered_exit_unavailable")
+	}
+	withdrawal, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, receipts, blockhash, route.Lane)
+	if err != nil {
+		return err
+	}
+	withdrawal.ObligationReserves = []string{route.Kamino.CollateralReserve}
+	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
+	projected := patchConfirmedTokenRaw(accounts, route.CollateralLiquiditySupply, liquidity+entry)
+	projected = patchConfirmedTokenRaw(projected, route.CollateralCustody, 0)
+	effects, err := exactKaminoTokenEffects(projected, source, destination, returned)
+	if err != nil {
+		return err
+	}
+	if err = appendInput(withdrawal, effects); err != nil {
+		return err
+	}
+	if err = appendBridge(ReportNAV, 0, 0, 0, 0); err != nil {
+		return err
+	}
+	exit, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapCollateralToStableStep, AmountRaw: int64(returned), StrategyKey: route.Lane}, returned, 0, observationFloor)
+	if err != nil {
+		return err
+	}
+	if err = appendInput(exit.Request, exit.ExpectedEffects); err != nil {
+		return err
+	}
+	proceeds := exit.Request.MinimumOutputRaw
+	if err = appendBridge(StageSquadsToVoltr, proceeds, 0, 0, proceeds); err != nil {
+		return err
+	}
+	if err = appendBridge(VoltrRestoreIdle, proceeds, 0, proceeds, 0); err != nil {
+		return err
+	}
+	out.PayoffSwap, out.PayoffReturnAmountRaw = exit, returned
 	return appendBridge(ReportNAV, 0, 0, 0, 0)
 }
