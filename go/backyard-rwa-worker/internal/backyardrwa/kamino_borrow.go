@@ -97,10 +97,31 @@ func validateBorrowRequest(ctx context.Context, rpc *RPCClient, r KaminoPrimeUSD
 	if err != nil {
 		return 0, err
 	}
-	if !reflect.DeepEqual(fresh, e) {
+	if !borrowEffectsMatch(fresh, e) {
 		return 0, budgetHold("borrow_fee_or_custody_changed")
 	}
 	return observed, nil
+}
+
+// borrowEffectsMatch compares a fresh borrow effect graph with the
+// prepared one. The debt fee receiver is a SHARED reserve account every
+// borrower pays into, so its absolute balance moves between prepare and
+// build; only its fee delta (and identity) must match. Our custodies and
+// the reserve supply keep the exact comparison (live 2026-09-29: the
+// leverage_up borrow held on borrow_fee_or_custody_changed).
+func borrowEffectsMatch(fresh, prepared ExpectedEffects) bool {
+	if len(fresh.Accounts) != 3 || len(prepared.Accounts) != 3 {
+		return reflect.DeepEqual(fresh, prepared)
+	}
+	a, b := fresh, prepared
+	fa, fb := a.Accounts[2], b.Accounts[2]
+	if fa.Address != fb.Address || fa.Owner != fb.Owner || fa.Mint != fb.Mint || fa.Authority != fb.Authority || fa.MinimumAfterRaw != nil || fb.MinimumAfterRaw != nil ||
+		fa.AfterRaw < fa.BeforeRaw || fb.AfterRaw < fb.BeforeRaw || fa.AfterRaw-fa.BeforeRaw != fb.AfterRaw-fb.BeforeRaw {
+		return false
+	}
+	a.Accounts = append([]ExpectedAccountEffect(nil), a.Accounts[:2]...)
+	b.Accounts = append([]ExpectedAccountEffect(nil), b.Accounts[:2]...)
+	return reflect.DeepEqual(a, b)
 }
 
 func measureBorrowDebit(r KaminoPrimeUSDCRequest, e ExpectedEffects, route RuntimeRoute) (ExecutableDebit, error) {

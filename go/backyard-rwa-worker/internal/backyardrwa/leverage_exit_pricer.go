@@ -386,15 +386,31 @@ func leverageExitMayNeedCycles(s Snapshot) bool {
 	if s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw < 0 {
 		return true
 	}
-	idle := max(s.CollateralIdleValueRaw, 0)
-	cash := max(debtCashRaw(s), 0)
-	debt := s.PositionDebtValueRaw * 103 / 100
-	if cash >= debt {
+	return leverageExitOneReleaseMayNotCover(big.NewInt(s.PositionCollateralValueRaw), big.NewInt(max(s.CollateralIdleValueRaw, 0)),
+		big.NewInt(s.PositionDebtValueRaw), big.NewInt(max(debtCashRaw(s), 0)))
+}
+
+// leverageExitOneReleaseMayNotCover is the pure pre-check: the first release
+// is sized on the FULL obligation debt (debt cash in custody is not yet
+// repaid, so it does not raise the release allowance: a post-borrow position
+// holds its borrowed cash beside a larger debt); its proceeds plus idle
+// collateral plus that cash must cover the debt with a 3% margin. Values
+// are in one unit (debt raw). true = run the quote-based cycle check.
+func leverageExitOneReleaseMayNotCover(collateral, idle, debt, cash *big.Int) bool {
+	owed := new(big.Int).Quo(new(big.Int).Mul(debt, big.NewInt(103)), big.NewInt(100))
+	if cash.Cmp(owed) >= 0 {
 		return false
 	}
-	// Idle collateral and debt cash already count toward the payoff.
-	plan, err := planLeverageExit(big.NewInt(s.PositionCollateralValueRaw+idle), big.NewInt(max(debt-cash, 0)), leverageExitReleaseCeilingBPS, 0)
-	return err != nil || len(plan.Cycles) > 0
+	if debt.Sign() == 0 {
+		return false
+	}
+	release := new(big.Int).Sub(collateral, new(big.Int).Quo(new(big.Int).Mul(debt, big.NewInt(10_000)), big.NewInt(leverageExitReleaseCeilingBPS)))
+	if release.Sign() < 0 {
+		release.SetInt64(0)
+	}
+	proceeds := new(big.Int).Add(release, idle)
+	proceeds.Mul(proceeds, big.NewInt(10_000-leverageExitSwapLossBPS)).Quo(proceeds, big.NewInt(10_000))
+	return proceeds.Add(proceeds, cash).Cmp(owed) < 0
 }
 
 // leverageExitReleaseCeilingBPS: min(55%, maxLTV-5, hard-5) is 55% on both
@@ -439,15 +455,14 @@ func leverageExitAccountsMayNeedCycles(accounts []ConfirmedAccount, route Runtim
 	if sharedUSDCDebt(route.Lane) {
 		cash = uint64(max(debtCashRaw(s), 0))
 	}
-	value, err := valueBetweenTokenRaw(redeemable+idle, collateral.mintDecimals, debt.mintDecimals, collateral.marketPriceSF, debt.marketPriceSF, false)
+	value, err := valueBetweenTokenRaw(redeemable, collateral.mintDecimals, debt.mintDecimals, collateral.marketPriceSF, debt.marketPriceSF, false)
 	if err != nil || value == 0 || value > math.MaxInt64 || obligation.debtRaw > math.MaxInt64/2 {
 		return true
 	}
-	owed := new(big.Int).SetUint64(obligation.debtRaw * 103 / 100)
-	owed.Sub(owed, new(big.Int).SetUint64(cash))
-	if owed.Sign() <= 0 {
-		return false
+	idleValue, err := valueBetweenTokenRaw(idle, collateral.mintDecimals, debt.mintDecimals, collateral.marketPriceSF, debt.marketPriceSF, false)
+	if err != nil {
+		return true
 	}
-	plan, err := planLeverageExit(new(big.Int).SetUint64(value), owed, leverageExitReleaseCeilingBPS, 0)
-	return err != nil || len(plan.Cycles) > 0
+	return leverageExitOneReleaseMayNotCover(new(big.Int).SetUint64(value), new(big.Int).SetUint64(idleValue),
+		new(big.Int).SetUint64(obligation.debtRaw), new(big.Int).SetUint64(cash))
 }

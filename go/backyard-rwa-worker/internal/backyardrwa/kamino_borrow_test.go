@@ -184,7 +184,7 @@ func TestBorrowFeesRevalidateBeforeSendAndRejectWrongGraph(t *testing.T) {
 		offset int
 		value  uint64
 	}{
-		{reserve.Data, kaminoReserveConfigOffset + 40, 1 << 53}, {fee.Data, 64, 6},
+		{reserve.Data, kaminoReserveConfigOffset + 40, 1 << 53},
 		{accountAt(accounts, route.DebtCustody).Data, 64, 1001},
 		{accountAt(accounts, route.Kamino.Obligation).Data, 2288, 1},
 	} {
@@ -195,6 +195,13 @@ func TestBorrowFeesRevalidateBeforeSendAndRejectWrongGraph(t *testing.T) {
 		}
 		binary.LittleEndian.PutUint64(change.data[change.offset:], before)
 	}
+	// The shared fee receiver's balance moves with other borrowers' fees:
+	// only this borrow's fee delta is bound (live 2026-09-29).
+	binary.LittleEndian.PutUint64(fee.Data[64:72], 6)
+	if _, err := revaluePhase3SignedInput(context.Background(), rpc, auth, op); err != nil {
+		t.Fatal("shared fee receiver balance move refused the borrow", err)
+	}
+	binary.LittleEndian.PutUint64(fee.Data[64:72], 5)
 	for _, variant := range []string{"omit_fee", "destination", "fee_authority", "conservation", "payoff", "deposit"} {
 		copy := e
 		copy.Accounts = append([]ExpectedAccountEffect(nil), e.Accounts...)

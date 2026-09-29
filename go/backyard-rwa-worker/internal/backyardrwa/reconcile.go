@@ -212,9 +212,12 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 		// which can land between our observation and this transaction. For that
 		// one account only, reconcile this transaction's own delta; every other
 		// account keeps the exact pre/post contract.
-		if effect.Address == bridgeIdleATA && bounds == nil && effect.MinimumAfterRaw == nil {
+		// The debt reserve's fee receiver is shared by every borrower: like
+		// Voltr idle, reconcile this transaction's own fee delta only.
+		sharedFeeReceiver := expected.Kind == "kamino-borrow" && i == 2 && bounds == nil && effect.MinimumAfterRaw == nil
+		if (effect.Address == bridgeIdleATA || sharedFeeReceiver) && bounds == nil && effect.MinimumAfterRaw == nil {
 			if int64(post.Raw)-int64(pre.Raw) != int64(effect.AfterRaw)-int64(effect.BeforeRaw) {
-				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped Voltr idle delta mismatch: %s", effect.Address)
+				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped shared-account delta mismatch: %s", effect.Address)
 			}
 		} else if pre.Raw != effect.BeforeRaw {
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
