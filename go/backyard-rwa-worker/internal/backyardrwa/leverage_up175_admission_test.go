@@ -109,8 +109,23 @@ func TestLeverageUp175BorrowAdmissionPricesTheCycleExit(t *testing.T) {
 			}
 		}
 	}
-	if cycleRepays < 1 || plan.BorrowProjection == nil || plan.Payoff == nil || plan.ExitAfterMicros <= 0 {
-		t.Fatalf("1.75x exit not priced with a cycle: %d cycle repays", cycleRepays)
+	if cycleRepays < 1 || plan.BorrowProjection == nil || plan.Payoff == nil || plan.ExitAfterMicros <= 0 || plan.ExitCycles != 1 || plan.BorrowRelease == nil {
+		t.Fatalf("1.75x exit not priced with a cycle: %d cycle repays, %d cycles", cycleRepays, plan.ExitCycles)
+	}
+	// Build / final send: the same revalidation revaluePhase3SignedInput runs
+	// (validatePilotProjectedReleaseRisk re-simulates the borrow and checks
+	// the bound first-cycle release against the fresh post-borrow state).
+	if _, err := validatePilotProjectedReleaseRisk(context.Background(), rpc, &plan, 42); err != nil {
+		t.Fatalf("final-send revalidation refused the admitted 1.75x plan: %v", err)
+	}
+	// Safety kept: a release above the safe size on the fresh state is refused.
+	req, effects2, _, _ := plan.BorrowRelease.decode()
+	big1 := req.(KaminoPrimeUSDCRequest)
+	big1.AmountRaw *= 3
+	encoded, _ := jsonMarshalExpectedEffects(effects2)
+	plan.BorrowRelease, _ = encodePhase3BuildInput(big1, encoded)
+	if _, err = validatePilotProjectedReleaseRisk(context.Background(), rpc, &plan, 42); err == nil {
+		t.Fatal("a release 3x above the admitted cycle release passed final send")
 	}
 }
 

@@ -39,6 +39,10 @@ type phase3BridgeAdmission struct {
 	RepaymentProjection   *phase3KaminoProjection `json:"repaymentProjection,omitempty"`
 	LeverageProjection    *phase3KaminoProjection `json:"leverageProjection,omitempty"`
 	BorrowRelease         *phase3BuildInput       `json:"borrowRelease,omitempty"`
+	// ExitCycles is the number of B2 1.75x exit cycles priced before the
+	// final payoff; BorrowRelease is then the first cycle's release, sized
+	// over 7 + 3*ExitCycles steps.
+	ExitCycles int `json:"exitCycles,omitempty"`
 }
 
 type phase3QuotedExit struct {

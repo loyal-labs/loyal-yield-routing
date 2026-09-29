@@ -2,6 +2,7 @@ package backyardrwa
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -153,7 +154,9 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *RPC
 		return ValuedTransactionCost{}, budgetHold("initializer_fee_changed")
 	}
 	if tokenErr != nil {
-		return ValuedTransactionCost{}, budgetHold("build_token_valuation_unavailable")
+		// Keep the cause (RPC read, stale reserve price whose refresh
+		// simulation failed, unbound mint) visible in the hold's details.
+		return ValuedTransactionCost{}, &BudgetHold{Reason: "build_token_valuation_unavailable", Details: map[string]string{"mint": debit.Mint, "cause": sanitizedHoldCause(tokenErr)}}
 	}
 	if solErr != nil {
 		return ValuedTransactionCost{}, budgetHold("build_native_valuation_unavailable")
@@ -195,4 +198,14 @@ func (m RouteManifest) authorizePhase3ProductionBuild(ctx context.Context, datab
 		return err
 	}
 	return database.authorizePhase3BuildOnManifest(ctx, m, rpc, operationID, request, encodedEffects, cost)
+}
+
+// sanitizedHoldCause keeps a nested hold's reason, or a generic cause for
+// transport errors (raw errors may carry RPC URLs).
+func sanitizedHoldCause(err error) string {
+	var hold *BudgetHold
+	if errors.As(err, &hold) {
+		return hold.Reason
+	}
+	return "rpc_read_failed"
 }

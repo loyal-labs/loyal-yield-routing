@@ -370,6 +370,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 		return plan, err
 	}
 	plan.Payoff, plan.PayoffWithdrawal = &bound, tail.Input
+	plan.ExitCycles = int((windowSteps - 7) / 3)
 	if len(cycles) > 0 {
 		// Build/send revalidation compares the CURRENT position's payoff
 		// window and first release: bind the first cycle's, not the final
@@ -400,8 +401,20 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 		if len(cycles) == 0 {
 			plan.BorrowRelease = releaseInput
 		} else {
-			// The build/send release recheck binds the FIRST cycle release.
-			plan.BorrowRelease = cycles[0].Template
+			// The build/send release recheck binds the FIRST cycle release
+			// (a cycle that starts from debt cash has none: then the final
+			// release, sized over the full window, is bound instead).
+			plan.BorrowRelease = releaseInput
+			for _, step := range cycles {
+				if req, _, _, err := step.Template.decode(); err == nil {
+					if k, ok := req.(KaminoPrimeUSDCRequest); ok {
+						if _, leg, _ := kaminoPrimeUSDCInstruction(k); leg == kaminoLegWithdraw {
+							plan.BorrowRelease = step.Template
+							break
+						}
+					}
+				}
+			}
 		}
 		plan.FundingSwap = &phase3QuotedExit{Input: input, QuotedOutputRaw: funding.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperCash - cash, ProofLevel: "COST_ONLY_BORROW_RETURN_NOT_EXECUTED_FUNDING"}
 		prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: releaseCost, Template: releaseInput}, nav, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: funding.Request.AmountRaw, Cost: fundingCost, Template: input}, nav)

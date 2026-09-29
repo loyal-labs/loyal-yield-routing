@@ -464,10 +464,37 @@ func validatePilotReleaseProjection(plan *phase3BridgeAdmission, projection, fre
 		return budgetHold("pilot_release_projection_backing_reduced")
 	}
 	// The current entry has now been simulated, leaving six of the admitted
-	// seven execution windows. Its complete-payoff bound must still fit.
-	bound, err := manifest.decodeKaminoRepaymentReleaseForMode(fresh.Accounts, route, fresh.Slot, 6, true)
+	// seven execution windows. Its complete-payoff bound must still fit. A
+	// B2 1.75x plan's first release is a cycle release sized over
+	// 7 + 3*ExitCycles steps; it is rechecked with the same ceiling and the
+	// same remaining step count, on the fresh post-leg simulation (the state
+	// the release will actually run on).
+	steps := int64(6)
+	if plan.ExitCycles > 0 {
+		steps = min(int64(6+3*plan.ExitCycles), kaminoPayoffMaxWindowSteps)
+	}
+	boundAccounts := fresh.Accounts
+	if plan.ExitCycles > 0 {
+		// A cycle that starts from debt cash repays before its release:
+		// check the bound release on the fresh state carried through those
+		// admitted partial repays, i.e. the state it will run on.
+		if boundAccounts, err = projectExitRepaysBeforeRelease(plan, fresh.Accounts, route, fresh.Slot); err != nil {
+			return err
+		}
+	}
+	bound, err := manifest.decodeKaminoRepaymentReleaseForMode(boundAccounts, route, fresh.Slot, steps, true)
 	if err != nil {
 		return err
+	}
+	if plan.ExitCycles > 0 {
+		// The payoff window compares the CURRENT (pre-cycle) debt.
+		if current, err := manifest.decodeKaminoRepaymentReleaseForMode(fresh.Accounts, route, fresh.Slot, steps, true); err == nil {
+			bound.Payoff = current.Payoff
+		} else if window, werr := decodeKaminoPayoffWindow(fresh.Accounts, route, fresh.Slot, steps); werr == nil {
+			bound.Payoff = window
+		} else {
+			return werr
+		}
 	}
 	if plan.Payoff == nil || bound.Payoff.UpperDebtRaw > plan.Payoff.UpperDebtRaw || bound.Payoff.ChainUnix < plan.Payoff.ChainUnix || bound.Payoff.ChainUnix > plan.Payoff.ChainUnix+kaminoPayoffWindowSeconds {
 		return budgetHold("pilot_release_projection_payoff_changed")
@@ -478,12 +505,15 @@ func validatePilotReleaseProjection(plan *phase3BridgeAdmission, projection, fre
 	}
 	request, effects, _, err := release.decode()
 	r, ok := request.(KaminoPrimeUSDCRequest)
-	if err != nil || !ok || r.AmountRaw > bound.ReceiptRaw || len(effects.Accounts) != 2 {
+	if err != nil || !ok || len(effects.Accounts) != 2 {
 		return budgetHold("pilot_release_projection_funding_changed")
+	}
+	if r.AmountRaw > bound.ReceiptRaw {
+		return budgetHold("pilot_release_projection_release_above_safe_size")
 	}
 	liquidity, err := newReserve.redeemLiquidityRaw(r.AmountRaw)
 	if err != nil || effects.Accounts[1].AfterRaw < effects.Accounts[1].BeforeRaw || liquidity < effects.Accounts[1].AfterRaw-effects.Accounts[1].BeforeRaw {
-		return budgetHold("pilot_release_projection_funding_changed")
+		return budgetHold("pilot_release_projection_release_liquidity_changed")
 	}
 	oldPosition, err := decodeKaminoObligation(accountAt(projection.Accounts, route.Kamino.Obligation), route.Kamino)
 	if err != nil {
@@ -507,7 +537,7 @@ func validatePilotReleaseProjection(plan *phase3BridgeAdmission, projection, fre
 	oldBalance, oldErr := DecodeTokenCustody(oldCash.Owner, oldCash.Data, mint, owner)
 	newBalance, newErr := DecodeTokenCustody(newCash.Owner, newCash.Data, mint, owner)
 	if oldErr != nil || newErr != nil || newCash.Executable || newCash.Lamports == 0 || newBalance.Raw < oldBalance.Raw {
-		return budgetHold("pilot_release_projection_funding_changed")
+		return budgetHold("pilot_release_projection_collateral_custody_reduced")
 	}
 	return nil
 }
@@ -516,20 +546,23 @@ func validateProjectedRiskSettings(projection, fresh phase3KaminoProjection, rou
 	for _, field := range []struct {
 		address    string
 		start, end int
+		name       string
 	}{
-		{route.Kamino.Market, kaminoMarketEmergencyModeOffset, kaminoMarketEmergencyModeOffset + 1},
-		{route.Kamino.Market, kaminoGlobalBorrowValueOffset, kaminoGlobalBorrowValueOffset + 8},
-		{route.Kamino.Market, kaminoMinRemainingValueOffset, kaminoMinRemainingValueOffset + 16},
-		{route.Kamino.CollateralReserve, kaminoLoanToValueOffset, kaminoLoanToValueOffset + 2},
-		{route.Kamino.CollateralReserve, 248, 264},
-		{route.Kamino.DebtReserve, 248, 264},
-		{route.Kamino.DebtReserve, kaminoBorrowFactorOffset, kaminoBorrowFactorOffset + 8},
-		{route.Kamino.Obligation, kaminoObligationElevationGroupOffset, kaminoObligationElevationGroupOffset + 1},
+		{route.Kamino.Market, kaminoMarketEmergencyModeOffset, kaminoMarketEmergencyModeOffset + 1, "market_emergency_mode"},
+		{route.Kamino.Market, kaminoGlobalBorrowValueOffset, kaminoGlobalBorrowValueOffset + 8, "market_global_allowed_borrow_value"},
+		{route.Kamino.Market, kaminoMinRemainingValueOffset, kaminoMinRemainingValueOffset + 16, "market_min_remaining_value"},
+		{route.Kamino.CollateralReserve, kaminoLoanToValueOffset, kaminoLoanToValueOffset + 2, "collateral_ltv_and_liquidation_pct"},
+		{route.Kamino.CollateralReserve, 248, 264, "collateral_market_price"},
+		{route.Kamino.DebtReserve, 248, 264, "debt_market_price"},
+		{route.Kamino.DebtReserve, kaminoBorrowFactorOffset, kaminoBorrowFactorOffset + 8, "debt_borrow_factor"},
+		{route.Kamino.Obligation, kaminoObligationElevationGroupOffset, kaminoObligationElevationGroupOffset + 1, "obligation_elevation_group"},
 	} {
 		before, after := accountAt(projection.Accounts, field.address), accountAt(fresh.Accounts, field.address)
 		if before.Owner != route.Kamino.Program || after.Owner != before.Owner || after.Executable || after.Lamports == 0 ||
 			len(before.Data) != len(after.Data) || len(before.Data) < field.end || !bytes.Equal(before.Data[field.start:field.end], after.Data[field.start:field.end]) {
-			return budgetHold("pilot_release_projection_risk_changed")
+			// Name the setting so a retry's cause is visible (a reserve
+			// price move is the common one: the plan is re-admitted).
+			return &BudgetHold{Reason: "pilot_release_projection_risk_changed", Details: map[string]string{"account": field.address, "field": field.name}}
 		}
 	}
 	return nil
@@ -553,4 +586,41 @@ func (m RouteManifest) observeRawRepaymentRelease(ctx context.Context, rpc *RPCC
 	}
 	bound, err := m.decodeKaminoRepaymentReleaseForMode(accounts, route, observed.ObservedSlot, 6, pilot)
 	return bound, accounts, err
+}
+
+// projectExitRepaysBeforeRelease applies, to cost-only copies of the fresh
+// accounts, every admitted exit-cycle partial repay that the plan runs
+// before its bound release (plan.BorrowRelease / FundingRelease). The
+// repay amounts are the admitted ones; debt is the fresh obligation's.
+func projectExitRepaysBeforeRelease(plan *phase3BridgeAdmission, fresh []ConfirmedAccount, route RuntimeRoute, slot int64) ([]ConfirmedAccount, error) {
+	accounts := fresh
+	for _, step := range plan.Exit {
+		if step.Template == nil {
+			continue
+		}
+		request, _, _, err := step.Template.decode()
+		if err != nil {
+			return nil, err
+		}
+		r, ok := request.(KaminoPrimeUSDCRequest)
+		if !ok || r.FullPayoff {
+			continue
+		}
+		_, leg, _ := kaminoPrimeUSDCInstruction(r)
+		if leg == kaminoLegWithdraw {
+			// The first release of the plan: the state it runs on.
+			return accounts, nil
+		}
+		if leg != kaminoLegRepay {
+			continue
+		}
+		window, err := decodeKaminoPayoffWindow(accounts, route, slot, 1)
+		if err != nil {
+			return nil, err
+		}
+		if accounts, err = projectLeverageExitCycle(accounts, route, KaminoReleaseBound{}, nil, window.ObservedDebtRaw, r.AmountRaw); err != nil {
+			return nil, err
+		}
+	}
+	return accounts, nil
 }

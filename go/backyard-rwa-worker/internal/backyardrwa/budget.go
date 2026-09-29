@@ -3,6 +3,7 @@ package backyardrwa
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 )
 
@@ -31,7 +32,21 @@ type BudgetHold struct {
 	alreadyJournaled bool
 }
 
-func (h *BudgetHold) Error() string  { return "HOLD: " + h.Reason }
+func (h *BudgetHold) Error() string {
+	if len(h.Details) == 0 {
+		return "HOLD: " + h.Reason
+	}
+	keys := make([]string, 0, len(h.Details))
+	for k := range h.Details {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	text := "HOLD: " + h.Reason
+	for _, k := range keys {
+		text += " " + k + "=" + h.Details[k]
+	}
+	return text
+}
 func budgetHold(reason string) error { return &BudgetHold{Reason: reason} }
 
 // journaledBudgetHold constructs a hold whose named reason is already durable
