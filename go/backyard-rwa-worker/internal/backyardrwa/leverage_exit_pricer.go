@@ -320,6 +320,13 @@ func priceLeverageExitAfterRelease(ctx context.Context, rpc *RPCClient, client *
 // leverageExitNeedsCycles: one safe release plus idle collateral, swapped at
 // its quote minimum, cannot fund the full payoff.
 func leverageExitNeedsCycles(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount) (bool, error) {
+	// Pure pre-check first (no RPC, no Jupiter): a position the value-level
+	// planner clears with zero cycles, even with a 3% margin on the debt,
+	// keeps the installed single-release path. Only 1.75x-like or borderline
+	// positions pay for the quote-based check.
+	if !leverageExitMayNeedCycles(s) || !leverageExitAccountsMayNeedCycles(accounts, route, s) {
+		return false, nil
+	}
 	clock := accountAt(accounts, budgetClockAddress)
 	if len(clock.Data) != 40 {
 		return false, budgetHold("leverage_exit_clock_unavailable")
@@ -366,4 +373,77 @@ func projectLeverageExitRelease(accounts []ConfirmedAccount, route RuntimeRoute,
 	binary.LittleEndian.PutUint64(c[2592:2600], supply-release.ReceiptRaw)
 	out = patchConfirmedTokenRaw(out, route.CollateralLiquiditySupply, effects.Accounts[0].AfterRaw)
 	return patchConfirmedTokenRaw(out, route.CollateralCustody, effects.Accounts[1].AfterRaw), nil
+}
+
+// leverageExitMayNeedCycles runs the step-1 planner on snapshot values with
+// a 3% debt margin (interest window, price moves). Unknown values stay on
+// the quote-based check.
+func leverageExitMayNeedCycles(s Snapshot) bool {
+	if s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw < 0 {
+		return true
+	}
+	idle := max(s.CollateralIdleValueRaw, 0)
+	cash := max(debtCashRaw(s), 0)
+	debt := s.PositionDebtValueRaw * 103 / 100
+	if cash >= debt {
+		return false
+	}
+	// Idle collateral and debt cash already count toward the payoff.
+	plan, err := planLeverageExit(big.NewInt(s.PositionCollateralValueRaw+idle), big.NewInt(max(debt-cash, 0)), leverageExitReleaseCeilingBPS, 0)
+	return err != nil || len(plan.Cycles) > 0
+}
+
+// leverageExitReleaseCeilingBPS: min(55%, maxLTV-5, hard-5) is 55% on both
+// AUTO (78/80) and OnRe (66/75); the pre-check uses it with its own margin.
+const leverageExitReleaseCeilingBPS int64 = 5500
+
+// leverageExitAccountsMayNeedCycles is the same pure pre-check on the
+// (possibly projected) accounts: collateral and idle collateral valued in
+// debt units at the reserve prices, debt at the obligation, 3% margin.
+// Undecodable accounts stay on the quote-based check.
+func leverageExitAccountsMayNeedCycles(accounts []ConfirmedAccount, route RuntimeRoute, s Snapshot) bool {
+	obligation, err := decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino)
+	if err != nil {
+		return true
+	}
+	collateral, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+	if err != nil {
+		return true
+	}
+	debt, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
+	if err != nil {
+		return true
+	}
+	redeemable, err := collateral.redeemLiquidityRaw(obligation.collateralDepositedRaw)
+	if err != nil {
+		return true
+	}
+	idle := uint64(0)
+	cash := uint64(0)
+	for _, row := range []struct{ address, mint string }{{route.CollateralCustody, route.Kamino.CollateralMint}, {route.DebtCustody, route.Kamino.DebtMint}} {
+		a := accountAt(accounts, row.address)
+		mint, _ := decodeBase58PublicKey(row.mint)
+		owner, _ := decodeBase58PublicKey(bridgeVault)
+		if custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, owner); err == nil {
+			if row.address == route.CollateralCustody {
+				idle = custody.Raw
+			} else {
+				cash = custody.Raw
+			}
+		}
+	}
+	if sharedUSDCDebt(route.Lane) {
+		cash = uint64(max(debtCashRaw(s), 0))
+	}
+	value, err := valueBetweenTokenRaw(redeemable+idle, collateral.mintDecimals, debt.mintDecimals, collateral.marketPriceSF, debt.marketPriceSF, false)
+	if err != nil || value == 0 || value > math.MaxInt64 || obligation.debtRaw > math.MaxInt64/2 {
+		return true
+	}
+	owed := new(big.Int).SetUint64(obligation.debtRaw * 103 / 100)
+	owed.Sub(owed, new(big.Int).SetUint64(cash))
+	if owed.Sign() <= 0 {
+		return false
+	}
+	plan, err := planLeverageExit(new(big.Int).SetUint64(value), owed, leverageExitReleaseCeilingBPS, 0)
+	return err != nil || len(plan.Cycles) > 0
 }

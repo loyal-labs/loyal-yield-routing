@@ -197,7 +197,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	var cycles []phase3BridgeExitCost
 	var firstPayoff *KaminoPayoffBound
 	windowSteps := int64(7)
-	if cash < bound.UpperDebtRaw && leverageLane(s.RouteLane) && s.PilotActive {
+	if cash < bound.UpperDebtRaw && leverageLane(s.RouteLane) && s.PilotActive && leverageExitAccountsMayNeedCycles(accounts, route, s) {
 		var cycleCash uint64
 		cycles, accounts, cycleCash, windowSteps, firstPayoff, err = priceLeverageExitCycles(ctx, rpc, client, m, route, s, accounts, projection.Slot, blockhash, cash)
 		if err != nil {

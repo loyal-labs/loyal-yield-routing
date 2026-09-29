@@ -173,3 +173,45 @@ func TestExitCycleKaminoWiresPassThePersistedWireGate(t *testing.T) {
 		}
 	}
 }
+
+// Review: a 1.5x release/NAV admission never needs Jupiter for the cycle
+// check. The live-shaped 1.5x AUTO position (2463.48 AUTO @ 1.0209, 837.77
+// PYUSD) and the OnRe fixture at 1.5x take the installed path even when the
+// Jupiter client fails.
+func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
+	broken, _ := newJupiterClient("https://jupiter.invalid", nil)
+	live := base()
+	live.RouteLane, live.StrategyKey, live.PilotActive, live.HasPosition = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true, true
+	live.PositionCollateralRaw, live.PositionCollateralValueRaw = 2_463_480_000, 2_514_967_000
+	live.PositionDebtRaw, live.PositionDebtValueRaw = 837_770_000, 837_770_000
+	if leverageExitMayNeedCycles(live) {
+		t.Fatal("live 1.5x flagged for cycles")
+	}
+	if need, err := leverageExitNeedsCycles(context.Background(), nil, broken, RouteManifest{}, autoAUTOPYUSD, live, nil); need || err != nil {
+		t.Fatalf("1.5x touched RPC/Jupiter: %v %v", need, err)
+	}
+	o, m, rpc, _, accounts, route := leverage175Fixture(t)
+	putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(33_333_333), 60))
+	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.LTVBPS = 33_333_333, 33_333_333, 3333
+	_, rows, _ := rpc.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), 42)
+	d := Decision{Action: ReportNAV, StrategyKey: route.Lane, Reason: "nav_due"}
+	if _, err, ok := priceLeverageExitFromCurrent(context.Background(), rpc, broken, m, o, d, BridgeBuildRequest{}, ExpectedEffects{}, route, rows); ok || err != nil {
+		t.Fatalf("1.5x NAV left the installed path: ok=%t err=%v", ok, err)
+	}
+	if _, err, ok := priceLeverageExitAfterRelease(context.Background(), rpc, broken, m, o, d, KaminoPrimeUSDCRequest{RouteLane: route.Lane}, ExpectedEffects{}, KaminoReleaseBound{}, rows); ok || err != nil {
+		t.Fatalf("1.5x release left the installed path: ok=%t err=%v", ok, err)
+	}
+	if leverageExitAccountsMayNeedCycles(rows, route, o.Snapshot) {
+		t.Fatal("1.5x accounts flagged for cycles")
+	}
+	// 1.75x still takes the quote check, on snapshot and on accounts.
+	s := leverageSnapshot(1.75)
+	if !leverageExitMayNeedCycles(s) {
+		t.Fatal("1.75x skipped the cycle check")
+	}
+	o175, _, rpc175, _, _, _ := leverage175Fixture(t)
+	_, rows175, _ := rpc175.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), 42)
+	if !leverageExitAccountsMayNeedCycles(rows175, route, o175.Snapshot) {
+		t.Fatal("1.75x accounts skipped the cycle check")
+	}
+}
