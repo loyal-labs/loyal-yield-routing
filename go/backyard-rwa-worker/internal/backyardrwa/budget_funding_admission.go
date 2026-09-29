@@ -173,6 +173,11 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 				return plan, err
 			}
 		}
+		if decision.Reason == leverageDownPartialReleaseReason {
+			// The 1.75x -> 1.5x release never funds a payoff; it is admitted
+			// only with the complete exit priced from its poststate above.
+			return phase3BridgeAdmission{}, budgetHold("leverage_down_partial_release_requires_cycle_pricing")
+		}
 		route, _ := runtimeRoute(s.RouteLane)
 		obligation, err := decodeKaminoObligation(accountAt(releaseAccounts, route.Kamino.Obligation), route.Kamino)
 		if err != nil || obligation.collateralDepositedRaw != uint64(s.PositionCollateralRaw) {

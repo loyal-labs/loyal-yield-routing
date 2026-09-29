@@ -268,7 +268,7 @@ func leverageDownStep(s Snapshot) (Action, string, int64, bool) {
 
 // Reason groups shared by the withdrawal chain and the B2 down move.
 func repaymentReleaseReason(reason string) bool {
-	return reason == "withdrawal_release_repayment_collateral" || reason == leverageDownReleaseReason
+	return reason == "withdrawal_release_repayment_collateral" || reason == leverageDownReleaseReason || reason == leverageDownPartialReleaseReason
 }
 
 // exitCycleStep is the B2 1.75x exit cycle inside every full-payoff chain
@@ -323,3 +323,53 @@ func exitCycleResidualFloor(debt int64) int64 {
 // A release leaves the position at the release ceiling (55%). Debt cash
 // that cannot pay off the debt at or above this LTV is a cycle's funding.
 const leverageExitCycleLTVBPS int64 = 5000
+
+// B2 1.75x -> 1.5x down move: one exit cycle sized to land at the 1.5x LTV.
+// Release R = (3D - C)/2 of value (so (D-R)/(C-R) = 1/3), swap it, repay
+// the proceeds (never the whole debt), then stop: the position snaps to
+// 1.5x. The swap and repay reuse the exit-cycle legs and admissions.
+const leverageDownPartialReleaseReason = "leverage_down_partial_release"
+
+// leverageDownPartialEnabled keeps the step inert until live levels reach
+// 1.75x (a drifted 1.5x position is not de-levered by this path).
+const leverageDownPartialEnabled = leverageMaxLiveLevel > 1.5
+
+func leverageDownPartialStep(s Snapshot) (Action, string, int64, bool) {
+	return leverageDownPartialStepAt(s, leverageDownPartialEnabled)
+}
+
+func leverageDownPartialStepAt(s Snapshot, enabled bool) (Action, string, int64, bool) {
+	if !enabled || !leverageLane(s.RouteLane) || !s.PilotActive || s.LeverageTargetLevel != 1.5 || !s.HasPosition || s.PositionDebtRaw <= 1 ||
+		s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw <= 0 {
+		return "", "", 0, false
+	}
+	cash := debtCashRaw(s)
+	if cash < 0 {
+		return "", "", 0, false
+	}
+	// Finish a started cycle first: swap released collateral, repay cash.
+	if s.CollateralIdleRaw > 0 {
+		return SwapCollateralToDebtStep, exitCycleSwapReason, s.CollateralIdleRaw, true
+	}
+	if cash > 0 {
+		amount := min(cash, s.PositionDebtRaw-exitCycleResidualFloor(s.PositionDebtRaw))
+		if amount <= 0 {
+			return "", "", 0, false
+		}
+		return DeleverRouteStep, exitPartialRepayReason, amount, true
+	}
+	if currentLeverageLevel(s) != 1.75 || s.PositionCollateralRaw <= 0 {
+		return "", "", 0, false
+	}
+	// R = (3D - C)/2 in value; receipts = R/C of the deposited receipts.
+	releaseValue := (3*s.PositionDebtValueRaw - s.PositionCollateralValueRaw) / 2
+	if releaseValue <= 0 {
+		return "", "", 0, false
+	}
+	receipts := new(big.Int).Mul(big.NewInt(s.PositionCollateralRaw), big.NewInt(releaseValue))
+	receipts.Quo(receipts, big.NewInt(s.PositionCollateralValueRaw))
+	if !receipts.IsInt64() || receipts.Sign() <= 0 || receipts.Int64() >= s.PositionCollateralRaw {
+		return "", "", 0, false
+	}
+	return DeleverRouteStep, leverageDownPartialReleaseReason, receipts.Int64(), true
+}

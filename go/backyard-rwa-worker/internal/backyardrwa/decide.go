@@ -315,6 +315,9 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if action, reason, amount, ok := leverageDownStep(s); ok {
 		return decision(action, reason, amount)
 	}
+	if action, reason, amount, ok := leverageDownPartialStep(s); ok {
+		return decision(action, reason, amount)
+	}
 	// Plan B3 top-up beside a funded debt-free OnRe position (B4). The USDC
 	// debt cash is Squads cash, so there is no separate residue leg. Every
 	// withdrawal, hard-LTV, unwind and report rule above has already run.

@@ -250,6 +250,9 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 	if action, reason, amount, ok := leverageDownStep(s); ok {
 		return d(action, reason, amount)
 	}
+	if action, reason, amount, ok := leverageDownPartialStep(s); ok {
+		return d(action, reason, amount)
+	}
 	// Plan B3 top-up tranche beside a funded debt-free position. It adds to
 	// the current loop, so it needs no new-lane selector entry authority.
 	if decision, ok := topupStep(s, hard, d); ok {

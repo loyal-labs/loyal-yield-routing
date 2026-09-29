@@ -215,3 +215,37 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 		t.Fatal("1.75x accounts skipped the cycle check")
 	}
 }
+
+// Step 5 admission: the sized 1.75x -> 1.5x release is priced from its
+// poststate (complete remaining exit), never as a payoff funding.
+func TestDownPartialReleaseAdmissionPricesFromItsPoststate(t *testing.T) {
+	o, m, rpc, client, _, route := leverage175Fixture(t)
+	o.Snapshot.LeverageTargetLevel = 1.5
+	_, rows, _ := rpc.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), 42)
+	bound, err := m.decodeKaminoRepaymentReleaseForMode(rows, route, 42, 5, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, receipts, ok := leverageDownPartialStepAt(o.Snapshot, true)
+	if !ok || uint64(receipts) > bound.ReceiptRaw {
+		t.Fatalf("partial release %d vs safe %d", receipts, bound.ReceiptRaw)
+	}
+	d := Decision{Action: DeleverRouteStep, StrategyKey: route.Lane, Reason: leverageDownPartialReleaseReason, AmountRaw: receipts}
+	r, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, uint64(receipts), LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+	r.RepaymentRelease, r.PilotRepaymentRelease = true, true
+	reserve, _ := decodeKaminoReserve(accountAt(rows, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+	liquidity, _ := reserve.redeemLiquidityRaw(uint64(receipts))
+	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
+	effects, err := exactKaminoTokenEffects(rows, source, destination, liquidity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err, ok := priceLeverageExitAfterRelease(context.Background(), rpc, client, m, o, d, r, effects, bound, rows)
+	if !ok || err != nil || plan.ExitAfterMicros <= 0 || plan.PayoffRepayment == nil || plan.Payoff == nil {
+		t.Fatalf("ok=%t err=%v plan=%+v", ok, err, plan.Payoff)
+	}
+}

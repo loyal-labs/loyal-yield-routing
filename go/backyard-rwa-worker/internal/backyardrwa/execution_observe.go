@@ -283,6 +283,18 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}
 			leg, wireAmount, effectAmount, releaseAccounts = kaminoLegWithdraw, bound.ReceiptRaw, bound.LiquidityRaw, raw
+			// B2 1.75x -> 1.5x: the release is sized to land at 1.5x, never
+			// above the safe size.
+			if decision.Reason == leverageDownPartialReleaseReason && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < wireAmount {
+				reserve, err := decodeKaminoReserve(accountAt(raw, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+				if err != nil {
+					return Observation{}, KaminoExecutionEvidence{}, err
+				}
+				wireAmount = uint64(decision.AmountRaw)
+				if effectAmount, err = reserve.redeemLiquidityRaw(wireAmount); err != nil || effectAmount == 0 {
+					return Observation{}, KaminoExecutionEvidence{}, budgetHold("leverage_down_partial_release_unavailable")
+				}
+			}
 		} else {
 			leg, wireAmount, effectAmount, err = selectKaminoLeg(observation.Snapshot.PilotActive, decision, position)
 			if err != nil {

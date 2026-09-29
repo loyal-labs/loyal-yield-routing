@@ -291,9 +291,13 @@ func priceLeverageExitAfterRelease(ctx context.Context, rpc *RPCClient, client *
 	if err != nil {
 		return phase3BridgeAdmission{}, err, true
 	}
-	need, err := leverageExitNeedsCycles(ctx, rpc, client, m, route, o.Snapshot, accounts)
-	if err != nil || !need {
-		return phase3BridgeAdmission{}, err, err != nil
+	// The 1.75x -> 1.5x partial release always prices from its poststate:
+	// it is a de-levering step, never a payoff funding.
+	if d.Reason != leverageDownPartialReleaseReason {
+		need, err := leverageExitNeedsCycles(ctx, rpc, client, m, route, o.Snapshot, accounts)
+		if err != nil || !need {
+			return phase3BridgeAdmission{}, err, err != nil
+		}
 	}
 	current, err := m.observePhase3KnownBuildCost(ctx, rpc, r, effects)
 	if err != nil {
