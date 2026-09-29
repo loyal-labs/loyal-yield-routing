@@ -272,7 +272,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
-		repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && repaymentReleaseReason(decision.Reason) && positionReturnRoute(route.Lane)
+		repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && (repaymentReleaseReason(decision.Reason) || decision.Reason == partialReleaseReason) && positionReturnRoute(route.Lane)
 		var leg kaminoPrimeUSDCLeg
 		var wireAmount, effectAmount uint64
 		// Release and full-payoff sizing read raw reserves (see the helpers).
@@ -285,7 +285,9 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 			leg, wireAmount, effectAmount, releaseAccounts = kaminoLegWithdraw, bound.ReceiptRaw, bound.LiquidityRaw, raw
 			// B2 1.75x -> 1.5x: the release is sized to land at 1.5x, never
 			// above the safe size.
-			if decision.Reason == leverageDownPartialReleaseReason && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < wireAmount {
+			// A partial withdrawal releases its collateral share, capped at
+			// the safe size (the chain repeats until the shortfall is met).
+			if (decision.Reason == leverageDownPartialReleaseReason || decision.Reason == partialReleaseReason) && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < wireAmount {
 				reserve, err := decodeKaminoReserve(accountAt(raw, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 				if err != nil {
 					return Observation{}, KaminoExecutionEvidence{}, err
@@ -415,6 +417,15 @@ func selectKaminoLeg(pilotActive bool, decision Decision, position KaminoPositio
 			return kaminoLegDeposit, uint64(decision.AmountRaw), uint64(decision.AmountRaw), nil
 		}
 	case DeleverPrimeUSDCStep:
+		if position.DebtRaw == 0 && decision.Reason == partialReleaseReason && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < position.CollateralDepositedRaw && position.RedeemablePrimeRaw > 0 {
+			// Debt-free partial withdrawal: withdraw the collateral share.
+			primeRaw := new(big.Int).Mul(big.NewInt(decision.AmountRaw), new(big.Int).SetUint64(position.RedeemablePrimeRaw))
+			primeRaw.Quo(primeRaw, new(big.Int).SetUint64(position.CollateralDepositedRaw))
+			if !primeRaw.IsUint64() || primeRaw.Sign() <= 0 {
+				return 0, 0, 0, fmt.Errorf("partial withdrawal rounds to zero")
+			}
+			return kaminoLegWithdraw, uint64(decision.AmountRaw), primeRaw.Uint64(), nil
+		}
 		if position.DebtRaw > 0 && repaymentReleaseReason(decision.Reason) {
 			receiptRaw, primeRaw, err := withdrawExcessForRepayment(position)
 			if err != nil {

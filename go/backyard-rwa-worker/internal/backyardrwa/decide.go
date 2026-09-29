@@ -234,6 +234,10 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		}
 
 		remaining := max(int64(0), shortfall-s.VoltrStrategyIdleRaw)
+		// Partial withdrawal: free only the shortfall and keep the level.
+		if action, reason, amount, ok := partialWithdrawalStep(s); ok {
+			return decision(action, reason, amount)
+		}
 		// B2 1.75x exit: repay the cycle's funding before another release.
 		if action, reason, amount, ok := exitCycleStep(s); ok {
 			return decision(action, reason, amount)

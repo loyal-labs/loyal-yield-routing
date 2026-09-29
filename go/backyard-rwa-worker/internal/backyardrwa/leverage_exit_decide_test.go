@@ -24,7 +24,8 @@ func setDebtCash(s *Snapshot, raw int64) {
 func TestExitCycleDecisionsOnEveryExitPath(t *testing.T) {
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		for path, mutate := range map[string]func(*Snapshot){
-			"withdrawal": func(s *Snapshot) { s.WithdrawalDemandRaw, s.VoltrIdleRaw = 100_000_000, 0 },
+			// >= 90% of equity: the full exit (a smaller demand is partial).
+			"withdrawal": func(s *Snapshot) { s.WithdrawalDemandRaw, s.VoltrIdleRaw = 950_000_000, 0 },
 			"unwind":     func(s *Snapshot) { s.Unwind = true },
 			"down to 1x": func(s *Snapshot) { s.LeverageTargetLevel = 1 },
 		} {

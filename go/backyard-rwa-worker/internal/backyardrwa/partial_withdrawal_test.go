@@ -1,0 +1,164 @@
+package backyardrwa
+
+import (
+	"testing"
+)
+
+// Live 09-29 shape: 1.5x AUTO, 2463.48 AUTO @ 1.0209 ($2,514.97), debt
+// 837.77 PYUSD, equity ~$1,677; Vlad withdraws $470 with Voltr idle 0.
+func livePartialSnapshot() Snapshot {
+	s := base()
+	s.RouteLane, s.StrategyKey, s.PilotActive, s.HasPosition = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true, true
+	s.LeverageTargetLevel = 1.5
+	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 2_463_480_000, 2_514_967_000
+	s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw = 837_770_000, 837_770_000, 837_900_000
+	s.StrategyNAVRaw, s.TotalVaultNAVRaw = 1_677_197_000, 1_677_197_000
+	s.LTVBPS = 3331
+	s.WithdrawalDemandRaw = 470_000_000
+	return s
+}
+
+// Simulate each leg at the live prices (AUTO $1.0209, PYUSD $1, 1% swap
+// loss) and return the sequence of decisions.
+func runPartialWithdrawal(t *testing.T, s Snapshot, price float64) (Snapshot, []Decision) {
+	t.Helper()
+	var legs []Decision
+	for step := 0; step < 12; step++ {
+		d := Decide(s)
+		legs = append(legs, d)
+		switch {
+		case d.Reason == partialReleaseReason:
+			value := int64(float64(d.AmountRaw) * price)
+			s.PositionCollateralRaw -= d.AmountRaw
+			s.PositionCollateralValueRaw -= value
+			s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = s.CollateralIdleRaw+d.AmountRaw, s.PrimeIdleRaw+d.AmountRaw, s.CollateralIdleValueRaw+value
+			s.LTVBPS = s.PositionDebtValueRaw * 10_000 / max(s.PositionCollateralValueRaw, 1)
+		case d.Reason == partialSwapToDebtReason:
+			value := int64(float64(d.AmountRaw) * price)
+			s.CollateralIdleRaw -= d.AmountRaw
+			s.PrimeIdleRaw = s.CollateralIdleRaw
+			s.CollateralIdleValueRaw = int64(float64(s.CollateralIdleRaw) * price)
+			setDebtCash(&s, debtCashOf(s)+value*99/100)
+		case d.Reason == exitPartialRepayReason:
+			setDebtCash(&s, debtCashOf(s)-d.AmountRaw)
+			s.PositionDebtRaw -= d.AmountRaw
+			s.PositionDebtValueRaw, s.PayoffDebtRaw = s.PositionDebtRaw, s.PositionDebtRaw+130_000
+			s.LTVBPS = s.PositionDebtValueRaw * 10_000 / max(s.PositionCollateralValueRaw, 1)
+		case d.Reason == partialSwapToUSDCReason:
+			value := int64(float64(d.AmountRaw) * price)
+			s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = 0, 0, 0
+			s.SquadsIdleRaw += value * 99 / 100
+		case d.Reason == partialDebtToUSDCReason:
+			s.DebtIdleRaw, s.SquadsIdleRaw = 0, s.SquadsIdleRaw+d.AmountRaw*99/100
+		case d.Reason == partialStageReason:
+			s.SquadsIdleRaw -= d.AmountRaw
+			s.VoltrIdleRaw += d.AmountRaw
+		default:
+			return s, legs
+		}
+	}
+	t.Fatalf("partial withdrawal did not settle: %+v", legs)
+	return s, legs
+}
+
+func debtCashOf(s Snapshot) int64 {
+	if sharedUSDCDebt(s.RouteLane) {
+		return s.SquadsIdleRaw
+	}
+	return s.DebtIdleRaw
+}
+
+func reasons(legs []Decision) []string {
+	var out []string
+	for _, d := range legs {
+		out = append(out, d.Reason)
+	}
+	return out
+}
+
+func TestPartialWithdrawalLive15xAUTO(t *testing.T) {
+	s, legs := runPartialWithdrawal(t, livePartialSnapshot(), 1.0209)
+	want := []string{partialReleaseReason, partialSwapToDebtReason, exitPartialRepayReason, partialSwapToUSDCReason}
+	got := reasons(legs)
+	for i, r := range want {
+		if i >= len(got) || got[i] != r {
+			t.Fatalf("chain %v, want prefix %v", got, want)
+		}
+	}
+	if s.VoltrIdleRaw < s.WithdrawalDemandRaw {
+		t.Fatalf("withdrawal not covered: idle %d < demand %d (%v)", s.VoltrIdleRaw, s.WithdrawalDemandRaw, got)
+	}
+	final := legs[len(legs)-1]
+	if final.Reason != "withdrawal_covered" && final.Reason != "withdrawal_covered_nav_due" {
+		t.Fatalf("end %+v (%v)", final, got)
+	}
+	if !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 0 {
+		t.Fatal("position closed")
+	}
+	if s.LTVBPS < 3200 || s.LTVBPS > 3450 {
+		t.Fatalf("remaining LTV %d, want ~3333 (%v)", s.LTVBPS, got)
+	}
+	for _, d := range legs {
+		if d.Reason == "withdrawal_release_repayment_collateral" || d.Reason == "withdrawal_withdraw_collateral" || d.Reason == "withdrawal_repay_debt" {
+			t.Fatalf("full-exit leg in a partial withdrawal: %v", got)
+		}
+	}
+	t.Logf("chain %v; remaining collateral %d debt %d LTV %d idle %d", got, s.PositionCollateralRaw, s.PositionDebtRaw, s.LTVBPS, s.VoltrIdleRaw)
+}
+
+func TestPartialWithdrawalDebtFree1xAndOnRe15x(t *testing.T) {
+	s := livePartialSnapshot()
+	s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw, s.LTVBPS, s.LeverageTargetLevel = 0, 0, 0, 0, 1
+	after, legs := runPartialWithdrawal(t, s, 1.0209)
+	got := reasons(legs)
+	if got[0] != partialReleaseReason || got[1] != partialSwapToUSDCReason || got[2] != partialStageReason || after.VoltrIdleRaw < after.WithdrawalDemandRaw || after.PositionCollateralRaw <= 0 || after.PositionDebtRaw != 0 {
+		t.Fatalf("1x chain %v", got)
+	}
+	onre := livePartialSnapshot()
+	onre.RouteLane, onre.StrategyKey = onreONycUSDC, onreONycUSDC
+	after, legs = runPartialWithdrawal(t, onre, 1.0209)
+	got = reasons(legs)
+	if got[0] != partialReleaseReason || got[1] != partialSwapToUSDCReason || got[2] != exitPartialRepayReason || after.VoltrIdleRaw < after.WithdrawalDemandRaw || after.LTVBPS < 3200 || after.LTVBPS > 3450 || after.PositionDebtRaw <= 0 {
+		t.Fatalf("OnRe chain %v LTV %d", got, after.LTVBPS)
+	}
+}
+
+func TestPartialWithdrawalFallbacksKeepInstalledBehaviour(t *testing.T) {
+	// >= 90% of equity: the installed full exit.
+	s := livePartialSnapshot()
+	s.WithdrawalDemandRaw = 1_600_000_000
+	if d := Decide(s); d.Reason != "withdrawal_release_repayment_collateral" {
+		t.Fatalf("large demand: %+v", d)
+	}
+	// Remainder below $50: full exit.
+	s = livePartialSnapshot()
+	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 100_000_000, 102_090_000
+	s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw = 34_000_000, 34_000_000, 34_100_000
+	s.WithdrawalDemandRaw = 30_000_000
+	if d := Decide(s); d.Reason == partialReleaseReason {
+		t.Fatalf("dust remainder went partial: %+v", d)
+	}
+	// Demand covered by Voltr idle: withdrawal_covered, unchanged.
+	s = livePartialSnapshot()
+	s.VoltrIdleRaw = 500_000_000
+	if d := Decide(s); d.Reason != "withdrawal_covered" && d.Reason != "withdrawal_covered_nav_due" {
+		t.Fatalf("covered: %+v", d)
+	}
+	// Unwind and Maple keep the full chain.
+	s = livePartialSnapshot()
+	s.Unwind = true
+	if d := Decide(s); d.Reason == partialReleaseReason {
+		t.Fatal("unwind went partial")
+	}
+	s = livePartialSnapshot()
+	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
+	if d := Decide(s); d.Reason == partialReleaseReason {
+		t.Fatal("Maple went partial")
+	}
+	// Hard LTV preempts.
+	s = livePartialSnapshot()
+	s.LTVBPS = 6000
+	if d := Decide(s); d.Reason == partialReleaseReason {
+		t.Fatal("hard LTV did not preempt")
+	}
+}

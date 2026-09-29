@@ -249,3 +249,117 @@ func TestDownPartialReleaseAdmissionPricesFromItsPoststate(t *testing.T) {
 		t.Fatalf("ok=%t err=%v plan=%+v", ok, err, plan.Payoff)
 	}
 }
+
+// Partial withdrawal: the leveraged release leg is admitted with the
+// complete exit of the remaining position priced from its poststate; the
+// debt-free position prices its withdraw -> swap -> return tail.
+func TestPartialWithdrawalReleaseAdmission(t *testing.T) {
+	for _, level := range []string{"1.5x", "1x"} {
+		o, m, rpc, client, accounts, route := leverage175Fixture(t)
+		debt := uint64(33_333_333)
+		if level == "1x" {
+			debt = 0
+		}
+		putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(new(big.Int).SetUint64(debt), 60))
+		o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.LTVBPS = int64(debt), int64(debt), int64(debt*10_000/100_000_000)
+		o.Snapshot.LeverageTargetLevel = 1.5
+		if debt == 0 {
+			o.Snapshot.LeverageTargetLevel = 1
+		}
+		// $10 of the fixture's $66.67 (1.5x) / $100 (1x) equity; the
+		// remainder stays above the $50 minimum.
+		o.Snapshot.WithdrawalDemandRaw, o.Snapshot.VoltrIdleRaw, o.Snapshot.PayoffDebtRaw = 10_000_000, 0, int64(debt)+100
+		// The fixture's snapshot equity (value units): C $100 - D.
+		o.Snapshot.StrategyNAVRaw, o.Snapshot.TotalVaultNAVRaw = 100_000_000-int64(debt), 100_000_000-int64(debt)
+		o.Snapshot.CollateralIdleValueRaw = 0
+		d := Decide(o.Snapshot)
+		if d.Reason != partialReleaseReason {
+			t.Fatalf("%s: %+v", level, d)
+		}
+		r, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, uint64(d.AmountRaw), LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.ObligationReserves = []string{route.Kamino.CollateralReserve}
+		if debt > 0 {
+			r.ObligationReserves = append(r.ObligationReserves, route.Kamino.DebtReserve)
+			r.RepaymentRelease, r.PilotRepaymentRelease = true, true
+		}
+		reserve, _ := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+		liquidity, _ := reserve.redeemLiquidityRaw(uint64(d.AmountRaw))
+		source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
+		effects, err := exactKaminoTokenEffects(accounts, source, destination, liquidity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err, ok := admitPartialWithdrawalLeg(context.Background(), rpc, client, m, o, d, r, effects)
+		if !ok || err != nil || plan.ExitAfterMicros <= 0 || plan.PayoffWithdrawal == nil || len(plan.Exit) == 0 {
+			t.Fatalf("%s: ok=%t err=%v", level, ok, err)
+		}
+		if debt > 0 && plan.PayoffRepayment == nil {
+			t.Fatalf("%s: remaining debt payoff not priced", level)
+		}
+		// A changed decision is refused.
+		bad := d
+		bad.AmountRaw++
+		if _, err, ok := admitPartialWithdrawalLeg(context.Background(), rpc, client, m, o, bad, r, effects); !ok || err == nil {
+			t.Fatalf("%s: drifted decision admitted", level)
+		}
+	}
+}
+
+// Every Kamino wire of a partial withdrawal is an existing topology: the
+// leveraged release ({collateral, debt}), the debt-free withdraw
+// ({collateral}) and the partial repay ({collateral, debt}), compiled by the
+// real compiler, pass the persisted-wire gate on AUTO and OnRe.
+func TestPartialWithdrawalKaminoWiresPassThePersistedWireGate(t *testing.T) {
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{91}, ed25519.SeedSize))
+	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
+	for lane, manifest := range map[string]RouteManifest{autoAUTOPYUSD.Lane: autoFixtureManifest(t), onreONycUSDC: basicPolicyFixtureManifest(t)} {
+		route, _ := runtimeRoute(lane)
+		both := []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+		for _, c := range []struct {
+			leg      kaminoPrimeUSDCLeg
+			reserves []string
+		}{{kaminoLegWithdraw, both}, {kaminoLegWithdraw, []string{route.Kamino.CollateralReserve}}, {kaminoLegRepay, both}} {
+			request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, c.leg, 176_750_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, lane)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.ObligationReserves = c.reserves
+			message, err := manifest.compileKaminoMessage(request, delegate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := signedTestBuildResult(t, key, message).validateForDelegate(delegate); err != nil {
+				t.Fatalf("%s leg %d %v: %v", lane, c.leg, c.reserves, err)
+			}
+		}
+	}
+}
+
+// The collateral->USDC swap leg of a partial withdrawal (after the release)
+// is admitted with the remaining position's complete exit priced.
+func TestPartialWithdrawalSwapLegAdmission(t *testing.T) {
+	o, m, rpc, client, accounts, route := leverage175Fixture(t)
+	debt := uint64(33_333_333)
+	putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(new(big.Int).SetUint64(debt), 60))
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.Obligation).Data[128:136], 85_000_000_000)
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 15_000_000_000)
+	o.Snapshot.PositionCollateralRaw, o.Snapshot.PositionCollateralValueRaw = 85_000_000_000, 85_000_000
+	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.PayoffDebtRaw, o.Snapshot.LTVBPS = int64(debt), int64(debt), int64(debt)+100, 3921
+	o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.CollateralIdleValueRaw = 15_000_000_000, 15_000_000_000, 15_000_000
+	o.Snapshot.LeverageTargetLevel, o.Snapshot.WithdrawalDemandRaw = 1.5, 10_000_000
+	d := Decide(o.Snapshot)
+	if d.Reason != partialSwapToUSDCReason || d.Action != SwapCollateralToStableStep {
+		t.Fatalf("decision %+v", d)
+	}
+	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, d, uint64(d.AmountRaw), 0, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err, ok := admitPartialWithdrawalLeg(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+	if !ok || err != nil || plan.ExitAfterMicros <= 0 || plan.PayoffRepayment == nil {
+		t.Fatalf("ok=%t err=%v", ok, err)
+	}
+}

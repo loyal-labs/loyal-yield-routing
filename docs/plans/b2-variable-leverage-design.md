@@ -78,3 +78,17 @@ borrowing costs more than the token pays, and back up to 1.5x.
    repay steps.
 4. Tests for each decision; then one real move up with Vlad watching (this is also A4:
    tries per step and restarts).
+
+## Partial withdrawals (2026-09-29)
+
+A withdrawal no longer closes the whole AUTO or OnRe position. Shortfall S = demand - Voltr idle;
+the worker frees E = S + max(1% of S, $1) and keeps the position at its level:
+
+1. Release the collateral share (E / equity of the receipts), capped at the safe release size.
+2. Leveraged: swap enough of it to debt and `exit_partial_repay` the LTV back to the level
+   (OnRe: one collateral -> USDC swap, the repay and the stage split the USDC).
+3. Swap the rest to USDC and stage it to Voltr; repeat until Voltr idle covers the demand.
+
+A debt-free (1x) position only releases -> swaps -> stages. Every leg's admission prices the
+complete exit of what stays. The full exit is kept when S >= 90% of equity, when the remainder
+would be under $50, during an unwind, and on Maple. Hard LTV still preempts every leg.

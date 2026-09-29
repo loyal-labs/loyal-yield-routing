@@ -397,6 +397,12 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		},
 		recordBudgetHold: database.RecordPhase3BudgetHold,
 		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
+				if err != nil {
+					return err
+				}
+				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
+			}
 			if evidence.Request.Action == VoltrAllocateToSquads && decision.Reason == topupAllocationReason {
 				return database.admitPhase3TopupAllocation(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
 			}
@@ -412,6 +418,12 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			return database.admitPhase3Bridge(ctx, rpc, operationID, observation, decision, evidence)
 		},
 		admitKamino: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence KaminoExecutionEvidence) error {
+			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
+				if err != nil {
+					return err
+				}
+				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
+			}
 			_, leg, err := kaminoPrimeUSDCInstruction(evidence.Request)
 			if err != nil {
 				return err
@@ -425,6 +437,12 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			return database.admitPhase3Withdrawal(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
 		},
 		admitJupiter: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
+			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
+				if err != nil {
+					return err
+				}
+				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
+			}
 			if evidence.Request.Action == SwapDebtToCollateralStep {
 				return database.admitPhase3LeverageSwap(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
 			}
