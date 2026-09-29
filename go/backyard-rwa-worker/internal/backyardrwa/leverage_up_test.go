@@ -79,8 +79,7 @@ func TestLeverageUpDecisionsAtEachLevel(t *testing.T) {
 			{1, 1.5, OpenRouteStep, leverageUpReason, 150},
 			{1, 1.75, OpenRouteStep, leverageUpReason, 150}, // one level per move
 			{1, 1, Hold, "leverage_target_1x", 0},
-			// 1.75x is capped until a multi-cycle exit exists.
-			{1.5, 1.75, Hold, "single_loop_position_ready", 0},
+			{1.5, 1.75, OpenRouteStep, leverageUpReason, 175},
 			{1.5, 1.5, Hold, "single_loop_position_ready", 0},
 			{1.75, 1.75, Hold, "single_loop_position_ready", 0},
 		} {
@@ -260,9 +259,8 @@ func TestLeverageUpBorrowWithDebtPassesThePersistedWireGate(t *testing.T) {
 	}
 }
 
-// The reviewed complete exit is one release at <=55% LTV, then one full
-// payoff. It repays a 1.5x position but not a 1.75x one, so live up moves
-// stop at 1.5x (leverageMaxLiveLevel) until a multi-cycle exit exists.
+// The one-release exit covers 1.5x but not 1.75x: that is why 1.75x runs
+// the multi-cycle exit (leverage_exit_pricer.go).
 func TestOneReleaseExitCoversOnlyUpTo1_5x(t *testing.T) {
 	for _, c := range []struct {
 		collateral, debt uint64
@@ -273,9 +271,7 @@ func TestOneReleaseExitCoversOnlyUpTo1_5x(t *testing.T) {
 			t.Fatalf("C=%d D=%d: one release %d covered=%t, want %t", c.collateral, c.debt, release, release >= c.debt, c.covered)
 		}
 	}
-	s := leverageSnapshot(1.5)
-	s.LeverageTargetLevel = 1.75
-	if leverageUpLevel(s) != 0 || selectorTrancheInProgress(s) {
-		t.Fatal("capped 1.75x target still starts a move or freezes the selector")
+	if leverageMaxLiveLevel != 1.75 {
+		t.Fatal("live cap")
 	}
 }

@@ -15,11 +15,10 @@ const (
 	// Smallest leverage_up borrow in debt raw units (six-decimal stables).
 	leverageMinimumBorrowRaw = 10_000_000
 	leverageSwapLossBPS      = 100
-	// leverageMaxLiveLevel caps live up moves. ponytail: 1.5x until a
-	// multi-cycle exit exists; the reviewed exit prices one release (<=55% LTV)
-	// then one full payoff, which cannot repay 1.75x debt (C=1.75, D=0.75:
-	// one release frees ~0.39). Raise to 1.75 with that exit.
-	leverageMaxLiveLevel = 1.5
+	// leverageMaxLiveLevel caps live levels. 1.75x needs the multi-cycle exit
+	// (one release at 55% frees ~0.39 of 0.75 debt), priced by
+	// leverage_exit_pricer.go and decided by exitCycleStep.
+	leverageMaxLiveLevel = 1.75
 )
 
 // leverageUpLevel is the next level above the position (at most one step),

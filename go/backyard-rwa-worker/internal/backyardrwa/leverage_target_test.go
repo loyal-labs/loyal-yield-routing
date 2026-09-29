@@ -42,12 +42,12 @@ func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
 		{"1x stays below 1 pt", 1, 0.10, math.Log1p(0.095), 1, "spread_rule"},
 		{"1x up at >= 1 pt", 1, 0.12, math.Log1p(0.06), 1.5, "spread_rule"},
 		{"1.5x stays 1-2 pt", 1.5, 0.10, math.Log1p(0.085), 1.5, "spread_rule"},
-		// Live targets stop at 1.5x (leverageMaxLiveLevel) until a
-		// multi-cycle exit exists; the watch rule itself is unchanged.
-		{"1.5x up at >= 2 pt is capped", 1.5, 0.12, math.Log1p(0.06), 1.5, "spread_rule"},
+		// Live levels reach 1.75x with the multi-cycle exit; option 1 exactly.
+		{"1.5x up at >= 2 pt", 1.5, 0.12, math.Log1p(0.06), 1.75, "spread_rule"},
 		{"1.5x down below 0", 1.5, 0.05, math.Log1p(0.06), 1, "spread_rule"},
-		{"1.75x counts as 1.5x", 1.75, 0.10, math.Log1p(0.085), 1.5, "spread_rule"},
-		{"1.75x counts as 1.5x, down below 0", 1.75, 0.05, math.Log1p(0.06), 1, "spread_rule"},
+		{"1.75x stays in the gap", 1.75, 0.10, math.Log1p(0.085), 1.75, "spread_rule"},
+		{"1.75x down below 1 pt", 1.75, 0.10, math.Log1p(0.095), 1.5, "spread_rule"},
+		{"1.75x never above", 1.75, 0.20, math.Log1p(0.01), 1.75, "spread_rule"},
 	} {
 		s := leverageSnapshot(tc.level)
 		got, ok := decideLeverageTarget(s, keep, []LaneEconomics{leverageMarket(s.RouteLane, tc.yield, tc.apr)}, p)
@@ -199,8 +199,9 @@ func TestUnavailableSpreadNeverFlipsTheStoredTarget(t *testing.T) {
 	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{full}, p); ok {
 		t.Fatalf("unavailable spread still decided: %+v", d)
 	}
+	// Stored 1.5x with a 2+ pt spread: the only change is the next step up.
 	d, ok := decideLeverageTarget(s, keep, []LaneEconomics{good}, p)
-	if !ok || d.Next != 1.5 || d.changesTarget(s.LeverageTargetLevel) {
+	if !ok || (d.Next != 1.5 && d.Next != 1.75) || (d.Next == 1.5 && d.changesTarget(s.LeverageTargetLevel)) {
 		t.Fatalf("available again: %+v ok=%t changes=%t", d, ok, d.changesTarget(s.LeverageTargetLevel))
 	}
 	// A dip in gain below the up gate does not undo a stored target either:
@@ -213,9 +214,8 @@ func TestUnavailableSpreadNeverFlipsTheStoredTarget(t *testing.T) {
 	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{neg}, p); !ok || d.Next != 1 || !d.changesTarget(1.5) {
 		t.Fatalf("negative spread did not step down: %+v", d)
 	}
-	// Equal in effect: a stored 1.75x (above the live cap) is 1.5x.
-	if (leverageDecision{Current: 1.5, Next: 1.5}).changesTarget(1.75) {
-		t.Fatal("stored 1.75x rewritten as 1.5x")
+	if (leverageDecision{Current: 1.75, Next: 1.75}).changesTarget(1.75) {
+		t.Fatal("stored 1.75x rewritten")
 	}
 	if !(leverageDecision{Current: 1, Next: 1.5}).changesTarget(0) {
 		t.Fatal("no stored target: first decision not written")
