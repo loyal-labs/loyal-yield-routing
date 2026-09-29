@@ -296,11 +296,12 @@ func exitCycleStep(s Snapshot) (Action, string, int64, bool) {
 	// Leave either no debt (the installed full payoff) or a remainder at or
 	// above the residual floor, never a dust debt a later payoff or release
 	// could trip on.
-	amount := min(cash, s.PositionDebtRaw-exitCycleResidualFloor(s.PositionDebtRaw))
-	if amount <= 0 {
+	// The decision carries the (stable) debt cash; prepare sizes the exact
+	// repay with exitPartialRepayWireRaw.
+	if min(cash, s.PositionDebtRaw-exitCycleResidualFloor(s.PositionDebtRaw)) <= 0 {
 		return "", "", 0, false
 	}
-	return DeleverRouteStep, exitPartialRepayReason, amount, true
+	return DeleverRouteStep, exitPartialRepayReason, cash, true
 }
 
 // exitCycleSwapReason swaps a cycle's released collateral to debt; its
@@ -356,24 +357,32 @@ func leverageDownPartialStepAt(s Snapshot, enabled bool) (Action, string, int64,
 		return SwapCollateralToDebtStep, exitCycleSwapReason, s.CollateralIdleRaw, true
 	}
 	if cash > 0 {
-		amount := min(cash, s.PositionDebtRaw-exitCycleResidualFloor(s.PositionDebtRaw))
-		if amount <= 0 {
+		if min(cash, s.PositionDebtRaw-exitCycleResidualFloor(s.PositionDebtRaw)) <= 0 {
 			return "", "", 0, false
 		}
-		return DeleverRouteStep, exitPartialRepayReason, amount, true
+		return DeleverRouteStep, exitPartialRepayReason, cash, true
 	}
 	if currentLeverageLevel(s) != 1.75 || s.PositionCollateralRaw <= 0 {
 		return "", "", 0, false
 	}
-	// R = (3D - C)/2 in value; receipts = R/C of the deposited receipts.
-	releaseValue := (3*s.PositionDebtValueRaw - s.PositionCollateralValueRaw) / 2
-	if releaseValue <= 0 {
+	// The decision carries a marker (1, stable); prepare sizes the release
+	// from its own snapshot with leverageDownPartialReceipts.
+	if leverageDownPartialReceipts(s) <= 0 {
 		return "", "", 0, false
+	}
+	return DeleverRouteStep, leverageDownPartialReleaseReason, 1, true
+}
+
+// leverageDownPartialReceipts: R = (3D - C)/2 of value, as receipts.
+func leverageDownPartialReceipts(s Snapshot) int64 {
+	releaseValue := (3*s.PositionDebtValueRaw - s.PositionCollateralValueRaw) / 2
+	if releaseValue <= 0 || s.PositionCollateralValueRaw <= 0 {
+		return 0
 	}
 	receipts := new(big.Int).Mul(big.NewInt(s.PositionCollateralRaw), big.NewInt(releaseValue))
 	receipts.Quo(receipts, big.NewInt(s.PositionCollateralValueRaw))
 	if !receipts.IsInt64() || receipts.Sign() <= 0 || receipts.Int64() >= s.PositionCollateralRaw {
-		return "", "", 0, false
+		return 0
 	}
-	return DeleverRouteStep, leverageDownPartialReleaseReason, receipts.Int64(), true
+	return receipts.Int64()
 }

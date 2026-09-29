@@ -100,6 +100,7 @@ func TestExitCycleRepayRespectsTheResidualFloor(t *testing.T) {
 	floor := exitCycleResidualFloor(s.PositionDebtRaw)
 	setDebtCash(&s, s.PositionDebtRaw-1)
 	got := Decide(s)
+	got.AmountRaw = exitPartialRepayWireRaw(s) // the prepared wire
 	if got.Reason != exitPartialRepayReason || s.PositionDebtRaw-got.AmountRaw != floor {
 		t.Fatalf("remainder %d, want the floor %d: %+v", s.PositionDebtRaw-got.AmountRaw, floor, got)
 	}

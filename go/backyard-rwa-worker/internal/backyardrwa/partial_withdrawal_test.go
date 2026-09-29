@@ -30,6 +30,10 @@ func runPartialWithdrawal(t *testing.T, s Snapshot, price float64) (Snapshot, []
 		if again := Decide(s); !decisionsEqual(again, d) {
 			t.Fatalf("stateless decide differs: %+v vs %+v", d, again)
 		}
+		// Prepare sizes the exact wire from the snapshot (stable decisions).
+		if wire, sized := partialWithdrawalWireAmount(s, d); sized {
+			d.AmountRaw = wire
+		}
 		switch {
 		case d.Reason == partialReleaseReason:
 			value := int64(float64(d.AmountRaw) * price)

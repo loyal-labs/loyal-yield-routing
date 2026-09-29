@@ -92,22 +92,25 @@ func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 		return "", "", 0, false
 	}
 	overTarget := s.PositionDebtRaw > 0 && s.LTVBPS > target+leverageUpNearBPS
+	// Decision amounts are stable across observe -> prepare (custody
+	// balances or the USDC target); value-dependent raw sizes (receipts,
+	// the exact repay) are computed in prepare and rechecked at admission.
 	switch {
 	case overTarget && debtCash > partialWithdrawalDustRaw:
-		// Repay back to the level: R = D - target*C (never the whole debt).
-		repay := partialWithdrawalRepayRaw(s, target)
-		amount := min(debtCash, repay, s.PositionDebtRaw-exitCycleResidualFloor(s.PositionDebtRaw))
-		if amount > 0 {
-			return DeleverRouteStep, exitPartialRepayReason, amount, true
+		// Repay back to the level: R = D - target*C (never the whole debt);
+		// the exact wire is exitPartialRepayWireRaw at prepare time.
+		if min(debtCash, partialWithdrawalRepayRaw(s, target), s.PositionDebtRaw-exitCycleResidualFloor(s.PositionDebtRaw)) > 0 {
+			return DeleverRouteStep, exitPartialRepayReason, debtCash, true
 		}
 	case overTarget && s.CollateralIdleRaw > partialWithdrawalDustRaw:
 		if sharedUSDCDebt(s.RouteLane) {
 			// USDC debt: one swap; the repay then the stage split the USDC.
 			return SwapCollateralToStableStep, partialSwapToUSDCReason, s.CollateralIdleRaw, true
 		}
-		amount := partialWithdrawalDebtSwapRaw(s, target)
-		if amount > 0 {
-			return SwapCollateralToDebtStep, partialSwapToDebtReason, amount, true
+		// The decision carries the idle collateral (stable); prepare sizes
+		// the debt share with partialWithdrawalDebtSwapRaw.
+		if partialWithdrawalDebtSwapRaw(s, target) > 0 {
+			return SwapCollateralToDebtStep, partialSwapToDebtReason, s.CollateralIdleRaw, true
 		}
 	}
 	if s.CollateralIdleRaw > partialWithdrawalDustRaw {
@@ -123,27 +126,52 @@ func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 	if inflight > partialWithdrawalDustRaw {
 		return "", "", 0, false
 	}
-	// Nothing in flight: release the collateral share for E = S + buffer,
-	// capped so the LTV after the release (before its repay) stays at or
-	// under the release ceiling; a larger E runs further rounds (release ->
-	// repay back to the level -> stage) until Voltr idle covers the demand.
+	// Nothing in flight: release the collateral share for E = S + buffer.
+	// The decision carries E (USDC raw, stable); prepare converts it to
+	// receipts with partialWithdrawalReleaseReceipts, capped at the safe
+	// release (a larger E runs further rounds).
 	free := shortfall + max(shortfall*partialWithdrawalBufferBPS/10_000, partialWithdrawalMinimumBuffer)
+	if partialWithdrawalReleaseReceipts(s, free) <= 0 {
+		return "", "", 0, false
+	}
+	return DeleverRouteStep, partialReleaseReason, free, true
+}
+
+// partialWithdrawalReleaseReceipts converts the USDC target E into receipts
+// at the snapshot's values: the collateral share C*E/Eq, capped so C - R >=
+// D / (ceiling - 5 pts). The builder's safe-release bound is the hard cap.
+func partialWithdrawalReleaseReceipts(s Snapshot, free int64) int64 {
+	equity := s.PositionCollateralValueRaw - s.PositionDebtValueRaw
+	if free <= 0 || equity <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionCollateralRaw <= 0 {
+		return 0
+	}
 	releaseValue := free * s.PositionCollateralValueRaw / equity
 	if s.PositionDebtValueRaw > 0 {
-		// C - R >= D / ceiling, with a 5-point margin for prices, rounding
-		// and interest (the builder's safe-size bound is the hard cap).
 		limit := s.PositionCollateralValueRaw - s.PositionDebtValueRaw*10_000/(leverageExitReleaseCeilingBPS-500)
 		if limit <= 0 {
-			return "", "", 0, false
+			return 0
 		}
 		releaseValue = min(releaseValue, limit)
 	}
 	receipts := new(big.Int).Mul(big.NewInt(s.PositionCollateralRaw), big.NewInt(releaseValue))
 	receipts.Quo(receipts, big.NewInt(s.PositionCollateralValueRaw))
 	if !receipts.IsInt64() || receipts.Sign() <= 0 || receipts.Int64() >= s.PositionCollateralRaw {
-		return "", "", 0, false
+		return 0
 	}
-	return DeleverRouteStep, partialReleaseReason, receipts.Int64(), true
+	return receipts.Int64()
+}
+
+// exitPartialRepayWireRaw is the exact partial repay prepared from the
+// current snapshot: all debt cash, never the whole debt (residual floor),
+// and inside a partial withdrawal only the debt share back to the level.
+func exitPartialRepayWireRaw(s Snapshot) int64 {
+	amount := min(debtCashRaw(s), s.PositionDebtRaw-exitCycleResidualFloor(s.PositionDebtRaw))
+	if _, reason, _, ok := partialWithdrawalStep(s); ok && reason == exitPartialRepayReason {
+		if target, ok := partialWithdrawalTargetLTVBPS(s); ok {
+			amount = min(amount, partialWithdrawalRepayRaw(s, target))
+		}
+	}
+	return max(amount, 0)
 }
 
 // partialWithdrawalRepayRaw is the debt (raw) to repay so the position
@@ -163,24 +191,6 @@ func partialWithdrawalRepayRaw(s Snapshot, target int64) int64 {
 	return raw.Int64()
 }
 
-// partialWithdrawalDebtSwapRaw sizes the collateral swapped to debt: the
-// repay's value plus 1% for swap loss, in collateral raw at the idle price.
-func partialWithdrawalDebtSwapRaw(s Snapshot, target int64) int64 {
-	repay := partialWithdrawalRepayRaw(s, target)
-	if repay <= 0 || s.CollateralIdleValueRaw <= 0 || s.PositionDebtRaw <= 0 {
-		return 0
-	}
-	value := new(big.Int).Mul(big.NewInt(repay), big.NewInt(s.PositionDebtValueRaw))
-	value.Quo(value, big.NewInt(s.PositionDebtRaw))
-	value.Mul(value, big.NewInt(10_000+leverageExitSwapLossBPS)).Quo(value, big.NewInt(10_000))
-	raw := new(big.Int).Mul(big.NewInt(s.CollateralIdleRaw), value)
-	raw.Quo(raw, big.NewInt(s.CollateralIdleValueRaw))
-	if !raw.IsInt64() || raw.Sign() <= 0 {
-		return 0
-	}
-	return min(raw.Int64(), s.CollateralIdleRaw)
-}
-
 // admitPartialWithdrawalLeg admits one leg of a partial withdrawal. Every
 // leg prices the COMPLETE remaining exit of the whole position from the
 // leg's cost-only poststate: the projected pricer (cycles if needed, final
@@ -194,12 +204,26 @@ func admitPartialWithdrawalLeg(ctx context.Context, rpc *RPCClient, client *jupi
 		return phase3BridgeAdmission{}, nil, false
 	}
 	s := o.Snapshot
+	// The decision amount is the stable driver; the request carries the wire
+	// sized from the same snapshot, rechecked below.
 	if want, reason, amount, ok := partialWithdrawalStep(s); !ok || want != d.Action || reason != d.Reason || amount != d.AmountRaw || !decisionsEqual(m.DecideOnManifest(s), d) {
 		return phase3BridgeAdmission{}, budgetHold("partial_withdrawal_decision_changed"), true
 	}
 	route, err := runtimeRoute(s.RouteLane)
 	if err != nil {
 		return phase3BridgeAdmission{}, err, true
+	}
+	if wire, sized := partialWithdrawalWireAmount(s, d); sized {
+		var got uint64
+		switch r := request.(type) {
+		case KaminoPrimeUSDCRequest:
+			got = r.AmountRaw
+		case JupiterSwapRequest:
+			got = r.AmountRaw
+		}
+		if wire <= 0 || got == 0 || got > uint64(wire) {
+			return phase3BridgeAdmission{}, budgetHold("partial_withdrawal_wire_mismatch"), true
+		}
 	}
 	current, err := m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
 	if err != nil {
@@ -362,4 +386,43 @@ func partialWithdrawalFitsRounds(s Snapshot, shortfall, total int64) bool {
 		}
 	}
 	return false
+}
+
+// partialWithdrawalDebtSwapRaw sizes the collateral swapped to debt: the
+// repay's value plus 1% for swap loss, in collateral raw at the idle price.
+func partialWithdrawalDebtSwapRaw(s Snapshot, target int64) int64 {
+	repay := partialWithdrawalRepayRaw(s, target)
+	if repay <= 0 || s.CollateralIdleValueRaw <= 0 || s.PositionDebtRaw <= 0 {
+		return 0
+	}
+	value := new(big.Int).Mul(big.NewInt(repay), big.NewInt(s.PositionDebtValueRaw))
+	value.Quo(value, big.NewInt(s.PositionDebtRaw))
+	value.Mul(value, big.NewInt(10_000+leverageExitSwapLossBPS)).Quo(value, big.NewInt(10_000))
+	raw := new(big.Int).Mul(big.NewInt(s.CollateralIdleRaw), value)
+	raw.Quo(raw, big.NewInt(s.CollateralIdleValueRaw))
+	if !raw.IsInt64() || raw.Sign() <= 0 {
+		return 0
+	}
+	return min(raw.Int64(), s.CollateralIdleRaw)
+}
+
+// partialWithdrawalWireAmount maps a stable decision amount to the exact
+// wire amount at prepare time, from the prepared snapshot. ok=false: the
+// decision's own amount is the wire amount.
+func partialWithdrawalWireAmount(s Snapshot, d Decision) (int64, bool) {
+	switch d.Reason {
+	case partialReleaseReason:
+		return partialWithdrawalReleaseReceipts(s, d.AmountRaw), true
+	case partialSwapToDebtReason:
+		target, ok := partialWithdrawalTargetLTVBPS(s)
+		if !ok {
+			return 0, true
+		}
+		return partialWithdrawalDebtSwapRaw(s, target), true
+	case exitPartialRepayReason:
+		return exitPartialRepayWireRaw(s), true
+	case leverageDownPartialReleaseReason:
+		return leverageDownPartialReceipts(s), true
+	}
+	return 0, false
 }

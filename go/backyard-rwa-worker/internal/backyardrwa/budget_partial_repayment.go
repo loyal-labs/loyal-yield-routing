@@ -15,7 +15,7 @@ func observePhase3PartialRepaymentAdmission(ctx context.Context, rpc *RPCClient,
 	defer cancel()
 	s, r := o.Snapshot, e.Request
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
-	if err != nil || rpc == nil || client == nil || !s.PilotActive || !partialRepaymentLane(s.RouteLane, d.Reason) || !s.Fresh || s.Slot <= 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteKind != RouteKind || s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 1 || d.Action != DeleverRouteStep || r.Action != d.Action || !partialRepaymentReason(d.Reason) || !decisionsEqual(m.DecideOnManifest(s), d) || d.AmountRaw <= 0 || uint64(d.AmountRaw) != r.AmountRaw || d.AmountRaw >= s.PositionDebtRaw || debtCashRaw(s) < d.AmountRaw || leg != kaminoLegRepay || r.FullPayoff || r.RepaymentRelease {
+	if err != nil || rpc == nil || client == nil || !s.PilotActive || !partialRepaymentLane(s.RouteLane, d.Reason) || !s.Fresh || s.Slot <= 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteKind != RouteKind || s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 1 || d.Action != DeleverRouteStep || r.Action != d.Action || !partialRepaymentReason(d.Reason) || !decisionsEqual(m.DecideOnManifest(s), d) || d.AmountRaw <= 0 || r.AmountRaw != partialRepaymentWireRaw(s, d) || r.AmountRaw == 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || uint64(debtCashRaw(s)) < r.AmountRaw || leg != kaminoLegRepay || r.FullPayoff || r.RepaymentRelease {
 		return phase3BridgeAdmission{}, budgetHold("partial_repayment_admission_unavailable")
 	}
 	current, err := observePhase3KnownBuildCost(ctx, rpc, r, e.ExpectedEffects)
@@ -157,4 +157,14 @@ func partialRepaymentLane(lane, reason string) bool {
 		return leverageLane(lane)
 	}
 	return selectorLane(lane)
+}
+
+// partialRepaymentWireRaw: hard_ltv_partial_repay carries its exact amount;
+// exit_partial_repay carries the (stable) debt cash and its exact wire is
+// sized from the same snapshot by exitPartialRepayWireRaw.
+func partialRepaymentWireRaw(s Snapshot, d Decision) uint64 {
+	if d.Reason == exitPartialRepayReason {
+		return uint64(max(exitPartialRepayWireRaw(s), 0))
+	}
+	return uint64(max(d.AmountRaw, 0))
 }

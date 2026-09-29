@@ -287,6 +287,12 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 			// above the safe size.
 			// A partial withdrawal releases its collateral share, capped at
 			// the safe size (the chain repeats until the shortfall is met).
+			if wire, sized := partialWithdrawalWireAmount(observation.Snapshot, decision); sized && (decision.Reason == leverageDownPartialReleaseReason || decision.Reason == partialReleaseReason) {
+				if wire <= 0 {
+					return Observation{}, KaminoExecutionEvidence{}, budgetHold("leverage_down_partial_release_unavailable")
+				}
+				decision.AmountRaw = min(wire, int64(wireAmount))
+			}
 			if (decision.Reason == leverageDownPartialReleaseReason || decision.Reason == partialReleaseReason) && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < wireAmount {
 				reserve, err := decodeKaminoReserve(accountAt(raw, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 				if err != nil {
@@ -298,7 +304,16 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 				}
 			}
 		} else {
-			leg, wireAmount, effectAmount, err = selectKaminoLeg(observation.Snapshot.PilotActive, decision, position)
+			// Stable partial decisions (E in USDC, debt cash) become exact
+			// wire amounts from this prepared snapshot.
+			legDecision := decision
+			if wire, sized := partialWithdrawalWireAmount(observation.Snapshot, decision); sized {
+				if wire <= 0 {
+					return Observation{}, KaminoExecutionEvidence{}, budgetHold("partial_withdrawal_leg_unavailable")
+				}
+				legDecision.AmountRaw = wire
+			}
+			leg, wireAmount, effectAmount, err = selectKaminoLeg(observation.Snapshot.PilotActive, legDecision, position)
 			if err != nil {
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}

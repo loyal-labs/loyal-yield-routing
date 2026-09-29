@@ -9,8 +9,9 @@ func TestDownMove175To15IsOneSizedCycle(t *testing.T) {
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		s := leverageSnapshot(1.75) // C 1750, D 750 (value = raw)
 		s.RouteLane, s.StrategyKey, s.LeverageTargetLevel = lane, lane, 1.5
-		action, reason, receipts, ok := leverageDownPartialStepAt(s, true)
-		if !ok || action != DeleverRouteStep || reason != leverageDownPartialReleaseReason || receipts != 250_000_000 {
+		action, reason, marker, ok := leverageDownPartialStepAt(s, true)
+		receipts := leverageDownPartialReceipts(s) // sized in prepare
+		if !ok || action != DeleverRouteStep || reason != leverageDownPartialReleaseReason || marker != 1 || receipts != 250_000_000 {
 			t.Fatalf("%s release %s %s %d", lane, action, reason, receipts)
 		}
 		// After the release: 250 idle collateral -> swap (LTV 50%).
@@ -22,7 +23,8 @@ func TestDownMove175To15IsOneSizedCycle(t *testing.T) {
 		// After the swap (1% loss): 247.5 debt cash -> partial repay, not the whole debt.
 		s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = 0, 0, 0
 		setDebtCash(&s, 247_500_000)
-		action, reason, amount, _ := leverageDownPartialStepAt(s, true)
+		action, reason, _, _ = leverageDownPartialStepAt(s, true)
+		amount := exitPartialRepayWireRaw(s) // sized in prepare
 		if action != DeleverRouteStep || reason != exitPartialRepayReason || amount != 247_500_000 || amount >= s.PositionDebtRaw {
 			t.Fatalf("%s repay %s %s %d", lane, action, reason, amount)
 		}
