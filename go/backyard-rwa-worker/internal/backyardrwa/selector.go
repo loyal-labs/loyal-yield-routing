@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -485,11 +486,13 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		c := CandidateForecast{Lane: lane}
 		if err := m.validateWithLane(in.Now, p, laneAllowed); err != nil {
 			c.BlockedReason = err.Error()
+			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
 		if exposed && lane == s.RouteLane && !sameLaneReinvestmentEligibleWithLane(s, p, fundingAllowed) {
 			c.BlockedReason = "current_position_is_keep_baseline"
+			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
@@ -543,6 +546,7 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 			if m.EntryBlockedReason != "" {
 				c.BlockedReason = m.EntryBlockedReason
 			}
+			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
@@ -551,6 +555,7 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 			if c.BlockedReason == "" {
 				c.BlockedReason = "entry_closed"
 			}
+			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
@@ -573,17 +578,20 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		}
 		if quote == nil {
 			c.BlockedReason = "bounded_move_cost_unavailable"
+			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
 		amount = quote.EquityRaw
 		if quote.CostRaw >= amount {
 			c.BlockedReason = "cost_exceeds_allocation"
+			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
 		if s.PilotActive && !quote.validBorrow() {
 			c.BlockedReason = "bounded_borrow_unavailable"
+			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
@@ -595,6 +603,7 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		// net reinvestment is strictly larger than the funded position it unwinds.
 		if lane == s.RouteLane && c.InvestedRaw <= s.StrategyNAVRaw {
 			c.BlockedReason = "same_lane_reinvestment_not_larger"
+			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
@@ -604,6 +613,7 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		economics, blocked := pilotQuoteEconomics(s.PilotActive, *quote, m, float64(c.InvestedRaw), years)
 		if blocked != "" {
 			c.BlockedReason = blocked
+			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
@@ -629,6 +639,16 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		out.Candidates = append(out.Candidates, c)
 		if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) && (best < 0 || c.BenefitRaw > out.Candidates[best].BenefitRaw) {
 			best = len(out.Candidates) - 1
+		}
+	}
+	// A lane whose economics are missing from this sample (feed gap) keeps
+	// its windows unchanged too; MaxSampleGap bounds how long.
+	for key, window := range previous.Advantages {
+		lane := strings.TrimSuffix(key, "|1x")
+		if _, present := markets[lane]; !present {
+			if _, sampled := out.State.Advantages[key]; !sampled {
+				out.State.Advantages[key] = window
+			}
 		}
 	}
 	if selectorTrancheInProgress(s) {
@@ -670,6 +690,40 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 // its Since while the last sample stayed inside MaxSampleGap. The USDC-debt
 // feed-level forecast and the non-USDC priced per-quote forecast share it, so
 // both persistence signals carry identical window semantics.
+// selectorAvailabilityReasons are candidate refusals that say nothing about
+// the lane's economics: the quote, move cost or evidence was not available
+// this sample (RPC fee read, timeout, feed gap). Such a sample carries the
+// lane's persistence windows forward unchanged; MaxSampleGap still resets a
+// window whose last real sample is too old. A priced lane that is not
+// profitable still drops its window.
+var selectorAvailabilityReasons = map[string]bool{
+	"economic_evidence_unavailable":      true,
+	"complete_entry_quote_unavailable":   true,
+	"complete_move_quote_unavailable":    true,
+	"bounded_move_cost_unavailable":      true,
+	"pair_capacity_unknown":              true,
+	"selector_source_quote_unavailable":  true,
+	"selector_source_unavailable":        true,
+	"selector_live_snapshot_unavailable": true,
+}
+
+// carryAdvantageWindows keeps the lane's leveraged and 1x windows exactly
+// as they were (same Since and LastSample) when this sample could not price
+// the lane for an availability reason.
+func carryAdvantageWindows(out *SelectorResult, previous SelectorState, lane, reason string) {
+	if !selectorAvailabilityReasons[reason] {
+		return
+	}
+	for _, key := range []string{lane, unleveredAdvantageKey(lane)} {
+		if _, sampled := out.State.Advantages[key]; sampled {
+			continue
+		}
+		if window, ok := previous.Advantages[key]; ok {
+			out.State.Advantages[key] = window
+		}
+	}
+}
+
 // unleveredAdvantageKey is the persistence window of a lane's 1x entry.
 func unleveredAdvantageKey(lane string) string { return lane + "|1x" }
 
