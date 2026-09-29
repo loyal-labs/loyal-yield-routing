@@ -286,12 +286,36 @@ func exitCycleStep(s Snapshot) (Action, string, int64, bool) {
 	if cash < 0 || cash >= payoff {
 		return "", "", 0, false
 	}
-	if s.CollateralIdleRaw > 0 || cash == 0 {
+	if s.CollateralIdleRaw > 0 {
+		// Released collateral that cannot fund the whole payoff is swapped
+		// for a partial repay; enough collateral keeps the full-funding swap.
+		if _, amount := payoffFundingSource(s, uint64(payoff)); amount > 0 {
+			return "", "", 0, false
+		}
+		return SwapCollateralToDebtStep, exitCycleSwapReason, s.CollateralIdleRaw, true
+	}
+	// Leave either no debt (the installed full payoff) or a remainder at or
+	// above the residual floor, never a dust debt a later payoff or release
+	// could trip on.
+	amount := min(cash, s.PositionDebtRaw-exitCycleResidualFloor(s.PositionDebtRaw))
+	if amount <= 0 {
 		return "", "", 0, false
 	}
-	return DeleverRouteStep, exitPartialRepayReason, min(cash, s.PositionDebtRaw-1), true
+	return DeleverRouteStep, exitPartialRepayReason, amount, true
 }
 
+// exitCycleSwapReason swaps a cycle's released collateral to debt; its
+// admission prices the rest of the multi-cycle exit.
+const exitCycleSwapReason = "exit_cycle_swap"
+
+// exitCycleResidualFloor is the smallest debt a partial repay leaves: 1% of
+// the debt, at least 1,000,000 raw ($1 on the six-decimal stables).
+// ponytail: fixed floor; KLend's own repay path has no minimum-debt check in
+// the worker's model (the market minimum-remaining value applies to
+// collateral withdrawals, which the release sizing already enforces).
+func exitCycleResidualFloor(debt int64) int64 {
+	return max(debt/100, 1_000_000)
+}
 
 // A release leaves the position at the release ceiling (55%). Debt cash
 // that cannot pay off the debt at or above this LTV is a cycle's funding.
