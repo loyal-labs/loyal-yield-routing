@@ -308,13 +308,16 @@ func exitCycleStep(s Snapshot) (Action, string, int64, bool) {
 // admission prices the rest of the multi-cycle exit.
 const exitCycleSwapReason = "exit_cycle_swap"
 
-// exitCycleResidualFloor is the smallest debt a partial repay leaves: 1% of
-// the debt, at least 1,000,000 raw ($1 on the six-decimal stables).
-// ponytail: fixed floor; KLend's own repay path has no minimum-debt check in
-// the worker's model (the market minimum-remaining value applies to
+// exitCycleResidualFloor is the smallest debt a partial repay leaves: 10% of
+// the debt (at least 1 raw). A cycle repays about half of a 1.75x debt, so
+// the floor never binds there; it stops cash that is just short of the
+// payoff from leaving dust debt, which the installed release -> full payoff
+// then clears instead.
+// ponytail: proportional floor; KLend's repay path has no minimum-debt check
+// in the worker's model (the market minimum-remaining value applies to
 // collateral withdrawals, which the release sizing already enforces).
 func exitCycleResidualFloor(debt int64) int64 {
-	return max(debt/100, 1_000_000)
+	return max(debt/10, 1)
 }
 
 // A release leaves the position at the release ceiling (55%). Debt cash
