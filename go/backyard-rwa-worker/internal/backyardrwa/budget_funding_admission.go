@@ -166,6 +166,13 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
+		// B2 1.75x: a release that cannot fund the payoff is a cycle's first
+		// leg; price the multi-cycle exit from its projected poststate.
+		if leverageLane(s.RouteLane) && s.PilotActive {
+			if plan, err, ok := priceLeverageExitAfterRelease(ctx, rpc, client, manifest, observation, decision, r, effects, releaseBound, releaseAccounts); ok {
+				return plan, err
+			}
+		}
 		route, _ := runtimeRoute(s.RouteLane)
 		obligation, err := decodeKaminoObligation(accountAt(releaseAccounts, route.Kamino.Obligation), route.Kamino)
 		if err != nil || obligation.collateralDepositedRaw != uint64(s.PositionCollateralRaw) {
@@ -204,6 +211,13 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			return phase3BridgeAdmission{}, err
 		}
 		action, amount := payoffFundingSource(s, future.UpperDebtRaw)
+		// B2 1.75x: a NAV before an exit that needs cycles prices the whole
+		// multi-cycle exit from the current (unchanged) accounts.
+		if uint64(debtCashRaw(s)) < future.UpperDebtRaw && amount == 0 && leverageLane(s.RouteLane) && s.PilotActive {
+			if plan, err, ok := priceLeverageExitFromCurrent(ctx, rpc, client, manifest, observation, decision, request, effects, route, rows); ok {
+				return plan, err
+			}
+		}
 		if uint64(debtCashRaw(s)) < future.UpperDebtRaw && amount == 0 {
 			// NAV -> release -> NAV -> funding -> NAV -> payoff. This is a
 			// future cost template; the release will be rebuilt and admitted

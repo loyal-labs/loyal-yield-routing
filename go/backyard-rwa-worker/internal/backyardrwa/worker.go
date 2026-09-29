@@ -428,6 +428,13 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			if evidence.Request.Action == SwapDebtToCollateralStep {
 				return database.admitPhase3LeverageSwap(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
 			}
+			if evidence.Request.Action == SwapCollateralToDebtStep && decision.Reason == exitCycleSwapReason {
+				plan, err := observePhase3ExitCycleSwapAdmission(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence)
+				if err != nil {
+					return err
+				}
+				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
+			}
 			if evidence.Request.Action == SwapStableToCollateralStep {
 				return database.admitPhase3EntrySwap(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
 			}

@@ -204,7 +204,8 @@ func TestBorrowAdmissionReservesFeeInterestReleaseAndCompleteReturn(t *testing.T
 		t.Fatal("increased interest bound passed final send")
 	}
 	binary.LittleEndian.PutUint16(reserve[kaminoReserveConfigOffset+2:], 0)
-	_, err = decodeKaminoPayoffWindow(plan.BorrowProjection.Accounts, ethenaUSDePYUSD, 42, 8)
+	// 7 installed steps + 3 per B2 exit cycle (at most 2) = 13.
+	_, err = decodeKaminoPayoffWindow(plan.BorrowProjection.Accounts, ethenaUSDePYUSD, 42, kaminoPayoffMaxWindowSteps+1)
 	assertBudgetHold(t, err, "invalid_payoff_execution_window")
 }
 

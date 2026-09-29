@@ -171,6 +171,12 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 		blockhash = LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
 	case JupiterSwapRequest:
 		blockhash = LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
+	case BridgeBuildRequest:
+		// B2 1.75x: a NAV before a multi-cycle exit prices from current state.
+		if r.Action != ReportNAV || !leverageLane(s.RouteLane) {
+			return phase3BridgeAdmission{}, budgetHold("invalid_projected_return_request")
+		}
+		blockhash = LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
 	default:
 		return phase3BridgeAdmission{}, budgetHold("invalid_projected_return_request")
 	}
@@ -184,10 +190,37 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	var funding *JupiterExecutionEvidence
 	var releaseCost, fundingCost ValuedTransactionCost
 	upperCash := cash
+	// B2 1.75x: when one release cannot fund the payoff, price the exit
+	// cycles (release -> swap -> partial repay) on cost-only account copies
+	// first; the payoff branch below then prices the final release from the
+	// post-cycle state over the longer 7 + 3N window.
+	var cycles []phase3BridgeExitCost
+	var firstPayoff *KaminoPayoffBound
+	windowSteps := int64(7)
+	if cash < bound.UpperDebtRaw && leverageLane(s.RouteLane) && s.PilotActive {
+		var cycleCash uint64
+		cycles, accounts, cycleCash, windowSteps, firstPayoff, err = priceLeverageExitCycles(ctx, rpc, client, m, route, s, accounts, projection.Slot, blockhash, cash)
+		if err != nil {
+			return phase3BridgeAdmission{}, err
+		}
+		if len(cycles) > 0 {
+			cash, upperCash = cycleCash, cycleCash
+			projection.Accounts = accounts
+			accounts = append([]ConfirmedAccount(nil), accounts...)
+			if position, err = decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino); err != nil {
+				return phase3BridgeAdmission{}, err
+			}
+			remaining = position.collateralDepositedRaw
+			if reserve, err = decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino); err != nil {
+				return phase3BridgeAdmission{}, err
+			}
+			s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 0
+		}
+	}
 	if cash < bound.UpperDebtRaw {
 		// Borrow -> NAV -> release -> NAV -> swap -> NAV -> payoff. Combine
 		// existing residue with the safe release; never require a dust-only swap.
-		limit, err := m.decodeKaminoRepaymentReleaseForMode(projection.Accounts, route, projection.Slot, 7, s.PilotActive)
+		limit, err := m.decodeKaminoRepaymentReleaseForMode(projection.Accounts, route, projection.Slot, windowSteps, s.PilotActive)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -337,14 +370,26 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 		return plan, err
 	}
 	plan.Payoff, plan.PayoffWithdrawal = &bound, tail.Input
+	if len(cycles) > 0 {
+		// Build/send revalidation compares the CURRENT position's payoff
+		// window and first release: bind the first cycle's, not the final
+		// post-cycle one.
+		plan.Payoff = firstPayoff
+	}
 	plan.PayoffRepayment, err = encode(payoff, payoffEffects)
 	if err != nil {
 		return plan, err
 	}
 	nav := phase3BridgeExitCost{Action: ReportNAV, Cost: tail.Exit[0].Cost, Template: tail.Exit[0].Template}
 	prefix := []phase3BridgeExitCost{nav}
+	for _, step := range cycles {
+		prefix = append(prefix, step)
+		if step.Action == DeleverRouteStep || step.Action == SwapCollateralToDebtStep {
+			prefix = append(prefix, nav)
+		}
+	}
 	if funding != nil {
-		plan.BorrowRelease, err = encode(release.Request, release.ExpectedEffects)
+		releaseInput, err := encode(release.Request, release.ExpectedEffects)
 		if err != nil {
 			return plan, err
 		}
@@ -352,8 +397,14 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 		if err != nil {
 			return plan, err
 		}
+		if len(cycles) == 0 {
+			plan.BorrowRelease = releaseInput
+		} else {
+			// The build/send release recheck binds the FIRST cycle release.
+			plan.BorrowRelease = cycles[0].Template
+		}
 		plan.FundingSwap = &phase3QuotedExit{Input: input, QuotedOutputRaw: funding.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperCash - cash, ProofLevel: "COST_ONLY_BORROW_RETURN_NOT_EXECUTED_FUNDING"}
-		prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: releaseCost, Template: plan.BorrowRelease}, nav, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: funding.Request.AmountRaw, Cost: fundingCost, Template: input}, nav)
+		prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: releaseCost, Template: releaseInput}, nav, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: funding.Request.AmountRaw, Cost: fundingCost, Template: input}, nav)
 	}
 	prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: payoff.AmountRaw, Cost: payoffCost, Template: plan.PayoffRepayment}, nav, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: withdrawal.AmountRaw, Cost: tail.CurrentCost, Template: tail.Input})
 	plan.Exit = append(prefix, tail.Exit...)
