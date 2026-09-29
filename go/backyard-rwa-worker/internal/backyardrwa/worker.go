@@ -266,6 +266,20 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 			observation.Snapshot.ManualReason = err.Error()
 		}
 	}
+	// The B2 level target is a durable planning input like the entry and the
+	// unwind: a construction refresh (no planning read) must see the same
+	// stored target as the outer decision, or leverage_up never matches
+	// (live 2026-09-29: every tick 'prepared evidence does not match').
+	observation.Snapshot.LeverageTargetLevel = 0
+	if reader, ok := p.journal.(interface {
+		LoadLeverageTarget(context.Context, string) (*LeverageTarget, error)
+	}); ok {
+		target, err := reader.LoadLeverageTarget(ctx, p.routeKey)
+		if err != nil {
+			return err
+		}
+		applyLeverageTarget(&observation.Snapshot, target)
+	}
 	if reader, ok := p.journal.(interface {
 		SelectorEntryPaused(context.Context, string) (bool, error)
 	}); ok {
@@ -631,7 +645,8 @@ func (w *Worker) Tick(ctx context.Context) error {
 	accruedRepayment := executionDecision == DeleverRouteStep && kaminoEvidence.Request.FullPayoff &&
 		fullDebtRepaymentRefreshed(preparedDecision, decision, observation.Snapshot)
 	if !decisionsEqual(decision, preparedDecision) && !accruedRepayment {
-		return confirmedObservationUnavailable(fmt.Errorf("prepared evidence does not match the refreshed decision"))
+		return confirmedObservationUnavailable(fmt.Errorf("prepared evidence does not match the refreshed decision: decided %s/%s/%d, refreshed %s/%s/%d",
+			preparedDecision.Action, preparedDecision.Reason, preparedDecision.AmountRaw, decision.Action, decision.Reason, decision.AmountRaw))
 	}
 	// Strict pre-decision shared-custody ownership proof (doc 26): a prepared
 	// AUTO-PYUSD spend is proofed against the prepared evidence's exact

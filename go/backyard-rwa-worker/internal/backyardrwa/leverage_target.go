@@ -53,6 +53,16 @@ func applyLeverageTarget(s *Snapshot, target *LeverageTarget) {
 	}
 }
 
+// LoadLeverageTarget reads the stored target for construction refreshes,
+// which merge durable state without a planning read.
+func (d *Database) LoadLeverageTarget(ctx context.Context, routeKey string) (*LeverageTarget, error) {
+	var raw []byte
+	if err := d.pool.QueryRow(ctx, `SELECT COALESCE(state->'leverageTarget','null'::jsonb) FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey).Scan(&raw); err != nil {
+		return nil, err
+	}
+	return decodeLeverageTarget(raw)
+}
+
 // RecordLeverageTarget stores a new target under the route fence and the
 // generation read with the observation it was decided from. It changes no
 // money and no selector state; a lost fence or a newer generation refuses.
