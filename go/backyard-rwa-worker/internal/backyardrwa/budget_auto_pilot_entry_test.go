@@ -328,7 +328,9 @@ func TestSelectorEntryManifestLaneAuthorityKeepsInstalledClosure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = decodeSelectorEntry(encoded); err == nil {
+	// An invalid stored entry decodes to "no entry" (paused), never an
+	// authorized one, and never an error that stops the worker.
+	if decoded, err := decodeSelectorEntry(encoded); err != nil || decoded != nil {
 		t.Fatal("embedded public decode admitted the candidate AUTO entry")
 	}
 	if absent.selectorEntryLaneAllowed(autoAUTOPYUSD.Lane) {

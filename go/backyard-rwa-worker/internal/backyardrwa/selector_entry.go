@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -38,7 +40,7 @@ func (e SelectorEntry) validate() error {
 func validateSelectorEntry(e SelectorEntry, laneAllowed func(string) bool) error {
 	if !laneAllowed(e.Lane) || e.ObservationID == "" || e.EquityRaw <= 0 || e.EquityRaw > PilotWorkingTrancheCapRaw ||
 		e.Quote.DestinationLane != e.Lane || !laneAllowed(e.Quote.SourceLane) || e.Quote.ObservationID != e.ObservationID || e.Quote.EquityRaw != e.EquityRaw || e.Quote.CostRaw < 0 || e.Quote.CostRaw >= e.EquityRaw || !sha256Pattern.MatchString(e.Quote.EvidenceID) ||
-		e.Quote.MinimumIdleRaw < uint64(e.EquityRaw) || !e.Quote.validBorrow() || !e.Quote.currentAtSlot(e.Quote.SampleSlot) || e.AcceptedAt.IsZero() || e.Quote.ObservedAt.IsZero() || e.Quote.ObservedAt.After(e.AcceptedAt) || !e.ExpiresAt.After(e.AcceptedAt) || e.ExpiresAt.After(e.Quote.ObservedAt.Add(30*time.Second)) {
+		e.Quote.MinimumIdleRaw < uint64(e.EquityRaw) || !e.Quote.validBorrow() || !e.Quote.storedWindowValid() || e.AcceptedAt.IsZero() || e.Quote.ObservedAt.IsZero() || e.Quote.ObservedAt.After(e.AcceptedAt) || !e.ExpiresAt.After(e.AcceptedAt) || e.ExpiresAt.After(e.Quote.ObservedAt.Add(30*time.Second)) {
 		return fmt.Errorf("invalid_selector_entry")
 	}
 	return nil
@@ -115,7 +117,9 @@ func applySelectorEntryWithLane(s *Snapshot, entry *SelectorEntry, now time.Time
 		return nil
 	}
 	if err := validateSelectorEntry(*entry, laneAllowed); err != nil {
-		return err
+		noteInvalidStoredSelectorEntry(*entry, err)
+		s.SelectorEntryPaused = true
+		return nil
 	}
 	if entry.Lane != s.RouteLane {
 		s.SelectorEntryPaused = true
@@ -182,9 +186,23 @@ func decodeSelectorEntryWithLane(raw []byte, laneAllowed func(string) bool) (*Se
 		return nil, fmt.Errorf("invalid_durable_selector_entry")
 	}
 	if err := validateSelectorEntry(entry, laneAllowed); err != nil {
-		return nil, err
+		// A stored entry that no longer validates authorizes nothing: treat
+		// it as absent (entry paused, like an expired one) instead of
+		// failing every observation and exiting the worker (live
+		// 2026-09-29). Logged once per distinct entry.
+		noteInvalidStoredSelectorEntry(entry, err)
+		return nil, nil
 	}
 	return &entry, nil
+}
+
+var invalidStoredEntryLogged sync.Map
+
+func noteInvalidStoredSelectorEntry(entry SelectorEntry, err error) {
+	key := entry.Lane + "|" + entry.ObservationID + "|" + entry.Quote.EvidenceID
+	if _, seen := invalidStoredEntryLogged.LoadOrStore(key, true); !seen {
+		_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: stored selector entry lane=%s is invalid (%v); entry paused, a fresh quote is required\n", entry.Lane, err)
+	}
 }
 
 // decodeSelectorEntryOnManifest resolves the entry lane authority through the

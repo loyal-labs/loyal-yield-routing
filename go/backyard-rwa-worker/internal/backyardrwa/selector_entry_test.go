@@ -137,9 +137,12 @@ func TestSelectorEntryEnrichesPreparationAndRefusesCorruptState(t *testing.T) {
 	if err := state.mergeJournal(context.Background(), &o); err != nil || o.Snapshot.SelectorEntryEquityRaw != entry.EquityRaw {
 		t.Fatal("planning omitted quote", err)
 	}
+	// A corrupt stored choice authorizes nothing and pauses entry; it never
+	// returns an error that would stop the worker (live 2026-09-29).
 	entry.Lane = "unapproved"
-	if err := state.mergeJournal(context.Background(), &o); err == nil {
-		t.Fatal("corrupt durable choice ignored")
+	o.Snapshot.SelectorEntryPaused = false
+	if err := state.mergeJournal(context.Background(), &o); err != nil || !o.Snapshot.SelectorEntryPaused || o.Snapshot.SelectorEntryEquityRaw != 0 || o.Snapshot.SelectorBorrowRaw != 0 {
+		t.Fatalf("corrupt durable choice not paused: err=%v paused=%t", err, o.Snapshot.SelectorEntryPaused)
 	}
 }
 

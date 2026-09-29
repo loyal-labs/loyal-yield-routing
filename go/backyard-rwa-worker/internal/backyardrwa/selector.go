@@ -233,6 +233,16 @@ type MoveQuote struct {
 	ValidThroughSlot int64 `json:"validThroughSlot"`
 }
 
+// storedWindowValid checks a PERSISTED quote's own slot window against the
+// fixed ceiling, not the runtime-measured observation lag: the lag is
+// re-measured (48/49 slots) and a quote stored under 49 must stay a valid
+// record when it later reads 48 (live 2026-09-29: the worker exited on
+// invalid_selector_entry). Freshness for new spending is still
+// currentAtSlot at the current slot, in applySelectorEntry and admission.
+func (q MoveQuote) storedWindowValid() bool {
+	return q.SampleSlot > 0 && q.ValidThroughSlot >= q.SampleSlot && q.ValidThroughSlot-q.SampleSlot <= budgetMaxObservationLagCeilingSlots
+}
+
 func (q MoveQuote) currentAtSlot(slot int64) bool {
 	return q.SampleSlot > 0 && q.ValidThroughSlot >= q.SampleSlot &&
 		q.ValidThroughSlot-q.SampleSlot <= observationLagSlots() &&
