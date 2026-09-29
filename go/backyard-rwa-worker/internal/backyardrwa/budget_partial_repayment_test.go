@@ -16,7 +16,15 @@ import (
 
 func partialRepaymentFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient) {
 	t.Helper()
-	o, m, rpc, client, accounts := usdcReturnFixture(t)
+	return partialRepaymentFixtureForLane(t, SelectedRouteID, variant)
+}
+
+// partialRepaymentFixtureForLane: on a B2 leverage lane the same position is
+// an exit cycle (unwinding at the release ceiling, below hard LTV), so the
+// decision is exit_partial_repay instead of hard_ltv_partial_repay.
+func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient) {
+	t.Helper()
+	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, lane)
 	route, _ := runtimeRoute(o.Snapshot.RouteLane)
 	accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset] = 80
 	accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset+1] = 90
@@ -31,8 +39,14 @@ func partialRepaymentFixture(t *testing.T, variant string) (Observation, Decisio
 	o.Snapshot.LiquidationThresholdBPS = 8000
 	o.Snapshot.PayoffDebtRaw = 1006
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], cash)
+	want := "hard_ltv_partial_repay"
+	if leverageLane(lane) {
+		o.Snapshot.LTVBPS, o.Snapshot.Unwind = 5500, true
+		o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.CollateralIdleValueRaw = 0, 0, 0
+		want = exitPartialRepayReason
+	}
 	d := Decide(o.Snapshot)
-	if d.Reason != "hard_ltv_partial_repay" || d.AmountRaw != int64(amount) {
+	if d.Reason != want || d.AmountRaw != int64(amount) {
 		t.Fatalf("partial decision: %+v snapshot %+v", d, o.Snapshot)
 	}
 	r, err := m.kaminoPacketForRoute(d.Action, kaminoLegRepay, uint64(d.AmountRaw), LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
@@ -360,4 +374,36 @@ func TestPartialRepaymentUnwindPersistsWithBudgetAndRollback(t *testing.T) {
 		t.Fatal("unspent attempt did not restore original reserve")
 	}
 
+}
+
+// B2 1.75x exit cycle: exit_partial_repay on OnRe runs the same measured
+// partial-repay admission (projection + complete remaining exit), repays
+// less than the whole debt, and writes no unwind intent of its own.
+func TestExitPartialRepayAdmissionOnLeverageLane(t *testing.T) {
+	o, d, e, m, rpc, client := partialRepaymentFixtureForLane(t, onreONycUSDC, "")
+	if d.Reason != exitPartialRepayReason || d.AmountRaw >= o.Snapshot.PositionDebtRaw {
+		t.Fatalf("decision %+v", d)
+	}
+	p, err := observePhase3PartialRepaymentAdmission(context.Background(), rpc, client, m, o, d, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.RepaymentProjection == nil || p.Payoff == nil || p.PayoffRepayment == nil || p.PayoffWithdrawal == nil || p.ExitAfterMicros <= 0 || len(p.Exit) == 0 {
+		t.Fatalf("incomplete exit: %+v", p)
+	}
+	for _, variant := range []string{"debt", "receipts", "collateral", "cash", "failed"} {
+		o, d, e, m, rpc, client := partialRepaymentFixtureForLane(t, onreONycUSDC, variant)
+		if _, err := observePhase3PartialRepaymentAdmission(context.Background(), rpc, client, m, o, d, e); err == nil {
+			t.Fatalf("%s: changed projection admitted", variant)
+		}
+	}
+	// A full repayment is never an exit cycle; Maple keeps only hard LTV.
+	full := d
+	full.AmountRaw = o.Snapshot.PositionDebtRaw
+	if _, err := observePhase3PartialRepaymentAdmission(context.Background(), rpc, client, m, o, full, e); err == nil {
+		t.Fatal("whole-debt repay admitted as a cycle")
+	}
+	if partialRepaymentLane(SelectedRouteID, exitPartialRepayReason) || !partialRepaymentLane(autoAUTOPYUSD.Lane, exitPartialRepayReason) || partialRepaymentLane(autoAUTOPYUSD.Lane, "hard_ltv_partial_repay") {
+		t.Fatal("partial-repay lane scope")
+	}
 }

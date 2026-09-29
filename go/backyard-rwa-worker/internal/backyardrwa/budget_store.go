@@ -394,9 +394,9 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 		}
 	}
 	recovery := decision.Action != VoltrAllocateToSquads
-	if decision.Reason == "hard_ltv_partial_repay" || plan.RepaymentProjection != nil {
+	if partialRepaymentReason(decision.Reason) || plan.RepaymentProjection != nil {
 		r, ok := request.(KaminoPrimeUSDCRequest)
-		if budget.Pilot == nil || !ok || decision.Action != DeleverRouteStep || decision.Reason != "hard_ltv_partial_repay" || plan.RepaymentProjection == nil || plan.Payoff == nil || budget.Families[family].ExitMicros == 0 || !decisionsEqual(manifest.DecideOnManifest(observation.Snapshot), decision) {
+		if budget.Pilot == nil || !ok || decision.Action != DeleverRouteStep || !partialRepaymentReason(decision.Reason) || plan.RepaymentProjection == nil || plan.Payoff == nil || budget.Families[family].ExitMicros == 0 || !decisionsEqual(manifest.DecideOnManifest(observation.Snapshot), decision) {
 			return budgetHold("partial_repayment_requires_reserved_pilot_position")
 		}
 		if _, err = validatePartialRepaymentProjection(r, effects, observation.Snapshot, *plan.RepaymentProjection); err != nil {
@@ -509,7 +509,7 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 		custodyBinding := custody
 		auth.CustodyProof = &custodyBinding
 	}
-	if plan.RepaymentProjection != nil {
+	if plan.RepaymentProjection != nil && decision.Reason == "hard_ltv_partial_repay" {
 		if err = d.persistPartialRepaymentUnwindTx(ctx, tx, plan, budget, intent); err != nil {
 			return err
 		}

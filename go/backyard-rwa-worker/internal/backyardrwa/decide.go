@@ -234,6 +234,10 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		}
 
 		remaining := max(int64(0), shortfall-s.VoltrStrategyIdleRaw)
+		// B2 1.75x exit: repay the cycle's funding before another release.
+		if action, reason, amount, ok := exitCycleStep(s); ok {
+			return decision(action, reason, amount)
+		}
 		// Fully flatten Kamino before any Squads USDC is staged to Voltr. The
 		// single-loop borrowed PRIME is the repayment buffer.
 		if s.PositionDebtRaw > 0 {

@@ -177,6 +177,10 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 	// user's claim amount", so it drains with no demand at all. Flat means every
 	// debt/collateral/bridge custody is cleared.
 	if s.CutoverDrain || s.Unwind || s.WithdrawalDemandRaw > 0 {
+		// B2 1.75x exit: repay the cycle's funding before another release.
+		if action, reason, amount, ok := exitCycleStep(s); ok {
+			return d(action, reason, amount)
+		}
 		if s.PositionDebtRaw > 0 {
 			// A normal drain needs a full payoff. A principal-only or partial
 			// buffer can fail the interest bound or KLend's residual-debt floor;

@@ -251,6 +251,9 @@ func leverageDownStep(s Snapshot) (Action, string, int64, bool) {
 	if debtCashRaw(s) >= payoff {
 		return DeleverRouteStep, leverageDownRepayReason, s.PositionDebtRaw, true
 	}
+	if action, reason, amount, ok := exitCycleStep(s); ok {
+		return action, reason, amount, true
+	}
 	switch action, amount := payoffFundingSource(s, uint64(payoff)); action {
 	case SwapCollateralToDebtStep:
 		return action, leverageDownSwapReason, amount, true
@@ -267,3 +270,29 @@ func leverageDownStep(s Snapshot) (Action, string, int64, bool) {
 func repaymentReleaseReason(reason string) bool {
 	return reason == "withdrawal_release_repayment_collateral" || reason == leverageDownReleaseReason
 }
+
+// exitCycleStep is the B2 1.75x exit cycle inside every full-payoff chain
+// (withdrawal, unwind/SWITCH, down move): when debt cash is below the payoff
+// and no more collateral can be released safely (the position already sits
+// at the release ceiling after a release+swap), repay what the cash covers
+// instead of releasing again. ok=false keeps the installed next leg.
+// The caller has already run hard-LTV safety, which preempts every cycle.
+func exitCycleStep(s Snapshot) (Action, string, int64, bool) {
+	if !leverageLane(s.RouteLane) || !s.PilotActive || s.PositionDebtRaw <= 1 || s.LTVBPS < leverageExitCycleLTVBPS {
+		return "", "", 0, false
+	}
+	payoff := max(s.PositionDebtRaw, s.PayoffDebtRaw)
+	cash := debtCashRaw(s)
+	if cash < 0 || cash >= payoff {
+		return "", "", 0, false
+	}
+	if s.CollateralIdleRaw > 0 || cash == 0 {
+		return "", "", 0, false
+	}
+	return DeleverRouteStep, exitPartialRepayReason, min(cash, s.PositionDebtRaw-1), true
+}
+
+
+// A release leaves the position at the release ceiling (55%). Debt cash
+// that cannot pay off the debt at or above this LTV is a cycle's funding.
+const leverageExitCycleLTVBPS int64 = 5000
