@@ -13,8 +13,8 @@ func TestDownMove175To15IsOneSizedCycle(t *testing.T) {
 		if !ok || action != DeleverRouteStep || reason != leverageDownPartialReleaseReason || receipts != 250_000_000 {
 			t.Fatalf("%s release %s %s %d", lane, action, reason, receipts)
 		}
-		// After the release: 250 idle collateral -> swap.
-		s.PositionCollateralRaw, s.PositionCollateralValueRaw = 1_500_000_000, 1_500_000_000
+		// After the release: 250 idle collateral -> swap (LTV 50%).
+		s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.LTVBPS = 1_500_000_000, 1_500_000_000, 5000
 		s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = 250_000_000, 250_000_000, 250_000_000
 		if action, reason, amount, _ := leverageDownPartialStepAt(s, true); action != SwapCollateralToDebtStep || reason != exitCycleSwapReason || amount != 250_000_000 {
 			t.Fatalf("%s swap %s %s %d", lane, action, reason, amount)

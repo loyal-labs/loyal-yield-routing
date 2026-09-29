@@ -348,6 +348,11 @@ func leverageDownPartialStepAt(s Snapshot, enabled bool) (Action, string, int64,
 		return "", "", 0, false
 	}
 	// Finish a started cycle first: swap released collateral, repay cash.
+	// Only while the move is running: position still above the 1.5x band.
+	// (an unknown LTV never starts or continues the move).
+	if s.LTVBPS <= leverageLevelLTVBPS(1.5)+leverageUpNearBPS {
+		return "", "", 0, false
+	}
 	if s.CollateralIdleRaw > 0 {
 		return SwapCollateralToDebtStep, exitCycleSwapReason, s.CollateralIdleRaw, true
 	}
