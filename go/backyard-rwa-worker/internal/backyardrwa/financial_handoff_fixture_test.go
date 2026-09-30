@@ -104,6 +104,7 @@ func TestBackyardFinancialHandoffFixture(t *testing.T) {
 			must(err)
 			entered := make(chan struct{})
 			runCtx, stop := context.WithCancel(ctx)
+			defer stop()
 			rpc := budgetBuildRPC(t, 5000, 42)
 			base := rpc.client.Transport
 			sends := 0
