@@ -32,7 +32,8 @@ def main():
                          'identity_patch': 'current worktree'},
         limits={'fixture_context_seconds': 20, 'postgres_setup_seconds': 30, 'ddl_seconds': 10, 'go_case_seconds': 90, 'go_process_seconds': 240, 'container_seconds': 300, 'build_seconds': 600},
         target_identity={'platform': sys.platform, 'test_binary_sha256': hashlib.sha256(args.test_binary.read_bytes()).hexdigest() if args.test_binary else None}, measurements={}, verdict='BLOCKED',
-        limitations=['Synthetic unsigned wire and deterministic RPC fixture; no chain receipt/custody or full migration replay proof.'])
+        limitations=['Synthetic unsigned wire and deterministic RPC fixture; no chain receipt/custody or full migration replay proof.',
+                    'SIGTERM child is a Worker/Store helper with expected ambiguous-send exit 1; actual production entrypoint and full financial family are not tested.'])
     if not args.ack_isolated:
         output['limitations'].append('isolated fixture acknowledgement required')
     elif not all((pg / name).is_file() for name in ('initdb', 'pg_ctl', 'psql')):
@@ -57,7 +58,7 @@ def main():
                 subprocess.run([str(pg / 'initdb'), '-D', str(data), '-A', 'trust', '--no-locale', '-E', 'UTF8', '-c', 'shared_memory_type=mmap'],
                                env=env, check=True, capture_output=True, timeout=30)
                 subprocess.run([str(pg / 'pg_ctl'), '-D', str(data), '-l', str(scratch / 'postgres.log'),
-                    '-o', f"-F -k {sock} -c listen_addresses=''", '-w', 'start'],
+                    '-o', f"-k {sock} -c listen_addresses=''", '-w', 'start'],
                     env=env, check=True, capture_output=True, timeout=30)
                 started = True
                 stage = 'fixture-ddl'
@@ -86,8 +87,9 @@ def main():
                         process.communicate()
                     raise
                 output['measurements'] = {'command': command, 'exit_code': process.returncode,
-                                          'stdout_tail': stdout, 'stderr_tail': stderr[-2000:]}
-                output['verdict'] = 'PASS' if process.returncode == 0 and stdout.count('RAW synthetic=true ') == 2 and '--- SKIP:' not in stdout else 'FAIL'
+                                          'stdout_tail': stdout, 'stderr_tail': stderr[-2000:],
+                                          'sigterm_helper_expected_exit_1_verified': stdout.count('CHILD_RESULT synthetic=true process=worker_store_helper exit_code=1 expected_record_verified=true production_entrypoint_tested=false') == 1}
+                output['verdict'] = 'PASS' if process.returncode == 0 and stdout.count('RAW synthetic=true ') == 3 and '--- SKIP:' not in stdout and output['measurements']['sigterm_helper_expected_exit_1_verified'] else 'FAIL'
                 if process.returncode and any(s in stderr for s in ('module lookup disabled by GOPROXY=off', 'requires go >=', 'cannot find package')):
                     output['verdict'] = 'BLOCKED'
                     output['limitations'].append('offline Go toolchain/module prerequisite missing')

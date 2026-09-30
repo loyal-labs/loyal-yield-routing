@@ -2,6 +2,7 @@
 """Allowlisted source archive; no traversal of env, git, deps or credentials."""
 import argparse
 import hashlib
+import gzip
 import json
 from pathlib import Path
 import subprocess
@@ -34,9 +35,16 @@ manifest = {'deployed_source_commit':deployed_source_commit,
             'source_identity':'allowlisted working-tree bytes; checkout commit does not attest uncommitted patches',
             'code_hashes':{name:digest for name,digest in file_hashes.items() if name.startswith('go/')},
             'files':file_hashes}
-with tarfile.open(out,'w:gz') as archive:
-    for f in files:
-        if f.is_symlink() or not f.is_file(): raise SystemExit('regular files only')
-        archive.add(f,arcname=str(f.relative_to(ROOT)),recursive=False)
+with out.open('wb') as destination:
+    with gzip.GzipFile(filename='', mode='wb', fileobj=destination, mtime=0) as compressed:
+        with tarfile.open(fileobj=compressed, mode='w', format=tarfile.USTAR_FORMAT) as archive:
+            for f in files:
+                if f.is_symlink() or not f.is_file(): raise SystemExit('regular files only')
+                info = archive.gettarinfo(str(f), arcname=str(f.relative_to(ROOT)))
+                info.uid = info.gid = info.mtime = 0
+                info.uname = info.gname = ''
+                info.mode = 0o644
+                with f.open('rb') as source:
+                    archive.addfile(info, source)
 out.with_suffix(out.suffix+'.manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
 print(json.dumps({'archive':str(out),'sha256':hashlib.sha256(out.read_bytes()).hexdigest(),'file_count':len(files),'manifest':str(out.with_suffix(out.suffix+'.manifest.json'))}))

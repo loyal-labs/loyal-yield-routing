@@ -83,3 +83,44 @@ hashes including `code_hashes`. HEAD alone does not identify uncommitted patches
 Optional `--checkout-commit <full SHA>` pins the caller's expected build checkout.
 This packaging-only revision does not invalidate or extend the behavioral scope
 of the separately retained parent-tested archive 80c2d464...d1c.
+
+## Lane B actual SIGTERM extension (pending parent execution)
+
+The current archive adds `os-sigterm` as a third case. A sanitized child test
+process opens only the runner's private socket/database and runs Worker.Run.
+Its fake transport checks exact persisted synthetic wire and committed broadcast
+intent, prints its actual lease token, then blocks until request cancellation.
+The parent sends OS SIGTERM, requires exit status zero within five seconds and
+reaps the child before acquiring the successor lease. The helper uses
+signal.NotifyContext, matching the production command's signal mechanism without
+invoking its signer/config startup. The successor runs two recovery ticks; the
+existing retained journal/reservation checks and stale predecessor write/release
+refusals apply to this case too. Successor is an in-process runtime, not another
+exec. The predecessor refusal is checked using its captured token after exit.
+No cryptographic signature validity, chain receipt, expiry, full-family drain,
+reboot, power-loss durability or production acceptance is claimed.
+
+Both parent and helper reject non-runner DSNs before connection (fixed database,
+no authority/user, only `/tmp/backyard-handoff-*/socket`). PostgreSQL now retains
+its default fsync setting; runtime storage remains disposable tmpfs. The runner
+requires three RAW cases, exit zero and no skipped cases for its narrow verdict.
+Earlier retained two-case evidence does not certify this extension.
+
+Exact parent recipe from this worktree (no host action performed by Lane B):
+
+```sh
+python3 scripts/hetzner-backyard-handoff-fixture/package.py /tmp/backyard-sigterm.tar.gz --checkout-commit "$(git rev-parse HEAD)"
+shasum -a 256 /tmp/backyard-sigterm.tar.gz /tmp/backyard-sigterm.tar.gz.manifest.json
+```
+
+Upload both files through the parent's authorized transport, verify both hashes,
+extract into a fresh private directory, and run the existing
+`linux-parent-run.sh` from the extracted root. Keep the source archive/manifest,
+image inspect, result JSON, stderr and exit files together. Packaging normalizes
+archive ownership, modes, timestamps and gzip metadata; identical inputs produce
+identical archive bytes. Public base-image tags still require recording resolved
+identities. No prior rehearsal address is assumed current or authorized.
+
+Local checks: targeted Go compilation/no-DB skip checks and the existing unsigned
+bridge serialization test; Python syntax and shell syntax. These provide no
+PostgreSQL or OS-signal measurement. Parent Linux execution is outstanding.
