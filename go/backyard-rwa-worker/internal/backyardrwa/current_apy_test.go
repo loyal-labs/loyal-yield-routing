@@ -171,3 +171,123 @@ func TestRecordCurrentAPYFencedWrite(t *testing.T) {
 		t.Fatal("write without a lease accepted")
 	}
 }
+
+// The stored summary is the printed line's numbers: the fixture line is
+// rebuilt from the stored lanes and must match exactly.
+func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
+	apr := 0.068
+	auto := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .0948, SupplyAPY: .002, BorrowCurve: []BorrowCurvePoint{{0, apr * 10_000}, {10_000, apr * 10_000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
+	onre := auto
+	onre.Lane, onre.NativeAPY = onreONycUSDC, .1102
+	var watch leverageWatch
+	lines := watch.observe([]LaneEconomics{onre, auto}, autoAUTOPYUSD.Lane, 1_207_050_000, true, func(l string) bool { return l == onreONycUSDC })
+	summary := lines[len(lines)-1]
+	if len(watch.summary) != 2 {
+		t.Fatalf("summary lanes %d", len(watch.summary))
+	}
+	for _, lane := range watch.summary {
+		parts := []string{}
+		for _, level := range leverageWatchLevels {
+			key := fmt.Sprintf("%.2f", level)
+			if bps, ok := lane.APYBPS[key]; ok {
+				parts = append(parts, fmt.Sprintf("%.2fx=%.2f", level, float64(bps)/100))
+			}
+		}
+		entry := "no"
+		if lane.Enterable {
+			entry = "yes"
+		}
+		rebuilt := fmt.Sprintf("%s(spread=%.2f enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", lane.Lane, float64(lane.SpreadBPS)/100, entry, strings.Join(parts, " "), lane.Levels[0], lane.Levels[1], lane.Levels[2])
+		if !strings.Contains(summary, rebuilt) {
+			t.Fatalf("stored lane %q not in the printed line %q", rebuilt, summary)
+		}
+	}
+	// A non-summary observe clears it: nothing is stored between summaries.
+	watch.observe([]LaneEconomics{auto}, autoAUTOPYUSD.Lane, 1_207_050_000, false, func(string) bool { return false })
+	if watch.summary != nil {
+		t.Fatal("stale summary kept")
+	}
+}
+
+func TestLeverageWatchMergeKeepsMissingLanes(t *testing.T) {
+	old := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
+	now := old.Add(time.Hour)
+	previous := &LeverageWatchSummary{ObservedAt: old, Lanes: []leverageWatchLane{
+		{Lane: autoAUTOPYUSD.Lane, ObservedAt: old, SpreadBPS: 100},
+		{Lane: onreONycUSDC, ObservedAt: old, SpreadBPS: 200},
+	}}
+	merged := mergeLeverageWatch(previous, LeverageWatchSummary{ObservedAt: now, Lanes: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane, ObservedAt: now, SpreadBPS: 150}}})
+	if len(merged.Lanes) != 2 || !merged.ObservedAt.Equal(now) {
+		t.Fatalf("%+v", merged)
+	}
+	for _, lane := range merged.Lanes {
+		switch lane.Lane {
+		case autoAUTOPYUSD.Lane:
+			if lane.SpreadBPS != 150 || !lane.ObservedAt.Equal(now) {
+				t.Fatalf("updated lane %+v", lane)
+			}
+		case onreONycUSDC:
+			if lane.SpreadBPS != 200 || !lane.ObservedAt.Equal(old) {
+				t.Fatalf("missing lane not kept with its older observedAt: %+v", lane)
+			}
+		}
+	}
+}
+
+func TestLeverageWatchWriteFailureOnlyLogs(t *testing.T) {
+	watch := &leverageWatch{summary: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane}}}
+	o := Observation{planning: &routePlanningState{generation: 3}}
+	logged := 0
+	publishLeverageWatch(context.Background(), time.Now(), watch, o, func(context.Context, LeverageWatchSummary, int64) error {
+		return budgetHold("leverage_watch_state_changed")
+	}, func(string, ...any) { logged++ })
+	if logged != 1 {
+		t.Fatal("refused write not logged")
+	}
+	publishLeverageWatch(context.Background(), time.Now(), watch, Observation{}, func(context.Context, LeverageWatchSummary, int64) error {
+		t.Fatal("wrote without a planning generation")
+		return nil
+	}, func(string, ...any) {})
+}
+
+// Against Postgres: stored and merged per lane, fenced, no version bump.
+func TestRecordLeverageWatchFencedWrite(t *testing.T) {
+	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
+	defer cancel()
+	defer db.Close()
+	key := fmt.Sprintf("leverage-watch-%d", time.Now().UnixNano())
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1}',1)`, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.AcquireRouteLease(ctx, key, "watch-worker", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
+	both := LeverageWatchSummary{ObservedAt: old, Lanes: []leverageWatchLane{
+		{Lane: autoAUTOPYUSD.Lane, ObservedAt: old, SpreadBPS: 100, APYBPS: map[string]int64{"1.00": 968}, Levels: []float64{1.5, 1.5, 1.5}},
+		{Lane: onreONycUSDC, ObservedAt: old, SpreadBPS: 200, APYBPS: map[string]int64{"1.00": 1102}, Levels: []float64{1, 1, 1}},
+	}}
+	if err := db.RecordLeverageWatch(ctx, key, both, 1); err != nil {
+		t.Fatal(err)
+	}
+	now := old.Add(time.Hour)
+	if err := db.RecordLeverageWatch(ctx, key, LeverageWatchSummary{ObservedAt: now, Lanes: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane, ObservedAt: now, SpreadBPS: 150}}}, 1); err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	var version int64
+	if err := db.pool.QueryRow(ctx, `SELECT state->'leverageWatch',state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&raw, &version); err != nil {
+		t.Fatal(err)
+	}
+	var stored LeverageWatchSummary
+	if err := json.Unmarshal(raw, &stored); err != nil || version != 1 || len(stored.Lanes) != 2 || !stored.ObservedAt.Equal(now) {
+		t.Fatalf("stored %s version %d err %v", raw, version, err)
+	}
+	if err := db.RecordLeverageWatch(ctx, key, both, 0); err == nil {
+		t.Fatal("stale version accepted")
+	}
+	db.setLease(nil)
+	if err := db.RecordLeverageWatch(ctx, key, both, 1); err == nil {
+		t.Fatal("write without a lease accepted")
+	}
+}

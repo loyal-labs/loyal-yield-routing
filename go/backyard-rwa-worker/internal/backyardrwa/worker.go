@@ -1214,6 +1214,10 @@ func Run(ctx context.Context, out io.Writer) error {
 					}
 					if time.Since(levWatchSummary) >= time.Hour {
 						levWatchSummary = time.Now()
+						// Display only: the same summary numbers, for the admin app.
+						publishLeverageWatch(ctx, time.Now(), levWatch, observed, func(ctx context.Context, summary LeverageWatchSummary, version int64) error {
+							return database.RecordLeverageWatch(ctx, productionRouteKey, summary, version)
+						}, func(format string, args ...any) { _, _ = fmt.Fprintf(out, format, args...) })
 					}
 					// B2 option 1: store the funded lane's level target. It
 					// never runs beside a selector move, unwind or open

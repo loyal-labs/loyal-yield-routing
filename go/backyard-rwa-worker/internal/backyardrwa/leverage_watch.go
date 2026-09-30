@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 )
 
 // B2 watch-only (docs/plans/b2-variable-leverage-design.md). Scores each lane
@@ -79,6 +80,19 @@ func nextLeverageLevel(steps []leverageStep, current float64, spreadAt func(floa
 
 type leverageWatch struct {
 	levels map[string]float64 // option|lane -> virtual level
+	// summary is the structured copy of the last summary line (nil when the
+	// last observe printed none): the numbers the line printed, for storage.
+	summary []leverageWatchLane
+}
+
+// leverageWatchLane is one lane of the summary line, as printed.
+type leverageWatchLane struct {
+	Lane       string           `json:"lane"`
+	ObservedAt time.Time        `json:"observedAt"`
+	SpreadBPS  int64            `json:"spreadBps"`
+	Enterable  bool             `json:"enterable"`
+	APYBPS     map[string]int64 `json:"apyBps"`
+	Levels     []float64        `json:"levels"`
 }
 
 // observe returns one line per virtual move and, when summary is set, one
@@ -88,6 +102,8 @@ func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equi
 		w.levels = map[string]float64{}
 	}
 	var lines, lanes []string
+	var summaryLanes []leverageWatchLane
+	w.summary = nil
 	sorted := append([]LaneEconomics(nil), markets...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Lane < sorted[j].Lane })
 	for _, m := range sorted {
@@ -107,23 +123,31 @@ func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equi
 			}
 		}
 		if summary {
+			lane := leverageWatchLane{Lane: m.Lane, APYBPS: map[string]int64{}, Enterable: enterable(m.Lane),
+				Levels: []float64{w.levels["1|"+m.Lane], w.levels["2|"+m.Lane], w.levels["3|"+m.Lane]}}
 			parts := []string{}
 			for _, level := range leverageWatchLevels {
 				if apy, ok := leverageLevelAPY(m, level, equityRaw, source); ok {
-					parts = append(parts, fmt.Sprintf("%.2fx=%.2f", level, apy*100))
+					bps := int64(math.Round(apy * 10_000))
+					lane.APYBPS[fmt.Sprintf("%.2f", level)] = bps
+					parts = append(parts, fmt.Sprintf("%.2fx=%.2f", level, float64(bps)/100))
 				}
 			}
 			spread, _ := spreadAt(1.5)
+			lane.SpreadBPS = int64(math.Round(spread * 10_000))
 			entry := "no"
-			if enterable(m.Lane) {
+			if lane.Enterable {
 				entry = "yes"
 			}
-			lanes = append(lanes, fmt.Sprintf("%s(spread=%.2f enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", m.Lane, spread*100, entry, strings.Join(parts, " "),
-				w.levels["1|"+m.Lane], w.levels["2|"+m.Lane], w.levels["3|"+m.Lane]))
+			// The printed line and the stored summary are the same values.
+			lanes = append(lanes, fmt.Sprintf("%s(spread=%.2f enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", m.Lane, float64(lane.SpreadBPS)/100, entry, strings.Join(parts, " "),
+				lane.Levels[0], lane.Levels[1], lane.Levels[2]))
+			summaryLanes = append(summaryLanes, lane)
 		}
 	}
 	if summary && len(lanes) > 0 {
 		lines = append(lines, "backyard-rwa-worker: leverage watch "+strings.Join(lanes, " "))
+		w.summary = summaryLanes
 	}
 	return lines
 }

@@ -3,9 +3,13 @@ package backyardrwa
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // CurrentAPY is the vault position's current net APY, published for the web
@@ -137,4 +141,90 @@ func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYT
 		return
 	}
 	throttle.wrote(now, value)
+}
+
+// LeverageWatchSummary is the stored copy of the hourly leverage-watch
+// summary line (display data for the admin app).
+type LeverageWatchSummary struct {
+	ObservedAt time.Time           `json:"observedAt"`
+	Lanes      []leverageWatchLane `json:"lanes"`
+}
+
+// mergeLeverageWatch keeps every previous lane the new summary does not
+// carry (with its older observedAt) and replaces the ones it does.
+func mergeLeverageWatch(previous *LeverageWatchSummary, next LeverageWatchSummary) LeverageWatchSummary {
+	out := LeverageWatchSummary{ObservedAt: next.ObservedAt}
+	seen := map[string]bool{}
+	for _, lane := range next.Lanes {
+		seen[lane.Lane] = true
+		out.Lanes = append(out.Lanes, lane)
+	}
+	if previous != nil {
+		for _, lane := range previous.Lanes {
+			if !seen[lane.Lane] {
+				out.Lanes = append(out.Lanes, lane)
+			}
+		}
+	}
+	sort.Slice(out.Lanes, func(i, j int) bool { return out.Lanes[i].Lane < out.Lanes[j].Lane })
+	return out
+}
+
+// RecordLeverageWatch merges and stores the summary under
+// state.leverageWatch with the same fence as RecordCurrentAPY (lease,
+// fencing token, state_version; no generation bump). The per-lane merge
+// reads the stored value in the same statement's row lock.
+func (d *Database) RecordLeverageWatch(ctx context.Context, routeKey string, summary LeverageWatchSummary, expectedVersion int64) error {
+	lease, err := d.currentLease()
+	if err != nil {
+		return err
+	}
+	if lease.RouteKey != routeKey {
+		return fmt.Errorf("leverage_watch_route_lease_mismatch")
+	}
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var raw []byte
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(state->'leverageWatch','null'::jsonb) FROM loyal_yield.multiply_route_states
+		WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp() FOR UPDATE`,
+		routeKey, lease.Owner, lease.FencingToken, expectedVersion).Scan(&raw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return budgetHold("leverage_watch_state_changed")
+		}
+		return err
+	}
+	var previous *LeverageWatchSummary
+	if len(raw) > 0 && string(raw) != "null" {
+		var stored LeverageWatchSummary
+		if json.Unmarshal(raw, &stored) == nil {
+			previous = &stored
+		}
+	}
+	merged, err := json.Marshal(mergeLeverageWatch(previous, summary))
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{leverageWatch}',$2::jsonb,true),updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(merged)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// publishLeverageWatch stores the summary the watch just printed. Every
+// failure only logs.
+func publishLeverageWatch(ctx context.Context, now time.Time, watch *leverageWatch, observed Observation, write func(context.Context, LeverageWatchSummary, int64) error, logf func(string, ...any)) {
+	if watch == nil || len(watch.summary) == 0 || observed.planning == nil {
+		return
+	}
+	summary := LeverageWatchSummary{ObservedAt: now.UTC()}
+	for _, lane := range watch.summary {
+		lane.ObservedAt = now.UTC()
+		summary.Lanes = append(summary.Lanes, lane)
+	}
+	if err := write(ctx, summary, observed.planning.generation); err != nil {
+		logf("backyard-rwa-worker: leverage watch not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
+	}
 }
