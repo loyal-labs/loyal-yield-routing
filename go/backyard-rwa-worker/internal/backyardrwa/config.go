@@ -56,6 +56,10 @@ const (
 	feeAccumulatorMaxBPS = int64(100)
 )
 
+// Deployment instance must be globally unique across hosts and restarts; the release
+// manifest supplies it. Each bounded component excludes whitespace and separators.
+var deploymentIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+
 var renderServiceIDPattern = regexp.MustCompile(`^srv-[a-z0-9]+$`)
 
 // Config is deliberately fixed for the MVP; route selection is not configurable.
@@ -76,6 +80,7 @@ func DefaultConfig() Config {
 type RuntimeConfig struct {
 	DatabaseURL, RPCURL, RouteKey string
 	RenderServiceID, ImageVersion string
+	DeploymentID                  string
 }
 
 func RuntimeConfigFromEnvironment() RuntimeConfig {
@@ -85,6 +90,7 @@ func RuntimeConfigFromEnvironment() RuntimeConfig {
 		RouteKey:        os.Getenv("BACKYARD_RWA_ROUTE_KEY"),
 		RenderServiceID: os.Getenv("RENDER_SERVICE_ID"),
 		ImageVersion:    os.Getenv("LOYAL_IMAGE_VERSION"),
+		DeploymentID:    os.Getenv("BACKYARD_RWA_DEPLOYMENT_ID"),
 	}
 }
 
@@ -100,11 +106,17 @@ func (c RuntimeConfig) Validate() error {
 }
 
 func (c RuntimeConfig) LeaseOwner() (string, error) {
-	if !renderServiceIDPattern.MatchString(c.RenderServiceID) {
-		return "", fmt.Errorf("Backyard worker requires a Render service ID")
-	}
 	if !immutableImageVersionPattern.MatchString(c.ImageVersion) {
 		return "", fmt.Errorf("Backyard worker requires an immutable image version")
+	}
+	if c.DeploymentID != "" {
+		if !deploymentIDPattern.MatchString(c.DeploymentID) {
+			return "", fmt.Errorf("Backyard worker requires deployment identity service:environment:instance")
+		}
+		return "deployment:" + c.DeploymentID + ":" + c.ImageVersion, nil
+	}
+	if !renderServiceIDPattern.MatchString(c.RenderServiceID) {
+		return "", fmt.Errorf("Backyard worker requires a deployment identity or Render service ID")
 	}
 	return "render:" + c.RenderServiceID + ":" + c.ImageVersion, nil
 }

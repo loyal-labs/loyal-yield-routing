@@ -16,6 +16,12 @@ const productionRouteKey = "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj
 
 var immutableImageVersionPattern = regexp.MustCompile(`^sha-[0-9a-f]{40}$`)
 var immutableRenderLeaseOwnerPattern = regexp.MustCompile(`^render:srv-[a-z0-9]+:sha-[0-9a-f]{40}$`)
+var immutableDeploymentLeaseOwnerPattern = regexp.MustCompile(`^deployment:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}:sha-[0-9a-f]{40}$`)
+
+func validLeaseOwner(owner string) bool {
+	return immutableRenderLeaseOwnerPattern.MatchString(owner) || immutableDeploymentLeaseOwnerPattern.MatchString(owner)
+}
+
 var errConfirmedObservationUnavailable = errors.New("confirmed route observation is temporarily unavailable")
 
 type Worker struct {
@@ -1054,7 +1060,7 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 // lost. Release is compare-and-clear on the exact fencing token, so a stale
 // process can never clear its successor's lease.
 func (w *Worker) Run(ctx context.Context, leases routeLeaser, owner string, config Config) (runErr error) {
-	if w == nil || leases == nil || !immutableRenderLeaseOwnerPattern.MatchString(owner) || config.validateLease() != nil {
+	if w == nil || leases == nil || !validLeaseOwner(owner) || config.validateLease() != nil {
 		return fmt.Errorf("invalid leased worker runtime")
 	}
 	if err := w.leaseHandoff.acquire(ctx, leases, w.routeKey, owner, config.LeaseTTL); err != nil {

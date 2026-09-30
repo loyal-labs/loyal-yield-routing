@@ -360,30 +360,38 @@ func (f *fakeRouteLeaseRuntime) snapshotEvents() []string {
 }
 
 func TestLeasedWorkerAcquiresBeforeTickAndReleasesOnCleanShutdown(t *testing.T) {
-	manifest := readyWorkerManifest(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	leasing := &fakeRouteLeaseRuntime{}
-	worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, manifest: manifest, runtime: tickRuntime{
-		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) {
-			leasing.record("tick")
-			cancel()
-			return nil, nil
-		},
-		observe: func(context.Context) (Observation, error) {
-			return tickObservation(Snapshot{ObservationID: "lease-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
-		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
-			return DecisionRecord{Status: Held}, nil
-		},
-	}}
-	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
-	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("a", 40), config)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected clean cancellation, got %v", err)
-	}
-	events := leasing.snapshotEvents()
-	if len(events) != 3 || !strings.HasPrefix(events[0], "acquire:") || events[1] != "tick" || events[2] != "release" {
-		t.Fatalf("wrong lease lifecycle order: %v", events)
+	for _, owner := range []string{
+		"render:srv-test:sha-" + strings.Repeat("a", 40),
+		"deployment:backyard:production:host-a-release-001:sha-" + strings.Repeat("a", 40),
+		"deployment:backyard:production:host-b-release-002:sha-" + strings.Repeat("a", 40),
+	} {
+		t.Run(owner, func(t *testing.T) {
+			manifest := readyWorkerManifest(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			leasing := &fakeRouteLeaseRuntime{}
+			worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, manifest: manifest, runtime: tickRuntime{
+				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) {
+					leasing.record("tick")
+					cancel()
+					return nil, nil
+				},
+				observe: func(context.Context) (Observation, error) {
+					return tickObservation(Snapshot{ObservationID: "lease-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
+				},
+				recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+					return DecisionRecord{Status: Held}, nil
+				},
+			}}
+			config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
+			err := worker.Run(ctx, leasing, owner, config)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected clean cancellation, got %v", err)
+			}
+			events := leasing.snapshotEvents()
+			if len(events) != 3 || events[0] != "acquire:"+productionRouteKey+":"+owner || events[1] != "tick" || events[2] != "release" {
+				t.Fatalf("wrong lease lifecycle order: %v", events)
+			}
+		})
 	}
 }
 
@@ -756,5 +764,38 @@ func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
 				t.Fatal("recovery tried a second signed send")
 			}
 		})
+	}
+}
+
+func TestProviderNeutralDeploymentIdentity(t *testing.T) {
+	t.Setenv("BACKYARD_RWA_DEPLOYMENT_ID", "backyard:production:host-a-release-001")
+	t.Setenv("LOYAL_IMAGE_VERSION", "sha-"+strings.Repeat("a", 40))
+	t.Setenv("RENDER_SERVICE_ID", "")
+	cfg := RuntimeConfigFromEnvironment()
+	first, err := cfg.LeaseOwner()
+	if err != nil || !validLeaseOwner(first) {
+		t.Fatalf("neutral owner rejected: %s %v", first, err)
+	}
+	cfg.DeploymentID = "backyard:production:host-b-release-002"
+	second, err := cfg.LeaseOwner()
+	if err != nil || first == second || !validLeaseOwner(second) {
+		t.Fatalf("distinct owner rejected: %s %v", second, err)
+	}
+	for _, id := range []string{" ", "backyard", "backyard:production:", "backyard:production:host/a", "backyard:production:host a", "backyard:production:" + strings.Repeat("x", 129)} {
+		cfg.DeploymentID = id
+		if _, err := cfg.LeaseOwner(); err == nil {
+			t.Fatalf("accepted invalid identity %q", id)
+		}
+	}
+	cfg.DeploymentID = "backyard:production:host-a-release-001"
+	cfg.ImageVersion = "latest"
+	if _, err := cfg.LeaseOwner(); err == nil {
+		t.Fatal("accepted mutable version")
+	}
+	for _, owner := range []string{"deployment:backyard:production:host:latest", "deployment:backyard:production:host/a:sha-" + strings.Repeat("a", 40)} {
+		leasing := &fakeRouteLeaseRuntime{}
+		if err := (&Worker{}).Run(context.Background(), leasing, owner, DefaultConfig()); err == nil || len(leasing.snapshotEvents()) != 0 {
+			t.Fatalf("invalid owner reached lease: %q", owner)
+		}
 	}
 }

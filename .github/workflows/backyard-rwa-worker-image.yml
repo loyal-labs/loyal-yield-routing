@@ -12,6 +12,7 @@ on:
       # Publish only this worker image for the capped pilot candidate.
       # Its fleet ancestry must not be merged into main as a release shortcut.
       - feat/voltr-rwa-selector
+      - codex/hetzner-backyard-current-afbe2ae-20260930
     paths:
       - .github/workflows/backyard-rwa-worker-image.yml
       - Dockerfile.backyard-rwa-worker
