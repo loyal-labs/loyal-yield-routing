@@ -24,6 +24,7 @@ on:
   push:
     branches:
       - main
+      - codex/hetzner-multiply-20260929
     paths:
       - .github/workflows/rust-image-build.yml
       - .github/workflows/worker-images.yml
