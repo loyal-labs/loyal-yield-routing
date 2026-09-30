@@ -319,3 +319,23 @@ Render's current Blueprint validator rejects `registryCredential` on these `runt
 The live services use private GHCR images through Render registry credential `loyal-ghcr` (`rgc-d8kic4bs9h5c73d37l40`). As of 2026-06-10, Render's Blueprint validator still reports private GHCR image refs as `image ... not found` because `runtime: image` private registry credentials cannot be represented in this Blueprint. The live service config is applied through the Render API with `image.registryCredentialId`.
 
 The monitor services deliberately remain separate Render services even though they share the same heavy image. They override the image command independently, so a restart, deploy, or failure of one monitor does not share a runtime process with the other.
+
+### Multiply deployment owner
+
+`multiply-route-worker run --owner OWNER` overrides `MULTIPLY_WORKER_OWNER`.
+Without either, the legacy `multiply:<pid>` owner remains compatible with Render.
+For cross-host/container deployments, explicitly provide a globally unique owner,
+for example `multiply:production:host-a-release-<unique-instance-id>`; include the
+service, environment, host/release and a fresh instance identity in the release
+manifest. A PID default does not establish uniqueness across hosts. Values must
+be 1–256 ASCII letters/digits or `_.:-`; blank or malformed overrides fail before
+runtime dependencies or signer configuration are loaded. Both targeted and
+next-route acquisition use this owner through the existing `WorkerRuntime.worker_id`.
+
+SIGTERM stops admission between ticks and waits for the current tick. This is
+not a bounded drain proof: forced stop during signing/broadcast requires the
+existing `multiply_operations` recovery workflow. Before activating a successor,
+prove predecessor inactivity, released/expired leases, and retained unresolved
+operation IDs, wire hashes/signatures and reservations with an explicit recovery
+owner. Recovery currently runs inside the normal worker tick; no recovery-only
+CLI mode is established by this identity patch.

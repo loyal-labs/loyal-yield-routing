@@ -14,6 +14,7 @@ enum Command {
 struct Options {
     command: Command,
     route_key: Option<String>,
+    owner: String,
 }
 
 #[tokio::main]
@@ -37,7 +38,7 @@ async fn main() {
             return Ok(());
         }
         let _observability = init_from_env("multiply-route-worker");
-        let runtime = runtime().await?;
+        let runtime = runtime(options.owner).await?;
         match options.command {
             Command::Run => run(&runtime, options.route_key.as_deref()).await,
             Command::Status => {
@@ -69,7 +70,7 @@ async fn main() {
     }
 }
 
-async fn runtime() -> Result<WorkerRuntime, Box<dyn Error>> {
+async fn runtime(owner: String) -> Result<WorkerRuntime, Box<dyn Error>> {
     let rpc_url = required_env("SOLANA_RPC_URL")?;
     let database_url = required_env("NEON_DATABASE_URL")?;
     let delegate = loyal_yield_orchestrator::policy_keypair_from_env()?;
@@ -90,30 +91,51 @@ async fn runtime() -> Result<WorkerRuntime, Box<dyn Error>> {
         ),
         fee_payer,
         delegate,
-        worker_id: format!("multiply:{}", process::id()),
+        worker_id: owner,
     })
 }
 
 fn parse_options() -> Result<Options, Box<dyn Error>> {
-    let mut args = env::args().skip(1);
+    parse_options_from(env::args().skip(1), env::var("MULTIPLY_WORKER_OWNER").ok())
+}
+
+fn parse_options_from(
+    mut args: impl Iterator<Item = String>,
+    env_owner: Option<String>,
+) -> Result<Options, Box<dyn Error>> {
     let command = match args.next().as_deref() {
         None | Some("run") => Command::Run,
         Some("status") => Command::Status,
         Some("--role-probe") => Command::RoleProbe,
         Some("help" | "--help" | "-h") => {
-            println!("multiply-route-worker [run|status|--role-probe] [--route ROUTE]");
+            println!("multiply-route-worker [run|status|--role-probe] [--route ROUTE] [--owner OWNER] (env: MULTIPLY_WORKER_OWNER)");
             process::exit(0);
         }
         Some(value) => return Err(format!("unknown command {value}").into()),
     };
     let mut route_key = None;
+    let mut owner = env_owner;
     while let Some(flag) = args.next() {
         match flag.as_str() {
+            "--owner" => owner = Some(args.next().ok_or("--owner requires a value")?),
             "--route" => route_key = Some(args.next().ok_or("--route requires a value")?),
             _ => return Err(format!("unknown option {flag}").into()),
         }
     }
-    Ok(Options { command, route_key })
+    let owner = owner.unwrap_or_else(|| format!("multiply:{}", process::id()));
+    if owner.is_empty()
+        || owner.len() > 256
+        || !owner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))
+    {
+        return Err("owner must be 1-256 ASCII letters, digits, or _.:-".into());
+    }
+    Ok(Options {
+        command,
+        route_key,
+        owner,
+    })
 }
 
 fn required_env(name: &str) -> Result<String, Box<dyn Error>> {
@@ -129,5 +151,35 @@ fn safe_error(error: &dyn Error) -> String {
         "external dependency failed; inspect terminal logs".to_owned()
     } else {
         message
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(args: &[&str], owner: Option<&str>) -> Result<Options, Box<dyn Error>> {
+        parse_options_from(args.iter().map(|s| s.to_string()), owner.map(str::to_owned))
+    }
+
+    #[test]
+    fn deployment_owner_cli_and_environment_contract() {
+        let legacy = options(&["run"], None).unwrap();
+        assert_eq!(legacy.owner, format!("multiply:{}", process::id()));
+        let a = options(&["run"], Some("multiply:production:host-a-release-001")).unwrap();
+        assert_eq!(a.owner, "multiply:production:host-a-release-001");
+        let b = options(
+            &["run", "--owner", "multiply:production:host-b-release-002"],
+            Some(&a.owner),
+        )
+        .unwrap();
+        assert_ne!(a.owner, b.owner);
+        assert_eq!(b.owner, "multiply:production:host-b-release-002");
+        for invalid in ["", " ", "host/a", "host\nother"] {
+            assert!(options(&["run", "--owner", invalid], None).is_err());
+            assert!(options(&["run"], Some(invalid)).is_err());
+        }
+        assert!(options(&["run", "--owner"], None).is_err());
+        assert!(options(&["run"], Some(&"a".repeat(257))).is_err());
     }
 }
