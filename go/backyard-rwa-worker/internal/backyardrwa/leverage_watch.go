@@ -43,6 +43,18 @@ func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source bool
 	return m.NativeAPY + m.SupplyAPY - math.Expm1(apr), true
 }
 
+// leverageLevelAPY is the lane's APY at a leverage level: token yield plus
+// (level-1) x the spread at that level. The single source for the leverage
+// watch summary ('apy 1.75x=') and the published currentApy, so the
+// dashboard and the app never disagree.
+func leverageLevelAPY(m LaneEconomics, level float64, equityRaw int64, source bool) (float64, bool) {
+	spread, ok := leverageSpread(m, level, equityRaw, source)
+	if !ok {
+		return 0, false
+	}
+	return m.NativeAPY + m.SupplyAPY + (level-1)*spread, true
+}
+
 // nextLeverageLevel applies at most one step from the current level.
 func nextLeverageLevel(steps []leverageStep, current float64, spreadAt func(float64) (float64, bool)) float64 {
 	for _, s := range steps {
@@ -97,8 +109,8 @@ func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equi
 		if summary {
 			parts := []string{}
 			for _, level := range leverageWatchLevels {
-				if spread, ok := spreadAt(level); ok {
-					parts = append(parts, fmt.Sprintf("%.2fx=%.2f", level, (m.NativeAPY+m.SupplyAPY+(level-1)*spread)*100))
+				if apy, ok := leverageLevelAPY(m, level, equityRaw, source); ok {
+					parts = append(parts, fmt.Sprintf("%.2fx=%.2f", level, apy*100))
 				}
 			}
 			spread, _ := spreadAt(1.5)
