@@ -1914,3 +1914,792 @@ fn voltr_reset_sequence() {
 
     assert!(rec.all_ok, "one or more reset steps failed; see {}", out.display());
 }
+
+
+// Focused unsigned calibration; this does NOT call the historical reset test.
+// Fixture overrides are synthetic local state, not instructions for production.
+const FEE_PROOF_VOLTR_SHA: &str =
+    "bf1c1831b3d6350f4340badb942bd2e7bfaca4aa89276cb65e8480aa30d44c56";
+const FEE_PROOF_ADAPTOR_SHA: &str =
+    "8361a469833fa17df8f62f9c4b8055aa859552fe8db7610b8fcb3af6ac6eb6d5";
+const Q48: u128 = 1u128 << 48;
+
+fn fee_proof_seed(base: &LiteSVM, admin_bps: u16) -> LiteSVM {
+    let mut svm = base.clone();
+    let clock: Clock = svm.get_sysvar();
+    let mut vault = svm.get_account(&key(VAULT)).unwrap();
+    vault.data[168..176].copy_from_slice(&1_000_000u64.to_le_bytes());
+    vault.data[448..456].copy_from_slice(&0u64.to_le_bytes());
+    vault.data[512..560].fill(0);
+    vault.data[514..516].copy_from_slice(&admin_bps.to_le_bytes());
+    vault.data[560..568].copy_from_slice(&(clock.unix_timestamp as u64 - 10).to_le_bytes());
+    vault.data[568..576].copy_from_slice(&(clock.unix_timestamp as u64 - 10).to_le_bytes());
+    vault.data[576..616].fill(0);
+    vault.data[616..624].copy_from_slice(&1_000u64.to_le_bytes());
+    vault.data[624..640].copy_from_slice(&Q48.to_le_bytes());
+    vault.data[640..648].copy_from_slice(&(clock.unix_timestamp as u64 - 10).to_le_bytes());
+    vault.data[672..688].fill(0);
+    svm.set_account(key(VAULT), vault).unwrap();
+    let mut receipt = svm.get_account(&key(RECEIPT)).unwrap();
+    receipt.data[104..112].copy_from_slice(&200_000u64.to_le_bytes());
+    receipt.data[128..136].fill(0);
+    // Historical dump is v1; the worker/current mainnet contract requires v2.
+    receipt.data[120] = 2;
+    svm.set_account(key(RECEIPT), receipt).unwrap();
+    let mut mint = svm.get_account(&key(LP_MINT)).unwrap();
+    mint.data[36..44].copy_from_slice(&999_000u64.to_le_bytes());
+    svm.set_account(key(LP_MINT), mint).unwrap();
+    set_token_account(&mut svm, key(IDLE_ATA), key(USDC), key(IDLE_AUTH), 800_000);
+    set_token_account(&mut svm, key(CUSTODY_ATA), key(USDC), key(STRATEGY_AUTH), 0);
+    set_token_account(
+        &mut svm,
+        key(SQUADS_USDC_ATA),
+        key(USDC),
+        key(SQUADS_VAULT),
+        200_000,
+    );
+    set_token_account(
+        &mut svm,
+        key(ADMIN_LP_ATA),
+        key(LP_MINT),
+        key(ADMIN),
+        999_000,
+    );
+    set_token_account(
+        &mut svm,
+        key(PENDING_ESCROW),
+        key(LP_MINT),
+        key(PENDING_RECEIPT),
+        0,
+    );
+    svm.set_account(key(PENDING_RECEIPT), Account::default())
+        .unwrap();
+    fund(&mut svm, &key(ADMIN), 1_000_000_000);
+    assert_eq!(snap(&svm, None).lp_incl_fees(), 1_000_000);
+    assert_eq!(snap(&svm, None).gap1(), 0);
+    svm
+}
+
+fn fee_proof_state(svm: &LiteSVM) -> Value {
+    let vault = account_data(svm, &key(VAULT));
+    let accounts: Vec<Value> = [
+        VAULT,
+        RECEIPT,
+        LP_MINT,
+        IDLE_ATA,
+        CUSTODY_ATA,
+        SQUADS_USDC_ATA,
+        ADMIN_LP_ATA,
+        TICKET,
+    ]
+    .iter()
+    .map(|addr| {
+        json!({
+            "address": addr, "dataBase64": STANDARD.encode(account_data(svm, &key(addr)))
+        })
+    })
+    .collect();
+    json!({"book": snap_json(&snap(svm, None)), "accounts": accounts,
+        "feeTerms": (512..528).step_by(2).map(|o| u16_le(&vault, o)).collect::<Vec<_>>(),
+        "performanceFeeTimestamp": u64_le(&vault, 560), "hwmTimestamp": u64_le(&vault, 640)})
+}
+
+fn fee_proof_record(
+    svm: &LiteSVM,
+    steps: &mut Vec<Value>,
+    label: &str,
+    before: Value,
+    r: &TxResult,
+) {
+    let after = fee_proof_state(svm);
+    eprintln!("FEE2000 {label}: {:?}", after["book"]);
+    steps.push(json!({"case": label, "before": before, "after": after,
+    "transaction": match r {
+        Ok((cu, logs)) => json!({"ok": true, "computeUnits": cu, "logs": logs}),
+        Err((error, logs)) => json!({"ok": false, "error": error, "logs": logs}),
+    }}));
+    if let Ok(path) = std::env::var("VOLTR_FEE_CALIBRATION_OUTPUT") {
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&json!({
+                "voltrBodySha256": FEE_PROOF_VOLTR_SHA, "adaptorBodySha256": FEE_PROOF_ADAPTOR_SHA,
+                "fixtureSource": "fixtures/voltr-repair/_manifest.json; synthetic local overrides",
+                "signaturesVerified": false, "broadcast": false, "steps": steps,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    assert!(r.is_ok(), "{label}: {r:?}");
+    let s = snap(svm, None);
+    assert_eq!(s.gap1(), 0, "{label}: gross book identity");
+    assert_eq!(
+        (s.fee_manager, s.fee_protocol),
+        (0, 0),
+        "only admin LP fees"
+    );
+    assert_eq!(s.locked_effective(), 0);
+    let v = account_data(svm, &key(VAULT));
+    assert_eq!(
+        (512..528)
+            .step_by(2)
+            .map(|o| u16_le(&v, o))
+            .collect::<Vec<_>>(),
+        vec![0, s.admin_perf_bps, 0, 0, 0, 0, 0, 0]
+    );
+}
+
+fn fee_proof_report(svm: &mut LiteSVM, steps: &mut Vec<Value>, label: &str, nav: u64) -> Snap {
+    // Synthetic external gain/loss: keep the reported NAV equal to actual local cash.
+    set_token_account(svm, key(SQUADS_USDC_ATA), key(USDC), key(SQUADS_VAULT), nav);
+    let before = fee_proof_state(svm);
+    let (r, _) = crank_deposit(svm, &strat1(), 0, nav);
+    fee_proof_record(svm, steps, label, before, &r);
+    snap(svm, None)
+}
+
+fn fee_proof_request(
+    svm: &mut LiteSVM,
+    steps: &mut Vec<Value>,
+    label: &str,
+    user: &User,
+    amount: u64,
+) -> (Pubkey, Pubkey, u128) {
+    let receipt = pda(
+        &[
+            b"request_withdraw_vault_receipt",
+            key(VAULT).as_ref(),
+            user.key.as_ref(),
+        ],
+        VOLTR,
+    );
+    let escrow = ata_for(&receipt, &key(LP_MINT));
+    let before = fee_proof_state(svm);
+    let r = send(
+        svm,
+        &[
+            cu_ix(),
+            create_ata_idempotent_ix(&user.key, &receipt, &key(LP_MINT)),
+            request_withdraw_vault_ix(&user.key, &user.lp, &receipt, &escrow, amount, false),
+        ],
+        &user.key,
+    );
+    fee_proof_record(svm, steps, label, before, &r);
+    let raw = account_data(svm, &receipt);
+    let quote = u128_le(&raw, 80);
+    assert_eq!(u64_le(&raw, 72), amount);
+    assert_eq!(token_amount_pk(svm, &escrow), amount);
+    steps.last_mut().unwrap()["receipt"] = json!({"address": receipt.to_string(), "escrow": escrow.to_string(), "dataBase64": STANDARD.encode(raw), "storedQuoteBits": quote.to_string()});
+    (receipt, escrow, quote)
+}
+
+fn fee_proof_claim(
+    svm: &mut LiteSVM,
+    steps: &mut Vec<Value>,
+    label: &str,
+    user: &User,
+    receipt: Pubkey,
+    escrow: Pubkey,
+    stored: u128,
+    amount: u64,
+) -> u64 {
+    let before_book = snap(svm, None);
+    let current_bits =
+        amount as u128 * before_book.tv as u128 * Q48 / before_book.lp_incl_fees() as u128;
+    let expected = (stored.min(current_bits) / Q48) as u64;
+    let demand_ceiling = stored.div_ceil(Q48) as u64;
+    let wf = u64_le(&account_data(svm, &receipt), 96);
+    set_clock_ts(svm, wf as i64 + 1);
+    let before = fee_proof_state(svm);
+    let balance = token_amount_pk(svm, &user.usdc);
+    let r = send(
+        svm,
+        &[
+            cu_ix(),
+            withdraw_vault_ix(&user.key, &receipt, &escrow, &user.usdc),
+        ],
+        &user.key,
+    );
+    fee_proof_record(svm, steps, label, before, &r);
+    let payout = token_amount_pk(svm, &user.usdc) - balance;
+    let after = snap(svm, None);
+    assert_eq!(
+        payout, expected,
+        "claim min(stored, current), then integer floor"
+    );
+    assert!(
+        payout <= demand_ceiling,
+        "worker's stored ceil bounds payout"
+    );
+    assert_eq!(
+        after.lp_supply,
+        before_book.lp_supply - amount,
+        "burn all escrow LP"
+    );
+    assert_eq!(after.fee_admin, before_book.fee_admin);
+    assert_eq!(after.tv, before_book.tv - payout);
+    assert_eq!(after.idle, before_book.idle - payout);
+    assert!(!account_exists(svm, &receipt));
+    assert_eq!(
+        token_amount_pk(svm, &escrow),
+        0,
+        "escrow is emptied, not necessarily closed"
+    );
+    steps.last_mut().unwrap()["quoteCheck"] = json!({"storedBits": stored.to_string(), "currentBits": current_bits.to_string(),
+        "storedCeiling": demand_ceiling, "expectedPayout": expected, "payout": payout, "escrowLpBurned": amount});
+    payout
+}
+
+#[test]
+#[ignore = "unsigned local mainnet pinned-binary calibration; explicit --ignored, no RPC or keys"]
+fn voltr_fee_2000_calibration() {
+    use sha2::{Digest, Sha256};
+    // Check both executable bodies BEFORE build_base loads them.
+    for (address, expected) in [
+        (
+            "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az",
+            FEE_PROOF_VOLTR_SHA,
+        ),
+        (
+            "DrvzixaVmAuPVVJPtP5wykb9mvgDWqZbvZau9oiCUpHu",
+            FEE_PROOF_ADAPTOR_SHA,
+        ),
+    ] {
+        assert_eq!(
+            format!("{:x}", Sha256::digest(program_elf(address))),
+            expected
+        );
+    }
+    let base = build_base().svm;
+    let approved = fee_proof_seed(&base, 2000);
+    let mut steps = vec![];
+
+    // Known exact HWM=1 and effective LP=1m. No rounding ambiguity at equality.
+    for (label, nav) in [("equality", 200_000), ("below-hwm", 100_000)] {
+        let mut svm = approved.clone();
+        let s = fee_proof_report(&mut svm, &mut steps, label, nav);
+        assert_eq!(s.tv, 800_000 + nav);
+        assert_eq!(s.receipt1, nav);
+        assert_eq!(s.lp_supply, 999_000);
+        assert_eq!(s.fee_admin, 0);
+        assert_eq!(s.hwm, Q48);
+    }
+    let mut positive = approved.clone();
+    let s = fee_proof_report(&mut positive, &mut steps, "gain-100000", 300_000);
+    assert_eq!(
+        (s.tv, s.receipt1, s.lp_supply, s.fee_admin),
+        (1_100_000, 300_000, 999_000, 18_519)
+    );
+    assert_eq!(s.hwm, 1_100_000u128 * Q48 / 1_018_519);
+
+    // Same gross wealth gain, different report cadence: repeated dilution matters.
+    let mut split_gain = approved.clone();
+    let first_half = fee_proof_report(
+        &mut split_gain,
+        &mut steps,
+        "split-gain-first-50000",
+        250_000,
+    );
+    assert_eq!(
+        (first_half.fee_admin, first_half.hwm),
+        (9_616, 1_050_000u128 * Q48 / 1_009_616)
+    );
+    let split = fee_proof_report(
+        &mut split_gain,
+        &mut steps,
+        "split-gain-second-50000",
+        300_000,
+    );
+    assert_eq!(split.tv, s.tv);
+    assert_eq!((split.fee_admin, split.hwm), (18_880, 303_885_123_254_673));
+    assert!(
+        split.lp_incl_fees() > s.lp_incl_fees(),
+        "two reports dilute holders more than one report"
+    );
+    assert!(
+        split.tv as u128 * 1_000_000 < 1_080_000u128 * split.lp_incl_fees() as u128,
+        "holder wealth is below nominal baseline + 0.8 * total gross gain"
+    );
+
+    let gain_hwm = s.hwm;
+    let gain_fee_ts = u64_le(&account_data(&positive, &key(VAULT)), 560);
+    assert_eq!(gain_fee_ts, s.clock_ts as u64);
+    assert_eq!(
+        u64_le(&account_data(&positive, &key(VAULT)), 640),
+        s.clock_ts as u64
+    );
+    let repeated = fee_proof_report(&mut positive, &mut steps, "unchanged-after-gain", 300_000);
+    assert_eq!(
+        (repeated.fee_admin, repeated.hwm),
+        (18_519, gain_hwm),
+        "unchanged report cannot charge twice"
+    );
+    assert_eq!(
+        u64_le(&account_data(&positive, &key(VAULT)), 560),
+        gain_fee_ts
+    );
+
+    let mut loss = approved.clone();
+    for (label, nav) in [
+        ("loss", 100_000),
+        ("partial-recovery", 150_000),
+        ("full-recovery", 200_000),
+    ] {
+        let s = fee_proof_report(&mut loss, &mut steps, label, nav);
+        assert_eq!(
+            (s.fee_admin, s.hwm),
+            (0, Q48),
+            "recovery to existing HWM is not profit"
+        );
+    }
+    let s = fee_proof_report(&mut loss, &mut steps, "one-raw-unit-above-hwm", 200_001);
+    assert_eq!((s.tv, s.fee_admin), (1_000_001, 1));
+    assert_eq!(s.hwm, Q48);
+    let s = fee_proof_report(&mut loss, &mut steps, "one-unit-unchanged", 200_001);
+    assert_eq!((s.fee_admin, s.hwm), (1, Q48));
+
+    // Fee configuration changes alone must not reset the historical HWM.
+    let mut zero = fee_proof_seed(&base, 0);
+    let s = fee_proof_report(&mut zero, &mut steps, "zero-fee-era-gain", 300_000);
+    assert_eq!(s.fee_admin, 0);
+    assert_eq!(
+        s.hwm,
+        1_100_000u128 * Q48 / 1_000_000,
+        "zero-fee era advances HWM"
+    );
+    let before = fee_proof_state(&zero);
+    let hwm_before_switch = s.hwm;
+    let r = send(
+        &mut zero,
+        &[
+            cu_ix(),
+            update_vault_config_ix(FIELD_ADMIN_PERFORMANCE_FEE, &2000u16.to_le_bytes()),
+        ],
+        &key(ADMIN),
+    );
+    fee_proof_record(
+        &zero,
+        &mut steps,
+        "switch-0-to-2000-after-zero-fee-report",
+        before,
+        &r,
+    );
+    assert_eq!(snap(&zero, None).hwm, hwm_before_switch);
+    let s = fee_proof_report(
+        &mut zero,
+        &mut steps,
+        "first-report-after-switch-unchanged",
+        300_000,
+    );
+    assert_eq!((s.fee_admin, s.hwm), (0, hwm_before_switch));
+    let s = fee_proof_report(
+        &mut zero,
+        &mut steps,
+        "first-new-gain-after-switch",
+        300_001,
+    );
+    assert_eq!(
+        (s.fee_admin, s.hwm),
+        (1, hwm_before_switch),
+        "tiny rounded fee must not reduce HWM"
+    );
+
+    let mut first = fee_proof_seed(&base, 0);
+    let before = fee_proof_state(&first);
+    let r = send(
+        &mut first,
+        &[
+            cu_ix(),
+            update_vault_config_ix(FIELD_ADMIN_PERFORMANCE_FEE, &2000u16.to_le_bytes()),
+        ],
+        &key(ADMIN),
+    );
+    fee_proof_record(
+        &first,
+        &mut steps,
+        "switch-before-unreported-gain",
+        before,
+        &r,
+    );
+    assert_eq!(snap(&first, None).hwm, Q48);
+    let s = fee_proof_report(
+        &mut first,
+        &mut steps,
+        "fee-first-report-crystallizes-existing-hwm-profit",
+        300_000,
+    );
+    assert_eq!((s.fee_admin, s.hwm), (18_519, gain_hwm));
+
+    // Pure allocation / return changes asset location, not NAV or fee eligibility.
+    let mut capital = approved.clone();
+    let before = fee_proof_state(&capital);
+    let (r, _) = crank_deposit(&mut capital, &strat1(), 100_000, 300_000);
+    fee_proof_record(&capital, &mut steps, "pure-allocation", before, &r);
+    assert_eq!(
+        (
+            snap(&capital, None).tv,
+            snap(&capital, None).fee_admin,
+            snap(&capital, None).hwm
+        ),
+        (1_000_000, 0, Q48)
+    );
+    let before = fee_proof_state(&capital);
+    let r = send(
+        &mut capital,
+        &[transfer_checked_ix(
+            &key(SQUADS_USDC_ATA),
+            &key(CUSTODY_ATA),
+            &key(SQUADS_VAULT),
+            100_000,
+        )],
+        &key(SQUADS_VAULT),
+    );
+    assert!(r.is_ok(), "stage pure return: {r:?}");
+    let (r, _) = crank_withdraw(&mut capital, &strat1(), 100_000, 200_000);
+    fee_proof_record(&capital, &mut steps, "pure-capital-return", before, &r);
+    let s = snap(&capital, None);
+    assert_eq!(
+        (s.tv, s.idle, s.receipt1, s.fee_admin, s.hwm),
+        (1_000_000, 800_000, 200_000, 0, Q48)
+    );
+
+    let mut paid_recovery = positive.clone();
+    for (label, nav) in [
+        ("loss-after-fee", 100_000),
+        ("partial-recovery-after-fee", 200_000),
+        ("full-recovery-after-fee", 300_000),
+    ] {
+        let s = fee_proof_report(&mut paid_recovery, &mut steps, label, nav);
+        assert_eq!((s.fee_admin, s.hwm), (18_519, gain_hwm));
+    }
+
+    // The capital-bearing entrypoints also crystallise real gains, not transfers.
+    let mut allocating_gain = approved.clone();
+    set_token_account(
+        &mut allocating_gain,
+        key(SQUADS_USDC_ATA),
+        key(USDC),
+        key(SQUADS_VAULT),
+        300_000,
+    );
+    let before = fee_proof_state(&allocating_gain);
+    let (r, _) = crank_deposit(&mut allocating_gain, &strat1(), 100_000, 400_000);
+    fee_proof_record(
+        &allocating_gain,
+        &mut steps,
+        "allocation-with-real-gain",
+        before,
+        &r,
+    );
+    let s = snap(&allocating_gain, None);
+    assert_eq!((s.tv, s.fee_admin, s.hwm), (1_100_000, 18_519, gain_hwm));
+    let mut returning_gain = approved.clone();
+    set_token_account(
+        &mut returning_gain,
+        key(SQUADS_USDC_ATA),
+        key(USDC),
+        key(SQUADS_VAULT),
+        300_000,
+    );
+    let before = fee_proof_state(&returning_gain);
+    let r = send(
+        &mut returning_gain,
+        &[transfer_checked_ix(
+            &key(SQUADS_USDC_ATA),
+            &key(CUSTODY_ATA),
+            &key(SQUADS_VAULT),
+            100_000,
+        )],
+        &key(SQUADS_VAULT),
+    );
+    assert!(r.is_ok());
+    let (r, _) = crank_withdraw(&mut returning_gain, &strat1(), 100_000, 200_000);
+    fee_proof_record(
+        &returning_gain,
+        &mut steps,
+        "return-with-real-gain",
+        before,
+        &r,
+    );
+    let s = snap(&returning_gain, None);
+    assert_eq!((s.tv, s.fee_admin, s.hwm), (1_100_000, 18_519, gain_hwm));
+
+    // Deposit after accrual uses virtual fee LP in the denominator, not mint supply alone.
+    let mut deposits = positive.clone();
+    let before = fee_proof_state(&deposits);
+    let b = snap(&deposits, None);
+    let (user, r, minted) = user_deposit(&mut deposits, 100_000);
+    fee_proof_record(&deposits, &mut steps, "deposit-after-accrual", before, &r);
+    assert_eq!(
+        minted,
+        (100_000u128 * b.lp_incl_fees() as u128 / b.tv as u128) as u64
+    );
+    assert_eq!(snap(&deposits, None).fee_admin, b.fee_admin);
+    assert_eq!(snap(&deposits, None).tv, b.tv + 100_000);
+    let (receipt, escrow, stored) = fee_proof_request(
+        &mut deposits,
+        &mut steps,
+        "request-after-accrual",
+        &user,
+        minted,
+    );
+    fee_proof_claim(
+        &mut deposits,
+        &mut steps,
+        "claim-request-after-accrual",
+        &user,
+        receipt,
+        escrow,
+        stored,
+        minted,
+    );
+
+    // Request before a true gain: net current price rises; stored quote caps payout.
+    let mut capped = approved.clone();
+    let before = fee_proof_state(&capped);
+    let (user, r, minted) = user_deposit(&mut capped, 100_000);
+    fee_proof_record(&capped, &mut steps, "deposit-before-accrual", before, &r);
+    assert_eq!(minted, 100_000);
+    let b = snap(&capped, None);
+    let (receipt, escrow, stored) = fee_proof_request(
+        &mut capped,
+        &mut steps,
+        "request-before-gain",
+        &user,
+        minted,
+    );
+    assert_eq!(stored, 100_000 * Q48);
+    assert_eq!(
+        snap(&capped, None).lp_supply,
+        b.lp_supply,
+        "escrow remains minted supply"
+    );
+    let s = fee_proof_report(&mut capped, &mut steps, "gain-after-request", 300_000);
+    assert!(minted as u128 * s.tv as u128 * Q48 / s.lp_incl_fees() as u128 > stored);
+    assert_eq!(
+        fee_proof_claim(
+            &mut capped,
+            &mut steps,
+            "claim-stored-cap-after-gain",
+            &user,
+            receipt,
+            escrow,
+            stored,
+            minted
+        ),
+        100_000
+    );
+
+    // A historical HWM can be below current wealth before fee activation.
+    // Neither the config-change timestamp nor the current wealth is a new hurdle.
+    for (label, nav, expected_fee, expected_tv) in [
+        ("existing-hwm-overhang-unchanged", 200_000, 0, 1_000_000),
+        ("existing-hwm-overhang-loss", 100_000, 0, 900_000),
+    ] {
+        let mut overhang = approved.clone();
+        let mut vault = overhang.get_account(&key(VAULT)).unwrap();
+        vault.data[624..640].copy_from_slice(&(Q48 / 2).to_le_bytes());
+        overhang.set_account(key(VAULT), vault).unwrap();
+        let s = fee_proof_report(&mut overhang, &mut steps, label, nav);
+        assert_eq!((s.fee_admin, s.tv), (expected_fee, expected_tv));
+        assert_eq!(
+            s.hwm,
+            expected_tv as u128 * Q48 / (1_000_000 + expected_fee) as u128
+        );
+    }
+
+    // Existing HWM overhang: fee crystallisation can lower a pre-fee current quote.
+    // This HWM is ONLY a synthetic fixture override, never calibrateHighWaterMark.
+    let mut diluted = approved.clone();
+    let mut vault = diluted.get_account(&key(VAULT)).unwrap();
+    vault.data[624..640].copy_from_slice(&(Q48 / 2).to_le_bytes());
+    diluted.set_account(key(VAULT), vault).unwrap();
+    let before = fee_proof_state(&diluted);
+    let (user, r, minted) = user_deposit(&mut diluted, 100_000);
+    fee_proof_record(
+        &diluted,
+        &mut steps,
+        "deposit-with-existing-hwm-overhang",
+        before,
+        &r,
+    );
+    let (receipt, escrow, stored) = fee_proof_request(
+        &mut diluted,
+        &mut steps,
+        "request-before-hwm-crystallisation",
+        &user,
+        minted,
+    );
+    fee_proof_report(
+        &mut diluted,
+        &mut steps,
+        "crystallise-existing-profit-one-new-raw-unit",
+        200_001,
+    );
+    let claim_branch = diluted.clone();
+    let s = snap(&diluted, None);
+    assert!(
+        minted as u128 * s.tv as u128 * Q48 / (s.lp_incl_fees() as u128) < stored,
+        "fee dilution can lower current quote"
+    );
+    let mut claim_branch = claim_branch;
+    let payout = fee_proof_claim(
+        &mut claim_branch,
+        &mut steps,
+        "claim-current-cap-after-dilution",
+        &user,
+        receipt,
+        escrow,
+        stored,
+        minted,
+    );
+    assert!(payout < (stored / Q48) as u64);
+
+    // Cancel under dilution returns all LP; re-request adopts the reduced current quote.
+    let before = fee_proof_state(&diluted);
+    let b = snap(&diluted, None);
+    let balance = token_amount_pk(&diluted, &user.lp);
+    let r = send(
+        &mut diluted,
+        &[
+            cu_ix(),
+            cancel_request_withdraw_vault_ix(&user.key, &user.lp, &receipt, &escrow),
+        ],
+        &user.key,
+    );
+    fee_proof_record(&diluted, &mut steps, "cancel-after-dilution", before, &r);
+    assert_eq!(token_amount_pk(&diluted, &user.lp) - balance, minted);
+    assert_eq!(snap(&diluted, None).lp_supply, b.lp_supply);
+    assert_eq!(snap(&diluted, None).fee_admin, b.fee_admin);
+    assert!(!account_exists(&diluted, &receipt));
+    assert_eq!(token_amount_pk(&diluted, &escrow), 0);
+    let (receipt, escrow, reduced) = fee_proof_request(
+        &mut diluted,
+        &mut steps,
+        "re-request-after-dilution",
+        &user,
+        minted,
+    );
+    assert!(reduced < stored);
+    fee_proof_claim(
+        &mut diluted,
+        &mut steps,
+        "claim-re-request-after-dilution",
+        &user,
+        receipt,
+        escrow,
+        reduced,
+        minted,
+    );
+
+    // A legitimate fee can exceed 1% without any invalid program state.
+    let s = snap(&positive, None);
+    assert!(10_000u128 * s.fee_admin as u128 > 100u128 * s.lp_incl_fees() as u128);
+    let mut withdrawal = approved.clone();
+    let s = fee_proof_report(
+        &mut withdrawal,
+        &mut steps,
+        "gain-below-one-percent-fee-ownership",
+        210_000,
+    );
+    assert!(10_000u128 * (s.fee_admin as u128) < 100u128 * s.lp_incl_fees() as u128);
+    let admin = User {
+        key: key(ADMIN),
+        usdc: ata_for(&key(ADMIN), &key(USDC)),
+        lp: key(ADMIN_LP_ATA),
+    };
+    set_token_account(&mut withdrawal, admin.usdc, key(USDC), admin.key, 0);
+    let (receipt, escrow, stored) = fee_proof_request(
+        &mut withdrawal,
+        &mut steps,
+        "large-withdrawal-request",
+        &admin,
+        820_000,
+    );
+    // Return enough real strategy cash to fund the claim. No gain, no additional fees.
+    let before = fee_proof_state(&withdrawal);
+    let r = send(
+        &mut withdrawal,
+        &[transfer_checked_ix(
+            &key(SQUADS_USDC_ATA),
+            &key(CUSTODY_ATA),
+            &key(SQUADS_VAULT),
+            40_000,
+        )],
+        &key(SQUADS_VAULT),
+    );
+    assert!(r.is_ok());
+    let (r, _) = crank_withdraw(&mut withdrawal, &strat1(), 40_000, 170_000);
+    fee_proof_record(
+        &withdrawal,
+        &mut steps,
+        "restore-for-large-withdrawal",
+        before,
+        &r,
+    );
+    fee_proof_claim(
+        &mut withdrawal,
+        &mut steps,
+        "large-withdrawal-claim",
+        &admin,
+        receipt,
+        escrow,
+        stored,
+        820_000,
+    );
+    let a = snap(&withdrawal, None);
+    assert_eq!(a.fee_admin, s.fee_admin);
+    assert!(
+        10_000u128 * a.fee_admin as u128 > 100u128 * a.lp_incl_fees() as u128,
+        "withdrawal alone can cross the 1% accumulator ownership heuristic"
+    );
+    // Program continues accepting a truthful unchanged report above that ratio.
+    let repeat = fee_proof_report(
+        &mut withdrawal,
+        &mut steps,
+        "valid-report-after-withdrawal-over-one-percent",
+        170_000,
+    );
+    assert_eq!(repeat.fee_admin, a.fee_admin);
+
+    // Optional unsigned local harvest: accumulated LP -> minted LP, with invariant S/NAV/HWM.
+    let mut harvest = positive.clone();
+    let payer = new_funded(&mut harvest);
+    let r = send(
+        &mut harvest,
+        &[
+            create_ata_idempotent_ix(&payer, &key(SQUADS_VAULT), &key(LP_MINT)),
+            create_ata_idempotent_ix(&payer, &key(PROTOCOL_TREASURY), &key(LP_MINT)),
+        ],
+        &payer,
+    );
+    assert!(r.is_ok());
+    let before = fee_proof_state(&harvest);
+    let b = snap(&harvest, None);
+    let r = send(&mut harvest, &[cu_ix(), harvest_fee_ix(&payer)], &payer);
+    fee_proof_record(
+        &harvest,
+        &mut steps,
+        "unsigned-local-harvest-parity",
+        before,
+        &r,
+    );
+    let a = snap(&harvest, None);
+    assert_eq!(a.fee_admin, 0);
+    assert_eq!(a.lp_supply, b.lp_supply + b.fee_admin);
+    assert_eq!(a.admin_lp, b.admin_lp + b.fee_admin);
+    assert_eq!(
+        (a.tv, a.idle, a.lp_incl_fees(), a.hwm),
+        (b.tv, b.idle, b.lp_incl_fees(), b.hwm)
+    );
+    if let Ok(path) = std::env::var("VOLTR_FEE_CALIBRATION_OUTPUT") {
+        let mut result: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        result["steps"] = json!(steps);
+        result["assertionsPassed"] = json!(true);
+        fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+    }
+    eprintln!(
+        "FEE2000 calibration assertions passed; {} recorded transactions",
+        steps.len()
+    );
+}
