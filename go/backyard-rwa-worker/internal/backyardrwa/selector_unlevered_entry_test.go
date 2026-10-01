@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"math"
 	"math/big"
 	"reflect"
 	"testing"
@@ -139,7 +140,8 @@ func TestUnleveredSwitchIsScoredAt1xAndNeedsPersistence(t *testing.T) {
 	first := selectUnlevered(in, SelectorState{})
 	c := onreCandidate(t, first)
 	invested := float64(1_677_000_000 - 3_000_000)
-	want := forecastGain(invested, invested, 0, in.Markets[1], 0, years) - 3_000_000
+	gross := forecastGain(invested, invested, 0, in.Markets[1], 0, years) - 3_000_000
+	want := float64(in.Snapshot.TotalVaultNAVRaw) * math.Expm1(.8*math.Log1p(gross/float64(in.Snapshot.TotalVaultNAVRaw)))
 	if !c.CostsKnown || c.BlockedReason != "" || c.GainRaw != want || c.BorrowAPR != 0 {
 		t.Fatalf("1x candidate %+v want gain %.0f", c, want)
 	}
@@ -167,10 +169,10 @@ func TestUnleveredSwitchIsScoredAt1xAndNeedsPersistence(t *testing.T) {
 	if r := selectUnlevered(in, lev); r.Action == "SWITCH" {
 		t.Fatal("leveraged window reused for a 1x switch")
 	}
-	// Cost that leaves benefit at exactly MinimumBenefit: never switches.
+	// Gross cost that removes the remaining investor edge: never switches.
 	in = unleveredSwitchFixtureAt(0, .16)
 	gap := onreCandidate(t, selectUnlevered(in, SelectorState{})).BenefitRaw
-	in = unleveredSwitchFixtureAt(int64(gap)-in.Policy.MinimumBenefitRaw+1, .16)
+	in = unleveredSwitchFixtureAt(int64((gap-float64(in.Policy.MinimumBenefitRaw))*1.25)+1, .16)
 	state = SelectorState{}
 	for i := 0; i <= 7; i++ {
 		r := selectUnlevered(in, state)

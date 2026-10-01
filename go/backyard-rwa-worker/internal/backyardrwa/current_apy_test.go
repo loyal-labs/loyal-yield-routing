@@ -38,7 +38,7 @@ func TestCurrentAPYMatchesTheLeverageWatchFigure(t *testing.T) {
 	// Debt-free: the 1x figure (native + supply).
 	s.PositionDebtValueRaw = 0
 	got, _ = currentPositionAPY(s, []LaneEconomics{m})
-	if got.APYBPS != int64(math.Round((m.NativeAPY+m.SupplyAPY)*10_000)) || got.Level != 1 {
+	if got.APYBPS != 767 || got.Level != 1 {
 		t.Fatalf("debt-free %+v", got)
 	}
 	// Flat: nothing computed, flat flag set.

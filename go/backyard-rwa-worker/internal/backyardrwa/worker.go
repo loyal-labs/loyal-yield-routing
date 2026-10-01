@@ -1187,7 +1187,7 @@ func Run(ctx context.Context, out io.Writer) error {
 			defer close(feedDone)
 			interval := time.Minute
 			if liveMode == "1" {
-				interval = 15 * time.Second
+				interval = selectorLiveSampleInterval
 			}
 			runSelectorSamples(feedCtx, interval, func(ctx context.Context) {
 				_ = feed.Refresh(ctx)

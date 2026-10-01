@@ -53,7 +53,17 @@ func leverageLevelAPY(m LaneEconomics, level float64, equityRaw int64, source bo
 	if !ok {
 		return 0, false
 	}
-	return m.NativeAPY + m.SupplyAPY + (level-1)*spread, true
+	return performanceFeeForecast(m.NativeAPY + m.SupplyAPY + (level-1)*spread), true
+}
+
+// performanceFeeForecast estimates continuous fee-paying annual growth, not
+// realized fees or a universal HWM bound. Losses never receive a fee rebate.
+// Money selection uses a separate asset/fee-LP rounding reserve.
+func performanceFeeForecast(apy float64) float64 {
+	if apy <= 0 {
+		return apy
+	}
+	return math.Expm1((1 - float64(approvedAdminPerformanceFeeBPS)/10_000) * math.Log1p(apy))
 }
 
 // nextLeverageLevel applies at most one step from the current level.

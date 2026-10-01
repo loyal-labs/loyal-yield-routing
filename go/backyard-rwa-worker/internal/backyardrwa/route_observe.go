@@ -855,6 +855,8 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	snapshot.LockedProfitDegradationSeconds = int64(nav.Voltr.LockedProfitDegradationSeconds)
 	snapshot.LastUpdatedLockedProfitRaw = int64(nav.Voltr.LastUpdatedLockedProfitRaw)
 	snapshot.LastLockedProfitReportUnix = int64(nav.Voltr.LastLockedProfitReportUnix)
+	snapshot.VoltrHighWaterMarkBits = nav.Voltr.HighWaterMarkBits
+	snapshot.VoltrHighWaterMarkKnown = nav.Voltr.HighWaterMarkKnown
 	snapshot.FeeAccumulatorRaw = int64(fees)
 	snapshot.LPSupplyInclFeesRaw = int64(supply)
 	snapshot.ManagerPerformanceFeeBPS = int64(nav.Voltr.ManagerPerformanceFeeBPS)

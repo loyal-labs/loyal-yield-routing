@@ -140,8 +140,9 @@ func TestMoveQuoteEconomicCostFallsBackAndBindsEvidence(t *testing.T) {
 		return math.NaN()
 	}
 	older, newer := gain(withBound), gain(withExpected)
-	// The expected-expense quote gains exactly the bound-minus-forecast wedge.
-	if math.Abs(newer-older-350_000) > 0.5 {
+	// Continuous dilution makes the shadow-only expense wedge slightly below
+	// the old flat 280,000 proxy; it still uses expected, not bound, expense.
+	if newer-older < 279_000 || newer-older > 280_000 {
 		t.Fatal("selector comparison ignored the forecast expense", older, newer)
 	}
 }

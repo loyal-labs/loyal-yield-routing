@@ -355,10 +355,11 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 		t.Fatal("forecast did not conserve actual deployment, cost and idle principal", got)
 	}
 	// More idle capital cannot increase productive collateral, borrowing, or
-	// modeled destination income. Keep uses the actual source holdings instead.
+	// gross destination income. The whole-wealth denominator does affect the
+	// continuous fee projection; KEEP still uses actual source holdings.
 	in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = 20_000_000, 20_000_000
 	smaller := SelectOpportunity(in, SelectorState{}).Candidates[0]
-	if c.GrossGainRaw != smaller.GrossGainRaw || c.GainRaw != smaller.GainRaw || c.BorrowAPR != smaller.BorrowAPR || smaller.IdleRaw != 10_000_000 {
+	if c.GrossGainRaw != smaller.GrossGainRaw || c.GainRaw <= smaller.GainRaw || c.GainRaw-smaller.GainRaw > 100 || c.BorrowAPR != smaller.BorrowAPR || smaller.IdleRaw != 10_000_000 {
 		t.Fatal(c, smaller)
 	}
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 3_000_000}
@@ -425,7 +426,8 @@ func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := forecastGain(collateral, collateral, debt, in.Markets[0], apr, in.Policy.Horizon.Hours()/(365.25*24)) - float64(in.Quotes[0].CostRaw)
+	gross := forecastGain(collateral, collateral, debt, in.Markets[0], apr, in.Policy.Horizon.Hours()/(365.25*24)) - float64(in.Quotes[0].CostRaw)
+	want := float64(in.Snapshot.TotalVaultNAVRaw) * math.Expm1(.8*math.Log1p(gross/float64(in.Snapshot.TotalVaultNAVRaw)))
 	if !got.CostsKnown || got.GainRaw != want {
 		t.Fatal("quoted borrow ignored", got, want)
 	}

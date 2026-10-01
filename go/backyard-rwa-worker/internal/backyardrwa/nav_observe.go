@@ -68,6 +68,8 @@ type VoltrVaultBook struct {
 	FeeAccumulatorAdminRaw         uint64
 	FeeAccumulatorProtocolRaw      uint64
 	LPSupplyDeadWeightRaw          uint64
+	HighWaterMarkBits              [16]byte // same-batch U80F48, little endian
+	HighWaterMarkKnown             bool
 }
 
 // LPTotalsRaw includes all unharvested fee LP and dead weight in the supply
@@ -123,6 +125,8 @@ func decodeVoltrVaultBook(account ConfirmedAccount) (VoltrVaultBook, error) {
 		FeeAccumulatorAdminRaw:         binary.LittleEndian.Uint64(account.Data[584:592]),
 		FeeAccumulatorProtocolRaw:      binary.LittleEndian.Uint64(account.Data[592:600]),
 		LPSupplyDeadWeightRaw:          binary.LittleEndian.Uint64(account.Data[616:624]),
+		HighWaterMarkBits:              [16]byte(account.Data[624:640]),
+		HighWaterMarkKnown:             true,
 		LastUpdatedLockedProfitRaw:     binary.LittleEndian.Uint64(account.Data[672:680]),
 		LastLockedProfitReportUnix:     binary.LittleEndian.Uint64(account.Data[680:688]),
 	}, nil

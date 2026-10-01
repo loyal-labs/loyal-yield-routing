@@ -96,7 +96,13 @@ func nonParWantBenefit(t *testing.T, debtUpper, proceedsFloor int64, equity int6
 	years := DefaultSelectorPolicy().Horizon.Hours() / (365.25 * 24)
 	growth := math.Expm1((math.Log1p(0.15) + math.Log1p(0)) * years)
 	interest := float64(debtUpper) * math.Expm1(0.04*years)
-	return (invested+float64(proceedsFloor))*growth - interest - float64(nonParCost)
+	gain := (invested+float64(proceedsFloor))*growth - interest - float64(nonParCost)
+	if gain <= 0 {
+		return gain
+	}
+	// This fixture is unarmed projection-only; the whole vault's 100m raw
+	// wealth is the denominator for continuous fee-paying growth.
+	return 100_000_000 * math.Expm1(.8*math.Log1p(gain/100_000_000))
 }
 
 func nonParBounds(t *testing.T, debt *BudgetPrice, collateral *BudgetPrice, route RuntimeRoute, validThrough int64) (int64, int64) {

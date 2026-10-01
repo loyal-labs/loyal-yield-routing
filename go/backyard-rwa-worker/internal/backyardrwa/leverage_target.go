@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -108,9 +109,10 @@ type leverageDecision struct {
 // decideLeverageTarget applies the option-1 rule to the funded lane. It runs
 // only on a settled position: no selector SWITCH/unwind, nothing nonterminal,
 // no withdrawal, and the selector itself chose KEEP. Up moves must also beat
-// MinimumBenefit plus an estimated move cost (Q2): gain = equity x (next -
-// current) x spread(next) x 30/365; cost = moved notional x 2 x UncertaintyBPS
-// + 3 transaction fees of 10,000 raw.
+// MinimumBenefit after the existing estimated move expense and the shared
+// whole-position fee reserve, compared to KEEP gross. Unarmed model fixtures
+// retain the old spread projection only. DOWN/no-change never use this gate.
+// Cost = moved notional x 2 x UncertaintyBPS + 3 fees of 10,000 raw.
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane}
 	if !leverageLane(s.RouteLane) || !s.PilotActive || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
@@ -161,7 +163,37 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		moved := float64(equity) * (out.Next - out.Current)
 		out.GainRaw = moved * spread * 30 / 365
 		out.CostRaw = moved*2*float64(p.UncertaintyBPS)/10_000 + 3*10_000
-		if out.GainRaw <= float64(p.MinimumBenefitRaw)+out.CostRaw {
+		if s.MonitorsArmed {
+			if !selectorFeeBaselineKnown(s) {
+				out.Next, out.Reason = out.Current, "fee_hwm_baseline_unavailable"
+				return out, true
+			}
+			// A pending target or unsupplied collateral is not the shared
+			// all-supplied, one-positive-exponential fee-reserve scenario.
+			if p.validate() != nil || out.Current != positionLevel || s.CollateralIdleRaw > 0 ||
+				!finite(out.CostRaw) || out.CostRaw > 1<<53 || s.PositionDebtValueRaw < 0 ||
+				!finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 {
+				out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
+				return out, true
+			}
+			years := p.Horizon.Hours() / (365.25 * 24)
+			collateral, debt := float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw)
+			keepGross := forecastGain(collateral, collateral, debt, *market, math.Log1p(market.CurrentBorrowAPY), years)
+			// Preserve the spread rule's projected source rate, including its
+			// existing utilization assumptions; do not silently reprice it.
+			nextAPR := math.Log1p(market.NativeAPY + market.SupplyAPY - spread)
+			candidate := pilotForecastEconomics(pilotEconomics{Debt: debt + moved, Proceeds: moved, APR: nextAPR},
+				collateral, *market, years, int64(math.Ceil(out.CostRaw)))
+			net, known := selectorFeeReservedGain(s, p.Horizon, candidate, float64(s.TotalVaultNAVRaw)-float64(equity))
+			if !known || !finite(keepGross) {
+				out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
+				return out, true
+			}
+			out.GainRaw = net - keepGross // fee- and expense-reserved edge
+			if out.GainRaw <= float64(p.MinimumBenefitRaw) {
+				out.Next, out.Reason = out.Current, "up_move_below_minimum_benefit"
+			}
+		} else if out.GainRaw <= float64(p.MinimumBenefitRaw)+out.CostRaw {
 			out.Next, out.Reason = out.Current, "up_move_below_minimum_benefit"
 		}
 	}

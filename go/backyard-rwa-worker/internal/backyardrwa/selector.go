@@ -369,7 +369,8 @@ func forecastGain(collateral, supplied, debt float64, e LaneEconomics, borrowAPR
 // raw debt-mint units; Debt and Proceeds are USDC valuations of the same
 // borrowing on opposite sides of the bound price interval.
 type pilotEconomics struct {
-	DebtRaw, Debt, Proceeds, APR, Gain float64
+	DebtRaw, Debt, Proceeds, APR, Gain    float64
+	PositiveIncome, InitialNAV, EndingNAV float64
 }
 
 // pilotQuoteEconomics projects a candidate from its bound quote. Reserve
@@ -384,7 +385,7 @@ func pilotQuoteEconomics(pilot bool, quote MoveQuote, m LaneEconomics, invested,
 		if !quote.validBorrow() {
 			return pilotEconomics{}, "bounded_borrow_unavailable"
 		}
-		return pilotEconomics{Gain: forecastGain(invested, invested, 0, m, 0, years) - float64(quote.selectorEconomicCostRaw())}, ""
+		return pilotForecastEconomics(pilotEconomics{}, invested, m, years, quote.selectorEconomicCostRaw()), ""
 	}
 	e := pilotEconomics{DebtRaw: invested * (singlePassLeverage - 1)}
 	e.Debt, e.Proceeds = e.DebtRaw, e.DebtRaw
@@ -404,9 +405,20 @@ func pilotQuoteEconomics(pilot bool, quote MoveQuote, m LaneEconomics, invested,
 		return pilotEconomics{}, err.Error()
 	}
 	e.APR = apr
+	return pilotForecastEconomics(e, invested, m, years, quote.selectorEconomicCostRaw()), ""
+}
+
+// All candidate collateral is supplied. A nonnegative asset exponential minus
+// a nonnegative borrow exponential has its minimum at an endpoint when the
+// initial collateral equity is positive. Reject the other case economically.
+func pilotForecastEconomics(e pilotEconomics, invested float64, m LaneEconomics, years float64, expense int64) pilotEconomics {
 	collateral := invested + e.Proceeds
-	e.Gain = forecastGain(collateral, collateral, e.Debt, m, apr, years) - float64(quote.selectorEconomicCostRaw())
-	return e, ""
+	income := collateral * math.Expm1((math.Log1p(m.NativeAPY)+math.Log1p(m.SupplyAPY))*years)
+	e.PositiveIncome = max(income, 0)
+	e.Gain = income - e.Debt*math.Expm1(e.APR*years) - float64(expense)
+	e.InitialNAV = collateral - e.Debt - float64(expense)
+	e.EndingNAV = collateral - e.Debt + e.Gain
+	return e
 }
 
 // SelectOpportunity never creates a transaction. The serialized worker must
@@ -431,6 +443,9 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 	hold := func(reason string) SelectorResult { out.Reason = reason; out.State = SelectorState{}; return out }
 	if err := p.validate(); err != nil || in.Now.IsZero() {
 		return hold("invalid_selector_policy")
+	}
+	if s.MonitorsArmed && !selectorFeeBaselineKnown(s) {
+		return hold("fee_hwm_baseline_unavailable")
 	}
 	base := Decide(s)
 	if base.Action == RecoverTransaction || base.Action == HoldManualRecovery || base.Action == DeleverRouteStep || base.Action == DeleverPrimeUSDCStep || base.Reason == "hard_ltv_buffer_swap" || s.Nonterminal != "" {
@@ -470,12 +485,19 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 	}
 	years := p.Horizon.Hours() / (365.25 * 24)
 	exposed := s.HasPosition || s.PositionDebtRaw > 0 || s.PositionCollateralRaw > 0 || s.CollateralIdleRaw > 0
+	var keepGrossGain float64
 	if exposed {
 		m, ok := markets[s.RouteLane]
 		if !ok || m.validateWithLane(in.Now, p, laneAllowed) != nil {
 			return hold("current_lane_economics_unavailable")
 		}
-		out.KeepGainRaw = forecastGain(float64(s.PositionCollateralValueRaw)+float64(s.CollateralIdleValueRaw), float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw), m, math.Log1p(m.CurrentBorrowAPY), years)
+		keepGrossGain = forecastGain(float64(s.PositionCollateralValueRaw)+float64(s.CollateralIdleValueRaw), float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw), m, math.Log1p(m.CurrentBorrowAPY), years)
+		// Armed money compares against KEEP's best-case gross gain. Unarmed
+		// shadow/model snapshots may still display a smooth net projection.
+		out.KeepGainRaw = keepGrossGain
+		if !s.MonitorsArmed {
+			out.KeepGainRaw = float64(s.TotalVaultNAVRaw) * performanceFeeForecast(keepGrossGain/float64(s.TotalVaultNAVRaw))
+		}
 		if !finite(out.KeepGainRaw) {
 			return hold("invalid_keep_forecast")
 		}
@@ -532,8 +554,9 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		fullDebt := economicAmount * (singlePassLeverage - 1)
 		fullAPR, fullErr := projectedBorrowAPR(m, fullDebt)
 		if fullErr == nil && !unpricedDebt {
-			gross := forecastGain(economicAmount*singlePassLeverage, economicAmount*singlePassLeverage, fullDebt, m, fullAPR, years)
-			if finite(gross) && gross-out.KeepGainRaw > float64(p.MinimumBenefitRaw)+float64(equity)*float64(p.UncertaintyBPS)/10_000 {
+			feed := pilotForecastEconomics(pilotEconomics{Debt: fullDebt, Proceeds: fullDebt, APR: fullAPR}, economicAmount, m, years, 0)
+			gain, ok := selectorFeeReservedGain(s, p.Horizon, feed, float64(s.TotalVaultNAVRaw)-economicAmount)
+			if ok && gain-out.KeepGainRaw > float64(p.MinimumBenefitRaw)+float64(equity)*float64(p.UncertaintyBPS)/10_000 {
 				sampleAdvantageWindow(&out, previous, lane, in.Now, p)
 			}
 		}
@@ -629,9 +652,16 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 			continue
 		}
 		c.BorrowAPR = economics.APR
-		c.GainRaw = economics.Gain
+		var feeKnown bool
+		c.GainRaw, feeKnown = selectorFeeReservedGain(s, p.Horizon, economics, float64(c.IdleRaw))
+		// Candidate pays a proved fee-value reserve; KEEP pays no fee in this
+		// comparison. Deduct unchanged uncertainty only after that money edge.
 		c.BenefitRaw = c.GainRaw - out.KeepGainRaw - float64(equity)*float64(p.UncertaintyBPS)/10_000
-		if !finite(c.GainRaw) || !finite(c.BenefitRaw) {
+		if !feeKnown {
+			c.BlockedReason = "fee_forecast_unavailable"
+			delete(out.State.Advantages, lane)
+			delete(out.State.Advantages, unleveredAdvantageKey(lane))
+		} else if !finite(c.GainRaw) || !finite(c.BenefitRaw) {
 			c.BlockedReason = "invalid_candidate_forecast"
 		}
 		// A non-USDC debt lane's persistence sample comes from the priced quote

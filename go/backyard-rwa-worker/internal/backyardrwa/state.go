@@ -146,6 +146,10 @@ type Snapshot struct {
 	// FeeAccumulatorRaw is unharvested fee LP; LPSupplyInclFeesRaw includes it
 	// and dead weight. Their ratio is warning-only. All eight same-batch fee
 	// terms must match the exact approved tuple before new decisions.
+	// Economic selection alone requires the coherent BOOK HWM baseline.
+	// Fixed-size bytes preserve Snapshot comparability; NAV/withdrawals ignore it.
+	VoltrHighWaterMarkBits    [16]byte
+	VoltrHighWaterMarkKnown   bool
 	FeeAccumulatorRaw         int64
 	LPSupplyInclFeesRaw       int64
 	ManagerPerformanceFeeBPS  int64

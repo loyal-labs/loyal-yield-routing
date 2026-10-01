@@ -12,8 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CurrentAPY is the vault position's current net APY, published for the web
-// app in multiply_route_states.state.currentApy. It is display data only:
+// CurrentAPY is the vault position's fee-paying APY estimate, published for the
+// web app in multiply_route_states.state.currentApy. It includes the approved
+// performance fee on profitable carry, not exact realized HWM fees. Display only:
 // no money path, admission or selector decision reads it.
 type CurrentAPY struct {
 	Lane       string    `json:"lane"`
