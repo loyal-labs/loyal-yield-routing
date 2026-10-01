@@ -2174,6 +2174,53 @@ fn voltr_fee_2000_calibration() {
     let approved = fee_proof_seed(&base, 2000);
     let mut steps = vec![];
 
+    // Recorded pilot-sized book, synthetic gain only. No live account mutation.
+    // Compare ten one-minute gains with the same gain reported once.
+    const PILOT_A: u64 = 1_207_762_608;
+    const PILOT_S: u64 = 3_256_644;
+    let mut pilot = approved.clone();
+    let mut vault = pilot.get_account(&key(VAULT)).unwrap();
+    vault.data[168..176].copy_from_slice(&PILOT_A.to_le_bytes());
+    vault.data[616..624].fill(0);
+    vault.data[624..640].copy_from_slice(&((PILOT_A as u128 * Q48) / PILOT_S as u128).to_le_bytes());
+    pilot.set_account(key(VAULT), vault).unwrap();
+    let mut mint = pilot.get_account(&key(LP_MINT)).unwrap();
+    mint.data[36..44].copy_from_slice(&PILOT_S.to_le_bytes());
+    pilot.set_account(key(LP_MINT), mint).unwrap();
+    set_token_account(&mut pilot, key(ADMIN_LP_ATA), key(LP_MINT), key(ADMIN), PILOT_S);
+    set_token_account(&mut pilot, key(IDLE_ATA), key(USDC), key(IDLE_AUTH), PILOT_A - 200_000);
+    let mut minute_reports = pilot.clone();
+    let mut minute_final = snap(&minute_reports, None);
+    for minute in 1..=10u64 {
+        advance_time(&mut minute_reports, 140, 56); // crank adds the remaining 4s
+        minute_final = fee_proof_report(&mut minute_reports, &mut steps,
+            &format!("pilot-minute-{minute}"), 200_000 + minute * 260);
+    }
+    let mut batch_report = pilot.clone();
+    advance_time(&mut batch_report, 1490, 596);
+    let batch_final = fee_proof_report(&mut batch_report, &mut steps,
+        "pilot-ten-minute-batch", 202_600);
+    assert_eq!(minute_final.tv, batch_final.tv);
+    assert!(minute_final.fee_admin > batch_final.fee_admin,
+        "same pilot gain has greater rounding dilution when reported each minute");
+    let mut hour_report = pilot.clone();
+    advance_time(&mut hour_report, 8990, 3596);
+    let hour_final = fee_proof_report(&mut hour_report, &mut steps,
+        "pilot-hour-batch", 215_600);
+    assert_eq!(hour_final.fee_admin, 9);
+    assert_eq!(minute_final.fee_admin, 8);
+    assert_eq!(batch_final.fee_admin, 2);
+    assert!(minute_final.tv as u128 * (PILOT_S as u128) <
+        PILOT_A as u128 * minute_final.lp_incl_fees() as u128,
+        "minute reporting can consume more than the entire small gross gain");
+    assert!(hour_final.tv as u128 * PILOT_S as u128 >
+        (PILOT_A + 12_000) as u128 * hour_final.lp_incl_fees() as u128,
+        "hourly aggregation retains more than 12,000 of 15,600 raw gain");
+
+    // Independent literal poststates are recorded for the worker regression.
+    eprintln!("PILOT_ROUNDING minute_fee_lp={} batch_fee_lp={} minute_hwm={} batch_hwm={}",
+        minute_final.fee_admin, batch_final.fee_admin, minute_final.hwm, batch_final.hwm);
+
     // Known exact HWM=1 and effective LP=1m. No rounding ambiguity at equality.
     for (label, nav) in [("equality", 200_000), ("below-hwm", 100_000)] {
         let mut svm = approved.clone();

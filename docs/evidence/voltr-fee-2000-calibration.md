@@ -17,3 +17,18 @@ The approved tuple is manager performance 0, admin performance 2000, and all man
 The pinned executable accrues fee LP while leaving gross strategy NAV intact. A 100,000-raw gain from assets/effective LP of 1,000,000 accrues 18,519 admin LP and net HWM bits `303992831141806`. Fees use the existing HWM and positive report profit. The fee-setting timestamp leaves that HWM unchanged. A zero-fee report advances HWM; the fee config instruction preserves it. For synthetic unchanged/loss reports above a low existing HWM, fees remain zero and HWM advances. A positive one-raw-unit report can crystallise old above-HWM profit. Two 50,000-raw gain reports produce final effective LP `1018880` and price `1100000/1018880`, versus `1018519` and `1100000/1018519` for one 100,000-raw report. Repeated dilution and rounding put holder gain below nominal 80% of total gross gain. A flat 20% haircut is a nominal forecast proxy; a guaranteed lower bound needs explicit cadence, HWM and accrual-state assumptions.
 
 This proof provides local executable evidence. Production activation and end-to-end worker verification remain separate work. Coverage excludes other nonzero fee terms, nonzero degradation, concurrent/report-interleaved user flows, every U80F48/u64 boundary or worker decision persistence. Live fixture refresh would be a separate explicit read-only mainnet operation; this test never fetches fixtures automatically.
+
+## Pilot share precision and report cadence
+
+The proof also seeds the recorded pilot book's assets/effective supply
+(`1207762608` / `3256644`) with a synthetic HWM at its share-price floor.
+Ten reports, each adding 260 raw USDC, accrue eight fee LP. A single report
+of the same 2,600 raw gain accrues two LP. Original-holder gain is approximately
+-366.888 raw for the frequent reports versus +1,858.277 raw for the combined
+report. One report of 15,600 raw gain accrues nine LP, retaining about 78.6%
+of that gain for original holders. The gain, timing and HWM seeds are local
+scenarios, not observations of production losses.
+
+This expands the proof to 58 unsigned transactions. The worker's approved
+hourly routine-report policy addresses this rounding cost. Withdrawal and
+post-transaction reporting remain separate, higher-priority paths.
