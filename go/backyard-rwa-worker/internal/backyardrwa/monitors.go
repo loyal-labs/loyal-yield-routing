@@ -136,6 +136,13 @@ func capitalMutationReports(s Snapshot) bool {
 	return s.CapitalMutated && navDriftOutsideTolerance(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw))
 }
 
+// scheduledNAVReportDue batches ordinary accrual, not capital changes. Keep
+// the existing one-minute aging fallback after a reconciled capital mutation.
+func scheduledNAVReportDue(s Snapshot) bool {
+	return s.LastReportAgeSeconds >= int64(routineNAVReportInterval.Seconds()) ||
+		(s.CapitalMutated && s.LastReportAgeSeconds >= 60)
+}
+
 // navDriftOutsideTolerance compares the independently observed NAV with the
 // last reported NAV using max(bps of reported, floor) raw units.
 func navDriftOutsideTolerance(observed, reported uint64) bool {

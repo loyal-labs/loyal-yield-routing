@@ -155,7 +155,7 @@ func TestAdmittedEntryAllocatesBeforeAgeOnlyReport(t *testing.T) {
 		s.RouteLane, s.StrategyKey, s.PilotActive = lane, lane, true
 		s.SelectorEntryEquityRaw, s.VoltrIdleRaw = 200_000_000, 256_387_976
 		s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw = PilotWorkingTrancheCapRaw, PilotWorkingTrancheCapRaw, PilotWorkingTrancheCapRaw
-		s.LastReportAgeSeconds = 75
+		s.LastReportAgeSeconds = 3605
 		if d := Decide(s); d.Action != VoltrAllocateToSquads || d.AmountRaw != 200_000_000 {
 			t.Fatalf("%s: admitted entry did not allocate before age-only report: %+v", lane, d)
 		}

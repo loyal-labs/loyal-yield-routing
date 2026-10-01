@@ -28,9 +28,57 @@ The current live adaptor is v2; the v3.3 upgrade is a separate finalized gate. T
 
 ## Monitoring and recovery
 
-The integration page is read-only evidence for AUM/NAV, custody, position, route state, deposits, withdrawals, and operation history. M1 holds on a book identity mismatch; M2 on a receipt/armed-NAV mismatch; M3 on custody residue or an unexpected staged amount; M4 when idle does not cover pending quotes; M5 on reserve/oracle/status/emergency-mode failure; M6 on Voltr or adaptor identity drift; M7 on fee accumulator or nonzero performance-fee LP; and M8 on a ticket sequence mismatch or unknown nonzero sequence. Any monitor red or route latch is fail-closed `HOLD`.
+The integration page is read-only evidence for AUM/NAV, custody, position, route state, deposits, withdrawals, and operation history. M1 holds on a book identity mismatch; M2 on a receipt/armed-NAV mismatch; M3 on custody residue or an unexpected staged amount; M4 when idle does not cover pending quotes; M5 on reserve/oracle/status/emergency-mode failure; M6 on Voltr or adaptor identity drift; M7 on unapproved fee terms or invalid LP accounting; and M8 on a ticket sequence mismatch or unknown nonzero sequence. Any monitor red or route latch is fail-closed `HOLD`.
 
 For a nonterminal operation, reconcile its persisted wire/signature and finalized protocol/account post-state first. Never blind-resend, never replay a one-shot leg, and never retry by hand. Preserve the journal and use the reset runbook’s same-journal reconcile path after an ambiguous send. Recovery may continue only after the relevant finalized readback and reconciliation pass.
+
+## Worker fee policy (2026-10-01 support change)
+
+The approved fee tuple is admin performance 2000 bps (20%) and all seven other
+terms zero. Different terms cause manual recovery. Checked LP arithmetic
+rejects overflow before a money action. Gross strategy NAV remains assets minus
+debt; effective supply includes unharvested fee LP. Stored withdrawal-request
+ceilings remain unchanged.
+
+Accumulated fee LP above 1% of effective supply warns at most once per 30
+minutes. It does not stop NAV reports or withdrawal unwinds. Automatic
+harvesting and on-chain HWM resets remain outside this change.
+
+Routine NAV reports run hourly. At the recorded pilot book's LP precision,
+minute-by-minute reports can round fees above the gain being reported. The
+pinned-program local proof reproduces this: ten 260-raw gains accrue eight LP,
+versus two LP for one 2,600-raw gain. One 15,600-raw hourly gain accrues nine LP,
+leaving about 78.6% to existing holders. These are synthetic gain scenarios,
+not a claim about live losses or a guaranteed effective fee.
+
+Withdrawal reports retain their one-minute freshness rule. Reconciled capital
+changes retain their existing reporting fallback; required post-transaction
+reports and hard-LTV repayment keep priority. The worker still observes risk
+at its existing poll cadence. The stored report timestamp stays exact; normal
+NAV freshness follows the hourly policy and never covers an unreported capital
+mutation. Operator canary entries still require a report younger than one minute.
+
+Economic entries, rotations and leverage increases require a coherent book
+HWM baseline. Unknown inputs or historical profit overhang hold economic moves
+and clear advantage windows, without adding a global NAV/withdrawal latch.
+Candidate forecasts reserve fees on the modeled NAV rise to its peak, plus
+pending profit, repeated dilution and rounding. KEEP receives an upper return
+bound using one terminal fee without rounding; it is not treated as fee-free.
+Both paths assume terminal NAV settlement, fixed modeled rates, unchanged
+holders and no later capital flows, safety interventions or foreign cranks.
+
+The rounding budget counts hourly reports plus the bounded source and
+destination recipes (at most 32 steps each), and initial/final reports—not
+worker polls or selector wakeups. Minimum benefit, movement costs, uncertainty
+and transaction spending limits remain in force. Low-margin moves can still
+fail those checks; hourly reporting does not waive costs.
+
+The shared displayed APY remains a continuous fee-paying estimate:
+`expm1(0.8 * log1p(apy))` for positive carry, with zero and losses unchanged.
+It is not a cadence-specific realized return. The historical zero-fee canary
+below records its original configuration, not today's approved terms.
+
+Deployment, latch clearance and monitoring restart require separate approval.
 
 ## Joint test plan with Backyard Finance
 

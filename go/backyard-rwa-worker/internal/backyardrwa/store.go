@@ -1099,7 +1099,7 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 		ComputedStrategyNAV: fmt.Sprint(snapshot.StrategyNAVRaw), ReportSequence: snapshot.ReportSequence,
 		ReportSlot: snapshot.ReportSequence, ReportObservedAt: reportUpdatedAt.Format(time.RFC3339),
 		ReportSnapshotDigest: snapshot.ReportSnapshotDigest,
-		NAVFresh:             !snapshot.CapitalMutated && snapshot.LastReportAgeSeconds < 60,
+		NAVFresh:             !snapshot.CapitalMutated && !snapshot.PostMutationNAVRequired && snapshot.LastReportAgeSeconds < int64(routineNAVReportInterval.Seconds()),
 	}, nil
 }
 

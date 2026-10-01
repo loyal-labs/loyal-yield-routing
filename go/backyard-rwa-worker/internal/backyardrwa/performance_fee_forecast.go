@@ -20,25 +20,54 @@ func selectorFeeBaselineKnown(s Snapshot) bool {
 	return littleInt(s.VoltrHighWaterMarkBits[:]).Cmp(floor) >= 0
 }
 
-// selectorFeeReportBound covers one fee-bearing bridge instruction per tick,
-// regular polling AND early selector wakes. Production Run uses DefaultConfig;
-// the live collector is serialized at selectorLiveSampleInterval. Boundary
-// ticks include an initial/pending report and a final report. This forward
-// scenario assumes no restarts/faster replacement executor or foreign cranks.
+// selectorFeeReportBound covers hourly routine reports plus every possible
+// fee-bearing step in the bounded source-exit and destination-entry recipes.
+// Initial/pending and terminal reports each get an additional slot. Polls and
+// selector wakeups do not accrue fees. Like the route forecast, this assumes
+// one modeled move, no later capital flows, safety events or foreign cranks.
 func selectorFeeReportBound(horizon time.Duration) int64 {
-	ceil := func(interval time.Duration) int64 { return int64((horizon-1)/interval + 1) }
-	return ceil(DefaultConfig().PollInterval) + ceil(selectorLiveSampleInterval) + 4
+	return int64((horizon-1)/routineNAVReportInterval+1) + 2*maxSelectorRecipeSteps + 2
+}
+
+// selectorKeepGainUpper favors KEEP: one terminal crystallization without LP
+// rounding. With fixed fees, no outside cashflow and an ordinary initial HWM,
+// splitting gains across reports cannot leave original holders more wealth
+// than this bound. A prior high-water mark exempts recovery, not new profit.
+// Candidate forecasts still reserve repeated dilution and both ceilings.
+func selectorKeepGainUpper(s Snapshot, gain float64) float64 {
+	if !s.MonitorsArmed {
+		return float64(s.TotalVaultNAVRaw) * performanceFeeForecast(gain/float64(s.TotalVaultNAVRaw))
+	}
+	ending := math.Floor(math.Nextafter(float64(s.TotalVaultNAVRaw)+gain, math.Inf(-1)))
+	if !selectorFeeBaselineKnown(s) || !finite(ending) || ending <= 0 || ending > 1<<53 {
+		return gain
+	}
+	scale := new(big.Int).Lsh(big.NewInt(1), 48)
+	baseline := new(big.Int).Mul(littleInt(s.VoltrHighWaterMarkBits[:]), big.NewInt(s.LPSupplyInclFeesRaw))
+	book := new(big.Int).Lsh(big.NewInt(s.VoltrTotalValueRaw), 48)
+	if baseline.Cmp(book) < 0 {
+		// Q48 floor dust is not guaranteed chargeable profit: an unchanged
+		// report charges no performance fee, even with a large LP supply.
+		baseline = book
+	}
+	eligible := new(big.Int).Lsh(big.NewInt(int64(ending)), 48)
+	eligible.Sub(eligible, baseline)
+	if eligible.Sign() <= 0 {
+		return gain
+	}
+	// Floor the minimum fee: never make KEEP worse by rounding it up.
+	fee := new(big.Int).Mul(eligible, big.NewInt(approvedAdminPerformanceFeeBPS))
+	fee.Quo(fee, new(big.Int).Mul(scale, big.NewInt(10_000)))
+	return gain - float64(fee.Int64())
 }
 
 // selectorFeeReservedGain is a conditional lower estimate under the existing
 // fixed-rate, unchanged-holder/no-external-cashflow route forecast. Candidate
-// fee-positive income is at most collateral's positive income plus unreported
+// fee-positive income is at most the modeled NAV rise to its peak plus unreported
 // current NAV and sub-Q48 book dust. Each crystallization adds <=1 asset raw
 // from fee rounding and <=1 LP valued at maxNAV/current effective supply.
 // Existing/extra treasury LP can grow by at most maxNAV/minNAV. Reserve all
-// that value, then compare to KEEP gross; never haircut a nominal money edge.
-// ponytail: worst-case report cadence can hold small pilots; tighter bounds
-// need a separately proved cadence/rounding model, not a nominal fee proxy.
+// that value, then compare to KEEP's upper return; never haircut a nominal edge.
 func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics, idle float64) (float64, bool) {
 	if !finite(e.Gain) || s.TotalVaultNAVRaw <= 0 {
 		return 0, false

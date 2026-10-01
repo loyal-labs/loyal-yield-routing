@@ -179,6 +179,7 @@ func TestSelectorEvaluationDurabilityFencesAndBudgetContinuity(t *testing.T) {
 	other.CostRaw -= 5_000
 	other.EvidenceID = sha256Bytes([]byte("different-gross-input"))
 	in.Quotes = append([]MoveQuote{other}, in.Quotes...)
+	armFeeAuthorityFixture(t, &in.Snapshot)
 	history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{in.Markets[0].Lane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
 	state := map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
 	raw, _ := json.Marshal(state)
@@ -494,6 +495,7 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	q.EquityRaw, q.BorrowReceiveRaw, q.MinimumIdleRaw = 10_000_000, 5_000_000, 99_900_000
 	q.EvidenceID = sha256Bytes([]byte("complete-switch-recipe"))
 	q.SourceExit = &selectorExitBound{MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: 5_001_000, GrossMicros: 10_000_000}
+	armFeeAuthorityFixture(t, &in.Snapshot)
 	history := SelectorResult{State: SelectorState{SourceLane: s.RouteLane, Advantages: map[string]AdvantageWindow{in.Markets[0].Lane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
 	entry := selectorEntryFixture(in.Now, s.RouteLane, 10_000_000)
 	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}, "selector": map[string]any{"result": history}, "selectorEntry": entry})
@@ -659,6 +661,7 @@ func TestSelectorSameLaneSwitchReusesExitReservationAndEntersOnlyAfterFlat(t *te
 	q := &in.Quotes[0]
 	q.EvidenceID = sha256Bytes([]byte("complete-same-lane-recipe"))
 	q.SourceExit = &selectorExitBound{MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: 5_001_000, GrossMicros: 10_000_000}
+	armFeeAuthorityFixture(t, &in.Snapshot)
 	entry := selectorEntryFixture(in.Now, s.RouteLane, 10_000_000)
 	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}, "selector": map[string]any{"result": SelectorResult{State: sameLaneSelectorHistory(in)}}, "selectorEntry": entry})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
@@ -716,6 +719,7 @@ func TestSelectorSameLaneSwitchReusesExitReservationAndEntersOnlyAfterFlat(t *te
 	flatIn.Quotes[0].MinimumIdleRaw = 100_000_000
 	flatIn.Quotes[0].SourceExit = nil
 	flatIn.Quotes[0].EvidenceID = sha256Bytes([]byte("flat-same-lane-reentry"))
+	armFeeAuthorityFixture(t, &flatIn.Snapshot)
 	refresh(&flatIn)
 	result, err = db.RecordSelectorEvaluation(ctx, key, flatIn, s.Slot, 3)
 	if err != nil || result.Action != "ENTER" || result.DestinationLane != s.RouteLane {

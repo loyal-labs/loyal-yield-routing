@@ -167,16 +167,16 @@ func TestRouteNAVCadenceReportsReconciledRiskMutationEvenWhenValueIsUnchanged(t 
 	}
 }
 
-func TestRouteNAVCadenceReportsAtSixtySeconds(t *testing.T) {
+func TestRouteNAVCadenceReportsAtOneHour(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	snapshot := base()
-	nav := cadenceNAV(uint64(snapshot.Slot), 42, 42, now.Add(-60*time.Second))
+	nav := cadenceNAV(uint64(snapshot.Slot), 42, 42, now.Add(-time.Hour))
 	if err := applyRouteNAVSnapshot(&snapshot, nav, now); err != nil {
 		t.Fatal(err)
 	}
 	snapshot.VoltrTotalValueRaw = 42 // idle 0 + custody 0 + receipt 42
 	cadenceArmedIdentity(&snapshot)
-	if got := Decide(snapshot); got.Action != ReportNAV || snapshot.LastReportAgeSeconds != 60 {
+	if got := Decide(snapshot); got.Action != ReportNAV || snapshot.LastReportAgeSeconds != 3600 {
 		t.Fatalf("aged NAV did not report: snapshot=%+v decision=%+v", snapshot, got)
 	}
 }

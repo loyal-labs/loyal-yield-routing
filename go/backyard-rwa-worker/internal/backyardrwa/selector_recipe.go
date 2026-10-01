@@ -10,6 +10,8 @@ import (
 	"sync"
 )
 
+const maxSelectorRecipeSteps = 32
+
 // A recipe is an economic forecast of a sequence, not an execution admission.
 // Future inputs contain explicit hypothetical token effects. They are never
 // simulated using invented accounts, persisted as operations, or sent. Actual
@@ -119,7 +121,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *RP
 			authorized = true
 		}
 	}
-	if rpc == nil || !authorized || len(inputs) == 0 || len(inputs) > 32 || minimumSlot <= 0 || minimumSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || observationFloor < minimumSlot || observationFloor-minimumSlot > observationLagSlots() {
+	if rpc == nil || !authorized || len(inputs) == 0 || len(inputs) > maxSelectorRecipeSteps || minimumSlot <= 0 || minimumSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || observationFloor < minimumSlot || observationFloor-minimumSlot > observationLagSlots() {
 		return out, budgetHold("invalid_selector_recipe")
 	}
 	type step struct {

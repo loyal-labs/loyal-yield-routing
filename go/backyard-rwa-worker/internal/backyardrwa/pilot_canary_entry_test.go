@@ -103,6 +103,7 @@ func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := pilotCanaryFixture()
+	armFeeAuthorityFixture(t, &in.Snapshot)
 	if _, err = db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 1); err == nil {
 		t.Fatal("lost generation admitted")
 	}

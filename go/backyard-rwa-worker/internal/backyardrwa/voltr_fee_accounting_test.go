@@ -26,7 +26,7 @@ func feePolicySnapshot(t *testing.T, offset int, bps uint16) Snapshot {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := applyRouteNAVSnapshot(&s, nav, time.Unix(kaminoFixtureUnix+60, 0)); err != nil {
+	if err := applyRouteNAVSnapshot(&s, nav, time.Unix(kaminoFixtureUnix+3600, 0)); err != nil {
 		t.Fatal(err)
 	}
 	return s
@@ -86,7 +86,7 @@ func TestVoltrLegitimateFeeRatioKeepsNAVAndQueueUnwindLive(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := applyRouteNAVSnapshot(s, nav, time.Unix(kaminoFixtureUnix+60, 0)); err != nil {
+			if err := applyRouteNAVSnapshot(s, nav, time.Unix(kaminoFixtureUnix+3600, 0)); err != nil {
 				t.Fatal(err)
 			}
 		})

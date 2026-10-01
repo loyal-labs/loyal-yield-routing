@@ -413,9 +413,19 @@ func pilotQuoteEconomics(pilot bool, quote MoveQuote, m LaneEconomics, invested,
 // initial collateral equity is positive. Reject the other case economically.
 func pilotForecastEconomics(e pilotEconomics, invested float64, m LaneEconomics, years float64, expense int64) pilotEconomics {
 	collateral := invested + e.Proceeds
-	income := collateral * math.Expm1((math.Log1p(m.NativeAPY)+math.Log1p(m.SupplyAPY))*years)
-	e.PositiveIncome = max(income, 0)
-	e.Gain = income - e.Debt*math.Expm1(e.APR*years) - float64(expense)
+	assetRate := math.Log1p(m.NativeAPY) + math.Log1p(m.SupplyAPY)
+	incomeAt := func(t float64) float64 {
+		return collateral*math.Expm1(assetRate*t) - e.Debt*math.Expm1(e.APR*t)
+	}
+	// With positive initial equity, this two-exponential NAV path is
+	// monotone or has one maximum. Only its positive rise can incur fees;
+	// taxing gross collateral income would also tax the borrowing expense.
+	peak := years
+	if assetRate > 0 && e.APR > assetRate && e.Debt > 0 {
+		peak = max(0, min(years, math.Log(assetRate*collateral/(e.APR*e.Debt))/(e.APR-assetRate)))
+	}
+	e.PositiveIncome = max(incomeAt(peak), 0)
+	e.Gain = incomeAt(years) - float64(expense)
 	e.InitialNAV = collateral - e.Debt - float64(expense)
 	e.EndingNAV = collateral - e.Debt + e.Gain
 	return e
@@ -492,12 +502,7 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 			return hold("current_lane_economics_unavailable")
 		}
 		keepGrossGain = forecastGain(float64(s.PositionCollateralValueRaw)+float64(s.CollateralIdleValueRaw), float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw), m, math.Log1p(m.CurrentBorrowAPY), years)
-		// Armed money compares against KEEP's best-case gross gain. Unarmed
-		// shadow/model snapshots may still display a smooth net projection.
-		out.KeepGainRaw = keepGrossGain
-		if !s.MonitorsArmed {
-			out.KeepGainRaw = float64(s.TotalVaultNAVRaw) * performanceFeeForecast(keepGrossGain/float64(s.TotalVaultNAVRaw))
-		}
+		out.KeepGainRaw = selectorKeepGainUpper(s, keepGrossGain)
 		if !finite(out.KeepGainRaw) {
 			return hold("invalid_keep_forecast")
 		}
@@ -654,8 +659,8 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		c.BorrowAPR = economics.APR
 		var feeKnown bool
 		c.GainRaw, feeKnown = selectorFeeReservedGain(s, p.Horizon, economics, float64(c.IdleRaw))
-		// Candidate pays a proved fee-value reserve; KEEP pays no fee in this
-		// comparison. Deduct unchanged uncertainty only after that money edge.
+		// Candidate pays the repeated-fee reserve; KEEP gets the upper return
+		// from a single terminal fee. Deduct uncertainty after that money edge.
 		c.BenefitRaw = c.GainRaw - out.KeepGainRaw - float64(equity)*float64(p.UncertaintyBPS)/10_000
 		if !feeKnown {
 			c.BlockedReason = "fee_forecast_unavailable"

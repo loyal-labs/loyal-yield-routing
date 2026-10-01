@@ -309,7 +309,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	// S2: a reconciled capital mutation reports only beyond the drift
 	// tolerance; the post-mutation requirement and the aging cadence report
 	// unconditionally.
-	if capitalMutationReports(s) || s.PostMutationNAVRequired || (s.LastReportAgeSeconds >= 60 && !admittedEntryAllocationReady(s)) {
+	if capitalMutationReports(s) || s.PostMutationNAVRequired || (scheduledNAVReportDue(s) && !admittedEntryAllocationReady(s)) {
 		if hold, blocked := custodyResidueHold(s); blocked {
 			return hold
 		}

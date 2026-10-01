@@ -406,8 +406,8 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 			if err != nil || entry == nil || entry.Lane != testAutoLane || entry.EquityRaw != 10_000_000 {
 				t.Fatal("restart lost the candidate entry through its manifest", err, entry)
 			}
-			if _, err = restarted.LoadSelectorEntry(ctx, key); err == nil {
-				t.Fatal("embedded decode admitted a candidate entry")
+			if closed, err := restarted.LoadSelectorEntry(ctx, key); err != nil || closed != nil {
+				t.Fatal("closed decoder must treat an unauthorized stored entry as absent", err, closed)
 			}
 			if _, err = db.ReleaseRouteLease(ctx); err != nil {
 				t.Fatal(err)

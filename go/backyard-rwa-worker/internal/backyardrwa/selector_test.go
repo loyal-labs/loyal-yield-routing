@@ -273,7 +273,7 @@ func TestSelectedFullCustodyExitCannotBeSilentlyClamped(t *testing.T) {
 func TestSelectorNAVDoesNotEraseFreshAdvantage(t *testing.T) {
 	in := selectorFixture()
 	first := SelectOpportunity(in, SelectorState{})
-	in.Snapshot.LastReportAgeSeconds = 60
+	in.Snapshot.LastReportAgeSeconds = 3600
 	advanceSelectorFixture(&in, 30*time.Second)
 	accounting := SelectOpportunity(in, first.State)
 	if accounting.Action != "KEEP" || accounting.Reason != "accounting_first" || !accounting.State.Advantages[in.Markets[0].Lane].Since.Equal(in.Now.Add(-30*time.Second)) {

@@ -188,7 +188,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 			out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
 			return out, true
 		}
-		out.GainRaw = net - keepGross // fee- and expense-reserved edge
+		out.GainRaw = net - selectorKeepGainUpper(s, keepGross) // fee- and expense-reserved edge
 		if out.GainRaw <= float64(p.MinimumBenefitRaw) {
 			out.Next, out.Reason = out.Current, "up_move_below_minimum_benefit"
 		}

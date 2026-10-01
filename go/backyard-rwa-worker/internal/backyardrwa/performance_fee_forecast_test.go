@@ -274,15 +274,15 @@ func TestPerformanceFeeLeverageUPNeedsFeeReservedWholePositionEdge(t *testing.T)
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 1_000_000_000, 1_000_000_000
 	s.VoltrIdleRaw, s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.JournalArmedNAVRaw = 0, 1_000_000_000, 1_000_000_000, 1_000_000_000
 	p := DefaultSelectorPolicy()
-	market := leverageMarket(s.RouteLane, .12, math.Log1p(.06))
+	market := leverageMarket(s.RouteLane, .08, math.Log1p(.06))
 	market.CurrentBorrowAPY = .06
 	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p)
-	// Original gross spread gate passes (~2.46m gain -1.03m cost). The
-	// whole-position performance fee + cadence rounding consumes that edge.
+	// A positive spread alone is insufficient: fees and movement costs
+	// consume this low-margin edge.
 	if !ok || got.Next != 1 || got.Reason != "up_move_below_minimum_benefit" {
 		t.Fatalf("gross-only leverage edge spent: %+v ok=%t", got, ok)
 	}
-	market.NativeAPY = .60
+	market.NativeAPY = .12
 	got, ok = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p)
 	if !ok || got.Next != 1.5 || got.GainRaw <= float64(p.MinimumBenefitRaw) {
 		t.Fatalf("proved fee-reserved UP was not supported: %+v ok=%t", got, ok)

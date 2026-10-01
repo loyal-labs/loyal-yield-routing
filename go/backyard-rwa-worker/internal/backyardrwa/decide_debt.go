@@ -237,7 +237,7 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 	if hold, drifted := unexplainedNAVDriftHold(s); drifted {
 		return hold
 	}
-	if capitalMutationReports(s) || (s.LastReportAgeSeconds >= 60 && !admittedEntryAllocationReady(s)) {
+	if capitalMutationReports(s) || (scheduledNAVReportDue(s) && !admittedEntryAllocationReady(s)) {
 		if hold, blocked := custodyResidueHold(s); blocked {
 			return hold
 		}

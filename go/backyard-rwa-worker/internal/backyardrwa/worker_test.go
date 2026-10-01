@@ -707,7 +707,7 @@ func TestRuntimeLeaseOwnerUsesExactRenderAndImmutableImageIdentity(t *testing.T)
 func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
 	for _, after := range []OperationStatus{Signed, BroadcastIntent} {
 		t.Run(string(after), func(t *testing.T) {
-			o := tickObservation(Snapshot{ObservationID: "report", Slot: 10, RouteKind: RouteKind, Fresh: true, LastReportAgeSeconds: 1000})
+			o := tickObservation(Snapshot{ObservationID: "report", Slot: 10, RouteKind: RouteKind, Fresh: true, LastReportAgeSeconds: 3600})
 			d := Decide(o.Snapshot)
 			if d.Action != ReportNAV {
 				t.Fatalf("expected report fixture: %+v", d)

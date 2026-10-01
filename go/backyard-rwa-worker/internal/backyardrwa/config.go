@@ -54,6 +54,9 @@ const (
 	// M7 pins the intentional admin performance fee exactly; every other
 	// performance, management, issuance and redemption term remains zero.
 	approvedAdminPerformanceFeeBPS = int64(2000)
+	// Batch routine fee-bearing reports to avoid whole-LP rounding consuming
+	// small pilot gains. Withdrawal and post-mutation reporting keep priority.
+	routineNAVReportInterval = time.Hour
 	// Unharvested fee LP above this share of effective supply warns only. It
 	// is not a fee-rate limit, harvest trigger or permission to stop withdrawals.
 	feeAccumulatorWarningBPS = int64(100)
