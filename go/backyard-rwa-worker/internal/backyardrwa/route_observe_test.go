@@ -49,6 +49,7 @@ func cadenceNAV(slot, current, reported uint64, lastUpdated time.Time) RouteNAVS
 	return RouteNAVSnapshot{
 		Slot: int64(slot), StrategyNAVRaw: current, TotalVaultNAVRaw: current, PriorReportedNAVRaw: reported,
 		PriorReportUpdatedTS: uint64(lastUpdated.Unix()), SnapshotDigest: digest,
+		Voltr:  VoltrVaultBook{AdminPerformanceFeeBPS: uint64(approvedAdminPerformanceFeeBPS)},
 		Report: BridgeReport{Sequence: slot, ObservedSlot: slot, NAVAfterRaw: current, SnapshotDigest: digest},
 	}
 }

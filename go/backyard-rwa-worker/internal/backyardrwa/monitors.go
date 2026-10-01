@@ -60,15 +60,14 @@ func bridgeMonitorHold(s Snapshot) (Decision, bool) {
 		(s.JournalArmedNAVRaw < 0 || uint64(s.JournalArmedNAVRaw) != uint64(s.PriorReportedNAVRaw)) {
 		return monitorHold(s, "receipt_nav_mismatch"), true
 	}
-	// M7: fee discipline. Un-harvested LP fee accumulators stay a bounded share
-	// of the supply Voltr prices deposits and claims against, and no
-	// performance fee may be switched on until its bps terms are calibrated and
-	// reviewed.
-	if feeAccumulatorOutsideBound(uint64(s.FeeAccumulatorRaw), uint64(s.LPSupplyInclFeesRaw)) {
-		return monitorHold(s, "fee_accumulator_anomaly"), true
+	// M7: exact approved terms, not a ceiling. Legitimate fee LP can exceed
+	// the warning ratio as profit accrues or circulating LP is withdrawn; that
+	// ratio must not block normal NAV reports or queue unwinds.
+	if s.FeeAccumulatorRaw < 0 || s.LPSupplyInclFeesRaw < 0 || s.FeeAccumulatorRaw > s.LPSupplyInclFeesRaw {
+		return monitorHold(s, "fee_accounting_invalid"), true
 	}
-	if s.ManagerPerformanceFeeBPS != 0 || s.AdminPerformanceFeeBPS != 0 {
-		return monitorHold(s, "performance_fee_enabled"), true
+	if !approvedVoltrFeeTerms(s) {
+		return monitorHold(s, "voltr_fee_terms_unapproved"), true
 	}
 	// M8: the report ticket may only ever be consumed by this worker's own
 	// reconciled bridge operation. A reconciled journal sequence always takes
@@ -150,14 +149,19 @@ func navDriftOutsideTolerance(observed, reported uint64) bool {
 	return reported-observed > bound
 }
 
-// feeAccumulatorOutsideBound bounds the un-harvested LP fee by a share of the
-// LP supply Voltr actually prices against. big.Int keeps a hostile accumulator
-// from wrapping the comparison.
-func feeAccumulatorOutsideBound(fees, supply uint64) bool {
+func approvedVoltrFeeTerms(s Snapshot) bool {
+	return s.AdminPerformanceFeeBPS == approvedAdminPerformanceFeeBPS &&
+		s.ManagerPerformanceFeeBPS == 0 && s.ManagerManagementFeeBPS == 0 && s.AdminManagementFeeBPS == 0 &&
+		s.RedemptionFeeBPS == 0 && s.IssuanceFeeBPS == 0 && s.ProtocolPerformanceFeeBPS == 0 && s.ProtocolManagementFeeBPS == 0
+}
+
+// feeAccumulatorNeedsWarning compares unharvested fee LP with effective supply
+// for telemetry only, never admission or a latch. big.Int avoids product wrap.
+func feeAccumulatorNeedsWarning(fees, supply uint64) bool {
 	if supply == 0 {
 		return fees > 0
 	}
-	bound := new(big.Int).Mul(new(big.Int).SetUint64(supply), big.NewInt(feeAccumulatorMaxBPS))
+	bound := new(big.Int).Mul(new(big.Int).SetUint64(supply), big.NewInt(feeAccumulatorWarningBPS))
 	fee := new(big.Int).Mul(new(big.Int).SetUint64(fees), big.NewInt(10_000))
 	return fee.Cmp(bound) > 0
 }

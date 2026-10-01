@@ -57,6 +57,12 @@ type VoltrVaultBook struct {
 	LastLockedProfitReportUnix     uint64
 	ManagerPerformanceFeeBPS       uint64
 	AdminPerformanceFeeBPS         uint64
+	ManagerManagementFeeBPS        uint64
+	AdminManagementFeeBPS          uint64
+	RedemptionFeeBPS               uint64
+	IssuanceFeeBPS                 uint64
+	ProtocolPerformanceFeeBPS      uint64
+	ProtocolManagementFeeBPS       uint64
 	WithdrawalWaitingPeriodSeconds uint64
 	FeeAccumulatorManagerRaw       uint64
 	FeeAccumulatorAdminRaw         uint64
@@ -64,16 +70,30 @@ type VoltrVaultBook struct {
 	LPSupplyDeadWeightRaw          uint64
 }
 
-// FeeAccumulatorRaw sums the un-harvested LP fee accumulators that
-// get_total_lp_supply_incl_fees adds to the mint supply.
-func (b VoltrVaultBook) FeeAccumulatorRaw() uint64 {
-	return b.FeeAccumulatorManagerRaw + b.FeeAccumulatorAdminRaw + b.FeeAccumulatorProtocolRaw
-}
-
-// LPSupplyInclFeesRaw mirrors Voltr's SDK LP supply used to price deposits and
-// claims. The dead-weight LP at offset 616 is minted but untracked supply.
-func (b VoltrVaultBook) LPSupplyInclFeesRaw(lpSupplyRaw uint64) uint64 {
-	return lpSupplyRaw + b.FeeAccumulatorRaw() + b.LPSupplyDeadWeightRaw
+// LPTotalsRaw includes all unharvested fee LP and dead weight in the supply
+// Voltr prices against. Check each addition before it can wrap, then enforce
+// the signed range used by decisions, for live observations and poststates.
+func (b VoltrVaultBook) LPTotalsRaw(lpSupplyRaw uint64) (fees, supply uint64, err error) {
+	for _, value := range []uint64{b.FeeAccumulatorManagerRaw, b.FeeAccumulatorAdminRaw, b.FeeAccumulatorProtocolRaw} {
+		if value > math.MaxUint64-fees {
+			return 0, 0, fmt.Errorf("Voltr LP fee accumulator overflows u64")
+		}
+		fees += value
+	}
+	if fees > math.MaxInt64 {
+		return 0, 0, fmt.Errorf("Voltr LP fee accumulator exceeds signed range")
+	}
+	supply = lpSupplyRaw
+	for _, value := range []uint64{fees, b.LPSupplyDeadWeightRaw} {
+		if value > math.MaxUint64-supply {
+			return 0, 0, fmt.Errorf("Voltr effective LP supply overflows u64")
+		}
+		supply += value
+	}
+	if supply > math.MaxInt64 {
+		return 0, 0, fmt.Errorf("Voltr effective LP supply exceeds signed range")
+	}
+	return fees, supply, nil
 }
 
 func decodeVoltrVaultBook(account ConfirmedAccount) (VoltrVaultBook, error) {
@@ -93,6 +113,12 @@ func decodeVoltrVaultBook(account ConfirmedAccount) (VoltrVaultBook, error) {
 		WithdrawalWaitingPeriodSeconds: binary.LittleEndian.Uint64(account.Data[456:464]),
 		ManagerPerformanceFeeBPS:       uint64(binary.LittleEndian.Uint16(account.Data[512:514])),
 		AdminPerformanceFeeBPS:         uint64(binary.LittleEndian.Uint16(account.Data[514:516])),
+		ManagerManagementFeeBPS:        uint64(binary.LittleEndian.Uint16(account.Data[516:518])),
+		AdminManagementFeeBPS:          uint64(binary.LittleEndian.Uint16(account.Data[518:520])),
+		RedemptionFeeBPS:               uint64(binary.LittleEndian.Uint16(account.Data[520:522])),
+		IssuanceFeeBPS:                 uint64(binary.LittleEndian.Uint16(account.Data[522:524])),
+		ProtocolPerformanceFeeBPS:      uint64(binary.LittleEndian.Uint16(account.Data[524:526])),
+		ProtocolManagementFeeBPS:       uint64(binary.LittleEndian.Uint16(account.Data[526:528])),
 		FeeAccumulatorManagerRaw:       binary.LittleEndian.Uint64(account.Data[576:584]),
 		FeeAccumulatorAdminRaw:         binary.LittleEndian.Uint64(account.Data[584:592]),
 		FeeAccumulatorProtocolRaw:      binary.LittleEndian.Uint64(account.Data[592:600]),
@@ -417,6 +443,9 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	}
 	lpSupply, err := decodeVoltrLPSupply(accountAt(accounts, bridgeLPMint))
 	if err != nil {
+		return RouteNAVSnapshot{}, err
+	}
+	if _, _, err := vault.LPTotalsRaw(lpSupply); err != nil {
 		return RouteNAVSnapshot{}, err
 	}
 	observedCashOnly := custodies.SquadsPRIMEraw == 0 && custodies.SquadsDebtRaw == 0

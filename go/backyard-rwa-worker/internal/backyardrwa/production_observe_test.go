@@ -49,6 +49,7 @@ func productionRouteBatchAccounts(t *testing.T, slot int64, mutate func([]Confir
 	accounts = append(accounts, exactReportTicketAccount(t, 4))
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyATA).Data[64:72], 0)
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeVoltrVault).Data[168:176], 53)
+	binary.LittleEndian.PutUint16(accountAt(accounts, bridgeVoltrVault).Data[514:516], uint16(approvedAdminPerformanceFeeBPS))
 	// The full observation path validates the Kamino reserve oracles that the
 	// NAV-only path ignores, so the batch carries one configured oracle for
 	// both reserves plus the oracle account itself.
@@ -299,9 +300,8 @@ func TestProductionUnexplainedDriftHoldsThroughObserve(t *testing.T) {
 	}
 }
 
-// TestProductionPerformanceFeeTermsHold is the major 6 proof: the decoded
-// performance-fee bps fields reach the snapshot, and either one switched on
-// stops the route until the terms are reviewed.
+// Unapproved performance-fee terms decoded by the production observation
+// must reach M7 and stop the route. Only the exact approved tuple passes.
 func TestProductionPerformanceFeeTermsHold(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -314,7 +314,7 @@ func TestProductionPerformanceFeeTermsHold(t *testing.T) {
 			got := productionDecision(t, reconciledJournal(), false, func(accounts []ConfirmedAccount) {
 				binary.LittleEndian.PutUint16(accountAt(accounts, bridgeVoltrVault).Data[tc.offset:tc.offset+2], 250)
 			}, pinnedIdentityObservation)
-			if got.Action != HoldManualRecovery || got.Reason != "performance_fee_enabled" {
+			if got.Action != HoldManualRecovery || got.Reason != "voltr_fee_terms_unapproved" {
 				t.Fatalf("%s did not hold the route: %+v", tc.name, got)
 			}
 		})

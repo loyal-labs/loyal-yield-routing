@@ -17,6 +17,7 @@ func monitorSnapshot(t *testing.T, mutate func(accounts []ConfirmedAccount, s *S
 	accounts := routeNAVFixture(t, 77)
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyATA).Data[64:72], 0)
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeVoltrVault).Data[168:176], 53)
+	binary.LittleEndian.PutUint16(accountAt(accounts, bridgeVoltrVault).Data[514:516], uint16(approvedAdminPerformanceFeeBPS))
 	nav, err := ComputeRouteNAV(77, accounts, readyWorkerManifest(t), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -164,27 +165,6 @@ func TestMonitorProgramDataPinHoldsOnChange(t *testing.T) {
 	unknown.ProgramIdentityKnown = false
 	if got := Decide(unknown); got.Action != HoldManualRecovery || got.Reason != "program_identity_unverified" {
 		t.Fatalf("an unverified program identity read did not hold durably: %+v", got)
-	}
-}
-
-func TestMonitorFeeAccumulatorsBoundedAndFeesZero(t *testing.T) {
-	accounts := routeNAVFixture(t, 77)
-	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyATA).Data[64:72], 0)
-	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeVoltrVault).Data[168:176], 53)
-	nav, err := ComputeRouteNAV(77, accounts, readyWorkerManifest(t), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if nav.Voltr.FeeAccumulatorRaw() != 0 || nav.Voltr.LPSupplyInclFeesRaw(nav.LPSupplyRaw) != 2_000 {
-		t.Fatalf("fee fixture drifted: %+v", nav.Voltr)
-	}
-	s := monitorSnapshot(t, func(_ []ConfirmedAccount, s *Snapshot) { s.FeeAccumulatorRaw = 100 })
-	if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "fee_accumulator_anomaly" {
-		t.Fatalf("unbounded fee accumulator did not hold: %+v", got)
-	}
-	within := monitorSnapshot(t, func(_ []ConfirmedAccount, s *Snapshot) { s.FeeAccumulatorRaw = 20 })
-	if hold, blocked := bridgeMonitorHold(within); blocked {
-		t.Fatalf("fee accumulator inside its bound held: %+v", hold)
 	}
 }
 

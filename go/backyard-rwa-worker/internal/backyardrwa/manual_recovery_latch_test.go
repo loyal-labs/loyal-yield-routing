@@ -199,6 +199,7 @@ func manualRecoveryHealthyRefreshObservation(id string, slot int64) Observation 
 	snapshot.ObservationID = id
 	snapshot.Slot = slot
 	snapshot.MonitorsArmed = true
+	snapshot.AdminPerformanceFeeBPS = approvedAdminPerformanceFeeBPS
 	snapshot.ProgramIdentityKnown = false
 	snapshot.TicketLastConsumedSequenceRaw = 4
 	snapshot.VoltrIdleRaw = 7

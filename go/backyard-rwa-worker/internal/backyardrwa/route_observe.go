@@ -816,13 +816,16 @@ func routeEconomicObservationID(
 }
 
 func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Time) error {
+	fees, supply, err := nav.Voltr.LPTotalsRaw(nav.LPSupplyRaw)
+	if err != nil {
+		return err
+	}
 	if snapshot == nil || snapshot.Slot <= 0 || nav.Slot != snapshot.Slot || now.IsZero() || now.Unix() < 0 ||
 		nav.StrategyNAVRaw > math.MaxInt64 || nav.TotalVaultNAVRaw > math.MaxInt64 || nav.PriorReportedNAVRaw > math.MaxInt64 ||
 		nav.Report.Sequence > math.MaxInt64 || nav.Custodies.SquadsDebtRaw > math.MaxInt64 || nav.PrimeIdleValueRaw > math.MaxInt64 ||
 		nav.PriorReportUpdatedTS > math.MaxInt64 || nav.Report.Sequence != nav.Report.ObservedSlot ||
 		nav.Report.ObservedSlot != uint64(nav.Slot) || nav.Report.NAVAfterRaw != nav.StrategyNAVRaw ||
 		nav.Voltr.TotalValueRaw > math.MaxInt64 || nav.Receipt.CustodyTrackedRaw > math.MaxInt64 ||
-		nav.Voltr.FeeAccumulatorRaw() > math.MaxInt64 || nav.Voltr.LPSupplyInclFeesRaw(nav.LPSupplyRaw) > math.MaxInt64 ||
 		nav.Voltr.LockedProfitDegradationSeconds > math.MaxInt64 || nav.Voltr.LastUpdatedLockedProfitRaw > math.MaxInt64 ||
 		nav.Voltr.LastLockedProfitReportUnix > math.MaxInt64 ||
 		nav.Report.SnapshotDigest != nav.SnapshotDigest || !sha256Pattern.MatchString(nav.SnapshotDigest) {
@@ -852,10 +855,16 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	snapshot.LockedProfitDegradationSeconds = int64(nav.Voltr.LockedProfitDegradationSeconds)
 	snapshot.LastUpdatedLockedProfitRaw = int64(nav.Voltr.LastUpdatedLockedProfitRaw)
 	snapshot.LastLockedProfitReportUnix = int64(nav.Voltr.LastLockedProfitReportUnix)
-	snapshot.FeeAccumulatorRaw = int64(nav.Voltr.FeeAccumulatorRaw())
-	snapshot.LPSupplyInclFeesRaw = int64(nav.Voltr.LPSupplyInclFeesRaw(nav.LPSupplyRaw))
+	snapshot.FeeAccumulatorRaw = int64(fees)
+	snapshot.LPSupplyInclFeesRaw = int64(supply)
 	snapshot.ManagerPerformanceFeeBPS = int64(nav.Voltr.ManagerPerformanceFeeBPS)
 	snapshot.AdminPerformanceFeeBPS = int64(nav.Voltr.AdminPerformanceFeeBPS)
+	snapshot.ManagerManagementFeeBPS = int64(nav.Voltr.ManagerManagementFeeBPS)
+	snapshot.AdminManagementFeeBPS = int64(nav.Voltr.AdminManagementFeeBPS)
+	snapshot.RedemptionFeeBPS = int64(nav.Voltr.RedemptionFeeBPS)
+	snapshot.IssuanceFeeBPS = int64(nav.Voltr.IssuanceFeeBPS)
+	snapshot.ProtocolPerformanceFeeBPS = int64(nav.Voltr.ProtocolPerformanceFeeBPS)
+	snapshot.ProtocolManagementFeeBPS = int64(nav.Voltr.ProtocolManagementFeeBPS)
 	// Reaching this point means every identity, book, custody, receipt, and
 	// reserve input decoded coherently from one confirmed batch, so the
 	// fail-closed monitors may gate the decisions planned from it.

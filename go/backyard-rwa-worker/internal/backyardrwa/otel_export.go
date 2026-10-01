@@ -385,6 +385,10 @@ func (e *otelExporter) noteSnapshot(s Snapshot) {
 	}
 	urgent := s.HasPosition && s.LTVBPS >= max(5500, floor) && e.due("ltv_urgent", 10*time.Minute)
 	warning := s.HasPosition && s.LTVBPS >= max(4500, floor) && s.LTVBPS < 5500 && e.due("ltv_warning", 30*time.Minute)
+	feeWarning := s.MonitorsArmed && s.Nonterminal == "" && approvedVoltrFeeTerms(s) &&
+		s.FeeAccumulatorRaw >= 0 && s.LPSupplyInclFeesRaw >= s.FeeAccumulatorRaw &&
+		feeAccumulatorNeedsWarning(uint64(s.FeeAccumulatorRaw), uint64(s.LPSupplyInclFeesRaw)) &&
+		e.due("fee_accumulator_warning", 30*time.Minute)
 	waiting := int64(0)
 	if s.WithdrawalDemandRaw > s.VoltrIdleRaw {
 		if e.withdrawSince.IsZero() {
@@ -406,6 +410,10 @@ func (e *otelExporter) noteSnapshot(s Snapshot) {
 	if waiting > 0 {
 		e.emit("WARN", "withdrawal_waiting", "withdrawal_waiting",
 			otelInt("loyal.amount_raw", s.WithdrawalDemandRaw), otelInt("loyal.age_seconds", waiting))
+	}
+	if feeWarning {
+		e.emit("WARN", "fee_accumulator_warning", "fee_accumulator_warning",
+			otelInt("loyal.fee_accumulator_raw", s.FeeAccumulatorRaw), otelInt("loyal.lp_supply_incl_fees_raw", s.LPSupplyInclFeesRaw))
 	}
 }
 

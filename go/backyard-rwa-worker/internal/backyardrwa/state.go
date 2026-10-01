@@ -143,13 +143,19 @@ type Snapshot struct {
 	LockedProfitDegradationSeconds int64
 	LastUpdatedLockedProfitRaw     int64
 	LastLockedProfitReportUnix     int64
-	// FeeAccumulatorRaw is the un-harvested LP fee Voltr has accrued, and
-	// LPSupplyInclFeesRaw is the supply those fees are bounded against. The
-	// performance-fee terms must both stay zero until they are calibrated.
-	FeeAccumulatorRaw        int64
-	LPSupplyInclFeesRaw      int64
-	ManagerPerformanceFeeBPS int64
-	AdminPerformanceFeeBPS   int64
+	// FeeAccumulatorRaw is unharvested fee LP; LPSupplyInclFeesRaw includes it
+	// and dead weight. Their ratio is warning-only. All eight same-batch fee
+	// terms must match the exact approved tuple before new decisions.
+	FeeAccumulatorRaw         int64
+	LPSupplyInclFeesRaw       int64
+	ManagerPerformanceFeeBPS  int64
+	AdminPerformanceFeeBPS    int64
+	ManagerManagementFeeBPS   int64
+	AdminManagementFeeBPS     int64
+	RedemptionFeeBPS          int64
+	IssuanceFeeBPS            int64
+	ProtocolPerformanceFeeBPS int64
+	ProtocolManagementFeeBPS  int64
 	// StagedAmountRaw is the amount of the most recent reconciled
 	// STAGE_SQUADS_TO_VOLTR operation for this route, with StagedAmountKnown
 	// false when the journal has no such operation. A restore must debit

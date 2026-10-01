@@ -51,9 +51,12 @@ const (
 	// route stops instead of reporting.
 	navDriftToleranceBPS = int64(50)
 	navDriftFloorRaw     = int64(1_000)
-	// M7: un-harvested LP fee accumulators are bounded as a share of the LP
-	// supply Voltr actually prices against.
-	feeAccumulatorMaxBPS = int64(100)
+	// M7 pins the intentional admin performance fee exactly; every other
+	// performance, management, issuance and redemption term remains zero.
+	approvedAdminPerformanceFeeBPS = int64(2000)
+	// Unharvested fee LP above this share of effective supply warns only. It
+	// is not a fee-rate limit, harvest trigger or permission to stop withdrawals.
+	feeAccumulatorWarningBPS = int64(100)
 )
 
 var renderServiceIDPattern = regexp.MustCompile(`^srv-[a-z0-9]+$`)
