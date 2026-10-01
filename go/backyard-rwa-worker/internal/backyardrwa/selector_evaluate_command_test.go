@@ -43,6 +43,7 @@ func canaryFixtureInput(t *testing.T) SelectorInput {
 	}
 	equity := nonParBorrowRaw + (upper11-nonParBorrowRaw)/2
 	in := nonParReviewFixture(t, &price09, &coll10, equity)
+	armFeeAuthorityFixture(t, &in.Snapshot)
 	in.canaryRequest = &pilotCanaryEntryRequest{
 		ID: sha256Bytes([]byte("selector-evaluate-command")), Lane: testAutoLane,
 		EquityRaw: equity, ExpiresAt: time.Now().UTC().Add(10 * time.Minute),

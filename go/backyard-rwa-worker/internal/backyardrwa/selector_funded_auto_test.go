@@ -316,6 +316,8 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 				t.Fatal(err)
 			}
 			in := fundedAutoFixture(t, debtPrice, collateralPrice)
+			in.Markets[0].NativeAPY = 2 // synthetic fee-reserved winner; rate is not live evidence
+			armFeeAuthorityFixture(t, &in.Snapshot)
 			history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{testAutoLane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
 			state := map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
 			raw, _ := json.Marshal(state)
@@ -441,6 +443,9 @@ func TestLockedManifestSelectorRecordsCandidateSourceUnwind(t *testing.T) {
 	// budget a pilot transition would reject.
 	budget.Families["AUTO"] = FamilyBudget{ExitMicros: 1_000_000}
 	in := fundedAutoSourceFixture(t, debtPrice, collateralPrice)
+	in.Snapshot.VoltrIdleRaw = in.Snapshot.TotalVaultNAVRaw - in.Snapshot.StrategyNAVRaw
+	in.Markets[1].NativeAPY = 2 // synthetic fee-reserved winner for persistence ownership
+	armFeeAuthorityFixture(t, &in.Snapshot)
 	history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{"OnRe/ONyc/USDC": {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
 	state := map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": false}
 	raw, _ := json.Marshal(state)

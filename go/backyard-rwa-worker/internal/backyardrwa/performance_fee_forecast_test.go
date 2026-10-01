@@ -1,6 +1,7 @@
 package backyardrwa
 
 import (
+	"context"
 	"encoding/binary"
 	"math"
 	"math/big"
@@ -285,5 +286,109 @@ func TestPerformanceFeeLeverageUPNeedsFeeReservedWholePositionEdge(t *testing.T)
 	got, ok = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p)
 	if !ok || got.Next != 1.5 || got.GainRaw <= float64(p.MinimumBenefitRaw) {
 		t.Fatalf("proved fee-reserved UP was not supported: %+v ok=%t", got, ok)
+	}
+}
+
+func TestPerformanceFeeUnarmedCannotWriteSelectorAuthority(t *testing.T) {
+	in := selectorFixture()
+	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
+	in.Snapshot.PilotActive = true
+	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
+	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 10_000_000, 5_000_000
+	in.Quotes[0].EvidenceID = sha256Bytes([]byte("unarmed-quoted-projection"))
+	previous := SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{
+		in.Markets[0].Lane: {Since: in.Now.Add(-time.Hour), LastSample: in.Now.Add(-time.Second)},
+	}}
+	// A diagnostic model can have a persistent, fully formed selected quote.
+	// It still cannot cross the locked authority writer, even as a canary.
+	projection := SelectOpportunity(in, previous)
+	if projection.Action != "ENTER" || projection.SelectedQuote == nil {
+		t.Fatal("fixture lacks a selected diagnostic quote", projection)
+	}
+	manifest := readyWorkerManifest(t)
+	for _, canary := range []bool{false, true} {
+		if canary {
+			in.canaryRequest = &pilotCanaryEntryRequest{ID: sha256Bytes([]byte("unarmed-canary")), Lane: in.Markets[0].Lane, EquityRaw: 10_000_000, ExpiresAt: in.Now.Add(time.Minute)}
+		}
+		for _, m := range []*RouteManifest{nil, &manifest} {
+			_, err := (&Database{}).recordSelectorEvaluationWithLanes(context.Background(), productionRouteKey, m, in, in.Snapshot.Slot, 1)
+			assertBudgetHold(t, err, "selector_fee_evidence_unavailable")
+		}
+	}
+}
+
+func TestPerformanceFeeUnarmedCannotProduceEconomicUP(t *testing.T) {
+	s := leverageSnapshot(1)
+	// Even copied HWM terms do not make an unarmed snapshot a coherent book.
+	in := coherentFeeSelectorFixture(t, 1_000_000_000, 1_000_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
+	s.VoltrTotalValueRaw, s.TotalVaultNAVRaw, s.LPSupplyInclFeesRaw = 1_000_000_000, 1_000_000_000, 1_000_000_000
+	s.VoltrHighWaterMarkBits, s.VoltrHighWaterMarkKnown = in.Snapshot.VoltrHighWaterMarkBits, true
+	s.AdminPerformanceFeeBPS = approvedAdminPerformanceFeeBPS
+	m := leverageMarket(s.RouteLane, .60, math.Log1p(.06))
+	m.CurrentBorrowAPY = .06
+	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy())
+	if !ok || got.Next != got.Current || got.Reason != "fee_hwm_baseline_unavailable" {
+		t.Fatalf("unarmed projection can raise durable target: %+v ok=%t", got, ok)
+	}
+}
+
+func TestPerformanceFeeProductionObserverArmsCoherentHWM(t *testing.T) {
+	want := new(big.Int).Lsh(big.NewInt(1), 48)
+	observe := productionConfirmedBatch(t, 77, func(accounts []ConfirmedAccount) {
+		putScaledFraction(accountAt(accounts, bridgeVoltrVault).Data[624:640], want)
+	})
+	o, err := observe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.Snapshot.MonitorsArmed || !o.Snapshot.VoltrHighWaterMarkKnown ||
+		littleInt(o.Snapshot.VoltrHighWaterMarkBits[:]).Cmp(want) != 0 || !selectorFeeBaselineKnown(o.Snapshot) || o.routeBatch == nil {
+		t.Fatalf("production coherent book lost fee evidence: %+v", o.Snapshot)
+	}
+}
+
+// armFeeAuthorityFixture adds decoded, internally coherent fee book inputs to
+// an existing synthetic holdings/admission fixture. It never disables M1/M7/M8.
+func armFeeAuthorityFixture(t *testing.T, s *Snapshot) {
+	t.Helper()
+	s.PriorReportedNAVRaw = s.StrategyNAVRaw
+	book := s.VoltrIdleRaw + s.PriorReportedNAVRaw + s.VoltrReceiptCustodyTrackedRaw
+	const supply = 100_000_000_000_000
+	floor := new(big.Int).Quo(new(big.Int).Lsh(big.NewInt(book), 48), big.NewInt(supply))
+	decoded := coherentFeeSelectorFixture(t, uint64(book), supply, floor).Snapshot
+	s.MonitorsArmed, s.VoltrHighWaterMarkKnown = true, decoded.VoltrHighWaterMarkKnown
+	s.VoltrHighWaterMarkBits = decoded.VoltrHighWaterMarkBits
+	s.VoltrTotalValueRaw, s.LPSupplyInclFeesRaw = decoded.VoltrTotalValueRaw, decoded.LPSupplyInclFeesRaw
+	s.FeeAccumulatorRaw, s.AdminPerformanceFeeBPS = 0, decoded.AdminPerformanceFeeBPS
+	s.ProgramIdentityKnown = true
+	s.VoltrProgramDeploySlot, s.AdaptorProgramDeploySlot = decoded.VoltrProgramDeploySlot, decoded.AdaptorProgramDeploySlot
+	s.JournalSequenceKnown, s.JournalReconciledSequenceRaw = true, s.TicketLastConsumedSequenceRaw
+	s.JournalArmedNAVKnown, s.JournalArmedNAVRaw = true, s.PriorReportedNAVRaw
+}
+
+func TestPerformanceFeeArmedAdmissionFixturesHaveProvableCandidates(t *testing.T) {
+	_, debt, _ := autoDebtPriceFixture(t, 1_000_000)
+	collateral := autoCollateralPriceFixture(t, 1_000_000)
+	manifest := autoInitializerFixtureManifest(t)
+	for _, funded := range []bool{false, true} {
+		in := fundedAutoFixture(t, debt, collateral)
+		if funded {
+			in = fundedAutoSourceFixture(t, debt, collateral)
+			in.Snapshot.VoltrIdleRaw = in.Snapshot.TotalVaultNAVRaw - in.Snapshot.StrategyNAVRaw
+			in.Markets[1].NativeAPY = 2
+		} else {
+			in.Markets[0].NativeAPY = 2
+		}
+		armFeeAuthorityFixture(t, &in.Snapshot)
+		first := selectOpportunityWithLanes(in, SelectorState{}, manifestLaneAllowed(manifest), manifestFundingAllowed(manifest))
+		advanceSelectorFixture(&in, time.Minute)
+		got := selectOpportunityWithLanes(in, first.State, manifestLaneAllowed(manifest), manifestFundingAllowed(manifest))
+		want := "ENTER"
+		if funded {
+			want = "SWITCH"
+		}
+		if got.Action != want || got.SelectedQuote == nil {
+			t.Fatalf("valid armed admission fixture failed %s: %+v", want, got)
+		}
 	}
 }

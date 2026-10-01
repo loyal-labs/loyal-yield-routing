@@ -255,6 +255,12 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	var result SelectorResult
+	// The pure selector also serves diagnostic model snapshots. Only a
+	// coherent, monitors-armed book may write entry/unwind authority here.
+	// Reject before the lease/DB boundary, including operator canaries.
+	if !input.Snapshot.MonitorsArmed {
+		return result, budgetHold("selector_fee_evidence_unavailable")
+	}
 	now := time.Now().UTC()
 	if !input.Snapshot.PilotActive || input.Now.After(now) || now.Sub(input.Now) > 5*time.Second || input.Snapshot.Slot <= 0 || confirmedSlot < input.Snapshot.Slot || confirmedSlot-input.Snapshot.Slot > observationLagSlots() {
 		return result, budgetHold("selector_evaluation_not_current")
