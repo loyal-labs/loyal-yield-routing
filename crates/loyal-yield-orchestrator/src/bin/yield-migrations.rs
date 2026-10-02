@@ -447,11 +447,11 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0073_backyard_rwa_expired_absent_failure.sql"),
         expected_checksum: None,
     },
-    // 0074-0077 are reserved by the backyard-rwa phase 3 work (PR #228).
+    // 0074-0083 are already used by deployed Backyard migrations.
     Migration {
-        version: 78,
+        version: 84,
         name: "earn_reserve_share_prices",
-        sql: include_str!("../../../loyal-yield-store/migrations/0078_earn_reserve_share_prices.sql"),
+        sql: include_str!("../../../loyal-yield-store/migrations/0084_earn_reserve_share_prices.sql"),
         expected_checksum: None,
     },
 ];
@@ -535,6 +535,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // --verify-reusable-alts retain the full read-only schema audit.
         if !matches!(mode, Mode::Apply) {
             validate_schema(&pool).await?;
+        } else {
+            validate_earn_reserve_share_prices_schema(&pool).await?;
         }
         if matches!(mode, Mode::VerifyReusableAlts) {
             verify_reusable_alts(&pool).await?;
@@ -899,7 +901,20 @@ async fn validate_earn_max_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+async fn validate_earn_reserve_share_prices_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+    let recorder_schema_valid: bool = sqlx::query_scalar(include_str!(
+        "../../../loyal-yield-store/src/earn_reserve_share_prices_schema.sql"
+    ))
+    .fetch_one(pool)
+    .await?;
+    if !recorder_schema_valid {
+        return Err("Earn reserve share-price columns, constraints or indexes are invalid".into());
+    }
+    Ok(())
+}
+
 async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
+    validate_earn_reserve_share_prices_schema(pool).await?;
     for relation in [
         "schema_migrations",
         "projection_offsets",

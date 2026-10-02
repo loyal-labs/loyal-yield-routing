@@ -2,6 +2,11 @@
 -- the reserves Loyal Earn uses. Written by loyal-app's
 -- /api/cron/earn-reserve-share-prices; read to compute realized Earn APY.
 
+-- Both runners execute this batch in one implicit transaction. Bound DDL
+-- waits; SET LOCAL does not change settings for subsequent worker queries.
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+
 CREATE TABLE IF NOT EXISTS loyal_yield.earn_reserve_share_prices (
     id BIGSERIAL PRIMARY KEY,
     cluster TEXT NOT NULL,
@@ -11,7 +16,8 @@ CREATE TABLE IF NOT EXISTS loyal_yield.earn_reserve_share_prices (
     observed_hour TIMESTAMPTZ NOT NULL,
     observed_at TIMESTAMPTZ NOT NULL,
     slot BIGINT NOT NULL,
-    share_price DOUBLE PRECISION NOT NULL CHECK (share_price > 0)
+    share_price DOUBLE PRECISION NOT NULL
+        CHECK (share_price > 0 AND share_price < 'Infinity'::DOUBLE PRECISION)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS earn_reserve_share_prices_hour_uidx
