@@ -1,0 +1,30 @@
+# ONyc collateral-funded offline lifecycle proof
+
+**Goal:** Execute realistic ONyc entry, capacity-sized financing, partial withdrawal and full collateral-funded repayment through current native builders and pinned programs in one evolving offline bank. Restore terminal USDC to Voltr. Expose failures rather than replacing missing execution with arithmetic.
+
+**Approved scope:** Vlad approved adapting the existing offline harness after the Oct2 feasibility study. Code base e2384fb. Keep1.75x/45% completed/50% instant risk limits and one position. No production transactions, signatures, policies, caps, deployments, clears, alerts, external comments, PR797 changes or recurring monitors. Public account/program/quote retrieval is read-only. No validators; use existing LiteSVM. Tests explicitly opt-in and zero-signature.
+
+**Architecture:** Reuse the existing connected ONyc LiteSVM harness and production Go CompileBridgeMessage/CompileKaminoMessage/CompileJupiterMessage builders. Build each unsigned leg from prior executed bank state. Never scale an immutable signed wire, fabricate successful pool poststate, or inject payoff money. Any initial hypothetical funding/flat-state substitutions must be confined to setup, listed with before/after hashes and checked for coherent vault/receipt/LP accounting. Load current pinned policy bytes rather than creating permissive candidate policies. Pool accounts carry forward untouched except executed swaps.
+
+## Tasks and owners
+1. Parent: locate retained fixtures/program sources and bounded capture tooling; review account/program identities and resource safety. Capture only public data required by builders. Preserve upstream evidence and distinguish capture time from coherent fixture state.
+2. Implementer: minimal test-only Go exporter plus connected Rust proof changes. Prefer adapting reusable existing helpers over a new simulation framework. First reproduce existing fixture limitations/failure. Implement1x control and up-to1.75x realistic case (target100k when representable; otherwise report exact limiter, no silent smaller substitute). Include actual positive capped/fractional debt, both partial and full exits. The loan must be economically material, and debt cash must be exhausted by reinvestment before unwind.
+3. Validation: execute normal native scoped commands with pinned programs/policies; assert collateral-funded repayment, changing pool state, debt zero at final payoff, custody attribution/conservation, full idle return and coherent NAV. Record each leg's raw amounts, wire SHA, packet/account/ALT/CU sizes, logs and pre/post account hashes. Include at least one fail-closed negative without lifecycle mutation. Distinguish receipt/queue, restart and worker-admission coverage still missing.
+4. Parent and independent reviewer: check invariants and evidence, run scoped checks, document exact proof level, failures and unsupported cases. Never label unused/skipped fixtures or resized template wires as current native execution proof.
+
+## Existing starting points
+- crates/squads-test-harness/tests/rwa_jupiter_controlled_probe.rs: current onre_lending borrows1000raw then repays from initial cash. Retain historical proof labels.
+- crates/squads-test-harness/tests/support/rwa_onre_bridge.rs: historical hardcoded/private tmp compiler and old ticket identity; do not reuse those identities blindly.
+- go/backyard-rwa-worker/internal/backyardrwa/r04_onre_bridge_test.go: zero-signature Go exporter, no RPC/signer/store path. Extend a bounded test-only request interface if needed.
+- go/backyard-rwa-worker/internal/backyardrwa/{kamino_build.go,jupiter.go,capacity_borrow.go,partial_withdrawal.go,leverage_exit_pricer.go,nav_observe.go}: production builders and amount/risk calculations.
+- docs/evidence/backyard-rwa-go/phase3/onre-*.json.gz: historical outputs, not current policy/admission proof.
+- /home/exedev/dev/voltr-handoff-20261002/onyc-lifecycle-study/{report,current-source-audit,review}.md: source map and precise missing proof.
+
+## Resource and validation bounds
+Use existing /home/exedev/dev/loyal-yield-routing/target with CARGO_BUILD_JOBS=1,CARGO_INCREMENTAL=0,CARGO_PROFILE_DEV_DEBUG=0,CARGO_PROFILE_TEST_DEBUG=0. Every build/test runs under verified transient systemd cgroup limits: MemoryMax=3G, MemorySwapMax=0, TasksMax=64, CPUQuota=100%; RuntimeMaxSec=900 for builds and120 for tests. User explicitly forbids all Solana validators, clones and node daemons. Only short-lived in-process LiteSVM is permitted. Record unit names and stop the unit explicitly on cancellation; never raise limits silently. A full rebuild is not a default check. Scope cargo test to the touched proof binary/test; cap each command with timeout (initial build up to15min, test120s) and inspect progress via handles. Check free disk before heavy work and stop at3GiB free. No cargo clean of shared target. Go cache was explicitly cleaned because it consumed13GiB; preserve source/module caches and fixtures. No plaintext secrets or key material.
+
+**Deliverables:** code and run doc in this worktree; raw fixture/results/logs in /home/exedev/dev/voltr-handoff-20261002/onyc-offline-proof. Explicit PASS or diagnosed blocker for each connected invariant. Vlad subsequently approved the narrow local partial-sizing overflow fix, then publication of a PR after focused validation/review. Merge and deployment remain unapproved.
+
+## Completion
+
+The $100k partial-withdrawal proof exposed a signed-integer overflow in the shared release-sizing helper. The separately approved fix uses wide multiply/divide with checked conversion, retaining floor rounding and risk caps. The default regression and related Go tests pass (13 top-level passes, one isolated-DB skip). All three connected offline cases pass partial restoration plus full exit:1x, native1.75x ceiling, and an explicit20k under-cap loan. The latter proves fractional-ratio handling, not real reserve exhaustion. Independent review and Go vet passed. Evidence and limitations are in `docs/onyc-offline-lifecycle-proof.md`. No validators, live transactions, policy/risk changes or deployment occurred.

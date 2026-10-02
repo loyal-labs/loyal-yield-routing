@@ -164,7 +164,12 @@ func partialWithdrawalReleaseReceipts(s Snapshot, free int64) int64 {
 	if free <= 0 || equity <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionCollateralRaw <= 0 {
 		return 0
 	}
-	releaseValue := free * s.PositionCollateralValueRaw / equity
+	release := new(big.Int).Mul(big.NewInt(free), big.NewInt(s.PositionCollateralValueRaw))
+	release.Quo(release, big.NewInt(equity))
+	if !release.IsInt64() {
+		return 0
+	}
+	releaseValue := release.Int64()
 	if s.PositionDebtValueRaw > 0 {
 		limit := s.PositionCollateralValueRaw - s.PositionDebtValueRaw*10_000/(leverageExitReleaseCeilingBPS-500)
 		if limit <= 0 {
