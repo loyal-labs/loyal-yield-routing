@@ -21,9 +21,20 @@ func leverageLevelLTVBPS(level float64) int64 {
 // leverageMaxLTVBPS is the option-1 cap after any move (the 45% warning).
 const leverageMaxLTVBPS int64 = 4500
 
-// currentLeverageLevel snaps an observed position to the nearest option-1
-// level: debt 0 is 1x; otherwise the level whose LTV is closest.
+// currentLeverageLevel is actual supplied collateral/equity; desired policy
+// bands remain discrete and are resolved separately by currentLeverageBand.
 func currentLeverageLevel(s Snapshot) float64 {
+	equity := s.PositionCollateralValueRaw - s.PositionDebtValueRaw
+	if s.PositionDebtRaw <= 0 {
+		return 1
+	}
+	if equity <= 0 {
+		return 0
+	}
+	return float64(s.PositionCollateralValueRaw) / float64(equity)
+}
+
+func currentLeverageBand(s Snapshot) float64 {
 	if s.PositionDebtRaw <= 0 {
 		return 1
 	}

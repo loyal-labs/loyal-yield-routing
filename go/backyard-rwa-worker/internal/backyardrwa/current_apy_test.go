@@ -16,7 +16,7 @@ import (
 func TestCurrentAPYMatchesTheLeverageWatchFigure(t *testing.T) {
 	s := base()
 	s.RouteLane, s.StrategyKey, s.HasPosition = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true
-	s.PositionCollateralValueRaw, s.PositionDebtValueRaw = 2_111_060_000, 904_010_000
+	s.PositionCollateralValueRaw, s.PositionDebtValueRaw = 2_112_337_500, 905_287_500
 	apr := 0.068
 	m := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .0948, SupplyAPY: .002, CurrentBorrowAPY: math.Expm1(apr),
 		BorrowCurve: []BorrowCurvePoint{{0, apr * 10_000}, {10_000, apr * 10_000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
@@ -25,8 +25,9 @@ func TestCurrentAPYMatchesTheLeverageWatchFigure(t *testing.T) {
 		t.Fatalf("%+v ok=%t", got, ok)
 	}
 	// The exact figure the watch summary prints for this lane at 1.75x.
+	armLeverageCapacityFixture(&s)
 	var watch leverageWatch
-	lines := watch.observe([]LaneEconomics{m}, autoAUTOPYUSD.Lane, 1_207_050_000, true, func(string) bool { return true })
+	lines := watch.observe([]LaneEconomics{m}, autoAUTOPYUSD.Lane, 1_207_050_000, true, func(string) bool { return true }, s)
 	want := fmt.Sprintf("1.75x=%.2f", float64(got.APYBPS)/100)
 	found := false
 	for _, line := range lines {
@@ -197,7 +198,11 @@ func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
 		if lane.Enterable {
 			entry = "yes"
 		}
-		rebuilt := fmt.Sprintf("%s(spread=%.2f enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", lane.Lane, float64(lane.SpreadBPS)/100, entry, strings.Join(parts, " "), lane.Levels[0], lane.Levels[1], lane.Levels[2])
+		spread := "unavailable"
+		if lane.SpreadBPS != nil {
+			spread = fmt.Sprintf("%.2f", float64(*lane.SpreadBPS)/100)
+		}
+		rebuilt := fmt.Sprintf("%s(spread=%s enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", lane.Lane, spread, entry, strings.Join(parts, " "), lane.Levels[0], lane.Levels[1], lane.Levels[2])
 		if !strings.Contains(summary, rebuilt) {
 			t.Fatalf("stored lane %q not in the printed line %q", rebuilt, summary)
 		}
@@ -213,21 +218,21 @@ func TestLeverageWatchMergeKeepsMissingLanes(t *testing.T) {
 	old := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
 	now := old.Add(time.Hour)
 	previous := &LeverageWatchSummary{ObservedAt: old, Lanes: []leverageWatchLane{
-		{Lane: autoAUTOPYUSD.Lane, ObservedAt: old, SpreadBPS: 100},
-		{Lane: onreONycUSDC, ObservedAt: old, SpreadBPS: 200},
+		{Lane: autoAUTOPYUSD.Lane, ObservedAt: old, SpreadBPS: watchSpreadFixture(100)},
+		{Lane: onreONycUSDC, ObservedAt: old, SpreadBPS: watchSpreadFixture(200)},
 	}}
-	merged := mergeLeverageWatch(previous, LeverageWatchSummary{ObservedAt: now, Lanes: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane, ObservedAt: now, SpreadBPS: 150}}})
+	merged := mergeLeverageWatch(previous, LeverageWatchSummary{ObservedAt: now, Lanes: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane, ObservedAt: now, SpreadBPS: watchSpreadFixture(150)}}})
 	if len(merged.Lanes) != 2 || !merged.ObservedAt.Equal(now) {
 		t.Fatalf("%+v", merged)
 	}
 	for _, lane := range merged.Lanes {
 		switch lane.Lane {
 		case autoAUTOPYUSD.Lane:
-			if lane.SpreadBPS != 150 || !lane.ObservedAt.Equal(now) {
+			if (lane.SpreadBPS == nil || *lane.SpreadBPS != 150) || !lane.ObservedAt.Equal(now) {
 				t.Fatalf("updated lane %+v", lane)
 			}
 		case onreONycUSDC:
-			if lane.SpreadBPS != 200 || !lane.ObservedAt.Equal(old) {
+			if (lane.SpreadBPS == nil || *lane.SpreadBPS != 200) || !lane.ObservedAt.Equal(old) {
 				t.Fatalf("missing lane not kept with its older observedAt: %+v", lane)
 			}
 		}
@@ -264,14 +269,14 @@ func TestRecordLeverageWatchFencedWrite(t *testing.T) {
 	}
 	old := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
 	both := LeverageWatchSummary{ObservedAt: old, Lanes: []leverageWatchLane{
-		{Lane: autoAUTOPYUSD.Lane, ObservedAt: old, SpreadBPS: 100, APYBPS: map[string]int64{"1.00": 968}, Levels: []float64{1.5, 1.5, 1.5}},
-		{Lane: onreONycUSDC, ObservedAt: old, SpreadBPS: 200, APYBPS: map[string]int64{"1.00": 1102}, Levels: []float64{1, 1, 1}},
+		{Lane: autoAUTOPYUSD.Lane, ObservedAt: old, SpreadBPS: watchSpreadFixture(100), APYBPS: map[string]int64{"1.00": 968}, Levels: []float64{1.5, 1.5, 1.5}},
+		{Lane: onreONycUSDC, ObservedAt: old, SpreadBPS: watchSpreadFixture(200), APYBPS: map[string]int64{"1.00": 1102}, Levels: []float64{1, 1, 1}},
 	}}
 	if err := db.RecordLeverageWatch(ctx, key, both, 1); err != nil {
 		t.Fatal(err)
 	}
 	now := old.Add(time.Hour)
-	if err := db.RecordLeverageWatch(ctx, key, LeverageWatchSummary{ObservedAt: now, Lanes: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane, ObservedAt: now, SpreadBPS: 150}}}, 1); err != nil {
+	if err := db.RecordLeverageWatch(ctx, key, LeverageWatchSummary{ObservedAt: now, Lanes: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane, ObservedAt: now, SpreadBPS: watchSpreadFixture(150)}}}, 1); err != nil {
 		t.Fatal(err)
 	}
 	var raw []byte
@@ -291,3 +296,5 @@ func TestRecordLeverageWatchFencedWrite(t *testing.T) {
 		t.Fatal("write without a lease accepted")
 	}
 }
+
+func watchSpreadFixture(n int64) *int64 { return &n }

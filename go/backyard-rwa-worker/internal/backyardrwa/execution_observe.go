@@ -319,10 +319,9 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 			}
 		}
 		if leg == kaminoLegBorrow && decision.Reason == leverageUpReason {
-			// B2: never the selector entry quote; cap receive+fee at 50%.
-			wireAmount, err = leverageUpCapFee(position, wireAmount, func(receive uint64) (uint64, error) { return kaminoBorrowFee(accounts, route, receive) })
-			if err != nil {
-				return Observation{}, KaminoExecutionEvidence{}, err
+			capped, capErr := capacitySizedBorrow(position, accounts, route, int64(leverageUpLevel(observation.Snapshot)*100))
+			if capErr != nil || wireAmount > capped || wireAmount < leverageMinimumBorrowRaw {
+				return Observation{}, KaminoExecutionEvidence{}, budgetHold("borrow_capacity_shrank")
 			}
 			effectAmount = wireAmount
 		} else if leg == kaminoLegBorrow {
@@ -413,12 +412,10 @@ func selectKaminoLeg(pilotActive bool, decision Decision, position KaminoPositio
 			return kaminoLegDeposit, uint64(decision.AmountRaw), uint64(decision.AmountRaw), nil
 		}
 		if position.CollateralDepositedRaw > 0 && decision.Reason == leverageUpReason {
-			// B2: sized from the stored target level carried in AmountRaw
-			// (150/175); the fee cap runs in prepare with the reserve fee.
-			amount, err := position.leverageUpBorrowRaw(decision.AmountRaw)
-			if err != nil {
-				return 0, 0, 0, err
+			if decision.AmountRaw < leverageMinimumBorrowRaw {
+				return 0, 0, 0, budgetHold("leverage_up_fixed_amount_required")
 			}
+			amount := uint64(decision.AmountRaw)
 			return kaminoLegBorrow, amount, amount, nil
 		}
 		if position.CollateralDepositedRaw > 0 && position.DebtRaw == 0 {

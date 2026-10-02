@@ -97,6 +97,9 @@ func observePhase3BorrowAdmission(ctx context.Context, rpc *RPCClient, client *j
 		s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !positionReturnRoute(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw < 0 || s.PositionDebtValueRaw < 0 || debtCashRaw(s) != 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || d.Action != OpenRouteStep || r.Action != d.Action || d.AmountRaw <= 0 || e.ExpectedEffects.Kind != "kamino-borrow" {
 		return phase3BridgeAdmission{}, budgetHold("complete_initial_borrow_return_unavailable")
 	}
+	if leverageUp && (uint64(d.AmountRaw) != r.AmountRaw || r.AmountRaw != leverageBorrowReceive(s, leverageUpLevel(s))) {
+		return phase3BridgeAdmission{}, budgetHold("borrow_fixed_amount_mismatch")
+	}
 	current, err := observePhase3KnownBuildCost(ctx, rpc, r, e.ExpectedEffects)
 	if err != nil {
 		return phase3BridgeAdmission{}, err

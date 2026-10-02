@@ -12,13 +12,13 @@ func TestLeverageLevelsAndOneStepRule(t *testing.T) {
 		}
 	}
 	s := base()
-	if currentLeverageLevel(s) != 1 {
+	if currentLeverageBand(s) != 1 {
 		t.Fatal("debt 0 is not 1x")
 	}
 	s.PositionDebtRaw = 1
 	for ltv, want := range map[int64]float64{3322: 1.5, 3700: 1.5, 3900: 1.75, 4100: 1.75, 4285: 1.75, 5501: 1.75} {
 		s.LTVBPS = ltv
-		if got := currentLeverageLevel(s); got != want {
+		if got := currentLeverageBand(s); got != want {
 			t.Fatalf("LTV %d snapped to %.2f, want %.2f", ltv, got, want)
 		}
 	}

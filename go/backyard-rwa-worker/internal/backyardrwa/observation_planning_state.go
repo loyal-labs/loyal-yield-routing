@@ -23,7 +23,8 @@ type routePlanningState struct {
 	unwind     *UnwindIntent
 	paused     bool
 	// leverage is the durable B2 option-1 level target (nil = none stored).
-	leverage *LeverageTarget
+	leverage          *LeverageTarget
+	partialWithdrawal *partialWithdrawalState
 	// remainingExecutionCost is advisory quote-sizing headroom under the
 	// reviewed $500 bounded execution-cost stop: the cap less booked spend and
 	// every outstanding reservation's cost bound. The binding check stays at
@@ -60,14 +61,14 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 		out.lease = &lease
 		owner, fence = lease.Owner, lease.FencingToken
 	}
-	var budget, activation, entry, unwind, leverage []byte
+	var budget, activation, entry, unwind, leverage, partial []byte
 	err := d.pool.QueryRow(ctx, `SELECT state_version,
 		COALESCE(state->'phase3','null'::jsonb),COALESCE(state->'pilotBudgetActivation','null'::jsonb),
 		state->'selectorEntry',state->'selectorUnwind',COALESCE((state->>'selectorEntryPaused')::boolean,false),
-		COALESCE(state->'leverageTarget','null'::jsonb)
+		COALESCE(state->'leverageTarget','null'::jsonb),state->'partialWithdrawal'
 		FROM loyal_yield.multiply_route_states WHERE route_key=$1
 		AND ($2='' OR (lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()))`,
-		routeKey, owner, fence).Scan(&out.generation, &budget, &activation, &entry, &unwind, &out.paused, &leverage)
+		routeKey, owner, fence).Scan(&out.generation, &budget, &activation, &entry, &unwind, &out.paused, &leverage, &partial)
 	if errors.Is(err, pgx.ErrNoRows) && execution {
 		d.setLease(nil)
 		return nil, ErrRouteLeaseLost
@@ -99,6 +100,15 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 	out.leverage, err = decodeLeverageTarget(leverage)
 	if err != nil {
 		return nil, err
+	}
+	if len(partial) > 0 && string(partial) != "null" {
+		if err = d.validatePartialWithdrawalOrigin(ctx, d.pool, routeKey, partial); err != nil {
+			return nil, err
+		}
+	}
+	out.partialWithdrawal, err = decodePartialWithdrawal(partial)
+	if err != nil || (out.partialWithdrawal != nil && out.partialWithdrawal.Generation > out.generation) {
+		return nil, budgetHold("invalid_partial_withdrawal_generation")
 	}
 	return out, nil
 }

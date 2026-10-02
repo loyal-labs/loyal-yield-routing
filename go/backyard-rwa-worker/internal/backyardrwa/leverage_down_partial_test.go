@@ -31,7 +31,7 @@ func TestDownMove175To15IsOneSizedCycle(t *testing.T) {
 		// After the repay: C 1500, D 502.5 -> LTV 33.5% = 1.5x; the step stops.
 		setDebtCash(&s, 0)
 		s.PositionDebtRaw, s.PositionDebtValueRaw, s.LTVBPS = 502_500_000, 502_500_000, 3350
-		if _, _, _, ok := leverageDownPartialStepAt(s, true); ok || currentLeverageLevel(s) != 1.5 {
+		if _, _, _, ok := leverageDownPartialStepAt(s, true); ok || currentLeverageBand(s) != 1.5 {
 			t.Fatalf("%s did not stop at 1.5x", lane)
 		}
 		if got := Decide(s); got.Action != Hold {

@@ -203,6 +203,21 @@ type Snapshot struct {
 	// lane (1, 1.5 or 1.75); 0 means no target is stored, which keeps the
 	// installed behaviour (one 50% loop).
 	LeverageTargetLevel float64
+	// Same-batch exact receive ceilings for the next 1.5x/1.75x step.
+	// Zero known room holds borrowing, never targets repayment of existing debt.
+	LeverageBorrowOperationID    string
+	LeverageApprovedBorrowRaw    uint64
+	LeverageSourceDebtRaw        uint64
+	BorrowCapacityKnown          bool
+	AdditionalDebtRoomRaw        uint64
+	LeverageBorrow150Raw         uint64
+	BorrowDebtPriceSF            [16]byte
+	BorrowUSDCPriceSF            [16]byte
+	BorrowDebtDecimals           uint8
+	BorrowFeeRate                uint64
+	LeverageBorrow175Raw         uint64
+	PartialWithdrawalLTVBPS      int64
+	PartialWithdrawalOperationID string
 	// TopupDepositRoomRaw is the collateral reserve's remaining deposit limit,
 	// valued in bridge USDC (floored, less a 1% price margin). It sizes a
 	// plan B3 top-up; zero or unknown allocates nothing.

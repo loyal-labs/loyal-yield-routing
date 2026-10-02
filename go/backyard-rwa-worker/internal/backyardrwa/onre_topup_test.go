@@ -36,7 +36,8 @@ func TestOnReTopupSequenceOnTheUSDCPath(t *testing.T) {
 	// collateral follows (no top-up is left to do).
 	s.CollateralIdleRaw, s.PrimeIdleRaw, s.PositionCollateralRaw = 0, 0, 1_420_000_000_000
 	s.LeverageTargetLevel = 1.5
-	check(s, OpenRouteStep, leverageUpReason, 150)
+	armLeverageCapacityFixture(&s)
+	check(s, OpenRouteStep, leverageUpReason, int64(s.LeverageApprovedBorrowRaw))
 	// Size: min(idle - buffer, tranche cap, deposit-limit room).
 	room := onreTopupSnapshot()
 	room.TopupDepositRoomRaw = 400_000_000

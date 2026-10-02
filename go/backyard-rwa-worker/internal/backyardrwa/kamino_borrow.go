@@ -89,9 +89,14 @@ func validateBorrowRequest(ctx context.Context, rpc *RPCClient, r KaminoPrimeUSD
 	if err != nil {
 		return 0, err
 	}
-	observed, accounts, err := rpc.GetMultipleAccounts(ctx, []string{route.Kamino.DebtReserve, route.Kamino.Obligation, route.DebtLiquiditySupply, route.DebtCustody, route.DebtFeeReceiver}, slot)
+	observed, accounts, err := rpc.GetMultipleAccounts(ctx, []string{route.Kamino.DebtReserve, route.Kamino.Obligation, route.DebtLiquiditySupply, route.DebtCustody, route.DebtFeeReceiver, route.Kamino.CollateralReserve, budgetClockAddress}, slot)
 	if err != nil {
 		return 0, err
+	}
+	if leverageLane(route.Lane) {
+		if err := validateCapacityBorrow(accounts, route, r.AmountRaw); err != nil {
+			return 0, err
+		}
 	}
 	fresh, err := kaminoBorrowEffects(accounts, route, r.AmountRaw)
 	if err != nil {

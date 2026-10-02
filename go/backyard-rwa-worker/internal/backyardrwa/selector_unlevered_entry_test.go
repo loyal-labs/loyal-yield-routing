@@ -80,7 +80,7 @@ func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 // Maple never takes the 1x path even when blocked.
 func TestUnblockedOrNonLeverageLaneKeepsTheLeveragedEntry(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, nil)
-	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, client, m, onreONycUSDC, 1_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, client, m, onreONycUSDC, 100_000_000, 42, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,6 +235,7 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 	check(Hold, "debt_reserve_utilization_blocks_borrow")
 	// Pool reopens with a 1.5x target: B2 levers through leverage_up.
 	s.BorrowUtilizationBlocked, s.LeverageTargetLevel = false, 1.5
+	armLeverageCapacityFixture(&s)
 	check(OpenRouteStep, leverageUpReason)
 }
 

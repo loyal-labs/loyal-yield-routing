@@ -44,6 +44,14 @@ func kaminoPairEntryCapacity(position KaminoPosition, accounts []ConfirmedAccoun
 // lane. The candidate AUTO destination path calls it only after
 // selectorDestinationLaneAuthorized admitted the exact manifest-bound lane.
 func kaminoPairEntryCapacityAuthorized(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
+	if leverageLane(route.Lane) {
+		// Validate borrowing evidence even for a known-zero recipe. Unknown is
+		// not a zero loan and must not become an executable forecast.
+		if _, err := kaminoAdditionalDebtRoom(accounts, route); err != nil {
+			return 0, err
+		}
+		return unleveredEntryCapacityDebtRaw(position, accounts, route)
+	}
 	if position.EntryCapacityRaw == 0 {
 		return 0, nil
 	}

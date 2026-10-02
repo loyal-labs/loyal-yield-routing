@@ -248,6 +248,7 @@ func TestPerformanceFeeLeverageHWMKEEPDoesNotRaiseTarget(t *testing.T) {
 	s.JournalArmedNAVRaw = 1_000_000_000
 	in.Snapshot = s
 	keep := SelectOpportunity(in, SelectorState{})
+	armLeverageCapacityFixture(&s)
 	market := leverageMarket(s.RouteLane, .30, math.Log1p(.06))
 	market.CurrentBorrowAPY = .06
 	got, ok := decideLeverageTarget(s, keep, []LaneEconomics{market}, DefaultSelectorPolicy())
@@ -274,6 +275,7 @@ func TestPerformanceFeeLeverageUPNeedsFeeReservedWholePositionEdge(t *testing.T)
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 1_000_000_000, 1_000_000_000
 	s.VoltrIdleRaw, s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.JournalArmedNAVRaw = 0, 1_000_000_000, 1_000_000_000, 1_000_000_000
 	p := DefaultSelectorPolicy()
+	armLeverageCapacityFixture(&s)
 	market := leverageMarket(s.RouteLane, .08, math.Log1p(.06))
 	market.CurrentBorrowAPY = .06
 	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p)

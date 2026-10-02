@@ -744,6 +744,17 @@ func (d *Database) recordDecisionTx(
 	if active {
 		return DecisionRecord{}, fmt.Errorf("one nonterminal operation already exists")
 	}
+	partial, err := decodePartialWithdrawal(setupState["partialWithdrawal"])
+	if err != nil {
+		return DecisionRecord{}, err
+	}
+	if decision.Action != Hold && decision.Action != HoldManualRecovery && partial != nil && (partial.Generation > stateVersion || partial.Lane != observation.Snapshot.RouteLane || partial.OperationID != observation.Snapshot.PartialWithdrawalOperationID || partial.LTVBPS != observation.Snapshot.PartialWithdrawalLTVBPS) {
+		return DecisionRecord{}, budgetHold("partial_withdrawal_state_changed")
+	}
+	if decision.Action != Hold && decision.Action != HoldManualRecovery && partial == nil && observation.Snapshot.PartialWithdrawalOperationID != "" {
+		return DecisionRecord{}, budgetHold("partial_withdrawal_state_changed")
+	}
+
 	expected, err := json.Marshal(map[string]any{
 		"schema":                "loyal-backyard-rwa-operation-evidence/v1",
 		"journalStrategyConfig": bridgeStrategy,
@@ -755,6 +766,20 @@ func (d *Database) recordDecisionTx(
 	}
 	idHash := sha256.Sum256([]byte(persistedIdempotencyKey))
 	operationID := hex.EncodeToString(idHash[:])
+	if decision.Reason == leverageUpReason {
+		target, err := decodeLeverageTarget(setupState["leverageTarget"])
+		if err != nil || target == nil || target.Lane != decision.StrategyKey || target.OperationID != "" || target.BorrowRaw != uint64(decision.AmountRaw) {
+			return DecisionRecord{}, budgetHold("leverage_authorization_consumed_or_changed")
+		}
+		target.OperationID = operationID
+		raw, err := json.Marshal(target)
+		if err != nil {
+			return DecisionRecord{}, err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{leverageTarget}',$2::jsonb,true) WHERE route_key=$1`, routeKey, string(raw)); err != nil {
+			return DecisionRecord{}, err
+		}
+	}
 	status, recoveryReason := initialDecisionStatus(decision)
 	strategyKey := decision.StrategyKey
 	if strategyKey == "" {
@@ -762,6 +787,33 @@ func (d *Database) recordDecisionTx(
 	}
 	if _, err := tx.Exec(ctx, OperationInsert, operationID, routeKey, cycle, string(decision.Action), string(status), persistedIdempotencyKey, strategyKey, string(expected), recoveryReason); err != nil {
 		return DecisionRecord{}, fmt.Errorf("insert decision: %w", err)
+	}
+	if decision.Reason == partialReleaseReason && partial == nil {
+		target, ok := partialWithdrawalTargetLTVBPS(observation.Snapshot)
+		if !ok || target > leverageMaxLTVBPS {
+			return DecisionRecord{}, budgetHold("partial_withdrawal_ratio_unavailable")
+		}
+		raw, err := json.Marshal(partialWithdrawalState{Lane: decision.StrategyKey, OperationID: operationID, Generation: stateVersion, LTVBPS: target})
+		if err != nil {
+			return DecisionRecord{}, err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{partialWithdrawal}',$2::jsonb,true) WHERE route_key=$1`, routeKey, string(raw)); err != nil {
+			return DecisionRecord{}, err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=expected_effects || jsonb_build_object('partialWithdrawal',$2::jsonb) WHERE operation_id=$1`, operationID, string(raw)); err != nil {
+			return DecisionRecord{}, err
+		}
+
+	} else if partial != nil && decision.Action != HoldManualRecovery && observation.Snapshot.PartialWithdrawalOperationID == partial.OperationID && partialWithdrawalTerminal(observation.Snapshot) {
+		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=state-'partialWithdrawal' WHERE route_key=$1`, routeKey); err != nil {
+			return DecisionRecord{}, err
+		}
+	}
+	if partial != nil && !partialWithdrawalTerminal(observation.Snapshot) {
+		raw, _ := json.Marshal(partial)
+		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=expected_effects || jsonb_build_object('partialWithdrawal',$2::jsonb) WHERE operation_id=$1`, operationID, string(raw)); err != nil {
+			return DecisionRecord{}, err
+		}
 	}
 	return DecisionRecord{OperationID: operationID, Cycle: cycle, Status: status}, nil
 }

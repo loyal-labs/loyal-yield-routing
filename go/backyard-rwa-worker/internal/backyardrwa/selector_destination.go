@@ -394,17 +394,8 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 	if err != nil {
 		return out, err
 	}
-	// B2: while the destination debt reserve blocks new borrowing (the same
-	// condition as the debt_reserve_utilization_blocks_borrow hold), an
-	// AUTO/OnRe destination prices a debt-free 1x entry sized by collateral
-	// deposit room. Every other state keeps the leveraged entry exactly.
+	// AUTO/OnRe retain collateral equity independently of additional debt room.
 	unlevered := false
-	if capacity == 0 && reentry == nil && leverageLane(route.Lane) && position.BorrowUtilizationBlocked {
-		out.Unlevered, unlevered = true, true
-		if capacity, err = unleveredEntryCapacityDebtRaw(position, accounts, route); err != nil {
-			return out, err
-		}
-	}
 	// Pair capacity is DEBT-denominated. A non-USDC debt lane converts it
 	// downwards at the established budget price observation before the result
 	// may bound a USDC equity; USDC lanes keep exact raw==USDC parity.
@@ -553,21 +544,45 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 		}}
 		return appendInput(r, e)
 	}
+	var borrow, fee uint64
+	if leverageLane(route.Lane) {
+		// Explicit future collateral, not a fabricated observed account image.
+		funded := position
+		funded.CollateralDepositedRaw, funded.RedeemablePrimeRaw, funded.DebtRaw = 1, minimum-1, 0
+		borrow, err = capacitySizedBorrow(funded, accounts, route, 150)
+		if err != nil {
+			return out, err
+		}
+		depositRoom, err := unleveredEntryCapacityDebtRaw(position, accounts, route)
+		if err != nil {
+			return out, err
+		}
+		initialDebtUnits, err := valueBetweenTokenRaw(swap.Request.MinimumOutputRaw, position.CollateralDecimals, position.DebtDecimals, position.CollateralPriceSF, position.DebtPriceSF, true)
+		if err != nil {
+			return out, err
+		}
+		if initialDebtUnits >= depositRoom {
+			borrow = 0
+		} else {
+			borrow = min(borrow, depositRoom-initialDebtUnits)
+		}
+		if borrow < leverageMinimumBorrowRaw {
+			borrow = 0
+		}
+		unlevered, out.Unlevered = borrow == 0, borrow == 0
+	} else {
+		borrow, err = targetBorrowForCollateralRaw(minimum-1, position.CollateralDecimals, position.DebtDecimals, position.CollateralPriceSF, position.DebtPriceSF)
+		if err != nil {
+			return out, err
+		}
+	}
 	var payoffLegs []JupiterExecutionEvidence
 	if unlevered {
-		// B2 1x entry while the destination debt reserve blocks borrowing:
-		// swap -> deposit, no borrow leg; the exit is withdraw -> swap back.
 		if err = appendSelectorUnleveredTail(ctx, rpc, client, m, route, accounts, slot, observationFloor, blockhash, swap, minimum, liquidity, deposit, appendInput, appendBridge, &out); err != nil {
 			return out, err
 		}
 	} else {
-		// Transfer rounding is not receipt redemption rounding. Deduct an extra
-		// liquidity unit before estimating a borrow against the first deposit.
-		borrow, err := targetBorrowForCollateralRaw(minimum-1, position.CollateralDecimals, position.DebtDecimals, position.CollateralPriceSF, position.DebtPriceSF)
-		if err != nil {
-			return out, err
-		}
-		fee, err := kaminoBorrowFeeAtRate(binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:]), borrow)
+		fee, err = kaminoBorrowFeeAtRate(binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:]), borrow)
 		if err != nil {
 			return out, err
 		}
@@ -623,6 +638,18 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 		}
 		if leverage.Request.MinimumOutputRaw <= rounding+1 {
 			return out, budgetHold("selector_destination_below_deposit_minimum")
+		}
+		if leverageLane(route.Lane) {
+			reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+			if err != nil {
+				return out, err
+			}
+			used, err := ceilScaledBigFraction(reserve.totalLiquiditySF)
+			total := new(big.Int).Add(new(big.Int).SetUint64(swap.Request.MinimumOutputRaw), new(big.Int).SetUint64(leverage.Request.MinimumOutputRaw))
+			total.Add(total, new(big.Int).SetUint64(used))
+			if err != nil || total.Cmp(new(big.Int).SetUint64(reserve.depositLimitRaw)) > 0 {
+				return out, budgetHold("selector_redeposit_capacity_unavailable")
+			}
 		}
 		redepositMinimum := leverage.Request.MinimumOutputRaw - rounding
 		if err = deposit(leverage.Request.MinimumOutputRaw, redepositMinimum, liquidity+swap.Request.MinimumOutputRaw, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}); err != nil {

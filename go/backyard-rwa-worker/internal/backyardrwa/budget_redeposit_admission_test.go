@@ -130,7 +130,7 @@ func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {
 			s.RouteLane, s.StrategyKey = lane, lane
 			s.PilotActive = true
 			s.MinimumCollateralDepositRaw = 3
-			s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 10_000_000, 10_000_000
+			s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 100_000_000, 100_000_000
 			s.CollateralIdleRaw, s.PrimeIdleRaw = 1, 1
 			s.PostMutationNAVRequired = true
 			if got := Decide(s); got.Action != ReportNAV {
@@ -143,15 +143,16 @@ func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {
 					t.Fatal("B2: a debt-free position without a target borrowed", got)
 				}
 				s.LeverageTargetLevel, want = 1.5, leverageUpReason
+				armLeverageCapacityFixture(&s)
 			}
 			if got := Decide(s); got.Action != OpenRouteStep || got.Reason != want {
 				t.Fatal("deposit remainder blocked borrowing", got)
 			}
-			s.PositionDebtRaw, s.PositionDebtValueRaw, s.SquadsIdleRaw = 5_000_000, 5_000_000, 5_000_000
+			s.PositionDebtRaw, s.PositionDebtValueRaw, s.SquadsIdleRaw = 50_000_000, 50_000_000, 50_000_000
 			if got := Decide(s); got.Action != SwapDebtToCollateralStep {
 				t.Fatal("remainder stranded borrowed cash", got)
 			}
-			s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 5_000_001, 5_000_001
+			s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 50_000_001, 50_000_001
 			if got := Decide(s); got.Action != OpenRouteStep || got.Reason != "single_loop_redeposit" {
 				t.Fatal("redeposit buffer skipped", got)
 			}

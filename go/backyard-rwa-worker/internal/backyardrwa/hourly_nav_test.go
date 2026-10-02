@@ -75,6 +75,7 @@ func TestHourlyFeeBudgetUsesPilotShareGranularity(t *testing.T) {
 	s.HasPosition, s.LeverageTargetLevel = true, 1
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = wealth, wealth
 	s.VoltrIdleRaw, s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.JournalArmedNAVRaw = 0, wealth, wealth, wealth
+	armLeverageCapacityFixture(&s)
 	market := leverageMarket(s.RouteLane, .12, math.Log1p(.06))
 	market.CurrentBorrowAPY = .06
 	up, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, DefaultSelectorPolicy())

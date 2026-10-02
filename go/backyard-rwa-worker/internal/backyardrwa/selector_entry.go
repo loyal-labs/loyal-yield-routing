@@ -481,6 +481,9 @@ func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, oper
 // the public behavior above. Pause, unwind, journal-lane, equity, borrow,
 // quote-currentness, allocation-binding and authority checks are byte-identical.
 func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manifest RouteManifest, tx pgx.Tx, operationID string, budget Phase3Budget, request any, effects ExpectedEffects, slot int64, admission bool) error {
+	if err := d.authorizePartialWithdrawalTx(ctx, tx, operationID); err != nil {
+		return err
+	}
 	if budget.Pilot == nil {
 		return nil
 	}
@@ -516,7 +519,7 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 	// B2: a leverage_up borrow adds to the current lane under its stored
 	// level target, not a selector entry. Sizing, both LTV caps and the
 	// complete return are bound by its own measured admission.
-	if bypass, err := leverageUpBypassesEntryFence(request, reason, unwinding, lane, leverageTarget); err != nil || bypass {
+	if bypass, err := leverageUpBypassesEntryFence(request, reason, unwinding, lane, leverageTarget, operationID); err != nil || bypass {
 		return err
 	}
 	// Plan B3: a top-up allocation adds to the current loop instead of opening

@@ -25,8 +25,8 @@ type CurrentAPY struct {
 }
 
 // currentPositionAPY publishes the leverage watch's own APY figure for the
-// route lane at the position's level (collateral/equity snapped to the
-// nearest watch level: 1, 1.5, 1.75), from the same LaneEconomics the
+// route lane at its actual collateral/equity ratio and current debt cost,
+// from the same LaneEconomics the
 // selector sample loads (no RPC). ok=false: flat, or no economics for the
 // lane. Level is the actual collateral/equity (2 decimals).
 func currentPositionAPY(s Snapshot, markets []LaneEconomics) (CurrentAPY, bool) {
@@ -47,13 +47,11 @@ func currentPositionAPY(s Snapshot, markets []LaneEconomics) (CurrentAPY, bool) 
 		return out, false
 	}
 	actual := collateral / float64(equityRaw)
-	level := leverageLevels[0]
-	for _, candidate := range leverageLevels {
-		if math.Abs(candidate-actual) < math.Abs(level-actual) {
-			level = candidate
-		}
+	if !finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 || s.PositionDebtValueRaw < 0 {
+		return out, false
 	}
-	apy, ok := leverageLevelAPY(*market, level, equityRaw, true)
+	apy := performanceFeeForecast((collateral*market.NativeAPY + float64(s.PositionCollateralValueRaw)*market.SupplyAPY - float64(s.PositionDebtValueRaw)*market.CurrentBorrowAPY) / float64(equityRaw))
+	ok := true
 	if !ok || !finite(apy) {
 		return out, false
 	}

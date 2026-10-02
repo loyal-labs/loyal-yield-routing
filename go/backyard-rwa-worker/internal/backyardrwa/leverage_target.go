@@ -12,10 +12,13 @@ import (
 // selector sample loop writes it; Decide reads it through the planning state.
 // A target for another lane, or none, keeps the installed behaviour.
 type LeverageTarget struct {
-	Lane      string    `json:"lane"`
-	Level     float64   `json:"level"`
-	SpreadBPS int64     `json:"spreadBps"`
-	DecidedAt time.Time `json:"decidedAt"`
+	Lane          string    `json:"lane"`
+	Level         float64   `json:"level"`
+	SpreadBPS     int64     `json:"spreadBps"`
+	DecidedAt     time.Time `json:"decidedAt"`
+	BorrowRaw     uint64    `json:"borrowRaw,omitempty"`
+	SourceDebtRaw uint64    `json:"sourceDebtRaw,omitempty"`
+	OperationID   string    `json:"operationId,omitempty"`
 }
 
 func (t LeverageTarget) validate() error {
@@ -23,7 +26,8 @@ func (t LeverageTarget) validate() error {
 	for _, level := range leverageLevels {
 		valid = valid || t.Level == level
 	}
-	if !valid || !leverageLane(t.Lane) || t.DecidedAt.IsZero() {
+	if !valid || !leverageLane(t.Lane) || t.DecidedAt.IsZero() || t.SourceDebtRaw > math.MaxInt64 || t.BorrowRaw > math.MaxInt64 ||
+		(t.BorrowRaw != 0 && (t.Level <= 1 || t.BorrowRaw < leverageMinimumBorrowRaw)) {
 		return fmt.Errorf("invalid_leverage_target")
 	}
 	return nil
@@ -49,8 +53,12 @@ func decodeLeverageTarget(raw []byte) (*LeverageTarget, error) {
 // lane it was decided for.
 func applyLeverageTarget(s *Snapshot, target *LeverageTarget) {
 	s.LeverageTargetLevel = 0
+	s.LeverageApprovedBorrowRaw, s.LeverageSourceDebtRaw = 0, 0
+	s.LeverageBorrowOperationID = ""
 	if target != nil && target.Lane == s.RouteLane && leverageLane(s.RouteLane) {
 		s.LeverageTargetLevel = target.Level
+		s.LeverageApprovedBorrowRaw, s.LeverageSourceDebtRaw = target.BorrowRaw, target.SourceDebtRaw
+		s.LeverageBorrowOperationID = target.OperationID
 	}
 }
 
@@ -104,6 +112,8 @@ type leverageDecision struct {
 	GainRaw       float64
 	CostRaw       float64
 	Reason        string
+	BorrowRaw     uint64
+	SourceDebtRaw uint64
 }
 
 // decideLeverageTarget applies the option-1 rule to the funded lane. It runs
@@ -116,7 +126,7 @@ type leverageDecision struct {
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane}
 	if !leverageLane(s.RouteLane) || !s.PilotActive || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
-		selector.Action != "KEEP" || s.Unwind || s.UnwindRefreshRequired || s.CutoverDrain || s.Nonterminal != "" || s.WithdrawalDemandRaw != 0 ||
+		selector.Action != "KEEP" || s.PartialWithdrawalOperationID != "" || s.Unwind || s.UnwindRefreshRequired || s.CutoverDrain || s.Nonterminal != "" || s.WithdrawalDemandRaw != 0 ||
 		s.SquadsIdleRaw != 0 || s.DebtIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 ||
 		(s.CollateralIdleRaw > 0 && s.MinimumCollateralDepositRaw > 0 && s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw) {
 		return out, false
@@ -137,62 +147,83 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	// 1.5x <-> 1x writes, each bumping the generation). Without a stored
 	// target the position level is the base. Live levels stop at
 	// leverageMaxLiveLevel (see leverage_up.go).
-	positionLevel := min(currentLeverageLevel(s), leverageMaxLiveLevel)
+	positionLevel := min(currentLeverageBand(s), leverageMaxLiveLevel)
 	out.Current = positionLevel
 	if s.LeverageTargetLevel > 0 {
 		out.Current = min(s.LeverageTargetLevel, leverageMaxLiveLevel)
 	}
-	spreadAt := func(level float64) (float64, bool) { return leverageSpread(*market, level, equity, positionLevel > 1) }
-	// Every spread the rule reads from this level must be available; an
-	// unavailable one (e.g. our borrow does not fit the pool's free
-	// liquidity) is no decision, never a silent "stay" that rewrites the
-	// target.
-	for _, step := range leverageWatchOptions["1"] {
-		if step.from != out.Current || step.to > leverageMaxLiveLevel {
-			continue
+	// Down rules use current borrowing cost even when new capacity is unknown.
+	currentSpread := market.NativeAPY + market.SupplyAPY - market.CurrentBorrowAPY
+	spreadAt := func(level float64) (float64, bool) {
+		if level <= out.Current {
+			return currentSpread, finite(currentSpread) && market.CurrentBorrowAPY >= 0
 		}
-		if _, ok := spreadAt(max(step.from, step.to)); !ok {
-			return out, false
+		raw := leverageBorrowCeiling(s, level)
+		if raw < leverageMinimumBorrowRaw {
+			return 0, false
 		}
+		fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, raw)
+		if err != nil {
+			return 0, false
+		}
+		apr, err := projectedBorrowAPR(*market, float64(raw+fee))
+		return market.NativeAPY + market.SupplyAPY - math.Expm1(apr), err == nil && finite(apr)
 	}
 	out.Next = min(nextLiveLeverageLevel(out.Current, spreadAt), leverageMaxLiveLevel)
-	spread, _ := spreadAt(max(out.Current, out.Next))
-	out.SpreadBPS = int64(spread * 10_000)
+	out.SpreadBPS = int64(currentSpread * 10_000)
 	out.Reason = "spread_rule"
-	if out.Next > out.Current {
-		moved := float64(equity) * (out.Next - out.Current)
-		out.GainRaw = moved * spread * 30 / 365
-		out.CostRaw = moved*2*float64(p.UncertaintyBPS)/10_000 + 3*10_000
-		if !s.MonitorsArmed || !selectorFeeBaselineKnown(s) {
-			out.Next, out.Reason = out.Current, "fee_hwm_baseline_unavailable"
-			return out, true
-		}
-		// A pending target or unsupplied collateral is not the shared
-		// all-supplied, one-positive-exponential fee-reserve scenario.
-		if p.validate() != nil || out.Current != positionLevel || s.CollateralIdleRaw > 0 ||
-			!finite(out.CostRaw) || out.CostRaw > 1<<53 || s.PositionDebtValueRaw < 0 ||
-			!finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 {
-			out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
-			return out, true
-		}
-		years := p.Horizon.Hours() / (365.25 * 24)
-		collateral, debt := float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw)
-		keepGross := forecastGain(collateral, collateral, debt, *market, math.Log1p(market.CurrentBorrowAPY), years)
-		// Preserve the spread rule's projected source rate, including its
-		// existing utilization assumptions; do not silently reprice it.
-		nextAPR := math.Log1p(market.NativeAPY + market.SupplyAPY - spread)
-		candidate := pilotForecastEconomics(pilotEconomics{Debt: debt + moved, Proceeds: moved, APR: nextAPR},
-			collateral, *market, years, int64(math.Ceil(out.CostRaw)))
-		net, known := selectorFeeReservedGain(s, p.Horizon, candidate, float64(s.TotalVaultNAVRaw)-float64(equity))
-		if !known || !finite(keepGross) {
-			out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
-			return out, true
-		}
-		out.GainRaw = net - selectorKeepGainUpper(s, keepGross) // fee- and expense-reserved edge
-		if out.GainRaw <= float64(p.MinimumBenefitRaw) {
-			out.Next, out.Reason = out.Current, "up_move_below_minimum_benefit"
-		}
+	if out.Next < out.Current {
+		return out, true
 	}
+	// A stored desired ceiling may be above a capacity-limited actual position.
+	// Reprice only the fresh clipped increment, including its entire fee/cost.
+	candidateSnapshot := s
+	candidateSnapshot.LeverageTargetLevel = out.Next
+	level := leverageUpLevel(candidateSnapshot)
+	raw := leverageBorrowCeiling(s, level)
+	if raw < leverageMinimumBorrowRaw {
+		return out, true
+	}
+	fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, raw)
+	proceeds, priceErr := capacityBorrowValue(s, raw, false)
+	liability, debtErr := capacityBorrowValue(s, raw+fee, true)
+	apr, rateErr := projectedBorrowAPR(*market, float64(raw+fee))
+	spread := market.NativeAPY + market.SupplyAPY - math.Expm1(apr)
+	minimumSpread := .01
+	if level == 1.75 {
+		minimumSpread = .02
+	}
+	if err != nil || priceErr != nil || debtErr != nil || rateErr != nil || !finite(spread) || spread < minimumSpread {
+		out.Next = out.Current
+		return out, true
+	}
+	out.SpreadBPS = int64(spread * 10_000)
+	moved := float64(proceeds)
+	out.CostRaw = moved*2*float64(p.UncertaintyBPS)/10_000 + 3*10_000
+	if !s.MonitorsArmed || !selectorFeeBaselineKnown(s) {
+		out.Next, out.Reason = out.Current, "fee_hwm_baseline_unavailable"
+		return out, true
+	}
+	if p.validate() != nil || s.CollateralIdleRaw > 0 || !finite(out.CostRaw) || out.CostRaw > 1<<53 || s.PositionDebtValueRaw < 0 || !finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 {
+		out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
+		return out, true
+	}
+	years := p.Horizon.Hours() / (365.25 * 24)
+	collateral, debt := float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw)
+	keepGross := forecastGain(collateral, collateral, debt, *market, math.Log1p(market.CurrentBorrowAPY), years)
+	candidate := pilotForecastEconomics(pilotEconomics{Debt: debt + float64(liability), Proceeds: moved, APR: apr}, collateral, *market, years, int64(math.Ceil(out.CostRaw)))
+	net, known := selectorFeeReservedGain(s, p.Horizon, candidate, float64(s.TotalVaultNAVRaw)-float64(equity))
+	if !known || !finite(keepGross) {
+		out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
+		return out, true
+	}
+	out.GainRaw = net - selectorKeepGainUpper(s, keepGross)
+	if out.GainRaw <= float64(p.MinimumBenefitRaw) {
+		out.Next, out.Reason = out.Current, "up_move_below_minimum_benefit"
+	} else {
+		out.BorrowRaw, out.SourceDebtRaw = raw, uint64(s.PositionDebtRaw)
+	}
+
 	return out, true
 }
 

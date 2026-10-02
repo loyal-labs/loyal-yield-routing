@@ -239,6 +239,9 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 		}
 		observation.Snapshot.SelectorEntryPaused = planning.paused
 		applyLeverageTarget(&observation.Snapshot, planning.leverage)
+		if err := applyPartialWithdrawal(&observation.Snapshot, planning.partialWithdrawal); err != nil {
+			return err
+		}
 		return p.manifest.applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
 	}
 	// The manifest-aware reader is preferred exactly as the entry read below:
@@ -270,6 +273,17 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	// unwind: a construction refresh (no planning read) must see the same
 	// stored target as the outer decision, or leverage_up never matches
 	// (live 2026-09-29: every tick 'prepared evidence does not match').
+	if reader, ok := p.journal.(interface {
+		LoadPartialWithdrawal(context.Context, string) (*partialWithdrawalState, error)
+	}); ok {
+		partial, err := reader.LoadPartialWithdrawal(ctx, p.routeKey)
+		if err != nil {
+			return err
+		}
+		if err = applyPartialWithdrawal(&observation.Snapshot, partial); err != nil {
+			return err
+		}
+	}
 	observation.Snapshot.LeverageTargetLevel = 0
 	if reader, ok := p.journal.(interface {
 		LoadLeverageTarget(context.Context, string) (*LeverageTarget, error)
@@ -1209,7 +1223,7 @@ func Run(ctx context.Context, out io.Writer) error {
 					otelLogs.selectorSample("")
 					lastEvaluateFailure = ""
 					// B2 watch-only: log lines, never a decision input.
-					for _, line := range levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(levWatchSummary) >= time.Hour, func(lane string) bool { return worker.manifest.selectorEntryFundingLane(lane, false) }) {
+					for _, line := range levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(levWatchSummary) >= time.Hour, func(lane string) bool { return worker.manifest.selectorEntryFundingLane(lane, false) }, observed.Snapshot) {
 						_, _ = fmt.Fprintln(out, line)
 					}
 					if time.Since(levWatchSummary) >= time.Hour {
@@ -1226,8 +1240,8 @@ func Run(ctx context.Context, out io.Writer) error {
 						if levDecisionLog.due(time.Now(), decision, observed.Snapshot.LeverageTargetLevel) {
 							_, _ = fmt.Fprintln(out, decision.logLine())
 						}
-						if decision.changesTarget(observed.Snapshot.LeverageTargetLevel) {
-							target := LeverageTarget{Lane: decision.Lane, Level: decision.Next, SpreadBPS: decision.SpreadBPS, DecidedAt: time.Now().UTC()}
+						if decision.changesTarget(observed.Snapshot.LeverageTargetLevel) || decision.BorrowRaw != observed.Snapshot.LeverageApprovedBorrowRaw || decision.SourceDebtRaw != observed.Snapshot.LeverageSourceDebtRaw || observed.Snapshot.LeverageBorrowOperationID != "" {
+							target := LeverageTarget{Lane: decision.Lane, Level: decision.Next, SpreadBPS: decision.SpreadBPS, DecidedAt: time.Now().UTC(), BorrowRaw: decision.BorrowRaw, SourceDebtRaw: decision.SourceDebtRaw}
 							if err := database.RecordLeverageTarget(ctx, productionRouteKey, target, observed.planning.generation); err != nil {
 								_, _ = fmt.Fprintf(out, "backyard-rwa-worker: leverage target not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
 							}

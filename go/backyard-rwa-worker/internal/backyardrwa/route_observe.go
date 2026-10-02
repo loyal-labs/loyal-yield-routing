@@ -437,6 +437,10 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if entryUSDC == 0 && leverageLane(route.Lane) && position.BorrowUtilizationBlocked && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
 			entryUSDC = room
 		}
+		if leverageLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
+			entryUSDC = room
+			applyBorrowCapacity(&base.Snapshot, position, accounts, route)
+		}
 		base.Snapshot.TopupDepositRoomRaw = int64(room)
 		base.Snapshot.CapacityRaw = int64(entryUSDC)
 		base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
@@ -746,6 +750,9 @@ func observeKaminoFromFixedAccounts(ctx context.Context, accountsReader func(con
 // USDC, so normalize at observed prices and floor rather than assume a peg.
 // The caller has already validated this same batch's NAV/refresh dependencies.
 func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
+	if leverageLane(route.Lane) && position.LiquidationThresholdBPS > 0 {
+		return topupDepositRoomUSDC(accounts, route)
+	}
 	if route.Kamino.DebtMint == bridgeUSDC {
 		if selectorLane(route.Lane) {
 			return kaminoPairEntryCapacity(position, accounts, route)

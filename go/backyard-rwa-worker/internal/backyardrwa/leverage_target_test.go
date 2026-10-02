@@ -12,7 +12,7 @@ import (
 // expm1(apr).
 func leverageMarket(lane string, yield, borrowAPR float64) LaneEconomics {
 	bps := borrowAPR * 10_000
-	return LaneEconomics{Lane: lane, NativeAPY: yield, BorrowCurve: []BorrowCurvePoint{{0, bps}, {10_000, bps}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
+	return LaneEconomics{Lane: lane, NativeAPY: yield, CurrentBorrowAPY: math.Expm1(borrowAPR), BorrowCurve: []BorrowCurvePoint{{0, bps}, {10_000, bps}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
 }
 
 // A settled funded AUTO position at the given level, equity ~$1,000.
@@ -26,6 +26,7 @@ func leverageSnapshot(level float64) Snapshot {
 	s.PositionDebtRaw = s.PositionDebtValueRaw
 	s.LTVBPS = leverageLevelLTVBPS(level)
 	s.LeverageTargetLevel = level
+	armLeverageCapacityFixture(&s)
 	return s
 }
 
@@ -43,7 +44,7 @@ func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
 		{"1x up with fee-reserved edge", 1, 0.60, math.Log1p(0.06), 1.5, "spread_rule"},
 		{"1.5x stays 1-2 pt", 1.5, 0.10, math.Log1p(0.085), 1.5, "spread_rule"},
 		// Live levels reach 1.75x with the multi-cycle exit; option 1 exactly.
-		{"1.5x qualifying spread held by fee reserve", 1.5, 0.12, math.Log1p(0.06), 1.5, "up_move_below_minimum_benefit"},
+		{"1.5x qualifying capped loan", 1.5, 0.12, math.Log1p(0.06), 1.75, "spread_rule"},
 		{"1.5x down below 0", 1.5, 0.05, math.Log1p(0.06), 1, "spread_rule"},
 		{"1.75x stays in the gap", 1.75, 0.10, math.Log1p(0.085), 1.75, "spread_rule"},
 		{"1.75x down below 1 pt", 1.75, 0.10, math.Log1p(0.095), 1.5, "spread_rule"},
@@ -63,10 +64,10 @@ func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
 	small.PositionCollateralValueRaw, small.PositionCollateralRaw = 2_000_000, 2_000_000
 	small.TotalVaultNAVRaw, small.StrategyNAVRaw = 2_000_000, 2_000_000
 	armFeeAuthorityFixture(t, &small)
+	armLeverageCapacityFixture(&small)
 	got, _ := decideLeverageTarget(small, keep, []LaneEconomics{leverageMarket(small.RouteLane, 0.12, math.Log1p(0.06))}, p)
-	if got.Next != 1 || got.Reason != "up_move_below_minimum_benefit" || got.GainRaw >= float64(p.MinimumBenefitRaw) || got.CostRaw <= 0 ||
-		!strings.Contains(got.logLine(), "gain=") || !strings.Contains(got.logLine(), "cost=") {
-		t.Fatalf("small up move not refused or not logged: %+v %s", got, got.logLine())
+	if got.Next != 1 || got.BorrowRaw != 0 {
+		t.Fatalf("sub-minimum loan authorized: %+v", got)
 	}
 }
 
@@ -200,7 +201,7 @@ func TestUnavailableSpreadNeverFlipsTheStoredTarget(t *testing.T) {
 	if _, ok := leverageSpread(full, 1.5, 1_000_000_000, false); ok {
 		t.Fatal("fixture: spread(1.5x) should be unavailable")
 	}
-	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{full}, p); ok {
+	if d, _ := decideLeverageTarget(s, keep, []LaneEconomics{full}, p); d.Next != s.LeverageTargetLevel || d.BorrowRaw != 0 {
 		t.Fatalf("unavailable spread still decided: %+v", d)
 	}
 	// Stored 1.5x with a 2+ pt spread: the only change is the next step up.
@@ -224,4 +225,27 @@ func TestUnavailableSpreadNeverFlipsTheStoredTarget(t *testing.T) {
 	if !(leverageDecision{Current: 1, Next: 1.5}).changesTarget(0) {
 		t.Fatal("no stored target: first decision not written")
 	}
+}
+
+func leverageTestPriceBytes() []byte { return []byte{0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0} }
+
+func armLeverageCapacityFixture(s *Snapshot) {
+	s.LeverageBorrow150Raw, s.LeverageBorrow175Raw = 0, 0
+	s.BorrowCapacityKnown = true
+	s.AdditionalDebtRoomRaw = 1_000_000_000
+	s.BorrowDebtDecimals = 6
+	copy(s.BorrowDebtPriceSF[:], leverageTestPriceBytes())
+	s.BorrowUSDCPriceSF = s.BorrowDebtPriceSF
+	position := leverageTestPosition(uint64(s.PositionCollateralRaw), uint64(s.PositionDebtRaw))
+	if n, err := position.leverageUpBorrowRaw(150); err == nil {
+		s.LeverageBorrow150Raw, _ = leverageUpCapFee(position, n, func(uint64) (uint64, error) { return 0, nil })
+	}
+	if n, err := position.leverageUpBorrowRaw(175); err == nil {
+		s.LeverageBorrow175Raw, _ = leverageUpCapFee(position, n, func(uint64) (uint64, error) { return 0, nil })
+	}
+	s.LeverageApprovedBorrowRaw = s.LeverageBorrow150Raw
+	if currentLeverageLevel(*s) >= 1.5 {
+		s.LeverageApprovedBorrowRaw = s.LeverageBorrow175Raw
+	}
+	s.LeverageSourceDebtRaw = uint64(s.PositionDebtRaw)
 }

@@ -38,15 +38,16 @@ func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
 			t.Fatalf("%s: no target must hold, got %+v", lane, got)
 		}
 		s.LeverageTargetLevel = 1.5
+		armLeverageCapacityFixture(&s)
 		got := m.DecideOnManifest(s)
-		if got.Action != OpenRouteStep || got.Reason != leverageUpReason || got.AmountRaw != 150 {
+		if got.Action != OpenRouteStep || got.Reason != leverageUpReason || got.AmountRaw != 837_162_000 {
 			t.Fatalf("%s: target 1.5x must borrow through leverage_up, got %+v", lane, got)
 		}
 		// Sizing: 50% of collateral value (the target), not the entry quote.
 		position := leverageTestPosition(1_676_000_000, 0)
 		leg, wire, _, err := selectKaminoLeg(true, got, position)
-		if err != nil || leg != kaminoLegBorrow || wire != 838_000_000 || wire == entry.Quote.BorrowReceiveRaw {
-			t.Fatalf("%s: leverage_up sized %d (leg %d, err %v), want 838000000", lane, wire, leg, err)
+		if err != nil || leg != kaminoLegBorrow || wire != 837_162_000 || wire == entry.Quote.BorrowReceiveRaw {
+			t.Fatalf("%s: leverage_up sized %d (leg %d, err %v), want 837162000", lane, wire, leg, err)
 		}
 	}
 }
@@ -76,10 +77,10 @@ func TestLeverageUpDecisionsAtEachLevel(t *testing.T) {
 			reason        string
 			amount        int64
 		}{
-			{1, 1.5, OpenRouteStep, leverageUpReason, 150},
-			{1, 1.75, OpenRouteStep, leverageUpReason, 150}, // one level per move
+			{1, 1.5, OpenRouteStep, leverageUpReason, 499_500_000},
+			{1, 1.75, OpenRouteStep, leverageUpReason, 499_500_000}, // one level per move
 			{1, 1, Hold, "leverage_target_1x", 0},
-			{1.5, 1.75, OpenRouteStep, leverageUpReason, 175},
+			{1.5, 1.75, OpenRouteStep, leverageUpReason, 249_250_000},
 			{1.5, 1.5, Hold, "single_loop_position_ready", 0},
 			{1.75, 1.75, Hold, "single_loop_position_ready", 0},
 		} {
@@ -180,7 +181,7 @@ func TestLeverageUpSizingAndCaps(t *testing.T) {
 // a borrow leg, same AUTO/OnRe lane, no unwind, a stored target above 1x.
 func TestLeverageUpEntryFenceExceptionIsNarrow(t *testing.T) {
 	manifest := basicPolicyFixtureManifest(t)
-	borrow, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreONycUSDC)
+	borrow, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, 10_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreONycUSDC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,11 +189,11 @@ func TestLeverageUpEntryFenceExceptionIsNarrow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := []byte(`{"lane":"OnRe/ONyc/USDC","level":1.5,"spreadBps":150,"decidedAt":"2026-09-28T12:00:00Z"}`)
-	if ok, err := leverageUpBypassesEntryFence(borrow, leverageUpReason, false, onreONycUSDC, target); !ok || err != nil {
+	target := []byte(`{"lane":"OnRe/ONyc/USDC","level":1.5,"borrowRaw":10000000,"operationId":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","spreadBps":150,"decidedAt":"2026-09-28T12:00:00Z"}`)
+	if ok, err := leverageUpBypassesEntryFence(borrow, leverageUpReason, false, onreONycUSDC, target, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); !ok || err != nil {
 		t.Fatalf("valid leverage_up refused: %v", err)
 	}
-	if ok, err := leverageUpBypassesEntryFence(borrow, "prime_collateral_requires_borrow", false, onreONycUSDC, target); ok || err != nil {
+	if ok, err := leverageUpBypassesEntryFence(borrow, "prime_collateral_requires_borrow", false, onreONycUSDC, target, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); ok || err != nil {
 		t.Fatal("other reasons must keep the entry fence")
 	}
 	for name, c := range map[string]struct {

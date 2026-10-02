@@ -163,6 +163,11 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 	// Voltr idle already pays a plain withdrawal: report if due, never unwind.
 	// Mirrors the USDC lane's withdrawal_covered (live 2026-09-28: a $5 claim
 	// against $1,295 idle started a full AUTO unwind).
+	if partialWithdrawalInFlight(s) {
+		if action, reason, amount, ok := partialWithdrawalStep(s); ok {
+			return d(action, reason, amount)
+		}
+	}
 	if s.WithdrawalDemandRaw > 0 && !s.Unwind && !s.CutoverDrain && s.WithdrawalDemandRaw <= s.VoltrIdleRaw {
 		if s.CapitalMutated || s.LastReportAgeSeconds >= 60 {
 			if hold, blocked := custodyResidueHold(s); blocked {

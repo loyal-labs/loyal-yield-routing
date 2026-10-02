@@ -4,6 +4,17 @@ Status: DRAFT for Vlad's OK (2026-09-27). No code before approval.
 All numbers below were computed in code from live data at 2026-09-27 12:44 UTC
 (worker `--selector-shadow`, Kamino Timescale, Jupiter quotes, on-chain AUTO reserve).
 
+## Capacity-sized extension
+
+The bounded AUTO/OnRe code contract is now specified in
+[capacity-sized AUTO/ONyc debt](capacity-sized-auto-onyc-debt-2026-10-02.md).
+Desired 1x/1.5x/1.75x levels are ceilings. Fresh reserve room can produce a
+settled intermediate level; actual holdings drive carry and partial withdrawal
+ratios. Each additional loan needs an exact, single-operation economic approval.
+The historical research below is not current reserve capacity or activation authority.
+The capacity plan’s mandatory stopped/fenced upgrade boundary applies before any
+replacement; selector-entry pause or a momentarily idle journal does not suffice.
+
 ## What changes
 
 Today the worker has one leverage: one borrow loop at a 50% borrow, which gives 1.5x

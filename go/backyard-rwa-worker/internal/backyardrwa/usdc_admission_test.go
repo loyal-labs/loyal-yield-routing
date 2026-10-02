@@ -212,10 +212,16 @@ func TestUSDCEntryConsumesWorkingCashAndValidatesSharedSourceOnce(t *testing.T) 
 func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 	for _, lane := range selectorLanes {
 		s := base()
+		scale := int64(1)
+		if leverageLane(lane) {
+			scale = 10_000
+			s.PilotActive = true
+			s.SelectorEntryEquityRaw = 200_000_000
+		}
 		s.RouteLane, s.StrategyKey = lane, lane
-		s.VoltrIdleRaw, s.CapacityRaw, s.MaxTargetLTVEntryRaw, s.PolicyLimitRaw = 100_000, 20_000, 20_000, 100_000
+		s.VoltrIdleRaw, s.CapacityRaw, s.MaxTargetLTVEntryRaw, s.PolicyLimitRaw = (100_000 * scale), (20_000 * scale), (20_000 * scale), (100_000 * scale)
 		d := Decide(s)
-		if d.Action != VoltrAllocateToSquads || d.AmountRaw != 20_000 {
+		if d.Action != VoltrAllocateToSquads || d.AmountRaw != (20_000*scale) {
 			t.Fatalf("%s allocation: %+v", lane, d)
 		}
 		o, _, evidence := bridgeAdmissionFixture(t, d.Action, d.AmountRaw, s.VoltrIdleRaw, 0, 0)
@@ -232,7 +238,7 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 		if d.Action != SwapStableToCollateralStep || d.AmountRaw != s.SquadsIdleRaw {
 			t.Fatalf("%s working cash: %+v", lane, d)
 		}
-		for _, capacity := range []int64{0, 19_999} {
+		for _, capacity := range []int64{0, (19_999 * scale)} {
 			changed := s
 			changed.CapacityRaw = capacity
 			d = Decide(changed)
@@ -247,20 +253,21 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 				t.Fatal("capacity return", err)
 			}
 		}
-		s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 20_000, 20_000
+		s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, (20_000 * scale), (20_000 * scale)
 		if d = Decide(s); d.Action != OpenRouteStep || d.Reason != "prime_collateral_ready" {
 			t.Fatalf("%s finish deposit before allocating more: %+v", lane, d)
 		}
-		s.CollateralIdleRaw, s.PrimeIdleRaw, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.HasPosition = 0, 0, 20_000, 20_000, true
+		s.CollateralIdleRaw, s.PrimeIdleRaw, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.HasPosition = 0, 0, (20_000 * scale), (20_000 * scale), true
 		wantBorrow := "prime_collateral_requires_borrow"
 		if leverageLane(lane) {
 			s.LeverageTargetLevel, wantBorrow = 1.5, leverageUpReason
+			armLeverageCapacityFixture(&s)
 		}
 		if d = Decide(s); d.Action != OpenRouteStep || d.Reason != wantBorrow {
 			t.Fatalf("%s finish borrow: %+v", lane, d)
 		}
-		s.PositionDebtRaw, s.PositionDebtValueRaw, s.SquadsIdleRaw = 10_000, 10_000, 10_000
-		if d = Decide(s); d.Action != SwapDebtToCollateralStep || d.AmountRaw != 10_000 {
+		s.PositionDebtRaw, s.PositionDebtValueRaw, s.SquadsIdleRaw = (10_000 * scale), (10_000 * scale), (10_000 * scale)
+		if d = Decide(s); d.Action != SwapDebtToCollateralStep || d.AmountRaw != (10_000*scale) {
 			t.Fatalf("%s borrowed cash: %+v", lane, d)
 		}
 		if err := d.Validate(); err != nil {
@@ -273,12 +280,12 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 				t.Fatal("USDC self-swap admitted", lane, action)
 			}
 		}
-		s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 10_000, 10_000
+		s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, (10_000 * scale), (10_000 * scale)
 		if d = Decide(s); d.Action != OpenRouteStep || d.Reason != "single_loop_redeposit" {
 			t.Fatalf("%s finish redeposit: %+v", lane, d)
 		}
 		s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 0
-		if d = Decide(s); d.Action != Hold || d.Reason != "single_loop_position_ready" || s.VoltrIdleRaw != 80_000 {
+		if d = Decide(s); d.Action != Hold || d.Reason != "single_loop_position_ready" || s.VoltrIdleRaw != (80_000*scale) {
 			t.Fatalf("%s idle remains separate: %+v", lane, d)
 		}
 	}

@@ -221,6 +221,11 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if s.CutoverDrain && s.PositionDebtRaw > 0 && s.SquadsIdleRaw == 0 && s.VoltrIdleRaw > 0 {
 		return decision(VoltrAllocateToSquads, "phase2_cutover_fund_repayment", min(s.PositionDebtRaw, s.VoltrIdleRaw))
 	}
+	if partialWithdrawalInFlight(s) {
+		if action, reason, amount, ok := partialWithdrawalStep(s); ok {
+			return decision(action, reason, amount)
+		}
+	}
 	if s.WithdrawalDemandRaw > 0 || s.Unwind || s.CutoverDrain {
 		shortfall := s.WithdrawalDemandRaw - s.VoltrIdleRaw
 		if shortfall <= 0 && !s.Unwind && !s.CutoverDrain {

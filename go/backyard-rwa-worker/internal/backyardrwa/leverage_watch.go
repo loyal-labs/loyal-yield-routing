@@ -30,12 +30,41 @@ var leverageWatchOptions = map[string][]leverageStep{
 }
 
 // leverageSpread is token yield minus the borrow APY at the utilization the
-// lane's debt would reach at that level. The source lane already carries a
-// 1.5x loan, which the observed utilization includes.
-func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source bool) (float64, bool) {
+// lane's hypothetical debt would reach at that level. Current raw source debt
+// is already included in observed utilization. Non-USDC columns require the
+// matching observation's reserve price authority; missing columns are omitted.
+func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source bool, observed ...Snapshot) (float64, bool) {
 	debt := (level - 1) * float64(equityRaw)
-	if source {
-		debt -= 0.5 * float64(equityRaw)
+	if !finite(debt) || debt < 0 || debt > 1<<53 {
+		return 0, false
+	}
+	var snapshot *Snapshot
+	if len(observed) == 1 && observed[0].RouteLane == m.Lane {
+		snapshot = &observed[0]
+	}
+	if debt > 0 {
+		route, err := runtimeRoute(m.Lane)
+		if err != nil {
+			return 0, false
+		}
+		if route.Kamino.DebtMint != bridgeUSDC {
+			if snapshot == nil || !snapshot.BorrowCapacityKnown {
+				return 0, false
+			}
+			// Hypothetical debt begins as USDC VALUE. Convert through the same
+			// batch's reserve prices/decimals before using the debt reserve curve.
+			raw, err := valueBetweenTokenRaw(uint64(math.Ceil(debt)), 6, snapshot.BorrowDebtDecimals, snapshot.BorrowUSDCPriceSF, snapshot.BorrowDebtPriceSF, true)
+			if err != nil {
+				return 0, false
+			}
+			debt = float64(raw)
+		}
+	}
+	if source && snapshot != nil {
+		if snapshot.PositionDebtRaw < 0 {
+			return 0, false
+		}
+		debt -= float64(snapshot.PositionDebtRaw)
 	}
 	apr, err := projectedBorrowAPR(m, max(debt, 0))
 	if err != nil || !finite(apr) {
@@ -48,8 +77,8 @@ func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source bool
 // (level-1) x the spread at that level. The single source for the leverage
 // watch summary ('apy 1.75x=') and the published currentApy, so the
 // dashboard and the app never disagree.
-func leverageLevelAPY(m LaneEconomics, level float64, equityRaw int64, source bool) (float64, bool) {
-	spread, ok := leverageSpread(m, level, equityRaw, source)
+func leverageLevelAPY(m LaneEconomics, level float64, equityRaw int64, source bool, observed ...Snapshot) (float64, bool) {
+	spread, ok := leverageSpread(m, level, equityRaw, source, observed...)
 	if !ok {
 		return 0, false
 	}
@@ -99,7 +128,7 @@ type leverageWatch struct {
 type leverageWatchLane struct {
 	Lane       string           `json:"lane"`
 	ObservedAt time.Time        `json:"observedAt"`
-	SpreadBPS  int64            `json:"spreadBps"`
+	SpreadBPS  *int64           `json:"spreadBps,omitempty"`
 	Enterable  bool             `json:"enterable"`
 	APYBPS     map[string]int64 `json:"apyBps"`
 	Levels     []float64        `json:"levels"`
@@ -107,7 +136,7 @@ type leverageWatchLane struct {
 
 // observe returns one line per virtual move and, when summary is set, one
 // line with each lane's spread and APY by level.
-func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equityRaw int64, summary bool, enterable func(string) bool) []string {
+func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equityRaw int64, summary bool, enterable func(string) bool, observed ...Snapshot) []string {
 	if w.levels == nil {
 		w.levels = map[string]float64{}
 	}
@@ -118,7 +147,9 @@ func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equi
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Lane < sorted[j].Lane })
 	for _, m := range sorted {
 		source := m.Lane == sourceLane
-		spreadAt := func(level float64) (float64, bool) { return leverageSpread(m, level, equityRaw, source) }
+		spreadAt := func(level float64) (float64, bool) {
+			return leverageSpread(m, level, equityRaw, source, observed...)
+		}
 		for _, option := range []string{"1", "2", "3"} {
 			key := option + "|" + m.Lane
 			current, ok := w.levels[key]
@@ -137,20 +168,24 @@ func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equi
 				Levels: []float64{w.levels["1|"+m.Lane], w.levels["2|"+m.Lane], w.levels["3|"+m.Lane]}}
 			parts := []string{}
 			for _, level := range leverageWatchLevels {
-				if apy, ok := leverageLevelAPY(m, level, equityRaw, source); ok {
+				if apy, ok := leverageLevelAPY(m, level, equityRaw, source, observed...); ok {
 					bps := int64(math.Round(apy * 10_000))
 					lane.APYBPS[fmt.Sprintf("%.2f", level)] = bps
 					parts = append(parts, fmt.Sprintf("%.2fx=%.2f", level, float64(bps)/100))
 				}
 			}
-			spread, _ := spreadAt(1.5)
-			lane.SpreadBPS = int64(math.Round(spread * 10_000))
+			spreadText := "unavailable"
+			if spread, known := spreadAt(1.5); known {
+				bps := int64(math.Round(spread * 10_000))
+				lane.SpreadBPS = &bps
+				spreadText = fmt.Sprintf("%.2f", float64(bps)/100)
+			}
 			entry := "no"
 			if lane.Enterable {
 				entry = "yes"
 			}
 			// The printed line and the stored summary are the same values.
-			lanes = append(lanes, fmt.Sprintf("%s(spread=%.2f enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", m.Lane, float64(lane.SpreadBPS)/100, entry, strings.Join(parts, " "),
+			lanes = append(lanes, fmt.Sprintf("%s(spread=%s enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", m.Lane, spreadText, entry, strings.Join(parts, " "),
 				lane.Levels[0], lane.Levels[1], lane.Levels[2]))
 			summaryLanes = append(summaryLanes, lane)
 		}

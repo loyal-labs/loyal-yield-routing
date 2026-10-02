@@ -2,9 +2,9 @@ package backyardrwa
 
 import "math/big"
 
-// B2 up moves. A stored target above the position's level borrows one level
-// up under reason leverage_up, sized from the target (never a selector entry
-// quote): debt after the whole loop = (level-1) x equity, i.e. borrow
+// B2 up moves. The desired target bounds a same-batch capacity-sized loan.
+// One economically approved raw receive is journal-bound to one operation.
+// The uncapped desired amount is
 // (L-1)*C - L*D in debt units (1x->1.5x: C/2; 1.5x->1.75x: equity/4). The
 // borrow plus its fee never takes the instant LTV above 50%, and the loop
 // must land at or below 45% even after a 1% swap loss.
@@ -79,7 +79,11 @@ func leverageDebtFreeStep(s Snapshot) (Action, string, int64) {
 	if level == 0 {
 		return Hold, "leverage_target_required", 0
 	}
-	return OpenRouteStep, leverageUpReason, int64(level * 100)
+	receive := leverageBorrowReceive(s, level)
+	if receive < leverageMinimumBorrowRaw {
+		return Hold, "leverage_capacity_settled", 0
+	}
+	return OpenRouteStep, leverageUpReason, int64(receive)
 }
 
 // leverageUpStepWithDebt is the 1.5x->1.75x move on a settled leveraged
@@ -92,7 +96,11 @@ func leverageUpStepWithDebt(s Snapshot) (Action, string, int64, bool) {
 	if s.BorrowUtilizationBlocked {
 		return Hold, "debt_reserve_utilization_blocks_borrow", 0, true
 	}
-	return OpenRouteStep, leverageUpReason, int64(level * 100), true
+	receive := leverageBorrowReceive(s, level)
+	if receive < leverageMinimumBorrowRaw {
+		return "", "", 0, false
+	}
+	return OpenRouteStep, leverageUpReason, int64(receive), true
 }
 
 // leverageUpBorrowRaw sizes the borrow toward levelHundredths (150 or 175)
@@ -204,7 +212,7 @@ func borrowDebtMatches(observed, snapshot uint64) bool {
 // leverageUpBypassesEntryFence: a leverage_up borrow is authorized by the
 // stored level target of the same lane, not by a selector entry. Every other
 // borrow keeps the entry fence.
-func leverageUpBypassesEntryFence(request any, journaledReason string, unwinding bool, operationLane string, rawTarget []byte) (bool, error) {
+func leverageUpBypassesEntryFence(request any, journaledReason string, unwinding bool, operationLane string, rawTarget []byte, operationID ...string) (bool, error) {
 	if journaledReason != leverageUpReason {
 		return false, nil
 	}
@@ -215,7 +223,7 @@ func leverageUpBypassesEntryFence(request any, journaledReason string, unwinding
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
 	target, targetErr := decodeLeverageTarget(rawTarget)
 	if err != nil || leg != kaminoLegBorrow || unwinding || r.RouteLane != operationLane || !leverageLane(operationLane) ||
-		targetErr != nil || target == nil || target.Lane != operationLane || target.Level <= 1 {
+		targetErr != nil || target == nil || target.Lane != operationLane || target.Level <= 1 || target.BorrowRaw < leverageMinimumBorrowRaw || r.AmountRaw != target.BorrowRaw || len(operationID) != 1 || target.OperationID != operationID[0] || target.OperationID == "" {
 		return false, budgetHold("leverage_up_authority_mismatch")
 	}
 	return true, nil
@@ -362,7 +370,7 @@ func leverageDownPartialStepAt(s Snapshot, enabled bool) (Action, string, int64,
 		}
 		return DeleverRouteStep, exitPartialRepayReason, cash, true
 	}
-	if currentLeverageLevel(s) != 1.75 || s.PositionCollateralRaw <= 0 {
+	if currentLeverageBand(s) != 1.75 || s.PositionCollateralRaw <= 0 {
 		return "", "", 0, false
 	}
 	// The decision carries a marker (1, stable); prepare sizes the release

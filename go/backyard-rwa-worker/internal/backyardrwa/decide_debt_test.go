@@ -52,7 +52,7 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 		t.Run(lane, func(t *testing.T) {
 			s := base()
 			s.RouteLane = lane
-			s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw = 100, 100, 100
+			s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw = 100000000, 100000000, 100000000
 			check := func(action Action, amount int64) {
 				t.Helper()
 				got := Decide(s)
@@ -60,53 +60,55 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 					t.Fatalf("wanted %s %d, got %+v", action, amount, got)
 				}
 			}
-			s.VoltrIdleRaw = 100
-			check(VoltrAllocateToSquads, 100)
-			s.VoltrIdleRaw, s.SquadsIdleRaw = 0, 100
-			check(SwapStableToCollateralStep, 100)
-			s.SquadsIdleRaw, s.CollateralIdleRaw = 0, 90
-			check(OpenRouteStep, 90)
-			s.CollateralIdleRaw, s.PositionCollateralRaw, s.HasPosition = 0, 90, true
+			s.VoltrIdleRaw = 100000000
+			check(VoltrAllocateToSquads, 100000000)
+			s.VoltrIdleRaw, s.SquadsIdleRaw = 0, 100000000
+			check(SwapStableToCollateralStep, 100000000)
+			s.SquadsIdleRaw, s.CollateralIdleRaw = 0, 90000000
+			check(OpenRouteStep, 90000000)
+			s.CollateralIdleRaw, s.PositionCollateralRaw, s.HasPosition = 0, 90000000, true
+			s.PositionCollateralValueRaw = 90_000_000
 			if leverageLane(lane) {
 				check(Hold, 0) // B2: leverage_target_required
-				s.LeverageTargetLevel = 1.5
-				check(OpenRouteStep, 150)
+				s.LeverageTargetLevel = 1.5000000
+				armLeverageCapacityFixture(&s)
+				check(OpenRouteStep, int64(s.LeverageApprovedBorrowRaw))
 			} else {
 				check(OpenRouteStep, 1)
 			}
-			s.PositionDebtRaw, s.DebtIdleRaw = 40, 40
-			s.PositionDebtValueRaw = 80
+			s.PositionDebtRaw, s.DebtIdleRaw = 40000000, 40000000
+			s.PositionDebtValueRaw = 80000000
 			// An unrelated USDC residue cannot be treated as borrowed PYUSD.
-			s.SquadsIdleRaw = 3
-			check(SwapDebtToCollateralStep, 40)
-			s.DebtIdleRaw, s.CollateralIdleRaw = 0, 35
-			check(OpenRouteStep, 35)
-			s.CollateralIdleRaw, s.PositionCollateralRaw = 0, 125
+			s.SquadsIdleRaw = 3000000
+			check(SwapDebtToCollateralStep, 40000000)
+			s.DebtIdleRaw, s.CollateralIdleRaw = 0, 35000000
+			check(OpenRouteStep, 35000000)
+			s.CollateralIdleRaw, s.PositionCollateralRaw = 0, 125000000
 			check(Hold, 0)
 			// Even ample Voltr USDC must not short-circuit a canary drain.
-			s.CutoverDrain, s.WithdrawalDemandRaw, s.VoltrIdleRaw = true, 1, 200
-			check(DeleverRouteStep, 1) // 3 USDC raw cannot fund 40 debt raw at $2
+			s.CutoverDrain, s.WithdrawalDemandRaw, s.VoltrIdleRaw = true, 1, 200000000
+			check(DeleverRouteStep, 1) // 3000000 USDC raw cannot fund 40000000 debt raw at $2
 			s.SquadsIdleRaw, s.DebtIdleRaw = 0, 2
 			check(DeleverRouteStep, 1)
-			s.DebtIdleRaw, s.PositionDebtRaw = 0, 38
+			s.DebtIdleRaw, s.PositionDebtRaw = 0, 38000000
 			check(DeleverRouteStep, 1)
-			s.CollateralIdleRaw = 45
-			s.CollateralIdleValueRaw = 100
-			check(SwapCollateralToDebtStep, 45)
-			s.CollateralIdleRaw, s.DebtIdleRaw = 0, 39
-			check(DeleverRouteStep, 38)
+			s.CollateralIdleRaw = 45000000
+			s.CollateralIdleValueRaw = 100000000
+			check(SwapCollateralToDebtStep, 45000000)
+			s.CollateralIdleRaw, s.DebtIdleRaw = 0, 39000000
+			check(DeleverRouteStep, 38000000)
 			s.PositionDebtRaw, s.DebtIdleRaw = 0, 1
 			check(DeleverRouteStep, 0)
-			s.PositionCollateralRaw, s.HasPosition, s.CollateralIdleRaw = 0, false, 80
-			check(SwapCollateralToStableStep, 80)
-			s.CollateralIdleRaw, s.SquadsIdleRaw = 0, 75
+			s.PositionCollateralRaw, s.HasPosition, s.CollateralIdleRaw = 0, false, 80000000
+			check(SwapCollateralToStableStep, 80000000)
+			s.CollateralIdleRaw, s.SquadsIdleRaw = 0, 75000000
 			check(SwapDebtToUSDCStep, 1)
-			s.DebtIdleRaw, s.SquadsIdleRaw = 0, 76
-			check(StageSquadsToVoltr, 76)
-			s.SquadsIdleRaw, s.VoltrStrategyIdleRaw = 0, 76
-			s.StagedAmountKnown, s.StagedAmountRaw = true, 76
-			check(VoltrRestoreIdle, 76)
-			s.VoltrStrategyIdleRaw, s.PriorReportedNAVRaw = 0, 76
+			s.DebtIdleRaw, s.SquadsIdleRaw = 0, 76000000
+			check(StageSquadsToVoltr, 76000000)
+			s.SquadsIdleRaw, s.VoltrStrategyIdleRaw = 0, 76000000
+			s.StagedAmountKnown, s.StagedAmountRaw = true, 76000000
+			check(VoltrRestoreIdle, 76000000)
+			s.VoltrStrategyIdleRaw, s.PriorReportedNAVRaw = 0, 76000000
 			check(ReportNAV, 0)
 			s.PriorReportedNAVRaw = 0
 			check(Hold, 0)

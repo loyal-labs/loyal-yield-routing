@@ -319,11 +319,11 @@ func selectorTrancheInProgress(s Snapshot) bool {
 	if !s.PilotActive || !hasWorkingCapital(s) {
 		return false
 	}
-	unborrowed := s.PositionDebtRaw <= 0 && !(s.HasPosition && s.PositionCollateralRaw > 0 && (s.LeverageTargetLevel == 1 || s.BorrowUtilizationBlocked))
+	unborrowed := s.PositionDebtRaw <= 0 && !(s.HasPosition && s.PositionCollateralRaw > 0 && (s.LeverageTargetLevel == 1 || s.BorrowUtilizationBlocked || (leverageLane(s.RouteLane) && s.BorrowCapacityKnown && leverageBorrowReceive(s, leverageUpLevel(s)) < leverageMinimumBorrowRaw)))
 	// A pending B2 up move (target above the position, borrowing open) is
 	// unfinished work too, so the selector never switches in its middle.
 	_, _, _, downPartial := leverageDownPartialStep(s)
-	levelPending := (leverageUpLevel(s) > 0 && !s.BorrowUtilizationBlocked) || leverageDownPending(s) || downPartial
+	levelPending := (leverageBorrowReceive(s, leverageUpLevel(s)) >= leverageMinimumBorrowRaw && !s.BorrowUtilizationBlocked) || leverageDownPending(s) || downPartial
 	return unborrowed || levelPending || s.SquadsIdleRaw > 0 || s.DebtIdleRaw > 0 ||
 		(s.CollateralIdleRaw > 0 && (s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw))
 }

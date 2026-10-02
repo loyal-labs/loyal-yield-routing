@@ -42,6 +42,7 @@ func TestTopupAllocationSizingAndPriority(t *testing.T) {
 		t.Fatalf("borrow preempted the top-up: %+v", got)
 	}
 	open.VoltrIdleRaw, open.LeverageTargetLevel = 0, 1.5
+	armLeverageCapacityFixture(&open)
 	if got := Decide(open); got.Action != OpenRouteStep || got.Reason != leverageUpReason {
 		t.Fatalf("no borrow after the top-up is done: %+v", got)
 	}

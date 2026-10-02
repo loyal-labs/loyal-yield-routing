@@ -40,21 +40,37 @@ func partialWithdrawalTargetLTVBPS(s Snapshot) (int64, bool) {
 	if s.PositionDebtRaw <= 0 {
 		return 0, true
 	}
+	if s.LeverageTargetLevel == 1 {
+		return 0, false
+	}
+	if s.PartialWithdrawalOperationID != "" {
+		return s.PartialWithdrawalLTVBPS, true
+	}
+	// Only capture with nothing in flight. Legacy in-flight positions keep
+	// their old discrete target; new releases persist this actual ratio.
+	if s.CollateralIdleRaw <= partialWithdrawalDustRaw && debtCashRaw(s) <= partialWithdrawalDustRaw && s.SquadsIdleRaw <= partialWithdrawalDustRaw {
+		if s.PositionCollateralValueRaw <= s.PositionDebtValueRaw || s.PositionDebtValueRaw <= 0 {
+			return 0, false
+		}
+		ratio := new(big.Int).Mul(big.NewInt(s.PositionDebtValueRaw), big.NewInt(10_000))
+		ratio.Quo(ratio, big.NewInt(s.PositionCollateralValueRaw))
+		if !ratio.IsInt64() || ratio.Int64() > leverageMaxLTVBPS {
+			return 0, false
+		}
+		return ratio.Int64(), true
+	}
 	level := s.LeverageTargetLevel
 	if level == 0 {
 		level = 1.5
 	}
-	if level < 1.5 {
-		return 0, false
-	}
-	return leverageLevelLTVBPS(level), true
+	return leverageLevelLTVBPS(level), level >= 1.5
 }
 
 // partialWithdrawalStep returns the next partial-withdrawal leg, or ok=false
 // for the installed full chain. Callers run it inside the withdrawal branch,
 // after hard LTV, recovery and the covered/staged checks.
 func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
-	if !leverageLane(s.RouteLane) || !s.PilotActive || s.Unwind || s.CutoverDrain || s.WithdrawalDemandRaw <= 0 || !s.HasPosition ||
+	if !leverageLane(s.RouteLane) || !s.PilotActive || s.Unwind || s.CutoverDrain || (s.WithdrawalDemandRaw <= 0 && !partialWithdrawalInFlight(s)) || !s.HasPosition ||
 		s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw < 0 || s.PositionDebtRaw < 0 {
 		return "", "", 0, false
 	}
@@ -75,20 +91,20 @@ func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 		inflight += s.DebtIdleRaw
 	}
 	shortfall := s.WithdrawalDemandRaw - s.VoltrIdleRaw
-	if equity <= 0 || shortfall <= 0 {
+	if equity <= 0 || (shortfall <= 0 && !partialWithdrawalInFlight(s)) {
 		return "", "", 0, false
 	}
 	// Full-exit fallbacks: the partial would take (nearly) everything or
 	// leave less than the minimum. Judged on the whole shortfall, before any
 	// leg, so an in-flight chain never flips to a full exit midway.
 	total := equity + inflight
-	if shortfall*10_000 >= total*partialWithdrawalFullExitBPS || total-shortfall < partialWithdrawalMinRemainingRaw {
+	if !partialWithdrawalInFlight(s) && (shortfall*10_000 >= total*partialWithdrawalFullExitBPS || total-shortfall < partialWithdrawalMinRemainingRaw) {
 		return "", "", 0, false
 	}
 	// Bounded rounds: a shortfall a capped release cannot free within
 	// partialWithdrawalMaxRounds rounds takes the full exit. Judged against
 	// the whole vault position so the answer is stable mid-chain.
-	if !partialWithdrawalFitsRounds(s, shortfall, total) {
+	if !partialWithdrawalInFlight(s) && !partialWithdrawalFitsRounds(s, shortfall, total) {
 		return "", "", 0, false
 	}
 	overTarget := s.PositionDebtRaw > 0 && s.LTVBPS > target+leverageUpNearBPS
@@ -124,6 +140,9 @@ func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 		return StageSquadsToVoltr, partialStageReason, usdc, true
 	}
 	if inflight > partialWithdrawalDustRaw {
+		return "", "", 0, false
+	}
+	if shortfall <= 0 {
 		return "", "", 0, false
 	}
 	// Nothing in flight: release the collateral share for E = S + buffer.

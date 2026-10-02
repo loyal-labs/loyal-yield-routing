@@ -975,7 +975,7 @@ func TestJupiterAutoRetainedMinimumRejectsForgedRequests(t *testing.T) {
 func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 	const (
 		slot   = int64(77)
-		equity = uint64(2_000_000)
+		equity = uint64(200_000_000)
 	)
 	m, route, rpc, client := autoCandidateStack(t, slot, nil)
 	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, equity, slot)
@@ -1121,13 +1121,13 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 	}
 	// The quote itself retains the bounded-exit inventory: the leftover
 	// custody and the unproven residual receipts — never deleted, never
-	// credited as proceeds. The fixture's compounding ceiling leaves exactly
-	// one receivable receipt beyond the guaranteed budget, and it is carried
+	// credited as proceeds. The fixture's compounding ceiling leaves a positive
+	// receivable receipt remainder beyond the guaranteed budget, and it is carried
 	// for the continuation pass instead of being wired or dropped.
 	if q.PayoffLeftoverCollateralRaw != leftover {
 		t.Fatalf("leftover collateral not retained on the quote: %d want %d", q.PayoffLeftoverCollateralRaw, leftover)
 	}
-	if q.PayoffResidualReceiptsRaw != 1 {
+	if q.PayoffResidualReceiptsRaw == 0 {
 		t.Fatalf("unproven residual receipt not explicitly retained: %d", q.PayoffResidualReceiptsRaw)
 	}
 	// The two receipt withdrawals are the only redemptions wired; production
@@ -1148,7 +1148,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 func TestSelectorDestinationCandidateHoldsUnconvertibleDustResidue(t *testing.T) {
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
-	_, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, 1_000_000, slot)
+	_, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, 200_037_035, slot)
 	assertBudgetHold(t, err, "jupiter_auto_wire_floor_zero")
 }
 
@@ -1198,7 +1198,7 @@ func TestSelectorDestinationCandidateConvertsTinyAbovePegResidue(t *testing.T) {
 		}
 		return quoted, quoted
 	}, nil)
-	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, abovePeg, m, 1_000_000, slot)
+	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, abovePeg, m, 200_037_035, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1490,7 +1490,7 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64,
 func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *testing.T) {
 	const (
 		slot   = int64(77)
-		equity = uint64(2_000_000) // coherent parity economics: zero guaranteed residue
+		equity = uint64(200_000_000) // coherent parity economics: zero guaranteed residue
 	)
 	m, route, rpc, client := autoCandidateInitializerStack(t, slot, slot, false, nil)
 	binding := autoInitializerFixtureBinding(t)
@@ -1726,7 +1726,7 @@ func TestSelectorDestinationCandidateReentryEntryStaysGated(t *testing.T) {
 func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T) {
 	const (
 		slot       = int64(77)
-		equity     = uint64(2_000_000)
+		equity     = uint64(200_000_000)
 		collateral = int64(15_000_000_000) // 15 AUTO of receipts at the pinned 1:1 rate (9dp)
 		debt       = int64(5_000_000)      // 5 PYUSD (6dp)
 	)

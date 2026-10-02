@@ -42,7 +42,23 @@ func TestLeverageUp175BorrowAdmissionPricesTheCycleExit(t *testing.T) {
 	position := KaminoPosition{CollateralDepositedRaw: 100_000_000_000, RedeemablePrimeRaw: 100_000_000_000, DebtRaw: debt, CollateralDecimals: 9, DebtDecimals: 6}
 	binary.LittleEndian.PutUint64(position.CollateralPriceSF[:8], uint64(1)<<60)
 	binary.LittleEndian.PutUint64(position.DebtPriceSF[:8], uint64(1)<<60)
-	borrow, err := position.leverageUpBorrowRaw(175)
+	for _, address := range []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve} {
+		a := accountAt(accounts, address).Data
+		binary.LittleEndian.PutUint64(a[kaminoReserveConfigOffset+160:], 1_000_000_000_000_000)
+		binary.LittleEndian.PutUint64(a[kaminoReserveConfigOffset+168:], 1_000_000_000_000_000)
+		binary.LittleEndian.PutUint64(a[kaminoOutsideBorrowLimitOffset:], 1_000_000_000_000_000)
+		binary.LittleEndian.PutUint64(a[kaminoBorrowFactorOffset:], 100)
+		binary.LittleEndian.PutUint64(a[kaminoMarketPriceLastUpdatedTSOffset:], 1000)
+	}
+	clock := clockFixture()
+	binary.LittleEndian.PutUint64(clock.Data[:8], 42)
+	binary.LittleEndian.PutUint64(clock.Data[32:], 1000)
+	accounts = append(accounts, clock)
+	rpc = budgetBuildRPCWithAccounts(t, 5000, 42, accounts)
+	applyBorrowCapacity(s, position, accounts, route)
+	borrow, err := capacitySizedBorrow(position, accounts, route, 175)
+	d.AmountRaw = int64(borrow)
+	s.LeverageApprovedBorrowRaw, s.LeverageSourceDebtRaw = borrow, debt
 	if err != nil {
 		t.Fatal(err)
 	}
