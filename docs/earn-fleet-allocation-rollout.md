@@ -31,6 +31,12 @@ verify them again when the ledger is already current. Run
 `yield-migrations --check` after applying and confirm version 86's name and
 checksum.
 
+The recorder reads each vault's latest complete snapshot through the 0085
+history index (`vault_position_snapshots_complete_history_idx`). Confirm that
+index exists and is valid in the target database before deploying the
+recorder: without it the read has to scan each vault's snapshot history and
+may not finish inside its 10 second limit.
+
 Deploy the loyal-app recorder after schema verification. Recording is forward
 only: there is no historical backfill, and a missed hour stays missing. A
 rerun inside the same hour replaces that hour's row only with a newer sample.
