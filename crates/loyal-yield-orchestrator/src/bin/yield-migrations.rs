@@ -454,6 +454,13 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0084_earn_reserve_share_prices.sql"),
         expected_checksum: None,
     },
+    // 0085 is the complete-snapshot history index, applied separately.
+    Migration {
+        version: 86,
+        name: "earn_fleet_allocations_hourly",
+        sql: include_str!("../../../loyal-yield-store/migrations/0086_earn_fleet_allocations_hourly.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -537,6 +544,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             validate_schema(&pool).await?;
         } else {
             validate_earn_reserve_share_prices_schema(&pool).await?;
+            validate_earn_fleet_allocations_hourly_schema(&pool).await?;
         }
         if matches!(mode, Mode::VerifyReusableAlts) {
             verify_reusable_alts(&pool).await?;
@@ -913,8 +921,23 @@ async fn validate_earn_reserve_share_prices_schema(pool: &PgPool) -> Result<(), 
     Ok(())
 }
 
+async fn validate_earn_fleet_allocations_hourly_schema(
+    pool: &PgPool,
+) -> Result<(), Box<dyn Error>> {
+    let allocation_schema_valid: bool = sqlx::query_scalar(include_str!(
+        "../../../loyal-yield-store/src/earn_fleet_allocations_hourly_schema.sql"
+    ))
+    .fetch_one(pool)
+    .await?;
+    if !allocation_schema_valid {
+        return Err("Earn fleet allocation columns, constraints or primary key are invalid".into());
+    }
+    Ok(())
+}
+
 async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     validate_earn_reserve_share_prices_schema(pool).await?;
+    validate_earn_fleet_allocations_hourly_schema(pool).await?;
     for relation in [
         "schema_migrations",
         "projection_offsets",
