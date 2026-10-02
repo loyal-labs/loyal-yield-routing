@@ -18,8 +18,9 @@ CREATE TABLE IF NOT EXISTS loyal_yield.earn_fleet_allocations_hourly (
     reserve_amounts JSONB NOT NULL
         CHECK (jsonb_typeof(reserve_amounts) = 'object'),
     idle_amount_raw NUMERIC(39, 0) NOT NULL CHECK (idle_amount_raw >= 0),
-    -- Every Earn vault is counted in exactly one of the four groups below.
-    -- Only included vaults contribute to reserve_amounts and idle_amount_raw.
+    -- Every active Earn vault is counted in exactly one of the four groups
+    -- below. Only included vaults contribute to reserve_amounts and
+    -- idle_amount_raw.
     vaults_total INTEGER NOT NULL,
     vaults_included INTEGER NOT NULL,
     -- No complete snapshot exists yet, so the capital is unknown.

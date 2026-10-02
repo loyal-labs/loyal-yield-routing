@@ -12,12 +12,15 @@ migration 0084, and reads it to weight realized Earn APY by the allocation
 held at the time. This replaces rebuilding a month of fleet history from
 `vault_position_snapshots` on every request.
 
-Each vault counts in exactly one group: included, missing (no complete
-snapshot yet), invalid (unknown amount units or unknown idle balance) or stale
-(funded, with a complete snapshot older than six hours). Only included vaults
-contribute to the amounts. `excluded_amount_raw` keeps the last-known raw
-amounts of invalid and stale vaults so a reader can bound what a sample leaves
-out; its units are unverified.
+The sample covers active Earn vaults only. Each one counts in exactly one
+group: included, missing (no complete snapshot yet), invalid (unknown amount
+units or unknown idle balance) or stale (funded, with a complete snapshot
+older than six hours). Only included vaults contribute to the amounts.
+`excluded_amount_raw` keeps the last-known raw amounts of invalid and stale
+vaults so a reader can bound what a sample leaves out; its units are
+unverified. loyal-app measures an hour only while that excluded amount stays
+within 1% of the included capital. Missing vaults have no known capital and
+do not block an hour.
 
 Before applying, compare every registered migration checksum with the target
 database ledger. Verify the production target independently; never infer it
