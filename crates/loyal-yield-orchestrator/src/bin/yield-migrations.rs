@@ -454,6 +454,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0084_earn_reserve_share_prices.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 85,
+        name: "earn_vault_allocation_history_index",
+        sql: include_str!("../../../loyal-yield-store/migrations/0085_earn_vault_allocation_history_index.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";
@@ -472,6 +478,7 @@ enum Mode {
     Apply,
     Check,
     VerifyReusableAlts,
+    PreflightEarnHistoryIndex,
 }
 
 #[tokio::main]
@@ -494,6 +501,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         None
     };
     let pool = connect(&database_url).await?;
+    if matches!(mode, Mode::PreflightEarnHistoryIndex) {
+        let state = loyal_yield_store::earn_history_index::preflight_earn_history_index(&pool).await?;
+        println!("Earn history index preflight: exists={}, valid={}, can_set_temp_file_limit={}", state.exists, state.valid, state.can_set_temp_file_limit);
+        return Ok(());
+    }
+
 
     if matches!(mode, Mode::Apply) {
         ensure_ledger(&pool).await?;
@@ -537,6 +550,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             validate_schema(&pool).await?;
         } else {
             validate_earn_reserve_share_prices_schema(&pool).await?;
+            loyal_yield_store::earn_history_index::validate_earn_history_index(&pool).await?;
         }
         if matches!(mode, Mode::VerifyReusableAlts) {
             verify_reusable_alts(&pool).await?;
@@ -587,6 +601,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn apply_migration(pool: &PgPool, migration: &Migration) -> Result<(), Box<dyn Error>> {
+    if migration.version == 85 {
+        loyal_yield_store::earn_history_index::apply_earn_history_index(pool, migration.sql).await?;
+        return Ok(());
+    }
     if migration.version == 32 {
         recover_invalid_idle_vault_decision_lookup_index(pool).await?;
     }
@@ -769,9 +787,10 @@ fn parse_mode() -> Result<Mode, Box<dyn Error>> {
             "--apply" => mode = Mode::Apply,
             "--check" => mode = Mode::Check,
             "--verify-reusable-alts" => mode = Mode::VerifyReusableAlts,
+            "--preflight-earn-history-index" => mode = Mode::PreflightEarnHistoryIndex,
             "--help" | "-h" => {
                 println!(
-                    "Usage: yield-migrations [--apply|--check|--verify-reusable-alts]\n\nReads NEON_DATABASE_URL from the environment. Verification requires every migration to be applied and performs no schema writes."
+                    "Usage: yield-migrations [--apply|--check|--verify-reusable-alts|--preflight-earn-history-index]\n\nReads NEON_DATABASE_URL from the environment. Verification requires every migration to be applied and performs no schema writes. Earn history preflight reads only catalog/privilege state and does not require applied migrations."
                 );
                 std::process::exit(0);
             }
@@ -915,6 +934,7 @@ async fn validate_earn_reserve_share_prices_schema(pool: &PgPool) -> Result<(), 
 
 async fn validate_schema(pool: &PgPool) -> Result<(), Box<dyn Error>> {
     validate_earn_reserve_share_prices_schema(pool).await?;
+    loyal_yield_store::earn_history_index::validate_earn_history_index(pool).await?;
     for relation in [
         "schema_migrations",
         "projection_offsets",

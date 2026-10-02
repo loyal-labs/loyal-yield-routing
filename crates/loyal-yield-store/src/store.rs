@@ -75,6 +75,8 @@ const MIGRATION_0073: &str =
     include_str!("../migrations/0073_backyard_rwa_expired_absent_failure.sql");
 const MIGRATION_0084: &str =
     include_str!("../migrations/0084_earn_reserve_share_prices.sql");
+const MIGRATION_0085: &str =
+    include_str!("../migrations/0085_earn_vault_allocation_history_index.sql");
 const LIVE_MIGRATION_0008_CHECKSUM: &str =
     "d20151ef6d6076961195da6c6cf3b4e11bb3e2045f729bdf4b118f6c7d3ddc34";
 const SAME_MINT_CHAIN_RECONCILE_PREVIEW_KIND: &str = "same_mint_chain_reconcile_preview";
@@ -631,6 +633,12 @@ impl NeonSqlClient {
                 version: 84,
                 name: "earn_reserve_share_prices",
                 sql: MIGRATION_0084,
+                expected_checksum: None,
+            },
+            StoreMigration {
+                version: 85,
+                name: "earn_vault_allocation_history_index",
+                sql: MIGRATION_0085,
                 expected_checksum: None,
             },
         ] {
@@ -5609,6 +5617,9 @@ async fn apply_store_migration(
             if migration.version == 84 {
                 validate_earn_reserve_share_prices_schema(pool).await?;
             }
+            if migration.version == 85 {
+                crate::earn_history_index::validate_earn_history_index(pool).await?;
+            }
             return Ok(());
         }
         Some(_) => {
@@ -5620,7 +5631,11 @@ async fn apply_store_migration(
         None => {}
     }
 
-    sqlx::raw_sql(migration.sql).execute(pool).await?;
+    if migration.version == 85 {
+        crate::earn_history_index::apply_earn_history_index(pool, migration.sql).await?;
+    } else {
+        sqlx::raw_sql(migration.sql).execute(pool).await?;
+    }
     if migration.version == 84 {
         validate_earn_reserve_share_prices_schema(pool).await?;
     }

@@ -10,6 +10,7 @@
 //! confined to crate source leave `recipe.json` byte-identical and reuse it.
 
 pub mod domain;
+pub mod earn_history_index;
 pub mod fleet_orchestration;
 pub mod multiply_state_store;
 mod store;
