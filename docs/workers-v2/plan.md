@@ -156,3 +156,10 @@ Implementation checkpoint — 2026-10-02
 - Source branch reuse is selective: importing the full observer branch would discard newer main proof/schema files, so no whole-branch merge is permitted.
 
 - Disposable PostgreSQL preparation is currently blocked by local kernel shared-memory allocation (`shmget`, ENOSPC) even with elevation. Existing processes/kernel settings were not modified. Offline implementation continues; durable acceptance cannot be claimed without a working isolated fixture.
+
+- Branch-only PostgreSQL service schema and baseline durable fleet/Backyard lease checks passed in CI run 37092914451 at `b9ec448b`; this excludes production-bound migration 0071 data activation and connected SVM checks.
+- Reviewed Backyard explicit capability injection passed offline races. Root additionally rejects injected keys whose public half does not match their seed and takes ownership of the validated key.
+- Fleet correction uses sparse permitted-target enumeration and full rescore only after selected flows: O(wave limit * permitted candidates). It retains initially uneconomic candidates that can improve, existing hard limits and deterministic ordering. This is bounded greedy scheduling, not a globally optimal allocation claim.
+- Autodeposit lot/claim/scheduling/request/attempt SQL increment is integrated for verification. Actual two-leg production execution and complete app-independent acceptance remain unfinished. Root added exact wire digest/packet checks, checked eligible sums, and a lease guard on reused persisted attempts.
+- Observer selected Go source compiles and passes offline races on Go1.26.6 with Go1.25.1 language baseline; protobuf module split required the matching parent genproto revision. Its runtime/recovery/readiness audit continues before integration.
+- Narrow Rust observer bridge source and only its required visibility/stdio/dependency changes compile against current main proof libraries; the Go-produced protobuf fixture passes. No full source-branch merge was used.

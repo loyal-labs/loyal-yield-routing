@@ -7,7 +7,6 @@ package fleet
 
 import (
 	"bytes"
-	"container/heap"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -62,6 +61,15 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 	return planFleet(snapshot, vaults, limits, false, time.Now())
 }
 
+// PlanFleetAt supplies an explicit evaluation clock for offline replay.
+func PlanFleetAt(snapshot MarketSnapshot, vaults []FleetVault, now time.Time) (FleetPlan, error) {
+	return PlanFleetWithLimitsAt(snapshot, vaults, DefaultWaveLimits(), now)
+}
+
+func PlanFleetWithLimitsAt(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, now time.Time) (FleetPlan, error) {
+	return planFleet(snapshot, vaults, limits, false, now)
+}
+
 // PlanFleetShadow jointly allocates idle and reserve sources, but does not enable
 // idle publication or revalidation. Those durable boundaries remain closed.
 func PlanFleetShadow(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) {
@@ -109,11 +117,6 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 	}
 	var candidates waveCandidates
 	out := FleetPlan{Rejections: map[int64]string{}}
-	reserveKeys := make([]string, 0, len(snapshot.Reserves))
-	for key := range snapshot.Reserves {
-		reserveKeys = append(reserveKeys, key)
-	}
-	sort.Strings(reserveKeys)
 	for _, vault := range vaults {
 		sourceKeyBytes, _ := json.Marshal([]any{vault.Position.VaultID, vault.Position.Mint, vault.Position.SourceReserve, vault.IdleTokenAccount})
 		sourceKey := string(sourceKeyBytes)
@@ -133,7 +136,14 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 			allowed[target] = true
 		}
 		eligible := false
-		for _, target := range reserveKeys {
+		allowedTargets := make([]string, 0, len(allowed))
+		for target := range allowed {
+			if _, exists := snapshot.Reserves[target]; exists {
+				allowedTargets = append(allowedTargets, target)
+			}
+		}
+		sort.Strings(allowedTargets)
+		for _, target := range allowedTargets {
 			if target == vault.Position.SourceReserve || !allowed[target] {
 				continue
 			}
@@ -152,8 +162,9 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 			if d.Eligible {
 				eligible = true
 				eligibleVaults[position.VaultID] = true
-				candidates = append(candidates, waveCandidate{vault: vault, target: target, d: d})
 			}
+			// An initially uneconomic target may improve after another selected flow.
+			candidates = append(candidates, waveCandidate{vault: vault, target: target, d: d})
 		}
 		if !eligible {
 			out.Rejections[vault.Position.VaultID] = "no_eligible_target"
@@ -162,77 +173,63 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 	for id := range eligibleVaults {
 		delete(out.Rejections, id)
 	}
-	heap.Init(&candidates)
 	inflow, outflow := map[string]int64{}, map[string]int64{}
-	versions := map[string]uint64{}
 	selectedVaults := map[int64]bool{}
 	tenantCounts, conflictCounts := map[string]int{}, map[string]int{}
 	selectedCount, selectedNotional := 0, int64(0)
-	for candidates.Len() > 0 && selectedCount < limits.MaxOpportunities {
-		c := heap.Pop(&candidates).(waveCandidate)
-		if selectedVaults[c.d.VaultID] {
-			continue
-		}
-		position := c.vault.Position
-		var ok bool
-		position.TargetCommittedInflowUSDMicros, ok = sumInt64(baseInflow[c.target], inflow[c.target])
-		if !ok {
-			return FleetPlan{}, errors.New("wave capacity overflow")
-		}
-		position.TargetCommittedOutflowUSDMicros, ok = sumInt64(baseOutflow[c.target], outflow[c.target])
-		if !ok {
-			return FleetPlan{}, errors.New("wave capacity overflow")
-		}
-		position.SourceCommittedInflowUSDMicros, ok = sumInt64(baseInflow[position.SourceReserve], inflow[position.SourceReserve])
-		if !ok {
-			return FleetPlan{}, errors.New("wave capacity overflow")
-		}
-		position.SourceCommittedOutflowUSDMicros, ok = sumInt64(baseOutflow[position.SourceReserve], outflow[position.SourceReserve])
-		if !ok {
-			return FleetPlan{}, errors.New("wave capacity overflow")
-		}
-		d := planWaveSource(snapshot, c.vault, position, c.target, now)
-		if binding, cross := c.vault.CrossMintTargets[c.target]; cross {
-			d.RouteKind = "cross_mint_jupiter"
-			d.SourceMint = position.Mint
-			d.TargetMint = snapshot.Reserves[c.target].Mint
-			d.Mint = d.TargetMint
-			d.PolicyBindings = &binding
-			d.CrossMintMaxValueLossBPS = c.vault.CrossMintMaxValueLossBPS
-		}
-		if !d.Eligible {
-			out.Rejections[position.VaultID] = d.Reason
-			continue
-		}
-		if c.sourceVersion != versions[d.SourceReserve] || c.targetVersion != versions[d.TargetReserve] {
-			c.d, c.sourceVersion, c.targetVersion = d, versions[d.SourceReserve], versions[d.TargetReserve]
-			heap.Push(&candidates, c)
-			continue
-		}
-		nextNotional, ok := sumInt64(selectedNotional, d.PrincipalUSDMicros)
-		if !ok {
-			return FleetPlan{}, errors.New("wave notional overflow")
-		}
-		if nextNotional > limits.MaxNotionalUSDMicros {
-			out.Rejections[position.VaultID] = "wave_notional_limit"
-			continue
-		}
-		if tenantCounts[position.PolicyAuthority] >= limits.MaxPerTenant {
-			out.Rejections[position.VaultID] = "tenant_limit"
-			continue
-		}
-		conflicts := opportunityConflictKeys(position, d)
-		limited := false
-		for _, key := range conflicts {
-			if conflictCounts[key] >= limits.MaxPerWritableConflictKey {
-				limited = true
-				break
+	for selectedCount < limits.MaxOpportunities {
+		// Full rescore is O(wave limit * permitted candidates). Rejected
+		// candidates do not cause another scan; only a selected flow does.
+		best := -1
+		for i, c := range candidates {
+			position := c.vault.Position
+			if selectedVaults[position.VaultID] {
+				continue
+			}
+			updated, ok := rescoreCandidate(snapshot, c, baseInflow, baseOutflow, inflow, outflow, now)
+			if !ok {
+				return FleetPlan{}, errors.New("wave capacity overflow")
+			}
+			candidates[i] = updated
+			d := updated.d
+			if !d.Eligible {
+				out.Rejections[position.VaultID] = d.Reason
+				continue
+			}
+			notional, ok := sumInt64(selectedNotional, d.PrincipalUSDMicros)
+			if !ok {
+				return FleetPlan{}, errors.New("wave notional overflow")
+			}
+			if notional > limits.MaxNotionalUSDMicros {
+				out.Rejections[position.VaultID] = "wave_notional_limit"
+				continue
+			}
+			if tenantCounts[position.PolicyAuthority] >= limits.MaxPerTenant {
+				out.Rejections[position.VaultID] = "tenant_limit"
+				continue
+			}
+			limited := false
+			for _, key := range opportunityConflictKeys(position, d) {
+				if conflictCounts[key] >= limits.MaxPerWritableConflictKey {
+					limited = true
+					break
+				}
+			}
+			if limited {
+				out.Rejections[position.VaultID] = "writable_conflict_limit"
+				continue
+			}
+			if best < 0 || candidates.Less(i, best) {
+				best = i
 			}
 		}
-		if limited {
-			out.Rejections[position.VaultID] = "writable_conflict_limit"
-			continue
+		if best < 0 {
+			break
 		}
+		c := candidates[best]
+		position, d := c.vault.Position, c.d
+		nextNotional := selectedNotional + d.PrincipalUSDMicros
+		conflicts := opportunityConflictKeys(position, d)
 		selectedCount++
 		selectedNotional = nextNotional
 		selectedVaults[position.VaultID] = true
@@ -240,10 +237,7 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 		for _, key := range conflicts {
 			conflictCounts[key]++
 		}
-		if d.RouteKind != "idle_vault_deposit" {
-			versions[d.SourceReserve]++
-		}
-		versions[d.TargetReserve]++
+		var ok bool
 		inflow[c.target], ok = sumInt64(inflow[c.target], d.PrincipalUSDMicros)
 		if !ok {
 			return FleetPlan{}, errors.New("wave inflow overflow")
@@ -290,12 +284,44 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 	// Preserve visibility of unvisited candidates when the wave count fills;
 	// selected vaults (including fee-fenced publications) keep their outcome.
 	for _, candidate := range candidates {
-		if !selectedVaults[candidate.d.VaultID] {
+		if selectedCount == limits.MaxOpportunities && !selectedVaults[candidate.vault.Position.VaultID] && candidate.d.Eligible {
 			out.Rejections[candidate.d.VaultID] = "wave_opportunity_limit"
 		}
 	}
 	return out, nil
 }
+
+// rescoreCandidate re-derives one candidate's decision against the current
+// wave frontier, preserving its exact source position, allowed targets and
+// cross-mint bindings. ok is false on committed-frontier arithmetic overflow.
+func rescoreCandidate(snapshot MarketSnapshot, c waveCandidate, baseInflow, baseOutflow, inflow, outflow map[string]int64, now time.Time) (waveCandidate, bool) {
+	position := c.vault.Position
+	var ok bool
+	if position.TargetCommittedInflowUSDMicros, ok = sumInt64(baseInflow[c.target], inflow[c.target]); !ok {
+		return c, false
+	}
+	if position.TargetCommittedOutflowUSDMicros, ok = sumInt64(baseOutflow[c.target], outflow[c.target]); !ok {
+		return c, false
+	}
+	if position.SourceCommittedInflowUSDMicros, ok = sumInt64(baseInflow[position.SourceReserve], inflow[position.SourceReserve]); !ok {
+		return c, false
+	}
+	if position.SourceCommittedOutflowUSDMicros, ok = sumInt64(baseOutflow[position.SourceReserve], outflow[position.SourceReserve]); !ok {
+		return c, false
+	}
+	d := planWaveSource(snapshot, c.vault, position, c.target, now)
+	if binding, cross := c.vault.CrossMintTargets[c.target]; cross {
+		d.RouteKind = "cross_mint_jupiter"
+		d.SourceMint = position.Mint
+		d.TargetMint = snapshot.Reserves[c.target].Mint
+		d.Mint = d.TargetMint
+		d.PolicyBindings = &binding
+		d.CrossMintMaxValueLossBPS = c.vault.CrossMintMaxValueLossBPS
+	}
+	c.d = d
+	return c, true
+}
+
 func betterDecision(a, b Decision) bool {
 	if a.EconomicPriority != b.EconomicPriority {
 		return a.EconomicPriority > b.EconomicPriority

@@ -17,10 +17,9 @@ func DefaultWaveLimits() WaveLimits {
 }
 
 type waveCandidate struct {
-	vault                        FleetVault
-	target                       string
-	d                            Decision
-	sourceVersion, targetVersion uint64
+	vault  FleetVault
+	target string
+	d      Decision
 }
 
 type waveCandidates []waveCandidate
@@ -59,15 +58,6 @@ func (h waveCandidates) Less(i, j int) bool {
 		return a.d.SourceReserve < b.d.SourceReserve
 	}
 	return a.target < b.target
-}
-func (h waveCandidates) Swap(i, j int)   { h[i], h[j] = h[j], h[i] }
-func (h *waveCandidates) Push(value any) { *h = append(*h, value.(waveCandidate)) }
-func (h *waveCandidates) Pop() any {
-	last := len(*h) - 1
-	value := (*h)[last]
-	(*h)[last] = waveCandidate{}
-	*h = (*h)[:last]
-	return value
 }
 
 // Keep wave conflict admission and the durable execution manifest identical.
