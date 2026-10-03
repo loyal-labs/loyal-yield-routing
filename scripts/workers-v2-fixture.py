@@ -46,7 +46,7 @@ for entry in app_schema:
     file = schema / entry["file"]
     if file.parent != schema or hashlib.sha256(file.read_bytes()).hexdigest() != entry["sha256"]:
         raise SystemExit("Historical app schema fixture provenance drifted")
-for family in ("fleet", "autodeposit", "observer", "backyard", "multiply"):
+for family in ("fleet", "fleetexec", "autodeposit", "observer", "backyard", "multiply"):
     name = "fleet" if family == "fleet" else "workers_v2_" + family
     execute(base, sql='CREATE DATABASE "' + name + '"')
     url = urlunparse(parsed._replace(path="/" + name))
@@ -98,6 +98,7 @@ out = os.environ.get("GITHUB_ENV")
 if out:
     with open(out, "a") as target:
         for key, family in (("FLEET_TEST_DATABASE_URL", "fleet"),
+                            ("FLEET_EXEC_TEST_DATABASE_URL", "fleetexec"),
                             ("AUTODEPOSIT_TEST_DATABASE_URL", "autodeposit"),
                             ("OBSERVER_TEST_DATABASE_URL", "observer"),
                             ("BACKYARD_RWA_TEST_DATABASE_URL", "backyard"),

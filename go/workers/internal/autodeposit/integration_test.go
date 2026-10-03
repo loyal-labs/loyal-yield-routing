@@ -96,9 +96,9 @@ func (s *Store) insertIntegrationEvent(t *testing.T, targetID int64, eventID int
 	t.Helper()
 	_, err := s.pool.Exec(context.Background(), `
 INSERT INTO loyal_yield.balance_sweep_wallet_balance_events
-    (event_id, target_id, wallet, amount_raw, delta_amount_raw, observed_slot,
+    (event_id, target_id, wallet, wallet_usdc_ata, wallet_token_ata, amount_raw, delta_amount_raw, observed_slot,
      observed_at, source, source_commitment, mint, txn_signature)
-VALUES ($1, $2, 'itest-wallet', $3, $4, 1, $5, 'itest', 'confirmed', $6, $7)`,
+VALUES ($1, $2, 'itest-wallet', 'itest-wallet-ata', 'itest-wallet-ata', $3, $4, 1, $5, 'itest', 'confirmed', $6, $7)`,
 		eventID, targetID, amountRaw, delta, observedAt, USDCMint,
 		fmt.Sprintf("itest-sig-%d", eventID))
 	if err != nil {
