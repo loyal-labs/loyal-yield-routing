@@ -43,7 +43,7 @@ for entry in app_schema:
     if file.parent != schema or hashlib.sha256(file.read_bytes()).hexdigest() != entry["sha256"]:
         raise SystemExit("Historical app schema fixture provenance drifted")
 for family in ("fleet", "autodeposit", "observer", "backyard", "multiply"):
-    name = "workers_v2_" + family
+    name = "fleet" if family == "fleet" else "workers_v2_" + family
     execute(base, sql='CREATE DATABASE "' + name + '"')
     url = urlunparse(parsed._replace(path="/" + name))
     for migration in migrations:
@@ -69,6 +69,8 @@ for family in ("fleet", "autodeposit", "observer", "backyard", "multiply"):
             execute(url, sql=ddl)
         else:
             execute(url, file=migration)
+    if family == "backyard":
+        execute(url, file=schema / "backyard_route_lease.sql")
     urls[family] = url
 print(json.dumps({"gate": "fixture", "verdict": "PASS", "registry": str(registry.relative_to(repo)),
                   "registered_schema_files": len(migrations), "databases": list(urls),
