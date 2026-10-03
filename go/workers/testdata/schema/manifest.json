@@ -1,0 +1,26 @@
+[
+  {
+    "file": "0001_add_user_yield_deposit_positions.sql",
+    "source_repo": "loyal-apps",
+    "source_commit": "81b5c0256317c46e4fa9fdac49d6c0b347530b03",
+    "source_path": "apps/web/src/lib/yield-optimization/migrations/0001_add_user_yield_deposit_positions.sql",
+    "sha256": "f71845d209deb528f3dd0a9d774bfbd2617c96c3af01ed646aadff52df66f234",
+    "use": "Historical application-owned starting schema for isolated fixtures only; not a migration runner"
+  },
+  {
+    "file": "0004_add_verifiable_earn_holdings.sql",
+    "source_repo": "loyal-apps",
+    "source_commit": "81b5c0256317c46e4fa9fdac49d6c0b347530b03",
+    "source_path": "apps/web/src/lib/yield-optimization/migrations/0004_add_verifiable_earn_holdings.sql",
+    "sha256": "0b4eab3b499bd51ec76dc822fd3f2399065286231fed297012c1ec39ccdb5815",
+    "use": "Historical application-owned starting schema for isolated fixtures only; not a migration runner"
+  },
+  {
+    "file": "0013_add_earn_deposit_onboarding_attempts.sql",
+    "source_repo": "loyal-apps",
+    "source_commit": "81b5c0256317c46e4fa9fdac49d6c0b347530b03",
+    "source_path": "apps/web/src/lib/yield-optimization/migrations/0013_add_earn_deposit_onboarding_attempts.sql",
+    "sha256": "e4d74920761803c6cf88ba6ac7dbdc8378d208e6c006b7a4022ac2c872411d7f",
+    "use": "Historical application-owned starting schema for isolated fixtures only; not a migration runner"
+  }
+]

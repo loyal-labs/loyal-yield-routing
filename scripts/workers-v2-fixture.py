@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Apply the real registered Yield migrations only to allowlisted test databases."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -33,15 +34,43 @@ def execute(url, *, sql=None, file=None):
         raise SystemExit("Fixture SQL failed: " + result.stderr[-3000:])
 
 urls = {}
+schema = repo / "go/workers/testdata/schema"
+app_schema = json.loads((schema / "manifest.json").read_text())
+for entry in app_schema:
+    file = schema / entry["file"]
+    if file.parent != schema or hashlib.sha256(file.read_bytes()).hexdigest() != entry["sha256"]:
+        raise SystemExit("Historical app schema fixture provenance drifted")
 for family in ("fleet", "autodeposit", "observer", "backyard", "multiply"):
     name = "workers_v2_" + family
     execute(base, sql='CREATE DATABASE "' + name + '"')
     url = urlunparse(parsed._replace(path="/" + name))
     for migration in migrations:
-        execute(url, file=migration)
+        version = int(migration.name.split("_", 1)[0])
+        if version == 13:
+            for entry in app_schema:
+                execute(url, file=schema / entry["file"])
+            # Match migration_execution_sql in the authoritative Rust runner.
+            sql = migration.read_text()
+            for relation in ("user_yield_positions", "user_yield_position_holding_events", "earn_deposit_onboarding_attempts"):
+                cast = "'loyal_yield." + relation + "'::regclass"
+                if sql.count(cast) != 1:
+                    raise SystemExit("Migration 13 optional-relation execution contract drifted")
+                sql = sql.replace(cast, "to_regclass('loyal_yield." + relation + "')")
+            execute(url, sql=sql)
+        elif version == 71:
+            # Only its schema changes apply to an empty fixture. The following
+            # DO block converts a hashed production singleton; no activation is
+            # claimed or attempted here.
+            ddl, activation = migration.read_text().split("DO $$", 1)
+            if "Backyard Phase 1 canonical route cardinality drifted" not in activation:
+                raise SystemExit("Production-bound activation fixture contract drifted")
+            execute(url, sql=ddl)
+        else:
+            execute(url, file=migration)
     urls[family] = url
 print(json.dumps({"gate": "fixture", "verdict": "PASS", "registry": str(registry.relative_to(repo)),
-                  "migrations": len(migrations), "databases": list(urls)}))
+                  "registered_schema_files": len(migrations), "databases": list(urls),
+                  "scope": "isolated behavior schema; historical app baseline plus registered Yield schema, excludes production-bound 0071 data activation"}))
 out = os.environ.get("GITHUB_ENV")
 if out:
     with open(out, "a") as target:
