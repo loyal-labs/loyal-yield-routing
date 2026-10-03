@@ -1,0 +1,18 @@
+{
+  "routing_base": "05338bbb70ce2e5287956f6e3659964e37bfa2f6",
+  "apps_base": "81b5c0256317c46e4fa9fdac49d6c0b347530b03",
+  "observer_candidate": "36a6664c125eeecd5e0ab5ea9218e72432da055d",
+  "mechanical_imports": [
+    "go/kamino-fleet-planner/internal/fleet",
+    "go/backyard-rwa-worker/internal/backyardrwa"
+  ],
+  "changes": [
+    "Backyard package renamed to backyard; no financial behavior changes in seed"
+  ],
+  "intentional_corrections": [
+    "collateral-liquidity units",
+    "continuous funded APY coverage",
+    "desired-intent vs observed target vocabulary",
+    "heap priorities after shared-reserve effects"
+  ]
+}

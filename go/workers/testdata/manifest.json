@@ -1,0 +1,7 @@
+{
+  "routing_source": "05338bbb70ce2e5287956f6e3659964e37bfa2f6",
+  "apps_source": "81b5c0256317c46e4fa9fdac49d6c0b347530b03",
+  "legacy_expectations": "Existing imported fleet and Backyard semantic tests",
+  "corrections": ["collateral-liquidity conversion", "funded APY continuous gap", "desired intent preservation", "heap improved source priority"],
+  "status": "Lane-owned fixtures and durable scenario evidence pending"
+}
