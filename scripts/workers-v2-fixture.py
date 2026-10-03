@@ -101,6 +101,7 @@ if out:
                             ("FLEET_EXEC_TEST_DATABASE_URL", "fleetexec"),
                             ("AUTODEPOSIT_TEST_DATABASE_URL", "autodeposit"),
                             ("OBSERVER_TEST_DATABASE_URL", "observer"),
+                            ("TEST_DATABASE_URL", "observer"),
                             ("BACKYARD_RWA_TEST_DATABASE_URL", "backyard"),
                             ("MULTIPLY_TEST_DATABASE_URL", "multiply")):
             target.write(key + "=" + urls[family] + "\n")

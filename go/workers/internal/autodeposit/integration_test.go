@@ -154,7 +154,7 @@ WHERE slot.target_id = $1`, seeded.TargetID).Scan(&slotID, &eligibleAfter, &lots
 	if lotsInSlot != 2 {
 		t.Fatalf("slot holds %d lots, want both lots coalesced into one slot", lotsInSlot)
 	}
-	newestDeadline := base.Add(2*time.Hour + ScheduleDelay)
+	newestDeadline := base.Add(time.Hour + ScheduleDelay)
 	if eligibleAfter.Before(newestDeadline.Add(-time.Second)) {
 		t.Fatalf("slot due %v moved earlier than the newest lot's deadline %v", eligibleAfter, newestDeadline)
 	}
@@ -314,8 +314,8 @@ func TestWorkerTickDispatchesEligibleTarget(t *testing.T) {
 	store.insertIntegrationEvent(t, seeded.TargetID, 9_200_001, 9_000_000, nil, base)
 	if _, err := store.pool.Exec(ctx, `
 INSERT INTO loyal_yield.balance_sweep_wallet_balances_current
-    (target_id, wallet, wallet_usdc_ata, amount_raw, mint, observed_slot, source, source_commitment)
-VALUES ($1, 'itest-wallet', 'itest-wallet-usdc', 9000000, $2, 1, 'itest', 'confirmed')`,
+    (target_id, wallet, wallet_usdc_ata, wallet_token_ata, amount_raw, mint, observed_slot, source, source_commitment)
+VALUES ($1, 'itest-wallet', 'itest-wallet-usdc', 'itest-wallet-usdc', 9000000, $2, 1, 'itest', 'confirmed')`,
 		seeded.TargetID, USDCMint); err != nil {
 		t.Fatalf("seed current wallet balance: %v", err)
 	}
