@@ -29,7 +29,7 @@ func Run(ctx context.Context, lanes ...Lane) error {
 		go func(index int, lane Lane) {
 			defer wg.Done()
 			err := lane.Run(owned)
-			if err == nil && owned.Err() == nil {
+			if owned.Err() == nil && (err == nil || errors.Is(err, context.Canceled)) {
 				err = fmt.Errorf("persistent lane %d stopped unexpectedly", index)
 			}
 			if err != nil && !errors.Is(err, context.Canceled) {

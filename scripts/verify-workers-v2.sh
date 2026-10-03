@@ -3,8 +3,9 @@ set -euo pipefail
 cd "$(dirname "$0")/../go/workers"
 export GOTOOLCHAIN=local
 export GOENV=off
-export GOMODCACHE="${WORKERS_V2_GOMODCACHE:-/Users/user/loyal/.cache/workers-v2/gomod}"
-export GOCACHE="${WORKERS_V2_GOCACHE:-/Users/user/loyal/.cache/workers-v2/gobuild}"
+cache_dir="${WORKERS_V2_CACHE_DIR:-${TMPDIR:-/tmp}/loyal-workers-v2-cache}"
+export GOMODCACHE="${WORKERS_V2_GOMODCACHE:-$cache_dir/gomod}"
+export GOCACHE="${WORKERS_V2_GOCACHE:-$cache_dir/gobuild}"
 if test -n "$(gofmt -l cmd internal)"; then
   echo '{"gate":"format","verdict":"FAIL"}'
   exit 1

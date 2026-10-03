@@ -145,3 +145,14 @@ Acceptance gates
 First milestone acceptance: Autodeposit setup/funding/control changes/pause/close and both transaction legs complete with web/mobile closed; crash recovery converges without duplicate spending; temporary missing-position conditions preserve desired intent; concurrent legacy fleet work cannot claim the same idle custody; app read repair deletion has direct replacement evidence.
 
 Progress is measured by eliminated writers/services/repair callers, app-independent completion, proven restart behavior, bounded backlog/admission latency and the code that can actually be deleted. Avoid promising a percentage reduction before those deletions exist.
+
+Implementation checkpoint — 2026-10-02
+
+- Runtime goal active; all work remains on rewrite branches.
+- Seed commit `234a33bf` pushed to `origin/codex/workers-v2`.
+- GLM Flash live launch check passed; first-wave A/B/C/E/F implementation started in isolated worktrees with provider-only credential environments and nested agents disabled.
+- Offline seed gate passed: formatting, vet, race-tested imported family semantics/shared primitives and three binary builds. Runtime engine/observer entrypoints deliberately reject incomplete wiring; this is not overall implementation acceptance.
+- Full durable, builder, family integration, read-model and application acceptance remain outstanding.
+- Source branch reuse is selective: importing the full observer branch would discard newer main proof/schema files, so no whole-branch merge is permitted.
+
+- Disposable PostgreSQL preparation is currently blocked by local kernel shared-memory allocation (`shmget`, ENOSPC) even with elevation. Existing processes/kernel settings were not modified. Offline implementation continues; durable acceptance cannot be claimed without a working isolated fixture.

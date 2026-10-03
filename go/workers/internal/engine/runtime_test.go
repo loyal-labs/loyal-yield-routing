@@ -27,3 +27,11 @@ func TestRuntimeJoinsOwnedLanesOnFailure(t *testing.T) {
 		t.Fatal("dependency cleanup could race surviving lane")
 	}
 }
+
+func TestRuntimeRejectsLaneCancellationWithoutRuntimeShutdown(t *testing.T) {
+	if err := Run(context.Background(), laneFunc(func(context.Context) error {
+		return context.Canceled
+	})); err == nil {
+		t.Fatal("a persistent lane stopped while the runtime still owned it")
+	}
+}

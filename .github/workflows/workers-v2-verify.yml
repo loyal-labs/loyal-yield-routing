@@ -1,0 +1,51 @@
+name: Workers v2 branch verification
+
+on:
+  push:
+    branches: [codex/workers-v2]
+    paths:
+      - go/workers/**
+      - scripts/verify-workers-v2.sh
+      - scripts/workers-v2-fixture.py
+      - crates/loyal-yield-store/migrations/**
+      - .github/workflows/workers-v2-verify.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workers-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: workers_v2
+          POSTGRES_DB: workers_v2_bootstrap
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: [5432/tcp]
+        options: >-
+          --health-cmd "pg_isready -U workers_v2 -d workers_v2_bootstrap"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: go/workers/go.sum
+      - name: Apply actual schema to isolated family databases
+        env:
+          WORKERS_V2_DISPOSABLE: '1'
+          WORKERS_V2_FIXTURE_URL: postgresql://workers_v2@127.0.0.1:${{ job.services.postgres.ports[5432] }}/workers_v2_bootstrap
+        run: python3 scripts/workers-v2-fixture.py
+      - name: Verify offline and enabled database behavior
+        run: bash scripts/verify-workers-v2.sh
