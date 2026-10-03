@@ -1,0 +1,19 @@
+{
+  "schema": "loyal-backyard-rwa-restart-journal/v1",
+  "routeKey": "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+  "leaseOwner": "worker:backyard:backyard-restart-fixture:sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "legacyOwner": "render:srv-cf8k2xq9:sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "operation": {
+    "operationId": "3f0a1d9c2b7e45f6a8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f7a8b9c0d1e2f",
+    "status": "signed",
+    "action": "VOLTR_ALLOCATE_TO_SQUADS",
+    "strategyKey": "PRIME/USDC",
+    "idempotencyKey": "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh:genesis:allocate-idle-fixture",
+    "signedWireBase64": "AQIDBA==",
+    "signedWireSha256": "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a",
+    "transactionSignature": "4z2xJVLzDgMKph9gzM6WJmzYXm4WDvRfJTvKyzrvNbYm5NzZ8Yz9eYcFmeJgs5pXnJyPLKrhgHomeV6sKsNRb8jj",
+    "recentBlockhash": "8sSrF4Y5V8YjTFslm5K4HsmLUIALHMy5KmXMzYdAUmjZ",
+    "lastValidBlockHeight": 312941117,
+    "broadcastIntentRecorded": false
+  }
+}

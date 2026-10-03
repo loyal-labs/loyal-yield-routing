@@ -11,9 +11,35 @@ import (
 
 const policyKeypairEnvironment = "POLICY_KEYPAIR"
 
+// Credentials is the explicit Backyard signing capability: the delegated
+// executor keypair for the fixed manifest lane. A loyal-engine instance owns
+// one Credentials value; observers, planners, and callers of decision or
+// recovery paths never receive one.
+type Credentials struct {
+	PolicyKey ed25519.PrivateKey
+}
+
+// signer validates the capability against the pinned delegated executor. The
+// same pin the environment bootstrap enforced now guards every injected
+// runtime, so a mismatched key fails at startup instead of at first build.
+func (c Credentials) signer() (ed25519.PrivateKey, error) {
+	if len(c.PolicyKey) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("Backyard signing capability is not configured")
+	}
+	key := ed25519.NewKeyFromSeed(c.PolicyKey.Seed())
+	if !key.Public().(ed25519.PublicKey).Equal(c.PolicyKey.Public()) {
+		return nil, fmt.Errorf("Backyard signing capability public half does not match seed")
+	}
+	if publicKeyFromBytes(key.Public().(ed25519.PublicKey)) != mustKey(bridgeDelegate) {
+		return nil, fmt.Errorf("Backyard signing capability does not match the pinned delegated executor")
+	}
+	return key, nil
+}
+
 // loadPinnedPolicySigner follows loyal-solana-env's established input contract:
 // a JSON byte array, hexadecimal bytes, or base58 bytes representing a 32-byte
 // seed or 64-byte Solana secret key. Errors deliberately omit all secret data.
+// It remains the only environment reader; injected runtimes carry Credentials.
 func loadPinnedPolicySigner() (ed25519.PrivateKey, error) {
 	value, ok := os.LookupEnv(policyKeypairEnvironment)
 	if !ok || strings.TrimSpace(value) == "" {
@@ -23,10 +49,7 @@ func loadPinnedPolicySigner() (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s is not a valid Solana keypair", policyKeypairEnvironment)
 	}
-	if publicKeyFromBytes(key.Public().(ed25519.PublicKey)) != mustKey(bridgeDelegate) {
-		return nil, fmt.Errorf("%s does not match the pinned delegated executor", policyKeypairEnvironment)
-	}
-	return key, nil
+	return Credentials{PolicyKey: key}.signer()
 }
 
 func decodeSolanaKeypairMaterial(value string) (ed25519.PrivateKey, error) {

@@ -492,7 +492,7 @@ type KaminoExecutionEvidence struct {
 	ExpectedEffects ExpectedEffects
 }
 
-func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc *RPCClient, operationID string, evidence KaminoExecutionEvidence) error {
+func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc *RPCClient, operationID string, evidence KaminoExecutionEvidence, credentials Credentials) error {
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("Kamino runtime dependencies are required")
 	}
@@ -506,7 +506,7 @@ func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc 
 	if _, err := DecodeExpectedEffects(effects); err != nil {
 		return err
 	}
-	signer, err := loadPinnedPolicySigner()
+	signer, err := credentials.signer()
 	if err != nil {
 		return err
 	}

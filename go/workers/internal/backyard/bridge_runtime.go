@@ -23,6 +23,7 @@ func BuildSimulateAndPersistBridge(
 	rpc *RPCClient,
 	operationID string,
 	evidence BridgeExecutionEvidence,
+	credentials Credentials,
 ) error {
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("bridge runtime dependencies are required")
@@ -37,7 +38,7 @@ func BuildSimulateAndPersistBridge(
 	if _, err := DecodeExpectedEffects(encodedEffects); err != nil {
 		return err
 	}
-	signer, err := loadPinnedPolicySigner()
+	signer, err := credentials.signer()
 	if err != nil {
 		return err
 	}

@@ -212,8 +212,11 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 }
 
 func TestNewWorkerRejectsRouteOverride(t *testing.T) {
-	if _, err := NewWorker(&Database{}, &RPCClient{}, "caller-selected-route", DefaultConfig()); err == nil {
+	if _, err := NewWorker(&Database{}, &RPCClient{}, "caller-selected-route", DefaultConfig(), Credentials{}); err == nil {
 		t.Fatal("worker accepted a route override")
+	}
+	if _, err := NewWorker(&Database{}, &RPCClient{}, productionRouteKey, DefaultConfig(), Credentials{}); err == nil {
+		t.Fatal("worker accepted an unconfigured signing capability")
 	}
 }
 
@@ -627,22 +630,87 @@ func TestLeasedWorkerSurfacesReleaseFailureOnCleanShutdown(t *testing.T) {
 	}
 }
 
-func TestRuntimeLeaseOwnerUsesExactRenderAndImmutableImageIdentity(t *testing.T) {
+func TestRuntimeLeaseOwnerUsesPlatformNeutralInstanceAndReleaseIdentity(t *testing.T) {
 	commit := strings.Repeat("d", 40)
-	config := RuntimeConfig{RenderServiceID: "srv-c123abc", ImageVersion: "sha-" + commit}
+	config := RuntimeConfig{InstanceID: "backyard-eu-1", ImageVersion: "sha-" + commit}
 	owner, err := config.LeaseOwner()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if owner != "render:srv-c123abc:sha-"+commit {
-		t.Fatalf("unexpected lease owner: %s", owner)
+	if owner != "worker:backyard:backyard-eu-1:sha-"+commit {
+		t.Fatalf("unexpected platform-neutral lease owner: %s", owner)
 	}
 	for _, invalid := range []RuntimeConfig{
-		{RenderServiceID: "loyal-backyard-rwa-worker", ImageVersion: "sha-" + commit},
-		{RenderServiceID: "srv-c123abc", ImageVersion: "latest"},
+		{InstanceID: "loyal backyard", ImageVersion: "sha-" + commit},
+		{InstanceID: strings.Repeat("x", 81), ImageVersion: "sha-" + commit},
+		{InstanceID: "backyard-eu-1", ImageVersion: "latest"},
+		{InstanceID: "backyard-eu-1", ImageVersion: "sha-notahash"},
 	} {
 		if _, err := invalid.LeaseOwner(); err == nil {
 			t.Fatalf("accepted invalid deployment identity: %+v", invalid)
+		}
+	}
+}
+
+func TestRuntimeLeaseOwnerInstanceComesFromPlatformNeutralVariableBeforeRender(t *testing.T) {
+	t.Setenv("LOYAL_WORKER_INSTANCE", "instance-primary")
+	t.Setenv("RENDER_SERVICE_ID", "srv-legacy")
+	config := RuntimeConfigFromEnvironment()
+	if config.InstanceID != "instance-primary" {
+		t.Fatalf("platform-neutral instance variable was ignored: %+v", config)
+	}
+	t.Setenv("LOYAL_WORKER_INSTANCE", "")
+	config = RuntimeConfigFromEnvironment()
+	if config.InstanceID != "srv-legacy" {
+		t.Fatalf("cutover instance fallback was ignored: %+v", config)
+	}
+}
+
+func TestLeasedWorkerAcceptsPlatformNeutralOwnerAndKeepsLegacyCutoverOwner(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	platformNeutral := "worker:backyard:backyard-eu-1:sha-" + commit
+	legacy := "render:srv-legacy:sha-" + commit
+	for _, owner := range []string{platformNeutral, legacy} {
+		if !ValidLeaseOwner(owner) {
+			t.Fatalf("accepted cutover owner %q was rejected", owner)
+		}
+		leasing := &fakeRouteLeaseRuntime{}
+		ctx, cancel := context.WithCancel(context.Background())
+		worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, manifest: readyWorkerManifest(t), runtime: tickRuntime{
+			loadNonterminal: func(context.Context, string) (*PersistedOperation, error) {
+				leasing.record("tick")
+				return nil, nil
+			},
+			observe: func(context.Context) (Observation, error) {
+				return tickObservation(Snapshot{ObservationID: "owner-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
+			},
+			recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+				cancel()
+				return DecisionRecord{Status: Held}, nil
+			},
+		}}
+		if err := worker.Run(ctx, leasing, owner, DefaultConfig()); !errors.Is(err, context.Canceled) {
+			t.Fatalf("owner %q did not acquire and run: %v", owner, err)
+		}
+		events := leasing.snapshotEvents()
+		if len(events) != 3 || events[0] != "acquire:"+productionRouteKey+":"+owner || events[2] != "release" {
+			t.Fatalf("owner %q lost the exact acquire/release lifecycle: %v", owner, events)
+		}
+	}
+	for _, rejected := range []string{
+		"worker:retail:backyard-eu-1:sha-" + commit,
+		"worker:observer:backyard-eu-1:sha-" + commit,
+		"backyard-eu-1",
+		"developer-laptop",
+		"",
+	} {
+		leasing := &fakeRouteLeaseRuntime{}
+		worker := &Worker{routeKey: productionRouteKey}
+		if err := worker.Run(context.Background(), leasing, rejected, DefaultConfig()); err == nil {
+			t.Fatalf("invalid owner %q was accepted", rejected)
+		}
+		if events := leasing.snapshotEvents(); len(events) != 0 {
+			t.Fatalf("invalid owner %q reached the database: %v", rejected, events)
 		}
 	}
 }

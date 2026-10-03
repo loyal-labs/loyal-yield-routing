@@ -28,6 +28,8 @@ if not migrations or any(not p.is_file() or p.parent != repo / "crates/loyal-yie
 
 def execute(url, *, sql=None, file=None):
     args = ["psql", url, "-X", "-v", "ON_ERROR_STOP=1", "-q"]
+    if file is not None and not re.search(r"\bCONCURRENTLY\b", file.read_text()):
+        args.append("--single-transaction")
     args += ["-c", sql] if sql is not None else ["-f", str(file)]
     result = subprocess.run(args, capture_output=True, text=True)
     if result.returncode:

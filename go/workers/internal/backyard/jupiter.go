@@ -420,7 +420,7 @@ func (s SignedJupiterTransaction) BuildResult(simulationSlot int64) (BuildResult
 	return BuildResult{MessageSHA256: s.messageSHA256, SignedWire: append([]byte(nil), s.signedWire...), SignedWireSHA256: s.signedWireSHA256, TransactionSignature: s.transactionSignature, RecentBlockhash: s.recentBlockhash, LastValidBlockHeight: s.lastValidBlockHeight, SimulationSlot: simulationSlot}, nil
 }
 
-func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc *RPCClient, operationID string, evidence JupiterExecutionEvidence) error {
+func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc *RPCClient, operationID string, evidence JupiterExecutionEvidence, credentials Credentials) error {
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("Jupiter runtime dependencies are required")
 	}
@@ -434,7 +434,7 @@ func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc
 	if _, err := DecodeExpectedEffects(effects); err != nil {
 		return err
 	}
-	signer, err := loadPinnedPolicySigner()
+	signer, err := credentials.signer()
 	if err != nil {
 		return err
 	}

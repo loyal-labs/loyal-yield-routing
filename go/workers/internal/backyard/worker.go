@@ -11,8 +11,20 @@ import (
 
 const productionRouteKey = "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
 
-var immutableImageVersionPattern = regexp.MustCompile(`^sha-[0-9a-f]{40}$`)
-var immutableRenderLeaseOwnerPattern = regexp.MustCompile(`^render:srv-[a-z0-9]+:sha-[0-9a-f]{40}$`)
+// The current lease owner is the platform-neutral scope+instance+release
+// identity. The legacy Render owner format stays valid through the cutover so
+// an unexpired fence held by the previous deployment identity keeps its exact
+// generation/token semantics instead of being released by owner-text drift.
+var platformNeutralLeaseOwnerPattern = regexp.MustCompile(`^worker:backyard:[a-zA-Z0-9_-]{1,80}:sha-[0-9a-f]{40}$`)
+var legacyRenderLeaseOwnerPattern = regexp.MustCompile(`^render:srv-[a-z0-9]+:sha-[0-9a-f]{40}$`)
+
+// ValidLeaseOwner reports whether the caller-supplied owner is a deployment
+// identity this runtime accepts. Any other string is rejected before it can
+// reach the database; authority never comes from the owner text itself.
+func ValidLeaseOwner(owner string) bool {
+	return platformNeutralLeaseOwnerPattern.MatchString(owner) || legacyRenderLeaseOwnerPattern.MatchString(owner)
+}
+
 var errConfirmedObservationUnavailable = errors.New("confirmed route observation is temporarily unavailable")
 
 type Worker struct {
@@ -41,7 +53,7 @@ type tickRuntime struct {
 	buildJupiter    func(context.Context, string, JupiterExecutionEvidence) error
 }
 
-func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteManifest) tickRuntime {
+func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteManifest, credentials Credentials) tickRuntime {
 	return tickRuntime{
 		loadNonterminal: database.LoadNonterminal,
 		advance: func(ctx context.Context, operation PersistedOperation) error {
@@ -77,13 +89,13 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		},
 		recordDecision: database.RecordDecision,
 		buildBridge: func(ctx context.Context, operationID string, evidence BridgeExecutionEvidence) error {
-			return BuildSimulateAndPersistBridge(ctx, database, rpc, operationID, evidence)
+			return BuildSimulateAndPersistBridge(ctx, database, rpc, operationID, evidence, credentials)
 		},
 		buildKamino: func(ctx context.Context, operationID string, evidence KaminoExecutionEvidence) error {
-			return BuildSimulateAndPersistKamino(ctx, database, rpc, operationID, evidence)
+			return BuildSimulateAndPersistKamino(ctx, database, rpc, operationID, evidence, credentials)
 		},
 		buildJupiter: func(ctx context.Context, operationID string, evidence JupiterExecutionEvidence) error {
-			return BuildSimulateAndPersistJupiter(ctx, database, rpc, operationID, evidence)
+			return BuildSimulateAndPersistJupiter(ctx, database, rpc, operationID, evidence, credentials)
 		},
 	}
 }
@@ -95,15 +107,26 @@ func confirmedObservationUnavailable(err error) error {
 	return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 }
 
-func NewWorker(database *Database, rpc *RPCClient, routeKey string, config Config) (*Worker, error) {
+// NewWorker constructs the single serialized lifecycle worker. The signing
+// capability is injected, validated here, and never derivable from a decision,
+// observation, or recovery input.
+func NewWorker(database *Database, rpc *RPCClient, routeKey string, config Config, credentials Credentials) (*Worker, error) {
 	if database == nil || rpc == nil || routeKey != productionRouteKey || config.validateLease() != nil {
 		return nil, fmt.Errorf("invalid concrete worker configuration")
 	}
+	key, err := credentials.signer()
+	if err != nil {
+		return nil, err
+	}
+	if database.pool == nil || rpc.client == nil || rpc.url == "" {
+		return nil, fmt.Errorf("Backyard database and RPC must be constructed")
+	}
+	credentials = Credentials{PolicyKey: key}
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return nil, err
 	}
-	return &Worker{routeKey: routeKey, interval: config.PollInterval, manifest: manifest, runtime: productionTickRuntime(database, rpc, manifest)}, nil
+	return &Worker{routeKey: routeKey, interval: config.PollInterval, manifest: manifest, runtime: productionTickRuntime(database, rpc, manifest, credentials)}, nil
 }
 
 func (w *Worker) Tick(ctx context.Context) error {
@@ -300,7 +323,7 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error) error {
 // lost. Release is compare-and-clear on the exact fencing token, so a stale
 // process can never clear its successor's lease.
 func (w *Worker) Run(ctx context.Context, leases routeLeaser, owner string, config Config) (runErr error) {
-	if w == nil || leases == nil || !immutableRenderLeaseOwnerPattern.MatchString(owner) || config.validateLease() != nil {
+	if w == nil || leases == nil || !ValidLeaseOwner(owner) || config.validateLease() != nil {
 		return fmt.Errorf("invalid leased worker runtime")
 	}
 	if err := w.leaseHandoff.acquire(ctx, leases, w.routeKey, owner, config.LeaseTTL); err != nil {
@@ -356,7 +379,9 @@ func (w *Worker) Run(ctx context.Context, leases routeLeaser, owner string, conf
 	return runErr
 }
 
-// Run wires the single direct pgx/RPC process. Missing deployment artifacts are
+// Run is the legacy standalone bootstrap: the only path that reads the
+// environment. It composes the same explicit injected runtime the loyal-engine
+// command uses and then behaves identically. Missing deployment artifacts are
 // an explicit startup failure, not a read-only mode or an alternate executor.
 func Run(ctx context.Context, out io.Writer) error {
 	if ctx == nil || out == nil {
@@ -373,7 +398,8 @@ func Run(ctx context.Context, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if _, err := loadPinnedPolicySigner(); err != nil {
+	signer, err := loadPinnedPolicySigner()
+	if err != nil {
 		return err
 	}
 	database, err := OpenDatabase(ctx, runtimeConfig.DatabaseURL)
@@ -385,22 +411,18 @@ func Run(ctx context.Context, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	worker, err := NewWorker(database, rpc, runtimeConfig.RouteKey, DefaultConfig())
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(out,
-		"backyard-rwa-worker: starting serialized confirmed lifecycle route=%s image=%s lease_owner=%s manifest_sha256=%s\n",
-		runtimeConfig.RouteKey, runtimeConfig.ImageVersion, leaseOwner, worker.manifest.SHA256,
-	); err != nil {
-		return err
-	}
-	err = worker.Run(ctx, database, leaseOwner, DefaultConfig())
+	err = RunWithConfig(ctx, EngineConfig{
+		Database:     database,
+		RPC:          rpc,
+		Credentials:  Credentials{PolicyKey: signer},
+		RouteKey:     runtimeConfig.RouteKey,
+		Config:       DefaultConfig(),
+		Owner:        leaseOwner,
+		Out:          out,
+		ImageVersion: runtimeConfig.ImageVersion,
+	})
 	if errors.Is(err, context.Canceled) {
 		return nil
-	}
-	if errors.Is(err, ErrTransactionConstructionUnavailable) {
-		return ErrTransactionConstructionUnavailable
 	}
 	return err
 }

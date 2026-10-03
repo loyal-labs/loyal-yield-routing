@@ -132,8 +132,8 @@ func (d *Database) currentLease() (RouteLease, error) {
 }
 
 // AcquireRouteLease never treats an unexpired lease as re-entrant, even when
-// its owner text is identical. Render can briefly overlap two instances during
-// a restart; only an absent or expired row may increment the fencing token.
+// its owner text is identical. A rolling deploy can briefly overlap two
+// instances; only an absent or expired row may increment the fencing token.
 func (d *Database) AcquireRouteLease(ctx context.Context, routeKey, owner string, ttl time.Duration) (RouteLease, error) {
 	if d == nil || d.pool == nil || routeKey == "" || owner == "" {
 		return RouteLease{}, fmt.Errorf("database, route key, and lease owner are required")

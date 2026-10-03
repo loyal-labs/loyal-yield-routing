@@ -520,6 +520,21 @@ func TestRouteLeaseAgainstDatabase(t *testing.T) {
 	if err != nil || !released {
 		t.Fatalf("exact lease release failed: released=%v err=%v", released, err)
 	}
+
+	// The platform-neutral owner acquires the same fence, and the legacy Render
+	// owner text is a different, stale holder while that lease is unexpired.
+	platformNeutral := "worker:backyard:srv-integrationtest:sha-" + strings.Repeat("f", 40)
+	neutral, err := database.AcquireRouteLease(ctx, productionRouteKey, platformNeutral, 30*time.Second)
+	if err != nil || neutral.Owner != platformNeutral || neutral.FencingToken <= lease.FencingToken {
+		t.Fatalf("platform-neutral owner did not take a new generation: lease=%+v err=%v", neutral, err)
+	}
+	if _, err := second.AcquireRouteLease(ctx, productionRouteKey, owner, 30*time.Second); !errors.Is(err, ErrRouteLeaseUnavailable) {
+		t.Fatalf("legacy owner text entered a live platform-neutral fence: %v", err)
+	}
+	released, err = database.ReleaseRouteLease(ctx)
+	if err != nil || !released {
+		t.Fatalf("platform-neutral exact lease release failed: released=%v err=%v", released, err)
+	}
 }
 
 func normalizeSQL(sql string) string {
