@@ -94,9 +94,14 @@ if timescale:
     for file in files:
         execute(timescale_url, file=file)
     print(json.dumps({"gate": "timescale_fixture", "verdict": "PASS", "schema_files": len(files)}))
+# The candidate watch loader has a separately classified sampled Apps/schema
+# compatibility fixture. Its DROP/CREATE test never touches the registered DB.
+execute(base, sql='CREATE DATABASE workers_v2_observer_watch')
+watch_url = urlunparse(parsed._replace(path="/workers_v2_observer_watch"))
 out = os.environ.get("GITHUB_ENV")
 if out:
     with open(out, "a") as target:
+        target.write("TEST_WATCH_DATABASE_URL=" + watch_url + "\n")
         for key, family in (("FLEET_TEST_DATABASE_URL", "fleet"),
                             ("FLEET_EXEC_TEST_DATABASE_URL", "fleetexec"),
                             ("AUTODEPOSIT_TEST_DATABASE_URL", "autodeposit"),

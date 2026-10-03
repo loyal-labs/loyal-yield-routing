@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
 // OperationInsert is the only execution journal shape. The SQL uses the existing
@@ -80,13 +81,11 @@ func OpenDatabase(ctx context.Context, databaseURL string) (*Database, error) {
 	if databaseURL == "" {
 		return nil, fmt.Errorf("database URL is required")
 	}
-	pool, err := pgxpool.New(ctx, databaseURL)
+	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	pool, err := db.Open(startup, databaseURL, 2)
 	if err != nil {
 		return nil, fmt.Errorf("open Backyard database: %w", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping Backyard database: %w", err)
 	}
 	return &Database{pool: pool}, nil
 }

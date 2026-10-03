@@ -26,6 +26,9 @@ const (
 	TargetLTVBPS                  = int64(5000)
 )
 
+// FixedRouteKey identifies the only authorized route this runtime composes.
+const FixedRouteKey = productionRouteKey
+
 // OwnerScope is the Backyard deployment scope in the platform-neutral lease
 // owner identity. It is fixed: a Backyard engine instance never shares owner
 // text with a retail engine instance.

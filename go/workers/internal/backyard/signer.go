@@ -36,6 +36,20 @@ func (c Credentials) signer() (ed25519.PrivateKey, error) {
 	return key, nil
 }
 
+// ParseCredentials constructs the fixed Backyard capability without reading
+// the environment. Its errors never include signing material.
+func ParseCredentials(material string) (Credentials, error) {
+	key, err := decodeSolanaKeypairMaterial(material)
+	if err != nil {
+		return Credentials{}, fmt.Errorf("invalid Backyard signing configuration")
+	}
+	key, err = (Credentials{PolicyKey: key}).signer()
+	if err != nil {
+		return Credentials{}, err
+	}
+	return Credentials{PolicyKey: key}, nil
+}
+
 // loadPinnedPolicySigner follows loyal-solana-env's established input contract:
 // a JSON byte array, hexadecimal bytes, or base58 bytes representing a 32-byte
 // seed or 64-byte Solana secret key. Errors deliberately omit all secret data.

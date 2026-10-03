@@ -42,8 +42,10 @@ func (s *HTTPServer) Run(ctx context.Context) error {
 		if errors.Is(serveErr, http.ErrServerClosed) {
 			serveErr = nil
 		}
-        if failure := errors.Join(err,serveErr); failure != nil { return failure }
-        return ctx.Err()
+		if failure := errors.Join(err, serveErr); failure != nil {
+			return failure
+		}
+		return ctx.Err()
 	}
 }
 

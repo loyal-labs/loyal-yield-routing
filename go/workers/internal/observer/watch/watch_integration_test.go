@@ -2,6 +2,7 @@ package watch
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +18,10 @@ func TestLoaderProductionSchemaCombinationFiltersAppSettings(t *testing.T) {
 	if databaseURL == "" {
 		t.Skip("TEST_WATCH_DATABASE_URL is required")
 	}
+	endpoint, err := url.Parse(databaseURL)
+	if err != nil || endpoint.Hostname() != "127.0.0.1" || endpoint.User == nil || endpoint.User.Username() != "workers_v2" || endpoint.Path != "/workers_v2_observer_watch" {
+		t.Fatal("watch sample requires isolated disposable fixture")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	pool, err := pgxpool.New(ctx, databaseURL)
@@ -29,7 +34,7 @@ func TestLoaderProductionSchemaCombinationFiltersAppSettings(t *testing.T) {
 	if !ok {
 		t.Fatal("resolve test fixture path")
 	}
-	fixturePath := filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", "..", "test-fixtures", "earn-watch-production-schema.sql")
+	fixturePath := filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", "testdata", "observer", "earn-watch-schema-sample.sql")
 	fixture, err := os.ReadFile(fixturePath)
 	if err != nil {
 		t.Fatal(err)

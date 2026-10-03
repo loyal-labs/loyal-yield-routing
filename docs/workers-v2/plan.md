@@ -1,6 +1,6 @@
 Loyal workers v2 — parallel implementation plan, 2026-10-02
 
-Implementation is authorized on isolated rewrite branches. No main merge, deployment, live writer activation, or migration-resource changes are authorized. Root integrates and verifies; GLM Flash lanes implement scoped features. The prior [audit](worker-v2-audit-2026-10-02.md) and [data/algorithm study](worker-v2-data-algorithms-go-2026-10-02.md) supply the rationale and source evidence.
+Implementation is authorized on isolated rewrite branches. No main merge, deployment, live writer activation, or migration-resource changes are authorized. Root integrates and verifies; GLM Flash lanes implement scoped features. The prior [audit](audit.md) and [data/algorithm study](data-algorithms.md) supply the rationale and source evidence.
 
 The outcome is one Go module, an observer, a retail engine, and a separately credentialed Backyard instance of the engine. Existing SSE stays initially. Existing Rust ABI/on-chain proof code and the small official KLend helper remain where exact compatibility warrants them. Multiply is a distinct family and has its own later implementation lane; it cannot disappear merely because Backyard joins the engine.
 
@@ -163,3 +163,12 @@ Implementation checkpoint — 2026-10-02
 - Autodeposit lot/claim/scheduling/request/attempt SQL increment is integrated for verification. Actual two-leg production execution and complete app-independent acceptance remain unfinished. Root added exact wire digest/packet checks, checked eligible sums, and a lease guard on reused persisted attempts.
 - Observer selected Go source compiles and passes offline races on Go1.26.6 with Go1.25.1 language baseline; protobuf module split required the matching parent genproto revision. Its runtime/recovery/readiness audit continues before integration.
 - Narrow Rust observer bridge source and only its required visibility/stdio/dependency changes compile against current main proof libraries; the Go-produced protobuf fixture passes. No full source-branch merge was used.
+
+Implementation checkpoints (2026-10-02, branch only)
+
+- Shared runtime and custody unit/wire primitives, reused fleet/Backyard Go implementations: integrated. Disposable baseline fleet/Backyard lease tests passed in run 37092914451; broader acceptance remains pending.
+- Fleet planner: bounded full-rescore correction integrated, including initially ineligible candidates becoming profitable after another selected flow. No global optimality claim.
+- Autodeposit lot/store/request/attempt increment integrated. Transaction controller/builder review continues in lane A; complete app-independent lifecycle acceptance is not passed.
+- Observer source reused selectively from pinned ASK-2169 candidate with lifecycle corrections, capture/application distinction, scoped Rust bridge environment, and abandoned-request restart. Offline race/build/verifier passed. Real registered-schema queue/Timescale tests and the separate sampled watch compatibility fixture are being exercised by branch-only CI. Rust domain bridge remains a deployment artifact requirement.
+- Fleet execution lane D is not integrated: review found unsafe send-before-intent ordering and missing durable runtime proof. Multiply lane G is implementing its distinct retail family. Routing read-model/maintenance consolidation is still outstanding.
+- Apps opt-in read-only GET changes are on the separate Apps worktree, under review. Legacy remains the default. No deployment, canary, custody adoption, migration acceptance or retirement gate is passed.
