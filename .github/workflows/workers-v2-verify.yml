@@ -8,6 +8,7 @@ on:
       - scripts/verify-workers-v2.sh
       - scripts/workers-v2-fixture.py
       - crates/loyal-yield-store/migrations/**
+      - crates/loyal-timescale-migrations/migrations/**
       - .github/workflows/workers-v2-verify.yml
 
 permissions:
@@ -34,6 +35,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+      timescale:
+        image: timescale/timescaledb:2.20.3-pg17
+        env:
+          POSTGRES_USER: workers_v2
+          POSTGRES_DB: workers_v2_bootstrap
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: [5432/tcp]
+        options: >-
+          --health-cmd "pg_isready -U workers_v2 -d workers_v2_bootstrap"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,6 +59,7 @@ jobs:
         env:
           WORKERS_V2_DISPOSABLE: '1'
           WORKERS_V2_FIXTURE_URL: postgresql://workers_v2@127.0.0.1:${{ job.services.postgres.ports[5432] }}/workers_v2_bootstrap
+          WORKERS_V2_TIMESCALE_FIXTURE_URL: postgresql://workers_v2@127.0.0.1:${{ job.services.timescale.ports[5432] }}/workers_v2_bootstrap
         run: python3 scripts/workers-v2-fixture.py
       - name: Verify offline and enabled database behavior
         run: bash scripts/verify-workers-v2.sh

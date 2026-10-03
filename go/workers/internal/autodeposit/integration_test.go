@@ -65,10 +65,10 @@ RETURNING id`, settings, vaultPubkey, policyID).Scan(&vaultID); err != nil {
 	if err := store.pool.QueryRow(ctx, `
 INSERT INTO loyal_yield.balance_sweep_targets
     (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
-     wallet, wallet_usdc_ata, vault_usdc_ata, token_mint, threshold,
+     wallet, wallet_usdc_ata, vault_usdc_ata, wallet_token_ata, vault_token_ata, token_mint, threshold,
      max_amount_per_period, desired_active, chain_status, wallet_balance_floor_raw,
      last_seen_slot, last_seen_signature)
-VALUES ($1, $2, 7, $3, 1, $4, $5, $6, $7, $8, 1, 1000000000, true, 'active', 4000000,
+VALUES ($1, $2, 7, $3, 1, $4, $5, $6, $7, $6, $7, $8, 1, 1000000000, true, 'active', 4000000,
         1, 'itest-seed')
 RETURNING id`,
 		settings, authority, policyAccount, vaultPubkey,

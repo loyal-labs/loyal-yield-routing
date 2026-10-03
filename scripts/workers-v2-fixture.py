@@ -9,14 +9,18 @@ import subprocess
 from urllib.parse import urlparse, urlunparse
 
 base = os.environ.get("WORKERS_V2_FIXTURE_URL", "")
-parsed = urlparse(base)
-if (os.environ.get("WORKERS_V2_DISPOSABLE") != "1"
+def allowlisted(url):
+    parsed = urlparse(url)
+    if (os.environ.get("WORKERS_V2_DISPOSABLE") != "1"
         or parsed.scheme not in ("postgres", "postgresql")
         or parsed.hostname not in ("127.0.0.1", "localhost")
         or parsed.username != "workers_v2" or parsed.password
         or parsed.path != "/workers_v2_bootstrap" or parsed.query
         or parsed.fragment or not parsed.port or parsed.port < 1024):
-    raise SystemExit("Refusing fixture setup outside the allowlisted disposable local service")
+        raise SystemExit("Refusing fixture setup outside the allowlisted disposable local service")
+    return parsed
+
+parsed = allowlisted(base)
 
 repo = Path(__file__).resolve().parent.parent
 registry = repo / "crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs"
@@ -75,6 +79,21 @@ for family in ("fleet", "autodeposit", "observer", "backyard", "multiply"):
 print(json.dumps({"gate": "fixture", "verdict": "PASS", "registry": str(registry.relative_to(repo)),
                   "registered_schema_files": len(migrations), "databases": list(urls),
                   "scope": "isolated behavior schema; historical app baseline plus registered Yield schema, excludes production-bound 0071 data activation"}))
+timescale = os.environ.get("WORKERS_V2_TIMESCALE_FIXTURE_URL")
+timescale_url = None
+if timescale:
+    timescale_parsed = allowlisted(timescale)
+    timescale_registry = repo / "crates/loyal-timescale-migrations/src/main.rs"
+    sql = timescale_registry.read_text().split("const MIGRATIONS:", 1)[1].split("\n];", 1)[0]
+    files = [(timescale_registry.parent / p).resolve()
+             for p in re.findall(r'include_str!\(\s*"([^"]+)"\s*\)', sql)]
+    if not files or any(not f.is_file() or f.parent != repo / "crates/loyal-timescale-migrations/migrations" for f in files):
+        raise SystemExit("Actual Timescale migration registry could not be resolved")
+    execute(timescale, sql='CREATE DATABASE workers_v2_timescale')
+    timescale_url = urlunparse(timescale_parsed._replace(path="/workers_v2_timescale"))
+    for file in files:
+        execute(timescale_url, file=file)
+    print(json.dumps({"gate": "timescale_fixture", "verdict": "PASS", "schema_files": len(files)}))
 out = os.environ.get("GITHUB_ENV")
 if out:
     with open(out, "a") as target:
@@ -84,3 +103,5 @@ if out:
                             ("BACKYARD_RWA_TEST_DATABASE_URL", "backyard"),
                             ("MULTIPLY_TEST_DATABASE_URL", "multiply")):
             target.write(key + "=" + urls[family] + "\n")
+        if timescale_url:
+            target.write("TEST_TIMESCALE_DATABASE_URL=" + timescale_url + "\n")
