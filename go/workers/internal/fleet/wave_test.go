@@ -174,3 +174,22 @@ func TestLargeReserveCapacityBoundary(t *testing.T) {
 		}
 	}
 }
+
+// Synthetic permitted-target frontiers bound the cost of the chosen full-rescore
+// algorithm. These are scale probes, not measurements of the production fleet.
+func BenchmarkFleetWaveSparse(b *testing.B) {
+	for _, count := range []int{128, 1024, 4096} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			snapshot, vaults := schedulingFixture(count)
+			limits := WaveLimits{128, 1_000_000_000_000, 128, 128}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				plan, err := PlanFleetWithLimitsAt(snapshot, vaults, limits, snapshot.ObservedAt)
+				if err != nil || len(plan.Opportunities) == 0 {
+					b.Fatalf("empty scale probe: %v", err)
+				}
+			}
+		})
+	}
+}

@@ -164,7 +164,7 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 				eligibleVaults[position.VaultID] = true
 			}
 			// An initially uneconomic target may improve after another selected flow.
-			candidates = append(candidates, waveCandidate{vault: vault, target: target, d: d})
+			candidates = append(candidates, waveCandidate{vault: vault, target: target, d: d, conflicts: opportunityConflictKeys(position, d)})
 		}
 		if !eligible {
 			out.Rejections[vault.Position.VaultID] = "no_eligible_target"
@@ -209,7 +209,7 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 				continue
 			}
 			limited := false
-			for _, key := range opportunityConflictKeys(position, d) {
+			for _, key := range updated.conflicts {
 				if conflictCounts[key] >= limits.MaxPerWritableConflictKey {
 					limited = true
 					break
@@ -229,7 +229,7 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 		c := candidates[best]
 		position, d := c.vault.Position, c.d
 		nextNotional := selectedNotional + d.PrincipalUSDMicros
-		conflicts := opportunityConflictKeys(position, d)
+		conflicts := c.conflicts
 		selectedCount++
 		selectedNotional = nextNotional
 		selectedVaults[position.VaultID] = true

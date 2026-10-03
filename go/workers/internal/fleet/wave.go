@@ -17,9 +17,10 @@ func DefaultWaveLimits() WaveLimits {
 }
 
 type waveCandidate struct {
-	vault  FleetVault
-	target string
-	d      Decision
+	vault     FleetVault
+	target    string
+	d         Decision
+	conflicts []string
 }
 
 type waveCandidates []waveCandidate

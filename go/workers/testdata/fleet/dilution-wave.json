@@ -1,0 +1,128 @@
+{
+  "Snapshot": {
+    "slot": 500,
+    "observedAt": "2026-10-02T00:00:00Z",
+    "hash": "snapshot",
+    "reserves": {
+      "A": {
+        "address": "A",
+        "market": "market",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "slot": 500,
+        "supplyApyBps": 1000,
+        "totalSupplyUsdMicros": 1000000000000,
+        "economicLifetimeMillis": 600000,
+        "dataHash": "hA"
+      },
+      "B": {
+        "address": "B",
+        "market": "market",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "slot": 500,
+        "supplyApyBps": 2000,
+        "totalSupplyUsdMicros": 1000000000000,
+        "economicLifetimeMillis": 600000,
+        "dataHash": "hB"
+      },
+      "C": {
+        "address": "C",
+        "market": "market",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "slot": 500,
+        "supplyApyBps": 3000,
+        "totalSupplyUsdMicros": 1000000000000,
+        "economicLifetimeMillis": 600000,
+        "dataHash": "hC"
+      },
+      "D": {
+        "address": "D",
+        "market": "market",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "slot": 500,
+        "supplyApyBps": 1000,
+        "totalSupplyUsdMicros": 1000000000000,
+        "economicLifetimeMillis": 600000,
+        "dataHash": "hD"
+      },
+      "E": {
+        "address": "E",
+        "market": "market",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "slot": 500,
+        "supplyApyBps": 2010,
+        "totalSupplyUsdMicros": 1000000000000,
+        "economicLifetimeMillis": 600000,
+        "dataHash": "hE"
+      }
+    }
+  },
+  "Vaults": [
+    {
+      "Position": {
+        "VaultID": 1,
+        "PolicyID": 1,
+        "VaultPubkey": "vault-1",
+        "SourceReserve": "A",
+        "Market": "market",
+        "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "AmountRaw": 20000000000,
+        "SourceCollateralAmountRaw": 20000000000,
+        "SourceAmountSemantics": "kamino_obligation_collateral_deposited_amount",
+        "SnapshotID": 7,
+        "ObservedSlot": 499,
+        "ObservedAt": "2026-10-02T00:00:00Z",
+        "PolicyAuthority": "tenant"
+      },
+      "AllowedTargets": [
+        "B"
+      ]
+    },
+    {
+      "Position": {
+        "VaultID": 2,
+        "PolicyID": 2,
+        "VaultPubkey": "vault-2",
+        "SourceReserve": "B",
+        "Market": "market",
+        "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "AmountRaw": 10000000000,
+        "SourceCollateralAmountRaw": 10000000000,
+        "SourceAmountSemantics": "kamino_obligation_collateral_deposited_amount",
+        "SnapshotID": 7,
+        "ObservedSlot": 499,
+        "ObservedAt": "2026-10-02T00:00:00Z",
+        "PolicyAuthority": "tenant"
+      },
+      "AllowedTargets": [
+        "C"
+      ]
+    },
+    {
+      "Position": {
+        "VaultID": 3,
+        "PolicyID": 3,
+        "VaultPubkey": "vault-3",
+        "SourceReserve": "D",
+        "Market": "market",
+        "Mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "AmountRaw": 10000000000,
+        "SourceCollateralAmountRaw": 10000000000,
+        "SourceAmountSemantics": "kamino_obligation_collateral_deposited_amount",
+        "SnapshotID": 7,
+        "ObservedSlot": 499,
+        "ObservedAt": "2026-10-02T00:00:00Z",
+        "PolicyAuthority": "tenant"
+      },
+      "AllowedTargets": [
+        "E"
+      ]
+    }
+  ],
+  "Limits": {
+    "MaxOpportunities": 2,
+    "MaxNotionalUSDMicros": 1000000000000,
+    "MaxPerTenant": 10,
+    "MaxPerWritableConflictKey": 10
+  },
+  "EvaluatedAt": "2026-10-02T00:00:00Z"
+}

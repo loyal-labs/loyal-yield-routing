@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"fmt"
+	"math"
 	"math/big"
 	"time"
 )
@@ -256,6 +257,19 @@ func minInt64(left, right int64) int64 {
 }
 
 func sumInt64(values ...int64) (int64, bool) {
+	// Most custody/frontier sums fit at every step. Keep that path allocation
+	// free, but preserve cancellation across an overflowing intermediate sum.
+	var total int64
+	for _, part := range values {
+		if part > 0 && total > math.MaxInt64-part || part < 0 && total < math.MinInt64-part {
+			return sumWideInt64(values)
+		}
+		total += part
+	}
+	return total, true
+}
+
+func sumWideInt64(values []int64) (int64, bool) {
 	value := new(big.Int)
 	for _, part := range values {
 		value.Add(value, big.NewInt(part))
@@ -285,6 +299,16 @@ func mulDivInt64(left, right, divisor int64) (int64, bool) {
 	if divisor == 0 {
 		return 0, false
 	}
+	product := left * right
+	specialOverflow := left == math.MinInt64 && right == -1 || right == math.MinInt64 && left == -1
+	if !specialOverflow && (right == 0 || product/right == left) {
+		if product == math.MinInt64 && divisor == -1 {
+			return 0, false
+		}
+		return product / divisor, true
+	}
+	// An overflowing numerator can still yield a valid quotient. Keep exact
+	// wide arithmetic for it rather than rejecting or rounding the spend.
 	value := new(big.Int).Mul(big.NewInt(left), big.NewInt(right))
 	value.Quo(value, big.NewInt(divisor))
 	if !value.IsInt64() {

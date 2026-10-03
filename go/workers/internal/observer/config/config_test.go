@@ -10,7 +10,7 @@ func setRequiredEnv(t *testing.T) {
 	for name, value := range map[string]string{
 		"LASERSTREAM_ENDPOINT": "https://example.invalid",
 		"HELIUS_API_KEY":       "fixture",
-		"EARN_MAX_DELEGATE":    "delegate",
+		"EARN_MAX_DELEGATE":    "11111111111111111111111111111111",
 		"SOLANA_RPC_URL":       "https://rpc.invalid",
 		"NEON_DATABASE_URL":    "postgresql://fixture",
 		"TIMESCALEDB_URL":      "postgresql://fixture",
@@ -85,7 +85,7 @@ func TestBridgeEnvironmentIsAStrictAllowlist(t *testing.T) {
 			t.Fatalf("bridge environment leaked %s: %s", forbidden, joined)
 		}
 	}
-	for _, required := range []string{"NEON_DATABASE_URL=postgresql://fixture", "SOLANA_RPC_URL=https://rpc.invalid", "SOLANA_CLUSTER=mainnet-beta", "EARN_MAX_DELEGATE=delegate", "TIMESCALEDB_URL=postgresql://fixture", "EARN_RECONCILIATION_CONCURRENCY=4"} {
+	for _, required := range []string{"NEON_DATABASE_URL=postgresql://fixture", "SOLANA_RPC_URL=https://rpc.invalid", "SOLANA_CLUSTER=mainnet-beta", "EARN_MAX_DELEGATE=11111111111111111111111111111111", "TIMESCALEDB_URL=postgresql://fixture", "EARN_RECONCILIATION_CONCURRENCY=4"} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("bridge environment omitted %s: %s", required, joined)
 		}
@@ -100,5 +100,24 @@ func TestFromEnvDefaultsBridgeStartupAndReadyBounds(t *testing.T) {
 	}
 	if cfg.BridgeStartupTimeout <= 0 || cfg.EarnReadyMaxAge <= 0 {
 		t.Fatalf("bridge startup %s / ready max age %s, want positive defaults", cfg.BridgeStartupTimeout, cfg.EarnReadyMaxAge)
+	}
+}
+
+func TestFromEnvRejectsUnrepresentableBounds(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"LASERSTREAM_HANDOFF_TIMEOUT_SECONDS", "18446744073709551615"},
+		{"EARN_DOMAIN_BRIDGE_STARTUP_TIMEOUT_SECONDS", "9223372037"},
+		{"EARN_RECONCILIATION_CONCURRENCY", "65"},
+		{"AUTODEPOSIT_RECONCILIATION_CONCURRENCY", "18446744073709551615"},
+		{"LASERSTREAM_REPLAY_OVERLAP_SLOTS", "9223372036854775808"},
+		{"EARN_MAX_DELEGATE", "not-a-public-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv(tc.name, tc.value)
+			if _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), tc.name) {
+				t.Fatalf("invalid bound accepted or unnamed: %v", err)
+			}
+		})
 	}
 }

@@ -3,11 +3,14 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	solanago "github.com/gagliardetto/solana-go"
 )
 
 type Config struct {
@@ -36,8 +39,8 @@ type Config struct {
 // BridgeEnvironment builds the complete environment of the Earn domain bridge
 // child. It is a strict allowlist: the child receives only observer data-plane
 // configuration and telemetry endpoints. The worker process environment is
-// never inherited, so signing capabilities such as POLICY_KEYPAIR, the Earn MAX
-// delegate and the Helius API key cannot reach the projection child.
+// never inherited. The public Earn delegate is verifier input; POLICY_KEYPAIR
+// and the Helius API key are excluded.
 func (c Config) BridgeEnvironment() []string {
 	return []string{
 		"NEON_DATABASE_URL=" + c.NeonDatabaseURL,
@@ -111,6 +114,9 @@ func FromEnv() (Config, error) {
 		sort.Strings(missing)
 		return Config{}, fmt.Errorf("required environment variables are missing: %s", strings.Join(missing, ", "))
 	}
+	if _, err := solanago.PublicKeyFromBase58(cfg.EarnMaxDelegate); err != nil {
+		return Config{}, errors.New("EARN_MAX_DELEGATE must be a Solana public key")
+	}
 	if cfg.ATAStream != "production" && cfg.ATAStream != "staging" {
 		return Config{}, fmt.Errorf("BALANCE_SWEEP_ATA_STREAM must be production or staging, got %q", cfg.ATAStream)
 	}
@@ -132,6 +138,14 @@ func validatePositiveIntegerEnv(names ...string) error {
 		parsed, err := strconv.ParseUint(value, 10, 64)
 		if err != nil || parsed == 0 {
 			return fmt.Errorf("%s must be a positive integer", name)
+		}
+		switch {
+		case strings.HasSuffix(name, "_SECONDS") && parsed > uint64(math.MaxInt64/int64(time.Second)):
+			return fmt.Errorf("%s exceeds the duration limit", name)
+		case strings.HasSuffix(name, "_CONCURRENCY") && parsed > 64:
+			return fmt.Errorf("%s exceeds the bounded worker limit of 64", name)
+		case name == "LASERSTREAM_REPLAY_OVERLAP_SLOTS" && parsed > math.MaxInt64:
+			return fmt.Errorf("%s exceeds the signed slot limit", name)
 		}
 	}
 	return nil

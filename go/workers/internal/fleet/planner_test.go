@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 	"time"
 )
@@ -184,5 +185,24 @@ func TestRustOpportunityIdentityFencesEpochAndEconomics(t *testing.T) {
 	decision.TargetAPYBPS++
 	if first == opportunityIdentity("mainnet-beta", 10, decision, plan, expires) {
 		t.Fatal("material economics did not change Rust identity")
+	}
+}
+
+func TestCapacitySumPreservesWideCancellationAndRejectsFinalOverflow(t *testing.T) {
+	for _, tc := range []struct {
+		parts []int64
+		want  int64
+		ok    bool
+	}{
+		{[]int64{math.MaxInt64, 1, -1}, math.MaxInt64, true},
+		{[]int64{math.MinInt64, -1, 1}, math.MinInt64, true},
+		{[]int64{math.MaxInt64, 1}, 0, false},
+		{[]int64{math.MinInt64, -1}, 0, false},
+		{[]int64{math.MaxInt64, math.MinInt64, 1}, 0, true},
+	} {
+		got, ok := sumInt64(tc.parts...)
+		if ok != tc.ok || ok && got != tc.want {
+			t.Fatalf("sum %v = %d/%v, want %d/%v", tc.parts, got, ok, tc.want, tc.ok)
+		}
 	}
 }

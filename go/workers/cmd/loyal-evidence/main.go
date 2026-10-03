@@ -9,10 +9,11 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"io"
 	"os"
+	"time"
 )
 
 func run() error {
-	kind := flag.String("kind", "", "fleet or backyard saved decision")
+	kind := flag.String("kind", "", "fleet, fleet-wave or backyard saved decision")
 	path := flag.String("snapshot", "", "saved input JSON; no database or RPC")
 	flag.Parse()
 	if *path == "" {
@@ -37,6 +38,27 @@ func run() error {
 			return err
 		}
 		result = fleet.Plan(in.Snapshot, in.Position, in.Source, in.Target)
+	case "fleet-wave":
+		var in struct {
+			Snapshot    fleet.MarketSnapshot
+			Vaults      []fleet.FleetVault
+			Limits      *fleet.WaveLimits
+			EvaluatedAt time.Time
+		}
+		if err := decode.Decode(&in); err != nil {
+			return err
+		}
+		if in.EvaluatedAt.IsZero() {
+			return errors.New("fleet-wave requires an explicit evaluatedAt clock")
+		}
+		limits := fleet.DefaultWaveLimits()
+		if in.Limits != nil {
+			limits = *in.Limits
+		}
+		result, err = fleet.PlanFleetWithLimitsAt(in.Snapshot, in.Vaults, limits, in.EvaluatedAt)
+		if err != nil {
+			return err
+		}
 	case "backyard":
 		var in backyard.Snapshot
 		if err := decode.Decode(&in); err != nil {
