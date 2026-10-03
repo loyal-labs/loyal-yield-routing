@@ -1,0 +1,21 @@
+{
+  "description": "Executor exit-code contract shared with the legacy Rust trigger binary. Exit codes are the only channel between the executor process and the scheduler, so renumbering them silently reclassifies incidents.",
+  "cases": [
+    { "exitCode": 20, "expect": { "result": "failed", "alertCode": "kamino_top_up_failed", "retryable": false } },
+    { "exitCode": 21, "expect": { "result": "failed", "alertCode": "yield_persistence_failed", "retryable": false } },
+    { "exitCode": 22, "expect": { "result": "failed", "alertCode": "autodeposit_preflight_blocked", "retryable": true } },
+    { "exitCode": 23, "expect": { "result": "not_actionable", "alertCode": null } },
+    { "exitCode": 24, "expect": { "result": "failed", "alertCode": "autodeposit_fee_payer_exhausted", "retryable": true } },
+    { "exitCode": 25, "expect": { "result": "failed", "alertCode": "autodeposit_transaction_effect_ambiguous", "retryable": false } },
+    { "exitCode": 26, "expect": { "result": "failed", "alertCode": "autodeposit_idle_handoff_failed", "retryable": true } },
+    { "exitCode": 27, "expect": { "result": "failed", "alertCode": "autodeposit_dependency_unavailable", "retryable": true, "selfRecovering": true } },
+    { "exitCode": 28, "expect": { "result": "completed", "alertCode": null } },
+    { "exitCode": 29, "expect": { "result": "deferred", "alertCode": null } },
+    { "exitCode": 30, "expect": { "result": "recovery_pending", "alertCode": null } },
+    { "exitCode": 31, "expect": { "result": "noop", "alertCode": null } },
+    { "exitCode": 0, "expect": { "result": "process_success_unclassified", "alertCode": null } },
+    { "exitCode": 1, "expect": { "result": "failed", "alertCode": "autodeposit_executor_failed", "retryable": true } },
+    { "exitCode": 99, "expect": { "result": "failed", "alertCode": "autodeposit_executor_failed", "retryable": true } },
+    { "exitCode": null, "expect": { "result": "failed", "alertCode": "autodeposit_executor_failed", "retryable": true } }
+  ]
+}
