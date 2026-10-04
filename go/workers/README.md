@@ -29,8 +29,14 @@ explicit `RETAIL_MODE=active` and scoped `RETAIL_DATABASE_URL`,
 `RETAIL_KLEND_PROXY_PATH`, `RETAIL_KLEND_PROXY_SHA256`,
 `RETAIL_DELEGATE_KEYPAIR` and `RETAIL_FEE_PAYER_KEYPAIR`. The current Autodeposit
 and same-mint packet contracts require the latter two keys to be identical.
-Cross-mint flags currently fail before network access while that runtime is
-being integrated. Do not enable this rewrite against shared resources.
+`RETAIL_CROSS_MINT_ENABLED=true` opts the planner/controller into fresh cross-mint
+work; it defaults off. Existing signed recovery and custody continuation stay
+available with rollout off. Source database controls are checked independently.
+Jupiter uses scoped `RETAIL_JUPITER_BUILD_URL` and `RETAIL_JUPITER_API_KEY`;
+optional `RETAIL_CROSS_MINT_MAX_SLIPPAGE_BPS` and
+`RETAIL_CROSS_MINT_MAX_VALUE_LOSS_BPS` each default to 50 and accept 1..1000.
+An inherited legacy cross-mint flag cannot grant fresh authority.
+Do not enable this rewrite against shared resources.
 
 Observer retains its reviewed transport configuration in
 `internal/observer/config/config.go` and starts the separately supervised,

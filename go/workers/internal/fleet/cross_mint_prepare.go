@@ -56,6 +56,7 @@ type CrossMintLegPreparation struct {
 	BalanceAnchors                  json.RawMessage
 	ConflictKeys                    []string
 	SelectedALTs                    []ExecutionALT
+	ExternalALTs                    []CrossMintExternalALT
 	AltSelectionFingerprint         string
 	ObservedSlot                    int64
 	ObservedAt                      time.Time
@@ -354,9 +355,6 @@ func (r *Revalidator) PrepareCrossMintLeg(ctx context.Context, q CrossMintPrepar
 	if err != nil {
 		return CrossMintLegPreparation{}, err
 	}
-	// External Jupiter ALT snapshots validate provider instructions, but their
-	// unregistered identities cannot obtain legacy prepared-transaction leases.
-	// Compilation therefore uses only the managed, registered member vectors.
 	manifestInput := KaminoSameMintRouteRequest{Vault: q.Movement.VaultPubkey, Source: bank.source.Position, Target: bank.target.Position}
 	if q.Leg == "deposit" {
 		p := bank.active.Position
@@ -366,6 +364,18 @@ func (r *Revalidator) PrepareCrossMintLeg(ctx context.Context, q CrossMintPrepar
 		manifestInput.Source, manifestInput.Target = p, p
 	}
 	manifest, err := BuildRouteALTManifest(manifestInput, plan.Bindings.Settings, out.PolicyAccount, r.signer, instructions, bank.swap)
+	if err != nil {
+		return CrossMintLegPreparation{}, err
+	}
+	manifest, err = r.bindFinalizedCrossMintALTManifest(ctx, manifest, bank.externalTables, bank.slot)
+	if err != nil {
+		return CrossMintLegPreparation{}, err
+	}
+	requirements, err := ALTManifestRequirementsFingerprint(&manifest)
+	if err != nil {
+		return CrossMintLegPreparation{}, err
+	}
+	out.ExternalALTs, err = ALTManifestExternalSnapshots(&manifest)
 	if err != nil {
 		return CrossMintLegPreparation{}, err
 	}
@@ -379,11 +389,15 @@ func (r *Revalidator) PrepareCrossMintLeg(ctx context.Context, q CrossMintPrepar
 	if err != nil {
 		return CrossMintLegPreparation{}, err
 	}
-	out.Preparation, out.LastValidBlockHeight, out.MissingAddresses, err = r.compileCrossMintIndependentLeg(ctx, q, instructions, tables, bank.slot)
+	combined, err := combineCrossMintLookupTables(tables, bank.externalTables)
 	if err != nil {
 		return CrossMintLegPreparation{}, err
 	}
-	out.Preparation.RequirementsFingerprint = manifest.Fingerprint
+	out.Preparation, out.LastValidBlockHeight, out.MissingAddresses, err = r.compileCrossMintIndependentLeg(ctx, q, instructions, combined, bank.slot)
+	if err != nil {
+		return CrossMintLegPreparation{}, err
+	}
+	out.Preparation.RequirementsFingerprint = requirements
 	out.Preparation.Manifest = &manifest
 	if len(out.MissingAddresses) > 0 {
 		if err := store.CheckCrossMintPreparation(ctx, q); err != nil {
@@ -395,22 +409,30 @@ func (r *Revalidator) PrepareCrossMintLeg(ctx context.Context, q CrossMintPrepar
 	for _, name := range out.Preparation.Transaction.LookupTables {
 		found := false
 		for _, table := range tables {
-			if table.Address == name && table.ID > 0 && table.FamilyID > 0 && table.Generation >= 0 && table.MutationEpoch >= 0 {
+			if table.Address == name {
+				if table.ID <= 0 || table.FamilyID <= 0 || table.Generation < 0 || table.MutationEpoch < 0 {
+					return CrossMintLegPreparation{}, errors.New("compiled managed ALT lost registered generation identity")
+				}
 				out.SelectedALTs = append(out.SelectedALTs, ExecutionALT{TableID: table.ID, MutationEpoch: table.MutationEpoch, FamilyID: table.FamilyID, Generation: table.Generation, BindingID: table.BindingID, Address: table.Address, Addresses: append([]string(nil), table.Addresses...)})
 				found = true
 				break
 			}
 		}
 		if !found {
-			return CrossMintLegPreparation{}, errors.New("compiled cross-mint ALT lacks registered generation identity")
+			for _, external := range out.ExternalALTs {
+				if external.Address == name {
+					found = true
+				}
+			}
+			if !found {
+				return CrossMintLegPreparation{}, errors.New("compiled cross-mint ALT lacks managed identity or finalized provider snapshot")
+			}
 		}
 	}
-	selected, err := json.Marshal(out.SelectedALTs)
+	out.AltSelectionFingerprint, err = CrossMintALTSelectionFingerprint(out.SelectedALTs, out.ExternalALTs, out.Preparation.Transaction.LookupTables)
 	if err != nil {
 		return CrossMintLegPreparation{}, err
 	}
-	selectionHash := sha256.Sum256(selected)
-	out.AltSelectionFingerprint = hex.EncodeToString(selectionHash[:])
 	out.ConflictKeys = canonicalStrings([]string{"vault-write:" + q.Movement.VaultPubkey, fmt.Sprintf("fleet-shared-write-lane:%02d", q.Movement.VaultID%64)})
 	out.ExpectedEffect, err = json.Marshal(effect)
 	if err != nil {
@@ -455,6 +477,7 @@ type crossMintPreparationBank struct {
 	accounts                                             map[string]Account
 	additionalMints                                      []string
 	swap                                                 *RouteInstruction
+	externalTables                                       []LookupTable
 }
 
 func sameCrossMintPreparationBank(a, b crossMintPreparationBank) bool {
@@ -716,6 +739,7 @@ func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q Cr
 	plan.Amount = amount // post-withdraw attribution, never the stale planned estimate
 	slippage := min(b.Swap.MaxSlippageBPS, r.crossMintMaxSlippageBPS)
 	var validated validatedJupiterBuild
+	var externalTables []LookupTable
 	for attempt := 0; attempt < 2; attempt++ {
 		body, err := r.jupiter.fetch(ctx, m.SourceMint, m.TargetMint, amount, m.VaultPubkey, slippage)
 		if err != nil {
@@ -733,6 +757,7 @@ func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q Cr
 		if err != nil {
 			return nil, effect, anchors, err
 		}
+		externalTables = tables
 		if validated.MinimumOutput >= minimum {
 			break
 		}
@@ -797,6 +822,7 @@ func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q Cr
 	effect = crossMintPreparationEffect{Debit: &crossMintPreparationToken{m.CustodyMint, m.CustodyAccount, m.CustodyAmountRaw}, CreditMint: &mint, CreditAccount: &ata, MinimumCredit: &minimumRaw}
 	anchors = crossMintPreparationAnchors{Debit: &crossMintPreparationToken{m.CustodyMint, m.CustodyAccount, *m.CustodyObservedBalanceRaw}, Credit: &crossMintPreparationToken{mint, ata, int64(binary.LittleEndian.Uint64(bank.accounts[ata].Data[64:72]))}}
 	bank.swap = &validated.Swap
+	bank.externalTables = externalTables
 	return []RouteInstruction{wrapped}, effect, anchors, nil
 }
 

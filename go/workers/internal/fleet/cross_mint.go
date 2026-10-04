@@ -650,7 +650,7 @@ func minimumEconomicOutput(amount uint64, bps uint16) (uint64, error) {
 }
 
 func decodeLookupTable(account Account, observedSlot int64) (LookupTable, error) {
-	if account.Owner != altProgram || len(account.Data) < 56 || (len(account.Data)-56)%32 != 0 || binary.LittleEndian.Uint32(account.Data[:4]) != 1 || binary.LittleEndian.Uint64(account.Data[4:12]) != ^uint64(0) || observedSlot <= 0 {
+	if account.Owner != altProgram || account.Executable || account.Lamports == 0 || len(account.Data) < 56 || (len(account.Data)-56)%32 != 0 || binary.LittleEndian.Uint32(account.Data[:4]) != 1 || binary.LittleEndian.Uint64(account.Data[4:12]) != ^uint64(0) || observedSlot <= 0 {
 		return LookupTable{}, fmt.Errorf("lookup table %s is invalid or deactivated", account.Address)
 	}
 	lastExtended := binary.LittleEndian.Uint64(account.Data[12:20])
@@ -694,8 +694,6 @@ func (r *Revalidator) loadFinalizedJupiterTables(ctx context.Context, listed map
 		if !equalStrings(tables[i].Addresses, listed[a.Address]) {
 			return nil, errors.New("Jupiter lookup table declaration differs from finalized chain")
 		}
-		tables[i].UsableAfterSlot = minimum
-		tables[i].LastVerifiedSlot = minimum
 	}
 	return tables, nil
 }
@@ -1318,13 +1316,20 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 	instructions := append([]RouteInstruction{}, computeBudgetInstructions(uint32(r.computeLimit), validated.UnitPrice)...)
 	instructions = append(instructions, route.Public[:firstObligation+1]...)
 	instructions = append(instructions, withdrawWrapped, swapWrapped)
-	tables := append(append([]LookupTable{}, jupiterTables...), managed...)
+	tables, err := combineCrossMintLookupTables(managed, jupiterTables)
+	if err != nil {
+		return out, err
+	}
 	manifestInput := KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: source.Position, Target: target.Position}
 	manifest, err := BuildCrossMintPreflightALTManifest(manifestInput, b.Settings, b.Withdraw.PolicyAccount, b.Swap.PolicyAccount, r.signer, instructions, validated.Swap)
 	if err != nil {
 		return out, err
 	}
-	manifest, err = r.filterFinalizedExternalALTManifest(ctx, manifest, jupiterTables, slot)
+	manifest, err = r.bindFinalizedCrossMintALTManifest(ctx, manifest, jupiterTables, slot)
+	if err != nil {
+		return out, err
+	}
+	requirementsFingerprint, err := ALTManifestRequirementsFingerprint(&manifest)
 	if err != nil {
 		return out, err
 	}
@@ -1345,7 +1350,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 	if len(missing) > 0 {
 		out.WaitingALT, out.MissingAddresses = true, canonicalStrings(missing)
 		out.PreflightPreparation = crossMintMissingALTPreparation(q, instructions, missing)
-		out.PreflightPreparation.RequirementsFingerprint = manifest.Fingerprint
+		out.PreflightPreparation.RequirementsFingerprint = requirementsFingerprint
 		out.PreflightPreparation.Manifest = &manifest
 		out.SharedAddresses, out.VaultAddresses = manifest.SharedAddresses, manifest.VaultAddresses
 		return out, nil
@@ -1378,7 +1383,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 	}
 	routeHash := sha256.Sum256(preview.Message)
 	out.Certificate = cert
-	out.PreflightPreparation = RoutePreparation{RouteFingerprint: hex.EncodeToString(routeHash[:]), RequirementsFingerprint: manifest.Fingerprint, Transaction: preview, Simulation: sim, ExecutionPlan: certRaw}
+	out.PreflightPreparation = RoutePreparation{RouteFingerprint: hex.EncodeToString(routeHash[:]), RequirementsFingerprint: requirementsFingerprint, Transaction: preview, Simulation: sim, ExecutionPlan: certRaw}
 	out.PreflightPreparation.Manifest = &manifest
 	if err := preserveCanonicalPlan(lease.ExecutionPlan, &out.PreflightPreparation, "cross_mint_preflight"); err != nil {
 		return out, err

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -27,6 +28,7 @@ type CrossMintFirstSendRequest struct {
 	Signature, RecentBlockhash                string
 	LastValidBlockHeight                      int64
 	SelectedALTs                              []ExecutionALT
+	ExternalALTs                              []CrossMintExternalALT
 }
 
 // ValidateCrossMintFirstSend verifies the old, unchanged signed message against
@@ -81,6 +83,9 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 		floor = max(floor, *m.CustodyReconciledSlot)
 	}
 	floor = max(floor, int64(plan.Bindings.Withdraw.ObservedSlot), int64(plan.Bindings.Deposit.ObservedSlot), int64(plan.Bindings.Swap.ObservedSlot))
+	for _, external := range input.ExternalALTs {
+		floor = max(floor, external.ObservedSlot, external.UsableAfterSlot)
+	}
 	bank, err := r.loadCrossMintRouteBank(ctx, q, plan, nil, floor)
 	if err != nil {
 		return err
@@ -109,6 +114,15 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 	}
 	tables, err = r.verifyFinalizedLookupTables(ctx, tables, bank.slot)
 	if err != nil {
+		return err
+	}
+	// Provider snapshots remain committed even if compilation chose a managed
+	// table instead. Verify every full vector against actual finalized accounts.
+	var providerTables []LookupTable
+	for _, external := range input.ExternalALTs {
+		providerTables = append(providerTables, LookupTable{Address: external.Address, Addresses: external.Addresses, Active: true})
+	}
+	if _, err := r.verifyFinalizedLookupTables(ctx, providerTables, bank.slot); err != nil {
 		return err
 	}
 	height, err := r.rpc.BlockHeight(ctx, "finalized")
@@ -220,27 +234,57 @@ func decodeCrossMintFirstSendWire(input CrossMintFirstSendRequest, signer string
 	if hex.EncodeToString(messageHash[:]) != input.ExpectedMessageSHA256 {
 		return fail("first-send durable message hash mismatch")
 	}
-	if len(tx.Message.AddressTableLookups) == 0 || len(tx.Message.AddressTableLookups) != len(input.SelectedALTs) {
-		return fail("first-send lacks exact registered ALT vector")
+	if len(tx.Message.AddressTableLookups) == 0 {
+		return fail("first-send lacks exact ALT lookup vector")
+	}
+	if err := validateCrossMintExternalALTs(input.ExternalALTs); err != nil {
+		return fail("first-send external ALT snapshot is malformed")
+	}
+	byAddress := map[string]LookupTable{}
+	managed := map[string]bool{}
+	for _, selected := range input.SelectedALTs {
+		if selected.TableID <= 0 || selected.FamilyID <= 0 || selected.Generation < 0 || selected.MutationEpoch < 0 || managed[selected.Address] {
+			return fail("first-send selected managed ALT identity changed")
+		}
+		if _, err := CrossMintExternalAddressHash(selected.Addresses); err != nil {
+			return fail("first-send managed ALT vector is malformed")
+		}
+		managed[selected.Address] = true
+		byAddress[selected.Address] = LookupTable{ID: selected.TableID, FamilyID: selected.FamilyID, Generation: selected.Generation, MutationEpoch: selected.MutationEpoch, BindingID: selected.BindingID, Address: selected.Address, Addresses: append([]string{}, selected.Addresses...), Active: true}
+	}
+	for _, external := range input.ExternalALTs {
+		if original, ok := byAddress[external.Address]; ok {
+			if !reflect.DeepEqual(original.Addresses, external.Addresses) {
+				return fail("first-send managed/provider copies disagree")
+			}
+		} else {
+			byAddress[external.Address] = LookupTable{Address: external.Address, Addresses: append([]string{}, external.Addresses...), Active: true}
+		}
 	}
 	loaded := map[solana.PublicKey]solana.PublicKeySlice{}
 	var tables []LookupTable
 	seen := map[string]bool{}
-	for i, l := range tx.Message.AddressTableLookups {
-		selected := input.SelectedALTs[i]
-		if selected.TableID <= 0 || selected.FamilyID <= 0 || selected.Generation < 0 || selected.MutationEpoch < 0 || selected.Address != l.AccountKey.String() || seen[selected.Address] || len(selected.Addresses) == 0 || len(selected.Addresses) > 256 {
-			return fail("first-send selected ALT identity changed")
+	managedIndex := 0
+	for _, l := range tx.Message.AddressTableLookups {
+		address := l.AccountKey.String()
+		table, ok := byAddress[address]
+		if !ok || seen[address] {
+			return fail("first-send wire lookup has unknown or repeated identity")
 		}
-		seen[selected.Address] = true
-		keys := make(solana.PublicKeySlice, len(selected.Addresses))
-		members := map[string]bool{}
-		for j, address := range selected.Addresses {
-			key, e := solana.PublicKeyFromBase58(address)
-			if e != nil || members[address] {
+		seen[address] = true
+		if managed[address] {
+			if managedIndex >= len(input.SelectedALTs) || input.SelectedALTs[managedIndex].Address != address {
+				return fail("first-send managed selection order differs from wire")
+			}
+			managedIndex++
+		}
+		keys := make(solana.PublicKeySlice, len(table.Addresses))
+		for j, address := range table.Addresses {
+			key, err := solana.PublicKeyFromBase58(address)
+			if err != nil {
 				return fail("first-send ALT member vector is malformed")
 			}
 			keys[j] = key
-			members[address] = true
 		}
 		indexes := map[uint8]bool{}
 		for _, index := range append(append([]uint8{}, l.WritableIndexes...), l.ReadonlyIndexes...) {
@@ -250,7 +294,10 @@ func decodeCrossMintFirstSendWire(input CrossMintFirstSendRequest, signer string
 			indexes[index] = true
 		}
 		loaded[l.AccountKey] = keys
-		tables = append(tables, LookupTable{ID: selected.TableID, FamilyID: selected.FamilyID, Generation: selected.Generation, MutationEpoch: selected.MutationEpoch, BindingID: selected.BindingID, Address: selected.Address, Addresses: append([]string{}, selected.Addresses...), Active: true})
+		tables = append(tables, table)
+	}
+	if managedIndex != len(input.SelectedALTs) {
+		return fail("first-send selected managed ALT does not contribute to wire")
 	}
 	if tx.Message.SetAddressTables(loaded) != nil || tx.Message.ResolveLookups() != nil {
 		return fail("first-send SDK could not resolve exact selected ALTs")

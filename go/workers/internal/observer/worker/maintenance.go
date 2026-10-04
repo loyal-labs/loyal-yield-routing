@@ -39,6 +39,9 @@ func (r *Runtime) NewMaintenance(ctx context.Context) (*observer.Maintenance, er
 	// unknown active policy custody instead of quietly publishing partial data
 	// into the shared mainnet product projections.
 	validateNamespace := func(ctx context.Context) error {
+		if err := validateWatchNamespace(ctx, r.cfg.Cluster, r.rpc); err != nil {
+			return err
+		}
 		var scoped bool
 		if err := r.neon.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM loyal_yield.route_policies WHERE active AND cluster IS DISTINCT FROM 'mainnet-beta')
  AND NOT EXISTS(SELECT 1 FROM loyal_yield.user_yield_positions p WHERE p.status='active' AND NOT EXISTS(
@@ -52,9 +55,9 @@ func (r *Runtime) NewMaintenance(ctx context.Context) (*observer.Maintenance, er
 		}
 		return nil
 	}
-	if err := validateNamespace(startup); err != nil {
-		return nil, err
-	}
+	// Mutable custody can become classifiable through the observer itself.
+	// Keep product readiness closed and recheck before every pass instead of
+	// stopping capture before it can repair that transient state.
 	rpc, err := observer.NewMaintenancePriceRPC(r.cfg.SolanaRPCURL, 30*time.Second)
 	if err != nil {
 		return nil, err

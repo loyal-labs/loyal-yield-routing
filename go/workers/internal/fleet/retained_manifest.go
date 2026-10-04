@@ -28,6 +28,8 @@ type ALTManifest struct {
 	fingerprintMaterial             []byte
 	verifiedShared, verifiedVault   []ALTManifestAddress
 	sourceShared, sourceVault       []ALTManifestAddress
+	externalSnapshots               []CrossMintExternalALT
+	boundRequirementsFingerprint    string
 }
 
 // ValidateALTManifestIntegrity accepts only the unchanged output of the typed
@@ -41,7 +43,35 @@ func ValidateALTManifestIntegrity(manifest *ALTManifest) error {
 	if manifest.Fingerprint != hex.EncodeToString(digest[:]) || !reflect.DeepEqual(manifest.SharedAddresses, manifest.verifiedShared) || !reflect.DeepEqual(manifest.VaultAddresses, manifest.verifiedVault) {
 		return fmt.Errorf("ALT manifest changed after typed source construction")
 	}
+	if manifest.boundRequirementsFingerprint != "" {
+		fp, err := crossMintExternalRequirementsFingerprint(manifest.Fingerprint, manifest.externalSnapshots)
+		if err != nil || fp != manifest.boundRequirementsFingerprint {
+			return fmt.Errorf("ALT manifest lost finalized external requirement binding")
+		}
+	}
 	return nil
+}
+
+// ALTManifestRequirementsFingerprint exposes only builder-bound requirements.
+// A caller-computed composite hash cannot create finalized external provenance.
+func ALTManifestRequirementsFingerprint(manifest *ALTManifest) (string, error) {
+	if err := ValidateALTManifestIntegrity(manifest); err != nil {
+		return "", err
+	}
+	if manifest.boundRequirementsFingerprint != "" {
+		return manifest.boundRequirementsFingerprint, nil
+	}
+	return manifest.Fingerprint, nil
+}
+
+func ALTManifestExternalSnapshots(manifest *ALTManifest) ([]CrossMintExternalALT, error) {
+	if err := ValidateALTManifestIntegrity(manifest); err != nil {
+		return nil, err
+	}
+	if manifest.boundRequirementsFingerprint == "" {
+		return nil, nil
+	}
+	return cloneCrossMintExternalALTs(manifest.externalSnapshots), nil
 }
 
 // ALTManifestSourceAddresses returns the original full source identities for
@@ -74,12 +104,29 @@ func (r *Revalidator) filterFinalizedExternalALTManifest(ctx context.Context, ma
 			return ALTManifest{}, fmt.Errorf("external manifest coverage lacks active full table vectors")
 		}
 	}
-	verified, err := r.verifyFinalizedLookupTables(ctx, tables, minimumSlot)
+	names := make([]string, len(tables))
+	for i, table := range tables {
+		names[i] = table.Address
+	}
+	observedSlot, accounts, err := r.rpc.FinalizedAccounts(ctx, names, minimumSlot)
 	if err != nil {
 		return ALTManifest{}, err
 	}
+	if observedSlot < minimumSlot || len(accounts) != len(tables) {
+		return ALTManifest{}, fmt.Errorf("external ALT readback is incomplete or stale")
+	}
+	var snapshots []CrossMintExternalALT
 	external := map[string]bool{}
-	for _, table := range verified {
+	for i, account := range accounts {
+		table, err := decodeLookupTable(account, observedSlot)
+		if err != nil || table.Address != tables[i].Address || !equalStrings(table.Addresses, tables[i].Addresses) {
+			return ALTManifest{}, fmt.Errorf("external ALT finalized vector differs from supplied source input")
+		}
+		hash, err := CrossMintExternalAddressHash(table.Addresses)
+		if err != nil {
+			return ALTManifest{}, err
+		}
+		snapshots = append(snapshots, CrossMintExternalALT{Address: table.Address, Addresses: append([]string{}, table.Addresses...), OrderedAddressHash: hash, ObservedSlot: table.LastVerifiedSlot, UsableAfterSlot: table.UsableAfterSlot})
 		for _, address := range table.Addresses {
 			external[address] = true
 		}
@@ -98,6 +145,20 @@ func (r *Revalidator) filterFinalizedExternalALTManifest(ctx context.Context, ma
 	manifest.VaultAddresses = filter(manifest.sourceVault)
 	manifest.verifiedShared = append([]ALTManifestAddress{}, manifest.SharedAddresses...)
 	manifest.verifiedVault = append([]ALTManifestAddress{}, manifest.VaultAddresses...)
+	manifest.externalSnapshots = snapshots
+	manifest.boundRequirementsFingerprint = ""
+	return manifest, nil
+}
+
+func (r *Revalidator) bindFinalizedCrossMintALTManifest(ctx context.Context, manifest ALTManifest, tables []LookupTable, minimumSlot int64) (ALTManifest, error) {
+	manifest, err := r.filterFinalizedExternalALTManifest(ctx, manifest, tables, minimumSlot)
+	if err != nil {
+		return ALTManifest{}, err
+	}
+	manifest.boundRequirementsFingerprint, err = crossMintExternalRequirementsFingerprint(manifest.Fingerprint, manifest.externalSnapshots)
+	if err != nil {
+		return ALTManifest{}, err
+	}
 	return manifest, nil
 }
 

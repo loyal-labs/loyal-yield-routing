@@ -49,12 +49,32 @@ func TestRetailConfigurationDoesNotStartWritersByDefault(t *testing.T) {
 			}
 		})
 	}
-	for _, name := range []string{"RETAIL_CROSS_MINT_ENABLED", "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER"} {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv(name, "true")
-			err := runRetail(context.Background(), owner, "sha-"+strings.Repeat("a", 40))
-			if err == nil || !strings.Contains(err.Error(), "cross-mint") {
-				t.Fatalf("unwired cross-mint reached initialization: %v", err)
+	t.Setenv("EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER", "true")
+	if _, err := loadRetailConfig(); err == nil || !strings.Contains(err.Error(), "RETAIL_CROSS_MINT_ENABLED") {
+		t.Fatalf("legacy flag granted fresh cross-mint authority: %v", err)
+	}
+}
+
+func TestRetailCrossMintRequiresScopedAuthorityAndBoundedEconomics(t *testing.T) {
+	configureRetailForTest(t)
+	t.Setenv("RETAIL_CROSS_MINT_ENABLED", "true")
+	t.Setenv("RETAIL_CROSS_MINT_MAX_SLIPPAGE_BPS", "75")
+	t.Setenv("RETAIL_CROSS_MINT_MAX_VALUE_LOSS_BPS", "25")
+	cfg, err := loadRetailConfig()
+	if err != nil || !cfg.crossMintEnabled || !cfg.fleetConfig().CrossMintEnabled || cfg.crossMintMaxSlippageBPS != 75 || cfg.crossMintMaxValueLossBPS != 25 {
+		t.Fatalf("scoped planner/controller economics drifted: %v", err)
+	}
+	for _, test := range []struct{ name, value string }{
+		{"RETAIL_CROSS_MINT_MAX_SLIPPAGE_BPS", "0"},
+		{"RETAIL_CROSS_MINT_MAX_VALUE_LOSS_BPS", "1001"},
+		{"RETAIL_CROSS_MINT_MAX_SLIPPAGE_BPS", "65536"},
+		{"RETAIL_JUPITER_BUILD_URL", "http://provider.invalid/test-secret"},
+		{"RETAIL_JUPITER_BUILD_URL", "https://test-secret@provider.invalid/build"},
+	} {
+		t.Run(test.name+test.value, func(t *testing.T) {
+			t.Setenv(test.name, test.value)
+			if _, err := loadRetailConfig(); err == nil || strings.Contains(err.Error(), "test-secret") {
+				t.Fatalf("unsafe cross-mint configuration accepted or leaked: %v", err)
 			}
 		})
 	}

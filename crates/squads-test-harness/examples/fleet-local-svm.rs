@@ -6,7 +6,8 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use litesvm::LiteSVM;
 use serde_json::{json, Value};
 use solana_sdk::{
-    account::Account, message::VersionedMessage, pubkey::Pubkey, transaction::VersionedTransaction,
+    account::Account, message::VersionedMessage, pubkey::Pubkey, sysvar::slot_hashes::SlotHashes,
+    transaction::VersionedTransaction,
 };
 use spl_token::solana_program::program_pack::Pack;
 use squads_test_harness::{
@@ -98,15 +99,22 @@ impl LocalChain {
                 if slot <= self.slot {
                     return Err("local slot must advance".into());
                 }
-                self.svm.as_mut().unwrap().warp_to_slot(slot);
+                let svm = self.svm.as_mut().unwrap();
+                svm.warp_to_slot(slot);
+                // One actual fixture bank advancement contributes one entry.
+                // Numeric gaps do not fabricate produced blocks or cooldown.
+                let mut slot_hashes: SlotHashes = svm.get_sysvar();
+                slot_hashes.add(slot, svm.latest_blockhash());
+                svm.set_sysvar(&slot_hashes);
                 self.slot = slot;
                 Ok(json!(slot))
             }
             "getSlot" | "getBlockHeight" => Ok(json!(self.slot)),
             // No contention in the deterministic local chain.
             "getRecentPrioritizationFees" => Ok(json!([{"slot":1000,"prioritizationFee":0}])),
+            // Existing local slot-as-blockheight approximation; no PoH model.
             "getLatestBlockhash" => Ok(json!({"context":{"slot":self.slot},"value":{
-                "blockhash":self.svm.as_ref().unwrap().latest_blockhash().to_string(),"lastValidBlockHeight":1150
+                "blockhash":self.svm.as_ref().unwrap().latest_blockhash().to_string(),"lastValidBlockHeight":self.slot.checked_add(150).ok_or("fixture height overflow")?
             }})),
             "getAccountInfo" => {
                 let key = Pubkey::from_str(params[0].as_str().ok_or("missing address")?)?;
@@ -177,6 +185,9 @@ impl LocalChain {
                 }
                 let svm = self.svm.as_mut().unwrap();
                 let (keys, loaded) = transaction_keys(svm, &tx)?;
+                if keys.iter().collect::<std::collections::BTreeSet<_>>().len() != keys.len() {
+                    return Err("duplicate resolved message account in fixture".into());
+                }
                 let pre_balances = lamport_balances(svm, &keys);
                 let pre_tokens = token_balances(svm, &keys)?;
                 let tx_signature = tx.signatures[0];
@@ -195,9 +206,27 @@ impl LocalChain {
                 };
                 let post_balances = lamport_balances(svm, &keys);
                 let post_tokens = token_balances(svm, &keys)?;
-                let fee = pre_balances[0]
-                    .checked_sub(post_balances[0])
-                    .ok_or("unexpected fee-payer credit")?;
+                // Controlled fixture bank conservation isolates the actual charged
+                // fee from rent transfers and close refunds. All message keys
+                // are complete and distinct, including created/closed accounts.
+                // Locked LiteSVM 0.7.1 lib.rs:834 passes priority fee 0 to
+                // calculate_fee; this is not mainnet priority-fee correctness.
+                if pre_balances.len() != keys.len() || post_balances.len() != keys.len() {
+                    return Err("incomplete fixture SOL balances".into());
+                }
+                let pre_total = pre_balances
+                    .iter()
+                    .try_fold(0u128, |sum, value| sum.checked_add(u128::from(*value)))
+                    .ok_or("fixture pre-balance overflow")?;
+                let post_total = post_balances
+                    .iter()
+                    .try_fold(0u128, |sum, value| sum.checked_add(u128::from(*value)))
+                    .ok_or("fixture post-balance overflow")?;
+                let fee = u64::try_from(
+                    pre_total
+                        .checked_sub(post_total)
+                        .ok_or("fixture transaction created SOL")?,
+                )?;
                 let status = if error.is_null() {
                     json!({"Ok":null})
                 } else {

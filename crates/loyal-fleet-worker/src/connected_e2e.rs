@@ -24,6 +24,7 @@ async fn connected_catalog_requirements(
     runtime: &SameMintRouteRuntime,
     opportunity: &RebalanceOpportunityRecord,
     bindings: &CrossMintPolicyBindings,
+    fixture_jupiter_build: Option<&Value>,
 ) -> Result<
     (
         Vec<LookupTableManifestAddressRecord>,
@@ -109,6 +110,123 @@ async fn connected_catalog_requirements(
             &[ata],
         )?);
     }
+    if let Some(build) = fixture_jupiter_build {
+        // Catalog planning proves account roles, not custody or swap admission.
+        // Use actual finalized bank snapshots and the independent strict SDK
+        // parser before deriving the same requirements as the retained swap.
+        let input_mint = Pubkey::from_str(&source_position.liquidity_mint)?;
+        let output_mint = Pubkey::from_str(&target_position.liquidity_mint)?;
+        let input_ata = derive_associated_token_address(
+            &vault_pubkey,
+            &input_mint,
+            &canonical_earn_token_program(input_mint)?,
+        );
+        let output_ata = derive_associated_token_address(
+            &vault_pubkey,
+            &output_mint,
+            &canonical_earn_token_program(output_mint)?,
+        );
+        let finalized = RpcClient::new_with_commitment(rpc.url(), CommitmentConfig::finalized());
+        let (input_mint_account, input_account, output_mint_account, output_account) =
+            finalized_swap_accounts(
+                &finalized,
+                input_mint,
+                input_ata,
+                output_mint,
+                output_ata,
+                1000,
+            )?;
+        let response = serde_json::to_vec(build)?;
+        let envelope: JupiterBuildEnvelope = serde_json::from_slice(&response)?;
+        let lookup_tables = finalized_jupiter_lookup_tables(
+            &finalized,
+            &envelope.addresses_by_lookup_table_address,
+            1000,
+        )?;
+        let additional_token_accounts = finalized_jupiter_route_token_accounts(
+            &finalized,
+            vault_pubkey,
+            &envelope,
+            input_mint,
+            output_mint,
+            1000,
+        )?;
+        let mut vault_token_accounts = vec![input_ata, output_ata];
+        vault_token_accounts.extend(
+            additional_token_accounts
+                .iter()
+                .map(|account| account.address),
+        );
+        let expected = JupiterExactInBuildExpectation {
+            authority: vault_pubkey,
+            input_mint: JupiterMintSnapshot {
+                address: input_mint,
+                owner_program: input_mint_account.owner,
+                data: input_mint_account.data,
+            },
+            output_mint: JupiterMintSnapshot {
+                address: output_mint,
+                owner_program: output_mint_account.owner,
+                data: output_mint_account.data,
+            },
+            input_token_account: JupiterTokenAccountSnapshot {
+                address: input_ata,
+                owner_program: input_account.owner,
+                data: input_account.data,
+            },
+            output_token_account: JupiterTokenAccountSnapshot {
+                address: output_ata,
+                owner_program: output_account.owner,
+                data: output_account.data,
+            },
+            additional_token_accounts,
+            input_amount: build["inAmount"]
+                .as_str()
+                .ok_or("catalog build amount missing")?
+                .parse()?,
+            minimum_output_amount: envelope.other_amount_threshold.parse()?,
+            maximum_slippage_bps: bindings.swap.max_slippage_bps,
+            requested_platform_fee_bps: 0,
+            lookup_tables: lookup_tables
+                .iter()
+                .map(|table| JupiterLookupTableSnapshot {
+                    address: table.key,
+                    addresses: table.addresses.clone(),
+                })
+                .collect(),
+            limits: JupiterBuildLimits::default(),
+        };
+        let validated = parse_and_validate_jupiter_exact_in_build(&response, &expected)?;
+        let swap_policy = Pubkey::from_str(&bindings.swap.policy_account)?;
+        let mut route_mints = vec![input_mint, output_mint];
+        route_mints.extend(jupiter_intermediate_route_mints(
+            &envelope,
+            input_mint,
+            output_mint,
+        )?);
+        let requirements = jupiter_swap_lookup_table_requirements(
+            swap_policy,
+            &validated.swap_instruction,
+            &route_mints,
+            &vault_token_accounts,
+            vault_pubkey,
+        );
+        let lane = jupiter_lane_contract(&opportunity.execution_plan)?;
+        let outer = wrap_policy_instruction(
+            swap_policy,
+            signer.pubkey(),
+            bindings.vault_index,
+            validated.swap_instruction,
+            lane.constraint_index(validated.dialect)?,
+        );
+        manifests.push(route_lookup_table_manifest(
+            signer.pubkey(),
+            &[outer],
+            &vault,
+            &requirements,
+            &vault_token_accounts,
+        )?);
+    }
     let mut addresses = BTreeMap::<String, LookupTableManifestAddressRecord>::new();
     let mut vault_addresses = BTreeMap::<String, LookupTableManifestAddressRecord>::new();
     for manifest in manifests {
@@ -161,7 +279,7 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
         || connection.get_username() != "workers_v2"
         || !matches!(
             connection.get_database(),
-            Some("fleet" | "fleet_same_mint" | "fleet_go_same_mint")
+            Some("fleet" | "fleet_same_mint" | "fleet_go_same_mint" | "fleet_go_cross_mint")
         )
     {
         return Err("connected worker requires disposable loopback /fleet database".into());
@@ -222,6 +340,7 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
             &opportunity,
             &mints,
             Some(&request["fixturePolicyBindings"]),
+            request.get("fixtureJupiterBuild"),
         )
         .await?;
         return Ok(());
@@ -487,7 +606,7 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
         maximum_slippage_bps: 50,
         maximum_value_loss_bps: 50,
     };
-    setup_connected_catalog(&runtime, &lease.opportunity, &mints, None).await?;
+    setup_connected_catalog(&runtime, &lease.opportunity, &mints, None, None).await?;
     connected_recovery::arm_initial_withdraw(lease.opportunity.id);
     let mut crash_options = options.clone();
     crash_options.lease_seconds = 10;
@@ -526,6 +645,7 @@ async fn setup_connected_catalog(
     opportunity: &RebalanceOpportunityRecord,
     mints: &[String],
     fixture_bindings: Option<&Value>,
+    fixture_jupiter_build: Option<&Value>,
 ) -> Result<(), Box<dyn Error>> {
     let client = &runtime.client;
     let cluster = opportunity.cluster.as_str();
@@ -535,7 +655,8 @@ async fn setup_connected_catalog(
         cross_mint_policy_bindings(&opportunity.execution_plan)?
     };
     let (catalog, vault_addresses) =
-        connected_catalog_requirements(runtime, opportunity, &bindings).await?;
+        connected_catalog_requirements(runtime, opportunity, &bindings, fixture_jupiter_build)
+            .await?;
     let head = client
         .upsert_shared_market_catalog(SharedMarketCatalogUpsert {
             cluster: cluster.to_owned(),

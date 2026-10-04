@@ -66,3 +66,21 @@ func TestRetailHealthLaneCancellationClosesAllGates(t *testing.T) {
 	}
 	assertRetailReady(t, r, false)
 }
+
+func TestRetailCrossMintRecoveryStallCannotBeMaskedByOtherFamilies(t *testing.T) {
+	r := newRetailReadiness(retailHealth(), "cross-mint")
+	now := time.Now()
+	for family := range r.families {
+		r.report(family, true, 100, now)
+	}
+	assertRetailReady(t, r, true)
+	late := now.Add(31 * time.Second)
+	for family := range r.families {
+		if family != "cross-mint" {
+			r.report(family, true, 101, late)
+		}
+	}
+	assertRetailReady(t, r, false)
+	r.report("cross-mint", true, 101, late)
+	assertRetailReady(t, r, true)
+}

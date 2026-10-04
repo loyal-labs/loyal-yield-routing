@@ -24,9 +24,9 @@ type retailReadiness struct {
 	frontier uint64
 }
 
-func newRetailReadiness(health *observability.Health) *retailReadiness {
+func newRetailReadiness(health *observability.Health, additionalFamilies ...string) *retailReadiness {
 	r := &retailReadiness{health: health, families: map[string]retailFamilyHealth{}}
-	for _, family := range []string{"autodeposit-control", "autodeposit", "fleet-planner", "fleet-executor", "multiply"} {
+	for _, family := range append([]string{"autodeposit-control", "autodeposit", "fleet-planner", "fleet-executor", "multiply"}, additionalFamilies...) {
 		age := 30 * time.Second
 		if family == "autodeposit" {
 			age = 2 * time.Minute // retained one-minute dispatch cadence

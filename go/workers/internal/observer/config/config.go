@@ -34,7 +34,6 @@ type Config struct {
 	ProgressTimeout       time.Duration
 	HandoffTimeout        time.Duration
 	ReconciliationWorkers int
-	AutodepositWorkers    int
 }
 
 // BridgeEnvironment builds the complete environment of the Earn domain bridge
@@ -48,7 +47,10 @@ func (c Config) BridgeEnvironment() []string {
 		"TIMESCALEDB_URL=" + c.TimescaleDatabaseURL,
 		"EARN_MAX_DELEGATE=" + c.EarnMaxDelegate,
 		"EARN_RECONCILIATION_CONCURRENCY=" + strconv.Itoa(c.ReconciliationWorkers),
-		"AUTODEPOSIT_RECONCILIATION_CONCURRENCY=" + strconv.Itoa(c.AutodepositWorkers),
+		// The Go retail engine owns Autodeposit reconciliation. The retained
+		// bridge may project Earn observations, but must not acknowledge that
+		// family outbox or bypass the Go creator-history gate.
+		"AUTODEPOSIT_RECONCILIATION_CONCURRENCY=0",
 		"SOLANA_RPC_URL=" + c.SolanaRPCURL,
 		"SOLANA_CLUSTER=" + c.Cluster,
 		"KAMINO_API_BASE=" + c.KaminoAPIBase,
@@ -69,9 +71,11 @@ func FromEnv() (Config, error) {
 		"EARN_DOMAIN_BRIDGE_STARTUP_TIMEOUT_SECONDS",
 		"EARN_RECONCILIATION_READY_MAX_AGE_SECONDS",
 		"EARN_RECONCILIATION_CONCURRENCY",
-		"AUTODEPOSIT_RECONCILIATION_CONCURRENCY",
 	); err != nil {
 		return Config{}, err
+	}
+	if value := strings.TrimSpace(os.Getenv("AUTODEPOSIT_RECONCILIATION_CONCURRENCY")); value != "" && value != "0" {
+		return Config{}, errors.New("AUTODEPOSIT_RECONCILIATION_CONCURRENCY must be 0: the Go retail engine owns this outbox")
 	}
 	cfg := Config{
 		LaserStreamEndpoint:   strings.TrimSpace(os.Getenv("LASERSTREAM_ENDPOINT")),
@@ -94,7 +98,6 @@ func FromEnv() (Config, error) {
 		ProgressTimeout:       durationEnv("LASERSTREAM_PROGRESS_TIMEOUT_SECONDS", 90*time.Second),
 		HandoffTimeout:        durationEnv("LASERSTREAM_HANDOFF_TIMEOUT_SECONDS", 120*time.Second),
 		ReconciliationWorkers: int(uintEnv("EARN_RECONCILIATION_CONCURRENCY", 4)),
-		AutodepositWorkers:    int(uintEnv("AUTODEPOSIT_RECONCILIATION_CONCURRENCY", 4)),
 	}
 	if !strings.Contains(cfg.HTTPAddress, ":") {
 		cfg.HTTPAddress = ":" + cfg.HTTPAddress
@@ -126,7 +129,7 @@ func FromEnv() (Config, error) {
 	if cfg.ReplayOverlapSlots == 0 || cfg.WatchRefresh <= 0 || cfg.VerifyRefresh <= 0 || cfg.ProgressTimeout <= 0 {
 		return Config{}, errors.New("LaserStream intervals and replay overlap must be positive")
 	}
-	if cfg.ReconciliationWorkers < 1 || cfg.AutodepositWorkers < 1 {
+	if cfg.ReconciliationWorkers < 1 {
 		return Config{}, errors.New("reconciliation worker counts must be positive")
 	}
 	return cfg, nil

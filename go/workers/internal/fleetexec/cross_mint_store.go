@@ -71,19 +71,15 @@ func validateCrossMintWire(w WireIdentity, p CrossMintPreparedLeg) (string, erro
 	if err := verifyDurableWire(SubmissionRecord{SignedTransaction: w.SignedTransaction, FeePayer: payer, Signature: w.TransactionSignature, RecentBlockhash: w.RecentBlockhash, MessageHash: w.MessageHash}); err != nil {
 		return "", err
 	}
-	a := fleet.ExecutionAdmission{Preparation: p.Preparation, SelectedALTs: p.SelectedALTs}
-	if err := verifyPreparedWritables(tx, a); err != nil {
+	if err := verifyCrossMintPreparedWritables(tx, p); err != nil {
 		return "", err
 	}
-	selected, declared := []string{}, []string{}
-	for _, t := range p.SelectedALTs {
-		selected = append(selected, t.Address)
+	fingerprint, err := crossMintALTSelectionFingerprint(p)
+	if err != nil {
+		return "", err
 	}
-	for _, lookup := range tx.Message.AddressTableLookups {
-		declared = append(declared, lookup.AccountKey.String())
-	}
-	if !sameStrings(selected, declared) || !sameStrings(selected, p.Preparation.Transaction.LookupTables) {
-		return "", errors.New("selected ALT vector differs from signed message")
+	if fingerprint != p.AltSelectionFingerprint {
+		return "", errors.New("cross-mint ALT selection fingerprint differs from compiled proof")
 	}
 	return payer, nil
 }
@@ -848,7 +844,7 @@ func (s *Store) AppendCrossMintLeg(ctx context.Context, l CrossMintContinuationL
 	if err != nil {
 		return 0, err
 	}
-	epochs, err := marshalALTEpochs(p.SelectedALTs)
+	epochs, err := marshalCrossMintALTEvidence(p)
 	if err != nil {
 		return 0, err
 	}
@@ -943,8 +939,10 @@ func (s *Store) AppendCrossMintLeg(ctx context.Context, l CrossMintContinuationL
 				return err
 			}
 		}
-		if err = checkPreparedALTUsage(ctx, tx, epochs, semantic, m.Cluster, p.Preparation.RequirementsFingerprint); err != nil {
-			return err
+		if len(p.SelectedALTs) > 0 {
+			if err = checkPreparedALTUsage(ctx, tx, epochs, semantic, m.Cluster, p.Preparation.RequirementsFingerprint); err != nil {
+				return err
+			}
 		}
 		keys := append([]string(nil), p.ConflictKeys...)
 		sort.Strings(keys)
@@ -1520,6 +1518,19 @@ const crossMintPolicyPayerSQL = `SELECT EXISTS (
                   $4::jsonb->>'lookupTableOrderedAddressesSha256', ''
               ) IS NOT NULL
               AND ($4::jsonb->>'lookupTableAddressCount')::BIGINT > 0
+          )
+          OR (
+              EXISTS (
+                  SELECT 1 FROM loyal_yield.rebalance_decisions decision
+                  WHERE decision.id = opportunity.decision_id
+                    AND decision.movement_route = 'cross_mint_jupiter'
+                    AND decision.terminal_outcome IS NULL
+              )
+              AND jsonb_array_length(COALESCE($4::jsonb -> 'tables', '[]'::jsonb)) = 0
+              AND jsonb_array_length(COALESCE($4::jsonb -> 'externalSnapshots', '[]'::jsonb)) > 0
+              AND jsonb_array_length(COALESCE($4::jsonb -> 'lookupTableOrder', '[]'::jsonb)) > 0
+              AND jsonb_array_length(COALESCE($4::jsonb #> '{resolver,externalLookupTables}', '[]'::jsonb))
+                  = jsonb_array_length($4::jsonb -> 'externalSnapshots')
           )
           OR (
               jsonb_array_length(

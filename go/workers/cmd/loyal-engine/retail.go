@@ -31,6 +31,9 @@ type retailConfig struct {
 	databaseURL, timescaleURL, rpcURL, timescaleSchema, httpAddress, proxyPath, proxyHash string
 	slotDuration                                                                          time.Duration
 	delegate, feePayer                                                                    ed25519.PrivateKey
+	crossMintEnabled                                                                      bool
+	crossMintMaxSlippageBPS, crossMintMaxValueLossBPS                                     uint16
+	jupiterBuildURL, jupiterAPIKey                                                        string
 }
 
 // Configuration is scoped to this capability. Legacy/background writer flags
@@ -49,9 +52,34 @@ func loadRetailConfig() (retailConfig, error) {
 		if err != nil {
 			return cfg, fmt.Errorf("%s must be a boolean", name)
 		}
-		if enabled {
-			return cfg, errors.New("retail cross-mint execution is not wired")
+		if name == "RETAIL_CROSS_MINT_ENABLED" {
+			cfg.crossMintEnabled = enabled
+		} else if enabled && !cfg.crossMintEnabled {
+			return cfg, errors.New("cross-mint requires explicit RETAIL_CROSS_MINT_ENABLED=true")
 		}
+	}
+	cfg.jupiterBuildURL = strings.TrimSpace(os.Getenv("RETAIL_JUPITER_BUILD_URL"))
+	if cfg.jupiterBuildURL == "" {
+		cfg.jupiterBuildURL = "https://api.jup.ag/swap/v2/build"
+	}
+	cfg.jupiterAPIKey = os.Getenv("RETAIL_JUPITER_API_KEY")
+	if _, err := fleet.NewJupiterBuildClient(cfg.jupiterBuildURL, cfg.jupiterAPIKey); err != nil {
+		return cfg, errors.New("RETAIL_JUPITER_BUILD_URL must be absolute HTTPS without user info")
+	}
+	for _, field := range []struct {
+		name string
+		out  *uint16
+	}{{"RETAIL_CROSS_MINT_MAX_SLIPPAGE_BPS", &cfg.crossMintMaxSlippageBPS}, {"RETAIL_CROSS_MINT_MAX_VALUE_LOSS_BPS", &cfg.crossMintMaxValueLossBPS}} {
+		value := strings.TrimSpace(os.Getenv(field.name))
+		if value == "" {
+			*field.out = 50
+			continue
+		}
+		parsed, err := strconv.ParseUint(value, 10, 16)
+		if err != nil || parsed == 0 || parsed > 1000 {
+			return cfg, fmt.Errorf("%s must be in 1..1000", field.name)
+		}
+		*field.out = uint16(parsed)
 	}
 	for _, field := range []struct {
 		name string
@@ -144,7 +172,7 @@ func parseRetailKey(material string) (ed25519.PrivateKey, error) {
 }
 
 func (c retailConfig) fleetConfig() fleet.Config {
-	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", Mode: fleet.ModePublish, PollInterval: time.Second, SlotDuration: c.slotDuration, KLendProxyPath: c.proxyPath, KLendProxySHA256: c.proxyHash, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationPollInterval: 250 * time.Millisecond, RevalidationConcurrency: 16, RevalidationComputeLimit: 1_400_000, RevalidatorEnabled: true, FusedExecute: true}
+	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", Mode: fleet.ModePublish, PollInterval: time.Second, SlotDuration: c.slotDuration, KLendProxyPath: c.proxyPath, KLendProxySHA256: c.proxyHash, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationPollInterval: 250 * time.Millisecond, RevalidationConcurrency: 16, RevalidationComputeLimit: 1_400_000, RevalidatorEnabled: true, FusedExecute: true, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey}
 }
 
 // The outer diagnostic retains error identity for cancellation and inspection
@@ -262,7 +290,7 @@ func runRetail(ctx context.Context, owner, release string) error {
 		return retailError("Autodeposit controller", err)
 	}
 	health := retailHealth()
-	readiness := newRetailReadiness(health)
+	readiness := newRetailReadiness(health, "cross-mint")
 	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, OnError: func(error) { health.SetDomainReady("autodeposit", false); log.Print("retail autodeposit tick failed") }, OnAlert: func(autodeposit.ExecutorFailureAlert) {
 		health.SetDomainReady("autodeposit", false)
 		log.Print("retail autodeposit execution requires attention")
@@ -289,7 +317,9 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err := planner.SetMarketEvidence(evidence); err != nil {
 		return retailError("fleet evidence binding", err)
 	}
-	revalidator, err := fleet.NewRevalidator(cStore, fleetRPC, proxy, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, SlotDuration: cfg.slotDuration, FusedExecute: true})
+	// Compilation/verification remains available for recovery with rollout off.
+	// Only the planner and D controller receive fresh cross-mint enablement.
+	revalidator, err := fleet.NewRevalidator(cStore, fleetRPC, proxy, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, SlotDuration: cfg.slotDuration, FusedExecute: true, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey})
 	if err != nil {
 		return retailError("fused fleet preparation", err)
 	}
@@ -307,6 +337,11 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err := executor.SetFreshRevalidator(revalidator); err != nil {
 		return retailError("fleet fresh execution binding", err)
 	}
+	crossMint, err := composeRetailCrossMint(startup, cfg, owner, dStore, revalidator, executionRPC, evidence)
+	if err != nil {
+		return retailError("cross-mint runtime", err)
+	}
+	crossMint.SetRuntimeReporter(readiness.reporter("cross-mint"))
 	observation, err := multiply.NewLiveObservationReader(gRPC)
 	if err != nil {
 		return retailError("Multiply observation", err)
@@ -324,5 +359,5 @@ func runRetail(ctx context.Context, owner, release string) error {
 		return retailError("health listener", err)
 	}
 	defer server.Close()
-	return runRetailLanes(ctx, control, aWorker, planner, executor, multiplyWorker, readiness, server)
+	return runRetailLanes(ctx, control, aWorker, planner, executor, crossMint, multiplyWorker, readiness, server)
 }

@@ -728,14 +728,15 @@ FOR UPDATE`, lease.Cluster, lease.VaultID, prep.RequirementsFingerprint).Scan(&r
 // They are different source contracts; never sort one to impersonate the other.
 func waitingALTManifestAddresses(prep RoutePreparation, missing []string) ([]provisioningAddress, []provisioningAddress, error) {
 	m := prep.Manifest
-	if err := ValidateALTManifestIntegrity(m); err != nil {
+	requirements, err := ALTManifestRequirementsFingerprint(m)
+	if err != nil {
 		return nil, nil, err
 	}
 	validHash := func(s string) bool {
 		b, err := hex.DecodeString(s)
 		return err == nil && len(b) == sha256.Size && hex.EncodeToString(b) == s
 	}
-	if m == nil || m.Fingerprint != prep.RequirementsFingerprint || !validHash(m.Fingerprint) || !validHash(prep.RouteFingerprint) || len(m.VaultAddresses) == 0 || len(m.SharedAddresses)+len(m.VaultAddresses) > 256 || len(prep.Transaction.UnsignedWire) != 0 || len(prep.Transaction.Message) != 0 {
+	if m == nil || requirements != prep.RequirementsFingerprint || !validHash(requirements) || !validHash(prep.RouteFingerprint) || len(m.VaultAddresses) == 0 || len(m.SharedAddresses)+len(m.VaultAddresses) > 256 || len(prep.Transaction.UnsignedWire) != 0 || len(prep.Transaction.Message) != 0 {
 		return nil, nil, errors.New("waiting ALT requires a bounded complete unsigned typed manifest")
 	}
 	wanted := make(map[string]bool, len(missing))

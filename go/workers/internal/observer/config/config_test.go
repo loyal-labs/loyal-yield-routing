@@ -86,10 +86,34 @@ func TestBridgeEnvironmentIsAStrictAllowlist(t *testing.T) {
 			t.Fatalf("bridge environment leaked %s: %s", forbidden, joined)
 		}
 	}
-	for _, required := range []string{"NEON_DATABASE_URL=postgresql://fixture", "SOLANA_RPC_URL=https://rpc.invalid", "SOLANA_CLUSTER=mainnet-beta", "EARN_MAX_DELEGATE=11111111111111111111111111111111", "TIMESCALEDB_URL=postgresql://fixture", "EARN_RECONCILIATION_CONCURRENCY=4"} {
+	for _, required := range []string{"NEON_DATABASE_URL=postgresql://fixture", "SOLANA_RPC_URL=https://rpc.invalid", "SOLANA_CLUSTER=mainnet-beta", "EARN_MAX_DELEGATE=11111111111111111111111111111111", "TIMESCALEDB_URL=postgresql://fixture", "EARN_RECONCILIATION_CONCURRENCY=4", "AUTODEPOSIT_RECONCILIATION_CONCURRENCY=0"} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("bridge environment omitted %s: %s", required, joined)
 		}
+	}
+}
+
+func TestObserverCannotStartCompetingAutodepositConsumer(t *testing.T) {
+	for _, value := range []string{"", "0", "4", "-1", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("AUTODEPOSIT_RECONCILIATION_CONCURRENCY", value)
+			cfg, err := FromEnv()
+			if value != "" && value != "0" {
+				if err == nil || !strings.Contains(err.Error(), "AUTODEPOSIT_RECONCILIATION_CONCURRENCY") {
+					t.Fatalf("competing family ownership accepted: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, setting := range cfg.BridgeEnvironment() {
+				if strings.HasPrefix(setting, "AUTODEPOSIT_RECONCILIATION_CONCURRENCY=") && setting != "AUTODEPOSIT_RECONCILIATION_CONCURRENCY=0" {
+					t.Fatalf("bridge gained Autodeposit ownership: %s", setting)
+				}
+			}
+		})
 	}
 }
 

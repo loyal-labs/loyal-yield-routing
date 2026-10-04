@@ -82,6 +82,7 @@ type CrossMintPreparedLeg struct {
 	BalanceAnchors                  CrossMintBalanceAnchors
 	ConflictKeys                    []string
 	SelectedALTs                    []fleet.ExecutionALT
+	ExternalALTs                    []CrossMintExternalALT
 	AltSelectionFingerprint         string
 	WaitingALT                      bool
 	MissingAddresses                []string

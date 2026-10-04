@@ -25,6 +25,27 @@ var (
 	_ fleetexec.CrossMintFirstSendVerifier = (*retailCrossMintAdapters)(nil)
 )
 
+func composeRetailCrossMint(ctx context.Context, cfg retailConfig, owner string, store *fleetexec.Store, revalidator *fleet.Revalidator, adapter *fleetexec.RPCAdapter, market *fleet.MarketEvidenceStore) (*fleetexec.CrossMintRuntime, error) {
+	if market == nil {
+		return nil, errors.New("cross-mint fallback requires the actual planner market evidence")
+	}
+	capabilities, err := newRetailCrossMintAdapters(revalidator)
+	if err != nil {
+		return nil, err
+	}
+	controller, err := fleetexec.NewCrossMintController(store, capabilities, fleetexec.DelegateSigner{FeePayer: cfg.delegate}, adapter, "mainnet-beta", owner, 30*time.Second, cfg.crossMintEnabled)
+	if err != nil {
+		return nil, err
+	}
+	controller.SetMarketEpochSource(market)
+	runtime, err := fleetexec.NewCrossMintRuntime(ctx, fleetexec.Config{Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration}, store, controller, adapter, capabilities)
+	if err != nil {
+		return nil, err
+	}
+	runtime.SetActivationSource(capabilities)
+	return runtime, nil
+}
+
 func newRetailCrossMintAdapters(revalidator *fleet.Revalidator) (*retailCrossMintAdapters, error) {
 	if revalidator == nil {
 		return nil, errors.New("cross-mint adapters require concrete source revalidator")
@@ -102,7 +123,8 @@ func retailCrossMintPreparedLeg(p fleet.CrossMintLegPreparation) (fleetexec.Cros
 	out := fleetexec.CrossMintPreparedLeg{
 		Preparation: p.Preparation, LastValidBlockHeight: p.LastValidBlockHeight, PolicyAccount: p.PolicyAccount,
 		ConflictKeys: p.ConflictKeys, SelectedALTs: p.SelectedALTs, AltSelectionFingerprint: p.AltSelectionFingerprint,
-		WaitingALT: p.WaitingALT, MissingAddresses: p.MissingAddresses,
+		ExternalALTs: p.ExternalALTs,
+		WaitingALT:   p.WaitingALT, MissingAddresses: p.MissingAddresses,
 		SharedAddresses: retailCrossMintALTAddresses(p.SharedAddresses), VaultAddresses: retailCrossMintALTAddresses(p.VaultAddresses),
 	}
 	if p.WaitingALT {
@@ -198,5 +220,6 @@ func retailCrossMintFirstSendRequest(q fleetexec.CrossMintFirstSendRequest) (fle
 		SignedWire: bytes.Clone(s.SignedTransaction), ExpectedWireSHA256: q.ExpectedWireSHA256, ExpectedMessageSHA256: s.MessageHash,
 		Signature: s.Signature, RecentBlockhash: s.RecentBlockhash, LastValidBlockHeight: s.LastValidBlockHeight,
 		SelectedALTs: q.SelectedALTs,
+		ExternalALTs: q.ExternalALTs,
 	}, nil
 }

@@ -154,11 +154,11 @@ untouched. No legacy writer or service is counted as retired.
 
 | Responsibility | Reviewed branch state | Required remaining acceptance |
 | --- | --- | --- |
-| Shared runtime and Backyard | Retail A/C/D/G composed with borrowed pools, scoped keys, explicit active mode and joined shutdown; Backyard remains separate | Current immutable Linux helper/bridge image CI and full ownership acceptance; per-family fresh-cycle readiness is implemented and race tested |
+| Shared runtime and Backyard | Retail A/C/D/G composed with borrowed pools, scoped keys, explicit active mode and joined shutdown; Backyard remains separate | Linux helper/bridge image and real schema CI pass at fdd6bbe1; full ownership acceptance remains; per-family fresh-cycle readiness is implemented and race tested |
 | Fleet planning | Independent greedy oracle matches 96 generated fixtures; wide-reference arithmetic and unsigned admission recovery pass | Assignment regret requires review; allocation frontier refactor preserves the full-rescore oracle and cuts synthetic allocation bytes by 79%; no global optimum claim |
-| Observer | Selected transport composed; capture/application, coalescing, abandonment and lifecycle corrections verified against registered PostgreSQL/Timescale | Complete Apps watch schema, domain readiness and packaged Rust compatibility bridge |
+| Observer | Selected transport composed; capture/application, coalescing, abandonment and lifecycle corrections verified against registered PostgreSQL/Timescale | Actual independent Apps UUID/Yield watch schema, domain readiness and packaged Rust bridge pass; ATA projection ownership remains |
 | Autodeposit | Two-leg controller, destination setup/readback, control reconciliation and immutable accounting integrated; registered PostgreSQL race suite passes | Complete app-closed/observer ownership acceptance; actual Go pull and official top-up execute through real Squads, Subscriptions and SPL Token with an explicit KLend mock, including immutable-floor admission rejection |
-| Fleet execution | Same-mint fused fresh admission, exact-wire recovery, real bank/receipt reconciliation and ALT selection fencing integrated; registered PostgreSQL race suite passes | Cross-mint composition, automatic fallback, external ALT snapshots and full ALT lifecycle; source activation/first-send validator and recovery-first runtime are implemented; independent current Go C-to-D canonical vault-1 connected lifecycle passes |
+| Fleet execution | Same-mint fused fresh admission, exact-wire recovery, real bank/receipt reconciliation and ALT selection fencing integrated; registered PostgreSQL race suite passes | Current Go cross-mint composition/fallback/full provider snapshots pass; autonomous ALT provisioning/cleanup remains; source activation/first-send validator and recovery-first runtime are implemented; independent current Go C-to-D canonical vault-1 connected lifecycle passes |
 | Multiply | Source-derived planner/math/wire/policy/quote/recovery integrated; registered PostgreSQL race suite and independent SDK/root-claim SVM proof pass | Full lifecycle coverage and packaging; external Claim source bridge compatibility and runtime health now tested; no full KLend SBF execution claim |
 | Read models | Go maintenance integrated, fixed mainnet catalog/namespace, price clocks, allocation coverage and modeled-return labels; four registered PostgreSQL SQL tests pass | Current increment real Timescale CI and complete consumer ownership before retiring App maintenance |
 
@@ -250,8 +250,8 @@ binding isolation and permutation checks pass; timings are noisy local
 observations, not a production sizing claim. The greedy assignment regret
 identified above remains explicit.
 
-Cross-mint root adapters, complete ALT provisioning/cleanup and registered
-Apps watch-schema integration remain separate unfinished increments. The
+The earlier cross-mint adapters and Apps watch-schema gaps are resolved by the
+checkpoint below. Complete autonomous ALT provisioning/cleanup remains open. The
 source-derived cross-mint activation now captures an actual capacity frontier
 after finalized preparation; its new capture path still needs its dedicated
 database/adversarial proof. No production worker is retired and no main merge
@@ -272,3 +272,61 @@ older preparation, and actual generation zero remains valid. Exactly one
 fallback target uses the source ranking, current immutable market evidence,
 finalized reserve/custody/history proof and atomic capacity rebind. It still
 needs root market-source composition; unavailable evidence holds custody.
+
+
+Reviewed cross-mint and ownership checkpoint — 2026-10-04 UTC
+
+Branch CI [37172699857](https://github.com/loyal-labs/loyal-yield-routing/actions/runs/37172699857)
+passes at `fdd6bbe1`: actual registered Yield/Apps schemas, independent UUID Apps
+watch discovery, real Timescale tests, and locked Linux helper/bridge image probes.
+This evidence covers that committed revision, not subsequent working changes.
+
+The current Go C → Go D cross-mint runtime passes its connected race proof in
+16.21s (package 17.594s), using canonical Earn vault index 1, real Squads, and
+explicit mock KLend/Jupiter. Withdrawal loses the successful response, then a
+new runtime without a signer reconciles the unchanged wire. All three exact
+receipts reconcile; decision/opportunity 5 ends completed_target/completed,
+custody is zero at version 3, and capacity/conflicts release only after newer
+reserve telemetry. The destination receives 999999999 raw units; source
+collateral leaves one rounding unit. Actual bank obligation readback and saved
+receipt anchors supply the proof; D does not refresh observer-owned projections.
+The fixture database `fleet_go_cross_mint` remains preserved.
+
+External provider ALTs retain full finalized ordered vectors and actual
+warm/observed slots separately from authentic managed identities. Original SDK
+lookup order, combined hashes, journal reconstruction and first-send readback
+are bound across C and D. Legacy managed-only hashes retain byte parity. The
+existing fee-payer SQL requires managed tables: external-only preparation is
+held by that source constraint, without fabricated IDs or a schema bypass.
+Cross-mint rollout flags control fresh work while custody recovery remains
+available. Missing continuation evidence holds custody.
+
+Additive branch-only migration 0090 journals exact ALT packets before send and
+protects unresolved ownership from retained operation resets. Registered SQL
+and actual local ALT-program bank tests pass: create/extend, same-bank warming
+hold, loaded v0 transfer, deactivate, actual SlotHashes aging, close/refund and
+idempotent recovery. Finalized no-effect expiry requires bounded parent-block
+history back to the saved original signing bank; pruned/capped history holds.
+Autonomous request planning/allocation, leasing/runtime, head activation and
+legacy receipt adoption remain open. Local bank tests do not model mainnet
+priority fees or consensus. No connected schema migration is applied.
+
+The acceptance audit found remaining Autodeposit ownership/liveness work.
+The observer now gives the retained Earn bridge zero Autodeposit consumers and
+rejects nonzero ownership configuration. The Go engine must still autonomously
+project later ATA inflows, retry conclusively unsigned stranded slots, paginate
+exact creator history, and own desired-control revision rebaselining. Existing
+Apps floor POST still mutates scheduling state and needs an intent-only adapter.
+No retained ATA projector or Apps repair is counted as retired.
+
+Multiply's ABI/root Claim proofs remain valid but do not prove a complete worker
+financial lifecycle. Exact transaction/meta receipt attribution, all signed
+recovery paths, quote-context freshness, checked withdrawal conversions and
+post-reconciliation strategy coherence are being completed with registered
+Worker.Tick lifecycle tests. Current balance direction alone is insufficient
+receipt attribution. Mature KLend SBF execution remains a separate proof limit.
+
+The combined offline verifier passes after the cross-mint/lookup/ownership
+increment, as do dedicated lookup SQL races (1.747s), C/D cross-mint races
+(2.131s/6.664s), and observer ownership/namespace tests. Whole-goal acceptance
+remains open; main, migration resources and production remain unchanged.

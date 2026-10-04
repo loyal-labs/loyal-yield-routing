@@ -31,6 +31,8 @@ type CrossMintFirstSendRequest struct {
 	ExpectedWireSHA256 string
 	MinimumSlot        int64
 	SelectedALTs       []fleet.ExecutionALT
+	ExternalALTs       []fleet.CrossMintExternalALT
+	LookupTableOrder   []string
 }
 
 type CrossMintActivationAdmission struct {
@@ -60,16 +62,30 @@ type CrossMintRuntime struct {
 }
 
 func NewCrossMintRuntime(ctx context.Context, config Config, store *Store, controller *CrossMintController, adapter *RPCAdapter, verifier CrossMintFirstSendVerifier) (*CrossMintRuntime, error) {
+	if controller == nil || controller.store != store || controller.cluster != config.Cluster || controller.owner != config.Owner {
+		return nil, errors.New("cross-mint runtime requires matching concrete owners, verifier and bounded whole-second lease")
+	}
+	runtime, err := NewCrossMintRecoveryRuntime(ctx, config, store, adapter, verifier)
+	if err != nil {
+		return nil, err
+	}
+	runtime.controller = controller
+	return runtime, nil
+}
+
+// NewCrossMintRecoveryRuntime owns existing signed packets without a signing
+// key. It cannot create a continuation or activation, even if a source is set.
+func NewCrossMintRecoveryRuntime(ctx context.Context, config Config, store *Store, adapter *RPCAdapter, verifier CrossMintFirstSendVerifier) (*CrossMintRuntime, error) {
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
-	if store == nil || controller == nil || adapter == nil || verifier == nil || controller.store != store || controller.cluster != config.Cluster || controller.owner != config.Owner || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 300*time.Second || config.LeaseTTL%time.Second != 0 || config.BatchSize > 100 {
-		return nil, errors.New("cross-mint runtime requires matching concrete owners, verifier and bounded whole-second lease")
+	if ctx == nil || store == nil || adapter == nil || verifier == nil || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 300*time.Second || config.LeaseTTL%time.Second != 0 || config.BatchSize > 100 {
+		return nil, errors.New("cross-mint recovery requires concrete owners, verifier and bounded whole-second lease")
 	}
 	if err := store.RequireCrossMintSchema(ctx); err != nil {
 		return nil, err
 	}
-	return &CrossMintRuntime{config: config, store: store, controller: controller, adapter: adapter, accounts: fleet.NewRPCClient(adapter.url), history: adapter, status: adapter, broadcast: adapter, verifier: verifier}, nil
+	return &CrossMintRuntime{config: config, store: store, adapter: adapter, accounts: fleet.NewRPCClient(adapter.url), history: adapter, status: adapter, broadcast: adapter, verifier: verifier}, nil
 }
 
 // Configure before Run. The root retains dependency and pool lifecycles.
@@ -123,7 +139,7 @@ func (r *CrossMintRuntime) Tick(ctx context.Context) (advanced int, err error) {
 		}
 		advanced++
 	}
-	if len(leases) > 0 {
+	if len(leases) > 0 || r.controller == nil {
 		return advanced, nil
 	}
 	_, worked, e := r.controller.ContinueOne(ctx)
@@ -181,8 +197,9 @@ func (r *CrossMintRuntime) ready(ctx context.Context) (bool, uint64, error) {
 	err = r.store.pool.QueryRow(ctx, `SELECT
  EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id WHERE s.cluster=$1 AND d.movement_route='cross_mint_jupiter' AND s.submission_state IN ('signed','submitted','confirmed','reconciliation_pending','expiry_check_pending','effect_ambiguous') AND (
  s.fee_payer_kind<>'policy' OR s.required_commitment<>'finalized' OR s.movement_leg NOT IN ('withdraw','swap','deposit') OR s.submission_state IN ('signed','expiry_check_pending','effect_ambiguous') OR s.last_status_checked_at IS NULL OR s.last_status_checked_at<clock_timestamp()-$3::interval OR (s.confirmation_lease_owner IS NOT NULL AND (s.confirmation_lease_owner<>$2 OR s.confirmation_lease_expires_at IS NULL OR s.confirmation_lease_expires_at<=clock_timestamp()))))
- OR EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id WHERE o.cluster=$1 AND d.movement_route='cross_mint_jupiter' AND d.terminal_outcome IS NULL AND d.continuation_lease_owner IS NOT NULL AND (d.continuation_lease_owner<>$2 OR d.continuation_lease_expires_at IS NULL OR d.continuation_lease_expires_at<=clock_timestamp())),
- (SELECT max(d.custody_reconciled_slot) FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id WHERE o.cluster=$1 AND d.movement_route='cross_mint_jupiter')`, r.config.Cluster, r.config.Owner, formatInterval(lookback)).Scan(&closed, &anchor)
+ OR EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id WHERE o.cluster=$1 AND d.movement_route='cross_mint_jupiter' AND d.terminal_outcome IS NULL AND d.continuation_lease_owner IS NOT NULL AND (d.continuation_lease_owner<>$2 OR d.continuation_lease_expires_at IS NULL OR d.continuation_lease_expires_at<=clock_timestamp() OR NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions s WHERE s.decision_id=d.id AND s.submission_state IN ('signed','submitted','confirmed','reconciliation_pending','expiry_check_pending','effect_ambiguous'))))
+ OR ($4 AND EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id WHERE o.cluster=$1 AND d.movement_route='cross_mint_jupiter' AND d.terminal_outcome IS NULL AND NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions s WHERE s.decision_id=d.id AND s.submission_state IN ('signed','submitted','confirmed','reconciliation_pending','expiry_check_pending','effect_ambiguous')))),
+ (SELECT max(d.custody_reconciled_slot) FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id WHERE o.cluster=$1 AND d.movement_route='cross_mint_jupiter')`, r.config.Cluster, r.config.Owner, formatInterval(lookback), r.controller == nil).Scan(&closed, &anchor)
 	if err != nil {
 		return false, 0, err
 	}
@@ -276,7 +293,7 @@ func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error 
 			return err
 		}
 	}
-	observed, _, err := observeCrossMintBank(workCtx, r.accounts, r.history, m, pre, floor, historyAnchor, known, m.CustodyReconciledSlot != nil)
+	observed, _, err := observeCrossMintFirstSendBank(workCtx, r.accounts, r.history, m, pre, floor, historyAnchor, known)
 	if err != nil || !sameCrossMintAnchorAmounts(pre, observed) {
 		if err == nil {
 			err = errors.New("signed prebalance or position changed")
@@ -463,13 +480,13 @@ func loadCrossMintSendEvidence(ctx context.Context, tx pgx.Tx, l SubmissionLease
 		}
 		out.SelectedALTs = append(out.SelectedALTs, a)
 	}
-	raw, err := json.Marshal(out.SelectedALTs)
+	external, order, _, err := crossMintJournalALTProof(epochs, out.SelectedALTs, l.Submission.SignedTransaction, selection)
 	if err != nil {
 		return out, err
 	}
-	hash := sha256.Sum256(raw)
-	if selection != hex.EncodeToString(hash[:]) {
-		return out, errors.New("durable ALT selected member identity changed")
+	out.ExternalALTs, out.LookupTableOrder = external, order
+	for _, snapshot := range external {
+		out.MinimumSlot = max(out.MinimumSlot, snapshot.ObservedSlot, snapshot.UsableAfterSlot)
 	}
 	return out, nil
 }
@@ -551,8 +568,9 @@ func (s *Store) recordCrossMintBroadcastIntent(ctx context.Context, l Submission
 		if err != nil {
 			return err
 		}
-		a.Preparation.Transaction = fleet.PreparedTransaction{UnsignedWire: unsigned, WritableAccounts: writable}
-		if err = verifyPreparedWritables(transaction, a); err != nil {
+		p := CrossMintPreparedLeg{SelectedALTs: evidence.SelectedALTs, ExternalALTs: evidence.ExternalALTs}
+		p.Preparation.Transaction = fleet.PreparedTransaction{UnsignedWire: unsigned, WritableAccounts: writable, LookupTables: evidence.LookupTableOrder}
+		if err = verifyCrossMintPreparedWritables(transaction, p); err != nil {
 			return err
 		}
 		var bound bool
@@ -612,6 +630,30 @@ func sameCrossMintAnchorAmounts(a, b CrossMintBalanceAnchors) bool {
 // bank. History follows the balance observation, so restoration cannot hide
 // an external debit. The source-backed decoder owns exchange-rate rounding.
 func observeCrossMintBank(ctx context.Context, reader finalizedAccountReader, history finalizedHistoryReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool, requireTokenAnchor bool) (CrossMintBalanceAnchors, int64, error) {
+	return observeCrossMintBankWithAnchorPolicy(ctx, reader, history, m, expected, floor, historyAnchor, recognized, requireTokenAnchor, "")
+}
+
+// A fresh swap has not yet touched its destination ATA. Its existing custody
+// account must retain the reconciled receipt anchor; other exact token anchors
+// must have no unrecognized activity, but need no invented prior receipt.
+// Receipt and expiry proofs retain the stricter all-account anchor policy.
+func observeCrossMintFirstSendBank(ctx context.Context, reader finalizedAccountReader, history finalizedHistoryReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool) (CrossMintBalanceAnchors, int64, error) {
+	if m.CustodyReconciledSlot == nil {
+		return observeCrossMintBank(ctx, reader, history, m, expected, floor, historyAnchor, recognized, false)
+	}
+	bound := false
+	for _, anchor := range []*CrossMintTokenAmount{expected.Debit, expected.Credit} {
+		if anchor != nil && anchor.TokenAccount == m.CustodyAccount && anchor.Mint == m.CustodyMint {
+			bound = true
+		}
+	}
+	if !bound || m.CustodyAccount == "" || (m.Phase != CrossMintSourceIdle && m.Phase != CrossMintTargetIdle) {
+		return CrossMintBalanceAnchors{}, 0, errors.New("first-send history lacks the attributable idle custody account")
+	}
+	return observeCrossMintBankWithAnchorPolicy(ctx, reader, history, m, expected, floor, historyAnchor, recognized, true, m.CustodyAccount)
+}
+
+func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader finalizedAccountReader, history finalizedHistoryReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool, requireTokenAnchor bool, custodyOnly string) (CrossMintBalanceAnchors, int64, error) {
 	var out CrossMintBalanceAnchors
 	if reader == nil || history == nil || floor <= 0 || requireTokenAnchor && (historyAnchor <= 0 || historyAnchor > floor) {
 		return out, 0, errors.New("cross-mint bank needs finalized proof dependencies and positive floor")
@@ -665,7 +707,7 @@ func observeCrossMintBank(ctx context.Context, reader finalizedAccountReader, hi
 			out.Credit = anchor
 		}
 		if requireTokenAnchor {
-			if _, e = verifyCustodyHistory(ctx, history, a.TokenAccount, historyAnchor, slot, recognized, true); e != nil {
+			if _, e = verifyCustodyHistory(ctx, history, a.TokenAccount, historyAnchor, slot, recognized, custodyOnly == "" || a.TokenAccount == custodyOnly); e != nil {
 				return out, 0, e
 			}
 		}
@@ -828,14 +870,11 @@ func (s *Store) verifyCrossMintReceiptLoadedAccounts(ctx context.Context, record
 		selected = append(selected, a)
 		byAddress[a.Address] = a.Addresses
 	}
-	encoded, err := json.Marshal(selected)
+	_, _, vectors, err := crossMintJournalALTProof(raw, selected, record.SignedTransaction, fingerprint)
 	if err != nil {
 		return err
 	}
-	hash := sha256.Sum256(encoded)
-	if fingerprint != hex.EncodeToString(hash[:]) {
-		return errors.New("receipt ALT member snapshot no longer reconstructs original compilation")
-	}
+	byAddress = vectors
 	keys := []string{}
 	for _, key := range tx.Message.AccountKeys {
 		keys = append(keys, key.String())
